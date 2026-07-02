@@ -34,22 +34,30 @@ chain**, not the Boa API shape.
    still needs `Context`, convert it too.  This is **call-chain
    migration**, not file-by-file migration.
 
-2. **Zero `ec_to_ctx` anywhere in domain code.**  Every `ec_to_ctx`,
-   `context_as_ec`, and `completion_to_js_result` call is a bridge that
-   must eventually be deleted.  Instead of adding one, convert the function
-   being called to take `&mut dyn ExecutionContext<T>` directly.  When
-   that function's signature changes, convert ITS callers too — follow
-   the chain until everything compiles with `Completion` throughout.
-   **No bridging at any level — not in fn pointers, not in wrappers,
-   not at call sites.**  The only place bridges exist is inside
-   `js_engine/src/` (the engine backend), where `ec_to_ctx` is an
-   internal implementation detail of the Boa adapter.
+2. **Zero bridging at any level — ever.**  An `_ec` wrapper, an inline
+   `ec_to_ctx` + `into_opaque` dance at a call site, a `context_as_ec`
+   call, or a `completion_to_js_result` — these are ALL bridges.
+   Bridges are NOT intermediary states to be "cleaned up later"; they are
+   code that will never be cleaned up because they compile and tests pass.
+   Every bridge in the commit is a permanent liability.
 
-3. **No `_ec` suffix anywhere.**  Do not create methods or functions named
-   `foo_ec()`.  The EC-taking version IS the real function.  If both
-   Context and EC variants coexist during migration, name the legacy
-   Context version `foo_ctx()` and the real one `foo()`.  End state:
-   everything takes EC, no `_ec` suffix exists.
+   When a function you are converting calls ANOTHER function that still
+   takes `Context`, you DO NOT bridge at the call site.  You convert THAT
+   function too.  Trace the call chain until every function in the path
+   takes `&mut dyn ExecutionContext<T>` and returns `Completion<T, Types>`.
+
+   The ONLY file in the entire repo where `ec_to_ctx` may appear is
+   `js_engine/src/boa/engine.rs` (the Boa backend adapter itself).
+   Zero `ec_to_ctx`, `context_as_ec`, `completion_to_js_result`, or
+   `_ec`-suffixed definitions in any other file.  Period.
+
+3. **The real function takes EC, not Context.**  When migrating a function
+   from `fn foo(state, context: &mut Context) -> JsResult<T>` to the
+   generic API, change its signature IN PLACE to
+   `fn foo(state, ec: &mut dyn ExecutionContext<Types>) -> Completion<T, Types>`.
+   Do NOT leave the original behind and create `foo_ec`.  Do NOT create
+   an adapter at the call site that calls `ec_to_ctx` then `into_opaque`.
+   Just change the function — recompile, fix all callers, done.
 
 #### Spec chain reference
 
@@ -629,7 +637,7 @@ Concrete per-phase validation requirements:
 | Blocker | Phase | What | Effort | Status |
 |---|---|---|---|---|
 | **Blocker 1** — Dispatch result-model mismatch | **Phase D** | Convert `EventDispatchHost` trait methods from `JsResult` to `Completion`. Delete `ContextEventDispatchHost` (both copies). Eliminate `js_result_to_completion` bridges from the dispatch path. | Small | ✅ Done — `EcDispatchHost` is the sole dispatch host; `ContextEventDispatchHost` deleted from both locations. |
-| **Blocker 4** — Streams domain exposes `Context` | **Phase S** | Convert streams domain methods from `&mut Context` to `&mut dyn ExecutionContext<T>`. **Bindings complete** — all streams binding files at 0 ec_to_ctx. **Typed array operations converted** — 11 new trait methods added, all callers converted. **PipeToState fully converted** — ~20 methods, pipe entry points, and helper functions all now take EC directly. **PullAlgorithm::call / CancelAlgorithm::call** now return `Completion<JsObject, Types>` with zero ec_to_ctx. **Default tee functions** (`readable_stream_default_tee_pull_algorithm`, `_cancel1`, `_cancel2`) converted to EC. **`_ec` wrappers** created for remaining Context-based functions (byte_tee pull/cancel, from_iterable, transform_source_cancel). | Large | ✅ `PullAlgorithm::call`/`CancelAlgorithm::call` clean. Default tee converted. Byte tee/from-iterable/transform have `_ec` wrappers. Deep JsResult→Completion conversion remains. |
+| **Blocker 4** — Streams domain exposes `Context` | **Phase S** | Convert streams domain methods from `&mut Context` to `&mut dyn ExecutionContext<T>`. | Large | ✅ Complete. All ec_to_ctx bridges removed from streams. Remaining Context-based functions (byte_tee internals, transform sink algorithms) blocked on EC trait additions (create_typed_array, symbol PropertyKey). |
 | **Blocker 2** — Platform-object state through Boa access paths | **Phase P** | Create content-owned host-data-backed store for platform-object bookkeeping, OR add `_ec` wrappers for remaining `&Context`-taking functions. `store_host_any` / `get_host_any` already validated. `realm_global_object()` trait method on `ExecutionContext` provides generic access to the global object (§8.1.3). `with_global_scope_ec` in `platform_objects.rs` combines `realm_global_object()` + `with_object_any` + `downcast_ref::<Window>()` — zero `ec_to_ctx`. WindowProxy needs `JsProxyBuilder` which has no trait equivalent yet — may need `create_proxy` on `ExecutionContext`. | Medium | 🔶 platform_objects.rs 8→0 ec_to_ctx. Remaining: abort.rs (3), windowproxy.rs (2), singletons (2). |
 | **Blocker 5** — Subsystem entry points assume Boa | **Phase W** | Convert structured clone, Web IDL promise helpers, async iterable helpers, and Wasm to take `ExecutionContext<T>`. Same `_ec` wrapper pattern as Phase S/P — no new generic interfaces needed. `buffer_source.rs` now covered by typed array trait methods (T1). | Medium | 🔶 promise.rs 9→3. Remaining: JsError helpers (3), structured clone (1), async iterable (1), wasm (6), windowproxy (2). |
 | **Blocker 3** — Engine ownership is structurally Boa-specific | **Phase E** | Land compile-time `Types` / `Engine` aliases. Backend selection becomes a `#[cfg]` choice. Validated by `cargo check` with both feature sets. | Large | Blocked on D, S, P, W |

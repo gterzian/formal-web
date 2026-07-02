@@ -149,20 +149,12 @@ impl ReadRequest {
             Self::ReadableStreamDefaultTee {
                 tee_state,
                 clone_for_branch2,
-            } => {
-                // SAFETY: ec is backed by BoaContext repr(transparent) over Context.
-                // Tee algorithms still take Boa's Context.
-                let context = unsafe { js_engine::boa::ec_to_ctx(ec) };
-                crate::js::js_result_to_completion(
-                    readable_stream_default_tee_read_request_chunk_steps(
-                        tee_state.clone(),
-                        *clone_for_branch2,
-                        chunk,
-                        context,
-                    ),
-                    context,
-                )
-            }
+            } => readable_stream_default_tee_read_request_chunk_steps(
+                tee_state.clone(),
+                *clone_for_branch2,
+                chunk,
+                ec,
+            ),
             Self::ReadableByteStreamTee { tee_state } => {
                 // SAFETY: ec is backed by BoaContext repr(transparent) over Context.
                 // Tee algorithms still take Boa's Context.

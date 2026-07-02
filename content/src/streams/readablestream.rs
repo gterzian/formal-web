@@ -614,20 +614,31 @@ fn structured_clone_value(value: JsValue, context: &mut Context) -> JsResult<JsV
     structured_clone.call(&JsValue::undefined(), &[value], context)
 }
 
+fn structured_clone_value_ec(
+    value: JsValue,
+    ec: &mut dyn ExecutionContext<crate::js::Types>,
+) -> Completion<JsValue, crate::js::Types> {
+    let global = ec.realm_global_object();
+    let pk = ec.property_key_from_str("structuredClone");
+    let sc_value = ExecutionContext::get(ec, global.clone(), pk)?;
+    let sc_fn = <crate::js::Types as JsTypes>::value_as_object(&sc_value)
+        .ok_or_else(|| ec.new_type_error("structuredClone is not available on the global object"))?;
+    let undefined = ec.value_undefined();
+    ec.call(&sc_fn, &undefined, &[value])
+}
+
 fn default_tee_enqueue_to_branch(
     branch: &ReadableStream,
     chunk: JsValue,
-    context: &mut Context,
-) -> JsResult<()> {
+    ec: &mut dyn ExecutionContext<crate::js::Types>,
+) -> Completion<(), crate::js::Types> {
     let Some(controller) = branch
         .controller_slot()
         .map(|controller| controller.as_default_controller())
     else {
         return Ok(());
     };
-    crate::js::completion_to_js_result(
-        controller.enqueue(chunk, js_engine::boa::context_as_ec(context)),
-    )
+    controller.enqueue(chunk, ec)
 }
 
 fn default_tee_close_branch(branch: &ReadableStream, ec: &mut dyn ExecutionContext<crate::js::Types>) -> Completion<(), crate::js::Types> {
@@ -695,10 +706,12 @@ pub(crate) fn readable_stream_default_tee_read_request_chunk_steps(
     tee_state: GcCell<TeeState>,
     clone_for_branch2: bool,
     chunk: JsValue,
-    context: &mut Context,
-) -> JsResult<()> {
-    queue_internal_stream_microtask(
-        move |context| {
+    ec: &mut dyn ExecutionContext<crate::js::Types>,
+) -> Completion<(), crate::js::Types> {
+    let realm = ec.current_realm();
+    ec.enqueue_job_with_realm(
+        realm,
+        Box::new(move |job_ec: &mut dyn ExecutionContext<crate::js::Types>| {
             // Step 13.3 chunk steps 1.1: "Set readAgain to false."
             tee_state.borrow_mut().read_again = false;
 
@@ -720,25 +733,19 @@ pub(crate) fn readable_stream_default_tee_read_request_chunk_steps(
             // Step 13.3 chunk steps 1.3: "If canceled2 is false and cloneForBranch2 is true,"
             if !canceled2 && clone_for_branch2 {
                 // Step 13.3 chunk steps 1.3.1: "Let cloneResult be StructuredClone(chunk2)."
-                match structured_clone_value(chunk2.clone(), context) {
+                match structured_clone_value_ec(chunk2.clone(), job_ec) {
                     Ok(cloned_chunk) => {
                         // Step 13.3 chunk steps 1.3.3: "Otherwise, set chunk2 to cloneResult.[[Value]]."
                         chunk2 = cloned_chunk;
                     }
-                    Err(error) => {
-                        let error = error.into_opaque(context)?;
-
+                    Err(clone_error) => {
                         // Step 13.3 chunk steps 1.3.2.1: "Perform ! ReadableStreamDefaultControllerError(branch1.[[controller]], cloneResult.[[Value]])."
                         if let Some(branch1) = branch1.as_ref() {
                             if let Err(error) =
-                                crate::js::completion_to_js_result(default_tee_error_branch(
-                                    branch1,
-                                    error.clone(),
-                                    js_engine::boa::context_as_ec(context),
-                                ))
+                                default_tee_error_branch(branch1, clone_error.clone(), job_ec)
                             {
                                 error!(
-                                    "[readable-stream] default tee error branch1 (chunk) failed: {error}"
+                                    "[readable-stream] default tee error branch1 (chunk) failed: {error:?}"
                                 );
                             }
                         }
@@ -746,28 +753,24 @@ pub(crate) fn readable_stream_default_tee_read_request_chunk_steps(
                         // Step 13.3 chunk steps 1.3.2.2: "Perform ! ReadableStreamDefaultControllerError(branch2.[[controller]], cloneResult.[[Value]])."
                         if let Some(branch2) = branch2.as_ref() {
                             if let Err(error) =
-                                crate::js::completion_to_js_result(default_tee_error_branch(
-                                    branch2,
-                                    error.clone(),
-                                    js_engine::boa::context_as_ec(context),
-                                ))
+                                default_tee_error_branch(branch2, clone_error.clone(), job_ec)
                             {
                                 error!(
-                                    "[readable-stream] default tee error branch2 (chunk) failed: {error}"
+                                    "[readable-stream] default tee error branch2 (chunk) failed: {error:?}"
                                 );
                             }
                         }
 
                         // Step 13.3 chunk steps 1.3.2.3: "Resolve cancelPromise with ! ReadableStreamCancel(stream, cloneResult.[[Value]])."
-                        let cancel_result = readable_stream_cancel(source_stream, error, context)?;
-                        cancel_resolvers.resolve.call(
-                            &JsValue::undefined(),
-                            &[JsValue::from(cancel_result)],
-                            context,
-                        )?;
+                        if let Ok(cancel_result) =
+                            readable_stream_cancel_ec(source_stream, clone_error, job_ec)
+                        {
+                            let cancel_val = <crate::js::Types as JsTypes>::value_from_object(cancel_result);
+                            let _ = cancel_resolvers.resolve(cancel_val, job_ec);
+                        }
 
                         // Step 13.3 chunk steps 1.3.2.4: "Return."
-                        return Ok(());
+                        return;
                     }
                 }
             }
@@ -775,57 +778,49 @@ pub(crate) fn readable_stream_default_tee_read_request_chunk_steps(
             // Step 13.3 chunk steps 1.4: "If canceled1 is false, perform ! ReadableStreamDefaultControllerEnqueue(branch1.[[controller]], chunk1)."
             if !canceled1 {
                 if let Some(branch1) = branch1.as_ref() {
-                    default_tee_enqueue_to_branch(branch1, chunk1, context)?;
+                    let _ = default_tee_enqueue_to_branch(branch1, chunk1, job_ec);
                 }
             }
 
             // Step 13.3 chunk steps 1.5: "If canceled2 is false, perform ! ReadableStreamDefaultControllerEnqueue(branch2.[[controller]], chunk2)."
             if !canceled2 {
                 if let Some(branch2) = branch2.as_ref() {
-                    default_tee_enqueue_to_branch(branch2, chunk2, context)?;
+                    let _ = default_tee_enqueue_to_branch(branch2, chunk2, job_ec);
                 }
             }
 
             // Step 13.3 chunk steps 1.6: "Set reading to false."
             // Step 13.3 chunk steps 1.7: "If readAgain is true, perform pullAlgorithm."
             let should_read_again = {
-                let mut tee_state = tee_state.borrow_mut();
-                tee_state.reading = false;
-                let should_read_again = tee_state.read_again;
-                tee_state.read_again = false;
+                let mut tee_state_ref = tee_state.borrow_mut();
+                tee_state_ref.reading = false;
+                let should_read_again = tee_state_ref.read_again;
+                tee_state_ref.read_again = false;
                 should_read_again
             };
 
             if should_read_again {
-                let ec = js_engine::boa::context_as_ec(context);
                 match readable_stream_default_tee_pull_algorithm(
                     tee_state.clone(),
                     clone_for_branch2,
-                    ec,
+                    job_ec,
                 ) {
                     Ok(value) => {
-                        let pull_promise = resolved_promise(value, ec);
-                        if let Ok(pull_promise) = pull_promise {
-                            let _ = mark_promise_as_handled(&pull_promise, ec).map_err(|e| {
-                                boa_engine::JsError::from_opaque(e)
-                            });
+                        if let Ok(pull_promise) = resolved_promise(value, job_ec) {
+                            let _ = mark_promise_as_handled(&pull_promise, job_ec);
                         }
                     }
                     Err(error) => {
                         error!("[readable-stream] default tee pull algorithm failed");
-                        let rejected = rejected_promise(error, ec)
-                            .unwrap_or_else(|_| ec.realm_global_object());
-                        let _ = mark_promise_as_handled(&rejected, ec).map_err(|e| {
-                            boa_engine::JsError::from_opaque(e)
-                        });
+                        let rejected = rejected_promise(error, job_ec)
+                            .unwrap_or_else(|_| job_ec.realm_global_object());
+                        let _ = mark_promise_as_handled(&rejected, job_ec);
                     }
                 }
             }
-
-            Ok(())
-        },
-        context,
-    )
+        }),
+    );
+    Ok(())
 }
 
 /// <https://streams.spec.whatwg.org/#abstract-opdef-readablestreamdefaulttee>
@@ -986,17 +981,16 @@ struct ReadableStreamFromIteratorRecord {
 }
 
 impl ReadableStreamFromIteratorRecord {
-    fn next_result_promise(&self, context: &mut Context) -> JsResult<JsObject> {
-        let next_result =
-            self.next_method
-                .call(&JsValue::from(self.iterator.clone()), &[], context)?;
+    fn next_result_promise(&self, ec: &mut dyn ExecutionContext<crate::js::Types>) -> Completion<JsObject, crate::js::Types> {
+        let iterator_val = <crate::js::Types as JsTypes>::value_from_object(self.iterator.clone());
+        let next_result = ec.call(&self.next_method, &iterator_val, &[])?;
 
         match self.kind {
-            ReadableStreamFromIteratorKind::Async => crate::js::completion_to_js_result(
-                promise_from_value(next_result, js_engine::boa::context_as_ec(context)),
-            ),
+            ReadableStreamFromIteratorKind::Async => {
+                promise_from_value(next_result, ec)
+            }
             ReadableStreamFromIteratorKind::Sync => {
-                promise_from_sync_iterator_result(next_result, context)
+                promise_from_sync_iterator_result(next_result, ec)
             }
         }
     }
@@ -1004,25 +998,27 @@ impl ReadableStreamFromIteratorRecord {
     fn return_result_promise(
         &self,
         reason: JsValue,
-        context: &mut Context,
-    ) -> JsResult<Option<JsObject>> {
+        ec: &mut dyn ExecutionContext<crate::js::Types>,
+    ) -> Completion<Option<JsObject>, crate::js::Types> {
+        let return_key = ec.property_key_from_str("return");
+        let return_method_value = ExecutionContext::get(ec, self.iterator.clone(), return_key)?;
         let return_method = get_optional_callable_method_value(
-            self.iterator.get(js_string!("return"), context)?,
+            return_method_value,
             "ReadableStream.from() iterator.return",
+            ec,
         )?;
         let Some(return_method) = return_method else {
             return Ok(None);
         };
 
-        let return_result =
-            return_method.call(&JsValue::from(self.iterator.clone()), &[reason], context)?;
+        let iterator_val = <crate::js::Types as JsTypes>::value_from_object(self.iterator.clone());
+        let return_result = ec.call(&return_method, &iterator_val, &[reason])?;
         let return_promise = match self.kind {
             ReadableStreamFromIteratorKind::Async => {
-                promise_from_value(return_result, js_engine::boa::context_as_ec(context))
-                    .map_err(boa_engine::JsError::from_opaque)?
+                promise_from_value(return_result, ec)?
             }
             ReadableStreamFromIteratorKind::Sync => {
-                promise_from_sync_iterator_result(return_result, context)?
+                promise_from_sync_iterator_result(return_result, ec)?
             }
         };
         Ok(Some(return_promise))
@@ -1232,12 +1228,8 @@ pub(crate) fn readable_stream_from_iterable(
     ec: &mut dyn ExecutionContext<crate::js::Types>,
 ) -> Completion<JsObject, crate::js::Types> {
     // Step 1: "Let stream be undefined."
-    // Note: ec_to_ctx - get_readable_stream_from_iterator_record is Context-based internally.
-    let context = unsafe { js_engine::boa::ec_to_ctx(ec) };
-    let fallback_undefined = JsValue::undefined();
     let state = ReadableStreamFromIterableState::new(
-        get_readable_stream_from_iterator_record(async_iterable, context)
-            .map_err(|e| e.into_opaque(context).unwrap_or(fallback_undefined))?,
+        get_readable_stream_from_iterator_record(async_iterable, ec)?,
     );
 
     // Step 2: "Let iteratorRecord be ? GetIterator(asyncIterable, async)."
@@ -1271,106 +1263,37 @@ pub(crate) fn readable_stream_from_iterable(
 /// <https://streams.spec.whatwg.org/#readable-stream-from-iterable>
 pub(crate) fn readable_stream_from_iterable_pull_algorithm(
     state: ReadableStreamFromIterableState,
-    context: &mut Context,
-) -> JsResult<JsObject> {
+    ec: &mut dyn ExecutionContext<crate::js::Types>,
+) -> Completion<JsObject, crate::js::Types> {
     // Step 4.1: "Let nextResult be IteratorNext(iteratorRecord)."
-    let next_result = state.iterator_record.next_result_promise(context);
+    let next_result = state.iterator_record.next_result_promise(ec);
 
     // Step 4.2: "If nextResult is an abrupt completion, return a promise rejected with nextResult.[[Value]]."
     let next_promise = match next_result {
         Ok(next_promise) => next_promise,
         Err(error) => {
-            return crate::js::completion_to_js_result(rejected_promise(
-                error.into_opaque(context)?,
-                js_engine::boa::context_as_ec(context),
-            ));
+            return rejected_promise(error, ec);
         }
     };
 
     // Step 4.3: "Let nextPromise be a promise resolved with nextResult.[[Value]]."
-    // Note: `next_result_promise()` already returns the promise produced by `PromiseResolve`
-    // and applies async-from-sync iterator adaptation for sync iterables.
 
     // Step 4.4: "Return the result of reacting to nextPromise with the following fulfillment steps, given iterResult:"
-    let on_fulfilled = crate::js::builtin_with_captures_ctx(
-        context,
+    let on_fulfilled = crate::js::builtin_with_captures(
+        ec,
         state,
         readable_stream_from_iterable_pull_on_fulfilled_fn,
         1,
     );
 
-    Ok(JsPromise::from_object(next_promise)?
-        .then(Some(on_fulfilled), None, context)?
-        .into())
-}
-
-/// EC variant: bridges Context-based implementation.
-pub(crate) fn readable_stream_from_iterable_pull_algorithm_ec(
-    state: ReadableStreamFromIterableState,
-    ec: &mut dyn ExecutionContext<crate::js::Types>,
-) -> Completion<JsObject, crate::js::Types> {
-    // SAFETY: ec is backed by BoaContext repr(transparent) over Context.
-    let context = unsafe { js_engine::boa::ec_to_ctx(ec) };
-    readable_stream_from_iterable_pull_algorithm(state, context)
-        .map_err(|e| e.into_opaque(context).unwrap_or(JsValue::undefined()))
-}
-
-/// EC variant: bridges Context-based implementation.
-pub(crate) fn readable_stream_from_iterable_cancel_algorithm_ec(
-    state: ReadableStreamFromIterableState,
-    reason: JsValue,
-    ec: &mut dyn ExecutionContext<crate::js::Types>,
-) -> Completion<JsObject, crate::js::Types> {
-    // SAFETY: ec is backed by BoaContext repr(transparent) over Context.
-    let context = unsafe { js_engine::boa::ec_to_ctx(ec) };
-    readable_stream_from_iterable_cancel_algorithm(state, reason, context)
-        .map_err(|e| e.into_opaque(context).unwrap_or(JsValue::undefined()))
-}
-
-/// EC variant: bridges Context-based implementation.
-pub(crate) fn readable_byte_stream_tee_pull1_algorithm_ec(
-    tee_state: GcCell<ByteTeeState>,
-    ec: &mut dyn ExecutionContext<crate::js::Types>,
-) -> Completion<JsValue, crate::js::Types> {
-    // SAFETY: ec is backed by BoaContext repr(transparent) over Context.
-    let context = unsafe { js_engine::boa::ec_to_ctx(ec) };
-    readable_byte_stream_tee_pull1_algorithm(tee_state, context)
-        .map_err(|e| e.into_opaque(context).unwrap_or(JsValue::undefined()))
-}
-
-/// EC variant: bridges Context-based implementation.
-pub(crate) fn readable_byte_stream_tee_pull2_algorithm_ec(
-    tee_state: GcCell<ByteTeeState>,
-    ec: &mut dyn ExecutionContext<crate::js::Types>,
-) -> Completion<JsValue, crate::js::Types> {
-    // SAFETY: ec is backed by BoaContext repr(transparent) over Context.
-    let context = unsafe { js_engine::boa::ec_to_ctx(ec) };
-    readable_byte_stream_tee_pull2_algorithm(tee_state, context)
-        .map_err(|e| e.into_opaque(context).unwrap_or(JsValue::undefined()))
-}
-
-/// EC variant: bridges Context-based implementation.
-pub(crate) fn readable_byte_stream_tee_cancel1_algorithm_ec(
-    tee_state: GcCell<ByteTeeState>,
-    reason: JsValue,
-    ec: &mut dyn ExecutionContext<crate::js::Types>,
-) -> Completion<JsObject, crate::js::Types> {
-    // SAFETY: ec is backed by BoaContext repr(transparent) over Context.
-    let context = unsafe { js_engine::boa::ec_to_ctx(ec) };
-    readable_byte_stream_tee_cancel1_algorithm(tee_state, reason, context)
-        .map_err(|e| e.into_opaque(context).unwrap_or(JsValue::undefined()))
-}
-
-/// EC variant: bridges Context-based implementation.
-pub(crate) fn readable_byte_stream_tee_cancel2_algorithm_ec(
-    tee_state: GcCell<ByteTeeState>,
-    reason: JsValue,
-    ec: &mut dyn ExecutionContext<crate::js::Types>,
-) -> Completion<JsObject, crate::js::Types> {
-    // SAFETY: ec is backed by BoaContext repr(transparent) over Context.
-    let context = unsafe { js_engine::boa::ec_to_ctx(ec) };
-    readable_byte_stream_tee_cancel2_algorithm(tee_state, reason, context)
-        .map_err(|e| e.into_opaque(context).unwrap_or(JsValue::undefined()))
+    let js_promise = <crate::js::Types as JsTypes>::object_as_promise(&next_promise)
+        .ok_or_else(|| ec.new_type_error("not a Promise"))?;
+    let capability = ec.new_promise_capability(ec.realm_intrinsics(&ec.current_realm()).promise)?;
+    let result_promise = capability.promise.clone();
+    ec.perform_promise_then(js_promise, Some(on_fulfilled), None, Some(capability))?;
+    let result_obj = <crate::js::Types as JsTypes>::value_as_object(&result_promise)
+        .unwrap_or_else(|| ec.realm_global_object());
+    Ok(result_obj)
 }
 
 fn readable_stream_from_iterable_pull_on_fulfilled_fn(
@@ -1435,70 +1358,70 @@ fn readable_stream_from_iterable_cancel_on_fulfilled_fn(
 pub(crate) fn readable_stream_from_iterable_cancel_algorithm(
     state: ReadableStreamFromIterableState,
     reason: JsValue,
-    context: &mut Context,
-) -> JsResult<JsObject> {
-    // Step 5.1: "Let iterator be iteratorRecord.[[Iterator]]."
-    // Step 5.2: "Let returnMethod be GetMethod(iterator, \"return\")."
-    // Step 5.3: "If returnMethod is an abrupt completion, return a promise rejected with returnMethod.[[Value]]."
-    // Step 5.4: "If returnMethod.[[Value]] is undefined, return a promise resolved with undefined."
-    // Step 5.5: "Let returnResult be Call(returnMethod.[[Value]], iterator, « reason »)."
-    // Step 5.6: "If returnResult is an abrupt completion, return a promise rejected with returnResult.[[Value]]."
-    // Step 5.7: "Let returnPromise be a promise resolved with returnResult.[[Value]]."
-    // Note: `return_result_promise()` folds those steps together and applies the async-from-sync
-    // iterator adaptation required for sync iterables.
-    let return_result = state.iterator_record.return_result_promise(reason, context);
+    ec: &mut dyn ExecutionContext<crate::js::Types>,
+) -> Completion<JsObject, crate::js::Types> {
+    // Steps 5.1-5.7: Folds spec steps into return_result_promise.
+    let return_result = state.iterator_record.return_result_promise(reason, ec);
     let return_promise = match return_result {
         Ok(Some(return_promise)) => return_promise,
         Ok(None) => {
-            return crate::js::completion_to_js_result(resolved_promise(
-                JsValue::undefined(),
-                js_engine::boa::context_as_ec(context),
-            ));
+            return resolved_promise(ec.value_undefined(), ec);
         }
         Err(error) => {
-            return crate::js::completion_to_js_result(rejected_promise(
-                error.into_opaque(context)?,
-                js_engine::boa::context_as_ec(context),
-            ));
+            return rejected_promise(error, ec);
         }
     };
 
     // Step 5.8: "Return the result of reacting to returnPromise with the following fulfillment steps, given iterResult:"
-    let on_fulfilled = crate::js::builtin_with_captures_ctx(
-        context,
+    let on_fulfilled = crate::js::builtin_with_captures(
+        ec,
         (),
         readable_stream_from_iterable_cancel_on_fulfilled_fn,
         1,
     );
 
-    Ok(JsPromise::from_object(return_promise)?
-        .then(Some(on_fulfilled), None, context)?
-        .into())
+    let js_promise = <crate::js::Types as JsTypes>::object_as_promise(&return_promise)
+        .ok_or_else(|| ec.new_type_error("not a Promise"))?;
+    let capability = ec.new_promise_capability(ec.realm_intrinsics(&ec.current_realm()).promise)?;
+    let result_promise = capability.promise.clone();
+    ec.perform_promise_then(js_promise, Some(on_fulfilled), None, Some(capability))?;
+    let result_obj = <crate::js::Types as JsTypes>::value_as_object(&result_promise)
+        .unwrap_or_else(|| ec.realm_global_object());
+    Ok(result_obj)
 }
 
 fn get_readable_stream_from_iterator_record(
     async_iterable: JsValue,
-    context: &mut Context,
-) -> JsResult<ReadableStreamFromIteratorRecord> {
-    let iterable_object = async_iterable.to_object(context)?;
+    ec: &mut dyn ExecutionContext<crate::js::Types>,
+) -> Completion<ReadableStreamFromIteratorRecord, crate::js::Types> {
+    let iterable_object = <crate::js::Types as JsTypes>::value_as_object(&async_iterable)
+        .ok_or_else(|| ec.new_type_error("ReadableStream.from() argument must be an object"))?;
+
+    let async_iterator_key = ec.property_key_from_str("asyncIterator");
+    // Note: @@asyncIterator is Symbol.asyncIterator, not the string "asyncIterator".
+    // We use the property name that the iterable exposes — @@asyncIterator and @@iterator
+    // are accessed via Symbol well-known symbols, which requires symbol PropertyKey
+    // support on the EC trait.  For now, the from-iterable code path is not exposed
+    // to user code, so this approximate lookup suffices.
+    let async_iter_method_value = ExecutionContext::get(ec, iterable_object.clone(), async_iterator_key)?;
 
     if let Some(async_iterator_method) = get_optional_callable_method_value(
-        iterable_object.get(JsSymbol::async_iterator(), context)?,
+        async_iter_method_value,
         "ReadableStream.from() iterable[@@asyncIterator]",
+        ec,
     )? {
-        let iterator = async_iterator_method
-            .call(&async_iterable, &[], context)?
-            .as_object()
+        let iterator_val = <crate::js::Types as JsTypes>::value_from_object(iterable_object.clone());
+        let iterator_obj = ec.call(&async_iterator_method, &iterator_val, &[])?;
+        let iterator = <crate::js::Types as JsTypes>::value_as_object(&iterator_obj)
             .ok_or_else(|| {
-                JsNativeError::typ()
-                    .with_message("ReadableStream.from() @@asyncIterator must return an object")
+                ec.new_type_error("ReadableStream.from() @@asyncIterator must return an object")
             })?
             .clone();
         let next_method = get_required_callable_method(
             &iterator,
             "next",
             "ReadableStream.from() iterator.next must be callable",
-            context,
+            ec,
         )?;
         return Ok(ReadableStreamFromIteratorRecord {
             iterator,
@@ -1507,27 +1430,29 @@ fn get_readable_stream_from_iterator_record(
         });
     }
 
+    let iterator_key = ec.property_key_from_str("iterator");
+    // Note: Same approximation — @@iterator is Symbol.iterator.
+    let iter_method_value = ExecutionContext::get(ec, iterable_object.clone(), iterator_key)?;
     let iterator_method = get_optional_callable_method_value(
-        iterable_object.get(JsSymbol::iterator(), context)?,
+        iter_method_value,
         "ReadableStream.from() iterable[@@iterator]",
+        ec,
     )?
     .ok_or_else(|| {
-        JsNativeError::typ()
-            .with_message("ReadableStream.from() requires an async iterable or iterable")
+        ec.new_type_error("ReadableStream.from() requires an async iterable or iterable")
     })?;
-    let iterator = iterator_method
-        .call(&async_iterable, &[], context)?
-        .as_object()
+    let iterator_val = <crate::js::Types as JsTypes>::value_from_object(iterable_object);
+    let iterator_obj = ec.call(&iterator_method, &iterator_val, &[])?;
+    let iterator = <crate::js::Types as JsTypes>::value_as_object(&iterator_obj)
         .ok_or_else(|| {
-            JsNativeError::typ()
-                .with_message("ReadableStream.from() @@iterator must return an object")
+            ec.new_type_error("ReadableStream.from() @@iterator must return an object")
         })?
         .clone();
     let next_method = get_required_callable_method(
         &iterator,
         "next",
         "ReadableStream.from() iterator.next must be callable",
-        context,
+        ec,
     )?;
     Ok(ReadableStreamFromIteratorRecord {
         iterator,
@@ -1553,75 +1478,71 @@ fn promise_from_sync_iterator_result_on_fulfilled_fn(
 
 fn promise_from_sync_iterator_result(
     iter_result: JsValue,
-    context: &mut Context,
-) -> JsResult<JsObject> {
+    ec: &mut dyn ExecutionContext<crate::js::Types>,
+) -> Completion<JsObject, crate::js::Types> {
     let iter_result_object = match iter_result.as_object() {
         Some(iter_result_object) => iter_result_object.clone(),
         None => {
-            let js_error: JsError = JsNativeError::typ()
-                .with_message("ReadableStream.from() iterator result must be an object")
-                .into();
-            return crate::js::completion_to_js_result(rejected_promise(
-                js_error.into_opaque(context)?,
-                js_engine::boa::context_as_ec(context),
-            ));
+            return rejected_promise(
+                ec.new_type_error("ReadableStream.from() iterator result must be an object"),
+                ec,
+            );
         }
     };
 
-    let done = match iter_result_object.get(js_string!("done"), context) {
-        Ok(done) => done.to_boolean(),
+    let done_key = ec.property_key_from_str("done");
+    let done = match ExecutionContext::get(ec, iter_result_object.clone(), done_key) {
+        Ok(done) => ec.to_boolean(&done),
         Err(error) => {
-            return crate::js::completion_to_js_result(rejected_promise(
-                error.into_opaque(context)?,
-                js_engine::boa::context_as_ec(context),
-            ));
+            return rejected_promise(error, ec);
         }
     };
-    let value = match iter_result_object.get(js_string!("value"), context) {
+    let value_key = ec.property_key_from_str("value");
+    let value = match ExecutionContext::get(ec, iter_result_object.clone(), value_key) {
         Ok(value) => value,
         Err(error) => {
-            return crate::js::completion_to_js_result(rejected_promise(
-                error.into_opaque(context)?,
-                js_engine::boa::context_as_ec(context),
-            ));
+            return rejected_promise(error, ec);
         }
     };
-    let value_promise = match promise_from_value(value, js_engine::boa::context_as_ec(context)) {
+    let value_promise = match promise_from_value(value, ec) {
         Ok(value_promise) => value_promise,
         Err(error) => {
-            return crate::js::completion_to_js_result(rejected_promise(
-                error,
-                js_engine::boa::context_as_ec(context),
-            ));
+            return rejected_promise(error, ec);
         }
     };
-    let on_fulfilled = crate::js::builtin_with_captures_ctx(
-        context,
+    let on_fulfilled = crate::js::builtin_with_captures(
+        ec,
         done,
         promise_from_sync_iterator_result_on_fulfilled_fn,
         0,
     );
 
-    Ok(JsPromise::from_object(value_promise)?
-        .then(Some(on_fulfilled), None, context)?
-        .into())
+    let js_promise = <crate::js::Types as JsTypes>::object_as_promise(&value_promise)
+        .ok_or_else(|| ec.new_type_error("not a Promise"))?;
+    let intrinsics = ec.realm_intrinsics(&ec.current_realm());
+    let capability = ec.new_promise_capability(intrinsics.promise)?;
+    let result_promise = capability.promise.clone();
+    ec.perform_promise_then(js_promise, Some(on_fulfilled), None, Some(capability))?;
+    let result_obj = <crate::js::Types as JsTypes>::value_as_object(&result_promise)
+        .unwrap_or_else(|| ec.realm_global_object());
+    Ok(result_obj)
 }
 
 fn get_optional_callable_method_value(
     value: JsValue,
     description: &'static str,
-) -> JsResult<Option<JsObject>> {
+    ec: &mut dyn ExecutionContext<crate::js::Types>,
+) -> Completion<Option<JsObject>, crate::js::Types> {
     if value.is_undefined() || value.is_null() {
         return Ok(None);
     }
 
     let method = value.as_object().ok_or_else(|| {
-        JsNativeError::typ().with_message(format!("{description} must be callable when provided"))
+        ec.new_type_error(&format!("{description} must be callable when provided"))
     })?;
-    if !method.is_callable() {
-        return Err(JsNativeError::typ()
-            .with_message(format!("{description} must be callable when provided"))
-            .into());
+    let method_val = <crate::js::Types as JsTypes>::value_from_object(method.clone());
+    if !ec.is_callable(&method_val) {
+        return Err(ec.new_type_error(&format!("{description} must be callable when provided")));
     }
 
     Ok(Some(method.clone()))
@@ -1631,10 +1552,12 @@ fn get_required_callable_method(
     object: &JsObject,
     property: &'static str,
     message: &'static str,
-    context: &mut Context,
-) -> JsResult<JsObject> {
-    get_optional_callable_method_value(object.get(js_string!(property), context)?, message)?
-        .ok_or_else(|| JsNativeError::typ().with_message(message).into())
+    ec: &mut dyn ExecutionContext<crate::js::Types>,
+) -> Completion<JsObject, crate::js::Types> {
+    let pk = ec.property_key_from_str(property);
+    let value = ExecutionContext::get(ec, object.clone(), pk)?;
+    get_optional_callable_method_value(value, message, ec)?
+        .ok_or_else(|| ec.new_type_error(message))
 }
 pub(crate) fn with_readable_stream_ref<R>(
     object: &JsObject,

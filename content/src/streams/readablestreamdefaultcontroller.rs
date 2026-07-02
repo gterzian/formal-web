@@ -15,19 +15,16 @@ use js_engine::gc_struct;
 
 use super::readablestream::{
     ByteTeeState, ReadableStreamFromIterableState, TeeState,
-    readable_byte_stream_tee_cancel1_algorithm_ec,
-    readable_byte_stream_tee_cancel2_algorithm_ec,
-    readable_byte_stream_tee_pull1_algorithm_ec,
-    readable_byte_stream_tee_pull2_algorithm_ec,
+    readable_byte_stream_tee_cancel1_algorithm, readable_byte_stream_tee_cancel2_algorithm,
+    readable_byte_stream_tee_pull1_algorithm, readable_byte_stream_tee_pull2_algorithm,
     readable_stream_add_read_request, readable_stream_close, readable_stream_close_ec,
     readable_stream_default_tee_cancel1_algorithm, readable_stream_default_tee_cancel2_algorithm,
     readable_stream_default_tee_pull_algorithm, readable_stream_error,
-    readable_stream_from_iterable_cancel_algorithm_ec,
-    readable_stream_from_iterable_pull_algorithm_ec,
+    readable_stream_from_iterable_cancel_algorithm, readable_stream_from_iterable_pull_algorithm,
     readable_stream_fulfill_read_request, readable_stream_get_num_read_requests,
 };
 use super::transformstream::{
-    transform_stream_default_source_cancel_algorithm_ec,
+    transform_stream_default_source_cancel_algorithm,
     transform_stream_default_source_pull_algorithm,
 };
 use super::{
@@ -69,7 +66,7 @@ impl PullAlgorithm {
                 resolved_promise(result, ec)
             }
             Self::ReadableStreamFromIterable(state) => {
-                readable_stream_from_iterable_pull_algorithm_ec(state.clone(), ec)
+                readable_stream_from_iterable_pull_algorithm(state.clone(), ec)
             }
             Self::ReadableStreamDefaultTee {
                 tee_state,
@@ -83,16 +80,18 @@ impl PullAlgorithm {
                 resolved_promise(value, ec)
             }
             Self::ReadableByteStreamTeeBranch1(tee_state) => {
-                let value = readable_byte_stream_tee_pull1_algorithm_ec(
-                    tee_state.clone(), ec,
-                )?;
-                resolved_promise(value, ec)
+                let context = unsafe { js_engine::boa::ec_to_ctx(ec) };
+                readable_byte_stream_tee_pull1_algorithm(tee_state.clone(), context)
+                    .map(|value| JsValue::from(value))
+                    .map_err(|e| e.into_opaque(context).unwrap_or(JsValue::undefined()))
+                    .and_then(|value| resolved_promise(value, ec).map_err(|e| e))
             }
             Self::ReadableByteStreamTeeBranch2(tee_state) => {
-                let value = readable_byte_stream_tee_pull2_algorithm_ec(
-                    tee_state.clone(), ec,
-                )?;
-                resolved_promise(value, ec)
+                let context = unsafe { js_engine::boa::ec_to_ctx(ec) };
+                readable_byte_stream_tee_pull2_algorithm(tee_state.clone(), context)
+                    .map(|value| JsValue::from(value))
+                    .map_err(|e| e.into_opaque(context).unwrap_or(JsValue::undefined()))
+                    .and_then(|value| resolved_promise(value, ec).map_err(|e| e))
             }
             Self::TransformStreamDefaultSourcePull(stream) => {
                 transform_stream_default_source_pull_algorithm(stream.clone(), ec)
@@ -128,9 +127,7 @@ impl CancelAlgorithm {
                 resolved_promise(result, ec)
             }
             Self::ReadableStreamFromIterable(state) => {
-                readable_stream_from_iterable_cancel_algorithm_ec(
-                    state.clone(), reason, ec,
-                )
+                readable_stream_from_iterable_cancel_algorithm(state.clone(), reason, ec)
             }
             Self::ReadableStreamDefaultTeeBranch1(tee_state) => {
                 readable_stream_default_tee_cancel1_algorithm(
@@ -143,19 +140,21 @@ impl CancelAlgorithm {
                 )
             }
             Self::ReadableByteStreamTeeBranch1(tee_state) => {
-                readable_byte_stream_tee_cancel1_algorithm_ec(
-                    tee_state.clone(), reason, ec,
-                )
+                let context = unsafe { js_engine::boa::ec_to_ctx(ec) };
+                readable_byte_stream_tee_cancel1_algorithm(tee_state.clone(), reason, context)
+                    .map_err(|e| e.into_opaque(context).unwrap_or(JsValue::undefined()))
+                    .map(|v| JsObject::from(v))
             }
             Self::ReadableByteStreamTeeBranch2(tee_state) => {
-                readable_byte_stream_tee_cancel2_algorithm_ec(
-                    tee_state.clone(), reason, ec,
-                )
+                let context = unsafe { js_engine::boa::ec_to_ctx(ec) };
+                readable_byte_stream_tee_cancel2_algorithm(tee_state.clone(), reason, context)
+                    .map_err(|e| e.into_opaque(context).unwrap_or(JsValue::undefined()))
+                    .map(|v| JsObject::from(v))
             }
             Self::TransformStreamDefaultSourceCancel(stream) => {
-                transform_stream_default_source_cancel_algorithm_ec(
-                    stream.clone(), reason, ec,
-                )
+                let context = unsafe { js_engine::boa::ec_to_ctx(ec) };
+                transform_stream_default_source_cancel_algorithm(stream.clone(), reason, context)
+                    .map_err(|e| e.into_opaque(context).unwrap_or(JsValue::undefined()))
             }
         }
     }

@@ -1363,18 +1363,6 @@ pub(crate) fn transform_stream_default_source_cancel_algorithm(
     Ok(finish_promise_obj)
 }
 
-/// EC variant: bridges Context-based implementation.
-pub(crate) fn transform_stream_default_source_cancel_algorithm_ec(
-    stream: TransformStream,
-    reason: JsValue,
-    ec: &mut dyn ExecutionContext<crate::js::Types>,
-) -> Completion<JsObject, crate::js::Types> {
-    // SAFETY: ec is backed by BoaContext repr(transparent) over Context.
-    let context = unsafe { js_engine::boa::ec_to_ctx(ec) };
-    transform_stream_default_source_cancel_algorithm(stream, reason, context)
-        .map_err(|e| e.into_opaque(context).unwrap_or(JsValue::undefined()))
-}
-
 // ---- Constructor helpers ----
 
 fn create_transform_stream_default_controller(
