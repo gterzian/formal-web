@@ -4,12 +4,12 @@ use js_engine::gc_struct;
 use std::{cell::Cell, rc::Rc};
 
 use boa_engine::{
-    Context, JsArgs, JsError, JsNativeError, JsResult, JsString, JsValue,
+    JsArgs, JsNativeError, JsResult, JsValue,
     object::{JsObject, builtins::JsPromise},
 };
 use boa_gc::{Finalize, Trace};
 
-use js_engine::{Completion, ExecutionContext, JsEngine, JsTypes};
+use js_engine::{Completion, ExecutionContext, JsTypes};
 
 use crate::{
     dom::{AbortSignal, create_abort_signal, signal_abort},
@@ -36,18 +36,14 @@ impl StartAlgorithm {
         controller_object: &JsObject,
         ec: &mut dyn ExecutionContext<crate::js::Types>,
     ) -> Completion<JsValue, crate::js::Types> {
-        let result: JsResult<JsValue> = match self {
-            Self::ReturnUndefined => Ok(JsValue::undefined()),
+        match self {
+            Self::ReturnUndefined => Ok(ec.value_undefined()),
             Self::ReturnValue(value) => Ok(value.clone()),
             Self::JavaScript(callback) => {
                 let arg = JsValue::from(controller_object.clone());
-                crate::js::completion_to_js_result(callback.call(&[arg], ec))
+                callback.call(&[arg], ec)
             }
-        };
-        // SAFETY: ec is backed by BoaContext repr(transparent) over Context.
-        // js_result_to_completion wraps JsError -> JsValue via Boa's Context.
-        let context = unsafe { js_engine::boa::ec_to_ctx(ec) };
-        crate::js::js_result_to_completion(result, context)
+        }
     }
 }
 
@@ -429,11 +425,7 @@ impl WritableStreamDefaultController {
         &self,
         ec: &mut dyn ExecutionContext<crate::js::Types>,
     ) -> Completion<(), crate::js::Types> {
-        let context = unsafe { js_engine::boa::ec_to_ctx(ec) };
-        crate::js::js_result_to_completion(
-            self.enqueue_value_with_size(QueueEntryValue::CloseSentinel, 0.0),
-            context,
-        )?;
+        self.enqueue_value_with_size(QueueEntryValue::CloseSentinel, 0.0, ec)?;
         self.advance_queue_if_needed(ec)
     }
 
@@ -445,11 +437,9 @@ impl WritableStreamDefaultController {
     ) -> Completion<(), crate::js::Types> {
         let backpressure = self.get_backpressure(ec)?;
         let stream = self.stream_slot(ec)?;
-        let context = unsafe { js_engine::boa::ec_to_ctx(ec) };
-        if let Err(error) = self.enqueue_value_with_size(QueueEntryValue::Chunk(chunk), chunk_size)
+        if let Err(error) = self.enqueue_value_with_size(QueueEntryValue::Chunk(chunk), chunk_size, ec)
         {
-            let opaque = crate::js::js_result_to_completion(error.into_opaque(context), context)?;
-            self.error_if_needed(opaque, ec)?;
+            self.error_if_needed(error, ec)?;
             return Ok(());
         }
 
@@ -552,11 +542,14 @@ impl WritableStreamDefaultController {
         Ok(())
     }
 
-    fn enqueue_value_with_size(&self, value: QueueEntryValue, chunk_size: f64) -> JsResult<()> {
+    fn enqueue_value_with_size(
+        &self,
+        value: QueueEntryValue,
+        chunk_size: f64,
+        ec: &mut dyn ExecutionContext<crate::js::Types>,
+    ) -> Completion<(), crate::js::Types> {
         if chunk_size.is_nan() || chunk_size < 0.0 {
-            return Err(JsNativeError::range()
-                .with_message("queue size must be a non-negative number")
-                .into());
+            return Err(ec.new_range_error("queue size must be a non-negative number"));
         }
 
         self.queue.borrow_mut().push(QueueEntry {
@@ -727,7 +720,7 @@ pub(crate) fn set_up_writable_stream_default_controller_from_underlying_sink(
     // Step 1: "Let controller be a new WritableStreamDefaultController."
     let (controller, controller_object) = create_writable_stream_default_controller(ec)?;
 
-    // Step 2-9: Extract optional methods before ec_to_ctx to avoid borrow conflicts.
+    // Step 2-9: Extract optional methods.
     let sink_methods: Option<(
         Option<JsObject>,
         Option<JsObject>,
@@ -742,9 +735,6 @@ pub(crate) fn set_up_writable_stream_default_controller_from_underlying_sink(
     } else {
         None
     };
-
-    // SAFETY: ec is backed by BoaContext repr(transparent) over Context
-    let context = unsafe { js_engine::boa::ec_to_ctx(ec) };
 
     // Step 2: "Let startAlgorithm be an algorithm that returns undefined."
     let mut start_algorithm = StartAlgorithm::ReturnUndefined;

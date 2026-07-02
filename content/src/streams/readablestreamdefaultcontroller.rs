@@ -1,7 +1,7 @@
 use std::{cell::Cell, collections::VecDeque, rc::Rc};
 
 use boa_engine::{
-    JsArgs, JsError, JsNativeError, JsResult, JsString, JsValue,
+    JsArgs, JsError, JsNativeError, JsResult, JsValue,
     object::{JsObject, builtins::JsPromise},
 };
 use boa_gc::{Finalize, Trace};
@@ -178,18 +178,14 @@ impl StartAlgorithm {
         controller_object: &JsObject,
         ec: &mut dyn ExecutionContext<crate::js::Types>,
     ) -> Completion<JsValue, crate::js::Types> {
-        let result: JsResult<JsValue> = match self {
-            Self::ReturnUndefined => Ok(JsValue::undefined()),
+        match self {
+            Self::ReturnUndefined => Ok(ec.value_undefined()),
             Self::ReturnValue(value) => Ok(value.clone()),
             Self::JavaScript(callback) => {
                 let arg = JsValue::from(controller_object.clone());
-                crate::js::completion_to_js_result(callback.call(&[arg], ec))
+                callback.call(&[arg], ec)
             }
-        };
-        // SAFETY: ec is backed by BoaContext repr(transparent) over Context.
-        // js_result_to_completion wraps JsError -> JsValue via Boa's Context.
-        let context = unsafe { js_engine::boa::ec_to_ctx(ec) };
-        crate::js::js_result_to_completion(result, context)
+        }
     }
 }
 /// `EnqueueValueWithSize` computes for it.
@@ -809,7 +805,6 @@ pub(crate) fn set_up_readable_stream_default_controller(
     size_algorithm: SizeAlgorithm,
     ec: &mut dyn ExecutionContext<crate::js::Types>,
 ) -> Completion<(), crate::js::Types> {
-    let context = unsafe { js_engine::boa::ec_to_ctx(ec) };
     // Step 1: "Assert: stream.[[controller]] is undefined."
     debug_assert!(stream.controller_slot().is_none());
 
@@ -867,13 +862,12 @@ pub(crate) fn set_up_readable_stream_default_controller_from_underlying_source(
     size_algorithm: SizeAlgorithm,
     ec: &mut dyn ExecutionContext<crate::js::Types>,
 ) -> Completion<(), crate::js::Types> {
-    let context = unsafe { js_engine::boa::ec_to_ctx(ec) };
     // Step 1: "Let controller be a new ReadableStreamDefaultController."
     let controller = ReadableStreamDefaultController::new();
     let controller_object = create_interface_instance::<
         crate::js::Types,
         ReadableStreamDefaultController,
-    >(controller.clone(), js_engine::boa::context_as_ec(context))?;
+    >(controller.clone(), ec)?;
 
     // Step 2: "Let startAlgorithm be an algorithm that returns undefined."
     let mut start_algorithm = StartAlgorithm::ReturnUndefined;
@@ -885,28 +879,22 @@ pub(crate) fn set_up_readable_stream_default_controller_from_underlying_source(
     let mut cancel_algorithm = CancelAlgorithm::ReturnUndefined;
 
     // Step 5: "If underlyingSourceDict[\"start\"] exists, then set startAlgorithm to an algorithm which returns the result of invoking underlyingSourceDict[\"start\"] with argument list « controller » and callback this value underlyingSource."
-    let ec_ref: &mut dyn ExecutionContext<crate::js::Types> =
-        js_engine::boa::context_as_ec(context);
     if let Some(start_method) =
-        extract_source_method(underlying_source_object.as_ref(), "start", ec_ref)?
+        extract_source_method(underlying_source_object.as_ref(), "start", ec)?
     {
         start_algorithm = StartAlgorithm::JavaScript(start_method);
     }
 
     // Step 6: "If underlyingSourceDict[\"pull\"] exists, then set pullAlgorithm to an algorithm which returns the result of invoking underlyingSourceDict[\"pull\"] with argument list « controller » and callback this value underlyingSource."
-    let ec_ref: &mut dyn ExecutionContext<crate::js::Types> =
-        js_engine::boa::context_as_ec(context);
     if let Some(pull_method) =
-        extract_source_method(underlying_source_object.as_ref(), "pull", ec_ref)?
+        extract_source_method(underlying_source_object.as_ref(), "pull", ec)?
     {
         pull_algorithm = PullAlgorithm::JavaScript(pull_method);
     }
 
     // Step 7: "If underlyingSourceDict[\"cancel\"] exists, then set cancelAlgorithm to an algorithm which takes an argument reason and returns the result of invoking underlyingSourceDict[\"cancel\"] with argument list « reason » and callback this value underlyingSource."
-    let ec_ref: &mut dyn ExecutionContext<crate::js::Types> =
-        js_engine::boa::context_as_ec(context);
     if let Some(cancel_method) =
-        extract_source_method(underlying_source_object.as_ref(), "cancel", ec_ref)?
+        extract_source_method(underlying_source_object.as_ref(), "cancel", ec)?
     {
         cancel_algorithm = CancelAlgorithm::JavaScript(cancel_method);
     }
@@ -921,7 +909,7 @@ pub(crate) fn set_up_readable_stream_default_controller_from_underlying_source(
         cancel_algorithm,
         high_water_mark,
         size_algorithm,
-        js_engine::boa::context_as_ec(context),
+        ec,
     )
 }
 /// underlying source object as the callback this value required by the Streams setup algorithm.
@@ -930,29 +918,24 @@ pub(crate) fn extract_source_method(
     name: &str,
     ec: &mut dyn ExecutionContext<crate::js::Types>,
 ) -> Completion<Option<SourceMethod>, crate::js::Types> {
-    // SAFETY: ec is backed by BoaContext repr(transparent) over Context.
-    let context = unsafe { js_engine::boa::ec_to_ctx(ec) };
     let Some(source_object) = source_object else {
         return Ok(None);
     };
 
-    let property_name = JsString::from(name);
-    let value =
-        crate::js::js_result_to_completion(source_object.get(property_name, context), context)?;
+    let pk = ec.property_key_from_str(name);
+    let value = ExecutionContext::get(ec, source_object.clone(), pk)?;
     if value.is_undefined() {
         return Ok(None);
     }
 
     let callback = value
         .as_object()
-        .filter(|object| object.is_callable())
-        .ok_or_else(|| {
-            crate::js::native_error_to_js_value(
-                JsNativeError::typ()
-                    .with_message(format!("underlying source {name} must be callable")),
-                context,
-            )
-        })?;
+        .ok_or_else(|| ec.new_type_error(&format!("underlying source {name} must be callable")))?;
+
+    let callback_val = <crate::js::Types as JsTypes>::value_from_object(callback.clone());
+    if !ec.is_callable(&callback_val) {
+        return Err(ec.new_type_error(&format!("underlying source {name} must be callable")));
+    }
 
     Ok(Some(SourceMethod::new(
         source_object.clone(),

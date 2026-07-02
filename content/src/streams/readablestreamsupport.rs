@@ -1,5 +1,5 @@
 use boa_engine::{
-    Context, JsError, JsNativeError, JsResult, JsValue,
+    Context, JsResult, JsValue,
     job::PromiseJob,
     js_string,
     object::{JsObject, ObjectInitializer},
@@ -179,20 +179,14 @@ impl ReadRequest {
             Self::ReadableStreamPipeTo { state } => {
                 let result = create_read_result(chunk, false, ec)?;
                 let state = state.clone();
-                let pending_err = ec.new_type_error("microtask queueing failed");
-                // SAFETY: ec is backed by BoaContext repr(transparent) over Context.
-                // queue_internal_stream_microtask requires Boa's Context.
-                let context = unsafe { js_engine::boa::ec_to_ctx(ec) };
-                queue_internal_stream_microtask(
-                    move |ctx| {
-                        let ec = js_engine::boa::context_as_ec(ctx);
-                        state.on_read_request_settled(result, ec)
-                            .map_err(|e| JsError::from_opaque(e))?;
-                        Ok(())
-                    },
-                    context,
-                )
-                .map_err(|_| pending_err)
+                let realm = ec.current_realm();
+                ec.enqueue_job_with_realm(
+                    realm,
+                    Box::new(move |job_ec: &mut dyn ExecutionContext<crate::js::Types>| {
+                        let _ = state.on_read_request_settled(result, job_ec);
+                    }),
+                );
+                Ok(())
             }
         }
     }
@@ -216,20 +210,14 @@ impl ReadRequest {
             Self::ReadableStreamPipeTo { state } => {
                 let result = create_read_result(JsValue::undefined(), true, ec)?;
                 let state = state.clone();
-                let pending_err = ec.new_type_error("microtask queueing failed");
-                // SAFETY: ec is backed by BoaContext repr(transparent) over Context.
-                // queue_internal_stream_microtask requires Boa's Context.
-                let context = unsafe { js_engine::boa::ec_to_ctx(ec) };
-                queue_internal_stream_microtask(
-                    move |ctx| {
-                        let ec = js_engine::boa::context_as_ec(ctx);
-                        state.on_read_request_settled(result, ec)
-                            .map_err(|e| JsError::from_opaque(e))?;
-                        Ok(())
-                    },
-                    context,
-                )
-                .map_err(|_| pending_err)
+                let realm = ec.current_realm();
+                ec.enqueue_job_with_realm(
+                    realm,
+                    Box::new(move |job_ec: &mut dyn ExecutionContext<crate::js::Types>| {
+                        let _ = state.on_read_request_settled(result, job_ec);
+                    }),
+                );
+                Ok(())
             }
         }
     }
@@ -253,19 +241,14 @@ impl ReadRequest {
             }
             Self::ReadableStreamPipeTo { state } => {
                 let state = state.clone();
-                let pending_err = ec.new_type_error("microtask queueing failed");
-                // SAFETY: ec is backed by BoaContext repr(transparent) over Context
-                let context = unsafe { js_engine::boa::ec_to_ctx(ec) };
-                queue_internal_stream_microtask(
-                    move |ctx| {
-                        let ec = js_engine::boa::context_as_ec(ctx);
-                        state.on_read_request_settled(error, ec)
-                            .map_err(|e| JsError::from_opaque(e))?;
-                        Ok(())
-                    },
-                    context,
-                )
-                .map_err(|_| pending_err)
+                let realm = ec.current_realm();
+                ec.enqueue_job_with_realm(
+                    realm,
+                    Box::new(move |job_ec: &mut dyn ExecutionContext<crate::js::Types>| {
+                        let _ = state.on_read_request_settled(error, job_ec);
+                    }),
+                );
+                Ok(())
             }
         }
     }

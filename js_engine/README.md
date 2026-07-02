@@ -686,8 +686,26 @@ Boa-specific `ResolvingFunctions`.
 
 **POC test suite: 81/81 pass on Boa.**
 
-**Remaining work:** `wait_for_all_promises_ec` should move to webidl (implements
-Web IDL "wait for all"). Phase E (conditional Types alias) remains.
+**Web IDL "wait for all" moved to webidl** — `wait_for_all` and `wait_for_all_get_promise`
+implement the spec algorithms in `content/src/webidl/promise.rs` with proper step
+comments and spec anchor URLs. The old `WaitForAllState` and helpers removed
+from `readablestream.rs`.
+
+**Phase E landed** — `content/src/js/mod.rs` uses `#[cfg(feature = "jsc")]` to select
+`js_engine::jsc::JscTypes` vs `js_engine::boa::BoaTypes`. Feature forwarding fixed:
+`boa = ["js_engine/boa"]`.
+
+**~10 ec_to_ctx eliminated across 3 files:**
+- `writablestreamdefaultcontroller.rs`: 4 — `StartAlgorithm::call`, `close_controller`,
+  `write_controller`, dead `ec_to_ctx` in setup
+- `readablestreamsupport.rs`: 3 — PipeTo `chunk_steps`/`close_steps`/`error_steps`
+  replaced `queue_internal_stream_microtask` with `ec.enqueue_job_with_realm`
+- `readablestreamdefaultcontroller.rs`: 3 — `StartAlgorithm::call`,
+  `set_up_readable_stream_default_controller` (dead), `extract_source_method`
+  (converted from Context to EC)
+
+**~37 ec_to_ctx remain** across streams tee/transform, platform objects,
+wasm namespace, structured clone, webidl helpers.
 
 ### Next session: recommended order
 
