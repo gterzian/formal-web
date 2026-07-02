@@ -1082,6 +1082,16 @@ impl ExecutionContext<BoaTypes> for BoaContext {
 
     // ── §25 ArrayBuffer — runtime queries ─────────────────────────────────
 
+    fn allocate_array_buffer(
+        &mut self,
+        constructor: JsFunction,
+        byte_length: u64,
+        max_byte_length: Option<u64>,
+    ) -> Completion<JsArrayBuffer, BoaTypes> {
+        // Delegate to the JsEngine<BoaTypes> implementation on self.
+        JsEngine::allocate_array_buffer(self, constructor, byte_length, max_byte_length)
+    }
+
     fn is_detached_buffer(&self, _array_buffer: &JsArrayBuffer) -> bool {
         false // HARD: Boa's JsArrayBuffer doesn't expose is_detached publicly
     }

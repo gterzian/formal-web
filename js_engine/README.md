@@ -599,7 +599,7 @@ Concrete per-phase validation requirements:
 | **Blocker 3** — Engine ownership is structurally Boa-specific | **Phase E** | Land compile-time `Types` / `Engine` aliases. Backend selection becomes a `#[cfg]` choice. Validated by `cargo check` with both feature sets. | Large | Blocked on D, S, P, W |
 | **Blocker 6** — Global-scope helpers are implicitly Boa | **Phase G** | Move `document_creation_url`, `with_global_scope`, etc. behind content-owned query helpers. | Small | Part of Phase P |
 
-### Current state (updated 2026-07-02)
+### Current state (updated 2026-07-03)
 
 **Phases A–D, S1–S10, T1–T2, W1–W2, G1–G3, C2–C3 complete.** All binding files
 at 0 ec_to_ctx.  All 34 struct/enum definitions use `#[gc_struct]`.  All domain
@@ -608,6 +608,54 @@ field types use `GcCell<T>`.
 **POC test suite: 79/79 pass on Boa.**
 
 **This session (July 2 continuation):**
+
+| Addition | What |
+|---|---|
+| `readablestream.rs` closures → EC fn pointers | 5 of 7 `NativeFunction` closures converted. Extracted named fn pointers `readable_stream_from_iterable_pull_on_fulfilled_fn`, `readable_stream_from_iterable_cancel_on_fulfilled_fn`, `promise_from_sync_iterator_result_on_fulfilled_fn`, `abort_destination_then_cancel_{on_fulfilled,on_rejected}_fn`. Zero ec_to_ctx in all bodies. |
+| `create_iter_result_object` inlined | Replaced Boa builtin with `create_plain_object` + `create_data_property` using EC trait methods. |
+| `start_abort_cancel_source` → EC | Converted from `(&mut Context) -> JsResult` to `(&mut dyn ExecutionContext) -> Completion`. Uses `readable_stream_cancel_ec`, `resolved_promise(ec)`, `perform_promise_then`. |
+| `underlying_source_type` → EC | Converted from Context to EC. Uses `ec.has_property`, `ec.get`, `ec.to_rust_string`, `ec.same_value`. |
+| `strategy_has_size` → EC | Converted from Context to EC. Uses `ec.to_object`, `ec.has_property`, `EcmascriptHost::get`, `ec.same_value`. |
+| `construct_readable_stream` → EC | Full EC conversion. `construct_readable_stream_ec` now just delegates directly (no ec_to_ctx bridge). |
+| `create_readable_stream_object` → EC | No more `context_as_ec` bridge. Uses `create_interface_instance(ec)` directly. |
+| `create_readable_stream` → EC | Uses `create_readable_stream_object(ec)`, `create_interface_instance(ec)`, `set_up_readable_stream_default_controller(ec)` directly. |
+| `create_readable_byte_stream` → EC | Uses `create_readable_stream_object(ec)`, `create_interface_instance(ec)`. |
+| `readable_stream_tee` → EC | Dispatches to now-EC `readable_byte_stream_tee` and `readable_stream_default_tee`. |
+| `readable_stream_default_tee` → EC | Uses `closed_ec(ec)`, `new_promise_pending()`, `mark_promise_as_handled(ec)`, `perform_promise_then` instead of `.catch()`. TeeState field `cancel_resolvers` changed to `PromiseResolvers`. |
+| `readable_byte_stream_tee` → EC | Uses `closed_ec(ec)`, `new_promise_pending()`, `with_readable_stream_default_reader_ref_ec`. ByteTeeState field `cancel_resolvers` changed to `PromiseResolvers`. |
+| `ReadableStream::tee` → EC | Converted to EC. `tee_ec` now delegates directly (no ec_to_ctx bridge). `ReadableStreamTeeBranches::into_js_value_ec` added using `create_empty_array` + `array_push`. |
+| `readable_stream_from_iterable` → EC | Converted to EC. `readable_stream_from_iterable_ec` now delegates directly (no ec_to_ctx bridge). |
+| `readablestreamdefaultcontroller.rs` double bridge eliminated | `cancel_steps` no longer does ec_to_ctx + context_as_ec to call `CancelAlgorithm::call` (which already takes EC). -1 ec_to_ctx. |
+| transformstream.rs bridge | Updated `create_readable_stream` call to bridge via `context_as_ec`. |
+| `cancel_resolvers.resolve` error logging restored | Two `let _ = cancel_resolvers.resolve(...)` fixed to `if let Err(error) = ... { error!(...); }`. |
+| `call_pull_if_needed` double bridge eliminated | `controller_object_ec(ec)`, `pull_algorithm.call(ec)`, `mark_promise_as_handled(ec)` — no more context_as_ec on calls that already take EC. -2 ec_to_ctx. |
+| `set_up_readable_stream_default_controller` double bridge eliminated | `start_algorithm.call(ec)` and `mark_promise_as_handled(ec)` use ec directly. -2 ec_to_ctx. |
+| `underlying_sink_type` → EC | Converted from Context to EC. Uses `ec.has_property`, `EcmascriptHost::get`, `ec.to_rust_string`, `ec.same_value`. writablestream.rs: 1→0 ec_to_ctx. |
+| `normalize_min` → EC | Converted in readablestreambyobreader.rs. Uses `EcmascriptHost::get`, `ec.to_object`, `ec.to_number`, `ec.new_{type,range}_error`. readablestreambyobreader.rs: 2→0 ec_to_ctx. |
+| `writablestreamdefaultcontroller` methods → EC | `stream_slot`, `controller_object`, `write_algorithm`, `close_algorithm`, `abort_algorithm`, `get_backpressure`, `get_desired_size`, `peek_queue_value`, `dequeue_value` all converted to take EC. `abort_steps` ec_to_ctx eliminated. `write_controller`, `advance_queue_if_needed` restructured to do EC ops before ec_to_ctx. |
+| `writablestreamdefaultwriter::desired_size` → EC | `desired_size` and `get_desired_size_from_stream` converted to EC. `desired_size_ec` simplified to direct delegation. |
+
+**ec_to_ctx eliminated in 4 files:** writablestream.rs (1→0), readablestreambyobreader.rs (2→0), readablestreamdefaultcontroller.rs (4 eliminated), writablestreamdefaultwriter.rs (2 eliminated).
+
+**This session (July 3 continuation):**
+
+| Addition | What |
+|---|---|
+| `builtin_with_captures_ec` / `builtin_callback_ec` helpers | Added EC-taking variants in `content/src/js/mod.rs` that bridge to Context internally. |
+| `readablestream.rs` tee + start_abort_cancel_source | 3 `builtin_with_captures` → `builtin_with_captures_ec`. -3 ec_to_ctx. |
+| `transformstream.rs` | `sink_abort` + `transform_stream_default_source_pull_algorithm` → EC. -1 ec_to_ctx. |
+| `readablebytestreamcontroller.rs` | Eliminated 14 ec_to_ctx: removed double-bridge patterns (ec→ctx→ec), converted `call_pull_if_needed`, `pull_steps`, `setup`, `extract_auto_allocate_chunk_size`, `readable_stream_fulfill_read_request` caller. Added `allocate_array_buffer` to `ExecutionContext<T>` trait and both backends. Converted `readable_stream_error` and `readable_stream_close_ec` to use `ec.call()` instead of `ResolvingFunctions::resolve.call`. |
+| `readablestreamdefaultcontroller.rs` | `readable_stream_add_read_request` callers fixed, `readable_stream_error` EC call, `readable_stream_fulfill_read_request` callers fixed. |
+| `writablestreamdefaultcontroller.rs` | Converted 5 fn pointer double bridges (`process_close_on_fulfilled/rejected`, `process_write_on_fulfilled/rejected`, `setup_on_fulfilled`) to use `ec` directly. -4 ec_to_ctx. |
+| `html_element.rs` | `style_declaration_object` fully converted to EC (replaced `ObjectInitializer` with `create_plain_object` + `define_property_or_throw` + `create_builtin_function`). -1 ec_to_ctx. |
+| `hyperlink_element_utils.rs` | `document_creation_url` converted to EC using `document_object_ec` + `with_object_any`. -1 ec_to_ctx. |
+| `html_anchor_element.rs` | Updated caller to use `document_creation_url` directly (removed `_ec` suffix). |
+| `html_media_element.rs` | `Context` import removed from unused. |
+| `windowproxy.rs` | `resolve_window` converted to EC using `with_object_any` + `global_object()`. -1 ec_to_ctx. |
+| `readablestream.rs` | `readable_stream_error` converted to EC. `readable_stream_close_ec` ResolvingFunctions::resolve → ec.call(). `readable_stream_fulfill_read_request` converted to EC. `readable_stream_add_read_request` converted to EC. |
+| `js_engine` trait | Added `allocate_array_buffer` to `ExecutionContext<T>` (both Boa and JSC backends). |
+
+**ec_to_ctx eliminated this session: 29 total** (84→55).  Files cleaned up: `html_element.rs`, `hyperlink_element_utils.rs`, `readablebytestreamcontroller.rs` (16→0), `writablestreamdefaultwriter.rs`.
 
 | Addition | What |
 |---|---|

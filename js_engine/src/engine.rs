@@ -422,6 +422,14 @@ pub trait ExecutionContext<T: JsTypes + JsTypesWithRealm>: EcmascriptHost<T> {
     /// <https://tc39.es/ecma262/#sec-isfixedlengtharraybuffer>
     fn is_fixed_length_array_buffer(&self, array_buffer: &T::ArrayBuffer) -> bool;
 
+    /// <https://tc39.es/ecma262/#sec-allocatearraybuffer>
+    fn allocate_array_buffer(
+        &mut self,
+        constructor: T::Constructor,
+        byte_length: u64,
+        max_byte_length: Option<u64>,
+    ) -> Completion<T::ArrayBuffer, T>;
+
     /// <https://tc39.es/ecma262/#sec-getvaluefrombuffer>
     fn get_value_from_buffer(
         &self,

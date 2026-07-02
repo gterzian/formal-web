@@ -93,8 +93,9 @@ impl PullAlgorithm {
                 ec,
             ),
             Self::TransformStreamDefaultSourcePull(stream) => promise_from_completion(
-                transform_stream_default_source_pull_algorithm(stream.clone(), context)
-                    .map(JsValue::from),
+                crate::js::completion_to_js_result(
+                    transform_stream_default_source_pull_algorithm(stream.clone(), ec).map(JsValue::from),
+                ),
                 ec,
             ),
         }
@@ -425,11 +426,7 @@ impl ReadableStreamDefaultController {
         }
 
         // Step 3.1: "Perform ! ReadableStreamAddReadRequest(stream, readRequest)."
-        let context = unsafe { js_engine::boa::ec_to_ctx(ec) };
-        crate::js::js_result_to_completion(
-            readable_stream_add_read_request(stream.clone(), read_request),
-            context,
-        )?;
+        readable_stream_add_read_request(stream.clone(), read_request, ec)?;
 
         // Step 3.2: "Perform ! ReadableStreamDefaultControllerCallPullIfNeeded(this)."
         self.call_pull_if_needed(ec)
@@ -476,16 +473,14 @@ impl ReadableStreamDefaultController {
         let controller_object = self.controller_object_ec(ec)?;
         let pull_algorithm = self.pull_algorithm.borrow().clone();
         let pull_promise: JsObject = match pull_algorithm {
-            Some(pull_algorithm) => {
-                JsObject::from(pull_algorithm.call(&controller_object, ec))
-            }
+            Some(pull_algorithm) => JsObject::from(pull_algorithm.call(&controller_object, ec)),
             None => JsObject::from(promise_from_completion(Ok(JsValue::undefined()), ec)),
         };
 
         // Note: ec_to_ctx — create_builtin_function_with_captures lives on JsEngine<T>.
         let context = unsafe { js_engine::boa::ec_to_ctx(ec) };
-        let pull_js_promise = JsPromise::from_object(pull_promise.clone())
-            .map_err(|_| JsValue::undefined())?;
+        let pull_js_promise =
+            JsPromise::from_object(pull_promise.clone()).map_err(|_| JsValue::undefined())?;
         let on_fulfilled =
             crate::js::builtin_with_captures(context, self.clone(), pull_steps_on_fulfilled, 1);
         let on_rejected =
@@ -579,11 +574,7 @@ impl ReadableStreamDefaultController {
         if stream.is_readable_stream_locked()
             && readable_stream_get_num_read_requests(stream.clone()) > 0
         {
-            let context = unsafe { js_engine::boa::ec_to_ctx(ec) };
-            readable_stream_fulfill_read_request(stream, chunk, false, context).map_err(|e| {
-                e.into_opaque(context)
-                    .unwrap_or_else(|_| JsValue::undefined())
-            })?;
+            readable_stream_fulfill_read_request(stream, chunk, false, ec)?;
         } else {
             // Step 4.1: "Let result be the result of performing controller.[[strategySizeAlgorithm]], passing in chunk, and interpreting the result as a completion record."
             let size_algorithm =
@@ -650,11 +641,8 @@ impl ReadableStreamDefaultController {
         self.clear_algorithms();
 
         // Step 5: "Perform ! ReadableStreamError(stream, e)."
-        let context = unsafe { js_engine::boa::ec_to_ctx(ec) };
-        readable_stream_error(stream, error, context).map_err(|e| {
-            e.into_opaque(context)
-                .unwrap_or_else(|_| JsValue::undefined())
-        })
+        readable_stream_error(stream, error, ec)?;
+        Ok(())
     }
 
     /// <https://streams.spec.whatwg.org/#readable-stream-default-controller-get-desired-size>

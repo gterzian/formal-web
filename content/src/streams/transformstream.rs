@@ -1151,9 +1151,8 @@ fn transform_stream_default_sink_abort_algorithm(
     transform_stream_default_controller_clear_algorithms(&controller);
 
     // Step 7: React to cancelPromise.
-    let ctx = unsafe { js_engine::boa::ec_to_ctx(ec) };
-    let on_fulfilled = crate::js::builtin_with_captures(
-        ctx,
+    let on_fulfilled = crate::js::builtin_with_captures_ec(
+        ec,
         (
             controller.clone(),
             readable.clone(),
@@ -1164,9 +1163,12 @@ fn transform_stream_default_sink_abort_algorithm(
         0,
     );
 
-    let on_rejected =
-        crate::js::builtin_with_captures(ctx, (controller, readable), sink_abort_on_rejected_fn, 1);
-    drop(ctx);
+    let on_rejected = crate::js::builtin_with_captures_ec(
+        ec,
+        (controller, readable),
+        sink_abort_on_rejected_fn,
+        1,
+    );
 
     let cancel_js_promise = crate::js::Types::object_as_promise(&cancel_promise)
         .ok_or_else(|| ec.new_type_error("cancelPromise is not a Promise"))?;
@@ -1260,8 +1262,8 @@ fn transform_stream_default_sink_close_algorithm(
 /// <https://streams.spec.whatwg.org/#transform-stream-default-source-pull-algorithm>
 pub(crate) fn transform_stream_default_source_pull_algorithm(
     stream: TransformStream,
-    context: &mut Context,
-) -> JsResult<JsObject> {
+    ec: &mut dyn ExecutionContext<crate::js::Types>,
+) -> Completion<JsObject, crate::js::Types> {
     // Step 1: "Assert: stream.[[backpressure]] is true."
     debug_assert!(stream.backpressure());
 
@@ -1269,14 +1271,11 @@ pub(crate) fn transform_stream_default_source_pull_algorithm(
     debug_assert!(stream.backpressure_change_promise().is_some());
 
     // Step 3: "Perform ! TransformStreamSetBackpressure(stream, false)."
-    transform_stream_set_backpressure(&stream, false, js_engine::boa::context_as_ec(context))
-        .map_err(boa_engine::JsError::from_opaque)?;
+    transform_stream_set_backpressure(&stream, false, ec)?;
 
     // Step 4: "Return stream.[[backpressureChangePromise]]."
     stream.backpressure_change_promise().ok_or_else(|| {
-        JsNativeError::typ()
-            .with_message("TransformStream is missing its backpressure change promise")
-            .into()
+        ec.new_type_error("TransformStream is missing its backpressure change promise")
     })
 }
 

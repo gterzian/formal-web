@@ -12,19 +12,22 @@ use crate::{
 
 use js_engine::{Completion, ExecutionContext, JsTypes};
 
-pub(crate) fn document_creation_url(context: &Context) -> JsResult<Url> {
-    let object = platform_objects::document_object(context)?;
-    let document = object
-        .downcast_ref::<Document>()
-        .ok_or_else(|| JsNativeError::typ().with_message("document object is not a Document"))?;
+pub(crate) fn document_creation_url(
+    ec: &mut dyn ExecutionContext<crate::js::Types>,
+) -> Completion<Url, crate::js::Types> {
+    let object = platform_objects::document_object_ec(ec)?;
+    let missing_err = ec.new_type_error("document object is not a Document");
+    let document = ec.with_object_any(&object)
+        .and_then(|any| any.downcast_ref::<Document>())
+        .ok_or(missing_err)?;
     Ok(document.creation_url.clone())
 }
 
+/// Convenience alias. Delegates to the EC-based implementation.
 pub(crate) fn document_creation_url_ec(
     ec: &mut dyn ExecutionContext<crate::js::Types>,
 ) -> Completion<Url, crate::js::Types> {
-    let ctx = unsafe { js_engine::boa::ec_to_ctx(ec) };
-    document_creation_url(ctx).map_err(|e| e.into_opaque(ctx).unwrap_or(JsValue::undefined()))
+    document_creation_url(ec)
 }
 
 fn with_hyperlink_element_utils_ref<R>(

@@ -112,7 +112,7 @@ fn get_href(
     _: &[JsValue],
     ec: &mut dyn ExecutionContext<crate::js::Types>,
 ) -> Completion<JsValue, crate::js::Types> {
-    let base_url = super::hyperlink_element_utils::document_creation_url_ec(ec)?;
+    let base_url = super::hyperlink_element_utils::document_creation_url(ec)?;
     let href = try_with_html_anchor_element_ref(this, ec, |anchor| anchor.href(&base_url))?;
     Ok(ec.value_from_string(ec.js_string_from_str(&href)))
 }

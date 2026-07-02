@@ -2,10 +2,8 @@ use std::collections::BTreeMap;
 use std::marker::PhantomData;
 
 use boa_engine::{
-    Context, JsArgs, JsResult, JsString, JsValue, js_string,
-    native_function::NativeFunction,
-    object::{JsObject, ObjectInitializer},
-    property::Attribute,
+    JsArgs, JsValue,
+    object::JsObject,
 };
 
 use crate::dom::Element;
@@ -456,68 +454,83 @@ fn set_element_style_attribute_ec(
 
 pub(crate) fn style_declaration_object(
     properties: &BTreeMap<String, String>,
-    context: &mut Context,
-) -> JsResult<JsObject> {
-    let mut initializer = ObjectInitializer::new(context);
+    ec: &mut dyn ExecutionContext<crate::js::Types>,
+) -> Completion<JsObject, crate::js::Types> {
+    let object = ec.create_plain_object(None);
     for (name, value) in properties {
-        let value = JsValue::from(JsString::from(value.as_str()));
-        initializer.property(
-            JsString::from(name.as_str()),
-            value.clone(),
-            Attribute::all(),
-        );
+        let js_value = ec.value_from_string(ec.js_string_from_str(value.as_str()));
+        let key = ec.property_key_from_str(name.as_str());
+        let desc = js_engine::PropertyDescriptor {
+            value: Some(js_value.clone()),
+            writable: Some(true),
+            get: None,
+            set: None,
+            enumerable: Some(true),
+            configurable: Some(true),
+        };
+        ec.define_property_or_throw(object.clone(), key, desc)?;
 
         let alias = camel_case_property_name(name);
         if alias != *name {
-            initializer.property(JsString::from(alias.as_str()), value, Attribute::all());
+            let alias_key = ec.property_key_from_str(alias.as_str());
+            let alias_desc = js_engine::PropertyDescriptor {
+                value: Some(js_value),
+                writable: Some(true),
+                get: None,
+                set: None,
+                enumerable: Some(true),
+                configurable: Some(true),
+            };
+            ec.define_property_or_throw(object.clone(), alias_key, alias_desc)?;
         }
     }
-    initializer.function(
-        NativeFunction::from_fn_ptr(get_style_property_value),
-        js_string!("getPropertyValue"),
+
+    // Add getPropertyValue method.
+    let getter_fn = ec.create_builtin_function(
+        Box::new(|args, this, ec| {
+            // Step 1.1: convert to ASCII lowercase.
+            let property_name = ec.to_rust_string(args.get_or_undefined(0).clone())?
+                .trim()
+                .to_ascii_lowercase();
+
+            // Step 2: Look up property in the declaration object.
+            let object = match <crate::js::Types as JsTypes>::value_as_object(&this) {
+                Some(obj) => obj,
+                None => return Ok(ec.value_from_string(ec.js_string_from_str(""))),
+            };
+            let key = ec.property_key_from_str(property_name.as_str());
+            let value = js_engine::ExecutionContext::get(ec, object, key)?;
+
+            // Step 3: Return empty string for undefined values.
+            if value.is_undefined() {
+                return Ok(ec.value_from_string(ec.js_string_from_str("")));
+            }
+            Ok(value)
+        }),
         1,
+        ec.property_key_from_str("getPropertyValue"),
     );
-    Ok(initializer.build())
+    let getter_value = <crate::js::Types as JsTypes>::value_from_object(getter_fn.into());
+    let getter_key = ec.property_key_from_str("getPropertyValue");
+    let desc = js_engine::PropertyDescriptor {
+        value: Some(getter_value),
+        writable: Some(true),
+        get: None,
+        set: None,
+        enumerable: Some(true),
+        configurable: Some(true),
+    };
+    ec.define_property_or_throw(object.clone(), getter_key, desc)?;
+
+    Ok(object)
 }
 
+/// Convenience wrapper that bridges to the EC-based implementation.
 pub(crate) fn style_declaration_object_ec(
     properties: &BTreeMap<String, String>,
     ec: &mut dyn ExecutionContext<crate::js::Types>,
 ) -> Completion<JsObject, crate::js::Types> {
-    let ctx = unsafe { js_engine::boa::ec_to_ctx(ec) };
-    style_declaration_object(properties, ctx)
-        .map_err(|e| e.into_opaque(ctx).unwrap_or(JsValue::undefined()))
-}
-
-fn get_style_property_value(
-    this: &JsValue,
-    args: &[JsValue],
-    context: &mut Context,
-) -> JsResult<JsValue> {
-    // Step 1.1 of CSSStyleDeclaration.getPropertyValue(property): if property is not a custom
-    // property, convert it to ASCII lowercase.
-    let property_name = args
-        .get_or_undefined(0)
-        .to_string(context)?
-        .to_std_string_escaped()
-        .trim()
-        .to_ascii_lowercase();
-
-    // Step 2: "If property is a case-sensitive match for a property name of a CSS declaration in
-    // the declarations, then return the result of invoking serialize a CSS value of that
-    // declaration."
-    let Some(object) = this.as_object() else {
-        return Ok(JsValue::from(JsString::from("")));
-    };
-    let value = object.get(JsString::from(property_name.as_str()), context)?;
-
-    // Step 3: "Return the empty string."
-    // Note: This snapshot object currently exposes directly materialized longhand values only, so
-    // shorthand serialization still falls through to the empty string.
-    if value.is_undefined() {
-        return Ok(JsValue::from(JsString::from("")));
-    }
-    Ok(value)
+    style_declaration_object(properties, ec)
 }
 
 fn camel_case_property_name(name: &str) -> String {

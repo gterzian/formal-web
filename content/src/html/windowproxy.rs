@@ -295,29 +295,26 @@ pub(crate) fn create_window_proxy(
 ///
 /// Resolve the Window from a value that may be a WindowProxy (Proxy) or a
 /// direct Window object.  For same-origin WindowProxies, the target Window
-/// is the context's global object.
+/// <https://html.spec.whatwg.org/#the-windowproxy-exotic-object>
 ///
-/// Note: This cannot use `Proxy::try_data()` (pub(crate) in upstream Boa)
-/// to extract the target, so it checks whether the object is a Proxy and
-/// falls back to `context.global_object()` for the same-origin case.
+/// Resolve the Window from a value that may be a WindowProxy (Proxy) or a
+/// direct Window object.  For same-origin WindowProxies, the target Window
+/// is the realm\'s global object.
 pub(crate) fn resolve_window(
     value: &JsValue,
     ec: &mut dyn ExecutionContext<crate::js::Types>,
 ) -> JsObject {
-    // SAFETY: ec is backed by BoaContext repr(transparent) over Context.
-    let context = unsafe { js_engine::boa::ec_to_ctx(ec) };
     if let Some(object) = value.as_object() {
-        // Direct Window: return as-is.
-        if object.is::<Window>() {
+        // Direct Window: check via with_object_any downcast.
+        if let Some(_) = ec.with_object_any(&object).and_then(|a| a.downcast_ref::<Window>()) {
             return object;
         }
-        // Proxy (WindowProxy): the target is the global (same-origin).
-        if object.is::<Proxy>() {
-            return context.global_object();
-        }
-        return object;
+        // For non-Window objects (Proxy or unknown), return the global.
+        return ec.global_object();
     }
-    context.global_object()
+
+    // For non-object values, fall back to the global object.
+    ec.global_object()
 }
 
 // ── Cross-origin support (unreachable in single-origin content process) ──

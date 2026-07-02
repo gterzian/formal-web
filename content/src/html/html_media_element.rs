@@ -315,12 +315,11 @@ impl HTMLMediaElement {
         &mut self,
         ec: &mut dyn ExecutionContext<crate::js::Types>,
     ) {
-        // SAFETY: ec is backed by BoaContext repr(transparent) over Context.
         let context = unsafe { js_engine::boa::ec_to_ctx(ec) };
-        self.resource_selection_algorithm_boa(context);
+        self.resource_selection_algorithm_impl(context);
     }
 
-    fn resource_selection_algorithm_boa(&mut self, context: &mut Context) {
+    fn resource_selection_algorithm_impl(&mut self, context: &mut Context) {
         // Step 1: Set networkState to NETWORK_NO_SOURCE.
         self.network_state = Self::NETWORK_NO_SOURCE;
 

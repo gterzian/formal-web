@@ -140,9 +140,9 @@ impl WritableStreamDefaultWriter {
         &self,
         ec: &mut dyn ExecutionContext<crate::js::Types>,
     ) -> Completion<Option<f64>, crate::js::Types> {
-        let stream = self.stream_slot_value().ok_or_else(|| {
-            ec.new_type_error("WritableStreamDefaultWriter has been released")
-        })?;
+        let stream = self
+            .stream_slot_value()
+            .ok_or_else(|| ec.new_type_error("WritableStreamDefaultWriter has been released"))?;
         self.get_desired_size_from_stream(stream, ec)
     }
 
@@ -359,9 +359,9 @@ impl WritableStreamDefaultWriter {
             WritableStreamState::Errored | WritableStreamState::Erroring => Ok(None),
             WritableStreamState::Closed => Ok(Some(0.0)),
             WritableStreamState::Writable => {
-                let controller = stream.controller_slot().ok_or_else(|| {
-                    ec.new_type_error("WritableStream is missing its controller")
-                })?;
+                let controller = stream
+                    .controller_slot()
+                    .ok_or_else(|| ec.new_type_error("WritableStream is missing its controller"))?;
                 Ok(Some(writable_stream_default_controller_get_desired_size(
                     controller.as_default_controller(),
                     ec,

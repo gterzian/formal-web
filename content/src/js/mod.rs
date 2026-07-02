@@ -86,6 +86,26 @@ pub(crate) fn builtin_with_captures<C: js_engine::gc::Trace + 'static>(
         .create_builtin_function_with_captures(captures, behaviour, length, name)
 }
 
+/// EC-based version of `builtin_with_captures`.
+/// Use this in functions that already have `&mut dyn ExecutionContext`.
+/// Bridges to Context internally since `create_builtin_function_with_captures`
+/// lives on `JsEngine<T>` (factory trait), not `ExecutionContext<T>`.
+pub(crate) fn builtin_with_captures_ec<C: js_engine::gc::Trace + 'static>(
+    ec: &mut dyn js_engine::ExecutionContext<crate::js::Types>,
+    captures: C,
+    behaviour: fn(
+        &[boa_engine::JsValue],
+        boa_engine::JsValue,
+        &C,
+        &mut dyn js_engine::ExecutionContext<crate::js::Types>,
+    ) -> js_engine::Completion<boa_engine::JsValue, crate::js::Types>,
+    length: u32,
+) -> boa_engine::object::builtins::JsFunction {
+    // SAFETY: ec is backed by BoaContext repr(transparent) over Context.
+    let context = unsafe { js_engine::boa::ec_to_ctx(ec) };
+    builtin_with_captures(context, captures, behaviour, length)
+}
+
 /// Convenience wrapper that creates a `Callback` from `builtin_with_captures`.
 /// Used by SourceMethod-wrapped closures in streams (e.g. writeAlgorithm,
 /// abortAlgorithm, closeAlgorithm).
@@ -102,5 +122,23 @@ pub(crate) fn builtin_callback<C: js_engine::gc::Trace + 'static>(
 ) -> crate::webidl::Callback {
     crate::webidl::Callback::from_object(
         builtin_with_captures(context, captures, behaviour, length).into(),
+    )
+}
+
+/// EC-based version of `builtin_callback`.
+/// Use this in functions that already have `&mut dyn ExecutionContext`.
+pub(crate) fn builtin_callback_ec<C: js_engine::gc::Trace + 'static>(
+    ec: &mut dyn js_engine::ExecutionContext<crate::js::Types>,
+    captures: C,
+    behaviour: fn(
+        &[boa_engine::JsValue],
+        boa_engine::JsValue,
+        &C,
+        &mut dyn js_engine::ExecutionContext<crate::js::Types>,
+    ) -> js_engine::Completion<boa_engine::JsValue, crate::js::Types>,
+    length: u32,
+) -> crate::webidl::Callback {
+    crate::webidl::Callback::from_object(
+        builtin_with_captures_ec(ec, captures, behaviour, length).into(),
     )
 }

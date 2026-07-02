@@ -1922,6 +1922,16 @@ impl ExecutionContext<JscTypes> for JscEngine {
     }
 
     // ── §25 ArrayBuffer — runtime queries ─────────────────────────────────
+    fn allocate_array_buffer(
+        &mut self,
+        constructor: JscConstructor,
+        byte_length: u64,
+        max_byte_length: Option<u64>,
+    ) -> Completion<JscArrayBuffer, JscTypes> {
+        // Delegate to the JsEngine<JscTypes> implementation on self.
+        JsEngine::allocate_array_buffer(self, constructor, byte_length, max_byte_length)
+    }
+
     fn is_detached_buffer(&self, array_buffer: &JscArrayBuffer) -> bool {
         // Check if the buffer's byteLength is 0 and it's detached:
         // A detached buffer in JSC has [[ArrayBufferByteLength]] == 0
