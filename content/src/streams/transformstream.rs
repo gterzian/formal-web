@@ -693,8 +693,9 @@ fn initialize_transform_stream(
         cancel_algorithm,
         Some(readable_high_water_mark),
         Some(readable_size_algorithm),
-        context,
-    )?;
+        js_engine::boa::context_as_ec(context),
+    )
+    .map_err(|e| JsError::from_opaque(e))?;
     *stream.readable.borrow_mut() = Some(readable);
     *stream.readable_object.borrow_mut() = Some(readable_object);
 

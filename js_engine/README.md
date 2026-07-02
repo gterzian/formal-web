@@ -607,25 +607,40 @@ field types use `GcCell<T>`.
 
 **POC test suite: 79/79 pass on Boa.**
 
-**This session:**
+**This session (July 2 continuation):**
 
 | Addition | What |
 |---|---|
-| `readablestream.rs` NativeFunction → captures | 5 of 7 closures converted to fn pointers with **zero ec_to_ctx** (see next table). Approach: extract named fn pointers with EC+Completion, inline `create_iter_result_object` with ec methods, convert `start_abort_cancel_source` to EC, use `EcmascriptHost::get` for property access. |
-| `create_iter_result_object` inlined | Replaced `boa_engine::builtins::iterable::create_iter_result_object` with `create_plain_object` + `create_data_property` using EC trait methods. |
-| `start_abort_cancel_source` converted to EC | Converted from `(&mut Context) -> JsResult` to `(&mut dyn ExecutionContext) -> Completion`. Uses `readable_stream_cancel_ec`, `resolved_promise(ec)` and `perform_promise_then` internally. |
+| `readablestream.rs` closures → EC fn pointers | 5 of 7 `NativeFunction` closures converted. Extracted named fn pointers `readable_stream_from_iterable_pull_on_fulfilled_fn`, `readable_stream_from_iterable_cancel_on_fulfilled_fn`, `promise_from_sync_iterator_result_on_fulfilled_fn`, `abort_destination_then_cancel_{on_fulfilled,on_rejected}_fn`. Zero ec_to_ctx in all bodies. |
+| `create_iter_result_object` inlined | Replaced Boa builtin with `create_plain_object` + `create_data_property` using EC trait methods. |
+| `start_abort_cancel_source` → EC | Converted from `(&mut Context) -> JsResult` to `(&mut dyn ExecutionContext) -> Completion`. Uses `readable_stream_cancel_ec`, `resolved_promise(ec)`, `perform_promise_then`. |
+| `underlying_source_type` → EC | Converted from Context to EC. Uses `ec.has_property`, `ec.get`, `ec.to_rust_string`, `ec.same_value`. |
+| `strategy_has_size` → EC | Converted from Context to EC. Uses `ec.to_object`, `ec.has_property`, `EcmascriptHost::get`, `ec.same_value`. |
+| `construct_readable_stream` → EC | Full EC conversion. `construct_readable_stream_ec` now just delegates directly (no ec_to_ctx bridge). |
+| `create_readable_stream_object` → EC | No more `context_as_ec` bridge. Uses `create_interface_instance(ec)` directly. |
+| `create_readable_stream` → EC | Uses `create_readable_stream_object(ec)`, `create_interface_instance(ec)`, `set_up_readable_stream_default_controller(ec)` directly. |
+| `create_readable_byte_stream` → EC | Uses `create_readable_stream_object(ec)`, `create_interface_instance(ec)`. |
+| `readable_stream_tee` → EC | Dispatches to now-EC `readable_byte_stream_tee` and `readable_stream_default_tee`. |
+| `readable_stream_default_tee` → EC | Uses `closed_ec(ec)`, `new_promise_pending()`, `mark_promise_as_handled(ec)`, `perform_promise_then` instead of `.catch()`. TeeState field `cancel_resolvers` changed to `PromiseResolvers`. |
+| `readable_byte_stream_tee` → EC | Uses `closed_ec(ec)`, `new_promise_pending()`, `with_readable_stream_default_reader_ref_ec`. ByteTeeState field `cancel_resolvers` changed to `PromiseResolvers`. |
+| `ReadableStream::tee` bridge | Updated to bridge from Context → EC via `completion_to_js_result`. |
+| `readable_stream_from_iterable` bridge | Updated to bridge via `context_as_ec` + `map_err`. |
+| transformstream.rs bridge | Updated `create_readable_stream` call to bridge via `context_as_ec`. |
 
 **2 closures remaining in `readablestream.rs`** (both from_copy_closure).
 All blocked on deeper function conversions:
 
 | Closure | Blocker |
 |---|---|
-| byte_tee_pull_byob on_fulfilled (line 2385) | `queue_internal_stream_microtask` — takes Context |
-| pipe_reaction (line 4004) | `pipe_to_on_promise_settled` — large function, takes Context |
+| byte_tee_pull_byob on_fulfilled (line ~2385) | `queue_internal_stream_microtask` — takes Context, deep closure chain |
+| pipe_reaction (line ~4004) | `pipe_to_on_promise_settled` — large function (~100 lines) calling many Context-based PipeToState methods |
 
-**ec_to_ctx count: 11** (pre-existing in _ec wrappers and controller code;
-no new ec_to_ctx added — the two remaining closures still use
-`NativeFunction::from_copy_closure_with_captures` directly).
+**Struct field conversions:**
+- `TeeState.cancel_resolvers`: `ResolvingFunctions` → `PromiseResolvers<crate::js::Types>`
+- `ByteTeeState.cancel_resolvers`: `ResolvingFunctions` → `PromiseResolvers<crate::js::Types>`
+- Existing EC fn pointers (`default_tee_on_rejected_fn`, `byte_tee_error_branch_on_rejected_fn`) updated to use `cancel_resolvers.resolve(value, ec)` directly.
+
+**Import additions:** `js_engine::records::PromiseResolvers`, `with_readable_stream_default_reader_ref_ec`, `js_engine::types::JsTypes`. **Import removals:** `boa_engine::builtins::iterable::create_iter_result_object`.
 
 ### Next session: recommended order
 
@@ -633,23 +648,16 @@ no new ec_to_ctx added — the two remaining closures still use
    - `pipe_reaction`: convert `pipe_to_on_promise_settled` to EC
    - `byte_tee_pull_byob_on_fulfilled`: convert `queue_internal_stream_microtask` to EC
 
-2. **Eliminate pre-existing 11 ec_to_ctx** — in `_ec` wrappers and controller code:
+2. **Eliminate remaining `_ec` wrappers** in readablestream.rs:
    - `ReadableStream::pipe_through_ec`, `pipe_to_ec`, `tee_ec` — convert wrapped functions
-   - `construct_readable_stream_ec`, `readable_stream_from_iterable_ec` — convert wrapped functions
-   - Controller code (ResolvingFunctions) — use `ec.call()` pattern or PromiseResolvers
+   - `readable_stream_from_iterable_ec` — already simplified, convert `readable_stream_from_iterable` fully
+   - Controller code `_ec` wrappers (readablestreamdefaultcontroller.rs, writablestreamdefaultcontroller.rs, readablebytestreamcontroller.rs)
 
-3. **Eliminate `_ec` suffix from struct methods** — rename `readable_ec` → `readable`, etc.
+3. **Convert remaining ResolvingFunctions usages** — `ByteTeeCancelState` in `byte_tee_cancel_algorithm` and `readable_stream_default_tee_cancel_algorithm` still use `cancel_resolvers.resolve.call(...)` pattern. Convert to `PromiseResolvers::resolve()`.
 
-4. **Phase E — Conditional Types alias**.
+4. **Eliminate `_ec` suffix from struct methods** — rename `readable_ec` → `readable`, etc.
 
-2. **Eliminate pre-existing 11 ec_to_ctx** — in `_ec` wrappers and controller code:
-   - `ReadableStream::pipe_through_ec`, `pipe_to_ec`, `tee_ec` — convert wrapped functions
-   - `construct_readable_stream_ec`, `readable_stream_from_iterable_ec` — convert wrapped functions
-   - Controller code (ResolvingFunctions) — use `ec.call()` pattern or PromiseResolvers
-
-3. **Eliminate `_ec` suffix from struct methods** — rename `readable_ec` → `readable`, etc.
-
-4. **Phase E — Conditional Types alias**.
+5. **Phase E — Conditional Types alias**.
 
 ### Working notes
 
