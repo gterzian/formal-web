@@ -2573,4 +2573,108 @@ mod tests {
         let s = engine.to_rust_string(result).unwrap();
         assert_eq!(s, "nested");
     }
+
+    // ── create_builtin_function_with_captures — traceable captures ─
+
+    /// Captures struct for [`create_builtin_function_with_captures`] tests.
+    /// Holds a counter that the builtin function increments on each call.
+    ///
+    /// The `impl_gc_traits!` macro emits `#[derive(boa_gc::Trace)]` (Boa)
+    /// which makes this struct GC-traceable.  When `#[gc_struct]` is
+    /// implemented, this becomes `#[gc_struct]` with `GcCell<f64>` fields.
+    js_engine::impl_gc_traits! {
+        pub(crate) struct Incrementor {
+            count: std::cell::Cell<f64>,
+        }
+    }
+
+    impl Incrementor {
+        fn new() -> Self {
+            Self {
+                count: std::cell::Cell::new(0.0),
+            }
+        }
+    }
+
+    /// Behaviour function for the incrementor builtin.
+    /// Receives `&Incrementor` as the captures reference.
+    fn incrementor_behaviour(
+        args: &[JsValue],
+        _this: JsValue,
+        captures: &Incrementor,
+        ec: &mut dyn ExecutionContext<TestTypes>,
+    ) -> Completion<JsValue, TestTypes> {
+        let delta = if let Some(arg) = args.first() {
+            ec.to_number(arg.clone()).unwrap_or(1.0)
+        } else {
+            1.0
+        };
+        let old = captures.count.get();
+        captures.count.set(old + delta);
+        Ok(ec.value_from_number(old))
+    }
+
+    #[test]
+    fn create_builtin_function_with_captures_increments() {
+        let mut engine = setup();
+        let captures = Incrementor::new();
+        let pk = engine.property_key_from_str("inc");
+        let func = engine.create_builtin_function_with_captures(
+            captures,
+            incrementor_behaviour,
+            0,
+            pk,
+        );
+        let func_obj = TestTypes::object_from_function(func);
+        let undef = engine.value_undefined();
+
+        // First call: old = 0, delta = 5.
+        let delta5 = engine.value_from_number(5.0);
+        let result =
+            js_engine::EcmascriptHost::call(&mut engine, &func_obj, &undef, &[delta5]).unwrap();
+        assert!((engine.to_number(result).unwrap() - 0.0).abs() < 0.001);
+
+        // Second call: old = 5, delta = 3.
+        let delta3 = engine.value_from_number(3.0);
+        let result =
+            js_engine::EcmascriptHost::call(&mut engine, &func_obj, &undef, &[delta3]).unwrap();
+        assert!((engine.to_number(result).unwrap() - 5.0).abs() < 0.001);
+
+        // Third call: no arg → default delta = 1.
+        let result =
+            js_engine::EcmascriptHost::call(&mut engine, &func_obj, &undef, &[]).unwrap();
+        assert!((engine.to_number(result).unwrap() - 8.0).abs() < 0.001);
+    }
+
+    #[test]
+    fn create_builtin_function_with_captures_survives_allocation_pressure() {
+        let mut engine = setup();
+        let captures = Incrementor::new();
+        let pk = engine.property_key_from_str("inc");
+        let func = engine.create_builtin_function_with_captures(
+            captures,
+            incrementor_behaviour,
+            0,
+            pk,
+        );
+        let func_obj = TestTypes::object_from_function(func);
+        let undef = engine.value_undefined();
+
+        // Warm up: one call.
+        let delta = engine.value_from_number(7.0);
+        let _ =
+            js_engine::EcmascriptHost::call(&mut engine, &func_obj, &undef, &[delta]).unwrap();
+
+        // Allocation pressure: create many throwaway arrays.
+        for i in 0..2000 {
+            let throwaway = engine.create_empty_array();
+            let num_val = engine.value_from_number(i as f64);
+            let _ = engine.array_push(&throwaway, num_val);
+        }
+
+        // The captures must survive the pressure — count should still be 7.
+        let result =
+            js_engine::EcmascriptHost::call(&mut engine, &func_obj, &undef, &[]).unwrap();
+        assert!((engine.to_number(result).unwrap() - 7.0).abs() < 0.001);
+    }
 }

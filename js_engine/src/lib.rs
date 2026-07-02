@@ -47,7 +47,7 @@ pub use enums::{
     IntegrityLevel, IteratorKind, Numeric, PreferredType, PromiseRejectionOperation,
     SharedMemoryOrder, TypedArrayElementType,
 };
-pub use gc::{Finalize, GcRootHandle, JsTypesGcExt, Trace};
+pub use gc::{Finalize, GcCell, GcRootHandle, JsTypesGcExt, Trace, gc_cell_new};
 pub use records::{
     IteratorRecord, ModuleRequest, PromiseCapability, PromiseResolvers, PropertyDescriptor,
     RealmIntrinsics, RootedPromiseCapability,

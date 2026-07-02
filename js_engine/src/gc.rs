@@ -33,7 +33,11 @@ use crate::JsTypes;
 ///
 /// Implementations must ensure that every field capable of holding a JavaScript
 /// value is also made known to the engine's GC mechanism.
+#[cfg(not(feature = "boa"))]
 pub unsafe trait Trace {}
+
+#[cfg(feature = "boa")]
+pub unsafe trait Trace: boa_gc::Trace {}
 
 /// Lifecycle hook executed when the host engine reclaims the object's backing
 /// memory.
@@ -75,7 +79,36 @@ impl<T: JsTypes> Drop for GcRootHandle<T> {
 }
 
 // ============================================================================
-// SECTION III: GC-TRAIT MACRO
+// SECTION III: BACKEND-ABSTRACTED GC CELL
+// ============================================================================
+
+/// A backend-abstracted GC-managed cell providing interior mutability.
+///
+/// On Boa this is a type alias for `boa_gc::Gc<boa_gc::GcRefCell<T>>` so
+/// the GC traces through the reference.  On JSC it is `Rc<RefCell<T>>`.
+///
+/// Use `gc_cell_new(val)` to construct, `.borrow()` / `.borrow_mut()` to
+/// access the inner value.
+#[cfg(feature = "boa")]
+pub type GcCell<T> = boa_gc::Gc<boa_gc::GcRefCell<T>>;
+
+#[cfg(not(feature = "boa"))]
+pub type GcCell<T> = std::rc::Rc<std::cell::RefCell<T>>;
+
+/// Construct a [`GcCell`] with the given value.
+#[cfg(feature = "boa")]
+pub fn gc_cell_new<T: boa_gc::Trace>(val: T) -> GcCell<T> {
+    boa_gc::Gc::new(boa_gc::GcRefCell::new(val))
+}
+
+/// Construct a [`GcCell`] with the given value.
+#[cfg(not(feature = "boa"))]
+pub fn gc_cell_new<T>(val: T) -> GcCell<T> {
+    std::rc::Rc::new(std::cell::RefCell::new(val))
+}
+
+// ============================================================================
+// SECTION IV: GC-TRAIT MACRO
 // ============================================================================
 
 /// Declarative macro that derives the correct GC traits for a type
@@ -144,7 +177,7 @@ macro_rules! impl_gc_traits {
 }
 
 // ============================================================================
-// SECTION IV: ENGINE-SPECIFIC IMPLEMENTATIONS
+// SECTION V: ENGINE-SPECIFIC IMPLEMENTATIONS
 // ============================================================================
 
 // ── Boa backend ───────────────────────────────────────────────────────────
@@ -153,10 +186,11 @@ mod boa_gc_impl {
     use super::*;
     use crate::boa::BoaTypes;
 
-    // SAFETY: `boa_gc::Trace` has the same safety contract as
-    // `js_engine::gc::Trace` — the implementor guarantees that every GC
-    // reachable field is visited during trace.
-    unsafe impl<T: boa_gc::Trace + ?Sized> Trace for T {}
+
+    // SAFETY: `boa_gc::Trace` satisfies all the requirements of
+    // `js_engine::gc::Trace` — both guarantee that every GC-reachable
+    // field is visited during trace.
+    unsafe impl<T: boa_gc::Trace> Trace for T {}
 
     impl<T: boa_gc::Finalize + ?Sized> Finalize for T {
         #[inline]

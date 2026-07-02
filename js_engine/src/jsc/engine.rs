@@ -526,6 +526,92 @@ impl JsEngine<JscTypes> for JscEngine {
         Ok(())
     }
 
+    // ── §10.3 Built-in Function Objects ──────────────────────────────────
+
+    /// <https://tc39.es/ecma262/#sec-createbuiltinfunction>
+    fn create_builtin_function_with_captures<C: crate::gc::Trace + 'static>(
+        &mut self,
+        captures: C,
+        behaviour: fn(
+            &[JscValue],
+            JscValue,
+            &C,
+            &mut dyn ExecutionContext<JscTypes>,
+        ) -> Completion<JscValue, JscTypes>,
+        length: u32,
+        name: JscPropertyKey,
+    ) -> JscFunction {
+        // SAFETY: the content process is single-threaded, and the engine
+        // outlives all builtin function objects created from it.
+        let engine_ptr: *mut JscEngine = self;
+
+        // Move captures into the StoredBehaviour closure.  They are dropped
+        // when builtin_finalize frees the StoredBehaviour box.
+        let wrapped: StoredBehaviour = Box::new(
+            move |args: &[JscValue], this_val: JscValue| -> Completion<JscValue, JscTypes> {
+                let engine: &mut JscEngine = unsafe { &mut *engine_ptr };
+                let ec: &mut dyn ExecutionContext<JscTypes> = engine;
+                behaviour(args, this_val, &captures, ec)
+            },
+        );
+
+        let leaked: *mut StoredBehaviour = Box::into_raw(Box::new(wrapped));
+
+        let ctx_ptr = self.ctx_ptr();
+        let raw = unsafe {
+            JSObjectMake(ctx_ptr, BUILTIN_CLASS.0, leaked as *mut c_void)
+        };
+
+        // Set `Function.prototype` as the prototype.
+        let realm = self.current_realm();
+        let intrinsics = self.realm_intrinsics(&realm);
+        unsafe {
+            JSObjectSetPrototype(ctx_ptr, raw, intrinsics.function_prototype.as_value_ref());
+        }
+
+        // Set the `length` property.
+        let length_key = JscString::from_rust("length");
+        let length_val = JscValue {
+            raw: unsafe { JSValueMakeNumber(ctx_ptr, length as f64) },
+            ctx: ctx_ptr,
+        };
+        let mut exc: *mut JSValueRef = std::ptr::null_mut();
+        unsafe {
+            JSObjectSetProperty(
+                ctx_ptr,
+                raw,
+                length_key.raw,
+                length_val.raw,
+                kJSPropertyAttributeNone,
+                &mut exc,
+            );
+        }
+
+        // Set the `name` property if the name is a string.
+        if let JscPropertyKey::String(name_str) = &name {
+            let name_key = JscString::from_rust("name");
+            let name_val = JscValue {
+                raw: unsafe { JSValueMakeString(ctx_ptr, name_str.raw) },
+                ctx: ctx_ptr,
+            };
+            unsafe {
+                JSObjectSetProperty(
+                    ctx_ptr,
+                    raw,
+                    name_key.raw,
+                    name_val.raw,
+                    kJSPropertyAttributeNone,
+                    &mut exc,
+                );
+            }
+        }
+
+        JscObject {
+            raw,
+            ctx: ctx_ptr,
+        }
+    }
+
     // ── §16 Script ────────────────────────────────────────────────────────
     fn evaluate_script(&mut self, source: &str, _realm: &JscRealm) -> Completion<JscValue, JscTypes>
     where

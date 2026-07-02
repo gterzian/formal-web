@@ -195,6 +195,48 @@ impl JsEngine<BoaTypes> for BoaContext {
     // ── §10.3 Built-in Function Objects ──────────────────────────────────
 
     /// <https://tc39.es/ecma262/#sec-createbuiltinfunction>
+    fn create_builtin_function_with_captures<C: crate::gc::Trace + boa_engine::Trace + 'static>(
+        &mut self,
+        captures: C,
+        behaviour: fn(
+            &[JsValue],
+            JsValue,
+            &C,
+            &mut dyn ExecutionContext<BoaTypes>,
+        ) -> Completion<JsValue, BoaTypes>,
+        length: u32,
+        name: PropertyKey,
+    ) -> JsFunction {
+        let realm = self.current_realm();
+        let name_str = match &name {
+            PropertyKey::String(s) => s.clone(),
+            PropertyKey::Symbol(_) => boa_engine::js_string!(""),
+            _ => boa_engine::js_string!(""),
+        };
+
+        // SAFETY: BoaContext is `#[repr(transparent)]` over Context.
+        // `from_copy_closure_with_captures` is the safe variant — `behaviour`
+        // is a fn pointer (Copy) and `captures: C: Trace` is traced by Boa's GC.
+        let native = NativeFunction::from_copy_closure_with_captures(
+            move |_this: &JsValue,
+                  args: &[JsValue],
+                  captures: &C,
+                  context: &mut Context|
+                  -> JsResult<JsValue> {
+                let engine: &mut BoaContext =
+                    unsafe { &mut *(context as *mut Context as *mut BoaContext) };
+                behaviour(args, _this.clone(), captures, engine)
+                    .map_err(|e| JsError::from_opaque(e))
+            },
+            captures,
+        );
+
+        FunctionObjectBuilder::new(&realm, native)
+            .name(name_str)
+            .length(length as usize)
+            .build()
+    }
+
     // ── §16 Script and Module evaluation ──────────────────────────────────
 
     fn evaluate_script(

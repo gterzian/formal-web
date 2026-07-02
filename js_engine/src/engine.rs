@@ -794,6 +794,29 @@ pub trait JsEngine<T: JsTypes> {
     // §10.3 Built-in Function Objects
     // ────────────────────────────────────────────────────────────────────────
 
+    /// <https://tc39.es/ecma262/#sec-createbuiltinfunction>
+    ///
+    /// Creates a built-in function whose behaviour closure receives a
+    /// traceable captures struct (instead of an opaque boxed closure).
+    /// The captures struct is stored alongside the function pointer and
+    /// traced by the GC, so domain objects held inside the struct can
+    /// safely survive garbage collections.
+    ///
+    /// `behaviour` is a function pointer (not a closure) receiving `&C`
+    /// as its third argument.
+    fn create_builtin_function_with_captures<C: crate::gc::Trace + 'static>(
+        &mut self,
+        captures: C,
+        behaviour: fn(
+            &[T::JsValue],
+            T::JsValue,
+            &C,
+            &mut dyn ExecutionContext<T>,
+        ) -> Completion<T::JsValue, T>,
+        length: u32,
+        name: T::PropertyKey,
+    ) -> T::Function;
+
     // ────────────────────────────────────────────────────────────────────────
     // §16.1 / §16.2 Script and Module evaluation
     // ────────────────────────────────────────────────────────────────────────
