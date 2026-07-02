@@ -351,7 +351,7 @@ pub struct JscEngine {
     host_data: HashMap<std::any::TypeId, Box<dyn std::any::Any>>,
     /// Monotonically-increasing counter for GC-root property names.
     next_root_id: u64,
-    queued_jobs: Vec<Box<dyn FnOnce() + Send>>,
+    queued_jobs: Vec<Box<dyn FnOnce(&mut JscEngine)>>,
 }
 
 impl JscEngine {
@@ -1911,13 +1911,24 @@ impl ExecutionContext<JscTypes> for JscEngine {
     }
 
     // ── §9.6 Jobs ─────────────────────────────────────────────────────────
-    fn enqueue_job(&mut self, job: Box<dyn FnOnce() + Send>) {
-        self.queued_jobs.push(job);
+    fn enqueue_job(&mut self, job: Box<dyn FnOnce()>) {
+        self.queued_jobs.push(Box::new(move |_: &mut JscEngine| {
+            job();
+        }));
+    }
+    fn enqueue_job_with_realm(
+        &mut self,
+        _realm: JscRealm,
+        job: Box<dyn FnOnce(&mut dyn ExecutionContext<JscTypes>)>,
+    ) {
+        self.queued_jobs.push(Box::new(move |engine: &mut JscEngine| {
+            job(engine);
+        }));
     }
     fn run_jobs(&mut self) {
         let jobs = std::mem::take(&mut self.queued_jobs);
         for job in jobs {
-            job();
+            job(self);
         }
     }
 

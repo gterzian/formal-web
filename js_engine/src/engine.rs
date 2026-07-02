@@ -31,15 +31,29 @@
 //!
 //! ## `HostHooks<T>`
 //!
-//! Constructor-time configuration for HTML-specific engine hooks
-//! (`HostEnsureCanCompileStrings`, `HostPromiseRejectionTracker`, etc.).
-//! Set once during engine construction.
+//! Configuration for HTML-specific engine hooks.  Rather than a custom
+//! abstraction, the intended design is to implement each backend's native
+//! host-hook mechanism:
+//!
+//! - **Boa:** implement `boa_engine::context::HostHooks` (which provides
+//!   `make_job_callback`, `call_job_callback`, `promise_rejection_tracker`,
+//!   etc.).  Register via `ContextBuilder::host_hooks()`.
+//!   See <https://tc39.es/ecma262/#sec-hostmakejobcallback>.
+//! - **JSC:** JSC's C API has no equivalent; simulate by wrapping function
+//!   creation in our own `HostMakeJobCallback` / `HostCallJobCallback` layer.
+//!
+//! The `HostHooks<T>` struct below is a placeholder.  The end state is a
+//! content-owned implementation of the backend's native hook trait, carrying
+//! `[[HostDefined]]` data (incumbent settings object, active script) per
+//! <https://tc39.es/ecma262/#sec-jobcallback-records>.
 //!
 //! ## Open problems
 //!
-//! - **P2: No `JsEngineErased` type.**  `enqueue_job` takes
-//!   `Box<dyn FnOnce() + Send>` — the closure can't access the engine.
-//!   Fix: create object-safe `JsEngineErased`.
+//! - **P2: HostMakeJobCallback not implemented.**  Content should implement
+//!   Boa's `HostHooks` trait (and a JSC equivalent) so `[[HostDefined]]`
+//!   data (ESO, active script) is captured at callback-creation time and
+//!   restored at callback-call time.  Today every closure manually threads
+//!   `&mut dyn ExecutionContext<T>` instead.
 //! - **P3: `create_builtin_function` not yet used by content code.**
 //!   Content still uses Boa's `FunctionObjectBuilder` + `NativeFunction`
 //!   because converting all native function registrations is a large
@@ -407,7 +421,16 @@ pub trait ExecutionContext<T: JsTypes + JsTypesWithRealm>: EcmascriptHost<T> {
     // ────────────────────────────────────────────────────────────────────────
 
     /// <https://tc39.es/ecma262/#sec-enqueuejob>
-    fn enqueue_job(&mut self, job: Box<dyn FnOnce() + Send>);
+    fn enqueue_job(&mut self, job: Box<dyn FnOnce()>);
+
+    /// Like `enqueue_job` but the job receives access to the execution context.
+    /// The closure runs with the given realm restored as the current realm.
+    /// <https://tc39.es/ecma262/#sec-enqueuejob>
+    fn enqueue_job_with_realm(
+        &mut self,
+        realm: T::Realm,
+        job: Box<dyn FnOnce(&mut dyn ExecutionContext<T>)>,
+    );
 
     /// <https://tc39.es/ecma262/#sec-runjobs>
     fn run_jobs(&mut self);

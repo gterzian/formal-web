@@ -1061,7 +1061,7 @@ impl ExecutionContext<BoaTypes> for BoaContext {
 
     // ── §9.6 Jobs ─────────────────────────────────────────────────────────
 
-    fn enqueue_job(&mut self, _job: Box<dyn FnOnce() + Send>) {
+    fn enqueue_job(&mut self, _job: Box<dyn FnOnce()>) {
         let realm = self.context.realm().clone();
         let mut deferred_job = Some(_job);
         let job = GenericJob::new(
@@ -1074,6 +1074,24 @@ impl ExecutionContext<BoaTypes> for BoaContext {
             realm,
         );
         self.context.enqueue_job(Job::from(job));
+    }
+
+    fn enqueue_job_with_realm(
+        &mut self,
+        realm: boa_engine::realm::Realm,
+        job: Box<dyn FnOnce(&mut dyn ExecutionContext<BoaTypes>)>,
+    ) {
+        let mut deferred_job = Some(job);
+        let generic_job = GenericJob::new(
+            move |context| {
+                if let Some(job) = deferred_job.take() {
+                    job(context_as_ec(context));
+                }
+                Ok(JsValue::undefined())
+            },
+            realm,
+        );
+        self.context.enqueue_job(Job::from(generic_job));
     }
 
     fn run_jobs(&mut self) {

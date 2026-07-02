@@ -330,6 +330,30 @@ same struct because Boa's `Context` serves both roles internally.
 These are the blockers to `EnvironmentSettingsObject` owning a purely generic context
 instead of `BoaContext`.  None are fundamental — they just aren't done yet.
 
+### HostMakeJobCallback — design direction
+
+<https://tc39.es/ecma262/#sec-hostmakejobcallback>
+
+This is a separate concern from `perform_promise_then` (which is already
+correctly generic).  `HostMakeJobCallback` / `HostCallJobCallback` wrap
+callbacks with `[[HostDefined]]` data (incumbent settings object, active
+script) so the HTML spec's "prepare to run a callback" steps happen
+automatically when the engine invokes a callback.
+
+**What already works:** `perform_promise_then` on the EC trait handles
+promise reactions (streams reacting to promises).  Boa internally calls
+its own `HostEnqueuePromiseJob` hook — no action needed from content.
+
+**What's future work:** Implement the engine's native host hooks trait
+(`boa_engine::context::HostHooks`) so `[[HostDefined]]` data is captured
+at `HostMakeJobCallback` time and restored at `HostCallJobCallback` time.
+This replaces manual threading of settings objects through closures.
+JSC has no equivalent C API; we'd simulate with our own layer.
+
+**What `enqueue_job_with_realm` does:** Explicit content-initiated
+microtask queueing (HTML's `queue a microtask`, streams'
+`queue_internal_stream_microtask`).  Separate from promise reactions.
+
 ### Platform object downcast without GC abstraction
 
 `downcast_ref::<T>()` and `downcast_mut::<T>()` on `JsObject` do not
@@ -657,63 +681,44 @@ field types use `GcCell<T>`.
 
 **ec_to_ctx eliminated this session: 29 total** (84→55).  Files cleaned up: `html_element.rs`, `hyperlink_element_utils.rs`, `readablebytestreamcontroller.rs` (16→0), `writablestreamdefaultwriter.rs`.
 
-| Addition | What |
-|---|---|
-| `readablestream.rs` closures → EC fn pointers | 5 of 7 `NativeFunction` closures converted. Extracted named fn pointers `readable_stream_from_iterable_pull_on_fulfilled_fn`, `readable_stream_from_iterable_cancel_on_fulfilled_fn`, `promise_from_sync_iterator_result_on_fulfilled_fn`, `abort_destination_then_cancel_{on_fulfilled,on_rejected}_fn`. Zero ec_to_ctx in all bodies. |
-| `create_iter_result_object` inlined | Replaced Boa builtin with `create_plain_object` + `create_data_property` using EC trait methods. |
-| `start_abort_cancel_source` → EC | Converted from `(&mut Context) -> JsResult` to `(&mut dyn ExecutionContext) -> Completion`. Uses `readable_stream_cancel_ec`, `resolved_promise(ec)`, `perform_promise_then`. |
-| `underlying_source_type` → EC | Converted from Context to EC. Uses `ec.has_property`, `ec.get`, `ec.to_rust_string`, `ec.same_value`. |
-| `strategy_has_size` → EC | Converted from Context to EC. Uses `ec.to_object`, `ec.has_property`, `EcmascriptHost::get`, `ec.same_value`. |
-| `construct_readable_stream` → EC | Full EC conversion. `construct_readable_stream_ec` now just delegates directly (no ec_to_ctx bridge). |
-| `create_readable_stream_object` → EC | No more `context_as_ec` bridge. Uses `create_interface_instance(ec)` directly. |
-| `create_readable_stream` → EC | Uses `create_readable_stream_object(ec)`, `create_interface_instance(ec)`, `set_up_readable_stream_default_controller(ec)` directly. |
-| `create_readable_byte_stream` → EC | Uses `create_readable_stream_object(ec)`, `create_interface_instance(ec)`. |
-| `readable_stream_tee` → EC | Dispatches to now-EC `readable_byte_stream_tee` and `readable_stream_default_tee`. |
-| `readable_stream_default_tee` → EC | Uses `closed_ec(ec)`, `new_promise_pending()`, `mark_promise_as_handled(ec)`, `perform_promise_then` instead of `.catch()`. TeeState field `cancel_resolvers` changed to `PromiseResolvers`. |
-| `readable_byte_stream_tee` → EC | Uses `closed_ec(ec)`, `new_promise_pending()`, `with_readable_stream_default_reader_ref_ec`. ByteTeeState field `cancel_resolvers` changed to `PromiseResolvers`. |
-| `ReadableStream::tee` → EC | Converted to EC. `tee_ec` now delegates directly (no ec_to_ctx bridge). `ReadableStreamTeeBranches::into_js_value_ec` added using `create_empty_array` + `array_push`. |
-| `readable_stream_from_iterable` → EC | Converted to EC. `readable_stream_from_iterable_ec` now delegates directly (no ec_to_ctx bridge). |
-| `readablestreamdefaultcontroller.rs` double bridge eliminated | `cancel_steps` no longer does ec_to_ctx + context_as_ec to call `CancelAlgorithm::call` (which already takes EC). -1 ec_to_ctx. |
-| transformstream.rs bridge | Updated `create_readable_stream` call to bridge via `context_as_ec`. |
-| `cancel_resolvers.resolve` error logging restored | Two `let _ = cancel_resolvers.resolve(...)` fixed to `if let Err(error) = ... { error!(...); }`. |
-| `call_pull_if_needed` double bridge eliminated | `controller_object_ec(ec)`, `pull_algorithm.call(ec)`, `mark_promise_as_handled(ec)` — no more context_as_ec on calls that already take EC. -2 ec_to_ctx. |
-| `set_up_readable_stream_default_controller` double bridge eliminated | `start_algorithm.call(ec)` and `mark_promise_as_handled(ec)` use ec directly. -2 ec_to_ctx. |
-| `underlying_sink_type` → EC | Converted from Context to EC. Uses `ec.has_property`, `EcmascriptHost::get`, `ec.to_rust_string`, `ec.same_value`. writablestream.rs: 1→0 ec_to_ctx. |
-| `normalize_min` → EC | Converted in readablestreambyobreader.rs. Uses `EcmascriptHost::get`, `ec.to_object`, `ec.to_number`, `ec.new_{type,range}_error`. readablestreambyobreader.rs: 2→0 ec_to_ctx. |
-| `writablestreamdefaultcontroller` methods → EC | `stream_slot`, `controller_object`, `write_algorithm`, `close_algorithm`, `abort_algorithm`, `get_backpressure`, `get_desired_size`, `peek_queue_value`, `dequeue_value` all converted to take EC. `abort_steps` ec_to_ctx eliminated. `write_controller`, `advance_queue_if_needed` restructured to do EC ops before ec_to_ctx. |
-| `writablestreamdefaultwriter::desired_size` → EC | `desired_size` and `get_desired_size_from_stream` converted to EC. `desired_size_ec` simplified to direct delegation. |
-
-**ec_to_ctx eliminated in 4 files:** writablestream.rs (1→0), readablestreambyobreader.rs (2→0), readablestreamdefaultcontroller.rs (4 eliminated), writablestreamdefaultwriter.rs (2 eliminated).
-
-**2 closures remaining in `readablestream.rs`** (both from_copy_closure).
-All blocked on deeper function conversions:
+**2 closures remaining in `readablestream.rs`** (both from_copy_closure):
 
 | Closure | Blocker |
 |---|---|
-| byte_tee_pull_byob on_fulfilled (line ~2385) | `queue_internal_stream_microtask` — takes Context, deep closure chain |
-| pipe_reaction (line ~4004) | `pipe_to_on_promise_settled` — large function (~100 lines) calling many Context-based PipeToState methods |
+| byte_tee_pull_byob on_fulfilled | `queue_internal_stream_microtask` — takes Context |
+| pipe_reaction | `pipe_to_on_promise_settled` — large function (~100 lines) |
 
-**Struct field conversions:**
-- `TeeState.cancel_resolvers`: `ResolvingFunctions` → `PromiseResolvers<crate::js::Types>`
-- `ByteTeeState.cancel_resolvers`: `ResolvingFunctions` → `PromiseResolvers<crate::js::Types>`
-- Existing EC fn pointers (`default_tee_on_rejected_fn`, `byte_tee_error_branch_on_rejected_fn`) updated to use `cancel_resolvers.resolve(value, ec)` directly.
+**This session (microtask queueing):**
 
-**Import additions:** `js_engine::records::PromiseResolvers`, `with_readable_stream_default_reader_ref_ec`, `js_engine::types::JsTypes`. **Import removals:** `boa_engine::builtins::iterable::create_iter_result_object`.
+| Addition | What |
+|---|---|
+| `enqueue_job_with_realm` implemented | Boa: wraps `Box<dyn FnOnce(&mut dyn EC<T>)>` in GenericJob, converts Context→EC via `context_as_ec`. JSC: stores `Box<dyn FnOnce(&mut JscEngine)>` in unified job queue; `run_jobs` passes `self` to each closure. |
+| `+ Send` removed from `enqueue_job` / `enqueue_job_with_realm` | Streams closures capture `GcCell<T>` which is `!Send`. Neither backend requires `Send` — jobs always run on the same thread. |
+| `queued_jobs` in JSC unified to `Vec<Box<dyn FnOnce(&mut JscEngine)>>` | `enqueue_job` wraps plain closures; `enqueue_job_with_realm` passes EC. `run_jobs` iterates and calls `job(self)`. |
+| HostMakeJobCallback design documented | Added README section explaining the two-pronged approach: `enqueue_job_with_realm` for content-initiated microtasks, `HostMakeJobCallback`/`HostCallJobCallback` via engine's native `HostHooks` trait for engine-initiated callbacks (promise reactions). |
+
+**This session (_ec wrapper elimination):**
+
+| Removal | What |
+|---|---|
+| `tee_ec` | Deleted — just delegated to `tee(ec)` which already takes EC. Caller changed. |
+| `construct_readable_stream_ec` | Deleted — just delegated to `construct_readable_stream(new_target, args, ec)` which already takes EC. |
+| `readable_stream_from_iterable_ec` | Deleted — just delegated to `readable_stream_from_iterable(async_iterable, ec)` which already takes EC. Also replaced `args.get_or_undefined(0)` with standard slice access. |
+
+**Remaining _ec wrappers blocked on deeper conversion:** `pipe_through_ec`, `pipe_to_ec`, `cancel_ec`, `get_reader_ec` — all delegate to Context-based counterparts that need conversion first. `readable_ec` — has a Context-based namesake (`readable()`) that would collide.
 
 ### Next session: recommended order
 
-1. **Convert remaining 2 closures** — both blocked on deeper function conversions:
-   - `pipe_reaction`: convert `pipe_to_on_promise_settled` to EC
-   - `byte_tee_pull_byob_on_fulfilled`: convert `queue_internal_stream_microtask` to EC
+1. **Convert `pipe_to_on_promise_settled` to EC** — this unblocks both the
+   `pipe_reaction` closure and the `pipe_through_ec` / `pipe_to_ec` wrappers.
 
-2. **Eliminate remaining `_ec` wrappers** in readablestream.rs:
-   - `ReadableStream::pipe_through_ec`, `pipe_to_ec`, `tee_ec` — convert wrapped functions
-   - `readable_stream_from_iterable_ec` — already simplified, convert `readable_stream_from_iterable` fully
-   - Controller code `_ec` wrappers (readablestreamdefaultcontroller.rs, writablestreamdefaultcontroller.rs, readablebytestreamcontroller.rs)
+2. **Convert `queue_internal_stream_microtask` to EC** — this unblocks the
+   `byte_tee_pull_byob_on_fulfilled` closure and the tee helper functions.
+   The `enqueue_job_with_realm` backend is ready; the bottleneck is converting
+   the closure bodies that call Context-taking helpers (`structured_clone_value`,
+   `readable_stream_cancel`, `byte_tee_enqueue_to_branch`, etc.).
 
-3. **Eliminate remaining `_ec` suffix from struct methods** — rename `readable_ec` → `readable`, etc.
-
-4. **Phase E — Conditional Types alias**.
+3. **Phase E — Conditional Types alias**.
 
 ### Working notes
 

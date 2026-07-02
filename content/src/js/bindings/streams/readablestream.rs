@@ -5,7 +5,7 @@ use crate::streams::{
     ReadableByteStreamController, ReadableStream, ReadableStreamBYOBReader,
     ReadableStreamBYOBRequest, ReadableStreamDefaultController, ReadableStreamDefaultReader,
     construct_readable_stream_byob_reader, construct_readable_stream_default_reader,
-    construct_readable_stream_ec, readable_stream_from_iterable_ec,
+    construct_readable_stream, readable_stream_from_iterable,
     with_readable_byte_stream_controller_ref, with_readable_byte_stream_controller_ref_ec,
     with_readable_stream_byob_reader_ref, with_readable_stream_byob_reader_ref_ec,
     with_readable_stream_byob_request_ref, with_readable_stream_byob_request_ref_ec,
@@ -27,7 +27,7 @@ impl WebIdlInterface<crate::js::Types> for ReadableStream {
         args: &[JsValue],
         ec: &mut dyn ExecutionContext<crate::js::Types>,
     ) -> Completion<Self, crate::js::Types> {
-        construct_readable_stream_ec(new_target, args, ec)
+        construct_readable_stream(new_target, args, ec)
     }
 
     fn define_members(def: &mut InterfaceDefinition<crate::js::Types>) {
@@ -467,7 +467,7 @@ fn tee_method(
         .ok_or_else(|| ec.new_type_error("ReadableStream receiver is not an object"))?;
     let mut stream =
         with_readable_stream_ref_ec(&stream_object, ec, |s: &ReadableStream| s.clone())?;
-    stream.tee_ec(ec)
+    stream.tee(ec)
 }
 
 pub(crate) fn values_method(
@@ -497,8 +497,9 @@ pub(crate) fn from_static(
     args: &[JsValue],
     ec: &mut dyn ExecutionContext<crate::js::Types>,
 ) -> Completion<JsValue, crate::js::Types> {
-    Ok(JsValue::from(readable_stream_from_iterable_ec(
-        args.get_or_undefined(0).clone(),
+    let async_iterable = args.get(0).cloned().unwrap_or_else(|| ec.value_undefined());
+    Ok(JsValue::from(readable_stream_from_iterable(
+        async_iterable,
         ec,
     )?))
 }

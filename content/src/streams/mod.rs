@@ -21,9 +21,9 @@ pub(crate) use readablebytestreamcontroller::{
 pub use readablebytestreamcontroller::{ReadableByteStreamController, ReadableStreamBYOBRequest};
 pub use readablestream::ReadableStream;
 pub(crate) use readablestream::{
-    PipeToState, construct_readable_stream, construct_readable_stream_ec,
+    PipeToState, construct_readable_stream,
     readable_stream_add_read_request, readable_stream_close, readable_stream_close_ec, readable_stream_error,
-    readable_stream_from_iterable, readable_stream_from_iterable_ec,
+    readable_stream_from_iterable,
     readable_stream_fulfill_read_request, readable_stream_get_num_read_requests,
     with_readable_stream_ref, with_readable_stream_ref_ec,
 };

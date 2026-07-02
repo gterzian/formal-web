@@ -412,14 +412,6 @@ impl ReadableStream {
         let ctx = unsafe { js_engine::boa::ec_to_ctx(ec) };
         Ok(self.pipe_to(destination, options, ctx))
     }
-
-    /// <https://streams.spec.whatwg.org/#rs-tee>
-    pub(crate) fn tee_ec(
-        &mut self,
-        ec: &mut dyn ExecutionContext<crate::js::Types>,
-    ) -> Completion<JsValue, crate::js::Types> {
-        self.tee(ec)
-    }
 }
 
 struct ReadableStreamTeeBranches {
@@ -1221,14 +1213,6 @@ pub(crate) fn create_readable_stream(
     Ok((stream, stream_object))
 }
 
-pub(crate) fn construct_readable_stream_ec(
-    new_target: &JsValue,
-    args: &[JsValue],
-    ec: &mut dyn ExecutionContext<crate::js::Types>,
-) -> Completion<ReadableStream, crate::js::Types> {
-    construct_readable_stream(new_target, args, ec)
-}
-
 fn create_readable_stream_object(
     ec: &mut dyn ExecutionContext<crate::js::Types>,
 ) -> Completion<(ReadableStream, JsObject), crate::js::Types> {
@@ -1315,14 +1299,6 @@ pub(crate) fn readable_stream_from_iterable(
 
     // Step 7: "Return stream."
     Ok(stream_object)
-}
-
-/// <https://streams.spec.whatwg.org/#readable-stream-from-iterable>
-pub(crate) fn readable_stream_from_iterable_ec(
-    async_iterable: JsValue,
-    ec: &mut dyn ExecutionContext<crate::js::Types>,
-) -> Completion<JsObject, crate::js::Types> {
-    readable_stream_from_iterable(async_iterable, ec)
 }
 
 /// <https://streams.spec.whatwg.org/#readable-stream-from-iterable>
