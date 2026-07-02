@@ -1,10 +1,11 @@
 use std::mem;
 
 use boa_engine::{JsArgs, JsError, JsNativeError, JsResult, JsValue, object::JsObject};
-use boa_gc::{Gc, GcRefCell};
 
 use crate::webidl::bindings::create_interface_instance;
 use crate::webidl::{mark_promise_as_handled, rejected_promise, resolved_promise};
+use js_engine::gc::GcCell;
+use js_engine::gc::gc_cell_new;
 use js_engine::gc_struct;
 
 use super::readablestream::{readable_stream_cancel, readable_stream_cancel_ec};
@@ -184,24 +185,24 @@ pub(crate) trait ReadableStreamGenericReader: Clone {
 #[derive(Clone)]
 pub struct ReadableStreamDefaultReader {
     /// <https://streams.spec.whatwg.org/#readablestreamgenericreader-stream>
-    stream: Gc<GcRefCell<Option<ReadableStream>>>,
+    stream: GcCell<Option<ReadableStream>>,
 
     /// <https://streams.spec.whatwg.org/#readablestreamgenericreader-closedpromise>
-    closed_promise: Gc<GcRefCell<Option<JsObject>>>,
+    closed_promise: GcCell<Option<JsObject>>,
     /// promise remains pending.
-    closed_resolvers: Gc<GcRefCell<Option<PromiseResolvers<crate::js::Types>>>>,
+    closed_resolvers: GcCell<Option<PromiseResolvers<crate::js::Types>>>,
 
     /// <https://streams.spec.whatwg.org/#readablestreamdefaultreader-readrequests>
-    read_requests: Gc<GcRefCell<Vec<ReadRequest>>>,
+    read_requests: GcCell<Vec<ReadRequest>>,
 }
 
 impl ReadableStreamDefaultReader {
     pub(crate) fn new() -> Self {
         Self {
-            stream: Gc::new(GcRefCell::new(None)),
-            closed_promise: Gc::new(GcRefCell::new(None)),
-            closed_resolvers: Gc::new(GcRefCell::new(None)),
-            read_requests: Gc::new(GcRefCell::new(Vec::new())),
+            stream: gc_cell_new(None),
+            closed_promise: gc_cell_new(None),
+            closed_resolvers: gc_cell_new(None),
+            read_requests: gc_cell_new(Vec::new()),
         }
     }
 

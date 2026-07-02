@@ -12,7 +12,7 @@ use crate::webidl::{
     Callback, ExceptionBehavior, invoke_callback_function, mark_promise_as_handled,
     rejected_promise,
 };
-use boa_gc::{Finalize, Gc, GcRefCell, Trace};
+use boa_gc::{Finalize, Trace};
 
 use super::readablebytestreamcontroller::ReadableByteStreamController;
 use super::readablestream::{
@@ -26,6 +26,8 @@ use super::readablestream::{
 use super::readablestreambyobreader::ReadableStreamBYOBReader;
 use super::readablestreamdefaultcontroller::ReadableStreamDefaultController;
 use super::readablestreamdefaultreader::ReadableStreamDefaultReader;
+use js_engine::gc::GcCell;
+use js_engine::gc::gc_cell_new;
 
 /// <https://streams.spec.whatwg.org/#readablestream-state>
 #[derive(Clone, Debug, Eq, PartialEq, Trace, Finalize)]
@@ -75,11 +77,11 @@ pub(crate) enum ReadRequest {
         resolvers: PromiseResolvers<crate::js::Types>,
     },
     ReadableStreamDefaultTee {
-        tee_state: Gc<GcRefCell<TeeState>>,
+        tee_state: GcCell<TeeState>,
         clone_for_branch2: bool,
     },
     ReadableByteStreamTee {
-        tee_state: Gc<GcRefCell<ByteTeeState>>,
+        tee_state: GcCell<ByteTeeState>,
     },
     ReadableStreamPipeTo {
         state: PipeToState,

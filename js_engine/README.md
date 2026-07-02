@@ -247,7 +247,7 @@ same struct because Boa's `Context` serves both roles internally.
 
 | Operation | Reason |
 |---|---|
-| Native function registration (`NativeFunction::from_closure`) | `create_builtin_function` on `JsEngine<T>` is the spec-correct equivalent, but binding functions only have `&mut dyn ExecutionContext<T>`. Phase C will either move it to `ExecutionContext<T>` or add an `engine()` accessor. |
+| Native function registration (`NativeFunction::from_closure`) | `create_builtin_function_with_captures` on `JsEngine<T>` accepts a traceable captures struct + fn pointer instead of an opaque boxed closure.  Boa backend uses the safe `from_copy_closure_with_captures`.  Domain code (transformstream.rs, readablestreamdefaultcontroller.rs, etc.) still uses `NativeFunction::from_copy_closure_with_captures` directly — needs migration to the new trait method. |
 | Platform object construction | Uses Boa `ObjectInitializer` — needs realm's intrinsics table; passes through EC |
 | Proxy creation | Boa's proxy builder not publicly creatable |
 | `Context::eval` (script evaluation) | `JsEngine::evaluate_script` exists on the trait but callers use `Context::eval` directly; needs migration |
@@ -299,9 +299,11 @@ src/
   engine.rs     JsEngine<T>, EcmascriptHost<T>, Completion, HostHooks
   enums.rs      Numeric, PreferredType, IntegrityLevel, etc.
   records.rs    IteratorRecord, PromiseCapability, PropertyDescriptor
-  gc.rs         Trace, Finalize, GcRootHandle, impl_gc_traits! macro
+  gc.rs         Trace, Finalize, GcRootHandle, GcCell<T>, gc_cell_new()
   boa/          Boa backend (feature = "boa")
   jsc/          JSC backend (feature = "jsc")
+
+`js_engine_macros/` — proc-macro crate providing `#[gc_struct]`.
 ```
 
 ## Feature flags
@@ -340,13 +342,20 @@ downcasts via `dyn Any::downcast_ref::<T>()` / `downcast_mut::<T>()`.
 
 | Operation | Mechanism | POC example |
 |---|---|---|
-| GC trait derivation | `impl_gc_traits!` declarative macro | `TestWidget` struct |
+| GC trait derivation | `#[gc_struct]` attribute macro | `TestWidget` struct |
+| GC-managed cell | `GcCell<T>` (Boa: `Gc<GcRefCell<T>>`, JSC: `Rc<RefCell<T>>`) | Domain struct fields |
 | Store a JS callback | `Option<GcRootHandle<Types>>` field | `on_change` field |
 | Root a JS value | `ec.create_root(&value) -> GcRootHandle<T>` | `store_callback` |
 
-`impl_gc_traits!` expands to:
-- Boa: `#[derive(boa_gc::Finalize, boa_gc::Trace, boa_engine::JsData)]`
+`#[gc_struct]` replaces the old `impl_gc_traits!` declarative macro.  It emits:
+- Boa: `#[derive(boa_gc::Finalize, boa_gc::Trace, boa_engine::JsData)]` (structs)
+  or `#[derive(boa_gc::Finalize, boa_gc::Trace)]` (enums, no JsData)
 - JSC: no-op `Trace` and `Finalize` impls
+
+`GcCell<T>` is a backend-abstracted type alias for GC-managed interior
+mutability.  Construct with `gc_cell_new(val)`, access with `.borrow()` /
+`.borrow_mut()`.  On Boa it maps to `Gc<GcRefCell<T>>` so the GC traces
+through it; on JSC it maps to `Rc<RefCell<T>>`.
 
 `GcRootHandle<T>` is an RAII guard:
 - Boa: no-op (GC traces through `boa_gc::Trace` on the handle itself)
@@ -526,7 +535,7 @@ See module docs for implementation status and quirks:
 |---|---|---|
 | Boa | `src/boa/mod.rs` | ✅ Full parity — all trait methods implemented, all generic_js_test tests pass |
 | JSC | `src/jsc/mod.rs` | 🔶 Trait surface complete. `create_builtin_function` implements behaviour closures via JSClass + private data. `create_root` uses global-object properties instead of `JSValueProtect`. `get` handles Symbol keys via eval fallback. 1 remaining ignore: `SharedArrayBuffer` (may not be available). `exercise_context_lifecycle` (registry init + interface registration end-to-end) is Boa-only — no JSC counterpart yet. |
-| GC | `src/gc.rs` | 🔶 API surface complete — `impl_gc_traits!` macro, `GcRootHandle<T>` with Boa trace impl, `create_root` on EC trait. GC-pressure testing gap: no test forces an explicit GC collection to prove rooted values survive; current tests use allocation-count pressure as a proxy. |
+| GC | `src/gc.rs` | ✅ Complete — `#[gc_struct]` attribute macro, `GcCell<T>` type alias, `GcRootHandle<T>` with Boa trace impl, `create_root` on EC trait. `Trace` is a supertrait of `boa_gc::Trace` on Boa. GC-pressure tests pass. |
 
 ## Migration status
 
@@ -611,6 +620,9 @@ Concrete per-phase validation requirements:
 | **T2. Typed array caller conversion** | Converted all streams callers to use new trait methods: `ArrayBufferViewDescriptor::from_value`, `create_result_view`, `create_remaining_view`, `create_view_object`, `create_typed_array_view_object`, `create_uint8_view_object`, `clone_as_uint8_array`. Eliminated ~13 ec_to_ctx from `readablebytestreamcontroller.rs` and `readablestreambyobreader.rs`. | ✅ |
 | **W1. WebIDL promise conversion** | Converted `resolved_promise`, `rejected_promise`, `promise_from_value`, `transform_promise_to_undefined`, `mark_promise_as_handled` to use existing trait methods (`new_promise_capability` + `Call`, `create_builtin_function` + `perform_promise_then`). Deleted dead `a_new_promise`. 9→3 ec_to_ctx in `promise.rs`. | ✅ |
 | **W2. Streams helpers conversion** | Converted `create_read_result` (ObjectInitializer→`create_plain_object`+`object_set_property`), `type_error_value`, `range_error_value` in `readablestreamsupport.rs`. Converted `get_callable_method` in `writablestreamdefaultcontroller.rs`. | ✅ |
+| **G1. `#[gc_struct]` proc-macro attribute** | Created `js_engine_macros` proc-macro crate with `#[gc_struct]` attribute.  Replaces `impl_gc_traits!` across all 34 struct/enum definitions in `content/`.  Re-exported as `js_engine::gc_struct`. | ✅ |
+| **G2. `GcCell<T>` type alias** | Added `GcCell<T>` (Boa: `Gc<GcRefCell<T>>`, JSC: `Rc<RefCell<T>>`) with `gc_cell_new()` constructor.  `Trace` made a supertrait of `boa_gc::Trace` on Boa so the type alias interoperates with GC trait bounds. | ✅ |
+| **C2. `create_builtin_function_with_captures`** | Added to `JsEngine<T>` — accepts a traceable captures struct + fn pointer (no opaque boxed closure).  Boa uses the safe `from_copy_closure_with_captures`; JSC moves captures into `StoredBehaviour`.  Two tests: basic mutable-state access and GC-pressure survival.  Validates the pattern for replacing `NativeFunction` closures in domain code. | ✅ |
 
 ### Remaining phases
 
@@ -655,89 +667,70 @@ Phase S (streams domain) ──► Phase P (platform-object store)
 3. Platform-object state (Phase P) and subsystem entry points (Phase W) are the next blockers — unblock the remaining ~33 non-streams ec_to_ctx.
 4. Backend alias lands once Phases P, W, and S are complete.
 
-### Current state (updated 2026-07-02, session 5 — controller JsResult → Completion + PromiseResolvers)
+### Current state (updated 2026-07-02 — `#[gc_struct]` + `GcCell<T>` + `create_builtin_function_with_captures`)
 
-**Phases A–D, S1–S8, T1–T2, W1–W2 complete.** All binding files at 0 ec_to_ctx. Controller stream_slot/controller_object/invalidate_byob_request methods have `_ec` versions.
+**Phases A–D, S1–S10, T1–T2, W1–W2, G1–G2, C2 complete.** All binding files at 0 ec_to_ctx. All 34 struct/enum definitions in `content/` use `#[gc_struct]`.
 
-**POC test suite: 77/77 pass on Boa.**
+**POC test suite: 79/79 pass on Boa** (2 new captures-pattern tests added this session).
 
-**~62 ec_to_ctx remain in streams/** (down from ~81 at session start, ~102 total including non-streams). ~19 eliminated this session (S8: ~14 controller JsResult, S9+S10: ~5 PromiseResolvers).
+**New this session:**
 
-**Added this session (`_ec` methods across 3 controller files):**
+| Addition | What |
+|---|---|
+| `js_engine_macros` crate | Proc-macro attribute `#[gc_struct]` replacing `impl_gc_traits!` |
+| `GcCell<T>` | Backend-abstracted GC cell (Boa: `Gc<GcRefCell<T>>`, JSC: `Rc<RefCell<T>>`) |
+| `create_builtin_function_with_captures` | `JsEngine<T>` method accepting traceable captures struct + fn pointer |
+| `Trace: boa_gc::Trace` | `Trace` is a supertrait of `boa_gc::Trace` on Boa, making captures bounds work |
 
-| File | New `_ec` methods | Callers converted |
-|---|---|---|
-| `readablestreamdefaultcontroller.rs` | `stream_slot_ec`, `controller_object_ec`, `can_close_or_enqueue_ec`, `get_desired_size_ec`, `has_backpressure_ec`, `should_call_pull_ec` | `close()`, `enqueue()`, `close_steps()`, `enqueue_steps()`, `error_steps()`, `pull_steps()`, `call_pull_if_needed()`, `desired_size_ec()` |
-| `writablestreamdefaultcontroller.rs` | `stream_slot_ec`, `controller_object_ec`, `signal_ec` | `error()`, `signal_abort()`, `signal_value_ec()`, `error_controller()`, `error_if_needed()` |
-| `transformstream.rs` | `stream_slot_ec`, `controller_object_ec`, `readable_controller_ec`, `desired_size_ec` (rewritten), `readable_ec`, `readable_object_ec` (rewritten), `writable_ec`, `writable_object_ec` (rewritten), `controller_slot_ec`, `controller_object_ec` (TransformStream) | `desired_size_ec()` no longer bridges through `ec_to_ctx` |
-| `readablebytestreamcontroller.rs` | (already had `_ec` versions from P2) | `update_byob_request_view()` — replaced `js_result_to_completion(with_readable_stream_byob_request_ref(...), context)` with `with_readable_stream_byob_request_ref_ec(...)` |
+**~62 ec_to_ctx remain in streams/.** No change from previous session — this session focused on GC abstraction infrastructure rather than ec_to_ctx elimination.
 
-**Remaining streams ec_to_ctx (68 total):**
-- `readablebytestreamcontroller.rs`: 13 — `pull_steps` (JsArrayBuffer, readable_stream_add_read_request), `error_steps` (readable_stream_error), `fill_read_request_from_queue*` (readable_stream_fulfill_read_request), `enqueue_chunk_to_queue` (readable_stream_fulfill_read_request), `respond*` methods (readable_stream_*), `pull_from_bytes` (JsArrayBuffer, NativeFunction)
-- `readablestreamdefaultcontroller.rs`: 11 — `PullAlgorithm::call`, `CancelAlgorithm::call`, `StartAlgorithm::call` (tee/itereable algorithms take `&mut Context`), `cancel_steps`, `pull_steps` (readable_stream_add_read_request), `call_pull_if_needed` (NativeFunction/JsPromise), `enqueue_steps` (readable_stream_fulfill_read_request), `error_steps` (readable_stream_error), `set_up_readable_stream_default_controller`, `set_up_*_from_underlying_source`, `extract_source_method`
-- `writablestreamdefaultcontroller.rs`: 11 — `abort_steps`, `get_chunk_size`, `close_controller`, `write_controller`, `advance_queue_if_needed`, `process_close` (NativeFunction/JsPromise), `process_write` (NativeFunction/JsPromise), `set_up_writable_stream_default_controller`, `set_up_*_from_underlying_sink`, `extract_sink_method`
+**Remaining streams ec_to_ctx (62 total):**
+- `readablebytestreamcontroller.rs`: 13 — `pull_steps`, `error_steps`, `fill_read_request_from_queue*`, `enqueue_chunk_to_queue`, `respond*`, `pull_from_bytes`
+- `readablestreamdefaultcontroller.rs`: 11 — `PullAlgorithm::call`, `CancelAlgorithm::call`, `StartAlgorithm::call`, `cancel_steps`, `pull_steps`, `call_pull_if_needed`, `enqueue_steps`, `error_steps`, `set_up_*`, `extract_*`
+- `writablestreamdefaultcontroller.rs`: 11 — `abort_steps`, `get_chunk_size`, `close_controller`, `write_controller`, `advance_queue_if_needed`, `process_close`, `process_write`, `set_up_*`, `extract_sink_method`
 - `readablestreamsupport.rs`: 9 — Tee + NativeFunction closures, readable_stream_* calls
-- `readablestream.rs`: 11 — JsPromise new_pending (ResolvingFunctions), tee, NativeFunction
-- `transformstream.rs`: 4 — `enqueue_ec`/`error_ec`/`terminate_ec` bridges (underlying functions take `&mut Context`), `construct_transform_stream_ec` bridge
-- Other streams files: 9 — `writablestream.rs` (4), `readablestreamdefaultreader.rs` (2), `writablestreamdefaultwriter.rs` (2), `readablestreambyobreader.rs` (1)
-
----
-
-### Current state (previous — session 4) (archived)
-
-**Phases A–D complete.** All binding files at 0 ec_to_ctx. Binding layer clean.
-
-**POC test suite: 77/77 pass on Boa** (3 new typed array tests added).
-
-> **~102 ec_to_ctx remained** at end of session 4 (down from ~124 at session start, ~169 before session 3). Streams: ~81; non-streams: ~21.
->
-> **New trait methods added in session 4 (11):**
-
-| Trait method | Spec basis | # sites
-|---|---|---|
-| `typed_array_buffer` | §23.2 GetTypedArrayBuffer | 3 |
-| `typed_array_byte_offset` | §23.2 GetTypedArrayByteOffset | 3 |
-| `typed_array_byte_length` | §23.2 GetTypedArrayByteLength | 3 |
-| `typed_array_element_type` | §23.2 (stub — returns None on Boa, TypedArrayKind is private) | — |
-| `construct_typed_array_view` | §23.2 TypedArrayCreate | 10 |
-| `data_view_buffer` | §25.3 GetDataViewBuffer | 2 |
-| `data_view_byte_offset` | §25.3 GetDataViewByteOffset | 1 |
-| `data_view_byte_length` | §25.3 GetDataViewByteLength | 1 |
-| `construct_data_view_from_buffer` | §25.3 Construct | 1 |
-| `array_buffer_data` | §25.1 (data access) | 3 |
-| — | **Boa: ✅ full | JSC: 🔶 stubs** | ~27 |
-
-**Eliminated in session 4 (22 total across 4 files):**
-- `promise.rs`: 9→3 — converted `resolved_promise`, `rejected_promise`, `promise_from_value`, `transform_promise_to_undefined`, `mark_promise_as_handled` to use trait methods; deleted dead `a_new_promise`
-- `readablestreamsupport.rs`: 12→9 — converted `create_read_result` (ObjectInitializer→`create_plain_object`+`object_set_property`), `type_error_value`, `range_error_value`
-- `readablebytestreamcontroller.rs`: 27→14 — converted all typed array operations (`from_value`, `create_result_view`, `create_remaining_view`, `create_view_object`, `create_uint8_view_object`, `create_typed_array_view_object`) to use new trait methods; converted `filled_view`, `close`, `commit`, `dequeue_chunk_as_value` to use trait methods
-- `readablestreambyobreader.rs`: 2→0 — `from_value` and `create_result_view` converted
-
-**Converted callers in `readablestream.rs`:** `clone_as_uint8_array`, tee helpers — all `from_value` and `clone_as_uint8_array` callers now use `context_as_ec(context)` bridge on the few remaining functions that still take `&mut Context`.
-
-**New test-file patterns validated:**
-- `construct_typed_array_view_and_read_metadata` — creates Uint8Array, reads buffer/offset/length
-- `construct_data_view_and_read_metadata` — creates DataView, reads buffer/offset/length
-- `array_buffer_data_reads_bytes` — confirms buffer data access returns bytes
-- `perform_promise_then_rejection_only_no_capability` — validates `mark_promise_as_handled` pattern
-- `resolved_promise_then_microtask_chain` — validates promise resolution through microtask checkpointing
-
-**Remaining ec_to_ctx categorized:**
-
-| Blocker | Files | ~Count | Needed trait methods |
-|---|---|---|---|
-| ~~**Internal JsResult methods**~~ | ~~readablebytestreamcontroller.rs, readablestreamdefaultcontroller.rs, writablestreamdefaultcontroller.rs, transformstream.rs~~ | ~~~33~~ ✅ | ~~None~~ S8 complete — `_ec` methods added, callers converted |
-| **JsPromise new_pending** | writablestream.rs, writablestreamdefaultwriter.rs, readablestreamdefaultreader.rs, readablestream.rs, transformstream.rs | ~16 | `PromiseResolvers<T>` + `new_promise_pending()` added to js_engine (S9). Needs content migration (S10): replace `ResolvingFunctions` with `PromiseResolvers<T>` in 5 GC-traced structs and convert callers |
-| **Tee + queue_internal** | readablestreamsupport.rs, writablestreamdefaultcontroller.rs, readablestreamdefaultcontroller.rs | ~24 | `ec.enqueue_job(...)` already on trait — but closures capture `&mut Context`. Need either `queue_microtask` that takes `&mut dyn ExecutionContext<T>` or convert tee functions |
-| **NativeFunction closures** | writablestreamdefaultcontroller.rs, readablestreamdefaultcontroller.rs | ~12 | `create_builtin_function` already on trait — but closures capture GC-traced types (not `Send`). Need to handle `Send` bound or add non-`Send` variant |
-| **Non-streams** | wasm/namespace.rs, promise.rs (JsError), windowproxy.rs, platform_objects | ~17 | Various — Phase W scope |
+- `readablestream.rs`: 11 — NativeFunction closures, tee
+- `transformstream.rs`: 4 — `_ec` bridge wrappers (underlying functions take `&mut Context`)
+- Other streams files: 3 — `writablestream.rs` (1), `readablestreamdefaultreader.rs` (0, already resolved), `writablestreamdefaultwriter.rs` (0), `readablestreambyobreader.rs` (2)
 
 ### Next session: recommended order
 
-1. ~~**Convert internal `stream_slot()`/`controller_object()`/`invalidate_byob_request()` from `JsResult` to `Completion`**~~ ✅ DONE
-2. ~~**Add `PromiseResolvers<T>` to js_engine + content migration**~~ ✅ DONE (S9+S10). `PromiseResolvers<T>` record type with `resolve(value, ec)` / `reject(reason, ec)` methods. `new_promise_pending()` on `ExecutionContext<T>`. Both Boa and JSC backends implemented. Content migration complete — 5 GC-traced structs and 4 request types converted. ~6 ec_to_ctx eliminated.
-3. **Add `queue_microtask` trait method** — wraps `ec.enqueue_job()` with a closure that receives `&mut dyn ExecutionContext<T>` instead of `&mut Context`. Eliminates ~24 more ec_to_ctx.
-4. **Phase E — Conditional Types alias** — once remaining ~62 ec_to_ctx are covered, `#[cfg]` gate all Boa imports.
+1. **Convert NativeFunction closures to `create_builtin_function_with_captures`** — the captures-struct pattern is now validated in `generic_js_test.rs`.  Replace each `NativeFunction::from_copy_closure_with_captures(...)` site in the streams domain with a named captures struct + `engine.create_builtin_function_with_captures(captures, fn_ptr, ...)`.  Eliminates ~12 ec_to_ctx across `writablestreamdefaultcontroller.rs`, `readablestreamdefaultcontroller.rs`, and `readablestreamsupport.rs`.
+2. **Add `queue_microtask` trait method** — wraps `ec.enqueue_job()` with a closure that receives `&mut dyn ExecutionContext<T>` instead of `&mut Context`.  Eliminates ~24 more ec_to_ctx from tee and queue operations.
+3. **Phase E — Conditional Types alias** — once remaining ~62 ec_to_ctx are covered, `#[cfg]` gate all Boa imports.
+
+### Working note: `ec_to_ctx` after `ec_to_ctx`
+
+When a function has `let context = unsafe { ec_to_ctx(ec) };`, you CANNOT call `ec.method()` afterward because `context` is a borrow of the underlying pointer. But you CAN call `ec.method()` BEFORE `ec_to_ctx` — the borrow from `ec.method()` ends at the semicolon. Pre-create errors and call `ec.call()` before the `ec_to_ctx` line.
+
+### Borrow-checker conflict: `ec_to_ctx` vs `_ec` methods
+
+`ec_to_ctx` takes `&mut dyn ExecutionContext`, and so does every `_ec`
+method.  In a function that already has `let context = unsafe { ec_to_ctx(ec) };`,
+calling `self.something_ec(ec)` afterwards is a second mutable borrow of `ec`
+— the Rust borrow checker rejects it.  This is the fundamental blocker for
+the ~62 domain-internal conversions.
+
+**Three workarounds, in order of preference:**
+
+1. **Reorder — call `_ec` before `ec_to_ctx`.**  The borrow from
+   `self.something_ec(ec)?` ends at the semicolon.  Then `ec_to_ctx(ec)`
+   starts a fresh borrow.  Works when the `_ec` result doesn't depend on
+   `context`-derived values.
+
+2. **Pre-create error values.**  `let err = ec.new_type_error("msg");` is a
+   `Completion<!, T>` — an owned value that doesn't borrow `ec`.  Store it
+   before calling `ec.with_object_any(&obj)`, then use it in the `None`
+   branch as `return Err(err)`.  Used in `set_onload` and `get_computed_style`.
+
+3. **Block-scope the `ec` borrow.**  Wrap `ec.with_object_any(&obj)` in a
+   block, extract what you need (clone, compute owned data), end the block
+   (releasing the borrow), then use `ec` again.  Used in
+   `get_computed_style` to extract element properties before calling
+   `style_declaration_object_ec`.
+
+None of these requires new generic interfaces — they're all established
+patterns already validated in `generic_js_test.rs`.
 
 ### Working note: `ec_to_ctx` after `ec_to_ctx`
 
@@ -851,8 +844,7 @@ generic layer.  Every generic pattern must be validated here before being
 applied to production binding files.  When converting real code, use the
 test file as the template:
 
-- **Struct with GC fields**: `impl_gc_traits! { struct ... }` with
-  `GcRootHandle<Types>` for JS references
+- **Struct with GC fields**: `#[gc_struct]` with `GcRootHandle<Types>` for JS references, `GcCell<T>` for GC-managed interior mutability
 - **Binding function**: `fn(&Types::JsValue, &[Types::JsValue], &mut dyn
   ExecutionContext<Types>) -> Completion<Types::JsValue, Types>` with
   `widget_data::with_ref`/`with_mut` for domain access

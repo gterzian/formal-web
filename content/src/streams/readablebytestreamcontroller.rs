@@ -10,12 +10,14 @@ use boa_engine::{
         builtins::{JsArrayBuffer, JsDataView, JsPromise, JsTypedArray},
     },
 };
-use boa_gc::{Finalize, Gc, GcRefCell, Trace};
+use boa_gc::{Finalize, Trace};
 
 use js_engine::{Completion, ExecutionContext, JsTypes, TypedArrayElementType};
 
 use crate::webidl::bindings::create_interface_instance;
 use crate::webidl::resolved_promise;
+use js_engine::gc::GcCell;
+use js_engine::gc::gc_cell_new;
 use js_engine::gc_struct;
 
 use super::{
@@ -377,16 +379,16 @@ impl ByteQueueEntry {
 #[derive(Clone)]
 pub struct ReadableStreamBYOBRequest {
     /// <https://streams.spec.whatwg.org/#readablestreambyobrequest-controller>
-    controller: Gc<GcRefCell<Option<ReadableByteStreamController>>>,
+    controller: GcCell<Option<ReadableByteStreamController>>,
     /// <https://streams.spec.whatwg.org/#readablestreambyobrequest-view>
-    view: Gc<GcRefCell<Option<JsObject>>>,
+    view: GcCell<Option<JsObject>>,
 }
 
 impl ReadableStreamBYOBRequest {
     pub(crate) fn new(controller: ReadableByteStreamController) -> Self {
         Self {
-            controller: Gc::new(GcRefCell::new(Some(controller))),
-            view: Gc::new(GcRefCell::new(None)),
+            controller: gc_cell_new(Some(controller)),
+            view: gc_cell_new(None),
         }
     }
 
@@ -439,9 +441,9 @@ impl ReadableStreamBYOBRequest {
 #[derive(Clone)]
 pub struct ReadableByteStreamController {
     /// <https://streams.spec.whatwg.org/#readablebytestreamcontroller-stream>
-    stream: Gc<GcRefCell<Option<ReadableStream>>>,
+    stream: GcCell<Option<ReadableStream>>,
     /// <https://streams.spec.whatwg.org/#readablebytestreamcontroller-queue>
-    queue: Gc<GcRefCell<VecDeque<ByteQueueEntry>>>,
+    queue: GcCell<VecDeque<ByteQueueEntry>>,
     /// <https://streams.spec.whatwg.org/#readablebytestreamcontroller-queuetotalsize>
     #[unsafe_ignore_trace]
     queue_total_size: Rc<Cell<usize>>,
@@ -464,20 +466,20 @@ pub struct ReadableByteStreamController {
     #[unsafe_ignore_trace]
     auto_allocate_chunk_size: Rc<Cell<Option<usize>>>,
     /// <https://streams.spec.whatwg.org/#readablebytestreamcontroller-pullalgorithm>
-    pull_algorithm: Gc<GcRefCell<Option<PullAlgorithm>>>,
+    pull_algorithm: GcCell<Option<PullAlgorithm>>,
     /// <https://streams.spec.whatwg.org/#readablebytestreamcontroller-cancelalgorithm>
-    cancel_algorithm: Gc<GcRefCell<Option<CancelAlgorithm>>>,
+    cancel_algorithm: GcCell<Option<CancelAlgorithm>>,
     /// <https://streams.spec.whatwg.org/#readablebytestreamcontroller-pendingpullintos>
-    pending_pull_intos: Gc<GcRefCell<VecDeque<PullIntoDescriptor>>>,
+    pending_pull_intos: GcCell<VecDeque<PullIntoDescriptor>>,
     /// <https://streams.spec.whatwg.org/#readablebytestreamcontroller-byobrequest>
-    byob_request_object: Gc<GcRefCell<Option<JsObject>>>,
+    byob_request_object: GcCell<Option<JsObject>>,
 }
 
 impl ReadableByteStreamController {
     pub(crate) fn new() -> Self {
         Self {
-            stream: Gc::new(GcRefCell::new(None)),
-            queue: Gc::new(GcRefCell::new(VecDeque::new())),
+            stream: gc_cell_new(None),
+            queue: gc_cell_new(VecDeque::new()),
             queue_total_size: Rc::new(Cell::new(0)),
             started: Rc::new(Cell::new(false)),
             close_requested: Rc::new(Cell::new(false)),
@@ -485,10 +487,10 @@ impl ReadableByteStreamController {
             pulling: Rc::new(Cell::new(false)),
             strategy_high_water_mark: Rc::new(Cell::new(0.0)),
             auto_allocate_chunk_size: Rc::new(Cell::new(None)),
-            pull_algorithm: Gc::new(GcRefCell::new(None)),
-            cancel_algorithm: Gc::new(GcRefCell::new(None)),
-            pending_pull_intos: Gc::new(GcRefCell::new(VecDeque::new())),
-            byob_request_object: Gc::new(GcRefCell::new(None)),
+            pull_algorithm: gc_cell_new(None),
+            cancel_algorithm: gc_cell_new(None),
+            pending_pull_intos: gc_cell_new(VecDeque::new()),
+            byob_request_object: gc_cell_new(None),
         }
     }
 

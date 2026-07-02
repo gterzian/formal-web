@@ -1,12 +1,14 @@
 use std::{mem, ptr};
 
 use boa_engine::{JsError, JsNativeError, JsResult, JsValue, object::JsObject};
-use boa_gc::{Finalize, Gc, GcRefCell, Trace};
+use boa_gc::{Finalize, Gc, Trace};
 
 use crate::js::with_event_target_mut;
 use crate::streams::PipeToState;
 use crate::webidl::Callback;
 use crate::webidl::bindings::create_interface_instance;
+use js_engine::gc::GcCell;
+use js_engine::gc::gc_cell_new;
 use js_engine::gc_struct;
 
 use super::{DOMException, EventDispatchHost, EventTarget, fire_event};
@@ -136,22 +138,19 @@ impl AbortSignalState {
 /// <https://dom.spec.whatwg.org/#abortsignal>
 #[derive(Clone)]
 pub struct AbortSignal {
-    shared: Gc<GcRefCell<AbortSignalState>>,
+    shared: GcCell<AbortSignalState>,
 }
 
 impl AbortSignal {
     pub(crate) fn new() -> Self {
         Self {
-            shared: Gc::new(GcRefCell::new(AbortSignalState::new(
-                false,
-                JsValue::undefined(),
-            ))),
+            shared: gc_cell_new(AbortSignalState::new(false, JsValue::undefined())),
         }
     }
 
     pub(crate) fn aborted_with_reason(reason: JsValue) -> Self {
         Self {
-            shared: Gc::new(GcRefCell::new(AbortSignalState::new(true, reason))),
+            shared: gc_cell_new(AbortSignalState::new(true, reason)),
         }
     }
 

@@ -1,7 +1,9 @@
+use js_engine::gc::GcCell;
+use js_engine::gc::gc_cell_new;
 use std::{cell::Cell, rc::Rc};
 
 use boa_engine::{Context, JsArgs, JsNativeError, JsResult, JsValue, js_string, object::JsObject};
-use boa_gc::{Finalize, Gc, GcRefCell, Trace};
+use boa_gc::{Finalize, Trace};
 
 use crate::webidl::{AsyncValueIterable, rejected_promise, resolved_promise};
 
@@ -10,7 +12,7 @@ use super::{ReadableStream, ReadableStreamDefaultReader, ReadableStreamGenericRe
 #[derive(Clone, Trace, Finalize)]
 pub(crate) struct ReadableStreamAsyncIteratorState {
     /// <https://streams.spec.whatwg.org/#readablestream-async-iterator-reader>
-    reader: Gc<GcRefCell<Option<ReadableStreamDefaultReader>>>,
+    reader: GcCell<Option<ReadableStreamDefaultReader>>,
 
     /// <https://streams.spec.whatwg.org/#readablestream-async-iterator-prevent-cancel>
     #[unsafe_ignore_trace]
@@ -20,7 +22,7 @@ pub(crate) struct ReadableStreamAsyncIteratorState {
 impl ReadableStreamAsyncIteratorState {
     fn new(reader: ReadableStreamDefaultReader, prevent_cancel: bool) -> Self {
         Self {
-            reader: Gc::new(GcRefCell::new(Some(reader))),
+            reader: gc_cell_new(Some(reader)),
             prevent_cancel: Rc::new(Cell::new(prevent_cancel)),
         }
     }

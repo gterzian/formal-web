@@ -1,14 +1,15 @@
+use js_engine::gc::GcCell;
+use js_engine::gc::gc_cell_new;
 use js_engine::gc_struct;
 use std::{cell::Cell, rc::Rc};
 
 use boa_engine::{
-    Context, JsArgs, JsNativeError, JsResult, JsString, JsValue,
-    native_function::NativeFunction,
+    Context, JsArgs, JsError, JsNativeError, JsResult, JsString, JsValue,
     object::{JsObject, builtins::JsPromise},
 };
-use boa_gc::{Finalize, Gc, GcRefCell, Trace};
+use boa_gc::{Finalize, Trace};
 
-use js_engine::{Completion, ExecutionContext, JsTypes};
+use js_engine::{Completion, ExecutionContext, JsEngine, JsTypes};
 
 use crate::{
     dom::{AbortSignal, create_abort_signal, signal_abort},
@@ -149,13 +150,13 @@ enum QueueEntryValue {
 #[derive(Clone)]
 pub struct WritableStreamDefaultController {
     /// <https://streams.spec.whatwg.org/#writablestreamdefaultcontroller-stream>
-    stream: Gc<GcRefCell<Option<WritableStream>>>,
+    stream: GcCell<Option<WritableStream>>,
 
     /// <https://streams.spec.whatwg.org/#writablestreamdefaultcontroller-abortcontroller>
-    abort_signal: Gc<GcRefCell<Option<AbortSignal>>>,
+    abort_signal: GcCell<Option<AbortSignal>>,
 
     /// <https://streams.spec.whatwg.org/#writablestreamdefaultcontroller-queue>
-    queue: Gc<GcRefCell<Vec<QueueEntry>>>,
+    queue: GcCell<Vec<QueueEntry>>,
 
     /// <https://streams.spec.whatwg.org/#writablestreamdefaultcontroller-queuetotalsize>
     #[unsafe_ignore_trace]
@@ -166,35 +167,35 @@ pub struct WritableStreamDefaultController {
     started: Rc<Cell<bool>>,
 
     /// <https://streams.spec.whatwg.org/#writablestreamdefaultcontroller-strategysizealgorithm>
-    strategy_size_algorithm: Gc<GcRefCell<Option<SizeAlgorithm>>>,
+    strategy_size_algorithm: GcCell<Option<SizeAlgorithm>>,
 
     /// <https://streams.spec.whatwg.org/#writablestreamdefaultcontroller-strategyhwm>
     #[unsafe_ignore_trace]
     strategy_high_water_mark: Rc<Cell<f64>>,
 
     /// <https://streams.spec.whatwg.org/#writablestreamdefaultcontroller-writealgorithm>
-    write_algorithm: Gc<GcRefCell<Option<WriteAlgorithm>>>,
+    write_algorithm: GcCell<Option<WriteAlgorithm>>,
 
     /// <https://streams.spec.whatwg.org/#writablestreamdefaultcontroller-closealgorithm>
-    close_algorithm: Gc<GcRefCell<Option<CloseAlgorithm>>>,
+    close_algorithm: GcCell<Option<CloseAlgorithm>>,
 
     /// <https://streams.spec.whatwg.org/#writablestreamdefaultcontroller-abortalgorithm>
-    abort_algorithm: Gc<GcRefCell<Option<AbortAlgorithm>>>,
+    abort_algorithm: GcCell<Option<AbortAlgorithm>>,
 }
 
 impl WritableStreamDefaultController {
     pub(crate) fn new() -> Self {
         Self {
-            stream: Gc::new(GcRefCell::new(None)),
-            abort_signal: Gc::new(GcRefCell::new(None)),
-            queue: Gc::new(GcRefCell::new(Vec::new())),
+            stream: gc_cell_new(None),
+            abort_signal: gc_cell_new(None),
+            queue: gc_cell_new(Vec::new()),
             queue_total_size: Rc::new(Cell::new(0.0)),
             started: Rc::new(Cell::new(false)),
-            strategy_size_algorithm: Gc::new(GcRefCell::new(None)),
+            strategy_size_algorithm: gc_cell_new(None),
             strategy_high_water_mark: Rc::new(Cell::new(1.0)),
-            write_algorithm: Gc::new(GcRefCell::new(None)),
-            close_algorithm: Gc::new(GcRefCell::new(None)),
-            abort_algorithm: Gc::new(GcRefCell::new(None)),
+            write_algorithm: gc_cell_new(None),
+            close_algorithm: gc_cell_new(None),
+            abort_algorithm: gc_cell_new(None),
         }
     }
     fn stream_slot(&self) -> JsResult<WritableStream> {
@@ -497,27 +498,18 @@ impl WritableStreamDefaultController {
         let sink_close_promise = algorithm.call(js_engine::boa::context_as_ec(context))?;
         self.clear_algorithms();
         let stream_for_fulfilled = stream.clone();
-        let on_fulfilled = NativeFunction::from_copy_closure_with_captures(
-            |_, _, stream: &WritableStream, context| {
-                crate::js::completion_to_js_result(
-                    stream.finish_in_flight_close(js_engine::boa::context_as_ec(context)),
-                )?;
-                Ok(JsValue::undefined())
-            },
+        let on_fulfilled = builtin_with_captures(
+            context,
             stream_for_fulfilled,
-        )
-        .to_js_function(context.realm());
-        let on_rejected = NativeFunction::from_copy_closure_with_captures(
-            |_, args, stream: &WritableStream, context| {
-                crate::js::completion_to_js_result(stream.finish_in_flight_close_with_error(
-                    args.get_or_undefined(0).clone(),
-                    js_engine::boa::context_as_ec(context),
-                ))?;
-                Ok(JsValue::undefined())
-            },
+            process_close_on_fulfilled,
+            1,
+        );
+        let on_rejected = builtin_with_captures(
+            context,
             stream,
-        )
-        .to_js_function(context.realm());
+            process_close_on_rejected,
+            1,
+        );
         let promise = crate::js::js_result_to_completion(
             JsPromise::from_object(sink_close_promise),
             context,
@@ -554,67 +546,18 @@ impl WritableStreamDefaultController {
 
         let controller_for_fulfilled = self.clone();
         let stream_for_fulfilled = stream.clone();
-        let on_fulfilled = NativeFunction::from_copy_closure_with_captures(
-            |_, _, captures: &(WritableStreamDefaultController, WritableStream), context| {
-                let (controller, stream) = captures;
-
-                // Step 4.1: "Perform ! WritableStreamFinishInFlightWrite(stream)."
-                crate::js::completion_to_js_result(
-                    stream.finish_in_flight_write(js_engine::boa::context_as_ec(context)),
-                )?;
-
-                // Step 4.2: "Let state be stream.[[state]]."
-                let state = stream.state();
-
-                // Step 4.3: "Assert: state is \"writable\" or \"erroring\"."
-                debug_assert!(
-                    state == WritableStreamState::Writable
-                        || state == WritableStreamState::Erroring
-                );
-
-                // Step 4.4: "Perform ! DequeueValue(controller)."
-                controller.dequeue_value()?;
-
-                // Step 4.5: "If ! WritableStreamCloseQueuedOrInFlight(stream) is false and state is \"writable\","
-                if !stream.close_queued_or_in_flight() && state == WritableStreamState::Writable {
-                    // Step 4.5.1: "Let backpressure be ! WritableStreamDefaultControllerGetBackpressure(controller)."
-                    let backpressure = controller.get_backpressure()?;
-
-                    // Step 4.5.2: "Perform ! WritableStreamUpdateBackpressure(stream, backpressure)."
-                    crate::js::completion_to_js_result(stream.update_backpressure(
-                        backpressure,
-                        js_engine::boa::context_as_ec(context),
-                    ))?;
-                }
-
-                // Step 4.6: "Perform ! WritableStreamDefaultControllerAdvanceQueueIfNeeded(controller)."
-                crate::js::completion_to_js_result(
-                    controller.advance_queue_if_needed(js_engine::boa::context_as_ec(context)),
-                )?;
-                Ok(JsValue::undefined())
-            },
+        let on_fulfilled = builtin_with_captures(
+            context,
             (controller_for_fulfilled, stream_for_fulfilled),
-        )
-        .to_js_function(context.realm());
-        let on_rejected = NativeFunction::from_copy_closure_with_captures(
-            |_, args, captures: &(WritableStreamDefaultController, WritableStream), context| {
-                let (controller, stream) = captures;
-
-                // Step 5.1: "If stream.[[state]] is \"writable\", perform ! WritableStreamDefaultControllerClearAlgorithms(controller)."
-                if stream.state() == WritableStreamState::Writable {
-                    controller.clear_algorithms();
-                }
-
-                // Step 5.2: "Perform ! WritableStreamFinishInFlightWriteWithError(stream, reason)."
-                crate::js::completion_to_js_result(stream.finish_in_flight_write_with_error(
-                    args.get_or_undefined(0).clone(),
-                    js_engine::boa::context_as_ec(context),
-                ))?;
-                Ok(JsValue::undefined())
-            },
+            process_write_on_fulfilled,
+            1,
+        );
+        let on_rejected = builtin_with_captures(
+            context,
             (self.clone(), stream),
-        )
-        .to_js_function(context.realm());
+            process_write_on_rejected,
+            1,
+        );
         let promise = crate::js::js_result_to_completion(
             JsPromise::from_object(sink_write_promise),
             context,
@@ -782,38 +725,20 @@ pub(crate) fn set_up_writable_stream_default_controller(
         crate::js::js_result_to_completion(JsPromise::resolve(start_result, context), context)?;
 
     // Step 17: "Upon fulfillment of startPromise..."
-    let on_fulfilled = NativeFunction::from_copy_closure_with_captures(
-        |_, _, controller: &WritableStreamDefaultController, context| {
-            // Step 17.2: "Set controller.[[started]] to true."
-            controller.set_started(true);
-
-            // Step 17.3: "Perform ! WritableStreamDefaultControllerAdvanceQueueIfNeeded(controller)."
-            crate::js::completion_to_js_result(
-                controller.advance_queue_if_needed(js_engine::boa::context_as_ec(context)),
-            )?;
-            Ok(JsValue::undefined())
-        },
+    let on_fulfilled = builtin_with_captures(
+        context,
         controller.clone(),
-    )
-    .to_js_function(context.realm());
+        setup_on_fulfilled,
+        1,
+    );
 
     // Step 18: "Upon rejection of startPromise with reason r..."
-    let on_rejected = NativeFunction::from_copy_closure_with_captures(
-        |_, args, controller: &WritableStreamDefaultController, context| {
-            // Step 18.2: "Set controller.[[started]] to true."
-            controller.set_started(true);
-
-            // Step 18.3: "Perform ! WritableStreamDealWithRejection(stream, r)."
-            let stream = controller.stream_slot()?;
-            crate::js::completion_to_js_result(stream.deal_with_rejection(
-                args.get_or_undefined(0).clone(),
-                js_engine::boa::context_as_ec(context),
-            ))?;
-            Ok(JsValue::undefined())
-        },
+    let on_rejected = builtin_with_captures(
+        context,
         controller,
-    )
-    .to_js_function(context.realm());
+        setup_on_rejected,
+        1,
+    );
     let _ = crate::js::js_result_to_completion(
         start_promise.then(Some(on_fulfilled), Some(on_rejected), context),
         context,
@@ -985,4 +910,137 @@ fn get_callable_method(
 
 fn reset_controller_queue(controller: &WritableStreamDefaultController) {
     controller.reset_queue();
+}
+
+// ── create_builtin_function_with_captures helpers ────────────────────
+
+/// Convenience wrapper that calls the generic `create_builtin_function_with_captures`
+/// from a `&mut Context`, returning a `JsFunction` ready for `.then()`.
+fn builtin_with_captures<C: Trace + 'static>(
+    context: &mut Context,
+    captures: C,
+    behaviour: fn(
+        &[JsValue],
+        JsValue,
+        &C,
+        &mut dyn ExecutionContext<crate::js::Types>,
+    ) -> Completion<JsValue, crate::js::Types>,
+    length: u32,
+) -> boa_engine::object::builtins::JsFunction {
+    let name = boa_engine::property::PropertyKey::from(boa_engine::js_string!(""));
+    js_engine::boa::context_as_engine(context)
+        .create_builtin_function_with_captures(captures, behaviour, length, name)
+}
+
+fn process_close_on_fulfilled(
+    _args: &[JsValue],
+    _this: JsValue,
+    captures: &WritableStream,
+    ec: &mut dyn ExecutionContext<crate::js::Types>,
+) -> Completion<JsValue, crate::js::Types> {
+    let ctx = unsafe { js_engine::boa::ec_to_ctx(ec) };
+    let _ = crate::js::completion_to_js_result(
+        captures.finish_in_flight_close(js_engine::boa::context_as_ec(ctx)),
+    )
+    .map_err(|e| e.into_opaque(ctx).unwrap_or(JsValue::undefined()))?;
+    Ok(JsValue::undefined())
+}
+
+fn process_close_on_rejected(
+    args: &[JsValue],
+    _this: JsValue,
+    captures: &WritableStream,
+    ec: &mut dyn ExecutionContext<crate::js::Types>,
+) -> Completion<JsValue, crate::js::Types> {
+    let ctx = unsafe { js_engine::boa::ec_to_ctx(ec) };
+    crate::js::completion_to_js_result(captures.finish_in_flight_close_with_error(
+        args.first().cloned().unwrap_or(JsValue::undefined()),
+        js_engine::boa::context_as_ec(ctx),
+    ))
+    .map_err(|e| e.into_opaque(ctx).unwrap_or(JsValue::undefined()))?;
+    Ok(JsValue::undefined())
+}
+
+fn process_write_on_fulfilled(
+    _args: &[JsValue],
+    _this: JsValue,
+    captures: &(WritableStreamDefaultController, WritableStream),
+    ec: &mut dyn ExecutionContext<crate::js::Types>,
+) -> Completion<JsValue, crate::js::Types> {
+    let ctx = unsafe { js_engine::boa::ec_to_ctx(ec) };
+    let (controller, stream) = captures;
+    crate::js::completion_to_js_result(
+        stream.finish_in_flight_write(js_engine::boa::context_as_ec(ctx)),
+    )
+    .map_err(|e| e.into_opaque(ctx).unwrap_or(JsValue::undefined()))?;
+    let state = stream.state();
+    debug_assert!(
+        state == WritableStreamState::Writable || state == WritableStreamState::Erroring
+    );
+    crate::js::js_result_to_completion(controller.dequeue_value(), ctx)?;
+    if !stream.close_queued_or_in_flight() && state == WritableStreamState::Writable {
+        let backpressure =
+            crate::js::js_result_to_completion(controller.get_backpressure(), ctx)?;
+        crate::js::completion_to_js_result(
+            stream.update_backpressure(backpressure, js_engine::boa::context_as_ec(ctx)),
+        )
+        .map_err(|e| e.into_opaque(ctx).unwrap_or(JsValue::undefined()))?;
+    }
+    crate::js::completion_to_js_result(
+        controller.advance_queue_if_needed(js_engine::boa::context_as_ec(ctx)),
+    )
+    .map_err(|e| e.into_opaque(ctx).unwrap_or(JsValue::undefined()))?;
+    Ok(JsValue::undefined())
+}
+
+fn process_write_on_rejected(
+    args: &[JsValue],
+    _this: JsValue,
+    captures: &(WritableStreamDefaultController, WritableStream),
+    ec: &mut dyn ExecutionContext<crate::js::Types>,
+) -> Completion<JsValue, crate::js::Types> {
+    let ctx = unsafe { js_engine::boa::ec_to_ctx(ec) };
+    let (controller, stream) = captures;
+    if stream.state() == WritableStreamState::Writable {
+        controller.clear_algorithms();
+    }
+    crate::js::completion_to_js_result(stream.finish_in_flight_write_with_error(
+        args.first().cloned().unwrap_or(JsValue::undefined()),
+        js_engine::boa::context_as_ec(ctx),
+    ))
+    .map_err(|e| e.into_opaque(ctx).unwrap_or(JsValue::undefined()))?;
+    Ok(JsValue::undefined())
+}
+
+fn setup_on_fulfilled(
+    _args: &[JsValue],
+    _this: JsValue,
+    captures: &WritableStreamDefaultController,
+    ec: &mut dyn ExecutionContext<crate::js::Types>,
+) -> Completion<JsValue, crate::js::Types> {
+    let ctx = unsafe { js_engine::boa::ec_to_ctx(ec) };
+    captures.set_started(true);
+    crate::js::completion_to_js_result(
+        captures.advance_queue_if_needed(js_engine::boa::context_as_ec(ctx)),
+    )
+    .map_err(|e| e.into_opaque(ctx).unwrap_or(JsValue::undefined()))?;
+    Ok(JsValue::undefined())
+}
+
+fn setup_on_rejected(
+    args: &[JsValue],
+    _this: JsValue,
+    captures: &WritableStreamDefaultController,
+    ec: &mut dyn ExecutionContext<crate::js::Types>,
+) -> Completion<JsValue, crate::js::Types> {
+    let ctx = unsafe { js_engine::boa::ec_to_ctx(ec) };
+    captures.set_started(true);
+    let stream =
+        crate::js::js_result_to_completion(captures.stream_slot(), ctx)?;
+    crate::js::completion_to_js_result(stream.deal_with_rejection(
+        args.first().cloned().unwrap_or(JsValue::undefined()),
+        js_engine::boa::context_as_ec(ctx),
+    ))
+    .map_err(|e| e.into_opaque(ctx).unwrap_or(JsValue::undefined()))?;
+    Ok(JsValue::undefined())
 }

@@ -1,8 +1,9 @@
 use boa_engine::{JsArgs, JsError, JsNativeError, JsResult, JsValue, object::JsObject};
-use boa_gc::{Gc, GcRefCell};
 
 use crate::webidl::bindings::create_interface_instance;
 use crate::webidl::rejected_promise;
+use js_engine::gc::GcCell;
+use js_engine::gc::gc_cell_new;
 use js_engine::gc_struct;
 
 use super::{
@@ -17,17 +18,17 @@ use js_engine::{Completion, ExecutionContext, PromiseResolvers};
 /// <https://streams.spec.whatwg.org/#byob-reader-class>
 #[derive(Clone)]
 pub struct ReadableStreamBYOBReader {
-    stream: Gc<GcRefCell<Option<ReadableStream>>>,
-    closed_promise: Gc<GcRefCell<Option<JsObject>>>,
-    closed_resolvers: Gc<GcRefCell<Option<PromiseResolvers<crate::js::Types>>>>,
+    stream: GcCell<Option<ReadableStream>>,
+    closed_promise: GcCell<Option<JsObject>>,
+    closed_resolvers: GcCell<Option<PromiseResolvers<crate::js::Types>>>,
 }
 
 impl ReadableStreamBYOBReader {
     pub(crate) fn new() -> Self {
         Self {
-            stream: Gc::new(GcRefCell::new(None)),
-            closed_promise: Gc::new(GcRefCell::new(None)),
-            closed_resolvers: Gc::new(GcRefCell::new(None)),
+            stream: gc_cell_new(None),
+            closed_promise: gc_cell_new(None),
+            closed_resolvers: gc_cell_new(None),
         }
     }
 

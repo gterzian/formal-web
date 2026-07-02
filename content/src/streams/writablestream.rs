@@ -4,13 +4,14 @@ use std::{
 };
 
 use boa_engine::{Context, JsArgs, JsNativeError, JsResult, JsValue, js_string, object::JsObject};
-use boa_gc::{Gc, GcRefCell};
 
 use js_engine::{Completion, ExecutionContext};
 
 use crate::streams::{SizeAlgorithm, extract_high_water_mark, extract_size_algorithm};
 use crate::webidl::bindings::create_interface_instance;
 use crate::webidl::{resolved_promise, upon_settlement};
+use js_engine::gc::GcCell;
+use js_engine::gc::gc_cell_new;
 use js_engine::gc_struct;
 
 use super::{
@@ -28,33 +29,33 @@ use super::{
 #[derive(Clone)]
 pub struct WritableStream {
     /// <https://streams.spec.whatwg.org/#writablestream-controller>
-    controller: Gc<GcRefCell<Option<WritableStreamController>>>,
-    controller_object: Gc<GcRefCell<Option<JsObject>>>,
+    controller: GcCell<Option<WritableStreamController>>,
+    controller_object: GcCell<Option<JsObject>>,
 
     /// <https://streams.spec.whatwg.org/#writablestream-writer>
-    writer: Gc<GcRefCell<Option<WritableStreamWriter>>>,
+    writer: GcCell<Option<WritableStreamWriter>>,
 
     /// <https://streams.spec.whatwg.org/#writablestream-state>
     #[unsafe_ignore_trace]
     state: Rc<RefCell<WritableStreamState>>,
 
     /// <https://streams.spec.whatwg.org/#writablestream-storederror>
-    stored_error: Gc<GcRefCell<JsValue>>,
+    stored_error: GcCell<JsValue>,
 
     /// <https://streams.spec.whatwg.org/#writablestream-writerequests>
-    write_requests: Gc<GcRefCell<Vec<WriteRequest>>>,
+    write_requests: GcCell<Vec<WriteRequest>>,
 
     /// <https://streams.spec.whatwg.org/#writablestream-inflightwriterequest>
-    in_flight_write_request: Gc<GcRefCell<Option<WriteRequest>>>,
+    in_flight_write_request: GcCell<Option<WriteRequest>>,
 
     /// <https://streams.spec.whatwg.org/#writablestream-closerequest>
-    close_request: Gc<GcRefCell<Option<WriteRequest>>>,
+    close_request: GcCell<Option<WriteRequest>>,
 
     /// <https://streams.spec.whatwg.org/#writablestream-inflightcloserequest>
-    in_flight_close_request: Gc<GcRefCell<Option<WriteRequest>>>,
+    in_flight_close_request: GcCell<Option<WriteRequest>>,
 
     /// <https://streams.spec.whatwg.org/#writablestream-pendingabortrequest>
-    pending_abort_request: Gc<GcRefCell<Option<PendingAbortRequest>>>,
+    pending_abort_request: GcCell<Option<PendingAbortRequest>>,
 
     /// <https://streams.spec.whatwg.org/#writablestream-backpressure>
     #[unsafe_ignore_trace]
@@ -64,16 +65,16 @@ pub struct WritableStream {
 impl WritableStream {
     pub(crate) fn new() -> Self {
         Self {
-            controller: Gc::new(GcRefCell::new(None)),
-            controller_object: Gc::new(GcRefCell::new(None)),
-            writer: Gc::new(GcRefCell::new(None)),
+            controller: gc_cell_new(None),
+            controller_object: gc_cell_new(None),
+            writer: gc_cell_new(None),
             state: Rc::new(RefCell::new(WritableStreamState::Writable)),
-            stored_error: Gc::new(GcRefCell::new(JsValue::undefined())),
-            write_requests: Gc::new(GcRefCell::new(Vec::new())),
-            in_flight_write_request: Gc::new(GcRefCell::new(None)),
-            close_request: Gc::new(GcRefCell::new(None)),
-            in_flight_close_request: Gc::new(GcRefCell::new(None)),
-            pending_abort_request: Gc::new(GcRefCell::new(None)),
+            stored_error: gc_cell_new(JsValue::undefined()),
+            write_requests: gc_cell_new(Vec::new()),
+            in_flight_write_request: gc_cell_new(None),
+            close_request: gc_cell_new(None),
+            in_flight_close_request: gc_cell_new(None),
+            pending_abort_request: gc_cell_new(None),
             backpressure: Rc::new(Cell::new(false)),
         }
     }

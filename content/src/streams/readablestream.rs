@@ -19,7 +19,7 @@ use boa_engine::{
     },
     symbol::JsSymbol,
 };
-use boa_gc::{Finalize, Gc, GcRef, GcRefCell, GcRefMut, Trace};
+use boa_gc::{Finalize, Gc, GcRef, GcRefMut, Trace};
 
 use crate::dom::{AbortAlgorithm as SignalAbortAlgorithm, AbortSignal};
 use crate::js::with_abort_signal_ref;
@@ -30,6 +30,8 @@ use crate::webidl::{
     promise_from_value, rejected_promise, rejected_promise_from_error, resolved_promise,
     transform_promise_to_undefined,
 };
+use js_engine::gc::GcCell;
+use js_engine::gc::gc_cell_new;
 use js_engine::gc_struct;
 
 use super::{
@@ -51,12 +53,12 @@ use js_engine::{Completion, ExecutionContext};
 #[derive(Clone)]
 pub struct ReadableStream {
     /// <https://streams.spec.whatwg.org/#readablestream-controller>
-    controller: Gc<GcRefCell<Option<ReadableStreamController>>>,
+    controller: GcCell<Option<ReadableStreamController>>,
 
-    controller_object: Gc<GcRefCell<Option<JsObject>>>,
+    controller_object: GcCell<Option<JsObject>>,
 
     /// <https://streams.spec.whatwg.org/#readablestream-reader>
-    reader: Gc<GcRefCell<Option<ReadableStreamReader>>>,
+    reader: GcCell<Option<ReadableStreamReader>>,
 
     /// <https://streams.spec.whatwg.org/#readablestream-disturbed>
     #[unsafe_ignore_trace]
@@ -67,18 +69,18 @@ pub struct ReadableStream {
     state: Rc<RefCell<ReadableStreamState>>,
 
     /// <https://streams.spec.whatwg.org/#readablestream-storederror>
-    stored_error: Gc<GcRefCell<JsValue>>,
+    stored_error: GcCell<JsValue>,
 }
 
 impl ReadableStream {
     pub(crate) fn new() -> Self {
         Self {
-            controller: Gc::new(GcRefCell::new(None)),
-            controller_object: Gc::new(GcRefCell::new(None)),
-            reader: Gc::new(GcRefCell::new(None)),
+            controller: gc_cell_new(None),
+            controller_object: gc_cell_new(None),
+            reader: gc_cell_new(None),
             disturbed: Rc::new(Cell::new(false)),
             state: Rc::new(RefCell::new(ReadableStreamState::Readable)),
-            stored_error: Gc::new(GcRefCell::new(JsValue::undefined())),
+            stored_error: gc_cell_new(JsValue::undefined()),
         }
     }
 
@@ -520,7 +522,7 @@ fn readable_stream_default_tee(
     // Step 9: "Let reason2 be undefined."
     // Step 10: "Let branch1 be undefined."
     // Step 11: "Let branch2 be undefined."
-    let tee_state = Gc::new(GcRefCell::new(TeeState {
+    let tee_state = gc_cell_new(TeeState {
         source_stream: stream,
         reader,
         branch1: None,
@@ -533,7 +535,7 @@ fn readable_stream_default_tee(
         canceled2: false,
         reason1: JsValue::undefined(),
         reason2: JsValue::undefined(),
-    }));
+    });
 
     // Step 16: "Let startAlgorithm be an algorithm that returns undefined."
     // Step 17: "Set branch1 to ! CreateReadableStream(startAlgorithm, pullAlgorithm, cancel1Algorithm)."
@@ -570,7 +572,7 @@ fn readable_stream_default_tee(
 
     // Step 19: "Upon rejection of reader.[[closedPromise]] with reason r,"
     let on_rejected = NativeFunction::from_copy_closure_with_captures(
-        |_, args: &[JsValue], tee_state: &Gc<GcRefCell<TeeState>>, context| {
+        |_, args: &[JsValue], tee_state: &GcCell<TeeState>, context| {
             let error = args.get_or_undefined(0).clone();
             let (branch1, branch2, canceled1, canceled2, cancel_resolvers) = {
                 let tee_state = tee_state.borrow();
@@ -685,7 +687,7 @@ fn default_tee_error_branch(
 
 /// <https://streams.spec.whatwg.org/#abstract-opdef-readablestreamdefaulttee>
 pub(crate) fn readable_stream_default_tee_pull_algorithm(
-    tee_state: Gc<GcRefCell<TeeState>>,
+    tee_state: GcCell<TeeState>,
     clone_for_branch2: bool,
     context: &mut Context,
 ) -> JsResult<JsValue> {
@@ -725,7 +727,7 @@ pub(crate) fn readable_stream_default_tee_pull_algorithm(
 
 /// <https://streams.spec.whatwg.org/#abstract-opdef-readablestreamdefaulttee>
 pub(crate) fn readable_stream_default_tee_read_request_chunk_steps(
-    tee_state: Gc<GcRefCell<TeeState>>,
+    tee_state: GcCell<TeeState>,
     clone_for_branch2: bool,
     chunk: JsValue,
     context: &mut Context,
@@ -845,7 +847,7 @@ pub(crate) fn readable_stream_default_tee_read_request_chunk_steps(
 
 /// <https://streams.spec.whatwg.org/#abstract-opdef-readablestreamdefaulttee>
 pub(crate) fn readable_stream_default_tee_read_request_close_steps(
-    tee_state: Gc<GcRefCell<TeeState>>,
+    tee_state: GcCell<TeeState>,
     context: &mut Context,
 ) -> JsResult<()> {
     let (branch1, branch2, canceled1, canceled2, cancel_resolvers) = {
@@ -888,7 +890,7 @@ pub(crate) fn readable_stream_default_tee_read_request_close_steps(
 
 /// <https://streams.spec.whatwg.org/#abstract-opdef-readablestreamdefaulttee>
 pub(crate) fn readable_stream_default_tee_read_request_error_steps(
-    tee_state: Gc<GcRefCell<TeeState>>,
+    tee_state: GcCell<TeeState>,
     _context: &mut Context,
 ) -> JsResult<()> {
     // Step 13.3 error steps 1: "Set reading to false."
@@ -898,7 +900,7 @@ pub(crate) fn readable_stream_default_tee_read_request_error_steps(
 
 /// <https://streams.spec.whatwg.org/#abstract-opdef-readablestreamdefaulttee>
 pub(crate) fn readable_stream_default_tee_cancel1_algorithm(
-    tee_state: Gc<GcRefCell<TeeState>>,
+    tee_state: GcCell<TeeState>,
     reason: JsValue,
     context: &mut Context,
 ) -> JsResult<JsValue> {
@@ -944,7 +946,7 @@ pub(crate) fn readable_stream_default_tee_cancel1_algorithm(
 
 /// <https://streams.spec.whatwg.org/#abstract-opdef-readablestreamdefaulttee>
 pub(crate) fn readable_stream_default_tee_cancel2_algorithm(
-    tee_state: Gc<GcRefCell<TeeState>>,
+    tee_state: GcCell<TeeState>,
     reason: JsValue,
     context: &mut Context,
 ) -> JsResult<JsValue> {
@@ -1048,14 +1050,14 @@ impl ReadableStreamFromIteratorRecord {
 #[derive(Clone, Trace, Finalize)]
 pub(crate) struct ReadableStreamFromIterableState {
     iterator_record: ReadableStreamFromIteratorRecord,
-    stream: Gc<GcRefCell<Option<ReadableStream>>>,
+    stream: GcCell<Option<ReadableStream>>,
 }
 
 impl ReadableStreamFromIterableState {
     fn new(iterator_record: ReadableStreamFromIteratorRecord) -> Self {
         Self {
             iterator_record,
-            stream: Gc::new(GcRefCell::new(None)),
+            stream: gc_cell_new(None),
         }
     }
 
@@ -1997,7 +1999,7 @@ fn byte_tee_pending_pull_into_controller(
 /// <https://streams.spec.whatwg.org/#abstract-opdef-readablebytestreamtee>
 fn byte_tee_forward_reader_error(
     reader_object: &JsObject,
-    tee_state: &Gc<GcRefCell<ByteTeeState>>,
+    tee_state: &GcCell<ByteTeeState>,
     context: &mut Context,
 ) -> JsResult<()> {
     let closed_promise = if let Ok(closed) = reader_object.get(js_string!("closed"), context) {
@@ -2014,7 +2016,7 @@ fn byte_tee_forward_reader_error(
     // Step helper: "Let thisReader be reader" for the forwardReaderError closure.
     let generation_at_attach = tee_state.borrow().reader_generation;
     let on_rejected = NativeFunction::from_copy_closure_with_captures(
-        |_, args: &[JsValue], captures: &(u64, Gc<GcRefCell<ByteTeeState>>), context| {
+        |_, args: &[JsValue], captures: &(u64, GcCell<ByteTeeState>), context| {
             let (captured_generation, tee_state) = captures;
             // Step helper: "If thisReader is not reader, return."
             if tee_state.borrow().reader_generation != *captured_generation {
@@ -2070,7 +2072,7 @@ fn byte_tee_ignore_pull_completion(
 }
 
 fn byte_tee_switch_to_default_reader(
-    tee_state: &Gc<GcRefCell<ByteTeeState>>,
+    tee_state: &GcCell<ByteTeeState>,
     context: &mut Context,
 ) -> JsResult<()> {
     if !matches!(tee_state.borrow().reader, ReadableStreamReader::BYOB(_)) {
@@ -2100,7 +2102,7 @@ fn byte_tee_switch_to_default_reader(
 }
 
 fn byte_tee_switch_to_byob_reader(
-    tee_state: &Gc<GcRefCell<ByteTeeState>>,
+    tee_state: &GcCell<ByteTeeState>,
     context: &mut Context,
 ) -> JsResult<()> {
     if !matches!(tee_state.borrow().reader, ReadableStreamReader::Default(_)) {
@@ -2129,7 +2131,7 @@ fn byte_tee_switch_to_byob_reader(
 
 /// <https://streams.spec.whatwg.org/#abstract-opdef-readablebytestreamtee>
 pub(crate) fn readable_byte_stream_tee_default_reader_chunk_steps(
-    tee_state: Gc<GcRefCell<ByteTeeState>>,
+    tee_state: GcCell<ByteTeeState>,
     chunk: JsValue,
     context: &mut Context,
 ) -> JsResult<()> {
@@ -2245,7 +2247,7 @@ pub(crate) fn readable_byte_stream_tee_default_reader_chunk_steps(
 
 /// <https://streams.spec.whatwg.org/#abstract-opdef-readablebytestreamtee>
 pub(crate) fn readable_byte_stream_tee_default_reader_close_steps(
-    tee_state: Gc<GcRefCell<ByteTeeState>>,
+    tee_state: GcCell<ByteTeeState>,
     context: &mut Context,
 ) -> JsResult<()> {
     let (branch1, branch2, canceled1, canceled2, cancel_resolvers) = {
@@ -2298,7 +2300,7 @@ pub(crate) fn readable_byte_stream_tee_default_reader_close_steps(
 
 /// <https://streams.spec.whatwg.org/#abstract-opdef-readablebytestreamtee>
 pub(crate) fn readable_byte_stream_tee_default_reader_error_steps(
-    tee_state: Gc<GcRefCell<ByteTeeState>>,
+    tee_state: GcCell<ByteTeeState>,
     _context: &mut Context,
 ) -> JsResult<()> {
     tee_state.borrow_mut().reading = false;
@@ -2307,7 +2309,7 @@ pub(crate) fn readable_byte_stream_tee_default_reader_error_steps(
 
 /// <https://streams.spec.whatwg.org/#abstract-opdef-readablebytestreamtee>
 fn readable_byte_stream_tee_pull_with_default_reader(
-    tee_state: Gc<GcRefCell<ByteTeeState>>,
+    tee_state: GcCell<ByteTeeState>,
     context: &mut Context,
 ) -> JsResult<()> {
     // Step 18.1: "If reader implements ReadableStreamBYOBReader,"
@@ -2327,7 +2329,7 @@ fn readable_byte_stream_tee_pull_with_default_reader(
 
 /// <https://streams.spec.whatwg.org/#abstract-opdef-readablebytestreamtee>
 fn readable_byte_stream_tee_pull_with_byob_reader(
-    tee_state: Gc<GcRefCell<ByteTeeState>>,
+    tee_state: GcCell<ByteTeeState>,
     view_value: JsValue,
     for_branch2: bool,
     context: &mut Context,
@@ -2345,7 +2347,7 @@ fn readable_byte_stream_tee_pull_with_byob_reader(
     let byob_reader = tee_state.borrow().reader.as_byob_reader().unwrap();
 
     let on_fulfilled = NativeFunction::from_copy_closure_with_captures(
-        |_, args: &[JsValue], captures: &(Gc<GcRefCell<ByteTeeState>>, bool), context| {
+        |_, args: &[JsValue], captures: &(GcCell<ByteTeeState>, bool), context| {
             let (tee_state, for_branch2) = captures;
             let result = args.get_or_undefined(0).to_object(context)?;
             let done = result.get(js_string!("done"), context)?.to_boolean();
@@ -2569,7 +2571,7 @@ fn readable_byte_stream_tee_pull_with_byob_reader(
     .to_js_function(context.realm());
 
     let on_rejected = NativeFunction::from_copy_closure_with_captures(
-        |_, _, tee_state: &Gc<GcRefCell<ByteTeeState>>, _| {
+        |_, _, tee_state: &GcCell<ByteTeeState>, _| {
             tee_state.borrow_mut().reading = false;
             Ok(JsValue::undefined())
         },
@@ -2598,7 +2600,7 @@ fn readable_byte_stream_tee_pull_with_byob_reader(
 
 /// <https://streams.spec.whatwg.org/#abstract-opdef-readablebytestreamtee>
 pub(crate) fn readable_byte_stream_tee_pull1_algorithm(
-    tee_state: Gc<GcRefCell<ByteTeeState>>,
+    tee_state: GcCell<ByteTeeState>,
     context: &mut Context,
 ) -> JsResult<JsValue> {
     {
@@ -2649,7 +2651,7 @@ pub(crate) fn readable_byte_stream_tee_pull1_algorithm(
 
 /// <https://streams.spec.whatwg.org/#abstract-opdef-readablebytestreamtee>
 pub(crate) fn readable_byte_stream_tee_pull2_algorithm(
-    tee_state: Gc<GcRefCell<ByteTeeState>>,
+    tee_state: GcCell<ByteTeeState>,
     context: &mut Context,
 ) -> JsResult<JsValue> {
     {
@@ -2700,7 +2702,7 @@ pub(crate) fn readable_byte_stream_tee_pull2_algorithm(
 
 /// <https://streams.spec.whatwg.org/#abstract-opdef-readablebytestreamtee>
 pub(crate) fn readable_byte_stream_tee_cancel1_algorithm(
-    tee_state: Gc<GcRefCell<ByteTeeState>>,
+    tee_state: GcCell<ByteTeeState>,
     reason: JsValue,
     context: &mut Context,
 ) -> JsResult<JsObject> {
@@ -2733,7 +2735,7 @@ pub(crate) fn readable_byte_stream_tee_cancel1_algorithm(
 
 /// <https://streams.spec.whatwg.org/#abstract-opdef-readablebytestreamtee>
 pub(crate) fn readable_byte_stream_tee_cancel2_algorithm(
-    tee_state: Gc<GcRefCell<ByteTeeState>>,
+    tee_state: GcCell<ByteTeeState>,
     reason: JsValue,
     context: &mut Context,
 ) -> JsResult<JsObject> {
@@ -2798,7 +2800,7 @@ fn readable_byte_stream_tee(
     // Step 13: Let cancelPromise be a new promise.
     let (cancel_promise, cancel_resolvers) = JsPromise::new_pending(context);
 
-    let tee_state = Gc::new(GcRefCell::new(ByteTeeState {
+    let tee_state = gc_cell_new(ByteTeeState {
         source_stream: stream,
         reader: ReadableStreamReader::Default(reader),
         branch1: None,
@@ -2813,7 +2815,7 @@ fn readable_byte_stream_tee(
         reason1: JsValue::undefined(),
         reason2: JsValue::undefined(),
         reader_generation: 0,
-    }));
+    });
 
     // Step 22: "Let startAlgorithm be an algorithm that returns undefined."
     // Step 23: "Set branch1 to ! CreateReadableByteStream(startAlgorithm, pull1Algorithm, cancel1Algorithm)."
@@ -3182,7 +3184,7 @@ fn readable_stream_pipe_to(
 }
 
 #[derive(Clone, Trace, Finalize)]
-pub(crate) struct PipeToState(Gc<GcRefCell<PipeToStateInner>>);
+pub(crate) struct PipeToState(GcCell<PipeToStateInner>);
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum PipePumpState {
@@ -3232,7 +3234,7 @@ pub(crate) struct PipeToStateInner {
 
 impl PipeToState {
     fn new(state: PipeToStateInner) -> Self {
-        Self(Gc::new(GcRefCell::new(state)))
+        Self(gc_cell_new(state))
     }
 
     fn borrow(&self) -> GcRef<'_, PipeToStateInner> {
@@ -4014,17 +4016,17 @@ fn wait_for_all_promises(promises: Vec<JsObject>, context: &mut Context) -> JsRe
     }
 
     let (promise, resolvers) = JsPromise::new_pending(context);
-    let aggregate = Gc::new(GcRefCell::new(WaitForAllState {
+    let aggregate = gc_cell_new(WaitForAllState {
         remaining: promises.len(),
         settled: false,
         first_rejection_index: None,
         first_rejection_reason: None,
         resolvers,
-    }));
+    });
 
     for (index, promise) in promises.into_iter().enumerate() {
         let on_fulfilled = NativeFunction::from_copy_closure_with_captures(
-            |_, _, aggregate: &Gc<GcRefCell<WaitForAllState>>, context| {
+            |_, _, aggregate: &GcCell<WaitForAllState>, context| {
                 let resolution = {
                     let mut aggregate = aggregate.borrow_mut();
                     if aggregate.settled {
@@ -4069,7 +4071,7 @@ fn wait_for_all_promises(promises: Vec<JsObject>, context: &mut Context) -> JsRe
         .to_js_function(context.realm());
 
         let on_rejected = NativeFunction::from_copy_closure_with_captures(
-            |_, args, capture: &(usize, Gc<GcRefCell<WaitForAllState>>), context| {
+            |_, args, capture: &(usize, GcCell<WaitForAllState>), context| {
                 let reason = args.get_or_undefined(0).clone();
                 let resolution = {
                     let (index, aggregate) = capture;
@@ -4140,22 +4142,22 @@ fn abort_destination_then_cancel_source(
     context: &mut Context,
 ) -> JsResult<JsObject> {
     let (promise, resolvers) = JsPromise::new_pending(context);
-    let state = Gc::new(GcRefCell::new(AbortThenCancelState {
+    let state = gc_cell_new(AbortThenCancelState {
         source: Some(source),
         error,
         abort_rejection: None,
         resolvers,
-    }));
+    });
 
     let on_fulfilled = NativeFunction::from_copy_closure_with_captures(
-        |_, _, state: &Gc<GcRefCell<AbortThenCancelState>>, context| {
+        |_, _, state: &GcCell<AbortThenCancelState>, context| {
             start_abort_cancel_source(state.clone(), None, context)
         },
         state.clone(),
     )
     .to_js_function(context.realm());
     let on_rejected = NativeFunction::from_copy_closure_with_captures(
-        |_, args, state: &Gc<GcRefCell<AbortThenCancelState>>, context| {
+        |_, args, state: &GcCell<AbortThenCancelState>, context| {
             start_abort_cancel_source(
                 state.clone(),
                 Some(args.get_or_undefined(0).clone()),
@@ -4175,7 +4177,7 @@ fn abort_destination_then_cancel_source(
 }
 
 fn start_abort_cancel_source(
-    state: Gc<GcRefCell<AbortThenCancelState>>,
+    state: GcCell<AbortThenCancelState>,
     abort_rejection: Option<JsValue>,
     context: &mut Context,
 ) -> JsResult<JsValue> {
@@ -4192,14 +4194,14 @@ fn start_abort_cancel_source(
     };
 
     let on_fulfilled = NativeFunction::from_copy_closure_with_captures(
-        |_, _, state: &Gc<GcRefCell<AbortThenCancelState>>, context| {
+        |_, _, state: &GcCell<AbortThenCancelState>, context| {
             finalize_abort_cancel_source(state.clone(), None, context)
         },
         state.clone(),
     )
     .to_js_function(context.realm());
     let on_rejected = NativeFunction::from_copy_closure_with_captures(
-        |_, args, state: &Gc<GcRefCell<AbortThenCancelState>>, context| {
+        |_, args, state: &GcCell<AbortThenCancelState>, context| {
             finalize_abort_cancel_source(
                 state.clone(),
                 Some(args.get_or_undefined(0).clone()),
@@ -4218,7 +4220,7 @@ fn start_abort_cancel_source(
 }
 
 fn finalize_abort_cancel_source(
-    state: Gc<GcRefCell<AbortThenCancelState>>,
+    state: GcCell<AbortThenCancelState>,
     cancel_rejection: Option<JsValue>,
     context: &mut Context,
 ) -> JsResult<JsValue> {

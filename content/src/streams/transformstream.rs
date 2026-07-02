@@ -8,7 +8,6 @@ use boa_engine::{
     native_function::NativeFunction,
     object::{JsObject, builtins::JsPromise},
 };
-use boa_gc::{Gc, GcRefCell};
 
 use crate::streams::{SizeAlgorithm, extract_high_water_mark, extract_size_algorithm};
 use crate::webidl::bindings::create_interface_instance;
@@ -25,6 +24,8 @@ use super::writablestreamdefaultcontroller::{
     writable_stream_default_controller_error_if_needed,
 };
 use super::{ReadableStream, WritableStream, type_error_value};
+use js_engine::gc::GcCell;
+use js_engine::gc::gc_cell_new;
 use js_engine::gc_struct;
 use js_engine::{Completion, ExecutionContext, JsTypes, PromiseResolvers};
 
@@ -65,34 +66,34 @@ pub struct TransformStream {
     backpressure: Rc<Cell<bool>>,
 
     /// <https://streams.spec.whatwg.org/#transformstream-backpressurechangepromise>
-    backpressure_change_promise: Gc<GcRefCell<Option<JsObject>>>,
-    backpressure_change_resolvers: Gc<GcRefCell<Option<PromiseResolvers<crate::js::Types>>>>,
+    backpressure_change_promise: GcCell<Option<JsObject>>,
+    backpressure_change_resolvers: GcCell<Option<PromiseResolvers<crate::js::Types>>>,
 
     /// <https://streams.spec.whatwg.org/#transformstream-controller>
-    controller: Gc<GcRefCell<Option<TransformStreamDefaultController>>>,
-    controller_object: Gc<GcRefCell<Option<JsObject>>>,
+    controller: GcCell<Option<TransformStreamDefaultController>>,
+    controller_object: GcCell<Option<JsObject>>,
 
     /// <https://streams.spec.whatwg.org/#transformstream-readable>
-    readable: Gc<GcRefCell<Option<ReadableStream>>>,
-    readable_object: Gc<GcRefCell<Option<JsObject>>>,
+    readable: GcCell<Option<ReadableStream>>,
+    readable_object: GcCell<Option<JsObject>>,
 
     /// <https://streams.spec.whatwg.org/#transformstream-writable>
-    writable: Gc<GcRefCell<Option<WritableStream>>>,
-    writable_object: Gc<GcRefCell<Option<JsObject>>>,
+    writable: GcCell<Option<WritableStream>>,
+    writable_object: GcCell<Option<JsObject>>,
 }
 
 impl TransformStream {
     pub(crate) fn new() -> Self {
         Self {
             backpressure: Rc::new(Cell::new(false)),
-            backpressure_change_promise: Gc::new(GcRefCell::new(None)),
-            backpressure_change_resolvers: Gc::new(GcRefCell::new(None)),
-            controller: Gc::new(GcRefCell::new(None)),
-            controller_object: Gc::new(GcRefCell::new(None)),
-            readable: Gc::new(GcRefCell::new(None)),
-            readable_object: Gc::new(GcRefCell::new(None)),
-            writable: Gc::new(GcRefCell::new(None)),
-            writable_object: Gc::new(GcRefCell::new(None)),
+            backpressure_change_promise: gc_cell_new(None),
+            backpressure_change_resolvers: gc_cell_new(None),
+            controller: gc_cell_new(None),
+            controller_object: gc_cell_new(None),
+            readable: gc_cell_new(None),
+            readable_object: gc_cell_new(None),
+            writable: gc_cell_new(None),
+            writable_object: gc_cell_new(None),
         }
     }
 
@@ -215,20 +216,20 @@ impl TransformStream {
 #[derive(Clone)]
 pub struct TransformStreamDefaultController {
     /// <https://streams.spec.whatwg.org/#transformstreamdefaultcontroller-stream>
-    stream: Gc<GcRefCell<Option<TransformStream>>>,
+    stream: GcCell<Option<TransformStream>>,
 
     /// <https://streams.spec.whatwg.org/#transformstreamdefaultcontroller-transformalgorithm>
-    transform_algorithm: Gc<GcRefCell<Option<TransformAlgorithm>>>,
+    transform_algorithm: GcCell<Option<TransformAlgorithm>>,
 
     /// <https://streams.spec.whatwg.org/#transformstreamdefaultcontroller-flushalgorithm>
-    flush_algorithm: Gc<GcRefCell<Option<FlushAlgorithm>>>,
+    flush_algorithm: GcCell<Option<FlushAlgorithm>>,
 
     /// <https://streams.spec.whatwg.org/#transformstreamdefaultcontroller-cancelalgorithm>
-    cancel_algorithm: Gc<GcRefCell<Option<TransformCancelAlgorithm>>>,
+    cancel_algorithm: GcCell<Option<TransformCancelAlgorithm>>,
 
     /// <https://streams.spec.whatwg.org/#transformstreamdefaultcontroller-finishpromise>
-    finish_promise: Gc<GcRefCell<Option<JsObject>>>,
-    finish_resolvers: Gc<GcRefCell<Option<PromiseResolvers<crate::js::Types>>>>,
+    finish_promise: GcCell<Option<JsObject>>,
+    finish_resolvers: GcCell<Option<PromiseResolvers<crate::js::Types>>>,
 }
 
 #[gc_struct]
@@ -258,12 +259,12 @@ pub(crate) enum TransformCancelAlgorithm {
 impl TransformStreamDefaultController {
     pub(crate) fn new() -> Self {
         Self {
-            stream: Gc::new(GcRefCell::new(None)),
-            transform_algorithm: Gc::new(GcRefCell::new(None)),
-            flush_algorithm: Gc::new(GcRefCell::new(None)),
-            cancel_algorithm: Gc::new(GcRefCell::new(None)),
-            finish_promise: Gc::new(GcRefCell::new(None)),
-            finish_resolvers: Gc::new(GcRefCell::new(None)),
+            stream: gc_cell_new(None),
+            transform_algorithm: gc_cell_new(None),
+            flush_algorithm: gc_cell_new(None),
+            cancel_algorithm: gc_cell_new(None),
+            finish_promise: gc_cell_new(None),
+            finish_resolvers: gc_cell_new(None),
         }
     }
 

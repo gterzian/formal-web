@@ -5,11 +5,13 @@ use boa_engine::{
     native_function::NativeFunction,
     object::{JsObject, builtins::JsPromise},
 };
-use boa_gc::{Finalize, Gc, GcRefCell, Trace};
+use boa_gc::{Finalize, Trace};
 
 use crate::streams::SizeAlgorithm;
 use crate::webidl::bindings::create_interface_instance;
 use crate::webidl::{mark_promise_as_handled, promise_from_completion, resolved_promise};
+use js_engine::gc::GcCell;
+use js_engine::gc::gc_cell_new;
 use js_engine::gc_struct;
 
 use super::readablestream::{
@@ -40,11 +42,11 @@ pub(crate) enum PullAlgorithm {
     JavaScript(SourceMethod),
     ReadableStreamFromIterable(ReadableStreamFromIterableState),
     ReadableStreamDefaultTee {
-        tee_state: Gc<GcRefCell<TeeState>>,
+        tee_state: GcCell<TeeState>,
         clone_for_branch2: bool,
     },
-    ReadableByteStreamTeeBranch1(Gc<GcRefCell<ByteTeeState>>),
-    ReadableByteStreamTeeBranch2(Gc<GcRefCell<ByteTeeState>>),
+    ReadableByteStreamTeeBranch1(GcCell<ByteTeeState>),
+    ReadableByteStreamTeeBranch2(GcCell<ByteTeeState>),
     TransformStreamDefaultSourcePull(TransformStream),
 }
 
@@ -106,10 +108,10 @@ pub(crate) enum CancelAlgorithm {
     ReturnUndefined,
     JavaScript(SourceMethod),
     ReadableStreamFromIterable(ReadableStreamFromIterableState),
-    ReadableStreamDefaultTeeBranch1(Gc<GcRefCell<TeeState>>),
-    ReadableStreamDefaultTeeBranch2(Gc<GcRefCell<TeeState>>),
-    ReadableByteStreamTeeBranch1(Gc<GcRefCell<ByteTeeState>>),
-    ReadableByteStreamTeeBranch2(Gc<GcRefCell<ByteTeeState>>),
+    ReadableStreamDefaultTeeBranch1(GcCell<TeeState>),
+    ReadableStreamDefaultTeeBranch2(GcCell<TeeState>),
+    ReadableByteStreamTeeBranch1(GcCell<ByteTeeState>),
+    ReadableByteStreamTeeBranch2(GcCell<ByteTeeState>),
     TransformStreamDefaultSourceCancel(TransformStream),
 }
 
@@ -203,10 +205,10 @@ struct QueueEntry {
 #[derive(Clone)]
 pub struct ReadableStreamDefaultController {
     /// <https://streams.spec.whatwg.org/#readablestreamdefaultcontroller-stream>
-    stream: Gc<GcRefCell<Option<ReadableStream>>>,
+    stream: GcCell<Option<ReadableStream>>,
 
     /// <https://streams.spec.whatwg.org/#readablestreamdefaultcontroller-queue>
-    queue: Gc<GcRefCell<VecDeque<QueueEntry>>>,
+    queue: GcCell<VecDeque<QueueEntry>>,
 
     /// <https://streams.spec.whatwg.org/#readablestreamdefaultcontroller-queuetotalsize>
     #[unsafe_ignore_trace]
@@ -229,33 +231,33 @@ pub struct ReadableStreamDefaultController {
     pulling: Rc<Cell<bool>>,
 
     /// <https://streams.spec.whatwg.org/#readablestreamdefaultcontroller-strategysizealgorithm>
-    strategy_size_algorithm: Gc<GcRefCell<Option<SizeAlgorithm>>>,
+    strategy_size_algorithm: GcCell<Option<SizeAlgorithm>>,
 
     /// <https://streams.spec.whatwg.org/#readablestreamdefaultcontroller-strategyhwm>
     #[unsafe_ignore_trace]
     strategy_high_water_mark: Rc<Cell<f64>>,
 
     /// <https://streams.spec.whatwg.org/#readablestreamdefaultcontroller-pullalgorithm>
-    pull_algorithm: Gc<GcRefCell<Option<PullAlgorithm>>>,
+    pull_algorithm: GcCell<Option<PullAlgorithm>>,
 
     /// <https://streams.spec.whatwg.org/#readablestreamdefaultcontroller-cancelalgorithm>
-    cancel_algorithm: Gc<GcRefCell<Option<CancelAlgorithm>>>,
+    cancel_algorithm: GcCell<Option<CancelAlgorithm>>,
 }
 
 impl ReadableStreamDefaultController {
     pub(crate) fn new() -> Self {
         Self {
-            stream: Gc::new(GcRefCell::new(None)),
-            queue: Gc::new(GcRefCell::new(VecDeque::new())),
+            stream: gc_cell_new(None),
+            queue: gc_cell_new(VecDeque::new()),
             queue_total_size: Rc::new(Cell::new(0.0)),
             started: Rc::new(Cell::new(false)),
             close_requested: Rc::new(Cell::new(false)),
             pull_again: Rc::new(Cell::new(false)),
             pulling: Rc::new(Cell::new(false)),
-            strategy_size_algorithm: Gc::new(GcRefCell::new(None)),
+            strategy_size_algorithm: gc_cell_new(None),
             strategy_high_water_mark: Rc::new(Cell::new(0.0)),
-            pull_algorithm: Gc::new(GcRefCell::new(None)),
-            cancel_algorithm: Gc::new(GcRefCell::new(None)),
+            pull_algorithm: gc_cell_new(None),
+            cancel_algorithm: gc_cell_new(None),
         }
     }
 

@@ -1,3 +1,5 @@
+use js_engine::gc::GcCell;
+use js_engine::gc::gc_cell_new;
 use js_engine::gc_struct;
 use std::{cell::Cell, rc::Rc};
 
@@ -9,7 +11,7 @@ use boa_engine::{
     object::{FunctionObjectBuilder, JsObject, ObjectInitializer, builtins::JsPromise},
     property::Attribute,
 };
-use boa_gc::{Finalize, Gc, GcRefCell, Trace};
+use boa_gc::{Finalize, Trace};
 
 use super::promise::{rejected_promise, resolved_promise};
 
@@ -111,7 +113,7 @@ where
 {
     target: T,
     state: T::State,
-    last_operation: Gc<GcRefCell<Option<JsObject>>>,
+    last_operation: GcCell<Option<JsObject>>,
     #[unsafe_ignore_trace]
     finished: Rc<Cell<bool>>,
 }
@@ -129,7 +131,7 @@ where
         Self {
             target,
             state,
-            last_operation: Gc::new(GcRefCell::new(None)),
+            last_operation: gc_cell_new(None),
             finished: Rc::new(Cell::new(false)),
         }
     }

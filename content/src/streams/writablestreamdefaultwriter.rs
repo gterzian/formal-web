@@ -1,8 +1,9 @@
 use boa_engine::{JsArgs, JsError, JsNativeError, JsResult, JsValue, object::JsObject};
-use boa_gc::{Gc, GcRefCell};
 
 use crate::webidl::bindings::create_interface_instance;
 use crate::webidl::{mark_promise_as_handled, rejected_promise, resolved_promise};
+use js_engine::gc::GcCell;
+use js_engine::gc::gc_cell_new;
 use js_engine::gc_struct;
 
 use super::{
@@ -18,25 +19,25 @@ use js_engine::{Completion, ExecutionContext, PromiseResolvers};
 #[derive(Clone)]
 pub struct WritableStreamDefaultWriter {
     /// <https://streams.spec.whatwg.org/#writablestreamdefaultwriter-stream>
-    stream: Gc<GcRefCell<Option<WritableStream>>>,
+    stream: GcCell<Option<WritableStream>>,
 
     /// <https://streams.spec.whatwg.org/#writablestreamdefaultwriter-readypromise>
-    ready_promise: Gc<GcRefCell<Option<JsObject>>>,
-    ready_resolvers: Gc<GcRefCell<Option<PromiseResolvers<crate::js::Types>>>>,
+    ready_promise: GcCell<Option<JsObject>>,
+    ready_resolvers: GcCell<Option<PromiseResolvers<crate::js::Types>>>,
 
     /// <https://streams.spec.whatwg.org/#writablestreamdefaultwriter-closedpromise>
-    closed_promise: Gc<GcRefCell<Option<JsObject>>>,
-    closed_resolvers: Gc<GcRefCell<Option<PromiseResolvers<crate::js::Types>>>>,
+    closed_promise: GcCell<Option<JsObject>>,
+    closed_resolvers: GcCell<Option<PromiseResolvers<crate::js::Types>>>,
 }
 
 impl WritableStreamDefaultWriter {
     pub(crate) fn new() -> Self {
         Self {
-            stream: Gc::new(GcRefCell::new(None)),
-            ready_promise: Gc::new(GcRefCell::new(None)),
-            ready_resolvers: Gc::new(GcRefCell::new(None)),
-            closed_promise: Gc::new(GcRefCell::new(None)),
-            closed_resolvers: Gc::new(GcRefCell::new(None)),
+            stream: gc_cell_new(None),
+            ready_promise: gc_cell_new(None),
+            ready_resolvers: gc_cell_new(None),
+            closed_promise: gc_cell_new(None),
+            closed_resolvers: gc_cell_new(None),
         }
     }
     pub(crate) fn stream_slot_value(&self) -> Option<WritableStream> {
