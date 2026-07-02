@@ -11,9 +11,8 @@ pub const CAPTURING_PHASE: u16 = 1;
 pub const AT_TARGET: u16 = 2;
 pub const BUBBLING_PHASE: u16 = 3;
 
-#[gc_struct]
 /// <https://dom.spec.whatwg.org/#concept-event-listener>
-#[derive(Clone)]
+#[gc_struct]
 pub(crate) struct EventListener {
     #[unsafe_ignore_trace]
     pub id: u64,
@@ -45,8 +44,8 @@ pub(crate) struct EventListener {
     pub removed: bool,
 }
 
-#[gc_struct]
 /// <https://dom.spec.whatwg.org/#interface-eventtarget>
+#[gc_struct]
 #[derive(Default)]
 pub struct EventTarget {
     /// <https://dom.spec.whatwg.org/#eventtarget-event-listener-list>
@@ -152,9 +151,8 @@ impl EventTarget {
     }
 }
 
-#[gc_struct]
 /// <https://dom.spec.whatwg.org/#event>
-#[derive(Clone)]
+#[gc_struct]
 pub struct Event {
     /// <https://dom.spec.whatwg.org/#dom-event-type>
     #[unsafe_ignore_trace]
@@ -319,9 +317,8 @@ impl Event {
     }
 }
 
-#[gc_struct]
 /// <https://w3c.github.io/uievents/#interface-uievent>
-#[derive(Clone)]
+#[gc_struct]
 pub struct UIEvent {
     /// <https://dom.spec.whatwg.org/#event>
     pub event: Event,

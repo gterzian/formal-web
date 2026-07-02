@@ -18,7 +18,6 @@ use super::promise::{rejected_promise, resolved_promise};
 use js_engine::{Completion, ExecutionContext};
 
 #[gc_struct]
-#[derive(Clone)]
 enum IteratorOperation {
     Next,
     Return(JsValue),

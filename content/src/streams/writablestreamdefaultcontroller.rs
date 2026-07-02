@@ -145,9 +145,8 @@ enum QueueEntryValue {
     CloseSentinel,
 }
 
-#[gc_struct]
 /// <https://streams.spec.whatwg.org/#writablestreamdefaultcontroller>
-#[derive(Clone)]
+#[gc_struct]
 pub struct WritableStreamDefaultController {
     /// <https://streams.spec.whatwg.org/#writablestreamdefaultcontroller-stream>
     stream: GcCell<Option<WritableStream>>,
@@ -498,13 +497,13 @@ impl WritableStreamDefaultController {
         let sink_close_promise = algorithm.call(js_engine::boa::context_as_ec(context))?;
         self.clear_algorithms();
         let stream_for_fulfilled = stream.clone();
-        let on_fulfilled = builtin_with_captures(
+        let on_fulfilled = crate::js::builtin_with_captures(
             context,
             stream_for_fulfilled,
             process_close_on_fulfilled,
             1,
         );
-        let on_rejected = builtin_with_captures(
+        let on_rejected = crate::js::builtin_with_captures(
             context,
             stream,
             process_close_on_rejected,
@@ -546,13 +545,13 @@ impl WritableStreamDefaultController {
 
         let controller_for_fulfilled = self.clone();
         let stream_for_fulfilled = stream.clone();
-        let on_fulfilled = builtin_with_captures(
+        let on_fulfilled = crate::js::builtin_with_captures(
             context,
             (controller_for_fulfilled, stream_for_fulfilled),
             process_write_on_fulfilled,
             1,
         );
-        let on_rejected = builtin_with_captures(
+        let on_rejected = crate::js::builtin_with_captures(
             context,
             (self.clone(), stream),
             process_write_on_rejected,
@@ -725,7 +724,7 @@ pub(crate) fn set_up_writable_stream_default_controller(
         crate::js::js_result_to_completion(JsPromise::resolve(start_result, context), context)?;
 
     // Step 17: "Upon fulfillment of startPromise..."
-    let on_fulfilled = builtin_with_captures(
+    let on_fulfilled = crate::js::builtin_with_captures(
         context,
         controller.clone(),
         setup_on_fulfilled,
@@ -733,7 +732,7 @@ pub(crate) fn set_up_writable_stream_default_controller(
     );
 
     // Step 18: "Upon rejection of startPromise with reason r..."
-    let on_rejected = builtin_with_captures(
+    let on_rejected = crate::js::builtin_with_captures(
         context,
         controller,
         setup_on_rejected,
@@ -912,25 +911,6 @@ fn reset_controller_queue(controller: &WritableStreamDefaultController) {
     controller.reset_queue();
 }
 
-// ── create_builtin_function_with_captures helpers ────────────────────
-
-/// Convenience wrapper that calls the generic `create_builtin_function_with_captures`
-/// from a `&mut Context`, returning a `JsFunction` ready for `.then()`.
-fn builtin_with_captures<C: Trace + 'static>(
-    context: &mut Context,
-    captures: C,
-    behaviour: fn(
-        &[JsValue],
-        JsValue,
-        &C,
-        &mut dyn ExecutionContext<crate::js::Types>,
-    ) -> Completion<JsValue, crate::js::Types>,
-    length: u32,
-) -> boa_engine::object::builtins::JsFunction {
-    let name = boa_engine::property::PropertyKey::from(boa_engine::js_string!(""));
-    js_engine::boa::context_as_engine(context)
-        .create_builtin_function_with_captures(captures, behaviour, length, name)
-}
 
 fn process_close_on_fulfilled(
     _args: &[JsValue],

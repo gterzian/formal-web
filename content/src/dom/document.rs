@@ -30,8 +30,8 @@ fn canonical_document_dir(value: &str) -> &str {
     }
 }
 
-#[gc_struct]
 /// <https://dom.spec.whatwg.org/#interface-document>
+#[gc_struct]
 pub struct Document {
     /// <https://dom.spec.whatwg.org/#interface-node>
     pub node: Node,

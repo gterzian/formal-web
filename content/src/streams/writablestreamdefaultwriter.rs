@@ -14,9 +14,8 @@ use super::{
 
 use js_engine::{Completion, ExecutionContext, PromiseResolvers};
 
-#[gc_struct]
 /// <https://streams.spec.whatwg.org/#writablestreamdefaultwriter>
-#[derive(Clone)]
+#[gc_struct]
 pub struct WritableStreamDefaultWriter {
     /// <https://streams.spec.whatwg.org/#writablestreamdefaultwriter-stream>
     stream: GcCell<Option<WritableStream>>,

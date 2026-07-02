@@ -4,9 +4,8 @@ use js_engine::{Completion, ExecutionContext, JsTypes};
 
 // Note: The content process reuses `Callback` for both [callback function](https://webidl.spec.whatwg.org/#idl-callback-function) type values and objects implementing a [callback interface](https://webidl.spec.whatwg.org/#dfn-callback-interface) because both Web IDL representations are a tuple of (object reference, callback context).
 // Note: The callback context remains implicit in the current single-realm content process until callback-realm bookkeeping is modeled explicitly.
-#[gc_struct]
 /// <https://webidl.spec.whatwg.org/#idl-callback-function>
-#[derive(Clone)]
+#[gc_struct]
 pub(crate) struct Callback {
     object: JsObject,
 }

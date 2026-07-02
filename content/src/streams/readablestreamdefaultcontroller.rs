@@ -1,8 +1,7 @@
 use std::{cell::Cell, collections::VecDeque, rc::Rc};
 
 use boa_engine::{
-    JsArgs, JsNativeError, JsResult, JsString, JsValue,
-    native_function::NativeFunction,
+    JsArgs, JsError, JsNativeError, JsResult, JsString, JsValue,
     object::{JsObject, builtins::JsPromise},
 };
 use boa_gc::{Finalize, Trace};
@@ -33,7 +32,7 @@ use super::{
     TransformStream, range_error_value,
 };
 
-use js_engine::{Completion, ExecutionContext};
+use js_engine::{Completion, ExecutionContext, JsEngine};
 
 /// <https://streams.spec.whatwg.org/#readablestreamdefaultcontroller-pullalgorithm>
 #[derive(Clone, Trace, Finalize)]
@@ -200,9 +199,8 @@ struct QueueEntry {
     size: f64,
 }
 
-#[gc_struct]
 /// <https://streams.spec.whatwg.org/#rs-default-controller-class>
-#[derive(Clone)]
+#[gc_struct]
 pub struct ReadableStreamDefaultController {
     /// <https://streams.spec.whatwg.org/#readablestreamdefaultcontroller-stream>
     stream: GcCell<Option<ReadableStream>>,
@@ -494,39 +492,18 @@ impl ReadableStreamDefaultController {
             ),
         };
 
-        let on_fulfilled = NativeFunction::from_copy_closure_with_captures(
-            |_, _, controller: &ReadableStreamDefaultController, context| {
-                // Step 7.1: "Set controller.[[pulling]] to false."
-                controller.pulling.set(false);
-
-                let should_pull_again = controller.pull_again.get();
-                if should_pull_again {
-                    // Step 7.2.1: "Set controller.[[pullAgain]] to false."
-                    controller.pull_again.set(false);
-
-                    // Step 7.2.2: "Perform ! ReadableStreamDefaultControllerCallPullIfNeeded(controller)."
-                    crate::js::completion_to_js_result(
-                        controller.call_pull_if_needed(js_engine::boa::context_as_ec(context)),
-                    )?;
-                }
-
-                Ok(JsValue::undefined())
-            },
+        let on_fulfilled = crate::js::builtin_with_captures(
+            context,
             self.clone(),
-        )
-        .to_js_function(context.realm());
-        let on_rejected = NativeFunction::from_copy_closure_with_captures(
-            |_, args, controller: &ReadableStreamDefaultController, context| {
-                // Step 8.1: "Perform ! ReadableStreamDefaultControllerError(controller, e)."
-                crate::js::completion_to_js_result(controller.error_steps(
-                    args.get_or_undefined(0).clone(),
-                    js_engine::boa::context_as_ec(context),
-                ))?;
-                Ok(JsValue::undefined())
-            },
+            pull_steps_on_fulfilled,
+            1,
+        );
+        let on_rejected = crate::js::builtin_with_captures(
+            context,
             self.clone(),
-        )
-        .to_js_function(context.realm());
+            pull_steps_on_rejected,
+            1,
+        );
         let pull_reaction: JsObject = pull_promise
             .then(Some(on_fulfilled), Some(on_rejected), context)
             .map_err(|e| {
@@ -903,38 +880,18 @@ pub(crate) fn set_up_readable_stream_default_controller(
         e.into_opaque(context)
             .unwrap_or_else(|_| JsValue::undefined())
     })?;
-    let on_fulfilled = NativeFunction::from_copy_closure_with_captures(
-        |_, _, controller: &ReadableStreamDefaultController, context| {
-            // Step 11.1: "Set controller.[[started]] to true."
-            controller.started.set(true);
-
-            // Step 11.2: "Assert: controller.[[pulling]] is false."
-            debug_assert!(!controller.pulling.get());
-
-            // Step 11.3: "Assert: controller.[[pullAgain]] is false."
-            debug_assert!(!controller.pull_again.get());
-
-            // Step 11.4: "Perform ! ReadableStreamDefaultControllerCallPullIfNeeded(controller)."
-            crate::js::completion_to_js_result(
-                controller.call_pull_if_needed(js_engine::boa::context_as_ec(context)),
-            )?;
-            Ok(JsValue::undefined())
-        },
+    let on_fulfilled = crate::js::builtin_with_captures(
+        context,
         controller.clone(),
-    )
-    .to_js_function(context.realm());
-    let on_rejected = NativeFunction::from_copy_closure_with_captures(
-        |_, args, controller: &ReadableStreamDefaultController, context| {
-            // Step 12.1: "Perform ! ReadableStreamDefaultControllerError(controller, r)."
-            crate::js::completion_to_js_result(controller.error_steps(
-                args.get_or_undefined(0).clone(),
-                js_engine::boa::context_as_ec(context),
-            ))?;
-            Ok(JsValue::undefined())
-        },
+        setup_on_fulfilled,
+        1,
+    );
+    let on_rejected = crate::js::builtin_with_captures(
+        context,
         controller,
-    )
-    .to_js_function(context.realm());
+        setup_on_rejected,
+        1,
+    );
     let start_reaction: JsObject = start_promise
         .then(Some(on_fulfilled), Some(on_rejected), context)
         .map_err(|e| {
@@ -1049,4 +1006,70 @@ pub(crate) fn extract_source_method(
         source_object.clone(),
         crate::webidl::Callback::from_object(callback),
     )))
+}
+
+fn pull_steps_on_fulfilled(
+    _args: &[JsValue],
+    _this: JsValue,
+    captures: &ReadableStreamDefaultController,
+    ec: &mut dyn ExecutionContext<crate::js::Types>,
+) -> Completion<JsValue, crate::js::Types> {
+    let ctx = unsafe { js_engine::boa::ec_to_ctx(ec) };
+    captures.pulling.set(false);
+    let should_pull_again = captures.pull_again.get();
+    if should_pull_again {
+        captures.pull_again.set(false);
+        crate::js::completion_to_js_result(
+            captures.call_pull_if_needed(js_engine::boa::context_as_ec(ctx)),
+        )
+        .map_err(|e| e.into_opaque(ctx).unwrap_or(JsValue::undefined()))?;
+    }
+    Ok(JsValue::undefined())
+}
+
+fn pull_steps_on_rejected(
+    args: &[JsValue],
+    _this: JsValue,
+    captures: &ReadableStreamDefaultController,
+    ec: &mut dyn ExecutionContext<crate::js::Types>,
+) -> Completion<JsValue, crate::js::Types> {
+    let ctx = unsafe { js_engine::boa::ec_to_ctx(ec) };
+    crate::js::completion_to_js_result(captures.error_steps(
+        args.first().cloned().unwrap_or(JsValue::undefined()),
+        js_engine::boa::context_as_ec(ctx),
+    ))
+    .map_err(|e| e.into_opaque(ctx).unwrap_or(JsValue::undefined()))?;
+    Ok(JsValue::undefined())
+}
+
+fn setup_on_fulfilled(
+    _args: &[JsValue],
+    _this: JsValue,
+    captures: &ReadableStreamDefaultController,
+    ec: &mut dyn ExecutionContext<crate::js::Types>,
+) -> Completion<JsValue, crate::js::Types> {
+    let ctx = unsafe { js_engine::boa::ec_to_ctx(ec) };
+    captures.started.set(true);
+    debug_assert!(!captures.pulling.get());
+    debug_assert!(!captures.pull_again.get());
+    crate::js::completion_to_js_result(
+        captures.call_pull_if_needed(js_engine::boa::context_as_ec(ctx)),
+    )
+    .map_err(|e| e.into_opaque(ctx).unwrap_or(JsValue::undefined()))?;
+    Ok(JsValue::undefined())
+}
+
+fn setup_on_rejected(
+    args: &[JsValue],
+    _this: JsValue,
+    captures: &ReadableStreamDefaultController,
+    ec: &mut dyn ExecutionContext<crate::js::Types>,
+) -> Completion<JsValue, crate::js::Types> {
+    let ctx = unsafe { js_engine::boa::ec_to_ctx(ec) };
+    crate::js::completion_to_js_result(captures.error_steps(
+        args.first().cloned().unwrap_or(JsValue::undefined()),
+        js_engine::boa::context_as_ec(ctx),
+    ))
+    .map_err(|e| e.into_opaque(ctx).unwrap_or(JsValue::undefined()))?;
+    Ok(JsValue::undefined())
 }

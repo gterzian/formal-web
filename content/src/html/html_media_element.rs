@@ -14,8 +14,8 @@ use js_engine::gc_struct;
 
 use js_engine::{Completion, ExecutionContext};
 
-#[gc_struct]
 /// <https://html.spec.whatwg.org/#media-elements>
+#[gc_struct]
 pub struct HTMLMediaElement {
     /// <https://html.spec.whatwg.org/#htmlelement>
     pub html_element: HTMLElement,
@@ -68,9 +68,8 @@ pub struct HTMLMediaElement {
     video_paint_id: VideoPaintId,
 }
 
-#[gc_struct]
 /// <https://html.spec.whatwg.org/#mediaerror>
-#[derive(Clone, Debug)]
+#[gc_struct]
 pub struct MediaError {
     /// <https://html.spec.whatwg.org/#dom-mediaerror-code>
     pub code: u16,

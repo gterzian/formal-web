@@ -24,9 +24,8 @@ use super::{
     writable_stream_default_controller_close,
 };
 
-#[gc_struct]
 /// <https://streams.spec.whatwg.org/#ws-class>
-#[derive(Clone)]
+#[gc_struct]
 pub struct WritableStream {
     /// <https://streams.spec.whatwg.org/#writablestream-controller>
     controller: GcCell<Option<WritableStreamController>>,

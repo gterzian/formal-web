@@ -6,8 +6,8 @@ use blitz_dom::BaseDocument;
 use crate::html::html_media_element::HTMLMediaElement;
 use js_engine::gc_struct;
 
-#[gc_struct]
 /// <https://html.spec.whatwg.org/#the-video-element>
+#[gc_struct]
 pub struct HTMLVideoElement {
     /// <https://html.spec.whatwg.org/#media-elements>
     pub media_element: HTMLMediaElement,

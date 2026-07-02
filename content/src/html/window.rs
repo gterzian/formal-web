@@ -17,8 +17,8 @@ use super::windowproxy::create_window_proxy;
 use super::{GlobalScope, the_rules_for_choosing_a_navigable};
 use js_engine::gc_struct;
 
-#[gc_struct]
 /// <https://html.spec.whatwg.org/#window>
+#[gc_struct]
 pub struct Window {
     /// <https://dom.spec.whatwg.org/#interface-eventtarget>
     pub event_target: EventTarget,

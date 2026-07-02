@@ -13,8 +13,8 @@ enum NodeKind {
     Comment,
 }
 
-#[gc_struct]
 /// <https://dom.spec.whatwg.org/#interface-node>
+#[gc_struct]
 pub struct Node {
     /// <https://dom.spec.whatwg.org/#concept-node-document>
     #[unsafe_ignore_trace]

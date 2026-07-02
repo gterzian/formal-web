@@ -58,8 +58,8 @@ fn collect_subtree_node_ids(document: &BaseDocument, node_id: usize, node_ids: &
     }
 }
 
-#[gc_struct]
 /// <https://dom.spec.whatwg.org/#interface-element>
+#[gc_struct]
 pub struct Element {
     /// <https://dom.spec.whatwg.org/#interface-node>
     pub node: Node,

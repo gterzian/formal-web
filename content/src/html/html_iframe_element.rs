@@ -18,8 +18,8 @@ use crate::{
     html::HTMLElement, html::navigate, webidl::Callback,
 };
 
-#[gc_struct]
 /// <https://html.spec.whatwg.org/#htmliframeelement>
+#[gc_struct]
 pub struct HTMLIFrameElement {
     /// <https://html.spec.whatwg.org/#htmlelement>
     pub html_element: HTMLElement,

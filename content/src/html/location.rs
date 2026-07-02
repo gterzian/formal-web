@@ -6,8 +6,8 @@ use url::{Host, Url};
 use super::Window;
 use js_engine::gc_struct;
 
-#[gc_struct]
 /// <https://html.spec.whatwg.org/#location>
+#[gc_struct]
 pub struct Location {
     /// Model-local backing URL used for Location attribute serialization and URL parsing.
     ///

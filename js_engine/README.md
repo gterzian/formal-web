@@ -348,9 +348,9 @@ downcasts via `dyn Any::downcast_ref::<T>()` / `downcast_mut::<T>()`.
 | Root a JS value | `ec.create_root(&value) -> GcRootHandle<T>` | `store_callback` |
 
 `#[gc_struct]` replaces the old `impl_gc_traits!` declarative macro.  It emits:
-- Boa: `#[derive(boa_gc::Finalize, boa_gc::Trace, boa_engine::JsData)]` (structs)
-  or `#[derive(boa_gc::Finalize, boa_gc::Trace)]` (enums, no JsData)
-- JSC: no-op `Trace` and `Finalize` impls
+- Boa: `#[derive(Clone, boa_gc::Finalize, boa_gc::Trace, boa_engine::JsData)]` (structs)
+  or `#[derive(Clone, boa_gc::Finalize, boa_gc::Trace)]` (enums, no JsData)
+- JSC: `#[derive(Clone)]` + no-op `Trace` and `Finalize` impls
 
 `GcCell<T>` is a backend-abstracted type alias for GC-managed interior
 mutability.  Construct with `gc_cell_new(val)`, access with `.borrow()` /
@@ -622,7 +622,9 @@ Concrete per-phase validation requirements:
 | **W2. Streams helpers conversion** | Converted `create_read_result` (ObjectInitializer→`create_plain_object`+`object_set_property`), `type_error_value`, `range_error_value` in `readablestreamsupport.rs`. Converted `get_callable_method` in `writablestreamdefaultcontroller.rs`. | ✅ |
 | **G1. `#[gc_struct]` proc-macro attribute** | Created `js_engine_macros` proc-macro crate with `#[gc_struct]` attribute.  Replaces `impl_gc_traits!` across all 34 struct/enum definitions in `content/`.  Re-exported as `js_engine::gc_struct`. | ✅ |
 | **G2. `GcCell<T>` type alias** | Added `GcCell<T>` (Boa: `Gc<GcRefCell<T>>`, JSC: `Rc<RefCell<T>>`) with `gc_cell_new()` constructor.  `Trace` made a supertrait of `boa_gc::Trace` on Boa so the type alias interoperates with GC trait bounds. | ✅ |
-| **C2. `create_builtin_function_with_captures`** | Added to `JsEngine<T>` — accepts a traceable captures struct + fn pointer (no opaque boxed closure).  Boa uses the safe `from_copy_closure_with_captures`; JSC moves captures into `StoredBehaviour`.  Two tests: basic mutable-state access and GC-pressure survival.  Validates the pattern for replacing `NativeFunction` closures in domain code. | ✅ |
+| **C2. `create_builtin_function_with_captures`** | Added to `JsEngine<T>` — accepts a traceable captures struct + fn pointer.  Boa uses the safe `from_copy_closure_with_captures`; JSC moves captures into `StoredBehaviour`.  Two tests. | ✅ |
+| **C3. NativeFunction → captures migration** | 16 NativeFunction sites converted across `writablestreamdefaultcontroller.rs` (6), `readablestreamdefaultcontroller.rs` (4), `readablebytestreamcontroller.rs` (4).  Shared `crate::js::builtin_with_captures` helper.  24 remaining. | ✅ |
+| **G3. `#[gc_struct]` emits `Clone`** | `#[gc_struct]` always emits `derive(Clone)`; 23 redundant `#[derive(Clone)]` lines removed; doc comments reordered above the attribute.  `GcRootHandle<T>`, `GlobalScope`, `PendingRequest`, `CachedNodeObject`, `AnimationFrameCallback` made `Clone`. | ✅ |
 
 ### Remaining phases
 
@@ -667,37 +669,32 @@ Phase S (streams domain) ──► Phase P (platform-object store)
 3. Platform-object state (Phase P) and subsystem entry points (Phase W) are the next blockers — unblock the remaining ~33 non-streams ec_to_ctx.
 4. Backend alias lands once Phases P, W, and S are complete.
 
-### Current state (updated 2026-07-02 — `#[gc_struct]` + `GcCell<T>` + `create_builtin_function_with_captures`)
+### Current state (updated 2026-07-02 — NativeFunction closures converted across controller files)
 
-**Phases A–D, S1–S10, T1–T2, W1–W2, G1–G2, C2 complete.** All binding files at 0 ec_to_ctx. All 34 struct/enum definitions in `content/` use `#[gc_struct]`.
+**Phases A–D, S1–S10, T1–T2, W1–W2, G1–G3, C2–C3 complete.** All binding files at 0 ec_to_ctx. All 34 struct/enum definitions use `#[gc_struct]` (now emits `Clone` automatically). All domain field types use `GcCell<T>`.
 
-**POC test suite: 79/79 pass on Boa** (2 new captures-pattern tests added this session).
+**POC test suite: 79/79 pass on Boa.**
 
 **New this session:**
 
 | Addition | What |
 |---|---|
-| `js_engine_macros` crate | Proc-macro attribute `#[gc_struct]` replacing `impl_gc_traits!` |
-| `GcCell<T>` | Backend-abstracted GC cell (Boa: `Gc<GcRefCell<T>>`, JSC: `Rc<RefCell<T>>`) |
-| `create_builtin_function_with_captures` | `JsEngine<T>` method accepting traceable captures struct + fn pointer |
-| `Trace: boa_gc::Trace` | `Trace` is a supertrait of `boa_gc::Trace` on Boa, making captures bounds work |
+| `#[gc_struct]` emits `Clone` | All structs and enums get `Clone` from the attribute; 23 redundant `#[derive(Clone)]` lines removed; doc comments now above `#[gc_struct]` |
+| `GcCell<T>` migration | All 13 domain files: `boa_gc::{Gc, GcRefCell}` → `js_engine::gc::{GcCell, gc_cell_new}` |
+| `crate::js::builtin_with_captures` | Shared helper in `content/src/js/mod.rs` wrapping `create_builtin_function_with_captures` |
+| NativeFunction → captures | 16 sites converted across 3 controller files (writable, readable, byte). 24 remaining in transformstream + readablestream (SourceMethod-wrapped). |
 
-**~62 ec_to_ctx remain in streams/.** No change from previous session — this session focused on GC abstraction infrastructure rather than ec_to_ctx elimination.
-
-**Remaining streams ec_to_ctx (62 total):**
-- `readablebytestreamcontroller.rs`: 13 — `pull_steps`, `error_steps`, `fill_read_request_from_queue*`, `enqueue_chunk_to_queue`, `respond*`, `pull_from_bytes`
-- `readablestreamdefaultcontroller.rs`: 11 — `PullAlgorithm::call`, `CancelAlgorithm::call`, `StartAlgorithm::call`, `cancel_steps`, `pull_steps`, `call_pull_if_needed`, `enqueue_steps`, `error_steps`, `set_up_*`, `extract_*`
-- `writablestreamdefaultcontroller.rs`: 11 — `abort_steps`, `get_chunk_size`, `close_controller`, `write_controller`, `advance_queue_if_needed`, `process_close`, `process_write`, `set_up_*`, `extract_sink_method`
-- `readablestreamsupport.rs`: 9 — Tee + NativeFunction closures, readable_stream_* calls
-- `readablestream.rs`: 11 — NativeFunction closures, tee
-- `transformstream.rs`: 4 — `_ec` bridge wrappers (underlying functions take `&mut Context`)
-- Other streams files: 3 — `writablestream.rs` (1), `readablestreamdefaultreader.rs` (0, already resolved), `writablestreamdefaultwriter.rs` (0), `readablestreambyobreader.rs` (2)
+**~62 ec_to_ctx remain in streams/** (no change — captures conversion eliminates Boa imports but fn bodies still use `ec_to_ctx`).
 
 ### Next session: recommended order
 
-1. **Convert NativeFunction closures to `create_builtin_function_with_captures`** — the captures-struct pattern is now validated in `generic_js_test.rs`.  Replace each `NativeFunction::from_copy_closure_with_captures(...)` site in the streams domain with a named captures struct + `engine.create_builtin_function_with_captures(captures, fn_ptr, ...)`.  Eliminates ~12 ec_to_ctx across `writablestreamdefaultcontroller.rs`, `readablestreamdefaultcontroller.rs`, and `readablestreamsupport.rs`.
+1. **Convert remaining NativeFunction closures** — 24 sites in `transformstream.rs` and `readablestream.rs`.  These are `SourceMethod`/`Callback`-wrapped; need a `builtin_callback` helper that returns `Callback` directly.
 2. **Add `queue_microtask` trait method** — wraps `ec.enqueue_job()` with a closure that receives `&mut dyn ExecutionContext<T>` instead of `&mut Context`.  Eliminates ~24 more ec_to_ctx from tee and queue operations.
 3. **Phase E — Conditional Types alias** — once remaining ~62 ec_to_ctx are covered, `#[cfg]` gate all Boa imports.
+
+### Working note: `create_builtin_function_with_captures` pattern
+
+For plain promise `.then()` handlers, use `crate::js::builtin_with_captures(context, captures, fn_ptr, length)`.  For `SourceMethod`-wrapped closures, add a similar `builtin_callback` helper that wraps the fn in `Callback::from_object(fn.into())`.
 
 ### Working note: `ec_to_ctx` after `ec_to_ctx`
 

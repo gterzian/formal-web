@@ -50,7 +50,7 @@ pub enum PendingState {
 /// in `GlobalScope.pending_wasm_resolvers` keyed by `request_id`.  This lets
 /// domain code in `content/src/wasm/` construct and push `PendingRequest`
 /// without importing `boa_engine`.
-#[derive(Trace, Finalize)]
+#[derive(Clone, Trace, Finalize)]
 pub enum PendingRequest {
     /// A WebAssembly module compilation or instantiate-byte request.
     WasmCompile {
@@ -93,7 +93,7 @@ pub enum GlobalScopeKind {
 }
 
 /// <https://html.spec.whatwg.org/#global-object>
-#[derive(Trace, Finalize)]
+#[derive(Clone, Trace, Finalize)]
 pub struct CachedNodeObject {
     /// <https://dom.spec.whatwg.org/#interface-node>
     #[unsafe_ignore_trace]
@@ -104,7 +104,7 @@ pub struct CachedNodeObject {
 }
 
 /// <https://html.spec.whatwg.org/#list-of-animation-frame-callbacks>
-#[derive(Trace, Finalize)]
+#[derive(Clone, Trace, Finalize)]
 pub struct AnimationFrameCallback {
     /// <https://html.spec.whatwg.org/#animation-frame-callback-identifier>
     #[unsafe_ignore_trace]
@@ -161,7 +161,7 @@ struct TimerHost {
 }
 
 /// <https://html.spec.whatwg.org/#global-object>
-#[derive(Trace, Finalize)]
+#[derive(Clone, Trace, Finalize)]
 pub struct GlobalScope {
     /// <https://html.spec.whatwg.org/#global-object>
     #[unsafe_ignore_trace]

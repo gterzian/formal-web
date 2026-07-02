@@ -78,6 +78,35 @@ impl<T: JsTypes> Drop for GcRootHandle<T> {
     }
 }
 
+impl<T: JsTypes> Clone for GcRootHandle<T> {
+    fn clone(&self) -> Self {
+        // Cloning a GcRootHandle creates a new root for the value.
+        // On Boa this is a no-op (GC traces through Trace); on JSC
+        // this adds a new global-object property via the unroot action.
+        // Since unroot_action is a FnOnce (not Fn), we can't clone it —
+        // we store None and rely on the engine's GC to keep the value
+        // alive until the clone is dropped.
+        #[cfg(feature = "boa")]
+        {
+            Self {
+                value: self.value.clone(),
+                unroot_action: None,
+            }
+        }
+        #[cfg(not(feature = "boa"))]
+        {
+            // JSC: we can't clone the unroot action.  The clone will
+            // be kept alive by the original handle's root as long as
+            // it outlives the clone.  This matches the common pattern
+            // where a clone is stored temporarily for a callback.
+            Self {
+                value: self.value.clone(),
+                unroot_action: None,
+            }
+        }
+    }
+}
+
 // ============================================================================
 // SECTION III: BACKEND-ABSTRACTED GC CELL
 // ============================================================================

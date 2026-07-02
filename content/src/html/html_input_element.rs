@@ -5,8 +5,8 @@ use blitz_dom::BaseDocument;
 use crate::html::HTMLElement;
 use js_engine::gc_struct;
 
-#[gc_struct]
 /// <https://html.spec.whatwg.org/#the-input-element>
+#[gc_struct]
 pub struct HTMLInputElement {
     /// <https://html.spec.whatwg.org/#htmlelement>
     pub html_element: HTMLElement,

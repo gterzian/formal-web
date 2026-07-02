@@ -1,10 +1,9 @@
 use std::{cell::Cell, collections::VecDeque, rc::Rc};
 
 use boa_engine::{
-    Context, JsNativeError, JsResult, JsValue,
+    Context, JsError, JsNativeError, JsResult, JsValue,
     builtins::typed_array::TypedArrayKind,
     js_string,
-    native_function::NativeFunction,
     object::{
         JsObject,
         builtins::{JsArrayBuffer, JsDataView, JsPromise, JsTypedArray},
@@ -374,9 +373,8 @@ impl ByteQueueEntry {
     }
 }
 
-#[gc_struct]
 /// <https://streams.spec.whatwg.org/#readablestreambyobrequest>
-#[derive(Clone)]
+#[gc_struct]
 pub struct ReadableStreamBYOBRequest {
     /// <https://streams.spec.whatwg.org/#readablestreambyobrequest-controller>
     controller: GcCell<Option<ReadableByteStreamController>>,
@@ -436,9 +434,8 @@ impl ReadableStreamBYOBRequest {
     }
 }
 
-#[gc_struct]
 /// <https://streams.spec.whatwg.org/#readablebytestreamcontroller>
-#[derive(Clone)]
+#[gc_struct]
 pub struct ReadableByteStreamController {
     /// <https://streams.spec.whatwg.org/#readablebytestreamcontroller-stream>
     stream: GcCell<Option<ReadableStream>>,
@@ -1059,7 +1056,6 @@ impl ReadableByteStreamController {
         self.pulling.set(true);
         let controller_object = self.controller_object(ec)?;
         // SAFETY: ec is backed by BoaContext repr(transparent) over Context.
-        // NativeFunction::from_copy_closure_with_captures and JsPromise::then still require &mut Context.
         let context = unsafe { js_engine::boa::ec_to_ctx(ec) };
         let ec_ref: &mut dyn ExecutionContext<crate::js::Types> =
             js_engine::boa::context_as_ec(context);
@@ -1070,32 +1066,18 @@ impl ReadableByteStreamController {
         };
 
         let captured_controller = self.clone();
-        let on_fulfilled = NativeFunction::from_copy_closure_with_captures(
-            |_, _, controller: &ReadableByteStreamController, context| {
-                controller.pulling.set(false);
-                if controller.pull_again.get() {
-                    controller.pull_again.set(false);
-                    crate::js::completion_to_js_result(
-                        controller.call_pull_if_needed(js_engine::boa::context_as_ec(context)),
-                    )?;
-                }
-                Ok(JsValue::undefined())
-            },
+        let on_fulfilled = crate::js::builtin_with_captures(
+            context,
             captured_controller,
-        )
-        .to_js_function(context.realm());
-        let captured_controller = self.clone();
-        let on_rejected = NativeFunction::from_copy_closure_with_captures(
-            |_, args, controller: &ReadableByteStreamController, context| {
-                crate::js::completion_to_js_result(controller.error_steps(
-                    args.first().cloned().unwrap_or_default(),
-                    js_engine::boa::context_as_ec(context),
-                ))?;
-                Ok(JsValue::undefined())
-            },
-            captured_controller,
-        )
-        .to_js_function(context.realm());
+            pull_steps_on_fulfilled,
+            1,
+        );
+        let on_rejected = crate::js::builtin_with_captures(
+            context,
+            self.clone(),
+            pull_steps_on_rejected,
+            1,
+        );
 
         let pull_promise_obj =
             crate::js::js_result_to_completion(JsPromise::from_object(pull_promise), context)?;
@@ -1433,28 +1415,18 @@ pub(crate) fn set_up_readable_byte_stream_controller(
     let start_promise =
         crate::js::js_result_to_completion(JsPromise::resolve(start_result, context), context)?;
 
-    let on_fulfilled = NativeFunction::from_copy_closure_with_captures(
-        |_, _, captured_controller: &ReadableByteStreamController, context| {
-            captured_controller.started.set(true);
-            crate::js::completion_to_js_result(
-                captured_controller.call_pull_if_needed(js_engine::boa::context_as_ec(context)),
-            )?;
-            Ok(JsValue::undefined())
-        },
+    let on_fulfilled = crate::js::builtin_with_captures(
+        context,
         controller.clone(),
-    )
-    .to_js_function(context.realm());
-    let on_rejected = NativeFunction::from_copy_closure_with_captures(
-        |_, args, captured_controller: &ReadableByteStreamController, context| {
-            crate::js::completion_to_js_result(captured_controller.error_steps(
-                args.first().cloned().unwrap_or_default(),
-                js_engine::boa::context_as_ec(context),
-            ))?;
-            Ok(JsValue::undefined())
-        },
+        setup_on_fulfilled,
+        1,
+    );
+    let on_rejected = crate::js::builtin_with_captures(
+        context,
         controller,
-    )
-    .to_js_function(context.realm());
+        setup_on_rejected,
+        1,
+    );
     let start_promise_obj =
         crate::js::js_result_to_completion(JsPromise::from_object(start_promise.into()), context)?;
     let _ = start_promise_obj
@@ -1536,4 +1508,67 @@ fn create_uint8_view_object(
         byte_length as u64,
     )?;
     Ok(JsObject::from(ta))
+}
+
+fn pull_steps_on_fulfilled(
+    _args: &[JsValue],
+    _this: JsValue,
+    captures: &ReadableByteStreamController,
+    ec: &mut dyn ExecutionContext<crate::js::Types>,
+) -> Completion<JsValue, crate::js::Types> {
+    let ctx = unsafe { js_engine::boa::ec_to_ctx(ec) };
+    captures.pulling.set(false);
+    if captures.pull_again.get() {
+        captures.pull_again.set(false);
+        crate::js::completion_to_js_result(
+            captures.call_pull_if_needed(js_engine::boa::context_as_ec(ctx)),
+        )
+        .map_err(|e| e.into_opaque(ctx).unwrap_or(JsValue::undefined()))?;
+    }
+    Ok(JsValue::undefined())
+}
+
+fn pull_steps_on_rejected(
+    args: &[JsValue],
+    _this: JsValue,
+    captures: &ReadableByteStreamController,
+    ec: &mut dyn ExecutionContext<crate::js::Types>,
+) -> Completion<JsValue, crate::js::Types> {
+    let ctx = unsafe { js_engine::boa::ec_to_ctx(ec) };
+    crate::js::completion_to_js_result(captures.error_steps(
+        args.first().cloned().unwrap_or_default(),
+        js_engine::boa::context_as_ec(ctx),
+    ))
+    .map_err(|e| e.into_opaque(ctx).unwrap_or(JsValue::undefined()))?;
+    Ok(JsValue::undefined())
+}
+
+fn setup_on_fulfilled(
+    _args: &[JsValue],
+    _this: JsValue,
+    captures: &ReadableByteStreamController,
+    ec: &mut dyn ExecutionContext<crate::js::Types>,
+) -> Completion<JsValue, crate::js::Types> {
+    let ctx = unsafe { js_engine::boa::ec_to_ctx(ec) };
+    captures.started.set(true);
+    crate::js::completion_to_js_result(
+        captures.call_pull_if_needed(js_engine::boa::context_as_ec(ctx)),
+    )
+    .map_err(|e| e.into_opaque(ctx).unwrap_or(JsValue::undefined()))?;
+    Ok(JsValue::undefined())
+}
+
+fn setup_on_rejected(
+    args: &[JsValue],
+    _this: JsValue,
+    captures: &ReadableByteStreamController,
+    ec: &mut dyn ExecutionContext<crate::js::Types>,
+) -> Completion<JsValue, crate::js::Types> {
+    let ctx = unsafe { js_engine::boa::ec_to_ctx(ec) };
+    crate::js::completion_to_js_result(captures.error_steps(
+        args.first().cloned().unwrap_or_default(),
+        js_engine::boa::context_as_ec(ctx),
+    ))
+    .map_err(|e| e.into_opaque(ctx).unwrap_or(JsValue::undefined()))?;
+    Ok(JsValue::undefined())
 }

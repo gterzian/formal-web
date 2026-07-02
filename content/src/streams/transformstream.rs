@@ -57,9 +57,8 @@ fn queued_resolved_promise(value: JsValue, context: &mut Context) -> JsResult<Js
     Ok(promise.into())
 }
 
-#[gc_struct]
 /// <https://streams.spec.whatwg.org/#ts-class>
-#[derive(Clone)]
+#[gc_struct]
 pub struct TransformStream {
     /// <https://streams.spec.whatwg.org/#transformstream-backpressure>
     #[unsafe_ignore_trace]
@@ -211,9 +210,8 @@ impl TransformStream {
     }
 }
 
-#[gc_struct]
 /// <https://streams.spec.whatwg.org/#transformstreamdefaultcontroller>
-#[derive(Clone)]
+#[gc_struct]
 pub struct TransformStreamDefaultController {
     /// <https://streams.spec.whatwg.org/#transformstreamdefaultcontroller-stream>
     stream: GcCell<Option<TransformStream>>,
@@ -232,25 +230,22 @@ pub struct TransformStreamDefaultController {
     finish_resolvers: GcCell<Option<PromiseResolvers<crate::js::Types>>>,
 }
 
-#[gc_struct]
 /// <https://streams.spec.whatwg.org/#transformstreamdefaultcontroller-transformalgorithm>
-#[derive(Clone)]
+#[gc_struct]
 pub(crate) enum TransformAlgorithm {
     Identity,
     JavaScript(SourceMethod),
 }
 
-#[gc_struct]
 /// <https://streams.spec.whatwg.org/#transformstreamdefaultcontroller-flushalgorithm>
-#[derive(Clone)]
+#[gc_struct]
 pub(crate) enum FlushAlgorithm {
     ReturnUndefined,
     JavaScript(SourceMethod),
 }
 
-#[gc_struct]
 /// <https://streams.spec.whatwg.org/#transformstreamdefaultcontroller-cancelalgorithm>
-#[derive(Clone)]
+#[gc_struct]
 pub(crate) enum TransformCancelAlgorithm {
     ReturnUndefined,
     JavaScript(SourceMethod),

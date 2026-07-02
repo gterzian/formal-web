@@ -6,9 +6,8 @@ use js_engine::{Completion, ExecutionContext};
 
 use crate::webidl::{Callback, ExceptionBehavior, invoke_callback_function};
 
-#[gc_struct]
 /// <https://streams.spec.whatwg.org/#blqs-class>
-#[derive(Clone)]
+#[gc_struct]
 pub struct ByteLengthQueuingStrategy {
     /// <https://streams.spec.whatwg.org/#bytelengthqueuingstrategy-highwatermark>
     #[unsafe_ignore_trace]
@@ -27,9 +26,8 @@ impl ByteLengthQueuingStrategy {
     }
 }
 
-#[gc_struct]
 /// <https://streams.spec.whatwg.org/#cqs-class>
-#[derive(Clone)]
+#[gc_struct]
 pub struct CountQueuingStrategy {
     /// <https://streams.spec.whatwg.org/#countqueuingstrategy-highwatermark>
     #[unsafe_ignore_trace]

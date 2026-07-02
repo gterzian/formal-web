@@ -48,9 +48,8 @@ use super::{
 };
 use js_engine::{Completion, ExecutionContext};
 
-#[gc_struct]
 /// <https://streams.spec.whatwg.org/#rs-class>
-#[derive(Clone)]
+#[gc_struct]
 pub struct ReadableStream {
     /// <https://streams.spec.whatwg.org/#readablestream-controller>
     controller: GcCell<Option<ReadableStreamController>>,

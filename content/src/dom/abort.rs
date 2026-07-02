@@ -134,9 +134,8 @@ impl AbortSignalState {
     }
 }
 
-#[gc_struct]
 /// <https://dom.spec.whatwg.org/#abortsignal>
-#[derive(Clone)]
+#[gc_struct]
 pub struct AbortSignal {
     shared: GcCell<AbortSignalState>,
 }
@@ -295,8 +294,8 @@ impl AbortSignal {
     }
 }
 
-#[gc_struct]
 /// <https://dom.spec.whatwg.org/#abortcontroller>
+#[gc_struct]
 pub struct AbortController {
     /// <https://dom.spec.whatwg.org/#abortcontroller-signal>
     signal: AbortSignal,

@@ -51,8 +51,9 @@ pub fn gc_struct(_attr: TokenStream, item: TokenStream) -> TokenStream {
                 #(#attrs)*
                 #[cfg_attr(
                     feature = "boa",
-                    derive(boa_gc::Finalize, boa_gc::Trace, boa_engine::JsData)
+                    derive(Clone, boa_gc::Finalize, boa_gc::Trace, boa_engine::JsData)
                 )]
+                #[cfg_attr(not(feature = "boa"), derive(Clone))]
                 #vis #struct_token #ident #generics #fields #semi
 
                 #[cfg(not(feature = "boa"))]
@@ -77,8 +78,9 @@ pub fn gc_struct(_attr: TokenStream, item: TokenStream) -> TokenStream {
                 #(#attrs)*
                 #[cfg_attr(
                     feature = "boa",
-                    derive(boa_gc::Finalize, boa_gc::Trace)
+                    derive(Clone, boa_gc::Finalize, boa_gc::Trace)
                 )]
+                #[cfg_attr(not(feature = "boa"), derive(Clone))]
                 #vis #enum_token #ident #generics {
                     #variants
                 }

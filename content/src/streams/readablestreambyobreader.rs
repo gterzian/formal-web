@@ -14,9 +14,8 @@ use super::{
 
 use js_engine::{Completion, ExecutionContext, PromiseResolvers};
 
-#[gc_struct]
 /// <https://streams.spec.whatwg.org/#byob-reader-class>
-#[derive(Clone)]
+#[gc_struct]
 pub struct ReadableStreamBYOBReader {
     stream: GcCell<Option<ReadableStream>>,
     closed_promise: GcCell<Option<JsObject>>,

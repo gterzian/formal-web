@@ -1,7 +1,6 @@
 use js_engine::gc_struct;
-#[gc_struct]
 /// <https://webidl.spec.whatwg.org/#idl-DOMException>
-#[derive(Clone)]
+#[gc_struct]
 pub struct DOMException {
     /// <https://webidl.spec.whatwg.org/#dom-domexception-message>
     #[unsafe_ignore_trace]

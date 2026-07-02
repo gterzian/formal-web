@@ -2605,7 +2605,7 @@ mod tests {
 
     /// Captures struct for [`create_builtin_function_with_captures`] tests.
     /// Holds a counter that the builtin function increments on each call.
-    #[gc_struct]
+#[gc_struct]
     pub(crate) struct Incrementor {
         count: std::cell::Cell<f64>,
     }

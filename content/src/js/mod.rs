@@ -15,6 +15,8 @@ pub(crate) use downcast::{
 /// a second backend (JSC), changing this one line switches the entire crate.
 pub(crate) type Types = js_engine::boa::BoaTypes;
 
+use js_engine::JsEngine;
+
 /// Convert a `JsResult<T>` into a `Completion<T, crate::js::Types>` by mapping
 /// `JsError` errors to their opaque `JsValue` form via `context`.
 ///
@@ -64,4 +66,22 @@ pub(crate) fn native_error_to_js_value(
     js_error
         .into_opaque(context)
         .unwrap_or_else(|_| boa_engine::JsValue::undefined())
+}
+
+/// Convenience wrapper for `create_builtin_function_with_captures` that works
+/// from `&mut Context` (the common domain-code entry point).
+pub(crate) fn builtin_with_captures<C: js_engine::gc::Trace + 'static>(
+    context: &mut boa_engine::Context,
+    captures: C,
+    behaviour: fn(
+        &[boa_engine::JsValue],
+        boa_engine::JsValue,
+        &C,
+        &mut dyn js_engine::ExecutionContext<crate::js::Types>,
+    ) -> js_engine::Completion<boa_engine::JsValue, crate::js::Types>,
+    length: u32,
+) -> boa_engine::object::builtins::JsFunction {
+    let name = boa_engine::property::PropertyKey::from(boa_engine::js_string!(""));
+    js_engine::boa::context_as_engine(context)
+        .create_builtin_function_with_captures(captures, behaviour, length, name)
 }

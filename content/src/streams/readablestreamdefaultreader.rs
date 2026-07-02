@@ -180,9 +180,8 @@ pub(crate) trait ReadableStreamGenericReader: Clone {
     }
 }
 
-#[gc_struct]
 /// <https://streams.spec.whatwg.org/#default-reader-class>
-#[derive(Clone)]
+#[gc_struct]
 pub struct ReadableStreamDefaultReader {
     /// <https://streams.spec.whatwg.org/#readablestreamgenericreader-stream>
     stream: GcCell<Option<ReadableStream>>,

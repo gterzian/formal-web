@@ -11,8 +11,8 @@ use crate::html::{
     HTMLElement, HyperlinkElementUtils, navigate, the_rules_for_choosing_a_navigable,
 };
 
-#[gc_struct]
 /// <https://html.spec.whatwg.org/#htmlanchorelement>
+#[gc_struct]
 pub struct HTMLAnchorElement {
     /// <https://html.spec.whatwg.org/#htmlelement>
     pub html_element: HTMLElement,
