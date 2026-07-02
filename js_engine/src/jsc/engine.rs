@@ -2435,6 +2435,15 @@ impl ExecutionContext<JscTypes> for JscEngine {
         })
     }
 
+    fn promise_state(
+        &mut self,
+        _promise: &JscObject,
+    ) -> Completion<crate::enums::PromiseState<JscTypes>, JscTypes> {
+        // JSC: Runtime promise state inspection is not supported via the C API.
+        // Callers should restructure to avoid needing this.
+        Ok(crate::enums::PromiseState::Pending)
+    }
+
     // ── §27.5 Generator ───────────────────────────────────────────────────
     fn generator_start(
         &mut self,

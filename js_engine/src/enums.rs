@@ -70,6 +70,16 @@ pub enum PromiseRejectionOperation {
     Handle,
 }
 
+/// <https://tc39.es/ecma262/#sec-promise-objects>
+///
+/// Mirrors the [[PromiseState]] internal slot.
+#[derive(Debug, Clone)]
+pub enum PromiseState<T: crate::JsTypes> {
+    Pending,
+    Fulfilled(T::JsValue),
+    Rejected(T::JsValue),
+}
+
 impl PreferredType {
     pub fn is_string(self) -> bool {
         matches!(self, PreferredType::String)

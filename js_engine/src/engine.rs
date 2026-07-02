@@ -572,6 +572,14 @@ pub trait ExecutionContext<T: JsTypes + JsTypesWithRealm>: EcmascriptHost<T> {
         result_capability: Option<PromiseCapability<T>>,
     ) -> Completion<T::JsValue, T>;
 
+    /// Returns the current [[PromiseState]] of a promise object.
+    ///
+    /// <https://tc39.es/ecma262/#sec-promise-objects>
+    fn promise_state(
+        &mut self,
+        promise: &T::JsObject,
+    ) -> Completion<crate::enums::PromiseState<T>, T>;
+
     // ────────────────────────────────────────────────────────────────────────
     // §27.5 Generator Abstract Operations
     // ────────────────────────────────────────────────────────────────────────

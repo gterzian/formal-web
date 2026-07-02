@@ -1321,6 +1321,29 @@ impl ExecutionContext<BoaTypes> for BoaContext {
         Ok(JsValue::from(result))
     }
 
+    fn promise_state(
+        &mut self,
+        promise: &JsObject,
+    ) -> Completion<crate::enums::PromiseState<BoaTypes>, BoaTypes> {
+        let js_promise = JsPromise::from_object(promise.clone()).map_err(|native_error| {
+            let js_error: boa_engine::JsError = native_error.into();
+            js_error
+                .into_opaque(&mut self.context)
+                .unwrap_or_else(|_| JsValue::undefined())
+        })?;
+        Ok(match js_promise.state() {
+            boa_engine::builtins::promise::PromiseState::Pending => {
+                crate::enums::PromiseState::Pending
+            }
+            boa_engine::builtins::promise::PromiseState::Fulfilled(v) => {
+                crate::enums::PromiseState::Fulfilled(v)
+            }
+            boa_engine::builtins::promise::PromiseState::Rejected(v) => {
+                crate::enums::PromiseState::Rejected(v)
+            }
+        })
+    }
+
     // ── §27.5 Generator ───────────────────────────────────────────────────
 
     fn generator_start(

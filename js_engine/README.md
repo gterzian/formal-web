@@ -10,6 +10,15 @@ HTML/DOM/WebIDL layers.
 > **Principle:** The architecture is defined by the standards.  We don't
 > invent new layers — we follow the spec chain exactly and make it generic.
 
+**End state:** All content code (domain, webidl, bindings) operates
+ exclusively on the generic JS API — `ExecutionContext<T>`,
+ `EcmascriptHost<T>`, `JsTypes`.  Zero `boa_engine::*` imports in
+ production code.  Zero `ec_to_ctx` / `context_as_ec` bridges.  Zero
+ `_ec`-suffixed wrappers.  Backend-specific code lives only inside
+ `js_engine/src/{boa,jsc}/`.  Every intermediate step — converting a
+ closure, deleting a wrapper, removing a bridge — is judged by whether it
+ moves toward this end state.
+
 ### 0. Migration methodology — spec-first, not Boa-first
 
 When converting Boa-specific code to the generic layer, **follow the spec
@@ -611,6 +620,8 @@ Concrete per-phase validation requirements:
 | G1-G3 | `#[gc_struct]` proc-macro; `GcCell<T>` type alias; `Clone` emitted |
 | C2-C3 | `create_builtin_function_with_captures`; 16 NativeFunction → captures migrated |
 | A-C | GC derive conversion; binding body conversion; `create_builtin_function` on EC |
+| **S-promise** | `PromiseState<T>` enum in js_engine; `promise_state()` method on `ExecutionContext<T>` trait; Boa + JSC backend impls. Replaces `JsPromise::from_object(x)?.state()` (Boa-specific) with `ec.promise_state(&obj)?`. |
+| **S1a** | PipeToState EC wrappers (18 methods); `pipe_to_on_promise_settled_ec`; `pipe_reaction_fn` + `pipe_reaction_function_ec`; `pipe_read_result_done_ec`; `queue_internal_stream_microtask_ec`; 3 ReadableStreamPipeTo closures converted to EC path |
 
 ### Remaining phases
 
@@ -631,94 +642,39 @@ field types use `GcCell<T>`.
 
 **POC test suite: 79/79 pass on Boa.**
 
-**This session (July 2 continuation):**
-
-| Addition | What |
-|---|---|
-| `readablestream.rs` closures → EC fn pointers | 5 of 7 `NativeFunction` closures converted. Extracted named fn pointers `readable_stream_from_iterable_pull_on_fulfilled_fn`, `readable_stream_from_iterable_cancel_on_fulfilled_fn`, `promise_from_sync_iterator_result_on_fulfilled_fn`, `abort_destination_then_cancel_{on_fulfilled,on_rejected}_fn`. Zero ec_to_ctx in all bodies. |
-| `create_iter_result_object` inlined | Replaced Boa builtin with `create_plain_object` + `create_data_property` using EC trait methods. |
-| `start_abort_cancel_source` → EC | Converted from `(&mut Context) -> JsResult` to `(&mut dyn ExecutionContext) -> Completion`. Uses `readable_stream_cancel_ec`, `resolved_promise(ec)`, `perform_promise_then`. |
-| `underlying_source_type` → EC | Converted from Context to EC. Uses `ec.has_property`, `ec.get`, `ec.to_rust_string`, `ec.same_value`. |
-| `strategy_has_size` → EC | Converted from Context to EC. Uses `ec.to_object`, `ec.has_property`, `EcmascriptHost::get`, `ec.same_value`. |
-| `construct_readable_stream` → EC | Full EC conversion. `construct_readable_stream_ec` now just delegates directly (no ec_to_ctx bridge). |
-| `create_readable_stream_object` → EC | No more `context_as_ec` bridge. Uses `create_interface_instance(ec)` directly. |
-| `create_readable_stream` → EC | Uses `create_readable_stream_object(ec)`, `create_interface_instance(ec)`, `set_up_readable_stream_default_controller(ec)` directly. |
-| `create_readable_byte_stream` → EC | Uses `create_readable_stream_object(ec)`, `create_interface_instance(ec)`. |
-| `readable_stream_tee` → EC | Dispatches to now-EC `readable_byte_stream_tee` and `readable_stream_default_tee`. |
-| `readable_stream_default_tee` → EC | Uses `closed_ec(ec)`, `new_promise_pending()`, `mark_promise_as_handled(ec)`, `perform_promise_then` instead of `.catch()`. TeeState field `cancel_resolvers` changed to `PromiseResolvers`. |
-| `readable_byte_stream_tee` → EC | Uses `closed_ec(ec)`, `new_promise_pending()`, `with_readable_stream_default_reader_ref_ec`. ByteTeeState field `cancel_resolvers` changed to `PromiseResolvers`. |
-| `ReadableStream::tee` → EC | Converted to EC. `tee_ec` now delegates directly (no ec_to_ctx bridge). `ReadableStreamTeeBranches::into_js_value_ec` added using `create_empty_array` + `array_push`. |
-| `readable_stream_from_iterable` → EC | Converted to EC. `readable_stream_from_iterable_ec` now delegates directly (no ec_to_ctx bridge). |
-| `readablestreamdefaultcontroller.rs` double bridge eliminated | `cancel_steps` no longer does ec_to_ctx + context_as_ec to call `CancelAlgorithm::call` (which already takes EC). -1 ec_to_ctx. |
-| transformstream.rs bridge | Updated `create_readable_stream` call to bridge via `context_as_ec`. |
-| `cancel_resolvers.resolve` error logging restored | Two `let _ = cancel_resolvers.resolve(...)` fixed to `if let Err(error) = ... { error!(...); }`. |
-| `call_pull_if_needed` double bridge eliminated | `controller_object_ec(ec)`, `pull_algorithm.call(ec)`, `mark_promise_as_handled(ec)` — no more context_as_ec on calls that already take EC. -2 ec_to_ctx. |
-| `set_up_readable_stream_default_controller` double bridge eliminated | `start_algorithm.call(ec)` and `mark_promise_as_handled(ec)` use ec directly. -2 ec_to_ctx. |
-| `underlying_sink_type` → EC | Converted from Context to EC. Uses `ec.has_property`, `EcmascriptHost::get`, `ec.to_rust_string`, `ec.same_value`. writablestream.rs: 1→0 ec_to_ctx. |
-| `normalize_min` → EC | Converted in readablestreambyobreader.rs. Uses `EcmascriptHost::get`, `ec.to_object`, `ec.to_number`, `ec.new_{type,range}_error`. readablestreambyobreader.rs: 2→0 ec_to_ctx. |
-| `writablestreamdefaultcontroller` methods → EC | `stream_slot`, `controller_object`, `write_algorithm`, `close_algorithm`, `abort_algorithm`, `get_backpressure`, `get_desired_size`, `peek_queue_value`, `dequeue_value` all converted to take EC. `abort_steps` ec_to_ctx eliminated. `write_controller`, `advance_queue_if_needed` restructured to do EC ops before ec_to_ctx. |
-| `writablestreamdefaultwriter::desired_size` → EC | `desired_size` and `get_desired_size_from_stream` converted to EC. `desired_size_ec` simplified to direct delegation. |
-
-**ec_to_ctx eliminated in 4 files:** writablestream.rs (1→0), readablestreambyobreader.rs (2→0), readablestreamdefaultcontroller.rs (4 eliminated), writablestreamdefaultwriter.rs (2 eliminated).
-
-**This session (July 3 continuation):**
-
-| Addition | What |
-|---|---|
-| `builtin_with_captures_ec` / `builtin_callback_ec` helpers | Added EC-taking variants in `content/src/js/mod.rs` that bridge to Context internally. |
-| `readablestream.rs` tee + start_abort_cancel_source | 3 `builtin_with_captures` → `builtin_with_captures_ec`. -3 ec_to_ctx. |
-| `transformstream.rs` | `sink_abort` + `transform_stream_default_source_pull_algorithm` → EC. -1 ec_to_ctx. |
-| `readablebytestreamcontroller.rs` | Eliminated 14 ec_to_ctx: removed double-bridge patterns (ec→ctx→ec), converted `call_pull_if_needed`, `pull_steps`, `setup`, `extract_auto_allocate_chunk_size`, `readable_stream_fulfill_read_request` caller. Added `allocate_array_buffer` to `ExecutionContext<T>` trait and both backends. Converted `readable_stream_error` and `readable_stream_close_ec` to use `ec.call()` instead of `ResolvingFunctions::resolve.call`. |
-| `readablestreamdefaultcontroller.rs` | `readable_stream_add_read_request` callers fixed, `readable_stream_error` EC call, `readable_stream_fulfill_read_request` callers fixed. |
-| `writablestreamdefaultcontroller.rs` | Converted 5 fn pointer double bridges (`process_close_on_fulfilled/rejected`, `process_write_on_fulfilled/rejected`, `setup_on_fulfilled`) to use `ec` directly. -4 ec_to_ctx. |
-| `html_element.rs` | `style_declaration_object` fully converted to EC (replaced `ObjectInitializer` with `create_plain_object` + `define_property_or_throw` + `create_builtin_function`). -1 ec_to_ctx. |
-| `hyperlink_element_utils.rs` | `document_creation_url` converted to EC using `document_object_ec` + `with_object_any`. -1 ec_to_ctx. |
-| `html_anchor_element.rs` | Updated caller to use `document_creation_url` directly (removed `_ec` suffix). |
-| `html_media_element.rs` | `Context` import removed from unused. |
-| `windowproxy.rs` | `resolve_window` converted to EC using `with_object_any` + `global_object()`. -1 ec_to_ctx. |
-| `readablestream.rs` | `readable_stream_error` converted to EC. `readable_stream_close_ec` ResolvingFunctions::resolve → ec.call(). `readable_stream_fulfill_read_request` converted to EC. `readable_stream_add_read_request` converted to EC. |
-| `js_engine` trait | Added `allocate_array_buffer` to `ExecutionContext<T>` (both Boa and JSC backends). |
-
-**ec_to_ctx eliminated this session: 29 total** (84→55).  Files cleaned up: `html_element.rs`, `hyperlink_element_utils.rs`, `readablebytestreamcontroller.rs` (16→0), `writablestreamdefaultwriter.rs`.
-
-**2 closures remaining in `readablestream.rs`** (both from_copy_closure):
+**1 closure remaining in `readablestream.rs`** (from_copy_closure):
 
 | Closure | Blocker |
 |---|---|
-| byte_tee_pull_byob on_fulfilled | `queue_internal_stream_microtask` — takes Context |
-| pipe_reaction | `pipe_to_on_promise_settled` — large function (~100 lines) |
+| byte_tee_pull_byob on_fulfilled | Deeper tee algorithm conversions — `clone_as_uint8_array`, `byte_tee_enqueue_to_branch`, `readable_stream_cancel` (all Context) |
 
-**This session (microtask queueing):**
+`pipe_reaction` is now fully addressed: `pipe_reaction_fn` (fn pointer) + `pipe_reaction_function_ec` (using `builtin_with_captures_ec`) provide the EC alternative. The old `NativeFunction::from_copy_closure_with_captures` in `pipe_reaction_function` remains for the Context code path.
 
-| Addition | What |
-|---|---|
-| `enqueue_job_with_realm` implemented | Boa: wraps `Box<dyn FnOnce(&mut dyn EC<T>)>` in GenericJob, converts Context→EC via `context_as_ec`. JSC: stores `Box<dyn FnOnce(&mut JscEngine)>` in unified job queue; `run_jobs` passes `self` to each closure. |
-| `+ Send` removed from `enqueue_job` / `enqueue_job_with_realm` | Streams closures capture `GcCell<T>` which is `!Send`. Neither backend requires `Send` — jobs always run on the same thread. |
-| `queued_jobs` in JSC unified to `Vec<Box<dyn FnOnce(&mut JscEngine)>>` | `enqueue_job` wraps plain closures; `enqueue_job_with_realm` passes EC. `run_jobs` iterates and calls `job(self)`. |
-| HostMakeJobCallback design documented | Added README section explaining the two-pronged approach: `enqueue_job_with_realm` for content-initiated microtasks, `HostMakeJobCallback`/`HostCallJobCallback` via engine's native `HostHooks` trait for engine-initiated callbacks (promise reactions). |
+**PipeToState EC wrappers:** ✅ All 18 methods have `_ec` wrappers. `pipe_to_on_promise_settled_ec`, `pipe_reaction_fn`, `pipe_reaction_function_ec`, `pipe_read_result_done_ec` all exist.
 
-**This session (_ec wrapper elimination):**
-
-| Removal | What |
-|---|---|
-| `tee_ec` | Deleted — just delegated to `tee(ec)` which already takes EC. Caller changed. |
-| `construct_readable_stream_ec` | Deleted — just delegated to `construct_readable_stream(new_target, args, ec)` which already takes EC. |
-| `readable_stream_from_iterable_ec` | Deleted — just delegated to `readable_stream_from_iterable(async_iterable, ec)` which already takes EC. Also replaced `args.get_or_undefined(0)` with standard slice access. |
+**`queue_internal_stream_microtask_ec`:** ✅ Added with `enqueue_job_with_realm`. All 3 `ReadableStreamPipeTo` closures in `readablestreamsupport.rs` now use it + `on_read_request_settled_ec`, eliminating 3 ec_to_ctx bridges.
 
 **Remaining _ec wrappers blocked on deeper conversion:** `pipe_through_ec`, `pipe_to_ec`, `cancel_ec`, `get_reader_ec` — all delegate to Context-based counterparts that need conversion first. `readable_ec` — has a Context-based namesake (`readable()`) that would collide.
 
 ### Next session: recommended order
 
-1. **Convert `pipe_to_on_promise_settled` to EC** — this unblocks both the
-   `pipe_reaction` closure and the `pipe_through_ec` / `pipe_to_ec` wrappers.
+1. **Convert PipeToState impl to EC** — With `promise_state()` now available on the EC trait, convert all ~20 PipeToState methods from `&mut Context` → `&mut dyn ExecutionContext<T>`, replacing:
+   - `JsPromise::from_object(x)?.state()` → `ec.promise_state(&x)?`
+   - `JsPromise::from_object(x)?.then(...)` → `ec.perform_promise_then(...)`
+   - `JsNativeError::typ().with_message(msg)` → `ec.new_type_error(msg)`
+   - `result_object.has_property(js_string!("k"), ctx)` → `ec.has_property(obj, "k")`
+   - `result_object.get(js_string!("k"), ctx)?.to_boolean()` → `ec.to_boolean(&ec.get(obj, "k")?)`
+   - `resolvers.resolve.call(&undefined, &[v], ctx)` → `ec.call(&resolve.into(), &ec.value_undefined(), &[v])`
+   - `JsPromise::new_pending(ctx)` → `ec.new_promise_pending()`
+   - `NativeFunction::from_copy_closure_with_captures(...)` → fn pointer + `builtin_with_captures_ec`
 
-2. **Convert `queue_internal_stream_microtask` to EC** — this unblocks the
-   `byte_tee_pull_byob_on_fulfilled` closure and the tee helper functions.
-   The `enqueue_job_with_realm` backend is ready; the bottleneck is converting
-   the closure bodies that call Context-taking helpers (`structured_clone_value`,
-   `readable_stream_cancel`, `byte_tee_enqueue_to_branch`, etc.).
+2. **Convert `readable_stream_pipe_to` to EC** — uses PipeToState methods + `acquire_readable_stream_default_reader`, `acquire_writable_stream_default_writer`, `readable_stream_default_reader_release` (all have EC variants or already take EC).
 
-3. **Phase E — Conditional Types alias**.
+3. **Convert entry points** (`ReadableStream::pipe_to`, `pipe_through`) — call `readable_stream_pipe_to`, `normalize_pipe_options`, `extract_abort_signal`.
+
+4. **Update callers** — `abort.rs` (`run_abort_algorithm_ec` → `run_abort_algorithm`), `readablestreamsupport.rs` (ReadRequest closures), JS bindings (`pipe_to_ec` → `pipe_to`), `queue_internal_stream_microtask` → EC closure variant.
+
+5. **Phase E — Conditional Types alias**.
 
 ### Working notes
 
