@@ -136,19 +136,21 @@ impl WritableStreamDefaultWriter {
     }
 
     /// <https://streams.spec.whatwg.org/#default-writer-desired-size>
-    pub(crate) fn desired_size(&self) -> JsResult<Option<f64>> {
+    pub(crate) fn desired_size(
+        &self,
+        ec: &mut dyn ExecutionContext<crate::js::Types>,
+    ) -> Completion<Option<f64>, crate::js::Types> {
         let stream = self.stream_slot_value().ok_or_else(|| {
-            JsNativeError::typ().with_message("WritableStreamDefaultWriter has been released")
+            ec.new_type_error("WritableStreamDefaultWriter has been released")
         })?;
-        self.get_desired_size_from_stream(stream)
+        self.get_desired_size_from_stream(stream, ec)
     }
 
     pub(crate) fn desired_size_ec(
         &self,
         ec: &mut dyn ExecutionContext<crate::js::Types>,
     ) -> Completion<Option<f64>, crate::js::Types> {
-        let err = ec.new_type_error("WritableStreamDefaultWriter has been released");
-        self.desired_size().map_err(|_| err)
+        self.desired_size(ec)
     }
 
     /// <https://streams.spec.whatwg.org/#default-writer-ready>
@@ -348,16 +350,21 @@ impl WritableStreamDefaultWriter {
         self.reject_ready_promise(error, ec)
     }
 
-    fn get_desired_size_from_stream(&self, stream: WritableStream) -> JsResult<Option<f64>> {
+    fn get_desired_size_from_stream(
+        &self,
+        stream: WritableStream,
+        ec: &mut dyn ExecutionContext<crate::js::Types>,
+    ) -> Completion<Option<f64>, crate::js::Types> {
         match stream.state() {
             WritableStreamState::Errored | WritableStreamState::Erroring => Ok(None),
             WritableStreamState::Closed => Ok(Some(0.0)),
             WritableStreamState::Writable => {
                 let controller = stream.controller_slot().ok_or_else(|| {
-                    JsNativeError::typ().with_message("WritableStream is missing its controller")
+                    ec.new_type_error("WritableStream is missing its controller")
                 })?;
                 Ok(Some(writable_stream_default_controller_get_desired_size(
                     controller.as_default_controller(),
+                    ec,
                 )?))
             }
         }

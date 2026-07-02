@@ -197,11 +197,12 @@ impl WritableStreamDefaultController {
             abort_algorithm: gc_cell_new(None),
         }
     }
-    fn stream_slot(&self) -> JsResult<WritableStream> {
+    fn stream_slot(
+        &self,
+        ec: &mut dyn ExecutionContext<crate::js::Types>,
+    ) -> Completion<WritableStream, crate::js::Types> {
         self.stream.borrow().clone().ok_or_else(|| {
-            JsNativeError::typ()
-                .with_message("WritableStreamDefaultController is not attached to a stream")
-                .into()
+            ec.new_type_error("WritableStreamDefaultController is not attached to a stream")
         })
     }
 
@@ -214,12 +215,17 @@ impl WritableStreamDefaultController {
         })
     }
 
-    fn controller_object(&self) -> JsResult<JsObject> {
-        self.stream_slot()?.controller_object_slot().ok_or_else(|| {
-            JsNativeError::typ()
-                .with_message("WritableStreamDefaultController is missing its JavaScript object")
-                .into()
-        })
+    fn controller_object(
+        &self,
+        ec: &mut dyn ExecutionContext<crate::js::Types>,
+    ) -> Completion<JsObject, crate::js::Types> {
+        self.stream_slot(ec)?
+            .controller_object_slot()
+            .ok_or_else(|| {
+                ec.new_type_error(
+                    "WritableStreamDefaultController is missing its JavaScript object",
+                )
+            })
     }
 
     fn controller_object_ec(
@@ -305,8 +311,7 @@ impl WritableStreamDefaultController {
         reason: JsValue,
         ec: &mut dyn ExecutionContext<crate::js::Types>,
     ) -> Completion<JsObject, crate::js::Types> {
-        let context = unsafe { js_engine::boa::ec_to_ctx(ec) };
-        let algorithm = crate::js::js_result_to_completion(self.abort_algorithm(), context)?;
+        let algorithm = self.abort_algorithm(ec)?;
         let result = algorithm.call(reason, ec)?;
         self.clear_algorithms();
         Ok(result)
@@ -327,36 +332,45 @@ impl WritableStreamDefaultController {
         signal_abort(&mut host, &signal, reason)
     }
 
-    fn write_algorithm(&self) -> JsResult<WriteAlgorithm> {
+    fn write_algorithm(
+        &self,
+        ec: &mut dyn ExecutionContext<crate::js::Types>,
+    ) -> Completion<WriteAlgorithm, crate::js::Types> {
         self.write_algorithm.borrow().clone().ok_or_else(|| {
-            JsNativeError::typ()
-                .with_message("WritableStreamDefaultController is missing its write algorithm")
-                .into()
+            ec.new_type_error("WritableStreamDefaultController is missing its write algorithm")
         })
     }
 
-    fn close_algorithm(&self) -> JsResult<CloseAlgorithm> {
+    fn close_algorithm(
+        &self,
+        ec: &mut dyn ExecutionContext<crate::js::Types>,
+    ) -> Completion<CloseAlgorithm, crate::js::Types> {
         self.close_algorithm.borrow().clone().ok_or_else(|| {
-            JsNativeError::typ()
-                .with_message("WritableStreamDefaultController is missing its close algorithm")
-                .into()
+            ec.new_type_error("WritableStreamDefaultController is missing its close algorithm")
         })
     }
 
-    fn abort_algorithm(&self) -> JsResult<AbortAlgorithm> {
+    fn abort_algorithm(
+        &self,
+        ec: &mut dyn ExecutionContext<crate::js::Types>,
+    ) -> Completion<AbortAlgorithm, crate::js::Types> {
         self.abort_algorithm.borrow().clone().ok_or_else(|| {
-            JsNativeError::typ()
-                .with_message("WritableStreamDefaultController is missing its abort algorithm")
-                .into()
+            ec.new_type_error("WritableStreamDefaultController is missing its abort algorithm")
         })
     }
 
-    fn get_desired_size(&self) -> JsResult<f64> {
+    fn get_desired_size(
+        &self,
+        _ec: &mut dyn ExecutionContext<crate::js::Types>,
+    ) -> Completion<f64, crate::js::Types> {
         Ok(self.strategy_high_water_mark.get() - self.queue_total_size.get())
     }
 
-    fn get_backpressure(&self) -> JsResult<bool> {
-        Ok(self.get_desired_size()? <= 0.0)
+    fn get_backpressure(
+        &self,
+        ec: &mut dyn ExecutionContext<crate::js::Types>,
+    ) -> Completion<bool, crate::js::Types> {
+        Ok(self.get_desired_size(ec)? <= 0.0)
     }
 
     fn get_chunk_size(
@@ -364,16 +378,15 @@ impl WritableStreamDefaultController {
         chunk: &JsValue,
         ec: &mut dyn ExecutionContext<crate::js::Types>,
     ) -> Completion<f64, crate::js::Types> {
-        let context = unsafe { js_engine::boa::ec_to_ctx(ec) };
         let Some(strategy_size_algorithm) = self.strategy_size_algorithm.borrow().clone() else {
             debug_assert_ne!(
-                crate::js::js_result_to_completion(self.stream_slot(), context)?.state(),
+                self.stream_slot(ec)?.state(),
                 WritableStreamState::Writable,
             );
             return Ok(1.0);
         };
 
-        match strategy_size_algorithm.size(chunk, js_engine::boa::context_as_ec(context)) {
+        match strategy_size_algorithm.size(chunk, ec) {
             Ok(size) => Ok(size),
             Err(error) => {
                 self.error_if_needed(error, ec)?;
@@ -430,6 +443,8 @@ impl WritableStreamDefaultController {
         chunk_size: f64,
         ec: &mut dyn ExecutionContext<crate::js::Types>,
     ) -> Completion<(), crate::js::Types> {
+        let backpressure = self.get_backpressure(ec)?;
+        let stream = self.stream_slot(ec)?;
         let context = unsafe { js_engine::boa::ec_to_ctx(ec) };
         if let Err(error) = self.enqueue_value_with_size(QueueEntryValue::Chunk(chunk), chunk_size)
         {
@@ -438,10 +453,7 @@ impl WritableStreamDefaultController {
             return Ok(());
         }
 
-        let stream = crate::js::js_result_to_completion(self.stream_slot(), context)?;
         if !stream.close_queued_or_in_flight() && stream.state() == WritableStreamState::Writable {
-            let backpressure =
-                crate::js::js_result_to_completion(self.get_backpressure(), context)?;
             stream.update_backpressure(backpressure, ec)?;
         }
 
@@ -452,8 +464,7 @@ impl WritableStreamDefaultController {
         &self,
         ec: &mut dyn ExecutionContext<crate::js::Types>,
     ) -> Completion<(), crate::js::Types> {
-        let context = unsafe { js_engine::boa::ec_to_ctx(ec) };
-        let stream = crate::js::js_result_to_completion(self.stream_slot(), context)?;
+        let stream = self.stream_slot(ec)?;
         if !self.started() {
             return Ok(());
         }
@@ -477,7 +488,7 @@ impl WritableStreamDefaultController {
             return Ok(());
         }
 
-        match crate::js::js_result_to_completion(self.peek_queue_value(), context)? {
+        match self.peek_queue_value(ec)? {
             QueueEntryValue::CloseSentinel => self.process_close(ec),
             QueueEntryValue::Chunk(ref chunk) => self.process_write(chunk.clone(), ec),
         }
@@ -487,15 +498,14 @@ impl WritableStreamDefaultController {
         &self,
         ec: &mut dyn ExecutionContext<crate::js::Types>,
     ) -> Completion<(), crate::js::Types> {
-        let context = unsafe { js_engine::boa::ec_to_ctx(ec) };
-        let stream = crate::js::js_result_to_completion(self.stream_slot(), context)?;
-        crate::js::js_result_to_completion(stream.mark_close_request_in_flight(), context)?;
-        crate::js::js_result_to_completion(self.dequeue_value(), context)?;
+        let stream = self.stream_slot(ec)?;
+        let _ = self.dequeue_value(ec)?;
         debug_assert!(self.queue.borrow().is_empty());
-
-        let algorithm = crate::js::js_result_to_completion(self.close_algorithm(), context)?;
-        let sink_close_promise = algorithm.call(js_engine::boa::context_as_ec(context))?;
-        self.clear_algorithms();
+        let algorithm = self.close_algorithm(ec)?;
+        let sink_close_promise = algorithm.call(ec)?;
+        // Note: ec_to_ctx — mark_close_request_in_flight and builtin_with_captures need Context.
+        let context = unsafe { js_engine::boa::ec_to_ctx(ec) };
+        crate::js::js_result_to_completion(stream.mark_close_request_in_flight(), context)?;
         let stream_for_fulfilled = stream.clone();
         let on_fulfilled = crate::js::builtin_with_captures(
             context,
@@ -521,23 +531,17 @@ impl WritableStreamDefaultController {
         chunk: JsValue,
         ec: &mut dyn ExecutionContext<crate::js::Types>,
     ) -> Completion<(), crate::js::Types> {
-        let context = unsafe { js_engine::boa::ec_to_ctx(ec) };
-
         // Step 1: "Let stream be controller.[[stream]]."
-        let stream = crate::js::js_result_to_completion(self.stream_slot(), context)?;
+        let stream = self.stream_slot(ec)?;
 
         // Step 2: "Perform ! WritableStreamMarkFirstWriteRequestInFlight(stream)."
-        crate::js::js_result_to_completion(stream.mark_first_write_request_in_flight(), context)?;
-
         // Step 3: "Let sinkWritePromise be the result of performing controller.[[writeAlgorithm]], passing in chunk."
-        let controller_object =
-            crate::js::js_result_to_completion(self.controller_object(), context)?;
-        let write_algo = crate::js::js_result_to_completion(self.write_algorithm(), context)?;
-        let sink_write_promise = write_algo.call(
-            &controller_object,
-            chunk,
-            js_engine::boa::context_as_ec(context),
-        )?;
+        let controller_object = self.controller_object(ec)?;
+        let write_algo = self.write_algorithm(ec)?;
+        let sink_write_promise = write_algo.call(&controller_object, chunk, ec)?;
+        // Note: ec_to_ctx — mark_first_write_request_in_flight still takes Context.
+        let context = unsafe { js_engine::boa::ec_to_ctx(ec) };
+        crate::js::js_result_to_completion(stream.mark_first_write_request_in_flight(), context)?;
 
         let controller_for_fulfilled = self.clone();
         let stream_for_fulfilled = stream.clone();
@@ -585,19 +589,21 @@ impl WritableStreamDefaultController {
         self.queue_total_size.set(0.0);
     }
 
-    fn peek_queue_value(&self) -> JsResult<QueueEntryValue> {
+    fn peek_queue_value(
+        &self,
+        ec: &mut dyn ExecutionContext<crate::js::Types>,
+    ) -> Completion<QueueEntryValue, crate::js::Types> {
         self.queue
             .borrow()
             .first()
             .map(|entry| entry.value.clone())
-            .ok_or_else(|| {
-                JsNativeError::typ()
-                    .with_message("WritableStreamDefaultController queue is empty")
-                    .into()
-            })
+            .ok_or_else(|| ec.new_type_error("WritableStreamDefaultController queue is empty"))
     }
 
-    fn dequeue_value(&self) -> JsResult<QueueEntryValue> {
+    fn dequeue_value(
+        &self,
+        _ec: &mut dyn ExecutionContext<crate::js::Types>,
+    ) -> Completion<QueueEntryValue, crate::js::Types> {
         let mut queue = self.queue.borrow_mut();
         let entry = queue.remove(0);
         drop(queue);
@@ -665,9 +671,6 @@ pub(crate) fn set_up_writable_stream_default_controller(
     size_algorithm: SizeAlgorithm,
     ec: &mut dyn ExecutionContext<crate::js::Types>,
 ) -> Completion<(), crate::js::Types> {
-    // SAFETY: ec is backed by BoaContext repr(transparent) over Context
-    let context = unsafe { js_engine::boa::ec_to_ctx(ec) };
-
     // Step 1: "Assert: stream implements WritableStream."
     // Step 2: "Assert: stream.[[controller]] is undefined."
 
@@ -684,7 +687,7 @@ pub(crate) fn set_up_writable_stream_default_controller(
     // Step 6: "Set controller.[[abortController]] to a new AbortController."
     // The content process stores the exposed [AbortSignal](https://dom.spec.whatwg.org/#interface-AbortSignal) [platform object](https://webidl.spec.whatwg.org/#dfn-platform-object) directly because the controller getter
     // only needs the signal object.
-    let signal = create_abort_signal(AbortSignal::new(), js_engine::boa::context_as_ec(context))?;
+    let signal = create_abort_signal(AbortSignal::new(), ec)?;
     controller.set_abort_signal_slot(signal);
 
     // Step 7: "Set controller.[[started]] to false."
@@ -706,14 +709,16 @@ pub(crate) fn set_up_writable_stream_default_controller(
     *controller.abort_algorithm.borrow_mut() = Some(abort_algorithm);
 
     // Step 13: "Let backpressure be ! WritableStreamDefaultControllerGetBackpressure(controller)."
-    let backpressure = crate::js::js_result_to_completion(controller.get_backpressure(), context)?;
+    let backpressure = controller.get_backpressure(ec)?;
 
     // Step 14: "Perform ! WritableStreamUpdateBackpressure(stream, backpressure)."
-    stream.update_backpressure(backpressure, js_engine::boa::context_as_ec(context))?;
+    stream.update_backpressure(backpressure, ec)?;
 
     // Step 15: "Let startResult be the result of performing startAlgorithm."
-    let start_result =
-        start_algorithm.call(controller_object, js_engine::boa::context_as_ec(context))?;
+    let start_result = start_algorithm.call(controller_object, ec)?;
+
+    // Note: ec_to_ctx — JsPromise::resolve and builtin_with_captures need Context.
+    let context = unsafe { js_engine::boa::ec_to_ctx(ec) };
 
     // Step 16: "Let startPromise be a promise resolved with startResult."
     let start_promise =
@@ -854,8 +859,9 @@ pub(crate) fn writable_stream_default_controller_get_chunk_size(
 /// <https://streams.spec.whatwg.org/#writable-stream-default-controller-get-desired-size>
 pub(crate) fn writable_stream_default_controller_get_desired_size(
     controller: WritableStreamDefaultController,
-) -> JsResult<f64> {
-    controller.get_desired_size()
+    ec: &mut dyn ExecutionContext<crate::js::Types>,
+) -> Completion<f64, crate::js::Types> {
+    controller.get_desired_size(ec)
 }
 
 /// <https://streams.spec.whatwg.org/#writable-stream-default-controller-write>
@@ -933,24 +939,20 @@ fn process_write_on_fulfilled(
     captures: &(WritableStreamDefaultController, WritableStream),
     ec: &mut dyn ExecutionContext<crate::js::Types>,
 ) -> Completion<JsValue, crate::js::Types> {
-    let ctx = unsafe { js_engine::boa::ec_to_ctx(ec) };
     let (controller, stream) = captures;
-    crate::js::completion_to_js_result(
-        stream.finish_in_flight_write(js_engine::boa::context_as_ec(ctx)),
-    )
-    .map_err(|e| e.into_opaque(ctx).unwrap_or(JsValue::undefined()))?;
+    // Do EC operations before ec_to_ctx to avoid borrow conflicts.
+    controller.dequeue_value(ec)?;
     let state = stream.state();
     debug_assert!(state == WritableStreamState::Writable || state == WritableStreamState::Erroring);
-    crate::js::js_result_to_completion(controller.dequeue_value(), ctx)?;
     if !stream.close_queued_or_in_flight() && state == WritableStreamState::Writable {
-        let backpressure = crate::js::js_result_to_completion(controller.get_backpressure(), ctx)?;
-        crate::js::completion_to_js_result(
-            stream.update_backpressure(backpressure, js_engine::boa::context_as_ec(ctx)),
-        )
-        .map_err(|e| e.into_opaque(ctx).unwrap_or(JsValue::undefined()))?;
+        let backpressure = controller.get_backpressure(ec)?;
+        stream.update_backpressure(backpressure, ec)?;
     }
+    controller.advance_queue_if_needed(ec)?;
+    // Note: ec_to_ctx — finish_in_flight_write still takes Context.
+    let ctx = unsafe { js_engine::boa::ec_to_ctx(ec) };
     crate::js::completion_to_js_result(
-        controller.advance_queue_if_needed(js_engine::boa::context_as_ec(ctx)),
+        stream.finish_in_flight_write(js_engine::boa::context_as_ec(ctx)),
     )
     .map_err(|e| e.into_opaque(ctx).unwrap_or(JsValue::undefined()))?;
     Ok(JsValue::undefined())
@@ -996,13 +998,11 @@ fn setup_on_rejected(
     captures: &WritableStreamDefaultController,
     ec: &mut dyn ExecutionContext<crate::js::Types>,
 ) -> Completion<JsValue, crate::js::Types> {
-    let ctx = unsafe { js_engine::boa::ec_to_ctx(ec) };
     captures.set_started(true);
-    let stream = crate::js::js_result_to_completion(captures.stream_slot(), ctx)?;
-    crate::js::completion_to_js_result(stream.deal_with_rejection(
+    let stream = captures.stream_slot(ec)?;
+    stream.deal_with_rejection(
         args.first().cloned().unwrap_or(JsValue::undefined()),
-        js_engine::boa::context_as_ec(ctx),
-    ))
-    .map_err(|e| e.into_opaque(ctx).unwrap_or(JsValue::undefined()))?;
+        ec,
+    )?;
     Ok(JsValue::undefined())
 }

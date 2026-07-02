@@ -632,8 +632,10 @@ field types use `GcCell<T>`.
 | `set_up_readable_stream_default_controller` double bridge eliminated | `start_algorithm.call(ec)` and `mark_promise_as_handled(ec)` use ec directly. -2 ec_to_ctx. |
 | `underlying_sink_type` → EC | Converted from Context to EC. Uses `ec.has_property`, `EcmascriptHost::get`, `ec.to_rust_string`, `ec.same_value`. writablestream.rs: 1→0 ec_to_ctx. |
 | `normalize_min` → EC | Converted in readablestreambyobreader.rs. Uses `EcmascriptHost::get`, `ec.to_object`, `ec.to_number`, `ec.new_{type,range}_error`. readablestreambyobreader.rs: 2→0 ec_to_ctx. |
+| `writablestreamdefaultcontroller` methods → EC | `stream_slot`, `controller_object`, `write_algorithm`, `close_algorithm`, `abort_algorithm`, `get_backpressure`, `get_desired_size`, `peek_queue_value`, `dequeue_value` all converted to take EC. `abort_steps` ec_to_ctx eliminated. `write_controller`, `advance_queue_if_needed` restructured to do EC ops before ec_to_ctx. |
+| `writablestreamdefaultwriter::desired_size` → EC | `desired_size` and `get_desired_size_from_stream` converted to EC. `desired_size_ec` simplified to direct delegation. |
 
-**ec_to_ctx eliminated in 3 files:** writablestream.rs (1→0), readablestreambyobreader.rs (2→0), readablestreamdefaultcontroller.rs (4 eliminated).
+**ec_to_ctx eliminated in 4 files:** writablestream.rs (1→0), readablestreambyobreader.rs (2→0), readablestreamdefaultcontroller.rs (4 eliminated), writablestreamdefaultwriter.rs (2 eliminated).
 
 **2 closures remaining in `readablestream.rs`** (both from_copy_closure).
 All blocked on deeper function conversions:
