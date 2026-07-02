@@ -16,6 +16,7 @@ use js_engine::{Completion, ExecutionContext, JsTypes, TypedArrayElementType};
 
 use crate::webidl::bindings::create_interface_instance;
 use crate::webidl::resolved_promise;
+use js_engine::gc_struct;
 
 use super::{
     CancelAlgorithm, PullAlgorithm, ReadIntoRequest, ReadRequest, ReadableStream,
@@ -99,9 +100,8 @@ impl ArrayBufferViewDescriptor {
         value: JsValue,
         ec: &mut dyn ExecutionContext<crate::js::Types>,
     ) -> Completion<Self, crate::js::Types> {
-        let object =
-            <crate::js::Types as JsTypes>::value_as_object(&value)
-                .ok_or_else(|| ec.new_type_error("Expected an ArrayBufferView object"))?;
+        let object = <crate::js::Types as JsTypes>::value_as_object(&value)
+            .ok_or_else(|| ec.new_type_error("Expected an ArrayBufferView object"))?;
 
         if let Some(data_view) = <crate::js::Types as JsTypes>::object_as_data_view(&object) {
             let buffer = ec.data_view_buffer(&data_view)?;
@@ -116,12 +116,10 @@ impl ArrayBufferViewDescriptor {
             });
         }
 
-        if let Some(typed_array) =
-            <crate::js::Types as JsTypes>::object_as_typed_array(&object)
-        {
-            let kind = typed_array.kind().ok_or_else(|| {
-                ec.new_type_error("TypedArray view is missing its kind")
-            })?;
+        if let Some(typed_array) = <crate::js::Types as JsTypes>::object_as_typed_array(&object) {
+            let kind = typed_array
+                .kind()
+                .ok_or_else(|| ec.new_type_error("TypedArray view is missing its kind"))?;
             let buffer = ec.typed_array_buffer(&typed_array)?;
             if ec.array_buffer_data(&buffer).is_none() {
                 return Err(ec.new_type_error("ArrayBufferView buffer is detached"));
@@ -374,15 +372,14 @@ impl ByteQueueEntry {
     }
 }
 
-js_engine::impl_gc_traits! {
-    /// <https://streams.spec.whatwg.org/#readablestreambyobrequest>
-    #[derive(Clone)]
-    pub struct ReadableStreamBYOBRequest {
-        /// <https://streams.spec.whatwg.org/#readablestreambyobrequest-controller>
-        controller: Gc<GcRefCell<Option<ReadableByteStreamController>>>,
-        /// <https://streams.spec.whatwg.org/#readablestreambyobrequest-view>
-        view: Gc<GcRefCell<Option<JsObject>>>,
-    }
+#[gc_struct]
+/// <https://streams.spec.whatwg.org/#readablestreambyobrequest>
+#[derive(Clone)]
+pub struct ReadableStreamBYOBRequest {
+    /// <https://streams.spec.whatwg.org/#readablestreambyobrequest-controller>
+    controller: Gc<GcRefCell<Option<ReadableByteStreamController>>>,
+    /// <https://streams.spec.whatwg.org/#readablestreambyobrequest-view>
+    view: Gc<GcRefCell<Option<JsObject>>>,
 }
 
 impl ReadableStreamBYOBRequest {
@@ -397,9 +394,10 @@ impl ReadableStreamBYOBRequest {
         &self,
         ec: &mut dyn ExecutionContext<crate::js::Types>,
     ) -> Completion<ReadableByteStreamController, crate::js::Types> {
-        self.controller.borrow().clone().ok_or_else(|| {
-            ec.new_type_error("ReadableStreamBYOBRequest is missing its controller")
-        })
+        self.controller
+            .borrow()
+            .clone()
+            .ok_or_else(|| ec.new_type_error("ReadableStreamBYOBRequest is missing its controller"))
     }
 
     /// <https://streams.spec.whatwg.org/#rs-byob-request-view>
@@ -431,16 +429,15 @@ impl ReadableStreamBYOBRequest {
             ec.new_type_error("respondWithNewView() requires an ArrayBufferView object")
         })?;
         let controller = self.controller_slot(ec)?;
-        let view_descriptor =
-            ArrayBufferViewDescriptor::from_value(view, ec)?;
+        let view_descriptor = ArrayBufferViewDescriptor::from_value(view, ec)?;
         controller.respond_with_new_view(view_descriptor, view_object, ec)
     }
 }
 
-js_engine::impl_gc_traits! {
-    /// <https://streams.spec.whatwg.org/#readablebytestreamcontroller>
-    #[derive(Clone)]
-    pub struct ReadableByteStreamController {
+#[gc_struct]
+/// <https://streams.spec.whatwg.org/#readablebytestreamcontroller>
+#[derive(Clone)]
+pub struct ReadableByteStreamController {
     /// <https://streams.spec.whatwg.org/#readablebytestreamcontroller-stream>
     stream: Gc<GcRefCell<Option<ReadableStream>>>,
     /// <https://streams.spec.whatwg.org/#readablebytestreamcontroller-queue>
@@ -475,7 +472,6 @@ js_engine::impl_gc_traits! {
     /// <https://streams.spec.whatwg.org/#readablebytestreamcontroller-byobrequest>
     byob_request_object: Gc<GcRefCell<Option<JsObject>>>,
 }
-}
 
 impl ReadableByteStreamController {
     pub(crate) fn new() -> Self {
@@ -500,18 +496,21 @@ impl ReadableByteStreamController {
         &self,
         ec: &mut dyn ExecutionContext<crate::js::Types>,
     ) -> Completion<ReadableStream, crate::js::Types> {
-        self.stream.borrow().clone().ok_or_else(|| {
-            ec.new_type_error("ReadableByteStreamController is missing its stream")
-        })
+        self.stream
+            .borrow()
+            .clone()
+            .ok_or_else(|| ec.new_type_error("ReadableByteStreamController is missing its stream"))
     }
 
     fn controller_object(
         &self,
         ec: &mut dyn ExecutionContext<crate::js::Types>,
     ) -> Completion<JsObject, crate::js::Types> {
-        self.stream_slot(ec)?.controller_object_slot().ok_or_else(|| {
-            ec.new_type_error("ReadableByteStreamController is missing its JavaScript object")
-        })
+        self.stream_slot(ec)?
+            .controller_object_slot()
+            .ok_or_else(|| {
+                ec.new_type_error("ReadableByteStreamController is missing its JavaScript object")
+            })
     }
 
     /// <https://streams.spec.whatwg.org/#readable-byte-stream-controller-clear-algorithms>
@@ -532,7 +531,9 @@ impl ReadableByteStreamController {
         ec: &mut dyn ExecutionContext<crate::js::Types>,
     ) -> Completion<(), crate::js::Types> {
         if let Some(object) = self.byob_request_object.borrow_mut().take() {
-            with_readable_stream_byob_request_ref_ec(&object, ec, |request| request.set_view_slot(None))?;
+            with_readable_stream_byob_request_ref_ec(&object, ec, |request| {
+                request.set_view_slot(None)
+            })?;
         }
         Ok(())
     }
@@ -545,10 +546,11 @@ impl ReadableByteStreamController {
             return Ok(());
         };
         let maybe_view = if let Some(descriptor) = self.pending_pull_intos.borrow().front() {
-            Some(descriptor.view.create_remaining_view(
-                descriptor.bytes_filled,
-                ec,
-            )?)
+            Some(
+                descriptor
+                    .view
+                    .create_remaining_view(descriptor.bytes_filled, ec)?,
+            )
         } else {
             None
         };
@@ -829,9 +831,8 @@ impl ReadableByteStreamController {
         ec: &mut dyn ExecutionContext<crate::js::Types>,
     ) -> Completion<(), crate::js::Types> {
         let view = ArrayBufferViewDescriptor::from_value(chunk, ec)?;
-        let empty_view_err = ec.new_type_error(
-            "ReadableByteStreamController.enqueue() requires a non-empty view",
-        );
+        let empty_view_err =
+            ec.new_type_error("ReadableByteStreamController.enqueue() requires a non-empty view");
         if view.byte_length() == 0 {
             return Err(empty_view_err);
         }
@@ -871,10 +872,7 @@ impl ReadableByteStreamController {
             descriptor.error(error.clone(), ec_ref)?;
         }
         self.clear_algorithms();
-        crate::js::js_result_to_completion(
-            readable_stream_error(stream, error, context),
-            context,
-        )
+        crate::js::js_result_to_completion(readable_stream_error(stream, error, context), context)
     }
 
     /// <https://streams.spec.whatwg.org/#readable-byte-stream-controller-respond>
@@ -883,10 +881,8 @@ impl ReadableByteStreamController {
         bytes_written: usize,
         ec: &mut dyn ExecutionContext<crate::js::Types>,
     ) -> Completion<(), crate::js::Types> {
-        let err_no_pending =
-            ec.new_type_error("There is no pending BYOB request to respond to");
-        let err_too_large =
-            ec.new_range_error("bytesWritten exceeds the available view size");
+        let err_no_pending = ec.new_type_error("There is no pending BYOB request to respond to");
+        let err_too_large = ec.new_range_error("bytesWritten exceeds the available view size");
         let descriptor = {
             let mut pending = self.pending_pull_intos.borrow_mut();
             let descriptor = match pending.front_mut() {
@@ -959,13 +955,11 @@ impl ReadableByteStreamController {
         ec: &mut dyn ExecutionContext<crate::js::Types>,
     ) -> Completion<(), crate::js::Types> {
         let bytes_written = view.byte_length();
-        let err_no_pending =
-            ec.new_type_error("There is no pending BYOB request to respond to");
+        let err_no_pending = ec.new_type_error("There is no pending BYOB request to respond to");
         let err_offset =
             ec.new_range_error("respondWithNewView() must preserve the current byte offset");
-        let err_large = ec.new_range_error(
-            "respondWithNewView() view is larger than the remaining request",
-        );
+        let err_large =
+            ec.new_range_error("respondWithNewView() view is larger than the remaining request");
         let descriptor_to_commit = {
             let mut pending = self.pending_pull_intos.borrow_mut();
             let descriptor = match pending.front_mut() {
@@ -1152,9 +1146,11 @@ impl ReadableByteStreamController {
         &self,
         ec: &mut dyn ExecutionContext<crate::js::Types>,
     ) -> Completion<JsValue, crate::js::Types> {
-        let entry = self.queue.borrow_mut().pop_front().ok_or_else(|| {
-            ec.new_type_error("Readable byte stream queue is empty")
-        })?;
+        let entry = self
+            .queue
+            .borrow_mut()
+            .pop_front()
+            .ok_or_else(|| ec.new_type_error("Readable byte stream queue is empty"))?;
         let remaining_len = entry.remaining_len();
         let remaining_view = entry.remaining_view();
         self.queue_total_size
@@ -1235,9 +1231,9 @@ impl ReadableByteStreamController {
         {
             let mut queue = self.queue.borrow_mut();
             while remaining > 0 {
-                let mut entry = queue.pop_front().ok_or_else(|| {
-                    ec.new_type_error("Readable byte stream queue is empty")
-                })?;
+                let mut entry = queue
+                    .pop_front()
+                    .ok_or_else(|| ec.new_type_error("Readable byte stream queue is empty"))?;
                 let to_take = remaining.min(entry.remaining_len());
                 let start = entry.remaining_byte_offset();
                 let bytes = {
@@ -1257,10 +1253,11 @@ impl ReadableByteStreamController {
 
         self.queue_total_size
             .set(self.queue_total_size.get().saturating_sub(copied.len()));
-        let mut data =
-            descriptor.view.buffer.data_mut().ok_or_else(|| {
-                ec.new_type_error("BYOB request buffer is detached")
-            })?;
+        let mut data = descriptor
+            .view
+            .buffer
+            .data_mut()
+            .ok_or_else(|| ec.new_type_error("BYOB request buffer is detached"))?;
         let start = descriptor.view.byte_offset() + descriptor.bytes_filled;
         let end = start + copied.len();
         data[start..end].copy_from_slice(&copied);
@@ -1505,11 +1502,8 @@ fn create_view_object(
 ) -> Completion<JsObject, crate::js::Types> {
     match kind {
         ArrayBufferViewKind::DataView => {
-            let dv = ec.construct_data_view_from_buffer(
-                buffer,
-                byte_offset as u64,
-                byte_length as u64,
-            )?;
+            let dv =
+                ec.construct_data_view_from_buffer(buffer, byte_offset as u64, byte_length as u64)?;
             Ok(JsObject::from(dv))
         }
         _ => {

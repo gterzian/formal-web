@@ -200,6 +200,8 @@ fn set_referrer_policy(
     ec: &mut dyn ExecutionContext<crate::js::Types>,
 ) -> Completion<JsValue, crate::js::Types> {
     let referrer_policy = ec.to_rust_string(args.get_or_undefined(0).clone())?;
-    try_with_html_anchor_element_ref(this, ec, |anchor| anchor.set_referrer_policy(&referrer_policy))?;
+    try_with_html_anchor_element_ref(this, ec, |anchor| {
+        anchor.set_referrer_policy(&referrer_policy)
+    })?;
     Ok(ec.value_undefined())
 }

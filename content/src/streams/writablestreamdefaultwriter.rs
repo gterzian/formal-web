@@ -1,11 +1,9 @@
-use boa_engine::{
-    JsArgs, JsError, JsNativeError, JsResult, JsValue,
-    object::JsObject,
-};
+use boa_engine::{JsArgs, JsError, JsNativeError, JsResult, JsValue, object::JsObject};
 use boa_gc::{Gc, GcRefCell};
 
 use crate::webidl::bindings::create_interface_instance;
 use crate::webidl::{mark_promise_as_handled, rejected_promise, resolved_promise};
+use js_engine::gc_struct;
 
 use super::{
     WritableStream, WritableStreamState, WritableStreamWriter, rejected_type_error_promise,
@@ -15,21 +13,20 @@ use super::{
 
 use js_engine::{Completion, ExecutionContext, PromiseResolvers};
 
-js_engine::impl_gc_traits! {
-    /// <https://streams.spec.whatwg.org/#writablestreamdefaultwriter>
-    #[derive(Clone)]
-    pub struct WritableStreamDefaultWriter {
-        /// <https://streams.spec.whatwg.org/#writablestreamdefaultwriter-stream>
-        stream: Gc<GcRefCell<Option<WritableStream>>>,
+#[gc_struct]
+/// <https://streams.spec.whatwg.org/#writablestreamdefaultwriter>
+#[derive(Clone)]
+pub struct WritableStreamDefaultWriter {
+    /// <https://streams.spec.whatwg.org/#writablestreamdefaultwriter-stream>
+    stream: Gc<GcRefCell<Option<WritableStream>>>,
 
-        /// <https://streams.spec.whatwg.org/#writablestreamdefaultwriter-readypromise>
-        ready_promise: Gc<GcRefCell<Option<JsObject>>>,
-        ready_resolvers: Gc<GcRefCell<Option<PromiseResolvers<crate::js::Types>>>>,
+    /// <https://streams.spec.whatwg.org/#writablestreamdefaultwriter-readypromise>
+    ready_promise: Gc<GcRefCell<Option<JsObject>>>,
+    ready_resolvers: Gc<GcRefCell<Option<PromiseResolvers<crate::js::Types>>>>,
 
-        /// <https://streams.spec.whatwg.org/#writablestreamdefaultwriter-closedpromise>
-        closed_promise: Gc<GcRefCell<Option<JsObject>>>,
-        closed_resolvers: Gc<GcRefCell<Option<PromiseResolvers<crate::js::Types>>>>,
-    }
+    /// <https://streams.spec.whatwg.org/#writablestreamdefaultwriter-closedpromise>
+    closed_promise: Gc<GcRefCell<Option<JsObject>>>,
+    closed_resolvers: Gc<GcRefCell<Option<PromiseResolvers<crate::js::Types>>>>,
 }
 
 impl WritableStreamDefaultWriter {
@@ -57,7 +54,10 @@ impl WritableStreamDefaultWriter {
     pub(crate) fn ready_resolvers_value(&self) -> Option<PromiseResolvers<crate::js::Types>> {
         self.ready_resolvers.borrow().clone()
     }
-    pub(crate) fn set_ready_resolvers_value(&self, resolvers: Option<PromiseResolvers<crate::js::Types>>) {
+    pub(crate) fn set_ready_resolvers_value(
+        &self,
+        resolvers: Option<PromiseResolvers<crate::js::Types>>,
+    ) {
         *self.ready_resolvers.borrow_mut() = resolvers;
     }
     pub(crate) fn closed_promise_value(&self) -> Option<JsObject> {
@@ -69,7 +69,10 @@ impl WritableStreamDefaultWriter {
     pub(crate) fn closed_resolvers_value(&self) -> Option<PromiseResolvers<crate::js::Types>> {
         self.closed_resolvers.borrow().clone()
     }
-    pub(crate) fn set_closed_resolvers_value(&self, resolvers: Option<PromiseResolvers<crate::js::Types>>) {
+    pub(crate) fn set_closed_resolvers_value(
+        &self,
+        resolvers: Option<PromiseResolvers<crate::js::Types>>,
+    ) {
         *self.closed_resolvers.borrow_mut() = resolvers;
     }
 
@@ -80,7 +83,9 @@ impl WritableStreamDefaultWriter {
         ec: &mut dyn ExecutionContext<crate::js::Types>,
     ) -> Completion<(), crate::js::Types> {
         if stream.is_writable_stream_locked() {
-            return Err(ec.new_type_error("Cannot create a writer for a stream that already has a writer"));
+            return Err(
+                ec.new_type_error("Cannot create a writer for a stream that already has a writer")
+            );
         }
 
         self.set_stream_slot_value(Some(stream.clone()));
@@ -446,8 +451,8 @@ pub(crate) fn construct_writable_stream_default_writer(
         ec.new_type_error("WritableStreamDefaultWriter requires a WritableStream")
     })?;
     let not_stream_err = ec.new_type_error("object is not a WritableStream");
-    let stream =
-        with_writable_stream_ref(&stream_object, |stream| stream.clone()).map_err(|_: JsError| not_stream_err)?;
+    let stream = with_writable_stream_ref(&stream_object, |stream| stream.clone())
+        .map_err(|_: JsError| not_stream_err)?;
     let writer = WritableStreamDefaultWriter::new();
     writer.set_up_writable_stream_default_writer(stream, ec)?;
     Ok(writer)

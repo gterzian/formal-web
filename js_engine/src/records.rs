@@ -12,9 +12,9 @@
 //! `JsTypes`) because the spec's Property Descriptor is a plain record type
 //! with no engine-specific representation.
 
+use crate::ExecutionContext;
 use crate::JsTypes;
 use crate::gc::GcRootHandle;
-use crate::ExecutionContext;
 
 /// <https://tc39.es/ecma262/#sec-iterator-record>
 #[derive(Debug, Clone)]

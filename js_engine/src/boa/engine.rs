@@ -30,8 +30,8 @@ use boa_engine::{
     object::{
         FunctionObjectBuilder, JsObject,
         builtins::{
-            JsArrayBuffer, JsDataView, JsFunction, JsGenerator, JsPromise,
-            JsSharedArrayBuffer, JsTypedArray,
+            JsArrayBuffer, JsDataView, JsFunction, JsGenerator, JsPromise, JsSharedArrayBuffer,
+            JsTypedArray,
         },
     },
     property::PropertyKey,
@@ -41,7 +41,9 @@ use boa_engine::{
 use crate::{
     Completion, EcmascriptHost, ExecutionContext, HostHooks, IntegrityLevel, IteratorKind,
     JsEngine, JsTypesWithRealm, Numeric, PreferredType, SharedMemoryOrder, TypedArrayElementType,
-    records::{IteratorRecord, PromiseCapability, PromiseResolvers, PropertyDescriptor, RealmIntrinsics},
+    records::{
+        IteratorRecord, PromiseCapability, PromiseResolvers, PropertyDescriptor, RealmIntrinsics,
+    },
 };
 
 use super::types::BoaTypes;
@@ -685,7 +687,10 @@ impl ExecutionContext<BoaTypes> for BoaContext {
     }
 
     fn own_property_keys(&mut self, object: JsObject) -> Completion<Vec<PropertyKey>, BoaTypes> {
-        into_completion(object.own_property_keys(&mut self.context), &mut self.context)
+        into_completion(
+            object.own_property_keys(&mut self.context),
+            &mut self.context,
+        )
     }
 
     fn get_own_property(
@@ -715,22 +720,21 @@ impl ExecutionContext<BoaTypes> for BoaContext {
             ),
             &mut self.context,
         )?;
-        let descriptor_fn = JsFunction::from_object(
-            descriptor_fn_val.as_object().ok_or_else(|| {
+        let descriptor_fn =
+            JsFunction::from_object(descriptor_fn_val.as_object().ok_or_else(|| {
                 JsValue::from(
                     JsNativeError::typ()
                         .with_message("Object.getOwnPropertyDescriptor is not callable")
                         .into_opaque(&mut self.context),
                 )
-            })?,
-        )
-        .ok_or_else(|| {
-            JsValue::from(
-                JsNativeError::typ()
-                    .with_message("Object.getOwnPropertyDescriptor is not callable")
-                    .into_opaque(&mut self.context),
-            )
-        })?;
+            })?)
+            .ok_or_else(|| {
+                JsValue::from(
+                    JsNativeError::typ()
+                        .with_message("Object.getOwnPropertyDescriptor is not callable")
+                        .into_opaque(&mut self.context),
+                )
+            })?;
 
         let key_value = boa_property_key_to_value(&property_key);
         let descriptor_val = into_completion(
@@ -765,8 +769,9 @@ impl ExecutionContext<BoaTypes> for BoaContext {
             .and_then(JsFunction::from_object);
         let enumerable = descriptor_field_value(&descriptor_obj, "enumerable", &mut self.context)?
             .map(|field| field.to_boolean());
-        let configurable = descriptor_field_value(&descriptor_obj, "configurable", &mut self.context)?
-            .map(|field| field.to_boolean());
+        let configurable =
+            descriptor_field_value(&descriptor_obj, "configurable", &mut self.context)?
+                .map(|field| field.to_boolean());
 
         Ok(Some(PropertyDescriptor {
             value,
@@ -1114,8 +1119,7 @@ impl ExecutionContext<BoaTypes> for BoaContext {
         &mut self,
         typed_array: &JsTypedArray,
     ) -> Completion<JsArrayBuffer, BoaTypes> {
-        let buffer_val =
-            into_completion(typed_array.buffer(&mut self.context), &mut self.context)?;
+        let buffer_val = into_completion(typed_array.buffer(&mut self.context), &mut self.context)?;
         let buffer_obj = buffer_val
             .as_object()
             .ok_or_else(|| self.new_type_error("TypedArray buffer is not an object"))?;
@@ -1123,21 +1127,19 @@ impl ExecutionContext<BoaTypes> for BoaContext {
             .map_err(|_| self.new_type_error("TypedArray buffer is not an ArrayBuffer"))
     }
 
-    fn typed_array_byte_offset(
-        &mut self,
-        typed_array: &JsTypedArray,
-    ) -> Completion<u64, BoaTypes> {
-        let offset =
-            into_completion(typed_array.byte_offset(&mut self.context), &mut self.context)?;
+    fn typed_array_byte_offset(&mut self, typed_array: &JsTypedArray) -> Completion<u64, BoaTypes> {
+        let offset = into_completion(
+            typed_array.byte_offset(&mut self.context),
+            &mut self.context,
+        )?;
         Ok(offset as u64)
     }
 
-    fn typed_array_byte_length(
-        &mut self,
-        typed_array: &JsTypedArray,
-    ) -> Completion<u64, BoaTypes> {
-        let length =
-            into_completion(typed_array.byte_length(&mut self.context), &mut self.context)?;
+    fn typed_array_byte_length(&mut self, typed_array: &JsTypedArray) -> Completion<u64, BoaTypes> {
+        let length = into_completion(
+            typed_array.byte_length(&mut self.context),
+            &mut self.context,
+        )?;
         Ok(length as u64)
     }
 
@@ -1190,10 +1192,10 @@ impl ExecutionContext<BoaTypes> for BoaContext {
             .ok_or_else(|| self.new_type_error("typed array constructor is not an object"))?;
         let result = into_completion(
             constructor_obj.construct(
-                    &[buffer_val, offset_val, length_val],
-                    None,
-                    &mut self.context,
-                ),
+                &[buffer_val, offset_val, length_val],
+                None,
+                &mut self.context,
+            ),
             &mut self.context,
         )?;
         JsTypedArray::from_object(result)
@@ -1202,12 +1204,8 @@ impl ExecutionContext<BoaTypes> for BoaContext {
 
     // ── §25.3 DataView Objects ────────────────────────────────────────────
 
-    fn data_view_buffer(
-        &mut self,
-        data_view: &JsDataView,
-    ) -> Completion<JsArrayBuffer, BoaTypes> {
-        let buffer_val =
-            into_completion(data_view.buffer(&mut self.context), &mut self.context)?;
+    fn data_view_buffer(&mut self, data_view: &JsDataView) -> Completion<JsArrayBuffer, BoaTypes> {
+        let buffer_val = into_completion(data_view.buffer(&mut self.context), &mut self.context)?;
         let buffer_obj = buffer_val
             .as_object()
             .ok_or_else(|| self.new_type_error("DataView buffer is not an object"))?;
@@ -1215,24 +1213,12 @@ impl ExecutionContext<BoaTypes> for BoaContext {
             .map_err(|_| self.new_type_error("DataView buffer is not an ArrayBuffer"))
     }
 
-    fn data_view_byte_offset(
-        &mut self,
-        data_view: &JsDataView,
-    ) -> Completion<u64, BoaTypes> {
-        into_completion(
-            data_view.byte_offset(&mut self.context),
-            &mut self.context,
-        )
+    fn data_view_byte_offset(&mut self, data_view: &JsDataView) -> Completion<u64, BoaTypes> {
+        into_completion(data_view.byte_offset(&mut self.context), &mut self.context)
     }
 
-    fn data_view_byte_length(
-        &mut self,
-        data_view: &JsDataView,
-    ) -> Completion<u64, BoaTypes> {
-        into_completion(
-            data_view.byte_length(&mut self.context),
-            &mut self.context,
-        )
+    fn data_view_byte_length(&mut self, data_view: &JsDataView) -> Completion<u64, BoaTypes> {
+        into_completion(data_view.byte_length(&mut self.context), &mut self.context)
     }
 
     fn construct_data_view_from_buffer(
@@ -1407,9 +1393,7 @@ impl ExecutionContext<BoaTypes> for BoaContext {
         object: &JsObject,
         f: Box<dyn FnOnce(&mut dyn std::any::Any, &mut dyn ExecutionContext<BoaTypes>) + '_>,
     ) {
-        let mut wrapper = match object
-            .downcast_mut::<NativeDataWrapper<Box<dyn std::any::Any>>>()
-        {
+        let mut wrapper = match object.downcast_mut::<NativeDataWrapper<Box<dyn std::any::Any>>>() {
             Some(w) => w,
             None => return,
         };
@@ -1418,9 +1402,8 @@ impl ExecutionContext<BoaTypes> for BoaContext {
         // `wrapper` is a RefMut guard borrowing from the JsObject's GcCell,
         // not from `self`.  The `&mut dyn ExecutionContext` parameter to `f`
         // borrows `self` — these are independent memory locations.
-        let data: &mut dyn std::any::Any = unsafe {
-            &mut *(wrapper.0.as_mut() as *mut dyn std::any::Any)
-        };
+        let data: &mut dyn std::any::Any =
+            unsafe { &mut *(wrapper.0.as_mut() as *mut dyn std::any::Any) };
         let ec: &mut dyn ExecutionContext<BoaTypes> = self;
         f(data, ec);
     }
@@ -1726,13 +1709,19 @@ fn descriptor_field_value(
     let field_key = PropertyKey::from(boa_engine::js_string!(field_name));
     let present = descriptor_obj
         .has_property(field_key.clone(), context)
-        .map_err(|error| error.into_opaque(context).unwrap_or_else(|_| JsValue::undefined()))?;
+        .map_err(|error| {
+            error
+                .into_opaque(context)
+                .unwrap_or_else(|_| JsValue::undefined())
+        })?;
     if !present {
         return Ok(None);
     }
-    let value = descriptor_obj
-        .get(field_key, context)
-        .map_err(|error| error.into_opaque(context).unwrap_or_else(|_| JsValue::undefined()))?;
+    let value = descriptor_obj.get(field_key, context).map_err(|error| {
+        error
+            .into_opaque(context)
+            .unwrap_or_else(|_| JsValue::undefined())
+    })?;
     Ok(Some(value))
 }
 

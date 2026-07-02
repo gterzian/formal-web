@@ -6,6 +6,7 @@ use url::Url;
 
 use super::{Element, Node};
 use crate::infra::strip_and_collapse_ascii_whitespace;
+use js_engine::gc_struct;
 
 fn collect_subtree_node_ids(document: &BaseDocument, node_id: usize, node_ids: &mut Vec<usize>) {
     let Some(node) = document.get_node(node_id) else {
@@ -29,16 +30,15 @@ fn canonical_document_dir(value: &str) -> &str {
     }
 }
 
-js_engine::impl_gc_traits! {
-    /// <https://dom.spec.whatwg.org/#interface-document>
-    pub struct Document {
-        /// <https://dom.spec.whatwg.org/#interface-node>
-        pub node: Node,
+#[gc_struct]
+/// <https://dom.spec.whatwg.org/#interface-document>
+pub struct Document {
+    /// <https://dom.spec.whatwg.org/#interface-node>
+    pub node: Node,
 
-        /// Model-local mirror of <https://html.spec.whatwg.org/#concept-environment-creation-url>.
-        #[unsafe_ignore_trace]
-        pub creation_url: Url,
-    }
+    /// Model-local mirror of <https://html.spec.whatwg.org/#concept-environment-creation-url>.
+    #[unsafe_ignore_trace]
+    pub creation_url: Url,
 }
 
 impl Document {

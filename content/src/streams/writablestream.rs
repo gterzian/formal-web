@@ -3,9 +3,7 @@ use std::{
     rc::Rc,
 };
 
-use boa_engine::{
-    Context, JsArgs, JsNativeError, JsResult, JsValue, js_string, object::JsObject,
-};
+use boa_engine::{Context, JsArgs, JsNativeError, JsResult, JsValue, js_string, object::JsObject};
 use boa_gc::{Gc, GcRefCell};
 
 use js_engine::{Completion, ExecutionContext};
@@ -13,6 +11,7 @@ use js_engine::{Completion, ExecutionContext};
 use crate::streams::{SizeAlgorithm, extract_high_water_mark, extract_size_algorithm};
 use crate::webidl::bindings::create_interface_instance;
 use crate::webidl::{resolved_promise, upon_settlement};
+use js_engine::gc_struct;
 
 use super::{
     AbortAlgorithm, CloseAlgorithm, PendingAbortRequest, WritableStartAlgorithm,
@@ -24,10 +23,10 @@ use super::{
     writable_stream_default_controller_close,
 };
 
-js_engine::impl_gc_traits! {
-    /// <https://streams.spec.whatwg.org/#ws-class>
-    #[derive(Clone)]
-    pub struct WritableStream {
+#[gc_struct]
+/// <https://streams.spec.whatwg.org/#ws-class>
+#[derive(Clone)]
+pub struct WritableStream {
     /// <https://streams.spec.whatwg.org/#writablestream-controller>
     controller: Gc<GcRefCell<Option<WritableStreamController>>>,
     controller_object: Gc<GcRefCell<Option<JsObject>>>,
@@ -60,7 +59,6 @@ js_engine::impl_gc_traits! {
     /// <https://streams.spec.whatwg.org/#writablestream-backpressure>
     #[unsafe_ignore_trace]
     backpressure: Rc<Cell<bool>>,
-}
 }
 
 impl WritableStream {
@@ -254,9 +252,9 @@ impl WritableStream {
             return resolved_promise(JsValue::undefined(), ec);
         }
 
-        let controller = self.controller_slot().ok_or_else(|| {
-            ec.new_type_error("WritableStream is missing its controller")
-        })?;
+        let controller = self
+            .controller_slot()
+            .ok_or_else(|| ec.new_type_error("WritableStream is missing its controller"))?;
         controller.signal_abort(reason.clone(), ec)?;
 
         if matches!(
@@ -317,9 +315,9 @@ impl WritableStream {
             }
         }
 
-        let controller = self.controller_slot().ok_or_else(|| {
-            ec.new_type_error("WritableStream is missing its controller")
-        })?;
+        let controller = self
+            .controller_slot()
+            .ok_or_else(|| ec.new_type_error("WritableStream is missing its controller"))?;
         writable_stream_default_controller_close(controller.as_default_controller(), ec)?;
         Ok(promise)
     }
@@ -366,9 +364,9 @@ impl WritableStream {
         debug_assert!(!self.has_operation_marked_in_flight());
 
         self.set_state(WritableStreamState::Errored);
-        let controller = self.controller_slot().ok_or_else(|| {
-            ec.new_type_error("WritableStream is missing its controller")
-        })?;
+        let controller = self
+            .controller_slot()
+            .ok_or_else(|| ec.new_type_error("WritableStream is missing its controller"))?;
         controller.error_steps();
 
         let stored_error = self.stored_error();
@@ -545,9 +543,9 @@ impl WritableStream {
         debug_assert!(self.stored_error().is_undefined());
         debug_assert_eq!(self.state(), WritableStreamState::Writable);
 
-        let controller = self.controller_slot().ok_or_else(|| {
-            ec.new_type_error("WritableStream is missing its controller")
-        })?;
+        let controller = self
+            .controller_slot()
+            .ok_or_else(|| ec.new_type_error("WritableStream is missing its controller"))?;
         self.set_state(WritableStreamState::Erroring);
         self.set_stored_error(reason.clone());
 
@@ -607,13 +605,14 @@ pub(crate) fn construct_writable_stream(
     let size_algorithm = extract_size_algorithm(&strategy, ec)?;
     let high_water_mark = extract_high_water_mark(&strategy, 1.0, ec)?;
 
-    let underlying_sink_object = if underlying_sink.is_null() || underlying_sink.is_undefined() {
-        None
-    } else {
-        Some(underlying_sink.as_object().ok_or_else(|| {
-            ec.new_type_error("WritableStream underlyingSink must be an object")
-        })?)
-    };
+    let underlying_sink_object =
+        if underlying_sink.is_null() || underlying_sink.is_undefined() {
+            None
+        } else {
+            Some(underlying_sink.as_object().ok_or_else(|| {
+                ec.new_type_error("WritableStream underlyingSink must be an object")
+            })?)
+        };
 
     // SAFETY: ec is backed by BoaContext repr(transparent) over Context.
     // underlying_sink_type still takes Boa's Context.

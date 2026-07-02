@@ -9,8 +9,8 @@ use js_engine::{Completion, ExecutionContext, JsTypes};
 use crate::dom::{DOMException, Document, Element, Node};
 use crate::html::{HTMLAnchorElement, HTMLElement, HTMLIFrameElement};
 use crate::js::platform_objects::{
-    collect_child_subtree_node_ids, document_object_ec,
-    invalidate_cached_node_ids, invalidate_cached_node_ids_ec, object_for_existing_node, object_for_existing_node_ec,
+    collect_child_subtree_node_ids, document_object_ec, invalidate_cached_node_ids,
+    invalidate_cached_node_ids_ec, object_for_existing_node, object_for_existing_node_ec,
 };
 use crate::webidl::bindings::{
     AttributeDef, ConstantDef, InterfaceDefinition, OperationDef, WebIdlInterface,
@@ -420,8 +420,9 @@ fn get_first_child(
     _: &[JsValue],
     ec: &mut dyn ExecutionContext<crate::js::Types>,
 ) -> Completion<JsValue, crate::js::Types> {
-    let (document, node_id) =
-        try_with_node_ref(this, ec, |node| (Rc::clone(&node.document), node.first_child()))?;
+    let (document, node_id) = try_with_node_ref(this, ec, |node| {
+        (Rc::clone(&node.document), node.first_child())
+    })?;
     match node_id {
         Some(node_id) => {
             let obj = object_for_existing_node_ec(document, node_id, ec)?;
@@ -436,8 +437,9 @@ fn get_last_child(
     _: &[JsValue],
     ec: &mut dyn ExecutionContext<crate::js::Types>,
 ) -> Completion<JsValue, crate::js::Types> {
-    let (document, node_id) =
-        try_with_node_ref(this, ec, |node| (Rc::clone(&node.document), node.last_child()))?;
+    let (document, node_id) = try_with_node_ref(this, ec, |node| {
+        (Rc::clone(&node.document), node.last_child())
+    })?;
     match node_id {
         Some(node_id) => {
             let obj = object_for_existing_node_ec(document, node_id, ec)?;
@@ -452,8 +454,9 @@ fn get_parent_node(
     _: &[JsValue],
     ec: &mut dyn ExecutionContext<crate::js::Types>,
 ) -> Completion<JsValue, crate::js::Types> {
-    let (document, node_id) =
-        try_with_node_ref(this, ec, |node| (Rc::clone(&node.document), node.parent_node()))?;
+    let (document, node_id) = try_with_node_ref(this, ec, |node| {
+        (Rc::clone(&node.document), node.parent_node())
+    })?;
     match node_id {
         Some(0) => {
             let obj = document_object_ec(ec)?;
@@ -500,7 +503,6 @@ fn get_next_sibling(
         None => Ok(ec.value_null()),
     }
 }
-
 
 fn get_child_nodes(
     this: &JsValue,

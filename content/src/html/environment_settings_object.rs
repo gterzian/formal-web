@@ -400,7 +400,10 @@ impl EventDispatchHost for EnvironmentSettingsObject {
         &mut self.engine
     }
 
-    fn create_event_object(&mut self, event: crate::dom::Event) -> Completion<JsObject, crate::js::Types> {
+    fn create_event_object(
+        &mut self,
+        event: crate::dom::Event,
+    ) -> Completion<JsObject, crate::js::Types> {
         create_interface_instance::<crate::js::Types, Event>(
             event,
             js_engine::boa::context_as_ec(self.context()),
@@ -409,7 +412,8 @@ impl EventDispatchHost for EnvironmentSettingsObject {
 
     fn document_object(&mut self) -> Completion<JsObject, crate::js::Types> {
         crate::js::platform_objects::document_object(self.context()).map_err(|e| {
-            e.into_opaque(self.context()).unwrap_or(JsValue::undefined())
+            e.into_opaque(self.context())
+                .unwrap_or(JsValue::undefined())
         })
     }
 
@@ -419,7 +423,8 @@ impl EventDispatchHost for EnvironmentSettingsObject {
 
     fn resolve_element_object(&mut self, node_id: usize) -> Completion<JsObject, crate::js::Types> {
         crate::js::platform_objects::resolve_element_object(node_id, self.context()).map_err(|e| {
-            e.into_opaque(self.context()).unwrap_or(JsValue::undefined())
+            e.into_opaque(self.context())
+                .unwrap_or(JsValue::undefined())
         })
     }
 
@@ -428,9 +433,11 @@ impl EventDispatchHost for EnvironmentSettingsObject {
         document: Rc<RefCell<BaseDocument>>,
         node_id: usize,
     ) -> Completion<JsObject, crate::js::Types> {
-        crate::js::platform_objects::object_for_existing_node(document, node_id, self.context()).map_err(|e| {
-            e.into_opaque(self.context()).unwrap_or(JsValue::undefined())
-        })
+        crate::js::platform_objects::object_for_existing_node(document, node_id, self.context())
+            .map_err(|e| {
+                e.into_opaque(self.context())
+                    .unwrap_or(JsValue::undefined())
+            })
     }
 
     fn current_time_millis(&self) -> f64 {

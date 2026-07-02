@@ -3,13 +3,13 @@ use std::{cell::RefCell, rc::Rc};
 use blitz_dom::BaseDocument;
 
 use crate::html::HTMLElement;
+use js_engine::gc_struct;
 
-js_engine::impl_gc_traits! {
-    /// <https://html.spec.whatwg.org/#the-input-element>
-    pub struct HTMLInputElement {
-        /// <https://html.spec.whatwg.org/#htmlelement>
-        pub html_element: HTMLElement,
-    }
+#[gc_struct]
+/// <https://html.spec.whatwg.org/#the-input-element>
+pub struct HTMLInputElement {
+    /// <https://html.spec.whatwg.org/#htmlelement>
+    pub html_element: HTMLElement,
 }
 
 impl HTMLInputElement {

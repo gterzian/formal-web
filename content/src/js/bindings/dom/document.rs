@@ -1,16 +1,11 @@
 use std::marker::PhantomData;
 use std::rc::Rc;
 
-use boa_engine::{
-    Context, JsResult, JsValue, js_string,
-    object::JsObject,
-    property::Attribute,
-};
+use boa_engine::{Context, JsResult, JsValue, js_string, object::JsObject, property::Attribute};
 
 use crate::dom::Document;
 use crate::js::platform_objects::{
-    document_object, invalidate_cached_node_ids_ec,
-    resolve_element_object_ec,
+    document_object, invalidate_cached_node_ids_ec, resolve_element_object_ec,
     resolve_or_create_text_node_object_ec,
 };
 use crate::webidl::bindings::{AttributeDef, InterfaceDefinition, OperationDef, WebIdlInterface};
@@ -242,7 +237,8 @@ fn get_elements_by_tag_name(
     ec: &mut dyn ExecutionContext<crate::js::Types>,
 ) -> Completion<JsValue, crate::js::Types> {
     let value_undefined = ec.value_undefined();
-    let qualified_name = ec.to_rust_string(args.first().cloned().unwrap_or(value_undefined.clone()))?;
+    let qualified_name =
+        ec.to_rust_string(args.first().cloned().unwrap_or(value_undefined.clone()))?;
     let node_ids = try_with_document(this, ec, |document| {
         document.get_elements_by_tag_name(&qualified_name)
     })?
@@ -281,7 +277,8 @@ fn create_element_ns(
     } else {
         Some(ec.to_rust_string(first)?)
     };
-    let qualified_name = ec.to_rust_string(args.get(1).cloned().unwrap_or(value_undefined.clone()))?;
+    let qualified_name =
+        ec.to_rust_string(args.get(1).cloned().unwrap_or(value_undefined.clone()))?;
     let node_id = try_with_document(this, ec, |document| {
         document.create_element_ns(namespace.as_deref(), &qualified_name)
     })?

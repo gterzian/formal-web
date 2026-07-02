@@ -7,8 +7,8 @@ use crate::html::{
     safe_passing_of_structured_data::StructuredCloneOptions,
     window_computed_style_properties_for_element,
 };
-use crate::js::platform_objects;
 use crate::js::downcast::try_with_event_target_mut;
+use crate::js::platform_objects;
 use crate::webidl::bindings::{
     AttributeDef, InterfaceDefinition, OperationDef, WebIdlInterface, create_interface_instance,
 };
@@ -404,11 +404,15 @@ fn get_computed_style_method(
     let properties = {
         let err_element = ec.new_type_error("receiver is not an Element");
         let err_object = ec.new_type_error("element receiver is not an object");
-        let object = match <crate::js::Types as JsTypes>::value_as_object(args.get_or_undefined(0)) {
+        let object = match <crate::js::Types as JsTypes>::value_as_object(args.get_or_undefined(0))
+        {
             Some(o) => o,
             None => return Err(err_object),
         };
-        let element = match ec.with_object_any(&object).and_then(|a| a.downcast_ref::<Element>()) {
+        let element = match ec
+            .with_object_any(&object)
+            .and_then(|a| a.downcast_ref::<Element>())
+        {
             Some(e) => e,
             None => return Err(err_element),
         };
@@ -430,10 +434,8 @@ fn location_object(
 
     let url = document_creation_url_ec(ec)?;
     let window = ec.global_object();
-    let object = create_interface_instance::<crate::js::Types, Location>(
-        Location::new(url, window),
-        ec,
-    )?;
+    let object =
+        create_interface_instance::<crate::js::Types, Location>(Location::new(url, window), ec)?;
     platform_objects::store_location_object_ec(ec, object.clone())?;
     Ok(object)
 }
@@ -465,9 +467,9 @@ fn downcast_window_ec<'a>(
     object: &'a JsObject,
     ec: &mut dyn ExecutionContext<crate::js::Types>,
 ) -> Completion<boa_gc::GcRef<'a, Window>, crate::js::Types> {
-    object.downcast_ref::<Window>().ok_or_else(|| {
-        ec.new_type_error("receiver is not a Window")
-    })
+    object
+        .downcast_ref::<Window>()
+        .ok_or_else(|| ec.new_type_error("receiver is not a Window"))
 }
 
 fn with_window_mut<R>(object: &JsObject, f: impl FnOnce(&mut Window) -> R) -> JsResult<R> {

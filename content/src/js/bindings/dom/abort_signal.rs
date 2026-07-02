@@ -1,13 +1,13 @@
-use boa_engine::{
-    JsArgs, JsValue,
-};
+use boa_engine::{JsArgs, JsValue};
 use std::marker::PhantomData;
 
 use crate::dom::{
     AbortSignal, DOMException, create_abort_signal, initialize_dependent_abort_signal, signal_abort,
 };
 use crate::html::{Window, WindowOrWorkerGlobalScope};
-use crate::js::downcast::{try_with_abort_signal_mut, try_with_abort_signal_ref, try_with_event_target_mut};
+use crate::js::downcast::{
+    try_with_abort_signal_mut, try_with_abort_signal_ref, try_with_event_target_mut,
+};
 use crate::webidl::bindings::{
     AttributeDef, InterfaceDefinition, OperationDef, WebIdlInterface, create_interface_instance,
 };
@@ -195,9 +195,7 @@ pub(crate) fn timeout_static(
         Box::new(|data, ec2| {
             set_result = match data.downcast_ref::<Window>() {
                 Some(window) => window.set_timeout(&callback_val, &ms_val, Vec::new(), ec2),
-                None => Err(ec2.new_type_error(
-                    "AbortSignal.timeout() requires a Window global",
-                )),
+                None => Err(ec2.new_type_error("AbortSignal.timeout() requires a Window global")),
             };
         }),
     );
@@ -295,15 +293,10 @@ fn set_onabort(
 ) -> Completion<JsValue, crate::js::Types> {
     let signal_object = crate::js::Types::value_as_object(this)
         .ok_or_else(|| ec.new_type_error("AbortSignal receiver is not an object"))?;
-    let callback = nullable_value_ec(
-        args.get_or_undefined(0),
-        ec,
-        callback_function_value_ec,
-    )?;
+    let callback = nullable_value_ec(args.get_or_undefined(0), ec, callback_function_value_ec)?;
 
-    let previous = try_with_abort_signal_mut(this, ec, |signal| {
-        signal.replace_onabort(callback.clone())
-    })?;
+    let previous =
+        try_with_abort_signal_mut(this, ec, |signal| signal.replace_onabort(callback.clone()))?;
 
     if let Some(previous) = previous {
         try_with_event_target_mut(this, ec, |target| {
@@ -332,8 +325,9 @@ fn sequence_abort_signals(
     value: &JsValue,
     ec: &mut dyn ExecutionContext<crate::js::Types>,
 ) -> Completion<Vec<AbortSignal>, crate::js::Types> {
-    let object = crate::js::Types::value_as_object(value)
-        .ok_or_else(|| ec.new_type_error("AbortSignal.any() requires a sequence of AbortSignal objects"))?;
+    let object = crate::js::Types::value_as_object(value).ok_or_else(|| {
+        ec.new_type_error("AbortSignal.any() requires a sequence of AbortSignal objects")
+    })?;
     let length_key = ec.property_key_from_str("length");
     let length_val = ExecutionContext::get(ec, object.clone(), length_key)?;
     let length = ec.to_length(length_val)?;
@@ -344,8 +338,7 @@ fn sequence_abort_signals(
         let signal_value = ExecutionContext::get(ec, object.clone(), index_key)?;
         let signal_object = crate::js::Types::value_as_object(&signal_value)
             .ok_or_else(|| ec.new_type_error("AbortSignal.any() requires AbortSignal objects"))?;
-        let signal =
-            try_with_abort_signal_ref(&signal_object, ec, |signal| signal.clone())?;
+        let signal = try_with_abort_signal_ref(&signal_object, ec, |signal| signal.clone())?;
         signals.push(signal);
     }
 

@@ -7,6 +7,7 @@ use crate::js::with_event_target_mut;
 use crate::streams::PipeToState;
 use crate::webidl::Callback;
 use crate::webidl::bindings::create_interface_instance;
+use js_engine::gc_struct;
 
 use super::{DOMException, EventDispatchHost, EventTarget, fire_event};
 
@@ -36,10 +37,15 @@ pub(crate) enum AbortAlgorithm {
 
 impl AbortAlgorithm {
     /// <https://dom.spec.whatwg.org/#abortsignal-add>
-    pub(crate) fn run(&self, host: &mut impl EventDispatchHost) -> Completion<(), crate::js::Types> {
+    pub(crate) fn run(
+        &self,
+        host: &mut impl EventDispatchHost,
+    ) -> Completion<(), crate::js::Types> {
         match self {
             Self::Native { callback } => {
-                let err = host.ec().new_type_error("abort algorithm native callback failed");
+                let err = host
+                    .ec()
+                    .new_type_error("abort algorithm native callback failed");
                 if callback().is_err() {
                     return Err(err);
                 }
@@ -126,12 +132,11 @@ impl AbortSignalState {
     }
 }
 
-js_engine::impl_gc_traits! {
-    /// <https://dom.spec.whatwg.org/#abortsignal>
-    #[derive(Clone)]
-    pub struct AbortSignal {
-        shared: Gc<GcRefCell<AbortSignalState>>,
-    }
+#[gc_struct]
+/// <https://dom.spec.whatwg.org/#abortsignal>
+#[derive(Clone)]
+pub struct AbortSignal {
+    shared: Gc<GcRefCell<AbortSignalState>>,
 }
 
 impl AbortSignal {
@@ -291,12 +296,11 @@ impl AbortSignal {
     }
 }
 
-js_engine::impl_gc_traits! {
-    /// <https://dom.spec.whatwg.org/#abortcontroller>
-    pub struct AbortController {
-        /// <https://dom.spec.whatwg.org/#abortcontroller-signal>
-        signal: AbortSignal,
-    }
+#[gc_struct]
+/// <https://dom.spec.whatwg.org/#abortcontroller>
+pub struct AbortController {
+    /// <https://dom.spec.whatwg.org/#abortcontroller-signal>
+    signal: AbortSignal,
 }
 
 impl AbortController {
@@ -333,12 +337,10 @@ pub(crate) fn signal_abort(
     reason: JsValue,
 ) -> Completion<(), crate::js::Types> {
     let reason = if reason.is_undefined() {
-        JsValue::from(
-            create_interface_instance::<crate::js::Types, DOMException>(
-                DOMException::abort_error(),
-                host.ec(),
-            )?,
-        )
+        JsValue::from(create_interface_instance::<crate::js::Types, DOMException>(
+            DOMException::abort_error(),
+            host.ec(),
+        )?)
     } else {
         reason
     };
@@ -362,7 +364,10 @@ pub(crate) fn signal_abort(
 }
 
 /// <https://dom.spec.whatwg.org/#run-the-abort-steps>
-fn run_abort_steps(host: &mut impl EventDispatchHost, signal: &AbortSignal) -> Completion<(), crate::js::Types> {
+fn run_abort_steps(
+    host: &mut impl EventDispatchHost,
+    signal: &AbortSignal,
+) -> Completion<(), crate::js::Types> {
     // Step 1: "For each algorithm of signal's abort algorithms: run algorithm."
     let algorithms = signal.take_abort_algorithms();
     for algorithm in algorithms {

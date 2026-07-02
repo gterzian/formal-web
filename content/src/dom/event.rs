@@ -2,6 +2,7 @@ use blitz_traits::events::{DomEvent, EventState};
 use boa_engine::{JsResult, object::JsObject};
 
 use crate::webidl::Callback;
+use js_engine::gc_struct;
 
 use super::{AbortAlgorithm, AbortSignal};
 
@@ -10,10 +11,10 @@ pub const CAPTURING_PHASE: u16 = 1;
 pub const AT_TARGET: u16 = 2;
 pub const BUBBLING_PHASE: u16 = 3;
 
-js_engine::impl_gc_traits! {
-    /// <https://dom.spec.whatwg.org/#concept-event-listener>
-    #[derive(Clone)]
-    pub(crate) struct EventListener {
+#[gc_struct]
+/// <https://dom.spec.whatwg.org/#concept-event-listener>
+#[derive(Clone)]
+pub(crate) struct EventListener {
     #[unsafe_ignore_trace]
     pub id: u64,
 
@@ -43,18 +44,16 @@ js_engine::impl_gc_traits! {
     #[unsafe_ignore_trace]
     pub removed: bool,
 }
-}
 
-js_engine::impl_gc_traits! {
-    /// <https://dom.spec.whatwg.org/#interface-eventtarget>
-    #[derive(Default)]
-    pub struct EventTarget {
+#[gc_struct]
+/// <https://dom.spec.whatwg.org/#interface-eventtarget>
+#[derive(Default)]
+pub struct EventTarget {
     /// <https://dom.spec.whatwg.org/#eventtarget-event-listener-list>
     pub(crate) event_listener_list: Vec<EventListener>,
 
     #[unsafe_ignore_trace]
     next_listener_id: u64,
-}
 }
 
 impl EventTarget {
@@ -153,10 +152,10 @@ impl EventTarget {
     }
 }
 
-js_engine::impl_gc_traits! {
-    /// <https://dom.spec.whatwg.org/#event>
-    #[derive(Clone)]
-    pub struct Event {
+#[gc_struct]
+/// <https://dom.spec.whatwg.org/#event>
+#[derive(Clone)]
+pub struct Event {
     /// <https://dom.spec.whatwg.org/#dom-event-type>
     #[unsafe_ignore_trace]
     pub type_: String,
@@ -214,7 +213,6 @@ js_engine::impl_gc_traits! {
     /// <https://dom.spec.whatwg.org/#event>
     #[unsafe_ignore_trace]
     pub initialized_flag: bool,
-}
 }
 
 impl Event {
@@ -321,10 +319,10 @@ impl Event {
     }
 }
 
-js_engine::impl_gc_traits! {
-    /// <https://w3c.github.io/uievents/#interface-uievent>
-    #[derive(Clone)]
-    pub struct UIEvent {
+#[gc_struct]
+/// <https://w3c.github.io/uievents/#interface-uievent>
+#[derive(Clone)]
+pub struct UIEvent {
     /// <https://dom.spec.whatwg.org/#event>
     pub event: Event,
 
@@ -334,7 +332,6 @@ js_engine::impl_gc_traits! {
     /// <https://w3c.github.io/uievents/#dom-uievent-detail>
     #[unsafe_ignore_trace]
     pub detail: i32,
-}
 }
 
 impl UIEvent {

@@ -1,18 +1,18 @@
 use boa_engine::JsValue;
 use boa_gc::{Finalize, Trace};
+use js_engine::gc_struct;
 
 use js_engine::{Completion, ExecutionContext};
 
 use crate::webidl::{Callback, ExceptionBehavior, invoke_callback_function};
 
-js_engine::impl_gc_traits! {
-    /// <https://streams.spec.whatwg.org/#blqs-class>
-    #[derive(Clone)]
-    pub struct ByteLengthQueuingStrategy {
-        /// <https://streams.spec.whatwg.org/#bytelengthqueuingstrategy-highwatermark>
-        #[unsafe_ignore_trace]
-        high_water_mark: f64,
-    }
+#[gc_struct]
+/// <https://streams.spec.whatwg.org/#blqs-class>
+#[derive(Clone)]
+pub struct ByteLengthQueuingStrategy {
+    /// <https://streams.spec.whatwg.org/#bytelengthqueuingstrategy-highwatermark>
+    #[unsafe_ignore_trace]
+    high_water_mark: f64,
 }
 
 impl ByteLengthQueuingStrategy {
@@ -27,14 +27,13 @@ impl ByteLengthQueuingStrategy {
     }
 }
 
-js_engine::impl_gc_traits! {
-    /// <https://streams.spec.whatwg.org/#cqs-class>
-    #[derive(Clone)]
-    pub struct CountQueuingStrategy {
-        /// <https://streams.spec.whatwg.org/#countqueuingstrategy-highwatermark>
-        #[unsafe_ignore_trace]
-        high_water_mark: f64,
-    }
+#[gc_struct]
+/// <https://streams.spec.whatwg.org/#cqs-class>
+#[derive(Clone)]
+pub struct CountQueuingStrategy {
+    /// <https://streams.spec.whatwg.org/#countqueuingstrategy-highwatermark>
+    #[unsafe_ignore_trace]
+    high_water_mark: f64,
 }
 
 impl CountQueuingStrategy {

@@ -21,7 +21,9 @@ use crate::{
     Completion, EcmascriptHost, ExecutionContext, HostHooks, IntegrityLevel, IteratorKind,
     JsEngine, JsTypes, JsTypesWithRealm, Numeric, PreferredType, SharedMemoryOrder,
     TypedArrayElementType,
-    records::{IteratorRecord, PromiseCapability, PromiseResolvers, PropertyDescriptor, RealmIntrinsics},
+    records::{
+        IteratorRecord, PromiseCapability, PromiseResolvers, PropertyDescriptor, RealmIntrinsics,
+    },
 };
 
 /// Marker type for JSC engine implementations.
@@ -47,9 +49,7 @@ pub struct JscTypes;
 /// Type stored as private data on each builtin function object.
 /// Captures an engine pointer so it can produce `&mut dyn ExecutionContext`
 /// without receiving it from the C callback.
-type StoredBehaviour = Box<
-    dyn Fn(&[JscValue], JscValue) -> Completion<JscValue, JscTypes>,
->;
+type StoredBehaviour = Box<dyn Fn(&[JscValue], JscValue) -> Completion<JscValue, JscTypes>>;
 
 /// Wrapper around `*mut JSClassRef` that implements `Sync` + `Send` so it
 /// can be stored in a `LazyLock` static.  The content process is
@@ -94,8 +94,7 @@ extern "C" fn builtin_call_as_function(
     arguments: *const *mut JSValueRef,
     exception: *mut *mut JSValueRef,
 ) -> *mut JSValueRef {
-    let stored_ptr =
-        unsafe { JSObjectGetPrivate(function) } as *mut StoredBehaviour;
+    let stored_ptr = unsafe { JSObjectGetPrivate(function) } as *mut StoredBehaviour;
     if stored_ptr.is_null() {
         return unsafe { JSValueMakeUndefined(ctx) };
     }
@@ -104,10 +103,7 @@ extern "C" fn builtin_call_as_function(
     let args_slice = unsafe { std::slice::from_raw_parts(arguments, argument_count) };
     let jsc_args: Vec<JscValue> = args_slice
         .iter()
-        .map(|raw| JscValue {
-            raw: *raw,
-            ctx,
-        })
+        .map(|raw| JscValue { raw: *raw, ctx })
         .collect();
     let this_val = JscValue {
         raw: this_object as *mut JSValueRef,
@@ -128,8 +124,7 @@ extern "C" fn builtin_call_as_function(
 /// `finalize` for builtin objects.  Drops the `StoredBehaviour` Box,
 /// freeing the captured closure and engine pointer.
 extern "C" fn builtin_finalize(object: *mut JSObjectRef) {
-    let stored_ptr =
-        unsafe { JSObjectGetPrivate(object) } as *mut StoredBehaviour;
+    let stored_ptr = unsafe { JSObjectGetPrivate(object) } as *mut StoredBehaviour;
     if !stored_ptr.is_null() {
         unsafe {
             drop(Box::from_raw(stored_ptr));
@@ -558,9 +553,7 @@ impl JsEngine<JscTypes> for JscEngine {
         let leaked: *mut StoredBehaviour = Box::into_raw(Box::new(wrapped));
 
         let ctx_ptr = self.ctx_ptr();
-        let raw = unsafe {
-            JSObjectMake(ctx_ptr, BUILTIN_CLASS.0, leaked as *mut c_void)
-        };
+        let raw = unsafe { JSObjectMake(ctx_ptr, BUILTIN_CLASS.0, leaked as *mut c_void) };
 
         // Set `Function.prototype` as the prototype.
         let realm = self.current_realm();
@@ -606,10 +599,7 @@ impl JsEngine<JscTypes> for JscEngine {
             }
         }
 
-        JscObject {
-            raw,
-            ctx: ctx_ptr,
-        }
+        JscObject { raw, ctx: ctx_ptr }
     }
 
     // ── §16 Script ────────────────────────────────────────────────────────
@@ -1199,8 +1189,7 @@ impl ExecutionContext<JscTypes> for JscEngine {
                         ctx: ctx_ptr,
                     });
                 }
-                let (result, exception) =
-                    self.eval_script_raw("__fw_get_obj[__fw_get_sym]");
+                let (result, exception) = self.eval_script_raw("__fw_get_obj[__fw_get_sym]");
                 // Cleanup temporary globals.
                 unsafe {
                     JSObjectDeleteProperty(ctx_ptr, global.raw, obj_key.raw, &mut exc);
@@ -1386,7 +1375,10 @@ impl ExecutionContext<JscTypes> for JscEngine {
     ) -> Completion<bool, JscTypes> {
         Ok(self.get_own_property(object, property_key)?.is_some())
     }
-    fn own_property_keys(&mut self, object: JscObject) -> Completion<Vec<JscPropertyKey>, JscTypes> {
+    fn own_property_keys(
+        &mut self,
+        object: JscObject,
+    ) -> Completion<Vec<JscPropertyKey>, JscTypes> {
         let global = self.context.global_object();
         let object_key = JscString::from_rust("__formal_web_own_keys_target");
         let mut exception: *mut JSValueRef = std::ptr::null_mut();
@@ -1407,7 +1399,8 @@ impl ExecutionContext<JscTypes> for JscEngine {
             });
         }
 
-        let (result, exception) = self.eval_script_raw("Reflect.ownKeys(__formal_web_own_keys_target)");
+        let (result, exception) =
+            self.eval_script_raw("Reflect.ownKeys(__formal_web_own_keys_target)");
         unsafe {
             JSObjectDeleteProperty(
                 self.context.as_context_ref(),
@@ -1440,9 +1433,8 @@ impl ExecutionContext<JscTypes> for JscEngine {
                 ctx: self.ctx_ptr(),
             });
         }
-        let length = unsafe {
-            JSValueToNumber(self.context.as_context_ref(), length_value, &mut exception)
-        };
+        let length =
+            unsafe { JSValueToNumber(self.context.as_context_ref(), length_value, &mut exception) };
         if !exception.is_null() {
             return Err(JscValue {
                 raw: exception,
@@ -2153,17 +2145,11 @@ impl ExecutionContext<JscTypes> for JscEngine {
         todo!("data_view_buffer not yet implemented for JSC")
     }
 
-    fn data_view_byte_offset(
-        &mut self,
-        _data_view: &JscDataView,
-    ) -> Completion<u64, JscTypes> {
+    fn data_view_byte_offset(&mut self, _data_view: &JscDataView) -> Completion<u64, JscTypes> {
         todo!("data_view_byte_offset not yet implemented for JSC")
     }
 
-    fn data_view_byte_length(
-        &mut self,
-        _data_view: &JscDataView,
-    ) -> Completion<u64, JscTypes> {
+    fn data_view_byte_length(&mut self, _data_view: &JscDataView) -> Completion<u64, JscTypes> {
         todo!("data_view_byte_length not yet implemented for JSC")
     }
 
@@ -2526,12 +2512,12 @@ impl ExecutionContext<JscTypes> for JscEngine {
             .host_data
             .get_mut(&map_type_id)
             .and_then(|boxed| {
-                boxed
-                    .downcast_mut::<std::collections::HashMap<usize, Box<dyn std::any::Any>>>()
+                boxed.downcast_mut::<std::collections::HashMap<usize, Box<dyn std::any::Any>>>()
             })
             .and_then(|map| {
                 let key = object.as_raw() as usize;
-                map.get_mut(&key).map(|boxed| boxed.as_mut() as *mut dyn std::any::Any)
+                map.get_mut(&key)
+                    .map(|boxed| boxed.as_mut() as *mut dyn std::any::Any)
             });
         if let Some(data_ptr) = data_ptr {
             let ec: &mut dyn ExecutionContext<JscTypes> = self;
@@ -2623,9 +2609,7 @@ impl ExecutionContext<JscTypes> for JscEngine {
         let leaked: *mut StoredBehaviour = Box::into_raw(Box::new(wrapped));
 
         let ctx_ptr = self.ctx_ptr();
-        let raw = unsafe {
-            JSObjectMake(ctx_ptr, BUILTIN_CLASS.0, leaked as *mut c_void)
-        };
+        let raw = unsafe { JSObjectMake(ctx_ptr, BUILTIN_CLASS.0, leaked as *mut c_void) };
 
         // Set `Function.prototype` as the prototype so `typeof fn === "function"`.
         let realm = self.current_realm();
@@ -2671,10 +2655,7 @@ impl ExecutionContext<JscTypes> for JscEngine {
             }
         }
 
-        JscObject {
-            raw,
-            ctx: ctx_ptr,
-        }
+        JscObject { raw, ctx: ctx_ptr }
     }
 
     // ── Property Key Construction ─────────────────────────────────────────

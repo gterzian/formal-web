@@ -25,6 +25,7 @@ use super::writablestreamdefaultcontroller::{
     writable_stream_default_controller_error_if_needed,
 };
 use super::{ReadableStream, WritableStream, type_error_value};
+use js_engine::gc_struct;
 use js_engine::{Completion, ExecutionContext, JsTypes, PromiseResolvers};
 
 fn stream_debug_enabled() -> bool {
@@ -55,30 +56,29 @@ fn queued_resolved_promise(value: JsValue, context: &mut Context) -> JsResult<Js
     Ok(promise.into())
 }
 
-js_engine::impl_gc_traits! {
-    /// <https://streams.spec.whatwg.org/#ts-class>
-    #[derive(Clone)]
-    pub struct TransformStream {
-        /// <https://streams.spec.whatwg.org/#transformstream-backpressure>
-        #[unsafe_ignore_trace]
-        backpressure: Rc<Cell<bool>>,
+#[gc_struct]
+/// <https://streams.spec.whatwg.org/#ts-class>
+#[derive(Clone)]
+pub struct TransformStream {
+    /// <https://streams.spec.whatwg.org/#transformstream-backpressure>
+    #[unsafe_ignore_trace]
+    backpressure: Rc<Cell<bool>>,
 
-        /// <https://streams.spec.whatwg.org/#transformstream-backpressurechangepromise>
-        backpressure_change_promise: Gc<GcRefCell<Option<JsObject>>>,
-        backpressure_change_resolvers: Gc<GcRefCell<Option<PromiseResolvers<crate::js::Types>>>>,
+    /// <https://streams.spec.whatwg.org/#transformstream-backpressurechangepromise>
+    backpressure_change_promise: Gc<GcRefCell<Option<JsObject>>>,
+    backpressure_change_resolvers: Gc<GcRefCell<Option<PromiseResolvers<crate::js::Types>>>>,
 
-        /// <https://streams.spec.whatwg.org/#transformstream-controller>
-        controller: Gc<GcRefCell<Option<TransformStreamDefaultController>>>,
-        controller_object: Gc<GcRefCell<Option<JsObject>>>,
+    /// <https://streams.spec.whatwg.org/#transformstream-controller>
+    controller: Gc<GcRefCell<Option<TransformStreamDefaultController>>>,
+    controller_object: Gc<GcRefCell<Option<JsObject>>>,
 
-        /// <https://streams.spec.whatwg.org/#transformstream-readable>
-        readable: Gc<GcRefCell<Option<ReadableStream>>>,
-        readable_object: Gc<GcRefCell<Option<JsObject>>>,
+    /// <https://streams.spec.whatwg.org/#transformstream-readable>
+    readable: Gc<GcRefCell<Option<ReadableStream>>>,
+    readable_object: Gc<GcRefCell<Option<JsObject>>>,
 
-        /// <https://streams.spec.whatwg.org/#transformstream-writable>
-        writable: Gc<GcRefCell<Option<WritableStream>>>,
-        writable_object: Gc<GcRefCell<Option<JsObject>>>,
-    }
+    /// <https://streams.spec.whatwg.org/#transformstream-writable>
+    writable: Gc<GcRefCell<Option<WritableStream>>>,
+    writable_object: Gc<GcRefCell<Option<JsObject>>>,
 }
 
 impl TransformStream {
@@ -108,9 +108,10 @@ impl TransformStream {
         &self,
         ec: &mut dyn ExecutionContext<crate::js::Types>,
     ) -> Completion<ReadableStream, crate::js::Types> {
-        self.readable.borrow().clone().ok_or_else(|| {
-            ec.new_type_error("TransformStream is missing its readable side")
-        })
+        self.readable
+            .borrow()
+            .clone()
+            .ok_or_else(|| ec.new_type_error("TransformStream is missing its readable side"))
     }
 
     pub(crate) fn readable_object(&self) -> JsResult<JsObject> {
@@ -142,9 +143,10 @@ impl TransformStream {
         &self,
         ec: &mut dyn ExecutionContext<crate::js::Types>,
     ) -> Completion<WritableStream, crate::js::Types> {
-        self.writable.borrow().clone().ok_or_else(|| {
-            ec.new_type_error("TransformStream is missing its writable side")
-        })
+        self.writable
+            .borrow()
+            .clone()
+            .ok_or_else(|| ec.new_type_error("TransformStream is missing its writable side"))
     }
 
     pub(crate) fn writable_object(&self) -> JsResult<JsObject> {
@@ -176,9 +178,10 @@ impl TransformStream {
         &self,
         ec: &mut dyn ExecutionContext<crate::js::Types>,
     ) -> Completion<TransformStreamDefaultController, crate::js::Types> {
-        self.controller.borrow().clone().ok_or_else(|| {
-            ec.new_type_error("TransformStream is missing its controller")
-        })
+        self.controller
+            .borrow()
+            .clone()
+            .ok_or_else(|| ec.new_type_error("TransformStream is missing its controller"))
     }
 
     pub(crate) fn controller_object(&self) -> JsResult<JsObject> {
@@ -207,53 +210,49 @@ impl TransformStream {
     }
 }
 
-js_engine::impl_gc_traits! {
-    /// <https://streams.spec.whatwg.org/#transformstreamdefaultcontroller>
-    #[derive(Clone)]
-    pub struct TransformStreamDefaultController {
-        /// <https://streams.spec.whatwg.org/#transformstreamdefaultcontroller-stream>
-        stream: Gc<GcRefCell<Option<TransformStream>>>,
+#[gc_struct]
+/// <https://streams.spec.whatwg.org/#transformstreamdefaultcontroller>
+#[derive(Clone)]
+pub struct TransformStreamDefaultController {
+    /// <https://streams.spec.whatwg.org/#transformstreamdefaultcontroller-stream>
+    stream: Gc<GcRefCell<Option<TransformStream>>>,
 
-        /// <https://streams.spec.whatwg.org/#transformstreamdefaultcontroller-transformalgorithm>
-        transform_algorithm: Gc<GcRefCell<Option<TransformAlgorithm>>>,
-
-        /// <https://streams.spec.whatwg.org/#transformstreamdefaultcontroller-flushalgorithm>
-        flush_algorithm: Gc<GcRefCell<Option<FlushAlgorithm>>>,
-
-        /// <https://streams.spec.whatwg.org/#transformstreamdefaultcontroller-cancelalgorithm>
-        cancel_algorithm: Gc<GcRefCell<Option<TransformCancelAlgorithm>>>,
-
-        /// <https://streams.spec.whatwg.org/#transformstreamdefaultcontroller-finishpromise>
-        finish_promise: Gc<GcRefCell<Option<JsObject>>>,
-        finish_resolvers: Gc<GcRefCell<Option<PromiseResolvers<crate::js::Types>>>>,
-    }
-}
-
-js_engine::impl_gc_traits! {
     /// <https://streams.spec.whatwg.org/#transformstreamdefaultcontroller-transformalgorithm>
-    #[derive(Clone)]
-    pub(crate) enum TransformAlgorithm {
-        Identity,
-        JavaScript(SourceMethod),
-    }
-}
+    transform_algorithm: Gc<GcRefCell<Option<TransformAlgorithm>>>,
 
-js_engine::impl_gc_traits! {
     /// <https://streams.spec.whatwg.org/#transformstreamdefaultcontroller-flushalgorithm>
-    #[derive(Clone)]
-    pub(crate) enum FlushAlgorithm {
-        ReturnUndefined,
-        JavaScript(SourceMethod),
-    }
+    flush_algorithm: Gc<GcRefCell<Option<FlushAlgorithm>>>,
+
+    /// <https://streams.spec.whatwg.org/#transformstreamdefaultcontroller-cancelalgorithm>
+    cancel_algorithm: Gc<GcRefCell<Option<TransformCancelAlgorithm>>>,
+
+    /// <https://streams.spec.whatwg.org/#transformstreamdefaultcontroller-finishpromise>
+    finish_promise: Gc<GcRefCell<Option<JsObject>>>,
+    finish_resolvers: Gc<GcRefCell<Option<PromiseResolvers<crate::js::Types>>>>,
 }
 
-js_engine::impl_gc_traits! {
-    /// <https://streams.spec.whatwg.org/#transformstreamdefaultcontroller-cancelalgorithm>
-    #[derive(Clone)]
-    pub(crate) enum TransformCancelAlgorithm {
-        ReturnUndefined,
-        JavaScript(SourceMethod),
-    }
+#[gc_struct]
+/// <https://streams.spec.whatwg.org/#transformstreamdefaultcontroller-transformalgorithm>
+#[derive(Clone)]
+pub(crate) enum TransformAlgorithm {
+    Identity,
+    JavaScript(SourceMethod),
+}
+
+#[gc_struct]
+/// <https://streams.spec.whatwg.org/#transformstreamdefaultcontroller-flushalgorithm>
+#[derive(Clone)]
+pub(crate) enum FlushAlgorithm {
+    ReturnUndefined,
+    JavaScript(SourceMethod),
+}
+
+#[gc_struct]
+/// <https://streams.spec.whatwg.org/#transformstreamdefaultcontroller-cancelalgorithm>
+#[derive(Clone)]
+pub(crate) enum TransformCancelAlgorithm {
+    ReturnUndefined,
+    JavaScript(SourceMethod),
 }
 
 impl TransformStreamDefaultController {
@@ -311,9 +310,9 @@ impl TransformStreamDefaultController {
     ) -> Completion<super::ReadableStreamDefaultController, crate::js::Types> {
         let stream = self.stream_slot_ec(ec)?;
         let readable = stream.readable_ec(ec)?;
-        let controller = readable.controller_slot().ok_or_else(|| {
-            ec.new_type_error("ReadableStream is missing its controller")
-        })?;
+        let controller = readable
+            .controller_slot()
+            .ok_or_else(|| ec.new_type_error("ReadableStream is missing its controller"))?;
         Ok(controller.as_default_controller())
     }
 
@@ -567,19 +566,18 @@ fn transform_stream_set_backpressure(
 
     // Step 2: "If stream.[[backpressureChangePromise]] is not undefined, resolve stream.[[backpressureChangePromise]] with undefined."
     if let Some(resolvers) = stream.backpressure_change_resolvers.borrow_mut().take() {
-        crate::js::completion_to_js_result(resolvers.resolve(
-            JsValue::undefined(),
-            js_engine::boa::context_as_ec(context),
-        ))?;
+        crate::js::completion_to_js_result(
+            resolvers.resolve(JsValue::undefined(), js_engine::boa::context_as_ec(context)),
+        )?;
     }
 
     // Step 3: "Set stream.[[backpressureChangePromise]] to a new promise."
     let (promise, resolvers) = crate::js::completion_to_js_result(
         js_engine::boa::context_as_ec(context).new_promise_pending(),
     )?;
-    let promise_obj = promise
-        .as_object()
-        .ok_or_else(|| JsNativeError::typ().with_message("new_promise_pending did not return an object"))?;
+    let promise_obj = promise.as_object().ok_or_else(|| {
+        JsNativeError::typ().with_message("new_promise_pending did not return an object")
+    })?;
     *stream.backpressure_change_promise.borrow_mut() = Some(promise_obj);
     *stream.backpressure_change_resolvers.borrow_mut() = Some(resolvers);
 
@@ -951,9 +949,9 @@ fn transform_stream_default_sink_abort_algorithm(
     let (finish_promise, finish_resolvers) = crate::js::completion_to_js_result(
         js_engine::boa::context_as_ec(context).new_promise_pending(),
     )?;
-    let finish_promise_obj = finish_promise
-        .as_object()
-        .ok_or_else(|| JsNativeError::typ().with_message("new_promise_pending did not return an object"))?;
+    let finish_promise_obj = finish_promise.as_object().ok_or_else(|| {
+        JsNativeError::typ().with_message("new_promise_pending did not return an object")
+    })?;
     *controller.finish_promise.borrow_mut() = Some(finish_promise_obj.clone());
     *controller.finish_resolvers.borrow_mut() = Some(finish_resolvers);
 
@@ -1095,9 +1093,9 @@ fn transform_stream_default_sink_close_algorithm(
     let (finish_promise, finish_resolvers) = crate::js::completion_to_js_result(
         js_engine::boa::context_as_ec(context).new_promise_pending(),
     )?;
-    let finish_promise_obj = finish_promise
-        .as_object()
-        .ok_or_else(|| JsNativeError::typ().with_message("new_promise_pending did not return an object"))?;
+    let finish_promise_obj = finish_promise.as_object().ok_or_else(|| {
+        JsNativeError::typ().with_message("new_promise_pending did not return an object")
+    })?;
     *controller.finish_promise.borrow_mut() = Some(finish_promise_obj.clone());
     *controller.finish_resolvers.borrow_mut() = Some(finish_resolvers);
 
@@ -1249,9 +1247,9 @@ pub(crate) fn transform_stream_default_source_cancel_algorithm(
     let (finish_promise, finish_resolvers) = crate::js::completion_to_js_result(
         js_engine::boa::context_as_ec(context).new_promise_pending(),
     )?;
-    let finish_promise_obj = finish_promise
-        .as_object()
-        .ok_or_else(|| JsNativeError::typ().with_message("new_promise_pending did not return an object"))?;
+    let finish_promise_obj = finish_promise.as_object().ok_or_else(|| {
+        JsNativeError::typ().with_message("new_promise_pending did not return an object")
+    })?;
     *controller.finish_promise.borrow_mut() = Some(finish_promise_obj.clone());
     *controller.finish_resolvers.borrow_mut() = Some(finish_resolvers);
 

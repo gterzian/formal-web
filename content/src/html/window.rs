@@ -15,19 +15,19 @@ use crate::webidl::Callback;
 use super::resolved_style_properties_for_element;
 use super::windowproxy::create_window_proxy;
 use super::{GlobalScope, the_rules_for_choosing_a_navigable};
+use js_engine::gc_struct;
 
-js_engine::impl_gc_traits! {
-    /// <https://html.spec.whatwg.org/#window>
-    pub struct Window {
-        /// <https://dom.spec.whatwg.org/#interface-eventtarget>
-        pub event_target: EventTarget,
+#[gc_struct]
+/// <https://html.spec.whatwg.org/#window>
+pub struct Window {
+    /// <https://dom.spec.whatwg.org/#interface-eventtarget>
+    pub event_target: EventTarget,
 
-        /// <https://html.spec.whatwg.org/#global-object>
-        pub global_scope: GlobalScope,
+    /// <https://html.spec.whatwg.org/#global-object>
+    pub global_scope: GlobalScope,
 
-        /// <https://html.spec.whatwg.org/#handler-onload>
-        onload: Option<Callback>,
-    }
+    /// <https://html.spec.whatwg.org/#handler-onload>
+    onload: Option<Callback>,
 }
 
 impl Window {
@@ -157,9 +157,9 @@ pub(crate) fn window_open_steps(
                         }
                     },
                     None => {
-                        return Err(ec.new_type_error(
-                            "SyntaxError: failed to parse URL in window.open",
-                        ));
+                        return Err(
+                            ec.new_type_error("SyntaxError: failed to parse URL in window.open")
+                        );
                     }
                 }
             }

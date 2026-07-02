@@ -3,13 +3,13 @@ use std::{cell::RefCell, collections::BTreeMap, rc::Rc};
 use blitz_dom::BaseDocument;
 
 use crate::dom::Element;
+use js_engine::gc_struct;
 
-js_engine::impl_gc_traits! {
-    /// <https://html.spec.whatwg.org/#htmlelement>
-    pub struct HTMLElement {
-        /// <https://dom.spec.whatwg.org/#interface-element>
-        pub element: Element,
-    }
+#[gc_struct]
+/// <https://html.spec.whatwg.org/#htmlelement>
+pub struct HTMLElement {
+    /// <https://dom.spec.whatwg.org/#interface-element>
+    pub element: Element,
 }
 
 impl HTMLElement {

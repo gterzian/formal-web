@@ -204,12 +204,14 @@ fn build_boa_context(document: Rc<RefCell<BaseDocument>>) -> Result<Context, Str
             .map_err(|error| error.to_string())?;
 
         // pipeTo with JS wrapper workaround
-        let pipe_to_native_fn =
-            FunctionObjectBuilder::new(&realm, NativeFunction::from_fn_ptr(pipe_to_native_method_adapter))
-                .name(js_string!("pipeTo"))
-                .length(2)
-                .constructor(false)
-                .build();
+        let pipe_to_native_fn = FunctionObjectBuilder::new(
+            &realm,
+            NativeFunction::from_fn_ptr(pipe_to_native_method_adapter),
+        )
+        .name(js_string!("pipeTo"))
+        .length(2)
+        .constructor(false)
+        .build();
 
         let native_desc = PropertyDescriptor::builder()
             .value(pipe_to_native_fn)

@@ -1,3 +1,4 @@
+use js_engine::gc_struct;
 use std::{cell::Cell, rc::Rc};
 
 use boa_engine::{
@@ -14,12 +15,11 @@ use super::promise::{rejected_promise, resolved_promise};
 
 use js_engine::{Completion, ExecutionContext};
 
-js_engine::impl_gc_traits! {
-    #[derive(Clone)]
-    enum IteratorOperation {
-        Next,
-        Return(JsValue),
-    }
+#[gc_struct]
+#[derive(Clone)]
+enum IteratorOperation {
+    Next,
+    Return(JsValue),
 }
 
 /// <https://webidl.spec.whatwg.org/#asynchronous-iterator-initialization-steps>

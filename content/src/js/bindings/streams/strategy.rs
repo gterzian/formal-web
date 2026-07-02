@@ -158,7 +158,9 @@ fn get_byte_length_size(
         1,
         ec.property_key_from_str("size"),
     );
-    Ok(crate::js::Types::value_from_object(crate::js::Types::object_from_function(function)))
+    Ok(crate::js::Types::value_from_object(
+        crate::js::Types::object_from_function(function),
+    ))
 }
 
 fn get_count_size(
@@ -175,5 +177,7 @@ fn get_count_size(
         1,
         ec.property_key_from_str("size"),
     );
-    Ok(crate::js::Types::value_from_object(crate::js::Types::object_from_function(function)))
+    Ok(crate::js::Types::value_from_object(
+        crate::js::Types::object_from_function(function),
+    ))
 }

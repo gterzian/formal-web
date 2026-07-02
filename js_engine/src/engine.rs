@@ -449,10 +449,7 @@ pub trait ExecutionContext<T: JsTypes + JsTypesWithRealm>: EcmascriptHost<T> {
 
     /// <https://tc39.es/ecma262/#sec-gettypedarraybuffer>
     /// Get the backing ArrayBuffer of a TypedArray.
-    fn typed_array_buffer(
-        &mut self,
-        typed_array: &T::TypedArray,
-    ) -> Completion<T::ArrayBuffer, T>;
+    fn typed_array_buffer(&mut self, typed_array: &T::TypedArray) -> Completion<T::ArrayBuffer, T>;
 
     /// <https://tc39.es/ecma262/#sec-gettypedarraybyteoffset>
     /// Get the byte offset of a TypedArray.
@@ -464,7 +461,10 @@ pub trait ExecutionContext<T: JsTypes + JsTypesWithRealm>: EcmascriptHost<T> {
 
     /// Get the TypedArray element type (e.g., Uint8, Int16).
     /// Returns None if the kind cannot be determined.
-    fn typed_array_element_type(&self, typed_array: &T::TypedArray) -> Option<TypedArrayElementType>;
+    fn typed_array_element_type(
+        &self,
+        typed_array: &T::TypedArray,
+    ) -> Option<TypedArrayElementType>;
 
     /// <https://tc39.es/ecma262/#sec-typedarraycreate>
     /// Create a new TypedArray view backed by the given ArrayBuffer.
@@ -482,10 +482,7 @@ pub trait ExecutionContext<T: JsTypes + JsTypesWithRealm>: EcmascriptHost<T> {
 
     /// <https://tc39.es/ecma262/#sec-getdataviewbuffer>
     /// Get the backing ArrayBuffer of a DataView.
-    fn data_view_buffer(
-        &mut self,
-        data_view: &T::DataView,
-    ) -> Completion<T::ArrayBuffer, T>;
+    fn data_view_buffer(&mut self, data_view: &T::DataView) -> Completion<T::ArrayBuffer, T>;
 
     /// <https://tc39.es/ecma262/#sec-getdataviewbyteoffset>
     /// Get the byte offset of a DataView.
@@ -533,9 +530,7 @@ pub trait ExecutionContext<T: JsTypes + JsTypesWithRealm>: EcmascriptHost<T> {
     ///
     /// Returns a GC-safe [`PromiseResolvers<T>`] that can be stored in
     /// domain structs.  The promise is returned as a `T::JsValue`.
-    fn new_promise_pending(
-        &mut self,
-    ) -> Completion<(T::JsValue, PromiseResolvers<T>), T>;
+    fn new_promise_pending(&mut self) -> Completion<(T::JsValue, PromiseResolvers<T>), T>;
 
     /// <https://tc39.es/ecma262/#sec-performpromisethen>
     fn perform_promise_then(

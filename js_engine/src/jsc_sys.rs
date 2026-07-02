@@ -278,9 +278,7 @@ pub struct JSClassDefinition {
     pub parentClass: *mut JSClassRef,
     pub staticValues: *const JSStaticValue,
     pub staticFunctions: *const JSStaticFunction,
-    pub initialize: Option<
-        unsafe extern "C" fn(ctx: *mut JSContextRef, object: *mut JSObjectRef),
-    >,
+    pub initialize: Option<unsafe extern "C" fn(ctx: *mut JSContextRef, object: *mut JSObjectRef)>,
     pub finalize: Option<JSObjectFinalizeCallback>,
     pub hasProperty: Option<
         unsafe extern "C" fn(

@@ -1,7 +1,5 @@
-use std::{
-    cell::Cell,
-    rc::Rc,
-};
+use js_engine::gc_struct;
+use std::{cell::Cell, rc::Rc};
 
 use boa_engine::{
     Context, JsArgs, JsNativeError, JsResult, JsString, JsValue,
@@ -146,10 +144,10 @@ enum QueueEntryValue {
     CloseSentinel,
 }
 
-js_engine::impl_gc_traits! {
-    /// <https://streams.spec.whatwg.org/#writablestreamdefaultcontroller>
-    #[derive(Clone)]
-    pub struct WritableStreamDefaultController {
+#[gc_struct]
+/// <https://streams.spec.whatwg.org/#writablestreamdefaultcontroller>
+#[derive(Clone)]
+pub struct WritableStreamDefaultController {
     /// <https://streams.spec.whatwg.org/#writablestreamdefaultcontroller-stream>
     stream: Gc<GcRefCell<Option<WritableStream>>>,
 
@@ -182,7 +180,6 @@ js_engine::impl_gc_traits! {
 
     /// <https://streams.spec.whatwg.org/#writablestreamdefaultcontroller-abortalgorithm>
     abort_algorithm: Gc<GcRefCell<Option<AbortAlgorithm>>>,
-}
 }
 
 impl WritableStreamDefaultController {
@@ -229,9 +226,13 @@ impl WritableStreamDefaultController {
         &self,
         ec: &mut dyn ExecutionContext<crate::js::Types>,
     ) -> Completion<JsObject, crate::js::Types> {
-        self.stream_slot_ec(ec)?.controller_object_slot().ok_or_else(|| {
-            ec.new_type_error("WritableStreamDefaultController is missing its JavaScript object")
-        })
+        self.stream_slot_ec(ec)?
+            .controller_object_slot()
+            .ok_or_else(|| {
+                ec.new_type_error(
+                    "WritableStreamDefaultController is missing its JavaScript object",
+                )
+            })
     }
 
     pub(crate) fn set_stream_slot(&self, stream: Option<WritableStream>) {
@@ -280,9 +281,9 @@ impl WritableStreamDefaultController {
         &self,
         ec: &mut dyn ExecutionContext<crate::js::Types>,
     ) -> Completion<JsObject, crate::js::Types> {
-        self.signal_ec(ec)?.object().ok_or_else(|| {
-            ec.new_type_error("AbortSignal is missing its JavaScript object")
-        })
+        self.signal_ec(ec)?
+            .object()
+            .ok_or_else(|| ec.new_type_error("AbortSignal is missing its JavaScript object"))
     }
 
     /// <https://streams.spec.whatwg.org/#ws-default-controller-error>

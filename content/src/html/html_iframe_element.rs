@@ -10,6 +10,7 @@ use std::{
 
 use blitz_dom::BaseDocument;
 use html5ever::{local_name, ns};
+use js_engine::gc_struct;
 use url::Url;
 
 use crate::{
@@ -17,18 +18,17 @@ use crate::{
     html::HTMLElement, html::navigate, webidl::Callback,
 };
 
-js_engine::impl_gc_traits! {
-    /// <https://html.spec.whatwg.org/#htmliframeelement>
-    pub struct HTMLIFrameElement {
-        /// <https://html.spec.whatwg.org/#htmlelement>
-        pub html_element: HTMLElement,
+#[gc_struct]
+/// <https://html.spec.whatwg.org/#htmliframeelement>
+pub struct HTMLIFrameElement {
+    /// <https://html.spec.whatwg.org/#htmlelement>
+    pub html_element: HTMLElement,
 
-        /// <https://html.spec.whatwg.org/#handler-onload>
-        onload: Option<Callback>,
+    /// <https://html.spec.whatwg.org/#handler-onload>
+    onload: Option<Callback>,
 
-        /// <https://html.spec.whatwg.org/#handler-onerror>
-        onerror: Option<Callback>,
-    }
+    /// <https://html.spec.whatwg.org/#handler-onerror>
+    onerror: Option<Callback>,
 }
 
 impl HTMLIFrameElement {

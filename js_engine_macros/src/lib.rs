@@ -79,7 +79,9 @@ pub fn gc_struct(_attr: TokenStream, item: TokenStream) -> TokenStream {
                     feature = "boa",
                     derive(boa_gc::Finalize, boa_gc::Trace)
                 )]
-                #vis #enum_token #ident #generics #variants
+                #vis #enum_token #ident #generics {
+                    #variants
+                }
 
                 #[cfg(not(feature = "boa"))]
                 unsafe impl #impl_generics ::js_engine::gc::Trace for #ident #ty_generics #where_clause {}

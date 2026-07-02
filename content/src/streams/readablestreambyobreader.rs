@@ -1,11 +1,9 @@
-use boa_engine::{
-    JsArgs, JsError, JsNativeError, JsResult, JsValue,
-    object::JsObject,
-};
+use boa_engine::{JsArgs, JsError, JsNativeError, JsResult, JsValue, object::JsObject};
 use boa_gc::{Gc, GcRefCell};
 
 use crate::webidl::bindings::create_interface_instance;
 use crate::webidl::rejected_promise;
+use js_engine::gc_struct;
 
 use super::{
     ArrayBufferViewDescriptor, ReadIntoRequest, ReadableStream, ReadableStreamGenericReader,
@@ -15,14 +13,13 @@ use super::{
 
 use js_engine::{Completion, ExecutionContext, PromiseResolvers};
 
-js_engine::impl_gc_traits! {
-    /// <https://streams.spec.whatwg.org/#byob-reader-class>
-    #[derive(Clone)]
-    pub struct ReadableStreamBYOBReader {
-        stream: Gc<GcRefCell<Option<ReadableStream>>>,
-        closed_promise: Gc<GcRefCell<Option<JsObject>>>,
-        closed_resolvers: Gc<GcRefCell<Option<PromiseResolvers<crate::js::Types>>>>,
-    }
+#[gc_struct]
+/// <https://streams.spec.whatwg.org/#byob-reader-class>
+#[derive(Clone)]
+pub struct ReadableStreamBYOBReader {
+    stream: Gc<GcRefCell<Option<ReadableStream>>>,
+    closed_promise: Gc<GcRefCell<Option<JsObject>>>,
+    closed_resolvers: Gc<GcRefCell<Option<PromiseResolvers<crate::js::Types>>>>,
 }
 
 impl ReadableStreamBYOBReader {
@@ -124,10 +121,7 @@ impl ReadableStreamBYOBReader {
 
         if stream.state() == ReadableStreamState::Closed {
             let result_view = view.create_result_view(0, ec)?;
-            return read_into_request.close_steps(
-                Some(JsValue::from(result_view)),
-                ec,
-            );
+            return read_into_request.close_steps(Some(JsValue::from(result_view)), ec);
         }
 
         if stream.state() == ReadableStreamState::Errored {
@@ -173,7 +167,10 @@ impl ReadableStreamGenericReader for ReadableStreamBYOBReader {
         self.closed_resolvers.borrow().clone()
     }
 
-    fn set_closed_resolvers_slot_value(&self, resolvers: Option<PromiseResolvers<crate::js::Types>>) {
+    fn set_closed_resolvers_slot_value(
+        &self,
+        resolvers: Option<PromiseResolvers<crate::js::Types>>,
+    ) {
         *self.closed_resolvers.borrow_mut() = resolvers;
     }
 
@@ -188,9 +185,10 @@ pub(crate) fn construct_readable_stream_byob_reader(
     args: &[JsValue],
     ec: &mut dyn ExecutionContext<crate::js::Types>,
 ) -> Completion<ReadableStreamBYOBReader, crate::js::Types> {
-    let stream_object = args.get_or_undefined(0).as_object().ok_or_else(|| {
-        ec.new_type_error("ReadableStreamBYOBReader requires a ReadableStream")
-    })?;
+    let stream_object = args
+        .get_or_undefined(0)
+        .as_object()
+        .ok_or_else(|| ec.new_type_error("ReadableStreamBYOBReader requires a ReadableStream"))?;
     let not_stream_err = ec.new_type_error("object is not a ReadableStream");
     let stream = with_readable_stream_ref(&stream_object, |stream: &ReadableStream| stream.clone())
         .map_err(|_: JsError| not_stream_err)?;

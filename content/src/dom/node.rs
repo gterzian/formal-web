@@ -1,3 +1,4 @@
+use js_engine::gc_struct;
 use std::{cell::RefCell, rc::Rc};
 
 use blitz_dom::{BaseDocument, NodeData};
@@ -12,9 +13,9 @@ enum NodeKind {
     Comment,
 }
 
-js_engine::impl_gc_traits! {
-    /// <https://dom.spec.whatwg.org/#interface-node>
-    pub struct Node {
+#[gc_struct]
+/// <https://dom.spec.whatwg.org/#interface-node>
+pub struct Node {
     /// <https://dom.spec.whatwg.org/#concept-node-document>
     #[unsafe_ignore_trace]
     pub document: Rc<RefCell<BaseDocument>>,
@@ -25,7 +26,6 @@ js_engine::impl_gc_traits! {
 
     /// <https://dom.spec.whatwg.org/#interface-eventtarget>
     pub event_target: EventTarget,
-}
 }
 
 impl Node {

@@ -10,12 +10,13 @@ use crate::js::platform_objects::with_global_scope;
 use crate::webidl::resolved_promise;
 use ipc_messages::content::{Event as ContentEvent, RegisterMediaPipeline};
 use ipc_messages::media::VideoPaintId;
+use js_engine::gc_struct;
 
 use js_engine::{Completion, ExecutionContext};
 
-js_engine::impl_gc_traits! {
-    /// <https://html.spec.whatwg.org/#media-elements>
-    pub struct HTMLMediaElement {
+#[gc_struct]
+/// <https://html.spec.whatwg.org/#media-elements>
+pub struct HTMLMediaElement {
     /// <https://html.spec.whatwg.org/#htmlelement>
     pub html_element: HTMLElement,
 
@@ -66,17 +67,15 @@ js_engine::impl_gc_traits! {
     #[unsafe_ignore_trace]
     video_paint_id: VideoPaintId,
 }
-}
 
-js_engine::impl_gc_traits! {
-    /// <https://html.spec.whatwg.org/#mediaerror>
-    #[derive(Clone, Debug)]
-    pub struct MediaError {
-        /// <https://html.spec.whatwg.org/#dom-mediaerror-code>
-        pub code: u16,
-        /// <https://html.spec.whatwg.org/#dom-mediaerror-message>
-        pub message: String,
-    }
+#[gc_struct]
+/// <https://html.spec.whatwg.org/#mediaerror>
+#[derive(Clone, Debug)]
+pub struct MediaError {
+    /// <https://html.spec.whatwg.org/#dom-mediaerror-code>
+    pub code: u16,
+    /// <https://html.spec.whatwg.org/#dom-mediaerror-message>
+    pub message: String,
 }
 
 impl MediaError {

@@ -239,7 +239,10 @@ fn get_style(
     let get_property_value_fn = ec.create_builtin_function(
         Box::new(move |args, this_ec_val, inner_ec| {
             let property_name = if let Some(arg) = args.first() {
-                inner_ec.to_rust_string(arg.clone())?.trim().to_ascii_lowercase()
+                inner_ec
+                    .to_rust_string(arg.clone())?
+                    .trim()
+                    .to_ascii_lowercase()
             } else {
                 String::new()
             };
@@ -256,8 +259,7 @@ fn get_style(
         1,
         ec.property_key_from_str("getPropertyValue"),
     );
-    let method_val =
-        Types::value_from_object(Types::object_from_function(get_property_value_fn));
+    let method_val = Types::value_from_object(Types::object_from_function(get_property_value_fn));
     ec.set(
         style_obj.clone(),
         ec.property_key_from_str("getPropertyValue"),
@@ -277,14 +279,16 @@ fn get_style(
     let css_text_getter = ec.create_builtin_function(
         Box::new(move |_args, this_ec_val, inner_ec| {
             let element_val = {
-                let this_obj =
-                    Types::value_as_object(&this_ec_val).ok_or_else(|| {
-                        inner_ec.new_type_error("cssText getter: receiver is not an object")
-                    })?;
-                ExecutionContext::get(inner_ec, this_obj, inner_ec.property_key_from_str("__element"))?
+                let this_obj = Types::value_as_object(&this_ec_val).ok_or_else(|| {
+                    inner_ec.new_type_error("cssText getter: receiver is not an object")
+                })?;
+                ExecutionContext::get(
+                    inner_ec,
+                    this_obj,
+                    inner_ec.property_key_from_str("__element"),
+                )?
             };
-            let style =
-                element_style_attribute_ec(&element_val, inner_ec).unwrap_or_default();
+            let style = element_style_attribute_ec(&element_val, inner_ec).unwrap_or_default();
             Ok(inner_ec.value_from_string(inner_ec.js_string_from_str(&style)))
         }),
         0,
@@ -299,11 +303,14 @@ fn get_style(
                 String::new()
             };
             let element_val = {
-                let this_obj =
-                    Types::value_as_object(&this_ec_val).ok_or_else(|| {
-                        inner_ec.new_type_error("cssText setter: receiver is not an object")
-                    })?;
-                ExecutionContext::get(inner_ec, this_obj, inner_ec.property_key_from_str("__element"))?
+                let this_obj = Types::value_as_object(&this_ec_val).ok_or_else(|| {
+                    inner_ec.new_type_error("cssText setter: receiver is not an object")
+                })?;
+                ExecutionContext::get(
+                    inner_ec,
+                    this_obj,
+                    inner_ec.property_key_from_str("__element"),
+                )?
             };
             set_element_style_attribute_ec(&element_val, &value, inner_ec);
             Ok(inner_ec.value_undefined())
@@ -338,15 +345,41 @@ fn element_style_attribute_ec(
     // Note: dyn Any::downcast_ref matches exact type only, so we check
     // most-derived types first and walk up to base types.
     if let Some(el) = data.downcast_ref::<HTMLVideoElement>() {
-        Some(el.media_element.html_element.element.get_attribute("style").unwrap_or_default())
+        Some(
+            el.media_element
+                .html_element
+                .element
+                .get_attribute("style")
+                .unwrap_or_default(),
+        )
     } else if let Some(el) = data.downcast_ref::<HTMLMediaElement>() {
-        Some(el.html_element.element.get_attribute("style").unwrap_or_default())
+        Some(
+            el.html_element
+                .element
+                .get_attribute("style")
+                .unwrap_or_default(),
+        )
     } else if let Some(el) = data.downcast_ref::<HTMLAnchorElement>() {
-        Some(el.html_element.element.get_attribute("style").unwrap_or_default())
+        Some(
+            el.html_element
+                .element
+                .get_attribute("style")
+                .unwrap_or_default(),
+        )
     } else if let Some(el) = data.downcast_ref::<HTMLIFrameElement>() {
-        Some(el.html_element.element.get_attribute("style").unwrap_or_default())
+        Some(
+            el.html_element
+                .element
+                .get_attribute("style")
+                .unwrap_or_default(),
+        )
     } else if let Some(el) = data.downcast_ref::<HTMLInputElement>() {
-        Some(el.html_element.element.get_attribute("style").unwrap_or_default())
+        Some(
+            el.html_element
+                .element
+                .get_attribute("style")
+                .unwrap_or_default(),
+        )
     } else if let Some(el) = data.downcast_ref::<HTMLElement>() {
         Some(el.element.get_attribute("style").unwrap_or_default())
     } else if let Some(el) = data.downcast_ref::<Element>() {
@@ -372,24 +405,52 @@ fn set_element_style_attribute_ec(
 
     if let Some(el) = data.downcast_ref::<HTMLVideoElement>() {
         let elem = &el.media_element.html_element.element;
-        if value.is_empty() { elem.remove_attribute("style"); } else { elem.set_attribute("style", value); }
+        if value.is_empty() {
+            elem.remove_attribute("style");
+        } else {
+            elem.set_attribute("style", value);
+        }
     } else if let Some(el) = data.downcast_ref::<HTMLMediaElement>() {
         let elem = &el.html_element.element;
-        if value.is_empty() { elem.remove_attribute("style"); } else { elem.set_attribute("style", value); }
+        if value.is_empty() {
+            elem.remove_attribute("style");
+        } else {
+            elem.set_attribute("style", value);
+        }
     } else if let Some(el) = data.downcast_ref::<HTMLAnchorElement>() {
         let elem = &el.html_element.element;
-        if value.is_empty() { elem.remove_attribute("style"); } else { elem.set_attribute("style", value); }
+        if value.is_empty() {
+            elem.remove_attribute("style");
+        } else {
+            elem.set_attribute("style", value);
+        }
     } else if let Some(el) = data.downcast_ref::<HTMLIFrameElement>() {
         let elem = &el.html_element.element;
-        if value.is_empty() { elem.remove_attribute("style"); } else { elem.set_attribute("style", value); }
+        if value.is_empty() {
+            elem.remove_attribute("style");
+        } else {
+            elem.set_attribute("style", value);
+        }
     } else if let Some(el) = data.downcast_ref::<HTMLInputElement>() {
         let elem = &el.html_element.element;
-        if value.is_empty() { elem.remove_attribute("style"); } else { elem.set_attribute("style", value); }
+        if value.is_empty() {
+            elem.remove_attribute("style");
+        } else {
+            elem.set_attribute("style", value);
+        }
     } else if let Some(el) = data.downcast_ref::<HTMLElement>() {
         let elem = &el.element;
-        if value.is_empty() { elem.remove_attribute("style"); } else { elem.set_attribute("style", value); }
+        if value.is_empty() {
+            elem.remove_attribute("style");
+        } else {
+            elem.set_attribute("style", value);
+        }
     } else if let Some(el) = data.downcast_ref::<Element>() {
-        if value.is_empty() { el.remove_attribute("style"); } else { el.set_attribute("style", value); }
+        if value.is_empty() {
+            el.remove_attribute("style");
+        } else {
+            el.set_attribute("style", value);
+        }
     }
 }
 

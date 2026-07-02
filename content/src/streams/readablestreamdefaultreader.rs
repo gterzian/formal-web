@@ -1,13 +1,11 @@
 use std::mem;
 
-use boa_engine::{
-    JsArgs, JsError, JsNativeError, JsResult, JsValue,
-    object::JsObject,
-};
+use boa_engine::{JsArgs, JsError, JsNativeError, JsResult, JsValue, object::JsObject};
 use boa_gc::{Gc, GcRefCell};
 
 use crate::webidl::bindings::create_interface_instance;
 use crate::webidl::{mark_promise_as_handled, rejected_promise, resolved_promise};
+use js_engine::gc_struct;
 
 use super::readablestream::{readable_stream_cancel, readable_stream_cancel_ec};
 use super::{
@@ -25,7 +23,10 @@ pub(crate) trait ReadableStreamGenericReader: Clone {
     fn set_closed_promise_slot_value(&self, promise: Option<JsObject>);
     /// promise is still pending.
     fn closed_resolvers_slot_value(&self) -> Option<PromiseResolvers<crate::js::Types>>;
-    fn set_closed_resolvers_slot_value(&self, resolvers: Option<PromiseResolvers<crate::js::Types>>);
+    fn set_closed_resolvers_slot_value(
+        &self,
+        resolvers: Option<PromiseResolvers<crate::js::Types>>,
+    );
     fn as_reader_slot(&self) -> ReadableStreamReader;
 
     /// <https://streams.spec.whatwg.org/#generic-reader-closed>
@@ -131,9 +132,7 @@ pub(crate) trait ReadableStreamGenericReader: Clone {
         // Step 1: "Let stream be reader.[[stream]]."
         let not_attached_error =
             ec.new_type_error("ReadableStream reader is not attached to a stream");
-        let stream = self
-            .stream_slot_value()
-            .ok_or_else(|| not_attached_error)?;
+        let stream = self.stream_slot_value().ok_or_else(|| not_attached_error)?;
 
         // Step 2: "Assert: stream is not undefined."
         debug_assert!(self.stream_slot_value().is_some());
@@ -165,8 +164,7 @@ pub(crate) trait ReadableStreamGenericReader: Clone {
         }
 
         // Step 7: "Perform ! stream.[[controller]].[[ReleaseSteps]]()."
-        let no_controller_error =
-            ec.new_type_error("ReadableStream is missing its controller");
+        let no_controller_error = ec.new_type_error("ReadableStream is missing its controller");
         let controller = stream
             .controller_slot()
             .ok_or_else(|| no_controller_error)?;
@@ -181,10 +179,10 @@ pub(crate) trait ReadableStreamGenericReader: Clone {
     }
 }
 
-js_engine::impl_gc_traits! {
-    /// <https://streams.spec.whatwg.org/#default-reader-class>
-    #[derive(Clone)]
-    pub struct ReadableStreamDefaultReader {
+#[gc_struct]
+/// <https://streams.spec.whatwg.org/#default-reader-class>
+#[derive(Clone)]
+pub struct ReadableStreamDefaultReader {
     /// <https://streams.spec.whatwg.org/#readablestreamgenericreader-stream>
     stream: Gc<GcRefCell<Option<ReadableStream>>>,
 
@@ -195,7 +193,6 @@ js_engine::impl_gc_traits! {
 
     /// <https://streams.spec.whatwg.org/#readablestreamdefaultreader-readrequests>
     read_requests: Gc<GcRefCell<Vec<ReadRequest>>>,
-}
 }
 
 impl ReadableStreamDefaultReader {
@@ -216,7 +213,9 @@ impl ReadableStreamDefaultReader {
     ) -> Completion<(), crate::js::Types> {
         // Step 1: "If ! IsReadableStreamLocked(stream) is true, throw a TypeError exception."
         if stream.is_readable_stream_locked() {
-            return Err(ec.new_type_error("Cannot create a reader for a stream that already has a reader"));
+            return Err(
+                ec.new_type_error("Cannot create a reader for a stream that already has a reader")
+            );
         }
 
         // Step 2: "Perform ! ReadableStreamReaderGenericInitialize(reader, stream)."
@@ -311,9 +310,9 @@ impl ReadableStreamDefaultReader {
         ec: &mut dyn ExecutionContext<crate::js::Types>,
     ) -> Completion<(), crate::js::Types> {
         // Step 1: "Let stream be reader.[[stream]]."
-        let stream = self.stream_slot_value().ok_or_else(|| {
-            ec.new_type_error("reader is not attached to a stream")
-        })?;
+        let stream = self
+            .stream_slot_value()
+            .ok_or_else(|| ec.new_type_error("reader is not attached to a stream"))?;
 
         // Step 2: "Assert: stream is not undefined."
         debug_assert!(self.stream_slot_value().is_some());
@@ -335,9 +334,9 @@ impl ReadableStreamDefaultReader {
         debug_assert_eq!(stream.state(), ReadableStreamState::Readable);
 
         // Step 6.2: "Perform ! stream.[[controller]].[[PullSteps]](readRequest)."
-        let controller = stream.controller_slot().ok_or_else(|| {
-            ec.new_type_error("ReadableStream is missing its controller")
-        })?;
+        let controller = stream
+            .controller_slot()
+            .ok_or_else(|| ec.new_type_error("ReadableStream is missing its controller"))?;
         controller.pull_steps(read_request, ec)
     }
 
@@ -377,7 +376,10 @@ impl ReadableStreamGenericReader for ReadableStreamDefaultReader {
         self.closed_resolvers.borrow().clone()
     }
 
-    fn set_closed_resolvers_slot_value(&self, resolvers: Option<PromiseResolvers<crate::js::Types>>) {
+    fn set_closed_resolvers_slot_value(
+        &self,
+        resolvers: Option<PromiseResolvers<crate::js::Types>>,
+    ) {
         *self.closed_resolvers.borrow_mut() = resolvers;
     }
 

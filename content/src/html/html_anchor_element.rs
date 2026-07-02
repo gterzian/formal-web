@@ -4,18 +4,18 @@ use blitz_dom::BaseDocument;
 use boa_engine::object::JsObject;
 use ipc::IpcSender;
 use ipc_messages::content::{Event as ContentEvent, NavigableId, UserNavigationInvolvement};
+use js_engine::gc_struct;
 use url::Url;
 
 use crate::html::{
     HTMLElement, HyperlinkElementUtils, navigate, the_rules_for_choosing_a_navigable,
 };
 
-js_engine::impl_gc_traits! {
-    /// <https://html.spec.whatwg.org/#htmlanchorelement>
-    pub struct HTMLAnchorElement {
-        /// <https://html.spec.whatwg.org/#htmlelement>
-        pub html_element: HTMLElement,
-    }
+#[gc_struct]
+/// <https://html.spec.whatwg.org/#htmlanchorelement>
+pub struct HTMLAnchorElement {
+    /// <https://html.spec.whatwg.org/#htmlelement>
+    pub html_element: HTMLElement,
 }
 
 impl HTMLAnchorElement {

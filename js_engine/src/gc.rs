@@ -186,7 +186,6 @@ mod boa_gc_impl {
     use super::*;
     use crate::boa::BoaTypes;
 
-
     // SAFETY: `boa_gc::Trace` satisfies all the requirements of
     // `js_engine::gc::Trace` — both guarantee that every GC-reachable
     // field is visited during trace.
@@ -265,7 +264,8 @@ mod jsc_gc_impl {
     #[allow(dead_code)]
     pub extern "C" fn jsc_generic_finalizer<V>(object: *mut std::ffi::c_void) {
         unsafe {
-            let private_data = crate::jsc_sys::JSObjectGetPrivate(object as *mut crate::jsc_sys::JSObjectRef);
+            let private_data =
+                crate::jsc_sys::JSObjectGetPrivate(object as *mut crate::jsc_sys::JSObjectRef);
             if !private_data.is_null() {
                 drop(std::sync::Arc::from_raw(
                     private_data as *const std::cell::RefCell<V>,

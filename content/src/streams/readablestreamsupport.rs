@@ -243,15 +243,17 @@ impl ReadRequest {
         ec: &mut dyn ExecutionContext<crate::js::Types>,
     ) -> Completion<(), crate::js::Types> {
         match &self {
-            Self::DefaultReaderRead { resolvers } => {
-                ec.call(&resolvers.reject, &JsValue::undefined(), &[error])
-                    .map(|_| ())
-            },
+            Self::DefaultReaderRead { resolvers } => ec
+                .call(&resolvers.reject, &JsValue::undefined(), &[error])
+                .map(|_| ()),
             Self::ReadableStreamDefaultTee { tee_state, .. } => {
                 // SAFETY: ec is backed by BoaContext repr(transparent) over Context
                 let context = unsafe { js_engine::boa::ec_to_ctx(ec) };
                 crate::js::js_result_to_completion(
-                    readable_stream_default_tee_read_request_error_steps(tee_state.clone(), context),
+                    readable_stream_default_tee_read_request_error_steps(
+                        tee_state.clone(),
+                        context,
+                    ),
                     context,
                 )
             }

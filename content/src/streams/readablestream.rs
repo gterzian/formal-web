@@ -30,6 +30,7 @@ use crate::webidl::{
     promise_from_value, rejected_promise, rejected_promise_from_error, resolved_promise,
     transform_promise_to_undefined,
 };
+use js_engine::gc_struct;
 
 use super::{
     ArrayBufferViewDescriptor, CancelAlgorithm, PullAlgorithm, ReadIntoRequest, ReadRequest,
@@ -45,10 +46,10 @@ use super::{
 };
 use js_engine::{Completion, ExecutionContext};
 
-js_engine::impl_gc_traits! {
-    /// <https://streams.spec.whatwg.org/#rs-class>
-    #[derive(Clone)]
-    pub struct ReadableStream {
+#[gc_struct]
+/// <https://streams.spec.whatwg.org/#rs-class>
+#[derive(Clone)]
+pub struct ReadableStream {
     /// <https://streams.spec.whatwg.org/#readablestream-controller>
     controller: Gc<GcRefCell<Option<ReadableStreamController>>>,
 
@@ -67,7 +68,6 @@ js_engine::impl_gc_traits! {
 
     /// <https://streams.spec.whatwg.org/#readablestream-storederror>
     stored_error: Gc<GcRefCell<JsValue>>,
-}
 }
 
 impl ReadableStream {
@@ -1658,9 +1658,9 @@ pub(crate) fn readable_stream_cancel_ec(
     let _ = reader;
 
     // Step 7: "Let sourceCancelPromise be ! stream.[[controller]].[[CancelSteps]](reason)."
-    let controller = stream.controller_slot().ok_or_else(|| {
-        ec.new_type_error("ReadableStream is missing its controller")
-    })?;
+    let controller = stream
+        .controller_slot()
+        .ok_or_else(|| ec.new_type_error("ReadableStream is missing its controller"))?;
     let source_cancel_promise = controller.cancel_steps(reason, ec)?;
 
     // Step 8: "Return the result of reacting to sourceCancelPromise with a fulfillment step that returns undefined."
@@ -1670,10 +1670,7 @@ pub(crate) fn readable_stream_cancel_ec(
 }
 
 /// <https://streams.spec.whatwg.org/#readable-stream-close>
-pub(crate) fn readable_stream_close(
-    stream: ReadableStream,
-    context: &mut Context,
-) -> JsResult<()> {
+pub(crate) fn readable_stream_close(stream: ReadableStream, context: &mut Context) -> JsResult<()> {
     readable_stream_close_ec(stream, js_engine::boa::context_as_ec(context))
         .map_err(|e| JsError::from_opaque(e))
 }
@@ -2580,9 +2577,9 @@ fn readable_byte_stream_tee_pull_with_byob_reader(
     )
     .to_js_function(context.realm());
 
-    let (read_into_request, promise) = crate::js::completion_to_js_result(
-        ReadIntoRequest::new(js_engine::boa::context_as_ec(context)),
-    )?;
+    let (read_into_request, promise) = crate::js::completion_to_js_result(ReadIntoRequest::new(
+        js_engine::boa::context_as_ec(context),
+    ))?;
 
     // Step 19.5: "Perform ! ReadableStreamBYOBReaderRead(reader, view, 1, readIntoRequest)."
     crate::js::completion_to_js_result(byob_reader.read_steps(

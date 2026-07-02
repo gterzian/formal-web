@@ -78,7 +78,11 @@ pub(crate) trait EventDispatchHost: EcmascriptHost<crate::js::Types> {
         Ok(())
     }
 
-    fn run_activation_behavior(&mut self, _target: &JsObject, _event: &JsObject) -> Completion<(), crate::js::Types> {
+    fn run_activation_behavior(
+        &mut self,
+        _target: &JsObject,
+        _event: &JsObject,
+    ) -> Completion<(), crate::js::Types> {
         Ok(())
     }
 
@@ -208,20 +212,30 @@ fn path_for_target(
 ) -> Completion<Vec<EventPathEntry>, crate::js::Types> {
     // Extract node info (doc, node_id) in a scoped block so the EC borrow doesn't
     // conflict with the subsequent path_for_node call that needs `host`.
-    let node_info: Option<(Rc<RefCell<BaseDocument>>, usize)> = host
-        .ec()
-        .with_object_any(target)
-        .and_then(|data| {
+    let node_info: Option<(Rc<RefCell<BaseDocument>>, usize)> =
+        host.ec().with_object_any(target).and_then(|data| {
             if let Some(element) = data.downcast_ref::<Element>() {
                 Some((Rc::clone(&element.node.document), element.node.node_id))
             } else if let Some(html_element) = data.downcast_ref::<HTMLElement>() {
-                Some((Rc::clone(&html_element.element.node.document), html_element.element.node.node_id))
+                Some((
+                    Rc::clone(&html_element.element.node.document),
+                    html_element.element.node.node_id,
+                ))
             } else if let Some(input) = data.downcast_ref::<HTMLInputElement>() {
-                Some((Rc::clone(&input.html_element.element.node.document), input.html_element.element.node.node_id))
+                Some((
+                    Rc::clone(&input.html_element.element.node.document),
+                    input.html_element.element.node.node_id,
+                ))
             } else if let Some(anchor) = data.downcast_ref::<HTMLAnchorElement>() {
-                Some((Rc::clone(&anchor.html_element.element.node.document), anchor.html_element.element.node.node_id))
+                Some((
+                    Rc::clone(&anchor.html_element.element.node.document),
+                    anchor.html_element.element.node.node_id,
+                ))
             } else if let Some(iframe) = data.downcast_ref::<HTMLIFrameElement>() {
-                Some((Rc::clone(&iframe.html_element.element.node.document), iframe.html_element.element.node.node_id))
+                Some((
+                    Rc::clone(&iframe.html_element.element.node.document),
+                    iframe.html_element.element.node.node_id,
+                ))
             } else if let Some(node) = data.downcast_ref::<Node>() {
                 Some((Rc::clone(&node.document), node.node_id))
             } else {
@@ -490,9 +504,11 @@ fn invoke(
     )?;
 
     // Step 6: "Let listeners be a clone of event's currentTarget attribute value's event listener list."
-    let listeners = try_with_event_target_ref(&JsValue::from(entry.invocation_target.clone()), host.ec(), |event_target| {
-        event_target.event_listener_list.clone()
-    })?;
+    let listeners = try_with_event_target_ref(
+        &JsValue::from(entry.invocation_target.clone()),
+        host.ec(),
+        |event_target| event_target.event_listener_list.clone(),
+    )?;
 
     if dispatch_debug_enabled() && event_type(host, event)? == "click" {
         let matching_listeners = listeners
@@ -561,9 +577,13 @@ fn inner_invoke(
 
         // Step 2.5: "If listener's once is true, then remove an event listener given event's currentTarget attribute value and listener."
         if listener.once {
-            try_with_event_target_mut(&JsValue::from(current_target.clone()), host.ec(), |event_target| {
-                event_target.remove_event_listener_by_id(listener.id);
-            })?;
+            try_with_event_target_mut(
+                &JsValue::from(current_target.clone()),
+                host.ec(),
+                |event_target| {
+                    event_target.remove_event_listener_by_id(listener.id);
+                },
+            )?;
         }
 
         // Step 2.6: "Let global be listener callback's associated realm's global object."
@@ -665,28 +685,36 @@ fn bubbles(
     host: &mut impl EventDispatchHost,
     event: &JsObject,
 ) -> Completion<bool, crate::js::Types> {
-    try_with_event_mut(&JsValue::from(event.clone()), host.ec(), |inner| inner.bubbles)
+    try_with_event_mut(&JsValue::from(event.clone()), host.ec(), |inner| {
+        inner.bubbles
+    })
 }
 
 fn canceled(
     host: &mut impl EventDispatchHost,
     event: &JsObject,
 ) -> Completion<bool, crate::js::Types> {
-    try_with_event_mut(&JsValue::from(event.clone()), host.ec(), |inner| inner.canceled_flag)
+    try_with_event_mut(&JsValue::from(event.clone()), host.ec(), |inner| {
+        inner.canceled_flag
+    })
 }
 
 fn event_phase(
     host: &mut impl EventDispatchHost,
     event: &JsObject,
 ) -> Completion<u16, crate::js::Types> {
-    try_with_event_mut(&JsValue::from(event.clone()), host.ec(), |inner| inner.event_phase)
+    try_with_event_mut(&JsValue::from(event.clone()), host.ec(), |inner| {
+        inner.event_phase
+    })
 }
 
 fn event_type(
     host: &mut impl EventDispatchHost,
     event: &JsObject,
 ) -> Completion<String, crate::js::Types> {
-    try_with_event_mut(&JsValue::from(event.clone()), host.ec(), |inner| inner.type_.clone())
+    try_with_event_mut(&JsValue::from(event.clone()), host.ec(), |inner| {
+        inner.type_.clone()
+    })
 }
 
 fn is_activation_event(

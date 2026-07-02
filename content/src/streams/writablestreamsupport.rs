@@ -1,7 +1,4 @@
-use boa_engine::{
-    Context, JsValue,
-    object::JsObject,
-};
+use boa_engine::{Context, JsValue, object::JsObject};
 use boa_gc::{Finalize, Trace};
 
 use js_engine::{Completion, ExecutionContext, PromiseResolvers};
@@ -39,7 +36,8 @@ impl WriteRequest {
     ) -> Completion<(), crate::js::Types> {
         let undefined = JsValue::undefined();
         let args = [undefined];
-        ec.call(&self.resolvers.resolve, &args[0], &args).map(|_| ())
+        ec.call(&self.resolvers.resolve, &args[0], &args)
+            .map(|_| ())
     }
     pub(crate) fn reject(
         self,
@@ -47,7 +45,8 @@ impl WriteRequest {
         ec: &mut dyn ExecutionContext<crate::js::Types>,
     ) -> Completion<(), crate::js::Types> {
         let undefined = JsValue::undefined();
-        ec.call(&self.resolvers.reject, &undefined, &[error]).map(|_| ())
+        ec.call(&self.resolvers.reject, &undefined, &[error])
+            .map(|_| ())
     }
 }
 #[derive(Clone, Trace, Finalize)]
@@ -94,7 +93,8 @@ impl PendingAbortRequest {
     ) -> Completion<(), crate::js::Types> {
         let undefined = JsValue::undefined();
         let args = [undefined];
-        ec.call(&self.resolvers.resolve, &args[0], &args).map(|_| ())
+        ec.call(&self.resolvers.resolve, &args[0], &args)
+            .map(|_| ())
     }
     pub(crate) fn reject(
         &self,
@@ -102,7 +102,8 @@ impl PendingAbortRequest {
         ec: &mut dyn ExecutionContext<crate::js::Types>,
     ) -> Completion<(), crate::js::Types> {
         let undefined = JsValue::undefined();
-        ec.call(&self.resolvers.reject, &undefined, &[error]).map(|_| ())
+        ec.call(&self.resolvers.reject, &undefined, &[error])
+            .map(|_| ())
     }
 }
 #[derive(Clone, Trace, Finalize)]

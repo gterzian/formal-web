@@ -67,43 +67,13 @@ pub(crate) fn register_hyperlink_element_utils_on_prototype(
     ec: &mut dyn ExecutionContext<crate::js::Types>,
 ) -> Completion<(), crate::js::Types> {
     link_property(proto, ec, "origin", get_origin, None)?;
-    link_property(
-        proto,
-        ec,
-        "protocol",
-        get_protocol,
-        Some(set_protocol),
-    )?;
-    link_property(
-        proto,
-        ec,
-        "username",
-        get_username,
-        Some(set_username),
-    )?;
-    link_property(
-        proto,
-        ec,
-        "password",
-        get_password,
-        Some(set_password),
-    )?;
+    link_property(proto, ec, "protocol", get_protocol, Some(set_protocol))?;
+    link_property(proto, ec, "username", get_username, Some(set_username))?;
+    link_property(proto, ec, "password", get_password, Some(set_password))?;
     link_property(proto, ec, "host", get_host, Some(set_host))?;
-    link_property(
-        proto,
-        ec,
-        "hostname",
-        get_hostname,
-        Some(set_hostname),
-    )?;
+    link_property(proto, ec, "hostname", get_hostname, Some(set_hostname))?;
     link_property(proto, ec, "port", get_port, Some(set_port))?;
-    link_property(
-        proto,
-        ec,
-        "pathname",
-        get_pathname,
-        Some(set_pathname),
-    )?;
+    link_property(proto, ec, "pathname", get_pathname, Some(set_pathname))?;
     link_property(proto, ec, "search", get_search, Some(set_search))?;
     link_property(proto, ec, "hash", get_hash, Some(set_hash))?;
     Ok(())
@@ -128,17 +98,13 @@ fn link_property(
 ) -> Completion<(), crate::js::Types> {
     let name_key = ec.property_key_from_str(name);
     let get_fn = ec.create_builtin_function(
-        Box::new(move |args, this_val, inner_ec| {
-            getter(&this_val, args, inner_ec)
-        }),
+        Box::new(move |args, this_val, inner_ec| getter(&this_val, args, inner_ec)),
         0,
         ec.property_key_from_str(name),
     );
     let set_fn = setter.map(|set_fn_ptr| {
         ec.create_builtin_function(
-            Box::new(move |args, this_val, inner_ec| {
-                set_fn_ptr(&this_val, args, inner_ec)
-            }),
+            Box::new(move |args, this_val, inner_ec| set_fn_ptr(&this_val, args, inner_ec)),
             1,
             ec.property_key_from_str(name),
         )
@@ -251,9 +217,8 @@ fn get_host(
     ec: &mut dyn ExecutionContext<crate::js::Types>,
 ) -> Completion<JsValue, crate::js::Types> {
     let creation_url = document_creation_url_ec(ec)?;
-    let host = try_with_hyperlink_element_utils_ref(this, ec, |hyperlink| {
-        hyperlink.host(&creation_url)
-    })?;
+    let host =
+        try_with_hyperlink_element_utils_ref(this, ec, |hyperlink| hyperlink.host(&creation_url))?;
     Ok(ec.value_from_string(ec.js_string_from_str(host.as_str())))
 }
 
@@ -303,9 +268,8 @@ fn get_port(
     ec: &mut dyn ExecutionContext<crate::js::Types>,
 ) -> Completion<JsValue, crate::js::Types> {
     let creation_url = document_creation_url_ec(ec)?;
-    let port = try_with_hyperlink_element_utils_ref(this, ec, |hyperlink| {
-        hyperlink.port(&creation_url)
-    })?;
+    let port =
+        try_with_hyperlink_element_utils_ref(this, ec, |hyperlink| hyperlink.port(&creation_url))?;
     Ok(ec.value_from_string(ec.js_string_from_str(port.as_str())))
 }
 
@@ -381,9 +345,8 @@ fn get_hash(
     ec: &mut dyn ExecutionContext<crate::js::Types>,
 ) -> Completion<JsValue, crate::js::Types> {
     let creation_url = document_creation_url_ec(ec)?;
-    let hash = try_with_hyperlink_element_utils_ref(this, ec, |hyperlink| {
-        hyperlink.hash(&creation_url)
-    })?;
+    let hash =
+        try_with_hyperlink_element_utils_ref(this, ec, |hyperlink| hyperlink.hash(&creation_url))?;
     Ok(ec.value_from_string(ec.js_string_from_str(hash.as_str())))
 }
 

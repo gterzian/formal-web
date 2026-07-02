@@ -423,7 +423,11 @@ impl EventDispatchHost for BlitzJSEventHandler<'_> {
         target.downcast_ref::<HTMLAnchorElement>().is_some()
     }
 
-    fn run_activation_behavior(&mut self, target: &JsObject, event: &JsObject) -> Completion<(), crate::js::Types> {
+    fn run_activation_behavior(
+        &mut self,
+        target: &JsObject,
+        event: &JsObject,
+    ) -> Completion<(), crate::js::Types> {
         if let Some(anchor) = target.downcast_ref::<HTMLAnchorElement>() {
             let result = anchor.activation_behavior(
                 self.source_navigable_id,

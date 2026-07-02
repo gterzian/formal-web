@@ -2,10 +2,7 @@ use std::marker::PhantomData;
 use std::{cell::RefCell, rc::Rc};
 
 use blitz_dom::BaseDocument;
-use boa_engine::{
-    Context, JsArgs, JsNativeError, JsResult, JsValue, js_string,
-    object::JsObject,
-};
+use boa_engine::{Context, JsArgs, JsNativeError, JsResult, JsValue, js_string, object::JsObject};
 
 use crate::dom::{AbortSignal, Event, EventDispatchHost, EventTarget, dispatch};
 use crate::js::downcast::try_with_event_target_mut;
@@ -81,8 +78,11 @@ fn add_event_listener(
     let event_target = current_event_target_object_ec(this, ec);
     let type_ = ec.to_rust_string(args.get_or_undefined(0).clone())?;
     let options = flatten_more_ec(args.get_or_undefined(2), ec)?;
-    let callback =
-        nullable_value_ec(args.get_or_undefined(1), ec, callback_interface_type_value_ec)?;
+    let callback = nullable_value_ec(
+        args.get_or_undefined(1),
+        ec,
+        callback_interface_type_value_ec,
+    )?;
     let receiver = JsValue::from(event_target.clone());
 
     try_with_event_target_mut(&receiver, ec, |target| {
@@ -107,8 +107,11 @@ fn remove_event_listener(
 ) -> Completion<JsValue, crate::js::Types> {
     let event_target = current_event_target_object_ec(this, ec);
     let type_ = ec.to_rust_string(args.get_or_undefined(0).clone())?;
-    let Some(callback) =
-        nullable_value_ec(args.get_or_undefined(1), ec, callback_interface_type_value_ec)?
+    let Some(callback) = nullable_value_ec(
+        args.get_or_undefined(1),
+        ec,
+        callback_interface_type_value_ec,
+    )?
     else {
         return Ok(JsValue::undefined());
     };
@@ -150,7 +153,9 @@ impl<'a, T: JsTypes> EcDispatchHost<'a, T> {
     }
 }
 
-impl<T: JsTypes + js_engine::JsTypesWithRealm> js_engine::EcmascriptHost<T> for EcDispatchHost<'_, T> {
+impl<T: JsTypes + js_engine::JsTypesWithRealm> js_engine::EcmascriptHost<T>
+    for EcDispatchHost<'_, T>
+{
     fn get(
         &mut self,
         object: &T::JsObject,
@@ -359,8 +364,10 @@ pub(crate) fn flatten_more_ec(
             None
         } else {
             let value = ExecutionContext::get(ec, object.clone(), signal_key)?;
-            let signal_obj = <crate::js::Types as JsTypes>::value_as_object(&value)
-                .ok_or_else(|| ec.new_type_error("addEventListener signal must be an AbortSignal"))?;
+            let signal_obj =
+                <crate::js::Types as JsTypes>::value_as_object(&value).ok_or_else(|| {
+                    ec.new_type_error("addEventListener signal must be an AbortSignal")
+                })?;
             Some(
                 signal_obj
                     .downcast_ref::<AbortSignal>()

@@ -288,8 +288,9 @@ fn get_protocol(
     ec: &mut dyn ExecutionContext<crate::js::Types>,
 ) -> Completion<JsValue, crate::js::Types> {
     let entry_settings = entry_settings_object_ec(ec)?;
-    let protocol =
-        try_with_location_ref(this, ec, |location| location.protocol(&entry_settings.origin))?;
+    let protocol = try_with_location_ref(this, ec, |location| {
+        location.protocol(&entry_settings.origin)
+    })?;
     let protocol = map_location_value(protocol, ec)?;
     Ok(ec.value_from_string(ec.js_string_from_str(protocol.as_str())))
 }
@@ -300,8 +301,7 @@ fn get_host(
     ec: &mut dyn ExecutionContext<crate::js::Types>,
 ) -> Completion<JsValue, crate::js::Types> {
     let entry_settings = entry_settings_object_ec(ec)?;
-    let host =
-        try_with_location_ref(this, ec, |location| location.host(&entry_settings.origin))?;
+    let host = try_with_location_ref(this, ec, |location| location.host(&entry_settings.origin))?;
     let host = map_location_value(host, ec)?;
     Ok(ec.value_from_string(ec.js_string_from_str(host.as_str())))
 }
@@ -312,8 +312,9 @@ fn get_hostname(
     ec: &mut dyn ExecutionContext<crate::js::Types>,
 ) -> Completion<JsValue, crate::js::Types> {
     let entry_settings = entry_settings_object_ec(ec)?;
-    let hostname =
-        try_with_location_ref(this, ec, |location| location.hostname(&entry_settings.origin))?;
+    let hostname = try_with_location_ref(this, ec, |location| {
+        location.hostname(&entry_settings.origin)
+    })?;
     let hostname = map_location_value(hostname, ec)?;
     Ok(ec.value_from_string(ec.js_string_from_str(hostname.as_str())))
 }
@@ -324,8 +325,7 @@ fn get_port(
     ec: &mut dyn ExecutionContext<crate::js::Types>,
 ) -> Completion<JsValue, crate::js::Types> {
     let entry_settings = entry_settings_object_ec(ec)?;
-    let port =
-        try_with_location_ref(this, ec, |location| location.port(&entry_settings.origin))?;
+    let port = try_with_location_ref(this, ec, |location| location.port(&entry_settings.origin))?;
     let port = map_location_value(port, ec)?;
     Ok(ec.value_from_string(ec.js_string_from_str(port.as_str())))
 }
@@ -336,8 +336,9 @@ fn get_pathname(
     ec: &mut dyn ExecutionContext<crate::js::Types>,
 ) -> Completion<JsValue, crate::js::Types> {
     let entry_settings = entry_settings_object_ec(ec)?;
-    let pathname =
-        try_with_location_ref(this, ec, |location| location.pathname(&entry_settings.origin))?;
+    let pathname = try_with_location_ref(this, ec, |location| {
+        location.pathname(&entry_settings.origin)
+    })?;
     let pathname = map_location_value(pathname, ec)?;
     Ok(ec.value_from_string(ec.js_string_from_str(pathname.as_str())))
 }
@@ -360,8 +361,7 @@ fn get_hash(
     ec: &mut dyn ExecutionContext<crate::js::Types>,
 ) -> Completion<JsValue, crate::js::Types> {
     let entry_settings = entry_settings_object_ec(ec)?;
-    let hash =
-        try_with_location_ref(this, ec, |location| location.hash(&entry_settings.origin))?;
+    let hash = try_with_location_ref(this, ec, |location| location.hash(&entry_settings.origin))?;
     let hash = map_location_value(hash, ec)?;
     Ok(ec.value_from_string(ec.js_string_from_str(hash.as_str())))
 }

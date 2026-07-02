@@ -52,9 +52,7 @@ pub(crate) fn with_global_scope<R>(
 /// Downcast the realm's global object to `&GlobalScope` through
 /// `realm_global_object()` + `with_object_any`.  Returns `None` if the
 /// global object is not a `Window` or has no native data.
-fn global_scope_or_error<'ec>(
-    ec: &'ec dyn ExecutionContext<Types>,
-) -> Option<&'ec GlobalScope> {
+fn global_scope_or_error<'ec>(ec: &'ec dyn ExecutionContext<Types>) -> Option<&'ec GlobalScope> {
     let global_obj = ec.realm_global_object();
     ec.with_object_any(&global_obj)
         .and_then(|data| data.downcast_ref::<Window>())
@@ -257,10 +255,8 @@ pub(crate) fn resolve_or_create_text_node_object_ec(
         return Ok(object);
     }
 
-    let object = create_interface_instance::<crate::js::Types, Node>(
-        Node::new(document, node_id),
-        ec,
-    )?;
+    let object =
+        create_interface_instance::<crate::js::Types, Node>(Node::new(document, node_id), ec)?;
 
     if let Some(gs) = global_scope_or_error(ec) {
         gs.cache_node_object(node_id, object.clone());
@@ -271,10 +267,7 @@ pub(crate) fn resolve_or_create_text_node_object_ec(
 
 // ── Non-_ec entry points (take &mut Context; used from Boa-specific callers) ──
 
-pub(crate) fn resolve_element_object(
-    node_id: usize,
-    context: &mut Context,
-) -> JsResult<JsObject> {
+pub(crate) fn resolve_element_object(node_id: usize, context: &mut Context) -> JsResult<JsObject> {
     // Read cached node and document (immutable borrow, released immediately).
     let (cached, document) = with_global_scope(context, |gs| {
         Ok((gs.cached_node_object(node_id), gs.document()))
@@ -284,12 +277,9 @@ pub(crate) fn resolve_element_object(
     }
 
     // Create platform object (mutable borrow, no immutable borrow active).
-    let object = element_object_from_document(
-        document,
-        node_id,
-        js_engine::boa::context_as_ec(context),
-    )
-    .map_err(JsError::from_opaque)?;
+    let object =
+        element_object_from_document(document, node_id, js_engine::boa::context_as_ec(context))
+            .map_err(JsError::from_opaque)?;
 
     // Cache the result (immutable borrow, released immediately).
     with_global_scope(context, |gs| {

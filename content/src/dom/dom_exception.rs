@@ -1,15 +1,15 @@
-js_engine::impl_gc_traits! {
-    /// <https://webidl.spec.whatwg.org/#idl-DOMException>
-    #[derive(Clone)]
-    pub struct DOMException {
-        /// <https://webidl.spec.whatwg.org/#dom-domexception-message>
-        #[unsafe_ignore_trace]
-        message: String,
+use js_engine::gc_struct;
+#[gc_struct]
+/// <https://webidl.spec.whatwg.org/#idl-DOMException>
+#[derive(Clone)]
+pub struct DOMException {
+    /// <https://webidl.spec.whatwg.org/#dom-domexception-message>
+    #[unsafe_ignore_trace]
+    message: String,
 
-        /// <https://webidl.spec.whatwg.org/#dom-domexception-name>
-        #[unsafe_ignore_trace]
-        name: String,
-    }
+    /// <https://webidl.spec.whatwg.org/#dom-domexception-name>
+    #[unsafe_ignore_trace]
+    name: String,
 }
 
 impl DOMException {

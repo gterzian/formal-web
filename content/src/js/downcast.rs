@@ -248,9 +248,12 @@ pub(crate) fn try_with_event_target_mut<R>(
             return Ok(f(&mut input.html_element.element.node.event_target));
         }
         if let Some(video) = data.downcast_mut::<HTMLVideoElement>() {
-            return Ok(f(
-                &mut video.media_element.html_element.element.node.event_target,
-            ));
+            return Ok(f(&mut video
+                .media_element
+                .html_element
+                .element
+                .node
+                .event_target));
         }
         if let Some(node) = data.downcast_mut::<Node>() {
             return Ok(f(&mut node.event_target));
@@ -302,9 +305,12 @@ pub(crate) fn try_with_event_target_ref<R>(
             return Ok(f(&input.html_element.element.node.event_target));
         }
         if let Some(video) = data.downcast_ref::<HTMLVideoElement>() {
-            return Ok(f(
-                &video.media_element.html_element.element.node.event_target,
-            ));
+            return Ok(f(&video
+                .media_element
+                .html_element
+                .element
+                .node
+                .event_target));
         }
         if let Some(node) = data.downcast_ref::<Node>() {
             return Ok(f(&node.event_target));

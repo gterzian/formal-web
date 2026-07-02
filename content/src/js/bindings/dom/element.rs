@@ -6,9 +6,7 @@ use crate::html::{
     HTMLAnchorElement, HTMLElement, HTMLIFrameElement, HTMLInputElement, HTMLMediaElement,
     HTMLVideoElement,
 };
-use crate::js::platform_objects::{
-    invalidate_cached_node_ids_ec, resolve_element_object_ec,
-};
+use crate::js::platform_objects::{invalidate_cached_node_ids_ec, resolve_element_object_ec};
 use crate::webidl::bindings::{
     AttributeDef, InterfaceDefinition, OperationDef, WebIdlInterface, create_interface_instance,
 };
@@ -294,12 +292,15 @@ fn get_class_list(
 
     // "add" method
     let add_fn = ec.create_builtin_function(
-        Box::new(move |args: &[<crate::js::Types as js_engine::JsTypes>::JsValue],
-                        this_val: <crate::js::Types as js_engine::JsTypes>::JsValue,
-                        inner_ec: &mut dyn ExecutionContext<crate::js::Types>|
-         -> Completion<<crate::js::Types as js_engine::JsTypes>::JsValue, crate::js::Types> {
-            class_list_add(&this_val, args, inner_ec)
-        }),
+        Box::new(
+            move |args: &[<crate::js::Types as js_engine::JsTypes>::JsValue],
+                  this_val: <crate::js::Types as js_engine::JsTypes>::JsValue,
+                  inner_ec: &mut dyn ExecutionContext<crate::js::Types>|
+                  -> Completion<
+                <crate::js::Types as js_engine::JsTypes>::JsValue,
+                crate::js::Types,
+            > { class_list_add(&this_val, args, inner_ec) },
+        ),
         1,
         ec.property_key_from_str("add"),
     );
@@ -311,12 +312,15 @@ fn get_class_list(
 
     // "remove" method
     let remove_fn = ec.create_builtin_function(
-        Box::new(move |args: &[<crate::js::Types as js_engine::JsTypes>::JsValue],
-                        this_val: <crate::js::Types as js_engine::JsTypes>::JsValue,
-                        inner_ec: &mut dyn ExecutionContext<crate::js::Types>|
-         -> Completion<<crate::js::Types as js_engine::JsTypes>::JsValue, crate::js::Types> {
-            class_list_remove(&this_val, args, inner_ec)
-        }),
+        Box::new(
+            move |args: &[<crate::js::Types as js_engine::JsTypes>::JsValue],
+                  this_val: <crate::js::Types as js_engine::JsTypes>::JsValue,
+                  inner_ec: &mut dyn ExecutionContext<crate::js::Types>|
+                  -> Completion<
+                <crate::js::Types as js_engine::JsTypes>::JsValue,
+                crate::js::Types,
+            > { class_list_remove(&this_val, args, inner_ec) },
+        ),
         1,
         ec.property_key_from_str("remove"),
     );
@@ -328,12 +332,15 @@ fn get_class_list(
 
     // "toggle" method
     let toggle_fn = ec.create_builtin_function(
-        Box::new(move |args: &[<crate::js::Types as js_engine::JsTypes>::JsValue],
-                        this_val: <crate::js::Types as js_engine::JsTypes>::JsValue,
-                        inner_ec: &mut dyn ExecutionContext<crate::js::Types>|
-         -> Completion<<crate::js::Types as js_engine::JsTypes>::JsValue, crate::js::Types> {
-            class_list_toggle(&this_val, args, inner_ec)
-        }),
+        Box::new(
+            move |args: &[<crate::js::Types as js_engine::JsTypes>::JsValue],
+                  this_val: <crate::js::Types as js_engine::JsTypes>::JsValue,
+                  inner_ec: &mut dyn ExecutionContext<crate::js::Types>|
+                  -> Completion<
+                <crate::js::Types as js_engine::JsTypes>::JsValue,
+                crate::js::Types,
+            > { class_list_toggle(&this_val, args, inner_ec) },
+        ),
         1,
         ec.property_key_from_str("toggle"),
     );
@@ -345,12 +352,15 @@ fn get_class_list(
 
     // "contains" method
     let contains_fn = ec.create_builtin_function(
-        Box::new(move |args: &[<crate::js::Types as js_engine::JsTypes>::JsValue],
-                        this_val: <crate::js::Types as js_engine::JsTypes>::JsValue,
-                        inner_ec: &mut dyn ExecutionContext<crate::js::Types>|
-         -> Completion<<crate::js::Types as js_engine::JsTypes>::JsValue, crate::js::Types> {
-            class_list_contains(&this_val, args, inner_ec)
-        }),
+        Box::new(
+            move |args: &[<crate::js::Types as js_engine::JsTypes>::JsValue],
+                  this_val: <crate::js::Types as js_engine::JsTypes>::JsValue,
+                  inner_ec: &mut dyn ExecutionContext<crate::js::Types>|
+                  -> Completion<
+                <crate::js::Types as js_engine::JsTypes>::JsValue,
+                crate::js::Types,
+            > { class_list_contains(&this_val, args, inner_ec) },
+        ),
         1,
         ec.property_key_from_str("contains"),
     );
@@ -368,12 +378,15 @@ fn get_class_list(
 
     // length getter
     let len_fn = ec.create_builtin_function(
-        Box::new(move |_args: &[<crate::js::Types as js_engine::JsTypes>::JsValue],
-                        this_val: <crate::js::Types as js_engine::JsTypes>::JsValue,
-                        inner_ec: &mut dyn ExecutionContext<crate::js::Types>|
-         -> Completion<<crate::js::Types as js_engine::JsTypes>::JsValue, crate::js::Types> {
-            class_list_length(&this_val, &[], inner_ec)
-        }),
+        Box::new(
+            move |_args: &[<crate::js::Types as js_engine::JsTypes>::JsValue],
+                  this_val: <crate::js::Types as js_engine::JsTypes>::JsValue,
+                  inner_ec: &mut dyn ExecutionContext<crate::js::Types>|
+                  -> Completion<
+                <crate::js::Types as js_engine::JsTypes>::JsValue,
+                crate::js::Types,
+            > { class_list_length(&this_val, &[], inner_ec) },
+        ),
         0,
         ec.property_key_from_str("get_length"),
     );
@@ -646,13 +659,14 @@ fn insert_adjacent_text(
     let value_undefined = ec.value_undefined();
     let where_ = ec.to_rust_string(args.first().cloned().unwrap_or(value_undefined.clone()))?;
     let data = ec.to_rust_string(args.get(1).cloned().unwrap_or(value_undefined))?;
-    try_with_element_ref(this, ec, |element| element.insert_adjacent_text(&where_, &data))?.map_err(
-        |error| {
-            create_interface_instance::<crate::js::Types, DOMException>(error, ec)
-                .map(|obj| crate::js::Types::value_from_object(obj))
-                .unwrap_or_else(|err| err)
-        },
-    )?;
+    try_with_element_ref(this, ec, |element| {
+        element.insert_adjacent_text(&where_, &data)
+    })?
+    .map_err(|error| {
+        create_interface_instance::<crate::js::Types, DOMException>(error, ec)
+            .map(|obj| crate::js::Types::value_from_object(obj))
+            .unwrap_or_else(|err| err)
+    })?;
     Ok(ec.value_undefined())
 }
 
@@ -706,7 +720,8 @@ fn set_attribute_ns(
     } else {
         Some(ec.to_rust_string(first)?)
     };
-    let qualified_name = ec.to_rust_string(args.get(1).cloned().unwrap_or(value_undefined.clone()))?;
+    let qualified_name =
+        ec.to_rust_string(args.get(1).cloned().unwrap_or(value_undefined.clone()))?;
     let value = ec.to_rust_string(args.get(2).cloned().unwrap_or(value_undefined))?;
     try_with_element_ref(this, ec, |element| {
         element.set_attribute_ns(namespace.as_deref(), &qualified_name, &value);

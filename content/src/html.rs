@@ -272,10 +272,14 @@ pub(crate) fn the_rules_for_choosing_a_navigable(
                         };
                     }
                 };
-                if let Err(error) = global_scope
-                    .register_new_traversable_document(new_document_id, settings, document)
-                {
-                    error!("the_rules_for_choosing_a_navigable: failed to register document: {error}");
+                if let Err(error) = global_scope.register_new_traversable_document(
+                    new_document_id,
+                    settings,
+                    document,
+                ) {
+                    error!(
+                        "the_rules_for_choosing_a_navigable: failed to register document: {error}"
+                    );
                 }
 
                 let new_info = NewTraversableInfo {

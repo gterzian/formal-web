@@ -131,9 +131,7 @@ fn resolve_wasm_namespace(
     let global = ec.realm_global_object();
     let ns_value = ExecutionContext::get(ec, global, ec.property_key_from_str("WebAssembly"))?;
     let Some(namespace) = <crate::js::Types as JsTypes>::value_as_object(&ns_value) else {
-        return Err(ec.new_type_error(
-            "WebAssembly namespace not found after registration",
-        ));
+        return Err(ec.new_type_error("WebAssembly namespace not found after registration"));
     };
     Ok(namespace)
 }

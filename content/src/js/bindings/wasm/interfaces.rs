@@ -83,9 +83,8 @@ impl WebIdlInterface<crate::js::Types> for WasmModule {
         };
         let stable_bytes = get_a_copy_of_the_buffer_source(bytes_value, ec)?;
         let engine = wasmtime::Engine::default();
-        let module = wasmtime::Module::new(&engine, &stable_bytes).map_err(|error| {
-            ec.new_type_error(&format!("CompileError: {}", error))
-        })?;
+        let module = wasmtime::Module::new(&engine, &stable_bytes)
+            .map_err(|error| ec.new_type_error(&format!("CompileError: {}", error)))?;
         // Note: Steps 4-6 and 9-10 (builtins, imported string constants) are not yet implemented.
         Ok(WasmModule::new(module, stable_bytes))
     }
@@ -129,14 +128,11 @@ fn module_exports_binding(
     let module_value = args
         .first()
         .ok_or_else(|| ec.new_type_error("Module.exports: missing argument"))?;
-    let module_object =
-        <crate::js::Types as JsTypes>::value_as_object(module_value).ok_or_else(|| {
-            ec.new_type_error("Module.exports: argument must be a Module object")
-        })?;
-    let wasm_module =
-        module_object.downcast_ref::<WasmModule>().ok_or_else(|| {
-            ec.new_type_error("Module.exports: argument is not a WebAssembly.Module")
-        })?;
+    let module_object = <crate::js::Types as JsTypes>::value_as_object(module_value)
+        .ok_or_else(|| ec.new_type_error("Module.exports: argument must be a Module object"))?;
+    let wasm_module = module_object
+        .downcast_ref::<WasmModule>()
+        .ok_or_else(|| ec.new_type_error("Module.exports: argument is not a WebAssembly.Module"))?;
 
     let descriptors = wasm_module.export_descriptors();
     let exports_array = ec.create_empty_array();
@@ -151,7 +147,9 @@ fn module_exports_binding(
         let entry_value = <crate::js::Types as JsTypes>::value_from_object(entry);
         ec.array_push(&exports_array, entry_value)?;
     }
-    Ok(<crate::js::Types as JsTypes>::value_from_object(exports_array))
+    Ok(<crate::js::Types as JsTypes>::value_from_object(
+        exports_array,
+    ))
 }
 
 fn get_instance_exports_binding(

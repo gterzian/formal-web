@@ -829,12 +829,16 @@ mod tests {
         assert_eq!(engine.to_rust_string(title_val).unwrap(), "ProtoTitle");
 
         let new_title = engine.value_from_string(engine.js_string_from_str("InheritedSet"));
-        engine.set(obj.clone(), title_key, new_title, false).unwrap();
+        engine
+            .set(obj.clone(), title_key, new_title, false)
+            .unwrap();
 
         let updated_title_key = engine.property_key_from_str("title");
-        let updated_title =
-            ExecutionContext::get(&mut engine, obj, updated_title_key).unwrap();
-        assert_eq!(engine.to_rust_string(updated_title).unwrap(), "InheritedSet");
+        let updated_title = ExecutionContext::get(&mut engine, obj, updated_title_key).unwrap();
+        assert_eq!(
+            engine.to_rust_string(updated_title).unwrap(),
+            "InheritedSet"
+        );
     }
 
     #[test]
@@ -849,13 +853,12 @@ mod tests {
             .expect("inherited increment method");
         let increment_obj = TestTypes::object_from_function(increment);
 
-        let old_val = js_engine::EcmascriptHost::call(&mut engine, &increment_obj, &receiver, &[])
-            .unwrap();
+        let old_val =
+            js_engine::EcmascriptHost::call(&mut engine, &increment_obj, &receiver, &[]).unwrap();
         assert!((engine.to_number(old_val).unwrap() - 0.0).abs() < 0.001);
 
         let count_key = engine.property_key_from_str("count");
-        let count_val =
-            ExecutionContext::get(&mut engine, obj, count_key).unwrap();
+        let count_val = ExecutionContext::get(&mut engine, obj, count_key).unwrap();
         assert!((engine.to_number(count_val).unwrap() - 1.0).abs() < 0.001);
     }
 
@@ -1199,12 +1202,8 @@ mod tests {
 
         // Create another promise via promise_resolve and verify it's an object.
         let val = engine.value_from_number(7.0);
-        let promise = engine
-            .promise_resolve(intrinsics.promise, val)
-            .unwrap();
-        let promise_val = TestTypes::value_from_object(
-            TestTypes::object_from_promise(promise),
-        );
+        let promise = engine.promise_resolve(intrinsics.promise, val).unwrap();
+        let promise_val = TestTypes::value_from_object(TestTypes::object_from_promise(promise));
         assert!(TestTypes::value_as_object(&promise_val).is_some());
     }
 
@@ -1566,10 +1565,7 @@ mod tests {
         assert_eq!(hidden_descriptor.configurable, Some(false));
         assert!((engine.to_number(hidden_descriptor.value.unwrap()).unwrap() - 2.0).abs() < 0.001);
 
-        let accessor_descriptor = engine
-            .get_own_property(obj, computed_key)
-            .unwrap()
-            .unwrap();
+        let accessor_descriptor = engine.get_own_property(obj, computed_key).unwrap().unwrap();
         assert!(accessor_descriptor.value.is_none());
         assert!(accessor_descriptor.get.is_some());
         assert!(accessor_descriptor.set.is_none());
@@ -1715,12 +1711,7 @@ mod tests {
             .allocate_array_buffer(intrinsics.array_buffer, 16, None)
             .unwrap();
         let ta = engine
-            .construct_typed_array_view(
-                TypedArrayElementType::Uint8,
-                ab.clone(),
-                0,
-                16,
-            )
+            .construct_typed_array_view(TypedArrayElementType::Uint8, ab.clone(), 0, 16)
             .unwrap();
         let buffer = engine.typed_array_buffer(&ta).unwrap();
         let byte_offset = engine.typed_array_byte_offset(&ta).unwrap();
@@ -1894,7 +1885,9 @@ mod tests {
         );
 
         // Create a rejected promise.
-        let cap = engine.new_promise_capability(intrinsics.promise.clone()).unwrap();
+        let cap = engine
+            .new_promise_capability(intrinsics.promise.clone())
+            .unwrap();
         let err = engine.new_type_error("test rejection");
         let undef = engine.value_undefined();
         engine.call(&cap.reject, &undef, &[err]).unwrap();
@@ -1935,20 +1928,21 @@ mod tests {
         let called = std::rc::Rc::new(std::cell::RefCell::new(false));
         let called_clone = called.clone();
         let on_fulfilled = engine.create_builtin_function(
-            Box::new(move |_args: &[<TestTypes as JsTypes>::JsValue], _this, inner_ec| {
-                *called_clone.borrow_mut() = true;
-                Ok(inner_ec.value_undefined())
-            }),
+            Box::new(
+                move |_args: &[<TestTypes as JsTypes>::JsValue], _this, inner_ec| {
+                    *called_clone.borrow_mut() = true;
+                    Ok(inner_ec.value_undefined())
+                },
+            ),
             1,
             empty_pk,
         );
         let result_cap = engine
             .new_promise_capability(intrinsics.promise.clone())
             .unwrap();
-        let js_promise = TestTypes::object_as_promise(
-            &TestTypes::value_as_object(&cap.promise).unwrap(),
-        )
-        .unwrap();
+        let js_promise =
+            TestTypes::object_as_promise(&TestTypes::value_as_object(&cap.promise).unwrap())
+                .unwrap();
         engine
             .perform_promise_then(js_promise, Some(on_fulfilled), None, Some(result_cap))
             .unwrap();
@@ -2202,7 +2196,9 @@ mod tests {
         assert!((engine.to_number(result).unwrap() - 7.0).abs() < 0.001);
 
         // Verify the property is an own accessor (not a data property).
-        let has_own = engine.has_own_property(obj, engine.property_key_from_str("computedLength")).unwrap();
+        let has_own = engine
+            .has_own_property(obj, engine.property_key_from_str("computedLength"))
+            .unwrap();
         assert!(has_own);
     }
 
@@ -2255,9 +2251,7 @@ mod tests {
 
         // Set via the accessor — extract value first to avoid double-borrow of engine.
         let set_val = engine.value_from_number(99.0);
-        engine
-            .set(obj.clone(), pk.clone(), set_val, false)
-            .unwrap();
+        engine.set(obj.clone(), pk.clone(), set_val, false).unwrap();
 
         // Get via the accessor.
         let result = ExecutionContext::get(&mut engine, obj, pk).unwrap();
@@ -2322,10 +2316,26 @@ mod tests {
         let color_key = engine.property_key_from_str("color");
         let font_size_val = engine.value_from_string(engine.js_string_from_str("12px"));
         let color_val = engine.value_from_string(engine.js_string_from_str("#000"));
-        engine.set(obj.clone(), font_size_key.clone(), font_size_val.clone(), false).unwrap();
-        engine.set(obj.clone(), color_key.clone(), color_val, false).unwrap();
+        engine
+            .set(
+                obj.clone(),
+                font_size_key.clone(),
+                font_size_val.clone(),
+                false,
+            )
+            .unwrap();
+        engine
+            .set(obj.clone(), color_key.clone(), color_val, false)
+            .unwrap();
         // Also set camelCase alias (mirrors the camel_case_property_name pattern).
-        engine.set(obj.clone(), font_size_camel_key.clone(), font_size_val, false).unwrap();
+        engine
+            .set(
+                obj.clone(),
+                font_size_camel_key.clone(),
+                font_size_val,
+                false,
+            )
+            .unwrap();
 
         // ── Step 3: attach a method (equivalent to initializer.function(...)) ──
         let get_property_value_fn = engine.create_builtin_function(
@@ -2336,16 +2346,18 @@ mod tests {
                     .unwrap_or_else(|| inner_ec.value_undefined());
                 // Return the queried property name back as a string.
                 let name = inner_ec.to_rust_string(prop_name).unwrap_or_default();
-                Ok(inner_ec.value_from_string(inner_ec.js_string_from_str(&format!("value_of_{}", name))))
+                Ok(inner_ec
+                    .value_from_string(inner_ec.js_string_from_str(&format!("value_of_{}", name))))
             }),
             1,
             engine.property_key_from_str("getPropertyValue"),
         );
         let method_key = engine.property_key_from_str("getPropertyValue");
-        let method_val = TestTypes::value_from_object(
-            TestTypes::object_from_function(get_property_value_fn),
-        );
-        engine.set(obj.clone(), method_key.clone(), method_val, false).unwrap();
+        let method_val =
+            TestTypes::value_from_object(TestTypes::object_from_function(get_property_value_fn));
+        engine
+            .set(obj.clone(), method_key.clone(), method_val, false)
+            .unwrap();
 
         // ── Step 4: define accessor property with getter + setter
         //           (equivalent to defining cssText with builder.get(...).set(...)) ──
@@ -2355,8 +2367,11 @@ mod tests {
         let accessor_getter = engine.create_builtin_function(
             Box::new(move |_args, _this, inner_ec| {
                 let bk = inner_ec.property_key_from_str("_cssText");
-                Ok(ExecutionContext::get(inner_ec, backing_for_getter.clone(), bk)
-                    .unwrap_or_else(|_| inner_ec.value_from_string(inner_ec.js_string_from_str(""))))
+                Ok(
+                    ExecutionContext::get(inner_ec, backing_for_getter.clone(), bk).unwrap_or_else(
+                        |_| inner_ec.value_from_string(inner_ec.js_string_from_str("")),
+                    ),
+                )
             }),
             0,
             engine.property_key_from_str("get_cssText"),
@@ -2390,10 +2405,13 @@ mod tests {
         // ── Step 5: store a back-reference (equivalent to style_obj.set("__element", ...)) ──
         let ref_key = engine.property_key_from_str("__element");
         let ref_val = TestTypes::value_from_object(obj.clone());
-        engine.set(obj.clone(), ref_key.clone(), ref_val, false).unwrap();
+        engine
+            .set(obj.clone(), ref_key.clone(), ref_val, false)
+            .unwrap();
 
         // ── Verify: read data properties back ──
-        let read_font_size = ExecutionContext::get(&mut engine, obj.clone(), font_size_key).unwrap();
+        let read_font_size =
+            ExecutionContext::get(&mut engine, obj.clone(), font_size_key).unwrap();
         assert_eq!(engine.to_rust_string(read_font_size).unwrap(), "12px");
         let read_color = ExecutionContext::get(&mut engine, obj.clone(), color_key).unwrap();
         assert_eq!(engine.to_rust_string(read_color).unwrap(), "#000");
@@ -2403,13 +2421,19 @@ mod tests {
         let method_callable = TestTypes::value_as_object(&method_obj).unwrap();
         let arg = engine.value_from_string(engine.js_string_from_str("fontSize"));
         let result = js_engine::EcmascriptHost::call(
-            &mut engine, &method_callable, &TestTypes::value_from_object(obj.clone()), &[arg],
-        ).unwrap();
+            &mut engine,
+            &method_callable,
+            &TestTypes::value_from_object(obj.clone()),
+            &[arg],
+        )
+        .unwrap();
         assert_eq!(engine.to_rust_string(result).unwrap(), "value_of_fontSize");
 
         // ── Verify: set via accessor, then read back ──
         let new_css = engine.value_from_string(engine.js_string_from_str("color: red;"));
-        engine.set(obj.clone(), css_text_key.clone(), new_css, false).unwrap();
+        engine
+            .set(obj.clone(), css_text_key.clone(), new_css, false)
+            .unwrap();
         let read_css = ExecutionContext::get(&mut engine, obj.clone(), css_text_key).unwrap();
         assert_eq!(engine.to_rust_string(read_css).unwrap(), "color: red;");
 
@@ -2419,7 +2443,11 @@ mod tests {
 
         // ── Verify: own property keys include all expected entries ──
         let keys = engine.own_property_keys(obj.clone()).unwrap();
-        assert!(keys.len() >= 6, "expected at least 6 own properties, got {}", keys.len());
+        assert!(
+            keys.len() >= 6,
+            "expected at least 6 own properties, got {}",
+            keys.len()
+        );
     }
 
     // ── Builtin function with captured mutable state ─────────────────
@@ -2525,7 +2553,7 @@ mod tests {
         check(&mut engine, 3.7, 3); // floor, not round
     }
 
-    /// Verifies that `Trace` propagates through nested `impl_gc_traits!`
+    /// Verifies that `Trace` propagates through nested `#[gc_struct]`
     /// structs.  `TestButton` wraps `TestWidget` which holds an
     /// `Option<GcRootHandle<Types>>` — the outer struct's `Trace` impl
     /// must visit the inner struct's GC roots.
@@ -2613,12 +2641,8 @@ mod tests {
         let mut engine = setup();
         let captures = Incrementor::new();
         let pk = engine.property_key_from_str("inc");
-        let func = engine.create_builtin_function_with_captures(
-            captures,
-            incrementor_behaviour,
-            0,
-            pk,
-        );
+        let func =
+            engine.create_builtin_function_with_captures(captures, incrementor_behaviour, 0, pk);
         let func_obj = TestTypes::object_from_function(func);
         let undef = engine.value_undefined();
 
@@ -2635,8 +2659,7 @@ mod tests {
         assert!((engine.to_number(result).unwrap() - 5.0).abs() < 0.001);
 
         // Third call: no arg → default delta = 1.
-        let result =
-            js_engine::EcmascriptHost::call(&mut engine, &func_obj, &undef, &[]).unwrap();
+        let result = js_engine::EcmascriptHost::call(&mut engine, &func_obj, &undef, &[]).unwrap();
         assert!((engine.to_number(result).unwrap() - 8.0).abs() < 0.001);
     }
 
@@ -2645,19 +2668,14 @@ mod tests {
         let mut engine = setup();
         let captures = Incrementor::new();
         let pk = engine.property_key_from_str("inc");
-        let func = engine.create_builtin_function_with_captures(
-            captures,
-            incrementor_behaviour,
-            0,
-            pk,
-        );
+        let func =
+            engine.create_builtin_function_with_captures(captures, incrementor_behaviour, 0, pk);
         let func_obj = TestTypes::object_from_function(func);
         let undef = engine.value_undefined();
 
         // Warm up: one call.
         let delta = engine.value_from_number(7.0);
-        let _ =
-            js_engine::EcmascriptHost::call(&mut engine, &func_obj, &undef, &[delta]).unwrap();
+        let _ = js_engine::EcmascriptHost::call(&mut engine, &func_obj, &undef, &[delta]).unwrap();
 
         // Allocation pressure: create many throwaway arrays.
         for i in 0..2000 {
@@ -2667,8 +2685,7 @@ mod tests {
         }
 
         // The captures must survive the pressure — count should still be 7.
-        let result =
-            js_engine::EcmascriptHost::call(&mut engine, &func_obj, &undef, &[]).unwrap();
+        let result = js_engine::EcmascriptHost::call(&mut engine, &func_obj, &undef, &[]).unwrap();
         assert!((engine.to_number(result).unwrap() - 7.0).abs() < 0.001);
     }
 }

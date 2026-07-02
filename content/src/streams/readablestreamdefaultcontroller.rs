@@ -10,6 +10,7 @@ use boa_gc::{Finalize, Gc, GcRefCell, Trace};
 use crate::streams::SizeAlgorithm;
 use crate::webidl::bindings::create_interface_instance;
 use crate::webidl::{mark_promise_as_handled, promise_from_completion, resolved_promise};
+use js_engine::gc_struct;
 
 use super::readablestream::{
     ByteTeeState, ReadableStreamFromIterableState, TeeState,
@@ -197,10 +198,10 @@ struct QueueEntry {
     size: f64,
 }
 
-js_engine::impl_gc_traits! {
-    /// <https://streams.spec.whatwg.org/#rs-default-controller-class>
-    #[derive(Clone)]
-    pub struct ReadableStreamDefaultController {
+#[gc_struct]
+/// <https://streams.spec.whatwg.org/#rs-default-controller-class>
+#[derive(Clone)]
+pub struct ReadableStreamDefaultController {
     /// <https://streams.spec.whatwg.org/#readablestreamdefaultcontroller-stream>
     stream: Gc<GcRefCell<Option<ReadableStream>>>,
 
@@ -239,7 +240,6 @@ js_engine::impl_gc_traits! {
 
     /// <https://streams.spec.whatwg.org/#readablestreamdefaultcontroller-cancelalgorithm>
     cancel_algorithm: Gc<GcRefCell<Option<CancelAlgorithm>>>,
-}
 }
 
 impl ReadableStreamDefaultController {
@@ -288,9 +288,13 @@ impl ReadableStreamDefaultController {
         &self,
         ec: &mut dyn ExecutionContext<crate::js::Types>,
     ) -> Completion<JsObject, crate::js::Types> {
-        self.stream_slot_ec(ec)?.controller_object_slot().ok_or_else(|| {
-            ec.new_type_error("ReadableStreamDefaultController is missing its JavaScript object")
-        })
+        self.stream_slot_ec(ec)?
+            .controller_object_slot()
+            .ok_or_else(|| {
+                ec.new_type_error(
+                    "ReadableStreamDefaultController is missing its JavaScript object",
+                )
+            })
     }
 
     fn queue_is_empty(&self) -> bool {
@@ -619,9 +623,15 @@ impl ReadableStreamDefaultController {
             })?;
         } else {
             // Step 4.1: "Let result be the result of performing controller.[[strategySizeAlgorithm]], passing in chunk, and interpreting the result as a completion record."
-            let size_algorithm = self.strategy_size_algorithm.borrow().clone().ok_or_else(
-                || ec.new_type_error("ReadableStreamDefaultController is missing its size algorithm"),
-            )?;
+            let size_algorithm =
+                self.strategy_size_algorithm
+                    .borrow()
+                    .clone()
+                    .ok_or_else(|| {
+                        ec.new_type_error(
+                            "ReadableStreamDefaultController is missing its size algorithm",
+                        )
+                    })?;
             let chunk_size = match size_algorithm.size(&chunk, ec) {
                 Ok(chunk_size) => chunk_size,
                 Err(error) => {
