@@ -367,12 +367,7 @@ impl ReadableStreamDefaultController {
 
         // Step 2: "Let result be the result of performing this.[[cancelAlgorithm]], passing reason."
         let result = match cancel_algorithm {
-            Some(cancel_algorithm) => {
-                let context = unsafe { js_engine::boa::ec_to_ctx(ec) };
-                JsObject::from(
-                    cancel_algorithm.call(reason, js_engine::boa::context_as_ec(context)),
-                )
-            }
+            Some(cancel_algorithm) => JsObject::from(cancel_algorithm.call(reason, ec)),
             None => resolved_promise(JsValue::undefined(), ec)?,
         };
 

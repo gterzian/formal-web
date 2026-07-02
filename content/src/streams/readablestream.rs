@@ -383,12 +383,13 @@ impl ReadableStream {
     }
 
     /// <https://streams.spec.whatwg.org/#rs-tee>
-    pub(crate) fn tee(&mut self, context: &mut Context) -> JsResult<JsValue> {
+    pub(crate) fn tee(
+        &mut self,
+        ec: &mut dyn ExecutionContext<crate::js::Types>,
+    ) -> Completion<JsValue, crate::js::Types> {
         // Step 1: "Return ? ReadableStreamTee(this, false)."
-        crate::js::completion_to_js_result(
-            readable_stream_tee(self.clone(), false, js_engine::boa::context_as_ec(context)),
-        )
-        .map(|branches| branches.into_js_value(context))
+        let branches = readable_stream_tee(self.clone(), false, ec)?;
+        branches.into_js_value_ec(ec)
     }
 
     /// <https://streams.spec.whatwg.org/#rs-pipe-through>
@@ -419,9 +420,7 @@ impl ReadableStream {
         &mut self,
         ec: &mut dyn ExecutionContext<crate::js::Types>,
     ) -> Completion<JsValue, crate::js::Types> {
-        let ctx = unsafe { js_engine::boa::ec_to_ctx(ec) };
-        self.tee(ctx)
-            .map_err(|e| e.into_opaque(ctx).unwrap_or(JsValue::undefined()))
+        self.tee(ec)
     }
 }
 
@@ -441,6 +440,22 @@ impl ReadableStreamTeeBranches {
             context,
         )
         .into()
+    }
+
+    fn into_js_value_ec(
+        self,
+        ec: &mut dyn ExecutionContext<crate::js::Types>,
+    ) -> Completion<JsValue, crate::js::Types> {
+        let array = ec.create_empty_array();
+        ec.array_push(
+            &array,
+            <crate::js::Types as JsTypes>::value_from_object(self.branch1_object),
+        )?;
+        ec.array_push(
+            &array,
+            <crate::js::Types as JsTypes>::value_from_object(self.branch2_object),
+        )?;
+        Ok(<crate::js::Types as JsTypes>::value_from_object(array))
     }
 }
 
@@ -500,7 +515,9 @@ fn default_tee_on_rejected_fn(
     // Step 19.3: "If canceled1 is false or canceled2 is false, resolve cancelPromise with undefined."
     if !canceled1 || !canceled2 {
         let undefined = ec.value_undefined();
-        let _ = cancel_resolvers.resolve(undefined.clone(), ec);
+        if let Err(error) = cancel_resolvers.resolve(undefined.clone(), ec) {
+            error!("[readable-stream] failed to resolve cancel promise: {error:?}");
+        }
     }
 
     Ok(JsValue::undefined())
@@ -1260,13 +1277,17 @@ fn create_readable_byte_stream(
 /// <https://streams.spec.whatwg.org/#readable-stream-from-iterable>
 pub(crate) fn readable_stream_from_iterable(
     async_iterable: JsValue,
-    context: &mut Context,
-) -> JsResult<JsObject> {
+    ec: &mut dyn ExecutionContext<crate::js::Types>,
+) -> Completion<JsObject, crate::js::Types> {
     // Step 1: "Let stream be undefined."
+    // Note: ec_to_ctx — get_readable_stream_from_iterator_record is Context-based internally.
+    let context = unsafe { js_engine::boa::ec_to_ctx(ec) };
+    let fallback_undefined = JsValue::undefined();
     let state = ReadableStreamFromIterableState::new(get_readable_stream_from_iterator_record(
         async_iterable,
         context,
-    )?);
+    )
+    .map_err(|e| e.into_opaque(context).unwrap_or(fallback_undefined))?);
 
     // Step 2: "Let iteratorRecord be ? GetIterator(asyncIterable, async)."
     // Note: `get_readable_stream_from_iterator_record()` normalizes async iterators and the
@@ -1288,9 +1309,8 @@ pub(crate) fn readable_stream_from_iterable(
         cancel_algorithm,
         Some(0.0),
         None,
-        js_engine::boa::context_as_ec(context),
-    )
-    .map_err(|e| JsError::from_opaque(e))?;
+        ec,
+    )?;
     state.set_stream(stream);
 
     // Step 7: "Return stream."
@@ -1302,9 +1322,7 @@ pub(crate) fn readable_stream_from_iterable_ec(
     async_iterable: JsValue,
     ec: &mut dyn ExecutionContext<crate::js::Types>,
 ) -> Completion<JsObject, crate::js::Types> {
-    let ctx = unsafe { js_engine::boa::ec_to_ctx(ec) };
-    readable_stream_from_iterable(async_iterable, ctx)
-        .map_err(|e| e.into_opaque(ctx).unwrap_or(JsValue::undefined()))
+    readable_stream_from_iterable(async_iterable, ec)
 }
 
 /// <https://streams.spec.whatwg.org/#readable-stream-from-iterable>
@@ -2038,7 +2056,9 @@ fn byte_tee_forward_error_on_rejected_fn(
     }
     if !canceled1 || !canceled2 {
         let undefined = ec.value_undefined();
-        let _ = cancel_resolvers.resolve(undefined.clone(), ec);
+        if let Err(error) = cancel_resolvers.resolve(undefined.clone(), ec) {
+            error!("[readable-stream] failed to resolve cancel promise: {error:?}");
+        }
     }
     Ok(JsValue::undefined())
 }

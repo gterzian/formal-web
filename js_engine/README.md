@@ -623,9 +623,11 @@ field types use `GcCell<T>`.
 | `readable_stream_tee` → EC | Dispatches to now-EC `readable_byte_stream_tee` and `readable_stream_default_tee`. |
 | `readable_stream_default_tee` → EC | Uses `closed_ec(ec)`, `new_promise_pending()`, `mark_promise_as_handled(ec)`, `perform_promise_then` instead of `.catch()`. TeeState field `cancel_resolvers` changed to `PromiseResolvers`. |
 | `readable_byte_stream_tee` → EC | Uses `closed_ec(ec)`, `new_promise_pending()`, `with_readable_stream_default_reader_ref_ec`. ByteTeeState field `cancel_resolvers` changed to `PromiseResolvers`. |
-| `ReadableStream::tee` bridge | Updated to bridge from Context → EC via `completion_to_js_result`. |
-| `readable_stream_from_iterable` bridge | Updated to bridge via `context_as_ec` + `map_err`. |
+| `ReadableStream::tee` → EC | Converted to EC. `tee_ec` now delegates directly (no ec_to_ctx bridge). `ReadableStreamTeeBranches::into_js_value_ec` added using `create_empty_array` + `array_push`. |
+| `readable_stream_from_iterable` → EC | Converted to EC. `readable_stream_from_iterable_ec` now delegates directly (no ec_to_ctx bridge). |
+| `readablestreamdefaultcontroller.rs` double bridge eliminated | `cancel_steps` no longer does ec_to_ctx + context_as_ec to call `CancelAlgorithm::call` (which already takes EC). -1 ec_to_ctx. |
 | transformstream.rs bridge | Updated `create_readable_stream` call to bridge via `context_as_ec`. |
+| `cancel_resolvers.resolve` error logging restored | Two `let _ = cancel_resolvers.resolve(...)` fixed to `if let Err(error) = ... { error!(...); }`. |
 
 **2 closures remaining in `readablestream.rs`** (both from_copy_closure).
 All blocked on deeper function conversions:
@@ -653,11 +655,9 @@ All blocked on deeper function conversions:
    - `readable_stream_from_iterable_ec` — already simplified, convert `readable_stream_from_iterable` fully
    - Controller code `_ec` wrappers (readablestreamdefaultcontroller.rs, writablestreamdefaultcontroller.rs, readablebytestreamcontroller.rs)
 
-3. **Convert remaining ResolvingFunctions usages** — `ByteTeeCancelState` in `byte_tee_cancel_algorithm` and `readable_stream_default_tee_cancel_algorithm` still use `cancel_resolvers.resolve.call(...)` pattern. Convert to `PromiseResolvers::resolve()`.
+3. **Eliminate remaining `_ec` suffix from struct methods** — rename `readable_ec` → `readable`, etc.
 
-4. **Eliminate `_ec` suffix from struct methods** — rename `readable_ec` → `readable`, etc.
-
-5. **Phase E — Conditional Types alias**.
+4. **Phase E — Conditional Types alias**.
 
 ### Working notes
 
