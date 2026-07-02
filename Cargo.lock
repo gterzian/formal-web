@@ -2913,8 +2913,18 @@ version = "0.1.0"
 dependencies = [
  "boa_engine",
  "boa_gc",
+ "js_engine_macros",
  "log",
  "serde_json",
+]
+
+[[package]]
+name = "js_engine_macros"
+version = "0.1.0"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn",
 ]
 
 [[package]]

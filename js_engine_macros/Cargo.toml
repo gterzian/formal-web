@@ -1,0 +1,14 @@
+[package]
+name = "js_engine_macros"
+version = "0.1.0"
+edition = "2024"
+publish = false
+description = "Proc-macro attributes for js_engine GC integration."
+
+[lib]
+proc-macro = true
+
+[dependencies]
+syn = { version = "2", features = ["full"] }
+quote = "1"
+proc-macro2 = "1"

@@ -29,6 +29,7 @@ use std::marker::PhantomData;
 
 use crate::webidl::bindings::{AttributeDef, InterfaceDefinition, OperationDef, WebIdlInterface};
 use js_engine::gc::GcRootHandle;
+use js_engine::gc_struct;
 use js_engine::{Completion, ExecutionContext, JsTypes, TypedArrayElementType};
 
 type TestTypes = crate::js::Types;
@@ -37,22 +38,21 @@ type JsObject = <TestTypes as JsTypes>::JsObject;
 
 // ── Domain type ──────────────────────────────────────────────────────────
 
-js_engine::impl_gc_traits! {
-    /// A toy domain struct exercising the full generic-API binding pattern.
-    ///
-    /// The `on_change` field uses `GcRootHandle<TestTypes>` which is a generic
-    /// RAII guard: on Boa it wraps a `JsValue` that the GC traces natively;
-    /// on JSC it keeps the value alive through a hidden global-object root
-    /// that is removed when the handle drops.
-    ///
-    /// GC trait derivation is handled by [`js_engine::impl_gc_traits`] which
-    /// expands to the correct backend-specific traits.
-    pub(crate) struct TestWidget {
-        title: String,
-        visible: bool,
-        count: u32,
-        on_change: Option<GcRootHandle<TestTypes>>,
-    }
+/// A toy domain struct exercising the full generic-API binding pattern.
+///
+/// The `on_change` field uses `GcRootHandle<TestTypes>` which is a generic
+/// RAII guard: on Boa it wraps a `JsValue` that the GC traces natively;
+/// on JSC it keeps the value alive through a hidden global-object root
+/// that is removed when the handle drops.
+///
+/// GC trait derivation is handled by [`js_engine::gc_struct`] which emits
+/// the correct backend-specific derives.
+#[gc_struct]
+pub(crate) struct TestWidget {
+    title: String,
+    visible: bool,
+    count: u32,
+    on_change: Option<GcRootHandle<TestTypes>>,
 }
 
 impl TestWidget {
@@ -132,13 +132,12 @@ mod widget_data {
 // the real codebase's with_event_target_mut / with_node_ref pattern)
 // ═══════════════════════════════════════════════════════════════════════════
 
-js_engine::impl_gc_traits! {
-    /// A toy subtype that wraps TestWidget — mirrors how HTMLInputElement
-    /// wraps HTMLElement, which wraps Element, which wraps Node.
-    pub(crate) struct TestButton {
-        label: String,
-        widget: TestWidget,
-    }
+/// A toy subtype that wraps TestWidget — mirrors how HTMLInputElement
+/// wraps HTMLElement, which wraps Element, which wraps Node.
+#[gc_struct]
+pub(crate) struct TestButton {
+    label: String,
+    widget: TestWidget,
 }
 
 impl TestButton {
@@ -2578,14 +2577,9 @@ mod tests {
 
     /// Captures struct for [`create_builtin_function_with_captures`] tests.
     /// Holds a counter that the builtin function increments on each call.
-    ///
-    /// The `impl_gc_traits!` macro emits `#[derive(boa_gc::Trace)]` (Boa)
-    /// which makes this struct GC-traceable.  When `#[gc_struct]` is
-    /// implemented, this becomes `#[gc_struct]` with `GcCell<f64>` fields.
-    js_engine::impl_gc_traits! {
-        pub(crate) struct Incrementor {
-            count: std::cell::Cell<f64>,
-        }
+    #[gc_struct]
+    pub(crate) struct Incrementor {
+        count: std::cell::Cell<f64>,
     }
 
     impl Incrementor {

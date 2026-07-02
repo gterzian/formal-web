@@ -48,6 +48,7 @@ pub use enums::{
     SharedMemoryOrder, TypedArrayElementType,
 };
 pub use gc::{Finalize, GcCell, GcRootHandle, JsTypesGcExt, Trace, gc_cell_new};
+pub use js_engine_macros::gc_struct;
 pub use records::{
     IteratorRecord, ModuleRequest, PromiseCapability, PromiseResolvers, PropertyDescriptor,
     RealmIntrinsics, RootedPromiseCapability,
