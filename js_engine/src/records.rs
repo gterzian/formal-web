@@ -14,6 +14,7 @@
 
 use crate::JsTypes;
 use crate::gc::GcRootHandle;
+use crate::ExecutionContext;
 
 /// <https://tc39.es/ecma262/#sec-iterator-record>
 #[derive(Debug, Clone)]
@@ -74,4 +75,47 @@ pub struct RealmIntrinsics<T: JsTypes> {
 pub struct ModuleRequest<T: JsTypes> {
     pub specifier: T::JsString,
     pub attributes: Vec<(T::JsString, T::JsValue)>,
+}
+
+/// GC-safe pair of promise resolve/reject callables.
+///
+/// Created by [`ExecutionContext::new_promise_pending`] as a replacement
+/// for engine-specific resolver types (e.g. Boa's `ResolvingFunctions`).
+/// Stored in GC-traced domain structs to hold pending promise resolvers.
+#[derive(Debug, Clone)]
+#[cfg_attr(
+    feature = "boa",
+    derive(boa_gc::Finalize, boa_gc::Trace, boa_engine::JsData)
+)]
+pub struct PromiseResolvers<T: JsTypes> {
+    pub resolve: T::JsObject,
+    pub reject: T::JsObject,
+}
+
+#[cfg(not(feature = "boa"))]
+unsafe impl<T: JsTypes> crate::gc::Trace for PromiseResolvers<T> {}
+
+#[cfg(not(feature = "boa"))]
+impl<T: JsTypes> crate::gc::Finalize for PromiseResolvers<T> {}
+
+impl<T: JsTypes> PromiseResolvers<T> {
+    /// Resolves the associated promise with the given value.
+    pub fn resolve(
+        &self,
+        value: T::JsValue,
+        ec: &mut dyn ExecutionContext<T>,
+    ) -> crate::Completion<T::JsValue, T> {
+        let undefined = ec.value_undefined();
+        ec.call(&self.resolve, &undefined, &[value])
+    }
+
+    /// Rejects the associated promise with the given reason.
+    pub fn reject(
+        &self,
+        reason: T::JsValue,
+        ec: &mut dyn ExecutionContext<T>,
+    ) -> crate::Completion<T::JsValue, T> {
+        let undefined = ec.value_undefined();
+        ec.call(&self.reject, &undefined, &[reason])
+    }
 }

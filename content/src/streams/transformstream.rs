@@ -3,7 +3,6 @@ use std::{cell::Cell, rc::Rc};
 
 use boa_engine::{
     Context, JsArgs, JsError, JsNativeError, JsResult, JsValue,
-    builtins::promise::ResolvingFunctions,
     job::PromiseJob,
     js_string,
     native_function::NativeFunction,
@@ -26,7 +25,7 @@ use super::writablestreamdefaultcontroller::{
     writable_stream_default_controller_error_if_needed,
 };
 use super::{ReadableStream, WritableStream, type_error_value};
-use js_engine::{Completion, ExecutionContext, JsTypes};
+use js_engine::{Completion, ExecutionContext, JsTypes, PromiseResolvers};
 
 fn stream_debug_enabled() -> bool {
     std::env::var_os("FORMAL_WEB_DEBUG_STREAMS").is_some()
@@ -66,7 +65,7 @@ js_engine::impl_gc_traits! {
 
         /// <https://streams.spec.whatwg.org/#transformstream-backpressurechangepromise>
         backpressure_change_promise: Gc<GcRefCell<Option<JsObject>>>,
-        backpressure_change_resolvers: Gc<GcRefCell<Option<ResolvingFunctions>>>,
+        backpressure_change_resolvers: Gc<GcRefCell<Option<PromiseResolvers<crate::js::Types>>>>,
 
         /// <https://streams.spec.whatwg.org/#transformstream-controller>
         controller: Gc<GcRefCell<Option<TransformStreamDefaultController>>>,
@@ -105,6 +104,15 @@ impl TransformStream {
         })
     }
 
+    pub(crate) fn readable_ec(
+        &self,
+        ec: &mut dyn ExecutionContext<crate::js::Types>,
+    ) -> Completion<ReadableStream, crate::js::Types> {
+        self.readable.borrow().clone().ok_or_else(|| {
+            ec.new_type_error("TransformStream is missing its readable side")
+        })
+    }
+
     pub(crate) fn readable_object(&self) -> JsResult<JsObject> {
         self.readable_object.borrow().clone().ok_or_else(|| {
             JsNativeError::typ()
@@ -117,9 +125,9 @@ impl TransformStream {
         &self,
         ec: &mut dyn ExecutionContext<crate::js::Types>,
     ) -> Completion<JsObject, crate::js::Types> {
-        let ctx = unsafe { js_engine::boa::ec_to_ctx(ec) };
-        self.readable_object()
-            .map_err(|e| e.into_opaque(ctx).unwrap_or(JsValue::undefined()))
+        self.readable_object.borrow().clone().ok_or_else(|| {
+            ec.new_type_error("TransformStream is missing its readable JavaScript object")
+        })
     }
 
     pub(crate) fn writable(&self) -> JsResult<WritableStream> {
@@ -127,6 +135,15 @@ impl TransformStream {
             JsNativeError::typ()
                 .with_message("TransformStream is missing its writable side")
                 .into()
+        })
+    }
+
+    pub(crate) fn writable_ec(
+        &self,
+        ec: &mut dyn ExecutionContext<crate::js::Types>,
+    ) -> Completion<WritableStream, crate::js::Types> {
+        self.writable.borrow().clone().ok_or_else(|| {
+            ec.new_type_error("TransformStream is missing its writable side")
         })
     }
 
@@ -142,9 +159,9 @@ impl TransformStream {
         &self,
         ec: &mut dyn ExecutionContext<crate::js::Types>,
     ) -> Completion<JsObject, crate::js::Types> {
-        let ctx = unsafe { js_engine::boa::ec_to_ctx(ec) };
-        self.writable_object()
-            .map_err(|e| e.into_opaque(ctx).unwrap_or(JsValue::undefined()))
+        self.writable_object.borrow().clone().ok_or_else(|| {
+            ec.new_type_error("TransformStream is missing its writable JavaScript object")
+        })
     }
 
     pub(crate) fn controller_slot(&self) -> JsResult<TransformStreamDefaultController> {
@@ -155,11 +172,29 @@ impl TransformStream {
         })
     }
 
+    pub(crate) fn controller_slot_ec(
+        &self,
+        ec: &mut dyn ExecutionContext<crate::js::Types>,
+    ) -> Completion<TransformStreamDefaultController, crate::js::Types> {
+        self.controller.borrow().clone().ok_or_else(|| {
+            ec.new_type_error("TransformStream is missing its controller")
+        })
+    }
+
     pub(crate) fn controller_object(&self) -> JsResult<JsObject> {
         self.controller_object.borrow().clone().ok_or_else(|| {
             JsNativeError::typ()
                 .with_message("TransformStream is missing its controller JavaScript object")
                 .into()
+        })
+    }
+
+    pub(crate) fn controller_object_ec(
+        &self,
+        ec: &mut dyn ExecutionContext<crate::js::Types>,
+    ) -> Completion<JsObject, crate::js::Types> {
+        self.controller_object.borrow().clone().ok_or_else(|| {
+            ec.new_type_error("TransformStream is missing its controller JavaScript object")
         })
     }
 
@@ -190,7 +225,7 @@ js_engine::impl_gc_traits! {
 
         /// <https://streams.spec.whatwg.org/#transformstreamdefaultcontroller-finishpromise>
         finish_promise: Gc<GcRefCell<Option<JsObject>>>,
-        finish_resolvers: Gc<GcRefCell<Option<ResolvingFunctions>>>,
+        finish_resolvers: Gc<GcRefCell<Option<PromiseResolvers<crate::js::Types>>>>,
     }
 }
 
@@ -241,8 +276,24 @@ impl TransformStreamDefaultController {
         })
     }
 
+    fn stream_slot_ec(
+        &self,
+        ec: &mut dyn ExecutionContext<crate::js::Types>,
+    ) -> Completion<TransformStream, crate::js::Types> {
+        self.stream.borrow().clone().ok_or_else(|| {
+            ec.new_type_error("TransformStreamDefaultController is not attached to a stream")
+        })
+    }
+
     fn controller_object(&self) -> JsResult<JsObject> {
         self.stream_slot()?.controller_object()
+    }
+
+    fn controller_object_ec(
+        &self,
+        ec: &mut dyn ExecutionContext<crate::js::Types>,
+    ) -> Completion<JsObject, crate::js::Types> {
+        self.stream_slot_ec(ec)?.controller_object_ec(ec)
     }
 
     fn readable_controller(&self) -> JsResult<super::ReadableStreamDefaultController> {
@@ -250,6 +301,18 @@ impl TransformStreamDefaultController {
         let readable = stream.readable()?;
         let controller = readable.controller_slot().ok_or_else(|| {
             JsNativeError::typ().with_message("ReadableStream is missing its controller")
+        })?;
+        Ok(controller.as_default_controller())
+    }
+
+    fn readable_controller_ec(
+        &self,
+        ec: &mut dyn ExecutionContext<crate::js::Types>,
+    ) -> Completion<super::ReadableStreamDefaultController, crate::js::Types> {
+        let stream = self.stream_slot_ec(ec)?;
+        let readable = stream.readable_ec(ec)?;
+        let controller = readable.controller_slot().ok_or_else(|| {
+            ec.new_type_error("ReadableStream is missing its controller")
         })?;
         Ok(controller.as_default_controller())
     }
@@ -267,9 +330,11 @@ impl TransformStreamDefaultController {
         &self,
         ec: &mut dyn ExecutionContext<crate::js::Types>,
     ) -> Completion<Option<f64>, crate::js::Types> {
-        let ctx = unsafe { js_engine::boa::ec_to_ctx(ec) };
-        self.desired_size()
-            .map_err(|e| e.into_opaque(ctx).unwrap_or(JsValue::undefined()))
+        // Step 1: "Let readableController be this.[[stream]].[[readable]].[[controller]]."
+        let readable_controller = self.readable_controller_ec(ec)?;
+
+        // Step 2: "Return ! ReadableStreamDefaultControllerGetDesiredSize(readableController)."
+        readable_controller.get_desired_size_ec(ec)
     }
 
     /// <https://streams.spec.whatwg.org/#ts-default-controller-enqueue>
@@ -502,14 +567,20 @@ fn transform_stream_set_backpressure(
 
     // Step 2: "If stream.[[backpressureChangePromise]] is not undefined, resolve stream.[[backpressureChangePromise]] with undefined."
     if let Some(resolvers) = stream.backpressure_change_resolvers.borrow_mut().take() {
-        resolvers
-            .resolve
-            .call(&JsValue::undefined(), &[JsValue::undefined()], context)?;
+        crate::js::completion_to_js_result(resolvers.resolve(
+            JsValue::undefined(),
+            js_engine::boa::context_as_ec(context),
+        ))?;
     }
 
     // Step 3: "Set stream.[[backpressureChangePromise]] to a new promise."
-    let (promise, resolvers) = JsPromise::new_pending(context);
-    *stream.backpressure_change_promise.borrow_mut() = Some(promise.into());
+    let (promise, resolvers) = crate::js::completion_to_js_result(
+        js_engine::boa::context_as_ec(context).new_promise_pending(),
+    )?;
+    let promise_obj = promise
+        .as_object()
+        .ok_or_else(|| JsNativeError::typ().with_message("new_promise_pending did not return an object"))?;
+    *stream.backpressure_change_promise.borrow_mut() = Some(promise_obj);
     *stream.backpressure_change_resolvers.borrow_mut() = Some(resolvers);
 
     // Step 4: "Set stream.[[backpressure]] to backpressure."
@@ -877,8 +948,12 @@ fn transform_stream_default_sink_abort_algorithm(
     let readable = stream.readable()?;
 
     // Step 4: "Let controller.[[finishPromise]] be a new promise."
-    let (finish_promise, finish_resolvers) = JsPromise::new_pending(context);
-    let finish_promise_obj: JsObject = finish_promise.into();
+    let (finish_promise, finish_resolvers) = crate::js::completion_to_js_result(
+        js_engine::boa::context_as_ec(context).new_promise_pending(),
+    )?;
+    let finish_promise_obj = finish_promise
+        .as_object()
+        .ok_or_else(|| JsNativeError::typ().with_message("new_promise_pending did not return an object"))?;
     *controller.finish_promise.borrow_mut() = Some(finish_promise_obj.clone());
     *controller.finish_resolvers.borrow_mut() = Some(finish_resolvers);
 
@@ -1017,8 +1092,12 @@ fn transform_stream_default_sink_close_algorithm(
     let readable = stream.readable()?;
 
     // Step 4: "Let controller.[[finishPromise]] be a new promise."
-    let (finish_promise, finish_resolvers) = JsPromise::new_pending(context);
-    let finish_promise_obj: JsObject = finish_promise.into();
+    let (finish_promise, finish_resolvers) = crate::js::completion_to_js_result(
+        js_engine::boa::context_as_ec(context).new_promise_pending(),
+    )?;
+    let finish_promise_obj = finish_promise
+        .as_object()
+        .ok_or_else(|| JsNativeError::typ().with_message("new_promise_pending did not return an object"))?;
     *controller.finish_promise.borrow_mut() = Some(finish_promise_obj.clone());
     *controller.finish_resolvers.borrow_mut() = Some(finish_resolvers);
 
@@ -1167,8 +1246,12 @@ pub(crate) fn transform_stream_default_source_cancel_algorithm(
     let writable = stream.writable()?;
 
     // Step 4: "Let controller.[[finishPromise]] be a new promise."
-    let (finish_promise, finish_resolvers) = JsPromise::new_pending(context);
-    let finish_promise_obj: JsObject = finish_promise.into();
+    let (finish_promise, finish_resolvers) = crate::js::completion_to_js_result(
+        js_engine::boa::context_as_ec(context).new_promise_pending(),
+    )?;
+    let finish_promise_obj = finish_promise
+        .as_object()
+        .ok_or_else(|| JsNativeError::typ().with_message("new_promise_pending did not return an object"))?;
     *controller.finish_promise.borrow_mut() = Some(finish_promise_obj.clone());
     *controller.finish_resolvers.borrow_mut() = Some(finish_resolvers);
 

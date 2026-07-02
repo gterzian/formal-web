@@ -1,13 +1,12 @@
 use boa_engine::{
     Context, JsNativeError, JsResult, JsValue,
-    builtins::promise::ResolvingFunctions,
     job::PromiseJob,
     js_string,
-    object::{JsObject, ObjectInitializer, builtins::JsPromise},
+    object::{JsObject, ObjectInitializer},
     property::Attribute,
 };
 
-use js_engine::{Completion, ExecutionContext, JsTypes};
+use js_engine::{Completion, ExecutionContext, JsTypes, PromiseResolvers};
 
 use crate::webidl::{
     Callback, ExceptionBehavior, invoke_callback_function, mark_promise_as_handled,
@@ -73,7 +72,7 @@ impl SourceMethod {
 #[derive(Clone, Trace, Finalize)]
 pub(crate) enum ReadRequest {
     DefaultReaderRead {
-        resolvers: ResolvingFunctions,
+        resolvers: PromiseResolvers<crate::js::Types>,
     },
     ReadableStreamDefaultTee {
         tee_state: Gc<GcRefCell<TeeState>>,
@@ -89,13 +88,18 @@ pub(crate) enum ReadRequest {
 
 #[derive(Clone, Trace, Finalize)]
 pub(crate) struct ReadIntoRequest {
-    resolvers: ResolvingFunctions,
+    resolvers: PromiseResolvers<crate::js::Types>,
 }
 
 impl ReadIntoRequest {
-    pub(crate) fn new(context: &mut Context) -> (Self, JsObject) {
-        let (promise, resolvers) = JsPromise::new_pending(context);
-        (Self { resolvers }, promise.into())
+    pub(crate) fn new(
+        ec: &mut dyn ExecutionContext<crate::js::Types>,
+    ) -> Completion<(Self, JsObject), crate::js::Types> {
+        let (promise, resolvers) = ec.new_promise_pending()?;
+        let promise_obj = promise
+            .as_object()
+            .ok_or_else(|| ec.new_type_error("new_promise_pending did not return an object"))?;
+        Ok((Self { resolvers }, promise_obj))
     }
 
     pub(crate) fn chunk_steps(

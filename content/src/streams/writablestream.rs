@@ -277,11 +277,8 @@ impl WritableStream {
             abort_reason = JsValue::undefined();
         }
 
-        // SAFETY: ec is backed by BoaContext repr(transparent) over Context.
-        // PendingAbortRequest::new requires Boa's Context for JsPromise::new_pending.
-        let context = unsafe { js_engine::boa::ec_to_ctx(ec) };
         let abort_request =
-            PendingAbortRequest::new(abort_reason.clone(), was_already_erroring, context);
+            PendingAbortRequest::new(abort_reason.clone(), was_already_erroring, ec)?;
         let promise = abort_request.promise();
         self.set_pending_abort_request_slot(Some(abort_request));
 
@@ -309,10 +306,7 @@ impl WritableStream {
 
         debug_assert!(!self.close_queued_or_in_flight());
 
-        // SAFETY: ec is backed by BoaContext repr(transparent) over Context.
-        // WriteRequest::new requires Boa's Context for JsPromise::new_pending.
-        let context = unsafe { js_engine::boa::ec_to_ctx(ec) };
-        let (close_request, promise) = WriteRequest::new(context);
+        let (close_request, promise) = WriteRequest::new(ec)?;
         self.set_close_request_slot(Some(close_request));
 
         if let Some(writer_slot) = self.writer_slot() {
@@ -338,10 +332,7 @@ impl WritableStream {
         debug_assert!(self.is_writable_stream_locked());
         debug_assert_eq!(self.state(), WritableStreamState::Writable);
 
-        // SAFETY: ec is backed by BoaContext repr(transparent) over Context.
-        // WriteRequest::new requires Boa's Context for JsPromise::new_pending.
-        let context = unsafe { js_engine::boa::ec_to_ctx(ec) };
-        let (write_request, promise) = WriteRequest::new(context);
+        let (write_request, promise) = WriteRequest::new(ec)?;
         self.push_write_request(write_request);
         Ok(promise)
     }

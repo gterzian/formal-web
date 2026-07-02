@@ -1,5 +1,5 @@
 use boa_engine::{
-    JsArgs, JsError, JsNativeError, JsResult, JsValue, builtins::promise::ResolvingFunctions,
+    JsArgs, JsError, JsNativeError, JsResult, JsValue,
     object::JsObject,
 };
 use boa_gc::{Gc, GcRefCell};
@@ -13,7 +13,7 @@ use super::{
     with_readable_stream_ref,
 };
 
-use js_engine::{Completion, ExecutionContext};
+use js_engine::{Completion, ExecutionContext, PromiseResolvers};
 
 js_engine::impl_gc_traits! {
     /// <https://streams.spec.whatwg.org/#byob-reader-class>
@@ -21,7 +21,7 @@ js_engine::impl_gc_traits! {
     pub struct ReadableStreamBYOBReader {
         stream: Gc<GcRefCell<Option<ReadableStream>>>,
         closed_promise: Gc<GcRefCell<Option<JsObject>>>,
-        closed_resolvers: Gc<GcRefCell<Option<ResolvingFunctions>>>,
+        closed_resolvers: Gc<GcRefCell<Option<PromiseResolvers<crate::js::Types>>>>,
     }
 }
 
@@ -91,7 +91,9 @@ impl ReadableStreamBYOBReader {
             );
         }
 
-        // SAFETY: normalize_min and ReadIntoRequest::new still require &mut Context
+        // Create ReadIntoRequest before ec_to_ctx (reorder workaround).
+        let (read_into_request, promise) = ReadIntoRequest::new(ec)?;
+        // SAFETY: normalize_min still requires &mut Context.
         let context = unsafe { js_engine::boa::ec_to_ctx(ec) };
         let min = match normalize_min(options, &view, context) {
             Ok(min) => min,
@@ -104,7 +106,6 @@ impl ReadableStreamBYOBReader {
                 );
             }
         };
-        let (read_into_request, promise) = ReadIntoRequest::new(context);
         self.read_steps(view, min, read_into_request, ec)?;
         Ok(promise)
     }
@@ -168,11 +169,11 @@ impl ReadableStreamGenericReader for ReadableStreamBYOBReader {
         *self.closed_promise.borrow_mut() = promise;
     }
 
-    fn closed_resolvers_slot_value(&self) -> Option<ResolvingFunctions> {
+    fn closed_resolvers_slot_value(&self) -> Option<PromiseResolvers<crate::js::Types>> {
         self.closed_resolvers.borrow().clone()
     }
 
-    fn set_closed_resolvers_slot_value(&self, resolvers: Option<ResolvingFunctions>) {
+    fn set_closed_resolvers_slot_value(&self, resolvers: Option<PromiseResolvers<crate::js::Types>>) {
         *self.closed_resolvers.borrow_mut() = resolvers;
     }
 

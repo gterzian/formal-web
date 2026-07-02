@@ -1,7 +1,6 @@
 use boa_engine::{
     JsArgs, JsError, JsNativeError, JsResult, JsValue,
-    builtins::promise::ResolvingFunctions,
-    object::{JsObject, builtins::JsPromise},
+    object::JsObject,
 };
 use boa_gc::{Gc, GcRefCell};
 
@@ -14,7 +13,7 @@ use super::{
     writable_stream_default_controller_get_desired_size, writable_stream_default_controller_write,
 };
 
-use js_engine::{Completion, ExecutionContext};
+use js_engine::{Completion, ExecutionContext, PromiseResolvers};
 
 js_engine::impl_gc_traits! {
     /// <https://streams.spec.whatwg.org/#writablestreamdefaultwriter>
@@ -25,11 +24,11 @@ js_engine::impl_gc_traits! {
 
         /// <https://streams.spec.whatwg.org/#writablestreamdefaultwriter-readypromise>
         ready_promise: Gc<GcRefCell<Option<JsObject>>>,
-        ready_resolvers: Gc<GcRefCell<Option<ResolvingFunctions>>>,
+        ready_resolvers: Gc<GcRefCell<Option<PromiseResolvers<crate::js::Types>>>>,
 
         /// <https://streams.spec.whatwg.org/#writablestreamdefaultwriter-closedpromise>
         closed_promise: Gc<GcRefCell<Option<JsObject>>>,
-        closed_resolvers: Gc<GcRefCell<Option<ResolvingFunctions>>>,
+        closed_resolvers: Gc<GcRefCell<Option<PromiseResolvers<crate::js::Types>>>>,
     }
 }
 
@@ -55,10 +54,10 @@ impl WritableStreamDefaultWriter {
     pub(crate) fn set_ready_promise_value(&self, promise: Option<JsObject>) {
         *self.ready_promise.borrow_mut() = promise;
     }
-    pub(crate) fn ready_resolvers_value(&self) -> Option<ResolvingFunctions> {
+    pub(crate) fn ready_resolvers_value(&self) -> Option<PromiseResolvers<crate::js::Types>> {
         self.ready_resolvers.borrow().clone()
     }
-    pub(crate) fn set_ready_resolvers_value(&self, resolvers: Option<ResolvingFunctions>) {
+    pub(crate) fn set_ready_resolvers_value(&self, resolvers: Option<PromiseResolvers<crate::js::Types>>) {
         *self.ready_resolvers.borrow_mut() = resolvers;
     }
     pub(crate) fn closed_promise_value(&self) -> Option<JsObject> {
@@ -67,10 +66,10 @@ impl WritableStreamDefaultWriter {
     pub(crate) fn set_closed_promise_value(&self, promise: Option<JsObject>) {
         *self.closed_promise.borrow_mut() = promise;
     }
-    pub(crate) fn closed_resolvers_value(&self) -> Option<ResolvingFunctions> {
+    pub(crate) fn closed_resolvers_value(&self) -> Option<PromiseResolvers<crate::js::Types>> {
         self.closed_resolvers.borrow().clone()
     }
-    pub(crate) fn set_closed_resolvers_value(&self, resolvers: Option<ResolvingFunctions>) {
+    pub(crate) fn set_closed_resolvers_value(&self, resolvers: Option<PromiseResolvers<crate::js::Types>>) {
         *self.closed_resolvers.borrow_mut() = resolvers;
     }
 
@@ -94,11 +93,11 @@ impl WritableStreamDefaultWriter {
                 } else {
                     self.resolve_ready_promise(ec)?;
                 }
-                self.reset_closed_promise(ec);
+                self.reset_closed_promise(ec)?;
             }
             WritableStreamState::Erroring => {
                 self.reject_ready_promise(stream.stored_error(), ec)?;
-                self.reset_closed_promise(ec);
+                self.reset_closed_promise(ec)?;
             }
             WritableStreamState::Closed => {
                 self.resolve_ready_promise(ec)?;
@@ -234,10 +233,11 @@ impl WritableStreamDefaultWriter {
         &self,
         ec: &mut dyn ExecutionContext<crate::js::Types>,
     ) -> Completion<(), crate::js::Types> {
-        // SAFETY: ec is backed by BoaContext repr(transparent) over Context
-        let context = unsafe { js_engine::boa::ec_to_ctx(ec) };
-        let (promise, resolvers) = JsPromise::new_pending(context);
-        self.set_ready_promise_value(Some(promise.into()));
+        let (promise, resolvers) = ec.new_promise_pending()?;
+        let promise_obj = promise
+            .as_object()
+            .ok_or_else(|| ec.new_type_error("new_promise_pending did not return an object"))?;
+        self.set_ready_promise_value(Some(promise_obj));
         self.set_ready_resolvers_value(Some(resolvers));
         Ok(())
     }
@@ -278,12 +278,17 @@ impl WritableStreamDefaultWriter {
         Ok(())
     }
 
-    pub(crate) fn reset_closed_promise(&self, ec: &mut dyn ExecutionContext<crate::js::Types>) {
-        // SAFETY: ec is backed by BoaContext repr(transparent) over Context
-        let context = unsafe { js_engine::boa::ec_to_ctx(ec) };
-        let (promise, resolvers) = JsPromise::new_pending(context);
-        self.set_closed_promise_value(Some(promise.into()));
+    pub(crate) fn reset_closed_promise(
+        &self,
+        ec: &mut dyn ExecutionContext<crate::js::Types>,
+    ) -> Completion<(), crate::js::Types> {
+        let (promise, resolvers) = ec.new_promise_pending()?;
+        let promise_obj = promise
+            .as_object()
+            .ok_or_else(|| ec.new_type_error("new_promise_pending did not return an object"))?;
+        self.set_closed_promise_value(Some(promise_obj));
         self.set_closed_resolvers_value(Some(resolvers));
+        Ok(())
     }
 
     pub(crate) fn resolve_closed_promise(

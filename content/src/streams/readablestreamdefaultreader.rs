@@ -2,13 +2,12 @@ use std::mem;
 
 use boa_engine::{
     JsArgs, JsError, JsNativeError, JsResult, JsValue,
-    builtins::promise::ResolvingFunctions,
-    object::{JsObject, builtins::JsPromise},
+    object::JsObject,
 };
 use boa_gc::{Gc, GcRefCell};
 
 use crate::webidl::bindings::create_interface_instance;
-use crate::webidl::{mark_promise_as_handled, rejected_promise};
+use crate::webidl::{mark_promise_as_handled, rejected_promise, resolved_promise};
 
 use super::readablestream::{readable_stream_cancel, readable_stream_cancel_ec};
 use super::{
@@ -16,7 +15,7 @@ use super::{
     rejected_type_error_promise, type_error_value, with_readable_stream_ref,
 };
 
-use js_engine::{Completion, ExecutionContext};
+use js_engine::{Completion, ExecutionContext, PromiseResolvers};
 
 /// default readers and BYOB readers.
 pub(crate) trait ReadableStreamGenericReader: Clone {
@@ -25,8 +24,8 @@ pub(crate) trait ReadableStreamGenericReader: Clone {
     fn closed_promise_slot_value(&self) -> Option<JsObject>;
     fn set_closed_promise_slot_value(&self, promise: Option<JsObject>);
     /// promise is still pending.
-    fn closed_resolvers_slot_value(&self) -> Option<ResolvingFunctions>;
-    fn set_closed_resolvers_slot_value(&self, resolvers: Option<ResolvingFunctions>);
+    fn closed_resolvers_slot_value(&self) -> Option<PromiseResolvers<crate::js::Types>>;
+    fn set_closed_resolvers_slot_value(&self, resolvers: Option<PromiseResolvers<crate::js::Types>>);
     fn as_reader_slot(&self) -> ReadableStreamReader;
 
     /// <https://streams.spec.whatwg.org/#generic-reader-closed>
@@ -81,9 +80,6 @@ pub(crate) trait ReadableStreamGenericReader: Clone {
         stream: ReadableStream,
         ec: &mut dyn ExecutionContext<crate::js::Types>,
     ) -> Completion<(), crate::js::Types> {
-        // SAFETY: ec is backed by BoaContext repr(transparent) over Context
-        let context = unsafe { js_engine::boa::ec_to_ctx(ec) };
-
         // Step 1: "Set reader.[[stream]] to stream."
         self.set_stream_slot_value(Some(stream.clone()));
 
@@ -93,8 +89,11 @@ pub(crate) trait ReadableStreamGenericReader: Clone {
         // Step 3: "If stream.[[state]] is \"readable\","
         if stream.state() == ReadableStreamState::Readable {
             // Step 3.1: "Set reader.[[closedPromise]] to a new promise."
-            let (promise, resolvers) = JsPromise::new_pending(context);
-            self.set_closed_promise_slot_value(Some(promise.into()));
+            let (promise, resolvers) = ec.new_promise_pending()?;
+            let promise_obj = promise
+                .as_object()
+                .ok_or_else(|| ec.new_type_error("new_promise_pending did not return an object"))?;
+            self.set_closed_promise_slot_value(Some(promise_obj));
             self.set_closed_resolvers_slot_value(Some(resolvers));
             return Ok(());
         }
@@ -102,11 +101,8 @@ pub(crate) trait ReadableStreamGenericReader: Clone {
         // Step 4: "Otherwise, if stream.[[state]] is \"closed\","
         if stream.state() == ReadableStreamState::Closed {
             // Step 4.1: "Set reader.[[closedPromise]] to a promise resolved with undefined."
-            let promise = JsPromise::resolve(JsValue::undefined(), context).map_err(|e| {
-                e.into_opaque(context)
-                    .unwrap_or_else(|_| JsValue::undefined())
-            })?;
-            self.set_closed_promise_slot_value(Some(promise.into()));
+            let promise = resolved_promise(JsValue::undefined(), ec)?.clone();
+            self.set_closed_promise_slot_value(Some(promise));
             self.set_closed_resolvers_slot_value(None);
             return Ok(());
         }
@@ -116,20 +112,14 @@ pub(crate) trait ReadableStreamGenericReader: Clone {
 
         // Step 5.2: "Set reader.[[closedPromise]] to a promise rejected with stream.[[storedError]]."
         // Step 5.3: "Set reader.[[closedPromise]].[[PromiseIsHandled]] to true."
-        // Note: create a pending promise, mark it handled first, then reject it to avoid
-        // host-level unhandled-rejection reporting races for already-errored streams.
-        let (promise, resolvers) = JsPromise::new_pending(context);
-        let promise_object: JsObject = promise.into();
+        let (promise, resolvers) = ec.new_promise_pending()?;
+        let promise_object = promise
+            .as_object()
+            .ok_or_else(|| ec.new_type_error("new_promise_pending did not return an object"))?;
         self.set_closed_promise_slot_value(Some(promise_object.clone()));
         self.set_closed_resolvers_slot_value(None);
-        mark_promise_as_handled(&promise_object, js_engine::boa::context_as_ec(context))?;
-        resolvers
-            .reject
-            .call(&JsValue::undefined(), &[stream.stored_error()], context)
-            .map_err(|e| {
-                e.into_opaque(context)
-                    .unwrap_or_else(|_| JsValue::undefined())
-            })?;
+        mark_promise_as_handled(&promise_object, ec)?;
+        resolvers.reject(stream.stored_error(), ec)?;
         Ok(())
     }
 
@@ -201,7 +191,7 @@ js_engine::impl_gc_traits! {
     /// <https://streams.spec.whatwg.org/#readablestreamgenericreader-closedpromise>
     closed_promise: Gc<GcRefCell<Option<JsObject>>>,
     /// promise remains pending.
-    closed_resolvers: Gc<GcRefCell<Option<ResolvingFunctions>>>,
+    closed_resolvers: Gc<GcRefCell<Option<PromiseResolvers<crate::js::Types>>>>,
 
     /// <https://streams.spec.whatwg.org/#readablestreamdefaultreader-readrequests>
     read_requests: Gc<GcRefCell<Vec<ReadRequest>>>,
@@ -287,10 +277,10 @@ impl ReadableStreamDefaultReader {
         }
 
         // Step 2: "Let promise be a new promise."
-        // SAFETY: ec is backed by BoaContext repr(transparent) over Context.
-        // JsPromise::new_pending requires Boa's Context.
-        let context = unsafe { js_engine::boa::ec_to_ctx(ec) };
-        let (promise, resolvers) = JsPromise::new_pending(context);
+        let (promise, resolvers) = ec.new_promise_pending()?;
+        let promise_obj = promise
+            .as_object()
+            .ok_or_else(|| ec.new_type_error("new_promise_pending did not return an object"))?;
 
         // Step 3: "Let readRequest be a new read request with the following items:"
         let read_request = ReadRequest::DefaultReaderRead { resolvers };
@@ -299,7 +289,7 @@ impl ReadableStreamDefaultReader {
         self.read_steps(read_request, ec)?;
 
         // Step 5: "Return promise."
-        Ok(promise.into())
+        Ok(promise_obj)
     }
 
     pub(crate) fn read_with_request(
@@ -383,11 +373,11 @@ impl ReadableStreamGenericReader for ReadableStreamDefaultReader {
         *self.closed_promise.borrow_mut() = promise;
     }
 
-    fn closed_resolvers_slot_value(&self) -> Option<ResolvingFunctions> {
+    fn closed_resolvers_slot_value(&self) -> Option<PromiseResolvers<crate::js::Types>> {
         self.closed_resolvers.borrow().clone()
     }
 
-    fn set_closed_resolvers_slot_value(&self, resolvers: Option<ResolvingFunctions>) {
+    fn set_closed_resolvers_slot_value(&self, resolvers: Option<PromiseResolvers<crate::js::Types>>) {
         *self.closed_resolvers.borrow_mut() = resolvers;
     }
 

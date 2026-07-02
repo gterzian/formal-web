@@ -21,7 +21,7 @@ use crate::{
     Completion, EcmascriptHost, ExecutionContext, HostHooks, IntegrityLevel, IteratorKind,
     JsEngine, JsTypes, JsTypesWithRealm, Numeric, PreferredType, SharedMemoryOrder,
     TypedArrayElementType,
-    records::{IteratorRecord, PromiseCapability, PropertyDescriptor, RealmIntrinsics},
+    records::{IteratorRecord, PromiseCapability, PromiseResolvers, PropertyDescriptor, RealmIntrinsics},
 };
 
 /// Marker type for JSC engine implementations.
@@ -2206,6 +2206,27 @@ impl ExecutionContext<JscTypes> for JscEngine {
             },
         })
     }
+
+    fn new_promise_pending(
+        &mut self,
+    ) -> Completion<(JscValue, PromiseResolvers<JscTypes>), JscTypes> {
+        // Reuse the same mechanism as new_promise_capability.
+        // The constructor parameter is ignored by new_promise_capability,
+        // so a dummy value is safe.
+        let dummy_ctor = JscObject {
+            raw: std::ptr::null_mut(),
+            ctx: std::ptr::null_mut(),
+        };
+        let pcap = self.new_promise_capability(dummy_ctor)?;
+        Ok((
+            pcap.promise,
+            PromiseResolvers {
+                resolve: pcap.resolve,
+                reject: pcap.reject,
+            },
+        ))
+    }
+
     fn perform_promise_then(
         &mut self,
         promise: JscPromise,

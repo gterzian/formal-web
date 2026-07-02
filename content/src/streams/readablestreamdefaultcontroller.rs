@@ -267,11 +267,29 @@ impl ReadableStreamDefaultController {
         })
     }
 
+    fn stream_slot_ec(
+        &self,
+        ec: &mut dyn ExecutionContext<crate::js::Types>,
+    ) -> Completion<ReadableStream, crate::js::Types> {
+        self.stream.borrow().clone().ok_or_else(|| {
+            ec.new_type_error("ReadableStreamDefaultController is missing its stream")
+        })
+    }
+
     fn controller_object(&self) -> JsResult<JsObject> {
         self.stream_slot()?.controller_object_slot().ok_or_else(|| {
             JsNativeError::typ()
                 .with_message("ReadableStreamDefaultController is missing its JavaScript object")
                 .into()
+        })
+    }
+
+    fn controller_object_ec(
+        &self,
+        ec: &mut dyn ExecutionContext<crate::js::Types>,
+    ) -> Completion<JsObject, crate::js::Types> {
+        self.stream_slot_ec(ec)?.controller_object_slot().ok_or_else(|| {
+            ec.new_type_error("ReadableStreamDefaultController is missing its JavaScript object")
         })
     }
 
@@ -289,9 +307,8 @@ impl ReadableStreamDefaultController {
         &self,
         ec: &mut dyn ExecutionContext<crate::js::Types>,
     ) -> Completion<Option<f64>, crate::js::Types> {
-        let ctx = unsafe { js_engine::boa::ec_to_ctx(ec) };
-        self.desired_size()
-            .map_err(|e| e.into_opaque(ctx).unwrap_or(JsValue::undefined()))
+        // Step 1: "Return ! ReadableStreamDefaultControllerGetDesiredSize(this)."
+        self.get_desired_size_ec(ec)
     }
 
     /// <https://streams.spec.whatwg.org/#rs-default-controller-close>
@@ -299,12 +316,9 @@ impl ReadableStreamDefaultController {
         &self,
         ec: &mut dyn ExecutionContext<crate::js::Types>,
     ) -> Completion<(), crate::js::Types> {
-        let context = unsafe { js_engine::boa::ec_to_ctx(ec) };
         // Step 1: "If ! ReadableStreamDefaultControllerCanCloseOrEnqueue(this) is false, throw a TypeError exception."
-        if !crate::js::js_result_to_completion(self.can_close_or_enqueue(), context)? {
-            let error: JsNativeError = JsNativeError::typ()
-                .with_message("The stream is not in a state that permits close");
-            return Err(crate::js::native_error_to_js_value(error, context));
+        if !self.can_close_or_enqueue_ec(ec)? {
+            return Err(ec.new_type_error("The stream is not in a state that permits close"));
         }
 
         // Step 2: "Perform ! ReadableStreamDefaultControllerClose(this)."
@@ -317,12 +331,9 @@ impl ReadableStreamDefaultController {
         chunk: JsValue,
         ec: &mut dyn ExecutionContext<crate::js::Types>,
     ) -> Completion<(), crate::js::Types> {
-        let context = unsafe { js_engine::boa::ec_to_ctx(ec) };
         // Step 1: "If ! ReadableStreamDefaultControllerCanCloseOrEnqueue(this) is false, throw a TypeError exception."
-        if !crate::js::js_result_to_completion(self.can_close_or_enqueue(), context)? {
-            let error: JsNativeError = JsNativeError::typ()
-                .with_message("The stream is not in a state that permits enqueue");
-            return Err(crate::js::native_error_to_js_value(error, context));
+        if !self.can_close_or_enqueue_ec(ec)? {
+            return Err(ec.new_type_error("The stream is not in a state that permits enqueue"));
         }
 
         // Step 2: "Perform ? ReadableStreamDefaultControllerEnqueue(this, chunk)."
@@ -374,9 +385,8 @@ impl ReadableStreamDefaultController {
         read_request: ReadRequest,
         ec: &mut dyn ExecutionContext<crate::js::Types>,
     ) -> Completion<(), crate::js::Types> {
-        let context = unsafe { js_engine::boa::ec_to_ctx(ec) };
         // Step 1: "Let stream be this.[[stream]]."
-        let stream = crate::js::js_result_to_completion(self.stream_slot(), context)?;
+        let stream = self.stream_slot_ec(ec)?;
 
         // Step 2: "If this.[[queue]] is not empty,"
         if !self.queue_is_empty() {
@@ -408,7 +418,7 @@ impl ReadableStreamDefaultController {
                 readable_stream_close_ec(stream, ec)?;
             } else {
                 // Step 2.3: "Otherwise, perform ! ReadableStreamDefaultControllerCallPullIfNeeded(this)."
-                self.call_pull_if_needed(js_engine::boa::context_as_ec(context))?;
+                self.call_pull_if_needed(ec)?;
             }
 
             // Step 2.4: "Perform readRequest's chunk steps, given chunk."
@@ -416,13 +426,14 @@ impl ReadableStreamDefaultController {
         }
 
         // Step 3.1: "Perform ! ReadableStreamAddReadRequest(stream, readRequest)."
+        let context = unsafe { js_engine::boa::ec_to_ctx(ec) };
         crate::js::js_result_to_completion(
             readable_stream_add_read_request(stream.clone(), read_request),
             context,
         )?;
 
         // Step 3.2: "Perform ! ReadableStreamDefaultControllerCallPullIfNeeded(this)."
-        self.call_pull_if_needed(js_engine::boa::context_as_ec(context))
+        self.call_pull_if_needed(ec)
     }
 
     /// <https://streams.spec.whatwg.org/#abstract-opdef-readablestreamdefaultcontroller-releasesteps>
@@ -439,9 +450,8 @@ impl ReadableStreamDefaultController {
         &self,
         ec: &mut dyn ExecutionContext<crate::js::Types>,
     ) -> Completion<(), crate::js::Types> {
-        let context = unsafe { js_engine::boa::ec_to_ctx(ec) };
         // Step 1: "Let shouldPull be ! ReadableStreamDefaultControllerShouldCallPull(controller)."
-        let should_pull = crate::js::js_result_to_completion(self.should_call_pull(), context)?;
+        let should_pull = self.should_call_pull_ec(ec)?;
 
         // Step 2: "If shouldPull is false, return."
         if !should_pull {
@@ -464,6 +474,7 @@ impl ReadableStreamDefaultController {
         self.pulling.set(true);
 
         // Step 6: "Let pullPromise be the result of performing controller.[[pullAlgorithm]]."
+        let context = unsafe { js_engine::boa::ec_to_ctx(ec) };
         let controller_object =
             crate::js::js_result_to_completion(self.controller_object(), context)?;
         let pull_algorithm = self.pull_algorithm.borrow().clone();
@@ -539,19 +550,34 @@ impl ReadableStreamDefaultController {
         Ok(false)
     }
 
+    pub(crate) fn can_close_or_enqueue_ec(
+        &self,
+        ec: &mut dyn ExecutionContext<crate::js::Types>,
+    ) -> Completion<bool, crate::js::Types> {
+        // Step 1: "Let state be controller.[[stream]].[[state]]."
+        let state = self.stream_slot_ec(ec)?.state();
+
+        // Step 2: "If controller.[[closeRequested]] is false and state is \"readable\", return true."
+        if !self.close_requested.get() && state == ReadableStreamState::Readable {
+            return Ok(true);
+        }
+
+        // Step 3: "Otherwise, return false."
+        Ok(false)
+    }
+
     /// <https://streams.spec.whatwg.org/#readable-stream-default-controller-close>
     pub(crate) fn close_steps(
         &self,
         ec: &mut dyn ExecutionContext<crate::js::Types>,
     ) -> Completion<(), crate::js::Types> {
-        let context = unsafe { js_engine::boa::ec_to_ctx(ec) };
         // Step 1: "If ! ReadableStreamDefaultControllerCanCloseOrEnqueue(controller) is false, return."
-        if !crate::js::js_result_to_completion(self.can_close_or_enqueue(), context)? {
+        if !self.can_close_or_enqueue_ec(ec)? {
             return Ok(());
         }
 
         // Step 2: "Let stream be controller.[[stream]]."
-        let stream = crate::js::js_result_to_completion(self.stream_slot(), context)?;
+        let stream = self.stream_slot_ec(ec)?;
 
         // Step 3: "Set controller.[[closeRequested]] to true."
         self.close_requested.set(true);
@@ -574,37 +600,27 @@ impl ReadableStreamDefaultController {
         chunk: JsValue,
         ec: &mut dyn ExecutionContext<crate::js::Types>,
     ) -> Completion<(), crate::js::Types> {
-        let context = unsafe { js_engine::boa::ec_to_ctx(ec) };
         // Step 1: "If ! ReadableStreamDefaultControllerCanCloseOrEnqueue(controller) is false, return."
-        if !crate::js::js_result_to_completion(self.can_close_or_enqueue(), context)? {
+        if !self.can_close_or_enqueue_ec(ec)? {
             return Ok(());
         }
 
         // Step 2: "Let stream be controller.[[stream]]."
-        let stream = crate::js::js_result_to_completion(self.stream_slot(), context)?;
+        let stream = self.stream_slot_ec(ec)?;
 
         // Step 3: "If ! IsReadableStreamLocked(stream) is true and ! ReadableStreamGetNumReadRequests(stream) > 0, perform ! ReadableStreamFulfillReadRequest(stream, chunk, false)."
         if stream.is_readable_stream_locked()
             && readable_stream_get_num_read_requests(stream.clone()) > 0
         {
+            let context = unsafe { js_engine::boa::ec_to_ctx(ec) };
             readable_stream_fulfill_read_request(stream, chunk, false, context).map_err(|e| {
                 e.into_opaque(context)
                     .unwrap_or_else(|_| JsValue::undefined())
             })?;
         } else {
             // Step 4.1: "Let result be the result of performing controller.[[strategySizeAlgorithm]], passing in chunk, and interpreting the result as a completion record."
-            let size_algorithm = crate::js::js_result_to_completion(
-                self.strategy_size_algorithm
-                    .borrow()
-                    .clone()
-                    .ok_or_else(|| {
-                        JsNativeError::typ()
-                            .with_message(
-                                "ReadableStreamDefaultController is missing its size algorithm",
-                            )
-                            .into()
-                    }),
-                context,
+            let size_algorithm = self.strategy_size_algorithm.borrow().clone().ok_or_else(
+                || ec.new_type_error("ReadableStreamDefaultController is missing its size algorithm"),
             )?;
             let chunk_size = match size_algorithm.size(&chunk, ec) {
                 Ok(chunk_size) => chunk_size,
@@ -646,9 +662,8 @@ impl ReadableStreamDefaultController {
         error: JsValue,
         ec: &mut dyn ExecutionContext<crate::js::Types>,
     ) -> Completion<(), crate::js::Types> {
-        let context = unsafe { js_engine::boa::ec_to_ctx(ec) };
         // Step 1: "Let stream be controller.[[stream]]."
-        let stream = crate::js::js_result_to_completion(self.stream_slot(), context)?;
+        let stream = self.stream_slot_ec(ec)?;
 
         // Step 2: "If stream.[[state]] is not \"readable\", return."
         if stream.state() != ReadableStreamState::Readable {
@@ -662,6 +677,7 @@ impl ReadableStreamDefaultController {
         self.clear_algorithms();
 
         // Step 5: "Perform ! ReadableStreamError(stream, e)."
+        let context = unsafe { js_engine::boa::ec_to_ctx(ec) };
         readable_stream_error(stream, error, context).map_err(|e| {
             e.into_opaque(context)
                 .unwrap_or_else(|_| JsValue::undefined())
@@ -689,9 +705,39 @@ impl ReadableStreamDefaultController {
         ))
     }
 
+    pub(crate) fn get_desired_size_ec(
+        &self,
+        ec: &mut dyn ExecutionContext<crate::js::Types>,
+    ) -> Completion<Option<f64>, crate::js::Types> {
+        // Step 1: "Let state be controller.[[stream]].[[state]]."
+        let state = self.stream_slot_ec(ec)?.state();
+
+        // Step 2: "If state is \"errored\", return null."
+        if state == ReadableStreamState::Errored {
+            return Ok(None);
+        }
+
+        // Step 3: "If state is \"closed\", return 0."
+        if state == ReadableStreamState::Closed {
+            return Ok(Some(0.0));
+        }
+
+        // Step 4: "Return controller.[[strategyHWM]] - controller.[[queueTotalSize]]."
+        Ok(Some(
+            self.strategy_high_water_mark.get() - self.queue_total_size.get(),
+        ))
+    }
+
     /// <https://streams.spec.whatwg.org/#readable-stream-default-controller-has-backpressure>
     pub(crate) fn has_backpressure(&self) -> JsResult<bool> {
         Ok(!self.should_call_pull()?)
+    }
+
+    pub(crate) fn has_backpressure_ec(
+        &self,
+        ec: &mut dyn ExecutionContext<crate::js::Types>,
+    ) -> Completion<bool, crate::js::Types> {
+        Ok(!self.should_call_pull_ec(ec)?)
     }
 
     /// <https://streams.spec.whatwg.org/#readable-stream-default-controller-should-call-pull>
@@ -718,6 +764,45 @@ impl ReadableStreamDefaultController {
 
         // Step 5: "Let desiredSize be ! ReadableStreamDefaultControllerGetDesiredSize(controller)."
         let desired_size = self.get_desired_size()?;
+
+        // Step 6: "Assert: desiredSize is not null."
+        debug_assert!(desired_size.is_some());
+
+        // Step 7: "If desiredSize > 0, return true."
+        if desired_size.unwrap_or(0.0) > 0.0 {
+            return Ok(true);
+        }
+
+        // Step 8: "Return false."
+        Ok(false)
+    }
+
+    fn should_call_pull_ec(
+        &self,
+        ec: &mut dyn ExecutionContext<crate::js::Types>,
+    ) -> Completion<bool, crate::js::Types> {
+        // Step 1: "Let stream be controller.[[stream]]."
+        let stream = self.stream_slot_ec(ec)?;
+
+        // Step 2: "If ! ReadableStreamDefaultControllerCanCloseOrEnqueue(controller) is false, return false."
+        if !self.can_close_or_enqueue_ec(ec)? {
+            return Ok(false);
+        }
+
+        // Step 3: "If controller.[[started]] is false, return false."
+        if !self.started.get() {
+            return Ok(false);
+        }
+
+        // Step 4: "If ! IsReadableStreamLocked(stream) is true and ! ReadableStreamGetNumReadRequests(stream) > 0, return true."
+        if stream.is_readable_stream_locked()
+            && readable_stream_get_num_read_requests(stream.clone()) > 0
+        {
+            return Ok(true);
+        }
+
+        // Step 5: "Let desiredSize be ! ReadableStreamDefaultControllerGetDesiredSize(controller)."
+        let desired_size = self.get_desired_size_ec(ec)?;
 
         // Step 6: "Assert: desiredSize is not null."
         debug_assert!(desired_size.is_some());

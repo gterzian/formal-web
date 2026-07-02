@@ -1,11 +1,10 @@
 use boa_engine::{
     Context, JsValue,
-    builtins::promise::ResolvingFunctions,
-    object::{JsObject, builtins::JsPromise},
+    object::JsObject,
 };
 use boa_gc::{Finalize, Trace};
 
-use js_engine::{Completion, ExecutionContext};
+use js_engine::{Completion, ExecutionContext, PromiseResolvers};
 
 use super::writablestreamdefaultcontroller::WritableStreamDefaultController;
 use super::writablestreamdefaultwriter::WritableStreamDefaultWriter;
@@ -21,13 +20,18 @@ pub(crate) enum WritableStreamState {
 
 #[derive(Clone, Trace, Finalize)]
 pub(crate) struct WriteRequest {
-    resolvers: ResolvingFunctions,
+    resolvers: PromiseResolvers<crate::js::Types>,
 }
 
 impl WriteRequest {
-    pub(crate) fn new(context: &mut Context) -> (Self, JsObject) {
-        let (promise, resolvers) = JsPromise::new_pending(context);
-        (Self { resolvers }, promise.into())
+    pub(crate) fn new(
+        ec: &mut dyn ExecutionContext<crate::js::Types>,
+    ) -> Completion<(Self, JsObject), crate::js::Types> {
+        let (promise, resolvers) = ec.new_promise_pending()?;
+        let promise_obj = promise
+            .as_object()
+            .ok_or_else(|| ec.new_type_error("new_promise_pending did not return an object"))?;
+        Ok((Self { resolvers }, promise_obj))
     }
     pub(crate) fn resolve(
         self,
@@ -49,7 +53,7 @@ impl WriteRequest {
 #[derive(Clone, Trace, Finalize)]
 pub(crate) struct PendingAbortRequest {
     promise: JsObject,
-    resolvers: ResolvingFunctions,
+    resolvers: PromiseResolvers<crate::js::Types>,
 
     /// <https://streams.spec.whatwg.org/#pending-abort-request-reason>
     reason: JsValue,
@@ -59,14 +63,21 @@ pub(crate) struct PendingAbortRequest {
 }
 
 impl PendingAbortRequest {
-    pub(crate) fn new(reason: JsValue, was_already_erroring: bool, context: &mut Context) -> Self {
-        let (promise, resolvers) = JsPromise::new_pending(context);
-        Self {
-            promise: promise.into(),
+    pub(crate) fn new(
+        reason: JsValue,
+        was_already_erroring: bool,
+        ec: &mut dyn ExecutionContext<crate::js::Types>,
+    ) -> Completion<Self, crate::js::Types> {
+        let (promise, resolvers) = ec.new_promise_pending()?;
+        let promise_obj = promise
+            .as_object()
+            .ok_or_else(|| ec.new_type_error("new_promise_pending did not return an object"))?;
+        Ok(Self {
+            promise: promise_obj,
             resolvers,
             reason,
             was_already_erroring,
-        }
+        })
     }
     pub(crate) fn promise(&self) -> JsObject {
         self.promise.clone()

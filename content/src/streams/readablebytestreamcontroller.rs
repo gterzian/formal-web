@@ -552,14 +552,9 @@ impl ReadableByteStreamController {
         } else {
             None
         };
-        // SAFETY: ec is backed by BoaContext repr(transparent) over Context
-        let context = unsafe { js_engine::boa::ec_to_ctx(ec) };
-        crate::js::js_result_to_completion(
-            with_readable_stream_byob_request_ref(&object, |request| {
-                request.set_view_slot(maybe_view)
-            }),
-            context,
-        )
+        with_readable_stream_byob_request_ref_ec(&object, ec, |request| {
+            request.set_view_slot(maybe_view)
+        })
     }
 
     pub(crate) fn pending_pull_intos_len(&self) -> usize {

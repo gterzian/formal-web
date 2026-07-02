@@ -41,7 +41,7 @@ use boa_engine::{
 use crate::{
     Completion, EcmascriptHost, ExecutionContext, HostHooks, IntegrityLevel, IteratorKind,
     JsEngine, JsTypesWithRealm, Numeric, PreferredType, SharedMemoryOrder, TypedArrayElementType,
-    records::{IteratorRecord, PromiseCapability, PropertyDescriptor, RealmIntrinsics},
+    records::{IteratorRecord, PromiseCapability, PromiseResolvers, PropertyDescriptor, RealmIntrinsics},
 };
 
 use super::types::BoaTypes;
@@ -1236,6 +1236,19 @@ impl ExecutionContext<BoaTypes> for BoaContext {
             resolve: resolvers.resolve,
             reject: resolvers.reject,
         })
+    }
+
+    fn new_promise_pending(
+        &mut self,
+    ) -> Completion<(JsValue, PromiseResolvers<BoaTypes>), BoaTypes> {
+        let (promise, resolvers) = JsPromise::new_pending(&mut self.context);
+        Ok((
+            JsValue::from(promise),
+            PromiseResolvers {
+                resolve: resolvers.resolve.into(),
+                reject: resolvers.reject.into(),
+            },
+        ))
     }
 
     fn perform_promise_then(

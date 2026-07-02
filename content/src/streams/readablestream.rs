@@ -2580,7 +2580,9 @@ fn readable_byte_stream_tee_pull_with_byob_reader(
     )
     .to_js_function(context.realm());
 
-    let (read_into_request, promise) = ReadIntoRequest::new(context);
+    let (read_into_request, promise) = crate::js::completion_to_js_result(
+        ReadIntoRequest::new(js_engine::boa::context_as_ec(context)),
+    )?;
 
     // Step 19.5: "Perform ! ReadableStreamBYOBReaderRead(reader, view, 1, readIntoRequest)."
     crate::js::completion_to_js_result(byob_reader.read_steps(

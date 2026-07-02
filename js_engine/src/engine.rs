@@ -59,7 +59,7 @@ use crate::enums::{
     IntegrityLevel, IteratorKind, PromiseRejectionOperation, SharedMemoryOrder,
     TypedArrayElementType,
 };
-use crate::records::{IteratorRecord, PromiseCapability, RealmIntrinsics};
+use crate::records::{IteratorRecord, PromiseCapability, PromiseResolvers, RealmIntrinsics};
 use crate::types::{JsTypes, JsTypesWithRealm};
 use crate::{Numeric, PreferredType, PropertyDescriptor, RootedPromiseCapability};
 
@@ -528,6 +528,14 @@ pub trait ExecutionContext<T: JsTypes + JsTypesWithRealm>: EcmascriptHost<T> {
         &mut self,
         constructor: T::Constructor,
     ) -> Completion<PromiseCapability<T>, T>;
+
+    /// Creates a new pending promise and its resolve/reject functions.
+    ///
+    /// Returns a GC-safe [`PromiseResolvers<T>`] that can be stored in
+    /// domain structs.  The promise is returned as a `T::JsValue`.
+    fn new_promise_pending(
+        &mut self,
+    ) -> Completion<(T::JsValue, PromiseResolvers<T>), T>;
 
     /// <https://tc39.es/ecma262/#sec-performpromisethen>
     fn perform_promise_then(

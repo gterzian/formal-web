@@ -601,6 +601,9 @@ Concrete per-phase validation requirements:
 | S5. readablestream.rs constructor | 2 → **0 ec_to_ctx**. Added `construct_readable_stream_ec`. `create_platform_object` now a single-line delegation. | ✅ |
 | S6. window.rs bindings | 11 → **0 ec_to_ctx**. Converted all 11 functions. `set_onload` uses inline `with_object_any_mut` + `try_with_event_target_mut`; `get_computed_style` uses `with_object_any` + `style_declaration_object_ec`. Added `downcast_window_ec`, used `callback_function_value_ec`, `nullable_value_ec`, `document_creation_url_ec`, `location_object_ec`, `store_location_object_ec`. | ✅ |
 | S7. event_target.rs bindings + EcDispatchHost | 10 → **0 ec_to_ctx**. Converted `addEventListener`, `removeEventListener`, `dispatchEvent`, plus `document_object`, `resolve_element_object`, `resolve_existing_node_object` in EcDispatchHost. Added `current_event_target_object_ec`, `flatten_more_ec`. | ✅ |
+| **S8. Controller JsResult → Completion** | Added `_ec` versions of `stream_slot`, `controller_object`, `invalidate_byob_request`, `should_call_pull`, `can_close_or_enqueue`, `get_desired_size`, `has_backpressure` across `readablestreamdefaultcontroller.rs`, `writablestreamdefaultcontroller.rs`, `transformstream.rs` (and `signal_ec` for writable). Converted callers in `close()`, `enqueue()`, `close_steps()`, `enqueue_steps()`, `error_steps()`, `pull_steps()`, `call_pull_if_needed()`, `error()`, `signal_abort()`, `signal_value_ec()`, `error_controller()`, `error_if_needed()`, `update_byob_request_view()`. Eliminated ~14 ec_to_ctx across controller files. `desired_size_ec` and `readable_object_ec`/`writable_object_ec`/`readable_ec`/`writable_ec`/`controller_slot_ec` on TransformStream now direct `Completion` (no `ec_to_ctx` bridge). | ✅ |
+| **S9. PromiseResolvers&lt;T&gt; in js_engine** | Added `PromiseResolvers<T>` record type with `resolve(value, ec)` and `reject(reason, ec)` methods that call `ec.call()` directly. Added `new_promise_pending()` trait method on `ExecutionContext<T>` returning `(T::JsValue, PromiseResolvers<T>)`. Implemented for Boa (wraps `JsPromise::new_pending` + `.into()` conversion) and JSC (reuses `new_promise_capability`). | ✅ |
+| **S10. PromiseResolvers content migration** | Replaced `ResolvingFunctions` with `PromiseResolvers<crate::js::Types>` in `WritableStreamDefaultWriter` (ready_resolvers, closed_resolvers), `ReadableStreamDefaultReader` (closed_resolvers), `ReadableStreamBYOBReader` (closed_resolvers), `TransformStream` (backpressure_change_resolvers), `TransformStreamDefaultController` (finish_resolvers), `ReadRequest::DefaultReaderRead`, `ReadIntoRequest`, `WriteRequest`, `PendingAbortRequest`, and the `ReadableStreamGenericReader` trait. Converted `JsPromise::new_pending(context)` → `ec.new_promise_pending()?` and `resolvers.resolve.call(...)` → `resolvers.resolve(value, ec)?`. Eliminated ~6 ec_to_ctx (writablestreamdefaultwriter: 2→0, readablestreamdefaultreader: 2→0, writablestream: 4→1). | ✅ |
 | P1. platform_objects `_ec` wrappers | Added `location_object_ec`, `store_location_object_ec`. | ✅ |
 | P2. readablebytestreamcontroller.rs | Added `_ec` wrappers for `stream_slot`, `controller_object`, `invalidate_byob_request`, `should_call_pull`. Eliminated ec_to_ctx from `cancel_steps`. | ✅ |
 | P3. platform_objects ec_to_ctx consolidation | `platform_objects.rs`: 8 → **0 ec_to_ctx**. Added `realm_global_object()` trait method on `ExecutionContext` (§8.1.3 `[[GlobalObject]]`). `with_global_scope_ec` uses `ec.realm_global_object()` → `ec.with_object_any()` → `downcast_ref::<Window>()` — pure trait-method access, no `ec_to_ctx`. Simple `_ec` wrappers pre-create errors to avoid borrow conflicts; complex wrappers use block scoping. Tested: `realm_global_object_returns_valid_js_object`, `host_any_stored_object_downcast_via_with_object_any`. | ✅ |
@@ -652,15 +655,43 @@ Phase S (streams domain) ──► Phase P (platform-object store)
 3. Platform-object state (Phase P) and subsystem entry points (Phase W) are the next blockers — unblock the remaining ~33 non-streams ec_to_ctx.
 4. Backend alias lands once Phases P, W, and S are complete.
 
-### Current state (updated 2026-07-02, session 4 — trait methods + typed array conversion)
+### Current state (updated 2026-07-02, session 5 — controller JsResult → Completion + PromiseResolvers)
+
+**Phases A–D, S1–S8, T1–T2, W1–W2 complete.** All binding files at 0 ec_to_ctx. Controller stream_slot/controller_object/invalidate_byob_request methods have `_ec` versions.
+
+**POC test suite: 77/77 pass on Boa.**
+
+**~62 ec_to_ctx remain in streams/** (down from ~81 at session start, ~102 total including non-streams). ~19 eliminated this session (S8: ~14 controller JsResult, S9+S10: ~5 PromiseResolvers).
+
+**Added this session (`_ec` methods across 3 controller files):**
+
+| File | New `_ec` methods | Callers converted |
+|---|---|---|
+| `readablestreamdefaultcontroller.rs` | `stream_slot_ec`, `controller_object_ec`, `can_close_or_enqueue_ec`, `get_desired_size_ec`, `has_backpressure_ec`, `should_call_pull_ec` | `close()`, `enqueue()`, `close_steps()`, `enqueue_steps()`, `error_steps()`, `pull_steps()`, `call_pull_if_needed()`, `desired_size_ec()` |
+| `writablestreamdefaultcontroller.rs` | `stream_slot_ec`, `controller_object_ec`, `signal_ec` | `error()`, `signal_abort()`, `signal_value_ec()`, `error_controller()`, `error_if_needed()` |
+| `transformstream.rs` | `stream_slot_ec`, `controller_object_ec`, `readable_controller_ec`, `desired_size_ec` (rewritten), `readable_ec`, `readable_object_ec` (rewritten), `writable_ec`, `writable_object_ec` (rewritten), `controller_slot_ec`, `controller_object_ec` (TransformStream) | `desired_size_ec()` no longer bridges through `ec_to_ctx` |
+| `readablebytestreamcontroller.rs` | (already had `_ec` versions from P2) | `update_byob_request_view()` — replaced `js_result_to_completion(with_readable_stream_byob_request_ref(...), context)` with `with_readable_stream_byob_request_ref_ec(...)` |
+
+**Remaining streams ec_to_ctx (68 total):**
+- `readablebytestreamcontroller.rs`: 13 — `pull_steps` (JsArrayBuffer, readable_stream_add_read_request), `error_steps` (readable_stream_error), `fill_read_request_from_queue*` (readable_stream_fulfill_read_request), `enqueue_chunk_to_queue` (readable_stream_fulfill_read_request), `respond*` methods (readable_stream_*), `pull_from_bytes` (JsArrayBuffer, NativeFunction)
+- `readablestreamdefaultcontroller.rs`: 11 — `PullAlgorithm::call`, `CancelAlgorithm::call`, `StartAlgorithm::call` (tee/itereable algorithms take `&mut Context`), `cancel_steps`, `pull_steps` (readable_stream_add_read_request), `call_pull_if_needed` (NativeFunction/JsPromise), `enqueue_steps` (readable_stream_fulfill_read_request), `error_steps` (readable_stream_error), `set_up_readable_stream_default_controller`, `set_up_*_from_underlying_source`, `extract_source_method`
+- `writablestreamdefaultcontroller.rs`: 11 — `abort_steps`, `get_chunk_size`, `close_controller`, `write_controller`, `advance_queue_if_needed`, `process_close` (NativeFunction/JsPromise), `process_write` (NativeFunction/JsPromise), `set_up_writable_stream_default_controller`, `set_up_*_from_underlying_sink`, `extract_sink_method`
+- `readablestreamsupport.rs`: 9 — Tee + NativeFunction closures, readable_stream_* calls
+- `readablestream.rs`: 11 — JsPromise new_pending (ResolvingFunctions), tee, NativeFunction
+- `transformstream.rs`: 4 — `enqueue_ec`/`error_ec`/`terminate_ec` bridges (underlying functions take `&mut Context`), `construct_transform_stream_ec` bridge
+- Other streams files: 9 — `writablestream.rs` (4), `readablestreamdefaultreader.rs` (2), `writablestreamdefaultwriter.rs` (2), `readablestreambyobreader.rs` (1)
+
+---
+
+### Current state (previous — session 4) (archived)
 
 **Phases A–D complete.** All binding files at 0 ec_to_ctx. Binding layer clean.
 
 **POC test suite: 77/77 pass on Boa** (3 new typed array tests added).
 
-**~102 ec_to_ctx remain** (down from ~124 at session start, ~169 before session 3). Streams: ~81; non-streams: ~21.
-
-**New trait methods added this session (11):**
+> **~102 ec_to_ctx remained** at end of session 4 (down from ~124 at session start, ~169 before session 3). Streams: ~81; non-streams: ~21.
+>
+> **New trait methods added in session 4 (11):**
 
 | Trait method | Spec basis | # sites
 |---|---|---|
@@ -676,7 +707,7 @@ Phase S (streams domain) ──► Phase P (platform-object store)
 | `array_buffer_data` | §25.1 (data access) | 3 |
 | — | **Boa: ✅ full | JSC: 🔶 stubs** | ~27 |
 
-**Eliminated this session (22 total across 4 files):**
+**Eliminated in session 4 (22 total across 4 files):**
 - `promise.rs`: 9→3 — converted `resolved_promise`, `rejected_promise`, `promise_from_value`, `transform_promise_to_undefined`, `mark_promise_as_handled` to use trait methods; deleted dead `a_new_promise`
 - `readablestreamsupport.rs`: 12→9 — converted `create_read_result` (ObjectInitializer→`create_plain_object`+`object_set_property`), `type_error_value`, `range_error_value`
 - `readablebytestreamcontroller.rs`: 27→14 — converted all typed array operations (`from_value`, `create_result_view`, `create_remaining_view`, `create_view_object`, `create_uint8_view_object`, `create_typed_array_view_object`) to use new trait methods; converted `filled_view`, `close`, `commit`, `dequeue_chunk_as_value` to use trait methods
@@ -695,18 +726,18 @@ Phase S (streams domain) ──► Phase P (platform-object store)
 
 | Blocker | Files | ~Count | Needed trait methods |
 |---|---|---|---|
-| **Internal JsResult methods** | readablebytestreamcontroller.rs, readablestreamdefaultcontroller.rs, writablestreamdefaultcontroller.rs, transformstream.rs | ~33 | None (purely content-level: convert `stream_slot()`/`controller_object()`/`invalidate_byob_request()` from `JsResult` to `Completion` using existing `ec.new_type_error(msg)`, then reorder callers before `ec_to_ctx`) |
-| **JsPromise new_pending** | writablestream.rs, writablestreamdefaultwriter.rs, readablestreamdefaultreader.rs, readablestream.rs, transformstream.rs | ~16 | Use existing `ec.new_promise_capability(intrinsics.promise)` — no new trait method needed, but `ResolvingFunctions` stored in GC-traced structs needs a `PromiseResolvers<T>` wrapper in js_engine |
+| ~~**Internal JsResult methods**~~ | ~~readablebytestreamcontroller.rs, readablestreamdefaultcontroller.rs, writablestreamdefaultcontroller.rs, transformstream.rs~~ | ~~~33~~ ✅ | ~~None~~ S8 complete — `_ec` methods added, callers converted |
+| **JsPromise new_pending** | writablestream.rs, writablestreamdefaultwriter.rs, readablestreamdefaultreader.rs, readablestream.rs, transformstream.rs | ~16 | `PromiseResolvers<T>` + `new_promise_pending()` added to js_engine (S9). Needs content migration (S10): replace `ResolvingFunctions` with `PromiseResolvers<T>` in 5 GC-traced structs and convert callers |
 | **Tee + queue_internal** | readablestreamsupport.rs, writablestreamdefaultcontroller.rs, readablestreamdefaultcontroller.rs | ~24 | `ec.enqueue_job(...)` already on trait — but closures capture `&mut Context`. Need either `queue_microtask` that takes `&mut dyn ExecutionContext<T>` or convert tee functions |
 | **NativeFunction closures** | writablestreamdefaultcontroller.rs, readablestreamdefaultcontroller.rs | ~12 | `create_builtin_function` already on trait — but closures capture GC-traced types (not `Send`). Need to handle `Send` bound or add non-`Send` variant |
 | **Non-streams** | wasm/namespace.rs, promise.rs (JsError), windowproxy.rs, platform_objects | ~17 | Various — Phase W scope |
 
 ### Next session: recommended order
 
-1. **Convert internal `stream_slot()`/`controller_object()`/`invalidate_byob_request()` from `JsResult` to `Completion`** — purely content-level, eliminates ~33 ec_to_ctx across 4 controller files using only existing `ec.new_type_error(msg)`.  Follow the three-workaround patterns (reorder before `ec_to_ctx`, pre-create errors, block-scope).
-2. **Add `PromiseResolvers<T>` to js_engine records** — a GC-safe wrapper for storing resolve/reject in traced structs. Replace Boa's `ResolvingFunctions` with this type, unblocking the ~16 JsPromise ec_to_ctx.
+1. ~~**Convert internal `stream_slot()`/`controller_object()`/`invalidate_byob_request()` from `JsResult` to `Completion`**~~ ✅ DONE
+2. ~~**Add `PromiseResolvers<T>` to js_engine + content migration**~~ ✅ DONE (S9+S10). `PromiseResolvers<T>` record type with `resolve(value, ec)` / `reject(reason, ec)` methods. `new_promise_pending()` on `ExecutionContext<T>`. Both Boa and JSC backends implemented. Content migration complete — 5 GC-traced structs and 4 request types converted. ~6 ec_to_ctx eliminated.
 3. **Add `queue_microtask` trait method** — wraps `ec.enqueue_job()` with a closure that receives `&mut dyn ExecutionContext<T>` instead of `&mut Context`. Eliminates ~24 more ec_to_ctx.
-4. **Phase E — Conditional Types alias** — once remaining ~102 ec_to_ctx are covered, `#[cfg]` gate all Boa imports.
+4. **Phase E — Conditional Types alias** — once remaining ~62 ec_to_ctx are covered, `#[cfg]` gate all Boa imports.
 
 ### Working note: `ec_to_ctx` after `ec_to_ctx`
 

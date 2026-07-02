@@ -13,7 +13,7 @@
 //! | [`types`] | `JsTypes`, `JsTypesWithRealm` |
 //! | [`engine`] | `JsEngine`, `Completion`, `EcmascriptHost`, `HostHooks` |
 //! | [`enums`] | `Numeric`, `PreferredType`, `IntegrityLevel`, etc. |
-//! | [`records`] | `IteratorRecord`, `PromiseCapability`, `PropertyDescriptor` |
+//! | [`records`] | `IteratorRecord`, `PromiseCapability`, `PromiseResolvers`, `PropertyDescriptor` |
 //! | [`gc`] | `Trace`, `Finalize`, `GcRootHandle` (engine-specific) |
 //! | [`boa`] | Boa backend (feature = "boa") |
 //! | [`jsc`] | JSC backend (feature = "jsc") |
@@ -49,7 +49,7 @@ pub use enums::{
 };
 pub use gc::{Finalize, GcRootHandle, JsTypesGcExt, Trace};
 pub use records::{
-    IteratorRecord, ModuleRequest, PromiseCapability, PropertyDescriptor, RealmIntrinsics,
-    RootedPromiseCapability,
+    IteratorRecord, ModuleRequest, PromiseCapability, PromiseResolvers, PropertyDescriptor,
+    RealmIntrinsics, RootedPromiseCapability,
 };
 pub use types::{JsTypes, JsTypesWithRealm};
