@@ -8,7 +8,6 @@ use std::{
 use boa_engine::{
     Context, JsArgs, JsError, JsNativeError, JsResult, JsValue,
     builtins::{
-        iterable::create_iter_result_object,
         promise::{PromiseState, ResolvingFunctions},
     },
     js_string,
@@ -33,6 +32,7 @@ use crate::webidl::{
 use js_engine::gc::GcCell;
 use js_engine::gc::gc_cell_new;
 use js_engine::gc_struct;
+use js_engine::types::JsTypes;
 
 use super::{
     ArrayBufferViewDescriptor, CancelAlgorithm, PullAlgorithm, ReadIntoRequest, ReadRequest,
@@ -1065,12 +1065,8 @@ impl ReadableStreamFromIterableState {
         *self.stream.borrow_mut() = Some(stream);
     }
 
-    fn stream(&self) -> JsResult<ReadableStream> {
-        self.stream.borrow().clone().ok_or_else(|| {
-            JsNativeError::typ()
-                .with_message("ReadableStream.from() is missing its stream")
-                .into()
-        })
+    fn stream(&self) -> Option<ReadableStream> {
+        self.stream.borrow().clone()
     }
 }
 /// <https://streams.spec.whatwg.org/#rs-constructor>
@@ -1344,53 +1340,73 @@ pub(crate) fn readable_stream_from_iterable_pull_algorithm(
     // and applies async-from-sync iterator adaptation for sync iterables.
 
     // Step 4.4: "Return the result of reacting to nextPromise with the following fulfillment steps, given iterResult:"
-    let on_fulfilled = NativeFunction::from_copy_closure_with_captures(
-        |_, args, state: &ReadableStreamFromIterableState, context| {
-            let iter_result = args.get_or_undefined(0).clone();
-
-            // Step 4.4.1: "If iterResult is not an Object, throw a TypeError."
-            let iter_result_object = iter_result.as_object().ok_or_else(|| {
-                JsNativeError::typ().with_message(
-                    "ReadableStream.from() iterator next() must fulfill with an object",
-                )
-            })?;
-
-            // Step 4.4.2: "Let done be ? IteratorComplete(iterResult)."
-            let done = iter_result_object
-                .get(js_string!("done"), context)?
-                .to_boolean();
-
-            let stream = state.stream()?;
-            let controller = stream.controller_slot().ok_or_else(|| {
-                JsNativeError::typ().with_message("ReadableStream.from() is missing its controller")
-            })?;
-            let controller = controller.as_default_controller();
-
-            // Step 4.4.3: "If done is true:"
-            if done {
-                // Step 4.4.3.1: "Perform ! ReadableStreamDefaultControllerClose(stream.[[controller]])."
-                crate::js::completion_to_js_result(
-                    controller.close_steps(js_engine::boa::context_as_ec(context)),
-                )?;
-                return Ok(JsValue::undefined());
-            }
-
-            // Step 4.4.4.1: "Let value be ? IteratorValue(iterResult)."
-            let value = iter_result_object.get(js_string!("value"), context)?;
-
-            // Step 4.4.4.2: "Perform ! ReadableStreamDefaultControllerEnqueue(stream.[[controller]], value)."
-            crate::js::completion_to_js_result(
-                controller.enqueue_steps(value, js_engine::boa::context_as_ec(context)),
-            )?;
-            Ok(JsValue::undefined())
-        },
-        state,
-    )
-    .to_js_function(context.realm());
+    let on_fulfilled = crate::js::builtin_with_captures(
+        context, state, readable_stream_from_iterable_pull_on_fulfilled_fn, 1,
+    );
 
     Ok(JsPromise::from_object(next_promise)?
         .then(Some(on_fulfilled), None, context)?
         .into())
+}
+
+fn readable_stream_from_iterable_pull_on_fulfilled_fn(
+    args: &[JsValue],
+    _this: JsValue,
+    state: &ReadableStreamFromIterableState,
+    ec: &mut dyn ExecutionContext<crate::js::Types>,
+) -> Completion<JsValue, crate::js::Types> {
+    let iter_result = args.get_or_undefined(0).clone();
+
+    // Step 4.4.1: "If iterResult is not an Object, throw a TypeError."
+    let iter_result_object = iter_result.as_object().ok_or_else(|| {
+        ec.new_type_error(
+            "ReadableStream.from() iterator next() must fulfill with an object",
+        )
+    })?;
+
+    // Step 4.4.2: "Let done be ? IteratorComplete(iterResult)."
+    use js_engine::EcmascriptHost;
+    let done_value = EcmascriptHost::get(ec, &iter_result_object, "done")?;
+    let done = ec.to_boolean(&done_value);
+
+    let stream = state.stream().ok_or_else(|| {
+        ec.new_type_error("ReadableStream.from() is missing its stream")
+    })?;
+    let controller = stream.controller_slot().ok_or_else(|| {
+        ec.new_type_error("ReadableStream.from() is missing its controller")
+    })?;
+    let controller = controller.as_default_controller();
+
+    // Step 4.4.3: "If done is true:"
+    if done {
+        // Step 4.4.3.1: "Perform ! ReadableStreamDefaultControllerClose(stream.[[controller]])."
+        controller.close_steps(ec)?;
+        return Ok(ec.value_undefined());
+    }
+
+    // Step 4.4.4.1: "Let value be ? IteratorValue(iterResult)."
+    let value = EcmascriptHost::get(ec, &iter_result_object, "value")?;
+
+    // Step 4.4.4.2: "Perform ! ReadableStreamDefaultControllerEnqueue(stream.[[controller]], value)."
+    controller.enqueue_steps(value, ec)?;
+    Ok(ec.value_undefined())
+}
+
+fn readable_stream_from_iterable_cancel_on_fulfilled_fn(
+    args: &[JsValue],
+    _this: JsValue,
+    _captures: &(),
+    ec: &mut dyn ExecutionContext<crate::js::Types>,
+) -> Completion<JsValue, crate::js::Types> {
+    // Step 5.8.1: "If iterResult is not an Object, throw a TypeError."
+    if args.get_or_undefined(0).as_object().is_none() {
+        return Err(ec.new_type_error(
+            "ReadableStream.from() iterator return() must fulfill with an object",
+        ));
+    }
+
+    // Step 5.8.2: "Return undefined."
+    Ok(ec.value_undefined())
 }
 
 /// <https://streams.spec.whatwg.org/#readable-stream-from-iterable>
@@ -1426,18 +1442,9 @@ pub(crate) fn readable_stream_from_iterable_cancel_algorithm(
     };
 
     // Step 5.8: "Return the result of reacting to returnPromise with the following fulfillment steps, given iterResult:"
-    let on_fulfilled = NativeFunction::from_fn_ptr(|_, args, _| {
-        // Step 5.8.1: "If iterResult is not an Object, throw a TypeError."
-        if args.get_or_undefined(0).as_object().is_none() {
-            return Err(JsNativeError::typ()
-                .with_message("ReadableStream.from() iterator return() must fulfill with an object")
-                .into());
-        }
-
-        // Step 5.8.2: "Return undefined."
-        Ok(JsValue::undefined())
-    })
-    .to_js_function(context.realm());
+    let on_fulfilled = crate::js::builtin_with_captures(
+        context, (), readable_stream_from_iterable_cancel_on_fulfilled_fn, 1,
+    );
 
     Ok(JsPromise::from_object(return_promise)?
         .then(Some(on_fulfilled), None, context)?
@@ -1504,6 +1511,25 @@ fn get_readable_stream_from_iterator_record(
     })
 }
 
+fn promise_from_sync_iterator_result_on_fulfilled_fn(
+    args: &[JsValue],
+    _this: JsValue,
+    done: &bool,
+    ec: &mut dyn ExecutionContext<crate::js::Types>,
+) -> Completion<JsValue, crate::js::Types> {
+    let value_key = ec.property_key_from_str("value");
+    let done_key = ec.property_key_from_str("done");
+    let done_value = ec.value_from_bool(*done);
+    let object = ec.create_plain_object(None);
+    ec.create_data_property(
+        object.clone(),
+        value_key,
+        args.get_or_undefined(0).clone(),
+    )?;
+    ec.create_data_property(object.clone(), done_key, done_value)?;
+    Ok(<crate::js::Types as JsTypes>::value_from_object(object))
+}
+
 fn promise_from_sync_iterator_result(
     iter_result: JsValue,
     context: &mut Context,
@@ -1548,17 +1574,9 @@ fn promise_from_sync_iterator_result(
             ));
         }
     };
-    let on_fulfilled = NativeFunction::from_copy_closure_with_captures(
-        |_, args, done: &bool, context| {
-            Ok(create_iter_result_object(
-                args.get_or_undefined(0).clone(),
-                *done,
-                context,
-            ))
-        },
-        done,
-    )
-    .to_js_function(context.realm());
+    let on_fulfilled = crate::js::builtin_with_captures(
+        context, done, promise_from_sync_iterator_result_on_fulfilled_fn, 0,
+    );
 
     Ok(JsPromise::from_object(value_promise)?
         .then(Some(on_fulfilled), None, context)?
@@ -4159,6 +4177,28 @@ fn start_abort_cancel_on_rejected_fn(
     )
 }
 
+fn abort_destination_then_cancel_on_fulfilled_fn(
+    _args: &[JsValue],
+    _this: JsValue,
+    state: &GcCell<AbortThenCancelState>,
+    ec: &mut dyn ExecutionContext<crate::js::Types>,
+) -> Completion<JsValue, crate::js::Types> {
+    start_abort_cancel_source(state.clone(), None, ec)
+}
+
+fn abort_destination_then_cancel_on_rejected_fn(
+    args: &[JsValue],
+    _this: JsValue,
+    state: &GcCell<AbortThenCancelState>,
+    ec: &mut dyn ExecutionContext<crate::js::Types>,
+) -> Completion<JsValue, crate::js::Types> {
+    start_abort_cancel_source(
+        state.clone(),
+        Some(args.get_or_undefined(0).clone()),
+        ec,
+    )
+}
+
 fn abort_destination_then_cancel_source(
     abort_promise: JsObject,
     source: ReadableStream,
@@ -4173,24 +4213,12 @@ fn abort_destination_then_cancel_source(
         resolvers,
     });
 
-    let on_fulfilled = NativeFunction::from_copy_closure_with_captures(
-        |_, _, state: &GcCell<AbortThenCancelState>, context| {
-            start_abort_cancel_source(state.clone(), None, context)
-        },
-        state.clone(),
-    )
-    .to_js_function(context.realm());
-    let on_rejected = NativeFunction::from_copy_closure_with_captures(
-        |_, args, state: &GcCell<AbortThenCancelState>, context| {
-            start_abort_cancel_source(
-                state.clone(),
-                Some(args.get_or_undefined(0).clone()),
-                context,
-            )
-        },
-        state.clone(),
-    )
-    .to_js_function(context.realm());
+    let on_fulfilled = crate::js::builtin_with_captures(
+        context, state.clone(), abort_destination_then_cancel_on_fulfilled_fn, 0,
+    );
+    let on_rejected = crate::js::builtin_with_captures(
+        context, state.clone(), abort_destination_then_cancel_on_rejected_fn, 1,
+    );
     let _ = JsPromise::from_object(abort_promise)?.then(
         Some(on_fulfilled),
         Some(on_rejected),
@@ -4203,8 +4231,8 @@ fn abort_destination_then_cancel_source(
 fn start_abort_cancel_source(
     state: GcCell<AbortThenCancelState>,
     abort_rejection: Option<JsValue>,
-    context: &mut Context,
-) -> JsResult<JsValue> {
+    ec: &mut dyn ExecutionContext<crate::js::Types>,
+) -> Completion<JsValue, crate::js::Types> {
     let (source, error) = {
         let mut state_ref = state.borrow_mut();
         state_ref.abort_rejection = abort_rejection;
@@ -4212,23 +4240,23 @@ fn start_abort_cancel_source(
     };
 
     let cancel_promise = match source {
-        Some(source) => readable_stream_cancel(source, error, context)?,
-        None => resolved_promise(JsValue::undefined(), js_engine::boa::context_as_ec(context))
-            .map_err(boa_engine::JsError::from_opaque)?,
+        Some(source) => readable_stream_cancel_ec(source, error, ec)?,
+        None => resolved_promise(ec.value_undefined(), ec)?,
     };
 
+    // Note: ec_to_ctx — create_builtin_function_with_captures lives on JsEngine<T>, not ExecutionContext<T>.
+    let context = unsafe { js_engine::boa::ec_to_ctx(ec) };
     let on_fulfilled = crate::js::builtin_with_captures(
         context, state.clone(), start_abort_cancel_on_fulfilled_fn, 0,
     );
     let on_rejected = crate::js::builtin_with_captures(
         context, state, start_abort_cancel_on_rejected_fn, 1,
     );
-    let _ = JsPromise::from_object(cancel_promise)?.then(
-        Some(on_fulfilled),
-        Some(on_rejected),
-        context,
-    )?;
-    Ok(JsValue::undefined())
+
+    let promise = <crate::js::Types as JsTypes>::object_as_promise(&cancel_promise)
+        .ok_or_else(|| ec.new_type_error("cancel_promise is not a Promise"))?;
+    ec.perform_promise_then(promise, Some(on_fulfilled), Some(on_rejected), None)?;
+    Ok(ec.value_undefined())
 }
 
 fn finalize_abort_cancel_source(

@@ -611,33 +611,36 @@ field types use `GcCell<T>`.
 
 | Addition | What |
 |---|---|
-| `readablestream.rs` NativeFunction → captures | 7 closures converted to fn pointers with **zero ec_to_ctx**. Approach: convert called functions to EC+Completion (no bridging), use `ec.call()` for resolve/reject, use `ec` directly for controller ops. |
-| No-bridging rule hardened | §0 rule 2 updated: zero ec_to_ctx, context_as_ec, or completion_to_js_result anywhere in domain code. Bridges only in js_engine backend. |
-| Leaf functions → EC | `default_tee_error_branch`, `byte_tee_error_branch`, `finalize_abort_cancel_source` converted to `Completion` return + `ec` param. |
+| `readablestream.rs` NativeFunction → captures | 5 of 7 closures converted to fn pointers with **zero ec_to_ctx** (see next table). Approach: extract named fn pointers with EC+Completion, inline `create_iter_result_object` with ec methods, convert `start_abort_cancel_source` to EC, use `EcmascriptHost::get` for property access. |
+| `create_iter_result_object` inlined | Replaced `boa_engine::builtins::iterable::create_iter_result_object` with `create_plain_object` + `create_data_property` using EC trait methods. |
+| `start_abort_cancel_source` converted to EC | Converted from `(&mut Context) -> JsResult` to `(&mut dyn ExecutionContext) -> Completion`. Uses `readable_stream_cancel_ec`, `resolved_promise(ec)` and `perform_promise_then` internally. |
 
-**7 closures remaining in `readablestream.rs`** (6 from_copy_closure + 1 from_fn_ptr).
+**2 closures remaining in `readablestream.rs`** (both from_copy_closure).
 All blocked on deeper function conversions:
 
 | Closure | Blocker |
 |---|---|
-| from_iterable_pull | `state.stream()`, `JsObject::get(_, ctx)`, `JsNativeError` → need EC trait methods |
-| from_fn_ptr | `JsNativeError` → needs `ec.new_type_error()` |
-| sync_iter_result | `create_iter_result_object` — Boa builtin, no EC equivalent |
-| byte_tee_pull_byob on_fulfilled | `queue_internal_stream_microtask` — takes Context |
-| pipe_reaction | `pipe_to_on_promise_settled` — large function, takes Context |
-| abort_then_cancel (×2) | `start_abort_cancel_source` — uses `builtin_with_captures` + `JsPromise::then` which need Context |
+| byte_tee_pull_byob on_fulfilled (line 2385) | `queue_internal_stream_microtask` — takes Context |
+| pipe_reaction (line 4004) | `pipe_to_on_promise_settled` — large function, takes Context |
 
-**ec_to_ctx count: 11** (unchanged from original — all pre-existing in _ec wrappers
-and controller code, no new ones added).
+**ec_to_ctx count: 11** (pre-existing in _ec wrappers and controller code;
+no new ec_to_ctx added — the two remaining closures still use
+`NativeFunction::from_copy_closure_with_captures` directly).
 
 ### Next session: recommended order
 
-1. **Convert remaining 7 closures** — each blocked on specific function conversions (see table above).  Priority order:
-   - `from_fn_ptr` and `from_iterable_pull`: use `ec.new_type_error()`, `ec.get()` trait methods
-   - `abort_then_cancel` (×2): convert `start_abort_cancel_source` to EC
+1. **Convert remaining 2 closures** — both blocked on deeper function conversions:
    - `pipe_reaction`: convert `pipe_to_on_promise_settled` to EC
-   - `sync_iter_result`: inline `create_iter_result_object` with ec methods
    - `byte_tee_pull_byob_on_fulfilled`: convert `queue_internal_stream_microtask` to EC
+
+2. **Eliminate pre-existing 11 ec_to_ctx** — in `_ec` wrappers and controller code:
+   - `ReadableStream::pipe_through_ec`, `pipe_to_ec`, `tee_ec` — convert wrapped functions
+   - `construct_readable_stream_ec`, `readable_stream_from_iterable_ec` — convert wrapped functions
+   - Controller code (ResolvingFunctions) — use `ec.call()` pattern or PromiseResolvers
+
+3. **Eliminate `_ec` suffix from struct methods** — rename `readable_ec` → `readable`, etc.
+
+4. **Phase E — Conditional Types alias**.
 
 2. **Eliminate pre-existing 11 ec_to_ctx** — in `_ec` wrappers and controller code:
    - `ReadableStream::pipe_through_ec`, `pipe_to_ec`, `tee_ec` — convert wrapped functions
