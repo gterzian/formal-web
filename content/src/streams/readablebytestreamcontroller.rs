@@ -662,8 +662,8 @@ impl ReadableByteStreamController {
 
         let cancel_algorithm = self.cancel_algorithm.borrow().clone();
         let result = match cancel_algorithm {
-            Some(cancel_algorithm) => JsObject::from(cancel_algorithm.call(reason, ec)),
-            None => JsObject::from(resolved_promise(JsValue::undefined(), ec)?),
+            Some(cancel_algorithm) => cancel_algorithm.call(reason, ec)?,
+            None => resolved_promise(ec.value_undefined(), ec)?,
         };
         self.clear_algorithms();
         Ok(result)
@@ -1022,8 +1022,8 @@ impl ReadableByteStreamController {
         let controller_object = self.controller_object(ec)?;
         let pull_algorithm = self.pull_algorithm.borrow().clone();
         let pull_promise = match pull_algorithm {
-            Some(pull_algorithm) => JsObject::from(pull_algorithm.call(&controller_object, ec)),
-            None => JsObject::from(resolved_promise(JsValue::undefined(), ec)?),
+            Some(pull_algorithm) => pull_algorithm.call(&controller_object, ec)?,
+            None => resolved_promise(ec.value_undefined(), ec)?,
         };
 
         let captured_controller = self.clone();

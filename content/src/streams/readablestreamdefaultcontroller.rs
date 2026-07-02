@@ -8,23 +8,26 @@ use boa_gc::{Finalize, Trace};
 
 use crate::streams::SizeAlgorithm;
 use crate::webidl::bindings::create_interface_instance;
-use crate::webidl::{mark_promise_as_handled, promise_from_completion, resolved_promise};
+use crate::webidl::{mark_promise_as_handled, resolved_promise};
 use js_engine::gc::GcCell;
 use js_engine::gc::gc_cell_new;
 use js_engine::gc_struct;
 
 use super::readablestream::{
     ByteTeeState, ReadableStreamFromIterableState, TeeState,
-    readable_byte_stream_tee_cancel1_algorithm, readable_byte_stream_tee_cancel2_algorithm,
-    readable_byte_stream_tee_pull1_algorithm, readable_byte_stream_tee_pull2_algorithm,
+    readable_byte_stream_tee_cancel1_algorithm_ec,
+    readable_byte_stream_tee_cancel2_algorithm_ec,
+    readable_byte_stream_tee_pull1_algorithm_ec,
+    readable_byte_stream_tee_pull2_algorithm_ec,
     readable_stream_add_read_request, readable_stream_close, readable_stream_close_ec,
     readable_stream_default_tee_cancel1_algorithm, readable_stream_default_tee_cancel2_algorithm,
     readable_stream_default_tee_pull_algorithm, readable_stream_error,
-    readable_stream_from_iterable_cancel_algorithm, readable_stream_from_iterable_pull_algorithm,
+    readable_stream_from_iterable_cancel_algorithm_ec,
+    readable_stream_from_iterable_pull_algorithm_ec,
     readable_stream_fulfill_read_request, readable_stream_get_num_read_requests,
 };
 use super::transformstream::{
-    transform_stream_default_source_cancel_algorithm,
+    transform_stream_default_source_cancel_algorithm_ec,
     transform_stream_default_source_pull_algorithm,
 };
 use super::{
@@ -55,49 +58,45 @@ impl PullAlgorithm {
         &self,
         controller_object: &JsObject,
         ec: &mut dyn ExecutionContext<crate::js::Types>,
-    ) -> JsPromise {
-        // SAFETY: ec is backed by BoaContext repr(transparent) over Context.
-        // readable_stream_from_iterable_pull_algorithm and tee algorithms still take Context.
-        let context = unsafe { js_engine::boa::ec_to_ctx(ec) };
+    ) -> Completion<JsObject, crate::js::Types> {
         match self {
-            Self::ReturnUndefined => promise_from_completion(Ok(JsValue::undefined()), ec),
+            Self::ReturnUndefined => {
+                resolved_promise(ec.value_undefined(), ec)
+            }
             Self::JavaScript(callback) => {
                 let arg = JsValue::from(controller_object.clone());
-                promise_from_completion(
-                    crate::js::completion_to_js_result(callback.call(&[arg], ec)),
-                    ec,
-                )
+                let result = callback.call(&[arg], ec)?;
+                resolved_promise(result, ec)
             }
-            Self::ReadableStreamFromIterable(state) => promise_from_completion(
-                readable_stream_from_iterable_pull_algorithm(state.clone(), context)
-                    .map(JsValue::from),
-                ec,
-            ),
+            Self::ReadableStreamFromIterable(state) => {
+                readable_stream_from_iterable_pull_algorithm_ec(state.clone(), ec)
+            }
             Self::ReadableStreamDefaultTee {
                 tee_state,
                 clone_for_branch2,
-            } => promise_from_completion(
-                readable_stream_default_tee_pull_algorithm(
+            } => {
+                let value = readable_stream_default_tee_pull_algorithm(
                     tee_state.clone(),
                     *clone_for_branch2,
-                    context,
-                ),
-                ec,
-            ),
-            Self::ReadableByteStreamTeeBranch1(tee_state) => promise_from_completion(
-                readable_byte_stream_tee_pull1_algorithm(tee_state.clone(), context),
-                ec,
-            ),
-            Self::ReadableByteStreamTeeBranch2(tee_state) => promise_from_completion(
-                readable_byte_stream_tee_pull2_algorithm(tee_state.clone(), context),
-                ec,
-            ),
-            Self::TransformStreamDefaultSourcePull(stream) => promise_from_completion(
-                crate::js::completion_to_js_result(
-                    transform_stream_default_source_pull_algorithm(stream.clone(), ec).map(JsValue::from),
-                ),
-                ec,
-            ),
+                    ec,
+                )?;
+                resolved_promise(value, ec)
+            }
+            Self::ReadableByteStreamTeeBranch1(tee_state) => {
+                let value = readable_byte_stream_tee_pull1_algorithm_ec(
+                    tee_state.clone(), ec,
+                )?;
+                resolved_promise(value, ec)
+            }
+            Self::ReadableByteStreamTeeBranch2(tee_state) => {
+                let value = readable_byte_stream_tee_pull2_algorithm_ec(
+                    tee_state.clone(), ec,
+                )?;
+                resolved_promise(value, ec)
+            }
+            Self::TransformStreamDefaultSourcePull(stream) => {
+                transform_stream_default_source_pull_algorithm(stream.clone(), ec)
+            }
         }
     }
 }
@@ -121,44 +120,43 @@ impl CancelAlgorithm {
         &self,
         reason: JsValue,
         ec: &mut dyn ExecutionContext<crate::js::Types>,
-    ) -> JsPromise {
-        // SAFETY: ec is backed by BoaContext repr(transparent) over Context.
-        // readable_stream_from_iterable_cancel_algorithm and tee algorithms still take Context.
-        let context = unsafe { js_engine::boa::ec_to_ctx(ec) };
+    ) -> Completion<JsObject, crate::js::Types> {
         match self {
-            Self::ReturnUndefined => promise_from_completion(Ok(JsValue::undefined()), ec),
-            Self::JavaScript(callback) => promise_from_completion(
-                crate::js::completion_to_js_result(callback.call(&[reason], ec)),
-                ec,
-            ),
-            Self::ReadableStreamFromIterable(state) => promise_from_completion(
-                readable_stream_from_iterable_cancel_algorithm(state.clone(), reason, context)
-                    .map(JsValue::from),
-                ec,
-            ),
-            Self::ReadableStreamDefaultTeeBranch1(tee_state) => promise_from_completion(
-                readable_stream_default_tee_cancel1_algorithm(tee_state.clone(), reason, context),
-                ec,
-            ),
-            Self::ReadableStreamDefaultTeeBranch2(tee_state) => promise_from_completion(
-                readable_stream_default_tee_cancel2_algorithm(tee_state.clone(), reason, context),
-                ec,
-            ),
-            Self::ReadableByteStreamTeeBranch1(tee_state) => promise_from_completion(
-                readable_byte_stream_tee_cancel1_algorithm(tee_state.clone(), reason, context)
-                    .map(JsValue::from),
-                ec,
-            ),
-            Self::ReadableByteStreamTeeBranch2(tee_state) => promise_from_completion(
-                readable_byte_stream_tee_cancel2_algorithm(tee_state.clone(), reason, context)
-                    .map(JsValue::from),
-                ec,
-            ),
-            Self::TransformStreamDefaultSourceCancel(stream) => promise_from_completion(
-                transform_stream_default_source_cancel_algorithm(stream.clone(), reason, context)
-                    .map(JsValue::from),
-                ec,
-            ),
+            Self::ReturnUndefined => resolved_promise(ec.value_undefined(), ec),
+            Self::JavaScript(callback) => {
+                let result = callback.call(&[reason], ec)?;
+                resolved_promise(result, ec)
+            }
+            Self::ReadableStreamFromIterable(state) => {
+                readable_stream_from_iterable_cancel_algorithm_ec(
+                    state.clone(), reason, ec,
+                )
+            }
+            Self::ReadableStreamDefaultTeeBranch1(tee_state) => {
+                readable_stream_default_tee_cancel1_algorithm(
+                    tee_state.clone(), reason, ec,
+                )
+            }
+            Self::ReadableStreamDefaultTeeBranch2(tee_state) => {
+                readable_stream_default_tee_cancel2_algorithm(
+                    tee_state.clone(), reason, ec,
+                )
+            }
+            Self::ReadableByteStreamTeeBranch1(tee_state) => {
+                readable_byte_stream_tee_cancel1_algorithm_ec(
+                    tee_state.clone(), reason, ec,
+                )
+            }
+            Self::ReadableByteStreamTeeBranch2(tee_state) => {
+                readable_byte_stream_tee_cancel2_algorithm_ec(
+                    tee_state.clone(), reason, ec,
+                )
+            }
+            Self::TransformStreamDefaultSourceCancel(stream) => {
+                transform_stream_default_source_cancel_algorithm_ec(
+                    stream.clone(), reason, ec,
+                )
+            }
         }
     }
 }
@@ -364,8 +362,8 @@ impl ReadableStreamDefaultController {
 
         // Step 2: "Let result be the result of performing this.[[cancelAlgorithm]], passing reason."
         let result = match cancel_algorithm {
-            Some(cancel_algorithm) => JsObject::from(cancel_algorithm.call(reason, ec)),
-            None => resolved_promise(JsValue::undefined(), ec)?,
+            Some(cancel_algorithm) => cancel_algorithm.call(reason, ec)?,
+            None => resolved_promise(ec.value_undefined(), ec)?,
         };
 
         // Step 3: "Perform ! ReadableStreamDefaultControllerClearAlgorithms(this)."
@@ -469,8 +467,8 @@ impl ReadableStreamDefaultController {
         let controller_object = self.controller_object_ec(ec)?;
         let pull_algorithm = self.pull_algorithm.borrow().clone();
         let pull_promise: JsObject = match pull_algorithm {
-            Some(pull_algorithm) => JsObject::from(pull_algorithm.call(&controller_object, ec)),
-            None => JsObject::from(promise_from_completion(Ok(JsValue::undefined()), ec)),
+            Some(pull_algorithm) => pull_algorithm.call(&controller_object, ec)?,
+            None => resolved_promise(ec.value_undefined(), ec)?,
         };
 
         let pull_js_promise =

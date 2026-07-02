@@ -629,7 +629,7 @@ Concrete per-phase validation requirements:
 | Blocker | Phase | What | Effort | Status |
 |---|---|---|---|---|
 | **Blocker 1** — Dispatch result-model mismatch | **Phase D** | Convert `EventDispatchHost` trait methods from `JsResult` to `Completion`. Delete `ContextEventDispatchHost` (both copies). Eliminate `js_result_to_completion` bridges from the dispatch path. | Small | ✅ Done — `EcDispatchHost` is the sole dispatch host; `ContextEventDispatchHost` deleted from both locations. |
-| **Blocker 4** — Streams domain exposes `Context` | **Phase S** | Convert streams domain methods from `&mut Context` to `&mut dyn ExecutionContext<T>`. **Bindings complete** — all streams binding files at 0 ec_to_ctx. **Typed array operations converted** — 11 new trait methods added, all callers converted. **PipeToState fully converted** — ~20 methods, pipe entry points, and helper functions all now take EC directly. **Remaining:** Tee closures (byte_tee, default_tee) and from_iterator still pass through Context; ~50 domain-internal calls remain (stream_slot/controller_object JsResult methods, microtask/tee). | Large | 🔶 Pipe conversion complete. |
+| **Blocker 4** — Streams domain exposes `Context` | **Phase S** | Convert streams domain methods from `&mut Context` to `&mut dyn ExecutionContext<T>`. **Bindings complete** — all streams binding files at 0 ec_to_ctx. **Typed array operations converted** — 11 new trait methods added, all callers converted. **PipeToState fully converted** — ~20 methods, pipe entry points, and helper functions all now take EC directly. **PullAlgorithm::call / CancelAlgorithm::call** now return `Completion<JsObject, Types>` with zero ec_to_ctx. **Default tee functions** (`readable_stream_default_tee_pull_algorithm`, `_cancel1`, `_cancel2`) converted to EC. **`_ec` wrappers** created for remaining Context-based functions (byte_tee pull/cancel, from_iterable, transform_source_cancel). | Large | ✅ `PullAlgorithm::call`/`CancelAlgorithm::call` clean. Default tee converted. Byte tee/from-iterable/transform have `_ec` wrappers. Deep JsResult→Completion conversion remains. |
 | **Blocker 2** — Platform-object state through Boa access paths | **Phase P** | Create content-owned host-data-backed store for platform-object bookkeeping, OR add `_ec` wrappers for remaining `&Context`-taking functions. `store_host_any` / `get_host_any` already validated. `realm_global_object()` trait method on `ExecutionContext` provides generic access to the global object (§8.1.3). `with_global_scope_ec` in `platform_objects.rs` combines `realm_global_object()` + `with_object_any` + `downcast_ref::<Window>()` — zero `ec_to_ctx`. WindowProxy needs `JsProxyBuilder` which has no trait equivalent yet — may need `create_proxy` on `ExecutionContext`. | Medium | 🔶 platform_objects.rs 8→0 ec_to_ctx. Remaining: abort.rs (3), windowproxy.rs (2), singletons (2). |
 | **Blocker 5** — Subsystem entry points assume Boa | **Phase W** | Convert structured clone, Web IDL promise helpers, async iterable helpers, and Wasm to take `ExecutionContext<T>`. Same `_ec` wrapper pattern as Phase S/P — no new generic interfaces needed. `buffer_source.rs` now covered by typed array trait methods (T1). | Medium | 🔶 promise.rs 9→3. Remaining: JsError helpers (3), structured clone (1), async iterable (1), wasm (6), windowproxy (2). |
 | **Blocker 3** — Engine ownership is structurally Boa-specific | **Phase E** | Land compile-time `Types` / `Engine` aliases. Backend selection becomes a `#[cfg]` choice. Validated by `cargo check` with both feature sets. | Large | Blocked on D, S, P, W |
@@ -704,8 +704,12 @@ from `readablestream.rs`.
   `set_up_readable_stream_default_controller` (dead), `extract_source_method`
   (converted from Context to EC)
 
-**~37 ec_to_ctx remain** across streams tee/transform, platform objects,
-wasm namespace, structured clone, webidl helpers.
+**Phase S — default tee pull/cancel converted to EC; PullAlgorithm::call and
+CancelAlgorithm::call now return `Completion<JsObject, Types>` with zero ec_to_ctx.
+`_ec` wrappers bridge remaining Context-based byte_tee/from-iterable/transform functions.**
+
+**~30-35 ec_to_ctx remain** across byte tee internals, transform stream,
+platform objects, wasm namespace, structured clone, webidl helpers.
 
 ### Next session: recommended order
 

@@ -658,19 +658,17 @@ fn default_tee_error_branch(
 pub(crate) fn readable_stream_default_tee_pull_algorithm(
     tee_state: GcCell<TeeState>,
     clone_for_branch2: bool,
-    context: &mut Context,
-) -> JsResult<JsValue> {
+    ec: &mut dyn ExecutionContext<crate::js::Types>,
+) -> Completion<JsValue, crate::js::Types> {
     // Step 13.1: "If reading is true,"
     {
         let mut tee_state = tee_state.borrow_mut();
         if tee_state.reading {
             // Step 13.1.1: "Set readAgain to true."
             tee_state.read_again = true;
-
             // Step 13.1.2: "Return a promise resolved with undefined."
-            return Ok(JsValue::undefined());
+            return Ok(ec.value_undefined());
         }
-
         // Step 13.2: "Set reading to true."
         tee_state.reading = true;
     }
@@ -683,15 +681,13 @@ pub(crate) fn readable_stream_default_tee_pull_algorithm(
     let reader = tee_state.borrow().reader.clone();
 
     // Step 13.4: "Perform ! ReadableStreamDefaultReaderRead(reader, readRequest)."
-    if let Err(error) = crate::js::completion_to_js_result(
-        reader.read_with_request(read_request, js_engine::boa::context_as_ec(context)),
-    ) {
+    if let Err(error) = reader.read_with_request(read_request, ec) {
         tee_state.borrow_mut().reading = false;
         return Err(error);
     }
 
     // Step 13.5: "Return a promise resolved with undefined."
-    Ok(JsValue::undefined())
+    Ok(ec.value_undefined())
 }
 
 /// <https://streams.spec.whatwg.org/#abstract-opdef-readablestreamdefaulttee>
@@ -801,19 +797,29 @@ pub(crate) fn readable_stream_default_tee_read_request_chunk_steps(
             };
 
             if should_read_again {
-                let pull_promise = promise_from_completion(
-                    readable_stream_default_tee_pull_algorithm(
-                        tee_state.clone(),
-                        clone_for_branch2,
-                        context,
-                    ),
-                    js_engine::boa::context_as_ec(context),
-                );
-                mark_promise_as_handled(
-                    &JsObject::from(pull_promise),
-                    js_engine::boa::context_as_ec(context),
-                )
-                .map_err(boa_engine::JsError::from_opaque)?;
+                let ec = js_engine::boa::context_as_ec(context);
+                match readable_stream_default_tee_pull_algorithm(
+                    tee_state.clone(),
+                    clone_for_branch2,
+                    ec,
+                ) {
+                    Ok(value) => {
+                        let pull_promise = resolved_promise(value, ec);
+                        if let Ok(pull_promise) = pull_promise {
+                            let _ = mark_promise_as_handled(&pull_promise, ec).map_err(|e| {
+                                boa_engine::JsError::from_opaque(e)
+                            });
+                        }
+                    }
+                    Err(error) => {
+                        error!("[readable-stream] default tee pull algorithm failed");
+                        let rejected = rejected_promise(error, ec)
+                            .unwrap_or_else(|_| ec.realm_global_object());
+                        let _ = mark_promise_as_handled(&rejected, ec).map_err(|e| {
+                            boa_engine::JsError::from_opaque(e)
+                        });
+                    }
+                }
             }
 
             Ok(())
@@ -876,8 +882,8 @@ pub(crate) fn readable_stream_default_tee_read_request_error_steps(
 pub(crate) fn readable_stream_default_tee_cancel1_algorithm(
     tee_state: GcCell<TeeState>,
     reason: JsValue,
-    context: &mut Context,
-) -> JsResult<JsValue> {
+    ec: &mut dyn ExecutionContext<crate::js::Types>,
+) -> Completion<JsObject, crate::js::Types> {
     let (source_stream, cancel_promise, canceled2, reason1, reason2, cancel_resolvers) = {
         let mut tee_state = tee_state.borrow_mut();
 
@@ -899,31 +905,32 @@ pub(crate) fn readable_stream_default_tee_cancel1_algorithm(
     // Step 14.3: "If canceled2 is true,"
     if canceled2 {
         // Step 14.3.1: "Let compositeReason be ! CreateArrayFromList(« reason1, reason2 »)."
-        let composite_reason =
-            JsArray::from_iter([reason1, reason2].into_iter().map(JsValue::from), context);
+        let composite_reason = {
+            let array = ec.create_empty_array();
+            ec.array_push(&array, reason1)?;
+            ec.array_push(&array, reason2)?;
+            <crate::js::Types as JsTypes>::value_from_object(array)
+        };
 
         // Step 14.3.2: "Let cancelResult be ! ReadableStreamCancel(stream, compositeReason)."
         let cancel_result =
-            readable_stream_cancel(source_stream, JsValue::from(composite_reason), context)?;
+            readable_stream_cancel_ec(source_stream, composite_reason, ec)?;
 
         // Step 14.3.3: "Resolve cancelPromise with cancelResult."
-        cancel_resolvers.resolve.call(
-            &JsValue::undefined(),
-            &[JsValue::from(cancel_result)],
-            context,
-        )?;
+        let resolve_val = <crate::js::Types as JsTypes>::value_from_object(cancel_result);
+        cancel_resolvers.resolve(resolve_val, ec)?;
     }
 
     // Step 14.4: "Return cancelPromise."
-    Ok(JsValue::from(cancel_promise))
+    Ok(cancel_promise)
 }
 
 /// <https://streams.spec.whatwg.org/#abstract-opdef-readablestreamdefaulttee>
 pub(crate) fn readable_stream_default_tee_cancel2_algorithm(
     tee_state: GcCell<TeeState>,
     reason: JsValue,
-    context: &mut Context,
-) -> JsResult<JsValue> {
+    ec: &mut dyn ExecutionContext<crate::js::Types>,
+) -> Completion<JsObject, crate::js::Types> {
     let (source_stream, cancel_promise, canceled1, reason1, reason2, cancel_resolvers) = {
         let mut tee_state = tee_state.borrow_mut();
 
@@ -945,23 +952,24 @@ pub(crate) fn readable_stream_default_tee_cancel2_algorithm(
     // Step 15.3: "If canceled1 is true,"
     if canceled1 {
         // Step 15.3.1: "Let compositeReason be ! CreateArrayFromList(« reason1, reason2 »)."
-        let composite_reason =
-            JsArray::from_iter([reason1, reason2].into_iter().map(JsValue::from), context);
+        let composite_reason = {
+            let array = ec.create_empty_array();
+            ec.array_push(&array, reason1)?;
+            ec.array_push(&array, reason2)?;
+            <crate::js::Types as JsTypes>::value_from_object(array)
+        };
 
         // Step 15.3.2: "Let cancelResult be ! ReadableStreamCancel(stream, compositeReason)."
         let cancel_result =
-            readable_stream_cancel(source_stream, JsValue::from(composite_reason), context)?;
+            readable_stream_cancel_ec(source_stream, composite_reason, ec)?;
 
         // Step 15.3.3: "Resolve cancelPromise with cancelResult."
-        cancel_resolvers.resolve.call(
-            &JsValue::undefined(),
-            &[JsValue::from(cancel_result)],
-            context,
-        )?;
+        let resolve_val = <crate::js::Types as JsTypes>::value_from_object(cancel_result);
+        cancel_resolvers.resolve(resolve_val, ec)?;
     }
 
     // Step 15.4: "Return cancelPromise."
-    Ok(JsValue::from(cancel_promise))
+    Ok(cancel_promise)
 }
 
 #[derive(Clone, Trace, Finalize)]
@@ -1294,6 +1302,75 @@ pub(crate) fn readable_stream_from_iterable_pull_algorithm(
     Ok(JsPromise::from_object(next_promise)?
         .then(Some(on_fulfilled), None, context)?
         .into())
+}
+
+/// EC variant: bridges Context-based implementation.
+pub(crate) fn readable_stream_from_iterable_pull_algorithm_ec(
+    state: ReadableStreamFromIterableState,
+    ec: &mut dyn ExecutionContext<crate::js::Types>,
+) -> Completion<JsObject, crate::js::Types> {
+    // SAFETY: ec is backed by BoaContext repr(transparent) over Context.
+    let context = unsafe { js_engine::boa::ec_to_ctx(ec) };
+    readable_stream_from_iterable_pull_algorithm(state, context)
+        .map_err(|e| e.into_opaque(context).unwrap_or(JsValue::undefined()))
+}
+
+/// EC variant: bridges Context-based implementation.
+pub(crate) fn readable_stream_from_iterable_cancel_algorithm_ec(
+    state: ReadableStreamFromIterableState,
+    reason: JsValue,
+    ec: &mut dyn ExecutionContext<crate::js::Types>,
+) -> Completion<JsObject, crate::js::Types> {
+    // SAFETY: ec is backed by BoaContext repr(transparent) over Context.
+    let context = unsafe { js_engine::boa::ec_to_ctx(ec) };
+    readable_stream_from_iterable_cancel_algorithm(state, reason, context)
+        .map_err(|e| e.into_opaque(context).unwrap_or(JsValue::undefined()))
+}
+
+/// EC variant: bridges Context-based implementation.
+pub(crate) fn readable_byte_stream_tee_pull1_algorithm_ec(
+    tee_state: GcCell<ByteTeeState>,
+    ec: &mut dyn ExecutionContext<crate::js::Types>,
+) -> Completion<JsValue, crate::js::Types> {
+    // SAFETY: ec is backed by BoaContext repr(transparent) over Context.
+    let context = unsafe { js_engine::boa::ec_to_ctx(ec) };
+    readable_byte_stream_tee_pull1_algorithm(tee_state, context)
+        .map_err(|e| e.into_opaque(context).unwrap_or(JsValue::undefined()))
+}
+
+/// EC variant: bridges Context-based implementation.
+pub(crate) fn readable_byte_stream_tee_pull2_algorithm_ec(
+    tee_state: GcCell<ByteTeeState>,
+    ec: &mut dyn ExecutionContext<crate::js::Types>,
+) -> Completion<JsValue, crate::js::Types> {
+    // SAFETY: ec is backed by BoaContext repr(transparent) over Context.
+    let context = unsafe { js_engine::boa::ec_to_ctx(ec) };
+    readable_byte_stream_tee_pull2_algorithm(tee_state, context)
+        .map_err(|e| e.into_opaque(context).unwrap_or(JsValue::undefined()))
+}
+
+/// EC variant: bridges Context-based implementation.
+pub(crate) fn readable_byte_stream_tee_cancel1_algorithm_ec(
+    tee_state: GcCell<ByteTeeState>,
+    reason: JsValue,
+    ec: &mut dyn ExecutionContext<crate::js::Types>,
+) -> Completion<JsObject, crate::js::Types> {
+    // SAFETY: ec is backed by BoaContext repr(transparent) over Context.
+    let context = unsafe { js_engine::boa::ec_to_ctx(ec) };
+    readable_byte_stream_tee_cancel1_algorithm(tee_state, reason, context)
+        .map_err(|e| e.into_opaque(context).unwrap_or(JsValue::undefined()))
+}
+
+/// EC variant: bridges Context-based implementation.
+pub(crate) fn readable_byte_stream_tee_cancel2_algorithm_ec(
+    tee_state: GcCell<ByteTeeState>,
+    reason: JsValue,
+    ec: &mut dyn ExecutionContext<crate::js::Types>,
+) -> Completion<JsObject, crate::js::Types> {
+    // SAFETY: ec is backed by BoaContext repr(transparent) over Context.
+    let context = unsafe { js_engine::boa::ec_to_ctx(ec) };
+    readable_byte_stream_tee_cancel2_algorithm(tee_state, reason, context)
+        .map_err(|e| e.into_opaque(context).unwrap_or(JsValue::undefined()))
 }
 
 fn readable_stream_from_iterable_pull_on_fulfilled_fn(
