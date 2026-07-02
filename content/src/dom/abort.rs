@@ -66,7 +66,7 @@ impl AbortAlgorithm {
                 }
             }
             Self::ReadableStreamPipeTo { state } => {
-                state.run_abort_algorithm_ec(host.ec())?;
+                state.run_abort_algorithm(host.ec())?;
             }
         }
 

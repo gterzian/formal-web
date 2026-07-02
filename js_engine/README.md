@@ -629,79 +629,77 @@ Concrete per-phase validation requirements:
 | Blocker | Phase | What | Effort | Status |
 |---|---|---|---|---|
 | **Blocker 1** — Dispatch result-model mismatch | **Phase D** | Convert `EventDispatchHost` trait methods from `JsResult` to `Completion`. Delete `ContextEventDispatchHost` (both copies). Eliminate `js_result_to_completion` bridges from the dispatch path. | Small | ✅ Done — `EcDispatchHost` is the sole dispatch host; `ContextEventDispatchHost` deleted from both locations. |
-| **Blocker 4** — Streams domain exposes `Context` | **Phase S** | Convert streams domain methods from `&mut Context` to `&mut dyn ExecutionContext<T>`. **Bindings complete** — all streams binding files at 0 ec_to_ctx. **Typed array operations converted** — 11 new trait methods added, all callers converted. **NativeFunction closures in progress** — 7 of 14 converted to fn pointers with zero ec_to_ctx; 7 remain blocked on deeper function conversions (see Current state table). ~70 domain-internal calls remain (stream_slot/controller_object JsResult methods, microtask/tee). | Large | 🔶 Bindings + typed arrays done. Closures in progress. |
+| **Blocker 4** — Streams domain exposes `Context` | **Phase S** | Convert streams domain methods from `&mut Context` to `&mut dyn ExecutionContext<T>`. **Bindings complete** — all streams binding files at 0 ec_to_ctx. **Typed array operations converted** — 11 new trait methods added, all callers converted. **PipeToState fully converted** — ~20 methods, pipe entry points, and helper functions all now take EC directly. **Remaining:** Tee closures (byte_tee, default_tee) and from_iterator still pass through Context; ~50 domain-internal calls remain (stream_slot/controller_object JsResult methods, microtask/tee). | Large | 🔶 Pipe conversion complete. |
 | **Blocker 2** — Platform-object state through Boa access paths | **Phase P** | Create content-owned host-data-backed store for platform-object bookkeeping, OR add `_ec` wrappers for remaining `&Context`-taking functions. `store_host_any` / `get_host_any` already validated. `realm_global_object()` trait method on `ExecutionContext` provides generic access to the global object (§8.1.3). `with_global_scope_ec` in `platform_objects.rs` combines `realm_global_object()` + `with_object_any` + `downcast_ref::<Window>()` — zero `ec_to_ctx`. WindowProxy needs `JsProxyBuilder` which has no trait equivalent yet — may need `create_proxy` on `ExecutionContext`. | Medium | 🔶 platform_objects.rs 8→0 ec_to_ctx. Remaining: abort.rs (3), windowproxy.rs (2), singletons (2). |
 | **Blocker 5** — Subsystem entry points assume Boa | **Phase W** | Convert structured clone, Web IDL promise helpers, async iterable helpers, and Wasm to take `ExecutionContext<T>`. Same `_ec` wrapper pattern as Phase S/P — no new generic interfaces needed. `buffer_source.rs` now covered by typed array trait methods (T1). | Medium | 🔶 promise.rs 9→3. Remaining: JsError helpers (3), structured clone (1), async iterable (1), wasm (6), windowproxy (2). |
 | **Blocker 3** — Engine ownership is structurally Boa-specific | **Phase E** | Land compile-time `Types` / `Engine` aliases. Backend selection becomes a `#[cfg]` choice. Validated by `cargo check` with both feature sets. | Large | Blocked on D, S, P, W |
 | **Blocker 6** — Global-scope helpers are implicitly Boa | **Phase G** | Move `document_creation_url`, `with_global_scope`, etc. behind content-owned query helpers. | Small | Part of Phase P |
 
-### Current state (updated 2026-07-03)
+### Current state (updated 2026-07-04)
 
 **Phases A–D, S1–S10, T1–T2, W1–W2, G1–G3, C2–C3, B1, R1, R2 complete.** All binding files
 at 0 ec_to_ctx.  All 34 struct/enum definitions use `#[gc_struct]`.  All domain
 field types use `GcCell<T>`.
 
+**PipeToState fully converted to EC** — All ~20 PipeToState methods converted from
+`&mut Context` → `&mut dyn ExecutionContext<T>`: `on_read_request_settled`,
+`reject_and_finalize_with_error`, `reject_and_finalize_with_reason`,
+`run_abort_algorithm`, `wait_for_writer_ready`, `read_chunk`, `write_chunk`,
+`wait_on_pending_write`, `check_and_propagate_errors_forward`,
+`check_and_propagate_errors_backward`, `check_and_propagate_closing_forward`,
+`check_and_propagate_closing_backward`, `shutdown`, `perform_action`, `finalize`,
+`update_pending_shutdown_action`, `shutdown_action_promise_state`,
+`prune_settled_pending_writes`, `append_reaction`.
+
+BoA-specific patterns replaced:
+| Old | New |
+|---|---|
+| `JsPromise::from_object(x)?.state()` | `ec.promise_state(&x)?` |
+| `JsPromise::from_object(x)?.then(...)` | `ec.perform_promise_then(...)` |
+| `JsNativeError::typ().with_message(msg)` | `ec.new_type_error(msg)` |
+| `promise_object.has_property(key, ctx)` | `ec.has_property(obj, prop_key)?` |
+| `promise_object.get(key, ctx)?.to_boolean()` | `ec.to_boolean(&ec.get(obj, prop_key)?)` |
+| `resolvers.resolve.call(&u, &[v], ctx)` | `ec.call(&resolve.into(), &u, &[v])` |
+| `JsPromise::new_pending(ctx)` | `ec.new_promise_pending()?` |
+| `NativeFunction::from_copy_closure_with_captures(...)` | `ec.create_builtin_function(...)` |
+
+**Entry points converted** — `ReadableStream::pipe_to` and `ReadableStream::pipe_through`
+now take `&mut dyn ExecutionContext<T>` directly. `pipe_to_ec`/`pipe_through_ec`
+wrappers deleted. JS bindings call `pipe_to`/`pipe_through` directly.
+
+**`readable_stream_pipe_to` converted** — renamed to `readable_stream_pipe_to_ec`
+(takes EC). Callers updated.
+
+**`run_abort_algorithm` converted** — now takes EC. Legacy Context variant
+`run_abort_algorithm_ctx` provided. `abort.rs` callers updated.
+
+**Helper functions converted** — `pipe_to_on_promise_settled_ec`,
+`pipe_read_result_done_ec`, `abort_destination_then_cancel_source_ec`,
+`normalize_pipe_options_ec`, `extract_abort_signal_ec`,
+`promise_rejected_with_reason_ec`, `promise_rejected_with_type_error_ec`,
+`promise_rejected_with_error_ec`, `reject_promise_with_error_ec`,
+`wait_for_all_promises_ec` (all EC-based).
+
+**`WaitForAllState` and `AbortThenCancelState` use `PromiseResolvers`** —
+both now use `js_engine::PromiseResolvers<crate::js::Types>` instead of
+Boa-specific `ResolvingFunctions`.
+
 **POC test suite: 81/81 pass on Boa.**
 
-**`builtin_with_captures(ec, ...)` now zero bridges** — uses
-`ec.create_builtin_function_from_behaviour(Box::new(Captured { ... }))`
-through the [`Behaviour`] trait object.  No `ec_to_ctx`, no unsafe.
-The legacy Context-taking wrapper is renamed to `builtin_with_captures_ctx`.
-
-**`_ec` suffix eliminated for `builtin_with_captures` / `builtin_callback`.**
-`builtin_with_captures` + `builtin_callback` now take `&mut dyn ExecutionContext<T>`
-as their canonical forms.  `builtin_with_captures_ctx` + `builtin_callback_ctx`
-are the legacy Context-taking variants.
-
-**Stream controller closures converted to EC** — process_close, process_write,
-pull_steps, setup, error_steps, advance_queue closures in both
-`writablestreamdefaultcontroller.rs` and `readablestreamdefaultcontroller.rs`
-now use EC directly (their inner calls already took EC — the ec_to_ctx +
-context_as_ec bridges were a double-roundtrip no-op).
-
-**Tee close_steps and error_steps converted to EC** —
-`readable_stream_default_tee_read_request_close_steps`,
-`readable_byte_stream_tee_default_reader_close_steps`, and both
-`error_steps` variants now take EC directly; 4 `ec_to_ctx` + 4
-`context_as_ec` bridges eliminated in `readablestreamsupport.rs` closures.
-`byte_tee_close_branch` and `default_tee_close_branch` converted; 2
-remaining callers in `chunk_steps` use temporary `context_as_ec` bridge
-(those functions still need full conversion due to internal use of
-`queue_internal_stream_microtask`).
-
-**1 closure remaining in `readablestream.rs`** (from_copy_closure):
-
-| Closure | Blocker |
-|---|---|
-| byte_tee_pull_byob on_fulfilled | Deeper tee algorithm conversions — `clone_as_uint8_array`, `byte_tee_enqueue_to_branch`, `readable_stream_cancel` (all Context) |
-
-`pipe_reaction` is now fully addressed: `pipe_reaction_fn` (fn pointer) + `pipe_reaction_function_ec` (using `builtin_with_captures_ec`) provide the EC alternative. The old `NativeFunction::from_copy_closure_with_captures` in `pipe_reaction_function` remains for the Context code path.
-
-**PipeToState EC wrappers:** ✅ All 18 methods have `_ec` wrappers. `pipe_to_on_promise_settled_ec`, `pipe_reaction_fn`, `pipe_reaction_function_ec`, `pipe_read_result_done_ec` all exist.
-
-**`queue_internal_stream_microtask_ec`:** ✅ Added with `enqueue_job_with_realm`. All 3 `ReadableStreamPipeTo` closures in `readablestreamsupport.rs` now use it + `on_read_request_settled_ec`, eliminating 3 ec_to_ctx bridges.
-
-**Remaining _ec wrappers blocked on deeper conversion:** `pipe_through_ec`, `pipe_to_ec`, `cancel_ec`, `get_reader_ec` — all delegate to Context-based counterparts that need conversion first. `readable_ec` — has a Context-based namesake (`readable()`) that would collide.
+**Remaining work:** `wait_for_all_promises_ec` should move to webidl (implements
+Web IDL "wait for all"). Phase E (conditional Types alias) remains.
 
 ### Next session: recommended order
 
-1. **Convert PipeToState impl to EC** — With `promise_state()` now available on the EC trait, convert all ~20 PipeToState methods from `&mut Context` → `&mut dyn ExecutionContext<T>`, replacing:
-   - `JsPromise::from_object(x)?.state()` → `ec.promise_state(&x)?`
-   - `JsPromise::from_object(x)?.then(...)` → `ec.perform_promise_then(...)`
-   - `JsNativeError::typ().with_message(msg)` → `ec.new_type_error(msg)`
-   - `result_object.has_property(js_string!("k"), ctx)` → `ec.has_property(obj, "k")`
-   - `result_object.get(js_string!("k"), ctx)?.to_boolean()` → `ec.to_boolean(&ec.get(obj, "k")?)`
-   - `resolvers.resolve.call(&undefined, &[v], ctx)` → `ec.call(&resolve.into(), &ec.value_undefined(), &[v])`
-   - `JsPromise::new_pending(ctx)` → `ec.new_promise_pending()`
-   - `NativeFunction::from_copy_closure_with_captures(...)` → fn pointer + `builtin_with_captures_ec`
+1. **Move `wait_for_all_promises_ec` to webidl** — The function implements the Web IDL "wait for all" algorithm. Move it to `content/src/webidl/promise.rs` and update imports.
 
-2. **Convert `readable_stream_pipe_to` to EC** — uses PipeToState methods + `acquire_readable_stream_default_reader`, `acquire_writable_stream_default_writer`, `readable_stream_default_reader_release` (all have EC variants or already take EC).
+2. **Convert remaining `readable_stream_pipe_to` callers** — The JS bindings in `content/src/js/bindings/streams/readablestream.rs` already call `pipe_to`/`pipe_through` directly (EC versions). Verify all callers are updated.
 
-3. **Convert entry points** (`ReadableStream::pipe_to`, `pipe_through`) — call `readable_stream_pipe_to`, `normalize_pipe_options`, `extract_abort_signal`.
+3. **Phase E — Conditional Types alias** — Land compile-time `Types` / `Engine` aliases. Backend selection becomes a `#[cfg]` choice.
 
-4. **Update callers** — `abort.rs` (`run_abort_algorithm_ec` → `run_abort_algorithm`), `readablestreamsupport.rs` (ReadRequest closures), JS bindings (`pipe_to_ec` → `pipe_to`), `queue_internal_stream_microtask` → EC closure variant.
+4. **Convert remaining Context-based pipe helpers** — `promise_rejected_with_reason`, `promise_rejected_with_type_error`, `promise_rejected_with_error` (Context versions) can be removed if no external callers remain.
 
-5. **Phase E — Conditional Types alias**.
+5. **Prune `_ec`/`_ctx` wrappers** — `run_abort_algorithm_ctx`, `readable_stream_pipe_to` (Context version, now dead), `pipe_reaction_function` (dead).
 
 ### Working notes
 

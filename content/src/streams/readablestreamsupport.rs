@@ -1,5 +1,5 @@
 use boa_engine::{
-    Context, JsNativeError, JsResult, JsValue,
+    Context, JsError, JsNativeError, JsResult, JsValue,
     job::PromiseJob,
     js_string,
     object::{JsObject, ObjectInitializer},
@@ -184,7 +184,12 @@ impl ReadRequest {
                 // queue_internal_stream_microtask requires Boa's Context.
                 let context = unsafe { js_engine::boa::ec_to_ctx(ec) };
                 queue_internal_stream_microtask(
-                    move |context| state.on_read_request_settled(result, context),
+                    move |ctx| {
+                        let ec = js_engine::boa::context_as_ec(ctx);
+                        state.on_read_request_settled(result, ec)
+                            .map_err(|e| JsError::from_opaque(e))?;
+                        Ok(())
+                    },
                     context,
                 )
                 .map_err(|_| pending_err)
@@ -216,7 +221,12 @@ impl ReadRequest {
                 // queue_internal_stream_microtask requires Boa's Context.
                 let context = unsafe { js_engine::boa::ec_to_ctx(ec) };
                 queue_internal_stream_microtask(
-                    move |context| state.on_read_request_settled(result, context),
+                    move |ctx| {
+                        let ec = js_engine::boa::context_as_ec(ctx);
+                        state.on_read_request_settled(result, ec)
+                            .map_err(|e| JsError::from_opaque(e))?;
+                        Ok(())
+                    },
                     context,
                 )
                 .map_err(|_| pending_err)
@@ -247,7 +257,12 @@ impl ReadRequest {
                 // SAFETY: ec is backed by BoaContext repr(transparent) over Context
                 let context = unsafe { js_engine::boa::ec_to_ctx(ec) };
                 queue_internal_stream_microtask(
-                    move |context| state.on_read_request_settled(error, context),
+                    move |ctx| {
+                        let ec = js_engine::boa::context_as_ec(ctx);
+                        state.on_read_request_settled(error, ec)
+                            .map_err(|e| JsError::from_opaque(e))?;
+                        Ok(())
+                    },
                     context,
                 )
                 .map_err(|_| pending_err)

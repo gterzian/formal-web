@@ -424,7 +424,7 @@ fn pipe_through_method(
         .ok_or_else(|| ec.new_type_error("ReadableStream receiver is not an object"))?;
     let mut stream =
         with_readable_stream_ref_ec(&stream_object, ec, |s: &ReadableStream| s.clone())?;
-    stream.pipe_through_ec(args.get_or_undefined(0), args.get_or_undefined(1), ec)
+    stream.pipe_through(args.get_or_undefined(0), args.get_or_undefined(1), ec)
 }
 
 fn pipe_to_operation(
@@ -436,7 +436,7 @@ fn pipe_to_operation(
         .ok_or_else(|| ec.new_type_error("ReadableStream receiver is not an object"))?;
     let mut stream =
         with_readable_stream_ref_ec(&stream_object, ec, |s: &ReadableStream| s.clone())?;
-    stream.pipe_to_ec(args.get_or_undefined(0), args.get_or_undefined(1), ec)
+    stream.pipe_to(args.get_or_undefined(0), args.get_or_undefined(1), ec)
 }
 
 pub(crate) fn pipe_to_native_method(
