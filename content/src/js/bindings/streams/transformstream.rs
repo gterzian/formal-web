@@ -174,7 +174,7 @@ fn controller_error(
     })?;
     let reason = args.first().cloned().unwrap_or(ec.value_undefined());
     let controller = with_transform_stream_default_controller_ref_ec(&obj, ec, |c| c.clone())?;
-    controller.error_ec(reason, ec)?;
+    controller.error(reason, ec)?;
     Ok(ec.value_undefined())
 }
 
@@ -188,6 +188,6 @@ fn controller_terminate(
         ec.new_type_error("TransformStreamDefaultController.terminate called on non-object")
     })?;
     let controller = with_transform_stream_default_controller_ref_ec(&obj, ec, |c| c.clone())?;
-    controller.terminate_ec(ec)?;
+    controller.terminate(ec)?;
     Ok(ec.value_undefined())
 }

@@ -85,3 +85,22 @@ pub(crate) fn builtin_with_captures<C: js_engine::gc::Trace + 'static>(
     js_engine::boa::context_as_engine(context)
         .create_builtin_function_with_captures(captures, behaviour, length, name)
 }
+
+/// Convenience wrapper that creates a `Callback` from `builtin_with_captures`.
+/// Used by SourceMethod-wrapped closures in streams (e.g. writeAlgorithm,
+/// abortAlgorithm, closeAlgorithm).
+pub(crate) fn builtin_callback<C: js_engine::gc::Trace + 'static>(
+    context: &mut boa_engine::Context,
+    captures: C,
+    behaviour: fn(
+        &[boa_engine::JsValue],
+        boa_engine::JsValue,
+        &C,
+        &mut dyn js_engine::ExecutionContext<crate::js::Types>,
+    ) -> js_engine::Completion<boa_engine::JsValue, crate::js::Types>,
+    length: u32,
+) -> crate::webidl::Callback {
+    crate::webidl::Callback::from_object(
+        builtin_with_captures(context, captures, behaviour, length).into(),
+    )
+}

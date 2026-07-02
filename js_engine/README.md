@@ -10,6 +10,93 @@ HTML/DOM/WebIDL layers.
 > **Principle:** The architecture is defined by the standards.  We don't
 > invent new layers — we follow the spec chain exactly and make it generic.
 
+### 0. Migration methodology — spec-first, not Boa-first
+
+When converting Boa-specific code to the generic layer, **follow the spec
+chain**, not the Boa API shape:
+
+1. **Read the spec algorithm.** Identify every ECMA-262 abstract operation
+   it calls (Call, Get, PerformPromiseThen, NewPromiseCapability,
+   CreateBuiltinFunction, etc.).
+
+2. **Use the `ExecutionContext<T>` trait methods** that implement those
+   ECMA-262 operations — never reach for Boa APIs when a generic equivalent
+   exists.
+
+3. **For promise chaining**, use `ec.perform_promise_then(promise, on_fulfilled,
+   on_rejected, None)` — not `JsPromise::from_object(p)?.then(...)`.
+```
+   // ❌  Boa-specific (bypasses EC trait)
+   let result = JsPromise::from_object(promise)?.then(Some(on_fulfilled), None, context)?;
+
+   // ✅  Generic (spec: ECMA-262 PerformPromiseThen)
+   let js_promise = Types::object_as_promise(&promise).ok_or_else(...)?;
+   ec.perform_promise_then(js_promise, Some(on_fulfilled), None, None)?;
+```
+
+4. **For creating promises**, use `ec.new_promise_pending()` — not
+   `JsPromise::new_pending(context)`.
+```
+   // ❌  Boa-specific
+   let (promise, resolvers) = JsPromise::new_pending(context);
+
+   // ✅  Generic (spec: ECMA-262 NewPromiseCapability)
+   let (promise, resolvers) = ec.new_promise_pending()?;
+```
+
+5. **For domain struct field access**, use the `_ec`-suffixed methods
+   (e.g., `stream.readable_ec(ec)`, `stream.controller_slot_ec(ec)`).
+   These ARE the proper generic methods — the non-`_ec` variants
+   (`stream.readable()`) are the legacy Boa wrappers.
+
+6. **For domain functions that still take `&mut Context`**: convert them
+   to take `&mut dyn ExecutionContext<T>` directly.  Do NOT create
+   standalone `_ec` wrapper functions that bridge Context→EC.
+
+7. **The ONLY place `ec_to_ctx` belongs** is inside fn pointer bodies
+   (used with `builtin_with_captures`) where the fn pointer calls
+   domain functions that haven't been converted to EC yet.  Each fn
+   pointer should have at most ONE `ec_to_ctx` call at the top.
+
+8. **Never create `_ec` wrapper functions** for standalone domain functions.
+   These are indirection that just moves the bridge one level up.
+   Convert the real function instead.
+
+**Anti-patterns (do NOT do these):**
+- Creating `xxx_ec()` wrapper functions that call `ec_to_ctx` internally
+- Using `JsPromise::then()` when `perform_promise_then` exists on the trait
+- Using `JsPromise::new_pending(context)` when `ec.new_promise_pending()` exists
+- Using `JsNativeError::typ().with_message(msg)` when `ec.new_type_error(msg)` exists
+- Using `completion_to_js_result` + `js_result_to_completion` bridges inside
+  functions that should take EC directly
+
+**Example — converting `transform_stream_default_sink_abort_algorithm`:**
+```
+   // ❌  Old: takes &mut Context, uses JsPromise::then, JsNativeError
+   fn sink_abort(stream: TransformStream, reason: JsValue, ctx: &mut Context) -> JsResult<JsObject> {
+       let controller = stream.controller_slot()?;        // JsResult
+       let (promise, resolvers) = JsPromise::new_pending(ctx);
+       let cancel_promise = ...;
+       let on_fulfilled = builtin_with_captures(ctx, captures, fn_ptr, 0);
+       let _ = JsPromise::from_object(cancel_promise)?.then(Some(on_fulfilled), Some(on_rejected), ctx)?;
+       Ok(finish_promise)
+   }
+
+   // ✅  New: takes &mut dyn EC, uses perform_promise_then, new_promise_pending
+   fn sink_abort(stream: TransformStream, reason: JsValue, ec: &mut dyn ExecutionContext<Types>) -> Completion<JsObject, Types> {
+       let controller = stream.controller_slot_ec(ec)?;   // Completion
+       let (promise, resolvers) = ec.new_promise_pending()?;
+       let cancel_promise = ...; // uses ec, not ctx
+       let ctx = unsafe { ec_to_ctx(ec) };  // ONE bridge for builtin_with_captures
+       let on_fulfilled = builtin_with_captures(ctx, captures, fn_ptr, 0);
+       let on_rejected = builtin_with_captures(ctx, captures2, fn_ptr2, 1);
+       drop(ctx);
+       let js_promise = Types::object_as_promise(&cancel_promise).ok_or_else(...)?;
+       ec.perform_promise_then(js_promise, Some(on_fulfilled), Some(on_rejected), None)?;
+       Ok(finish_promise)
+   }
+```
+
 ### 1. The ownership model
 
 <https://html.spec.whatwg.org/#environment-settings-objects> (§8.1.3.2)
@@ -685,6 +772,17 @@ Phase S (streams domain) ──► Phase P (platform-object store)
 | NativeFunction → captures | 16 sites converted across 3 controller files (writable, readable, byte). 24 remaining in transformstream + readablestream (SourceMethod-wrapped). |
 
 **~62 ec_to_ctx remain in streams/** (no change — captures conversion eliminates Boa imports but fn bodies still use `ec_to_ctx`).
+
+**New this session:**
+
+| Addition | What |
+|---|---|
+| Deep call-chain conversion | Converted 7 domain functions to take `&mut dyn ExecutionContext<T>` directly: `transform_stream_set_backpressure`, `transform_stream_unblock_write`, `transform_stream_error`, `transform_stream_error_writable_and_unblock_write`, `transform_stream_default_controller_error`, `transform_stream_default_sink_abort_algorithm`, `transform_stream_default_controller_terminate`. Deleted corresponding `_ec` wrapper functions. |
+| Struct method conversion | `TransformStreamDefaultController::error()` and `::terminate()` now take EC directly (deleted `error_ec`/`terminate_ec` bridges). Updated all callers across bindings and streams. |
+| `perform_promise_then` usage | `transform_stream_default_sink_abort_algorithm` now uses `ec.perform_promise_then()` + `ec.new_promise_pending()` instead of `JsPromise::then()` + `JsPromise::new_pending(context)`. |
+| Methodological docs | Added §0 "Migration methodology — spec-first, not Boa-first" to this README. |
+
+**Key lesson — deep, not broad:** When converting a function to EC, trace the ENTIRE call chain (across files if needed) and convert everything that function calls. Never leave bridges (`context_as_ec`, `_ec` wrappers, `completion_to_js_result` bridges) at the boundaries. If a called function still needs Context, convert it too. This is deep-call-chain migration, not file-by-file migration.
 
 ### Next session: recommended order
 
