@@ -1072,12 +1072,8 @@ impl ReadableByteStreamController {
             pull_steps_on_fulfilled,
             1,
         );
-        let on_rejected = crate::js::builtin_with_captures(
-            context,
-            self.clone(),
-            pull_steps_on_rejected,
-            1,
-        );
+        let on_rejected =
+            crate::js::builtin_with_captures(context, self.clone(), pull_steps_on_rejected, 1);
 
         let pull_promise_obj =
             crate::js::js_result_to_completion(JsPromise::from_object(pull_promise), context)?;
@@ -1415,18 +1411,9 @@ pub(crate) fn set_up_readable_byte_stream_controller(
     let start_promise =
         crate::js::js_result_to_completion(JsPromise::resolve(start_result, context), context)?;
 
-    let on_fulfilled = crate::js::builtin_with_captures(
-        context,
-        controller.clone(),
-        setup_on_fulfilled,
-        1,
-    );
-    let on_rejected = crate::js::builtin_with_captures(
-        context,
-        controller,
-        setup_on_rejected,
-        1,
-    );
+    let on_fulfilled =
+        crate::js::builtin_with_captures(context, controller.clone(), setup_on_fulfilled, 1);
+    let on_rejected = crate::js::builtin_with_captures(context, controller, setup_on_rejected, 1);
     let start_promise_obj =
         crate::js::js_result_to_completion(JsPromise::from_object(start_promise.into()), context)?;
     let _ = start_promise_obj

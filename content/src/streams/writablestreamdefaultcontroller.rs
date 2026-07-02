@@ -503,12 +503,8 @@ impl WritableStreamDefaultController {
             process_close_on_fulfilled,
             1,
         );
-        let on_rejected = crate::js::builtin_with_captures(
-            context,
-            stream,
-            process_close_on_rejected,
-            1,
-        );
+        let on_rejected =
+            crate::js::builtin_with_captures(context, stream, process_close_on_rejected, 1);
         let promise = crate::js::js_result_to_completion(
             JsPromise::from_object(sink_close_promise),
             context,
@@ -724,20 +720,11 @@ pub(crate) fn set_up_writable_stream_default_controller(
         crate::js::js_result_to_completion(JsPromise::resolve(start_result, context), context)?;
 
     // Step 17: "Upon fulfillment of startPromise..."
-    let on_fulfilled = crate::js::builtin_with_captures(
-        context,
-        controller.clone(),
-        setup_on_fulfilled,
-        1,
-    );
+    let on_fulfilled =
+        crate::js::builtin_with_captures(context, controller.clone(), setup_on_fulfilled, 1);
 
     // Step 18: "Upon rejection of startPromise with reason r..."
-    let on_rejected = crate::js::builtin_with_captures(
-        context,
-        controller,
-        setup_on_rejected,
-        1,
-    );
+    let on_rejected = crate::js::builtin_with_captures(context, controller, setup_on_rejected, 1);
     let _ = crate::js::js_result_to_completion(
         start_promise.then(Some(on_fulfilled), Some(on_rejected), context),
         context,
@@ -911,7 +898,6 @@ fn reset_controller_queue(controller: &WritableStreamDefaultController) {
     controller.reset_queue();
 }
 
-
 fn process_close_on_fulfilled(
     _args: &[JsValue],
     _this: JsValue,
@@ -954,13 +940,10 @@ fn process_write_on_fulfilled(
     )
     .map_err(|e| e.into_opaque(ctx).unwrap_or(JsValue::undefined()))?;
     let state = stream.state();
-    debug_assert!(
-        state == WritableStreamState::Writable || state == WritableStreamState::Erroring
-    );
+    debug_assert!(state == WritableStreamState::Writable || state == WritableStreamState::Erroring);
     crate::js::js_result_to_completion(controller.dequeue_value(), ctx)?;
     if !stream.close_queued_or_in_flight() && state == WritableStreamState::Writable {
-        let backpressure =
-            crate::js::js_result_to_completion(controller.get_backpressure(), ctx)?;
+        let backpressure = crate::js::js_result_to_completion(controller.get_backpressure(), ctx)?;
         crate::js::completion_to_js_result(
             stream.update_backpressure(backpressure, js_engine::boa::context_as_ec(ctx)),
         )
@@ -1015,8 +998,7 @@ fn setup_on_rejected(
 ) -> Completion<JsValue, crate::js::Types> {
     let ctx = unsafe { js_engine::boa::ec_to_ctx(ec) };
     captures.set_started(true);
-    let stream =
-        crate::js::js_result_to_completion(captures.stream_slot(), ctx)?;
+    let stream = crate::js::js_result_to_completion(captures.stream_slot(), ctx)?;
     crate::js::completion_to_js_result(stream.deal_with_rejection(
         args.first().cloned().unwrap_or(JsValue::undefined()),
         js_engine::boa::context_as_ec(ctx),

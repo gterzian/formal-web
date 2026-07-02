@@ -454,7 +454,12 @@ fn controller_enqueue_on_fulfilled_fn(
 fn sink_abort_on_fulfilled_fn(
     _args: &[JsValue],
     _this: JsValue,
-    captures: &(TransformStreamDefaultController, ReadableStream, JsValue, bool),
+    captures: &(
+        TransformStreamDefaultController,
+        ReadableStream,
+        JsValue,
+        bool,
+    ),
     ec: &mut dyn ExecutionContext<crate::js::Types>,
 ) -> Completion<JsValue, crate::js::Types> {
     let (controller, readable, reason, reject_finish_on_fulfilled_cancel) = captures;
@@ -465,9 +470,9 @@ fn sink_abort_on_fulfilled_fn(
         }
     } else {
         // Step 7.1.2.1: "Perform ! ReadableStreamDefaultControllerError(readable.[[controller]], reason)."
-        let readable_controller = readable.controller_slot().ok_or_else(|| {
-            ec.new_type_error("ReadableStream is missing its controller")
-        })?;
+        let readable_controller = readable
+            .controller_slot()
+            .ok_or_else(|| ec.new_type_error("ReadableStream is missing its controller"))?;
         readable_controller
             .as_default_controller()
             .error_steps(reason.clone(), ec)?;
@@ -488,9 +493,9 @@ fn sink_abort_on_rejected_fn(
     let (controller, readable) = captures;
     let error = args.get_or_undefined(0).clone();
     // Step 7.2.1: "Perform ! ReadableStreamDefaultControllerError(readable.[[controller]], r)."
-    let readable_controller = readable.controller_slot().ok_or_else(|| {
-        ec.new_type_error("ReadableStream is missing its controller")
-    })?;
+    let readable_controller = readable
+        .controller_slot()
+        .ok_or_else(|| ec.new_type_error("ReadableStream is missing its controller"))?;
     readable_controller
         .as_default_controller()
         .error_steps(error.clone(), ec)?;
@@ -516,10 +521,12 @@ fn sink_close_on_fulfilled_fn(
         }
     } else {
         // Step 7.1.2.1: "Perform ! ReadableStreamDefaultControllerClose(readable.[[controller]])."
-        let readable_controller = readable.controller_slot().ok_or_else(|| {
-            ec.new_type_error("ReadableStream is missing its controller")
-        })?;
-        readable_controller.as_default_controller().close_steps(ec)?;
+        let readable_controller = readable
+            .controller_slot()
+            .ok_or_else(|| ec.new_type_error("ReadableStream is missing its controller"))?;
+        readable_controller
+            .as_default_controller()
+            .close_steps(ec)?;
         // Step 7.1.2.2: Resolve finishPromise.
         if let Some(resolvers) = controller.finish_resolvers.borrow_mut().take() {
             resolvers.resolve(ec.value_undefined(), ec)?;
@@ -537,9 +544,9 @@ fn sink_close_on_rejected_fn(
     let (controller, readable) = captures;
     let error = args.get_or_undefined(0).clone();
     // Step 7.2.1: "Perform ! ReadableStreamDefaultControllerError(readable.[[controller]], r)."
-    let readable_controller = readable.controller_slot().ok_or_else(|| {
-        ec.new_type_error("ReadableStream is missing its controller")
-    })?;
+    let readable_controller = readable
+        .controller_slot()
+        .ok_or_else(|| ec.new_type_error("ReadableStream is missing its controller"))?;
     readable_controller
         .as_default_controller()
         .error_steps(error.clone(), ec)?;
@@ -577,9 +584,9 @@ fn source_cancel_on_fulfilled_fn(
         }
     } else {
         // Step 7.1.2.1: "Perform ! WritableStreamDefaultControllerErrorIfNeeded(writable.[[controller]], reason)."
-        let writable_controller = writable.controller_slot().ok_or_else(|| {
-            ec.new_type_error("WritableStream is missing its controller")
-        })?;
+        let writable_controller = writable
+            .controller_slot()
+            .ok_or_else(|| ec.new_type_error("WritableStream is missing its controller"))?;
         writable_stream_default_controller_error_if_needed(
             writable_controller.as_default_controller(),
             reason.clone(),
@@ -598,15 +605,19 @@ fn source_cancel_on_fulfilled_fn(
 fn source_cancel_on_rejected_fn(
     args: &[JsValue],
     _this: JsValue,
-    captures: &(TransformStreamDefaultController, TransformStream, WritableStream),
+    captures: &(
+        TransformStreamDefaultController,
+        TransformStream,
+        WritableStream,
+    ),
     ec: &mut dyn ExecutionContext<crate::js::Types>,
 ) -> Completion<JsValue, crate::js::Types> {
     let (controller, stream, writable) = captures;
     let error = args.get_or_undefined(0).clone();
     // Step 7.2.1: "Perform ! WritableStreamDefaultControllerErrorIfNeeded(writable.[[controller]], r)."
-    let writable_controller = writable.controller_slot().ok_or_else(|| {
-        ec.new_type_error("WritableStream is missing its controller")
-    })?;
+    let writable_controller = writable
+        .controller_slot()
+        .ok_or_else(|| ec.new_type_error("WritableStream is missing its controller"))?;
     writable_stream_default_controller_error_if_needed(
         writable_controller.as_default_controller(),
         error.clone(),
@@ -709,9 +720,9 @@ fn transform_stream_error(
 ) -> Completion<(), crate::js::Types> {
     // Step 1: "Perform ! ReadableStreamDefaultControllerError(stream.[[readable]].[[controller]], e)."
     let readable = stream.readable_ec(ec)?;
-    let readable_controller = readable.controller_slot().ok_or_else(|| {
-        ec.new_type_error("ReadableStream is missing its controller")
-    })?;
+    let readable_controller = readable
+        .controller_slot()
+        .ok_or_else(|| ec.new_type_error("ReadableStream is missing its controller"))?;
     readable_controller
         .as_default_controller()
         .error_steps(error.clone(), ec)?;
@@ -732,9 +743,9 @@ fn transform_stream_error_writable_and_unblock_write(
 
     // Step 2: "Perform ! WritableStreamDefaultControllerErrorIfNeeded(stream.[[writable]].[[controller]], e)."
     let writable = stream.writable_ec(ec)?;
-    let writable_controller = writable.controller_slot().ok_or_else(|| {
-        ec.new_type_error("WritableStream is missing its controller")
-    })?;
+    let writable_controller = writable
+        .controller_slot()
+        .ok_or_else(|| ec.new_type_error("WritableStream is missing its controller"))?;
     writable_stream_default_controller_error_if_needed(
         writable_controller.as_default_controller(),
         error,
@@ -915,7 +926,9 @@ fn transform_stream_default_controller_enqueue(
     {
         // Step 5.1: "Perform ! TransformStreamErrorWritableAndUnblockWrite(stream, enqueueResult.[[Value]])."
         transform_stream_error_writable_and_unblock_write(
-            &stream, error_value, js_engine::boa::context_as_ec(context),
+            &stream,
+            error_value,
+            js_engine::boa::context_as_ec(context),
         )
         .map_err(boa_engine::JsError::from_opaque)?;
 
@@ -998,9 +1011,8 @@ fn transform_stream_default_controller_perform_transform(
 
     // Step 2: "Return the result of reacting to transformPromise with the following rejection steps given the argument r:"
     let stream = controller.stream_slot()?;
-    let on_rejected = crate::js::builtin_with_captures(
-        context, stream, perform_transform_on_rejected_fn, 1,
-    );
+    let on_rejected =
+        crate::js::builtin_with_captures(context, stream, perform_transform_on_rejected_fn, 1);
     let result =
         JsPromise::from_object(transform_promise)?.then(None, Some(on_rejected), context)?;
     Ok(result.into())
@@ -1065,7 +1077,10 @@ fn transform_stream_default_sink_write_algorithm(
 
         // Step 3.3: "Return the result of reacting to backpressureChangePromise with the following fulfillment steps:"
         let on_fulfilled = crate::js::builtin_with_captures(
-            context, (stream, controller, chunk), controller_enqueue_on_fulfilled_fn, 0,
+            context,
+            (stream, controller, chunk),
+            controller_enqueue_on_fulfilled_fn,
+            0,
         );
 
         let result = JsPromise::from_object(backpressure_change_promise)?.then(
@@ -1148,14 +1163,12 @@ fn transform_stream_default_sink_abort_algorithm(
         0,
     );
 
-    let on_rejected = crate::js::builtin_with_captures(
-        ctx, (controller, readable), sink_abort_on_rejected_fn, 1,
-    );
+    let on_rejected =
+        crate::js::builtin_with_captures(ctx, (controller, readable), sink_abort_on_rejected_fn, 1);
     drop(ctx);
 
-    let cancel_js_promise =
-        crate::js::Types::object_as_promise(&cancel_promise)
-            .ok_or_else(|| ec.new_type_error("cancelPromise is not a Promise"))?;
+    let cancel_js_promise = crate::js::Types::object_as_promise(&cancel_promise)
+        .ok_or_else(|| ec.new_type_error("cancelPromise is not a Promise"))?;
     ec.perform_promise_then(
         cancel_js_promise,
         Some(on_fulfilled),
@@ -1225,7 +1238,10 @@ fn transform_stream_default_sink_close_algorithm(
     );
 
     let on_rejected = crate::js::builtin_with_captures(
-        context, (controller, readable), sink_close_on_rejected_fn, 1,
+        context,
+        (controller, readable),
+        sink_close_on_rejected_fn,
+        1,
     );
 
     let _ = JsPromise::from_object(flush_promise)?.then(
@@ -1331,7 +1347,10 @@ pub(crate) fn transform_stream_default_source_cancel_algorithm(
     );
 
     let on_rejected = crate::js::builtin_with_captures(
-        context, (controller, stream, writable), source_cancel_on_rejected_fn, 1,
+        context,
+        (controller, stream, writable),
+        source_cancel_on_rejected_fn,
+        1,
     );
 
     let _ = JsPromise::from_object(cancel_promise)?.then(

@@ -492,18 +492,10 @@ impl ReadableStreamDefaultController {
             ),
         };
 
-        let on_fulfilled = crate::js::builtin_with_captures(
-            context,
-            self.clone(),
-            pull_steps_on_fulfilled,
-            1,
-        );
-        let on_rejected = crate::js::builtin_with_captures(
-            context,
-            self.clone(),
-            pull_steps_on_rejected,
-            1,
-        );
+        let on_fulfilled =
+            crate::js::builtin_with_captures(context, self.clone(), pull_steps_on_fulfilled, 1);
+        let on_rejected =
+            crate::js::builtin_with_captures(context, self.clone(), pull_steps_on_rejected, 1);
         let pull_reaction: JsObject = pull_promise
             .then(Some(on_fulfilled), Some(on_rejected), context)
             .map_err(|e| {
@@ -880,18 +872,9 @@ pub(crate) fn set_up_readable_stream_default_controller(
         e.into_opaque(context)
             .unwrap_or_else(|_| JsValue::undefined())
     })?;
-    let on_fulfilled = crate::js::builtin_with_captures(
-        context,
-        controller.clone(),
-        setup_on_fulfilled,
-        1,
-    );
-    let on_rejected = crate::js::builtin_with_captures(
-        context,
-        controller,
-        setup_on_rejected,
-        1,
-    );
+    let on_fulfilled =
+        crate::js::builtin_with_captures(context, controller.clone(), setup_on_fulfilled, 1);
+    let on_rejected = crate::js::builtin_with_captures(context, controller, setup_on_rejected, 1);
     let start_reaction: JsObject = start_promise
         .then(Some(on_fulfilled), Some(on_rejected), context)
         .map_err(|e| {

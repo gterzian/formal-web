@@ -460,6 +460,50 @@ pub(crate) struct TeeState {
     reason2: JsValue,
 }
 
+fn default_tee_on_rejected_fn(
+    args: &[JsValue],
+    _this: JsValue,
+    tee_state: &GcCell<TeeState>,
+    ec: &mut dyn ExecutionContext<crate::js::Types>,
+) -> Completion<JsValue, crate::js::Types> {
+    let error = args.get_or_undefined(0).clone();
+    let (branch1, branch2, canceled1, canceled2, cancel_resolvers) = {
+        let tee_state = tee_state.borrow();
+        (
+            tee_state.branch1.clone(),
+            tee_state.branch2.clone(),
+            tee_state.canceled1,
+            tee_state.canceled2,
+            tee_state.cancel_resolvers.clone(),
+        )
+    };
+
+    // Step 19.1: "Perform ! ReadableStreamDefaultControllerError(branch1.[[controller]], r)."
+    if let Some(branch1) = branch1.as_ref() {
+        if let Err(error) = default_tee_error_branch(branch1, error.clone(), ec) {
+            error!("[readable-stream] default tee error branch1 failed: {error:?}");
+        }
+    }
+
+    // Step 19.2: "Perform ! ReadableStreamDefaultControllerError(branch2.[[controller]], r)."
+    if let Some(branch2) = branch2.as_ref() {
+        if let Err(error) = default_tee_error_branch(branch2, error, ec) {
+            error!("[readable-stream] default tee error branch2 failed: {error:?}");
+        }
+    }
+
+    // Step 19.3: "If canceled1 is false or canceled2 is false, resolve cancelPromise with undefined."
+    if !canceled1 || !canceled2 {
+        let resolver: JsObject = cancel_resolvers.resolve.into();
+        let undefined = ec.value_undefined();
+        if let Err(error) = ec.call(&resolver, &undefined, &[undefined.clone()]) {
+            error!("[readable-stream] failed to resolve cancel promise: {error:?}");
+        }
+    }
+
+    Ok(JsValue::undefined())
+}
+
 /// <https://streams.spec.whatwg.org/#readable-stream-tee>
 fn readable_stream_tee(
     stream: ReadableStream,
@@ -570,50 +614,9 @@ fn readable_stream_default_tee(
     }
 
     // Step 19: "Upon rejection of reader.[[closedPromise]] with reason r,"
-    let on_rejected = NativeFunction::from_copy_closure_with_captures(
-        |_, args: &[JsValue], tee_state: &GcCell<TeeState>, context| {
-            let error = args.get_or_undefined(0).clone();
-            let (branch1, branch2, canceled1, canceled2, cancel_resolvers) = {
-                let tee_state = tee_state.borrow();
-                (
-                    tee_state.branch1.clone(),
-                    tee_state.branch2.clone(),
-                    tee_state.canceled1,
-                    tee_state.canceled2,
-                    tee_state.cancel_resolvers.clone(),
-                )
-            };
-
-            // Step 19.1: "Perform ! ReadableStreamDefaultControllerError(branch1.[[controller]], r)."
-            if let Some(branch1) = branch1.as_ref() {
-                if let Err(error) = default_tee_error_branch(branch1, error.clone(), context) {
-                    error!("[readable-stream] default tee error branch1 failed: {error}");
-                }
-            }
-
-            // Step 19.2: "Perform ! ReadableStreamDefaultControllerError(branch2.[[controller]], r)."
-            if let Some(branch2) = branch2.as_ref() {
-                if let Err(error) = default_tee_error_branch(branch2, error, context) {
-                    error!("[readable-stream] default tee error branch2 failed: {error}");
-                }
-            }
-
-            // Step 19.3: "If canceled1 is false or canceled2 is false, resolve cancelPromise with undefined."
-            if !canceled1 || !canceled2 {
-                if let Err(error) = cancel_resolvers.resolve.call(
-                    &JsValue::undefined(),
-                    &[JsValue::undefined()],
-                    context,
-                ) {
-                    error!("[readable-stream] failed to resolve cancel promise: {error}");
-                }
-            }
-
-            Ok(JsValue::undefined())
-        },
-        tee_state,
-    )
-    .to_js_function(context.realm());
+    let on_rejected = crate::js::builtin_with_captures(
+        context, tee_state, default_tee_on_rejected_fn, 1,
+    );
     let forward_error: JsObject = JsPromise::from_object(reader_closed_promise)?
         .catch(on_rejected, context)?
         .into();
@@ -671,17 +674,15 @@ fn default_tee_close_branch(branch: &ReadableStream, context: &mut Context) -> J
 fn default_tee_error_branch(
     branch: &ReadableStream,
     error: JsValue,
-    context: &mut Context,
-) -> JsResult<()> {
+    ec: &mut dyn ExecutionContext<crate::js::Types>,
+) -> Completion<(), crate::js::Types> {
     let Some(controller) = branch
         .controller_slot()
         .map(|controller| controller.as_default_controller())
     else {
         return Ok(());
     };
-    crate::js::completion_to_js_result(
-        controller.error(error, js_engine::boa::context_as_ec(context)),
-    )
+    controller.error(error, ec)
 }
 
 /// <https://streams.spec.whatwg.org/#abstract-opdef-readablestreamdefaulttee>
@@ -765,7 +766,7 @@ pub(crate) fn readable_stream_default_tee_read_request_chunk_steps(
                         // Step 13.3 chunk steps 1.3.2.1: "Perform ! ReadableStreamDefaultControllerError(branch1.[[controller]], cloneResult.[[Value]])."
                         if let Some(branch1) = branch1.as_ref() {
                             if let Err(error) =
-                                default_tee_error_branch(branch1, error.clone(), context)
+                                crate::js::completion_to_js_result(default_tee_error_branch(branch1, error.clone(), js_engine::boa::context_as_ec(context)))
                             {
                                 error!(
                                     "[readable-stream] default tee error branch1 (chunk) failed: {error}"
@@ -776,7 +777,7 @@ pub(crate) fn readable_stream_default_tee_read_request_chunk_steps(
                         // Step 13.3 chunk steps 1.3.2.2: "Perform ! ReadableStreamDefaultControllerError(branch2.[[controller]], cloneResult.[[Value]])."
                         if let Some(branch2) = branch2.as_ref() {
                             if let Err(error) =
-                                default_tee_error_branch(branch2, error.clone(), context)
+                                crate::js::completion_to_js_result(default_tee_error_branch(branch2, error.clone(), js_engine::boa::context_as_ec(context)))
                             {
                                 error!(
                                     "[readable-stream] default tee error branch2 (chunk) failed: {error}"
@@ -1957,8 +1958,8 @@ fn byte_tee_enqueue_to_branch(
 fn byte_tee_error_branch(
     branch: &ReadableStream,
     error: JsValue,
-    context: &mut Context,
-) -> JsResult<()> {
+    ec: &mut dyn ExecutionContext<crate::js::Types>,
+) -> Completion<(), crate::js::Types> {
     // Step helper: "Perform ! ReadableByteStreamControllerError(branchX.[[controller]], r)."
     let Some(controller) = branch
         .controller_slot()
@@ -1966,8 +1967,7 @@ fn byte_tee_error_branch(
     else {
         return Ok(());
     };
-    let ec: &mut dyn ExecutionContext<crate::js::Types> = js_engine::boa::context_as_ec(context);
-    crate::js::completion_to_js_result(controller.error(error, ec))
+    controller.error(error, ec)
 }
 
 /// <https://streams.spec.whatwg.org/#abstract-opdef-readablebytestreamtee>
@@ -1995,6 +1995,48 @@ fn byte_tee_pending_pull_into_controller(
     }
 }
 
+fn byte_tee_forward_error_on_rejected_fn(
+    args: &[JsValue],
+    _this: JsValue,
+    captures: &(u64, GcCell<ByteTeeState>),
+    ec: &mut dyn ExecutionContext<crate::js::Types>,
+) -> Completion<JsValue, crate::js::Types> {
+    let (captured_generation, tee_state) = captures;
+    // Step helper: "If thisReader is not reader, return."
+    if tee_state.borrow().reader_generation != *captured_generation {
+        return Ok(JsValue::undefined());
+    }
+    let error = args.get_or_undefined(0).clone();
+    let (branch1, branch2, canceled1, canceled2, cancel_resolvers) = {
+        let tee = tee_state.borrow();
+        (
+            tee.branch1.clone(),
+            tee.branch2.clone(),
+            tee.canceled1,
+            tee.canceled2,
+            tee.cancel_resolvers.clone(),
+        )
+    };
+    if let Some(ref branch1) = branch1 {
+        if let Err(error) = byte_tee_error_branch(branch1, error.clone(), ec) {
+            error!("[readable-stream] byte tee error branch1 failed: {error:?}");
+        }
+    }
+    if let Some(ref branch2) = branch2 {
+        if let Err(error) = byte_tee_error_branch(branch2, error, ec) {
+            error!("[readable-stream] byte tee error branch2 failed: {error:?}");
+        }
+    }
+    if !canceled1 || !canceled2 {
+        let resolver: JsObject = cancel_resolvers.resolve.into();
+        let undefined = ec.value_undefined();
+        if let Err(error) = ec.call(&resolver, &undefined, &[undefined.clone()]) {
+            error!("[readable-stream] failed to resolve cancel promise: {error:?}");
+        }
+    }
+    Ok(JsValue::undefined())
+}
+
 /// <https://streams.spec.whatwg.org/#abstract-opdef-readablebytestreamtee>
 fn byte_tee_forward_reader_error(
     reader_object: &JsObject,
@@ -2014,46 +2056,12 @@ fn byte_tee_forward_reader_error(
 
     // Step helper: "Let thisReader be reader" for the forwardReaderError closure.
     let generation_at_attach = tee_state.borrow().reader_generation;
-    let on_rejected = NativeFunction::from_copy_closure_with_captures(
-        |_, args: &[JsValue], captures: &(u64, GcCell<ByteTeeState>), context| {
-            let (captured_generation, tee_state) = captures;
-            // Step helper: "If thisReader is not reader, return."
-            if tee_state.borrow().reader_generation != *captured_generation {
-                return Ok(JsValue::undefined());
-            }
-            let error = args.get_or_undefined(0).clone();
-            let (branch1, branch2, canceled1, canceled2, cancel_resolvers) = {
-                let tee = tee_state.borrow();
-                (
-                    tee.branch1.clone(),
-                    tee.branch2.clone(),
-                    tee.canceled1,
-                    tee.canceled2,
-                    tee.cancel_resolvers.clone(),
-                )
-            };
-            if let Some(ref branch1) = branch1 {
-                if let Err(error) = byte_tee_error_branch(branch1, error.clone(), context) {
-                    error!("[readable-stream] byte tee error branch1 failed: {error}");
-                }
-            }
-            if let Some(ref branch2) = branch2 {
-                if let Err(error) = byte_tee_error_branch(branch2, error, context) {
-                    error!("[readable-stream] byte tee error branch2 failed: {error}");
-                }
-            }
-            if !canceled1 || !canceled2 {
-                cancel_resolvers.resolve.call(
-                    &JsValue::undefined(),
-                    &[JsValue::undefined()],
-                    context,
-                )?;
-            }
-            Ok(JsValue::undefined())
-        },
+    let on_rejected = crate::js::builtin_with_captures(
+        context,
         (generation_at_attach, tee_state.clone()),
-    )
-    .to_js_function(context.realm());
+        byte_tee_forward_error_on_rejected_fn,
+        1,
+    );
     let _ = closed_promise.catch(on_rejected, context)?;
     Ok(())
 }
@@ -2169,7 +2177,7 @@ pub(crate) fn readable_byte_stream_tee_default_reader_chunk_steps(
                         // Step 18.2 chunk steps 1.4.2.1: "Perform ! ReadableByteStreamControllerError(branch1.[[controller]], cloneResult.[[Value]])."
                         if let Some(branch1) = branch1.as_ref() {
                             if let Err(inner_error) =
-                                byte_tee_error_branch(branch1, error.clone(), context)
+                                crate::js::completion_to_js_result(byte_tee_error_branch(branch1, error.clone(), js_engine::boa::context_as_ec(context)))
                             {
                                 error!(
                                     "[readable-stream] byte tee error branch1 (chunk) failed: {inner_error}"
@@ -2180,7 +2188,7 @@ pub(crate) fn readable_byte_stream_tee_default_reader_chunk_steps(
                         // Step 18.2 chunk steps 1.4.2.2: "Perform ! ReadableByteStreamControllerError(branch2.[[controller]], cloneResult.[[Value]])."
                         if let Some(branch2) = branch2.as_ref() {
                             if let Err(error) =
-                                byte_tee_error_branch(branch2, error.clone(), context)
+                                crate::js::completion_to_js_result(byte_tee_error_branch(branch2, error.clone(), js_engine::boa::context_as_ec(context)))
                             {
                                 error!(
                                     "[readable-stream] byte tee error branch2 (chunk) failed: {error}"
@@ -2324,6 +2332,16 @@ fn readable_byte_stream_tee_pull_with_default_reader(
     crate::js::completion_to_js_result(
         default_reader.read_with_request(read_request, js_engine::boa::context_as_ec(context)),
     )
+}
+
+fn byte_tee_pull_byob_on_rejected_fn(
+    _args: &[JsValue],
+    _this: JsValue,
+    tee_state: &GcCell<ByteTeeState>,
+    _ec: &mut dyn ExecutionContext<crate::js::Types>,
+) -> Completion<JsValue, crate::js::Types> {
+    tee_state.borrow_mut().reading = false;
+    Ok(JsValue::undefined())
 }
 
 /// <https://streams.spec.whatwg.org/#abstract-opdef-readablebytestreamtee>
@@ -2486,14 +2504,14 @@ fn readable_byte_stream_tee_pull_with_byob_reader(
                                 Err(error) => {
                                     // Step 19.4 chunk steps 1.5.2.1: "Perform ! ReadableByteStreamControllerError(byobBranch.[[controller]], cloneResult.[[Value]])."
                                     if let Some(branch) = byob_branch.as_ref() {
-                                        if let Err(error) = byte_tee_error_branch(branch, error.clone(), context) {
+                                        if let Err(error) = crate::js::completion_to_js_result(byte_tee_error_branch(branch, error.clone(), js_engine::boa::context_as_ec(context))) {
                                             error!("[readable-stream] byte tee error byob-branch (chunk) failed: {error}");
                                         }
                                     }
 
                                     // Step 19.4 chunk steps 1.5.2.2: "Perform ! ReadableByteStreamControllerError(otherBranch.[[controller]], cloneResult.[[Value]])."
                                     if let Some(branch) = other_branch.as_ref() {
-                                        if let Err(error) = byte_tee_error_branch(branch, error.clone(), context) {
+                                        if let Err(error) = crate::js::completion_to_js_result(byte_tee_error_branch(branch, error.clone(), js_engine::boa::context_as_ec(context))) {
                                             error!("[readable-stream] byte tee error other-branch (chunk) failed: {error}");
                                         }
                                     }
@@ -2569,14 +2587,9 @@ fn readable_byte_stream_tee_pull_with_byob_reader(
     )
     .to_js_function(context.realm());
 
-    let on_rejected = NativeFunction::from_copy_closure_with_captures(
-        |_, _, tee_state: &GcCell<ByteTeeState>, _| {
-            tee_state.borrow_mut().reading = false;
-            Ok(JsValue::undefined())
-        },
-        tee_state.clone(),
-    )
-    .to_js_function(context.realm());
+    let on_rejected = crate::js::builtin_with_captures(
+        context, tee_state.clone(), byte_tee_pull_byob_on_rejected_fn, 0,
+    );
 
     let (read_into_request, promise) = crate::js::completion_to_js_result(ReadIntoRequest::new(
         js_engine::boa::context_as_ec(context),
@@ -3993,6 +4006,89 @@ fn pipe_read_result_done(result: &JsValue, context: &mut Context) -> JsResult<Op
     ))
 }
 
+fn wait_for_all_on_fulfilled_fn(
+    _args: &[JsValue],
+    _this: JsValue,
+    aggregate: &GcCell<WaitForAllState>,
+    ec: &mut dyn ExecutionContext<crate::js::Types>,
+) -> Completion<JsValue, crate::js::Types> {
+    let resolution = {
+        let mut aggregate = aggregate.borrow_mut();
+        if aggregate.settled {
+            return Ok(JsValue::undefined());
+        }
+        if aggregate.remaining > 0 {
+            aggregate.remaining -= 1;
+        }
+        if aggregate.remaining == 0 {
+            aggregate.settled = true;
+            Some((
+                aggregate.resolvers.clone(),
+                aggregate.first_rejection_reason.clone(),
+            ))
+        } else {
+            None
+        }
+    };
+    if let Some((resolvers, rejection_reason)) = resolution {
+        let undefined = ec.value_undefined();
+        if let Some(rejection_reason) = rejection_reason {
+            let reject: JsObject = resolvers.reject.into();
+            ec.call(&reject, &undefined, &[rejection_reason])?;
+        } else {
+            let resolve: JsObject = resolvers.resolve.into();
+            ec.call(&resolve, &undefined, &[undefined.clone()])?;
+        }
+    }
+    Ok(JsValue::undefined())
+}
+
+fn wait_for_all_on_rejected_fn(
+    args: &[JsValue],
+    _this: JsValue,
+    capture: &(usize, GcCell<WaitForAllState>),
+    ec: &mut dyn ExecutionContext<crate::js::Types>,
+) -> Completion<JsValue, crate::js::Types> {
+    let reason = args.get_or_undefined(0).clone();
+    let resolution = {
+        let (index, aggregate) = capture;
+        let mut aggregate = aggregate.borrow_mut();
+        if aggregate.settled {
+            return Ok(JsValue::undefined());
+        }
+        if aggregate
+            .first_rejection_index
+            .is_none_or(|current_index| *index < current_index)
+        {
+            aggregate.first_rejection_index = Some(*index);
+            aggregate.first_rejection_reason = Some(reason);
+        }
+        if aggregate.remaining > 0 {
+            aggregate.remaining -= 1;
+        }
+        if aggregate.remaining == 0 {
+            aggregate.settled = true;
+            Some((
+                aggregate.resolvers.clone(),
+                aggregate.first_rejection_reason.clone(),
+            ))
+        } else {
+            None
+        }
+    };
+    if let Some((resolvers, rejection_reason)) = resolution {
+        let undefined = ec.value_undefined();
+        if let Some(rejection_reason) = rejection_reason {
+            let reject: JsObject = resolvers.reject.into();
+            ec.call(&reject, &undefined, &[rejection_reason])?;
+        } else {
+            let resolve: JsObject = resolvers.resolve.into();
+            ec.call(&resolve, &undefined, &[undefined.clone()])?;
+        }
+    }
+    Ok(JsValue::undefined())
+}
+
 /// <https://streams.spec.whatwg.org/#readable-stream-pipe-to>
 #[allow(dead_code)]
 fn wait_for_all_promises(promises: Vec<JsObject>, context: &mut Context) -> JsResult<JsObject> {
@@ -4024,105 +4120,12 @@ fn wait_for_all_promises(promises: Vec<JsObject>, context: &mut Context) -> JsRe
     });
 
     for (index, promise) in promises.into_iter().enumerate() {
-        let on_fulfilled = NativeFunction::from_copy_closure_with_captures(
-            |_, _, aggregate: &GcCell<WaitForAllState>, context| {
-                let resolution = {
-                    let mut aggregate = aggregate.borrow_mut();
-                    if aggregate.settled {
-                        return Ok(JsValue::undefined());
-                    }
-
-                    if aggregate.remaining > 0 {
-                        aggregate.remaining -= 1;
-                    }
-
-                    if aggregate.remaining == 0 {
-                        aggregate.settled = true;
-                        Some((
-                            aggregate.resolvers.clone(),
-                            aggregate.first_rejection_reason.clone(),
-                        ))
-                    } else {
-                        None
-                    }
-                };
-
-                if let Some((resolvers, rejection_reason)) = resolution {
-                    if let Some(rejection_reason) = rejection_reason {
-                        resolvers.reject.call(
-                            &JsValue::undefined(),
-                            &[rejection_reason],
-                            context,
-                        )?;
-                    } else {
-                        resolvers.resolve.call(
-                            &JsValue::undefined(),
-                            &[JsValue::undefined()],
-                            context,
-                        )?;
-                    }
-                }
-
-                Ok(JsValue::undefined())
-            },
-            aggregate.clone(),
-        )
-        .to_js_function(context.realm());
-
-        let on_rejected = NativeFunction::from_copy_closure_with_captures(
-            |_, args, capture: &(usize, GcCell<WaitForAllState>), context| {
-                let reason = args.get_or_undefined(0).clone();
-                let resolution = {
-                    let (index, aggregate) = capture;
-                    let mut aggregate = aggregate.borrow_mut();
-                    if aggregate.settled {
-                        return Ok(JsValue::undefined());
-                    }
-
-                    if aggregate
-                        .first_rejection_index
-                        .is_none_or(|current_index| *index < current_index)
-                    {
-                        aggregate.first_rejection_index = Some(*index);
-                        aggregate.first_rejection_reason = Some(reason);
-                    }
-
-                    if aggregate.remaining > 0 {
-                        aggregate.remaining -= 1;
-                    }
-
-                    if aggregate.remaining == 0 {
-                        aggregate.settled = true;
-                        Some((
-                            aggregate.resolvers.clone(),
-                            aggregate.first_rejection_reason.clone(),
-                        ))
-                    } else {
-                        None
-                    }
-                };
-
-                if let Some((resolvers, rejection_reason)) = resolution {
-                    if let Some(rejection_reason) = rejection_reason {
-                        resolvers.reject.call(
-                            &JsValue::undefined(),
-                            &[rejection_reason],
-                            context,
-                        )?;
-                    } else {
-                        resolvers.resolve.call(
-                            &JsValue::undefined(),
-                            &[JsValue::undefined()],
-                            context,
-                        )?;
-                    }
-                }
-
-                Ok(JsValue::undefined())
-            },
-            (index, aggregate.clone()),
-        )
-        .to_js_function(context.realm());
+        let on_fulfilled = crate::js::builtin_with_captures(
+            context, aggregate.clone(), wait_for_all_on_fulfilled_fn, 0,
+        );
+        let on_rejected = crate::js::builtin_with_captures(
+            context, (index, aggregate.clone()), wait_for_all_on_rejected_fn, 1,
+        );
 
         let _ = JsPromise::from_object(promise)?.then(
             Some(on_fulfilled),
@@ -4132,6 +4135,28 @@ fn wait_for_all_promises(promises: Vec<JsObject>, context: &mut Context) -> JsRe
     }
 
     Ok(promise.into())
+}
+
+fn start_abort_cancel_on_fulfilled_fn(
+    _args: &[JsValue],
+    _this: JsValue,
+    state: &GcCell<AbortThenCancelState>,
+    ec: &mut dyn ExecutionContext<crate::js::Types>,
+) -> Completion<JsValue, crate::js::Types> {
+    finalize_abort_cancel_source(state.clone(), None, ec)
+}
+
+fn start_abort_cancel_on_rejected_fn(
+    args: &[JsValue],
+    _this: JsValue,
+    state: &GcCell<AbortThenCancelState>,
+    ec: &mut dyn ExecutionContext<crate::js::Types>,
+) -> Completion<JsValue, crate::js::Types> {
+    finalize_abort_cancel_source(
+        state.clone(),
+        Some(args.get_or_undefined(0).clone()),
+        ec,
+    )
 }
 
 fn abort_destination_then_cancel_source(
@@ -4192,24 +4217,12 @@ fn start_abort_cancel_source(
             .map_err(boa_engine::JsError::from_opaque)?,
     };
 
-    let on_fulfilled = NativeFunction::from_copy_closure_with_captures(
-        |_, _, state: &GcCell<AbortThenCancelState>, context| {
-            finalize_abort_cancel_source(state.clone(), None, context)
-        },
-        state.clone(),
-    )
-    .to_js_function(context.realm());
-    let on_rejected = NativeFunction::from_copy_closure_with_captures(
-        |_, args, state: &GcCell<AbortThenCancelState>, context| {
-            finalize_abort_cancel_source(
-                state.clone(),
-                Some(args.get_or_undefined(0).clone()),
-                context,
-            )
-        },
-        state,
-    )
-    .to_js_function(context.realm());
+    let on_fulfilled = crate::js::builtin_with_captures(
+        context, state.clone(), start_abort_cancel_on_fulfilled_fn, 0,
+    );
+    let on_rejected = crate::js::builtin_with_captures(
+        context, state, start_abort_cancel_on_rejected_fn, 1,
+    );
     let _ = JsPromise::from_object(cancel_promise)?.then(
         Some(on_fulfilled),
         Some(on_rejected),
@@ -4221,8 +4234,8 @@ fn start_abort_cancel_source(
 fn finalize_abort_cancel_source(
     state: GcCell<AbortThenCancelState>,
     cancel_rejection: Option<JsValue>,
-    context: &mut Context,
-) -> JsResult<JsValue> {
+    ec: &mut dyn ExecutionContext<crate::js::Types>,
+) -> Completion<JsValue, crate::js::Types> {
     let (abort_rejection, resolvers) = {
         let state_ref = state.borrow();
         (
@@ -4231,14 +4244,13 @@ fn finalize_abort_cancel_source(
         )
     };
 
+    let undefined = ec.value_undefined();
     if let Some(reason) = abort_rejection.or(cancel_rejection) {
-        resolvers
-            .reject
-            .call(&JsValue::undefined(), &[reason], context)?;
+        let reject: JsObject = resolvers.reject.into();
+        ec.call(&reject, &undefined, &[reason])?;
     } else {
-        resolvers
-            .resolve
-            .call(&JsValue::undefined(), &[JsValue::undefined()], context)?;
+        let resolve: JsObject = resolvers.resolve.into();
+        ec.call(&resolve, &undefined, &[undefined.clone()])?;
     }
 
     Ok(JsValue::undefined())
