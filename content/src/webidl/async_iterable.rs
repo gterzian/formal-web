@@ -17,6 +17,8 @@ use super::promise::{rejected_promise, resolved_promise};
 
 use js_engine::{Completion, ExecutionContext};
 
+type Types = crate::js::Types;
+
 #[gc_struct]
 enum IteratorOperation {
     Next,
@@ -30,16 +32,20 @@ pub(crate) trait AsyncValueIterable: Clone + Trace + Finalize + 'static {
     fn create_async_iterator_state(
         &self,
         args: &[JsValue],
-        context: &mut Context,
-    ) -> JsResult<Self::State>;
+        ec: &mut dyn ExecutionContext<Types>,
+    ) -> Completion<Self::State, Types>;
 
     fn get_next_iteration_result(
         &self,
         state: &Self::State,
-        context: &mut Context,
-    ) -> JsResult<JsObject>;
+        ec: &mut dyn ExecutionContext<Types>,
+    ) -> Completion<<Types as js_engine::JsTypes>::JsObject, Types>;
 
-    fn finish_async_iterator(&self, _state: &Self::State, _context: &mut Context) -> JsResult<()> {
+    fn finish_async_iterator(
+        &self,
+        _state: &Self::State,
+        _ec: &mut dyn ExecutionContext<Types>,
+    ) -> Completion<(), Types> {
         Ok(())
     }
 
@@ -51,12 +57,10 @@ pub(crate) trait AsyncValueIterable: Clone + Trace + Finalize + 'static {
         &self,
         _state: &Self::State,
         _value: JsValue,
-        context: &mut Context,
-    ) -> JsResult<JsObject> {
-        crate::js::completion_to_js_result(resolved_promise(
-            JsValue::undefined(),
-            js_engine::boa::context_as_ec(context),
-        ))
+        ec: &mut dyn ExecutionContext<Types>,
+    ) -> Completion<<Types as js_engine::JsTypes>::JsObject, Types> {
+        // Step 1: "Return a promise resolved with undefined."
+        resolved_promise(ec.value_undefined(), ec)
     }
 }
 
@@ -86,10 +90,10 @@ where
     // Step 6: "Let iterator be a newly created default asynchronous iterator object for definition with idlObject as its target, \"value\" as its kind, and is finished set to false."
     // Step 7: "Run the asynchronous iterator initialization steps for definition with idlObject, iterator, and idlArgs, if any such steps exist."
     // Note: No current content-process async iterable needs the JavaScript iterator object's identity during initialization, so the interface-specific hook returns the iterator state before the wrapper object is allocated.
-    let state = crate::js::js_result_to_completion(
-        target.create_async_iterator_state(args, context),
-        context,
-    )?;
+    let state = {
+        let ec = js_engine::boa::context_as_ec(context);
+        target.create_async_iterator_state(args, ec)?
+    };
 
     let iterator = DefaultAsyncIterator::new(target, state);
 
@@ -184,26 +188,39 @@ where
     fn start_next(&self, context: &mut Context) -> JsResult<JsObject> {
         // Step 8.2: "If object's is finished is true, then:"
         if self.finished.get() {
-            return crate::js::completion_to_js_result(resolved_promise(
+            let promise = resolved_promise(
                 create_iter_result_object(JsValue::undefined(), true, context),
                 js_engine::boa::context_as_ec(context),
-            ));
+            )
+            .map_err(|error| JsError::from_opaque(error))?;
+            return Ok(promise);
         }
 
         // Step 8.4: "Let nextPromise be the result of getting the next iteration result with object's target and object."
-        let next_promise = match self.target.get_next_iteration_result(&self.state, context) {
-            Ok(next_promise) => next_promise,
-            Err(error) => {
-                let reason = error.into_opaque(context)?;
-                rejected_promise(reason, js_engine::boa::context_as_ec(context))
-                    .map_err(boa_engine::JsError::from_opaque)?
+        let next_promise = {
+            let ec = js_engine::boa::context_as_ec(context);
+            match self
+                .target
+                .get_next_iteration_result(&self.state, ec)
+            {
+                Ok(promise_obj) => promise_obj,
+                Err(error) => {
+                    // On error, create a rejected promise with the error value
+                    match rejected_promise(error, &mut *ec) {
+                        Ok(rejected_obj) => rejected_obj,
+                        Err(inner_error) => {
+                            return Err(JsError::from_opaque(inner_error));
+                        }
+                    }
+                }
             }
         };
 
+        // For Boa, <Types as JsTypes>::JsObject is boa_engine::object::JsObject
         let on_fulfilled = FunctionObjectBuilder::new(
             context.realm(),
             NativeFunction::from_copy_closure_with_captures(
-                |_, args, iterator: &DefaultAsyncIterator<T>, context| {
+                move |_, args, iterator: &DefaultAsyncIterator<T>, context| {
                     let result = args.get_or_undefined(0).clone();
 
                     if let Some(result_object) = result.as_object() {
@@ -212,9 +229,11 @@ where
                         // Step 8.5.2: "If next is end of iteration, then:"
                         if done {
                             iterator.finished.set(true);
+                            let ec = js_engine::boa::context_as_ec(context);
                             iterator
                                 .target
-                                .finish_async_iterator(&iterator.state, context)?;
+                                .finish_async_iterator(&iterator.state, ec)
+                                .map_err(JsError::from_opaque)?;
                         }
                     }
 
@@ -231,13 +250,15 @@ where
         let on_rejected = FunctionObjectBuilder::new(
             context.realm(),
             NativeFunction::from_copy_closure_with_captures(
-                |_, args, iterator: &DefaultAsyncIterator<T>, context| {
+                move |_, args, iterator: &DefaultAsyncIterator<T>, context| {
                     // Step 8.7.2: "Set object's is finished to true."
                     iterator.finished.set(true);
 
+                    let ec = js_engine::boa::context_as_ec(context);
                     iterator
                         .target
-                        .finish_async_iterator(&iterator.state, context)?;
+                        .finish_async_iterator(&iterator.state, ec)
+                        .map_err(JsError::from_opaque)?;
 
                     // Step 8.7.3: "Throw reason."
                     Err(JsError::from_opaque(args.get_or_undefined(0).clone()))
@@ -260,36 +281,45 @@ where
     fn start_return(&self, value: JsValue, context: &mut Context) -> JsResult<JsObject> {
         // Step 8.2: "If object's is finished is true, then:"
         if self.finished.get() {
-            return crate::js::completion_to_js_result(resolved_promise(
+            let promise = resolved_promise(
                 create_iter_result_object(value, true, context),
                 js_engine::boa::context_as_ec(context),
-            ));
+            )
+            .map_err(|error| JsError::from_opaque(error))?;
+            return Ok(promise);
         }
 
         if !T::has_async_iterator_return() {
             self.finished.set(true);
-            return crate::js::completion_to_js_result(resolved_promise(
+            let promise = resolved_promise(
                 create_iter_result_object(value, true, context),
                 js_engine::boa::context_as_ec(context),
-            ));
+            )
+            .map_err(|error| JsError::from_opaque(error))?;
+            return Ok(promise);
         }
 
         // Step 8.3: "Set object's is finished to true."
         self.finished.set(true);
 
         // Step 8.4: "Return the result of running the asynchronous iterator return algorithm for interface, given object's target, object, and value."
-        let return_promise =
+        let return_promise = {
+            let ec = js_engine::boa::context_as_ec(context);
             match self
                 .target
-                .return_async_iterator(&self.state, value.clone(), context)
+                .return_async_iterator(&self.state, value.clone(), ec)
             {
-                Ok(return_promise) => return_promise,
+                Ok(promise_obj) => promise_obj,
                 Err(error) => {
-                    let reason = error.into_opaque(context)?;
-                    rejected_promise(reason, js_engine::boa::context_as_ec(context))
-                        .map_err(boa_engine::JsError::from_opaque)?
+                    match rejected_promise(error, &mut *ec) {
+                        Ok(rejected_obj) => rejected_obj,
+                        Err(inner_error) => {
+                            return Err(JsError::from_opaque(inner_error));
+                        }
+                    }
                 }
-            };
+            }
+        };
 
         let on_fulfilled = FunctionObjectBuilder::new(
             context.realm(),
@@ -407,12 +437,10 @@ where
     let iterator = match default_async_iterator_from_this::<T>(this, context) {
         Ok(iterator) => iterator,
         Err(error) => {
-            return Ok(JsValue::from(crate::js::completion_to_js_result(
-                rejected_promise(
-                    error.into_opaque(context)?,
-                    js_engine::boa::context_as_ec(context),
-                ),
-            )?));
+            let error_js = error.into_opaque(context)?;
+            return rejected_promise(error_js, js_engine::boa::context_as_ec(context))
+                .map(|obj| JsValue::from(obj))
+                .map_err(|_| JsError::from_opaque(boa_engine::JsValue::undefined()));
         }
     };
 
@@ -438,12 +466,10 @@ where
     let iterator = match default_async_iterator_from_this::<T>(this, context) {
         Ok(iterator) => iterator,
         Err(error) => {
-            return Ok(JsValue::from(crate::js::completion_to_js_result(
-                rejected_promise(
-                    error.into_opaque(context)?,
-                    js_engine::boa::context_as_ec(context),
-                ),
-            )?));
+            let error_js = error.into_opaque(context)?;
+            return rejected_promise(error_js, js_engine::boa::context_as_ec(context))
+                .map(|obj| JsValue::from(obj))
+                .map_err(|_| JsError::from_opaque(boa_engine::JsValue::undefined()));
         }
     };
 

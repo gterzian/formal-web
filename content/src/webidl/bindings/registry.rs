@@ -145,18 +145,4 @@ where
     get_prototype_from_host_defined::<Ty, I>(ec)
 }
 
-/// Convenience: get prototype from &Context (Boa-specific, uses repr(transparent) cast).
-pub(crate) fn get_registry_prototype_boa<I: 'static>(
-    context: &boa_engine::Context,
-) -> Option<boa_engine::JsObject> {
-    get_prototype_from_host_defined::<crate::js::Types, I>(js_engine::boa::context_as_ec_ref(
-        context,
-    ))
-}
 
-/// Convenience: wire prototype using &mut Context.
-pub(crate) fn wire_registry_prototype_boa<TChild: 'static, TParent: 'static>(
-    context: &mut boa_engine::Context,
-) {
-    wire_prototype::<crate::js::Types, TChild, TParent>(js_engine::boa::context_as_ec(context));
-}

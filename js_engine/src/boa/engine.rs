@@ -1120,6 +1120,10 @@ impl ExecutionContext<BoaTypes> for BoaContext {
                 .expect("Uint8Array constructor"),
             object_prototype: constructors.object().prototype(),
             function_prototype: constructors.function().prototype(),
+            async_iterator_prototype: intrinsics
+                .objects()
+                .iterator_prototypes()
+                .async_iterator(),
         }
     }
 

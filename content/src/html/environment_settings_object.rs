@@ -111,13 +111,13 @@ impl EnvironmentSettingsObject {
             Ok(())
         })
         .map_err(|error| error.display().to_string())?;
-        install_document_property(engine.context()).map_err(|error| error.to_string())?;
+        install_document_property(&mut engine).map_err(|error| error.display().to_string())?;
         install_console_namespace(engine.context())
             .map_err(|error: boa_engine::JsError| error.to_string())?;
         install_css_namespace(engine.context()).map_err(|error| error.to_string())?;
 
         let global = engine.context().global_object();
-        if let Some(window_proto) = get_registry_prototype::<Window>(engine.context_ref()) {
+        if let Some(window_proto) = get_registry_prototype::<crate::js::Types, Window>(&engine) {
             global.set_prototype(Some(window_proto));
         }
         engine
@@ -141,6 +141,11 @@ impl EnvironmentSettingsObject {
         })
     }
 
+    /// Access the execution context for generic ECMA-262 operations.
+    pub fn ec(&mut self) -> &mut dyn ExecutionContext<crate::js::Types> {
+        &mut self.engine
+    }
+
     /// Access the underlying Boa context (mutable).
     ///
     /// Temporary compatibility shim. Prefer using `self.engine` directly
@@ -162,7 +167,7 @@ impl EnvironmentSettingsObject {
 
     pub fn clear_all_window_timers(&mut self) -> Result<(), String> {
         with_global_scope(
-            js_engine::boa::context_as_ec(self.context()),
+            &mut self.engine,
             |global_scope| {
                 global_scope.clear_all_timers();
                 Ok(())

@@ -395,7 +395,7 @@ or subsystem entry-point signature must first be validated in
 on **both backends** (Boa and JSC) before it can be applied to any
 real production file.
 
-### Current state (updated 2026-07-10)
+### Current state (updated 2026-07-03)
 
 **Phases A–D, S1–S10, T1–T2, W1–W2, G1–G3, C2–C3, B1, R1, R2, S, P complete.**
 All binding files at 0 ec_to_ctx. All 34 struct/enum definitions use `#[gc_struct]`.
@@ -405,50 +405,34 @@ selects between BoaTypes and JscTypes.
 
 **`_ec` suffix count: ZERO — all `_ec` bridge functions eliminated.**
 
-The last `_ec` function (`with_global_scope_ec`) was converted in this pass:
-- 7 bridge callers in `main.rs` and `environment_settings_object.rs` changed
-  from `&self` to `&mut self`, restructured multi-field borrows via `Rc::clone`
-  before mutable borrow, and switched from `context_ref()` to `context()`.
-- Bridge function `with_global_scope` (taking `&Context`) deleted.
-- Function renamed from `with_global_scope_ec` to `with_global_scope`.
-- All callers updated (`platform_objects.rs`, `html_media_element.rs`,
-  `environment_settings_object.rs`, `main.rs`).
-- Error formatting changed from `{error}` (Display on `JsError`) to
-  `error.display()` (on `JsValue`) since `Completion` errors are opaque values.
+**`completion_to_js_result` bridges: ELIMINATED.** The function definition and
+all 15 call sites have been removed. The `AsyncValueIterable` trait is now
+generic (takes `&mut dyn ExecutionContext<Types>` instead of `&mut Context`),
+enabling `readablestreamasynciterator.rs` to implement it with zero bridges.
+`main.rs` wasm promise resolution also uses `Completion` directly.
 
-The 8 `_ec` functions converted in an earlier session in this task are:
-- `get_reader_ec` — bridge caller converted, bridge deleted, function renamed.
-- `with_readable_stream_ref_ec`, `with_readable_stream_default_reader_ref_ec`,
-  `with_readable_stream_byob_reader_ref_ec`, `with_writable_stream_ref_ec` —
-  non-EC callers converted to use EC variant (all already had `ec`), non-EC
-  versions deleted, EC functions renamed.
-- `with_readable_stream_default_controller_ref_ec`,
-  `with_readable_byte_stream_controller_ref_ec`,
-  `with_readable_stream_byob_request_ref_ec` — non-EC counterparts had zero
-  callers; deleted directly and EC functions renamed.
+**`RealmIntrinsics` extended** with `async_iterator_prototype` field
+(`T::JsObject`) for the generic async iterable infrastructure.
 
-**Remaining `context_as_ec` calls outside `js_engine/src/` (31 total):**
-- `streams/readablestreamasynciterator.rs` (7) — `AsyncValueIterable` impl
-- `webidl/async_iterable.rs` (8) — `AsyncValueIterable` trait
-- `webidl/bindings/registry.rs` (2) — registry bootstrap
-- `js/bindings/html/host_hooks.rs` (4) — host hook setup
-- `js/bindings/streams/readablestream.rs` (2) — binding functions
-- `js/bindings/wasm/mod.rs` (1) — wasm binding
-- `js/bindings/dom/document.rs` (1)
-- `html/safe_passing_of_structured_data.rs` (1)
-- `wasm/namespace.rs` (2) — gated behind `boa` feature
-- `main.rs` (4) — wasm result handling
+**Remaining `context_as_ec` calls outside `js_engine/src/` (16 total):**
+- `webidl/async_iterable.rs` (10) — internal Boa-specific iterator infrastructure
+  (NativeFunction, JsPromise, ObjectInitializer) bridging to generic trait
+- `js/bindings/streams/readablestream.rs` (2) — NativeFunction binding-function adapters
+- `wasm/namespace.rs` (2) — gated behind `#[cfg(feature = "boa")]`
+- `html/safe_passing_of_structured_data.rs` (1) — `data_clone_error` helper
+- `js/bindings/wasm/mod.rs` (1) — NativeFunction adapter
 
-Plus `completion_to_js_result` bridges (16 total, 1 definition + 15 call sites):
-- `readablestreamasynciterator.rs` (5)
-- `webidl/async_iterable.rs` (6)
-- `main.rs` (4)
+**Eliminated in this session:** `main.rs` (10), `environment_settings_object.rs` (1),
+`host_hooks.rs` (3), `registry.rs` (2), `document.rs` (1) — 17 total.
 
 ### Next session: recommended order
 
-1. **Clean up remaining `completion_to_js_result` bridges** — `async_iterable.rs`
-   (requires making `AsyncValueIterable` trait generic), `readablestreamasynciterator.rs`,
-   `main.rs`.
+1. **Eliminate remaining `context_as_ec` bridges** — 16 calls remaining:
+   - `html/safe_passing_of_structured_data.rs` (1) — convert `data_clone_error` to EC
+   - `wasm/namespace.rs` (2) — convert function signatures from Context to EC
+   - `js/bindings/wasm/mod.rs` (1) — NativeFunction adapter pattern
+   - `js/bindings/streams/readablestream.rs` (2) — NativeFunction adapter pattern
+   - `webidl/async_iterable.rs` (10) — deeply Boa-specific internal code
 
 2. **Phase E** — Content crate does not yet compile for JSC.
    Blockers: GC trait bounds (`boa_engine::Trace`/`#[gc_struct]`) and

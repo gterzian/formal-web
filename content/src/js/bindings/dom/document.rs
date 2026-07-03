@@ -2,7 +2,7 @@ use std::marker::PhantomData;
 use std::rc::Rc;
 
 use boa_engine::{
-    Context, JsError, JsResult, JsValue, js_string, object::JsObject, property::Attribute,
+    Context, JsResult, JsValue, js_string, object::JsObject, property::Attribute,
 };
 
 use crate::dom::Document;
@@ -12,7 +12,7 @@ use crate::js::platform_objects::{
 };
 use crate::webidl::bindings::{AttributeDef, InterfaceDefinition, OperationDef, WebIdlInterface};
 
-use js_engine::{Completion, ExecutionContext, JsTypes};
+use js_engine::{Completion, ExecutionContext, JsTypes, PropertyDescriptor};
 
 // ── WebIDL interface definition (§3) ──
 
@@ -407,8 +407,27 @@ pub(crate) fn install_document_property_with_object(
     context.register_global_property(js_string!("document"), document, Attribute::all())
 }
 
-pub(crate) fn install_document_property(context: &mut Context) -> JsResult<()> {
-    let document =
-        document_object(js_engine::boa::context_as_ec(context)).map_err(JsError::from_opaque)?;
-    install_document_property_with_object(context, document)
+pub(crate) fn install_document_property(
+    ec: &mut dyn ExecutionContext<crate::js::Types>,
+) -> Completion<(), crate::js::Types> {
+    let document = document_object(ec)?;
+    let global = ec.realm_global_object();
+    let key = ec.property_key_from_str("document");
+    let value = <crate::js::Types as js_engine::JsTypes>::value_from_object(document);
+    // Step 1: Define the "document" property on the global object.
+    // Note: This replaces register_global_property which is Boa-specific.
+    // The property is writable, enumerable, configurable (same as Attribute::all()).
+    ec.define_property_or_throw(
+        global,
+        key,
+        js_engine::PropertyDescriptor {
+            value: Some(value),
+            writable: Some(true),
+            enumerable: Some(true),
+            configurable: Some(true),
+            get: None,
+            set: None,
+        },
+    )?;
+    Ok(())
 }

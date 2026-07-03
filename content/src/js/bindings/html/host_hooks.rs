@@ -69,40 +69,45 @@ pub(crate) fn build_context(document: Rc<RefCell<BaseDocument>>) -> Result<BoaCo
 }
 
 fn build_boa_context(document: Rc<RefCell<BaseDocument>>) -> Result<Context, String> {
-    let mut context = ContextBuilder::new()
+    let context = ContextBuilder::new()
         .host_hooks(Rc::new(WindowHostHooks::new(document)))
         .job_executor(Rc::new(SimpleJobExecutor::new()))
         .build()
         .map_err(|error| error.to_string())?;
 
-    initialize_registry::<crate::js::Types>(js_engine::boa::context_as_ec(&mut context));
+    // Get a shared error-to-string helper that works with both Context and BoaContext.
+    let error_string = |error: String| -> String { error };
+
+    let mut engine = js_engine::boa::BoaContext::from_context(context);
+
+    initialize_registry::<crate::js::Types>(&mut engine);
 
     // Store the global object in host_any so that platform_objects.rs can
     // reach GlobalScope through the generic ExecutionContext trait.
     {
-        let global_obj = context.global_object().clone();
+        let global_obj = engine.context().global_object();
         crate::js::platform_objects::init_global_object_slot(
-            js_engine::boa::context_as_ec(&mut context),
+            &mut engine,
             global_obj,
         );
     }
 
     // ── Install WebAssembly namespace ──
-    if let Err(error) = crate::js::bindings::install_wasm_namespace(&mut context) {
+    if let Err(error) = crate::js::bindings::install_wasm_namespace(engine.context()) {
         error!("[content] failed to install WebAssembly namespace: {error}");
     }
 
+    // Helper to convert Completion errors to strings for error reporting
+    let report_err = |result: js_engine::Completion<(), crate::js::Types>| -> Result<(), String> {
+        result.map_err(|error| error.display().to_string())
+    };
+
     macro_rules! reg {
         ($ty:ty) => {
-            register_interface_spec::<crate::js::Types, $ty, _>(js_engine::boa::context_as_engine(
-                &mut context,
-            ))
-            .map_err(|error| {
-                error
-                    .to_string(&mut context)
-                    .map(|s| s.to_std_string_escaped())
-                    .unwrap_or_else(|_| String::from("unknown error"))
-            })?;
+            register_interface_spec::<crate::js::Types, $ty, _>(
+                &mut engine,
+            )
+            .map_err(|error| error.display().to_string())?;
         };
     }
 
@@ -137,32 +142,36 @@ fn build_boa_context(document: Rc<RefCell<BaseDocument>>) -> Result<Context, Str
     reg!(TransformStream);
     reg!(TransformStreamDefaultController);
 
-    if let Some(de_proto) = get_registry_prototype::<DOMException>(&context) {
-        de_proto.set_prototype(Some(
-            context.intrinsics().constructors().error().prototype(),
-        ));
+    {
+        let context = engine.context_ref();
+        let de_proto = get_registry_prototype::<crate::js::Types, DOMException>(&engine);
+        if let Some(ref de_proto) = de_proto {
+            de_proto.set_prototype(Some(
+                context.intrinsics().constructors().error().prototype(),
+            ));
+        }
     }
 
-    wire_registry_prototype::<UIEvent, Event>(&mut context);
-    wire_registry_prototype::<AbortSignal, EventTarget>(&mut context);
-    wire_registry_prototype::<Node, EventTarget>(&mut context);
-    wire_registry_prototype::<Document, Node>(&mut context);
-    wire_registry_prototype::<Element, Node>(&mut context);
-    wire_registry_prototype::<HTMLElement, Element>(&mut context);
-    wire_registry_prototype::<HTMLAnchorElement, HTMLElement>(&mut context);
-    wire_registry_prototype::<HTMLIFrameElement, HTMLElement>(&mut context);
-    wire_registry_prototype::<HTMLMediaElement, HTMLElement>(&mut context);
-    wire_registry_prototype::<HTMLVideoElement, HTMLMediaElement>(&mut context);
-    wire_registry_prototype::<HTMLInputElement, HTMLElement>(&mut context);
-    wire_registry_prototype::<Window, EventTarget>(&mut context);
+    wire_registry_prototype::<crate::js::Types, UIEvent, Event>(&mut engine);
+    wire_registry_prototype::<crate::js::Types, AbortSignal, EventTarget>(&mut engine);
+    wire_registry_prototype::<crate::js::Types, Node, EventTarget>(&mut engine);
+    wire_registry_prototype::<crate::js::Types, Document, Node>(&mut engine);
+    wire_registry_prototype::<crate::js::Types, Element, Node>(&mut engine);
+    wire_registry_prototype::<crate::js::Types, HTMLElement, Element>(&mut engine);
+    wire_registry_prototype::<crate::js::Types, HTMLAnchorElement, HTMLElement>(&mut engine);
+    wire_registry_prototype::<crate::js::Types, HTMLIFrameElement, HTMLElement>(&mut engine);
+    wire_registry_prototype::<crate::js::Types, HTMLMediaElement, HTMLElement>(&mut engine);
+    wire_registry_prototype::<crate::js::Types, HTMLVideoElement, HTMLMediaElement>(&mut engine);
+    wire_registry_prototype::<crate::js::Types, HTMLInputElement, HTMLElement>(&mut engine);
+    wire_registry_prototype::<crate::js::Types, Window, EventTarget>(&mut engine);
 
     // ── Post-registration wiring ──
 
     // HTMLAnchorElement: HTMLHyperlinkElementUtils members (§HTMLHyperlinkElementUtils)
-    if let Some(proto) = get_registry_prototype::<HTMLAnchorElement>(&context) {
+    if let Some(proto) = get_registry_prototype::<crate::js::Types, HTMLAnchorElement>(&engine) {
         hyperlink_element_utils::register_hyperlink_element_utils_on_prototype(
             &proto,
-            js_engine::boa::context_as_ec(&mut context),
+            &mut engine,
         )
         .map_err(|error| error.display().to_string())?;
     }
@@ -171,7 +180,8 @@ fn build_boa_context(document: Rc<RefCell<BaseDocument>>) -> Result<Context, Str
     // Note: Static methods (ReadableStream.from(), AbortSignal.abort(), etc.) are
     // registered automatically by `register_interface_spec` via static operations.
 
-    if let Some(rs_proto) = get_registry_prototype::<ReadableStream>(&context) {
+    if let Some(rs_proto) = get_registry_prototype::<crate::js::Types, ReadableStream>(&engine) {
+        let context = engine.context();
         let realm = context.realm().clone();
 
         // values() and @@asyncIterator
@@ -189,7 +199,7 @@ fn build_boa_context(document: Rc<RefCell<BaseDocument>>) -> Result<Context, Str
             .configurable(true)
             .build();
         rs_proto
-            .define_property_or_throw(js_string!("values"), values_desc, &mut context)
+            .define_property_or_throw(js_string!("values"), values_desc, context)
             .map(|_| ())
             .map_err(|error| error.to_string())?;
 
@@ -199,7 +209,7 @@ fn build_boa_context(document: Rc<RefCell<BaseDocument>>) -> Result<Context, Str
             .configurable(true)
             .build();
         rs_proto
-            .define_property_or_throw(JsSymbol::async_iterator(), symbol_desc, &mut context)
+            .define_property_or_throw(JsSymbol::async_iterator(), symbol_desc, context)
             .map(|_| ())
             .map_err(|error| error.to_string())?;
 
@@ -218,16 +228,17 @@ fn build_boa_context(document: Rc<RefCell<BaseDocument>>) -> Result<Context, Str
             .writable(true)
             .configurable(true)
             .build();
+        let context = engine.context();
         rs_proto
             .define_property_or_throw(
                 js_string!("__formalWebReadableStreamPipeToNative"),
                 native_desc,
-                &mut context,
+                context,
             )
             .map(|_| ())
             .map_err(|error| error.to_string())?;
 
-        let pipe_to_wrapper = context.eval(Source::from_bytes(
+        let pipe_to_wrapper = engine.context().eval(Source::from_bytes(
             "(function pipeTo() { return ReadableStream.prototype.__formalWebReadableStreamPipeToNative.call(this, arguments[0], arguments[1]); })",
         ))
         .map_err(|error| error.to_string())?
@@ -241,11 +252,12 @@ fn build_boa_context(document: Rc<RefCell<BaseDocument>>) -> Result<Context, Str
             .writable(true)
             .configurable(true)
             .build();
+        let context = engine.context();
         rs_proto
-            .define_property_or_throw(js_string!("pipeTo"), pipe_to_desc, &mut context)
+            .define_property_or_throw(js_string!("pipeTo"), pipe_to_desc, context)
             .map(|_| ())
             .map_err(|error| error.to_string())?;
     }
 
-    Ok(context)
+    Ok(engine.into_context())
 }

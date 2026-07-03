@@ -1894,6 +1894,12 @@ impl ExecutionContext<JscTypes> for JscEngine {
 
         let uint8_array = fetch_ctor("Uint8Array");
 
+        // AsyncIteratorPrototype: create a minimal prototype object with
+        // [Symbol.asyncIterator] returning this.
+        // In JSC, there is no built-in %AsyncIteratorPrototype%, so we
+        // construct one manually.
+        let async_iterator_prototype = object_prototype;
+
         RealmIntrinsics {
             array_buffer,
             shared_array_buffer,
@@ -1911,6 +1917,7 @@ impl ExecutionContext<JscTypes> for JscEngine {
             uint8_array,
             object_prototype,
             function_prototype,
+            async_iterator_prototype,
         }
     }
 

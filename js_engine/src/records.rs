@@ -69,6 +69,7 @@ pub struct RealmIntrinsics<T: JsTypes> {
     pub uint8_array: T::Constructor,
     pub object_prototype: T::JsObject,
     pub function_prototype: T::JsObject,
+    pub async_iterator_prototype: T::JsObject,
 }
 
 /// <https://html.spec.whatwg.org/#hostloadimportedmodule>

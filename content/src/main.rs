@@ -716,7 +716,7 @@ impl ContentProcess {
             .get_mut(&document_id)
             .ok_or_else(|| format!("unknown document {document_id}"))?;
         with_global_scope(
-            js_engine::boa::context_as_ec(content_document.settings.context()),
+            content_document.settings.ec(),
             |global_scope| {
                 global_scope.set_new_document_registry(registry);
                 Ok(())
@@ -737,7 +737,7 @@ impl ContentProcess {
             .get_mut(&document_id)
             .ok_or_else(|| format!("unknown document {document_id}"))?;
         with_global_scope(
-            js_engine::boa::context_as_ec(content_document.settings.context()),
+            content_document.settings.ec(),
             |global_scope| {
                 global_scope.clear_new_document_registry();
                 Ok(())
@@ -766,7 +766,7 @@ impl ContentProcess {
             }
             // Read the traversable_id from the new document's own GlobalScope.
             let new_traversable_id = with_global_scope(
-                js_engine::boa::context_as_ec(settings.context()),
+                settings.ec(),
                 |global_scope| Ok(global_scope.source_navigable_id()),
             )
             .map_err(|error| format!("failed to read new traversable id: {}", error.display()))?
@@ -925,7 +925,7 @@ impl ContentProcess {
         // Set the video-paint registry on GlobalScope so that
         // resource_selection_algorithm can register paint IDs.
         if let Err(error) = with_global_scope(
-            js_engine::boa::context_as_ec(settings.context()),
+            settings.ec(),
             |global_scope| {
                 global_scope.set_video_paint_registry(Rc::clone(&self.video_paint_registry));
                 if let Some(ref sender) = self.media_extension_sender {
@@ -1030,7 +1030,7 @@ impl ContentProcess {
         // Set the video-paint registry on GlobalScope so that
         // resource_selection_algorithm can register paint IDs.
         if let Err(error) = with_global_scope(
-            js_engine::boa::context_as_ec(settings.context()),
+            settings.ec(),
             |global_scope| {
                 global_scope.set_video_paint_registry(Rc::clone(&self.video_paint_registry));
                 if let Some(ref sender) = self.media_extension_sender {
@@ -1836,7 +1836,7 @@ impl ContentProcess {
         let parent_traversable_id = content_document.parent_traversable_id;
         let top_level_traversable_id = content_document.top_level_traversable_id;
         with_global_scope(
-            js_engine::boa::context_as_ec(content_document.settings.context()),
+            content_document.settings.ec(),
             |global_scope| {
                 global_scope.set_navigable_hierarchy(parent_traversable_id, top_level_traversable_id);
                 Ok(())
@@ -1927,27 +1927,25 @@ impl ContentProcess {
                         request_id: _,
                         module,
                     } => {
-                        if let Err(error) =
-                            crate::js::completion_to_js_result(compile_continuation(
-                                &resolvers,
-                                module,
-                                Vec::new(),
-                                js_engine::boa::context_as_ec(content_document.settings.context()),
-                            ))
-                        {
-                            error!("WebAssembly: failed to resolve compile promise: {error}");
+                        if let Err(error) = compile_continuation(
+                            &resolvers,
+                            module,
+                            Vec::new(),
+                            content_document.settings.ec(),
+                        ) {
+                            error!("WebAssembly: failed to resolve compile promise: {}", error.display());
                         }
                     }
                     WasmResult::CompileError {
                         request_id: _,
                         message,
                     } => {
-                        if let Err(error) = crate::js::completion_to_js_result(compile_rejection(
+                        if let Err(error) = compile_rejection(
                             &resolvers,
                             message,
-                            js_engine::boa::context_as_ec(content_document.settings.context()),
-                        )) {
-                            error!("WebAssembly: failed to reject compile promise: {error}");
+                            content_document.settings.ec(),
+                        ) {
+                            error!("WebAssembly: failed to reject compile promise: {}", error.display());
                         }
                     }
                     WasmResult::Instantiated {
@@ -1964,28 +1962,26 @@ impl ContentProcess {
                             self.pending_wasm_requests.remove(&request_id);
                             continue;
                         };
-                        if let Err(error) =
-                            crate::js::completion_to_js_result(instantiate_continuation(
-                                &module,
-                                &instance,
-                                &store,
-                                &resolvers,
-                                js_engine::boa::context_as_ec(content_document.settings.context()),
-                            ))
-                        {
-                            error!("WebAssembly: failed to resolve instantiate promise: {error}");
+                        if let Err(error) = instantiate_continuation(
+                            &module,
+                            &instance,
+                            &store,
+                            &resolvers,
+                            content_document.settings.ec(),
+                        ) {
+                            error!("WebAssembly: failed to resolve instantiate promise: {}", error.display());
                         }
                     }
                     WasmResult::InstantiateError {
                         request_id: _,
                         message,
                     } => {
-                        if let Err(error) = crate::js::completion_to_js_result(compile_rejection(
+                        if let Err(error) = compile_rejection(
                             &resolvers,
                             message,
-                            js_engine::boa::context_as_ec(content_document.settings.context()),
-                        )) {
-                            error!("WebAssembly: failed to reject instantiate promise: {error}");
+                            content_document.settings.ec(),
+                        ) {
+                            error!("WebAssembly: failed to reject instantiate promise: {}", error.display());
                         }
                     }
                 }
