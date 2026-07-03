@@ -283,7 +283,7 @@ fn get_style(
                     inner_ec.property_key_from_str("__element"),
                 )?
             };
-            let style = element_style_attribute_ec(&element_val, inner_ec).unwrap_or_default();
+            let style = element_style_attribute(&element_val, inner_ec).unwrap_or_default();
             Ok(inner_ec.value_from_string(inner_ec.js_string_from_str(&style)))
         }),
         0,
@@ -307,7 +307,7 @@ fn get_style(
                     inner_ec.property_key_from_str("__element"),
                 )?
             };
-            set_element_style_attribute_ec(&element_val, &value, inner_ec);
+            set_element_style_attribute(&element_val, &value, inner_ec);
             Ok(inner_ec.value_undefined())
         }),
         1,
@@ -329,7 +329,7 @@ fn get_style(
 }
 
 /// Read the element's `style` attribute via the generic EC trait.
-fn element_style_attribute_ec(
+fn element_style_attribute(
     element_val: &JsValue,
     ec: &mut dyn ExecutionContext<crate::js::Types>,
 ) -> Option<String> {
@@ -385,7 +385,7 @@ fn element_style_attribute_ec(
 }
 
 /// Set/remove the element's `style` attribute via the generic EC trait.
-fn set_element_style_attribute_ec(
+fn set_element_style_attribute(
     element_val: &JsValue,
     value: &str,
     ec: &mut dyn ExecutionContext<crate::js::Types>,
@@ -521,14 +521,6 @@ pub(crate) fn style_declaration_object(
     ec.define_property_or_throw(object.clone(), getter_key, desc)?;
 
     Ok(object)
-}
-
-/// Convenience wrapper that bridges to the EC-based implementation.
-pub(crate) fn style_declaration_object_ec(
-    properties: &BTreeMap<String, String>,
-    ec: &mut dyn ExecutionContext<crate::js::Types>,
-) -> Completion<JsObject, crate::js::Types> {
-    style_declaration_object(properties, ec)
 }
 
 fn camel_case_property_name(name: &str) -> String {

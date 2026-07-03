@@ -30,7 +30,7 @@ pub(crate) trait WindowOrWorkerGlobalScope {
         ec: &mut dyn ExecutionContext<crate::js::Types>,
     ) -> Completion<u32, crate::js::Types> {
         // Step 1: "Return the result of running the timer initialization steps given this, handler, timeout, arguments, and false."
-        let handler = timer_handler_ec(handler, ec)?;
+        let handler = timer_handler(handler, ec)?;
         self.timer_initialization_steps(handler, timeout, arguments, false, None, ec)
     }
 
@@ -43,7 +43,7 @@ pub(crate) trait WindowOrWorkerGlobalScope {
         ec: &mut dyn ExecutionContext<crate::js::Types>,
     ) -> Completion<u32, crate::js::Types> {
         // Step 1: "Return the result of running the timer initialization steps given this, handler, timeout, arguments, and true."
-        let handler = timer_handler_ec(handler, ec)?;
+        let handler = timer_handler(handler, ec)?;
         self.timer_initialization_steps(handler, timeout, arguments, true, None, ec)
     }
 
@@ -76,7 +76,7 @@ pub(crate) trait WindowOrWorkerGlobalScope {
             .unwrap_or(0);
 
         // Step 4: "Set timeout to the result of converting timeout to an IDL long."
-        let mut timeout_ms = timeout_ms_ec(timeout, ec)?;
+        let mut timeout_ms = timeout_ms(timeout, ec)?;
 
         // Step 5-6: clamp and nesting-level adjustments.
         if nesting_level > 5 && timeout_ms < 4 {
@@ -108,7 +108,7 @@ impl WindowOrWorkerGlobalScope for Window {
     }
 }
 
-fn timer_handler_ec(
+fn timer_handler(
     value: &JsValue,
     ec: &mut dyn ExecutionContext<crate::js::Types>,
 ) -> Completion<TimerHandler, crate::js::Types> {
@@ -124,7 +124,7 @@ fn timer_handler_ec(
     Ok(TimerHandler::String { source })
 }
 
-fn timeout_ms_ec(
+fn timeout_ms(
     value: &JsValue,
     ec: &mut dyn ExecutionContext<crate::js::Types>,
 ) -> Completion<u32, crate::js::Types> {

@@ -395,7 +395,7 @@ or subsystem entry-point signature must first be validated in
 on **both backends** (Boa and JSC) before it can be applied to any
 real production file.
 
-### Current state (updated 2026-07-03)
+### Current state (updated 2026-07-04)
 
 **Phases A–D, S1–S10, T1–T2, W1–W2, G1–G3, C2–C3, B1, R1, R2, S, P complete.**
 All binding files at 0 ec_to_ctx. All 34 struct/enum definitions use `#[gc_struct]`.
@@ -410,21 +410,42 @@ selects between BoaTypes and JscTypes.
   `readablestream.rs`, `readablebytestreamcontroller.rs`, `transformstream.rs`,
   `async_iterable.rs`, and `main.rs`.
 
-**`_ec` suffix count: 43 function definitions, 537 total occurrences** —
-reduced from 78 defs / 620 total. See the `_ec` suffix convention section
-for the complete rules.
+**`_ec` suffix count: 11 function definitions, 133 total occurrences** —
+reduced from 78 defs / 620 total (-86%/-79%). See the `_ec` suffix convention
+section for the complete rules.
+
+**Eliminated in current pass:** 67 `_ec` function definitions, 487 occurrences.
+- All zero-caller bridges deleted (11) + their `_ec` variants renamed:
+  `appendable_node`, `callback_function_value`, `callback_interface_type_value`,
+  `current_event_target_object`, `downcast_window`, `flatten`, `flatten_more`,
+  `into_js_value`, `object_for_existing_node`, `readable_stream_cancel`,
+  `readable_stream_close`, `structured_clone_value`.
+- EC-only functions renamed (drop `_ec` suffix): `timer_handler`, `timeout_ms`,
+  `element_style_attribute`, `set_element_style_attribute`, `entry_settings_object`,
+  `current_window_object_from`, `extract_abort_signal`, `normalize_pipe_options`,
+  `promise_rejected_with_reason`, `promise_rejected_with_type_error`,
+  `promise_rejected_with_error`, `reject_promise_with_error`,
+  `readable_stream_pipe_to`, `pipe_to_on_promise_settled`, `pipe_read_result_done`,
+  `abort_destination_then_cancel_source`, `signal_abort`.
+- Pointless aliases deleted: `document_creation_url_ec`, `style_declaration_object_ec`.
+- 7 internal-duplicate function pairs merged in `readablestreamdefaultcontroller.rs` and
+  `transformstream.rs` (stream_slot, controller_object, desired_size, etc.).
 
 ### Next session: recommended order
 
-1. **Continue `_ec` cleanup in `readablebytestreamcontroller.rs`** — This file
-   likely has similar `stream_slot_ec`/`controller_object_ec` pair duplicates.
-   Apply the same pattern: convert non-EC → EC, delete bridges with 0 callers,
-   rename `_ec` variants.
+1. **Convert remaining 11 active-bridge `_ec` functions** — Each has a non-EC
+   bridge with live callers. For each, convert the callers to use the EC
+   variant (replacing `&mut Context` with `&mut dyn ExecutionContext`), then
+   delete the bridge and rename. The 7 platform_objects.rs functions require
+   converting Boa callers in `environment_settings_object.rs`, `dispatch.rs`,
+   and `ui_event_dispatch.rs`. The 2 `closed_ec` functions, `get_reader_ec`,
+   and `enqueue_ec` require converting their non-EC bridge callers.
 
-2. **Continue `_ec` cleanup — remaining free functions** — Functions like
-   `create_readable_byte_stream_controller_ec`, `set_up_readable_byte_stream_controller_from_underlying_source_ec`,
-   and other free-standing `_ec` functions in stream files that still have
-   non-EC bridges. Check each for 0-caller bridges and delete+rename.
+2. **Clean up remaining `completion_to_js_result` bridges** — These return
+   `Completion<T, BoaTypes>` from generic code by bridging to Boa `JsResult`.
+   Files: `readablestreamasynciterator.rs`, `readablestream.rs`,
+   `readablebytestreamcontroller.rs`, `transformstream.rs`,
+   `async_iterable.rs`, `main.rs`.
 
 3. **Phase E** — The content crate does not yet compile for JSC.
    Blockers are GC trait bounds (`boa_engine::Trace`/`#[gc_struct]`) and

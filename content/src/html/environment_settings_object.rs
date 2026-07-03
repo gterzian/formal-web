@@ -433,11 +433,8 @@ impl EventDispatchHost for EnvironmentSettingsObject {
         document: Rc<RefCell<BaseDocument>>,
         node_id: usize,
     ) -> Completion<JsObject, crate::js::Types> {
-        crate::js::platform_objects::object_for_existing_node(document, node_id, self.context())
-            .map_err(|e| {
-                e.into_opaque(self.context())
-                    .unwrap_or(JsValue::undefined())
-            })
+        let ec = js_engine::boa::context_as_ec(self.context());
+        crate::js::platform_objects::object_for_existing_node(document, node_id, ec)
     }
 
     fn current_time_millis(&self) -> f64 {

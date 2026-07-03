@@ -8,7 +8,7 @@ use js_engine::gc::GcCell;
 use js_engine::gc::gc_cell_new;
 use js_engine::gc_struct;
 
-use super::readablestream::{readable_stream_cancel, readable_stream_cancel_ec};
+use super::readablestream::readable_stream_cancel;
 use super::{
     ReadRequest, ReadableStream, ReadableStreamReader, ReadableStreamState,
     rejected_type_error_promise, type_error_value, with_readable_stream_ref,
@@ -73,7 +73,7 @@ pub(crate) trait ReadableStreamGenericReader: Clone {
         debug_assert!(self.stream_slot_value().is_some());
 
         // Step 3: "Return ! ReadableStreamCancel(stream, reason)."
-        readable_stream_cancel_ec(stream, reason, ec)
+        readable_stream_cancel(stream, reason, ec)
     }
 
     /// <https://streams.spec.whatwg.org/#readable-stream-reader-generic-initialize>

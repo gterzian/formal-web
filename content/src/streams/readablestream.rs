@@ -159,23 +159,7 @@ impl ReadableStream {
     }
 
     /// <https://streams.spec.whatwg.org/#rs-cancel>
-    pub(crate) fn cancel(&mut self, reason: JsValue, context: &mut Context) -> JsResult<JsObject> {
-        // Step 1: "If ! IsReadableStreamLocked(this) is true, return a promise rejected with a TypeError exception."
-        if self.is_readable_stream_locked() {
-            let ec_ref = js_engine::boa::context_as_ec(context);
-            return crate::js::completion_to_js_result(rejected_type_error_promise(
-                "Cannot cancel a stream that already has a reader",
-                ec_ref,
-            ));
-        }
-
-        // Step 2: "Return ! ReadableStreamCancel(this, reason)."
-        readable_stream_cancel(self.clone(), reason, context)
-    }
-
-    /// Generic entry point for <https://streams.spec.whatwg.org/#rs-cancel>.
-    /// Returns `Completion` - the binding layer uses this directly without bridging.
-    pub(crate) fn cancel_ec(
+    pub(crate) fn cancel(
         &mut self,
         reason: JsValue,
         ec: &mut dyn ExecutionContext<crate::js::Types>,
@@ -189,7 +173,7 @@ impl ReadableStream {
         }
 
         // Step 2: "Return ! ReadableStreamCancel(this, reason)."
-        readable_stream_cancel_ec(self.clone(), reason, ec)
+        readable_stream_cancel(self.clone(), reason, ec)
     }
 
     /// <https://streams.spec.whatwg.org/#rs-get-reader>
@@ -287,7 +271,7 @@ impl ReadableStream {
         // This implementation normalizes options first so option getters run before the lock check.
         // This ordering is currently required to match WPT behavior for
         // pipeThrough() should throw if an option getter grabs a writer.
-        let options = normalize_pipe_options_ec(options, ec)?;
+        let options = normalize_pipe_options(options, ec)?;
 
         // Step 2: "If ! IsWritableStreamLocked(transform[\"writable\"]) is true, throw a TypeError exception."
         let writable_locked =
@@ -301,7 +285,7 @@ impl ReadableStream {
         // Step 4: "Let promise be ! ReadableStreamPipeTo(this, transform[\"writable\"], options[\"preventClose\"], options[\"preventAbort\"], options[\"preventCancel\"], signal)."
         // Note: The Rust helper takes the normalized option members as separate arguments.
         let destination = super::with_writable_stream_ref_ec(&writable_obj, ec, |ws| ws.clone())?;
-        let promise = readable_stream_pipe_to_ec(
+        let promise = readable_stream_pipe_to(
             self.clone(),
             destination,
             options.prevent_close,
@@ -327,7 +311,7 @@ impl ReadableStream {
     ) -> Completion<JsObject, crate::js::Types> {
         // Step 1: "If ! IsReadableStreamLocked(this) is true, return a promise rejected with a TypeError exception."
         if self.locked() {
-            return promise_rejected_with_type_error_ec(
+            return promise_rejected_with_type_error(
                 "ReadableStream.pipeTo() called on a locked stream",
                 ec,
             );
@@ -337,7 +321,7 @@ impl ReadableStream {
         let dest_obj = match destination.as_object() {
             Some(obj) => obj.clone(),
             None => {
-                return promise_rejected_with_type_error_ec(
+                return promise_rejected_with_type_error(
                     "ReadableStream.pipeTo() requires a WritableStream destination",
                     ec,
                 );
@@ -345,19 +329,19 @@ impl ReadableStream {
         };
         let dest_locked = super::with_writable_stream_ref_ec(&dest_obj, ec, |ws| ws.locked())?;
         if dest_locked {
-            return promise_rejected_with_type_error_ec(
+            return promise_rejected_with_type_error(
                 "ReadableStream.pipeTo(): destination is locked",
                 ec,
             );
         }
 
-        let options = normalize_pipe_options_ec(options, ec)?;
+        let options = normalize_pipe_options(options, ec)?;
 
         let dest = super::with_writable_stream_ref_ec(&dest_obj, ec, |ws| ws.clone())?;
 
         // Step 4: "Return ! ReadableStreamPipeTo(this, destination, options[\"preventClose\"], options[\"preventAbort\"], options[\"preventCancel\"], signal)."
         // Note: The Rust helper takes the normalized option members as separate arguments.
-        readable_stream_pipe_to_ec(
+        readable_stream_pipe_to(
             self.clone(),
             dest,
             options.prevent_close,
@@ -375,7 +359,7 @@ impl ReadableStream {
     ) -> Completion<JsValue, crate::js::Types> {
         // Step 1: "Return ? ReadableStreamTee(this, false)."
         let branches = readable_stream_tee(self.clone(), false, ec)?;
-        branches.into_js_value_ec(ec)
+        branches.into_js_value(ec)
     }
 }
 
@@ -387,17 +371,7 @@ struct ReadableStreamTeeBranches {
 }
 
 impl ReadableStreamTeeBranches {
-    fn into_js_value(self, context: &mut Context) -> JsValue {
-        JsArray::from_iter(
-            [self.branch1_object, self.branch2_object]
-                .into_iter()
-                .map(JsValue::from),
-            context,
-        )
-        .into()
-    }
-
-    fn into_js_value_ec(
+    fn into_js_value(
         self,
         ec: &mut dyn ExecutionContext<crate::js::Types>,
     ) -> Completion<JsValue, crate::js::Types> {
@@ -604,20 +578,7 @@ fn readable_stream_default_tee(
     })
 }
 
-fn structured_clone_value(value: JsValue, context: &mut Context) -> JsResult<JsValue> {
-    let structured_clone = context
-        .global_object()
-        .get(js_string!("structuredClone"), context)?
-        .as_object()
-        .and_then(JsFunction::from_object)
-        .ok_or_else(|| {
-            JsNativeError::typ()
-                .with_message("structuredClone is not available on the global object")
-        })?;
-    structured_clone.call(&JsValue::undefined(), &[value], context)
-}
-
-fn structured_clone_value_ec(
+fn structured_clone_value(
     value: JsValue,
     ec: &mut dyn ExecutionContext<crate::js::Types>,
 ) -> Completion<JsValue, crate::js::Types> {
@@ -740,7 +701,7 @@ pub(crate) fn readable_stream_default_tee_read_request_chunk_steps(
             // Step 13.3 chunk steps 1.3: "If canceled2 is false and cloneForBranch2 is true,"
             if !canceled2 && clone_for_branch2 {
                 // Step 13.3 chunk steps 1.3.1: "Let cloneResult be StructuredClone(chunk2)."
-                match structured_clone_value_ec(chunk2.clone(), job_ec) {
+                match structured_clone_value(chunk2.clone(), job_ec) {
                     Ok(cloned_chunk) => {
                         // Step 13.3 chunk steps 1.3.3: "Otherwise, set chunk2 to cloneResult.[[Value]]."
                         chunk2 = cloned_chunk;
@@ -770,7 +731,7 @@ pub(crate) fn readable_stream_default_tee_read_request_chunk_steps(
 
                         // Step 13.3 chunk steps 1.3.2.3: "Resolve cancelPromise with ! ReadableStreamCancel(stream, cloneResult.[[Value]])."
                         if let Ok(cancel_result) =
-                            readable_stream_cancel_ec(source_stream, clone_error, job_ec)
+                            readable_stream_cancel(source_stream, clone_error, job_ec)
                         {
                             let cancel_val = <crate::js::Types as JsTypes>::value_from_object(cancel_result);
                             let _ = cancel_resolvers.resolve(cancel_val, job_ec);
@@ -913,7 +874,7 @@ pub(crate) fn readable_stream_default_tee_cancel1_algorithm(
         };
 
         // Step 14.3.2: "Let cancelResult be ! ReadableStreamCancel(stream, compositeReason)."
-        let cancel_result = readable_stream_cancel_ec(source_stream, composite_reason, ec)?;
+        let cancel_result = readable_stream_cancel(source_stream, composite_reason, ec)?;
 
         // Step 14.3.3: "Resolve cancelPromise with cancelResult."
         let resolve_val = <crate::js::Types as JsTypes>::value_from_object(cancel_result);
@@ -959,7 +920,7 @@ pub(crate) fn readable_stream_default_tee_cancel2_algorithm(
         };
 
         // Step 15.3.2: "Let cancelResult be ! ReadableStreamCancel(stream, compositeReason)."
-        let cancel_result = readable_stream_cancel_ec(source_stream, composite_reason, ec)?;
+        let cancel_result = readable_stream_cancel(source_stream, composite_reason, ec)?;
 
         // Step 15.3.3: "Resolve cancelPromise with cancelResult."
         let resolve_val = <crate::js::Types as JsTypes>::value_from_object(cancel_result);
@@ -1588,18 +1549,8 @@ pub(crate) fn with_readable_stream_ref_ec<R>(
 }
 
 /// <https://streams.spec.whatwg.org/#readable-stream-cancel>
+/// <https://streams.spec.whatwg.org/#readable-stream-cancel>
 pub(crate) fn readable_stream_cancel(
-    stream: ReadableStream,
-    reason: JsValue,
-    context: &mut Context,
-) -> JsResult<JsObject> {
-    readable_stream_cancel_ec(stream, reason, js_engine::boa::context_as_ec(context))
-        .map_err(|e| JsError::from_opaque(e))
-}
-
-/// Generic entry point for <https://streams.spec.whatwg.org/#readable-stream-cancel>.
-/// Returns `Completion` - the binding layer uses this directly without bridging.
-pub(crate) fn readable_stream_cancel_ec(
     stream: ReadableStream,
     reason: JsValue,
     ec: &mut dyn ExecutionContext<crate::js::Types>,
@@ -1618,7 +1569,7 @@ pub(crate) fn readable_stream_cancel_ec(
     }
 
     // Step 4: "Perform ! ReadableStreamClose(stream)."
-    readable_stream_close_ec(stream.clone(), ec)?;
+    readable_stream_close(stream.clone(), ec)?;
 
     // Step 5: "Let reader be stream.[[reader]]."
     let reader = stream.reader_slot();
@@ -1640,14 +1591,7 @@ pub(crate) fn readable_stream_cancel_ec(
 }
 
 /// <https://streams.spec.whatwg.org/#readable-stream-close>
-pub(crate) fn readable_stream_close(stream: ReadableStream, context: &mut Context) -> JsResult<()> {
-    readable_stream_close_ec(stream, js_engine::boa::context_as_ec(context))
-        .map_err(|e| JsError::from_opaque(e))
-}
-
-/// Generic entry point for <https://streams.spec.whatwg.org/#readable-stream-close>.
-/// Returns `Completion` - the binding layer uses this directly without bridging.
-pub(crate) fn readable_stream_close_ec(
+pub(crate) fn readable_stream_close(
     stream: ReadableStream,
     ec: &mut dyn ExecutionContext<crate::js::Types>,
 ) -> Completion<(), crate::js::Types> {
@@ -2134,8 +2078,7 @@ pub(crate) fn readable_byte_stream_tee_default_reader_chunk_steps(
                         // Step 18.2 chunk steps 1.4.2.3: "Resolve cancelPromise with ! ReadableStreamCancel(stream, cloneResult.[[Value]])."
                         let source_stream = tee_state.borrow().source_stream.clone();
                         let cancel_resolvers = tee_state.borrow().cancel_resolvers.clone();
-                        let cancel_result =
-                            readable_stream_cancel_ec(source_stream, error, job_ec)?;
+                        let cancel_result = readable_stream_cancel(source_stream, error, job_ec)?;
                         let undefined = job_ec.value_undefined();
                         job_ec.call(
                             &cancel_resolvers.resolve,
@@ -2486,7 +2429,7 @@ fn byte_tee_pull_byob_on_fulfilled_fn(
                             let source_stream = tee_state.borrow().source_stream.clone();
                             let cancel_resolvers = tee_state.borrow().cancel_resolvers.clone();
                             let cancel_result =
-                                readable_stream_cancel_ec(source_stream, error, job_ec)?;
+                                readable_stream_cancel(source_stream, error, job_ec)?;
                             let undefined = job_ec.value_undefined();
                             job_ec.call(
                                 &cancel_resolvers.resolve,
@@ -2668,7 +2611,7 @@ pub(crate) fn readable_byte_stream_tee_cancel1_algorithm(
         ec.array_push(&composite_reason_array, reason2)?;
         let composite_reason =
             <crate::js::Types as JsTypes>::value_from_object(composite_reason_array);
-        let cancel_result = readable_stream_cancel_ec(source_stream, composite_reason, ec)?;
+        let cancel_result = readable_stream_cancel(source_stream, composite_reason, ec)?;
         let undefined = ec.value_undefined();
         ec.call(
             &cancel_resolvers.resolve,
@@ -2704,7 +2647,7 @@ pub(crate) fn readable_byte_stream_tee_cancel2_algorithm(
         ec.array_push(&composite_reason_array, reason2)?;
         let composite_reason =
             <crate::js::Types as JsTypes>::value_from_object(composite_reason_array);
-        let cancel_result = readable_stream_cancel_ec(source_stream, composite_reason, ec)?;
+        let cancel_result = readable_stream_cancel(source_stream, composite_reason, ec)?;
         let undefined = ec.value_undefined();
         ec.call(
             &cancel_resolvers.resolve,
@@ -2870,7 +2813,7 @@ fn strategy_has_size(
     Ok(!ec.same_value(&value, &undefined_value))
 }
 
-fn extract_abort_signal_ec(
+fn extract_abort_signal(
     options_object: Option<&<crate::js::Types as JsTypes>::JsObject>,
     ec: &mut dyn ExecutionContext<crate::js::Types>,
 ) -> Completion<Option<AbortSignal>, crate::js::Types> {
@@ -2907,7 +2850,7 @@ struct PipeOptions {
     signal: Option<AbortSignal>,
 }
 
-fn normalize_pipe_options_ec(
+fn normalize_pipe_options(
     options: &JsValue,
     ec: &mut dyn ExecutionContext<crate::js::Types>,
 ) -> Completion<PipeOptions, crate::js::Types> {
@@ -2942,7 +2885,7 @@ fn normalize_pipe_options_ec(
         None => false,
     };
 
-    let signal = extract_abort_signal_ec(options_object.as_ref(), ec)?;
+    let signal = extract_abort_signal(options_object.as_ref(), ec)?;
 
     Ok(PipeOptions {
         prevent_abort,
@@ -2952,29 +2895,29 @@ fn normalize_pipe_options_ec(
     })
 }
 
-fn promise_rejected_with_reason_ec(
+fn promise_rejected_with_reason(
     reason: JsValue,
     ec: &mut dyn ExecutionContext<crate::js::Types>,
 ) -> Completion<JsObject, crate::js::Types> {
     crate::webidl::rejected_promise(reason, ec)
 }
 
-fn promise_rejected_with_type_error_ec(
+fn promise_rejected_with_type_error(
     message: &'static str,
     ec: &mut dyn ExecutionContext<crate::js::Types>,
 ) -> Completion<JsObject, crate::js::Types> {
     let reason = type_error_value(message, ec)?;
-    promise_rejected_with_reason_ec(reason, ec)
+    promise_rejected_with_reason(reason, ec)
 }
 
-fn promise_rejected_with_error_ec(
+fn promise_rejected_with_error(
     error: JsError,
     ec: &mut dyn ExecutionContext<crate::js::Types>,
 ) -> Completion<JsObject, crate::js::Types> {
     Ok(crate::webidl::rejected_promise_from_error(error, ec))
 }
 
-fn reject_promise_with_error_ec(
+fn reject_promise_with_error(
     resolvers: &js_engine::PromiseResolvers<crate::js::Types>,
     error: JsValue,
     ec: &mut dyn ExecutionContext<crate::js::Types>,
@@ -2986,7 +2929,7 @@ fn reject_promise_with_error_ec(
 }
 
 /// <https://streams.spec.whatwg.org/#readable-stream-pipe-to>
-fn readable_stream_pipe_to_ec(
+fn readable_stream_pipe_to(
     source: ReadableStream,
     dest: super::WritableStream,
     prevent_close: bool,
@@ -3022,7 +2965,7 @@ fn readable_stream_pipe_to_ec(
     let reader_object = match acquire_readable_stream_default_reader(source.clone(), ec) {
         Ok(reader_object) => reader_object,
         Err(error) => {
-            reject_promise_with_error_ec(&pipe_resolvers, error, ec);
+            reject_promise_with_error(&pipe_resolvers, error, ec);
             return Ok(pipe_promise_obj);
         }
     };
@@ -3031,7 +2974,7 @@ fn readable_stream_pipe_to_ec(
             Ok(reader) => reader,
             Err(error) => {
                 let reason = crate::webidl::error_to_rejection_reason(error, ec);
-                reject_promise_with_error_ec(&pipe_resolvers, reason, ec);
+                reject_promise_with_error(&pipe_resolvers, reason, ec);
                 return Ok(pipe_promise_obj);
             }
         };
@@ -3043,7 +2986,7 @@ fn readable_stream_pipe_to_ec(
             if let Err(error) = readable_stream_default_reader_release(reader.clone(), ec) {
                 error!("[readable-stream] failed to release reader on pipe setup error: {error:?}");
             }
-            reject_promise_with_error_ec(&pipe_resolvers, error, ec);
+            reject_promise_with_error(&pipe_resolvers, error, ec);
             return Ok(pipe_promise_obj);
         }
     };
@@ -3056,7 +2999,7 @@ fn readable_stream_pipe_to_ec(
                 if let Err(error) = readable_stream_default_reader_release(reader.clone(), ec) {
                     error!("[readable-stream] failed to release reader on writer error: {error:?}");
                 }
-                reject_promise_with_error_ec(&pipe_resolvers, reason, ec);
+                reject_promise_with_error(&pipe_resolvers, reason, ec);
                 return Ok(pipe_promise_obj);
             }
         };
@@ -3207,7 +3150,7 @@ impl PipeToState {
         result: JsValue,
         ec: &mut dyn ExecutionContext<crate::js::Types>,
     ) -> Completion<(), crate::js::Types> {
-        pipe_to_on_promise_settled_ec(self.clone(), result, ec)
+        pipe_to_on_promise_settled(self.clone(), result, ec)
     }
 
     fn reject_and_finalize_with_error(
@@ -3559,7 +3502,7 @@ impl PipeToState {
                 None => resolved_promise(ec.value_undefined(), ec)?,
             },
             PipeShutdownAction::CancelSource => match source {
-                Some(source) => readable_stream_cancel_ec(source, error, ec)?,
+                Some(source) => readable_stream_cancel(source, error, ec)?,
                 None => resolved_promise(ec.value_undefined(), ec)?,
             },
             PipeShutdownAction::CloseDestination => match dest {
@@ -3596,10 +3539,10 @@ impl PipeToState {
 
                 match (abort_promise, cancel_source) {
                     (Some(abort_promise), Some(source)) => {
-                        abort_destination_then_cancel_source_ec(abort_promise, source, error, ec)?
+                        abort_destination_then_cancel_source(abort_promise, source, error, ec)?
                     }
                     (Some(abort_promise), None) => abort_promise,
-                    (None, Some(source)) => readable_stream_cancel_ec(source, error, ec)?,
+                    (None, Some(source)) => readable_stream_cancel(source, error, ec)?,
                     (None, None) => resolved_promise(ec.value_undefined(), ec)?,
                 }
             }
@@ -3791,7 +3734,7 @@ impl PipeToState {
         let on_fulfilled = ec.create_builtin_function(
             Box::new(
                 move |_args: &[<crate::js::Types as JsTypes>::JsValue], _this, inner_ec| {
-                    pipe_to_on_promise_settled_ec(
+                    pipe_to_on_promise_settled(
                         state.clone(),
                         _args.get_or_undefined(0).clone(),
                         inner_ec,
@@ -3806,7 +3749,7 @@ impl PipeToState {
         let on_rejected = ec.create_builtin_function(
             Box::new(
                 move |_args: &[<crate::js::Types as JsTypes>::JsValue], _this, inner_ec| {
-                    pipe_to_on_promise_settled_ec(
+                    pipe_to_on_promise_settled(
                         state.clone(),
                         _args.get_or_undefined(0).clone(),
                         inner_ec,
@@ -3833,7 +3776,7 @@ struct AbortThenCancelState {
 }
 
 /// <https://streams.spec.whatwg.org/#readable-stream-pipe-to>
-fn pipe_to_on_promise_settled_ec(
+fn pipe_to_on_promise_settled(
     state: PipeToState,
     result: JsValue,
     ec: &mut dyn ExecutionContext<crate::js::Types>,
@@ -3857,7 +3800,7 @@ fn pipe_to_on_promise_settled_ec(
                     if dest.state() == super::WritableStreamState::Writable
                         && !dest.close_queued_or_in_flight()
                     {
-                        let Some(done) = pipe_read_result_done_ec(&result, ec)? else {
+                        let Some(done) = pipe_read_result_done(&result, ec)? else {
                             return Ok(());
                         };
 
@@ -3931,7 +3874,7 @@ fn pipe_to_on_promise_settled_ec(
     Ok(())
 }
 
-fn pipe_read_result_done_ec(
+fn pipe_read_result_done(
     result: &<crate::js::Types as JsTypes>::JsValue,
     ec: &mut dyn ExecutionContext<crate::js::Types>,
 ) -> Completion<Option<bool>, crate::js::Types> {
@@ -3983,7 +3926,7 @@ fn abort_destination_then_cancel_on_rejected_fn(
     start_abort_cancel_source(state.clone(), Some(args.get_or_undefined(0).clone()), ec)
 }
 
-fn abort_destination_then_cancel_source_ec(
+fn abort_destination_then_cancel_source(
     abort_promise: JsObject,
     source: ReadableStream,
     error: JsValue,
@@ -4032,7 +3975,7 @@ fn start_abort_cancel_source(
     };
 
     let cancel_promise = match source {
-        Some(source) => readable_stream_cancel_ec(source, error, ec)?,
+        Some(source) => readable_stream_cancel(source, error, ec)?,
         None => resolved_promise(ec.value_undefined(), ec)?,
     };
 

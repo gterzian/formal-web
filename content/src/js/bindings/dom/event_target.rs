@@ -7,7 +7,7 @@ use boa_engine::{Context, JsArgs, JsNativeError, JsResult, JsValue, js_string, o
 use crate::dom::{AbortSignal, Event, EventDispatchHost, EventTarget, dispatch};
 use crate::js::downcast::try_with_event_target_mut;
 use crate::js::platform_objects;
-use crate::webidl::{callback_interface_type_value_ec, nullable_value_ec};
+use crate::webidl::{callback_interface_type_value, nullable_value_ec};
 
 use js_engine::{Completion, ExecutionContext, JsTypes};
 
@@ -75,14 +75,10 @@ fn add_event_listener(
     args: &[JsValue],
     ec: &mut dyn ExecutionContext<crate::js::Types>,
 ) -> Completion<JsValue, crate::js::Types> {
-    let event_target = current_event_target_object_ec(this, ec);
+    let event_target = current_event_target_object(this, ec);
     let type_ = ec.to_rust_string(args.get_or_undefined(0).clone())?;
-    let options = flatten_more_ec(args.get_or_undefined(2), ec)?;
-    let callback = nullable_value_ec(
-        args.get_or_undefined(1),
-        ec,
-        callback_interface_type_value_ec,
-    )?;
+    let options = flatten_more(args.get_or_undefined(2), ec)?;
+    let callback = nullable_value_ec(args.get_or_undefined(1), ec, callback_interface_type_value)?;
     let receiver = JsValue::from(event_target.clone());
 
     try_with_event_target_mut(&receiver, ec, |target| {
@@ -105,17 +101,14 @@ fn remove_event_listener(
     args: &[JsValue],
     ec: &mut dyn ExecutionContext<crate::js::Types>,
 ) -> Completion<JsValue, crate::js::Types> {
-    let event_target = current_event_target_object_ec(this, ec);
+    let event_target = current_event_target_object(this, ec);
     let type_ = ec.to_rust_string(args.get_or_undefined(0).clone())?;
-    let Some(callback) = nullable_value_ec(
-        args.get_or_undefined(1),
-        ec,
-        callback_interface_type_value_ec,
-    )?
+    let Some(callback) =
+        nullable_value_ec(args.get_or_undefined(1), ec, callback_interface_type_value)?
     else {
         return Ok(JsValue::undefined());
     };
-    let capture = flatten_ec(args.get_or_undefined(2), ec)?;
+    let capture = flatten(args.get_or_undefined(2), ec)?;
     let receiver = JsValue::from(event_target);
 
     try_with_event_target_mut(&receiver, ec, |target| {
@@ -134,7 +127,7 @@ fn dispatch_event(
         Some(obj) => obj,
         None => return Err(ec.new_type_error("dispatchEvent requires an Event")),
     };
-    let target = current_event_target_object_ec(this, ec);
+    let target = current_event_target_object(this, ec);
     let mut host = EcDispatchHost::new(ec);
     let canceled = dispatch(&mut host, &target, &event_obj, false)?;
     Ok(JsValue::from(!canceled))
@@ -232,7 +225,7 @@ impl EventDispatchHost for EcDispatchHost<'_, crate::js::Types> {
         document: Rc<RefCell<BaseDocument>>,
         node_id: usize,
     ) -> Completion<JsObject, crate::js::Types> {
-        crate::js::platform_objects::object_for_existing_node_ec(document, node_id, self.ec)
+        crate::js::platform_objects::object_for_existing_node(document, node_id, self.ec)
     }
 
     fn current_time_millis(&self) -> f64 {
@@ -240,15 +233,7 @@ impl EventDispatchHost for EcDispatchHost<'_, crate::js::Types> {
     }
 }
 
-fn current_event_target_object(this: &JsValue, context: &Context) -> JsObject {
-    if let Some(object) = this.as_object() {
-        return object.clone();
-    }
-
-    context.global_object()
-}
-
-fn current_event_target_object_ec(
+fn current_event_target_object(
     this: &JsValue,
     ec: &dyn ExecutionContext<crate::js::Types>,
 ) -> JsObject {
@@ -259,17 +244,7 @@ fn current_event_target_object_ec(
     ec.global_object()
 }
 
-pub(crate) fn flatten(options: &JsValue, context: &mut Context) -> JsResult<bool> {
-    if let Some(boolean) = options.as_boolean() {
-        return Ok(boolean);
-    }
-    let Some(object) = options.as_object() else {
-        return Ok(false);
-    };
-    Ok(object.get(js_string!("capture"), context)?.to_boolean())
-}
-
-pub(crate) fn flatten_ec(
+pub(crate) fn flatten(
     options: &JsValue,
     ec: &mut dyn ExecutionContext<crate::js::Types>,
 ) -> Completion<bool, crate::js::Types> {
@@ -286,56 +261,9 @@ pub(crate) fn flatten_ec(
 
 pub(crate) fn flatten_more(
     options: &JsValue,
-    context: &mut Context,
-) -> JsResult<AddEventListenerOptions> {
-    let capture = flatten(options, context)?;
-    let Some(object) = options.as_object() else {
-        return Ok(AddEventListenerOptions {
-            capture,
-            once: false,
-            passive: None,
-            signal: None,
-        });
-    };
-    let once = object.get(js_string!("once"), context)?.to_boolean();
-    let passive = {
-        if !object.has_property(js_string!("passive"), context)? {
-            None
-        } else {
-            let value = object.get(js_string!("passive"), context)?;
-            Some(value.to_boolean())
-        }
-    };
-    let signal = if !object.has_property(js_string!("signal"), context)? {
-        None
-    } else {
-        let value = object.get(js_string!("signal"), context)?;
-        let signal = value.as_object().ok_or_else(|| {
-            JsNativeError::typ().with_message("addEventListener signal must be an AbortSignal")
-        })?;
-        Some(
-            signal
-                .downcast_ref::<AbortSignal>()
-                .map(|signal| signal.clone())
-                .ok_or_else(|| {
-                    JsNativeError::typ()
-                        .with_message("addEventListener signal must be an AbortSignal")
-                })?,
-        )
-    };
-    Ok(AddEventListenerOptions {
-        capture,
-        once,
-        passive,
-        signal,
-    })
-}
-
-pub(crate) fn flatten_more_ec(
-    options: &JsValue,
     ec: &mut dyn ExecutionContext<crate::js::Types>,
 ) -> Completion<AddEventListenerOptions, crate::js::Types> {
-    let capture = flatten_ec(options, ec)?;
+    let capture = flatten(options, ec)?;
     let Some(object) = <crate::js::Types as JsTypes>::value_as_object(options) else {
         return Ok(AddEventListenerOptions {
             capture,

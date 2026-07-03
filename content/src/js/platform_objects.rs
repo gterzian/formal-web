@@ -218,7 +218,7 @@ pub(crate) fn resolve_element_object_ec(
     Ok(object)
 }
 
-pub(crate) fn object_for_existing_node_ec(
+pub(crate) fn object_for_existing_node(
     document: Rc<RefCell<BaseDocument>>,
     node_id: usize,
     ec: &mut dyn ExecutionContext<Types>,
@@ -312,27 +312,6 @@ pub(crate) fn resolve_or_create_text_node_object(
     })?;
 
     Ok(object)
-}
-
-pub(crate) fn object_for_existing_node(
-    document: Rc<RefCell<BaseDocument>>,
-    node_id: usize,
-    context: &mut Context,
-) -> JsResult<JsObject> {
-    let cached = with_global_scope(context, |gs| Ok(gs.cached_node_object(node_id)))?;
-    if let Some(object) = cached {
-        return Ok(object);
-    }
-
-    let is_element = document
-        .borrow()
-        .get_node(node_id)
-        .is_some_and(BlitzNode::is_element);
-    if is_element {
-        resolve_element_object(node_id, context)
-    } else {
-        resolve_or_create_text_node_object(document, node_id, context)
-    }
 }
 
 // ── Implementation helper — element kind dispatch ──────────────────────

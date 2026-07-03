@@ -10,7 +10,7 @@ use crate::dom::{DOMException, Document, Element, Node};
 use crate::html::{HTMLAnchorElement, HTMLElement, HTMLIFrameElement};
 use crate::js::platform_objects::{
     collect_child_subtree_node_ids, document_object_ec, invalidate_cached_node_ids,
-    invalidate_cached_node_ids_ec, object_for_existing_node, object_for_existing_node_ec,
+    invalidate_cached_node_ids_ec, object_for_existing_node,
 };
 use crate::webidl::bindings::{
     AttributeDef, ConstantDef, InterfaceDefinition, OperationDef, WebIdlInterface,
@@ -425,7 +425,7 @@ fn get_first_child(
     })?;
     match node_id {
         Some(node_id) => {
-            let obj = object_for_existing_node_ec(document, node_id, ec)?;
+            let obj = object_for_existing_node(document, node_id, ec)?;
             Ok(crate::js::Types::value_from_object(obj))
         }
         None => Ok(ec.value_null()),
@@ -442,7 +442,7 @@ fn get_last_child(
     })?;
     match node_id {
         Some(node_id) => {
-            let obj = object_for_existing_node_ec(document, node_id, ec)?;
+            let obj = object_for_existing_node(document, node_id, ec)?;
             Ok(crate::js::Types::value_from_object(obj))
         }
         None => Ok(ec.value_null()),
@@ -463,7 +463,7 @@ fn get_parent_node(
             Ok(crate::js::Types::value_from_object(obj))
         }
         Some(node_id) => {
-            let obj = object_for_existing_node_ec(document, node_id, ec)?;
+            let obj = object_for_existing_node(document, node_id, ec)?;
             Ok(crate::js::Types::value_from_object(obj))
         }
         None => Ok(ec.value_null()),
@@ -480,7 +480,7 @@ fn get_previous_sibling(
     })?;
     match node_id {
         Some(node_id) => {
-            let obj = object_for_existing_node_ec(document, node_id, ec)?;
+            let obj = object_for_existing_node(document, node_id, ec)?;
             Ok(crate::js::Types::value_from_object(obj))
         }
         None => Ok(ec.value_null()),
@@ -497,7 +497,7 @@ fn get_next_sibling(
     })?;
     match node_id {
         Some(node_id) => {
-            let obj = object_for_existing_node_ec(document, node_id, ec)?;
+            let obj = object_for_existing_node(document, node_id, ec)?;
             Ok(crate::js::Types::value_from_object(obj))
         }
         None => Ok(ec.value_null()),
@@ -514,7 +514,7 @@ fn get_child_nodes(
     })?;
     let array = ec.create_empty_array();
     for node_id in node_ids {
-        let obj = object_for_existing_node_ec(Rc::clone(&document), node_id, ec)?;
+        let obj = object_for_existing_node(Rc::clone(&document), node_id, ec)?;
         ec.array_push(&array, crate::js::Types::value_from_object(obj))?;
     }
     Ok(crate::js::Types::value_from_object(array))
@@ -551,7 +551,7 @@ fn get_owner_document(
         }
         Some(node_id) => {
             let document = try_with_node_ref(this, ec, |node| Rc::clone(&node.document))?;
-            let obj = object_for_existing_node_ec(document, node_id, ec)?;
+            let obj = object_for_existing_node(document, node_id, ec)?;
             Ok(crate::js::Types::value_from_object(obj))
         }
         None => Ok(ec.value_null()),
@@ -660,10 +660,10 @@ fn insert_before(
     ec: &mut dyn ExecutionContext<crate::js::Types>,
 ) -> Completion<JsValue, crate::js::Types> {
     let child_val = args.get_or_undefined(0).clone();
-    let child = appendable_node_ec(args.get_or_undefined(0), ec)?;
+    let child = appendable_node(args.get_or_undefined(0), ec)?;
     let reference_child = match args.get_or_undefined(1) {
         value if value.is_null() || value.is_undefined() => None,
-        value => Some(appendable_node_ec(value, ec)?),
+        value => Some(appendable_node(value, ec)?),
     };
     match try_with_node_ref(this, ec, |node| {
         node.insert_before(&child, reference_child.as_ref())
@@ -679,46 +679,14 @@ fn remove_child(
     ec: &mut dyn ExecutionContext<crate::js::Types>,
 ) -> Completion<JsValue, crate::js::Types> {
     let child_val = args.get_or_undefined(0).clone();
-    let child = appendable_node_ec(args.get_or_undefined(0), ec)?;
+    let child = appendable_node(args.get_or_undefined(0), ec)?;
     match try_with_node_ref(this, ec, |node| node.remove_child(&child))? {
         Ok(()) => Ok(child_val),
         Err(error_msg) => Err(ec.new_type_error(&error_msg)),
     }
 }
 
-fn appendable_node(value: &JsValue) -> JsResult<Node> {
-    let Some(object) = value.as_object() else {
-        return Err(JsNativeError::typ()
-            .with_message("appendChild requires a Node")
-            .into());
-    };
-    if let Some(node) = object.downcast_ref::<Node>() {
-        return Ok(Node::new(Rc::clone(&node.document), node.node_id));
-    }
-    if let Some(element) = object.downcast_ref::<Element>() {
-        return Ok(Node::new(
-            Rc::clone(&element.node.document),
-            element.node.node_id,
-        ));
-    }
-    if let Some(html_element) = object.downcast_ref::<HTMLElement>() {
-        return Ok(Node::new(
-            Rc::clone(&html_element.element.node.document),
-            html_element.element.node.node_id,
-        ));
-    }
-    if let Some(html_iframe_element) = object.downcast_ref::<HTMLIFrameElement>() {
-        return Ok(Node::new(
-            Rc::clone(&html_iframe_element.html_element.element.node.document),
-            html_iframe_element.html_element.element.node.node_id,
-        ));
-    }
-    Err(JsNativeError::typ()
-        .with_message("appendChild requires a Node")
-        .into())
-}
-
-fn appendable_node_ec(
+fn appendable_node(
     value: &JsValue,
     ec: &mut dyn ExecutionContext<crate::js::Types>,
 ) -> Completion<Node, crate::js::Types> {

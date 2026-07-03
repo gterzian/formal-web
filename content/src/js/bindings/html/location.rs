@@ -5,7 +5,7 @@ use boa_engine::JsValue;
 use crate::dom::DOMException;
 use crate::html::{Location, LocationError};
 
-use super::hyperlink_element_utils::document_creation_url_ec;
+use super::hyperlink_element_utils::document_creation_url;
 
 use js_engine::{Completion, ExecutionContext, JsTypes};
 
@@ -246,10 +246,10 @@ fn map_location_value<T>(
     result.map_err(|error| location_error_to_js_value(error, ec))
 }
 
-fn entry_settings_object_ec(
+fn entry_settings_object(
     ec: &mut dyn ExecutionContext<crate::js::Types>,
 ) -> Completion<EntrySettingsObject, crate::js::Types> {
-    let api_base_url = document_creation_url_ec(ec)?;
+    let api_base_url = document_creation_url(ec)?;
     let origin = api_base_url.origin().unicode_serialization();
     Ok(EntrySettingsObject {
         api_base_url,
@@ -264,7 +264,7 @@ fn get_href(
     _: &[JsValue],
     ec: &mut dyn ExecutionContext<crate::js::Types>,
 ) -> Completion<JsValue, crate::js::Types> {
-    let entry_settings = entry_settings_object_ec(ec)?;
+    let entry_settings = entry_settings_object(ec)?;
     let href = try_with_location_ref(this, ec, |location| location.href(&entry_settings.origin))?;
     let href = map_location_value(href, ec)?;
     Ok(ec.value_from_string(ec.js_string_from_str(href.as_str())))
@@ -275,7 +275,7 @@ fn get_origin(
     _: &[JsValue],
     ec: &mut dyn ExecutionContext<crate::js::Types>,
 ) -> Completion<JsValue, crate::js::Types> {
-    let entry_settings = entry_settings_object_ec(ec)?;
+    let entry_settings = entry_settings_object(ec)?;
     let origin =
         try_with_location_ref(this, ec, |location| location.origin(&entry_settings.origin))?;
     let origin = map_location_value(origin, ec)?;
@@ -287,7 +287,7 @@ fn get_protocol(
     _: &[JsValue],
     ec: &mut dyn ExecutionContext<crate::js::Types>,
 ) -> Completion<JsValue, crate::js::Types> {
-    let entry_settings = entry_settings_object_ec(ec)?;
+    let entry_settings = entry_settings_object(ec)?;
     let protocol = try_with_location_ref(this, ec, |location| {
         location.protocol(&entry_settings.origin)
     })?;
@@ -300,7 +300,7 @@ fn get_host(
     _: &[JsValue],
     ec: &mut dyn ExecutionContext<crate::js::Types>,
 ) -> Completion<JsValue, crate::js::Types> {
-    let entry_settings = entry_settings_object_ec(ec)?;
+    let entry_settings = entry_settings_object(ec)?;
     let host = try_with_location_ref(this, ec, |location| location.host(&entry_settings.origin))?;
     let host = map_location_value(host, ec)?;
     Ok(ec.value_from_string(ec.js_string_from_str(host.as_str())))
@@ -311,7 +311,7 @@ fn get_hostname(
     _: &[JsValue],
     ec: &mut dyn ExecutionContext<crate::js::Types>,
 ) -> Completion<JsValue, crate::js::Types> {
-    let entry_settings = entry_settings_object_ec(ec)?;
+    let entry_settings = entry_settings_object(ec)?;
     let hostname = try_with_location_ref(this, ec, |location| {
         location.hostname(&entry_settings.origin)
     })?;
@@ -324,7 +324,7 @@ fn get_port(
     _: &[JsValue],
     ec: &mut dyn ExecutionContext<crate::js::Types>,
 ) -> Completion<JsValue, crate::js::Types> {
-    let entry_settings = entry_settings_object_ec(ec)?;
+    let entry_settings = entry_settings_object(ec)?;
     let port = try_with_location_ref(this, ec, |location| location.port(&entry_settings.origin))?;
     let port = map_location_value(port, ec)?;
     Ok(ec.value_from_string(ec.js_string_from_str(port.as_str())))
@@ -335,7 +335,7 @@ fn get_pathname(
     _: &[JsValue],
     ec: &mut dyn ExecutionContext<crate::js::Types>,
 ) -> Completion<JsValue, crate::js::Types> {
-    let entry_settings = entry_settings_object_ec(ec)?;
+    let entry_settings = entry_settings_object(ec)?;
     let pathname = try_with_location_ref(this, ec, |location| {
         location.pathname(&entry_settings.origin)
     })?;
@@ -348,7 +348,7 @@ fn get_search(
     _: &[JsValue],
     ec: &mut dyn ExecutionContext<crate::js::Types>,
 ) -> Completion<JsValue, crate::js::Types> {
-    let entry_settings = entry_settings_object_ec(ec)?;
+    let entry_settings = entry_settings_object(ec)?;
     let search =
         try_with_location_ref(this, ec, |location| location.search(&entry_settings.origin))?;
     let search = map_location_value(search, ec)?;
@@ -360,7 +360,7 @@ fn get_hash(
     _: &[JsValue],
     ec: &mut dyn ExecutionContext<crate::js::Types>,
 ) -> Completion<JsValue, crate::js::Types> {
-    let entry_settings = entry_settings_object_ec(ec)?;
+    let entry_settings = entry_settings_object(ec)?;
     let hash = try_with_location_ref(this, ec, |location| location.hash(&entry_settings.origin))?;
     let hash = map_location_value(hash, ec)?;
     Ok(ec.value_from_string(ec.js_string_from_str(hash.as_str())))
@@ -375,7 +375,7 @@ fn set_href(
 ) -> Completion<JsValue, crate::js::Types> {
     let value_undefined = ec.value_undefined();
     let value = ec.to_rust_string(args.first().cloned().unwrap_or(value_undefined))?;
-    let entry_settings = entry_settings_object_ec(ec)?;
+    let entry_settings = entry_settings_object(ec)?;
     let result = try_with_location_ref(this, ec, |location| {
         location.set_href_with_origin(&value, &entry_settings.api_base_url)
     })?;
@@ -389,7 +389,7 @@ fn set_protocol(
 ) -> Completion<JsValue, crate::js::Types> {
     let value_undefined = ec.value_undefined();
     let value = ec.to_rust_string(args.first().cloned().unwrap_or(value_undefined))?;
-    let entry_settings = entry_settings_object_ec(ec)?;
+    let entry_settings = entry_settings_object(ec)?;
     let result = try_with_location_ref(this, ec, |location| {
         location.set_protocol_with_origin(&value, &entry_settings.origin)
     })?;
@@ -403,7 +403,7 @@ fn set_host(
 ) -> Completion<JsValue, crate::js::Types> {
     let value_undefined = ec.value_undefined();
     let value = ec.to_rust_string(args.first().cloned().unwrap_or(value_undefined))?;
-    let entry_settings = entry_settings_object_ec(ec)?;
+    let entry_settings = entry_settings_object(ec)?;
     let result = try_with_location_ref(this, ec, |location| {
         location.set_host_with_origin(&value, &entry_settings.origin)
     })?;
@@ -417,7 +417,7 @@ fn set_hostname(
 ) -> Completion<JsValue, crate::js::Types> {
     let value_undefined = ec.value_undefined();
     let value = ec.to_rust_string(args.first().cloned().unwrap_or(value_undefined))?;
-    let entry_settings = entry_settings_object_ec(ec)?;
+    let entry_settings = entry_settings_object(ec)?;
     let result = try_with_location_ref(this, ec, |location| {
         location.set_hostname_with_origin(&value, &entry_settings.origin)
     })?;
@@ -431,7 +431,7 @@ fn set_port(
 ) -> Completion<JsValue, crate::js::Types> {
     let value_undefined = ec.value_undefined();
     let value = ec.to_rust_string(args.first().cloned().unwrap_or(value_undefined))?;
-    let entry_settings = entry_settings_object_ec(ec)?;
+    let entry_settings = entry_settings_object(ec)?;
     let result = try_with_location_ref(this, ec, |location| {
         location.set_port_with_origin(&value, &entry_settings.origin)
     })?;
@@ -445,7 +445,7 @@ fn set_pathname(
 ) -> Completion<JsValue, crate::js::Types> {
     let value_undefined = ec.value_undefined();
     let value = ec.to_rust_string(args.first().cloned().unwrap_or(value_undefined))?;
-    let entry_settings = entry_settings_object_ec(ec)?;
+    let entry_settings = entry_settings_object(ec)?;
     let result = try_with_location_ref(this, ec, |location| {
         location.set_pathname_with_origin(&value, &entry_settings.origin)
     })?;
@@ -459,7 +459,7 @@ fn set_search(
 ) -> Completion<JsValue, crate::js::Types> {
     let value_undefined = ec.value_undefined();
     let value = ec.to_rust_string(args.first().cloned().unwrap_or(value_undefined))?;
-    let entry_settings = entry_settings_object_ec(ec)?;
+    let entry_settings = entry_settings_object(ec)?;
     let result = try_with_location_ref(this, ec, |location| {
         location.set_search_with_origin(&value, &entry_settings.origin)
     })?;
@@ -473,7 +473,7 @@ fn set_hash(
 ) -> Completion<JsValue, crate::js::Types> {
     let value_undefined = ec.value_undefined();
     let value = ec.to_rust_string(args.first().cloned().unwrap_or(value_undefined))?;
-    let entry_settings = entry_settings_object_ec(ec)?;
+    let entry_settings = entry_settings_object(ec)?;
     let result = try_with_location_ref(this, ec, |location| {
         location.set_hash_with_origin(&value, &entry_settings.origin)
     })?;
@@ -489,7 +489,7 @@ fn assign_method(
 ) -> Completion<JsValue, crate::js::Types> {
     let value_undefined = ec.value_undefined();
     let value = ec.to_rust_string(args.first().cloned().unwrap_or(value_undefined))?;
-    let entry_settings = entry_settings_object_ec(ec)?;
+    let entry_settings = entry_settings_object(ec)?;
     let result = try_with_location_ref(this, ec, |location| {
         location.assign_with_origin(&value, &entry_settings.api_base_url, &entry_settings.origin)
     })?;
@@ -503,7 +503,7 @@ fn replace_method(
 ) -> Completion<JsValue, crate::js::Types> {
     let value_undefined = ec.value_undefined();
     let value = ec.to_rust_string(args.first().cloned().unwrap_or(value_undefined))?;
-    let entry_settings = entry_settings_object_ec(ec)?;
+    let entry_settings = entry_settings_object(ec)?;
     let result = try_with_location_ref(this, ec, |location| {
         location.replace_with_origin(&value, &entry_settings.api_base_url)
     })?;
@@ -515,7 +515,7 @@ fn reload_method(
     _: &[JsValue],
     ec: &mut dyn ExecutionContext<crate::js::Types>,
 ) -> Completion<JsValue, crate::js::Types> {
-    let entry_settings = entry_settings_object_ec(ec)?;
+    let entry_settings = entry_settings_object(ec)?;
     let result = try_with_location_ref(this, ec, |location| {
         location.reload_with_origin(&entry_settings.origin)
     })?;
@@ -527,7 +527,7 @@ fn get_ancestor_origins(
     _: &[JsValue],
     ec: &mut dyn ExecutionContext<crate::js::Types>,
 ) -> Completion<JsValue, crate::js::Types> {
-    let entry_settings = entry_settings_object_ec(ec)?;
+    let entry_settings = entry_settings_object(ec)?;
     let values = try_with_location_ref(this, ec, |location| {
         location.ancestor_origins_with_origin(&entry_settings.origin)
     })?;
@@ -545,7 +545,7 @@ fn to_string_method(
     _: &[JsValue],
     ec: &mut dyn ExecutionContext<crate::js::Types>,
 ) -> Completion<JsValue, crate::js::Types> {
-    let entry_settings = entry_settings_object_ec(ec)?;
+    let entry_settings = entry_settings_object(ec)?;
     let href = try_with_location_ref(this, ec, |location| location.href(&entry_settings.origin))?;
     let href = map_location_value(href, ec)?;
     Ok(ec.value_from_string(ec.js_string_from_str(href.as_str())))

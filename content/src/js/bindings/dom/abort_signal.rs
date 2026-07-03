@@ -2,7 +2,8 @@ use boa_engine::{JsArgs, JsValue};
 use std::marker::PhantomData;
 
 use crate::dom::{
-    AbortSignal, DOMException, create_abort_signal, initialize_dependent_abort_signal, signal_abort,
+    AbortSignal, DOMException, create_abort_signal, initialize_dependent_abort_signal,
+    signal_abort as dom_signal_abort,
 };
 use crate::html::{Window, WindowOrWorkerGlobalScope};
 use crate::js::downcast::{
@@ -11,7 +12,7 @@ use crate::js::downcast::{
 use crate::webidl::bindings::{
     AttributeDef, InterfaceDefinition, OperationDef, WebIdlInterface, create_interface_instance,
 };
-use crate::webidl::{callback_function_value_ec, nullable_value_ec};
+use crate::webidl::{callback_function_value, nullable_value_ec};
 
 use super::event_target::EcDispatchHost;
 
@@ -138,13 +139,13 @@ pub(crate) fn timeout_reason(
     Ok(crate::js::Types::value_from_object(exc))
 }
 
-pub(crate) fn signal_abort_ec(
+pub(crate) fn signal_abort(
     signal: &AbortSignal,
     reason: JsValue,
     ec: &mut dyn ExecutionContext<crate::js::Types>,
 ) -> Completion<(), crate::js::Types> {
     let mut host = EcDispatchHost::new(ec);
-    signal_abort(&mut host, signal, reason)
+    dom_signal_abort(&mut host, signal, reason)
 }
 
 pub(crate) fn abort_static(
@@ -175,7 +176,7 @@ pub(crate) fn timeout_static(
     let callback_fn = ec.create_builtin_function(
         Box::new(move |_args, _this, inner_ec| {
             let reason = timeout_reason(inner_ec).unwrap_or_else(|_| inner_ec.value_undefined());
-            signal_abort_ec(&signal_for_callback, reason, inner_ec)?;
+            signal_abort(&signal_for_callback, reason, inner_ec)?;
             Ok(inner_ec.value_undefined())
         }),
         0,
@@ -293,7 +294,7 @@ fn set_onabort(
 ) -> Completion<JsValue, crate::js::Types> {
     let signal_object = crate::js::Types::value_as_object(this)
         .ok_or_else(|| ec.new_type_error("AbortSignal receiver is not an object"))?;
-    let callback = nullable_value_ec(args.get_or_undefined(0), ec, callback_function_value_ec)?;
+    let callback = nullable_value_ec(args.get_or_undefined(0), ec, callback_function_value)?;
 
     let previous =
         try_with_abort_signal_mut(this, ec, |signal| signal.replace_onabort(callback.clone()))?;

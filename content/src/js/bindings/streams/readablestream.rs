@@ -398,7 +398,7 @@ fn cancel_method(
         .ok_or_else(|| ec.new_type_error("ReadableStream receiver is not an object"))?;
     let mut stream =
         with_readable_stream_ref_ec(&stream_object, ec, |s: &ReadableStream| s.clone())?;
-    let promise = stream.cancel_ec(args.get_or_undefined(0).clone(), ec)?;
+    let promise = stream.cancel(args.get_or_undefined(0).clone(), ec)?;
     Ok(JsValue::from(promise))
 }
 

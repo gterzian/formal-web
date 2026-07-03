@@ -22,7 +22,7 @@ use js_engine::gc_struct;
 use super::{
     CancelAlgorithm, PullAlgorithm, ReadIntoRequest, ReadRequest, ReadableStream,
     ReadableStreamController, ReadableStreamState, StartAlgorithm, extract_source_method,
-    readable_stream_add_read_request, readable_stream_close_ec, readable_stream_error,
+    readable_stream_add_read_request, readable_stream_close, readable_stream_error,
     readable_stream_fulfill_read_request, readable_stream_get_num_read_requests, type_error_value,
 };
 
@@ -740,7 +740,7 @@ impl ReadableByteStreamController {
 
             self.clear_algorithms();
             descriptor.close(ec)?;
-            readable_stream_close_ec(stream, ec)?;
+            readable_stream_close(stream, ec)?;
             return Ok(());
         }
 
@@ -804,7 +804,7 @@ impl ReadableByteStreamController {
         }
 
         self.clear_algorithms();
-        readable_stream_close_ec(stream, ec)
+        readable_stream_close(stream, ec)
     }
 
     /// <https://streams.spec.whatwg.org/#readable-byte-stream-controller-enqueue>
@@ -912,7 +912,7 @@ impl ReadableByteStreamController {
             && self.pending_pull_intos.borrow().is_empty()
         {
             self.clear_algorithms();
-            readable_stream_close_ec(stream, ec)?;
+            readable_stream_close(stream, ec)?;
             return Ok(());
         }
 
@@ -996,7 +996,7 @@ impl ReadableByteStreamController {
             && self.pending_pull_intos.borrow().is_empty()
         {
             self.clear_algorithms();
-            readable_stream_close_ec(stream, ec)?;
+            readable_stream_close(stream, ec)?;
             return Ok(());
         }
 
@@ -1101,7 +1101,7 @@ impl ReadableByteStreamController {
         read_request.chunk_steps(chunk, ec)?;
         if self.close_requested.get() && self.queue_total_size.get() == 0 {
             self.clear_algorithms();
-            readable_stream_close_ec(stream, ec)?;
+            readable_stream_close(stream, ec)?;
         }
         Ok(())
     }
@@ -1129,7 +1129,7 @@ impl ReadableByteStreamController {
             && self.pending_pull_intos.borrow().is_empty()
         {
             self.clear_algorithms();
-            readable_stream_close_ec(stream, ec)?;
+            readable_stream_close(stream, ec)?;
         }
 
         Ok(())

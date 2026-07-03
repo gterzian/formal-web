@@ -37,20 +37,7 @@ pub(crate) enum ExceptionBehavior {
 }
 
 /// <https://webidl.spec.whatwg.org/#js-to-callback-interface>
-pub(crate) fn callback_interface_type_value(value: &JsValue) -> JsResult<Callback> {
-    // Step 1: "If V is not an Object, then throw a TypeError."
-    let object = value.as_object().ok_or_else(|| {
-        JsError::from(
-            JsNativeError::typ().with_message("callback interface value is not an object"),
-        )
-    })?;
-
-    // Step 2: "Return the IDL callback interface type value that represents a reference to V, with the incumbent settings object as the callback context."
-    // Note: The `Callback` stores the referenced [object implementing a callback interface](https://webidl.spec.whatwg.org/#dfn-callback-interface); the callback context remains implicit in the current single-realm implementation.
-    Ok(Callback::from_object(object.clone()))
-}
-
-pub(crate) fn callback_interface_type_value_ec(
+pub(crate) fn callback_interface_type_value(
     value: &JsValue,
     ec: &mut dyn ExecutionContext<crate::js::Types>,
 ) -> Completion<Callback, crate::js::Types> {
@@ -60,24 +47,7 @@ pub(crate) fn callback_interface_type_value_ec(
 }
 
 /// <https://webidl.spec.whatwg.org/#js-to-callback-function>
-pub(crate) fn callback_function_value(value: &JsValue) -> JsResult<Callback> {
-    // Step 1: "If the result of calling IsCallable(V) is false and the conversion to an IDL value is not being performed due to V being assigned to an attribute whose type is a nullable callback function that is annotated with [LegacyTreatNonObjectAsNull], then throw a TypeError."
-    // Note: No current content call sites use [LegacyTreatNonObjectAsNull].
-    let object = match value.as_object() {
-        Some(object) if object.is_callable() => object.clone(),
-        _ => {
-            return Err(JsNativeError::typ()
-                .with_message("callback function value is not callable")
-                .into());
-        }
-    };
-
-    // Step 2: "Return the IDL callback function type value that represents a reference to the same object that V represents, with the incumbent settings object as the callback context."
-    // Note: The `Callback` stores the referenced [object implementing a callback interface](https://webidl.spec.whatwg.org/#dfn-callback-interface) or callback function; the callback context remains implicit in the current single-realm implementation.
-    Ok(Callback::from_object(object.clone()))
-}
-
-pub(crate) fn callback_function_value_ec(
+pub(crate) fn callback_function_value(
     value: &JsValue,
     ec: &mut dyn ExecutionContext<crate::js::Types>,
 ) -> Completion<Callback, crate::js::Types> {

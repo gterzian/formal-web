@@ -5,7 +5,7 @@ use crate::dom::{AbortController, AbortSignal, create_abort_signal};
 use crate::js::try_with_abort_controller_ref;
 use crate::webidl::bindings::{AttributeDef, InterfaceDefinition, OperationDef, WebIdlInterface};
 
-use super::abort_signal::{abort_reason_from_argument, signal_abort_ec};
+use super::abort_signal::{abort_reason_from_argument, signal_abort};
 
 use js_engine::{Completion, ExecutionContext, JsTypes};
 
@@ -74,6 +74,6 @@ fn abort(
     let controller = crate::js::Types::value_as_object(this)
         .ok_or_else(|| ec.new_type_error("AbortController receiver is not an object"))?;
     let signal = try_with_abort_controller_ref(&controller, ec, |controller| controller.signal())?;
-    signal_abort_ec(&signal, reason, ec)?;
+    signal_abort(&signal, reason, ec)?;
     Ok(ec.value_undefined())
 }

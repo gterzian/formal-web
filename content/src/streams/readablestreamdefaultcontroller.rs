@@ -14,7 +14,7 @@ use super::readablestream::{
     ByteTeeState, ReadableStreamFromIterableState, TeeState,
     readable_byte_stream_tee_cancel1_algorithm, readable_byte_stream_tee_cancel2_algorithm,
     readable_byte_stream_tee_pull1_algorithm, readable_byte_stream_tee_pull2_algorithm,
-    readable_stream_add_read_request, readable_stream_close, readable_stream_close_ec,
+    readable_stream_add_read_request, readable_stream_close,
     readable_stream_default_tee_cancel1_algorithm, readable_stream_default_tee_cancel2_algorithm,
     readable_stream_default_tee_pull_algorithm, readable_stream_error,
     readable_stream_from_iterable_cancel_algorithm, readable_stream_from_iterable_pull_algorithm,
@@ -364,7 +364,7 @@ impl ReadableStreamDefaultController {
                 self.clear_algorithms();
 
                 // Step 2.2.2: "Perform ! ReadableStreamClose(stream)."
-                readable_stream_close_ec(stream, ec)?;
+                readable_stream_close(stream, ec)?;
             } else {
                 // Step 2.3: "Otherwise, perform ! ReadableStreamDefaultControllerCallPullIfNeeded(this)."
                 self.call_pull_if_needed(ec)?;
@@ -480,7 +480,7 @@ impl ReadableStreamDefaultController {
             self.clear_algorithms();
 
             // Step 4.2: "Perform ! ReadableStreamClose(stream)."
-            readable_stream_close_ec(stream, ec)?;
+            readable_stream_close(stream, ec)?;
         }
 
         Ok(())

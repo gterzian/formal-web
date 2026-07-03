@@ -10,4 +10,4 @@ mod location;
 mod window;
 
 pub(crate) use host_hooks::build_context;
-pub(crate) use html_element::{style_declaration_object, style_declaration_object_ec};
+pub(crate) use html_element::style_declaration_object;
