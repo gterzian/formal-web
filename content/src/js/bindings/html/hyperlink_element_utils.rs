@@ -17,7 +17,8 @@ pub(crate) fn document_creation_url(
 ) -> Completion<Url, crate::js::Types> {
     let object = platform_objects::document_object_ec(ec)?;
     let missing_err = ec.new_type_error("document object is not a Document");
-    let document = ec.with_object_any(&object)
+    let document = ec
+        .with_object_any(&object)
         .and_then(|any| any.downcast_ref::<Document>())
         .ok_or(missing_err)?;
     Ok(document.creation_url.clone())

@@ -328,10 +328,7 @@ pub trait ExecutionContext<T: JsTypes + JsTypesWithRealm>: EcmascriptHost<T> {
     ) -> Completion<(), T>;
 
     /// <https://tc39.es/ecma262/#sec-getprototypeof>
-    fn get_prototype_of(
-        &mut self,
-        object: T::JsObject,
-    ) -> Completion<Option<T::JsObject>, T>;
+    fn get_prototype_of(&mut self, object: T::JsObject) -> Completion<Option<T::JsObject>, T>;
 
     /// <https://tc39.es/ecma262/#sec-setprototypeof>
     fn set_prototype(

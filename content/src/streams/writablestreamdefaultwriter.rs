@@ -124,8 +124,7 @@ impl WritableStreamDefaultWriter {
         ec: &mut dyn ExecutionContext<crate::js::Types>,
     ) -> Completion<JsObject, crate::js::Types> {
         let err = ec.new_type_error("WritableStreamDefaultWriter is missing its closed promise");
-        self.closed_promise_value()
-            .ok_or(err)
+        self.closed_promise_value().ok_or(err)
     }
 
     /// <https://streams.spec.whatwg.org/#default-writer-desired-size>
@@ -145,8 +144,7 @@ impl WritableStreamDefaultWriter {
         ec: &mut dyn ExecutionContext<crate::js::Types>,
     ) -> Completion<JsObject, crate::js::Types> {
         let err = ec.new_type_error("WritableStreamDefaultWriter is missing its ready promise");
-        self.ready_promise_value()
-            .ok_or(err)
+        self.ready_promise_value().ok_or(err)
     }
 
     /// <https://streams.spec.whatwg.org/#default-writer-abort>
@@ -450,7 +448,8 @@ pub(crate) fn acquire_writable_stream_default_writer(
     ec: &mut dyn ExecutionContext<crate::js::Types>,
 ) -> Completion<JsObject, crate::js::Types> {
     let writer_object = create_writable_stream_default_writer(ec)?;
-    let writer = with_writable_stream_default_writer_ref(&writer_object, ec, |writer| writer.clone())?;
+    let writer =
+        with_writable_stream_default_writer_ref(&writer_object, ec, |writer| writer.clone())?;
     writer.set_up_writable_stream_default_writer(stream, ec)?;
     Ok(writer_object)
 }

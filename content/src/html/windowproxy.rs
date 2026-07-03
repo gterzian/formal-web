@@ -255,7 +255,11 @@ pub(crate) fn create_window_proxy(
     let handler = ec.create_plain_object(None::<&JsObject>);
 
     let traps: &[(
-        fn(&[JsValue], JsValue, &mut dyn ExecutionContext<crate::js::Types>) -> Completion<JsValue, crate::js::Types>,
+        fn(
+            &[JsValue],
+            JsValue,
+            &mut dyn ExecutionContext<crate::js::Types>,
+        ) -> Completion<JsValue, crate::js::Types>,
         u32,
         &str,
     )] = &[
@@ -277,7 +281,12 @@ pub(crate) fn create_window_proxy(
             ec.property_key_from_str(name),
         );
         let builtin_fn_jsobj = <crate::js::Types as JsTypes>::object_from_function(builtin_fn);
-        ec.set(handler.clone(), ec.property_key_from_str(name), <crate::js::Types as JsTypes>::value_from_object(builtin_fn_jsobj), false)?;
+        ec.set(
+            handler.clone(),
+            ec.property_key_from_str(name),
+            <crate::js::Types as JsTypes>::value_from_object(builtin_fn_jsobj),
+            false,
+        )?;
     }
 
     let proxy = ec.create_proxy(window.clone(), handler)?;
@@ -295,7 +304,10 @@ pub(crate) fn resolve_window(
 ) -> JsObject {
     if let Some(object) = value.as_object() {
         // Direct Window: check via with_object_any downcast.
-        if let Some(_) = ec.with_object_any(&object).and_then(|a| a.downcast_ref::<Window>()) {
+        if let Some(_) = ec
+            .with_object_any(&object)
+            .and_then(|a| a.downcast_ref::<Window>())
+        {
             return object;
         }
         // For non-Window objects (Proxy or unknown), return the global.
@@ -392,9 +404,15 @@ pub(crate) fn cross_origin_own_property_keys() -> Vec<boa_engine::property::Prop
         .into_iter()
         .map(|p| boa_engine::property::PropertyKey::String(boa_engine::js_string!(p.property)))
         .collect();
-    keys.push(boa_engine::property::PropertyKey::String(boa_engine::js_string!("then")));
-    keys.push(boa_engine::property::PropertyKey::Symbol(boa_engine::JsSymbol::to_string_tag()));
-    keys.push(boa_engine::property::PropertyKey::Symbol(boa_engine::JsSymbol::has_instance()));
+    keys.push(boa_engine::property::PropertyKey::String(
+        boa_engine::js_string!("then"),
+    ));
+    keys.push(boa_engine::property::PropertyKey::Symbol(
+        boa_engine::JsSymbol::to_string_tag(),
+    ));
+    keys.push(boa_engine::property::PropertyKey::Symbol(
+        boa_engine::JsSymbol::has_instance(),
+    ));
     keys.push(boa_engine::property::PropertyKey::Symbol(
         boa_engine::JsSymbol::is_concat_spreadable(),
     ));

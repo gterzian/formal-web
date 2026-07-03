@@ -8,10 +8,10 @@ use boa_engine::{
     object::{JsObject, builtins::JsPromise},
 };
 
-use js_engine::{Completion, ExecutionContext, JsTypes};
 use js_engine::gc::GcCell;
 use js_engine::gc::gc_cell_new;
 use js_engine::gc_struct;
+use js_engine::{Completion, ExecutionContext, JsTypes};
 use log::error;
 
 /// **Web IDL Promise Manipulation**
@@ -148,8 +148,8 @@ pub(crate) fn promise_from_completion(
     match completion {
         Ok(value) => {
             // Resolve the promise with the value.
-            let promise_obj = promise_from_value(value.clone(), ec)
-                .unwrap_or_else(|_| ec.realm_global_object());
+            let promise_obj =
+                promise_from_value(value.clone(), ec).unwrap_or_else(|_| ec.realm_global_object());
             // Return as JsPromise (Boa type) for backward compatibility
             // with the byte_tee_ignore_pull_completion caller.
             JsPromise::from_object(promise_obj)
@@ -558,7 +558,10 @@ where
                   _this: JsValue,
                   handler_ec: &mut dyn ExecutionContext<crate::js::Types>|
                   -> Completion<JsValue, crate::js::Types> {
-                let arg = args.first().cloned().unwrap_or_else(|| handler_ec.value_undefined());
+                let arg = args
+                    .first()
+                    .cloned()
+                    .unwrap_or_else(|| handler_ec.value_undefined());
                 let mut state_ref = state_clone.borrow_mut();
                 // Step 3.1: If rejected is true, abort these steps.
                 if state_ref.rejected {
@@ -623,7 +626,10 @@ where
                       _this: JsValue,
                       handler_ec: &mut dyn ExecutionContext<crate::js::Types>|
                       -> Completion<JsValue, crate::js::Types> {
-                    let arg = args.first().cloned().unwrap_or_else(|| handler_ec.value_undefined());
+                    let arg = args
+                        .first()
+                        .cloned()
+                        .unwrap_or_else(|| handler_ec.value_undefined());
                     let mut state_ref = state_for_fulfillment.borrow_mut();
                     // Step 9.2.1: Set result[promiseIndex] to arg.
                     if promise_index < state_ref.result.len() {
@@ -633,9 +639,15 @@ where
                     state_ref.fulfilled_count += 1;
                     // Step 9.2.3: If fulfilledCount equals total, then perform successSteps given result.
                     if state_ref.fulfilled_count == state_ref.total {
-                        let results: Vec<JsValue> = state_ref.result.iter().map(|opt| opt.clone().unwrap_or_else(|| handler_ec.value_undefined())).collect();
+                        let results: Vec<JsValue> = state_ref
+                            .result
+                            .iter()
+                            .map(|opt| opt.clone().unwrap_or_else(|| handler_ec.value_undefined()))
+                            .collect();
                         drop(state_ref);
-                        if let Some(success_steps) = success_cell_for_fulfillment.borrow_mut().take() {
+                        if let Some(success_steps) =
+                            success_cell_for_fulfillment.borrow_mut().take()
+                        {
                             let _ = success_steps(results, handler_ec);
                         }
                     }
@@ -688,25 +700,33 @@ pub(crate) fn wait_for_all_get_promise(
     let resolvers_for_success = resolvers.clone();
     wait_for_all(
         promises,
-        Box::new(move |results: Vec<JsValue>, inner_ec: &mut dyn ExecutionContext<crate::js::Types>| {
-            // Step 2.1: Resolve promise with results.
-            let resolve: JsObject = resolvers_for_success.resolve.clone().into();
-            let undefined = inner_ec.value_undefined();
-            // Convert results to JS array for Promise<sequence<T>>
-            let array = inner_ec.create_empty_array();
-            for value in results {
-                inner_ec.array_push(&array, value)?;
-            }
-            inner_ec.call(&resolve, &undefined, &[crate::js::Types::value_from_object(array)])?;
-            Ok(())
-        }),
-        Box::new(move |reason: JsValue, inner_ec: &mut dyn ExecutionContext<crate::js::Types>| {
-            // Step 3.1: Reject promise with reason.
-            let reject: JsObject = resolvers.reject.clone().into();
-            let undefined = inner_ec.value_undefined();
-            inner_ec.call(&reject, &undefined, &[reason])?;
-            Ok(())
-        }),
+        Box::new(
+            move |results: Vec<JsValue>, inner_ec: &mut dyn ExecutionContext<crate::js::Types>| {
+                // Step 2.1: Resolve promise with results.
+                let resolve: JsObject = resolvers_for_success.resolve.clone().into();
+                let undefined = inner_ec.value_undefined();
+                // Convert results to JS array for Promise<sequence<T>>
+                let array = inner_ec.create_empty_array();
+                for value in results {
+                    inner_ec.array_push(&array, value)?;
+                }
+                inner_ec.call(
+                    &resolve,
+                    &undefined,
+                    &[crate::js::Types::value_from_object(array)],
+                )?;
+                Ok(())
+            },
+        ),
+        Box::new(
+            move |reason: JsValue, inner_ec: &mut dyn ExecutionContext<crate::js::Types>| {
+                // Step 3.1: Reject promise with reason.
+                let reject: JsObject = resolvers.reject.clone().into();
+                let undefined = inner_ec.value_undefined();
+                inner_ec.call(&reject, &undefined, &[reason])?;
+                Ok(())
+            },
+        ),
         ec,
     )?;
 

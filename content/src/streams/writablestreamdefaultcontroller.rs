@@ -3,10 +3,7 @@ use js_engine::gc::gc_cell_new;
 use js_engine::gc_struct;
 use std::{cell::Cell, rc::Rc};
 
-use boa_engine::{
-    JsArgs, JsNativeError, JsResult, JsValue,
-    object::{JsObject, builtins::JsPromise},
-};
+use boa_engine::{JsValue, object::JsObject};
 use boa_gc::{Finalize, Trace};
 
 use js_engine::{Completion, ExecutionContext, JsTypes};
@@ -337,10 +334,7 @@ impl WritableStreamDefaultController {
         ec: &mut dyn ExecutionContext<crate::js::Types>,
     ) -> Completion<f64, crate::js::Types> {
         let Some(strategy_size_algorithm) = self.strategy_size_algorithm.borrow().clone() else {
-            debug_assert_ne!(
-                self.stream_slot(ec)?.state(),
-                WritableStreamState::Writable,
-            );
+            debug_assert_ne!(self.stream_slot(ec)?.state(), WritableStreamState::Writable,);
             return Ok(1.0);
         };
 
@@ -399,7 +393,8 @@ impl WritableStreamDefaultController {
     ) -> Completion<(), crate::js::Types> {
         let backpressure = self.get_backpressure(ec)?;
         let stream = self.stream_slot(ec)?;
-        if let Err(error) = self.enqueue_value_with_size(QueueEntryValue::Chunk(chunk), chunk_size, ec)
+        if let Err(error) =
+            self.enqueue_value_with_size(QueueEntryValue::Chunk(chunk), chunk_size, ec)
         {
             self.error_if_needed(error, ec)?;
             return Ok(());
@@ -457,8 +452,12 @@ impl WritableStreamDefaultController {
         let sink_close_promise = algorithm.call(ec)?;
         stream.mark_close_request_in_flight(ec)?;
         let stream_for_fulfilled = stream.clone();
-        let on_fulfilled =
-            crate::js::builtin_with_captures(ec, stream_for_fulfilled, process_close_on_fulfilled, 1);
+        let on_fulfilled = crate::js::builtin_with_captures(
+            ec,
+            stream_for_fulfilled,
+            process_close_on_fulfilled,
+            1,
+        );
         let on_rejected =
             crate::js::builtin_with_captures(ec, stream, process_close_on_rejected, 1);
         let promise = crate::js::Types::object_as_promise(&sink_close_promise)
@@ -569,18 +568,6 @@ pub(crate) fn create_writable_stream_default_controller(
 }
 
 pub(crate) fn with_writable_stream_default_controller_ref<R>(
-    object: &JsObject,
-    f: impl FnOnce(&WritableStreamDefaultController) -> R,
-) -> JsResult<R> {
-    let controller = object
-        .downcast_ref::<WritableStreamDefaultController>()
-        .ok_or_else(|| {
-            JsNativeError::typ().with_message("object is not a WritableStreamDefaultController")
-        })?;
-    Ok(f(&controller))
-}
-
-pub(crate) fn with_writable_stream_default_controller_ref_ec<R>(
     object: &JsObject,
     ec: &mut dyn ExecutionContext<crate::js::Types>,
     f: impl FnOnce(&WritableStreamDefaultController) -> R,
@@ -911,9 +898,6 @@ fn setup_on_rejected(
 ) -> Completion<JsValue, crate::js::Types> {
     captures.set_started(true);
     let stream = captures.stream_slot(ec)?;
-    stream.deal_with_rejection(
-        args.first().cloned().unwrap_or(JsValue::undefined()),
-        ec,
-    )?;
+    stream.deal_with_rejection(args.first().cloned().unwrap_or(JsValue::undefined()), ec)?;
     Ok(JsValue::undefined())
 }

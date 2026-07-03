@@ -206,17 +206,11 @@ Three traits model the split between factory and runtime:
 | `ExecutionContext<T>` | **Stateful runtime** — the realm execution context.  Carries the realm, heap, global object, job queue.  Threaded through every binding function, domain method, and dispatch call.  **This is what `EnvironmentSettingsObject` owns.** | <https://html.spec.whatwg.org/#realm-execution-context> §8.1.3.2 → all of ECMA-262 §7, §9.3, §9.6 |
 | `EcmascriptHost<T>` | Subset of `ExecutionContext<T>` covering only Web IDL callback algorithms (`Get`, `IsCallable`, `Call`, `report_exception`, value construction).  A supertrait of `ExecutionContext<T>`. | §3 of Web IDL |
 
-### Concrete realization
 
 `BoaContext` (was `BoaEngine`) wraps `boa_engine::Context` and implements
-`ExecutionContext<BoaTypes>`.  It **is** a realm execution context for the
-Boa backend.  The `JsEngine<BoaTypes>` impl on the same struct is a
-convenience — in a clean split the factory would be a separate stateless
-singleton and `BoaContext` would only implement `ExecutionContext<BoaTypes>`.
-
-The plan is to eliminate the `JsEngine<BoaTypes>` impl from `BoaContext`
-and make the factory a standalone global.  For now they co-reside on the
-same struct because Boa's `Context` serves both roles internally.
+`ExecutionContext<BoaTypes>`.  The `JsEngine<BoaTypes>` impl on the same
+struct is a convenience — in a clean split the factory would be a standalone
+global.  For now they co-reside because Boa's `Context` serves both roles.
 
 ### What moves where
 
@@ -368,7 +362,7 @@ See module docs for implementation status and quirks:
 
 ## Migration status
 
-POC is **complete** — 70/70 tests pass on Boa in `content/src/generic_js_test.rs`
+POC is **complete** — 81/81 tests pass on Boa in `content/src/generic_js_test.rs`
 (content JSC blocked on Phase E).
 (see JSC backend status for details).  The test file
 (`content/src/generic_js_test.rs`) proves every content pattern can be
@@ -392,7 +386,7 @@ expressed through the generic API with zero structural `#[cfg]`.
 
 The actual missing abstractions are smaller and more local than that.
 
-### Test-file-first discipline (applies to all remaining phases)
+### Test-file-first discipline
 
 **Never add a new generic pattern directly to production code.**
 Every new generic interface, downcast helper, host-data abstraction,
@@ -400,42 +394,6 @@ or subsystem entry-point signature must first be validated in
 `content/src/generic_js_test.rs` with compilation and passing unit tests
 on **both backends** (Boa and JSC) before it can be applied to any
 real production file.
-
-This means: before implementing Phase P's `platform_object_store(ec)`,
-add a test that exercises the full lifecycle (store → retrieve → mutate).
-Before converting Phase W's `structured_clone` to take `ExecutionContext<T>`,
-add a test that clones a value through the generic entry point.  The POC
-test file is the gate — no pattern enters production without passing through it first.
-
-Concrete per-phase validation requirements:
-
-| Phase | What to validate in `generic_js_test.rs` |
-|---|---|
-| **Phase D** ✅ | Return-type change only (trait methods `JsResult` → `Completion`). No new generic interface — validated by `cargo check` passing. |
-| **Phase S** ✅ | `clone_as_uint8_array` converted to pure EC; byte tee closures fully converted (pull1/pull2/cancel1/cancel2 + helpers); `queue_internal_stream_microtask` converted; `NativeFunction::from_copy_closure_with_captures` → `builtin_with_captures`. |
-| **Phase P** | `store_host_any` / `get_host_any` already validated. New content-owned helpers (`platform_object_store(ec)`) must be validated: store a document handle, retrieve by key, mutate. |
-| **Phase W** | Each subsystem entry point that changes signature must be exercised: structured clone round-trip, promise helper usage, Wasm namespace access. |
-| **Phase E** | `cargo check -p content` with both `--features boa` and `--no-default-features --features jsc`. No new generic interface — configuration-only change. |
-
-### Completed phases
-
-| Phase | What |
-|---|---|
-| 1-9, D | Trait split, generic bindings, EC infrastructure, generic registry, binding fn signatures, CtxHost removal, EDS context leak, domain threading, GC abstraction, JSC backend, dispatch host cleanup |
-| S1-S10 | Streams bindings at 0 ec_to_ctx; Controller JsResult→Completion; PromiseResolvers<T> in js_engine and content |
-| P1-P3 | Platform objects `_ec` wrappers; `realm_global_object()` trait method; `platform_objects.rs` 8→0 ec_to_ctx |
-| T1-T2 | Typed array trait methods (11 methods); all callers converted |
-| W1-W2 | WebIDL promise conversion; streams helpers conversion |
-| G1-G3 | `#[gc_struct]` proc-macro; `GcCell<T>` type alias; `Clone` emitted |
-| C2-C3 | `create_builtin_function_with_captures`; 16 NativeFunction → captures migrated |
-| **B1** | `Behaviour<T>` trait; `create_builtin_function_from_behaviour` on `ExecutionContext<T>` — object-safe EC method for captures; `builtin_with_captures_ec` now zero bridges (no `ec_to_ctx`, no unsafe); 81/81 POC tests pass |
-| A-C | GC derive conversion; binding body conversion; `create_builtin_function` on EC |
-| **S-promise** | `PromiseState<T>` enum in js_engine; `promise_state()` method on `ExecutionContext<T>` trait; Boa + JSC backend impls. Replaces `JsPromise::from_object(x)?.state()` (Boa-specific) with `ec.promise_state(&obj)?`. |
-| **S1a** | PipeToState EC wrappers (18 methods); `pipe_to_on_promise_settled_ec`; `pipe_reaction_fn` + `pipe_reaction_function_ec`; `pipe_read_result_done_ec`; `queue_internal_stream_microtask_ec`; 3 ReadableStreamPipeTo closures converted to EC path |
-| **S** | Byte tee closures: `readable_byte_stream_tee_pull1/pull2/cancel1/cancel2_algorithm` + helpers; `queue_internal_stream_microtask` EC; `NativeFunction::from_copy_closure_with_captures` → `builtin_with_captures`. 5 ec_to_ctx eliminated |
-| **P** | `create_proxy`, `get_prototype_of`, `to_property_descriptor` on EC trait; `windowproxy.rs` → EC-builtin-function traps + `ec.create_proxy()` (1 ec_to_ctx); `html_media_element/resource_selection_algorithm` → EC (1); `queue_a_microtask`/`await_a_stable_state` → EC; `with_global_scope_ec` pub(crate). 2 ec_to_ctx eliminated |
-
-### Next session: recommended order
 
 ### Current state (updated 2026-07-03)
 
@@ -445,62 +403,33 @@ All domain field types use `GcCell<T>`. Generic POC: 81/81 tests pass on Boa.
 Phase E (compile-time Types/Engine aliases) is landed — `#[cfg(feature = "jsc")]`
 selects between BoaTypes and JscTypes.
 
-**ec_to_ctx count: ~8** (was ~34; 26 eliminated across 5 sessions)
-  - Eliminated: `js_result_to_completion_ec` bridge (was 1 ec_to_ctx)
-  - Remaining: `wasm/namespace.rs` (6, gated behind `boa` feature),
-    `html/safe_passing_of_structured_data.rs` (1),
-    `webidl/async_iterable.rs` (1)
+**ec_to_ctx / bridge count:** Still ~8 — remaining: `wasm/namespace.rs` (6, gated behind `boa` feature),
+  `html/safe_passing_of_structured_data.rs` (1),
+  `webidl/async_iterable.rs` (1).
+  Plus `completion_to_js_result` bridges in `readablestreamasynciterator.rs`,
+  `readablestream.rs`, `readablebytestreamcontroller.rs`, `transformstream.rs`,
+  `async_iterable.rs`, and `main.rs`.
 
-**`_ec` suffix count: 78 function definitions, 620 total occurrences** —
-all temporary. Down from 87/654 in previous session. 9 definitions and
-34 total occurrences eliminated this session.
-See the `_ec` suffix convention section for the complete rules.
-
-**Phase S complete — byte tee closures fully EC:**
-- `readablestreamdefaultcontroller.rs` (4 ec_to_ctx eliminated)
-- `readablestreamsupport.rs`: `queue_internal_stream_microtask` converted (1)
-- `readablestream.rs`: 6 byte tee functions + 6 helpers converted (1)
-
-**Phase P complete — WindowProxy via generic ProxyCreate:**
-- Added `create_proxy`, `get_prototype_of`, `to_property_descriptor` to EC trait
-- `windowproxy.rs`: 10 traps → EC-builtin-functions; handler → `ec.create_proxy()` (1)
-
-**Additional conversions (this session):**
-- **`js_result_to_completion_ec` eliminated** — Removed the bridge from
-  `js/mod.rs` (1 ec_to_ctx). Converted `mark_close_request_in_flight` and
-  `mark_first_write_request_in_flight` in `writablestream.rs` from `JsResult`
-  to `Completion`.
-- **`_ec` cleanup in writablestreamdefaultcontroller.rs** — Removed 5 `_ec`
-  suffixes: `stream_slot_ec`, `controller_object_ec` (pure duplicates),
-  `signal_ec→signal`, `signal_value_ec→signal_value`.
-- **`_ec` cleanup in writablestreamdefaultwriter.rs** — Removed 4 `_ec`
-  suffixes: `closed_ec→closed`, `desired_size_ec` (pure duplicate),
-  `ready_ec→ready`, `with_writable_stream_default_writer_ref_ec→..._ref`.
-  Updated all callers in writablestream bindings and readablestream.rs.
-
-**Remaining ~8 ec_to_ctx by file:**
-- `wasm/namespace.rs`: 6 — gated behind `boa` feature, lowest priority.
-- `html/safe_passing_of_structured_data.rs`: 1 — structured clone (Boa-internal)
-- `webidl/async_iterable.rs`: 1 — async iterator creation (`ObjectInitializer`)
+**`_ec` suffix count: 43 function definitions, 537 total occurrences** —
+reduced from 78 defs / 620 total. See the `_ec` suffix convention section
+for the complete rules.
 
 ### Next session: recommended order
 
-1. **`_ec` cleanup — writablestreamdefaultcontroller.rs** — Remove the remaining
-   `with_writable_stream_default_controller_ref_ec` bridge (non-EC version has
-   0 callers). Then tackle the `stream_slot_ec`/`controller_object_ec` duplicates
-   in `readablestreamdefaultcontroller.rs` and `transformstream.rs`.
+1. **Continue `_ec` cleanup in `readablebytestreamcontroller.rs`** — This file
+   likely has similar `stream_slot_ec`/`controller_object_ec` pair duplicates.
+   Apply the same pattern: convert non-EC → EC, delete bridges with 0 callers,
+   rename `_ec` variants.
 
-2. **Phase E validation** — `cargo check -p content --no-default-features --features jsc`.
-   Note: `content/src/wasm/` is not yet gated behind `boa` feature. To make Phase E
-   clean, gate `pub mod wasm` in `main.rs` behind `#[cfg(feature = "boa")]` and
-   conditionally compile the `wasmtime` dep. The wasm module can be left as a
+2. **Continue `_ec` cleanup — remaining free functions** — Functions like
+   `create_readable_byte_stream_controller_ec`, `set_up_readable_byte_stream_controller_from_underlying_source_ec`,
+   and other free-standing `_ec` functions in stream files that still have
+   non-EC bridges. Check each for 0-caller bridges and delete+rename.
 
-2. **Phase E validation** — `cargo check -p content --no-default-features --features jsc`.
-   Note: `content/src/wasm/` is now gated behind `#[cfg(feature = "boa")]`.
-   The remaining JSC compilation blockers are GC trait bounds
-   (`boa_engine::Trace`/`#[gc_struct]`) and `unsafe_ignore_trace` attribute on
-   non-wasm structs throughout the content crate — these are pre-existing
-   Phase E issues, not wasm-specific.
+3. **Phase E** — The content crate does not yet compile for JSC.
+   Blockers are GC trait bounds (`boa_engine::Trace`/`#[gc_struct]`) and
+   `unsafe_ignore_trace` attribute on non-wasm structs throughout the content
+   crate. Wasm is now gated behind `#[cfg(feature = "boa")]`.
 
 ## `_ec` suffix convention
 
@@ -555,7 +484,7 @@ original name.  The same algorithm lives at the same conceptual location — the
 
 ### End state
 
-Current count: **87 `_ec` function definitions**, **654 total `_ec` occurrences**
+Current count: **78 `_ec` function definitions**, **620 total `_ec` occurrences**
 (definitions + call sites across all files).  These shrink as bridges are
 removed.  At migration completion: **zero `_ec` suffixes anywhere in the
 codebase.**  Every function uses its original name with an EC parameter.
@@ -577,9 +506,6 @@ bridges through `context_as_engine` — prefer the EC variant.
 
 **Test-file-first:** Validate new generic patterns in `generic_js_test.rs`
 on both backends before production code. 81/81 tests pass on Boa.
-
-**`Behaviour<T>` trait design note:** `dyn Behaviour<BoaTypes>` uses no-op
-Trace/Finalize — captures are GC-managed objects rooted by their parent.
 
 **Do not introduce new `_ec` functions unnecessarily.** If the function has no
 non-EC callers, convert it in place without a suffix.  The `_ec` suffix is only

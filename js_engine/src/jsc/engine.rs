@@ -1323,10 +1323,7 @@ impl ExecutionContext<JscTypes> for JscEngine {
         Ok(())
     }
 
-    fn get_prototype_of(
-        &mut self,
-        object: JscObject,
-    ) -> Completion<Option<JscObject>, JscTypes> {
+    fn get_prototype_of(&mut self, object: JscObject) -> Completion<Option<JscObject>, JscTypes> {
         // Stub — not yet used by JSC proxy code
         Err(self.new_type_error("get_prototype_of not yet implemented on JSC backend"))
     }
@@ -1935,9 +1932,10 @@ impl ExecutionContext<JscTypes> for JscEngine {
         _realm: JscRealm,
         job: Box<dyn FnOnce(&mut dyn ExecutionContext<JscTypes>)>,
     ) {
-        self.queued_jobs.push(Box::new(move |engine: &mut JscEngine| {
-            job(engine);
-        }));
+        self.queued_jobs
+            .push(Box::new(move |engine: &mut JscEngine| {
+                job(engine);
+            }));
     }
     fn run_jobs(&mut self) {
         let jobs = std::mem::take(&mut self.queued_jobs);
@@ -2720,13 +2718,11 @@ impl ExecutionContext<JscTypes> for JscEngine {
     ) -> JscFunction {
         let engine_ptr: *mut JscEngine = self;
 
-        let wrapped: StoredBehaviour = Box::new(
-            move |args, this_val| {
-                let engine: &mut JscEngine = unsafe { &mut *engine_ptr };
-                let ec: &mut dyn ExecutionContext<JscTypes> = engine;
-                behaviour.call(args, this_val, ec)
-            },
-        );
+        let wrapped: StoredBehaviour = Box::new(move |args, this_val| {
+            let engine: &mut JscEngine = unsafe { &mut *engine_ptr };
+            let ec: &mut dyn ExecutionContext<JscTypes> = engine;
+            behaviour.call(args, this_val, ec)
+        });
 
         let leaked: *mut StoredBehaviour = Box::into_raw(Box::new(wrapped));
 
@@ -2747,9 +2743,12 @@ impl ExecutionContext<JscTypes> for JscEngine {
         let mut exc: *mut JSValueRef = std::ptr::null_mut();
         unsafe {
             JSObjectSetProperty(
-                ctx_ptr, raw,
-                length_key.raw, length_val.raw,
-                kJSPropertyAttributeNone, &mut exc,
+                ctx_ptr,
+                raw,
+                length_key.raw,
+                length_val.raw,
+                kJSPropertyAttributeNone,
+                &mut exc,
             );
         }
 
@@ -2761,9 +2760,12 @@ impl ExecutionContext<JscTypes> for JscEngine {
             };
             unsafe {
                 JSObjectSetProperty(
-                    ctx_ptr, raw,
-                    name_key.raw, name_val.raw,
-                    kJSPropertyAttributeNone, &mut exc,
+                    ctx_ptr,
+                    raw,
+                    name_key.raw,
+                    name_val.raw,
+                    kJSPropertyAttributeNone,
+                    &mut exc,
                 );
             }
         }
@@ -3348,8 +3350,8 @@ mod tests {
         let mut engine = JscEngine::new();
         let realm = engine.current_realm();
         let intrinsics = engine.realm_intrinsics(&realm);
-        let ab = JsEngine::allocate_array_buffer(&mut engine, intrinsics.array_buffer, 8, None)
-            .unwrap();
+        let ab =
+            JsEngine::allocate_array_buffer(&mut engine, intrinsics.array_buffer, 8, None).unwrap();
         assert!(!ab.raw.is_null());
     }
 }

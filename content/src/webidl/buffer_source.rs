@@ -1,9 +1,6 @@
 //! <https://webidl.spec.whatwg.org/#js-buffer-source-types>
 
-use boa_engine::{
-    JsValue, object::builtins::JsArrayBuffer,
-    object::builtins::JsTypedArray,
-};
+use boa_engine::{JsValue, object::builtins::JsArrayBuffer, object::builtins::JsTypedArray};
 
 use js_engine::{Completion, ExecutionContext};
 
@@ -14,9 +11,9 @@ pub(crate) fn get_a_copy_of_the_buffer_source(
 ) -> Completion<Vec<u8>, crate::js::Types> {
     // Step 1: "Let jsBufferSource be the result of converting bufferSource
     //          to a JavaScript value."
-    let object = value.as_object().ok_or_else(|| {
-        ec.new_type_error("argument must be an ArrayBuffer or typed array")
-    })?;
+    let object = value
+        .as_object()
+        .ok_or_else(|| ec.new_type_error("argument must be an ArrayBuffer or typed array"))?;
 
     // Step 5: "If jsBufferSource has a [[ViewedArrayBuffer]] internal slot, then:"
     if let Ok(typed_array) = JsTypedArray::from_object(object.clone()) {

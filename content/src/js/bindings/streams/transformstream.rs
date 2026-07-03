@@ -3,8 +3,8 @@ use std::marker::PhantomData;
 use crate::webidl::bindings::{AttributeDef, InterfaceDefinition, OperationDef, WebIdlInterface};
 
 use crate::streams::{
-    TransformStream, TransformStreamDefaultController, construct_transform_stream_ec,
-    with_transform_stream_default_controller_ref_ec, with_transform_stream_ref_ec,
+    TransformStream, TransformStreamDefaultController, construct_transform_stream,
+    with_transform_stream_default_controller_ref, with_transform_stream_ref,
 };
 
 use js_engine::{Completion, ExecutionContext, JsTypes};
@@ -17,7 +17,7 @@ impl WebIdlInterface<crate::js::Types> for TransformStream {
         args: &[<crate::js::Types as JsTypes>::JsValue],
         ec: &mut dyn ExecutionContext<crate::js::Types>,
     ) -> Completion<Self, crate::js::Types> {
-        construct_transform_stream_ec(this, args, ec)
+        construct_transform_stream(this, args, ec)
     }
 
     fn define_members(def: &mut InterfaceDefinition<crate::js::Types>) {
@@ -113,8 +113,8 @@ fn get_readable(
 ) -> Completion<<crate::js::Types as JsTypes>::JsValue, crate::js::Types> {
     let obj = <crate::js::Types as JsTypes>::value_as_object(this)
         .ok_or_else(|| ec.new_type_error("TransformStream.readable called on non-object"))?;
-    let stream = with_transform_stream_ref_ec(&obj, ec, |s| s.clone())?;
-    let readable = stream.readable_object_ec(ec)?;
+    let stream = with_transform_stream_ref(&obj, ec, |s| s.clone())?;
+    let readable = stream.readable_object(ec)?;
     Ok(readable.into())
 }
 
@@ -126,8 +126,8 @@ fn get_writable(
 ) -> Completion<<crate::js::Types as JsTypes>::JsValue, crate::js::Types> {
     let obj = <crate::js::Types as JsTypes>::value_as_object(this)
         .ok_or_else(|| ec.new_type_error("TransformStream.writable called on non-object"))?;
-    let stream = with_transform_stream_ref_ec(&obj, ec, |s| s.clone())?;
-    let writable = stream.writable_object_ec(ec)?;
+    let stream = with_transform_stream_ref(&obj, ec, |s| s.clone())?;
+    let writable = stream.writable_object(ec)?;
     Ok(writable.into())
 }
 
@@ -140,8 +140,8 @@ fn get_desired_size(
     let obj = <crate::js::Types as JsTypes>::value_as_object(this).ok_or_else(|| {
         ec.new_type_error("TransformStreamDefaultController.desiredSize called on non-object")
     })?;
-    let controller = with_transform_stream_default_controller_ref_ec(&obj, ec, |c| c.clone())?;
-    let size = controller.desired_size_ec(ec)?;
+    let controller = with_transform_stream_default_controller_ref(&obj, ec, |c| c.clone())?;
+    let size = controller.desired_size(ec)?;
     match size {
         Some(s) => Ok(s.into()),
         None => Ok(ec.value_null()),
@@ -158,7 +158,7 @@ fn controller_enqueue(
         ec.new_type_error("TransformStreamDefaultController.enqueue called on non-object")
     })?;
     let chunk = args.first().cloned().unwrap_or(ec.value_undefined());
-    let controller = with_transform_stream_default_controller_ref_ec(&obj, ec, |c| c.clone())?;
+    let controller = with_transform_stream_default_controller_ref(&obj, ec, |c| c.clone())?;
     controller.enqueue_ec(chunk, ec)?;
     Ok(ec.value_undefined())
 }
@@ -173,7 +173,7 @@ fn controller_error(
         ec.new_type_error("TransformStreamDefaultController.error called on non-object")
     })?;
     let reason = args.first().cloned().unwrap_or(ec.value_undefined());
-    let controller = with_transform_stream_default_controller_ref_ec(&obj, ec, |c| c.clone())?;
+    let controller = with_transform_stream_default_controller_ref(&obj, ec, |c| c.clone())?;
     controller.error(reason, ec)?;
     Ok(ec.value_undefined())
 }
@@ -187,7 +187,7 @@ fn controller_terminate(
     let obj = <crate::js::Types as JsTypes>::value_as_object(this).ok_or_else(|| {
         ec.new_type_error("TransformStreamDefaultController.terminate called on non-object")
     })?;
-    let controller = with_transform_stream_default_controller_ref_ec(&obj, ec, |c| c.clone())?;
+    let controller = with_transform_stream_default_controller_ref(&obj, ec, |c| c.clone())?;
     controller.terminate(ec)?;
     Ok(ec.value_undefined())
 }

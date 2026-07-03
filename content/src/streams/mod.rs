@@ -21,11 +21,10 @@ pub(crate) use readablebytestreamcontroller::{
 pub use readablebytestreamcontroller::{ReadableByteStreamController, ReadableStreamBYOBRequest};
 pub use readablestream::ReadableStream;
 pub(crate) use readablestream::{
-    PipeToState, construct_readable_stream,
-    readable_stream_add_read_request, readable_stream_close, readable_stream_close_ec, readable_stream_error,
-    readable_stream_from_iterable,
-    readable_stream_fulfill_read_request, readable_stream_get_num_read_requests,
-    with_readable_stream_ref, with_readable_stream_ref_ec,
+    PipeToState, construct_readable_stream, readable_stream_add_read_request,
+    readable_stream_close, readable_stream_close_ec, readable_stream_error,
+    readable_stream_from_iterable, readable_stream_fulfill_read_request,
+    readable_stream_get_num_read_requests, with_readable_stream_ref, with_readable_stream_ref_ec,
 };
 pub use readablestreambyobreader::ReadableStreamBYOBReader;
 pub(crate) use readablestreambyobreader::{
@@ -59,8 +58,8 @@ pub(crate) use strategy::{
 };
 pub use transformstream::{TransformStream, TransformStreamDefaultController};
 pub(crate) use transformstream::{
-    construct_transform_stream_ec,
-    with_transform_stream_default_controller_ref_ec, with_transform_stream_ref_ec,
+    construct_transform_stream, with_transform_stream_default_controller_ref,
+    with_transform_stream_ref,
 };
 pub use writablestream::WritableStream;
 pub(crate) use writablestream::{
@@ -71,15 +70,14 @@ pub(crate) use writablestreamdefaultcontroller::{
     AbortAlgorithm, CloseAlgorithm, StartAlgorithm as WritableStartAlgorithm, WriteAlgorithm,
     create_writable_stream_default_controller, set_up_writable_stream_default_controller,
     set_up_writable_stream_default_controller_from_underlying_sink,
-    with_writable_stream_default_controller_ref, with_writable_stream_default_controller_ref_ec,
-    writable_stream_default_controller_close, writable_stream_default_controller_get_chunk_size,
+    with_writable_stream_default_controller_ref, writable_stream_default_controller_close,
+    writable_stream_default_controller_get_chunk_size,
     writable_stream_default_controller_get_desired_size, writable_stream_default_controller_write,
 };
 pub use writablestreamdefaultwriter::WritableStreamDefaultWriter;
 pub(crate) use writablestreamdefaultwriter::{
     acquire_writable_stream_default_writer, construct_writable_stream_default_writer,
-    with_writable_stream_default_writer_ref,
-    writable_stream_default_writer_release,
+    with_writable_stream_default_writer_ref, writable_stream_default_writer_release,
 };
 pub(crate) use writablestreamsupport::{
     PendingAbortRequest, WritableStreamController, WritableStreamState, WritableStreamWriter,

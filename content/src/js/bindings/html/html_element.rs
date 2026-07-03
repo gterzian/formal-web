@@ -1,10 +1,7 @@
 use std::collections::BTreeMap;
 use std::marker::PhantomData;
 
-use boa_engine::{
-    JsArgs, JsValue,
-    object::JsObject,
-};
+use boa_engine::{JsArgs, JsValue, object::JsObject};
 
 use crate::dom::Element;
 use crate::html::{
@@ -489,7 +486,8 @@ pub(crate) fn style_declaration_object(
     let getter_fn = ec.create_builtin_function(
         Box::new(|args, this, ec| {
             // Step 1.1: convert to ASCII lowercase.
-            let property_name = ec.to_rust_string(args.get_or_undefined(0).clone())?
+            let property_name = ec
+                .to_rust_string(args.get_or_undefined(0).clone())?
                 .trim()
                 .to_ascii_lowercase();
 

@@ -499,9 +499,9 @@ impl WritableStream {
         ec: &mut dyn ExecutionContext<crate::js::Types>,
     ) -> Completion<(), crate::js::Types> {
         debug_assert!(self.in_flight_close_request_slot().is_none());
-        let close_request = self.take_close_request_slot().ok_or_else(|| {
-            ec.new_type_error("WritableStream is missing its close request")
-        })?;
+        let close_request = self
+            .take_close_request_slot()
+            .ok_or_else(|| ec.new_type_error("WritableStream is missing its close request"))?;
         self.set_in_flight_close_request_slot(Some(close_request));
         Ok(())
     }
@@ -512,9 +512,9 @@ impl WritableStream {
         ec: &mut dyn ExecutionContext<crate::js::Types>,
     ) -> Completion<(), crate::js::Types> {
         debug_assert!(self.in_flight_write_request_slot().is_none());
-        let write_request = self.shift_write_request().ok_or_else(|| {
-            ec.new_type_error("WritableStream has no pending write request")
-        })?;
+        let write_request = self
+            .shift_write_request()
+            .ok_or_else(|| ec.new_type_error("WritableStream has no pending write request"))?;
         self.set_in_flight_write_request_slot(Some(write_request));
         Ok(())
     }

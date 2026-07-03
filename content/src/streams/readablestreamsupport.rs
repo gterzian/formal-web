@@ -156,11 +156,7 @@ impl ReadRequest {
                 ec,
             ),
             Self::ReadableByteStreamTee { tee_state } => {
-                readable_byte_stream_tee_default_reader_chunk_steps(
-                    tee_state.clone(),
-                    chunk,
-                    ec,
-                )
+                readable_byte_stream_tee_default_reader_chunk_steps(tee_state.clone(), chunk, ec)
             }
             Self::ReadableStreamPipeTo { state } => {
                 let result = create_read_result(chunk, false, ec)?;
@@ -245,7 +241,8 @@ pub(crate) fn queue_internal_stream_microtask<F>(
     ec: &mut dyn ExecutionContext<crate::js::Types>,
 ) -> Completion<(), crate::js::Types>
 where
-    F: FnOnce(&mut dyn ExecutionContext<crate::js::Types>) -> Completion<(), crate::js::Types> + 'static,
+    F: FnOnce(&mut dyn ExecutionContext<crate::js::Types>) -> Completion<(), crate::js::Types>
+        + 'static,
 {
     let realm = ec.current_realm();
     ec.enqueue_job_with_realm(

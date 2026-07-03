@@ -4,8 +4,8 @@ use std::marker::PhantomData;
 use crate::streams::{
     ReadableByteStreamController, ReadableStream, ReadableStreamBYOBReader,
     ReadableStreamBYOBRequest, ReadableStreamDefaultController, ReadableStreamDefaultReader,
-    construct_readable_stream_byob_reader, construct_readable_stream_default_reader,
-    construct_readable_stream, readable_stream_from_iterable,
+    construct_readable_stream, construct_readable_stream_byob_reader,
+    construct_readable_stream_default_reader, readable_stream_from_iterable,
     with_readable_byte_stream_controller_ref, with_readable_byte_stream_controller_ref_ec,
     with_readable_stream_byob_reader_ref, with_readable_stream_byob_reader_ref_ec,
     with_readable_stream_byob_request_ref, with_readable_stream_byob_request_ref_ec,
@@ -515,7 +515,7 @@ fn get_desired_size(
         })?;
     let controller =
         with_readable_stream_default_controller_ref_ec(&controller_object, ec, |c| c.clone())?;
-    let size = controller.desired_size_ec(ec)?;
+    let size = controller.desired_size(ec)?;
     Ok(match size {
         Some(s) => JsValue::from(s),
         None => JsValue::null(),

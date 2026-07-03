@@ -1266,8 +1266,8 @@ mod tests {
         let mut engine = setup();
         let realm = engine.current_realm();
         let intrinsics = engine.realm_intrinsics(&realm);
-        let ab = JsEngine::allocate_array_buffer(&mut engine, intrinsics.array_buffer, 8, None)
-            .unwrap();
+        let ab =
+            JsEngine::allocate_array_buffer(&mut engine, intrinsics.array_buffer, 8, None).unwrap();
         assert!(!engine.is_detached_buffer(&ab));
         assert!(engine.is_fixed_length_array_buffer(&ab));
     }
@@ -1647,8 +1647,9 @@ mod tests {
         let mut engine = setup();
         let realm = engine.current_realm();
         let intrinsics = engine.realm_intrinsics(&realm);
-        let ab = JsEngine::allocate_array_buffer(&mut engine, intrinsics.array_buffer.clone(), 8, None)
-            .unwrap();
+        let ab =
+            JsEngine::allocate_array_buffer(&mut engine, intrinsics.array_buffer.clone(), 8, None)
+                .unwrap();
         let val = engine.get_value_from_buffer(
             &ab,
             0,
@@ -1675,8 +1676,9 @@ mod tests {
         let mut engine = setup();
         let realm = engine.current_realm();
         let intrinsics = engine.realm_intrinsics(&realm);
-        let ab = JsEngine::allocate_array_buffer(&mut engine, intrinsics.array_buffer.clone(), 8, None)
-            .unwrap();
+        let ab =
+            JsEngine::allocate_array_buffer(&mut engine, intrinsics.array_buffer.clone(), 8, None)
+                .unwrap();
         let engine_ref: &mut dyn js_engine::ExecutionContext<crate::js::Types> = &mut engine;
         let _cloned = js_engine::ExecutionContext::clone_array_buffer(
             engine_ref,
@@ -1746,8 +1748,8 @@ mod tests {
         let mut engine = setup();
         let realm = engine.current_realm();
         let intrinsics = engine.realm_intrinsics(&realm);
-        let ab = JsEngine::allocate_array_buffer(&mut engine, intrinsics.array_buffer, 8, None)
-            .unwrap();
+        let ab =
+            JsEngine::allocate_array_buffer(&mut engine, intrinsics.array_buffer, 8, None).unwrap();
         let data = engine.array_buffer_data(&ab);
         assert!(data.is_some());
         assert_eq!(data.unwrap().len(), 8);
@@ -2737,8 +2739,7 @@ mod tests {
             js_engine::EcmascriptHost::call(&mut engine, &func_obj, &undef, &[delta5]).unwrap();
         assert!((engine.to_number(result).unwrap() - 0.0).abs() < 0.001);
 
-        let result =
-            js_engine::EcmascriptHost::call(&mut engine, &func_obj, &undef, &[]).unwrap();
+        let result = js_engine::EcmascriptHost::call(&mut engine, &func_obj, &undef, &[]).unwrap();
         assert!((engine.to_number(result).unwrap() - 5.0).abs() < 0.001);
     }
 
@@ -2781,8 +2782,7 @@ mod tests {
         let undef = engine.value_undefined();
 
         let delta7 = engine.value_from_number(7.0);
-        let _ =
-            js_engine::EcmascriptHost::call(&mut engine, &func_obj, &undef, &[delta7]).unwrap();
+        let _ = js_engine::EcmascriptHost::call(&mut engine, &func_obj, &undef, &[delta7]).unwrap();
 
         for i in 0..2000 {
             let throwaway = engine.create_empty_array();
@@ -2790,8 +2790,7 @@ mod tests {
             let _ = engine.array_push(&throwaway, num_val);
         }
 
-        let result =
-            js_engine::EcmascriptHost::call(&mut engine, &func_obj, &undef, &[]).unwrap();
+        let result = js_engine::EcmascriptHost::call(&mut engine, &func_obj, &undef, &[]).unwrap();
         assert!((engine.to_number(result).unwrap() - 7.0).abs() < 0.001);
     }
 }

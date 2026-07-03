@@ -115,7 +115,10 @@ pub(crate) fn builtin_with_captures<C: js_engine::gc::Trace + 'static>(
 
     let name = boa_engine::property::PropertyKey::from(boa_engine::js_string!(""));
     ec.create_builtin_function_from_behaviour(
-        Box::new(Captured { captures, fn_ptr: behaviour }),
+        Box::new(Captured {
+            captures,
+            fn_ptr: behaviour,
+        }),
         length,
         name,
     )

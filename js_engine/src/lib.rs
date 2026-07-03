@@ -44,8 +44,8 @@ pub mod jsc;
 
 pub use engine::{Behaviour, Completion, EcmascriptHost, ExecutionContext, HostHooks, JsEngine};
 pub use enums::{
-    IntegrityLevel, IteratorKind, Numeric, PreferredType, PromiseRejectionOperation,
-    PromiseState, SharedMemoryOrder, TypedArrayElementType,
+    IntegrityLevel, IteratorKind, Numeric, PreferredType, PromiseRejectionOperation, PromiseState,
+    SharedMemoryOrder, TypedArrayElementType,
 };
 pub use gc::{Finalize, GcCell, GcRootHandle, JsTypesGcExt, Trace, gc_cell_new};
 pub use js_engine_macros::gc_struct;

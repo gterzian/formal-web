@@ -4,8 +4,7 @@ use std::marker::PhantomData;
 use crate::streams::{
     WritableStream, WritableStreamDefaultController, WritableStreamDefaultWriter,
     construct_writable_stream, construct_writable_stream_default_writer,
-    with_writable_stream_default_controller_ref, with_writable_stream_default_controller_ref_ec,
-    with_writable_stream_default_writer_ref,
+    with_writable_stream_default_controller_ref, with_writable_stream_default_writer_ref,
     with_writable_stream_ref_ec,
 };
 use crate::webidl::bindings::{AttributeDef, InterfaceDefinition, OperationDef, WebIdlInterface};
@@ -258,7 +257,7 @@ fn get_signal(
             ec.new_type_error("WritableStreamDefaultController receiver is not an object")
         })?;
     let controller =
-        with_writable_stream_default_controller_ref_ec(&controller_object, ec, |c| c.clone())?;
+        with_writable_stream_default_controller_ref(&controller_object, ec, |c| c.clone())?;
     let signal = controller.signal_value(ec)?;
     Ok(JsValue::from(signal))
 }
@@ -273,7 +272,7 @@ fn error_method(
             ec.new_type_error("WritableStreamDefaultController receiver is not an object")
         })?;
     let controller =
-        with_writable_stream_default_controller_ref_ec(&controller_object, ec, |c| c.clone())?;
+        with_writable_stream_default_controller_ref(&controller_object, ec, |c| c.clone())?;
     controller.error(args.get_or_undefined(0).clone(), ec)?;
     Ok(ec.value_undefined())
 }

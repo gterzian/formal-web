@@ -1865,122 +1865,124 @@ impl ContentProcess {
     fn drain_wasm_results(&mut self) {
         #[cfg(feature = "boa")]
         {
-        let completed: Vec<(u64, WasmResult)> = {
-            let results = self.wasm_worker.drain_results();
-            results
-                .into_iter()
-                .map(|result| {
-                    let request_id = match &result {
-                        WasmResult::Compiled { request_id, .. }
-                        | WasmResult::CompileError { request_id, .. }
-                        | WasmResult::Instantiated { request_id, .. }
-                        | WasmResult::InstantiateError { request_id, .. } => *request_id,
-                    };
-                    (request_id, result)
-                })
-                .collect()
-        };
-
-        for (request_id, result) in completed {
-            let Some(&document_id) = self.pending_wasm_requests.get(&request_id) else {
-                // This is expected when a document is destroyed before the
-                // worker finishes — the destroy_document cleanup removes the
-                // entry, and the worker's result arrives safely discarded.
-                continue;
+            let completed: Vec<(u64, WasmResult)> = {
+                let results = self.wasm_worker.drain_results();
+                results
+                    .into_iter()
+                    .map(|result| {
+                        let request_id = match &result {
+                            WasmResult::Compiled { request_id, .. }
+                            | WasmResult::CompileError { request_id, .. }
+                            | WasmResult::Instantiated { request_id, .. }
+                            | WasmResult::InstantiateError { request_id, .. } => *request_id,
+                        };
+                        (request_id, result)
+                    })
+                    .collect()
             };
 
-            let Some(content_document) = self.documents.get_mut(&document_id) else {
-                error!("WebAssembly: document {} not found", document_id);
-                self.pending_wasm_requests.remove(&request_id);
-                continue;
-            };
+            for (request_id, result) in completed {
+                let Some(&document_id) = self.pending_wasm_requests.get(&request_id) else {
+                    // This is expected when a document is destroyed before the
+                    // worker finishes — the destroy_document cleanup removes the
+                    // entry, and the worker's result arrives safely discarded.
+                    continue;
+                };
 
-            let Some((_promise, resolvers)) =
-                content_document.settings.consume_wasm_request(request_id)
-            else {
-                error!(
-                    "WebAssembly: request {} not found on document {}",
-                    request_id, document_id
-                );
-                self.pending_wasm_requests.remove(&request_id);
-                continue;
-            };
+                let Some(content_document) = self.documents.get_mut(&document_id) else {
+                    error!("WebAssembly: document {} not found", document_id);
+                    self.pending_wasm_requests.remove(&request_id);
+                    continue;
+                };
 
-            match result {
-                WasmResult::Compiled {
-                    request_id: _,
-                    module,
-                } => {
-                    if let Err(error) = crate::js::completion_to_js_result(compile_continuation(
-                        &resolvers,
+                let Some((_promise, resolvers)) =
+                    content_document.settings.consume_wasm_request(request_id)
+                else {
+                    error!(
+                        "WebAssembly: request {} not found on document {}",
+                        request_id, document_id
+                    );
+                    self.pending_wasm_requests.remove(&request_id);
+                    continue;
+                };
+
+                match result {
+                    WasmResult::Compiled {
+                        request_id: _,
                         module,
-                        Vec::new(),
-                        js_engine::boa::context_as_ec(content_document.settings.context()),
-                    )) {
-                        error!("WebAssembly: failed to resolve compile promise: {error}");
+                    } => {
+                        if let Err(error) =
+                            crate::js::completion_to_js_result(compile_continuation(
+                                &resolvers,
+                                module,
+                                Vec::new(),
+                                js_engine::boa::context_as_ec(content_document.settings.context()),
+                            ))
+                        {
+                            error!("WebAssembly: failed to resolve compile promise: {error}");
+                        }
                     }
-                }
-                WasmResult::CompileError {
-                    request_id: _,
-                    message,
-                } => {
-                    if let Err(error) = crate::js::completion_to_js_result(compile_rejection(
-                        &resolvers,
+                    WasmResult::CompileError {
+                        request_id: _,
                         message,
-                        js_engine::boa::context_as_ec(content_document.settings.context()),
-                    )) {
-                        error!("WebAssembly: failed to reject compile promise: {error}");
-                    }
-                }
-                WasmResult::Instantiated {
-                    request_id: _,
-                    store,
-                    instance,
-                } => {
-                    let module = self.pending_wasm_modules.remove(&request_id);
-                    let Some(module) = module else {
-                        error!(
-                            "WebAssembly: no module found for instantiate request {}",
-                            request_id
-                        );
-                        self.pending_wasm_requests.remove(&request_id);
-                        continue;
-                    };
-                    if let Err(error) =
-                        crate::js::completion_to_js_result(instantiate_continuation(
-                            &module,
-                            &instance,
-                            &store,
+                    } => {
+                        if let Err(error) = crate::js::completion_to_js_result(compile_rejection(
                             &resolvers,
+                            message,
                             js_engine::boa::context_as_ec(content_document.settings.context()),
-                        ))
-                    {
-                        error!("WebAssembly: failed to resolve instantiate promise: {error}");
+                        )) {
+                            error!("WebAssembly: failed to reject compile promise: {error}");
+                        }
                     }
-                }
-                WasmResult::InstantiateError {
-                    request_id: _,
-                    message,
-                } => {
-                    if let Err(error) = crate::js::completion_to_js_result(compile_rejection(
-                        &resolvers,
+                    WasmResult::Instantiated {
+                        request_id: _,
+                        store,
+                        instance,
+                    } => {
+                        let module = self.pending_wasm_modules.remove(&request_id);
+                        let Some(module) = module else {
+                            error!(
+                                "WebAssembly: no module found for instantiate request {}",
+                                request_id
+                            );
+                            self.pending_wasm_requests.remove(&request_id);
+                            continue;
+                        };
+                        if let Err(error) =
+                            crate::js::completion_to_js_result(instantiate_continuation(
+                                &module,
+                                &instance,
+                                &store,
+                                &resolvers,
+                                js_engine::boa::context_as_ec(content_document.settings.context()),
+                            ))
+                        {
+                            error!("WebAssembly: failed to resolve instantiate promise: {error}");
+                        }
+                    }
+                    WasmResult::InstantiateError {
+                        request_id: _,
                         message,
-                        js_engine::boa::context_as_ec(content_document.settings.context()),
-                    )) {
-                        error!("WebAssembly: failed to reject instantiate promise: {error}");
+                    } => {
+                        if let Err(error) = crate::js::completion_to_js_result(compile_rejection(
+                            &resolvers,
+                            message,
+                            js_engine::boa::context_as_ec(content_document.settings.context()),
+                        )) {
+                            error!("WebAssembly: failed to reject instantiate promise: {error}");
+                        }
                     }
                 }
+
+                self.pending_wasm_requests.remove(&request_id);
             }
 
-            self.pending_wasm_requests.remove(&request_id);
-        }
-
-        // Flush microtasks (promise .then() handlers) after resolving/rejecting.
-        for document in self.documents.values_mut() {
-            if let Err(error) = document.settings.perform_a_microtask_checkpoint() {
-                error!("WebAssembly: microtask checkpoint failed: {error}");
+            // Flush microtasks (promise .then() handlers) after resolving/rejecting.
+            for document in self.documents.values_mut() {
+                if let Err(error) = document.settings.perform_a_microtask_checkpoint() {
+                    error!("WebAssembly: microtask checkpoint failed: {error}");
+                }
             }
-        }
         }
     }
 

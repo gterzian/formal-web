@@ -58,7 +58,8 @@ use url::Url;
 /// <https://html.spec.whatwg.org/#queue-a-microtask>
 pub fn queue_a_microtask<F>(ec: &mut dyn ExecutionContext<crate::js::Types>, callback: F)
 where
-    F: FnOnce(&mut dyn ExecutionContext<crate::js::Types>) -> Completion<JsValue, crate::js::Types> + 'static,
+    F: FnOnce(&mut dyn ExecutionContext<crate::js::Types>) -> Completion<JsValue, crate::js::Types>
+        + 'static,
 {
     // Note: Steps 1-7 (asserting a surrounding agent, setting eventLoop,
     // creating a new task, setting its steps/source/document/settings-object
@@ -69,13 +70,21 @@ where
     //         not called while in parallel.
     let realm = ec.current_realm();
     // Step 9: Enqueue microtask on eventLoop's microtask queue.
-    ec.enqueue_job_with_realm(realm, Box::new(move |job_ec| { let _ = callback(job_ec); }));
+    ec.enqueue_job_with_realm(
+        realm,
+        Box::new(move |job_ec| {
+            let _ = callback(job_ec);
+        }),
+    );
 }
 
 /// <https://html.spec.whatwg.org/#await-a-stable-state>
-pub fn await_a_stable_state<F>(ec: &mut dyn ExecutionContext<crate::js::Types>, synchronous_section: F)
-where
-    F: FnOnce(&mut dyn ExecutionContext<crate::js::Types>) -> Completion<JsValue, crate::js::Types> + 'static,
+pub fn await_a_stable_state<F>(
+    ec: &mut dyn ExecutionContext<crate::js::Types>,
+    synchronous_section: F,
+) where
+    F: FnOnce(&mut dyn ExecutionContext<crate::js::Types>) -> Completion<JsValue, crate::js::Types>
+        + 'static,
 {
     // Note: The preamble ("queue a microtask that runs the following steps, and
     // must then stop executing") is implemented by delegating to

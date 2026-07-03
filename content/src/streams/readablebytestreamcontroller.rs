@@ -721,7 +721,7 @@ impl ReadableByteStreamController {
 
         self.fill_pull_into_from_queue(&mut descriptor, ec)?;
         // SAFETY: ec is backed by BoaContext repr(transparent) over Context.
-        
+
         if descriptor.can_commit() {
             return descriptor.commit(false, ec);
         }
@@ -788,14 +788,15 @@ impl ReadableByteStreamController {
             };
 
             if has_misaligned_pending {
-                let ec: &mut dyn ExecutionContext<crate::js::Types> =
-                    ec;
+                let ec: &mut dyn ExecutionContext<crate::js::Types> = ec;
                 let error = type_error_value(
                     "Cannot close a byte stream with a partially filled typed array element",
                     ec,
                 )?;
                 self.error_steps(error.clone(), ec)?;
-                return Err(ec.new_type_error("Cannot close a byte stream with a partially filled typed array element"));
+                return Err(ec.new_type_error(
+                    "Cannot close a byte stream with a partially filled typed array element",
+                ));
             }
 
             self.close_requested.set(true);
@@ -819,7 +820,6 @@ impl ReadableByteStreamController {
             return Err(empty_view_err);
         }
 
-        
         self.enqueue_chunk(view);
         self.process_pending_pull_intos_using_queue(ec)?;
         self.process_read_requests_using_queue(ec)?;
@@ -842,7 +842,7 @@ impl ReadableByteStreamController {
         let pending = std::mem::take(&mut *self.pending_pull_intos.borrow_mut());
         self.invalidate_byob_request(ec)?;
         // SAFETY: ec is backed by BoaContext repr(transparent) over Context.
-        
+
         for descriptor in pending {
             descriptor.error(error.clone(), ec)?;
         }
@@ -892,7 +892,7 @@ impl ReadableByteStreamController {
         self.invalidate_byob_request(ec)?;
         let stream = self.stream_slot(ec)?;
         // SAFETY: ec is backed by BoaContext repr(transparent) over Context.
-        
+
         if self.close_requested.get() {
             if descriptor.bytes_filled % descriptor.view.element_size() != 0 {
                 let error = type_error_value(
@@ -1000,8 +1000,7 @@ impl ReadableByteStreamController {
             return Ok(());
         }
 
-        let ec: &mut dyn ExecutionContext<crate::js::Types> =
-            ec;
+        let ec: &mut dyn ExecutionContext<crate::js::Types> = ec;
         self.call_pull_if_needed(ec)
     }
 
@@ -1027,12 +1026,8 @@ impl ReadableByteStreamController {
         };
 
         let captured_controller = self.clone();
-        let on_fulfilled = crate::js::builtin_with_captures(
-            ec,
-            captured_controller,
-            pull_steps_on_fulfilled,
-            1,
-        );
+        let on_fulfilled =
+            crate::js::builtin_with_captures(ec, captured_controller, pull_steps_on_fulfilled, 1);
         let on_rejected =
             crate::js::builtin_with_captures(ec, self.clone(), pull_steps_on_rejected, 1);
 
@@ -1334,7 +1329,6 @@ pub(crate) fn set_up_readable_byte_stream_controller(
     auto_allocate_chunk_size: Option<usize>,
     ec: &mut dyn ExecutionContext<crate::js::Types>,
 ) -> Completion<(), crate::js::Types> {
-    
     controller.close_requested.set(false);
     controller.started.set(false);
     controller.pull_again.set(false);
@@ -1351,11 +1345,15 @@ pub(crate) fn set_up_readable_byte_stream_controller(
 
     let on_fulfilled =
         crate::js::builtin_with_captures(ec, controller.clone(), setup_on_fulfilled, 1);
-    let on_rejected =
-        crate::js::builtin_with_captures(ec, controller, setup_on_rejected, 1);
+    let on_rejected = crate::js::builtin_with_captures(ec, controller, setup_on_rejected, 1);
     let start_js_promise = <crate::js::Types as JsTypes>::object_as_promise(&start_promise)
         .ok_or_else(|| ec.new_type_error("start result is not a Promise"))?;
-    ec.perform_promise_then(start_js_promise, Some(on_fulfilled), Some(on_rejected), None)?;
+    ec.perform_promise_then(
+        start_js_promise,
+        Some(on_fulfilled),
+        Some(on_rejected),
+        None,
+    )?;
     Ok(())
 }
 
@@ -1447,10 +1445,7 @@ fn pull_steps_on_rejected(
     captures: &ReadableByteStreamController,
     ec: &mut dyn ExecutionContext<crate::js::Types>,
 ) -> Completion<JsValue, crate::js::Types> {
-    captures.error_steps(
-        args.first().cloned().unwrap_or_default(),
-        ec,
-    )?;
+    captures.error_steps(args.first().cloned().unwrap_or_default(), ec)?;
     Ok(JsValue::undefined())
 }
 
@@ -1471,9 +1466,6 @@ fn setup_on_rejected(
     captures: &ReadableByteStreamController,
     ec: &mut dyn ExecutionContext<crate::js::Types>,
 ) -> Completion<JsValue, crate::js::Types> {
-    captures.error_steps(
-        args.first().cloned().unwrap_or_default(),
-        ec,
-    )?;
+    captures.error_steps(args.first().cloned().unwrap_or_default(), ec)?;
     Ok(JsValue::undefined())
 }

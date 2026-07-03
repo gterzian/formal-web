@@ -700,10 +700,7 @@ impl ExecutionContext<BoaTypes> for BoaContext {
         )
     }
 
-    fn get_prototype_of(
-        &mut self,
-        object: JsObject,
-    ) -> Completion<Option<JsObject>, BoaTypes> {
+    fn get_prototype_of(&mut self, object: JsObject) -> Completion<Option<JsObject>, BoaTypes> {
         Ok(object.prototype())
     }
 
@@ -1651,7 +1648,8 @@ impl ExecutionContext<BoaTypes> for BoaContext {
                   -> JsResult<JsValue> {
                 let engine: &mut BoaContext =
                     unsafe { &mut *(context as *mut Context as *mut BoaContext) };
-                behaviour.call(args, _this.clone(), engine)
+                behaviour
+                    .call(args, _this.clone(), engine)
                     .map_err(|e| JsError::from_opaque(e))
             },
             behaviour,
@@ -2090,8 +2088,8 @@ mod tests {
         let mut engine = BoaContext::new();
         let realm = engine.current_realm();
         let intrinsics = engine.realm_intrinsics(&realm);
-        let ab = JsEngine::allocate_array_buffer(&mut engine, intrinsics.array_buffer, 8, None)
-            .unwrap();
+        let ab =
+            JsEngine::allocate_array_buffer(&mut engine, intrinsics.array_buffer, 8, None).unwrap();
         let _ = ab;
     }
 }
