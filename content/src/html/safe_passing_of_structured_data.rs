@@ -205,17 +205,23 @@ impl MemoryMap {
 // DataCloneError helper
 // ──────────────────────────────────────────────────────────────────────────────
 
-fn data_clone_error(context: &mut Context) -> JsError {
-    JsError::from_opaque(JsValue::from(
-        create_interface_instance::<crate::js::Types, DOMException>(
-            DOMException::new(
-                String::from("The object could not be cloned."),
-                String::from("DataCloneError"),
-            ),
-            js_engine::boa::context_as_ec(context),
-        )
-        .expect("DOMException construction should not fail"),
-    ))
+/// Bridge wrapper: converts Context to EC for boilerplate callers.
+/// TODO: Remove when this file is converted to EC throughout.
+fn data_clone_error_ctx(context: &mut Context) -> JsError {
+    JsError::from_opaque(data_clone_error(js_engine::boa::context_as_ec(context)))
+}
+
+fn data_clone_error(ec: &mut dyn ExecutionContext<crate::js::Types>) -> JsValue {
+    let obj = create_interface_instance::<crate::js::Types, DOMException>(
+        DOMException::new(
+            String::from("The object could not be cloned."),
+            String::from("DataCloneError"),
+        ),
+        ec,
+    )
+    .expect("DOMException construction should not fail");
+    // SAFETY: The DOMException object is a JsObject; upcast to JsValue.
+    obj.into()
 }
 
 fn internal_error(message: &str) -> JsError {
@@ -244,7 +250,7 @@ fn js_value_to_primitive(value: &JsValue) -> Option<PrimitiveValue> {
 fn property_key_to_string(key: &PropertyKey, context: &mut Context) -> JsResult<Vec<u16>> {
     match key {
         PropertyKey::String(s) => Ok(s.as_str().to_vec()),
-        PropertyKey::Symbol(_) => Err(data_clone_error(context)),
+        PropertyKey::Symbol(_) => Err(data_clone_error_ctx(context)),
         PropertyKey::Index(i) => Ok(i.get().to_string().encode_utf16().collect()),
     }
 }
@@ -283,7 +289,7 @@ fn structured_serialize_internal(
 
     // Step 5: If value is a Symbol, then throw a "DataCloneError" DOMException.
     if value.is_symbol() {
-        return Err(data_clone_error(context));
+        return Err(data_clone_error_ctx(context));
     }
 
     // Step 6: Let serialized be an uninitialized value.
@@ -387,7 +393,7 @@ fn structured_serialize_internal(
 
     // Step 21: Otherwise, if IsCallable(value) is true, then throw a "DataCloneError" DOMException.
     if object.is_callable() {
-        return Err(data_clone_error(context));
+        return Err(data_clone_error_ctx(context));
     }
 
     // Step 22: Otherwise, if value has any internal slot other than [[Prototype]], [[Extensible]],
@@ -452,7 +458,7 @@ fn serialize_array_buffer(
     context: &mut Context,
 ) -> JsResult<SerializedRecord> {
     // Step 13.2.1: If IsDetachedBuffer(value) is true, then throw a "DataCloneError" DOMException.
-    let data = buffer.data().ok_or_else(|| data_clone_error(context))?;
+    let data = buffer.data().ok_or_else(|| data_clone_error_ctx(context))?;
 
     // Step 13.2.2: Let size be value.[[ArrayBufferByteLength]].
     let size = data.len() as u64;
@@ -489,7 +495,7 @@ fn serialize_shared_array_buffer(
 
     // Step 13.1.2: If forStorage is true, then throw a "DataCloneError" DOMException.
     if for_storage {
-        return Err(data_clone_error(context));
+        return Err(data_clone_error_ctx(context));
     }
 
     // Step 13.1.3: If value has an [[ArrayBufferMaxByteLength]] internal slot, then
@@ -888,7 +894,7 @@ pub fn structured_serialize_with_transfer(
         let Some(object) = transferable.as_object() else {
             // If transferable has neither an [[ArrayBufferData]] internal slot nor a
             // [[Detached]] internal slot, then throw a "DataCloneError" DOMException.
-            return Err(data_clone_error(context));
+            return Err(data_clone_error_ctx(context));
         };
         let has_ab = JsArrayBuffer::from_object(object.clone()).is_ok();
         let has_sab = JsSharedArrayBuffer::from_object(object.clone()).is_ok();
@@ -896,18 +902,18 @@ pub fn structured_serialize_with_transfer(
         // Step 2.1: If transferable has neither an [[ArrayBufferData]] internal slot nor a
         //             [[Detached]] internal slot, then throw.
         if !has_ab && !has_sab && !is_transferable_platform_object(&object) {
-            return Err(data_clone_error(context));
+            return Err(data_clone_error_ctx(context));
         }
 
         // Step 2.2: If transferable has an [[ArrayBufferData]] internal slot and
         //             IsSharedArrayBuffer(transferable) is true, then throw.
         if has_sab {
-            return Err(data_clone_error(context));
+            return Err(data_clone_error_ctx(context));
         }
 
         // Step 2.3: If memory[transferable] exists, then throw.
         if memory.get_serialized(&object).is_some() {
-            return Err(data_clone_error(context));
+            return Err(data_clone_error_ctx(context));
         }
 
         // Step 2.4: Set memory[transferable] to { [[Type]]: an uninitialized value }.
@@ -928,12 +934,12 @@ pub fn structured_serialize_with_transfer(
     for transferable in &transfer_list {
         let object = transferable
             .as_object()
-            .ok_or_else(|| data_clone_error(context))?;
+            .ok_or_else(|| data_clone_error_ctx(context))?;
         if let Ok(buffer) = JsArrayBuffer::from_object(object.clone()) {
             // Step 5.1: If transferable has an [[ArrayBufferData]] internal slot:
             //   Step 5.1.1: If IsDetachedBuffer(transferable) is true, then throw.
             if buffer.data().is_none() {
-                return Err(data_clone_error(context));
+                return Err(data_clone_error_ctx(context));
             }
 
             // TODO: Check for [[ArrayBufferMaxByteLength]] (ResizableArrayBuffer case).
@@ -951,7 +957,7 @@ pub fn structured_serialize_with_transfer(
         } else {
             // Step 5.2: Otherwise (platform object with [[Detached]] internal slot).
             // TODO: platform object transfer.
-            return Err(data_clone_error(context));
+            return Err(data_clone_error_ctx(context));
         }
     }
 
@@ -1080,7 +1086,7 @@ fn structured_deserialize(
             let aligned = boa_engine::object::builtins::AlignedVec::from_slice(0, data_copy);
             // Catch any exception from ArrayBuffer creation and re-throw as DataCloneError.
             let buffer = JsArrayBuffer::from_byte_block(aligned, context)
-                .map_err(|_| data_clone_error(context))?;
+                .map_err(|_| data_clone_error_ctx(context))?;
             value = JsValue::from(buffer);
         }
         // Step 15: Otherwise, if serialized.[[Type]] is "ResizableArrayBuffer":
@@ -1184,7 +1190,7 @@ fn structured_deserialize(
         //   created in targetRealm.
         //   Set deep to true.
         SerializedRecord::PlatformObject { .. } => {
-            return Err(data_clone_error(context));
+            return Err(data_clone_error_ctx(context));
         }
     }
 
@@ -1371,13 +1377,13 @@ pub fn structured_deserialize_with_transfer(
             } => {
                 let aligned = boa_engine::object::builtins::AlignedVec::from_slice(0, data);
                 let buffer = JsArrayBuffer::from_byte_block(aligned, context)
-                    .map_err(|_| data_clone_error(context))?;
+                    .map_err(|_| data_clone_error_ctx(context))?;
                 JsValue::from(buffer)
             }
             // Step 3.3: Otherwise (platform object).
             TransferDataHolder::PlatformObject { .. } => {
                 // TODO: platform object transfer-receiving.
-                return Err(data_clone_error(context));
+                return Err(data_clone_error_ctx(context));
             }
         };
 

@@ -27,7 +27,7 @@ use crate::webidl::bindings::{
 use crate::webidl::{
     get_a_copy_of_the_buffer_source, is_buffer_source, rejected_promise_from_error,
 };
-use boa_engine::{Context, JsError, JsNativeError, JsResult, JsValue, js_string, object::JsObject};
+use boa_engine::{JsError, JsNativeError, JsResult, JsValue, js_string, object::JsObject};
 use js_engine::boa::BoaContext;
 use js_engine::{Completion, ExecutionContext, JsTypes};
 use std::marker::PhantomData;
@@ -102,8 +102,7 @@ impl WebIdlNamespace<crate::js::Types> for WasmNamespace {
 // ── Installation entry point ──
 
 /// <https://webassembly.github.io/spec/js-api/#webassembly-namespace>
-pub(crate) fn install_wasm_namespace(context: &mut Context) -> JsResult<()> {
-    let engine = js_engine::boa::context_as_engine(context);
+pub(crate) fn install_wasm_namespace(engine: &mut BoaContext) -> JsResult<()> {
     // Step 1: "Let namespaceObject be OrdinaryObjectCreate(...)."
     // Step 2-3: Define regular attributes and operations.
     register_namespace_spec::<crate::js::Types, WasmNamespace, BoaContext>(engine)
@@ -117,9 +116,9 @@ pub(crate) fn install_wasm_namespace(context: &mut Context) -> JsResult<()> {
 
     // Register error types (CompileError, LinkError, RuntimeError).
     // https://webassembly.github.io/spec/js-api/#error-objects
-    let ec = js_engine::boa::context_as_ec(context);
+    let ec: &mut dyn ExecutionContext<crate::js::Types> = engine;
     let namespace_obj = resolve_wasm_namespace(ec).map_err(JsError::from_opaque)?;
-    interfaces::register_wasm_error_types(&namespace_obj, context)?;
+    interfaces::register_wasm_error_types(&namespace_obj, engine.context())?;
 
     Ok(())
 }

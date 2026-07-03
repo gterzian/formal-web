@@ -365,44 +365,42 @@ fn create_exported_function_wrapper_boa(
     store: Arc<Mutex<Store<()>>>,
     context: &mut Context,
 ) -> Completion<JsValue, crate::js::Types> {
-    let js_func = unsafe {
-        NativeFunction::from_closure(
-            move |_this: &JsValue, args: &[JsValue], context: &mut Context| -> JsResult<JsValue> {
-                let mut store_guard = store.lock().unwrap();
-                let func_type = func.ty(&*store_guard);
-                let params: Vec<wasmtime::Val> = func_type
-                    .params()
-                    .enumerate()
-                    .map(|(i, param_type)| {
-                        let js_arg = args.get(i).cloned().unwrap_or(JsValue::undefined());
-                        let ec = js_engine::boa::context_as_ec(context);
-                        js_val_to_wasm_val(&js_arg, &param_type, ec)
-                            .map_err(|err_val| JsError::from_opaque(err_val))
-                    })
-                    .collect::<Result<_, _>>()?;
-                let mut results: Vec<wasmtime::Val> = func_type
-                    .results()
-                    .map(|val_type| default_val_for_type(&val_type))
-                    .collect();
-                func.call(&mut *store_guard, &params, &mut results)
-                    .map_err(|error| {
-                        JsNativeError::error().with_message(format!("WebAssembly trap: {}", error))
-                    })?;
-                if results.len() == 1 {
-                    let ec = js_engine::boa::context_as_ec(context);
-                    wasm_val_to_js_value(&results[0], ec)
-                        .map_err(|err_val| JsError::from_opaque(err_val))
-                } else {
-                    Err(JsNativeError::error()
-                        .with_message("multiple wasm results not yet supported")
-                        .into())
-                }
-            },
-        )
-    };
-    let realm = context.realm().clone();
-    let func_object = FunctionObjectBuilder::new(&realm, js_func).build();
-    Ok(JsValue::from(func_object))
+    // Bridge once to get the generic EC — the closure below uses
+    // ec directly, eliminating per-invocation context_as_ec bridges.
+    let engine = js_engine::boa::context_as_engine(context);
+    let js_func = engine.create_builtin_function(
+        Box::new(move |args, _this, ec| {
+            let mut store_guard = store.lock().unwrap();
+            let func_type = func.ty(&*store_guard);
+            let params: Vec<wasmtime::Val> = func_type
+                .params()
+                .enumerate()
+                .map(|(i, param_type)| {
+                    let js_arg = args.get(i).cloned()
+                        .unwrap_or_else(|| ec.value_undefined());
+                    js_val_to_wasm_val(&js_arg, &param_type, ec)
+                        .map_err(|err_val| err_val)
+                })
+                .collect::<Result<_, _>>()?;
+            let mut results: Vec<wasmtime::Val> = func_type
+                .results()
+                .map(|val_type| default_val_for_type(&val_type))
+                .collect();
+            func.call(&mut *store_guard, &params, &mut results)
+                .map_err(|error| {
+                    ec.new_type_error(&format!("WebAssembly trap: {}", error))
+                })?;
+            if results.len() == 1 {
+                wasm_val_to_js_value(&results[0], ec)
+                    .map_err(|err_val| err_val)
+            } else {
+                Err(ec.new_type_error("multiple wasm results not yet supported"))
+            }
+        }),
+        0,
+        boa_engine::property::PropertyKey::from(boa_engine::js_string!("")),
+    );
+    Ok(js_func.into())
 }
 
 // ── Helpers ──

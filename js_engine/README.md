@@ -395,7 +395,7 @@ or subsystem entry-point signature must first be validated in
 on **both backends** (Boa and JSC) before it can be applied to any
 real production file.
 
-### Current state (updated 2026-07-04)
+### Current state (updated 2026-07-04 — session 2)
 
 **Phases A–D, S1–S10, T1–T2, W1–W2, G1–G3, C2–C3, B1, R1, R2, S, P complete.**
 All binding files at 0 ec_to_ctx. All 34 struct/enum definitions use `#[gc_struct]`.
@@ -411,36 +411,48 @@ generic (takes `&mut dyn ExecutionContext<Types>` instead of `&mut Context`),
 enabling `readablestreamasynciterator.rs` to implement it with zero bridges.
 `main.rs` wasm promise resolution also uses `Completion` directly.
 
+- `js/bindings/streams/readablestream.rs` (2) — adapter functions deleted;
+  `host_hooks.rs` now uses `create_builtin_function` directly.
+- `js/bindings/wasm/mod.rs` (1) — `install_wasm_namespace` now takes `&mut BoaContext`.
+- `wasm/namespace.rs` (2) — `create_exported_function_wrapper_boa` now uses
+  `create_builtin_function` with an EC-taking closure; the outer bridge
+  uses `context_as_engine` once at setup instead of `context_as_ec` per invocation.
+- `html/safe_passing_of_structured_data.rs` — `data_clone_error` converted to EC;
+  one `context_as_ec` remains in the `data_clone_error_ctx` bridge wrapper.
+
 **`RealmIntrinsics` extended** with `async_iterator_prototype` field
 (`T::JsObject`) for the generic async iterable infrastructure.
 
-**Remaining `context_as_ec` calls outside `js_engine/src/` (6 total):**
-- `js/bindings/streams/readablestream.rs` (2) — NativeFunction binding-function adapters
-- `wasm/namespace.rs` (2) — gated behind `#[cfg(feature = "boa")]`
-- `html/safe_passing_of_structured_data.rs` (1) — `data_clone_error` helper
-- `js/bindings/wasm/mod.rs` (1) — NativeFunction adapter
+**Wasm (Boa-only — no migration needed):** WebAssembly support is Boa-only
+and will never target JSC. The remaining bridges in `wasm/namespace.rs`
+(`ec_to_ctx` × 6, `context_as_engine` × 1) are fine to leave in place.
+The two `context_as_ec` calls in that file were eliminated in this session
+(switched to `create_builtin_function` with an EC-taking closure).
 
-**Eliminated in this session:** `webidl/async_iterable.rs` (10) — fully converted to
-`&mut dyn ExecutionContext<Types>` with zero `boa_engine::*` imports.
-Replaced `NativeFunction`, `FunctionObjectBuilder`, `ObjectInitializer`,
-`JsPromise::then`, `JsObject::downcast_ref`, and `create_iter_result_object`
-with generic EC trait methods (`create_builtin_function_from_behaviour`,
-`create_plain_object` + `object_set_property`, `perform_promise_then`,
-`with_object_any`, `create_object_with_any`). All 10 `context_as_ec`
-bridge calls eliminated.
+**Remaining `context_as_ec` calls outside `js_engine/src/` (1 total):**
+- `html/safe_passing_of_structured_data.rs` (1) — `data_clone_error_ctx` bridge
+  (16 callers not yet converted to EC). Whether to eliminate depends on whether
+  structured clone needs to work with JSC in the future.
+
+**Eliminated in this session (5 `context_as_ec` total):**
+- `webidl/async_iterable.rs` (10) — fully converted to
+  `&mut dyn ExecutionContext<Types>` with zero `boa_engine::*` imports
+  (previous session).
+- `js/bindings/streams/readablestream.rs` (2) — adapter functions deleted;
+  `host_hooks.rs` now uses `create_builtin_function` directly.
+- `js/bindings/wasm/mod.rs` (1) — `install_wasm_namespace` changed to take
+  `&mut BoaContext` instead of `&mut Context`.
+- `wasm/namespace.rs` (2) — `create_exported_function_wrapper_boa` uses
+  `create_builtin_function` with an EC-taking closure instead of
+  `NativeFunction::from_closure` with per-invocation bridges.
 
 **Eliminated previously:** `main.rs` (10), `environment_settings_object.rs` (1),
-`host_hooks.rs` (3), `registry.rs` (2), `document.rs` (1) — 17 total.
+`host_hooks.rs` (3), `registry.rs` (2), `document.rs` (1),
+`webidl/async_iterable.rs` (10) — 27 total.
 
 ### Next session: recommended order
 
-1. **Eliminate remaining `context_as_ec` bridges** — 6 calls remaining:
-   - `html/safe_passing_of_structured_data.rs` (1) — convert `data_clone_error` to EC
-   - `wasm/namespace.rs` (2) — convert function signatures from Context to EC
-   - `js/bindings/wasm/mod.rs` (1) — NativeFunction adapter pattern
-   - `js/bindings/streams/readablestream.rs` (2) — NativeFunction adapter pattern
-
-2. **Phase E** — Content crate does not yet compile for JSC.
+1. **Phase E** — Content crate does not yet compile for JSC.
    Blockers: GC trait bounds (`boa_engine::Trace`/`#[gc_struct]`) and
    `unsafe_ignore_trace` attribute on non-wasm structs. Wasm is gated behind
    `#[cfg(feature = "boa")]`.

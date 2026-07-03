@@ -7,12 +7,12 @@ use boa_engine::{
     context::{ContextBuilder, HostHooks, intrinsics::Intrinsics},
     job::SimpleJobExecutor,
     js_string,
-    native_function::NativeFunction,
-    object::{FunctionObjectBuilder, JsObject},
+    object::JsObject,
     property::PropertyDescriptor,
     symbol::JsSymbol,
 };
 use js_engine::boa::BoaContext;
+use js_engine::ExecutionContext;
 
 use super::hyperlink_element_utils;
 use crate::dom::{
@@ -34,7 +34,7 @@ use crate::webidl::bindings::{
 };
 // Note: AbortSignal static methods (abort, timeout, any) are registered via
 // static operations in `AbortSignal::define_members`.
-use super::super::streams::readablestream::{pipe_to_native_method_adapter, values_method_adapter};
+use super::super::streams::readablestream::{pipe_to_native_method, values_method};
 
 pub(crate) struct WindowHostHooks {
     document: Rc<RefCell<BaseDocument>>,
@@ -93,7 +93,7 @@ fn build_boa_context(document: Rc<RefCell<BaseDocument>>) -> Result<Context, Str
     }
 
     // ── Install WebAssembly namespace ──
-    if let Err(error) = crate::js::bindings::install_wasm_namespace(engine.context()) {
+    if let Err(error) = crate::js::bindings::install_wasm_namespace(&mut engine) {
         error!("[content] failed to install WebAssembly namespace: {error}");
     }
 
@@ -181,17 +181,27 @@ fn build_boa_context(document: Rc<RefCell<BaseDocument>>) -> Result<Context, Str
     // registered automatically by `register_interface_spec` via static operations.
 
     if let Some(rs_proto) = get_registry_prototype::<crate::js::Types, ReadableStream>(&engine) {
+        // Create builtin functions via generic EC operations (no Boa context needed)
+        let values_fn: JsObject = engine
+            .create_builtin_function(
+                Box::new(|args, this, ec| values_method(&this, args, ec)),
+                0,
+                engine.property_key_from_str("values"),
+            )
+            .into();
+
+        let pipe_to_native_fn: JsObject = engine
+            .create_builtin_function(
+                Box::new(|args, this, ec| pipe_to_native_method(&this, args, ec)),
+                2,
+                engine.property_key_from_str("pipeTo"),
+            )
+            .into();
+
+        // Property definitions require the Boa Context directly
         let context = engine.context();
-        let realm = context.realm().clone();
 
-        // values() and @@asyncIterator
-        let values_fn =
-            FunctionObjectBuilder::new(&realm, NativeFunction::from_fn_ptr(values_method_adapter))
-                .name(js_string!("values"))
-                .length(0)
-                .constructor(false)
-                .build();
-
+        // values() descriptor
         let values_desc = PropertyDescriptor::builder()
             .value(values_fn.clone())
             .writable(true)
@@ -203,6 +213,7 @@ fn build_boa_context(document: Rc<RefCell<BaseDocument>>) -> Result<Context, Str
             .map(|_| ())
             .map_err(|error| error.to_string())?;
 
+        // @@asyncIterator
         let symbol_desc = PropertyDescriptor::builder()
             .value(values_fn)
             .writable(true)
@@ -213,22 +224,12 @@ fn build_boa_context(document: Rc<RefCell<BaseDocument>>) -> Result<Context, Str
             .map(|_| ())
             .map_err(|error| error.to_string())?;
 
-        // pipeTo with JS wrapper workaround
-        let pipe_to_native_fn = FunctionObjectBuilder::new(
-            &realm,
-            NativeFunction::from_fn_ptr(pipe_to_native_method_adapter),
-        )
-        .name(js_string!("pipeTo"))
-        .length(2)
-        .constructor(false)
-        .build();
-
+        // __formalWebReadableStreamPipeToNative (native backstop)
         let native_desc = PropertyDescriptor::builder()
             .value(pipe_to_native_fn)
             .writable(true)
             .configurable(true)
             .build();
-        let context = engine.context();
         rs_proto
             .define_property_or_throw(
                 js_string!("__formalWebReadableStreamPipeToNative"),
@@ -238,7 +239,8 @@ fn build_boa_context(document: Rc<RefCell<BaseDocument>>) -> Result<Context, Str
             .map(|_| ())
             .map_err(|error| error.to_string())?;
 
-        let pipe_to_wrapper = engine.context().eval(Source::from_bytes(
+        // pipeTo with JS wrapper workaround
+        let pipe_to_wrapper = context.eval(Source::from_bytes(
             "(function pipeTo() { return ReadableStream.prototype.__formalWebReadableStreamPipeToNative.call(this, arguments[0], arguments[1]); })",
         ))
         .map_err(|error| error.to_string())?
@@ -252,7 +254,6 @@ fn build_boa_context(document: Rc<RefCell<BaseDocument>>) -> Result<Context, Str
             .writable(true)
             .configurable(true)
             .build();
-        let context = engine.context();
         rs_proto
             .define_property_or_throw(js_string!("pipeTo"), pipe_to_desc, context)
             .map(|_| ())

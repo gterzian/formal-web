@@ -1,4 +1,4 @@
-use boa_engine::{Context, JsArgs, JsError, JsNativeError, JsResult, JsValue, object::JsObject};
+use boa_engine::{JsArgs, JsValue, object::JsObject};
 use std::marker::PhantomData;
 
 use crate::streams::{
@@ -442,16 +442,6 @@ pub(crate) fn pipe_to_native_method(
     Ok(JsValue::from(promise))
 }
 
-// Adapter for host_hooks.rs which still uses NativeFunction::from_fn_ptr with Context.
-pub(crate) fn pipe_to_native_method_adapter(
-    this: &JsValue,
-    args: &[JsValue],
-    context: &mut Context,
-) -> JsResult<JsValue> {
-    let ec = js_engine::boa::context_as_ec(context);
-    pipe_to_native_method(this, args, ec).map_err(JsError::from_opaque)
-}
-
 fn tee_method(
     this: &JsValue,
     _: &[JsValue],
@@ -473,16 +463,6 @@ pub(crate) fn values_method(
     let stream = with_readable_stream_ref(&stream_object, ec, |s: &ReadableStream| s.clone())?;
     let iterator = create_value_async_iterator(stream, args, ec)?;
     Ok(JsValue::from(iterator))
-}
-
-// Adapter for host_hooks.rs which still uses NativeFunction::from_fn_ptr with Context.
-pub(crate) fn values_method_adapter(
-    this: &JsValue,
-    args: &[JsValue],
-    context: &mut Context,
-) -> JsResult<JsValue> {
-    let ec = js_engine::boa::context_as_ec(context);
-    values_method(this, args, ec).map_err(JsError::from_opaque)
 }
 
 pub(crate) fn from_static(
