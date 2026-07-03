@@ -248,7 +248,7 @@ global.  For now they co-reside because Boa's `Context` serves both roles.
 |---|---|
 | `Context::eval` (script evaluation) | `evaluate_script` on `JsEngine<T>` exists; callers haven't migrated |
 | `ObjectInitializer`, `register_global_property` | Boa object-model construction; needs centralized `build_context` path |
-| Structured clone, async iterable creation | Boa-internal APIs (realm access, data clone) |
+| Structured clone | Boa-internal APIs (realm access, data clone) |
 
 None are fundamental — they just aren't done yet.
 
@@ -395,7 +395,7 @@ or subsystem entry-point signature must first be validated in
 on **both backends** (Boa and JSC) before it can be applied to any
 real production file.
 
-### Current state (updated 2026-07-03)
+### Current state (updated 2026-07-04)
 
 **Phases A–D, S1–S10, T1–T2, W1–W2, G1–G3, C2–C3, B1, R1, R2, S, P complete.**
 All binding files at 0 ec_to_ctx. All 34 struct/enum definitions use `#[gc_struct]`.
@@ -414,25 +414,31 @@ enabling `readablestreamasynciterator.rs` to implement it with zero bridges.
 **`RealmIntrinsics` extended** with `async_iterator_prototype` field
 (`T::JsObject`) for the generic async iterable infrastructure.
 
-**Remaining `context_as_ec` calls outside `js_engine/src/` (16 total):**
-- `webidl/async_iterable.rs` (10) — internal Boa-specific iterator infrastructure
-  (NativeFunction, JsPromise, ObjectInitializer) bridging to generic trait
+**Remaining `context_as_ec` calls outside `js_engine/src/` (6 total):**
 - `js/bindings/streams/readablestream.rs` (2) — NativeFunction binding-function adapters
 - `wasm/namespace.rs` (2) — gated behind `#[cfg(feature = "boa")]`
 - `html/safe_passing_of_structured_data.rs` (1) — `data_clone_error` helper
 - `js/bindings/wasm/mod.rs` (1) — NativeFunction adapter
 
-**Eliminated in this session:** `main.rs` (10), `environment_settings_object.rs` (1),
+**Eliminated in this session:** `webidl/async_iterable.rs` (10) — fully converted to
+`&mut dyn ExecutionContext<Types>` with zero `boa_engine::*` imports.
+Replaced `NativeFunction`, `FunctionObjectBuilder`, `ObjectInitializer`,
+`JsPromise::then`, `JsObject::downcast_ref`, and `create_iter_result_object`
+with generic EC trait methods (`create_builtin_function_from_behaviour`,
+`create_plain_object` + `object_set_property`, `perform_promise_then`,
+`with_object_any`, `create_object_with_any`). All 10 `context_as_ec`
+bridge calls eliminated.
+
+**Eliminated previously:** `main.rs` (10), `environment_settings_object.rs` (1),
 `host_hooks.rs` (3), `registry.rs` (2), `document.rs` (1) — 17 total.
 
 ### Next session: recommended order
 
-1. **Eliminate remaining `context_as_ec` bridges** — 16 calls remaining:
+1. **Eliminate remaining `context_as_ec` bridges** — 6 calls remaining:
    - `html/safe_passing_of_structured_data.rs` (1) — convert `data_clone_error` to EC
-   - `wasm/namespace.rs` (2) — convert function signatures from Context to EC
+   - `wasm/namespace.rs` (2) — convert function signatures from Context to EC
    - `js/bindings/wasm/mod.rs` (1) — NativeFunction adapter pattern
    - `js/bindings/streams/readablestream.rs` (2) — NativeFunction adapter pattern
-   - `webidl/async_iterable.rs` (10) — deeply Boa-specific internal code
 
 2. **Phase E** — Content crate does not yet compile for JSC.
    Blockers: GC trait bounds (`boa_engine::Trace`/`#[gc_struct]`) and
