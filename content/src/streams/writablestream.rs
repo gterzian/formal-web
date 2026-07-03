@@ -35,7 +35,7 @@ pub struct WritableStream {
     writer: GcCell<Option<WritableStreamWriter>>,
 
     /// <https://streams.spec.whatwg.org/#writablestream-state>
-    #[unsafe_ignore_trace]
+    #[ignore_trace]
     state: Rc<RefCell<WritableStreamState>>,
 
     /// <https://streams.spec.whatwg.org/#writablestream-storederror>
@@ -57,7 +57,7 @@ pub struct WritableStream {
     pending_abort_request: GcCell<Option<PendingAbortRequest>>,
 
     /// <https://streams.spec.whatwg.org/#writablestream-backpressure>
-    #[unsafe_ignore_trace]
+    #[ignore_trace]
     backpressure: Rc<Cell<bool>>,
 }
 

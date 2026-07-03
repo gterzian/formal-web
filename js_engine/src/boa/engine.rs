@@ -28,14 +28,12 @@ use boa_engine::{
     job::{GenericJob, Job},
     native_function::NativeFunction,
     object::{
-        builtins::{
-            JsDate, JsMap, JsRegExp, JsSet,
-        },
         FunctionObjectBuilder, JsObject,
         builtins::{
             JsArrayBuffer, JsDataView, JsFunction, JsGenerator, JsPromise, JsSharedArrayBuffer,
             JsTypedArray,
         },
+        builtins::{JsDate, JsMap, JsRegExp, JsSet},
     },
     property::PropertyKey,
     value::PreferredType as BoaPreferredType,
@@ -1154,10 +1152,7 @@ impl ExecutionContext<BoaTypes> for BoaContext {
             eval_error_prototype: constructors.eval_error().prototype(),
             object_prototype: constructors.object().prototype(),
             function_prototype: constructors.function().prototype(),
-            async_iterator_prototype: intrinsics
-                .objects()
-                .iterator_prototypes()
-                .async_iterator(),
+            async_iterator_prototype: intrinsics.objects().iterator_prototypes().async_iterator(),
         }
     }
 
@@ -1393,9 +1388,8 @@ impl ExecutionContext<BoaTypes> for BoaContext {
     // ── §22.2 Date ────────────────────────────────────────────────────────
 
     fn get_date_value(&mut self, date: &JsObject) -> Completion<f64, BoaTypes> {
-        let js_date = JsDate::from_object(date.clone()).map_err(|_| {
-            self.new_type_error("object is not a Date")
-        })?;
+        let js_date = JsDate::from_object(date.clone())
+            .map_err(|_| self.new_type_error("object is not a Date"))?;
         let time = js_date.get_time(&mut self.context).map_err(|e| {
             e.into_opaque(&mut self.context)
                 .unwrap_or_else(|_| JsValue::undefined())
@@ -1407,9 +1401,8 @@ impl ExecutionContext<BoaTypes> for BoaContext {
     // ── §22.3 RegExp ─────────────────────────────────────────────────────
 
     fn get_regexp_source(&mut self, regexp: &JsObject) -> Completion<String, BoaTypes> {
-        let js_regexp = JsRegExp::from_object(regexp.clone()).map_err(|_| {
-            self.new_type_error("object is not a RegExp")
-        })?;
+        let js_regexp = JsRegExp::from_object(regexp.clone())
+            .map_err(|_| self.new_type_error("object is not a RegExp"))?;
         let source: String = js_regexp.source(&mut self.context).map_err(|e| {
             e.into_opaque(&mut self.context)
                 .unwrap_or_else(|_| JsValue::undefined())
@@ -1418,9 +1411,8 @@ impl ExecutionContext<BoaTypes> for BoaContext {
     }
 
     fn get_regexp_flags(&mut self, regexp: &JsObject) -> Completion<String, BoaTypes> {
-        let js_regexp = JsRegExp::from_object(regexp.clone()).map_err(|_| {
-            self.new_type_error("object is not a RegExp")
-        })?;
+        let js_regexp = JsRegExp::from_object(regexp.clone())
+            .map_err(|_| self.new_type_error("object is not a RegExp"))?;
         let flags: String = js_regexp.flags(&mut self.context).map_err(|e| {
             e.into_opaque(&mut self.context)
                 .unwrap_or_else(|_| JsValue::undefined())
@@ -1430,10 +1422,7 @@ impl ExecutionContext<BoaTypes> for BoaContext {
 
     // ── §24.1 Map ────────────────────────────────────────────────────────
 
-    fn map_get_entries(
-        &mut self,
-        map: &JsMap,
-    ) -> Completion<Vec<(JsValue, JsValue)>, BoaTypes> {
+    fn map_get_entries(&mut self, map: &JsMap) -> Completion<Vec<(JsValue, JsValue)>, BoaTypes> {
         let mut entries = Vec::new();
         map.for_each_native(|key, val| {
             entries.push((key, val));
@@ -1470,12 +1459,10 @@ impl ExecutionContext<BoaTypes> for BoaContext {
     }
 
     fn set_add_entry(&mut self, set: &JsSet, value: JsValue) -> Completion<(), BoaTypes> {
-        set.add(value, &mut self.context)
-            .map(|_| ())
-            .map_err(|e| {
-                e.into_opaque(&mut self.context)
-                    .unwrap_or_else(|_| JsValue::undefined())
-            })
+        set.add(value, &mut self.context).map(|_| ()).map_err(|e| {
+            e.into_opaque(&mut self.context)
+                .unwrap_or_else(|_| JsValue::undefined())
+        })
     }
 
     // ── §27 Promise ───────────────────────────────────────────────────────
@@ -1582,7 +1569,12 @@ impl ExecutionContext<BoaTypes> for BoaContext {
     fn property_key_to_rust_string(&self, key: &PropertyKey) -> String {
         match key {
             PropertyKey::String(s) => s.to_std_string_escaped(),
-            PropertyKey::Symbol(sym) => format!("Symbol({})", sym.description().map(|s| s.to_std_string_escaped()).unwrap_or_default()),
+            PropertyKey::Symbol(sym) => format!(
+                "Symbol({})",
+                sym.description()
+                    .map(|s| s.to_std_string_escaped())
+                    .unwrap_or_default()
+            ),
             PropertyKey::Index(i) => i.get().to_string(),
         }
     }

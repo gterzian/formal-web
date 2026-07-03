@@ -14,33 +14,33 @@ pub const BUBBLING_PHASE: u16 = 3;
 /// <https://dom.spec.whatwg.org/#concept-event-listener>
 #[gc_struct]
 pub(crate) struct EventListener {
-    #[unsafe_ignore_trace]
+    #[ignore_trace]
     pub id: u64,
 
     /// <https://dom.spec.whatwg.org/#concept-event-listener-type>
-    #[unsafe_ignore_trace]
+    #[ignore_trace]
     pub type_: String,
 
     /// <https://dom.spec.whatwg.org/#concept-event-listener-callback>
     pub callback: Option<Callback>,
 
     /// <https://dom.spec.whatwg.org/#concept-event-listener-capture>
-    #[unsafe_ignore_trace]
+    #[ignore_trace]
     pub capture: bool,
 
     /// <https://dom.spec.whatwg.org/#concept-event-listener-passive>
-    #[unsafe_ignore_trace]
+    #[ignore_trace]
     pub passive: Option<bool>,
 
     /// <https://dom.spec.whatwg.org/#concept-event-listener-once>
-    #[unsafe_ignore_trace]
+    #[ignore_trace]
     pub once: bool,
 
     /// <https://dom.spec.whatwg.org/#event-listener-signal>
     pub signal: Option<AbortSignal>,
 
     /// <https://dom.spec.whatwg.org/#concept-event-listener-removed>
-    #[unsafe_ignore_trace]
+    #[ignore_trace]
     pub removed: bool,
 }
 
@@ -51,7 +51,7 @@ pub struct EventTarget {
     /// <https://dom.spec.whatwg.org/#eventtarget-event-listener-list>
     pub(crate) event_listener_list: Vec<EventListener>,
 
-    #[unsafe_ignore_trace]
+    #[ignore_trace]
     next_listener_id: u64,
 }
 
@@ -155,7 +155,7 @@ impl EventTarget {
 #[gc_struct]
 pub struct Event {
     /// <https://dom.spec.whatwg.org/#dom-event-type>
-    #[unsafe_ignore_trace]
+    #[ignore_trace]
     pub type_: String,
 
     /// <https://dom.spec.whatwg.org/#dom-event-target>
@@ -165,51 +165,51 @@ pub struct Event {
     pub current_target: Option<JsObject>,
 
     /// <https://dom.spec.whatwg.org/#dom-event-eventphase>
-    #[unsafe_ignore_trace]
+    #[ignore_trace]
     pub event_phase: u16,
 
     /// <https://dom.spec.whatwg.org/#dom-event-bubbles>
-    #[unsafe_ignore_trace]
+    #[ignore_trace]
     pub bubbles: bool,
 
     /// <https://dom.spec.whatwg.org/#dom-event-cancelable>
-    #[unsafe_ignore_trace]
+    #[ignore_trace]
     pub cancelable: bool,
 
     /// <https://dom.spec.whatwg.org/#dom-event-composed>
-    #[unsafe_ignore_trace]
+    #[ignore_trace]
     pub composed: bool,
 
     /// <https://dom.spec.whatwg.org/#dom-event-istrusted>
-    #[unsafe_ignore_trace]
+    #[ignore_trace]
     pub is_trusted: bool,
 
     /// <https://dom.spec.whatwg.org/#dom-event-timestamp>
-    #[unsafe_ignore_trace]
+    #[ignore_trace]
     pub time_stamp: f64,
 
     /// <https://dom.spec.whatwg.org/#event>
-    #[unsafe_ignore_trace]
+    #[ignore_trace]
     pub stop_propagation_flag: bool,
 
     /// <https://dom.spec.whatwg.org/#event>
-    #[unsafe_ignore_trace]
+    #[ignore_trace]
     pub stop_immediate_propagation_flag: bool,
 
     /// <https://dom.spec.whatwg.org/#dom-event-defaultprevented>
-    #[unsafe_ignore_trace]
+    #[ignore_trace]
     pub canceled_flag: bool,
 
     /// <https://dom.spec.whatwg.org/#event>
-    #[unsafe_ignore_trace]
+    #[ignore_trace]
     pub in_passive_listener_flag: bool,
 
     /// <https://dom.spec.whatwg.org/#event>
-    #[unsafe_ignore_trace]
+    #[ignore_trace]
     pub dispatch_flag: bool,
 
     /// <https://dom.spec.whatwg.org/#event>
-    #[unsafe_ignore_trace]
+    #[ignore_trace]
     pub initialized_flag: bool,
 }
 
@@ -327,7 +327,7 @@ pub struct UIEvent {
     pub view: Option<JsObject>,
 
     /// <https://w3c.github.io/uievents/#dom-uievent-detail>
-    #[unsafe_ignore_trace]
+    #[ignore_trace]
     pub detail: i32,
 }
 

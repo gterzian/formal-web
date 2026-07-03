@@ -20,7 +20,7 @@ use js_engine::{Completion, ExecutionContext};
 pub(crate) enum AbortAlgorithm {
     #[allow(dead_code)]
     Native {
-        #[unsafe_ignore_trace]
+        #[ignore_trace]
         callback: fn() -> JsResult<()>,
     },
 
@@ -28,7 +28,7 @@ pub(crate) enum AbortAlgorithm {
         /// <https://dom.spec.whatwg.org/#eventtarget>
         event_target: JsObject,
 
-        #[unsafe_ignore_trace]
+        #[ignore_trace]
         listener_id: u64,
     },
 
@@ -102,13 +102,13 @@ struct AbortSignalState {
     reflector: Option<JsObject>,
     event_target: EventTarget,
 
-    #[unsafe_ignore_trace]
+    #[ignore_trace]
     aborted: bool,
 
     abort_reason: JsValue,
     abort_algorithms: Vec<AbortAlgorithm>,
 
-    #[unsafe_ignore_trace]
+    #[ignore_trace]
     dependent: bool,
 
     source_signals: Vec<AbortSignal>,

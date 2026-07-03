@@ -395,91 +395,62 @@ or subsystem entry-point signature must first be validated in
 on **both backends** (Boa and JSC) before it can be applied to any
 real production file.
 
-### Current state (updated 2026-07-04 — session 3)
+### Current state (updated 2026-07-04 — session 4)
 
-**Phases A–D, S1–S10, T1–T2, W1–W2, G1–G3, C2–C3, B1, R1, R2, S, P complete.**
-All binding files at 0 ec_to_ctx. All 34 struct/enum definitions use `#[gc_struct]`.
-All domain field types use `GcCell<T>`. Generic POC: 81/81 tests pass on Boa.
-Phase E (compile-time Types/Engine aliases) is landed — `#[cfg(feature = "jsc")]`
-selects between BoaTypes and JscTypes.
+**Phases A–D, S1–S10, T1–T2, W1–W2, G1–G3, C2–C3, B1, R1, R2, S, P, E complete.**
+
+**Phase E (content crate compiles on JSC) is COMPLETE.**
+- `content/Cargo.toml` uses target-specific dependencies: `boa_engine`/`boa_gc`/`wasmtime`
+  only on non-Apple platforms; `js_engine` with `jsc` feature on Apple platforms.
+- `content/build.rs` sets `boa_backend` or `jsc_backend` cfg flags based on target OS.
+- `content/src/js/mod.rs` uses `#[cfg(jsc_backend)]`/`#[cfg(not(jsc_backend))]` to select
+  `JscTypes` or `BoaTypes` as the `crate::js::Types` alias.
+- Boa-dependent modules (`dom`, `html`, `streams`, `webidl`, `wasm`, `generic_js_test`)
+  are gated behind `#[cfg(boa_backend)]`.
+- `js/bindings/`, `downcast/`, `platform_objects/` are gated behind `#[cfg(boa_backend)]`.
+- All Boa-specific helper functions in `js/mod.rs` are gated behind `#[cfg(boa_backend)]`.
+- `run_content_process()` has a JSC stub that returns an error.
+- Zero `#[cfg(feature = ...)]` references remain in content code (all migrated to
+  build.rs cfg flags `boa_backend`/`jsc_backend`).
+- `cargo check -p content` passes on macOS with zero errors, 44 warnings (unused imports
+  and dead code from gated Boa modules).
+
+**`#[gc_struct]` split into backend-specific variants:**
+- `js_engine_macros` provides `gc_struct_boa` (Boa) and `gc_struct_jsc` (JSC).
+- `js_engine` conditionally re-exports the right one as `gc_struct`.
+- `#[ignore_trace]` field-level attribute: on Boa translates to `#[unsafe_ignore_trace]`,
+  on JSC is stripped.  Replaces all direct `#[unsafe_ignore_trace]` usage in content code.
+- All `#[derive(Clone, Trace, Finalize)]` in domain code replaced with `#[gc_struct]`.
+
+**JSC backend fixes:**
+- `JSValueIsDate` FFI declaration added to `jsc_sys.rs` (available since macOS 10.11).
+- `object_is_regexp` and `object_is_error` implemented via `JSEvaluateScript` with
+  `Object.prototype.toString.call(this)` (no `JSValueIsRegExp` in public JSC API).
+- All unused-variable warnings in JSC backend trait impls fixed.
+- Type annotation for `s.to_rust()` in `get_regexp_source`/`get_regexp_flags` fixed
+  by calling as `JscTypes::value_as_string(&result)`.
 
 **`_ec` suffix count: ZERO — all `_ec` bridge functions eliminated.**
 
-**`completion_to_js_result` bridges: ELIMINATED.** The function definition and
-all 15 call sites have been removed. The `AsyncValueIterable` trait is now
-generic (takes `&mut dyn ExecutionContext<Types>` instead of `&mut Context`),
-enabling `readablestreamasynciterator.rs` to implement it with zero bridges.
-`main.rs` wasm promise resolution also uses `Completion` directly.
+**`completion_to_js_result` bridges: ELIMINATED.**
 
-- `js/bindings/streams/readablestream.rs` (2) — adapter functions deleted;
-  `host_hooks.rs` now uses `create_builtin_function` directly.
-- `js/bindings/wasm/mod.rs` (1) — `install_wasm_namespace` now takes `&mut BoaContext`.
-- `wasm/namespace.rs` (2) — `create_exported_function_wrapper_boa` now uses
-  `create_builtin_function` with an EC-taking closure; the outer bridge
-  uses `context_as_engine` once at setup instead of `context_as_ec` per invocation.
-- `html/safe_passing_of_structured_data.rs` — fully converted to EC (this session);
-  `data_clone_error_ctx` bridge deleted.
+**Wasm (Boa-only):** Gated behind `#[cfg(boa_backend)]`. No bridge changes needed.
 
-**`RealmIntrinsics` extended** with `async_iterator_prototype` field
-(`T::JsObject`) for the generic async iterable infrastructure.
-
-**Wasm (Boa-only — no migration needed):** WebAssembly support is Boa-only
-and will never target JSC. The remaining bridges in `wasm/namespace.rs`
-(`ec_to_ctx` × 6, `context_as_engine` × 1) are fine to leave in place.
-The two `context_as_ec` calls in that file were eliminated in this session
-(switched to `create_builtin_function` with an EC-taking closure).
-
-**`context_as_ec` calls outside `js_engine/src/`: ZERO.**
-The last call (in `html/safe_passing_of_structured_data.rs::data_clone_error_ctx`)
-was replaced with `context_as_engine`. The remaining `context_as_engine` and
-`ec_to_ctx` bridges are listed in the next section.
-
-**Remaining bridges in content code (not `context_as_ec`):**
+**Remaining bridges in content code:**
 - `wasm/namespace.rs` — `ec_to_ctx` × 6, `context_as_engine` × 1 (Boa-only).
-- `js/mod.rs` — `context_as_engine` × 1 (`builtin_with_captures_ctx`).
-
-**Generic APIs added in previous sessions (validated in `generic_js_test.rs`):**
-- JsTypes: `value_as_bigint`, wrapper object detection+data (Boolean/Number/
-  String/BigInt), Date/RegExp/Error detection
-- `RealmIntrinsics`: `boolean`, `number`, `string`, `bigint`, `date`, `regexp`,
-  `map`, `set` constructors; `boolean_prototype` through `eval_error_prototype`
-- EC trait: `get_date_value`, `get_regexp_source`, `get_regexp_flags`,
-  `map_get_entries`, `map_set_entry`, `set_get_values`, `set_add_entry`
-
-**Generic APIs added in this session:**
-- EC trait: `property_key_to_rust_string` — converts a `PropertyKey` to a Rust
-  string for serialization. Implemented for both Boa and JSC backends.
-- All 86 generic tests pass on Boa.
-
-**Eliminated in previous sessions:**
-- `webidl/async_iterable.rs` (10) — fully converted to
-  `&mut dyn ExecutionContext<Types>` with zero `boa_engine::*` imports.
-- `js/bindings/streams/readablestream.rs` (2) — adapter functions deleted;
-  `host_hooks.rs` now uses `create_builtin_function` directly.
-- `js/bindings/wasm/mod.rs` (1) — `install_wasm_namespace` changed to take
-  `&mut BoaContext` instead of `&mut Context`.
-- `wasm/namespace.rs` (2) — `create_exported_function_wrapper_boa` uses
-  `create_builtin_function` with an EC-taking closure.
-- `html/safe_passing_of_structured_data.rs` (1) — `data_clone_error_ctx`
-  switched from `context_as_ec` to `context_as_engine`.
-
-**Eliminated in this session (entire file converted to EC):**
-- `html/safe_passing_of_structured_data.rs` — FULL CONVERSION.
-  All `&mut Context` → `&mut dyn ExecutionContext<Types>`.
-  `data_clone_error_ctx` bridge deleted. `structured_clone_boa` bridge
-  removed. All 27 internal functions use generic EC/JsTypes API.
-  Result: 0 `context_as_engine`, 0 `context_as_ec`, 0 `ec_to_ctx` in this file.
-
-**Eliminated previously:** `main.rs` (10), `environment_settings_object.rs` (1),
-`host_hooks.rs` (3), `registry.rs` (2), `document.rs` (1),
-`webidl/async_iterable.rs` (10) — 27 total.
+- `js/mod.rs` — `context_as_engine` × 1 (`builtin_with_captures_ctx`, Boa-only).
 
 ### Next session: recommended order
 
-1. **Phase E** — Content crate does not yet compile for JSC.
-   Blockers: GC trait bounds (`boa_engine::Trace`/`#[gc_struct]`) and
-   `unsafe_ignore_trace` attribute on non-wasm structs. Wasm is gated behind
-   `#[cfg(feature = "boa")]`.
+1. **Phase F — Generic content operation on JSC.**  The content crate now compiles
+   on JSC but `run_content_process()` returns an error.  To make it functional:
+   - Convert `environment_settings_object.rs` to use a generic EC trait object
+     instead of `BoaContext`/`JscEngine` directly.
+   - Implement `build_context` for JSC (or provide a generic bootstrap function).
+   - Port the binding infrastructure (`install_console_namespace`, etc.) from Boa
+     to the generic EC API.
+   - Bring `dom`, `html`, `webidl` modules back from `#[cfg(boa_backend)]` gating
+     by converting their `use boa_engine::*` patterns to generic `Types::*` aliases.
 
 ## `_ec` suffix convention
 
@@ -563,10 +534,12 @@ callers.
 
 ## Working during migration
 
-**End-of-task override:** While working on Phase D–E migration, standard
-verification steps (WPT, navigation verification, clippy, fmt) are
-**skipped**.  Only `cargo check -p content` and step 9 (review session in light of Rule Number One) from top level agents file is required.  Full verification
-resumes after Phase E.
+**End-of-task override:** Phase E is complete — content crate compiles on
+both JSC and Boa.  Standard verification steps (WPT, navigation
+verification) should now be run.  However, the content crate is still not
+functional on JSC (`run_content_process` returns an error), so only the
+Boa backend path is verified.  `cargo clippy` and `cargo fmt` should be run
+on all changed files.
 
 **Update this README at end of every task.**  The remaining-phases table,
 next-session order, ec_to_ctx counts, and phase status markers must reflect

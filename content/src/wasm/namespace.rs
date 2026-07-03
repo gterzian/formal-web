@@ -376,10 +376,8 @@ fn create_exported_function_wrapper_boa(
                 .params()
                 .enumerate()
                 .map(|(i, param_type)| {
-                    let js_arg = args.get(i).cloned()
-                        .unwrap_or_else(|| ec.value_undefined());
-                    js_val_to_wasm_val(&js_arg, &param_type, ec)
-                        .map_err(|err_val| err_val)
+                    let js_arg = args.get(i).cloned().unwrap_or_else(|| ec.value_undefined());
+                    js_val_to_wasm_val(&js_arg, &param_type, ec).map_err(|err_val| err_val)
                 })
                 .collect::<Result<_, _>>()?;
             let mut results: Vec<wasmtime::Val> = func_type
@@ -387,12 +385,9 @@ fn create_exported_function_wrapper_boa(
                 .map(|val_type| default_val_for_type(&val_type))
                 .collect();
             func.call(&mut *store_guard, &params, &mut results)
-                .map_err(|error| {
-                    ec.new_type_error(&format!("WebAssembly trap: {}", error))
-                })?;
+                .map_err(|error| ec.new_type_error(&format!("WebAssembly trap: {}", error)))?;
             if results.len() == 1 {
-                wasm_val_to_js_value(&results[0], ec)
-                    .map_err(|err_val| err_val)
+                wasm_val_to_js_value(&results[0], ec).map_err(|err_val| err_val)
             } else {
                 Err(ec.new_type_error("multiple wasm results not yet supported"))
             }

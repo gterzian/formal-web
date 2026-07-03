@@ -166,13 +166,10 @@ impl EnvironmentSettingsObject {
     }
 
     pub fn clear_all_window_timers(&mut self) -> Result<(), String> {
-        with_global_scope(
-            &mut self.engine,
-            |global_scope| {
-                global_scope.clear_all_timers();
-                Ok(())
-            },
-        )
+        with_global_scope(&mut self.engine, |global_scope| {
+            global_scope.clear_all_timers();
+            Ok(())
+        })
         .map_err(|error| error.display().to_string())
     }
 

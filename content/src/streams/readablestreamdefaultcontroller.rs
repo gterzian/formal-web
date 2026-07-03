@@ -166,7 +166,7 @@ impl StartAlgorithm {
 #[derive(Clone, Trace, Finalize)]
 struct QueueEntry {
     chunk: JsValue,
-    #[unsafe_ignore_trace]
+    #[ignore_trace]
     size: f64,
 }
 
@@ -180,30 +180,30 @@ pub struct ReadableStreamDefaultController {
     queue: GcCell<VecDeque<QueueEntry>>,
 
     /// <https://streams.spec.whatwg.org/#readablestreamdefaultcontroller-queuetotalsize>
-    #[unsafe_ignore_trace]
+    #[ignore_trace]
     queue_total_size: Rc<Cell<f64>>,
 
     /// <https://streams.spec.whatwg.org/#readablestreamdefaultcontroller-started>
-    #[unsafe_ignore_trace]
+    #[ignore_trace]
     started: Rc<Cell<bool>>,
 
     /// <https://streams.spec.whatwg.org/#readablestreamdefaultcontroller-closerequested>
-    #[unsafe_ignore_trace]
+    #[ignore_trace]
     close_requested: Rc<Cell<bool>>,
 
     /// <https://streams.spec.whatwg.org/#readablestreamdefaultcontroller-pullagain>
-    #[unsafe_ignore_trace]
+    #[ignore_trace]
     pull_again: Rc<Cell<bool>>,
 
     /// <https://streams.spec.whatwg.org/#readablestreamdefaultcontroller-pulling>
-    #[unsafe_ignore_trace]
+    #[ignore_trace]
     pulling: Rc<Cell<bool>>,
 
     /// <https://streams.spec.whatwg.org/#readablestreamdefaultcontroller-strategysizealgorithm>
     strategy_size_algorithm: GcCell<Option<SizeAlgorithm>>,
 
     /// <https://streams.spec.whatwg.org/#readablestreamdefaultcontroller-strategyhwm>
-    #[unsafe_ignore_trace]
+    #[ignore_trace]
     strategy_high_water_mark: Rc<Cell<f64>>,
 
     /// <https://streams.spec.whatwg.org/#readablestreamdefaultcontroller-pullalgorithm>

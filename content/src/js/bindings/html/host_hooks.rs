@@ -11,8 +11,8 @@ use boa_engine::{
     property::PropertyDescriptor,
     symbol::JsSymbol,
 };
-use js_engine::boa::BoaContext;
 use js_engine::ExecutionContext;
+use js_engine::boa::BoaContext;
 
 use super::hyperlink_element_utils;
 use crate::dom::{
@@ -86,10 +86,7 @@ fn build_boa_context(document: Rc<RefCell<BaseDocument>>) -> Result<Context, Str
     // reach GlobalScope through the generic ExecutionContext trait.
     {
         let global_obj = engine.context().global_object();
-        crate::js::platform_objects::init_global_object_slot(
-            &mut engine,
-            global_obj,
-        );
+        crate::js::platform_objects::init_global_object_slot(&mut engine, global_obj);
     }
 
     // ── Install WebAssembly namespace ──
@@ -104,10 +101,8 @@ fn build_boa_context(document: Rc<RefCell<BaseDocument>>) -> Result<Context, Str
 
     macro_rules! reg {
         ($ty:ty) => {
-            register_interface_spec::<crate::js::Types, $ty, _>(
-                &mut engine,
-            )
-            .map_err(|error| error.display().to_string())?;
+            register_interface_spec::<crate::js::Types, $ty, _>(&mut engine)
+                .map_err(|error| error.display().to_string())?;
         };
     }
 
@@ -169,11 +164,8 @@ fn build_boa_context(document: Rc<RefCell<BaseDocument>>) -> Result<Context, Str
 
     // HTMLAnchorElement: HTMLHyperlinkElementUtils members (§HTMLHyperlinkElementUtils)
     if let Some(proto) = get_registry_prototype::<crate::js::Types, HTMLAnchorElement>(&engine) {
-        hyperlink_element_utils::register_hyperlink_element_utils_on_prototype(
-            &proto,
-            &mut engine,
-        )
-        .map_err(|error| error.display().to_string())?;
+        hyperlink_element_utils::register_hyperlink_element_utils_on_prototype(&proto, &mut engine)
+            .map_err(|error| error.display().to_string())?;
     }
 
     // ReadableStream: async iterator, pipeTo (§ReadableStream)

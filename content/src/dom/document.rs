@@ -37,7 +37,7 @@ pub struct Document {
     pub node: Node,
 
     /// Model-local mirror of <https://html.spec.whatwg.org/#concept-environment-creation-url>.
-    #[unsafe_ignore_trace]
+    #[ignore_trace]
     pub creation_url: Url,
 }
 

@@ -490,15 +490,15 @@ where
 #[gc_struct]
 struct WaitAllState {
     /// Number of promises fulfilled so far (= Step 1's fulfilledCount).
-    #[unsafe_ignore_trace]
+    #[ignore_trace]
     fulfilled_count: usize,
 
     /// Whether any promise has rejected (= Step 2's rejected flag).
-    #[unsafe_ignore_trace]
+    #[ignore_trace]
     rejected: bool,
 
     /// Total number of promises to wait for (= Step 5's total).
-    #[unsafe_ignore_trace]
+    #[ignore_trace]
     total: usize,
 
     /// Collected results indexed by promise position.

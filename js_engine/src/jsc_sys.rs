@@ -99,6 +99,7 @@ unsafe extern "C" {
         ctx: *mut JSContextRef,
         description: *mut JSStringRef,
     ) -> *mut JSValueRef;
+    pub fn JSValueIsDate(ctx: *mut JSContextRef, value: *mut JSValueRef) -> bool;
 }
 
 // ── Object functions ──────────────────────────────────────────────────────

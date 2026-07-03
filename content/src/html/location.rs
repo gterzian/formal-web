@@ -13,11 +13,11 @@ pub struct Location {
     ///
     /// Note: The spec defines Location.url in terms of the relevant Document URL. This implementation
     /// currently snapshots that URL when creating the Location object.
-    #[unsafe_ignore_trace]
+    #[ignore_trace]
     url: Url,
 
     /// <https://html.spec.whatwg.org/#relevant-document>
-    #[unsafe_ignore_trace]
+    #[ignore_trace]
     relevant_document_origin: Option<String>,
 
     /// <https://html.spec.whatwg.org/#concept-relevant-global>

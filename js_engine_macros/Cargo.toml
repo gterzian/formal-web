@@ -5,6 +5,9 @@ edition = "2024"
 publish = false
 description = "Proc-macro attributes for js_engine GC integration."
 
+[lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(boa_backend)', 'cfg(jsc_backend)'] }
+
 [lib]
 proc-macro = true
 

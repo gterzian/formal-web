@@ -64,7 +64,7 @@ pub struct HTMLMediaElement {
 
     /// Globally-unique paint-layer identifier for this video element (UUID v4).
     /// Not traced — this is an internal identifier, not a JS value or GC-managed object.
-    #[unsafe_ignore_trace]
+    #[ignore_trace]
     video_paint_id: VideoPaintId,
 }
 

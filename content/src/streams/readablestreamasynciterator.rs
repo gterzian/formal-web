@@ -19,7 +19,7 @@ pub(crate) struct ReadableStreamAsyncIteratorState {
     reader: GcCell<Option<ReadableStreamDefaultReader>>,
 
     /// <https://streams.spec.whatwg.org/#readablestream-async-iterator-prevent-cancel>
-    #[unsafe_ignore_trace]
+    #[ignore_trace]
     prevent_cancel: Rc<Cell<bool>>,
 }
 
@@ -35,10 +35,7 @@ impl ReadableStreamAsyncIteratorState {
         self.reader.borrow().clone()
     }
 
-    fn finish(
-        &self,
-        ec: &mut dyn ExecutionContext<Types>,
-    ) -> Completion<(), Types> {
+    fn finish(&self, ec: &mut dyn ExecutionContext<Types>) -> Completion<(), Types> {
         let Some(reader) = self.reader.borrow().clone() else {
             return Ok(());
         };
@@ -88,7 +85,10 @@ impl AsyncValueIterable for ReadableStream {
         let prevent_cancel = iterator_prevent_cancel(args.get_or_undefined(0), ec)?;
 
         // Step 4: "Set iterator's prevent cancel to preventCancel."
-        Ok(ReadableStreamAsyncIteratorState::new(reader, prevent_cancel))
+        Ok(ReadableStreamAsyncIteratorState::new(
+            reader,
+            prevent_cancel,
+        ))
     }
 
     /// <https://streams.spec.whatwg.org/#rs-asynciterator-prototype-next>
@@ -134,9 +134,7 @@ impl AsyncValueIterable for ReadableStream {
 
         let cancel_promise = reader
             .cancel(value, ec)
-            .or_else(|error_value| {
-                rejected_promise(error_value, ec)
-            })?;
+            .or_else(|error_value| rejected_promise(error_value, ec))?;
 
         state.finish(ec)?;
         Ok(cancel_promise)

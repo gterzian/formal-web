@@ -349,17 +349,17 @@ impl JsTypes for JscTypes {
         Some(*o)
     }
 
-    fn object_is_boolean_wrapper(o: &Self::JsObject) -> bool {
+    fn object_is_boolean_wrapper(_o: &Self::JsObject) -> bool {
         // JSC C API has no direct boolean-object check; fallible approximation
         false
     }
-    fn object_is_number_wrapper(o: &Self::JsObject) -> bool {
+    fn object_is_number_wrapper(_o: &Self::JsObject) -> bool {
         false
     }
-    fn object_is_string_wrapper(o: &Self::JsObject) -> bool {
+    fn object_is_string_wrapper(_o: &Self::JsObject) -> bool {
         false
     }
-    fn object_is_bigint_wrapper(o: &Self::JsObject) -> bool {
+    fn object_is_bigint_wrapper(_o: &Self::JsObject) -> bool {
         false
     }
     fn object_is_date(o: &Self::JsObject) -> bool {
@@ -373,29 +373,58 @@ impl JsTypes for JscTypes {
         if o.ctx.is_null() {
             return false;
         }
-        let val_ref: *mut JSValueRef = o.as_value_ref();
-        unsafe { crate::jsc_sys::JSValueIsRegExp(o.ctx, val_ref) }
+        // JSValueIsRegExp is not in the public JSC C API, so evaluate
+        // Object.prototype.toString.call(this) to check the @@toStringTag.
+        let script =
+            JscString::from_rust("Object.prototype.toString.call(this)==='[object RegExp]'");
+        let result = unsafe {
+            JSEvaluateScript(
+                o.ctx,
+                script.raw,
+                o.raw,
+                std::ptr::null_mut(),
+                0,
+                std::ptr::null_mut(),
+            )
+        };
+        if result.is_null() {
+            return false;
+        }
+        unsafe { JSValueToBoolean(o.ctx, result) }
     }
     fn object_is_error(o: &Self::JsObject) -> bool {
-        // JSC C API: check if the object's class is Error
         if o.ctx.is_null() {
             return false;
         }
-        let error_ref = unsafe { crate::jsc_sys::JSValueMakeNull(o.ctx) };
-        // No direct C API for Error-class check; conservative
-        false
+        // Check if Object.prototype.toString.call(this) matches an Error type.
+        // Error objects have @@toStringTag returning "Error", "TypeError", "RangeError", etc.
+        let script = JscString::from_rust("/Error\\]/.test(Object.prototype.toString.call(this))");
+        let result = unsafe {
+            JSEvaluateScript(
+                o.ctx,
+                script.raw,
+                o.raw,
+                std::ptr::null_mut(),
+                0,
+                std::ptr::null_mut(),
+            )
+        };
+        if result.is_null() {
+            return false;
+        }
+        unsafe { JSValueToBoolean(o.ctx, result) }
     }
 
-    fn boolean_wrapper_data(o: &Self::JsObject) -> Option<bool> {
+    fn boolean_wrapper_data(_o: &Self::JsObject) -> Option<bool> {
         None
     }
-    fn number_wrapper_data(o: &Self::JsObject) -> Option<f64> {
+    fn number_wrapper_data(_o: &Self::JsObject) -> Option<f64> {
         None
     }
-    fn string_wrapper_data(o: &Self::JsObject) -> Option<Self::JsString> {
+    fn string_wrapper_data(_o: &Self::JsObject) -> Option<Self::JsString> {
         None
     }
-    fn bigint_wrapper_data(o: &Self::JsObject) -> Option<Self::JsBigInt> {
+    fn bigint_wrapper_data(_o: &Self::JsObject) -> Option<Self::JsBigInt> {
         None
     }
 }
@@ -1352,7 +1381,7 @@ impl ExecutionContext<JscTypes> for JscEngine {
 
     fn to_property_descriptor(
         &mut self,
-        desc_obj: JscObject,
+        _desc_obj: JscObject,
     ) -> Completion<PropertyDescriptor<JscTypes>, JscTypes> {
         // Stub — not yet used by JSC proxy code
         Err(self.new_type_error("to_property_descriptor not yet implemented on JSC backend"))
@@ -1384,7 +1413,7 @@ impl ExecutionContext<JscTypes> for JscEngine {
         Ok(())
     }
 
-    fn get_prototype_of(&mut self, object: JscObject) -> Completion<Option<JscObject>, JscTypes> {
+    fn get_prototype_of(&mut self, _object: JscObject) -> Completion<Option<JscObject>, JscTypes> {
         // Stub — not yet used by JSC proxy code
         Err(self.new_type_error("get_prototype_of not yet implemented on JSC backend"))
     }
@@ -2345,14 +2374,15 @@ impl ExecutionContext<JscTypes> for JscEngine {
         // JSC: call date.getTime()
         let get_time_str = JscString::from_rust("getTime");
         let get_time_key = JscPropertyKey::String(get_time_str);
-        let get_time = self.get_method(
-            JscValue {
-                raw: date.as_value_ref(),
-                ctx: self.ctx_ptr(),
-            },
-            get_time_key,
-        )?
-        .ok_or_else(|| self.new_type_error("Date has no getTime"))?;
+        let get_time = self
+            .get_method(
+                JscValue {
+                    raw: date.as_value_ref(),
+                    ctx: self.ctx_ptr(),
+                },
+                get_time_key,
+            )?
+            .ok_or_else(|| self.new_type_error("Date has no getTime"))?;
         let date_val = JscValue {
             raw: date.as_value_ref(),
             ctx: self.ctx_ptr(),
@@ -2368,8 +2398,9 @@ impl ExecutionContext<JscTypes> for JscEngine {
         let source_key = JscPropertyKey::String(source_str);
         let result = ExecutionContext::get(self, *regexp, source_key)?;
         // RegExp.source is a string; extract it
-        if let Some(s) = crate::JsTypes::value_as_string(&result) {
-            Ok(s.to_rust())
+        if let Some(s) = JscTypes::value_as_string(&result) {
+            let source: String = s.to_rust();
+            Ok(source)
         } else {
             Err(self.new_type_error("RegExp.source is not a string"))
         }
@@ -2379,8 +2410,9 @@ impl ExecutionContext<JscTypes> for JscEngine {
         let flags_str = JscString::from_rust("flags");
         let flags_key = JscPropertyKey::String(flags_str);
         let result = ExecutionContext::get(self, *regexp, flags_key)?;
-        if let Some(s) = crate::JsTypes::value_as_string(&result) {
-            Ok(s.to_rust())
+        if let Some(s) = JscTypes::value_as_string(&result) {
+            let flags: String = s.to_rust();
+            Ok(flags)
         } else {
             Err(self.new_type_error("RegExp.flags is not a string"))
         }

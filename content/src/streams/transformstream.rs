@@ -37,7 +37,7 @@ fn log_stream_debug(message: impl AsRef<str>) {
 #[gc_struct]
 pub struct TransformStream {
     /// <https://streams.spec.whatwg.org/#transformstream-backpressure>
-    #[unsafe_ignore_trace]
+    #[ignore_trace]
     backpressure: Rc<Cell<bool>>,
 
     /// <https://streams.spec.whatwg.org/#transformstream-backpressurechangepromise>

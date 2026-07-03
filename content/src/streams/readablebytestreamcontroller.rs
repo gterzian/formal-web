@@ -90,9 +90,9 @@ impl ArrayBufferViewKind {
 pub(crate) struct ArrayBufferViewDescriptor {
     buffer: JsArrayBuffer,
     kind: ArrayBufferViewKind,
-    #[unsafe_ignore_trace]
+    #[ignore_trace]
     byte_offset: usize,
-    #[unsafe_ignore_trace]
+    #[ignore_trace]
     byte_length: usize,
 }
 
@@ -226,10 +226,10 @@ struct PullIntoDescriptor {
     /// <https://streams.spec.whatwg.org/#pull-into-descriptor-buffer>
     view: ArrayBufferViewDescriptor,
     /// <https://streams.spec.whatwg.org/#pull-into-descriptor-bytes-filled>
-    #[unsafe_ignore_trace]
+    #[ignore_trace]
     bytes_filled: usize,
     /// <https://streams.spec.whatwg.org/#pull-into-descriptor-minimum-fill>
-    #[unsafe_ignore_trace]
+    #[ignore_trace]
     minimum_fill: usize,
     /// <https://streams.spec.whatwg.org/#pull-into-descriptor-reader-type>
     request: PullRequest,
@@ -338,11 +338,11 @@ impl PullIntoDescriptor {
 #[derive(Clone, Trace, Finalize)]
 struct ByteQueueEntry {
     buffer: JsArrayBuffer,
-    #[unsafe_ignore_trace]
+    #[ignore_trace]
     byte_offset: usize,
-    #[unsafe_ignore_trace]
+    #[ignore_trace]
     byte_length: usize,
-    #[unsafe_ignore_trace]
+    #[ignore_trace]
     offset: usize,
 }
 
@@ -442,25 +442,25 @@ pub struct ReadableByteStreamController {
     /// <https://streams.spec.whatwg.org/#readablebytestreamcontroller-queue>
     queue: GcCell<VecDeque<ByteQueueEntry>>,
     /// <https://streams.spec.whatwg.org/#readablebytestreamcontroller-queuetotalsize>
-    #[unsafe_ignore_trace]
+    #[ignore_trace]
     queue_total_size: Rc<Cell<usize>>,
     /// <https://streams.spec.whatwg.org/#readablebytestreamcontroller-started>
-    #[unsafe_ignore_trace]
+    #[ignore_trace]
     started: Rc<Cell<bool>>,
     /// <https://streams.spec.whatwg.org/#readablebytestreamcontroller-closerequested>
-    #[unsafe_ignore_trace]
+    #[ignore_trace]
     close_requested: Rc<Cell<bool>>,
     /// <https://streams.spec.whatwg.org/#readablebytestreamcontroller-pullagain>
-    #[unsafe_ignore_trace]
+    #[ignore_trace]
     pull_again: Rc<Cell<bool>>,
     /// <https://streams.spec.whatwg.org/#readablebytestreamcontroller-pulling>
-    #[unsafe_ignore_trace]
+    #[ignore_trace]
     pulling: Rc<Cell<bool>>,
     /// <https://streams.spec.whatwg.org/#readablebytestreamcontroller-strategyhwm>
-    #[unsafe_ignore_trace]
+    #[ignore_trace]
     strategy_high_water_mark: Rc<Cell<f64>>,
     /// <https://streams.spec.whatwg.org/#readablebytestreamcontroller-autoallocatechunksize>
-    #[unsafe_ignore_trace]
+    #[ignore_trace]
     auto_allocate_chunk_size: Rc<Cell<Option<usize>>>,
     /// <https://streams.spec.whatwg.org/#readablebytestreamcontroller-pullalgorithm>
     pull_algorithm: GcCell<Option<PullAlgorithm>>,

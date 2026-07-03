@@ -1,9 +1,7 @@
 use std::marker::PhantomData;
 use std::rc::Rc;
 
-use boa_engine::{
-    Context, JsResult, JsValue, js_string, object::JsObject, property::Attribute,
-};
+use boa_engine::{Context, JsResult, JsValue, js_string, object::JsObject, property::Attribute};
 
 use crate::dom::Document;
 use crate::js::platform_objects::{

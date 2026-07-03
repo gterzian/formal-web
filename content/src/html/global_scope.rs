@@ -55,17 +55,17 @@ pub enum PendingRequest {
     /// A WebAssembly module compilation or instantiate-byte request.
     WasmCompile {
         /// Stable copy of the buffer bytes.
-        #[unsafe_ignore_trace]
+        #[ignore_trace]
         bytes: Vec<u8>,
         /// The request id, correlating with the background thread's result.
-        #[unsafe_ignore_trace]
+        #[ignore_trace]
         request_id: u64,
         /// True if this came from `instantiate(bytes, ...)`, false for `compile(bytes, ...)`.
         is_instantiate: bool,
         /// Current lifecycle state.
         ///
         /// PendingState is a simple Copy enum, safe to ignore trace on.
-        #[unsafe_ignore_trace]
+        #[ignore_trace]
         state: PendingState,
     },
 
@@ -75,13 +75,13 @@ pub enum PendingRequest {
     /// The module is already compiled — this only needs instantiation.
     WasmInstantiate {
         /// The previously compiled wasm module.
-        #[unsafe_ignore_trace]
+        #[ignore_trace]
         module: wasmtime::Module,
         /// The request id, correlating with the content-process's processing.
-        #[unsafe_ignore_trace]
+        #[ignore_trace]
         request_id: u64,
         /// Current lifecycle state.
-        #[unsafe_ignore_trace]
+        #[ignore_trace]
         state: PendingState,
     },
 }
@@ -96,7 +96,7 @@ pub enum GlobalScopeKind {
 #[derive(Clone, Trace, Finalize)]
 pub struct CachedNodeObject {
     /// <https://dom.spec.whatwg.org/#interface-node>
-    #[unsafe_ignore_trace]
+    #[ignore_trace]
     pub node_id: usize,
 
     /// <https://webidl.spec.whatwg.org/#dfn-platform-object>
@@ -107,7 +107,7 @@ pub struct CachedNodeObject {
 #[derive(Clone, Trace, Finalize)]
 pub struct AnimationFrameCallback {
     /// <https://html.spec.whatwg.org/#animation-frame-callback-identifier>
-    #[unsafe_ignore_trace]
+    #[ignore_trace]
     pub handle: u32,
 
     /// <https://webidl.spec.whatwg.org/#idl-callback-function>
@@ -123,7 +123,7 @@ pub enum TimerHandler {
     },
     String {
         /// <https://html.spec.whatwg.org/#timerhandler>
-        #[unsafe_ignore_trace]
+        #[ignore_trace]
         source: String,
     },
 }
@@ -132,11 +132,11 @@ pub enum TimerHandler {
 #[derive(Trace, Finalize, Clone)]
 pub struct WindowTimer {
     /// <https://html.spec.whatwg.org/#map-of-settimeout-and-setinterval-ids>
-    #[unsafe_ignore_trace]
+    #[ignore_trace]
     pub id: u32,
 
     /// <https://html.spec.whatwg.org/#run-steps-after-a-timeout>
-    #[unsafe_ignore_trace]
+    #[ignore_trace]
     pub timer_key: WindowTimerKey,
 
     /// <https://html.spec.whatwg.org/#timerhandler>
@@ -146,11 +146,11 @@ pub struct WindowTimer {
     pub arguments: Vec<JsValue>,
 
     /// <https://html.spec.whatwg.org/#timers>
-    #[unsafe_ignore_trace]
+    #[ignore_trace]
     pub repeat: bool,
 
     /// <https://html.spec.whatwg.org/#timers>
-    #[unsafe_ignore_trace]
+    #[ignore_trace]
     pub timeout_ms: u32,
 }
 
@@ -164,11 +164,11 @@ struct TimerHost {
 #[derive(Clone, Trace, Finalize)]
 pub struct GlobalScope {
     /// <https://html.spec.whatwg.org/#global-object>
-    #[unsafe_ignore_trace]
+    #[ignore_trace]
     pub kind: GlobalScopeKind,
 
     /// <https://html.spec.whatwg.org/#concept-document-window>
-    #[unsafe_ignore_trace]
+    #[ignore_trace]
     document: Rc<RefCell<BaseDocument>>,
 
     /// <https://dom.spec.whatwg.org/#interface-document>
@@ -181,48 +181,48 @@ pub struct GlobalScope {
     node_objects: GcRefCell<Vec<CachedNodeObject>>,
 
     /// <https://html.spec.whatwg.org/#animation-frame-callback-identifier>
-    #[unsafe_ignore_trace]
+    #[ignore_trace]
     animation_frame_callback_identifier: Cell<u32>,
 
     /// <https://html.spec.whatwg.org/#list-of-animation-frame-callbacks>
     animation_frame_callbacks: GcRefCell<Vec<AnimationFrameCallback>>,
 
     /// <https://html.spec.whatwg.org/#timers>
-    #[unsafe_ignore_trace]
+    #[ignore_trace]
     timer_callback_identifier: Cell<u32>,
 
     /// <https://html.spec.whatwg.org/#map-of-settimeout-and-setinterval-ids>
     window_timers: GcRefCell<Vec<WindowTimer>>,
 
     /// <https://html.spec.whatwg.org/#timer-nesting-level>
-    #[unsafe_ignore_trace]
+    #[ignore_trace]
     current_timer_nesting_level: Cell<Option<u32>>,
 
-    #[unsafe_ignore_trace]
+    #[ignore_trace]
     timer_host: RefCell<Option<TimerHost>>,
 
     /// <https://html.spec.whatwg.org/#concept-navigable>
-    #[unsafe_ignore_trace]
+    #[ignore_trace]
     source_navigable_id: Cell<Option<NavigableId>>,
 
     /// <https://html.spec.whatwg.org/#parent-navigable>
     /// The parent of this document's navigable in the navigable tree.
     /// None indicates a top-level traversable.
-    #[unsafe_ignore_trace]
+    #[ignore_trace]
     parent_traversable_id: Cell<Option<NavigableId>>,
 
     /// <https://html.spec.whatwg.org/#traversable-navigable>
     /// The top-level traversable for this navigable tree.
-    #[unsafe_ignore_trace]
+    #[ignore_trace]
     top_level_traversable_id: Cell<Option<NavigableId>>,
 
     /// <https://html.spec.whatwg.org/#concept-document>
     /// The document id for the document associated with this global scope.
-    #[unsafe_ignore_trace]
+    #[ignore_trace]
     document_id: RefCell<Option<DocumentId>>,
 
     /// Sender for content-to-user-agent IPC events (e.g. navigation requests).
-    #[unsafe_ignore_trace]
+    #[ignore_trace]
     event_sender: RefCell<Option<IpcSender<ContentEvent>>>,
 
     /// Shared registry for newly-created traversable documents (window.open).
@@ -230,7 +230,7 @@ pub struct GlobalScope {
     /// `the_rules_for_choosing_a_navigable`. Both GlobalScope (to insert)
     /// and ContentProcess (to retrieve) share the same `Rc`, so no separate
     /// flush step is needed.
-    #[unsafe_ignore_trace]
+    #[ignore_trace]
     new_document_registry: RefCell<
         Option<
             Rc<
@@ -246,16 +246,16 @@ pub struct GlobalScope {
     /// `resource_selection_algorithm` (to insert) and
     /// `ContentProcess::build_frame_composition_metadata` (to read) share
     /// the same `Rc`.
-    #[unsafe_ignore_trace]
+    #[ignore_trace]
     video_paint_registry: RefCell<Option<Rc<RefCell<HashMap<(DocumentId, usize), VideoPaintId>>>>>,
 
     /// Direct sender to the media extension.
-    #[unsafe_ignore_trace]
+    #[ignore_trace]
     media_extension_sender: RefCell<Option<IpcSender<MediaCommand>>>,
 
     /// <https://html.spec.whatwg.org/#concept-document-creation-url>
     /// The creation URL of this window's Document.
-    #[unsafe_ignore_trace]
+    #[ignore_trace]
     creation_url: RefCell<Option<url::Url>>,
 
     /// Generic queue of pending async requests created during JS execution.
@@ -264,7 +264,7 @@ pub struct GlobalScope {
     pending_requests: GcRefCell<Vec<PendingRequest>>,
 
     /// A counter for generating unique request IDs for async wasm operations.
-    #[unsafe_ignore_trace]
+    #[ignore_trace]
     pending_wasm_request_id_counter: std::cell::Cell<u64>,
 
     /// Map of request_id → (promise, resolvers) for pending wasm operations.

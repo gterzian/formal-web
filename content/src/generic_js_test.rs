@@ -686,7 +686,7 @@ impl WebIdlInterface<TestTypes> for TestButton {
     fn define_members(_def: &mut InterfaceDefinition<TestTypes>) {}
 }
 
-#[cfg(feature = "boa")]
+#[cfg(boa_backend)]
 #[allow(dead_code)]
 pub(crate) fn exercise_context_lifecycle() -> Result<(), String> {
     use crate::webidl::bindings::{initialize_registry, register_interface_spec};
@@ -730,7 +730,7 @@ mod tests {
     /// registered (Boa) or available (JSC).
     /// Returns the concrete engine type so callers can use both
     /// `ExecutionContext` and `JsEngine` trait methods.
-    #[cfg(feature = "boa")]
+    #[cfg(boa_backend)]
     fn setup() -> js_engine::boa::BoaContext {
         use crate::webidl::bindings::{initialize_registry, register_interface_spec};
         use boa_engine::context::ContextBuilder;
@@ -745,7 +745,7 @@ mod tests {
         engine
     }
 
-    #[cfg(feature = "jsc")]
+    #[cfg(jsc_backend)]
     fn setup() -> js_engine::jsc::JscEngine {
         use crate::webidl::bindings::{initialize_registry, register_interface_spec};
         use js_engine::{ExecutionContext, JsEngine};
@@ -2801,17 +2801,24 @@ mod tests {
         let mut engine = setup();
         let realm = engine.current_realm();
         let intrinsics = engine.realm_intrinsics(&realm);
-        let bi_val = engine
-            .evaluate_script("123n", &realm)
-            .unwrap();
+        let bi_val = engine.evaluate_script("123n", &realm).unwrap();
         let bi = <TestTypes as JsTypes>::value_as_bigint(&bi_val);
-        assert!(bi.is_some(), "value_as_bigint should detect BigInt primitives");
+        assert!(
+            bi.is_some(),
+            "value_as_bigint should detect BigInt primitives"
+        );
 
         let num_val = engine.value_from_number(42.0);
-        assert!(<TestTypes as JsTypes>::value_as_bigint(&num_val).is_none(), "number should not be detected as BigInt");
+        assert!(
+            <TestTypes as JsTypes>::value_as_bigint(&num_val).is_none(),
+            "number should not be detected as BigInt"
+        );
 
         let str_val = engine.value_from_string(engine.js_string_from_str("hello"));
-        assert!(<TestTypes as JsTypes>::value_as_bigint(&str_val).is_none(), "string should not be detected as BigInt");
+        assert!(
+            <TestTypes as JsTypes>::value_as_bigint(&str_val).is_none(),
+            "string should not be detected as BigInt"
+        );
     }
 
     #[test]
@@ -2822,18 +2829,36 @@ mod tests {
 
         // Create wrapper objects using construct
         let true_val = engine.value_from_bool(true);
-        let bool_wrapper = engine.construct(intrinsics.boolean, &[true_val], None).unwrap();
-        assert!(<TestTypes as JsTypes>::object_is_boolean_wrapper(&bool_wrapper));
-        assert_eq!(<TestTypes as JsTypes>::boolean_wrapper_data(&bool_wrapper), Some(true));
+        let bool_wrapper = engine
+            .construct(intrinsics.boolean, &[true_val], None)
+            .unwrap();
+        assert!(<TestTypes as JsTypes>::object_is_boolean_wrapper(
+            &bool_wrapper
+        ));
+        assert_eq!(
+            <TestTypes as JsTypes>::boolean_wrapper_data(&bool_wrapper),
+            Some(true)
+        );
 
         let num_val = engine.value_from_number(42.5);
-        let num_wrapper = engine.construct(intrinsics.number, &[num_val], None).unwrap();
-        assert!(<TestTypes as JsTypes>::object_is_number_wrapper(&num_wrapper));
-        assert_eq!(<TestTypes as JsTypes>::number_wrapper_data(&num_wrapper), Some(42.5));
+        let num_wrapper = engine
+            .construct(intrinsics.number, &[num_val], None)
+            .unwrap();
+        assert!(<TestTypes as JsTypes>::object_is_number_wrapper(
+            &num_wrapper
+        ));
+        assert_eq!(
+            <TestTypes as JsTypes>::number_wrapper_data(&num_wrapper),
+            Some(42.5)
+        );
 
         let str_val = engine.value_from_string(engine.js_string_from_str("test"));
-        let str_wrapper = engine.construct(intrinsics.string, &[str_val], None).unwrap();
-        assert!(<TestTypes as JsTypes>::object_is_string_wrapper(&str_wrapper));
+        let str_wrapper = engine
+            .construct(intrinsics.string, &[str_val], None)
+            .unwrap();
+        assert!(<TestTypes as JsTypes>::object_is_string_wrapper(
+            &str_wrapper
+        ));
         assert!(<TestTypes as JsTypes>::string_wrapper_data(&str_wrapper).is_some());
 
         // Plain object should NOT be detected as any wrapper
@@ -2862,7 +2887,9 @@ mod tests {
         // RegExp detection
         let src = engine.value_from_string(engine.js_string_from_str("[a-z]+"));
         let flags = engine.value_from_string(engine.js_string_from_str("gi"));
-        let re_obj = engine.construct(intrinsics.regexp, &[src, flags], None).unwrap();
+        let re_obj = engine
+            .construct(intrinsics.regexp, &[src, flags], None)
+            .unwrap();
         assert!(<TestTypes as JsTypes>::object_is_regexp(&re_obj));
 
         // RegExp source and flags extraction
@@ -2893,8 +2920,12 @@ mod tests {
         let key_b = engine.value_from_string(engine.js_string_from_str("b"));
         let val_2 = engine.value_from_number(2.0);
 
-        engine.map_set_entry(&map, key_a.clone(), val_1.clone()).unwrap();
-        engine.map_set_entry(&map, key_b.clone(), val_2.clone()).unwrap();
+        engine
+            .map_set_entry(&map, key_a.clone(), val_1.clone())
+            .unwrap();
+        engine
+            .map_set_entry(&map, key_b.clone(), val_2.clone())
+            .unwrap();
 
         let entries = engine.map_get_entries(&map).unwrap();
         assert_eq!(entries.len(), 2);

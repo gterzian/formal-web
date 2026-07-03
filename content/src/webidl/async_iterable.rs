@@ -17,8 +17,7 @@ fn promise_from_object(
     obj: JsObject,
     ec: &mut dyn ExecutionContext<Types>,
 ) -> Completion<<Types as JsTypes>::Promise, Types> {
-    Types::object_as_promise(&obj)
-        .ok_or_else(|| ec.new_type_error("value is not a Promise"))
+    Types::object_as_promise(&obj).ok_or_else(|| ec.new_type_error("value is not a Promise"))
 }
 
 // ── Iterator operation ────────────────────────────────────────────────────
@@ -44,7 +43,10 @@ impl<T: AsyncValueIterable> Behaviour<Types> for NextOnFulfilled<T> {
         _this: JsValue,
         ec: &mut dyn ExecutionContext<Types>,
     ) -> Completion<JsValue, Types> {
-        let result = args.first().cloned().unwrap_or_else(|| ec.value_undefined());
+        let result = args
+            .first()
+            .cloned()
+            .unwrap_or_else(|| ec.value_undefined());
 
         // Try to extract the "done" property from the resolved value.
         // If it's an iterator result object ({value, done}), check done.
@@ -58,9 +60,11 @@ impl<T: AsyncValueIterable> Behaviour<Types> for NextOnFulfilled<T> {
                         .target
                         .finish_async_iterator(&self.iterator.state, ec)?;
                     // Return CreateIteratorResultObject(undefined, true)
-                    return Ok(Types::value_from_object(
-                        create_iterator_result_object(ec.value_undefined(), true, ec),
-                    ));
+                    return Ok(Types::value_from_object(create_iterator_result_object(
+                        ec.value_undefined(),
+                        true,
+                        ec,
+                    )));
                 }
             }
         }
@@ -91,7 +95,10 @@ impl<T: AsyncValueIterable> Behaviour<Types> for NextOnRejected<T> {
             .finish_async_iterator(&self.iterator.state, ec)?;
 
         // Step 8.7.3: "Throw reason."
-        let reason = args.first().cloned().unwrap_or_else(|| ec.value_undefined());
+        let reason = args
+            .first()
+            .cloned()
+            .unwrap_or_else(|| ec.value_undefined());
         Err(reason)
     }
 }
@@ -129,9 +136,11 @@ impl Behaviour<Types> for ReturnOnFulfilled {
         ec: &mut dyn ExecutionContext<Types>,
     ) -> Completion<JsValue, Types> {
         // Step 12.1: "Return CreateIteratorResultObject(value, true)."
-        Ok(Types::value_from_object(
-            create_iterator_result_object(self.value.clone(), true, ec),
-        ))
+        Ok(Types::value_from_object(create_iterator_result_object(
+            self.value.clone(),
+            true,
+            ec,
+        )))
     }
 }
 
@@ -146,9 +155,10 @@ impl Behaviour<Types> for ReThrowRejected {
         _this: JsValue,
         _ec: &mut dyn ExecutionContext<Types>,
     ) -> Completion<JsValue, Types> {
-        Err(args.first().cloned().unwrap_or_else(|| {
-            unreachable!("Rejection should have a reason")
-        }))
+        Err(args
+            .first()
+            .cloned()
+            .unwrap_or_else(|| unreachable!("Rejection should have a reason")))
     }
 }
 
@@ -199,10 +209,7 @@ pub(crate) trait AsyncValueIterable:
 
 /// <https://webidl.spec.whatwg.org/#js-default-asynchronous-iterator-object>
 #[derive(Clone)]
-#[cfg_attr(
-    feature = "boa",
-    derive(boa_gc::Finalize, boa_gc::Trace)
-)]
+#[cfg_attr(feature = "boa", derive(boa_gc::Finalize, boa_gc::Trace))]
 struct DefaultAsyncIterator<T>
 where
     T: AsyncValueIterable,
@@ -210,13 +217,13 @@ where
     target: T,
     state: T::State,
     ongoing_promise: GcCell<Option<JsObject>>,
-    #[unsafe_ignore_trace]
+    #[ignore_trace]
     finished: Rc<Cell<bool>>,
 }
 
-#[cfg(not(feature = "boa"))]
+#[cfg(not(boa_backend))]
 unsafe impl<T: AsyncValueIterable> js_engine::gc::Trace for DefaultAsyncIterator<T> {}
-#[cfg(not(feature = "boa"))]
+#[cfg(not(boa_backend))]
 impl<T: AsyncValueIterable> js_engine::gc::Finalize for DefaultAsyncIterator<T> {}
 
 impl<T> DefaultAsyncIterator<T>
@@ -244,9 +251,7 @@ where
             // Step 10: "If ongoingPromise is not null, then:"
             // Step 10.1: "Let afterOngoingPromiseCapability be ! NewPromiseCapability(%Promise%)."
             let after_capability = ec
-                .new_promise_capability(
-                    ec.realm_intrinsics(&ec.current_realm()).promise,
-                )
+                .new_promise_capability(ec.realm_intrinsics(&ec.current_realm()).promise)
                 .map_err(|e| e)?;
             let after_promise = after_capability.promise.clone();
 
@@ -270,8 +275,8 @@ where
             )?;
 
             // Step 10.4: "Set object's ongoing promise to afterOngoingPromiseCapability.[[Promise]]."
-            let result_obj = Types::value_as_object(&after_promise)
-                .unwrap_or_else(|| ec.realm_global_object());
+            let result_obj =
+                Types::value_as_object(&after_promise).unwrap_or_else(|| ec.realm_global_object());
             *self.ongoing_promise.borrow_mut() = Some(result_obj.clone());
             Ok(result_obj)
         } else {
@@ -296,10 +301,7 @@ where
 
     /// <https://webidl.spec.whatwg.org/#js-asynchronous-iterator-prototype-object>
     /// Core nextSteps from step 8 of "invoke the next property".
-    fn start_next(
-        &self,
-        ec: &mut dyn ExecutionContext<Types>,
-    ) -> Completion<JsObject, Types> {
+    fn start_next(&self, ec: &mut dyn ExecutionContext<Types>) -> Completion<JsObject, Types> {
         // Step 8.1: "Let nextPromiseCapability be ! NewPromiseCapability(%Promise%)."
         let next_capability = ec
             .new_promise_capability(ec.realm_intrinsics(&ec.current_realm()).promise)
@@ -311,11 +313,13 @@ where
             let result = create_iterator_result_object(ec.value_undefined(), true, ec);
             let resolve_obj = Types::object_from_function(next_capability.resolve);
             let undefined = ec.value_undefined();
-            ec.call(&resolve_obj, &undefined, &[Types::value_from_object(result)])?;
-            return Ok(
-                Types::value_as_object(&next_promise_value)
-                    .unwrap_or_else(|| ec.realm_global_object()),
-            );
+            ec.call(
+                &resolve_obj,
+                &undefined,
+                &[Types::value_from_object(result)],
+            )?;
+            return Ok(Types::value_as_object(&next_promise_value)
+                .unwrap_or_else(|| ec.realm_global_object()));
         }
 
         // Step 8.4: "Let nextPromise be the result of getting the next iteration result with object's target and object."
@@ -325,10 +329,8 @@ where
                 let reject_obj = Types::object_from_function(next_capability.reject);
                 let undefined = ec.value_undefined();
                 ec.call(&reject_obj, &undefined, &[error])?;
-                return Ok(
-                    Types::value_as_object(&next_promise_value)
-                        .unwrap_or_else(|| ec.realm_global_object()),
-                );
+                return Ok(Types::value_as_object(&next_promise_value)
+                    .unwrap_or_else(|| ec.realm_global_object()));
             }
         };
 
@@ -360,10 +362,7 @@ where
         )?;
 
         // Step 8.10: "Return nextPromiseCapability.[[Promise]]."
-        Ok(
-            Types::value_as_object(&next_promise_value)
-                .unwrap_or_else(|| ec.realm_global_object()),
-        )
+        Ok(Types::value_as_object(&next_promise_value).unwrap_or_else(|| ec.realm_global_object()))
     }
 
     /// <https://webidl.spec.whatwg.org/#js-asynchronous-iterator-prototype-object>
@@ -389,10 +388,8 @@ where
                 &undefined,
                 &[Types::value_from_object(result)],
             )?;
-            return Ok(
-                Types::value_as_object(&return_promise_value)
-                    .unwrap_or_else(|| ec.realm_global_object()),
-            );
+            return Ok(Types::value_as_object(&return_promise_value)
+                .unwrap_or_else(|| ec.realm_global_object()));
         }
 
         // Step 8.3: "Set object's is finished to true."
@@ -403,23 +400,26 @@ where
             let result = create_iterator_result_object(value.clone(), true, ec);
             resolved_promise(Types::value_from_object(result), ec)?
         } else {
-            match self.target.return_async_iterator(&self.state, value.clone(), ec) {
+            match self
+                .target
+                .return_async_iterator(&self.state, value.clone(), ec)
+            {
                 Ok(promise_obj) => promise_obj,
                 Err(error) => {
                     let reject_obj = Types::object_from_function(return_capability.reject);
                     let undefined = ec.value_undefined();
                     ec.call(&reject_obj, &undefined, &[error])?;
-                    return Ok(
-                        Types::value_as_object(&return_promise_value)
-                            .unwrap_or_else(|| ec.realm_global_object()),
-                    );
+                    return Ok(Types::value_as_object(&return_promise_value)
+                        .unwrap_or_else(|| ec.realm_global_object()));
                 }
             }
         };
 
         // Step 12–13: "Let onFulfilled be CreateBuiltinFunction(fulfillSteps, 1, "", « »)."
         let on_fulfilled = ec.create_builtin_function_from_behaviour(
-            Box::new(ReturnOnFulfilled { value: value.clone() }),
+            Box::new(ReturnOnFulfilled {
+                value: value.clone(),
+            }),
             1,
             ec.property_key_from_str(""),
         );
@@ -440,10 +440,8 @@ where
         )?;
 
         // Step 15: "Return returnPromiseCapability.[[Promise]]."
-        Ok(
-            Types::value_as_object(&return_promise_value)
-                .unwrap_or_else(|| ec.realm_global_object()),
-        )
+        Ok(Types::value_as_object(&return_promise_value)
+            .unwrap_or_else(|| ec.realm_global_object()))
     }
 }
 
@@ -467,9 +465,7 @@ fn create_iterator_result_object(
 
 // ── Prototype and object construction ─────────────────────────────────────
 
-fn create_async_iterator_prototype<T>(
-    ec: &mut dyn ExecutionContext<Types>,
-) -> JsObject
+fn create_async_iterator_prototype<T>(ec: &mut dyn ExecutionContext<Types>) -> JsObject
 where
     T: AsyncValueIterable,
 {
@@ -481,9 +477,11 @@ where
     // Create the `next` method — a built-in function that delegates to
     // async_iterator_next_inner.
     let next_fn = ec.create_builtin_function(
-        Box::new(|args: &[JsValue], this: JsValue, ec: &mut dyn ExecutionContext<Types>| {
-            async_iterator_next_inner::<T>(this, args, ec)
-        }),
+        Box::new(
+            |args: &[JsValue], this: JsValue, ec: &mut dyn ExecutionContext<Types>| {
+                async_iterator_next_inner::<T>(this, args, ec)
+            },
+        ),
         0,
         ec.property_key_from_str("next"),
     );
@@ -493,9 +491,11 @@ where
     // Create the `return` method if the interface has a return algorithm
     if T::has_async_iterator_return() {
         let return_fn = ec.create_builtin_function(
-            Box::new(|args: &[JsValue], this: JsValue, ec: &mut dyn ExecutionContext<Types>| {
-                async_iterator_return_inner::<T>(this, args, ec)
-            }),
+            Box::new(
+                |args: &[JsValue], this: JsValue, ec: &mut dyn ExecutionContext<Types>| {
+                    async_iterator_return_inner::<T>(this, args, ec)
+                },
+            ),
             1,
             ec.property_key_from_str("return"),
         );
@@ -527,7 +527,8 @@ where
     T: AsyncValueIterable,
 {
     let obj = ec.to_object(this.clone())?;
-    let cloned = ec.with_object_any(&obj)
+    let cloned = ec
+        .with_object_any(&obj)
         .and_then(|data| data.downcast_ref::<DefaultAsyncIterator<T>>())
         .cloned();
     cloned.ok_or_else(|| ec.new_type_error("object is not a default asynchronous iterator"))
@@ -571,7 +572,10 @@ fn async_iterator_return_inner<T>(
 where
     T: AsyncValueIterable,
 {
-    let value = args.first().cloned().unwrap_or_else(|| ec.value_undefined());
+    let value = args
+        .first()
+        .cloned()
+        .unwrap_or_else(|| ec.value_undefined());
 
     // Steps 2-5: this validation
     let iterator = match default_async_iterator_from_this::<T>(&this, ec) {

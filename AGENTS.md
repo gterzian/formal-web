@@ -406,11 +406,11 @@ At the end of each task, run the following steps **in order**:
 
 6. **Run all verification steps** — Every end-of-task run executes ALL verification steps unconditionally. Do not skip any step based on a subjective assessment of "relevance" — changes to seemingly unrelated files (test pages, configuration, documentation) routinely break downstream steps in this multi-process system. Running everything catches regressions the agent cannot predict.
 
-   **Migration override:** During Phase D–E migration (see `js_engine/README.md`
-   "Working during migration"), standard verification steps (WPT, navigation
-   verification, clippy, fmt) are **skipped**. Only `cargo check -p content`
-   and this step 9 (Rule Number One review) are required. Full verification
-   resumes after Phase E completes.
+   **Migration override:** Phase E is complete — content crate compiles on
+   both JSC and Boa. Standard verification steps (WPT, navigation
+   verification, clippy, fmt) should now be run. However, the content crate
+   is still not functional on JSC (`run_content_process` returns an error),
+   so only the Boa backend path is verified.
 
    - **Default WPT run** —
 

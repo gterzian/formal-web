@@ -1,9 +1,15 @@
+#[cfg(boa_backend)]
 pub(crate) mod bindings;
+#[cfg(boa_backend)]
 mod downcast;
+#[cfg(boa_backend)]
 pub(crate) mod platform_objects;
+
+#[cfg(boa_backend)]
 pub(crate) use bindings::{
     install_console_namespace, install_css_namespace, install_document_property,
 };
+#[cfg(boa_backend)]
 pub(crate) use downcast::{
     try_with_abort_controller_ref, try_with_abort_signal_mut, try_with_abort_signal_ref,
     try_with_event_mut, try_with_event_target_mut, try_with_event_target_ref,
@@ -11,11 +17,12 @@ pub(crate) use downcast::{
 };
 
 /// Content-level type alias for the concrete JS types in use.
-/// Selected by cargo feature: `jsc` → JscTypes, else → BoaTypes (default).
-#[cfg(feature = "jsc")]
+/// Set by the build script based on the target platform:
+/// `jsc_backend` on Apple platforms, `boa_backend` on others.
+#[cfg(jsc_backend)]
 pub(crate) type Types = js_engine::jsc::JscTypes;
 
-#[cfg(not(feature = "jsc"))]
+#[cfg(not(jsc_backend))]
 pub(crate) type Types = js_engine::boa::BoaTypes;
 
 use js_engine::JsEngine;
@@ -27,6 +34,7 @@ use js_engine::JsEngine;
 /// `ExecutionContext<T>` through domain code: functions still returning
 /// `JsResult` are wrapped with this helper at call sites in
 /// `Completion`-returning functions.
+#[cfg(boa_backend)]
 #[allow(dead_code)]
 pub(crate) fn js_result_to_completion<T>(
     result: boa_engine::JsResult<T>,
@@ -39,6 +47,7 @@ pub(crate) fn js_result_to_completion<T>(
 }
 
 /// Convert a `JsNativeError` into a `JsValue` suitable as a `Completion` error.
+#[cfg(boa_backend)]
 pub(crate) fn native_error_to_js_value(
     error: boa_engine::JsNativeError,
     context: &mut boa_engine::Context,
@@ -51,6 +60,7 @@ pub(crate) fn native_error_to_js_value(
 
 /// Convenience wrapper for `create_builtin_function_with_captures` that works
 /// from `&mut Context` (the legacy domain-code entry point).
+#[cfg(boa_backend)]
 pub(crate) fn builtin_with_captures_ctx<C: js_engine::gc::Trace + 'static>(
     context: &mut boa_engine::Context,
     captures: C,
@@ -70,6 +80,7 @@ pub(crate) fn builtin_with_captures_ctx<C: js_engine::gc::Trace + 'static>(
 /// Convenience wrapper: creates a builtin function with captures through
 /// the [`ExecutionContext::create_builtin_function_from_behaviour`] method.
 /// Zero bridges — no `ec_to_ctx`, no unsafe.
+#[cfg(boa_backend)]
 pub(crate) fn builtin_with_captures<C: js_engine::gc::Trace + 'static>(
     ec: &mut dyn js_engine::ExecutionContext<crate::js::Types>,
     captures: C,
@@ -116,6 +127,7 @@ pub(crate) fn builtin_with_captures<C: js_engine::gc::Trace + 'static>(
 /// Convenience wrapper that creates a `Callback` from `builtin_with_captures_ctx`.
 /// Used by SourceMethod-wrapped closures in streams (e.g. writeAlgorithm,
 /// abortAlgorithm, closeAlgorithm).
+#[cfg(boa_backend)]
 pub(crate) fn builtin_callback_ctx<C: js_engine::gc::Trace + 'static>(
     context: &mut boa_engine::Context,
     captures: C,
@@ -134,6 +146,7 @@ pub(crate) fn builtin_callback_ctx<C: js_engine::gc::Trace + 'static>(
 
 /// Convenience wrapper that creates a `Callback` from `builtin_with_captures`.
 /// Used by SourceMethod-wrapped closures in streams that already take EC.
+#[cfg(boa_backend)]
 pub(crate) fn builtin_callback<C: js_engine::gc::Trace + 'static>(
     ec: &mut dyn js_engine::ExecutionContext<crate::js::Types>,
     captures: C,

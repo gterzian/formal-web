@@ -59,11 +59,11 @@ pub struct ReadableStream {
     reader: GcCell<Option<ReadableStreamReader>>,
 
     /// <https://streams.spec.whatwg.org/#readablestream-disturbed>
-    #[unsafe_ignore_trace]
+    #[ignore_trace]
     disturbed: Rc<Cell<bool>>,
 
     /// <https://streams.spec.whatwg.org/#readablestream-state>
-    #[unsafe_ignore_trace]
+    #[ignore_trace]
     state: Rc<RefCell<ReadableStreamState>>,
 
     /// <https://streams.spec.whatwg.org/#readablestream-storederror>
@@ -383,13 +383,13 @@ pub(crate) struct TeeState {
     branch2: Option<ReadableStream>,
     cancel_promise: JsObject,
     cancel_resolvers: PromiseResolvers<crate::js::Types>,
-    #[unsafe_ignore_trace]
+    #[ignore_trace]
     reading: bool,
-    #[unsafe_ignore_trace]
+    #[ignore_trace]
     read_again: bool,
-    #[unsafe_ignore_trace]
+    #[ignore_trace]
     canceled1: bool,
-    #[unsafe_ignore_trace]
+    #[ignore_trace]
     canceled2: bool,
     reason1: JsValue,
     reason2: JsValue,
@@ -1782,26 +1782,26 @@ pub(crate) struct ByteTeeState {
     /// <https://streams.spec.whatwg.org/#abstract-opdef-readablebytestreamtee>
     cancel_resolvers: PromiseResolvers<crate::js::Types>,
     /// <https://streams.spec.whatwg.org/#abstract-opdef-readablebytestreamtee>
-    #[unsafe_ignore_trace]
+    #[ignore_trace]
     reading: bool,
     /// <https://streams.spec.whatwg.org/#abstract-opdef-readablebytestreamtee>
-    #[unsafe_ignore_trace]
+    #[ignore_trace]
     read_again_for_branch1: bool,
     /// <https://streams.spec.whatwg.org/#abstract-opdef-readablebytestreamtee>
-    #[unsafe_ignore_trace]
+    #[ignore_trace]
     read_again_for_branch2: bool,
     /// <https://streams.spec.whatwg.org/#abstract-opdef-readablebytestreamtee>
-    #[unsafe_ignore_trace]
+    #[ignore_trace]
     canceled1: bool,
     /// <https://streams.spec.whatwg.org/#abstract-opdef-readablebytestreamtee>
-    #[unsafe_ignore_trace]
+    #[ignore_trace]
     canceled2: bool,
     /// <https://streams.spec.whatwg.org/#abstract-opdef-readablebytestreamtee>
     reason1: JsValue,
     /// <https://streams.spec.whatwg.org/#abstract-opdef-readablebytestreamtee>
     reason2: JsValue,
     /// <https://streams.spec.whatwg.org/#abstract-opdef-readablebytestreamtee>
-    #[unsafe_ignore_trace]
+    #[ignore_trace]
     reader_generation: u64,
 }
 
@@ -3078,16 +3078,16 @@ pub(crate) struct PipeToStateInner {
     writer: super::WritableStreamDefaultWriter,
     pending_writes: VecDeque<JsObject>,
 
-    #[unsafe_ignore_trace]
+    #[ignore_trace]
     state: PipePumpState,
 
-    #[unsafe_ignore_trace]
+    #[ignore_trace]
     prevent_close: bool,
 
-    #[unsafe_ignore_trace]
+    #[ignore_trace]
     prevent_abort: bool,
 
-    #[unsafe_ignore_trace]
+    #[ignore_trace]
     prevent_cancel: bool,
 
     signal: Option<AbortSignal>,
@@ -3095,7 +3095,7 @@ pub(crate) struct PipeToStateInner {
     shutdown_action_promise: Option<JsObject>,
     resolvers: Option<js_engine::PromiseResolvers<crate::js::Types>>,
 
-    #[unsafe_ignore_trace]
+    #[ignore_trace]
     shutting_down: bool,
 }
 

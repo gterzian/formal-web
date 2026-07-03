@@ -129,7 +129,7 @@ impl AbortAlgorithm {
 struct QueueEntry {
     value: QueueEntryValue,
 
-    #[unsafe_ignore_trace]
+    #[ignore_trace]
     size: f64,
 }
 #[derive(Clone, Trace, Finalize)]
@@ -151,18 +151,18 @@ pub struct WritableStreamDefaultController {
     queue: GcCell<Vec<QueueEntry>>,
 
     /// <https://streams.spec.whatwg.org/#writablestreamdefaultcontroller-queuetotalsize>
-    #[unsafe_ignore_trace]
+    #[ignore_trace]
     queue_total_size: Rc<Cell<f64>>,
 
     /// <https://streams.spec.whatwg.org/#writablestreamdefaultcontroller-started>
-    #[unsafe_ignore_trace]
+    #[ignore_trace]
     started: Rc<Cell<bool>>,
 
     /// <https://streams.spec.whatwg.org/#writablestreamdefaultcontroller-strategysizealgorithm>
     strategy_size_algorithm: GcCell<Option<SizeAlgorithm>>,
 
     /// <https://streams.spec.whatwg.org/#writablestreamdefaultcontroller-strategyhwm>
-    #[unsafe_ignore_trace]
+    #[ignore_trace]
     strategy_high_water_mark: Rc<Cell<f64>>,
 
     /// <https://streams.spec.whatwg.org/#writablestreamdefaultcontroller-writealgorithm>

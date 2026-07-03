@@ -20,8 +20,7 @@ use crate::dom::DOMException;
 use crate::webidl::bindings::create_interface_instance;
 
 use js_engine::{
-    Completion, EcmascriptHost, ExecutionContext, JsTypes,
-    enums::TypedArrayElementType,
+    Completion, EcmascriptHost, ExecutionContext, JsTypes, enums::TypedArrayElementType,
 };
 
 /// <https://html.spec.whatwg.org/#safe-passing-of-structured-data>
@@ -452,8 +451,7 @@ fn structured_serialize_internal(
         // Step 26: "Let inputValue be ? value.[[Get]](key, value)."
         let input_value = get_property_key(ec, object.clone(), key.clone())?;
         // Step 26: "Let outputValue be ? StructuredSerializeInternal(inputValue, forStorage, memory)."
-        let output_value =
-            structured_serialize_internal(&input_value, for_storage, memory, ec)?;
+        let output_value = structured_serialize_internal(&input_value, for_storage, memory, ec)?;
         let key_str = property_key_to_string(&key, ec)?;
         properties.push((key_str, output_value));
     }
@@ -479,7 +477,9 @@ fn serialize_array_buffer(
     ec: &mut dyn ExecutionContext<Types>,
 ) -> Completion<SerializedRecord, Types> {
     // Step 13.2.1: If IsDetachedBuffer(value) is true, then throw a "DataCloneError" DOMException.
-    let data = ec.array_buffer_data(buffer).ok_or_else(|| data_clone_error(ec))?;
+    let data = ec
+        .array_buffer_data(buffer)
+        .ok_or_else(|| data_clone_error(ec))?;
 
     // Step 13.2.2: Let size be value.[[ArrayBufferByteLength]].
     let size = data.len() as u64;
@@ -558,8 +558,7 @@ fn serialize_dataview(
 
     // Step 14.3: Let bufferSerialized be ? StructuredSerializeInternal(buffer, forStorage, memory).
     let buffer_val = Types::value_from_object(buffer_obj);
-    let buffer_serialized =
-        structured_serialize_internal(&buffer_val, for_storage, memory, ec)?;
+    let buffer_serialized = structured_serialize_internal(&buffer_val, for_storage, memory, ec)?;
 
     // Step 14.4: If value has a [[DataView]] internal slot, then set serialized to
     //              { [[Type]]: "ArrayBufferView", [[Constructor]]: "DataView",
@@ -593,8 +592,7 @@ fn serialize_typed_array(
     // Step 14.3: Let bufferSerialized be ? StructuredSerializeInternal(buffer, forStorage, memory).
     let buffer_obj = Types::object_from_array_buffer(buffer);
     let buffer_val = Types::value_from_object(buffer_obj);
-    let buffer_serialized =
-        structured_serialize_internal(&buffer_val, for_storage, memory, ec)?;
+    let buffer_serialized = structured_serialize_internal(&buffer_val, for_storage, memory, ec)?;
 
     // Step 14.5 (spec numbering): Otherwise (value does not have a [[DataView]] internal slot):
     //   Step 14.5.1: Assert: value has a [[TypedArrayName]] internal slot.
@@ -610,7 +608,11 @@ fn serialize_typed_array(
     let byte_offset = ec.typed_array_byte_offset(typed_array)?;
     // TypedArray length = byte_length / element byte size.
     let element_size = typed_array_element_byte_size(element_type) as u64;
-    let array_length = if byte_length > 0 { byte_length / element_size } else { 0 };
+    let array_length = if byte_length > 0 {
+        byte_length / element_size
+    } else {
+        0
+    };
 
     Ok(SerializedRecord::ArrayBufferView {
         constructor,
@@ -753,12 +755,11 @@ fn serialize_error(
     let msg_key = ec.property_key_from_str("message");
     let msg_desc = ec.get_own_property(object.clone(), msg_key)?;
     let message: Option<String> = match msg_desc {
-        Some(ref desc) if desc.value.is_some() => {
-            desc.value
-                .clone()
-                .map(|v| ec.to_rust_string(v))
-                .transpose()?
-        }
+        Some(ref desc) if desc.value.is_some() => desc
+            .value
+            .clone()
+            .map(|v| ec.to_rust_string(v))
+            .transpose()?,
         _ => None,
     };
 
@@ -814,9 +815,11 @@ fn serialize_array(
 
     // Step 18.1-2: Get length via own property descriptor.
     let length_key = ec.property_key_from_str("length");
-    let length_desc = ec.get_own_property(object.clone(), length_key)?
+    let length_desc = ec
+        .get_own_property(object.clone(), length_key)?
         .ok_or_else(|| ec.new_type_error("Array has no length"))?;
-    let length = length_desc.value
+    let length = length_desc
+        .value
         .as_ref()
         .and_then(|v| Types::value_as_number(v).map(|n| n as u64))
         .ok_or_else(|| ec.new_type_error("Array length is not a number"))?;
@@ -849,8 +852,7 @@ fn serialize_array(
         // Let inputValue be ? value.[[Get]](key, value).
         let input_value = get_property_key(ec, object.clone(), key.clone())?;
         // Let outputValue be ? StructuredSerializeInternal(inputValue, forStorage, memory).
-        let output_value =
-            structured_serialize_internal(&input_value, for_storage, memory, ec)?;
+        let output_value = structured_serialize_internal(&input_value, for_storage, memory, ec)?;
         let key_str = property_key_to_string(&key, ec)?;
         properties.push((key_str, output_value));
     }
@@ -972,8 +974,7 @@ pub fn structured_serialize_with_transfer(
 
     // Step 5: For each transferable of transferList:
     for transferable in &transfer_list {
-        let object = Types::value_as_object(transferable)
-            .ok_or_else(|| data_clone_error(ec))?;
+        let object = Types::value_as_object(transferable).ok_or_else(|| data_clone_error(ec))?;
         if let Some(buffer) = Types::object_as_array_buffer(&object) {
             // Step 5.1: If transferable has an [[ArrayBufferData]] internal slot:
             //   Step 5.1.1: If IsDetachedBuffer(transferable) is true, then throw.
@@ -984,7 +985,8 @@ pub fn structured_serialize_with_transfer(
             // TODO: Check for [[ArrayBufferMaxByteLength]] (ResizableArrayBuffer case).
 
             // Step 5.1.4: Perform ? DetachArrayBuffer(transferable).
-            let data = ec.array_buffer_data(&buffer)
+            let data = ec
+                .array_buffer_data(&buffer)
                 .ok_or_else(|| data_clone_error(ec))?;
             let byte_length = data.len() as u64;
             let data_copy = data.to_vec();
@@ -1070,7 +1072,8 @@ fn structured_deserialize(
         //           serialized.[[BigIntData]].
         SerializedRecord::BigInt(s) => {
             // Create a BigInt wrapper via Object(BigInt(string)).
-            let bi_val = ec.string_to_bigint(ec.js_string_from_str(s))
+            let bi_val = ec
+                .string_to_bigint(ec.js_string_from_str(s))
                 .map(|bi| Types::value_from_bigint(bi))
                 .unwrap_or_else(|| ec.value_from_number(0.0));
 
@@ -1082,9 +1085,7 @@ fn structured_deserialize(
         //           object in targetRealm whose [[StringData]] internal slot value is
         //           serialized.[[StringData]].
         SerializedRecord::String(s) => {
-            let str_val = ec.value_from_string(ec.js_string_from_str(
-                &String::from_utf16_lossy(s),
-            ));
+            let str_val = ec.value_from_string(ec.js_string_from_str(&String::from_utf16_lossy(s)));
             let obj = ec.construct(intrinsics.string.clone(), &[str_val], None)?;
             value = Types::value_from_object(obj);
         }
@@ -1114,15 +1115,15 @@ fn structured_deserialize(
             value = Types::value_from_object(regexp);
         }
         // Step 13: Otherwise, if serialized.[[Type]] is "SharedArrayBuffer":
-        SerializedRecord::SharedArrayBuffer { data, agent_cluster: _ } => {
+        SerializedRecord::SharedArrayBuffer {
+            data,
+            agent_cluster: _,
+        } => {
             // TODO: check agent cluster.
             // Create SharedArrayBuffer via the constructor.
             let sab_len_val = ec.value_from_number(data.len() as f64);
-            let sab_obj = ec.construct(
-                intrinsics.shared_array_buffer.clone(),
-                &[sab_len_val],
-                None,
-            )?;
+            let sab_obj =
+                ec.construct(intrinsics.shared_array_buffer.clone(), &[sab_len_val], None)?;
             value = Types::value_from_object(sab_obj);
         }
         // Step 14: Otherwise, if serialized.[[Type]] is "ArrayBuffer", then set value to a new
@@ -1136,7 +1137,12 @@ fn structured_deserialize(
             ..
         } => {
             // Allocate an ArrayBuffer of the right size and fill it with data.
-            let buf = ec.allocate_array_buffer(intrinsics.array_buffer.clone(), data_copy.len() as u64, None)
+            let buf = ec
+                .allocate_array_buffer(
+                    intrinsics.array_buffer.clone(),
+                    data_copy.len() as u64,
+                    None,
+                )
                 .map_err(|_| data_clone_error(ec))?;
             // Write data byte by byte using set_value_in_buffer with Uint8.
             for (i, byte) in data_copy.iter().enumerate() {
@@ -1175,16 +1181,12 @@ fn structured_deserialize(
                 let dv_obj = Types::object_from_data_view(dv);
                 value = Types::value_from_object(dv_obj);
             } else {
-                let kind = parse_typed_array_kind(constructor)
-                    .ok_or_else(|| ec.new_type_error(&format!("Unknown typed array kind: {constructor}")))?;
+                let kind = parse_typed_array_kind(constructor).ok_or_else(|| {
+                    ec.new_type_error(&format!("Unknown typed array kind: {constructor}"))
+                })?;
                 let buffer = Types::object_as_array_buffer(&buffer_obj)
                     .ok_or_else(|| ec.new_type_error("expected ArrayBuffer for TypedArray"))?;
-                let ta = ec.construct_typed_array_view(
-                    kind,
-                    buffer,
-                    *byte_offset,
-                    *byte_length,
-                )?;
+                let ta = ec.construct_typed_array_view(kind, buffer, *byte_offset, *byte_length)?;
                 let ta_obj = Types::object_from_typed_array(ta);
                 value = Types::value_from_object(ta_obj);
             }
@@ -1300,7 +1302,8 @@ fn deserialize_primitive_value(
                 Ok(Types::value_from_bigint(bi))
             } else {
                 // Fall back to 0n if parsing failed
-                let bi = ec.string_to_bigint(ec.js_string_from_str("0"))
+                let bi = ec
+                    .string_to_bigint(ec.js_string_from_str("0"))
                     .unwrap_or_else(|| unreachable!("0 is a valid BigInt"));
                 Ok(Types::value_from_bigint(bi))
             }
@@ -1420,7 +1423,8 @@ pub fn structured_deserialize_with_transfer(
             } => {
                 let realm = ec.current_realm();
                 let intrinsics = ec.realm_intrinsics(&realm);
-                let buf = ec.allocate_array_buffer(intrinsics.array_buffer.clone(), data.len() as u64, None)
+                let buf = ec
+                    .allocate_array_buffer(intrinsics.array_buffer.clone(), data.len() as u64, None)
                     .map_err(|_| data_clone_error(ec))?;
                 // Write data into the buffer byte by byte.
                 for (i, byte) in data.iter().enumerate() {
@@ -1446,10 +1450,8 @@ pub fn structured_deserialize_with_transfer(
 
         // Step 3.4: Set memory[transferDataHolder] to value.
         if let Some(obj) = Types::value_as_object(&value) {
-            memory.insert_deserialized(
-                &SerializedRecord::Primitive(PrimitiveValue::Undefined),
-                obj,
-            );
+            memory
+                .insert_deserialized(&SerializedRecord::Primitive(PrimitiveValue::Undefined), obj);
         }
         // Step 3.5: Append value to transferredValues.
         transferred_values.push(value);
@@ -1457,12 +1459,8 @@ pub fn structured_deserialize_with_transfer(
 
     // Step 4: Let deserialized be ? StructuredDeserialize(
     //           serializeWithTransferResult.[[Serialized]], targetRealm, memory).
-    let deserialized = structured_deserialize(
-        &serialize_result.serialized,
-        target_realm,
-        &mut memory,
-        ec,
-    )?;
+    let deserialized =
+        structured_deserialize(&serialize_result.serialized, target_realm, &mut memory, ec)?;
 
     // Step 5: Return { [[Deserialized]]: deserialized, [[TransferredValues]]: transferredValues }.
     Ok(DeserializeWithTransferResult {
@@ -1489,11 +1487,7 @@ pub fn structured_clone(
     let serialized = structured_serialize_with_transfer(&value, transfer, ec)?;
 
     // Step 2: Let deserializeRecord be ? StructuredDeserializeWithTransfer(...).
-    let desc_result = structured_deserialize_with_transfer(
-        &serialized,
-        &ec.value_undefined(),
-        ec,
-    )?;
+    let desc_result = structured_deserialize_with_transfer(&serialized, &ec.value_undefined(), ec)?;
 
     // Step 3: Return deserializeRecord.[[Deserialized]].
     Ok(desc_result.deserialized)

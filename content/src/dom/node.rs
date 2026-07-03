@@ -17,11 +17,11 @@ enum NodeKind {
 #[gc_struct]
 pub struct Node {
     /// <https://dom.spec.whatwg.org/#concept-node-document>
-    #[unsafe_ignore_trace]
+    #[ignore_trace]
     pub document: Rc<RefCell<BaseDocument>>,
 
     /// <https://dom.spec.whatwg.org/#interface-node>
-    #[unsafe_ignore_trace]
+    #[ignore_trace]
     pub node_id: usize,
 
     /// <https://dom.spec.whatwg.org/#interface-eventtarget>

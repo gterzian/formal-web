@@ -144,5 +144,3 @@ where
 {
     get_prototype_from_host_defined::<Ty, I>(ec)
 }
-
-

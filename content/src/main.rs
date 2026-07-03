@@ -3,29 +3,38 @@
 pub(crate) mod ui_event;
 
 pub mod css;
-pub mod dom;
 pub(crate) mod fetch;
-mod generic_js_test;
-pub mod html;
 pub mod infra;
 pub mod js;
+
+#[cfg(boa_backend)]
+pub mod dom;
+#[cfg(boa_backend)]
+mod generic_js_test;
+#[cfg(boa_backend)]
+pub mod html;
+#[cfg(boa_backend)]
 pub mod streams;
-#[cfg(feature = "boa")]
+#[cfg(boa_backend)]
 pub mod wasm;
+#[cfg(boa_backend)]
 pub mod webidl;
 
+#[cfg(boa_backend)]
 use crate::dom::{
     dispatch_trusted_click_event, dispatch_ui_event, dispatch_window_event, fire_event,
 };
+#[cfg(boa_backend)]
 use crate::html::{
     EnvironmentSettingsObject, JsHtmlParserProvider, PendingParserScript,
     attach_same_origin_child_document_for_traversable, execute_parser_scripts,
     parse_html_into_document, run_dom_post_connection_steps_for_document,
     run_dom_removing_steps_for_document, run_iframe_load_event_steps_for_traversable,
 };
+#[cfg(boa_backend)]
 use crate::js::platform_objects::with_global_scope;
 use crate::ui_event::deserialize_ui_event;
-#[cfg(feature = "boa")]
+#[cfg(boa_backend)]
 use crate::wasm::{
     WasmResult, WasmWorker, compile_continuation, compile_rejection, instantiate_continuation,
 };
@@ -363,6 +372,7 @@ impl NetProvider for ContentNetProvider {
     }
 }
 
+#[cfg(boa_backend)]
 pub(crate) struct ContentDocument {
     traversable_id: NavigableId,
     parent_traversable_id: Option<NavigableId>,
@@ -385,6 +395,7 @@ struct DocumentViewportState {
     offset_y: f32,
 }
 
+#[cfg(boa_backend)]
 pub(crate) struct ContentProcess {
     event_sender: ipc::IpcSender<ContentEvent>,
     event_loop_id: EventLoopId,
@@ -425,6 +436,7 @@ pub(crate) struct ContentProcess {
     content_command_sender: ipc::IpcSender<Command>,
 }
 
+#[cfg(boa_backend)]
 impl ContentProcess {
     fn new(
         event_sender: ipc::IpcSender<ContentEvent>,
@@ -452,11 +464,11 @@ impl ContentProcess {
             clipboard_cache: clipboard_cache.clone(),
             new_document_registry: Rc::new(RefCell::new(HashMap::new())),
             video_paint_registry: Rc::new(RefCell::new(HashMap::new())),
-            #[cfg(feature = "boa")]
+            #[cfg(boa_backend)]
             wasm_worker: WasmWorker::new(wasmtime::Engine::default(), _wasm_signal_sender),
-            #[cfg(feature = "boa")]
+            #[cfg(boa_backend)]
             pending_wasm_requests: HashMap::new(),
-            #[cfg(feature = "boa")]
+            #[cfg(boa_backend)]
             pending_wasm_modules: HashMap::new(),
             network_extension_sender,
             media_extension_sender,
@@ -715,19 +727,19 @@ impl ContentProcess {
             .documents
             .get_mut(&document_id)
             .ok_or_else(|| format!("unknown document {document_id}"))?;
-        with_global_scope(
-            content_document.settings.ec(),
-            |global_scope| {
-                global_scope.set_new_document_registry(registry);
-                Ok(())
-            },
-        )
+        with_global_scope(content_document.settings.ec(), |global_scope| {
+            global_scope.set_new_document_registry(registry);
+            Ok(())
+        })
         .map_err(|error| format!("failed to set new document registry: {}", error.display()))
     }
 
     /// Clear the shared new-document registry from the source document's
     /// GlobalScope after JS execution completes.
-    fn tear_down_new_document_registry(&mut self, traversable_id: NavigableId) -> Result<(), String> {
+    fn tear_down_new_document_registry(
+        &mut self,
+        traversable_id: NavigableId,
+    ) -> Result<(), String> {
         let document_id = *self
             .active_documents_by_traversable
             .get(&traversable_id)
@@ -736,13 +748,10 @@ impl ContentProcess {
             .documents
             .get_mut(&document_id)
             .ok_or_else(|| format!("unknown document {document_id}"))?;
-        with_global_scope(
-            content_document.settings.ec(),
-            |global_scope| {
-                global_scope.clear_new_document_registry();
-                Ok(())
-            },
-        )
+        with_global_scope(content_document.settings.ec(), |global_scope| {
+            global_scope.clear_new_document_registry();
+            Ok(())
+        })
         .map_err(|error| format!("failed to clear new document registry: {}", error.display()))
     }
 
@@ -765,10 +774,9 @@ impl ContentProcess {
                 continue;
             }
             // Read the traversable_id from the new document's own GlobalScope.
-            let new_traversable_id = with_global_scope(
-                settings.ec(),
-                |global_scope| Ok(global_scope.source_navigable_id()),
-            )
+            let new_traversable_id = with_global_scope(settings.ec(), |global_scope| {
+                Ok(global_scope.source_navigable_id())
+            })
             .map_err(|error| format!("failed to read new traversable id: {}", error.display()))?
             .unwrap_or_else(NavigableId::new);
 
@@ -924,17 +932,17 @@ impl ContentProcess {
 
         // Set the video-paint registry on GlobalScope so that
         // resource_selection_algorithm can register paint IDs.
-        if let Err(error) = with_global_scope(
-            settings.ec(),
-            |global_scope| {
-                global_scope.set_video_paint_registry(Rc::clone(&self.video_paint_registry));
-                if let Some(ref sender) = self.media_extension_sender {
-                    global_scope.set_media_extension_sender(sender.clone());
-                }
-                Ok(())
-            },
-        ) {
-            error!("[media] failed to set video paint registry on GlobalScope: {}", error.display());
+        if let Err(error) = with_global_scope(settings.ec(), |global_scope| {
+            global_scope.set_video_paint_registry(Rc::clone(&self.video_paint_registry));
+            if let Some(ref sender) = self.media_extension_sender {
+                global_scope.set_media_extension_sender(sender.clone());
+            }
+            Ok(())
+        }) {
+            error!(
+                "[media] failed to set video paint registry on GlobalScope: {}",
+                error.display()
+            );
         }
 
         // Note: This block continues <https://html.spec.whatwg.org/#creating-a-new-browsing-context>.
@@ -1029,17 +1037,17 @@ impl ContentProcess {
 
         // Set the video-paint registry on GlobalScope so that
         // resource_selection_algorithm can register paint IDs.
-        if let Err(error) = with_global_scope(
-            settings.ec(),
-            |global_scope| {
-                global_scope.set_video_paint_registry(Rc::clone(&self.video_paint_registry));
-                if let Some(ref sender) = self.media_extension_sender {
-                    global_scope.set_media_extension_sender(sender.clone());
-                }
-                Ok(())
-            },
-        ) {
-            error!("[media] failed to set video paint registry on GlobalScope: {}", error.display());
+        if let Err(error) = with_global_scope(settings.ec(), |global_scope| {
+            global_scope.set_video_paint_registry(Rc::clone(&self.video_paint_registry));
+            if let Some(ref sender) = self.media_extension_sender {
+                global_scope.set_media_extension_sender(sender.clone());
+            }
+            Ok(())
+        }) {
+            error!(
+                "[media] failed to set video paint registry on GlobalScope: {}",
+                error.display()
+            );
         }
 
         let parser_scripts = {
@@ -1203,7 +1211,7 @@ impl ContentProcess {
                 error!("failed to clear window timers during document teardown: {error}");
             }
         }
-        #[cfg(feature = "boa")]
+        #[cfg(boa_backend)]
         {
             // Clean up any pending wasm requests for this document so that
             // worker results arriving after destruction are not misattributed,
@@ -1835,20 +1843,17 @@ impl ContentProcess {
         };
         let parent_traversable_id = content_document.parent_traversable_id;
         let top_level_traversable_id = content_document.top_level_traversable_id;
-        with_global_scope(
-            content_document.settings.ec(),
-            |global_scope| {
-                global_scope.set_navigable_hierarchy(parent_traversable_id, top_level_traversable_id);
-                Ok(())
-            },
-        )
+        with_global_scope(content_document.settings.ec(), |global_scope| {
+            global_scope.set_navigable_hierarchy(parent_traversable_id, top_level_traversable_id);
+            Ok(())
+        })
         .map_err(|error| error.display().to_string())
     }
 
     /// Drain pending WebAssembly requests from all documents and submit
     /// them to the background worker.
     fn drain_all_pending_wasm_requests(&mut self) {
-        #[cfg(feature = "boa")]
+        #[cfg(boa_backend)]
         {
             let document_ids: Vec<DocumentId> = self.documents.keys().copied().collect();
 
@@ -1879,7 +1884,7 @@ impl ContentProcess {
     /// Called both at the end of `handle_command` and when the dedicated
     /// IPC signal fires.
     fn drain_wasm_results(&mut self) {
-        #[cfg(feature = "boa")]
+        #[cfg(boa_backend)]
         {
             let completed: Vec<(u64, WasmResult)> = {
                 let results = self.wasm_worker.drain_results();
@@ -1933,19 +1938,23 @@ impl ContentProcess {
                             Vec::new(),
                             content_document.settings.ec(),
                         ) {
-                            error!("WebAssembly: failed to resolve compile promise: {}", error.display());
+                            error!(
+                                "WebAssembly: failed to resolve compile promise: {}",
+                                error.display()
+                            );
                         }
                     }
                     WasmResult::CompileError {
                         request_id: _,
                         message,
                     } => {
-                        if let Err(error) = compile_rejection(
-                            &resolvers,
-                            message,
-                            content_document.settings.ec(),
-                        ) {
-                            error!("WebAssembly: failed to reject compile promise: {}", error.display());
+                        if let Err(error) =
+                            compile_rejection(&resolvers, message, content_document.settings.ec())
+                        {
+                            error!(
+                                "WebAssembly: failed to reject compile promise: {}",
+                                error.display()
+                            );
                         }
                     }
                     WasmResult::Instantiated {
@@ -1969,19 +1978,23 @@ impl ContentProcess {
                             &resolvers,
                             content_document.settings.ec(),
                         ) {
-                            error!("WebAssembly: failed to resolve instantiate promise: {}", error.display());
+                            error!(
+                                "WebAssembly: failed to resolve instantiate promise: {}",
+                                error.display()
+                            );
                         }
                     }
                     WasmResult::InstantiateError {
                         request_id: _,
                         message,
                     } => {
-                        if let Err(error) = compile_rejection(
-                            &resolvers,
-                            message,
-                            content_document.settings.ec(),
-                        ) {
-                            error!("WebAssembly: failed to reject instantiate promise: {}", error.display());
+                        if let Err(error) =
+                            compile_rejection(&resolvers, message, content_document.settings.ec())
+                        {
+                            error!(
+                                "WebAssembly: failed to reject instantiate promise: {}",
+                                error.display()
+                            );
                         }
                     }
                 }
@@ -2003,7 +2016,7 @@ impl ContentProcess {
     fn handle_command(&mut self, command: Command) -> Result<bool, String> {
         let result = self.handle_command_inner(command);
 
-        #[cfg(feature = "boa")]
+        #[cfg(boa_backend)]
         {
             // After every command, drain any pending WebAssembly requests and
             // process completed results from the shared queue.
@@ -2174,14 +2187,9 @@ fn content_token_from_args() -> Result<Option<String>, String> {
 }
 
 /// Run the content extension.
+#[cfg(boa_backend)]
 pub fn run_content_process(token: String) -> Result<(), String> {
-    #[cfg(feature = "boa")]
     let (wasm_signal_sender, wasm_rx) = crossbeam_channel::unbounded::<()>();
-    #[cfg(not(feature = "boa"))]
-    let (wasm_signal_sender, wasm_rx) = {
-        let (s, r) = crossbeam_channel::unbounded::<()>();
-        (s, r)
-    };
 
     ipc::run_extension::<Command, ContentEvent>(&token, move |server| {
         let event_sender = server.connection.sender.clone();
@@ -2264,11 +2272,8 @@ pub fn run_content_process(token: String) -> Result<(), String> {
                     }
                 }
                 recv(wasm_rx) -> _ => {
-                    #[cfg(feature = "boa")]
-                    {
-                        process.drain_all_pending_wasm_requests();
-                        process.drain_wasm_results();
-                    }
+                    process.drain_all_pending_wasm_requests();
+                    process.drain_wasm_results();
                 }
             }
         }
@@ -2276,6 +2281,12 @@ pub fn run_content_process(token: String) -> Result<(), String> {
         process.drain_wasm_results();
         Ok(())
     })
+}
+
+#[cfg(not(boa_backend))]
+pub fn run_content_process(_token: String) -> Result<(), String> {
+    error!("JSC backend: content process not yet implemented");
+    Err("JSC backend not yet implemented for content process".into())
 }
 
 pub fn run_content_process_from_args() -> Result<(), String> {

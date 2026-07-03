@@ -10,7 +10,7 @@ use crate::webidl::{Callback, ExceptionBehavior, invoke_callback_function};
 #[gc_struct]
 pub struct ByteLengthQueuingStrategy {
     /// <https://streams.spec.whatwg.org/#bytelengthqueuingstrategy-highwatermark>
-    #[unsafe_ignore_trace]
+    #[ignore_trace]
     high_water_mark: f64,
 }
 
@@ -30,7 +30,7 @@ impl ByteLengthQueuingStrategy {
 #[gc_struct]
 pub struct CountQueuingStrategy {
     /// <https://streams.spec.whatwg.org/#countqueuingstrategy-highwatermark>
-    #[unsafe_ignore_trace]
+    #[ignore_trace]
     high_water_mark: f64,
 }
 
