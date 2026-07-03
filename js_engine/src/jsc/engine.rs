@@ -288,6 +288,17 @@ impl JsTypes for JscTypes {
         }
         unsafe { JSValueIsUndefined(v.ctx, v.raw) }
     }
+    fn value_as_bigint(v: &Self::JsValue) -> Option<Self::JsBigInt> {
+        if v.ctx.is_null() {
+            return None;
+        }
+        let jstype = unsafe { JSValueGetType(v.ctx, v.raw) };
+        if jstype == JSType::kJSTypeBigInt {
+            Some(unsafe { JscBigInt::from_value(*v) })
+        } else {
+            None
+        }
+    }
     fn value_is_null(v: &Self::JsValue) -> bool {
         if v.ctx.is_null() {
             return false;
@@ -336,6 +347,56 @@ impl JsTypes for JscTypes {
     }
     fn object_as_async_generator(o: &Self::JsObject) -> Option<Self::AsyncGenerator> {
         Some(*o)
+    }
+
+    fn object_is_boolean_wrapper(o: &Self::JsObject) -> bool {
+        // JSC C API has no direct boolean-object check; fallible approximation
+        false
+    }
+    fn object_is_number_wrapper(o: &Self::JsObject) -> bool {
+        false
+    }
+    fn object_is_string_wrapper(o: &Self::JsObject) -> bool {
+        false
+    }
+    fn object_is_bigint_wrapper(o: &Self::JsObject) -> bool {
+        false
+    }
+    fn object_is_date(o: &Self::JsObject) -> bool {
+        if o.ctx.is_null() {
+            return false;
+        }
+        let val_ref: *mut JSValueRef = o.as_value_ref();
+        unsafe { crate::jsc_sys::JSValueIsDate(o.ctx, val_ref) }
+    }
+    fn object_is_regexp(o: &Self::JsObject) -> bool {
+        if o.ctx.is_null() {
+            return false;
+        }
+        let val_ref: *mut JSValueRef = o.as_value_ref();
+        unsafe { crate::jsc_sys::JSValueIsRegExp(o.ctx, val_ref) }
+    }
+    fn object_is_error(o: &Self::JsObject) -> bool {
+        // JSC C API: check if the object's class is Error
+        if o.ctx.is_null() {
+            return false;
+        }
+        let error_ref = unsafe { crate::jsc_sys::JSValueMakeNull(o.ctx) };
+        // No direct C API for Error-class check; conservative
+        false
+    }
+
+    fn boolean_wrapper_data(o: &Self::JsObject) -> Option<bool> {
+        None
+    }
+    fn number_wrapper_data(o: &Self::JsObject) -> Option<f64> {
+        None
+    }
+    fn string_wrapper_data(o: &Self::JsObject) -> Option<Self::JsString> {
+        None
+    }
+    fn bigint_wrapper_data(o: &Self::JsObject) -> Option<Self::JsBigInt> {
+        None
     }
 }
 
@@ -1898,6 +1959,44 @@ impl ExecutionContext<JscTypes> for JscEngine {
         // [Symbol.asyncIterator] returning this.
         // In JSC, there is no built-in %AsyncIteratorPrototype%, so we
         // construct one manually.
+        let boolean_ctor = fetch_ctor("Boolean");
+        let number_ctor = fetch_ctor("Number");
+        let string_ctor = fetch_ctor("String");
+        let bigint_ctor = fetch_ctor("BigInt");
+        let date_ctor = fetch_ctor("Date");
+        let regexp_ctor = fetch_ctor("RegExp");
+        let map_ctor = fetch_ctor("Map");
+        let set_ctor = fetch_ctor("Set");
+
+        // Fetch prototypes via constructor.prototype
+        let fetch_proto = |ctor: JscObject| -> JscObject {
+            let mut exc: *mut JSValueRef = std::ptr::null_mut();
+            let raw = unsafe { JSObjectGetProperty(ctx, ctor.raw, proto_str.raw, &mut exc) };
+            if raw.is_null() {
+                return object_prototype;
+            }
+            JscObject {
+                raw: raw as *mut JSObjectRef,
+                ctx: self.ctx_ptr(),
+            }
+        };
+
+        let boolean_prototype = fetch_proto(boolean_ctor);
+        let number_prototype = fetch_proto(number_ctor);
+        let string_prototype = fetch_proto(string_ctor);
+        let bigint_prototype = fetch_proto(bigint_ctor);
+        let date_prototype = fetch_proto(date_ctor);
+        let regexp_prototype = fetch_proto(regexp_ctor);
+        let map_prototype = fetch_proto(map_ctor);
+        let set_prototype = fetch_proto(set_ctor);
+        let error_prototype = fetch_proto(error);
+        let type_error_prototype = fetch_proto(type_error);
+        let range_error_prototype = fetch_proto(range_error);
+        let syntax_error_prototype = fetch_proto(syntax_error);
+        let reference_error_prototype = fetch_proto(reference_error);
+        let uri_error_prototype = fetch_proto(uri_error);
+        let eval_error_prototype = fetch_proto(eval_error);
+
         let async_iterator_prototype = object_prototype;
 
         RealmIntrinsics {
@@ -1915,6 +2014,29 @@ impl ExecutionContext<JscTypes> for JscEngine {
             eval_error,
             array,
             uint8_array,
+            boolean: boolean_ctor,
+            number: number_ctor,
+            string: string_ctor,
+            bigint: bigint_ctor,
+            date: date_ctor,
+            regexp: regexp_ctor,
+            map: map_ctor,
+            set: set_ctor,
+            boolean_prototype,
+            number_prototype,
+            string_prototype,
+            bigint_prototype,
+            date_prototype,
+            regexp_prototype,
+            map_prototype,
+            set_prototype,
+            error_prototype,
+            type_error_prototype,
+            range_error_prototype,
+            syntax_error_prototype,
+            reference_error_prototype,
+            uri_error_prototype,
+            eval_error_prototype,
             object_prototype,
             function_prototype,
             async_iterator_prototype,
@@ -2215,6 +2337,81 @@ impl ExecutionContext<JscTypes> for JscEngine {
 
     fn array_buffer_data(&self, _array_buffer: &JscArrayBuffer) -> Option<Vec<u8>> {
         None
+    }
+
+    // ── §22.2 Date ────────────────────────────────────────────────────────
+
+    fn get_date_value(&mut self, date: &JscObject) -> Completion<f64, JscTypes> {
+        // JSC: call date.getTime()
+        let get_time_str = JscString::from_rust("getTime");
+        let get_time_key = JscPropertyKey::String(get_time_str);
+        let get_time = self.get_method(
+            JscValue {
+                raw: date.as_value_ref(),
+                ctx: self.ctx_ptr(),
+            },
+            get_time_key,
+        )?
+        .ok_or_else(|| self.new_type_error("Date has no getTime"))?;
+        let date_val = JscValue {
+            raw: date.as_value_ref(),
+            ctx: self.ctx_ptr(),
+        };
+        let result = EcmascriptHost::call(self, &get_time, &date_val, &[])?;
+        self.to_number(result)
+    }
+
+    // ── §22.3 RegExp ─────────────────────────────────────────────────────
+
+    fn get_regexp_source(&mut self, regexp: &JscObject) -> Completion<String, JscTypes> {
+        let source_str = JscString::from_rust("source");
+        let source_key = JscPropertyKey::String(source_str);
+        let result = ExecutionContext::get(self, *regexp, source_key)?;
+        // RegExp.source is a string; extract it
+        if let Some(s) = crate::JsTypes::value_as_string(&result) {
+            Ok(s.to_rust())
+        } else {
+            Err(self.new_type_error("RegExp.source is not a string"))
+        }
+    }
+
+    fn get_regexp_flags(&mut self, regexp: &JscObject) -> Completion<String, JscTypes> {
+        let flags_str = JscString::from_rust("flags");
+        let flags_key = JscPropertyKey::String(flags_str);
+        let result = ExecutionContext::get(self, *regexp, flags_key)?;
+        if let Some(s) = crate::JsTypes::value_as_string(&result) {
+            Ok(s.to_rust())
+        } else {
+            Err(self.new_type_error("RegExp.flags is not a string"))
+        }
+    }
+
+    // ── §24.1 Map ────────────────────────────────────────────────────────
+
+    fn map_get_entries(
+        &mut self,
+        _map: &JscMap,
+    ) -> Completion<Vec<(JscValue, JscValue)>, JscTypes> {
+        Err(self.new_type_error("map_get_entries not yet implemented for JSC"))
+    }
+
+    fn map_set_entry(
+        &mut self,
+        _map: &JscMap,
+        _key: JscValue,
+        _value: JscValue,
+    ) -> Completion<(), JscTypes> {
+        Err(self.new_type_error("map_set_entry not yet implemented for JSC"))
+    }
+
+    // ── §24.2 Set ────────────────────────────────────────────────────────
+
+    fn set_get_values(&mut self, _set: &JscSet) -> Completion<Vec<JscValue>, JscTypes> {
+        Err(self.new_type_error("set_get_values not yet implemented for JSC"))
+    }
+
+    fn set_add_entry(&mut self, _set: &JscSet, _value: JscValue) -> Completion<(), JscTypes> {
+        Err(self.new_type_error("set_add_entry not yet implemented for JSC"))
     }
 
     // ── §27 Promise ───────────────────────────────────────────────────────

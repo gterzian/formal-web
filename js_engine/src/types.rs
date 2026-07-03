@@ -106,6 +106,7 @@ pub trait JsTypes: Sized + 'static {
     fn value_as_symbol(v: &Self::JsValue) -> Option<Self::JsSymbol>;
     fn value_as_number(v: &Self::JsValue) -> Option<f64>;
     fn value_as_bool(v: &Self::JsValue) -> Option<bool>;
+    fn value_as_bigint(v: &Self::JsValue) -> Option<Self::JsBigInt>;
     fn value_is_undefined(v: &Self::JsValue) -> bool;
     fn value_is_null(v: &Self::JsValue) -> bool;
 
@@ -123,6 +124,32 @@ pub trait JsTypes: Sized + 'static {
     fn object_as_weak_ref(o: &Self::JsObject) -> Option<Self::WeakRef>;
     fn object_as_generator(o: &Self::JsObject) -> Option<Self::Generator>;
     fn object_as_async_generator(o: &Self::JsObject) -> Option<Self::AsyncGenerator>;
+
+    // ── ECMAScript wrapper object downcasts (§6.1) ──────────────────
+
+    /// Returns `true` if the object has a [[BooleanData]] internal slot.
+    fn object_is_boolean_wrapper(o: &Self::JsObject) -> bool;
+    /// Returns `true` if the object has a [[NumberData]] internal slot.
+    fn object_is_number_wrapper(o: &Self::JsObject) -> bool;
+    /// Returns `true` if the object has a [[StringData]] internal slot.
+    fn object_is_string_wrapper(o: &Self::JsObject) -> bool;
+    /// Returns `true` if the object has a [[BigIntData]] internal slot.
+    fn object_is_bigint_wrapper(o: &Self::JsObject) -> bool;
+    /// Returns `true` if the object has a [[DateValue]] internal slot.
+    fn object_is_date(o: &Self::JsObject) -> bool;
+    /// Returns `true` if the object has a [[RegExpMatcher]] internal slot.
+    fn object_is_regexp(o: &Self::JsObject) -> bool;
+    /// Returns `true` if the object has an [[ErrorData]] internal slot.
+    fn object_is_error(o: &Self::JsObject) -> bool;
+
+    /// Extract the [[BooleanData]] from a Boolean wrapper object.
+    fn boolean_wrapper_data(o: &Self::JsObject) -> Option<bool>;
+    /// Extract the [[NumberData]] from a Number wrapper object.
+    fn number_wrapper_data(o: &Self::JsObject) -> Option<f64>;
+    /// Extract the [[StringData]] from a String wrapper object.
+    fn string_wrapper_data(o: &Self::JsObject) -> Option<Self::JsString>;
+    /// Extract the [[BigIntData]] from a BigInt wrapper object.
+    fn bigint_wrapper_data(o: &Self::JsObject) -> Option<Self::JsBigInt>;
 }
 
 /// <https://tc39.es/ecma262/#sec-code-realms>

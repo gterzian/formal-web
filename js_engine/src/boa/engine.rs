@@ -28,6 +28,9 @@ use boa_engine::{
     job::{GenericJob, Job},
     native_function::NativeFunction,
     object::{
+        builtins::{
+            JsDate, JsMap, JsRegExp, JsSet,
+        },
         FunctionObjectBuilder, JsObject,
         builtins::{
             JsArrayBuffer, JsDataView, JsFunction, JsGenerator, JsPromise, JsSharedArrayBuffer,
@@ -1118,6 +1121,37 @@ impl ExecutionContext<BoaTypes> for BoaContext {
                 .expect("Array constructor"),
             uint8_array: JsFunction::from_object(constructors.typed_uint8_array().constructor())
                 .expect("Uint8Array constructor"),
+            boolean: JsFunction::from_object(constructors.boolean().constructor())
+                .expect("Boolean constructor"),
+            number: JsFunction::from_object(constructors.number().constructor())
+                .expect("Number constructor"),
+            string: JsFunction::from_object(constructors.string().constructor())
+                .expect("String constructor"),
+            bigint: JsFunction::from_object(constructors.bigint().constructor())
+                .expect("BigInt constructor"),
+            date: JsFunction::from_object(constructors.date().constructor())
+                .expect("Date constructor"),
+            regexp: JsFunction::from_object(constructors.regexp().constructor())
+                .expect("RegExp constructor"),
+            map: JsFunction::from_object(constructors.map().constructor())
+                .expect("Map constructor"),
+            set: JsFunction::from_object(constructors.set().constructor())
+                .expect("Set constructor"),
+            boolean_prototype: constructors.boolean().prototype(),
+            number_prototype: constructors.number().prototype(),
+            string_prototype: constructors.string().prototype(),
+            bigint_prototype: constructors.bigint().prototype(),
+            date_prototype: constructors.date().prototype(),
+            regexp_prototype: constructors.regexp().prototype(),
+            map_prototype: constructors.map().prototype(),
+            set_prototype: constructors.set().prototype(),
+            error_prototype: constructors.error().prototype(),
+            type_error_prototype: constructors.type_error().prototype(),
+            range_error_prototype: constructors.range_error().prototype(),
+            syntax_error_prototype: constructors.syntax_error().prototype(),
+            reference_error_prototype: constructors.reference_error().prototype(),
+            uri_error_prototype: constructors.uri_error().prototype(),
+            eval_error_prototype: constructors.eval_error().prototype(),
             object_prototype: constructors.object().prototype(),
             function_prototype: constructors.function().prototype(),
             async_iterator_prototype: intrinsics
@@ -1354,6 +1388,94 @@ impl ExecutionContext<BoaTypes> for BoaContext {
 
     fn array_buffer_data(&self, array_buffer: &JsArrayBuffer) -> Option<Vec<u8>> {
         array_buffer.data().map(|aligned| aligned.to_vec())
+    }
+
+    // ── §22.2 Date ────────────────────────────────────────────────────────
+
+    fn get_date_value(&mut self, date: &JsObject) -> Completion<f64, BoaTypes> {
+        let js_date = JsDate::from_object(date.clone()).map_err(|_| {
+            self.new_type_error("object is not a Date")
+        })?;
+        let time = js_date.get_time(&mut self.context).map_err(|e| {
+            e.into_opaque(&mut self.context)
+                .unwrap_or_else(|_| JsValue::undefined())
+        })?;
+        time.as_number()
+            .ok_or_else(|| self.new_type_error("Date.getTime did not return a number"))
+    }
+
+    // ── §22.3 RegExp ─────────────────────────────────────────────────────
+
+    fn get_regexp_source(&mut self, regexp: &JsObject) -> Completion<String, BoaTypes> {
+        let js_regexp = JsRegExp::from_object(regexp.clone()).map_err(|_| {
+            self.new_type_error("object is not a RegExp")
+        })?;
+        let source: String = js_regexp.source(&mut self.context).map_err(|e| {
+            e.into_opaque(&mut self.context)
+                .unwrap_or_else(|_| JsValue::undefined())
+        })?;
+        Ok(source)
+    }
+
+    fn get_regexp_flags(&mut self, regexp: &JsObject) -> Completion<String, BoaTypes> {
+        let js_regexp = JsRegExp::from_object(regexp.clone()).map_err(|_| {
+            self.new_type_error("object is not a RegExp")
+        })?;
+        let flags: String = js_regexp.flags(&mut self.context).map_err(|e| {
+            e.into_opaque(&mut self.context)
+                .unwrap_or_else(|_| JsValue::undefined())
+        })?;
+        Ok(flags)
+    }
+
+    // ── §24.1 Map ────────────────────────────────────────────────────────
+
+    fn map_get_entries(
+        &mut self,
+        map: &JsMap,
+    ) -> Completion<Vec<(JsValue, JsValue)>, BoaTypes> {
+        let mut entries = Vec::new();
+        map.for_each_native(|key, val| {
+            entries.push((key, val));
+            Ok(())
+        })
+        .map_err(|_| self.new_type_error("failed to iterate Map entries"))?;
+        Ok(entries)
+    }
+
+    fn map_set_entry(
+        &mut self,
+        map: &JsMap,
+        key: JsValue,
+        value: JsValue,
+    ) -> Completion<(), BoaTypes> {
+        map.set(key, value, &mut self.context)
+            .map(|_| ())
+            .map_err(|e| {
+                e.into_opaque(&mut self.context)
+                    .unwrap_or_else(|_| JsValue::undefined())
+            })
+    }
+
+    // ── §24.2 Set ────────────────────────────────────────────────────────
+
+    fn set_get_values(&mut self, set: &JsSet) -> Completion<Vec<JsValue>, BoaTypes> {
+        let mut values = Vec::new();
+        set.for_each_native(|val| {
+            values.push(val);
+            Ok(())
+        })
+        .map_err(|_| self.new_type_error("failed to iterate Set values"))?;
+        Ok(values)
+    }
+
+    fn set_add_entry(&mut self, set: &JsSet, value: JsValue) -> Completion<(), BoaTypes> {
+        set.add(value, &mut self.context)
+            .map(|_| ())
+            .map_err(|e| {
+                e.into_opaque(&mut self.context)
+                    .unwrap_or_else(|_| JsValue::undefined())
+            })
     }
 
     // ── §27 Promise ───────────────────────────────────────────────────────

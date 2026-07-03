@@ -580,6 +580,55 @@ pub trait ExecutionContext<T: JsTypes + JsTypesWithRealm>: EcmascriptHost<T> {
     fn array_buffer_data(&self, array_buffer: &T::ArrayBuffer) -> Option<Vec<u8>>;
 
     // ────────────────────────────────────────────────────────────────────────
+    // §22.2 Date Operations
+    // ────────────────────────────────────────────────────────────────────────
+
+    /// <https://tc39.es/ecma262/#sec-date-objects>
+    /// Get the [[DateValue]] internal slot (time in ms since epoch).
+    fn get_date_value(&mut self, date: &T::JsObject) -> Completion<f64, T>;
+
+    // ────────────────────────────────────────────────────────────────────────
+    // §22.3 RegExp Operations
+    // ────────────────────────────────────────────────────────────────────────
+
+    /// <https://tc39.es/ecma262/#sec-regexp-pattern-flags>
+    /// Get the [[OriginalSource]] from a RegExp object.
+    fn get_regexp_source(&mut self, regexp: &T::JsObject) -> Completion<String, T>;
+
+    /// <https://tc39.es/ecma262/#sec-get-regexp-flags>
+    /// Get the [[OriginalFlags]] from a RegExp object.
+    fn get_regexp_flags(&mut self, regexp: &T::JsObject) -> Completion<String, T>;
+
+    // ────────────────────────────────────────────────────────────────────────
+    // §24.1 Map Operations
+    // ────────────────────────────────────────────────────────────────────────
+
+    /// <https://tc39.es/ecma262/#sec-map-objects>
+    /// Get all entries from a Map as a Vec of (key, value) pairs.
+    fn map_get_entries(&mut self, map: &T::Map) -> Completion<Vec<(T::JsValue, T::JsValue)>, T>;
+
+    /// <https://tc39.es/ecma262/#sec-map.prototype.set>
+    /// Add a (key, value) entry to a Map.
+    fn map_set_entry(
+        &mut self,
+        map: &T::Map,
+        key: T::JsValue,
+        value: T::JsValue,
+    ) -> Completion<(), T>;
+
+    // ────────────────────────────────────────────────────────────────────────
+    // §24.2 Set Operations
+    // ────────────────────────────────────────────────────────────────────────
+
+    /// <https://tc39.es/ecma262/#sec-set-objects>
+    /// Get all values from a Set as a Vec.
+    fn set_get_values(&mut self, set: &T::Set) -> Completion<Vec<T::JsValue>, T>;
+
+    /// <https://tc39.es/ecma262/#sec-set.prototype.add>
+    /// Add a value to a Set.
+    fn set_add_entry(&mut self, set: &T::Set, value: T::JsValue) -> Completion<(), T>;
+
+    // ────────────────────────────────────────────────────────────────────────
     // §27.2 Promise Abstract Operations
     // ────────────────────────────────────────────────────────────────────────
 

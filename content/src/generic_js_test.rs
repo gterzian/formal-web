@@ -2793,4 +2793,154 @@ mod tests {
         let result = js_engine::EcmascriptHost::call(&mut engine, &func_obj, &undef, &[]).unwrap();
         assert!((engine.to_number(result).unwrap() - 7.0).abs() < 0.001);
     }
+
+    // ── §6.1 Language type detection ─────────────────────────────────
+
+    #[test]
+    fn bigint_primitive_detection() {
+        let mut engine = setup();
+        let realm = engine.current_realm();
+        let intrinsics = engine.realm_intrinsics(&realm);
+        let bi_val = engine
+            .evaluate_script("123n", &realm)
+            .unwrap();
+        let bi = <TestTypes as JsTypes>::value_as_bigint(&bi_val);
+        assert!(bi.is_some(), "value_as_bigint should detect BigInt primitives");
+
+        let num_val = engine.value_from_number(42.0);
+        assert!(<TestTypes as JsTypes>::value_as_bigint(&num_val).is_none(), "number should not be detected as BigInt");
+
+        let str_val = engine.value_from_string(engine.js_string_from_str("hello"));
+        assert!(<TestTypes as JsTypes>::value_as_bigint(&str_val).is_none(), "string should not be detected as BigInt");
+    }
+
+    #[test]
+    fn wrapper_object_detection_and_data() {
+        let mut engine = setup();
+        let realm = engine.current_realm();
+        let intrinsics = engine.realm_intrinsics(&realm);
+
+        // Create wrapper objects using construct
+        let true_val = engine.value_from_bool(true);
+        let bool_wrapper = engine.construct(intrinsics.boolean, &[true_val], None).unwrap();
+        assert!(<TestTypes as JsTypes>::object_is_boolean_wrapper(&bool_wrapper));
+        assert_eq!(<TestTypes as JsTypes>::boolean_wrapper_data(&bool_wrapper), Some(true));
+
+        let num_val = engine.value_from_number(42.5);
+        let num_wrapper = engine.construct(intrinsics.number, &[num_val], None).unwrap();
+        assert!(<TestTypes as JsTypes>::object_is_number_wrapper(&num_wrapper));
+        assert_eq!(<TestTypes as JsTypes>::number_wrapper_data(&num_wrapper), Some(42.5));
+
+        let str_val = engine.value_from_string(engine.js_string_from_str("test"));
+        let str_wrapper = engine.construct(intrinsics.string, &[str_val], None).unwrap();
+        assert!(<TestTypes as JsTypes>::object_is_string_wrapper(&str_wrapper));
+        assert!(<TestTypes as JsTypes>::string_wrapper_data(&str_wrapper).is_some());
+
+        // Plain object should NOT be detected as any wrapper
+        let plain = engine.create_plain_object(None);
+        assert!(!<TestTypes as JsTypes>::object_is_boolean_wrapper(&plain));
+        assert!(!<TestTypes as JsTypes>::object_is_number_wrapper(&plain));
+        assert!(!<TestTypes as JsTypes>::object_is_string_wrapper(&plain));
+        assert!(!<TestTypes as JsTypes>::object_is_bigint_wrapper(&plain));
+    }
+
+    #[test]
+    fn date_regexp_error_detection() {
+        let mut engine = setup();
+        let realm = engine.current_realm();
+        let intrinsics = engine.realm_intrinsics(&realm);
+
+        // Date detection
+        let now = engine.value_from_number(1700000000000.0);
+        let date_obj = engine.construct(intrinsics.date, &[now], None).unwrap();
+        assert!(<TestTypes as JsTypes>::object_is_date(&date_obj));
+
+        // Date value extraction
+        let date_time = engine.get_date_value(&date_obj).unwrap();
+        assert!((date_time - 1700000000000.0).abs() < 1.0);
+
+        // RegExp detection
+        let src = engine.value_from_string(engine.js_string_from_str("[a-z]+"));
+        let flags = engine.value_from_string(engine.js_string_from_str("gi"));
+        let re_obj = engine.construct(intrinsics.regexp, &[src, flags], None).unwrap();
+        assert!(<TestTypes as JsTypes>::object_is_regexp(&re_obj));
+
+        // RegExp source and flags extraction
+        let re_source = engine.get_regexp_source(&re_obj).unwrap();
+        assert_eq!(re_source, "[a-z]+");
+        let re_flags = engine.get_regexp_flags(&re_obj).unwrap();
+        assert_eq!(re_flags, "gi");
+
+        // Plain object should NOT be detected as Date or RegExp
+        let plain = engine.create_plain_object(None);
+        assert!(!<TestTypes as JsTypes>::object_is_date(&plain));
+        assert!(!<TestTypes as JsTypes>::object_is_regexp(&plain));
+        assert!(!<TestTypes as JsTypes>::object_is_error(&plain));
+    }
+
+    #[test]
+    fn map_set_entry_operations() {
+        let mut engine = setup();
+        let realm = engine.current_realm();
+        let intrinsics = engine.realm_intrinsics(&realm);
+
+        // Create a Map, add entries, retrieve them
+        let map_obj = engine.construct(intrinsics.map, &[], None).unwrap();
+        let map = <TestTypes as JsTypes>::object_as_map(&map_obj).unwrap();
+
+        let key_a = engine.value_from_string(engine.js_string_from_str("a"));
+        let val_1 = engine.value_from_number(1.0);
+        let key_b = engine.value_from_string(engine.js_string_from_str("b"));
+        let val_2 = engine.value_from_number(2.0);
+
+        engine.map_set_entry(&map, key_a.clone(), val_1.clone()).unwrap();
+        engine.map_set_entry(&map, key_b.clone(), val_2.clone()).unwrap();
+
+        let entries = engine.map_get_entries(&map).unwrap();
+        assert_eq!(entries.len(), 2);
+
+        // Create a Set, add entries, retrieve them
+        let set_obj = engine.construct(intrinsics.set, &[], None).unwrap();
+        let set = <TestTypes as JsTypes>::object_as_set(&set_obj).unwrap();
+
+        engine.set_add_entry(&set, val_1.clone()).unwrap();
+        engine.set_add_entry(&set, val_2.clone()).unwrap();
+
+        let values = engine.set_get_values(&set).unwrap();
+        assert_eq!(values.len(), 2);
+    }
+
+    #[test]
+    fn realm_intrinsics_constructors_and_prototypes() {
+        let mut engine = setup();
+        let realm = engine.current_realm();
+        let intrinsics = engine.realm_intrinsics(&realm);
+
+        // Verify new constructors are accessible
+        let _ = intrinsics.boolean;
+        let _ = intrinsics.number;
+        let _ = intrinsics.string;
+        let _ = intrinsics.bigint;
+        let _ = intrinsics.date;
+        let _ = intrinsics.regexp;
+        let _ = intrinsics.map;
+        let _ = intrinsics.set;
+
+        // Verify prototypes are objects
+        let _: JsObject = intrinsics.boolean_prototype;
+        let _: JsObject = intrinsics.number_prototype;
+        let _: JsObject = intrinsics.string_prototype;
+        let _: JsObject = intrinsics.bigint_prototype;
+        let _: JsObject = intrinsics.date_prototype;
+        let _: JsObject = intrinsics.regexp_prototype;
+        let _: JsObject = intrinsics.map_prototype;
+        let _: JsObject = intrinsics.set_prototype;
+        let _: JsObject = intrinsics.error_prototype;
+        let _: JsObject = intrinsics.type_error_prototype;
+        let _: JsObject = intrinsics.range_error_prototype;
+        let _: JsObject = intrinsics.syntax_error_prototype;
+        let _: JsObject = intrinsics.reference_error_prototype;
+        let _: JsObject = intrinsics.uri_error_prototype;
+        let _: JsObject = intrinsics.eval_error_prototype;
+    }
 }

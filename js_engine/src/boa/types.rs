@@ -101,6 +101,13 @@ impl JsTypes for BoaTypes {
     fn value_as_bool(v: &Self::JsValue) -> Option<bool> {
         v.as_boolean()
     }
+    fn value_as_bigint(v: &Self::JsValue) -> Option<Self::JsBigInt> {
+        if let Some(bi) = v.as_bigint() {
+            Some(bi.clone())
+        } else {
+            None
+        }
+    }
     fn value_is_undefined(v: &Self::JsValue) -> bool {
         v.is_undefined()
     }
@@ -151,6 +158,41 @@ impl JsTypes for BoaTypes {
     }
     fn object_as_async_generator(o: &Self::JsObject) -> Option<Self::AsyncGenerator> {
         JsAsyncGenerator::from_object(o.clone()).ok()
+    }
+
+    fn object_is_boolean_wrapper(o: &Self::JsObject) -> bool {
+        o.downcast_ref::<bool>().is_some()
+    }
+    fn object_is_number_wrapper(o: &Self::JsObject) -> bool {
+        o.downcast_ref::<f64>().is_some()
+    }
+    fn object_is_string_wrapper(o: &Self::JsObject) -> bool {
+        o.downcast_ref::<boa_engine::JsString>().is_some()
+    }
+    fn object_is_bigint_wrapper(o: &Self::JsObject) -> bool {
+        o.downcast_ref::<boa_engine::JsBigInt>().is_some()
+    }
+    fn object_is_date(o: &Self::JsObject) -> bool {
+        boa_engine::object::builtins::JsDate::from_object(o.clone()).is_ok()
+    }
+    fn object_is_regexp(o: &Self::JsObject) -> bool {
+        boa_engine::object::builtins::JsRegExp::from_object(o.clone()).is_ok()
+    }
+    fn object_is_error(o: &Self::JsObject) -> bool {
+        o.is::<boa_engine::builtins::error::Error>()
+    }
+
+    fn boolean_wrapper_data(o: &Self::JsObject) -> Option<bool> {
+        o.downcast_ref::<bool>().map(|r| *r)
+    }
+    fn number_wrapper_data(o: &Self::JsObject) -> Option<f64> {
+        o.downcast_ref::<f64>().map(|r| *r)
+    }
+    fn string_wrapper_data(o: &Self::JsObject) -> Option<Self::JsString> {
+        o.downcast_ref::<boa_engine::JsString>().map(|r| r.clone())
+    }
+    fn bigint_wrapper_data(o: &Self::JsObject) -> Option<Self::JsBigInt> {
+        o.downcast_ref::<boa_engine::JsBigInt>().map(|r| r.clone())
     }
 }
 

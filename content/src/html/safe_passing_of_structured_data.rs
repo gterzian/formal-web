@@ -5,8 +5,7 @@
 //! for transferable and serializable platform objects.
 //!
 //! The `SerializedRecord` and `PrimitiveValue` types are pure data (serde-serializable)
-//! so they can cross IPC boundaries. The Boa engine integration is confined to the
-//! `structured_serialize_internal` and `structured_deserialize` functions.
+//! so they can cross IPC boundaries.
 
 // The traits, variants, and fields below that trigger dead_code warnings
 // are intentionally defined as the spec-required extension points for
@@ -19,7 +18,10 @@ use std::collections::HashMap;
 
 use boa_engine::{
     Context, JsBigInt, JsError, JsNativeError, JsResult, JsString, JsValue, JsVariant,
-    builtins::error::{Error, ErrorKind},
+    builtins::{
+        array_buffer::AlignedVec,
+        error::{Error, ErrorKind},
+    },
     js_string,
     object::{
         JsObject,
@@ -34,7 +36,7 @@ use boa_engine::{
 use crate::dom::DOMException;
 use crate::webidl::bindings::create_interface_instance;
 
-use js_engine::{Completion, ExecutionContext};
+use js_engine::{Completion, ExecutionContext, JsTypes};
 
 // ──────────────────────────────────────────────────────────────────────────────
 // Traits for platform objects (bridge layer)
@@ -51,8 +53,8 @@ pub trait Serializable: std::fmt::Debug {
         serialized: &mut HashMap<String, JsValue>,
         for_storage: bool,
         memory: &mut MemoryMap,
-        context: &mut Context,
-    ) -> JsResult<()>;
+        ec: &mut dyn ExecutionContext<crate::js::Types>,
+    ) -> Completion<(), crate::js::Types>;
 }
 
 /// <https://html.spec.whatwg.org/#transferable-objects>
@@ -64,15 +66,15 @@ pub trait Transferable: std::fmt::Debug {
     fn transfer_steps(
         &self,
         data_holder: &mut HashMap<String, JsValue>,
-        context: &mut Context,
-    ) -> JsResult<()>;
+        ec: &mut dyn ExecutionContext<crate::js::Types>,
+    ) -> Completion<(), crate::js::Types>;
 
     /// <https://html.spec.whatwg.org/#transfer-receiving-steps>
     fn transfer_receiving_steps(
         &self,
         data_holder: &HashMap<String, JsValue>,
-        context: &mut Context,
-    ) -> JsResult<()>;
+        ec: &mut dyn ExecutionContext<crate::js::Types>,
+    ) -> Completion<(), crate::js::Types>;
 }
 
 // ──────────────────────────────────────────────────────────────────────────────
@@ -207,8 +209,9 @@ impl MemoryMap {
 
 /// Bridge wrapper: converts Context to EC for boilerplate callers.
 /// TODO: Remove when this file is converted to EC throughout.
-fn data_clone_error_ctx(context: &mut Context) -> JsError {
-    JsError::from_opaque(data_clone_error(js_engine::boa::context_as_ec(context)))
+fn data_clone_error_ctx(context: &mut boa_engine::Context) -> JsError {
+    let engine = js_engine::boa::context_as_engine(context);
+    JsError::from_opaque(data_clone_error(engine))
 }
 
 fn data_clone_error(ec: &mut dyn ExecutionContext<crate::js::Types>) -> JsValue {

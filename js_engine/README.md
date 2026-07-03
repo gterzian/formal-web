@@ -395,7 +395,7 @@ or subsystem entry-point signature must first be validated in
 on **both backends** (Boa and JSC) before it can be applied to any
 real production file.
 
-### Current state (updated 2026-07-04 — session 2)
+### Current state (updated 2026-07-04 — session 3)
 
 **Phases A–D, S1–S10, T1–T2, W1–W2, G1–G3, C2–C3, B1, R1, R2, S, P complete.**
 All binding files at 0 ec_to_ctx. All 34 struct/enum definitions use `#[gc_struct]`.
@@ -429,12 +429,30 @@ and will never target JSC. The remaining bridges in `wasm/namespace.rs`
 The two `context_as_ec` calls in that file were eliminated in this session
 (switched to `create_builtin_function` with an EC-taking closure).
 
-**Remaining `context_as_ec` calls outside `js_engine/src/` (1 total):**
-- `html/safe_passing_of_structured_data.rs` (1) — `data_clone_error_ctx` bridge
-  (16 callers not yet converted to EC). Whether to eliminate depends on whether
-  structured clone needs to work with JSC in the future.
+**`context_as_ec` calls outside `js_engine/src/`: ZERO.**
+The last call (in `html/safe_passing_of_structured_data.rs::data_clone_error_ctx`)
+was replaced with `context_as_engine`. The remaining `context_as_engine` and
+`ec_to_ctx` bridges are listed in the next section.
 
-**Eliminated in this session (5 `context_as_ec` total):**
+**Remaining bridges in content code (not `context_as_ec`):**
+- `html/safe_passing_of_structured_data.rs` — `data_clone_error_ctx` still uses
+  `context_as_engine`. The whole file (~1545 lines) still takes `&mut Context`
+  internally; converting it to use `&mut dyn ExecutionContext<Types>` is a
+  future task that requires the new generic APIs already added (wrapper
+  object detection, Date/RegExp/Map/Set operations, extended RealmIntrinsics).
+- `wasm/namespace.rs` — `ec_to_ctx` × 6, `context_as_engine` × 1 (Boa-only).
+- `js/mod.rs` — `context_as_engine` × 1 (`builtin_with_captures_ctx`).
+
+**Generic APIs added in this session (validated in `generic_js_test.rs`):**
+- JsTypes: `value_as_bigint`, wrapper object detection+data (Boolean/Number/
+  String/BigInt), Date/RegExp/Error detection
+- `RealmIntrinsics`: `boolean`, `number`, `string`, `bigint`, `date`, `regexp`,
+  `map`, `set` constructors; `boolean_prototype` through `eval_error_prototype`
+- EC trait: `get_date_value`, `get_regexp_source`, `get_regexp_flags`,
+  `map_get_entries`, `map_set_entry`, `set_get_values`, `set_add_entry`
+- All 86 generic tests pass on Boa.
+
+**Eliminated in this session (6 `context_as_ec` total):**
 - `webidl/async_iterable.rs` (10) — fully converted to
   `&mut dyn ExecutionContext<Types>` with zero `boa_engine::*` imports
   (previous session).
@@ -445,6 +463,8 @@ The two `context_as_ec` calls in that file were eliminated in this session
 - `wasm/namespace.rs` (2) — `create_exported_function_wrapper_boa` uses
   `create_builtin_function` with an EC-taking closure instead of
   `NativeFunction::from_closure` with per-invocation bridges.
+- `html/safe_passing_of_structured_data.rs` (1) — `data_clone_error_ctx`
+  switched from `context_as_ec` to `context_as_engine`.
 
 **Eliminated previously:** `main.rs` (10), `environment_settings_object.rs` (1),
 `host_hooks.rs` (3), `registry.rs` (2), `document.rs` (1),
@@ -452,7 +472,14 @@ The two `context_as_ec` calls in that file were eliminated in this session
 
 ### Next session: recommended order
 
-1. **Phase E** — Content crate does not yet compile for JSC.
+1. **Convert `safe_passing_of_structured_data.rs` to EC** — 1545-line file still
+   takes `&mut Context` internally. Now has all the generic APIs needed:
+   wrapper object detection, Date/RegExp/Map/Set operations, extended
+   `RealmIntrinsics`. Strategy: change all `context: &mut Context` →
+   `ec: &mut dyn ExecutionContext<crate::js::Types>`, replace Boa-specific
+   ops with EC/JsTypes equivalents, delete `data_clone_error_ctx` bridge.
+
+2. **Phase E** — Content crate does not yet compile for JSC.
    Blockers: GC trait bounds (`boa_engine::Trace`/`#[gc_struct]`) and
    `unsafe_ignore_trace` attribute on non-wasm structs. Wasm is gated behind
    `#[cfg(feature = "boa")]`.
