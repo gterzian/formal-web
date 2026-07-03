@@ -1,5 +1,5 @@
-use boa_engine::job::{GenericJob, Job};
 use boa_engine::{Context, JsResult, JsValue};
+use js_engine::{Completion, ExecutionContext};
 use log::error;
 mod environment_settings_object;
 mod global_scope;
@@ -56,27 +56,26 @@ use std::{cell::RefCell, rc::Rc};
 use url::Url;
 
 /// <https://html.spec.whatwg.org/#queue-a-microtask>
-pub fn queue_a_microtask<F>(context: &mut Context, callback: F)
+pub fn queue_a_microtask<F>(ec: &mut dyn ExecutionContext<crate::js::Types>, callback: F)
 where
-    F: FnOnce(&mut Context) -> JsResult<JsValue> + 'static,
+    F: FnOnce(&mut dyn ExecutionContext<crate::js::Types>) -> Completion<JsValue, crate::js::Types> + 'static,
 {
-    // Note: Steps 1-8 (asserting a surrounding agent, setting eventLoop,
+    // Note: Steps 1-7 (asserting a surrounding agent, setting eventLoop,
     // creating a new task, setting its steps/source/document/settings-object
-    // set) are handled by Boa's GenericJob + enqueue_job.  The realm carries
+    // set) are handled by the engine's job queue.  The realm carries
     // the agent/event-loop association.
     //
     // Step 1: Assert: there is a surrounding agent. I.e., this algorithm is
     //         not called while in parallel.
-    let realm = context.realm().clone();
-    let job = GenericJob::new(callback, realm);
+    let realm = ec.current_realm();
     // Step 9: Enqueue microtask on eventLoop's microtask queue.
-    context.enqueue_job(Job::from(job));
+    ec.enqueue_job_with_realm(realm, Box::new(move |job_ec| { let _ = callback(job_ec); }));
 }
 
 /// <https://html.spec.whatwg.org/#await-a-stable-state>
-pub fn await_a_stable_state<F>(context: &mut Context, synchronous_section: F)
+pub fn await_a_stable_state<F>(ec: &mut dyn ExecutionContext<crate::js::Types>, synchronous_section: F)
 where
-    F: FnOnce(&mut Context) -> JsResult<JsValue> + 'static,
+    F: FnOnce(&mut dyn ExecutionContext<crate::js::Types>) -> Completion<JsValue, crate::js::Types> + 'static,
 {
     // Note: The preamble ("queue a microtask that runs the following steps, and
     // must then stop executing") is implemented by delegating to
@@ -89,7 +88,7 @@ where
     //         described in the algorithm's steps.
     //         (Implicit — after the synchronous section returns, control
     //         resumes in the calling algorithm's in-parallel context.)
-    queue_a_microtask(context, synchronous_section);
+    queue_a_microtask(ec, synchronous_section);
 }
 
 /// <https://html.spec.whatwg.org/#creating-a-new-browsing-context>

@@ -246,17 +246,13 @@ same struct because Boa's `Context` serves both roles internally.
 - `report_exception`
 - Value construction (shared with `ExecutionContext<T>`)
 
-### Not yet abstracted (known blockers to EDS owning a generic type)
+### Not yet abstracted (known blockers)
 
 | Operation | Blocked on |
 |---|---|
-| Proxy creation (`JsProxyBuilder::build(context)`) | `create_proxy` trait method not yet needed by any EC path |
 | `Context::eval` (script evaluation) | `evaluate_script` on `JsEngine<T>` exists; callers haven't migrated |
-| `with_global_scope(&Context, ...)` | GC heap traversal; `realm_global_object()` partially covers this |
 | `ObjectInitializer`, `register_global_property` | Boa object-model construction; needs centralized `build_context` path |
-| `queue_internal_stream_microtask` | Deep byte-tee chain uses `PromiseJob::with_realm` |
 | Structured clone, async iterable creation | Boa-internal APIs (realm access, data clone) |
-| `downcast_ref::<Window>()` on global object | Content-owned accessor needed (wasm, html_media_element) |
 
 None are fundamental — they just aren't done yet.
 
@@ -414,7 +410,7 @@ Concrete per-phase validation requirements:
 | Phase | What to validate in `generic_js_test.rs` |
 |---|---|
 | **Phase D** ✅ | Return-type change only (trait methods `JsResult` → `Completion`). No new generic interface — validated by `cargo check` passing. |
-| **Phase S** ✅ 🔶 | `clone_as_uint8_array` converted to pure EC (uses `clone_array_buffer` + `construct` + `uint8_array` intrinsics). Byte tee closures and transform sink algorithms still use Context. |
+| **Phase S** ✅ | `clone_as_uint8_array` converted to pure EC; byte tee closures fully converted (pull1/pull2/cancel1/cancel2 + helpers); `queue_internal_stream_microtask` converted; `NativeFunction::from_copy_closure_with_captures` → `builtin_with_captures`. |
 | **Phase P** | `store_host_any` / `get_host_any` already validated. New content-owned helpers (`platform_object_store(ec)`) must be validated: store a document handle, retrieve by key, mutate. |
 | **Phase W** | Each subsystem entry point that changes signature must be exercised: structured clone round-trip, promise helper usage, Wasm namespace access. |
 | **Phase E** | `cargo check -p content` with both `--features boa` and `--no-default-features --features jsc`. No new generic interface — configuration-only change. |
@@ -434,67 +430,45 @@ Concrete per-phase validation requirements:
 | A-C | GC derive conversion; binding body conversion; `create_builtin_function` on EC |
 | **S-promise** | `PromiseState<T>` enum in js_engine; `promise_state()` method on `ExecutionContext<T>` trait; Boa + JSC backend impls. Replaces `JsPromise::from_object(x)?.state()` (Boa-specific) with `ec.promise_state(&obj)?`. |
 | **S1a** | PipeToState EC wrappers (18 methods); `pipe_to_on_promise_settled_ec`; `pipe_reaction_fn` + `pipe_reaction_function_ec`; `pipe_read_result_done_ec`; `queue_internal_stream_microtask_ec`; 3 ReadableStreamPipeTo closures converted to EC path |
+| **S** | Byte tee closures: `readable_byte_stream_tee_pull1/pull2/cancel1/cancel2_algorithm` + helpers; `queue_internal_stream_microtask` EC; `NativeFunction::from_copy_closure_with_captures` → `builtin_with_captures`. 5 ec_to_ctx eliminated |
+| **P** | `create_proxy`, `get_prototype_of`, `to_property_descriptor` on EC trait; `windowproxy.rs` → EC-builtin-function traps + `ec.create_proxy()` (1 ec_to_ctx); `html_media_element/resource_selection_algorithm` → EC (1); `queue_a_microtask`/`await_a_stable_state` → EC; `with_global_scope_ec` pub(crate). 2 ec_to_ctx eliminated |
 
 ### Next session: recommended order
 
 ### Current state (updated 2026-07-03)
 
-**Phases A–D, S1–S10, T1–T2, W1–W2, G1–G3, C2–C3, B1, R1, R2 complete.**
+**Phases A–D, S1–S10, T1–T2, W1–W2, G1–G3, C2–C3, B1, R1, R2, S, P complete.**
 All binding files at 0 ec_to_ctx. All 34 struct/enum definitions use `#[gc_struct]`.
 All domain field types use `GcCell<T>`. Generic POC: 81/81 tests pass on Boa.
 Phase E (compile-time Types/Engine aliases) is landed — `#[cfg(feature = "jsc")]`
 selects between BoaTypes and JscTypes.
 
-**ec_to_ctx count: ~11** (was ~34 before this session; 5 eliminated)
+**ec_to_ctx count: ~9** (was ~34; 25 eliminated across 4 sessions)
 
-**Phase S — Byte tee closures fully converted (this session):**
-- `readablestreamdefaultcontroller.rs` — all 4 byte tee pull/cancel ec_to_ctx eliminated.
-  PullAlgorithm/CancelAlgorithm now call EC-converted functions directly.
-- `readablestreamsupport.rs` — `queue_internal_stream_microtask` converted to EC:
-  closure type changed from `FnOnce(&mut Context) -> JsResult<()>` to
-  `FnOnce(&mut dyn ExecutionContext<T>) -> Completion<(), T>`; uses
-  `ec.current_realm()` + `ec.enqueue_job_with_realm()` instead of
-  `context.realm()` + `PromiseJob::with_realm`. 1 ec_to_ctx eliminated.
-- `readablestream.rs` — 6 functions converted from `&mut Context` to
-  `&mut dyn ExecutionContext<T>`: `readable_byte_stream_tee_pull1/pull2/cancel1/cancel2_algorithm`,
-  `readable_byte_stream_tee_pull_with_byob/default_reader`.
-  6 helpers converted: `byte_tee_enqueue_to_branch`, `byte_tee_ignore_pull_completion`,
-  `byte_tee_switch_to_default_reader`, `byte_tee_switch_to_byob_reader`,
-  `readable_byte_stream_tee_default_reader_chunk_steps`.
-  `NativeFunction::from_copy_closure_with_captures` → `builtin_with_captures` (EC).
-  Inner `queue_internal_stream_microtask` closures converted to EC-taking.
-  5 ec_to_ctx eliminated across these files.
+**Phase S complete — byte tee closures fully EC:**
+- `readablestreamdefaultcontroller.rs` (4 ec_to_ctx eliminated)
+- `readablestreamsupport.rs`: `queue_internal_stream_microtask` converted (1)
+- `readablestream.rs`: 6 byte tee functions + 6 helpers converted (1)
 
-**Phase P — WindowProxy conversion (this session):**
-- Added `create_proxy(target, handler)` to `ExecutionContext<T>` — ProxyCreate
-  (§10.5.14). Boa backend uses Proxy constructor via intrinsics. JSC stub.
-- Added `get_prototype_of` to `ExecutionContext<T>` — needed by WindowProxy
-  traps. Boa: delegates to `JsObject::prototype()`. JSC stub.
-- Added `to_property_descriptor` to `ExecutionContext<T>` — reads descriptor
-  fields from a descriptor object. Boa: implemented via `EcmascriptHost::get`.
-  JSC stub.
-- Converted `content/src/html/windowproxy.rs` — all 10 trap functions changed
-  from `NativeFunctionPointer` (Boa fn pointer taking `&mut Context`) to
-  EC-compatible signatures. Follows the same recipe as Web IDL observable
-  arrays (<https://webidl.spec.whatwg.org/#js-observable-arrays>):
-  `OrdinaryObjectCreate(null)` → CreateBuiltinFunction for each trap →
-  CreateDataPropertyOrThrow on handler → ProxyCreate(target, handler).
-  Uses `ec.create_plain_object(None)` + `ec.create_builtin_function()` for
-  each trap in a loop + `ec.set()` → `ec.create_proxy()`.
-  1 ec_to_ctx eliminated.
+**Phase P complete — WindowProxy via generic ProxyCreate:**
+- Added `create_proxy`, `get_prototype_of`, `to_property_descriptor` to EC trait
+- `windowproxy.rs`: 10 traps → EC-builtin-functions; handler → `ec.create_proxy()` (1)
 
-**Remaining ~10 ec_to_ctx by file:**
+**Additional conversions (this session):**
+- `html/html_media_element.rs`: `resource_selection_algorithm` → EC (1 ec_to_ctx)
+- `html.rs`: `queue_a_microtask`/`await_a_stable_state` → EC
+  (removed `GenericJob`/`Job` Boa imports)
+
+**Remaining ~9 ec_to_ctx by file:**
 - `wasm/namespace.rs`: 6 — gated behind `boa` feature, lowest priority.
-- `html/html_media_element.rs`: 1 — `with_global_scope` (GC heap traversal)
 - `html/safe_passing_of_structured_data.rs`: 1 — structured clone (Boa-internal)
 - `webidl/async_iterable.rs`: 1 — async iterator creation (`ObjectInitializer`)
 - `js/mod.rs`: 1 — `js_result_to_completion_ec` bridge helper
 
 ### Next session: recommended order
 
-1. **Phase P — Remaining singleton ec_to_ctx** — `html/html_media_element.rs`,
-   `webidl/async_iterable.rs`, `html/safe_passing_of_structured_data.rs`,
-   `js/mod.rs` (4 total).
+1. **Phase P — Remaining singleton ec_to_ctx** — `webidl/async_iterable.rs`,
+   `html/safe_passing_of_structured_data.rs`, `js/mod.rs` (3 total).
 
 2. **Phase E validation** — `cargo check -p content --no-default-features --features jsc`.
    Note: `content/src/wasm/` is not yet gated behind `boa` feature. To make Phase E

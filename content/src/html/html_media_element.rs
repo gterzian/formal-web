@@ -2,11 +2,11 @@ use std::cell::RefCell;
 use std::rc::Rc;
 
 use blitz_dom::BaseDocument;
-use boa_engine::{Context, JsValue};
+use boa_engine::JsValue;
 use log::{debug, error};
 
 use crate::html::{HTMLElement, await_a_stable_state};
-use crate::js::platform_objects::with_global_scope;
+use crate::js::platform_objects::with_global_scope_ec;
 use crate::webidl::resolved_promise;
 use ipc_messages::content::{Event as ContentEvent, RegisterMediaPipeline};
 use ipc_messages::media::VideoPaintId;
@@ -315,11 +315,6 @@ impl HTMLMediaElement {
         &mut self,
         ec: &mut dyn ExecutionContext<crate::js::Types>,
     ) {
-        let context = unsafe { js_engine::boa::ec_to_ctx(ec) };
-        self.resource_selection_algorithm_impl(context);
-    }
-
-    fn resource_selection_algorithm_impl(&mut self, context: &mut Context) {
         // Step 1: Set networkState to NETWORK_NO_SOURCE.
         self.network_state = Self::NETWORK_NO_SOURCE;
 
@@ -339,7 +334,7 @@ impl HTMLMediaElement {
         // Resolve the src attribute value to an absolute URL against the document's
         // base URL (creation URL), as required by the spec's current_src definition.
         let resolved_src = src.as_ref().and_then(|s| {
-            with_global_scope(context, |global_scope| Ok(global_scope.creation_url()))
+            with_global_scope_ec(ec, |global_scope| Ok(global_scope.creation_url()))
                 .ok()
                 .flatten()
                 .and_then(|base_url| base_url.join(s).ok().map(|url| url.to_string()))
@@ -351,7 +346,7 @@ impl HTMLMediaElement {
         let video_paint_id = self.video_paint_id;
 
         // Extract document_id and navigable_id from the GlobalScope.
-        let global_scope_data = with_global_scope(context, |global_scope| {
+        let global_scope_data = with_global_scope_ec(ec, |global_scope| {
             Ok((
                 global_scope.document_id(),
                 global_scope.source_navigable_id(),
@@ -361,7 +356,7 @@ impl HTMLMediaElement {
         let (document_id, traversable_id, event_sender) = match global_scope_data {
             Ok(values) => values,
             Err(error) => {
-                error!("[media] failed to read GlobalScope state: {error}");
+                error!("[media] failed to read GlobalScope state: {error:?}");
                 (None, None, None)
             }
         };
@@ -369,13 +364,13 @@ impl HTMLMediaElement {
         // Register the paint_id via GlobalScope so the composition
         // metadata builder can find the same UUID for this video element.
         if let Some(document_id) = document_id {
-            let _ = with_global_scope(context, |global_scope| {
+            let _ = with_global_scope_ec(ec, |global_scope| {
                 global_scope.register_video_paint_id(document_id, node_id, video_paint_id);
                 Ok(())
             });
         }
 
-        await_a_stable_state(context, move |_ctx| {
+        await_a_stable_state(ec, move |job_ec| {
             // ── Synchronous section starts here ──
 
             // Step 5: ⌛ If blocked-on-parser flag is false, populate list of pending text tracks.
@@ -401,14 +396,14 @@ impl HTMLMediaElement {
                     (event_sender, traversable_id, document_id)
                 {
                     // Allocate pipeline ID and send CreatePipeline+Play directly to media.
-                    let pipeline_id = with_global_scope(_ctx, |global_scope| {
+                    let pipeline_id = with_global_scope_ec(job_ec, |global_scope| {
                         Ok(global_scope.allocate_media_pipeline_id())
                     })
                     .ok();
 
                     if let Some(pipeline_id) = pipeline_id {
                         // Send CreatePipeline + Play directly to the media extension.
-                        let media_sender = with_global_scope(_ctx, |global_scope| {
+                        let media_sender = with_global_scope_ec(job_ec, |global_scope| {
                             Ok(global_scope.media_extension_sender())
                         })
                         .ok()

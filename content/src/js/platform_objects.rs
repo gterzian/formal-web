@@ -63,7 +63,7 @@ fn global_scope_or_error<'ec>(ec: &'ec dyn ExecutionContext<Types>) -> Option<&'
 ///
 /// Like `global_scope_or_error` but constructs a `Completion` error when
 /// the global object can't be reached.
-fn with_global_scope_ec<R>(
+pub(crate) fn with_global_scope_ec<R>(
     ec: &mut dyn ExecutionContext<Types>,
     f: impl FnOnce(&GlobalScope) -> Completion<R, Types>,
 ) -> Completion<R, Types> {
