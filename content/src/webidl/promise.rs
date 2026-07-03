@@ -1,18 +1,16 @@
 use std::cell::RefCell;
 use std::rc::Rc;
 
-use boa_engine::{
-    Context, JsError, JsNativeError, JsValue,
-    builtins::promise::ResolvingFunctions,
-    native_function::NativeFunction,
-    object::{JsObject, builtins::JsPromise},
-};
-
 use js_engine::gc::GcCell;
 use js_engine::gc::gc_cell_new;
 use js_engine::gc_struct;
 use js_engine::{Completion, ExecutionContext, JsTypes};
 use log::error;
+
+use crate::js::Types;
+
+type JsValue = <Types as JsTypes>::JsValue;
+type JsObject = <Types as JsTypes>::JsObject;
 
 /// **Web IDL Promise Manipulation**
 ///
@@ -25,16 +23,29 @@ use log::error;
 /// - `transform_promise_to_undefined` → § dfn-perform-steps-once-promise-is-settled
 
 /// <https://webidl.spec.whatwg.org/#a-new-promise>
-pub(crate) fn a_new_promise_boa(context: &mut Context) -> (JsObject, ResolvingFunctions) {
-    let (promise, resolvers) = JsPromise::new_pending(context);
+pub(crate) fn a_new_promise(
+    ec: &mut dyn ExecutionContext<Types>,
+) -> Completion<(JsObject, js_engine::PromiseResolvers<Types>), Types> {
+    let (promise, resolvers) = ec.new_promise_pending()?;
+    let promise_obj =
+        <Types as JsTypes>::value_as_object(&promise).unwrap_or_else(|| ec.realm_global_object());
+    Ok((promise_obj, resolvers))
+}
+
+/// Bridge for Boa-gated wasm callers that pass `&mut Context` directly.
+#[cfg(boa_backend)]
+pub(crate) fn a_new_promise_boa(
+    context: &mut boa_engine::Context,
+) -> (JsObject, boa_engine::builtins::promise::ResolvingFunctions) {
+    let (promise, resolvers) = boa_engine::object::builtins::JsPromise::new_pending(context);
     (promise.into(), resolvers)
 }
 
 /// <https://webidl.spec.whatwg.org/#a-promise-resolved-with>
 pub(crate) fn resolved_promise(
     value: JsValue,
-    ec: &mut dyn ExecutionContext<crate::js::Types>,
-) -> Completion<JsObject, crate::js::Types> {
+    ec: &mut dyn ExecutionContext<Types>,
+) -> Completion<JsObject, Types> {
     // Step 1: "Let value be the result of converting x to a JavaScript value."
     // Note: Step 1 is a no-op — value is already a JsValue.
     // Step 2: "Let constructor be realm.[[Intrinsics]].[[%Promise%]]."
@@ -43,63 +54,31 @@ pub(crate) fn resolved_promise(
     // Step 3: "Let promiseCapability be ? NewPromiseCapability(constructor)."
     let capability = ec.new_promise_capability(intrinsics.promise)?;
     // Step 4: "Perform ! Call(promiseCapability.[[Resolve]], undefined, « value »)."
-    let resolve_obj = <crate::js::Types as JsTypes>::object_from_function(capability.resolve);
+    let resolve_obj = <Types as JsTypes>::object_from_function(capability.resolve);
     let undefined = ec.value_undefined();
     ec.call(&resolve_obj, &undefined, &[value])?;
     // Step 5: "Return promiseCapability."
-    Ok(
-        <crate::js::Types as JsTypes>::value_as_object(&capability.promise)
-            .unwrap_or_else(|| ec.realm_global_object()),
-    )
-}
-
-/// <https://webidl.spec.whatwg.org/#a-promise-resolved-with>
-fn resolved_promise_boa(
-    value: JsValue,
-    context: &mut Context,
-) -> Completion<JsObject, crate::js::Types> {
-    // Step 1: "Return a promise resolved with value."
-    JsPromise::resolve(value, context)
-        .map(JsObject::from)
-        .map_err(|e| {
-            e.into_opaque(context)
-                .unwrap_or_else(|_| JsValue::undefined())
-        })
+    Ok(<Types as JsTypes>::value_as_object(&capability.promise)
+        .unwrap_or_else(|| ec.realm_global_object()))
 }
 
 /// <https://webidl.spec.whatwg.org/#a-promise-rejected-with>
 pub(crate) fn rejected_promise(
     reason: JsValue,
-    ec: &mut dyn ExecutionContext<crate::js::Types>,
-) -> Completion<JsObject, crate::js::Types> {
+    ec: &mut dyn ExecutionContext<Types>,
+) -> Completion<JsObject, Types> {
     // Step 1: "Let constructor be realm.[[Intrinsics]].[[%Promise%]]."
     let realm = ec.current_realm();
     let intrinsics = ec.realm_intrinsics(&realm);
     // Step 2: "Let promiseCapability be ? NewPromiseCapability(constructor)."
     let capability = ec.new_promise_capability(intrinsics.promise)?;
     // Step 3: "Perform ! Call(promiseCapability.[[Reject]], undefined, « r »)."
-    let reject_obj = <crate::js::Types as JsTypes>::object_from_function(capability.reject);
+    let reject_obj = <Types as JsTypes>::object_from_function(capability.reject);
     let undefined = ec.value_undefined();
     ec.call(&reject_obj, &undefined, &[reason])?;
     // Step 4: "Return promiseCapability."
-    Ok(
-        <crate::js::Types as JsTypes>::value_as_object(&capability.promise)
-            .unwrap_or_else(|| ec.realm_global_object()),
-    )
-}
-
-/// <https://webidl.spec.whatwg.org/#a-promise-rejected-with>
-fn rejected_promise_boa(
-    reason: JsValue,
-    context: &mut Context,
-) -> Completion<JsObject, crate::js::Types> {
-    // Step 1: "Return a promise rejected with reason."
-    JsPromise::reject(JsError::from_opaque(reason.clone()), context)
-        .map(JsObject::from)
-        .map_err(|e| {
-            e.into_opaque(context)
-                .unwrap_or_else(|_| JsValue::undefined())
-        })
+    Ok(<Types as JsTypes>::value_as_object(&capability.promise)
+        .unwrap_or_else(|| ec.realm_global_object()))
 }
 
 /// <https://webidl.spec.whatwg.org/#js-to-promise>
@@ -107,101 +86,53 @@ fn rejected_promise_boa(
 /// Converts a value into a promise, following the "JS-to-promise" coercion rules.
 pub(crate) fn promise_from_value(
     value: JsValue,
-    ec: &mut dyn ExecutionContext<crate::js::Types>,
-) -> Completion<JsObject, crate::js::Types> {
+    ec: &mut dyn ExecutionContext<Types>,
+) -> Completion<JsObject, Types> {
     // Step 1: "Let promiseCapability be ? NewPromiseCapability(%Promise%)."
     let realm = ec.current_realm();
     let intrinsics = ec.realm_intrinsics(&realm);
     let capability = ec.new_promise_capability(intrinsics.promise)?;
     // Step 2: "Perform ? Call(promiseCapability.[[Resolve]], undefined, « V »)."
-    let resolve_obj = <crate::js::Types as JsTypes>::object_from_function(capability.resolve);
+    let resolve_obj = <Types as JsTypes>::object_from_function(capability.resolve);
     let undefined = ec.value_undefined();
     ec.call(&resolve_obj, &undefined, &[value])?;
     // Step 3: "Return promiseCapability."
-    Ok(
-        <crate::js::Types as JsTypes>::value_as_object(&capability.promise)
-            .unwrap_or_else(|| ec.realm_global_object()),
-    )
-}
-
-/// <https://webidl.spec.whatwg.org/#js-to-promise>
-fn promise_from_value_boa(
-    value: JsValue,
-    context: &mut Context,
-) -> Completion<JsObject, crate::js::Types> {
-    JsPromise::resolve(value, context)
-        .map(JsObject::from)
-        .map_err(|e| {
-            e.into_opaque(context)
-                .unwrap_or_else(|_| JsValue::undefined())
-        })
-}
-
-/// <https://webidl.spec.whatwg.org/#js-to-promise>
-///
-/// Converts a completion result into a `Promise`, rejecting it when the completion throws.
-pub(crate) fn promise_from_completion(
-    completion: boa_engine::JsResult<JsValue>,
-    ec: &mut dyn ExecutionContext<crate::js::Types>,
-) -> JsPromise {
-    // Convert the JsResult into a promise using EC-based helpers.
-    match completion {
-        Ok(value) => {
-            // Resolve the promise with the value.
-            let promise_obj =
-                promise_from_value(value.clone(), ec).unwrap_or_else(|_| ec.realm_global_object());
-            // Return as JsPromise (Boa type) for backward compatibility
-            // with the byte_tee_ignore_pull_completion caller.
-            JsPromise::from_object(promise_obj)
-                .expect("promise_from_value must return a Promise object")
-        }
-        Err(error) => {
-            // Reject the promise with the error reason.
-            let promise_obj = rejected_promise_from_error(error, ec);
-            JsPromise::from_object(promise_obj)
-                .expect("rejected_promise_from_error must return a Promise object")
-        }
-    }
+    Ok(<Types as JsTypes>::value_as_object(&capability.promise)
+        .unwrap_or_else(|| ec.realm_global_object()))
 }
 
 /// <https://webidl.spec.whatwg.org/#a-promise-rejected-with>
 ///
-/// Creates a rejected promise from a `JsError`, using the Web IDL coercion rules.
-/// Falls back to a TypeError with a generic message if conversion fails.
+/// Creates a rejected promise from a `JsValue` error reason.
 pub(crate) fn rejected_promise_from_error(
-    error: JsError,
-    ec: &mut dyn ExecutionContext<crate::js::Types>,
+    error: JsValue,
+    ec: &mut dyn ExecutionContext<Types>,
 ) -> JsObject {
-    // Convert the error to a rejection reason using the EC-based helper.
-    // Note: error_to_rejection_reason is now EC-based.
-    let reason = error_to_rejection_reason(error, ec);
-    // Use the generic rejected_promise helper which works on JsValue.
-    // rejected_promise creates a new promise via NewPromiseCapability — it never fails.
+    rejected_promise(error, ec).unwrap_or_else(|_| ec.realm_global_object())
+}
+
+/// Bridge for Boa-gated callers that pass `JsError`.
+#[cfg(boa_backend)]
+pub(crate) fn rejected_promise_from_error_boa(
+    error: boa_engine::JsError,
+    ec: &mut dyn ExecutionContext<Types>,
+) -> JsObject {
+    // Extract the opaque value if available, or fall back to a type error.
+    let reason = error
+        .as_opaque()
+        .cloned()
+        .unwrap_or_else(|| ec.new_type_error("rejected_promise_from_error: no opaque error value"));
     rejected_promise(reason, ec).unwrap_or_else(|_| ec.realm_global_object())
 }
 
 /// <https://webidl.spec.whatwg.org/#a-promise-rejected-with>
 ///
-/// Converts a Rust `JsError` into a JS rejection reason.
-/// Unwraps opaque error values or converts Rust-internal exceptions into serializable
-/// JS exceptions.
+/// Converts a `JsValue` error into a JS rejection reason (identity, already a value).
 pub(crate) fn error_to_rejection_reason(
-    error: JsError,
-    ec: &mut dyn ExecutionContext<crate::js::Types>,
+    error: JsValue,
+    _ec: &mut dyn ExecutionContext<Types>,
 ) -> JsValue {
-    // Step 1: If the error wraps an opaque value, return it directly.
-    // Note: as_opaque() does not need Context.
-    if let Some(reason) = error.as_opaque().cloned() {
-        return reason;
-    }
-
-    // Step 2: If the error has no opaque value (a Boa-internal JsNativeError),
-    // fall back to a generic TypeError via EC.
-    // In the generic EC path, all Completion errors carry opaque JsValues,
-    // so this fallback should never fire for generic code.
-    ec.new_type_error(
-        "Promise-returning operation could not convert an internal error into a rejection reason",
-    )
+    error
 }
 
 /// <https://webidl.spec.whatwg.org/#dfn-perform-steps-once-promise-is-settled>
@@ -210,8 +141,8 @@ pub(crate) fn error_to_rejection_reason(
 /// "React to promise with a fulfillment step that returns undefined."
 pub(crate) fn transform_promise_to_undefined(
     promise_object: &JsObject,
-    ec: &mut dyn ExecutionContext<crate::js::Types>,
-) -> Completion<JsObject, crate::js::Types> {
+    ec: &mut dyn ExecutionContext<Types>,
+) -> Completion<JsObject, Types> {
     let realm = ec.current_realm();
     let intrinsics = ec.realm_intrinsics(&realm);
     let not_promise_err =
@@ -221,7 +152,7 @@ pub(crate) fn transform_promise_to_undefined(
         Box::new(
             |_args: &[JsValue],
              _this: JsValue,
-             on_fulfilled_ec: &mut dyn ExecutionContext<crate::js::Types>| {
+             on_fulfilled_ec: &mut dyn ExecutionContext<Types>| {
                 Ok(on_fulfilled_ec.value_undefined())
             },
         ),
@@ -234,30 +165,12 @@ pub(crate) fn transform_promise_to_undefined(
     let capability = ec.new_promise_capability(promise_constructor)?;
     let result_promise = capability.promise.clone();
     // Step 7 of react: "PerformPromiseThen(promise, onFulfilled, onRejected, newCapability)."
-    let js_promise = <crate::js::Types as JsTypes>::object_as_promise(promise_object)
-        .ok_or_else(|| not_promise_err)?;
+    let js_promise =
+        <Types as JsTypes>::object_as_promise(promise_object).ok_or_else(|| not_promise_err)?;
     ec.perform_promise_then(js_promise, Some(on_fulfilled), None, Some(capability))?;
     // Step 8 of react: "Return newCapability."
-    Ok(
-        <crate::js::Types as JsTypes>::value_as_object(&result_promise)
-            .unwrap_or_else(|| ec.realm_global_object()),
-    )
-}
-
-/// <https://webidl.spec.whatwg.org/#dfn-perform-steps-once-promise-is-settled>
-fn transform_promise_to_undefined_boa(
-    promise_object: &JsObject,
-    context: &mut Context,
-) -> Completion<JsObject, crate::js::Types> {
-    let on_fulfilled =
-        NativeFunction::from_fn_ptr(return_undefined).to_js_function(context.realm());
-    JsPromise::from_object(promise_object.clone())
-        .and_then(|p| p.then(Some(on_fulfilled), None, context))
-        .map(JsObject::from)
-        .map_err(|e| {
-            e.into_opaque(context)
-                .unwrap_or_else(|_| JsValue::undefined())
-        })
+    Ok(<Types as JsTypes>::value_as_object(&result_promise)
+        .unwrap_or_else(|| ec.realm_global_object()))
 }
 
 /// <https://webidl.spec.whatwg.org/#mark-a-promise-as-handled>
@@ -265,15 +178,15 @@ fn transform_promise_to_undefined_boa(
 /// Marks a promise as "handled" to suppress unhandled-rejection warnings.
 pub(crate) fn mark_promise_as_handled(
     promise_object: &JsObject,
-    ec: &mut dyn ExecutionContext<crate::js::Types>,
-) -> Completion<(), crate::js::Types> {
+    ec: &mut dyn ExecutionContext<Types>,
+) -> Completion<(), Types> {
     let not_promise_err = ec.new_type_error("mark_promise_as_handled: value is not a Promise");
     // CreateBuiltinFunction returning undefined on rejection.
     let on_rejected = ec.create_builtin_function(
         Box::new(
             |_args: &[JsValue],
              _this: JsValue,
-             on_rejected_ec: &mut dyn ExecutionContext<crate::js::Types>| {
+             on_rejected_ec: &mut dyn ExecutionContext<Types>| {
                 Ok(on_rejected_ec.value_undefined())
             },
         ),
@@ -281,29 +194,10 @@ pub(crate) fn mark_promise_as_handled(
         ec.property_key_from_str(""),
     );
     // PerformPromiseThen with rejection-only handler.
-    let js_promise = <crate::js::Types as JsTypes>::object_as_promise(promise_object)
-        .ok_or_else(|| not_promise_err)?;
+    let js_promise =
+        <Types as JsTypes>::object_as_promise(promise_object).ok_or_else(|| not_promise_err)?;
     ec.perform_promise_then(js_promise, None, Some(on_rejected), None)?;
     Ok(())
-}
-
-/// <https://webidl.spec.whatwg.org/#mark-a-promise-as-handled>
-fn mark_promise_as_handled_boa(
-    promise_object: &JsObject,
-    context: &mut Context,
-) -> Completion<(), crate::js::Types> {
-    let on_rejected = NativeFunction::from_fn_ptr(return_undefined).to_js_function(context.realm());
-    let _ = JsPromise::from_object(promise_object.clone())
-        .and_then(|p| p.catch(on_rejected, context))
-        .map_err(|e| {
-            e.into_opaque(context)
-                .unwrap_or_else(|_| JsValue::undefined())
-        })?;
-    Ok(())
-}
-
-fn return_undefined(_: &JsValue, _: &[JsValue], _: &mut Context) -> boa_engine::JsResult<JsValue> {
-    Ok(JsValue::undefined())
 }
 
 // ── Web IDL Promise Reaction (upon fulfillment / upon rejection) ────────
@@ -324,22 +218,17 @@ fn return_undefined(_: &JsValue, _: &[JsValue], _: &mut Context) -> boa_engine::
 pub(crate) fn upon_fulfillment<F>(
     promise: JsObject,
     steps: F,
-    ec: &mut dyn ExecutionContext<crate::js::Types>,
-) -> Completion<JsObject, crate::js::Types>
+    ec: &mut dyn ExecutionContext<Types>,
+) -> Completion<JsObject, Types>
 where
-    F: FnOnce(
-            JsValue,
-            &mut dyn ExecutionContext<crate::js::Types>,
-        ) -> Completion<JsValue, crate::js::Types>
-        + 'static,
+    F: FnOnce(JsValue, &mut dyn ExecutionContext<Types>) -> Completion<JsValue, Types> + 'static,
 {
-    upon_settlement::<
-        F,
-        fn(
-            JsValue,
-            &mut dyn ExecutionContext<crate::js::Types>,
-        ) -> Completion<JsValue, crate::js::Types>,
-    >(promise, Some(steps), None, ec)
+    upon_settlement::<F, fn(JsValue, &mut dyn ExecutionContext<Types>) -> Completion<JsValue, Types>>(
+        promise,
+        Some(steps),
+        None,
+        ec,
+    )
 }
 
 /// <https://webidl.spec.whatwg.org/#upon-rejection>
@@ -350,22 +239,17 @@ where
 pub(crate) fn upon_rejection<R>(
     promise: JsObject,
     steps: R,
-    ec: &mut dyn ExecutionContext<crate::js::Types>,
-) -> Completion<JsObject, crate::js::Types>
+    ec: &mut dyn ExecutionContext<Types>,
+) -> Completion<JsObject, Types>
 where
-    R: FnOnce(
-            JsValue,
-            &mut dyn ExecutionContext<crate::js::Types>,
-        ) -> Completion<JsValue, crate::js::Types>
-        + 'static,
+    R: FnOnce(JsValue, &mut dyn ExecutionContext<Types>) -> Completion<JsValue, Types> + 'static,
 {
-    upon_settlement::<
-        fn(
-            JsValue,
-            &mut dyn ExecutionContext<crate::js::Types>,
-        ) -> Completion<JsValue, crate::js::Types>,
-        R,
-    >(promise, None, Some(steps), ec)
+    upon_settlement::<fn(JsValue, &mut dyn ExecutionContext<Types>) -> Completion<JsValue, Types>, R>(
+        promise,
+        None,
+        Some(steps),
+        ec,
+    )
 }
 
 /// <https://webidl.spec.whatwg.org/#react>
@@ -377,19 +261,11 @@ pub(crate) fn upon_settlement<F, R>(
     promise: JsObject,
     on_fulfilled: Option<F>,
     on_rejected: Option<R>,
-    ec: &mut dyn ExecutionContext<crate::js::Types>,
-) -> Completion<JsObject, crate::js::Types>
+    ec: &mut dyn ExecutionContext<Types>,
+) -> Completion<JsObject, Types>
 where
-    F: FnOnce(
-            JsValue,
-            &mut dyn ExecutionContext<crate::js::Types>,
-        ) -> Completion<JsValue, crate::js::Types>
-        + 'static,
-    R: FnOnce(
-            JsValue,
-            &mut dyn ExecutionContext<crate::js::Types>,
-        ) -> Completion<JsValue, crate::js::Types>
-        + 'static,
+    F: FnOnce(JsValue, &mut dyn ExecutionContext<Types>) -> Completion<JsValue, Types> + 'static,
+    R: FnOnce(JsValue, &mut dyn ExecutionContext<Types>) -> Completion<JsValue, Types> + 'static,
 {
     // Extract everything we need from `ec` before creating closures,
     // since create_builtin_function takes &mut self.
@@ -404,43 +280,41 @@ where
     let rejected_cell = on_rejected.map(|s| RefCell::new(Some(s)));
 
     // Step 2 of react: CreateBuiltinFunction(onFulfilledSteps, 1, "", « »)
-    let on_fulfilled_fn: Option<<crate::js::Types as JsTypes>::Function> =
-        if fulfilled_cell.is_some() {
-            let cell = fulfilled_cell.unwrap();
-            Some(ec.create_builtin_function(
-                Box::new(
-                    move |args: &[JsValue],
-                          _this: JsValue,
-                          inner_ec: &mut dyn ExecutionContext<crate::js::Types>|
-                          -> Completion<JsValue, crate::js::Types> {
-                        let value = args
-                            .first()
-                            .cloned()
-                            .unwrap_or_else(|| inner_ec.value_undefined());
-                        if let Some(steps) = cell.borrow_mut().take() {
-                            steps(value, inner_ec)
-                        } else {
-                            Ok(inner_ec.value_undefined())
-                        }
-                    },
-                ),
-                1,
-                ec.property_key_from_str(""),
-            ))
-        } else {
-            None
-        };
+    let on_fulfilled_fn: Option<<Types as JsTypes>::Function> = if fulfilled_cell.is_some() {
+        let cell = fulfilled_cell.unwrap();
+        Some(ec.create_builtin_function(
+            Box::new(
+                move |args: &[JsValue],
+                      _this: JsValue,
+                      inner_ec: &mut dyn ExecutionContext<Types>|
+                      -> Completion<JsValue, Types> {
+                    let value = args
+                        .first()
+                        .cloned()
+                        .unwrap_or_else(|| inner_ec.value_undefined());
+                    if let Some(steps) = cell.borrow_mut().take() {
+                        steps(value, inner_ec)
+                    } else {
+                        Ok(inner_ec.value_undefined())
+                    }
+                },
+            ),
+            1,
+            ec.property_key_from_str(""),
+        ))
+    } else {
+        None
+    };
 
     // Step 4 of react: CreateBuiltinFunction(onRejectedSteps, 1, "", « »)
-    let on_rejected_fn: Option<<crate::js::Types as JsTypes>::Function> = if rejected_cell.is_some()
-    {
+    let on_rejected_fn: Option<<Types as JsTypes>::Function> = if rejected_cell.is_some() {
         let cell = rejected_cell.unwrap();
         Some(ec.create_builtin_function(
             Box::new(
                 move |args: &[JsValue],
                       _this: JsValue,
-                      inner_ec: &mut dyn ExecutionContext<crate::js::Types>|
-                      -> Completion<JsValue, crate::js::Types> {
+                      inner_ec: &mut dyn ExecutionContext<Types>|
+                      -> Completion<JsValue, Types> {
                     let reason = args
                         .first()
                         .cloned()
@@ -468,8 +342,8 @@ where
     let result_promise = capability.promise.clone();
 
     // Step 7 of react: PerformPromiseThen(promise, onFulfilled, onRejected, newCapability).
-    let js_promise = <crate::js::Types as JsTypes>::object_as_promise(&promise)
-        .ok_or_else(|| not_promise_err.clone())?;
+    let js_promise =
+        <Types as JsTypes>::object_as_promise(&promise).ok_or_else(|| not_promise_err.clone())?;
     ec.perform_promise_then(
         js_promise,
         on_fulfilled_fn,
@@ -478,7 +352,7 @@ where
     )?;
 
     // Step 8 of react: Return newCapability.
-    Ok(crate::js::Types::value_as_object(&result_promise).unwrap_or(global))
+    Ok(Types::value_as_object(&result_promise).unwrap_or(global))
 }
 
 // ── Wait for all ──────────────────────────────────────────────────────
@@ -514,19 +388,12 @@ pub(crate) fn wait_for_all<TSuccess, TFailure>(
     promises: Vec<JsObject>,
     success_steps: TSuccess,
     failure_steps: TFailure,
-    ec: &mut dyn ExecutionContext<crate::js::Types>,
-) -> Completion<(), crate::js::Types>
+    ec: &mut dyn ExecutionContext<Types>,
+) -> Completion<(), Types>
 where
-    TSuccess: FnOnce(
-            Vec<JsValue>,
-            &mut dyn ExecutionContext<crate::js::Types>,
-        ) -> Completion<(), crate::js::Types>
-        + 'static,
-    TFailure: FnOnce(
-            JsValue,
-            &mut dyn ExecutionContext<crate::js::Types>,
-        ) -> Completion<(), crate::js::Types>
-        + 'static,
+    TSuccess:
+        FnOnce(Vec<JsValue>, &mut dyn ExecutionContext<Types>) -> Completion<(), Types> + 'static,
+    TFailure: FnOnce(JsValue, &mut dyn ExecutionContext<Types>) -> Completion<(), Types> + 'static,
 {
     // Step 1: Let fulfilledCount be 0.
     // Step 2: Let rejected be false.
@@ -556,8 +423,8 @@ where
         Box::new(
             move |args: &[JsValue],
                   _this: JsValue,
-                  handler_ec: &mut dyn ExecutionContext<crate::js::Types>|
-                  -> Completion<JsValue, crate::js::Types> {
+                  handler_ec: &mut dyn ExecutionContext<Types>|
+                  -> Completion<JsValue, Types> {
                 let arg = args
                     .first()
                     .cloned()
@@ -591,7 +458,7 @@ where
         let realm = ec.current_realm();
         ec.enqueue_job_with_realm(
             realm,
-            Box::new(move |job_ec: &mut dyn ExecutionContext<crate::js::Types>| {
+            Box::new(move |job_ec: &mut dyn ExecutionContext<Types>| {
                 if let Some(success_steps) = success_cell.borrow_mut().take() {
                     let _ = success_steps(Vec::new(), job_ec);
                 }
@@ -624,8 +491,8 @@ where
             Box::new(
                 move |args: &[JsValue],
                       _this: JsValue,
-                      handler_ec: &mut dyn ExecutionContext<crate::js::Types>|
-                      -> Completion<JsValue, crate::js::Types> {
+                      handler_ec: &mut dyn ExecutionContext<Types>|
+                      -> Completion<JsValue, Types> {
                     let arg = args
                         .first()
                         .cloned()
@@ -659,7 +526,7 @@ where
         );
 
         // Step 9.4: Perform PerformPromiseThen(promise, fulfillmentHandler, rejectionHandler).
-        let js_promise = <crate::js::Types as JsTypes>::object_as_promise(&promise)
+        let js_promise = <Types as JsTypes>::object_as_promise(&promise)
             .ok_or_else(|| ec.new_type_error("wait_for_all: value is not a Promise"))?;
         ec.perform_promise_then(
             js_promise,
@@ -681,12 +548,12 @@ where
 /// fulfilled, or rejects on the first rejection.
 pub(crate) fn wait_for_all_get_promise(
     promises: Vec<JsObject>,
-    ec: &mut dyn ExecutionContext<crate::js::Types>,
-) -> Completion<JsObject, crate::js::Types> {
+    ec: &mut dyn ExecutionContext<Types>,
+) -> Completion<JsObject, Types> {
     // Step 1: Let promise be a new promise of type Promise<sequence<T>> in realm.
     // Note: new_promise_pending returns (promise_value, resolvers), not a capability struct.
     let (promise_value, resolvers) = ec.new_promise_pending()?;
-    let promise_obj = <crate::js::Types as JsTypes>::value_as_object(&promise_value)
+    let promise_obj = <Types as JsTypes>::value_as_object(&promise_value)
         .unwrap_or_else(|| ec.realm_global_object());
 
     // Share resolvers between success and failure closures via Rc.
@@ -701,7 +568,7 @@ pub(crate) fn wait_for_all_get_promise(
     wait_for_all(
         promises,
         Box::new(
-            move |results: Vec<JsValue>, inner_ec: &mut dyn ExecutionContext<crate::js::Types>| {
+            move |results: Vec<JsValue>, inner_ec: &mut dyn ExecutionContext<Types>| {
                 // Step 2.1: Resolve promise with results.
                 let resolve: JsObject = resolvers_for_success.resolve.clone().into();
                 let undefined = inner_ec.value_undefined();
@@ -710,16 +577,12 @@ pub(crate) fn wait_for_all_get_promise(
                 for value in results {
                     inner_ec.array_push(&array, value)?;
                 }
-                inner_ec.call(
-                    &resolve,
-                    &undefined,
-                    &[crate::js::Types::value_from_object(array)],
-                )?;
+                inner_ec.call(&resolve, &undefined, &[Types::value_from_object(array)])?;
                 Ok(())
             },
         ),
         Box::new(
-            move |reason: JsValue, inner_ec: &mut dyn ExecutionContext<crate::js::Types>| {
+            move |reason: JsValue, inner_ec: &mut dyn ExecutionContext<Types>| {
                 // Step 3.1: Reject promise with reason.
                 let reject: JsObject = resolvers.reject.clone().into();
                 let undefined = inner_ec.value_undefined();

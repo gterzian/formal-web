@@ -1,15 +1,19 @@
 //! <https://webidl.spec.whatwg.org/#dfn-array-index-property-name>
 
-use boa_engine::JsValue;
+use js_engine::{ExecutionContext, JsTypes};
+
+use crate::js::Types;
+
+type JsValue = <Types as JsTypes>::JsValue;
 
 /// <https://webidl.spec.whatwg.org/#legacy-platform-object-abstract-ops>
-pub(crate) fn is_array_index_key(key: &JsValue) -> bool {
+pub(crate) fn is_array_index_key(key: &JsValue, ec: &mut dyn ExecutionContext<Types>) -> bool {
     // Step 1: "If P is not a String, then return false."
-    let s = match key.as_string() {
-        Some(s) => s.to_std_string_escaped(),
+    let s = match <Types as JsTypes>::value_as_string(key) {
+        Some(s) => ec.js_string_to_rust_string(&s),
         None => {
             // Also accept numeric JsValues — they coerce to string keys.
-            let n = match key.as_number() {
+            let n = match <Types as JsTypes>::value_as_number(key) {
                 Some(n) => n,
                 None => return false,
             };

@@ -90,7 +90,7 @@ fn trap_define_property(
 
     // Step 2: "If IsPlatformObjectSameOrigin(W) is true:"
     // Step 2.1: "If P is an array index property name, return false."
-    if is_array_index_key(&key) {
+    if is_array_index_key(&key, ec) {
         return Ok(ec.value_from_bool(false));
     }
 
@@ -140,7 +140,7 @@ fn trap_set(
     // Note: Access reporting is not yet implemented.
     // Step 3: "If IsPlatformObjectSameOrigin(W) is true:"
     // Step 3.1: "If P is an array index property name, return false."
-    if is_array_index_key(&key) {
+    if is_array_index_key(&key, ec) {
         return Ok(ec.value_from_bool(false));
     }
 
@@ -162,7 +162,7 @@ fn trap_delete_property(
 
     // Step 2: "If IsPlatformObjectSameOrigin(W) is true:"
     // Step 2.1: "If P is an array index property name:"
-    if is_array_index_key(&key) {
+    if is_array_index_key(&key, ec) {
         let prop_key = ec.to_property_key(key)?;
         // Step 2.1.1: "Let desc be ! this.[[GetOwnProperty]](P)."
         // Uses has_own_property as proxy for "desc is undefined".

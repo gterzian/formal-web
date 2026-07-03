@@ -28,5 +28,7 @@ fn build_context_inner(_document: Rc<RefCell<BaseDocument>>) -> Result<Engine, S
     let mut engine = JscEngine::new();
     crate::js::install_console_namespace(&mut engine)
         .map_err(|error| format!("failed to install console: {:?}", error))?;
+    crate::js::install_css_namespace(&mut engine)
+        .map_err(|error| format!("failed to install CSS namespace: {:?}", error))?;
     Ok(engine)
 }

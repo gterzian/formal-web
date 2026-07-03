@@ -6,7 +6,7 @@ use std::{
 };
 
 use boa_engine::{
-    Context, JsArgs, JsError, JsValue,
+    Context, JsArgs, JsValue,
     builtins::promise::ResolvingFunctions,
     js_string,
     native_function::NativeFunction,
@@ -23,8 +23,8 @@ use crate::js::with_abort_signal_ref;
 use crate::streams::{SizeAlgorithm, extract_high_water_mark, extract_size_algorithm};
 use crate::webidl::bindings::create_interface_instance;
 use crate::webidl::{
-    mark_promise_as_handled, promise_from_completion, promise_from_value, rejected_promise,
-    rejected_promise_from_error, resolved_promise, transform_promise_to_undefined,
+    mark_promise_as_handled, promise_from_value, rejected_promise, rejected_promise_from_error,
+    resolved_promise, transform_promise_to_undefined,
 };
 use js_engine::EcmascriptHost;
 use js_engine::gc::GcCell;
@@ -1936,8 +1936,18 @@ fn byte_tee_ignore_pull_completion(
     completion: Completion<JsValue, crate::js::Types>,
     ec: &mut dyn ExecutionContext<crate::js::Types>,
 ) -> Completion<(), crate::js::Types> {
-    let promise = promise_from_completion(completion.map_err(|e| JsError::from_opaque(e)), ec);
-    mark_promise_as_handled(&JsObject::from(promise), ec)
+    // Resolve or reject based on the completion, then mark as handled.
+    match completion {
+        Ok(value) => {
+            let promise_obj = crate::webidl::promise_from_value(value.clone(), ec)?;
+            crate::webidl::mark_promise_as_handled(&promise_obj, ec)?;
+        }
+        Err(error) => {
+            let promise_obj = crate::webidl::rejected_promise_from_error(error, ec);
+            crate::webidl::mark_promise_as_handled(&promise_obj, ec)?;
+        }
+    }
+    Ok(())
 }
 
 fn byte_tee_switch_to_default_reader(
@@ -2883,13 +2893,6 @@ fn promise_rejected_with_type_error(
 ) -> Completion<JsObject, crate::js::Types> {
     let reason = type_error_value(message, ec)?;
     promise_rejected_with_reason(reason, ec)
-}
-
-fn promise_rejected_with_error(
-    error: JsError,
-    ec: &mut dyn ExecutionContext<crate::js::Types>,
-) -> Completion<JsObject, crate::js::Types> {
-    Ok(crate::webidl::rejected_promise_from_error(error, ec))
 }
 
 fn reject_promise_with_error(

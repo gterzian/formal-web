@@ -25,7 +25,7 @@ use crate::webidl::bindings::{
     register_namespace_spec,
 };
 use crate::webidl::{
-    get_a_copy_of_the_buffer_source, is_buffer_source, rejected_promise_from_error,
+    get_a_copy_of_the_buffer_source, is_buffer_source, rejected_promise_from_error_boa,
 };
 use boa_engine::{JsError, JsNativeError, JsResult, JsValue, js_string, object::JsObject};
 use js_engine::boa::BoaContext;
@@ -165,14 +165,14 @@ fn compile_fn(
             let error: JsError = JsNativeError::typ()
                 .with_message("WebAssembly.compile: missing argument")
                 .into();
-            return Ok(JsValue::from(rejected_promise_from_error(error, ec)));
+            return Ok(JsValue::from(rejected_promise_from_error_boa(error, ec)));
         }
     };
     let stable_bytes = match get_a_copy_of_the_buffer_source(bytes_value, ec) {
         Ok(bytes) => bytes,
         Err(opaque) => {
             let error: JsError = JsError::from_opaque(opaque);
-            return Ok(JsValue::from(rejected_promise_from_error(error, ec)));
+            return Ok(JsValue::from(rejected_promise_from_error_boa(error, ec)));
         }
     };
     asynchronously_compile_a_webassembly_module(stable_bytes, ec)
@@ -189,7 +189,7 @@ fn instantiate_fn(
             let error: JsError = JsNativeError::typ()
                 .with_message("WebAssembly.instantiate: missing argument")
                 .into();
-            return Ok(JsValue::from(rejected_promise_from_error(error, ec)));
+            return Ok(JsValue::from(rejected_promise_from_error_boa(error, ec)));
         }
     };
 
@@ -199,12 +199,12 @@ fn instantiate_fn(
             Ok(bytes) => bytes,
             Err(opaque) => {
                 let error: JsError = JsError::from_opaque(opaque);
-                return Ok(JsValue::from(rejected_promise_from_error(error, ec)));
+                return Ok(JsValue::from(rejected_promise_from_error_boa(error, ec)));
             }
         };
         return instantiate_bytes(stable_bytes, ec).or_else(|opaque| {
             let error: JsError = JsError::from_opaque(opaque);
-            Ok(JsValue::from(rejected_promise_from_error(error, ec)))
+            Ok(JsValue::from(rejected_promise_from_error_boa(error, ec)))
         });
     }
 
@@ -216,7 +216,7 @@ fn instantiate_fn(
                     "WebAssembly.instantiate: first argument must be a buffer source or Module",
                 )
                 .into();
-            return Ok(JsValue::from(rejected_promise_from_error(error, ec)));
+            return Ok(JsValue::from(rejected_promise_from_error_boa(error, ec)));
         }
     };
     let wasm_module = match module_object.downcast_ref::<WasmModule>() {
@@ -225,11 +225,11 @@ fn instantiate_fn(
             let error: JsError = JsNativeError::typ()
                 .with_message("WebAssembly.instantiate: first argument does not implement the Module interface")
                 .into();
-            return Ok(JsValue::from(rejected_promise_from_error(error, ec)));
+            return Ok(JsValue::from(rejected_promise_from_error_boa(error, ec)));
         }
     };
     asynchronously_instantiate_a_webassembly_module(&*wasm_module, ec).or_else(|opaque| {
         let error: JsError = JsError::from_opaque(opaque);
-        Ok(JsValue::from(rejected_promise_from_error(error, ec)))
+        Ok(JsValue::from(rejected_promise_from_error_boa(error, ec)))
     })
 }

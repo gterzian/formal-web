@@ -256,6 +256,13 @@ fn binding_fn(
   `boa_gc::Trace`/`boa_gc::Finalize` derive imports from content code.
 - **Proc-macro fix:** `#[gc_struct]` now correctly transforms `#[ignore_trace]`
   in enum variant fields (both `gc_struct_boa` and `gc_struct_jsc`).
+- **Generic CSS namespace** (`css_generic.rs`) following `console_generic.rs`
+  pattern (`create_plain_object` + `Behaviour` trait), wired into JSC path.
+- **`buffer_source.rs`, `array_index.rs` converted to generic EC API** —
+  no `boa_engine::*` imports.
+- **`promise.rs` cleaned up:** removed dead `_boa` suffix functions; converted
+  `rejected_promise_from_error`/`error_to_rejection_reason` to take `JsValue`;
+  converted all function signatures to generic `ExecutionContext<Types>`.
 - **Both backends compile clean:** `cargo check -p content` (JSC default) and
   `cargo check -p content --no-default-features --features boa,media` (Boa)
   both produce zero errors.
@@ -264,8 +271,8 @@ fn binding_fn(
 
 | Blocked operation | Reason |
 |---|---|
-| `ObjectInitializer` / `register_global_property` (CSS namespace, document property) | Boa object-model construction; needs conversion to `ec.create_plain_object` + `ec.set` pattern (already done for console) |
-| `#[gc_struct]` proc-macro didn't handle enum variant fields | Fixed: both `gc_struct_boa`/`gc_struct_jsc` now transform `#[ignore_trace]` in enum variant fields |
+| `ObjectInitializer` / `register_global_property` (document property) | Boa object-model construction; needs conversion to `ec.create_plain_object` + `ec.set` pattern. CSS namespace done (`css_generic.rs`). |
+| `Callback::equals` requires engine-level object comparison | `JsObject` doesn't implement `Eq` on generic `JsTypes`; needs trait extension or bridge. Blocks `callback.rs` generic conversion. |
 
 ### Remaining `#[cfg(boa_backend)]` gating to remove
 
@@ -352,17 +359,5 @@ from `main.rs` except for wasm-related code.
 
 ## End-of-task checklist
 
-- **Update this README** to reflect the current state — remaining gating,
-  blocker status, next-task order.
-- **Prune stale sections.**  This file is a living plan, not a log.
-- **Run `cargo clippy` and `cargo fmt`** on all changed files.
-- **Run WPT** on the active backend:
-  ```bash
-  # JSC (default on macOS)
-  cargo run --release -- wpt
-
-  # Boa
-  cargo run --release --no-default-features --features boa,media -- wpt
-  ```
-- **Run navigation verification:** `./verification/verify-navigation.sh`
-- **Goal:** zero unexpected WPT results on both backends.
+- Make sure everything compiles wiht every feature flag. 
+- Run step 9 of the top AGENTS.md end of task steps.
