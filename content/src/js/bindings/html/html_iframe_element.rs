@@ -4,7 +4,7 @@ use std::marker::PhantomData;
 use crate::html::HTMLIFrameElement;
 use crate::js::downcast::try_with_event_target_mut;
 use crate::webidl::bindings::{AttributeDef, InterfaceDefinition, WebIdlInterface};
-use crate::webidl::{callback_function_value, nullable_value_ec};
+use crate::webidl::{callback_function_value, nullable_value};
 
 use js_engine::{Completion, ExecutionContext, JsTypes};
 
@@ -215,7 +215,7 @@ fn set_onload(
 ) -> Completion<JsValue, crate::js::Types> {
     let iframe_object = crate::js::Types::value_as_object(this)
         .ok_or_else(|| ec.new_type_error("HTMLIFrameElement receiver is not an object"))?;
-    let callback = nullable_value_ec(args.get_or_undefined(0), ec, callback_function_value)?;
+    let callback = nullable_value(args.get_or_undefined(0), ec, callback_function_value)?;
 
     // Note: uses JsObject::downcast_mut — with_object_any_mut borrows ec.
     let previous = if let Some(mut iframe) = iframe_object.downcast_mut::<HTMLIFrameElement>() {
@@ -265,7 +265,7 @@ fn set_onerror(
 ) -> Completion<JsValue, crate::js::Types> {
     let iframe_object = crate::js::Types::value_as_object(this)
         .ok_or_else(|| ec.new_type_error("HTMLIFrameElement receiver is not an object"))?;
-    let callback = nullable_value_ec(args.get_or_undefined(0), ec, callback_function_value)?;
+    let callback = nullable_value(args.get_or_undefined(0), ec, callback_function_value)?;
 
     // Note: uses JsObject::downcast_mut — with_object_any_mut borrows ec.
     let previous = if let Some(mut iframe) = iframe_object.downcast_mut::<HTMLIFrameElement>() {

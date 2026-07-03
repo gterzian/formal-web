@@ -6,7 +6,7 @@ use crate::html::{
     HTMLAnchorElement, HTMLElement, HTMLIFrameElement, HTMLInputElement, HTMLMediaElement,
     HTMLVideoElement,
 };
-use crate::js::platform_objects::{invalidate_cached_node_ids_ec, resolve_element_object_ec};
+use crate::js::platform_objects::{invalidate_cached_node_ids, resolve_element_object};
 use crate::webidl::bindings::{
     AttributeDef, InterfaceDefinition, OperationDef, WebIdlInterface, create_interface_instance,
 };
@@ -271,7 +271,7 @@ fn set_inner_html(
     let value_undefined = ec.value_undefined();
     let html = ec.to_rust_string(args.first().cloned().unwrap_or(value_undefined))?;
     let dropped_node_ids = try_with_element_ref(this, ec, Element::child_subtree_node_ids)?;
-    invalidate_cached_node_ids_ec(ec, &dropped_node_ids)?;
+    invalidate_cached_node_ids(ec, &dropped_node_ids)?;
     try_with_element_ref(this, ec, |element| element.set_inner_html(&html))?;
     Ok(ec.value_undefined())
 }
@@ -627,7 +627,7 @@ fn query_selector(
         .map_err(|error| ec.new_syntax_error(&error))?;
     match node_id {
         Some(node_id) => {
-            let obj = resolve_element_object_ec(node_id, ec)?;
+            let obj = resolve_element_object(node_id, ec)?;
             Ok(crate::js::Types::value_from_object(obj))
         }
         None => Ok(ec.value_null()),
@@ -645,7 +645,7 @@ fn query_selector_all(
         .map_err(|error| ec.new_syntax_error(&error))?;
     let array = ec.create_empty_array();
     for node_id in node_ids {
-        let obj = resolve_element_object_ec(node_id, ec)?;
+        let obj = resolve_element_object(node_id, ec)?;
         ec.array_push(&array, crate::js::Types::value_from_object(obj))?;
     }
     Ok(crate::js::Types::value_from_object(array))

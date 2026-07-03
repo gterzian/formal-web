@@ -12,7 +12,7 @@ use crate::js::downcast::{
 use crate::webidl::bindings::{
     AttributeDef, InterfaceDefinition, OperationDef, WebIdlInterface, create_interface_instance,
 };
-use crate::webidl::{callback_function_value, nullable_value_ec};
+use crate::webidl::{callback_function_value, nullable_value};
 
 use super::event_target::EcDispatchHost;
 
@@ -294,7 +294,7 @@ fn set_onabort(
 ) -> Completion<JsValue, crate::js::Types> {
     let signal_object = crate::js::Types::value_as_object(this)
         .ok_or_else(|| ec.new_type_error("AbortSignal receiver is not an object"))?;
-    let callback = nullable_value_ec(args.get_or_undefined(0), ec, callback_function_value)?;
+    let callback = nullable_value(args.get_or_undefined(0), ec, callback_function_value)?;
 
     let previous =
         try_with_abort_signal_mut(this, ec, |signal| signal.replace_onabort(callback.clone()))?;

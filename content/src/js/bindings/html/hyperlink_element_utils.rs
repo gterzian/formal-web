@@ -15,7 +15,7 @@ use js_engine::{Completion, ExecutionContext, JsTypes};
 pub(crate) fn document_creation_url(
     ec: &mut dyn ExecutionContext<crate::js::Types>,
 ) -> Completion<Url, crate::js::Types> {
-    let object = platform_objects::document_object_ec(ec)?;
+    let object = platform_objects::document_object(ec)?;
     let missing_err = ec.new_type_error("document object is not a Document");
     let document = ec
         .with_object_any(&object)

@@ -603,9 +603,9 @@ fn run_iframe_load_event_steps(
 
     let iframe_object = crate::js::platform_objects::resolve_element_object(
         iframe_node_id,
-        content_document.settings.context(),
+        &mut content_document.settings.engine,
     )
-    .map_err(|error| error.to_string())?;
+    .map_err(|error| error.display().to_string())?;
 
     // Step 4: "If element's pending resource-timing start time is not null, then:"
     // TODO: Implement iframe resource timing.

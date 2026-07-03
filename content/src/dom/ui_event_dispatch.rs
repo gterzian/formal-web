@@ -529,7 +529,7 @@ impl EventHandler for BlitzJSEventHandler<'_> {
         let ui_event = JsUiEvent::from_dom_event(event, view, time_stamp);
         let event_object = create_interface_instance::<crate::js::Types, JsUiEvent>(
             ui_event,
-            js_engine::boa::context_as_ec(self.settings.context()),
+            &mut self.settings.engine,
         )
         .expect("UIEvent construction must succeed");
         if let Err(error) = dispatch_with_chain(self, chain, &event_object) {

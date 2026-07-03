@@ -31,12 +31,13 @@ pub(crate) trait ReadableStreamGenericReader: Clone {
     fn as_reader_slot(&self) -> ReadableStreamReader;
 
     /// <https://streams.spec.whatwg.org/#generic-reader-closed>
-    fn closed(&self) -> JsResult<JsObject> {
+    fn closed(
+        &self,
+        ec: &mut dyn ExecutionContext<crate::js::Types>,
+    ) -> Completion<JsObject, crate::js::Types> {
         // Step 1: "Return this.[[closedPromise]]."
         self.closed_promise_slot_value().ok_or_else(|| {
-            JsNativeError::typ()
-                .with_message("ReadableStream reader is missing its closed promise")
-                .into()
+            ec.new_type_error("ReadableStream reader is missing its closed promise")
         })
     }
 
@@ -244,16 +245,11 @@ impl ReadableStreamDefaultReader {
     }
 
     /// <https://streams.spec.whatwg.org/#generic-reader-closed>
-    pub(crate) fn closed(&self) -> JsResult<JsObject> {
-        <Self as ReadableStreamGenericReader>::closed(self)
-    }
-
-    pub(crate) fn closed_ec(
+    pub(crate) fn closed(
         &self,
         ec: &mut dyn ExecutionContext<crate::js::Types>,
     ) -> Completion<JsObject, crate::js::Types> {
-        let err = ec.new_type_error("ReadableStream reader is missing its closed promise");
-        self.closed().map_err(|_| err)
+        <Self as ReadableStreamGenericReader>::closed(self, ec)
     }
 
     /// <https://streams.spec.whatwg.org/#generic-reader-cancel>

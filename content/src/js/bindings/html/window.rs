@@ -12,7 +12,7 @@ use crate::js::platform_objects;
 use crate::webidl::bindings::{
     AttributeDef, InterfaceDefinition, OperationDef, WebIdlInterface, create_interface_instance,
 };
-use crate::webidl::{callback_function_value, nullable_value_ec};
+use crate::webidl::{callback_function_value, nullable_value};
 
 use crate::dom::Element;
 use crate::js::bindings::dom::with_element_ref;
@@ -258,7 +258,7 @@ fn set_onload(
     ec: &mut dyn ExecutionContext<crate::js::Types>,
 ) -> Completion<JsValue, crate::js::Types> {
     let window_object = current_window_object_from(this, ec);
-    let callback = nullable_value_ec(args.get_or_undefined(0), ec, callback_function_value)?;
+    let callback = nullable_value(args.get_or_undefined(0), ec, callback_function_value)?;
 
     let previous = {
         if let Some(data) = ec.with_object_any_mut(&window_object) {
@@ -427,7 +427,7 @@ fn get_computed_style_method(
 fn location_object(
     ec: &mut dyn ExecutionContext<crate::js::Types>,
 ) -> Completion<JsObject, crate::js::Types> {
-    if let Some(object) = platform_objects::location_object_ec(ec)? {
+    if let Some(object) = platform_objects::location_object(ec)? {
         return Ok(object);
     }
 
@@ -435,7 +435,7 @@ fn location_object(
     let window = ec.global_object();
     let object =
         create_interface_instance::<crate::js::Types, Location>(Location::new(url, window), ec)?;
-    platform_objects::store_location_object_ec(ec, object.clone())?;
+    platform_objects::store_location_object(ec, object.clone())?;
     Ok(object)
 }
 
@@ -443,10 +443,6 @@ fn location_object(
 ///
 /// Resolve the Window from a receiver that may be a Window or a WindowProxy.
 /// Delegates to the domain layer's `resolve_window`.
-fn current_window_object(this: &JsValue, ctx: &mut Context) -> JsObject {
-    current_window_object_from(this, js_engine::boa::context_as_ec(ctx))
-}
-
 fn current_window_object_from(
     this: &JsValue,
     ec: &mut dyn ExecutionContext<crate::js::Types>,

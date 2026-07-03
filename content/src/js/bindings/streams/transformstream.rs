@@ -159,7 +159,7 @@ fn controller_enqueue(
     })?;
     let chunk = args.first().cloned().unwrap_or(ec.value_undefined());
     let controller = with_transform_stream_default_controller_ref(&obj, ec, |c| c.clone())?;
-    controller.enqueue_ec(chunk, ec)?;
+    controller.enqueue(chunk, ec)?;
     Ok(ec.value_undefined())
 }
 

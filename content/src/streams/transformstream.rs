@@ -232,15 +232,7 @@ impl TransformStreamDefaultController {
     }
 
     /// <https://streams.spec.whatwg.org/#ts-default-controller-enqueue>
-    pub(crate) fn enqueue(&self, chunk: JsValue, context: &mut Context) -> JsResult<()> {
-        crate::js::completion_to_js_result(transform_stream_default_controller_enqueue(
-            self.clone(),
-            chunk,
-            js_engine::boa::context_as_ec(context),
-        ))
-    }
-
-    pub(crate) fn enqueue_ec(
+    pub(crate) fn enqueue(
         &self,
         chunk: JsValue,
         ec: &mut dyn ExecutionContext<crate::js::Types>,

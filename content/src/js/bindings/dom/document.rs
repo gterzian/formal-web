@@ -1,12 +1,12 @@
 use std::marker::PhantomData;
 use std::rc::Rc;
 
-use boa_engine::{Context, JsResult, JsValue, js_string, object::JsObject, property::Attribute};
+use boa_engine::{Context, JsError, JsResult, JsValue, js_string, object::JsObject, property::Attribute};
 
 use crate::dom::Document;
 use crate::js::platform_objects::{
-    document_object, invalidate_cached_node_ids_ec, resolve_element_object_ec,
-    resolve_or_create_text_node_object_ec,
+    document_object, invalidate_cached_node_ids, resolve_element_object,
+    resolve_or_create_text_node_object,
 };
 use crate::webidl::bindings::{AttributeDef, InterfaceDefinition, OperationDef, WebIdlInterface};
 
@@ -189,7 +189,7 @@ fn get_element_by_id(
     let node_id = try_with_document(this, ec, |document| document.get_element_by_id(&id))?;
     match node_id {
         Some(node_id) => {
-            let obj = resolve_element_object_ec(node_id, ec)?;
+            let obj = resolve_element_object(node_id, ec)?;
             Ok(crate::js::Types::value_from_object(obj))
         }
         None => Ok(ec.value_null()),
@@ -207,7 +207,7 @@ fn query_selector(
         .map_err(|error| ec.new_syntax_error(&error))?;
     match node_id {
         Some(node_id) => {
-            let obj = resolve_element_object_ec(node_id, ec)?;
+            let obj = resolve_element_object(node_id, ec)?;
             Ok(crate::js::Types::value_from_object(obj))
         }
         None => Ok(ec.value_null()),
@@ -225,7 +225,7 @@ fn query_selector_all(
         .map_err(|error| ec.new_syntax_error(&error))?;
     let array = ec.create_empty_array();
     for node_id in node_ids {
-        let obj = resolve_element_object_ec(node_id, ec)?;
+        let obj = resolve_element_object(node_id, ec)?;
         ec.array_push(&array, crate::js::Types::value_from_object(obj))?;
     }
     Ok(crate::js::Types::value_from_object(array))
@@ -245,7 +245,7 @@ fn get_elements_by_tag_name(
     .map_err(|error| ec.new_syntax_error(&error))?;
     let array = ec.create_empty_array();
     for node_id in node_ids {
-        let obj = resolve_element_object_ec(node_id, ec)?;
+        let obj = resolve_element_object(node_id, ec)?;
         ec.array_push(&array, crate::js::Types::value_from_object(obj))?;
     }
     Ok(crate::js::Types::value_from_object(array))
@@ -259,7 +259,7 @@ fn create_element(
     let value_undefined = ec.value_undefined();
     let local_name = ec.to_rust_string(args.first().cloned().unwrap_or(value_undefined))?;
     let node_id = try_with_document(this, ec, |document| document.create_element(&local_name))?;
-    let obj = resolve_element_object_ec(node_id, ec)?;
+    let obj = resolve_element_object(node_id, ec)?;
     Ok(crate::js::Types::value_from_object(obj))
 }
 
@@ -283,7 +283,7 @@ fn create_element_ns(
         document.create_element_ns(namespace.as_deref(), &qualified_name)
     })?
     .map_err(|error| ec.new_syntax_error(&error))?;
-    let obj = resolve_element_object_ec(node_id, ec)?;
+    let obj = resolve_element_object(node_id, ec)?;
     Ok(crate::js::Types::value_from_object(obj))
 }
 
@@ -300,7 +300,7 @@ fn create_text_node(
             document.create_text_node(&text),
         )
     })?;
-    let obj = resolve_or_create_text_node_object_ec(document, node_id, ec)?;
+    let obj = resolve_or_create_text_node_object(document, node_id, ec)?;
     Ok(crate::js::Types::value_from_object(obj))
 }
 
@@ -317,7 +317,7 @@ fn create_comment(
             document.create_comment(&data),
         )
     })?;
-    let obj = resolve_or_create_text_node_object_ec(document, node_id, ec)?;
+    let obj = resolve_or_create_text_node_object(document, node_id, ec)?;
     Ok(crate::js::Types::value_from_object(obj))
 }
 
@@ -330,7 +330,7 @@ fn get_body(
         .map_err(|error| ec.new_syntax_error(&error))?;
     match node_id {
         Some(node_id) => {
-            let obj = resolve_element_object_ec(node_id, ec)?;
+            let obj = resolve_element_object(node_id, ec)?;
             Ok(crate::js::Types::value_from_object(obj))
         }
         None => Ok(ec.value_null()),
@@ -344,7 +344,7 @@ fn get_document_element(
 ) -> Completion<JsValue, crate::js::Types> {
     match try_with_document(this, ec, Document::document_element)? {
         Some(node_id) => {
-            let obj = resolve_element_object_ec(node_id, ec)?;
+            let obj = resolve_element_object(node_id, ec)?;
             Ok(crate::js::Types::value_from_object(obj))
         }
         None => Ok(ec.value_null()),
@@ -368,7 +368,7 @@ fn set_title(
     let value_undefined = ec.value_undefined();
     let title = ec.to_rust_string(args.first().cloned().unwrap_or(value_undefined))?;
     let dropped_node_ids = try_with_document(this, ec, Document::title_subtree_node_ids)?;
-    invalidate_cached_node_ids_ec(ec, &dropped_node_ids)?;
+    invalidate_cached_node_ids(ec, &dropped_node_ids)?;
     try_with_document(this, ec, |document| document.set_title(&title))?;
     Ok(ec.value_undefined())
 }
@@ -406,6 +406,7 @@ pub(crate) fn install_document_property_with_object(
 }
 
 pub(crate) fn install_document_property(context: &mut Context) -> JsResult<()> {
-    let document = document_object(context)?;
+    let document = document_object(js_engine::boa::context_as_ec(context))
+        .map_err(JsError::from_opaque)?;
     install_document_property_with_object(context, document)
 }

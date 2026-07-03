@@ -9,8 +9,8 @@ use js_engine::{Completion, ExecutionContext, JsTypes};
 use crate::dom::{DOMException, Document, Element, Node};
 use crate::html::{HTMLAnchorElement, HTMLElement, HTMLIFrameElement};
 use crate::js::platform_objects::{
-    collect_child_subtree_node_ids, document_object_ec, invalidate_cached_node_ids,
-    invalidate_cached_node_ids_ec, object_for_existing_node,
+    collect_child_subtree_node_ids, document_object, invalidate_cached_node_ids,
+    object_for_existing_node,
 };
 use crate::webidl::bindings::{
     AttributeDef, ConstantDef, InterfaceDefinition, OperationDef, WebIdlInterface,
@@ -459,7 +459,7 @@ fn get_parent_node(
     })?;
     match node_id {
         Some(0) => {
-            let obj = document_object_ec(ec)?;
+            let obj = document_object(ec)?;
             Ok(crate::js::Types::value_from_object(obj))
         }
         Some(node_id) => {
@@ -546,7 +546,7 @@ fn get_owner_document(
     let owner_document = try_with_node_ref(this, ec, Node::owner_document_node_id)?;
     match owner_document {
         Some(0) => {
-            let obj = document_object_ec(ec)?;
+            let obj = document_object(ec)?;
             Ok(crate::js::Types::value_from_object(obj))
         }
         Some(node_id) => {
@@ -610,7 +610,7 @@ fn set_text_content(
             Vec::new()
         }
     })?;
-    invalidate_cached_node_ids_ec(ec, &dropped_node_ids)?;
+    invalidate_cached_node_ids(ec, &dropped_node_ids)?;
     try_with_node_ref(this, ec, |node| node.set_text_content(text.as_deref()))?;
     Ok(ec.value_undefined())
 }

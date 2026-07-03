@@ -50,16 +50,11 @@ impl ReadableStreamBYOBReader {
         self.readable_stream_reader_generic_initialize(stream, ec)
     }
 
-    pub(crate) fn closed(&self) -> JsResult<JsObject> {
-        <Self as ReadableStreamGenericReader>::closed(self)
-    }
-
-    pub(crate) fn closed_ec(
+    pub(crate) fn closed(
         &self,
         ec: &mut dyn ExecutionContext<crate::js::Types>,
     ) -> Completion<JsObject, crate::js::Types> {
-        let err = ec.new_type_error("ReadableStreamBYOBReader is missing its closed promise");
-        self.closed().map_err(|_| err)
+        <Self as ReadableStreamGenericReader>::closed(self, ec)
     }
 
     pub(crate) fn cancel(

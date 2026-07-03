@@ -12,7 +12,8 @@ use url::Url;
 use crate::dom::{Document, Event, EventDispatchHost};
 use crate::html::{TimerHandler, Window};
 use crate::js::bindings::html::build_context;
-use crate::js::platform_objects::{store_document_object, with_global_scope};
+use crate::js::platform_objects::with_global_scope_ec;
+use crate::js::platform_objects::with_global_scope;
 use crate::js::{install_console_namespace, install_css_namespace, install_document_property};
 use crate::webidl::bindings::{create_interface_instance, get_registry_prototype};
 use js_engine::boa::BoaContext;
@@ -80,24 +81,23 @@ impl EnvironmentSettingsObject {
         // GlobalScope during build().
         let mut engine = build_context(Rc::clone(&document))?;
 
-        // Install timer host and navigation info on the GlobalScope through the
-        // safe boa API (with_global_scope — traverses the GC heap to reach the
-        // Window's GlobalScope).
+        // Set up timer host and navigation info on the GlobalScope through
+        // the EC trait's realm_global_object + with_object_any.
         if let (Some(event_sender), Some(document_id)) = (&event_sender, document_id) {
-            with_global_scope(engine.context_ref(), |global_scope| {
+            with_global_scope_ec(&mut engine, |global_scope| {
                 global_scope.set_timer_host(document_id, event_sender.clone());
                 Ok(())
             })
-            .map_err(|error| error.to_string())?;
+            .map_err(|error| error.display().to_string())?;
         }
         if let Some(navigable_id) = source_navigable_id {
             if let Some(event_sender) = &event_sender {
-                with_global_scope(engine.context_ref(), |global_scope| {
+                with_global_scope_ec(&mut engine, |global_scope| {
                     global_scope.set_navigation_info(navigable_id, event_sender.clone());
                     global_scope.set_creation_url(creation_url.clone());
                     Ok(())
                 })
-                .map_err(|error| error.to_string())?;
+                .map_err(|error| error.display().to_string())?;
             }
         }
 
@@ -107,8 +107,11 @@ impl EnvironmentSettingsObject {
         )
         .map_err(|error| error.display().to_string())?;
 
-        store_document_object(engine.context_ref(), document_object)
-            .map_err(|error| error.to_string())?;
+        with_global_scope_ec(&mut engine, |global_scope| {
+            global_scope.store_document_object(document_object);
+            Ok(())
+        })
+        .map_err(|error| error.display().to_string())?;
         install_document_property(engine.context()).map_err(|error| error.to_string())?;
         install_console_namespace(engine.context())
             .map_err(|error: boa_engine::JsError| error.to_string())?;
@@ -149,7 +152,7 @@ impl EnvironmentSettingsObject {
 
     /// Access the underlying Boa context (immutable).
     ///
-    /// Needed for functions that take `&Context` (e.g. `with_global_scope`).
+    /// Still needed for a few Boa-specific operations (e.g. downcasting).
     pub fn context_ref(&self) -> &Context {
         self.engine.context_ref()
     }
@@ -194,8 +197,10 @@ impl EnvironmentSettingsObject {
 
     /// <https://html.spec.whatwg.org/#run-the-animation-frame-callbacks>
     pub(crate) fn run_animation_frame_callbacks(&mut self, now: f64) -> Result<(), String> {
-        let callbacks = crate::js::platform_objects::take_animation_frame_callbacks(self.context())
-            .map_err(|error| error.to_string())?;
+        let callbacks = crate::js::platform_objects::take_animation_frame_callbacks(
+            &mut self.engine,
+        )
+        .map_err(|error| error.display().to_string())?;
 
         for callback in callbacks {
             // Step 3.3: "Invoke callback with « now » and \"report\"."
@@ -225,26 +230,26 @@ impl EnvironmentSettingsObject {
             timer_id, timer_key, nesting_level
         ));
 
-        let previous_nesting_level = with_global_scope(self.context_ref(), |global_scope| {
+        let previous_nesting_level = with_global_scope_ec(&mut self.engine, |global_scope| {
             Ok(global_scope.set_current_timer_nesting_level(Some(nesting_level)))
         })
-        .map_err(|error| error.to_string())?;
+        .map_err(|error| error.display().to_string())?;
 
-        let timer = with_global_scope(self.context_ref(), |global_scope| {
+        let timer = with_global_scope_ec(&mut self.engine, |global_scope| {
             Ok(global_scope.window_timer(timer_id, timer_key))
         })
-        .map_err(|error| error.to_string())?;
+        .map_err(|error| error.display().to_string())?;
 
         let Some(timer) = timer else {
             log_timer_debug(format!(
                 "run timer id={} key={} missing_registration",
                 timer_id, timer_key
             ));
-            if let Err(error) = with_global_scope(self.context_ref(), |global_scope| {
+            if let Err(error) = with_global_scope_ec(&mut self.engine, |global_scope| {
                 global_scope.set_current_timer_nesting_level(previous_nesting_level);
                 Ok(())
             }) {
-                error!("[timers] failed to reset timer nesting level: {error}");
+                error!("[timers] failed to reset timer nesting level: {}", error.display());
             }
             return Ok(());
         };
@@ -283,19 +288,19 @@ impl EnvironmentSettingsObject {
             }
         }
 
-        if let Err(error) = with_global_scope(self.context_ref(), |global_scope| {
+        if let Err(error) = with_global_scope_ec(&mut self.engine, |global_scope| {
             if let Err(error) = global_scope.complete_window_timer(timer_id, timer_key) {
                 error!("failed to complete window timer (id={timer_id} key={timer_key}): {error}");
             }
             Ok(())
         }) {
-            error!("failed to access global scope for timer completion: {error}");
+            error!("failed to access global scope for timer completion: {}", error.display());
         }
-        if let Err(error) = with_global_scope(self.context_ref(), |global_scope| {
+        if let Err(error) = with_global_scope_ec(&mut self.engine, |global_scope| {
             global_scope.set_current_timer_nesting_level(previous_nesting_level);
             Ok(())
         }) {
-            error!("failed to access global scope for timer nesting level: {error}");
+            error!("failed to access global scope for timer nesting level: {}", error.display());
         }
 
         if let Err(error) = self.perform_a_microtask_checkpoint() {
@@ -404,28 +409,19 @@ impl EventDispatchHost for EnvironmentSettingsObject {
         &mut self,
         event: crate::dom::Event,
     ) -> Completion<JsObject, crate::js::Types> {
-        create_interface_instance::<crate::js::Types, Event>(
-            event,
-            js_engine::boa::context_as_ec(self.context()),
-        )
+        create_interface_instance::<crate::js::Types, Event>(event, &mut self.engine)
     }
 
     fn document_object(&mut self) -> Completion<JsObject, crate::js::Types> {
-        crate::js::platform_objects::document_object(self.context()).map_err(|e| {
-            e.into_opaque(self.context())
-                .unwrap_or(JsValue::undefined())
-        })
+        crate::js::platform_objects::document_object(&mut self.engine)
     }
 
     fn global_object(&mut self) -> JsObject {
-        self.context().global_object()
+        self.engine.realm_global_object()
     }
 
     fn resolve_element_object(&mut self, node_id: usize) -> Completion<JsObject, crate::js::Types> {
-        crate::js::platform_objects::resolve_element_object(node_id, self.context()).map_err(|e| {
-            e.into_opaque(self.context())
-                .unwrap_or(JsValue::undefined())
-        })
+        crate::js::platform_objects::resolve_element_object(node_id, &mut self.engine)
     }
 
     fn resolve_existing_node_object(
@@ -433,8 +429,7 @@ impl EventDispatchHost for EnvironmentSettingsObject {
         document: Rc<RefCell<BaseDocument>>,
         node_id: usize,
     ) -> Completion<JsObject, crate::js::Types> {
-        let ec = js_engine::boa::context_as_ec(self.context());
-        crate::js::platform_objects::object_for_existing_node(document, node_id, ec)
+        crate::js::platform_objects::object_for_existing_node(document, node_id, &mut self.engine)
     }
 
     fn current_time_millis(&self) -> f64 {

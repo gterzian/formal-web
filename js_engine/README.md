@@ -77,7 +77,7 @@ Most web-exposed APIs (Streams, DOM) call Web IDL, which calls ECMA-262.
 
 | Layer | Spec | Our code |
 |---|---|---|
-| Domain | <https://streams.spec.whatwg.org/#readable-stream-cancel> | `content/src/streams/readablestream.rs` → `readable_stream_cancel_ec()` |
+| Domain | <https://streams.spec.whatwg.org/#readable-stream-cancel> | `content/src/streams/readablestream.rs` → `readable_stream_cancel()` |
 | Web IDL | <https://webidl.spec.whatwg.org/#a-promise-resolved-with> | `content/src/webidl/promise.rs` → `resolved_promise()` |
 | Web IDL | <https://webidl.spec.whatwg.org/#a-promise-rejected-with> | `content/src/webidl/promise.rs` → `rejected_promise()` |
 | Web IDL | <https://webidl.spec.whatwg.org/#dfn-perform-steps-once-promise-is-settled> ("react") | `content/src/webidl/promise.rs` → `transform_promise_to_undefined()` |
@@ -395,7 +395,7 @@ or subsystem entry-point signature must first be validated in
 on **both backends** (Boa and JSC) before it can be applied to any
 real production file.
 
-### Current state (updated 2026-07-04)
+### Current state (updated 2026-07-06)
 
 **Phases A–D, S1–S10, T1–T2, W1–W2, G1–G3, C2–C3, B1, R1, R2, S, P complete.**
 All binding files at 0 ec_to_ctx. All 34 struct/enum definitions use `#[gc_struct]`.
@@ -403,54 +403,77 @@ All domain field types use `GcCell<T>`. Generic POC: 81/81 tests pass on Boa.
 Phase E (compile-time Types/Engine aliases) is landed — `#[cfg(feature = "jsc")]`
 selects between BoaTypes and JscTypes.
 
-**ec_to_ctx / bridge count:** Still ~8 — remaining: `wasm/namespace.rs` (6, gated behind `boa` feature),
-  `html/safe_passing_of_structured_data.rs` (1),
-  `webidl/async_iterable.rs` (1).
-  Plus `completion_to_js_result` bridges in `readablestreamasynciterator.rs`,
-  `readablestream.rs`, `readablebytestreamcontroller.rs`, `transformstream.rs`,
-  `async_iterable.rs`, and `main.rs`.
+### Eliminated in this pass
 
-**`_ec` suffix count: 11 function definitions, 133 total occurrences** —
-reduced from 78 defs / 620 total (-86%/-79%). See the `_ec` suffix convention
-section for the complete rules.
+**Platform objects bridges (7 deleted, `_ec` variants renamed):**
+- `store_document_object`, `store_location_object`, `invalidate_cached_node_ids`,
+  `take_animation_frame_callbacks`, `resolve_element_object`, `resolve_or_create_text_node_object`, `location_object` — all non-EC bridges deleted (zero external callers).
+  Their `_ec` variants renamed to drop suffix.
+- EnvironmentSettingsObject EventDispatchHost impl now uses `&mut self.engine` directly
+  with no `context_as_ec` calls.
+- `with_global_scope_ec` retained — bridge `with_global_scope` still has callers in
+  `main.rs` (&self methods) and `clear_all_window_timers`.
+- `document_object` retained as separate functions (one EC, one non-EC bridge for bootstrapping).
 
-**Eliminated in current pass:** 67 `_ec` function definitions, 487 occurrences.
-- All zero-caller bridges deleted (11) + their `_ec` variants renamed:
-  `appendable_node`, `callback_function_value`, `callback_interface_type_value`,
-  `current_event_target_object`, `downcast_window`, `flatten`, `flatten_more`,
-  `into_js_value`, `object_for_existing_node`, `readable_stream_cancel`,
-  `readable_stream_close`, `structured_clone_value`.
-- EC-only functions renamed (drop `_ec` suffix): `timer_handler`, `timeout_ms`,
-  `element_style_attribute`, `set_element_style_attribute`, `entry_settings_object`,
-  `current_window_object_from`, `extract_abort_signal`, `normalize_pipe_options`,
-  `promise_rejected_with_reason`, `promise_rejected_with_type_error`,
-  `promise_rejected_with_error`, `reject_promise_with_error`,
-  `readable_stream_pipe_to`, `pipe_to_on_promise_settled`, `pipe_read_result_done`,
-  `abort_destination_then_cancel_source`, `signal_abort`.
-- Pointless aliases deleted: `document_creation_url_ec`, `style_declaration_object_ec`.
-- 7 internal-duplicate function pairs merged in `readablestreamdefaultcontroller.rs` and
-  `transformstream.rs` (stream_slot, controller_object, desired_size, etc.).
+**`nullable_value` bridge eliminated:** `nullable_value_ec` renamed to `nullable_value`
+(now takes `&mut dyn ExecutionContext`). The old non-EC bridge `nullable_value<
+(JsResult)` had zero callers.
+
+**`closed_ec` bridges eliminated (2):** `ReadableStreamGenericReader::closed` trait
+method changed from returning `JsResult` to `Completion`. `closed_ec` methods on
+both `ReadableStreamDefaultReader` and `ReadableStreamBYOBReader` deleted;
+`closed` now returns `Completion` directly.
+
+**`enqueue_ec` bridge eliminated:** `TransformStreamDefaultController::enqueue` non-EC
+bridge (taking `&mut Context`) had zero callers. Bridge deleted, `_ec` variant renamed.
+
+**Dead code deleted:** `current_window_object` (called `context_as_ec`, had zero callers).
+
+**ec_to_ctx / bridge count:** Remaining `context_as_ec` calls outside `js_engine/src/`:
+- `wasm/namespace.rs` (2, gated behind `boa` feature) — wasm bootstrap
+- `html/safe_passing_of_structured_data.rs` (1)
+- `webidl/async_iterable.rs` (8) — inside `AsyncValueIterable` trait (Boa-specific)
+- `webidl/bindings/registry.rs` (2) — registry bootstrap
+- `js/bindings/streams/readablestream.rs` (2) — binding functions
+- `js/bindings/html/host_hooks.rs` (4) — host hook setup
+- `js/bindings/wasm/mod.rs` (2) — wasm binding
+- `js/mod.rs` (1) — inside `completion_to_js_result` definition
+- `main.rs` (4) — wasm result handling
+- `streams/readablestreamasynciterator.rs` (6) — inside `AsyncValueIterable` impl
+- `streams/readablestream.rs` (1) — `get_reader` bridge (1 caller)
+- `streams/readablestream.rs` (0) — `closed` bridge eliminated
+- `streams/transformstream.rs` (0) — `enqueue` bridge eliminated
+
+Plus `completion_to_js_result` bridges in:
+`readablestreamasynciterator.rs`, `webidl/async_iterable.rs`, `main.rs`.
+
+**`_ec` suffix count: 9 function definitions** remaining:
+- **Active bridges (2):** `with_global_scope_ec`, `get_reader_ec`
+- **Parallel implementations (7):** `with_readable_stream_ref_ec`,
+  `with_readable_stream_default_reader_ref_ec`, `with_readable_stream_byob_reader_ref_ec`,
+  `with_readable_stream_default_controller_ref_ec`, `with_readable_byte_stream_controller_ref_ec`,
+  `with_readable_stream_byob_request_ref_ec`, `with_writable_stream_ref_ec`
 
 ### Next session: recommended order
 
-1. **Convert remaining 11 active-bridge `_ec` functions** — Each has a non-EC
-   bridge with live callers. For each, convert the callers to use the EC
-   variant (replacing `&mut Context` with `&mut dyn ExecutionContext`), then
-   delete the bridge and rename. The 7 platform_objects.rs functions require
-   converting Boa callers in `environment_settings_object.rs`, `dispatch.rs`,
-   and `ui_event_dispatch.rs`. The 2 `closed_ec` functions, `get_reader_ec`,
-   and `enqueue_ec` require converting their non-EC bridge callers.
+1. **Convert remaining active-bridge `_ec` functions (2):** `with_global_scope_ec`
+   (bridge `with_global_scope` still called from `main.rs` &-self methods and
+   `clear_all_window_timers`) and `get_reader_ec` (bridge `get_reader` has 1 caller
+   in `readablestreamasynciterator.rs`).
 
-2. **Clean up remaining `completion_to_js_result` bridges** — These return
-   `Completion<T, BoaTypes>` from generic code by bridging to Boa `JsResult`.
-   Files: `readablestreamasynciterator.rs`, `readablestream.rs`,
-   `readablebytestreamcontroller.rs`, `transformstream.rs`,
-   `async_iterable.rs`, `main.rs`.
+2. **Convert the 7 parallel-implementation `with_*_ref_ec` functions** to drop the
+   `_ec` suffix. Each has a non-EC counterpart in the same module that uses
+   `downcast_ref` directly. Remove the non-EC version, rename the EC version.
+   Requires converting all callers of the non-EC version first.
 
-3. **Phase E** — The content crate does not yet compile for JSC.
-   Blockers are GC trait bounds (`boa_engine::Trace`/`#[gc_struct]`) and
-   `unsafe_ignore_trace` attribute on non-wasm structs throughout the content
-   crate. Wasm is now gated behind `#[cfg(feature = "boa")]`.
+3. **Clean up remaining `completion_to_js_result` bridges** — `async_iterable.rs`
+   (requires making `AsyncValueIterable` trait generic), `readablestreamasynciterator.rs`,
+   `main.rs`.
+
+4. **Phase E** — Content crate does not yet compile for JSC.
+   Blockers: GC trait bounds (`boa_engine::Trace`/`#[gc_struct]`) and
+   `unsafe_ignore_trace` attribute on non-wasm structs. Wasm is gated behind
+   `#[cfg(feature = "boa")]`.
 
 ## `_ec` suffix convention
 
@@ -461,16 +484,16 @@ is kept as a one-line bridge:
 
 ```rust
 // OLD — bridge, to be deleted when all callers are converted
-pub(crate) fn readable_stream_cancel(
-    stream: ReadableStream, reason: JsValue, context: &mut Context,
+pub(crate) fn get_reader(
+    &mut self, options: &JsValue, context: &mut Context,
 ) -> JsResult<JsObject> {
-    readable_stream_cancel_ec(stream, reason, js_engine::boa::context_as_ec(context))
+    self.get_reader_ec(options, js_engine::boa::context_as_ec(context))
         .map_err(|e| JsError::from_opaque(e))
 }
 
 // NEW — the real implementation, temporary _ec suffix
-pub(crate) fn readable_stream_cancel_ec(
-    stream: ReadableStream, reason: JsValue,
+pub(crate) fn get_reader_ec(
+    &mut self, options: &JsValue,
     ec: &mut dyn ExecutionContext<crate::js::Types>,
 ) -> Completion<JsObject, crate::js::Types> {
     // ... implementation ...
@@ -505,17 +528,17 @@ original name.  The same algorithm lives at the same conceptual location — the
 
 ### End state
 
-Current count: **78 `_ec` function definitions**, **620 total `_ec` occurrences**
-(definitions + call sites across all files).  These shrink as bridges are
-removed.  At migration completion: **zero `_ec` suffixes anywhere in the
-codebase.**  Every function uses its original name with an EC parameter.
+Current count: **11 `_ec` function definitions**, **133 total `_ec` occurrences**
+(definitions + call sites across all files, reduced from 78/620).  These shrink
+as bridges are removed.  At migration completion: **zero `_ec` suffixes anywhere
+in the codebase.**  Every function uses its original name with an EC parameter.
 
 ### How to remove `_ec` from a function
 
-1. Ensure every caller of the non-EC bridge (`readable_stream_cancel` in the
-   example above) has been converted to call the `_ec` variant directly.
+1. Ensure every caller of the non-EC bridge (`get_reader` in the example above)
+   has been converted to call the `_ec` variant directly.
 2. Delete the non-EC bridge function.
-3. Rename `readable_stream_cancel_ec` → `readable_stream_cancel`.
+3. Rename `get_reader_ec` → `get_reader`.
 4. Update all call sites to use the new name.
 5. `cargo check -p content` passes.
 
@@ -537,7 +560,7 @@ callers.
 
 **End-of-task override:** While working on Phase D–E migration, standard
 verification steps (WPT, navigation verification, clippy, fmt) are
-**skipped**.  Only `cargo check -p content` is required.  Full verification
+**skipped**.  Only `cargo check -p content` and step 9 (review session in light of Rule Number One) from top level agents file is required.  Full verification
 resumes after Phase E.
 
 **Update this README at end of every task.**  The remaining-phases table,

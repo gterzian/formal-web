@@ -657,7 +657,7 @@ fn get_closed(
         ec.new_type_error("ReadableStreamDefaultReader receiver is not an object")
     })?;
     let reader = with_readable_stream_default_reader_ref_ec(&reader_object, ec, |r| r.clone())?;
-    let closed = reader.closed_ec(ec)?;
+    let closed = reader.closed(ec)?;
     Ok(JsValue::from(closed))
 }
 
@@ -669,7 +669,7 @@ fn get_byob_closed(
     let reader_object = <crate::js::Types as JsTypes>::value_as_object(this)
         .ok_or_else(|| ec.new_type_error("ReadableStreamBYOBReader receiver is not an object"))?;
     let reader = with_readable_stream_byob_reader_ref_ec(&reader_object, ec, |r| r.clone())?;
-    let closed = reader.closed_ec(ec)?;
+    let closed = reader.closed(ec)?;
     Ok(JsValue::from(closed))
 }
 

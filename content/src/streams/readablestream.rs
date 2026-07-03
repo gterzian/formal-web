@@ -489,7 +489,7 @@ fn readable_stream_default_tee(
         with_readable_stream_default_reader_ref_ec(&reader_object, ec, |reader| reader.clone())?;
 
     // Step 12: "Let cancelPromise be a new promise."
-    let reader_closed_promise = reader.closed_ec(ec)?;
+    let reader_closed_promise = reader.closed(ec)?;
 
     // Step 19: "Upon rejection of reader.[[closedPromise]] with reason r,"
     // Note: mark the source reader's closed promise as handled before attaching the forwarding
@@ -2667,7 +2667,7 @@ fn readable_byte_stream_tee(
     // Step 3: Let reader be ? AcquireReadableStreamDefaultReader(stream).
     let reader_object = acquire_readable_stream_default_reader(stream.clone(), ec)?;
     let reader = with_readable_stream_default_reader_ref_ec(&reader_object, ec, |r| r.clone())?;
-    let reader_closed_promise = reader.closed_ec(ec)?;
+    let reader_closed_promise = reader.closed(ec)?;
     mark_promise_as_handled(&reader_closed_promise, ec)?;
 
     // Step 4: Let reading be false.
@@ -3210,7 +3210,7 @@ impl PipeToState {
             (state.writer.clone(), state.reader.clone())
         };
         let ready_promise = writer.ready(ec)?;
-        let reader_closed_promise = reader.closed_ec(ec)?;
+        let reader_closed_promise = reader.closed(ec)?;
 
         if matches!(
             ec.promise_state(&ready_promise)?,

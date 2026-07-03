@@ -1,4 +1,4 @@
-use boa_engine::{JsError, JsNativeError, JsResult, JsValue, object::JsObject};
+use boa_engine::{JsValue, object::JsObject};
 use js_engine::gc_struct;
 use js_engine::{Completion, ExecutionContext, JsTypes};
 
@@ -61,27 +61,6 @@ pub(crate) fn callback_function_value(
 
 /// <https://webidl.spec.whatwg.org/#js-to-nullable>
 pub(crate) fn nullable_value<T>(
-    value: &JsValue,
-    convert_inner: impl FnOnce(&JsValue) -> JsResult<T>,
-) -> JsResult<Option<T>> {
-    // Note: The current content process uses this helper for nullable callback interface and nullable callback function conversions, so the Rust struct models the `null` result as `None` and delegates all non-null inputs to the inner conversion.
-
-    // Step 1: "If V is not an Object, and the conversion to an IDL value is being performed due to V being assigned to an attribute whose type is a nullable callback function that is annotated with [LegacyTreatNonObjectAsNull], then return the IDL nullable type T? value null."
-    // Note: No current content call sites use [LegacyTreatNonObjectAsNull].
-
-    // Step 2: "Otherwise, if V is undefined, and T includes undefined, return the unique undefined value."
-    // Note: No current content call sites use inner types that include undefined.
-
-    // Step 3: "Otherwise, if V is null or undefined, then return the IDL nullable type T? value null."
-    if value.is_null() || value.is_undefined() {
-        return Ok(None);
-    }
-
-    // Step 4: "Otherwise, return the result of converting V using the rules for the inner IDL type T."
-    convert_inner(value).map(Some)
-}
-
-pub(crate) fn nullable_value_ec<T>(
     value: &JsValue,
     ec: &mut dyn ExecutionContext<crate::js::Types>,
     convert_inner: impl FnOnce(

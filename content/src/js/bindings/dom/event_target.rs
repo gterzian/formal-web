@@ -7,7 +7,7 @@ use boa_engine::{Context, JsArgs, JsNativeError, JsResult, JsValue, js_string, o
 use crate::dom::{AbortSignal, Event, EventDispatchHost, EventTarget, dispatch};
 use crate::js::downcast::try_with_event_target_mut;
 use crate::js::platform_objects;
-use crate::webidl::{callback_interface_type_value, nullable_value_ec};
+use crate::webidl::{callback_interface_type_value, nullable_value};
 
 use js_engine::{Completion, ExecutionContext, JsTypes};
 
@@ -78,7 +78,7 @@ fn add_event_listener(
     let event_target = current_event_target_object(this, ec);
     let type_ = ec.to_rust_string(args.get_or_undefined(0).clone())?;
     let options = flatten_more(args.get_or_undefined(2), ec)?;
-    let callback = nullable_value_ec(args.get_or_undefined(1), ec, callback_interface_type_value)?;
+    let callback = nullable_value(args.get_or_undefined(1), ec, callback_interface_type_value)?;
     let receiver = JsValue::from(event_target.clone());
 
     try_with_event_target_mut(&receiver, ec, |target| {
@@ -104,7 +104,7 @@ fn remove_event_listener(
     let event_target = current_event_target_object(this, ec);
     let type_ = ec.to_rust_string(args.get_or_undefined(0).clone())?;
     let Some(callback) =
-        nullable_value_ec(args.get_or_undefined(1), ec, callback_interface_type_value)?
+        nullable_value(args.get_or_undefined(1), ec, callback_interface_type_value)?
     else {
         return Ok(JsValue::undefined());
     };
@@ -209,7 +209,7 @@ impl EventDispatchHost for EcDispatchHost<'_, crate::js::Types> {
     }
 
     fn document_object(&mut self) -> Completion<JsObject, crate::js::Types> {
-        crate::js::platform_objects::document_object_ec(self.ec)
+        crate::js::platform_objects::document_object(self.ec)
     }
 
     fn global_object(&mut self) -> JsObject {
@@ -217,7 +217,7 @@ impl EventDispatchHost for EcDispatchHost<'_, crate::js::Types> {
     }
 
     fn resolve_element_object(&mut self, node_id: usize) -> Completion<JsObject, crate::js::Types> {
-        crate::js::platform_objects::resolve_element_object_ec(node_id, self.ec)
+        crate::js::platform_objects::resolve_element_object(node_id, self.ec)
     }
 
     fn resolve_existing_node_object(
