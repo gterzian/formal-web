@@ -1854,6 +1854,13 @@ impl ExecutionContext<BoaTypes> for BoaContext {
     fn value_from_bigint(&mut self, n: i64) -> JsValue {
         JsValue::from(JsBigInt::from(n))
     }
+
+    fn evaluate_script(&mut self, source: &str) -> Completion<JsValue, BoaTypes> {
+        into_completion(
+            self.context.eval(boa_engine::Source::from_bytes(source)),
+            &mut self.context,
+        )
+    }
 }
 
 /// Wrapper that implements `NativeObject` for arbitrary `'static` data.

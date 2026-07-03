@@ -873,6 +873,17 @@ pub trait ExecutionContext<T: JsTypes + JsTypesWithRealm>: EcmascriptHost<T> {
     fn json_stringify(&mut self, value: T::JsValue) -> Completion<String, T>;
 
     // ────────────────────────────────────────────────────────────────────────
+    // §16 Script and Module Evaluation (realm-free convenience)
+    // ────────────────────────────────────────────────────────────────────────
+
+    /// <https://tc39.es/ecma262/#sec-runtime-semantics-scriptevaluation>
+    ///
+    /// Evaluate a script source string in the current realm.
+    /// Convenience wrapper around [`JsEngine::evaluate_script`] that uses
+    /// [`current_realm`](Self::current_realm) automatically.
+    fn evaluate_script(&mut self, source: &str) -> Completion<T::JsValue, T>;
+
+    // ────────────────────────────────────────────────────────────────────────
     // BigInt Construction
     // ────────────────────────────────────────────────────────────────────────
 

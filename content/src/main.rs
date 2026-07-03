@@ -2284,9 +2284,85 @@ pub fn run_content_process(token: String) -> Result<(), String> {
 }
 
 #[cfg(not(boa_backend))]
-pub fn run_content_process(_token: String) -> Result<(), String> {
-    error!("JSC backend: content process not yet implemented");
-    Err("JSC backend not yet implemented for content process".into())
+pub fn run_content_process(token: String) -> Result<(), String> {
+    use js_engine::jsc::JscEngine;
+    use js_engine::{ExecutionContext, JsEngine};
+
+    ipc::run_extension::<Command, ContentEvent>(&token, move |server| {
+        let event_sender = server.connection.sender.clone();
+
+        // First message must be ContentBootstrap.
+        let _ = match server.connection.receiver.recv() {
+            Ok(incoming) => match incoming.payload {
+                ContentBootstrap {
+                    net_sender,
+                    media_sender,
+                    ..
+                } => (net_sender, media_sender),
+                other => {
+                    error!("JSC: first message must be ContentBootstrap, got: {other:?}");
+                    return Err("wrong first message, expected ContentBootstrap".into());
+                }
+            },
+            Err(_) => return Err("command channel closed before ContentBootstrap".into()),
+        };
+
+        let _ = event_sender.send(ContentEvent::CommandCompleted);
+
+        // Create JSC engine and install generic console.
+        let mut engine = JscEngine::new();
+        if let Err(error) = crate::js::install_console_namespace(&mut engine) {
+            error!("JSC: failed to install console namespace: {:?}", error);
+            return Err(format!("failed to install console: {:?}", error));
+        }
+
+        // Inform embedder that initialization is complete.
+        let _ = event_sender.send(ContentEvent::CommandCompleted);
+
+        // Enter the IPC message loop.
+        loop {
+            match server.connection.receiver.recv() {
+                Ok(incoming) => {
+                    let command = incoming.payload;
+                    match command {
+                        EvaluateScript {
+                            source, request_id, ..
+                        } => {
+                            let result = ExecutionContext::evaluate_script(&mut engine, &source);
+                            let eval_result = match result {
+                                Ok(value) => {
+                                    let json = engine.json_stringify(value).unwrap_or_default();
+                                    ipc_messages::content::ScriptEvaluationResult {
+                                        request_id,
+                                        value_json: json,
+                                        error: None,
+                                    }
+                                }
+                                Err(error) => {
+                                    let error_str = engine
+                                        .to_rust_string(error)
+                                        .unwrap_or_else(|_| "unknown error".to_owned());
+                                    ipc_messages::content::ScriptEvaluationResult {
+                                        request_id,
+                                        value_json: String::new(),
+                                        error: Some(error_str),
+                                    }
+                                }
+                            };
+                            let _ = event_sender.send(ContentEvent::ScriptEvaluated(eval_result));
+                        }
+                        Shutdown => break,
+                        other => {
+                            trace!("JSC: unhandled command: {other:?}");
+                        }
+                    }
+                }
+                Err(_) => break,
+            }
+        }
+
+        Ok(())
+    })
 }
 
 pub fn run_content_process_from_args() -> Result<(), String> {

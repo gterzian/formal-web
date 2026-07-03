@@ -246,9 +246,13 @@ global.  For now they co-reside because Boa's `Context` serves both roles.
 
 | Operation | Blocked on |
 |---|---|
-| `Context::eval` (script evaluation) | `evaluate_script` on `JsEngine<T>` exists; callers haven't migrated |
 | `ObjectInitializer`, `register_global_property` | Boa object-model construction; needs centralized `build_context` path |
 | Structured clone | Boa-internal APIs (realm access, data clone) |
+
+**Recently resolved:** `evaluate_script` was added to `ExecutionContext<T>` (session 5 — 2026-07-04).
+Now both `JsEngine<T>` (takes realm) and `ExecutionContext<T>` (uses current realm) have
+`evaluate_script`. Generic console namespace installer also created, using only EC trait
+methods (`create_plain_object` + `create_builtin_function` + `object_set_property`).
 
 None are fundamental — they just aren't done yet.
 
@@ -395,9 +399,20 @@ or subsystem entry-point signature must first be validated in
 on **both backends** (Boa and JSC) before it can be applied to any
 real production file.
 
-### Current state (updated 2026-07-04 — session 4)
+### Current state (updated 2026-07-04 — session 5)
 
-**Phases A–D, S1–S10, T1–T2, W1–W2, G1–G3, C2–C3, B1, R1, R2, S, P, E complete.**
+**Phases A–E, S1–S10, T1–T2, W1–W2, G1–G3, C2–C3, B1, R1, R2, S, P, E complete.**
+
+**Phase F (generic content operation on JSC) — in progress:**
+- ✅ `evaluate_script` added to `ExecutionContext<T>` trait (Boa + JSC backends).
+- ✅ Generic console namespace installer (`content/src/js/console_generic.rs`)
+  using only EC trait methods (`create_plain_object` + `create_builtin_function`
+  + `object_set_property`). No Boa-specific APIs.
+- ✅ Minimal JSC `run_content_process` created — creates `JscEngine`, installs
+  generic console, handles `EvaluateScript` and `Shutdown` IPC commands.
+- ❌ Generic CSS namespace installer not yet created.
+- ❌ JSC `build_context` not yet implemented (no Web IDL bindings on JSC).
+- ❌ `dom`, `html`, `webidl` modules still gated behind `#[cfg(boa_backend)]`.
 
 **Phase E (content crate compiles on JSC) is COMPLETE.**
 - `content/Cargo.toml` uses target-specific dependencies: `boa_engine`/`boa_gc`/`wasmtime`
@@ -440,15 +455,20 @@ real production file.
 - `wasm/namespace.rs` — `ec_to_ctx` × 6, `context_as_engine` × 1 (Boa-only).
 - `js/mod.rs` — `context_as_engine` × 1 (`builtin_with_captures_ctx`, Boa-only).
 
-### Next session: recommended order
+### Next session: recommended order (updated 2026-07-04 — session 5)
 
-1. **Phase F — Generic content operation on JSC.**  The content crate now compiles
-   on JSC but `run_content_process()` returns an error.  To make it functional:
+1. **Phase F — Generic content operation on JSC (continued).**
+   Progress so far:
+   - ✅ `evaluate_script` on `ExecutionContext<T>` — Boa + JSC.
+   - ✅ Generic console namespace installer (EC trait only).
+   - ✅ Minimal JSC `run_content_process` (console + script eval + IPC).
+
+   Remaining work:
+   - Port CSS namespace installer to generic EC API (follows console pattern).
    - Convert `environment_settings_object.rs` to use a generic EC trait object
-     instead of `BoaContext`/`JscEngine` directly.
-   - Implement `build_context` for JSC (or provide a generic bootstrap function).
-   - Port the binding infrastructure (`install_console_namespace`, etc.) from Boa
-     to the generic EC API.
+     instead of `BoaContext`/`JscEngine` directly (requires removing the
+     `#[cfg(boa_backend)]` gate on the `html` module first).
+   - Create JSC `build_context` bootstrap (minimal, no Web IDL).
    - Bring `dom`, `html`, `webidl` modules back from `#[cfg(boa_backend)]` gating
      by converting their `use boa_engine::*` patterns to generic `Types::*` aliases.
 

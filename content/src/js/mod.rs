@@ -5,10 +5,20 @@ mod downcast;
 #[cfg(boa_backend)]
 pub(crate) mod platform_objects;
 
+/// Generic bootstrap module — uses only [`ExecutionContext<T>`] trait methods.
+/// Not engine-specific; only compiled when the Boa-specific bindings are
+/// not available (JSC backend).
+#[cfg(not(boa_backend))]
+pub(crate) mod console_generic;
+
 #[cfg(boa_backend)]
 pub(crate) use bindings::{
     install_console_namespace, install_css_namespace, install_document_property,
 };
+
+/// Generic console namespace installer available on all backends.
+#[cfg(not(boa_backend))]
+pub(crate) use console_generic::install_console_namespace;
 #[cfg(boa_backend)]
 pub(crate) use downcast::{
     try_with_abort_controller_ref, try_with_abort_signal_mut, try_with_abort_signal_ref,

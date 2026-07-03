@@ -172,14 +172,12 @@ pub fn gc_struct_jsc(_attr: TokenStream, item: TokenStream) -> TokenStream {
             };
             expanded.into()
         }
-        _ => {
-            syn::Error::new_spanned(
-                &input,
-                "#[gc_struct] can only be applied to structs and enums",
-            )
-            .to_compile_error()
-            .into()
-        }
+        _ => syn::Error::new_spanned(
+            &input,
+            "#[gc_struct] can only be applied to structs and enums",
+        )
+        .to_compile_error()
+        .into(),
     }
 }
 

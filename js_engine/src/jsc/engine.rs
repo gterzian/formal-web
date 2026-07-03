@@ -3286,6 +3286,31 @@ impl ExecutionContext<JscTypes> for JscEngine {
             })),
         }
     }
+
+    fn evaluate_script(&mut self, source: &str) -> Completion<JscValue, JscTypes> {
+        let script = JscString::from_rust(source);
+        let mut exception: *mut JSValueRef = std::ptr::null_mut();
+        let result = unsafe {
+            JSEvaluateScript(
+                self.context.as_context_ref(),
+                script.raw,
+                std::ptr::null_mut(),
+                std::ptr::null_mut(),
+                1,
+                &mut exception,
+            )
+        };
+        if !exception.is_null() {
+            return Err(JscValue {
+                raw: exception,
+                ctx: self.ctx_ptr(),
+            });
+        }
+        Ok(JscValue {
+            raw: result,
+            ctx: self.ctx_ptr(),
+        })
+    }
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
