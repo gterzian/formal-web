@@ -720,24 +720,51 @@ from `readablestream.rs`.
 CancelAlgorithm::call now return `Completion<JsObject, Types>` with zero ec_to_ctx.
 `_ec` wrappers bridge remaining Context-based byte_tee/from-iterable/transform functions.**
 
-**~29-34 ec_to_ctx remain** across byte tee internals, transform stream,
-platform objects, wasm namespace, structured clone, webidl helpers.
+**Phase S — Transform stream fully converted to EC** — `transformstream.rs` went from
+5 `ec_to_ctx` to 0. The following functions were converted from `&mut Context` to
+`&mut dyn ExecutionContext<T>`:
+
+| Function | Spec anchor |
+|---|---|
+| `transform_stream_default_controller_enqueue` | [`#transform-stream-default-controller-enqueue`](https://streams.spec.whatwg.org/#transform-stream-default-controller-enqueue) |
+| `transform_stream_default_controller_perform_transform` | [`#transform-stream-default-controller-perform-transform`](https://streams.spec.whatwg.org/#transform-stream-default-controller-perform-transform) |
+| `transform_stream_default_sink_write_algorithm` | [`#transform-stream-default-sink-write-algorithm`](https://streams.spec.whatwg.org/#transform-stream-default-sink-write-algorithm) |
+| `transform_stream_default_sink_close_algorithm` | [`#transform-stream-default-sink-close-algorithm`](https://streams.spec.whatwg.org/#transform-stream-default-sink-close-algorithm) |
+| `initialize_transform_stream` | [`#initialize-transform-stream`](https://streams.spec.whatwg.org/#initialize-transform-stream) |
+| `construct_transform_stream_ec` (formerly `construct_transform_stream`) | [`#ts-constructor`](https://streams.spec.whatwg.org/#ts-constructor) |
+
+Three closure wrappers (`sink_write_algorithm_fn`, `sink_close_algorithm_fn`,
+`controller_enqueue_on_fulfilled_fn`) had their `ec_to_ctx` bridges removed. Two
+helper functions (`get_callable_method_ec`, `create_transform_stream_default_controller_ec`)
+were added as EC variants.
+
+**~17 ec_to_ctx remain** — 6 in `wasm/namespace.rs`, 4 in byte tee pull/cancel
+(`readablestreamdefaultcontroller.rs`), 1 in `js/mod.rs` (bridge helper),
+and 1 each in `readablestream.rs`, `readablestreamsupport.rs`,
+`html/windowproxy.rs`, `html/html_media_element.rs`,
+`html/safe_passing_of_structured_data.rs`,
+`webidl/async_iterable.rs`.
+
+**webidl/promise.rs and buffer_source.rs now zero ec_to_ctx** — `error_to_rejection_reason`,
+`rejected_promise_from_error`, and `promise_from_completion` converted to pure EC using
+`JsError::as_opaque()` for the opaque path and `ec.new_type_error()` as fallback.
+`get_a_copy_of_the_buffer_source` now uses `typed_array_buffer`/`typed_array_byte_offset`/
+`typed_array_byte_length` EC trait methods instead of Boa `Context::typed_array_*`.
 
 ### Next session: recommended order
 
 1. **Continue Phase S — `pull_with_byob_reader` and `from_iterator`** — Deep byte_tee
    closures in `readable_byte_stream_tee_pull_with_byob_reader` still pass Context.
    Converting requires `Behaviour` trait impls for the `NativeFunction::from_copy_closure_with_captures`
-   closures and nested `queue_internal_stream_microtask` closures. Also convert
-   transform sink algorithms (`transform_stream_default_sink_write_algorithm`,
-   `transform_stream_default_sink_close_algorithm`, etc.).
+   closures and nested `queue_internal_stream_microtask` closures.
 
-2. **Continue Phase P — Remaining ec_to_ctx** — `abort.rs` (3), `windowproxy.rs` (2),
-   singletons (2).
+2. **Continue Phase W — `webidl/promise.rs` (3), `webidl/async_iterable.rs` (1), `webidl/buffer_source.rs` (1), `wasm/namespace.rs` (6)** —
+   Convert `error_to_rejection_reason`, `rejected_promise_from_error`, and
+   `promise_from_completion` to pure EC. Then convert buffer_source,
+   async_iterable, and wasm namespace.
 
-3. **Continue Phase W — `JsError` helpers, structured clone, async iterable, wasm** —
-   `JsError` helpers (3), structured clone (1), async iterable (1), wasm (6),
-   windowproxy (2).
+3. **Continue Phase P — Remaining ec_to_ctx** — `windowproxy.rs` (1),
+   `html_media_element.rs` (1), `safe_passing_of_structured_data.rs` (1).
 
 4. **Phase E validation (long-term)** — Once D/S/P/W are complete, verify
    `cargo check -p content --no-default-features --features jsc` passes.

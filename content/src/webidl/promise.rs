@@ -144,20 +144,24 @@ pub(crate) fn promise_from_completion(
     completion: boa_engine::JsResult<JsValue>,
     ec: &mut dyn ExecutionContext<crate::js::Types>,
 ) -> JsPromise {
-    // SAFETY: ec is backed by BoaContext repr(transparent) over Context
-    let context = unsafe { js_engine::boa::ec_to_ctx(ec) };
-    promise_from_completion_boa(completion, context)
-}
-
-/// <https://webidl.spec.whatwg.org/#js-to-promise>
-fn promise_from_completion_boa(
-    completion: boa_engine::JsResult<JsValue>,
-    context: &mut Context,
-) -> JsPromise {
-    JsPromise::from_result(completion, context).unwrap_or_else(|error| {
-        JsPromise::from_object(rejected_promise_from_error_boa(error, context))
-            .expect("rejected_promise_from_error must return a Promise object")
-    })
+    // Convert the JsResult into a promise using EC-based helpers.
+    match completion {
+        Ok(value) => {
+            // Resolve the promise with the value.
+            let promise_obj = promise_from_value(value.clone(), ec)
+                .unwrap_or_else(|_| ec.realm_global_object());
+            // Return as JsPromise (Boa type) for backward compatibility
+            // with the byte_tee_ignore_pull_completion caller.
+            JsPromise::from_object(promise_obj)
+                .expect("promise_from_value must return a Promise object")
+        }
+        Err(error) => {
+            // Reject the promise with the error reason.
+            let promise_obj = rejected_promise_from_error(error, ec);
+            JsPromise::from_object(promise_obj)
+                .expect("rejected_promise_from_error must return a Promise object")
+        }
+    }
 }
 
 /// <https://webidl.spec.whatwg.org/#a-promise-rejected-with>
@@ -168,28 +172,12 @@ pub(crate) fn rejected_promise_from_error(
     error: JsError,
     ec: &mut dyn ExecutionContext<crate::js::Types>,
 ) -> JsObject {
-    // SAFETY: ec is backed by BoaContext repr(transparent) over Context
-    let context = unsafe { js_engine::boa::ec_to_ctx(ec) };
-    rejected_promise_from_error_boa(error, context)
-}
-
-/// <https://webidl.spec.whatwg.org/#a-promise-rejected-with>
-fn rejected_promise_from_error_boa(error: JsError, context: &mut Context) -> JsObject {
-    let reason = error_to_rejection_reason_boa(error, context);
-    if let Ok(promise) = resolved_promise_boa(reason, context) {
-        return promise;
-    }
-    let (promise, resolvers) = JsPromise::new_pending(context);
-    if let Err(error) =
-        resolvers
-            .reject
-            .call(&JsValue::undefined(), &[JsValue::undefined()], context)
-    {
-        error!(
-            "[webidl] failed to reject fallback promise in rejected_promise_from_error: {error}"
-        );
-    }
-    promise.into()
+    // Convert the error to a rejection reason using the EC-based helper.
+    // Note: error_to_rejection_reason is now EC-based.
+    let reason = error_to_rejection_reason(error, ec);
+    // Use the generic rejected_promise helper which works on JsValue.
+    // rejected_promise creates a new promise via NewPromiseCapability — it never fails.
+    rejected_promise(reason, ec).unwrap_or_else(|_| ec.realm_global_object())
 }
 
 /// <https://webidl.spec.whatwg.org/#a-promise-rejected-with>
@@ -201,26 +189,19 @@ pub(crate) fn error_to_rejection_reason(
     error: JsError,
     ec: &mut dyn ExecutionContext<crate::js::Types>,
 ) -> JsValue {
-    // SAFETY: ec is backed by BoaContext repr(transparent) over Context
-    let context = unsafe { js_engine::boa::ec_to_ctx(ec) };
-    error_to_rejection_reason_boa(error, context)
-}
-
-/// <https://webidl.spec.whatwg.org/#a-promise-rejected-with>
-fn error_to_rejection_reason_boa(error: JsError, context: &mut Context) -> JsValue {
+    // Step 1: If the error wraps an opaque value, return it directly.
+    // Note: as_opaque() does not need Context.
     if let Some(reason) = error.as_opaque().cloned() {
         return reason;
     }
 
-    match error.into_opaque(context) {
-        Ok(reason) => reason,
-        Err(_js_error) => JsNativeError::typ()
-            .with_message(
-                "Promise-returning operation could not convert an internal error into a rejection reason",
-            )
-            .into_opaque(context)
-            .into(),
-    }
+    // Step 2: If the error has no opaque value (a Boa-internal JsNativeError),
+    // fall back to a generic TypeError via EC.
+    // In the generic EC path, all Completion errors carry opaque JsValues,
+    // so this fallback should never fire for generic code.
+    ec.new_type_error(
+        "Promise-returning operation could not convert an internal error into a rejection reason",
+    )
 }
 
 /// <https://webidl.spec.whatwg.org/#dfn-perform-steps-once-promise-is-settled>

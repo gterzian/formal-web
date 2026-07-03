@@ -152,9 +152,7 @@ impl CancelAlgorithm {
                     .map(|v| JsObject::from(v))
             }
             Self::TransformStreamDefaultSourceCancel(stream) => {
-                let context = unsafe { js_engine::boa::ec_to_ctx(ec) };
-                transform_stream_default_source_cancel_algorithm(stream.clone(), reason, context)
-                    .map_err(|e| e.into_opaque(context).unwrap_or(JsValue::undefined()))
+                transform_stream_default_source_cancel_algorithm(stream.clone(), reason, ec)
             }
         }
     }

@@ -59,7 +59,7 @@ pub(crate) use strategy::{
 };
 pub use transformstream::{TransformStream, TransformStreamDefaultController};
 pub(crate) use transformstream::{
-    construct_transform_stream, construct_transform_stream_ec,
+    construct_transform_stream_ec,
     with_transform_stream_default_controller_ref_ec, with_transform_stream_ref_ec,
 };
 pub use writablestream::WritableStream;
