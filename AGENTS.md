@@ -424,6 +424,8 @@ At the end of each task, run the following steps **in order**:
 
 8. Do NOT use `collect_session` — that tool has been removed. Sessions are collected automatically on shutdown.
 
+9. Review the entire session (your entire context window) and make sure that Rule Number One was respected (see top of file), and if not alert the user.
+
 
 # Forbidden commands
 
