@@ -1994,28 +1994,24 @@ fn byte_tee_forward_error_on_rejected_fn(
 fn byte_tee_forward_reader_error(
     reader_object: &JsObject,
     tee_state: &GcCell<ByteTeeState>,
-    context: &mut Context,
-) -> JsResult<()> {
-    let closed_promise = if let Ok(closed) = reader_object.get(js_string!("closed"), context) {
-        closed
-            .as_object()
-            .and_then(|o| JsPromise::from_object(o.clone()).ok())
-    } else {
-        None
-    };
+    ec: &mut dyn ExecutionContext<crate::js::Types>,
+) -> Completion<(), crate::js::Types> {
+    let closed_value = js_engine::EcmascriptHost::get(ec, reader_object, "closed")?;
+    let closed_promise = crate::js::Types::value_as_object(&closed_value)
+        .and_then(|o| crate::js::Types::object_as_promise(&o));
     let Some(closed_promise) = closed_promise else {
         return Ok(());
     };
 
     // Step helper: "Let thisReader be reader" for the forwardReaderError closure.
     let generation_at_attach = tee_state.borrow().reader_generation;
-    let on_rejected = crate::js::builtin_with_captures_ctx(
-        context,
+    let on_rejected = crate::js::builtin_with_captures(
+        ec,
         (generation_at_attach, tee_state.clone()),
         byte_tee_forward_error_on_rejected_fn,
         1,
     );
-    let _ = closed_promise.catch(on_rejected, context)?;
+    ec.perform_promise_then(closed_promise, None, Some(on_rejected), None)?;
     Ok(())
 }
 
@@ -2058,7 +2054,11 @@ fn byte_tee_switch_to_default_reader(
         ))?;
     let new_reader = with_readable_stream_default_reader_ref(&new_reader_object, |r| r.clone())?;
     tee_state.borrow_mut().reader = ReadableStreamReader::Default(new_reader);
-    byte_tee_forward_reader_error(&new_reader_object, tee_state, context)
+    crate::js::completion_to_js_result(byte_tee_forward_reader_error(
+        &new_reader_object,
+        tee_state,
+        js_engine::boa::context_as_ec(context),
+    ))
 }
 
 fn byte_tee_switch_to_byob_reader(
@@ -2086,7 +2086,11 @@ fn byte_tee_switch_to_byob_reader(
     )?;
     let new_reader = with_readable_stream_byob_reader_ref(&new_reader_object, |r| r.clone())?;
     tee_state.borrow_mut().reader = ReadableStreamReader::BYOB(new_reader);
-    byte_tee_forward_reader_error(&new_reader_object, tee_state, context)
+    crate::js::completion_to_js_result(byte_tee_forward_reader_error(
+        &new_reader_object,
+        tee_state,
+        js_engine::boa::context_as_ec(context),
+    ))
 }
 
 /// <https://streams.spec.whatwg.org/#abstract-opdef-readablebytestreamtee>
@@ -2805,12 +2809,7 @@ fn readable_byte_stream_tee(
     }
 
     // Step 23: Perform forwardReaderError, given reader.
-    // Note: ec_to_ctx - byte_tee_forward_reader_error is Context-based internally.
-    let ctx = unsafe { js_engine::boa::ec_to_ctx(ec) };
-    if let Err(error) = byte_tee_forward_reader_error(&reader_object, &tee_state, ctx) {
-        let error_value = error.into_opaque(ctx).unwrap_or(JsValue::undefined());
-        return Err(error_value);
-    }
+    byte_tee_forward_reader_error(&reader_object, &tee_state, ec)?;
     // Step 24: Return « branch1, branch2 ».
 
     Ok(ReadableStreamTeeBranches {

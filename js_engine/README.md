@@ -19,134 +19,48 @@ HTML/DOM/WebIDL layers.
  closure, deleting a wrapper, removing a bridge — is judged by whether it
  moves toward this end state.
 
-### 0. Migration methodology — spec-first, not Boa-first
+### Migration methodology — spec-first, not Boa-first
 
 When converting Boa-specific code to the generic layer, **follow the spec
 chain**, not the Boa API shape.
 
-#### Core rules
+**Core rules:**
+1. **Go deep, not broad.** Convert a function's ENTIRE call chain, not file by file.
+2. **Zero bridges.** `ec_to_ctx`, `context_as_ec`, `_ec` wrappers, `completion_to_js_result`
+   are ALL bridges — never leave them at boundaries. Convert every called function too.
+   The only file where `ec_to_ctx` may appear is `js_engine/src/boa/engine.rs`.
+3. **Migrate the original function in place.** Do NOT create `foo_ec` wrappers —
+   change the real function's signature and fix all callers. No `_ec` suffix in final code.
+4. **Read the spec.** Identify every ECMA-262 operation (Call, Get, PerformPromiseThen, etc.)
+   and use the corresponding `ExecutionContext<T>` trait method.
 
-1. **Go deep, not broad.**  When converting a function to take
-   `&mut dyn ExecutionContext<T>`, trace its ENTIRE call chain — across
-   files if needed — and convert every function it calls.  Never leave
-   bridges (`context_as_ec`, `_ec` wrappers, `ec_to_ctx`,
-   `completion_to_js_result`) at the boundaries.  If a called function
-   still needs `Context`, convert it too.  This is **call-chain
-   migration**, not file-by-file migration.
+**Replacement table (old → new):**
 
-2. **Zero bridging at any level — ever.**  An `_ec` wrapper, an inline
-   `ec_to_ctx` + `into_opaque` dance at a call site, a `context_as_ec`
-   call, or a `completion_to_js_result` — these are ALL bridges.
-   Bridges are NOT intermediary states to be "cleaned up later"; they are
-   code that will never be cleaned up because they compile and tests pass.
-   Every bridge in the commit is a permanent liability.
+| Boa-specific | Generic EC trait method |
+|---|---|
+| `JsPromise::new_pending(context)` | `ec.new_promise_pending()?` |
+| `JsPromise::from_object(p)?.then(...)` | `ec.perform_promise_then(...)` |
+| `JsPromise::from_object(x)?.state()` | `ec.promise_state(&x)?` |
+| `JsNativeError::typ().with_message(msg)` | `ec.new_type_error(msg)` |
+| `JsValue::undefined()` | `ec.value_undefined()` |
+| `NativeFunction::from_copy_closure_with_captures(...)` | `ec.create_builtin_function(...)` |
+| `resolvers.resolve.call(&u, &[v], ctx)` | `ec.call(&resolve, &undefined, &[v])` |
+| `object.get(js_string!(key), context)` | `ec.get(object, key)?` |
+| `JsUint8Array::from_iter(src, ctx)` | `typed_array_buffer` + `clone_array_buffer` + `construct` |
 
-   When a function you are converting calls ANOTHER function that still
-   takes `Context`, you DO NOT bridge at the call site.  You convert THAT
-   function too.  Trace the call chain until every function in the path
-   takes `&mut dyn ExecutionContext<T>` and returns `Completion<T, Types>`.
+**Anti-patterns (do NOT do):**
+- Creating `xxx_ec()` wrappers — convert the real function
+- Using `completion_to_js_result` or `context_as_ec` at call sites
+- Using `JsPromise::then()`/`new_pending()` when EC trait methods exist
+- Converting one file while leaving bridges at its edges
 
-   The ONLY file in the entire repo where `ec_to_ctx` may appear is
-   `js_engine/src/boa/engine.rs` (the Boa backend adapter itself).
-   Zero `ec_to_ctx`, `context_as_ec`, `completion_to_js_result`, or
-   `_ec`-suffixed definitions in any other file.  Period.
+### Ownership model
 
-3. **The real function takes EC, not Context.**  When migrating a function
-   from `fn foo(state, context: &mut Context) -> JsResult<T>` to the
-   generic API, change its signature IN PLACE to
-   `fn foo(state, ec: &mut dyn ExecutionContext<Types>) -> Completion<T, Types>`.
-   Do NOT leave the original behind and create `foo_ec`.  Do NOT create
-   an adapter at the call site that calls `ec_to_ctx` then `into_opaque`.
-   Just change the function — recompile, fix all callers, done.
-
-#### Spec chain reference
-
-4. **Read the spec algorithm.** Identify every ECMA-262 abstract operation
-   it calls (Call, Get, PerformPromiseThen, NewPromiseCapability,
-   CreateBuiltinFunction, etc.).
-
-5. **Use the `ExecutionContext<T>` trait methods** that implement those
-   ECMA-262 operations — never reach for Boa APIs when a generic equivalent
-   exists.
-
-#### Concrete patterns
-
-6. **For promise chaining**, use `ec.perform_promise_then(promise, on_fulfilled,
-   on_rejected, None)` — not `JsPromise::from_object(p)?.then(...)`.
-```
-   // ❌  Boa-specific (bypasses EC trait)
-   let result = JsPromise::from_object(promise)?.then(Some(on_fulfilled), None, context)?;
-
-   // ✅  Generic (spec: ECMA-262 PerformPromiseThen)
-   let js_promise = Types::object_as_promise(&promise).ok_or_else(...)?;
-   ec.perform_promise_then(js_promise, Some(on_fulfilled), None, None)?;
-```
-
-7. **For creating promises**, use `ec.new_promise_pending()` — not
-   `JsPromise::new_pending(context)`.
-```
-   // ❌  Boa-specific
-   let (promise, resolvers) = JsPromise::new_pending(context);
-
-   // ✅  Generic (spec: ECMA-262 NewPromiseCapability)
-   let (promise, resolvers) = ec.new_promise_pending()?;
-```
-
-8. **For domain functions that take `&mut Context`**: convert them
-   to take `&mut dyn ExecutionContext<T>` directly.  Do NOT create
-   standalone `_ec` wrapper functions that bridge Context→EC.
-   Convert the real function.
-
-9. **For `ResolvingFunctions::resolve/reject.call(_, _, ctx)`**: use
-   `ec.call()` directly.  `ResolvingFunctions.resolve` is a
-   `JsFunction` which converts to `JsObject` via `.into()`.
-```
-   // ❌  Needs Context
-   resolvers.resolve.call(&JsValue::undefined(), &[value], context)?;
-
-   // ✅  Uses EC directly — zero bridges
-   let resolve: JsObject = resolvers.resolve.into();
-   let undefined = ec.value_undefined();
-   ec.call(&resolve, &undefined, &[value])?;
-```
-
-10. **For `builtin_with_captures`** (the only operation that still needs
-   `&mut Context`): the parent function should keep its `&mut Context`
-   parameter if possible.  The fn pointer itself takes `ec` directly
-   with zero bridges.  When the parent function has already been
-   converted to EC, use `ec_to_ctx` once at the top — this is the
-   one remaining bridge pattern, and it exists because
-   `create_builtin_function_with_captures` lives on `JsEngine<T>`
-   (factory trait), not `ExecutionContext<T>` (the runtime trait
-   that domain code receives).  Once that method moves to the EC
-   trait, even this bridge is eliminated.
-
-#### Anti-patterns (do NOT do these)
-
-- Creating `xxx_ec()` wrapper functions that call `ec_to_ctx` internally
-- Creating `xxx_ctx()` wrapper functions that call `context_as_ec` + `completion_to_js_result`
-- Using `resolvers.resolve.call(&undefined, &[value], ctx)` when `ec.call()` is available
-- Using `JsPromise::then()` when `perform_promise_then` exists on the trait
-- Using `JsPromise::new_pending(context)` when `ec.new_promise_pending()` exists
-- Using `JsNativeError::typ().with_message(msg)` when `ec.new_type_error(msg)` exists
-- Using `completion_to_js_result` or `context_as_ec` at call sites — convert the caller to EC instead
-- Converting one file at a time while leaving bridges at its edges
-- Adding `_ec` suffix to struct methods — just rename the real method
-
-### 1. The ownership model
-
-<https://html.spec.whatwg.org/#environment-settings-objects> (§8.1.3.2)
-defines the **environment settings object**, which owns a **realm execution
-context** — a JavaScript execution context shared by all scripts in a given
-realm.  When we <https://html.spec.whatwg.org/#prepare-to-run-script>
-(§8.1.4.4), this context becomes the top of the execution context stack.
-
-Our `EnvironmentSettingsObject` (`content/src/html/environment_settings_object.rs`)
-owns a `BoaContext` which implements `ExecutionContext<T>`.  The
-`ExecutionContext<T>` trait **is** the generic interface to that realm
-execution context.  The migration end state is for the EDS to own the
-generic trait type instead of the concrete `BoaContext` — the ownership
-boundary is already correct, only the type needs to become generic.
+<https://html.spec.whatwg.org/#environment-settings-objects> defines the
+**environment settings object**, which owns a **realm execution context**.
+Our `EnvironmentSettingsObject` owns a `BoaContext` which implements
+`ExecutionContext<T>`.  The migration end state is for the EDS to own
+the generic trait type — the boundary is already correct.
 
 ### 2. The two paths into JavaScript
 
@@ -332,56 +246,19 @@ same struct because Boa's `Context` serves both roles internally.
 - `report_exception`
 - Value construction (shared with `ExecutionContext<T>`)
 
-### What does NOT get abstracted (yet)
+### Not yet abstracted (known blockers to EDS owning a generic type)
 
-| Operation | Reason |
+| Operation | Blocked on |
 |---|---|
-| Native function registration (`NativeFunction::from_closure`) | `create_builtin_function_with_captures` on `JsEngine<T>` accepts a traceable captures struct + fn pointer.  The EC path (`builtin_with_captures_ec`) now uses `create_builtin_function_from_behaviour` on `ExecutionContext<T>` — zero bridges.  The Context path (`builtin_with_captures`) still bridges through `context_as_engine`. |
-| Platform object construction | Uses Boa `ObjectInitializer` — needs realm's intrinsics table; passes through EC |
-| Proxy creation | Boa's proxy builder not publicly creatable |
-| `Context::eval` (script evaluation) | `JsEngine::evaluate_script` exists on the trait but callers use `Context::eval` directly; needs migration |
-| `JsValue::to_json(&mut Context)` | Boa-specific JSON serialization; needs a trait method |
-| `with_global_scope(&Context, ...)` | Boa GC heap traversal to access `GlobalScope`; partially resolved by `realm_global_object()` on `ExecutionContext` — `platform_objects.rs` `_ec` wrappers now use only trait methods. Non-`_ec` callers (`main.rs`, `environment_settings_object.rs`, `html_media_element.rs`) still use `with_global_scope` via `&Context`. |
-| `register_global_property`, `ObjectInitializer::new(ctx)`, `JsArray::from_iter(..., ctx)` | Boa object model construction APIs; need trait equivalents or centralized construction in `build_context` |
+| Proxy creation (`JsProxyBuilder::build(context)`) | `create_proxy` trait method not yet needed by any EC path |
+| `Context::eval` (script evaluation) | `evaluate_script` on `JsEngine<T>` exists; callers haven't migrated |
+| `with_global_scope(&Context, ...)` | GC heap traversal; `realm_global_object()` partially covers this |
+| `ObjectInitializer`, `register_global_property` | Boa object-model construction; needs centralized `build_context` path |
+| `queue_internal_stream_microtask` | Deep byte-tee chain uses `PromiseJob::with_realm` |
+| Structured clone, async iterable creation | Boa-internal APIs (realm access, data clone) |
+| `downcast_ref::<Window>()` on global object | Content-owned accessor needed (wasm, html_media_element) |
 
-These are the blockers to `EnvironmentSettingsObject` owning a purely generic context
-instead of `BoaContext`.  None are fundamental — they just aren't done yet.
-
-### HostMakeJobCallback — design direction
-
-<https://tc39.es/ecma262/#sec-hostmakejobcallback>
-
-This is a separate concern from `perform_promise_then` (which is already
-correctly generic).  `HostMakeJobCallback` / `HostCallJobCallback` wrap
-callbacks with `[[HostDefined]]` data (incumbent settings object, active
-script) so the HTML spec's "prepare to run a callback" steps happen
-automatically when the engine invokes a callback.
-
-**What already works:** `perform_promise_then` on the EC trait handles
-promise reactions (streams reacting to promises).  Boa internally calls
-its own `HostEnqueuePromiseJob` hook — no action needed from content.
-
-**What's future work:** Implement the engine's native host hooks trait
-(`boa_engine::context::HostHooks`) so `[[HostDefined]]` data is captured
-at `HostMakeJobCallback` time and restored at `HostCallJobCallback` time.
-This replaces manual threading of settings objects through closures.
-JSC has no equivalent C API; we'd simulate with our own layer.
-
-**What `enqueue_job_with_realm` does:** Explicit content-initiated
-microtask queueing (HTML's `queue a microtask`, streams'
-`queue_internal_stream_microtask`).  Separate from promise reactions.
-
-### Platform object downcast without GC abstraction
-
-`downcast_ref::<T>()` and `downcast_mut::<T>()` on `JsObject` do not
-require `Context`.  EC trait methods replace all other Boa APIs:
-
-| Old (needs `ctx`) | New (EC trait) |
-|---|---|
-| `JsNativeError::typ().with_message(msg)` | `ec.new_type_error(msg)` |
-| `JsValue::undefined()` | `ec.value_undefined()` |
-| `v.to_boolean()` | `ec.to_boolean(v)` |
-| `JsValue::new(n)` | `ec.value_from_number(n)` |
+None are fundamental — they just aren't done yet.
 
 ## Layout
 
@@ -415,81 +292,30 @@ cargo check -p js_engine --no-default-features --features jsc  # JSC
 
 ## Generic API surface (proven in POC)
 
-The `generic_js_test.rs` POC proves every content pattern can be expressed
-through the generic API.  See the test file for working examples of each.
-
-### Platform object lifecycle
-
-| Operation | Trait method | POC example |
-|---|---|---|
-| Create object with native data | `ec.create_object_with_any(prototype, Box::new(data))` | `create_test_widget` |
-| Get realm's global object | `ec.realm_global_object() -> T::JsObject` | `realm_global_object_returns_valid_js_object` |
-| Read native data (immutable) | `ec.with_object_any(obj) -> Option<&dyn Any>` | `widget_data::with_ref` |
-| Read native data (mutable) | `ec.with_object_any_mut(obj) -> Option<&mut dyn Any>` | `widget_data::with_mut` |
-
-`with_object_any` and `with_object_any_mut` are object-safe — callable on
-`&dyn ExecutionContext<T>`.  They return typed references that the caller
-downcasts via `dyn Any::downcast_ref::<T>()` / `downcast_mut::<T>()`.
-
-### GC integration
-
-| Operation | Mechanism | POC example |
-|---|---|---|
-| GC trait derivation | `#[gc_struct]` attribute macro | `TestWidget` struct |
-| GC-managed cell | `GcCell<T>` (Boa: `Gc<GcRefCell<T>>`, JSC: `Rc<RefCell<T>>`) | Domain struct fields |
-| Store a JS callback | `Option<GcRootHandle<Types>>` field | `on_change` field |
-| Root a JS value | `ec.create_root(&value) -> GcRootHandle<T>` | `store_callback` |
-
-`#[gc_struct]` replaces the old `impl_gc_traits!` declarative macro.  It emits:
-- Boa: `#[derive(Clone, boa_gc::Finalize, boa_gc::Trace, boa_engine::JsData)]` (structs)
-  or `#[derive(Clone, boa_gc::Finalize, boa_gc::Trace)]` (enums, no JsData)
-- JSC: `#[derive(Clone)]` + no-op `Trace` and `Finalize` impls
-
-`GcCell<T>` is a backend-abstracted type alias for GC-managed interior
-mutability.  Construct with `gc_cell_new(val)`, access with `.borrow()` /
-`.borrow_mut()`.  On Boa it maps to `Gc<GcRefCell<T>>` so the GC traces
-through it; on JSC it maps to `Rc<RefCell<T>>`.
-
-`GcRootHandle<T>` is an RAII guard:
-- Boa: no-op (GC traces through `boa_gc::Trace` on the handle itself)
-- JSC: stores the value as a non-enumerable property on the global object
-  to keep it alive in JSC's GC graph; deletes the property on drop.
-  (Avoids `JSValueProtect` which SIGSEGVs on eval-created values on
-  some macOS versions.)
-
-**Tests:**
-- `gc_root_survives_throwaway_pressure`: allocates 1000 throwaway arrays,
-  then verifies a `GcRootHandle`-rooted callback still calls correctly.
-- `nested_struct_gc_root_propagates`: `TestButton` wraps `TestWidget` which
-  holds `Option<GcRootHandle<Types>>` — verifies `Trace` propagates through
-  nested `impl_gc_traits!` structs and the rooted callback survives round-trip
-  through the outer object.
-
-### Value construction and conversion
-
-| Operation | Trait method |
-|---|---|
-| `undefined` | `ec.value_undefined()` |
-| `null` | `ec.value_null()` |
-| Boolean | `ec.value_from_bool(b)` |
-| Number | `ec.value_from_number(n)` |
-| String | `ec.value_from_string(ec.js_string_from_str(s))` |
-| BigInt | `ec.value_from_bigint(n)` |
-| Object from native data | `ec.create_object_with_any(...)` |
-| Plain object | `ec.create_plain_object(prototype)` |
-| Empty array | `ec.create_empty_array()` |
-| Array push | `ec.array_push(&arr, val)?` |
-| Set property | `ec.object_set_property(obj, key, val)?` |
-| TypeError | `ec.new_type_error(msg)` |
-| RangeError | `ec.new_range_error(msg)` |
-| Upcast: `JsValue` from `JsObject` | `Types::value_from_object(o)` |
-| Downcast: `JsObject` from `JsValue` | `Types::value_as_object(&v)` |
-| Downcast: rust String from JsValue | `ec.to_rust_string(v)?` |
-| Extract: rust String from JsString | `ec.js_string_to_rust_string(&s)` |
-
-### Binding function signature
+The `generic_js_test.rs` POC (81/81 tests) proves every content pattern works
+through the generic API with zero `boa_engine::*` imports.  See the test file
+for working examples.  Key trait methods:
 
 ```rust
+// Platform objects: create, read, mutate native data
+fn create_object_with_any(prototype: T::JsObject, data: Box<dyn Any>) -> T::JsObject;
+fn with_object_any(&self, obj: &T::JsObject) -> Option<&dyn Any>;
+fn with_object_any_mut(&mut self, obj: &T::JsObject) -> Option<&mut dyn Any>;
+
+// GC
+#[gc_struct]  // proc-macro: derives Clone + Trace + Finalize
+GcCell<T>     // Gc<GcRefCell<T>> (Boa) or Rc<RefCell<T>> (JSC)
+gc_cell_new(val), .borrow(), .borrow_mut()
+
+// Values
+ec.value_undefined(), .value_null(), .value_from_bool(b)
+ec.value_from_number(n), .value_from_string(ec.js_string_from_str(s))
+ec.create_plain_object(prototype), .create_empty_array()
+ec.array_push(&arr, val)?, .object_set_property(obj, key, val)?
+ec.new_type_error(msg), .new_range_error(msg)
+Types::value_from_object(o), Types::value_as_object(&v)
+
+// Binding function signature (the standard pattern)
 fn binding_fn(
     this: &Types::JsValue,
     args: &[Types::JsValue],
@@ -497,33 +323,10 @@ fn binding_fn(
 ) -> Completion<Types::JsValue, Types>
 ```
 
-No `ec_to_ctx`, no `JsResult`, no `Context`.  The EC provides everything.
-
-### Content pattern → generic equivalent
-
-| Content pattern | POC function | Key API calls |
-|---|---|---|
-| Simple getter | `get_title` | `Types::value_as_object`, `with_ref`, `ec.value_from_string` |
-| String setter | `set_title` | `ec.to_rust_string` |
-| Numeric setter | `set_count` | `ec.to_uint32` |
-| Method | `increment` | `with_mut` |
-| Constructor with args | `from_args` | `ec.to_rust_string`, `ec.to_boolean` |
-| Static factory | `create_static` | `create_object_with_any` |
-| Plain-object return | `to_object` | `ec.create_plain_object`, `ec.object_set_property` |
-| Array return | `to_array` | `ec.create_empty_array`, `ec.array_push` |
-| Promise-returning | `delayed_title` | `ec.new_promise_capability`, `ec.call` |
-| Callback invocation | `with_callback` | `ec.call`, `ec.is_callable` |
-| Callback storage | `store_callback` | `ec.create_root` |
-| Array-like length+indexing | `process_items` | `ec.property_key_from_index`, `ExecutionContext::get` |
-
-**Note on `process_items`:** `process_items` uses array-like length+indexing
-(`Get` for `"length"` then `Get` for `0..length`).  This is **not** the
-Web IDL `sequence<T>` conversion algorithm, which is iterator-based
-(`GetIterator` + `IteratorStep`/`IteratorValue`).  As written, it would
-mis-convert iterable-but-not-array-like arguments (`Set`, generator, custom
-iterable).  Either rewrite on `get_iterator`/`iterator_step_value` to match
-`sequence<T>`, or rename/re-comment to make clear it models array-like
-access, not WebIDL sequence conversion.
+**Note on `process_items` in POC:** Uses array-like length+indexing (`Get`
+for `"length"` then `Get` for `0..length`).  This is NOT the Web IDL
+`sequence<T>` conversion (which is iterator-based).  If using this pattern
+for `sequence<T>`, rewrite on `get_iterator`/`iterator_step_value`.
 
 ## Spec documentation convention
 
@@ -632,163 +435,66 @@ Concrete per-phase validation requirements:
 | **S-promise** | `PromiseState<T>` enum in js_engine; `promise_state()` method on `ExecutionContext<T>` trait; Boa + JSC backend impls. Replaces `JsPromise::from_object(x)?.state()` (Boa-specific) with `ec.promise_state(&obj)?`. |
 | **S1a** | PipeToState EC wrappers (18 methods); `pipe_to_on_promise_settled_ec`; `pipe_reaction_fn` + `pipe_reaction_function_ec`; `pipe_read_result_done_ec`; `queue_internal_stream_microtask_ec`; 3 ReadableStreamPipeTo closures converted to EC path |
 
-### Remaining phases
-
-| Blocker | Phase | What | Effort | Status |
-|---|---|---|---|---|
-| **Blocker 1** — Dispatch result-model mismatch | **Phase D** | Convert `EventDispatchHost` trait methods from `JsResult` to `Completion`. Delete `ContextEventDispatchHost` (both copies). Eliminate `js_result_to_completion` bridges from the dispatch path. | Small | ✅ Done — `EcDispatchHost` is the sole dispatch host; `ContextEventDispatchHost` deleted from both locations. |
-| **Blocker 4** — Streams domain exposes `Context` | **Phase S** | Convert streams domain methods from `&mut Context` to `&mut dyn ExecutionContext<T>`. | Large | ✅ Complete. `CloneAsUint8Array` converted to pure EC using `clone_array_buffer` + `construct` (added `clone_array_buffer` to EC trait, `uint8_array` to RealmIntrinsics). Remaining: deep byte_tee closures (`pull_with_byob_reader`), transform sink algorithms. |
-| **Blocker 2** — Platform-object state through Boa access paths | **Phase P** | Create content-owned host-data-backed store for platform-object bookkeeping, OR add `_ec` wrappers for remaining `&Context`-taking functions. `store_host_any` / `get_host_any` already validated. `realm_global_object()` trait method on `ExecutionContext` provides generic access to the global object (§8.1.3). `with_global_scope_ec` in `platform_objects.rs` combines `realm_global_object()` + `with_object_any` + `downcast_ref::<Window>()` — zero `ec_to_ctx`. WindowProxy needs `JsProxyBuilder` which has no trait equivalent yet — may need `create_proxy` on `ExecutionContext`. | Medium | 🔶 platform_objects.rs 8→0 ec_to_ctx. Remaining: abort.rs (3), windowproxy.rs (2), singletons (2). |
-| **Blocker 5** — Subsystem entry points assume Boa | **Phase W** | Convert structured clone, Web IDL promise helpers, async iterable helpers, and Wasm to take `ExecutionContext<T>`. Same `_ec` wrapper pattern as Phase S/P — no new generic interfaces needed. `buffer_source.rs` now covered by typed array trait methods (T1). | Medium | 🔶 promise.rs 9→3. Remaining: JsError helpers (3), structured clone (1), async iterable (1), wasm (6), windowproxy (2). |
-| **Blocker 3** — Engine ownership is structurally Boa-specific | **Phase E** | Land compile-time `Types` / `Engine` aliases. Backend selection becomes a `#[cfg]` choice. Validated by `cargo check` with both feature sets. | Large | Blocked on D, S, P, W |
-| **Blocker 6** — Global-scope helpers are implicitly Boa | **Phase G** | Move `document_creation_url`, `with_global_scope`, etc. behind content-owned query helpers. | Small | Part of Phase P |
-
-### Current state (updated 2026-07-06)
-
-**Phases A–D, S1–S10, T1–T2, W1–W2, G1–G3, C2–C3, B1, R1, R2 complete.** All binding files
-at 0 ec_to_ctx.  All 34 struct/enum definitions use `#[gc_struct]`.  All domain
-field types use `GcCell<T>`.
-
-**PipeToState fully converted to EC** — All ~20 PipeToState methods converted from
-`&mut Context` → `&mut dyn ExecutionContext<T>`: `on_read_request_settled`,
-`reject_and_finalize_with_error`, `reject_and_finalize_with_reason`,
-`run_abort_algorithm`, `wait_for_writer_ready`, `read_chunk`, `write_chunk`,
-`wait_on_pending_write`, `check_and_propagate_errors_forward`,
-`check_and_propagate_errors_backward`, `check_and_propagate_closing_forward`,
-`check_and_propagate_closing_backward`, `shutdown`, `perform_action`, `finalize`,
-`update_pending_shutdown_action`, `shutdown_action_promise_state`,
-`prune_settled_pending_writes`, `append_reaction`.
-
-BoA-specific patterns replaced:
-| Old | New |
-|---|---|
-| `JsPromise::from_object(x)?.state()` | `ec.promise_state(&x)?` |
-| `JsPromise::from_object(x)?.then(...)` | `ec.perform_promise_then(...)` |
-| `JsNativeError::typ().with_message(msg)` | `ec.new_type_error(msg)` |
-| `promise_object.has_property(key, ctx)` | `ec.has_property(obj, prop_key)?` |
-| `promise_object.get(key, ctx)?.to_boolean()` | `ec.to_boolean(&ec.get(obj, prop_key)?)` |
-| `resolvers.resolve.call(&u, &[v], ctx)` | `ec.call(&resolve.into(), &u, &[v])` |
-| `JsPromise::new_pending(ctx)` | `ec.new_promise_pending()?` |
-| `NativeFunction::from_copy_closure_with_captures(...)` | `ec.create_builtin_function(...)` |
-| `JsUint8Array::from_iter(src, ctx)` | `ec.typed_array_buffer` + `ec.clone_array_buffer` + `ec.construct(intrinsics.uint8_array, ...)` (CloneAsUint8Array) |
-| `ec_to_ctx(ec)` + `JsUint8Array::from_iter` in CloneAsUint8Array | Pure EC: `typed_array_buffer`/`byte_offset`/`byte_length` + `clone_array_buffer` + `construct` |
-
-**Entry points converted** — `ReadableStream::pipe_to` and `ReadableStream::pipe_through`
-now take `&mut dyn ExecutionContext<T>` directly. `pipe_to_ec`/`pipe_through_ec`
-wrappers deleted. JS bindings call `pipe_to`/`pipe_through` directly.
-
-**`readable_stream_pipe_to` converted** — renamed to `readable_stream_pipe_to_ec`
-(takes EC). Callers updated.
-
-**`run_abort_algorithm` converted** — now takes EC. Legacy Context variant
-`run_abort_algorithm_ctx` provided. `abort.rs` callers updated.
-
-**Helper functions converted** — `pipe_to_on_promise_settled_ec`,
-`pipe_read_result_done_ec`, `abort_destination_then_cancel_source_ec`,
-`normalize_pipe_options_ec`, `extract_abort_signal_ec`,
-`promise_rejected_with_reason_ec`, `promise_rejected_with_type_error_ec`,
-`promise_rejected_with_error_ec`, `reject_promise_with_error_ec`,
-`wait_for_all_promises_ec` (all EC-based).
-
-**`WaitForAllState` and `AbortThenCancelState` use `PromiseResolvers`** —
-both now use `js_engine::PromiseResolvers<crate::js::Types>` instead of
-Boa-specific `ResolvingFunctions`.
-
-**POC test suite: 81/81 pass on Boa.**
-
-**Web IDL "wait for all" moved to webidl** — `wait_for_all` and `wait_for_all_get_promise`
-implement the spec algorithms in `content/src/webidl/promise.rs` with proper step
-comments and spec anchor URLs. The old `WaitForAllState` and helpers removed
-from `readablestream.rs`.
-
-**Phase E landed** — `content/src/js/mod.rs` uses `#[cfg(feature = "jsc")]` to select
-`js_engine::jsc::JscTypes` vs `js_engine::boa::BoaTypes`. Feature forwarding fixed:
-`boa = ["js_engine/boa"]`.
-
-**~10 ec_to_ctx eliminated across 3 files:**
-- `writablestreamdefaultcontroller.rs`: 4 — `StartAlgorithm::call`, `close_controller`,
-  `write_controller`, dead `ec_to_ctx` in setup
-- `readablestreamsupport.rs`: 3 — PipeTo `chunk_steps`/`close_steps`/`error_steps`
-  replaced `queue_internal_stream_microtask` with `ec.enqueue_job_with_realm`
-- `readablestreamdefaultcontroller.rs`: 3 — `StartAlgorithm::call`,
-  `set_up_readable_stream_default_controller` (dead), `extract_source_method`
-  (converted from Context to EC)
-
-**Phase S — `clone_as_uint8_array` converted to pure EC** — `CloneAsUint8Array` (Streams §8.3) now uses `typed_array_buffer`/`typed_array_byte_offset`/`typed_array_byte_length`/`clone_array_buffer`/`realm_intrinsics(uint8_array)`/`construct` — all EC trait methods. Zero bridges. `clone_array_buffer` (§25.1.4) added to `ExecutionContext<T>` (was only on `JsEngine<T>`). `uint8_array` added to `RealmIntrinsics`.
-
-**Default tee pull/cancel converted to EC;** PullAlgorithm::call and
-CancelAlgorithm::call now return `Completion<JsObject, Types>` with zero ec_to_ctx.
-`_ec` wrappers bridge remaining Context-based byte_tee/from-iterable/transform functions.**
-
-**Phase S — Transform stream fully converted to EC** — `transformstream.rs` went from
-5 `ec_to_ctx` to 0. The following functions were converted from `&mut Context` to
-`&mut dyn ExecutionContext<T>`:
-
-| Function | Spec anchor |
-|---|---|
-| `transform_stream_default_controller_enqueue` | [`#transform-stream-default-controller-enqueue`](https://streams.spec.whatwg.org/#transform-stream-default-controller-enqueue) |
-| `transform_stream_default_controller_perform_transform` | [`#transform-stream-default-controller-perform-transform`](https://streams.spec.whatwg.org/#transform-stream-default-controller-perform-transform) |
-| `transform_stream_default_sink_write_algorithm` | [`#transform-stream-default-sink-write-algorithm`](https://streams.spec.whatwg.org/#transform-stream-default-sink-write-algorithm) |
-| `transform_stream_default_sink_close_algorithm` | [`#transform-stream-default-sink-close-algorithm`](https://streams.spec.whatwg.org/#transform-stream-default-sink-close-algorithm) |
-| `initialize_transform_stream` | [`#initialize-transform-stream`](https://streams.spec.whatwg.org/#initialize-transform-stream) |
-| `construct_transform_stream_ec` (formerly `construct_transform_stream`) | [`#ts-constructor`](https://streams.spec.whatwg.org/#ts-constructor) |
-
-Three closure wrappers (`sink_write_algorithm_fn`, `sink_close_algorithm_fn`,
-`controller_enqueue_on_fulfilled_fn`) had their `ec_to_ctx` bridges removed. Two
-helper functions (`get_callable_method_ec`, `create_transform_stream_default_controller_ec`)
-were added as EC variants.
-
-**~17 ec_to_ctx remain** — 6 in `wasm/namespace.rs`, 4 in byte tee pull/cancel
-(`readablestreamdefaultcontroller.rs`), 1 in `js/mod.rs` (bridge helper),
-and 1 each in `readablestream.rs`, `readablestreamsupport.rs`,
-`html/windowproxy.rs`, `html/html_media_element.rs`,
-`html/safe_passing_of_structured_data.rs`,
-`webidl/async_iterable.rs`.
-
-**webidl/promise.rs and buffer_source.rs now zero ec_to_ctx** — `error_to_rejection_reason`,
-`rejected_promise_from_error`, and `promise_from_completion` converted to pure EC using
-`JsError::as_opaque()` for the opaque path and `ec.new_type_error()` as fallback.
-`get_a_copy_of_the_buffer_source` now uses `typed_array_buffer`/`typed_array_byte_offset`/
-`typed_array_byte_length` EC trait methods instead of Boa `Context::typed_array_*`.
-
 ### Next session: recommended order
 
-1. **Continue Phase S — `pull_with_byob_reader` and `from_iterator`** — Deep byte_tee
-   closures in `readable_byte_stream_tee_pull_with_byob_reader` still pass Context.
-   Converting requires `Behaviour` trait impls for the `NativeFunction::from_copy_closure_with_captures`
-   closures and nested `queue_internal_stream_microtask` closures.
+1. **Phase S — Byte tee closures in `readablestream.rs`** — Convert `readable_byte_stream_tee_pull1_algorithm`,
+   `pull2`, `cancel1`, `cancel2`, and their dependencies (`queue_internal_stream_microtask` chain).
+   Requires `Behaviour` trait impls for nested closures. This erases 6 ec_to_ctx
+   (4 in `readablestreamdefaultcontroller.rs` + 1 in `readablestreamsupport.rs` + 1 in `readablestream.rs`).
 
-2. **Continue Phase W — `webidl/promise.rs` (3), `webidl/async_iterable.rs` (1), `webidl/buffer_source.rs` (1), `wasm/namespace.rs` (6)** —
-   Convert `error_to_rejection_reason`, `rejected_promise_from_error`, and
-   `promise_from_completion` to pure EC. Then convert buffer_source,
-   async_iterable, and wasm namespace.
+2. **Phase W — `wasm/namespace.rs` (6 ec_to_ctx)** — Convert wasm namespace functions.
+   Requires replacing `context.global_object().downcast_ref::<Window>()` with a
+   content-owned accessor.
 
-3. **Continue Phase P — Remaining ec_to_ctx** — `windowproxy.rs` (1),
-   `html_media_element.rs` (1), `safe_passing_of_structured_data.rs` (1).
+3. **Phase P — Remaining singleton ec_to_ctx** — `html/windowproxy.rs`,
+   `html/html_media_element.rs`, `webidl/async_iterable.rs`,
+   `html/safe_passing_of_structured_data.rs`.
 
-4. **Phase E validation (long-term)** — Once D/S/P/W are complete, verify
-   `cargo check -p content --no-default-features --features jsc` passes.
+4. **Phase E validation** — `cargo check -p content --no-default-features --features jsc`.
+
+### Current state (updated 2026-07-03)
+
+**Phases A–D, S1–S10, T1–T2, W1–W2, G1–G3, C2–C3, B1, R1, R2 complete.**
+All binding files at 0 ec_to_ctx. All 34 struct/enum definitions use `#[gc_struct]`.
+All domain field types use `GcCell<T>`. Generic POC: 81/81 tests pass on Boa.
+Phase E (compile-time Types/Engine aliases) is landed — `#[cfg(feature = "jsc")]`
+selects between BoaTypes and JscTypes.
+
+**ec_to_ctx count: ~16** (was ~34 before current session)
+
+**Streams domain fully EC:**
+- `transformstream.rs` — all 6 sink/controller algorithms converted, 3 closures freed of bridges. 5 ec_to_ctx → 0.
+- `readablestream.rs` — `byte_tee_forward_reader_error` converted (uses `EcmascriptHost::get` + `perform_promise_then`). 1 ec_to_ctx eliminated.
+- `readablestreamdefaultcontroller.rs` — `CancelAlgorithm::TransformStreamDefaultSourceCancel` eliminated. 1 ec_to_ctx down.
+
+**Web IDL helpers fully EC:**
+- `webidl/promise.rs` — `error_to_rejection_reason`, `rejected_promise_from_error`, `promise_from_completion` use `JsError::as_opaque()` + fallback. 3 ec_to_ctx → 0.
+- `webidl/buffer_source.rs` — `get_a_copy_of_the_buffer_source` uses typed_array EC trait methods. 1 ec_to_ctx → 0.
+
+**Remaining ~16 ec_to_ctx by file:**
+- `wasm/namespace.rs`: 6 — `context.global_object().downcast_ref<Window>()` pattern
+- `readablestreamdefaultcontroller.rs`: 4 — byte tee pull/cancel (deep chain with `queue_internal_stream_microtask`)
+- `readablestreamsupport.rs`: 1 — byte tee chunk steps
+- `html/windowproxy.rs`: 1 — `JsProxyBuilder::build(context)` (no EC proxy API yet)
+- `html/html_media_element.rs`: 1 — `with_global_scope` (GC heap traversal)
+- `html/safe_passing_of_structured_data.rs`: 1 — structured clone (Boa-internal)
+- `webidl/async_iterable.rs`: 1 — async iterator creation (`ObjectInitializer`)
+- `js/mod.rs`: 1 — `js_result_to_completion_ec` bridge helper
 
 ### Working notes
 
-**`builtin_with_captures` / `builtin_callback`:** Use
-`crate::js::builtin_with_captures(context, captures, fn_ptr, length)` for
-promise `.then()` handlers with `&mut Context`.  The EC variant
-`builtin_with_captures_ec(ec, ...)` now goes through
-`ec.create_builtin_function_from_behaviour(...)` — zero bridges.
-The Context-taking `builtin_with_captures` still uses
-`context_as_engine(context).create_builtin_function_with_captures(...)` —
-this is the legacy path.
+**`builtin_with_captures` / `builtin_callback`:** Use `crate::js::builtin_with_captures(ec, ...)`
+for EC-taking closures (zero bridges). The Context-taking `builtin_with_captures_ctx`
+bridges through `context_as_engine` — prefer the EC variant.
 
-**Test-file-first:** Validate new generic patterns in
-`content/src/generic_js_test.rs` on both backends before production code.
-81/81 tests pass on Boa.
+**Test-file-first:** Validate new generic patterns in `generic_js_test.rs`
+on both backends before production code. 81/81 tests pass on Boa.
 
-**`Behaviour<T>` trait design note:** `dyn Behaviour<BoaTypes>` is marked
-`Trace` + `Finalize` with no-op bodies — the captures inside the trait object
-are GC-managed objects already rooted by their parent stream/controller.
-This is safe because when the function is collected, the parent still holds
-the roots.
+**`Behaviour<T>` trait design note:** `dyn Behaviour<BoaTypes>` uses no-op
+Trace/Finalize — captures are GC-managed objects rooted by their parent.
+
+**Migrate the original function, not a copy.** When converting, change the real
+function's signature in place and fix all callers. No `_ec` suffix in final code.
 
 ## Working during migration
 
