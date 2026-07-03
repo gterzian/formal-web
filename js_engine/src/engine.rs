@@ -701,6 +701,11 @@ pub trait ExecutionContext<T: JsTypes + JsTypesWithRealm>: EcmascriptHost<T> {
     /// a sequence by numeric index).
     fn property_key_from_index(&self, index: u32) -> T::PropertyKey;
 
+    /// Convert a `PropertyKey` to its string representation.
+    /// Returns the string name of the property, or the string form of an index.
+    /// Symbols are represented as their `Symbol(name)` string.
+    fn property_key_to_rust_string(&self, key: &T::PropertyKey) -> String;
+
     // ────────────────────────────────────────────────────────────────────────
     // Host-Defined Data Store (analogous to boa_engine::Context::get_data/insert_data)
     // ────────────────────────────────────────────────────────────────────────

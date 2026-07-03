@@ -417,8 +417,8 @@ enabling `readablestreamasynciterator.rs` to implement it with zero bridges.
 - `wasm/namespace.rs` (2) — `create_exported_function_wrapper_boa` now uses
   `create_builtin_function` with an EC-taking closure; the outer bridge
   uses `context_as_engine` once at setup instead of `context_as_ec` per invocation.
-- `html/safe_passing_of_structured_data.rs` — `data_clone_error` converted to EC;
-  one `context_as_ec` remains in the `data_clone_error_ctx` bridge wrapper.
+- `html/safe_passing_of_structured_data.rs` — fully converted to EC (this session);
+  `data_clone_error_ctx` bridge deleted.
 
 **`RealmIntrinsics` extended** with `async_iterator_prototype` field
 (`T::JsObject`) for the generic async iterable infrastructure.
@@ -435,36 +435,40 @@ was replaced with `context_as_engine`. The remaining `context_as_engine` and
 `ec_to_ctx` bridges are listed in the next section.
 
 **Remaining bridges in content code (not `context_as_ec`):**
-- `html/safe_passing_of_structured_data.rs` — `data_clone_error_ctx` still uses
-  `context_as_engine`. The whole file (~1545 lines) still takes `&mut Context`
-  internally; converting it to use `&mut dyn ExecutionContext<Types>` is a
-  future task that requires the new generic APIs already added (wrapper
-  object detection, Date/RegExp/Map/Set operations, extended RealmIntrinsics).
 - `wasm/namespace.rs` — `ec_to_ctx` × 6, `context_as_engine` × 1 (Boa-only).
 - `js/mod.rs` — `context_as_engine` × 1 (`builtin_with_captures_ctx`).
 
-**Generic APIs added in this session (validated in `generic_js_test.rs`):**
+**Generic APIs added in previous sessions (validated in `generic_js_test.rs`):**
 - JsTypes: `value_as_bigint`, wrapper object detection+data (Boolean/Number/
   String/BigInt), Date/RegExp/Error detection
 - `RealmIntrinsics`: `boolean`, `number`, `string`, `bigint`, `date`, `regexp`,
   `map`, `set` constructors; `boolean_prototype` through `eval_error_prototype`
 - EC trait: `get_date_value`, `get_regexp_source`, `get_regexp_flags`,
   `map_get_entries`, `map_set_entry`, `set_get_values`, `set_add_entry`
+
+**Generic APIs added in this session:**
+- EC trait: `property_key_to_rust_string` — converts a `PropertyKey` to a Rust
+  string for serialization. Implemented for both Boa and JSC backends.
 - All 86 generic tests pass on Boa.
 
-**Eliminated in this session (6 `context_as_ec` total):**
+**Eliminated in previous sessions:**
 - `webidl/async_iterable.rs` (10) — fully converted to
-  `&mut dyn ExecutionContext<Types>` with zero `boa_engine::*` imports
-  (previous session).
+  `&mut dyn ExecutionContext<Types>` with zero `boa_engine::*` imports.
 - `js/bindings/streams/readablestream.rs` (2) — adapter functions deleted;
   `host_hooks.rs` now uses `create_builtin_function` directly.
 - `js/bindings/wasm/mod.rs` (1) — `install_wasm_namespace` changed to take
   `&mut BoaContext` instead of `&mut Context`.
 - `wasm/namespace.rs` (2) — `create_exported_function_wrapper_boa` uses
-  `create_builtin_function` with an EC-taking closure instead of
-  `NativeFunction::from_closure` with per-invocation bridges.
+  `create_builtin_function` with an EC-taking closure.
 - `html/safe_passing_of_structured_data.rs` (1) — `data_clone_error_ctx`
   switched from `context_as_ec` to `context_as_engine`.
+
+**Eliminated in this session (entire file converted to EC):**
+- `html/safe_passing_of_structured_data.rs` — FULL CONVERSION.
+  All `&mut Context` → `&mut dyn ExecutionContext<Types>`.
+  `data_clone_error_ctx` bridge deleted. `structured_clone_boa` bridge
+  removed. All 27 internal functions use generic EC/JsTypes API.
+  Result: 0 `context_as_engine`, 0 `context_as_ec`, 0 `ec_to_ctx` in this file.
 
 **Eliminated previously:** `main.rs` (10), `environment_settings_object.rs` (1),
 `host_hooks.rs` (3), `registry.rs` (2), `document.rs` (1),
@@ -472,14 +476,7 @@ was replaced with `context_as_engine`. The remaining `context_as_engine` and
 
 ### Next session: recommended order
 
-1. **Convert `safe_passing_of_structured_data.rs` to EC** — 1545-line file still
-   takes `&mut Context` internally. Now has all the generic APIs needed:
-   wrapper object detection, Date/RegExp/Map/Set operations, extended
-   `RealmIntrinsics`. Strategy: change all `context: &mut Context` →
-   `ec: &mut dyn ExecutionContext<crate::js::Types>`, replace Boa-specific
-   ops with EC/JsTypes equivalents, delete `data_clone_error_ctx` bridge.
-
-2. **Phase E** — Content crate does not yet compile for JSC.
+1. **Phase E** — Content crate does not yet compile for JSC.
    Blockers: GC trait bounds (`boa_engine::Trace`/`#[gc_struct]`) and
    `unsafe_ignore_trace` attribute on non-wasm structs. Wasm is gated behind
    `#[cfg(feature = "boa")]`.

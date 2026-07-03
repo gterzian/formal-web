@@ -2987,6 +2987,13 @@ impl ExecutionContext<JscTypes> for JscEngine {
         JscPropertyKey::String(JscString::from_rust(&index.to_string()))
     }
 
+    fn property_key_to_rust_string(&self, key: &JscPropertyKey) -> String {
+        match key {
+            JscPropertyKey::String(s) => s.to_rust(),
+            JscPropertyKey::Symbol(_) => String::from("Symbol()"),
+        }
+    }
+
     // ── Proxy Creation (§10.5.14) ──────────────────────────────────────────
 
     fn create_proxy(

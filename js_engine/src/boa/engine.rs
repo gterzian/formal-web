@@ -1579,6 +1579,14 @@ impl ExecutionContext<BoaTypes> for BoaContext {
         )
     }
 
+    fn property_key_to_rust_string(&self, key: &PropertyKey) -> String {
+        match key {
+            PropertyKey::String(s) => s.to_std_string_escaped(),
+            PropertyKey::Symbol(sym) => format!("Symbol({})", sym.description().map(|s| s.to_std_string_escaped()).unwrap_or_default()),
+            PropertyKey::Index(i) => i.get().to_string(),
+        }
+    }
+
     // ── Host-Defined Data Store ───────────────────────────────────────────
 
     // ── Error Reporting ──────────────────────────────────────────────────
