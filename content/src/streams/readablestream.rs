@@ -44,7 +44,8 @@ use super::{
     rejected_type_error_promise, set_up_readable_byte_stream_controller_from_underlying_source,
     set_up_readable_stream_default_controller,
     set_up_readable_stream_default_controller_from_underlying_source, type_error_value,
-    with_readable_stream_byob_reader_ref, with_readable_stream_default_reader_ref,
+    with_readable_stream_byob_reader_ref, with_readable_stream_byob_reader_ref_ec,
+    with_readable_stream_default_reader_ref,
     with_readable_stream_default_reader_ref_ec,
 };
 use js_engine::{Completion, ExecutionContext};
@@ -1896,8 +1897,8 @@ pub(crate) struct ByteTeeState {
 fn byte_tee_enqueue_to_branch(
     branch: &ReadableStream,
     chunk: JsValue,
-    context: &mut Context,
-) -> JsResult<()> {
+    ec: &mut dyn ExecutionContext<crate::js::Types>,
+) -> Completion<(), crate::js::Types> {
     // Step helper: "Perform ! ReadableByteStreamControllerEnqueue(branchX.[[controller]], chunkX)."
     let Some(controller) = branch
         .controller_slot()
@@ -1905,8 +1906,7 @@ fn byte_tee_enqueue_to_branch(
     else {
         return Ok(());
     };
-    let ec: &mut dyn ExecutionContext<crate::js::Types> = js_engine::boa::context_as_ec(context);
-    crate::js::completion_to_js_result(controller.enqueue(chunk, ec))
+    controller.enqueue(chunk, ec)
 }
 
 /// <https://streams.spec.whatwg.org/#abstract-opdef-readablebytestreamtee>
@@ -2016,21 +2016,20 @@ fn byte_tee_forward_reader_error(
 }
 
 fn byte_tee_ignore_pull_completion(
-    completion: JsResult<JsValue>,
-    context: &mut Context,
-) -> JsResult<()> {
-    let promise = promise_from_completion(completion, js_engine::boa::context_as_ec(context));
-    mark_promise_as_handled(
-        &JsObject::from(promise),
-        js_engine::boa::context_as_ec(context),
-    )
-    .map_err(boa_engine::JsError::from_opaque)
+    completion: Completion<JsValue, crate::js::Types>,
+    ec: &mut dyn ExecutionContext<crate::js::Types>,
+) -> Completion<(), crate::js::Types> {
+    let promise = promise_from_completion(
+        completion.map_err(|e| JsError::from_opaque(e)),
+        ec,
+    );
+    mark_promise_as_handled(&JsObject::from(promise), ec)
 }
 
 fn byte_tee_switch_to_default_reader(
     tee_state: &GcCell<ByteTeeState>,
-    context: &mut Context,
-) -> JsResult<()> {
+    ec: &mut dyn ExecutionContext<crate::js::Types>,
+) -> Completion<(), crate::js::Types> {
     if !matches!(tee_state.borrow().reader, ReadableStreamReader::BYOB(_)) {
         return Ok(());
     }
@@ -2043,28 +2042,18 @@ fn byte_tee_switch_to_default_reader(
         )
     };
     tee_state.borrow_mut().reader_generation += 1;
-    crate::js::completion_to_js_result(readable_stream_byob_reader_release(
-        old_reader,
-        js_engine::boa::context_as_ec(context),
-    ))?;
+    readable_stream_byob_reader_release(old_reader, ec)?;
     let new_reader_object =
-        crate::js::completion_to_js_result(acquire_readable_stream_default_reader(
-            source_stream,
-            js_engine::boa::context_as_ec(context),
-        ))?;
-    let new_reader = with_readable_stream_default_reader_ref(&new_reader_object, |r| r.clone())?;
+        acquire_readable_stream_default_reader(source_stream, ec)?;
+    let new_reader = with_readable_stream_default_reader_ref_ec(&new_reader_object, ec, |r: &ReadableStreamDefaultReader| r.clone())?;
     tee_state.borrow_mut().reader = ReadableStreamReader::Default(new_reader);
-    crate::js::completion_to_js_result(byte_tee_forward_reader_error(
-        &new_reader_object,
-        tee_state,
-        js_engine::boa::context_as_ec(context),
-    ))
+    byte_tee_forward_reader_error(&new_reader_object, tee_state, ec)
 }
 
 fn byte_tee_switch_to_byob_reader(
     tee_state: &GcCell<ByteTeeState>,
-    context: &mut Context,
-) -> JsResult<()> {
+    ec: &mut dyn ExecutionContext<crate::js::Types>,
+) -> Completion<(), crate::js::Types> {
     if !matches!(tee_state.borrow().reader, ReadableStreamReader::Default(_)) {
         return Ok(());
     }
@@ -2077,30 +2066,22 @@ fn byte_tee_switch_to_byob_reader(
         )
     };
     tee_state.borrow_mut().reader_generation += 1;
-    crate::js::completion_to_js_result(readable_stream_default_reader_release(
-        old_reader,
-        js_engine::boa::context_as_ec(context),
-    ))?;
-    let new_reader_object = crate::js::completion_to_js_result(
-        acquire_readable_stream_byob_reader(source_stream, js_engine::boa::context_as_ec(context)),
-    )?;
-    let new_reader = with_readable_stream_byob_reader_ref(&new_reader_object, |r| r.clone())?;
+    readable_stream_default_reader_release(old_reader, ec)?;
+    let new_reader_object =
+        acquire_readable_stream_byob_reader(source_stream, ec)?;
+    let new_reader = with_readable_stream_byob_reader_ref_ec(&new_reader_object, ec, |r| r.clone())?;
     tee_state.borrow_mut().reader = ReadableStreamReader::BYOB(new_reader);
-    crate::js::completion_to_js_result(byte_tee_forward_reader_error(
-        &new_reader_object,
-        tee_state,
-        js_engine::boa::context_as_ec(context),
-    ))
+    byte_tee_forward_reader_error(&new_reader_object, tee_state, ec)
 }
 
 /// <https://streams.spec.whatwg.org/#abstract-opdef-readablebytestreamtee>
 pub(crate) fn readable_byte_stream_tee_default_reader_chunk_steps(
     tee_state: GcCell<ByteTeeState>,
     chunk: JsValue,
-    context: &mut Context,
-) -> JsResult<()> {
+    ec: &mut dyn ExecutionContext<crate::js::Types>,
+) -> Completion<(), crate::js::Types> {
     queue_internal_stream_microtask(
-        move |context| {
+        move |job_ec| {
             // Step 18.2 chunk steps 1.1: "Set readAgainForBranch1 to false."
             // Step 18.2 chunk steps 1.2: "Set readAgainForBranch2 to false."
             {
@@ -2125,7 +2106,7 @@ pub(crate) fn readable_byte_stream_tee_default_reader_chunk_steps(
             // Step 18.2 chunk steps 1.4: "If canceled1 is false and canceled2 is false,"
             if !canceled1 && !canceled2 {
                 // Step 18.2 chunk steps 1.4.1: "Let cloneResult be CloneAsUint8Array(chunk)."
-                match clone_as_uint8_array(chunk1.clone(), js_engine::boa::context_as_ec(context)) {
+                match clone_as_uint8_array(chunk1.clone(), job_ec) {
                     Ok(cloned_chunk) => {
                         // Step 18.2 chunk steps 1.4.3: "Otherwise, set chunk2 to cloneResult.[[Value]]."
                         chunk2 = cloned_chunk;
@@ -2133,30 +2114,26 @@ pub(crate) fn readable_byte_stream_tee_default_reader_chunk_steps(
                     Err(error) => {
                         // Step 18.2 chunk steps 1.4.2.1: "Perform ! ReadableByteStreamControllerError(branch1.[[controller]], cloneResult.[[Value]])."
                         if let Some(branch1) = branch1.as_ref() {
-                            if let Err(inner_error) =
-                                crate::js::completion_to_js_result(byte_tee_error_branch(
-                                    branch1,
-                                    error.clone(),
-                                    js_engine::boa::context_as_ec(context),
-                                ))
-                            {
+                            if let Err(inner_error) = byte_tee_error_branch(
+                                branch1,
+                                error.clone(),
+                                job_ec,
+                            ) {
                                 error!(
-                                    "[readable-stream] byte tee error branch1 (chunk) failed: {inner_error}"
+                                    "[readable-stream] byte tee error branch1 (chunk) failed: {inner_error:?}"
                                 );
                             }
                         }
 
                         // Step 18.2 chunk steps 1.4.2.2: "Perform ! ReadableByteStreamControllerError(branch2.[[controller]], cloneResult.[[Value]])."
                         if let Some(branch2) = branch2.as_ref() {
-                            if let Err(error) =
-                                crate::js::completion_to_js_result(byte_tee_error_branch(
-                                    branch2,
-                                    error.clone(),
-                                    js_engine::boa::context_as_ec(context),
-                                ))
-                            {
+                            if let Err(error) = byte_tee_error_branch(
+                                branch2,
+                                error.clone(),
+                                job_ec,
+                            ) {
                                 error!(
-                                    "[readable-stream] byte tee error branch2 (chunk) failed: {error}"
+                                    "[readable-stream] byte tee error branch2 (chunk) failed: {error:?}"
                                 );
                             }
                         }
@@ -2164,12 +2141,9 @@ pub(crate) fn readable_byte_stream_tee_default_reader_chunk_steps(
                         // Step 18.2 chunk steps 1.4.2.3: "Resolve cancelPromise with ! ReadableStreamCancel(stream, cloneResult.[[Value]])."
                         let source_stream = tee_state.borrow().source_stream.clone();
                         let cancel_resolvers = tee_state.borrow().cancel_resolvers.clone();
-                        let cancel_result = readable_stream_cancel(source_stream, error, context)?;
-                        cancel_resolvers.resolve.call(
-                            &JsValue::undefined(),
-                            &[JsValue::from(cancel_result)],
-                            context,
-                        )?;
+                        let cancel_result = readable_stream_cancel_ec(source_stream, error, job_ec)?;
+                        let undefined = job_ec.value_undefined();
+                        job_ec.call(&cancel_resolvers.resolve, &undefined, &[cancel_result.into()])?;
 
                         // Step 18.2 chunk steps 1.4.2.4: "Return."
                         return Ok(());
@@ -2180,14 +2154,14 @@ pub(crate) fn readable_byte_stream_tee_default_reader_chunk_steps(
             // Step 18.2 chunk steps 1.5: "If canceled1 is false, perform ! ReadableByteStreamControllerEnqueue(branch1.[[controller]], chunk1)."
             if !canceled1 {
                 if let Some(branch1) = branch1.as_ref() {
-                    byte_tee_enqueue_to_branch(branch1, chunk1, context)?;
+                    byte_tee_enqueue_to_branch(branch1, chunk1, job_ec)?;
                 }
             }
 
             // Step 18.2 chunk steps 1.6: "If canceled2 is false, perform ! ReadableByteStreamControllerEnqueue(branch2.[[controller]], chunk2)."
             if !canceled2 {
                 if let Some(branch2) = branch2.as_ref() {
-                    byte_tee_enqueue_to_branch(branch2, chunk2, context)?;
+                    byte_tee_enqueue_to_branch(branch2, chunk2, job_ec)?;
                 }
             }
 
@@ -2201,19 +2175,19 @@ pub(crate) fn readable_byte_stream_tee_default_reader_chunk_steps(
             };
             if read_again1 {
                 byte_tee_ignore_pull_completion(
-                    readable_byte_stream_tee_pull1_algorithm(tee_state.clone(), context),
-                    context,
+                    readable_byte_stream_tee_pull1_algorithm(tee_state.clone(), job_ec),
+                    job_ec,
                 )?;
             } else if read_again2 {
                 byte_tee_ignore_pull_completion(
-                    readable_byte_stream_tee_pull2_algorithm(tee_state.clone(), context),
-                    context,
+                    readable_byte_stream_tee_pull2_algorithm(tee_state.clone(), job_ec),
+                    job_ec,
                 )?;
             }
 
             Ok(())
         },
-        context,
+        ec,
     )
 }
 
@@ -2275,10 +2249,10 @@ pub(crate) fn readable_byte_stream_tee_default_reader_error_steps(
 /// <https://streams.spec.whatwg.org/#abstract-opdef-readablebytestreamtee>
 fn readable_byte_stream_tee_pull_with_default_reader(
     tee_state: GcCell<ByteTeeState>,
-    context: &mut Context,
-) -> JsResult<()> {
+    ec: &mut dyn ExecutionContext<crate::js::Types>,
+) -> Completion<(), crate::js::Types> {
     // Step 18.1: "If reader implements ReadableStreamBYOBReader,"
-    byte_tee_switch_to_default_reader(&tee_state, context)?;
+    byte_tee_switch_to_default_reader(&tee_state, ec)?;
 
     // Step 18.2: "Let readRequest be a read request with the following items:"
     let default_reader = tee_state.borrow().reader.as_default_reader().unwrap();
@@ -2287,9 +2261,7 @@ fn readable_byte_stream_tee_pull_with_default_reader(
     };
 
     // Step 18.3: "Perform ! ReadableStreamDefaultReaderRead(reader, readRequest)."
-    crate::js::completion_to_js_result(
-        default_reader.read_with_request(read_request, js_engine::boa::context_as_ec(context)),
-    )
+    default_reader.read_with_request(read_request, ec)
 }
 
 fn byte_tee_pull_byob_on_rejected_fn(
@@ -2307,275 +2279,262 @@ fn readable_byte_stream_tee_pull_with_byob_reader(
     tee_state: GcCell<ByteTeeState>,
     view_value: JsValue,
     for_branch2: bool,
-    context: &mut Context,
-) -> JsResult<()> {
+    ec: &mut dyn ExecutionContext<crate::js::Types>,
+) -> Completion<(), crate::js::Types> {
     let view = match ArrayBufferViewDescriptor::from_value(
         view_value.clone(),
-        js_engine::boa::context_as_ec(context),
+        ec,
     ) {
         Ok(v) => v,
-        Err(js_error) => return Err(boa_engine::JsError::from_opaque(js_error)),
+        Err(e) => return Err(e),
     };
 
     // Step 19.1: "If reader implements ReadableStreamDefaultReader,"
-    byte_tee_switch_to_byob_reader(&tee_state, context)?;
+    byte_tee_switch_to_byob_reader(&tee_state, ec)?;
     let byob_reader = tee_state.borrow().reader.as_byob_reader().unwrap();
 
-    let on_fulfilled = NativeFunction::from_copy_closure_with_captures(
-        |_, args: &[JsValue], captures: &(GcCell<ByteTeeState>, bool), context| {
-            let (tee_state, for_branch2) = captures;
-            let result = args.get_or_undefined(0).to_object(context)?;
-            let done = result.get(js_string!("done"), context)?.to_boolean();
-            let chunk = result.get(js_string!("value"), context)?;
-
-            let (byob_branch, other_branch, byob_canceled, other_canceled) = {
-                let tee = tee_state.borrow();
-                if *for_branch2 {
-                    (
-                        tee.branch2.clone(),
-                        tee.branch1.clone(),
-                        tee.canceled2,
-                        tee.canceled1,
-                    )
-                } else {
-                    (
-                        tee.branch1.clone(),
-                        tee.branch2.clone(),
-                        tee.canceled1,
-                        tee.canceled2,
-                    )
-                }
-            };
-
-            queue_internal_stream_microtask(
-                {
-                    let tee_state = tee_state.clone();
-                    move |context| {
-                        // Step 19.4 chunk steps 1.1: "Set readAgainForBranch1 to false."
-                        // Step 19.4 chunk steps 1.2: "Set readAgainForBranch2 to false."
-                        {
-                            let mut tee = tee_state.borrow_mut();
-                            tee.read_again_for_branch1 = false;
-                            tee.read_again_for_branch2 = false;
-                        }
-
-                        if done {
-                            // Step 19.4 close steps 1: "Set reading to false."
-                            tee_state.borrow_mut().reading = false;
-
-                            // Step 19.4 close steps 4: "If byobCanceled is false, perform ! ReadableByteStreamControllerClose(byobBranch.[[controller]])."
-                            if !byob_canceled {
-                                if let Some(branch) = byob_branch.as_ref() {
-                                    byte_tee_close_branch(branch, js_engine::boa::context_as_ec(context)).map_err(JsError::from_opaque)?;
-                                }
-                            }
-
-                            // Step 19.4 close steps 5: "If otherCanceled is false, perform ! ReadableByteStreamControllerClose(otherBranch.[[controller]])."
-                            if !other_canceled {
-                                if let Some(branch) = other_branch.as_ref() {
-                                    byte_tee_close_branch(branch, js_engine::boa::context_as_ec(context)).map_err(JsError::from_opaque)?;
-                                }
-                            }
-
-                            // Step 19.4 close steps 6: "If chunk is not undefined,"
-                            if !chunk.is_undefined() {
-                                // Step 19.4 close steps 6.2: "If byobCanceled is false, perform ! ReadableByteStreamControllerRespondWithNewView(byobBranch.[[controller]], chunk)."
-                                if !byob_canceled {
-                                    if let Some(branch) = byob_branch.as_ref() {
-                                        let view = match ArrayBufferViewDescriptor::from_value(
-                                            chunk.clone(),
-                                            js_engine::boa::context_as_ec(context),
-                                        ) {
-                                            Ok(v) => v,
-                                            Err(e) => {
-                                                return Err(boa_engine::JsError::from_opaque(e));
-                                            }
-                                        };
-                                        if let Some(view_object) = chunk.as_object() {
-                                            if let Some(controller) = branch
-                                                .controller_slot()
-                                                .and_then(|c| c.as_byte_controller())
-                                            {
-                                                let ec: &mut dyn ExecutionContext<crate::js::Types> = js_engine::boa::context_as_ec(context);
-                                                crate::js::completion_to_js_result(controller.respond_with_new_view(view, view_object, ec))?;
-                                            }
-                                        }
-                                    }
-                                }
-
-                                // Step 19.4 close steps 6.3: "If otherCanceled is false and otherBranch.[[controller]].[[pendingPullIntos]] is not empty, perform ! ReadableByteStreamControllerRespond(otherBranch.[[controller]], 0)."
-                                if !other_canceled {
-                                    if let Some(branch) = other_branch.as_ref() {
-                                        if let Some(controller) = byte_tee_pending_pull_into_controller(branch) {
-                                            let ec: &mut dyn ExecutionContext<crate::js::Types> = js_engine::boa::context_as_ec(context);
-                                            crate::js::completion_to_js_result(controller.respond(0, ec))?;
-                                        }
-                                    }
-                                }
-                            }
-
-                            // Step 19.4 close steps 7: "If byobCanceled is false or otherCanceled is false, resolve cancelPromise with undefined."
-                            if !byob_canceled || !other_canceled {
-                                let cancel_resolvers = tee_state.borrow().cancel_resolvers.clone();
-                                cancel_resolvers.resolve.call(
-                                    &JsValue::undefined(),
-                                    &[JsValue::undefined()],
-                                    context,
-                                )?;
-                            }
-
-                            return Ok(());
-                        }
-
-                        // Step 19.4 chunk steps 1.3: "Let byobCanceled be canceled2 if forBranch2 is true, and canceled1 otherwise."
-                        // Step 19.4 chunk steps 1.4: "Let otherCanceled be canceled2 if forBranch2 is false, and canceled1 otherwise."
-                        if !other_canceled {
-                            // Step 19.4 chunk steps 1.5.1: "Let cloneResult be CloneAsUint8Array(chunk)."
-                            match clone_as_uint8_array(chunk.clone(), js_engine::boa::context_as_ec(context)) {
-                                Ok(cloned_chunk) => {
-                                    // Step 19.4 chunk steps 1.5.3: "Otherwise, let clonedChunk be cloneResult.[[Value]]."
-                                    // Step 19.4 chunk steps 1.5.4: "If byobCanceled is false, perform ! ReadableByteStreamControllerRespondWithNewView(byobBranch.[[controller]], chunk)."
-                                    if !byob_canceled {
-                                        if let Some(branch) = byob_branch.as_ref() {
-                                            if let Ok(view) = ArrayBufferViewDescriptor::from_value(
-                                                chunk.clone(),
-                                                js_engine::boa::context_as_ec(context),
-                                            ) {
-                                                if let Some(view_object) = chunk.as_object() {
-                                                    if let Some(controller) = branch
-                                                        .controller_slot()
-                                                        .and_then(|c| c.as_byte_controller())
-                                                    {
-                                                        let ec_ref: &mut dyn ExecutionContext<crate::js::Types> = js_engine::boa::context_as_ec(context);
-                                                        crate::js::completion_to_js_result(controller.respond_with_new_view(view, view_object, ec_ref))?;
-                                                    }
-                                                }
-                                            }
-                                        }
-                                    }
-
-                                    // Step 19.4 chunk steps 1.5.5: "Perform ! ReadableByteStreamControllerEnqueue(otherBranch.[[controller]], clonedChunk)."
-                                    if let Some(branch) = other_branch.as_ref() {
-                                        byte_tee_enqueue_to_branch(branch, cloned_chunk, context)?;
-                                    }
-                                }
-                                Err(error) => {
-                                    // Step 19.4 chunk steps 1.5.2.1: "Perform ! ReadableByteStreamControllerError(byobBranch.[[controller]], cloneResult.[[Value]])."
-                                    if let Some(branch) = byob_branch.as_ref() {
-                                        if let Err(error) = crate::js::completion_to_js_result(byte_tee_error_branch(branch, error.clone(), js_engine::boa::context_as_ec(context))) {
-                                            error!("[readable-stream] byte tee error byob-branch (chunk) failed: {error}");
-                                        }
-                                    }
-
-                                    // Step 19.4 chunk steps 1.5.2.2: "Perform ! ReadableByteStreamControllerError(otherBranch.[[controller]], cloneResult.[[Value]])."
-                                    if let Some(branch) = other_branch.as_ref() {
-                                        if let Err(error) = crate::js::completion_to_js_result(byte_tee_error_branch(branch, error.clone(), js_engine::boa::context_as_ec(context))) {
-                                            error!("[readable-stream] byte tee error other-branch (chunk) failed: {error}");
-                                        }
-                                    }
-
-                                    // Step 19.4 chunk steps 1.5.2.3: "Resolve cancelPromise with ! ReadableStreamCancel(stream, cloneResult.[[Value]])."
-                                    let source_stream = tee_state.borrow().source_stream.clone();
-                                    let cancel_resolvers = tee_state.borrow().cancel_resolvers.clone();
-                                    let cancel_result = readable_stream_cancel(source_stream, error, context)?;
-                                    cancel_resolvers.resolve.call(
-                                        &JsValue::undefined(),
-                                        &[JsValue::from(cancel_result)],
-                                        context,
-                                    )?;
-
-                                    // Step 19.4 chunk steps 1.5.2.4: "Return."
-                                    tee_state.borrow_mut().reading = false;
-                                    return Ok(());
-                                }
-                            }
-                        } else if !byob_canceled {
-                            // Step 19.4 chunk steps 1.6: "Otherwise, if byobCanceled is false, perform ! ReadableByteStreamControllerRespondWithNewView(byobBranch.[[controller]], chunk)."
-                            if let Some(branch) = byob_branch.as_ref() {
-                                if let Ok(view) = ArrayBufferViewDescriptor::from_value(
-                                    chunk.clone(),
-                                    js_engine::boa::context_as_ec(context),
-                                ) {
-                                    if let Some(view_object) = chunk.as_object() {
-                                        if let Some(controller) = branch
-                                            .controller_slot()
-                                            .and_then(|c| c.as_byte_controller())
-                                        {
-                                            let ec: &mut dyn ExecutionContext<crate::js::Types> = js_engine::boa::context_as_ec(context);
-                                            crate::js::completion_to_js_result(controller.respond_with_new_view(view, view_object, ec))?;
-                                        }
-                                    }
-                                }
-                            }
-                        }
-
-                        // Step 19.4 chunk steps 1.7: "Set reading to false."
-                        let (read_again1, read_again2) = {
-                            let mut tee = tee_state.borrow_mut();
-                            tee.reading = false;
-                            (tee.read_again_for_branch1, tee.read_again_for_branch2)
-                        };
-
-                        // Step 19.4 chunk steps 1.8: "If readAgainForBranch1 is true, perform pull1Algorithm."
-                        // Step 19.4 chunk steps 1.9: "Otherwise, if readAgainForBranch2 is true, perform pull2Algorithm."
-                        if read_again1 {
-                            byte_tee_ignore_pull_completion(
-                                readable_byte_stream_tee_pull1_algorithm(tee_state.clone(), context),
-                                context,
-                            )?;
-                        } else if read_again2 {
-                            byte_tee_ignore_pull_completion(
-                                readable_byte_stream_tee_pull2_algorithm(tee_state.clone(), context),
-                                context,
-                            )?;
-                        } else if matches!(tee_state.borrow().reader, ReadableStreamReader::BYOB(_)) {
-                            // Note: Switch back to the default reader when no branch has an outstanding BYOB pull.
-                            byte_tee_switch_to_default_reader(&tee_state, context)?;
-                        }
-
-                        Ok(())
-                    }
-                },
-                context,
-            )?;
-
-            Ok(JsValue::undefined())
-        },
+    let on_fulfilled = crate::js::builtin_with_captures(
+        ec,
         (tee_state.clone(), for_branch2),
-    )
-    .to_js_function(context.realm());
+        byte_tee_pull_byob_on_fulfilled_fn,
+        1,
+    );
 
-    let on_rejected = crate::js::builtin_with_captures_ctx(
-        context,
+    let on_rejected = crate::js::builtin_with_captures(
+        ec,
         tee_state.clone(),
         byte_tee_pull_byob_on_rejected_fn,
         0,
     );
 
-    let (read_into_request, promise) = crate::js::completion_to_js_result(ReadIntoRequest::new(
-        js_engine::boa::context_as_ec(context),
-    ))?;
+    let (read_into_request, promise_obj) = ReadIntoRequest::new(ec)?;
+    let js_promise = <crate::js::Types as JsTypes>::object_as_promise(&promise_obj)
+        .ok_or_else(|| ec.new_type_error("not a Promise"))?;
 
     // Step 19.5: "Perform ! ReadableStreamBYOBReaderRead(reader, view, 1, readIntoRequest)."
-    crate::js::completion_to_js_result(byob_reader.read_steps(
-        view,
-        1,
-        read_into_request,
-        js_engine::boa::context_as_ec(context),
-    ))?;
-    let reaction: JsObject = JsPromise::from_object(promise)?
-        .then(Some(on_fulfilled), Some(on_rejected), context)?
-        .into();
-    mark_promise_as_handled(&reaction, js_engine::boa::context_as_ec(context))
-        .map_err(boa_engine::JsError::from_opaque)?;
+    byob_reader.read_steps(view, 1, read_into_request, ec)?;
+    ec.perform_promise_then(js_promise, Some(on_fulfilled), Some(on_rejected), None)?;
     Ok(())
+}
+
+fn byte_tee_pull_byob_on_fulfilled_fn(
+    args: &[JsValue],
+    _this: JsValue,
+    captures: &(GcCell<ByteTeeState>, bool),
+    ec: &mut dyn ExecutionContext<crate::js::Types>,
+) -> Completion<JsValue, crate::js::Types> {
+    let (tee_state, for_branch2) = captures;
+    let arg0 = args.get(0).cloned().unwrap_or_else(|| boa_engine::JsValue::undefined());
+    let result = ec.to_object(arg0)?;
+    let done_val = js_engine::EcmascriptHost::get(ec, &result, "done")?;
+    let done = ec.to_boolean(&done_val);
+    let chunk = js_engine::EcmascriptHost::get(ec, &result, "value")?;
+
+    let (byob_branch, other_branch, byob_canceled, other_canceled) = {
+        let tee = tee_state.borrow();
+        if *for_branch2 {
+            (
+                tee.branch2.clone(),
+                tee.branch1.clone(),
+                tee.canceled2,
+                tee.canceled1,
+            )
+        } else {
+            (
+                tee.branch1.clone(),
+                tee.branch2.clone(),
+                tee.canceled1,
+                tee.canceled2,
+            )
+        }
+    };
+
+    queue_internal_stream_microtask(
+        {
+            let tee_state = tee_state.clone();
+            move |job_ec| {
+                // Step 19.4 chunk steps 1.1: "Set readAgainForBranch1 to false."
+                // Step 19.4 chunk steps 1.2: "Set readAgainForBranch2 to false."
+                {
+                    let mut tee = tee_state.borrow_mut();
+                    tee.read_again_for_branch1 = false;
+                    tee.read_again_for_branch2 = false;
+                }
+
+                if done {
+                    // Step 19.4 close steps 1: "Set reading to false."
+                    tee_state.borrow_mut().reading = false;
+
+                    // Step 19.4 close steps 4: "If byobCanceled is false, perform ! ReadableByteStreamControllerClose(byobBranch.[[controller]])."
+                    if !byob_canceled {
+                        if let Some(branch) = byob_branch.as_ref() {
+                            byte_tee_close_branch(branch, job_ec)?;
+                        }
+                    }
+
+                    // Step 19.4 close steps 5: "If otherCanceled is false, perform ! ReadableByteStreamControllerClose(otherBranch.[[controller]])."
+                    if !other_canceled {
+                        if let Some(branch) = other_branch.as_ref() {
+                            byte_tee_close_branch(branch, job_ec)?;
+                        }
+                    }
+
+                    // Step 19.4 close steps 6: "If chunk is not undefined,"
+                    let undefined = job_ec.value_undefined();
+                    if !job_ec.same_value(&chunk, &undefined) {
+                        // Step 19.4 close steps 6.2: "If byobCanceled is false, perform ! ReadableByteStreamControllerRespondWithNewView(byobBranch.[[controller]], chunk)."
+                        if !byob_canceled {
+                            if let Some(branch) = byob_branch.as_ref() {
+                                if let Ok(view) = ArrayBufferViewDescriptor::from_value(
+                                    chunk.clone(),
+                                    job_ec,
+                                ) {
+                                    if let Some(view_object) = <crate::js::Types as JsTypes>::value_as_object(&chunk) {
+                                        if let Some(controller) = branch
+                                            .controller_slot()
+                                            .and_then(|c| c.as_byte_controller())
+                                        {
+                                            let _ = controller.respond_with_new_view(view, view_object, job_ec);
+                                        }
+                                    }
+                                }
+                            }
+                        }
+
+                        // Step 19.4 close steps 6.3: "If otherCanceled is false and otherBranch.[[controller]].[[pendingPullIntos]] is not empty, perform ! ReadableByteStreamControllerRespond(otherBranch.[[controller]], 0)."
+                        if !other_canceled {
+                            if let Some(branch) = other_branch.as_ref() {
+                                if let Some(controller) = byte_tee_pending_pull_into_controller(branch) {
+                                    let _ = controller.respond(0, job_ec);
+                                }
+                            }
+                        }
+                    }
+
+                    // Step 19.4 close steps 7: "If byobCanceled is false or otherCanceled is false, resolve cancelPromise with undefined."
+                    if !byob_canceled || !other_canceled {
+                        let cancel_resolvers = tee_state.borrow().cancel_resolvers.clone();
+                        job_ec.call(&cancel_resolvers.resolve, &undefined, &[undefined.clone()])?;
+                    }
+
+                    return Ok(());
+                }
+
+                // Step 19.4 chunk steps 1.3: "Let byobCanceled be canceled2 if forBranch2 is true, and canceled1 otherwise."
+                // Step 19.4 chunk steps 1.4: "Let otherCanceled be canceled2 if forBranch2 is false, and canceled1 otherwise."
+                if !other_canceled {
+                    // Step 19.4 chunk steps 1.5.1: "Let cloneResult be CloneAsUint8Array(chunk)."
+                    match clone_as_uint8_array(chunk.clone(), job_ec) {
+                        Ok(cloned_chunk) => {
+                            // Step 19.4 chunk steps 1.5.3: "Otherwise, let clonedChunk be cloneResult.[[Value]]."
+                            // Step 19.4 chunk steps 1.5.4: "If byobCanceled is false, perform ! ReadableByteStreamControllerRespondWithNewView(byobBranch.[[controller]], chunk)."
+                            if !byob_canceled {
+                                if let Some(branch) = byob_branch.as_ref() {
+                                    if let Ok(view) = ArrayBufferViewDescriptor::from_value(
+                                        chunk.clone(),
+                                        job_ec,
+                                    ) {
+                                        if let Some(view_object) = <crate::js::Types as JsTypes>::value_as_object(&chunk) {
+                                            if let Some(controller) = branch
+                                                .controller_slot()
+                                                .and_then(|c| c.as_byte_controller())
+                                            {
+                                                let _ = controller.respond_with_new_view(view, view_object, job_ec);
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+
+                            // Step 19.4 chunk steps 1.5.5: "Perform ! ReadableByteStreamControllerEnqueue(otherBranch.[[controller]], clonedChunk)."
+                            if let Some(branch) = other_branch.as_ref() {
+                                byte_tee_enqueue_to_branch(branch, cloned_chunk, job_ec)?;
+                            }
+                        }
+                        Err(error) => {
+                            // Step 19.4 chunk steps 1.5.2.1: "Perform ! ReadableByteStreamControllerError(byobBranch.[[controller]], cloneResult.[[Value]])."
+                            if let Some(branch) = byob_branch.as_ref() {
+                                if let Err(error) = byte_tee_error_branch(branch, error.clone(), job_ec) {
+                                    error!("[readable-stream] byte tee error byob-branch (chunk) failed: {error:?}");
+                                }
+                            }
+
+                            // Step 19.4 chunk steps 1.5.2.2: "Perform ! ReadableByteStreamControllerError(otherBranch.[[controller]], cloneResult.[[Value]])."
+                            if let Some(branch) = other_branch.as_ref() {
+                                if let Err(error) = byte_tee_error_branch(branch, error.clone(), job_ec) {
+                                    error!("[readable-stream] byte tee error other-branch (chunk) failed: {error:?}");
+                                }
+                            }
+
+                            // Step 19.4 chunk steps 1.5.2.3: "Resolve cancelPromise with ! ReadableStreamCancel(stream, cloneResult.[[Value]])."
+                            let source_stream = tee_state.borrow().source_stream.clone();
+                            let cancel_resolvers = tee_state.borrow().cancel_resolvers.clone();
+                            let cancel_result = readable_stream_cancel_ec(source_stream, error, job_ec)?;
+                            let undefined = job_ec.value_undefined();
+                            job_ec.call(&cancel_resolvers.resolve, &undefined, &[cancel_result.into()])?;
+
+                            // Step 19.4 chunk steps 1.5.2.4: "Return."
+                            tee_state.borrow_mut().reading = false;
+                            return Ok(());
+                        }
+                    }
+                } else if !byob_canceled {
+                    // Step 19.4 chunk steps 1.6: "Otherwise, if byobCanceled is false, perform ! ReadableByteStreamControllerRespondWithNewView(byobBranch.[[controller]], chunk)."
+                    if let Some(branch) = byob_branch.as_ref() {
+                        if let Ok(view) = ArrayBufferViewDescriptor::from_value(
+                            chunk.clone(),
+                            job_ec,
+                        ) {
+                            if let Some(view_object) = <crate::js::Types as JsTypes>::value_as_object(&chunk) {
+                                if let Some(controller) = branch
+                                    .controller_slot()
+                                    .and_then(|c| c.as_byte_controller())
+                                {
+                                    let _ = controller.respond_with_new_view(view, view_object, job_ec);
+                                }
+                            }
+                        }
+                    }
+                }
+
+                // Step 19.4 chunk steps 1.7: "Set reading to false."
+                let (read_again1, read_again2) = {
+                    let mut tee = tee_state.borrow_mut();
+                    tee.reading = false;
+                    (tee.read_again_for_branch1, tee.read_again_for_branch2)
+                };
+
+                // Step 19.4 chunk steps 1.8: "If readAgainForBranch1 is true, perform pull1Algorithm."
+                // Step 19.4 chunk steps 1.9: "Otherwise, if readAgainForBranch2 is true, perform pull2Algorithm."
+                if read_again1 {
+                    byte_tee_ignore_pull_completion(
+                        readable_byte_stream_tee_pull1_algorithm(tee_state.clone(), job_ec),
+                        job_ec,
+                    )?;
+                } else if read_again2 {
+                    byte_tee_ignore_pull_completion(
+                        readable_byte_stream_tee_pull2_algorithm(tee_state.clone(), job_ec),
+                        job_ec,
+                    )?;
+                } else if matches!(tee_state.borrow().reader, ReadableStreamReader::BYOB(_)) {
+                    // Note: Switch back to the default reader when no branch has an outstanding BYOB pull.
+                    byte_tee_switch_to_default_reader(&tee_state, job_ec)?;
+                }
+
+                Ok(())
+            }
+        },
+        ec,
+    )?;
+
+    Ok(JsValue::undefined())
 }
 
 /// <https://streams.spec.whatwg.org/#abstract-opdef-readablebytestreamtee>
 pub(crate) fn readable_byte_stream_tee_pull1_algorithm(
     tee_state: GcCell<ByteTeeState>,
-    context: &mut Context,
-) -> JsResult<JsValue> {
+    ec: &mut dyn ExecutionContext<crate::js::Types>,
+) -> Completion<JsValue, crate::js::Types> {
     {
         let mut tee = tee_state.borrow_mut();
 
@@ -2585,7 +2544,7 @@ pub(crate) fn readable_byte_stream_tee_pull1_algorithm(
             tee.read_again_for_branch1 = true;
 
             // Step 20.1.2: "Return a promise resolved with undefined."
-            return Ok(JsValue::undefined());
+            return Ok(ec.value_undefined());
         }
 
         // Step 20.2: "Set reading to true."
@@ -2599,34 +2558,28 @@ pub(crate) fn readable_byte_stream_tee_pull1_algorithm(
             .as_ref()
             .and_then(|branch| branch.controller_slot())
             .and_then(|controller| controller.as_byte_controller())
-            .map(|controller| {
-                let ec: &mut dyn ExecutionContext<crate::js::Types> =
-                    js_engine::boa::context_as_ec(context);
-                crate::js::completion_to_js_result(controller.byob_request(ec))
-            })
-            .transpose()?
-            .flatten()
-            .and_then(|request| request.get(js_string!("view"), context).ok())
-            .filter(|value| !value.is_null() && !value.is_undefined())
+            .and_then(|controller| controller.byob_request(ec).ok().flatten())
+            .and_then(|request| js_engine::EcmascriptHost::get(ec, &request, "view").ok())
+            .filter(|value: &JsValue| !value.is_null() && !value.is_undefined())
     };
 
     // Step 20.4: "If byobRequest is null, perform pullWithDefaultReader."
     if let Some(view) = byob_request_view {
         // Step 20.5: "Otherwise, perform pullWithBYOBReader, given byobRequest.[[view]] and false."
-        readable_byte_stream_tee_pull_with_byob_reader(tee_state, view, false, context)?;
+        readable_byte_stream_tee_pull_with_byob_reader(tee_state, view, false, ec)?;
     } else {
-        readable_byte_stream_tee_pull_with_default_reader(tee_state, context)?;
+        readable_byte_stream_tee_pull_with_default_reader(tee_state, ec)?;
     }
 
     // Step 20.6: "Return a promise resolved with undefined."
-    Ok(JsValue::undefined())
+    Ok(ec.value_undefined())
 }
 
 /// <https://streams.spec.whatwg.org/#abstract-opdef-readablebytestreamtee>
 pub(crate) fn readable_byte_stream_tee_pull2_algorithm(
     tee_state: GcCell<ByteTeeState>,
-    context: &mut Context,
-) -> JsResult<JsValue> {
+    ec: &mut dyn ExecutionContext<crate::js::Types>,
+) -> Completion<JsValue, crate::js::Types> {
     {
         let mut tee = tee_state.borrow_mut();
 
@@ -2636,7 +2589,7 @@ pub(crate) fn readable_byte_stream_tee_pull2_algorithm(
             tee.read_again_for_branch2 = true;
 
             // Step 21.1.2: "Return a promise resolved with undefined."
-            return Ok(JsValue::undefined());
+            return Ok(ec.value_undefined());
         }
 
         // Step 21.2: "Set reading to true."
@@ -2650,35 +2603,29 @@ pub(crate) fn readable_byte_stream_tee_pull2_algorithm(
             .as_ref()
             .and_then(|branch| branch.controller_slot())
             .and_then(|controller| controller.as_byte_controller())
-            .map(|controller| {
-                let ec: &mut dyn ExecutionContext<crate::js::Types> =
-                    js_engine::boa::context_as_ec(context);
-                crate::js::completion_to_js_result(controller.byob_request(ec))
-            })
-            .transpose()?
-            .flatten()
-            .and_then(|request| request.get(js_string!("view"), context).ok())
-            .filter(|value| !value.is_null() && !value.is_undefined())
+            .and_then(|controller| controller.byob_request(ec).ok().flatten())
+            .and_then(|request| js_engine::EcmascriptHost::get(ec, &request, "view").ok())
+            .filter(|value: &JsValue| !value.is_null() && !value.is_undefined())
     };
 
     // Step 21.4: "If byobRequest is null, perform pullWithDefaultReader."
     if let Some(view) = byob_request_view {
         // Step 21.5: "Otherwise, perform pullWithBYOBReader, given byobRequest.[[view]] and true."
-        readable_byte_stream_tee_pull_with_byob_reader(tee_state, view, true, context)?;
+        readable_byte_stream_tee_pull_with_byob_reader(tee_state, view, true, ec)?;
     } else {
-        readable_byte_stream_tee_pull_with_default_reader(tee_state, context)?;
+        readable_byte_stream_tee_pull_with_default_reader(tee_state, ec)?;
     }
 
     // Step 21.6: "Return a promise resolved with undefined."
-    Ok(JsValue::undefined())
+    Ok(ec.value_undefined())
 }
 
 /// <https://streams.spec.whatwg.org/#abstract-opdef-readablebytestreamtee>
 pub(crate) fn readable_byte_stream_tee_cancel1_algorithm(
     tee_state: GcCell<ByteTeeState>,
     reason: JsValue,
-    context: &mut Context,
-) -> JsResult<JsObject> {
+    ec: &mut dyn ExecutionContext<crate::js::Types>,
+) -> Completion<JsObject, crate::js::Types> {
     let (source_stream, cancel_promise, canceled2, reason1, reason2, cancel_resolvers) = {
         let mut tee = tee_state.borrow_mut();
         tee.canceled1 = true;
@@ -2693,15 +2640,14 @@ pub(crate) fn readable_byte_stream_tee_cancel1_algorithm(
         )
     };
     if canceled2 {
-        let composite_reason =
-            JsArray::from_iter([reason1, reason2].into_iter().map(JsValue::from), context);
+        let composite_reason_array = ec.create_empty_array();
+        ec.array_push(&composite_reason_array, reason1.clone())?;
+        ec.array_push(&composite_reason_array, reason2)?;
+        let composite_reason = <crate::js::Types as JsTypes>::value_from_object(composite_reason_array);
         let cancel_result =
-            readable_stream_cancel(source_stream, JsValue::from(composite_reason), context)?;
-        cancel_resolvers.resolve.call(
-            &JsValue::undefined(),
-            &[JsValue::from(cancel_result)],
-            context,
-        )?;
+            readable_stream_cancel_ec(source_stream, composite_reason, ec)?;
+        let undefined = ec.value_undefined();
+        ec.call(&cancel_resolvers.resolve, &undefined, &[JsValue::from(cancel_result)])?;
     }
     Ok(cancel_promise)
 }
@@ -2710,8 +2656,8 @@ pub(crate) fn readable_byte_stream_tee_cancel1_algorithm(
 pub(crate) fn readable_byte_stream_tee_cancel2_algorithm(
     tee_state: GcCell<ByteTeeState>,
     reason: JsValue,
-    context: &mut Context,
-) -> JsResult<JsObject> {
+    ec: &mut dyn ExecutionContext<crate::js::Types>,
+) -> Completion<JsObject, crate::js::Types> {
     let (source_stream, cancel_promise, canceled1, reason1, reason2, cancel_resolvers) = {
         let mut tee = tee_state.borrow_mut();
         tee.canceled2 = true;
@@ -2726,15 +2672,14 @@ pub(crate) fn readable_byte_stream_tee_cancel2_algorithm(
         )
     };
     if canceled1 {
-        let composite_reason =
-            JsArray::from_iter([reason1, reason2].into_iter().map(JsValue::from), context);
+        let composite_reason_array = ec.create_empty_array();
+        ec.array_push(&composite_reason_array, reason1)?;
+        ec.array_push(&composite_reason_array, reason2)?;
+        let composite_reason = <crate::js::Types as JsTypes>::value_from_object(composite_reason_array);
         let cancel_result =
-            readable_stream_cancel(source_stream, JsValue::from(composite_reason), context)?;
-        cancel_resolvers.resolve.call(
-            &JsValue::undefined(),
-            &[JsValue::from(cancel_result)],
-            context,
-        )?;
+            readable_stream_cancel_ec(source_stream, composite_reason, ec)?;
+        let undefined = ec.value_undefined();
+        ec.call(&cancel_resolvers.resolve, &undefined, &[JsValue::from(cancel_result)])?;
     }
     Ok(cancel_promise)
 }

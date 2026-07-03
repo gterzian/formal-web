@@ -1288,6 +1288,15 @@ impl ExecutionContext<JscTypes> for JscEngine {
         }
         Ok(())
     }
+
+    fn to_property_descriptor(
+        &mut self,
+        desc_obj: JscObject,
+    ) -> Completion<PropertyDescriptor<JscTypes>, JscTypes> {
+        // Stub — not yet used by JSC proxy code
+        Err(self.new_type_error("to_property_descriptor not yet implemented on JSC backend"))
+    }
+
     fn delete_property_or_throw(
         &mut self,
         object: JscObject,
@@ -1313,6 +1322,15 @@ impl ExecutionContext<JscTypes> for JscEngine {
         }
         Ok(())
     }
+
+    fn get_prototype_of(
+        &mut self,
+        object: JscObject,
+    ) -> Completion<Option<JscObject>, JscTypes> {
+        // Stub — not yet used by JSC proxy code
+        Err(self.new_type_error("get_prototype_of not yet implemented on JSC backend"))
+    }
+
     fn set_prototype(
         &mut self,
         object: JscObject,
@@ -2761,6 +2779,16 @@ impl ExecutionContext<JscTypes> for JscEngine {
 
     fn property_key_from_index(&self, index: u32) -> JscPropertyKey {
         JscPropertyKey::String(JscString::from_rust(&index.to_string()))
+    }
+
+    // ── Proxy Creation (§10.5.14) ──────────────────────────────────────────
+
+    fn create_proxy(
+        &mut self,
+        _target: JscObject,
+        _handler: JscObject,
+    ) -> Completion<JscObject, JscTypes> {
+        Err(self.new_type_error("Proxy not yet supported on JSC backend"))
     }
 
     // ── Error Reporting ──────────────────────────────────────────────────

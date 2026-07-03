@@ -80,18 +80,12 @@ impl PullAlgorithm {
                 resolved_promise(value, ec)
             }
             Self::ReadableByteStreamTeeBranch1(tee_state) => {
-                let context = unsafe { js_engine::boa::ec_to_ctx(ec) };
-                readable_byte_stream_tee_pull1_algorithm(tee_state.clone(), context)
-                    .map(|value| JsValue::from(value))
-                    .map_err(|e| e.into_opaque(context).unwrap_or(JsValue::undefined()))
-                    .and_then(|value| resolved_promise(value, ec).map_err(|e| e))
+                let value = readable_byte_stream_tee_pull1_algorithm(tee_state.clone(), ec)?;
+                resolved_promise(value, ec)
             }
             Self::ReadableByteStreamTeeBranch2(tee_state) => {
-                let context = unsafe { js_engine::boa::ec_to_ctx(ec) };
-                readable_byte_stream_tee_pull2_algorithm(tee_state.clone(), context)
-                    .map(|value| JsValue::from(value))
-                    .map_err(|e| e.into_opaque(context).unwrap_or(JsValue::undefined()))
-                    .and_then(|value| resolved_promise(value, ec).map_err(|e| e))
+                let value = readable_byte_stream_tee_pull2_algorithm(tee_state.clone(), ec)?;
+                resolved_promise(value, ec)
             }
             Self::TransformStreamDefaultSourcePull(stream) => {
                 transform_stream_default_source_pull_algorithm(stream.clone(), ec)
@@ -140,16 +134,10 @@ impl CancelAlgorithm {
                 )
             }
             Self::ReadableByteStreamTeeBranch1(tee_state) => {
-                let context = unsafe { js_engine::boa::ec_to_ctx(ec) };
-                readable_byte_stream_tee_cancel1_algorithm(tee_state.clone(), reason, context)
-                    .map_err(|e| e.into_opaque(context).unwrap_or(JsValue::undefined()))
-                    .map(|v| JsObject::from(v))
+                readable_byte_stream_tee_cancel1_algorithm(tee_state.clone(), reason, ec)
             }
             Self::ReadableByteStreamTeeBranch2(tee_state) => {
-                let context = unsafe { js_engine::boa::ec_to_ctx(ec) };
-                readable_byte_stream_tee_cancel2_algorithm(tee_state.clone(), reason, context)
-                    .map_err(|e| e.into_opaque(context).unwrap_or(JsValue::undefined()))
-                    .map(|v| JsObject::from(v))
+                readable_byte_stream_tee_cancel2_algorithm(tee_state.clone(), reason, ec)
             }
             Self::TransformStreamDefaultSourceCancel(stream) => {
                 transform_stream_default_source_cancel_algorithm(stream.clone(), reason, ec)

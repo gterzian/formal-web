@@ -156,16 +156,10 @@ impl ReadRequest {
                 ec,
             ),
             Self::ReadableByteStreamTee { tee_state } => {
-                // SAFETY: ec is backed by BoaContext repr(transparent) over Context.
-                // Tee algorithms still take Boa's Context.
-                let context = unsafe { js_engine::boa::ec_to_ctx(ec) };
-                crate::js::js_result_to_completion(
-                    readable_byte_stream_tee_default_reader_chunk_steps(
-                        tee_state.clone(),
-                        chunk,
-                        context,
-                    ),
-                    context,
+                readable_byte_stream_tee_default_reader_chunk_steps(
+                    tee_state.clone(),
+                    chunk,
+                    ec,
                 )
             }
             Self::ReadableStreamPipeTo { state } => {
@@ -246,37 +240,28 @@ impl ReadRequest {
     }
 }
 
-pub(crate) fn queue_internal_stream_microtask<F>(task: F, context: &mut Context) -> JsResult<()>
+pub(crate) fn queue_internal_stream_microtask<F>(
+    task: F,
+    ec: &mut dyn ExecutionContext<crate::js::Types>,
+) -> Completion<(), crate::js::Types>
 where
-    F: FnOnce(&mut Context) -> JsResult<()> + 'static,
+    F: FnOnce(&mut dyn ExecutionContext<crate::js::Types>) -> Completion<(), crate::js::Types> + 'static,
 {
-    let realm = context.realm().clone();
-    context.enqueue_job(
-        PromiseJob::with_realm(
-            move |context| {
-                if let Err(error) = task(context) {
-                    let reason = error
-                        .into_opaque(context)
-                        .unwrap_or_else(|_| JsValue::undefined());
-                    if let Ok(rejected) =
-                        rejected_promise(reason, js_engine::boa::context_as_ec(context))
-                    {
-                        if let Err(error) = mark_promise_as_handled(
-                            &rejected,
-                            js_engine::boa::context_as_ec(context),
-                        ) {
-                            log::warn!(
-                                "[readable-stream] failed to mark promise as handled: {:?}",
-                                error
-                            );
-                        }
+    let realm = ec.current_realm();
+    ec.enqueue_job_with_realm(
+        realm,
+        Box::new(move |job_ec| {
+            if let Err(error) = task(job_ec) {
+                if let Ok(rejected) = rejected_promise(error, job_ec) {
+                    if let Err(error) = mark_promise_as_handled(&rejected, job_ec) {
+                        log::warn!(
+                            "[readable-stream] failed to mark promise as handled: {:?}",
+                            error
+                        );
                     }
                 }
-                Ok(JsValue::undefined())
-            },
-            realm,
-        )
-        .into(),
+            }
+        }),
     );
     Ok(())
 }

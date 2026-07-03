@@ -612,6 +612,59 @@ impl ExecutionContext<BoaTypes> for BoaContext {
         )
     }
 
+    fn to_property_descriptor(
+        &mut self,
+        desc_obj: JsObject,
+    ) -> Completion<PropertyDescriptor<BoaTypes>, BoaTypes> {
+        // <https://tc39.es/ecma262/#sec-topropertydescriptor>
+        let enumerable_val = crate::EcmascriptHost::get(self, &desc_obj, "enumerable")?;
+        let configurable_val = crate::EcmascriptHost::get(self, &desc_obj, "configurable")?;
+        let value = {
+            let val = crate::EcmascriptHost::get(self, &desc_obj, "value")?;
+            if !val.is_undefined() { Some(val) } else { None }
+        };
+        let writable_val = crate::EcmascriptHost::get(self, &desc_obj, "writable")?;
+        let get_val = crate::EcmascriptHost::get(self, &desc_obj, "get")?;
+        let set_val = crate::EcmascriptHost::get(self, &desc_obj, "set")?;
+
+        let enumerable = if !enumerable_val.is_undefined() {
+            Some(self.to_boolean(&enumerable_val))
+        } else {
+            None
+        };
+        let configurable = if !configurable_val.is_undefined() {
+            Some(self.to_boolean(&configurable_val))
+        } else {
+            None
+        };
+        let writable = if !writable_val.is_undefined() {
+            Some(self.to_boolean(&writable_val))
+        } else {
+            None
+        };
+        let get_fn = if !get_val.is_undefined() && !get_val.is_null() {
+            let obj = self.to_object(get_val)?;
+            JsFunction::from_object(obj)
+        } else {
+            None
+        };
+        let set_fn = if !set_val.is_undefined() && !set_val.is_null() {
+            let obj = self.to_object(set_val)?;
+            JsFunction::from_object(obj)
+        } else {
+            None
+        };
+
+        Ok(PropertyDescriptor {
+            value,
+            writable,
+            get: get_fn,
+            set: set_fn,
+            enumerable,
+            configurable,
+        })
+    }
+
     fn define_property_or_throw(
         &mut self,
         object: JsObject,
@@ -645,6 +698,13 @@ impl ExecutionContext<BoaTypes> for BoaContext {
                 .map(|_| ()),
             &mut self.context,
         )
+    }
+
+    fn get_prototype_of(
+        &mut self,
+        object: JsObject,
+    ) -> Completion<Option<JsObject>, BoaTypes> {
+        Ok(object.prototype())
     }
 
     fn set_prototype(
@@ -1543,6 +1603,31 @@ impl ExecutionContext<BoaTypes> for BoaContext {
             .name(name_str)
             .length(length as usize)
             .build()
+    }
+
+    fn create_proxy(
+        &mut self,
+        target: boa_engine::JsObject,
+        handler: boa_engine::JsObject,
+    ) -> Completion<boa_engine::JsObject, BoaTypes> {
+        let proxy_ctor = self
+            .context
+            .intrinsics()
+            .constructors()
+            .proxy()
+            .constructor();
+        let target_val = boa_engine::JsValue::from(target);
+        let handler_val = boa_engine::JsValue::from(handler);
+        proxy_ctor
+            .construct(
+                &[target_val, handler_val],
+                Some(&proxy_ctor),
+                &mut self.context,
+            )
+            .map_err(|e| {
+                e.into_opaque(&mut self.context)
+                    .unwrap_or_else(|_| boa_engine::JsValue::undefined())
+            })
     }
 
     fn create_builtin_function_from_behaviour(

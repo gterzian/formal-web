@@ -437,21 +437,6 @@ Concrete per-phase validation requirements:
 
 ### Next session: recommended order
 
-1. **Phase S — Byte tee closures in `readablestream.rs`** — Convert `readable_byte_stream_tee_pull1_algorithm`,
-   `pull2`, `cancel1`, `cancel2`, and their dependencies (`queue_internal_stream_microtask` chain).
-   Requires `Behaviour` trait impls for nested closures. This erases 6 ec_to_ctx
-   (4 in `readablestreamdefaultcontroller.rs` + 1 in `readablestreamsupport.rs` + 1 in `readablestream.rs`).
-
-2. **Phase W — `wasm/namespace.rs` (6 ec_to_ctx)** — Convert wasm namespace functions.
-   Requires replacing `context.global_object().downcast_ref::<Window>()` with a
-   content-owned accessor.
-
-3. **Phase P — Remaining singleton ec_to_ctx** — `html/windowproxy.rs`,
-   `html/html_media_element.rs`, `webidl/async_iterable.rs`,
-   `html/safe_passing_of_structured_data.rs`.
-
-4. **Phase E validation** — `cargo check -p content --no-default-features --features jsc`.
-
 ### Current state (updated 2026-07-03)
 
 **Phases A–D, S1–S10, T1–T2, W1–W2, G1–G3, C2–C3, B1, R1, R2 complete.**
@@ -460,26 +445,62 @@ All domain field types use `GcCell<T>`. Generic POC: 81/81 tests pass on Boa.
 Phase E (compile-time Types/Engine aliases) is landed — `#[cfg(feature = "jsc")]`
 selects between BoaTypes and JscTypes.
 
-**ec_to_ctx count: ~16** (was ~34 before current session)
+**ec_to_ctx count: ~11** (was ~34 before this session; 5 eliminated)
 
-**Streams domain fully EC:**
-- `transformstream.rs` — all 6 sink/controller algorithms converted, 3 closures freed of bridges. 5 ec_to_ctx → 0.
-- `readablestream.rs` — `byte_tee_forward_reader_error` converted (uses `EcmascriptHost::get` + `perform_promise_then`). 1 ec_to_ctx eliminated.
-- `readablestreamdefaultcontroller.rs` — `CancelAlgorithm::TransformStreamDefaultSourceCancel` eliminated. 1 ec_to_ctx down.
+**Phase S — Byte tee closures fully converted (this session):**
+- `readablestreamdefaultcontroller.rs` — all 4 byte tee pull/cancel ec_to_ctx eliminated.
+  PullAlgorithm/CancelAlgorithm now call EC-converted functions directly.
+- `readablestreamsupport.rs` — `queue_internal_stream_microtask` converted to EC:
+  closure type changed from `FnOnce(&mut Context) -> JsResult<()>` to
+  `FnOnce(&mut dyn ExecutionContext<T>) -> Completion<(), T>`; uses
+  `ec.current_realm()` + `ec.enqueue_job_with_realm()` instead of
+  `context.realm()` + `PromiseJob::with_realm`. 1 ec_to_ctx eliminated.
+- `readablestream.rs` — 6 functions converted from `&mut Context` to
+  `&mut dyn ExecutionContext<T>`: `readable_byte_stream_tee_pull1/pull2/cancel1/cancel2_algorithm`,
+  `readable_byte_stream_tee_pull_with_byob/default_reader`.
+  6 helpers converted: `byte_tee_enqueue_to_branch`, `byte_tee_ignore_pull_completion`,
+  `byte_tee_switch_to_default_reader`, `byte_tee_switch_to_byob_reader`,
+  `readable_byte_stream_tee_default_reader_chunk_steps`.
+  `NativeFunction::from_copy_closure_with_captures` → `builtin_with_captures` (EC).
+  Inner `queue_internal_stream_microtask` closures converted to EC-taking.
+  5 ec_to_ctx eliminated across these files.
 
-**Web IDL helpers fully EC:**
-- `webidl/promise.rs` — `error_to_rejection_reason`, `rejected_promise_from_error`, `promise_from_completion` use `JsError::as_opaque()` + fallback. 3 ec_to_ctx → 0.
-- `webidl/buffer_source.rs` — `get_a_copy_of_the_buffer_source` uses typed_array EC trait methods. 1 ec_to_ctx → 0.
+**Phase P — WindowProxy conversion (this session):**
+- Added `create_proxy(target, handler)` to `ExecutionContext<T>` — ProxyCreate
+  (§10.5.14). Boa backend uses Proxy constructor via intrinsics. JSC stub.
+- Added `get_prototype_of` to `ExecutionContext<T>` — needed by WindowProxy
+  traps. Boa: delegates to `JsObject::prototype()`. JSC stub.
+- Added `to_property_descriptor` to `ExecutionContext<T>` — reads descriptor
+  fields from a descriptor object. Boa: implemented via `EcmascriptHost::get`.
+  JSC stub.
+- Converted `content/src/html/windowproxy.rs` — all 10 trap functions changed
+  from `NativeFunctionPointer` (Boa fn pointer taking `&mut Context`) to
+  EC-compatible signatures. Follows the same recipe as Web IDL observable
+  arrays (<https://webidl.spec.whatwg.org/#js-observable-arrays>):
+  `OrdinaryObjectCreate(null)` → CreateBuiltinFunction for each trap →
+  CreateDataPropertyOrThrow on handler → ProxyCreate(target, handler).
+  Uses `ec.create_plain_object(None)` + `ec.create_builtin_function()` for
+  each trap in a loop + `ec.set()` → `ec.create_proxy()`.
+  1 ec_to_ctx eliminated.
 
-**Remaining ~16 ec_to_ctx by file:**
-- `wasm/namespace.rs`: 6 — `context.global_object().downcast_ref<Window>()` pattern
-- `readablestreamdefaultcontroller.rs`: 4 — byte tee pull/cancel (deep chain with `queue_internal_stream_microtask`)
-- `readablestreamsupport.rs`: 1 — byte tee chunk steps
-- `html/windowproxy.rs`: 1 — `JsProxyBuilder::build(context)` (no EC proxy API yet)
+**Remaining ~10 ec_to_ctx by file:**
+- `wasm/namespace.rs`: 6 — gated behind `boa` feature, lowest priority.
 - `html/html_media_element.rs`: 1 — `with_global_scope` (GC heap traversal)
 - `html/safe_passing_of_structured_data.rs`: 1 — structured clone (Boa-internal)
 - `webidl/async_iterable.rs`: 1 — async iterator creation (`ObjectInitializer`)
 - `js/mod.rs`: 1 — `js_result_to_completion_ec` bridge helper
+
+### Next session: recommended order
+
+1. **Phase P — Remaining singleton ec_to_ctx** — `html/html_media_element.rs`,
+   `webidl/async_iterable.rs`, `html/safe_passing_of_structured_data.rs`,
+   `js/mod.rs` (4 total).
+
+2. **Phase E validation** — `cargo check -p content --no-default-features --features jsc`.
+   Note: `content/src/wasm/` is not yet gated behind `boa` feature. To make Phase E
+   clean, gate `pub mod wasm` in `main.rs` behind `#[cfg(feature = "boa")]` and
+   conditionally compile the `wasmtime` dep. The wasm module can be left as a
+   Boa-only feature since JSC handles WebAssembly internally.
 
 ### Working notes
 

@@ -306,6 +306,12 @@ pub trait ExecutionContext<T: JsTypes + JsTypesWithRealm>: EcmascriptHost<T> {
         value: T::JsValue,
     ) -> Completion<bool, T>;
 
+    /// <https://tc39.es/ecma262/#sec-topropertydescriptor>
+    fn to_property_descriptor(
+        &mut self,
+        desc_obj: T::JsObject,
+    ) -> Completion<PropertyDescriptor<T>, T>;
+
     /// <https://tc39.es/ecma262/#sec-definepropertyorthrow>
     fn define_property_or_throw(
         &mut self,
@@ -320,6 +326,12 @@ pub trait ExecutionContext<T: JsTypes + JsTypesWithRealm>: EcmascriptHost<T> {
         object: T::JsObject,
         property_key: T::PropertyKey,
     ) -> Completion<(), T>;
+
+    /// <https://tc39.es/ecma262/#sec-getprototypeof>
+    fn get_prototype_of(
+        &mut self,
+        object: T::JsObject,
+    ) -> Completion<Option<T::JsObject>, T>;
 
     /// <https://tc39.es/ecma262/#sec-setprototypeof>
     fn set_prototype(
@@ -735,6 +747,18 @@ pub trait ExecutionContext<T: JsTypes + JsTypesWithRealm>: EcmascriptHost<T> {
         length: u32,
         name: T::PropertyKey,
     ) -> T::Function;
+
+    // ── Proxy Creation (§10.5.14) ─────────────────────────────────
+
+    /// <https://tc39.es/ecma262/#sec-proxycreate>
+    ///
+    /// Creates a Proxy exotic object with the given target and handler.
+    /// The handler should have the trap methods already set as properties.
+    fn create_proxy(
+        &mut self,
+        target: T::JsObject,
+        handler: T::JsObject,
+    ) -> Completion<T::JsObject, T>;
 
     // ────────────────────────────────────────────────────────────────────────
     // Error Reporting
