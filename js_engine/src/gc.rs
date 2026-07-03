@@ -136,6 +136,21 @@ pub fn gc_cell_new<T>(val: T) -> GcCell<T> {
     std::rc::Rc::new(std::cell::RefCell::new(val))
 }
 
+/// Compare two [`GcCell`] references for pointer equality.
+///
+/// Returns `true` if both references point to the same GC-managed allocation.
+/// On Boa this uses `Gc::ptr_eq`; on JSC it uses `Rc::ptr_eq`.
+#[cfg(feature = "boa")]
+pub fn gc_cell_ptr_eq<T: boa_gc::Trace + ?Sized>(a: &GcCell<T>, b: &GcCell<T>) -> bool {
+    boa_gc::Gc::ptr_eq(a, b)
+}
+
+/// Compare two [`GcCell`] references for pointer equality.
+#[cfg(not(feature = "boa"))]
+pub fn gc_cell_ptr_eq<T>(a: &GcCell<T>, b: &GcCell<T>) -> bool {
+    std::rc::Rc::ptr_eq(a, b)
+}
+
 // ============================================================================
 // SECTION IV: GC-TRAIT MACRO
 // ============================================================================

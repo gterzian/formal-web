@@ -610,7 +610,7 @@ pub(crate) fn set_up_writable_stream_default_controller(
     // Step 6: "Set controller.[[abortController]] to a new AbortController."
     // The content process stores the exposed [AbortSignal](https://dom.spec.whatwg.org/#interface-AbortSignal) [platform object](https://webidl.spec.whatwg.org/#dfn-platform-object) directly because the controller getter
     // only needs the signal object.
-    let signal = create_abort_signal(AbortSignal::new(), ec)?;
+    let signal = create_abort_signal(AbortSignal::new(ec), ec)?;
     controller.set_abort_signal_slot(signal);
 
     // Step 7: "Set controller.[[started]] to false."

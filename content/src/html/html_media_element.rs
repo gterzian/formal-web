@@ -2,8 +2,9 @@ use std::cell::RefCell;
 use std::rc::Rc;
 
 use blitz_dom::BaseDocument;
-use boa_engine::JsValue;
 use log::{debug, error};
+
+use crate::js::Types;
 
 use crate::html::{HTMLElement, await_a_stable_state};
 use crate::js::platform_objects::with_global_scope;
@@ -12,7 +13,7 @@ use ipc_messages::content::{Event as ContentEvent, RegisterMediaPipeline};
 use ipc_messages::media::VideoPaintId;
 use js_engine::gc_struct;
 
-use js_engine::{Completion, ExecutionContext};
+use js_engine::{Completion, ExecutionContext, JsTypes};
 
 /// <https://html.spec.whatwg.org/#media-elements>
 #[gc_struct]
@@ -452,7 +453,7 @@ impl HTMLMediaElement {
             }
 
             // ── Synchronous section ends here ──
-            Ok(JsValue::undefined())
+            Ok(ec.value_undefined())
         })
     }
 
@@ -537,7 +538,7 @@ impl HTMLMediaElement {
     pub(crate) fn play(
         &mut self,
         ec: &mut dyn ExecutionContext<crate::js::Types>,
-    ) -> Completion<JsValue, crate::js::Types> {
+    ) -> Completion<<Types as JsTypes>::JsValue, crate::js::Types> {
         // Step 1: If the media element is not allowed to play, then return
         // a promise rejected with a "NotAllowedError" DOMException.
         // Note: Simplified — always allowed to play for now.
@@ -553,7 +554,7 @@ impl HTMLMediaElement {
 
         // Step 5: Let promise be a new promise and append promise to the
         // list of pending play promises.
-        let promise = resolved_promise(JsValue::undefined(), ec)?.into();
+        let promise = resolved_promise(ec.value_undefined(), ec)?.into();
         // Note: The list of pending play promises is not yet tracked.
 
         // Step 6: Run the internal play steps for the media element.

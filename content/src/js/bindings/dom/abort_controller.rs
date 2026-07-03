@@ -19,7 +19,7 @@ impl WebIdlInterface<crate::js::Types> for AbortController {
         _args: &[JsValue],
         ec: &mut dyn ExecutionContext<crate::js::Types>,
     ) -> Completion<Self, crate::js::Types> {
-        let signal = create_abort_signal(AbortSignal::new(), ec)?;
+        let signal = create_abort_signal(AbortSignal::new(ec), ec)?;
         Ok(AbortController::new(signal))
     }
 

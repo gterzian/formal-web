@@ -167,7 +167,7 @@ pub(crate) fn timeout_static(
     use crate::js::Types;
 
     let milliseconds = ec.to_length(args.get_or_undefined(0).clone())?;
-    let signal = create_abort_signal(AbortSignal::new(), ec)?;
+    let signal = create_abort_signal(AbortSignal::new(ec), ec)?;
 
     // Create the timeout callback as a builtin function.
     let signal_for_callback = signal.clone();
@@ -212,7 +212,7 @@ pub(crate) fn any_static(
 ) -> Completion<JsValue, crate::js::Types> {
     let value_undefined = ec.value_undefined();
     let signals = sequence_abort_signals(args.get_or_undefined(0), ec)?;
-    let result_signal = create_abort_signal(AbortSignal::new(), ec)?;
+    let result_signal = create_abort_signal(AbortSignal::new(ec), ec)?;
     initialize_dependent_abort_signal(&result_signal, &signals);
     Ok(crate::js::Types::value_from_object(
         result_signal.object().ok_or(value_undefined)?,

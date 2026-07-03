@@ -5,13 +5,16 @@ use crate::js::Types;
 type JsValue = <Types as JsTypes>::JsValue;
 type JsObject = <Types as JsTypes>::JsObject;
 use log::error;
+#[cfg(boa_backend)]
 mod environment_settings_object;
+#[cfg(boa_backend)]
 mod global_scope;
 mod html_anchor_element;
 mod html_dom_tree;
 mod html_element;
 pub(crate) mod html_iframe_element;
 pub(crate) mod html_input_element;
+#[cfg(boa_backend)]
 pub(crate) mod html_media_element;
 mod html_parser;
 pub(crate) mod html_video_element;
@@ -20,6 +23,7 @@ mod location;
 pub(crate) mod safe_passing_of_structured_data;
 mod window;
 mod window_or_worker_global_scope;
+#[cfg(boa_backend)]
 pub(crate) mod windowproxy;
 
 use ipc::IpcSender;
@@ -28,8 +32,11 @@ use ipc_messages::content::{
     NewChildNavigableInfo, NewTraversableInfo, UserNavigationInvolvement,
 };
 
+#[cfg(boa_backend)]
 pub use environment_settings_object::EnvironmentSettingsObject;
+#[cfg(boa_backend)]
 pub(crate) use global_scope::TimerHandler;
+#[cfg(boa_backend)]
 pub use global_scope::{GlobalScope, GlobalScopeKind, PendingRequest, PendingState};
 pub use html_anchor_element::HTMLAnchorElement;
 pub(crate) use html_dom_tree::{
@@ -43,6 +50,7 @@ pub use html_iframe_element::HTMLIFrameElement;
 pub(crate) use html_iframe_element::attach_same_origin_child_document_for_traversable;
 pub(crate) use html_iframe_element::run_iframe_load_event_steps_for_traversable;
 pub use html_input_element::HTMLInputElement;
+#[cfg(boa_backend)]
 pub use html_media_element::{HTMLMediaElement, MediaError};
 pub(crate) use html_parser::PendingParserScript;
 pub use html_parser::{JsHtmlParserProvider, execute_parser_scripts, parse_html_into_document};

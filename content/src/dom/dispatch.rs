@@ -2,67 +2,72 @@ use log::trace;
 use std::{cell::RefCell, rc::Rc};
 
 use blitz_dom::BaseDocument;
-use boa_engine::{JsValue, object::JsObject};
 
 use crate::html::{HTMLAnchorElement, HTMLElement, HTMLIFrameElement, HTMLInputElement, Window};
+use crate::js::Types;
 use crate::js::{try_with_event_mut, try_with_event_target_mut, try_with_event_target_ref};
 use crate::webidl::call_user_objects_operation;
-use js_engine::{Completion, EcmascriptHost, ExecutionContext};
+use js_engine::{Completion, EcmascriptHost, ExecutionContext, JsTypes};
 
 use super::event::{EventListener, NONE};
 use super::{BUBBLING_PHASE, CAPTURING_PHASE, Document, Element, Event, Node};
+
+type JsObject = <Types as JsTypes>::JsObject;
+type JsValue = <Types as JsTypes>::JsValue;
 
 fn dispatch_debug_enabled() -> bool {
     std::env::var_os("FORMAL_WEB_DEBUG_INPUT").is_some()
 }
 
-fn debug_target_label(object: &JsObject) -> String {
-    if object.downcast_ref::<Window>().is_some() {
-        return String::from("Window");
-    }
-    if let Some(document) = object.downcast_ref::<Document>() {
-        return format!("Document(node={})", document.node.node_id);
-    }
-    if let Some(html_anchor) = object.downcast_ref::<HTMLAnchorElement>() {
-        return format!(
-            "HTMLAnchorElement(node={})",
-            html_anchor.html_element.element.node.node_id,
-        );
-    }
-    if let Some(html_iframe) = object.downcast_ref::<HTMLIFrameElement>() {
-        return format!(
-            "HTMLIFrameElement(node={})",
-            html_iframe.html_element.element.node.node_id,
-        );
-    }
-    if let Some(html_element) = object.downcast_ref::<HTMLElement>() {
-        return format!("HTMLElement(node={})", html_element.element.node.node_id);
-    }
-    if let Some(element) = object.downcast_ref::<Element>() {
-        return format!("Element(node={})", element.node.node_id);
-    }
-    if let Some(node) = object.downcast_ref::<Node>() {
-        return format!("Node(node={})", node.node_id);
+fn debug_target_label(object: &JsObject, ec: &mut dyn ExecutionContext<Types>) -> String {
+    if let Some(data) = ec.with_object_any(object) {
+        if data.downcast_ref::<Window>().is_some() {
+            return String::from("Window");
+        }
+        if let Some(document) = data.downcast_ref::<Document>() {
+            return format!("Document(node={})", document.node.node_id);
+        }
+        if let Some(html_anchor) = data.downcast_ref::<HTMLAnchorElement>() {
+            return format!(
+                "HTMLAnchorElement(node={})",
+                html_anchor.html_element.element.node.node_id,
+            );
+        }
+        if let Some(html_iframe) = data.downcast_ref::<HTMLIFrameElement>() {
+            return format!(
+                "HTMLIFrameElement(node={})",
+                html_iframe.html_element.element.node.node_id,
+            );
+        }
+        if let Some(html_element) = data.downcast_ref::<HTMLElement>() {
+            return format!("HTMLElement(node={})", html_element.element.node.node_id);
+        }
+        if let Some(element) = data.downcast_ref::<Element>() {
+            return format!("Element(node={})", element.node.node_id);
+        }
+        if let Some(node) = data.downcast_ref::<Node>() {
+            return format!("Node(node={})", node.node_id);
+        }
     }
     String::from("UnknownTarget")
 }
 
-pub(crate) trait EventDispatchHost: EcmascriptHost<crate::js::Types> {
-    fn ec(&mut self) -> &mut dyn ExecutionContext<crate::js::Types>;
+pub(crate) trait EventDispatchHost: EcmascriptHost<Types> {
+    fn ec(&mut self) -> &mut dyn ExecutionContext<Types>;
 
-    fn create_event_object(&mut self, event: Event) -> Completion<JsObject, crate::js::Types>;
+    fn create_event_object(&mut self, event: Event) -> Completion<JsObject, Types>;
 
-    fn document_object(&mut self) -> Completion<JsObject, crate::js::Types>;
+    fn document_object(&mut self) -> Completion<JsObject, Types>;
 
     fn global_object(&mut self) -> JsObject;
 
-    fn resolve_element_object(&mut self, node_id: usize) -> Completion<JsObject, crate::js::Types>;
+    fn resolve_element_object(&mut self, node_id: usize) -> Completion<JsObject, Types>;
 
     fn resolve_existing_node_object(
         &mut self,
         document: Rc<RefCell<BaseDocument>>,
         node_id: usize,
-    ) -> Completion<JsObject, crate::js::Types>;
+    ) -> Completion<JsObject, Types>;
 
     fn current_time_millis(&self) -> f64;
 
@@ -74,7 +79,7 @@ pub(crate) trait EventDispatchHost: EcmascriptHost<crate::js::Types> {
         &mut self,
         _target: &JsObject,
         _event: &JsObject,
-    ) -> Completion<(), crate::js::Types> {
+    ) -> Completion<(), Types> {
         Ok(())
     }
 
@@ -82,7 +87,7 @@ pub(crate) trait EventDispatchHost: EcmascriptHost<crate::js::Types> {
         &mut self,
         _target: &JsObject,
         _event: &JsObject,
-    ) -> Completion<(), crate::js::Types> {
+    ) -> Completion<(), Types> {
         Ok(())
     }
 
@@ -90,7 +95,7 @@ pub(crate) trait EventDispatchHost: EcmascriptHost<crate::js::Types> {
         &mut self,
         _target: &JsObject,
         _event: &JsObject,
-    ) -> Completion<(), crate::js::Types> {
+    ) -> Completion<(), Types> {
         Ok(())
     }
 }
@@ -113,7 +118,7 @@ pub(crate) fn fire_event(
     target: &JsObject,
     event_type: &str,
     legacy_target_override: bool,
-) -> Completion<bool, crate::js::Types> {
+) -> Completion<bool, Types> {
     // Step 1: "If eventConstructor is not given, then let eventConstructor be Event."
     // Note: This helper currently models only the default `Event` constructor path.
 
@@ -140,7 +145,7 @@ pub(crate) fn dispatch_window_event(
     host: &mut impl EventDispatchHost,
     event_type: &str,
     cancelable: bool,
-) -> Completion<bool, crate::js::Types> {
+) -> Completion<bool, Types> {
     let event = host.create_event_object(Event::new(
         event_type.to_owned(),
         false,
@@ -159,7 +164,7 @@ pub(crate) fn dispatch(
     target: &JsObject,
     event: &JsObject,
     legacy_target_override: bool,
-) -> Completion<bool, crate::js::Types> {
+) -> Completion<bool, Types> {
     let path = path_for_target(host, target, legacy_target_override)?;
     dispatch_on_path(host, &path, event)
 }
@@ -169,7 +174,7 @@ pub(crate) fn dispatch_with_chain(
     host: &mut impl EventDispatchHost,
     chain: &[usize],
     event: &JsObject,
-) -> Completion<bool, crate::js::Types> {
+) -> Completion<bool, Types> {
     let path = if chain.is_empty() {
         let document = host.document_object()?;
         vec![
@@ -209,7 +214,7 @@ fn path_for_target(
     host: &mut impl EventDispatchHost,
     target: &JsObject,
     legacy_target_override: bool,
-) -> Completion<Vec<EventPathEntry>, crate::js::Types> {
+) -> Completion<Vec<EventPathEntry>, Types> {
     // Extract node info (doc, node_id) in a scoped block so the EC borrow doesn't
     // conflict with the subsequent path_for_node call that needs `host`.
     let node_info: Option<(Rc<RefCell<BaseDocument>>, usize)> =
@@ -294,7 +299,7 @@ fn path_for_node(
     document: Rc<RefCell<BaseDocument>>,
     node_id: usize,
     target: JsObject,
-) -> Completion<Vec<EventPathEntry>, crate::js::Types> {
+) -> Completion<Vec<EventPathEntry>, Types> {
     let mut path = vec![EventPathEntry {
         invocation_target: target.clone(),
         shadow_adjusted_target: Some(target),
@@ -326,9 +331,9 @@ fn dispatch_on_path(
     host: &mut impl EventDispatchHost,
     path: &[EventPathEntry],
     event: &JsObject,
-) -> Completion<bool, crate::js::Types> {
+) -> Completion<bool, Types> {
     // Step 1: "Set event's dispatch flag."
-    let event_value = JsValue::from(event.clone());
+    let event_value = <Types as JsTypes>::value_from_object(event.clone());
     try_with_event_mut(&event_value, host.ec(), |inner| {
         inner.dispatch_flag = true;
         inner.stop_propagation_flag = false;
@@ -429,7 +434,7 @@ fn activation_target(
     host: &mut impl EventDispatchHost,
     path: &[EventPathEntry],
     event: &JsObject,
-) -> Completion<Option<JsObject>, crate::js::Types> {
+) -> Completion<Option<JsObject>, Types> {
     // Note: This helper models the `activationTarget` selection performed while DOM dispatch
     // appends the initial target and then walks up through its parents. The implementation does
     // not model shadow trees, so the spec's two `activationTarget` assignment sites collapse to a
@@ -478,7 +483,7 @@ fn invoke(
     index: usize,
     event: &JsObject,
     phase: ListenerPhase,
-) -> Completion<(), crate::js::Types> {
+) -> Completion<(), Types> {
     let entry = &path[index];
 
     // Step 1: "Set event's target to the shadow-adjusted target of the last struct in event's path, that is either struct or preceding struct, whose shadow-adjusted target is non-null."
@@ -505,7 +510,7 @@ fn invoke(
 
     // Step 6: "Let listeners be a clone of event's currentTarget attribute value's event listener list."
     let listeners = try_with_event_target_ref(
-        &JsValue::from(entry.invocation_target.clone()),
+        &<Types as JsTypes>::value_from_object(entry.invocation_target.clone()),
         host.ec(),
         |event_target| event_target.event_listener_list.clone(),
     )?;
@@ -522,7 +527,7 @@ fn invoke(
         trace!(
             "[input-debug][dispatch] phase={} current_target={} listeners={} matching_click_listeners={}",
             phase_name,
-            debug_target_label(&entry.invocation_target),
+            debug_target_label(&entry.invocation_target, host.ec()),
             listeners.len(),
             matching_listeners,
         );
@@ -547,7 +552,7 @@ fn inner_invoke(
     event: &JsObject,
     listeners: &[EventListener],
     phase: ListenerPhase,
-) -> Completion<bool, crate::js::Types> {
+) -> Completion<bool, Types> {
     // Step 1: "Let found be false."
     let mut found = false;
 
@@ -578,7 +583,7 @@ fn inner_invoke(
         // Step 2.5: "If listener's once is true, then remove an event listener given event's currentTarget attribute value and listener."
         if listener.once {
             try_with_event_target_mut(
-                &JsValue::from(current_target.clone()),
+                &<Types as JsTypes>::value_from_object(current_target.clone()),
                 host.ec(),
                 |event_target| {
                     event_target.remove_event_listener_by_id(listener.id);
@@ -593,9 +598,13 @@ fn inner_invoke(
 
         // Step 2.9: "If listener's passive is true, then set event's in passive listener flag."
         if listener.passive == Some(true) {
-            try_with_event_mut(&JsValue::from(event.clone()), host.ec(), |inner| {
-                inner.in_passive_listener_flag = true;
-            })?;
+            try_with_event_mut(
+                &<Types as JsTypes>::value_from_object(event.clone()),
+                host.ec(),
+                |inner| {
+                    inner.in_passive_listener_flag = true;
+                },
+            )?;
         }
 
         // Step 2.10: "If global is a Window object, then record timing info for event listener given event and listener."
@@ -607,17 +616,23 @@ fn inner_invoke(
                 host.ec(),
                 callback,
                 "handleEvent",
-                &[JsValue::from(event.clone())],
-                Some(&JsValue::from(current_target.clone())),
+                &[<Types as JsTypes>::value_from_object(event.clone())],
+                Some(&<Types as JsTypes>::value_from_object(
+                    current_target.clone(),
+                )),
             ) {
                 host.report_exception(error);
             }
         }
 
         // Step 2.12: "Unset event's in passive listener flag."
-        try_with_event_mut(&JsValue::from(event.clone()), host.ec(), |inner| {
-            inner.in_passive_listener_flag = false;
-        })?;
+        try_with_event_mut(
+            &<Types as JsTypes>::value_from_object(event.clone()),
+            host.ec(),
+            |inner| {
+                inner.in_passive_listener_flag = false;
+            },
+        )?;
 
         // Step 2.13: "If global is a Window object, then set global's current event to currentEvent."
         // Note: The content process does not yet model Window.currentEvent restoration.
@@ -643,10 +658,12 @@ fn listener_is_active(
     host: &mut impl EventDispatchHost,
     target: &JsObject,
     listener_id: u64,
-) -> Completion<bool, crate::js::Types> {
-    try_with_event_target_ref(&JsValue::from(target.clone()), host.ec(), |event_target| {
-        event_target.listener_is_active(listener_id)
-    })
+) -> Completion<bool, Types> {
+    try_with_event_target_ref(
+        &<Types as JsTypes>::value_from_object(target.clone()),
+        host.ec(),
+        |event_target| event_target.listener_is_active(listener_id),
+    )
 }
 
 fn set_event_target_state(
@@ -655,71 +672,72 @@ fn set_event_target_state(
     target: Option<JsObject>,
     current_target: Option<JsObject>,
     phase: u16,
-) -> Completion<(), crate::js::Types> {
-    try_with_event_mut(&JsValue::from(event.clone()), host.ec(), |inner| {
-        inner.target = target;
-        inner.current_target = current_target;
-        inner.event_phase = phase;
-    })
+) -> Completion<(), Types> {
+    try_with_event_mut(
+        &<Types as JsTypes>::value_from_object(event.clone()),
+        host.ec(),
+        |inner| {
+            inner.target = target;
+            inner.current_target = current_target;
+            inner.event_phase = phase;
+        },
+    )
 }
 
 fn stop_propagation(
     host: &mut impl EventDispatchHost,
     event: &JsObject,
-) -> Completion<bool, crate::js::Types> {
-    try_with_event_mut(&JsValue::from(event.clone()), host.ec(), |inner| {
-        inner.stop_propagation_flag
-    })
+) -> Completion<bool, Types> {
+    try_with_event_mut(
+        &<Types as JsTypes>::value_from_object(event.clone()),
+        host.ec(),
+        |inner| inner.stop_propagation_flag,
+    )
 }
 
-fn stop_immediate(
-    host: &mut impl EventDispatchHost,
-    event: &JsObject,
-) -> Completion<bool, crate::js::Types> {
-    try_with_event_mut(&JsValue::from(event.clone()), host.ec(), |inner| {
-        inner.stop_immediate_propagation_flag
-    })
+fn stop_immediate(host: &mut impl EventDispatchHost, event: &JsObject) -> Completion<bool, Types> {
+    try_with_event_mut(
+        &<Types as JsTypes>::value_from_object(event.clone()),
+        host.ec(),
+        |inner| inner.stop_immediate_propagation_flag,
+    )
 }
 
-fn bubbles(
-    host: &mut impl EventDispatchHost,
-    event: &JsObject,
-) -> Completion<bool, crate::js::Types> {
-    try_with_event_mut(&JsValue::from(event.clone()), host.ec(), |inner| {
-        inner.bubbles
-    })
+fn bubbles(host: &mut impl EventDispatchHost, event: &JsObject) -> Completion<bool, Types> {
+    try_with_event_mut(
+        &<Types as JsTypes>::value_from_object(event.clone()),
+        host.ec(),
+        |inner| inner.bubbles,
+    )
 }
 
-fn canceled(
-    host: &mut impl EventDispatchHost,
-    event: &JsObject,
-) -> Completion<bool, crate::js::Types> {
-    try_with_event_mut(&JsValue::from(event.clone()), host.ec(), |inner| {
-        inner.canceled_flag
-    })
+fn canceled(host: &mut impl EventDispatchHost, event: &JsObject) -> Completion<bool, Types> {
+    try_with_event_mut(
+        &<Types as JsTypes>::value_from_object(event.clone()),
+        host.ec(),
+        |inner| inner.canceled_flag,
+    )
 }
 
-fn event_phase(
-    host: &mut impl EventDispatchHost,
-    event: &JsObject,
-) -> Completion<u16, crate::js::Types> {
-    try_with_event_mut(&JsValue::from(event.clone()), host.ec(), |inner| {
-        inner.event_phase
-    })
+fn event_phase(host: &mut impl EventDispatchHost, event: &JsObject) -> Completion<u16, Types> {
+    try_with_event_mut(
+        &<Types as JsTypes>::value_from_object(event.clone()),
+        host.ec(),
+        |inner| inner.event_phase,
+    )
 }
 
-fn event_type(
-    host: &mut impl EventDispatchHost,
-    event: &JsObject,
-) -> Completion<String, crate::js::Types> {
-    try_with_event_mut(&JsValue::from(event.clone()), host.ec(), |inner| {
-        inner.type_.clone()
-    })
+fn event_type(host: &mut impl EventDispatchHost, event: &JsObject) -> Completion<String, Types> {
+    try_with_event_mut(
+        &<Types as JsTypes>::value_from_object(event.clone()),
+        host.ec(),
+        |inner| inner.type_.clone(),
+    )
 }
 
 fn is_activation_event(
     host: &mut impl EventDispatchHost,
     event: &JsObject,
-) -> Completion<bool, crate::js::Types> {
+) -> Completion<bool, Types> {
     Ok(event_type(host, event)? == "click")
 }

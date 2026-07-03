@@ -1,19 +1,20 @@
 use std::{mem, ptr};
 
-use boa_engine::{JsError, JsNativeError, JsResult, JsValue, object::JsObject};
-use boa_gc::Gc;
-
-use crate::js::with_event_target_mut;
+use crate::js::Types;
+#[cfg(boa_backend)]
 use crate::streams::PipeToState;
 use crate::webidl::Callback;
 use crate::webidl::bindings::create_interface_instance;
-use js_engine::gc::GcCell;
-use js_engine::gc::gc_cell_new;
+use js_engine::gc::{GcCell, gc_cell_new, gc_cell_ptr_eq};
 use js_engine::gc_struct;
+use js_engine::{Completion, ExecutionContext, JsTypes};
 
-use super::{DOMException, EventDispatchHost, EventTarget, fire_event};
+use super::EventTarget;
+#[cfg(boa_backend)]
+use super::{DOMException, EventDispatchHost, EventTarget as _, fire_event};
 
-use js_engine::{Completion, ExecutionContext};
+type JsObject = <Types as JsTypes>::JsObject;
+type JsValue = <Types as JsTypes>::JsValue;
 
 /// <https://dom.spec.whatwg.org/#abortsignal-add>
 #[gc_struct]
@@ -21,7 +22,7 @@ pub(crate) enum AbortAlgorithm {
     #[allow(dead_code)]
     Native {
         #[ignore_trace]
-        callback: fn() -> JsResult<()>,
+        callback: fn() -> Completion<(), Types>,
     },
 
     RemoveEventListener {
@@ -32,23 +33,20 @@ pub(crate) enum AbortAlgorithm {
         listener_id: u64,
     },
 
-    ReadableStreamPipeTo {
-        state: PipeToState,
-    },
+    #[cfg(boa_backend)]
+    ReadableStreamPipeTo { state: PipeToState },
 }
 
+#[cfg(boa_backend)]
 impl AbortAlgorithm {
     /// <https://dom.spec.whatwg.org/#abortsignal-add>
-    pub(crate) fn run(
-        &self,
-        host: &mut impl EventDispatchHost,
-    ) -> Completion<(), crate::js::Types> {
+    pub(crate) fn run(&self, host: &mut impl EventDispatchHost) -> Completion<(), Types> {
         match self {
             Self::Native { callback } => {
-                let err = host
-                    .ec()
-                    .new_type_error("abort algorithm native callback failed");
                 if callback().is_err() {
+                    let err = host
+                        .ec()
+                        .new_type_error("abort algorithm native callback failed");
                     return Err(err);
                 }
             }
@@ -56,15 +54,15 @@ impl AbortAlgorithm {
                 event_target,
                 listener_id,
             } => {
-                let err = host.ec().new_type_error("receiver is not an EventTarget");
-                if with_event_target_mut(&JsValue::from(event_target.clone()), |target| {
-                    target.remove_event_listener_by_id(*listener_id);
-                })
-                .is_err()
-                {
-                    return Err(err);
+                let ec = host.ec();
+                let target = ec.with_object_any_mut(event_target);
+                if let Some(data) = target {
+                    if let Some(event_target) = data.downcast_mut::<EventTarget>() {
+                        event_target.remove_event_listener_by_id(*listener_id);
+                    }
                 }
             }
+            #[cfg(boa_backend)]
             Self::ReadableStreamPipeTo { state } => {
                 state.run_abort_algorithm(host.ec())?;
             }
@@ -87,7 +85,8 @@ impl AbortAlgorithm {
                     event_target: right_target,
                     listener_id: right_id,
                 },
-            ) => left_id == right_id && JsObject::equals(left_target, right_target),
+            ) => left_id == right_id && left_target == right_target,
+            #[cfg(boa_backend)]
             (
                 Self::ReadableStreamPipeTo { state: left_state },
                 Self::ReadableStreamPipeTo { state: right_state },
@@ -141,9 +140,9 @@ pub struct AbortSignal {
 }
 
 impl AbortSignal {
-    pub(crate) fn new() -> Self {
+    pub(crate) fn new(ec: &mut dyn ExecutionContext<Types>) -> Self {
         Self {
-            shared: gc_cell_new(AbortSignalState::new(false, JsValue::undefined())),
+            shared: gc_cell_new(AbortSignalState::new(false, ec.value_undefined())),
         }
     }
 
@@ -206,7 +205,7 @@ impl AbortSignal {
     }
 
     #[allow(dead_code)]
-    pub(crate) fn add_native_abort_algorithm(&self, callback: fn() -> JsResult<()>) {
+    pub(crate) fn add_native_abort_algorithm(&self, callback: fn() -> Completion<(), Types>) {
         self.add_abort_algorithm(AbortAlgorithm::Native { callback });
     }
 
@@ -320,22 +319,22 @@ impl AbortController {
 /// <https://dom.spec.whatwg.org/#abortsignal>
 pub(crate) fn create_abort_signal(
     signal: AbortSignal,
-    ec: &mut dyn ExecutionContext<crate::js::Types>,
-) -> Completion<AbortSignal, crate::js::Types> {
-    let signal_object =
-        create_interface_instance::<crate::js::Types, AbortSignal>(signal.clone(), ec)?;
+    ec: &mut dyn ExecutionContext<Types>,
+) -> Completion<AbortSignal, Types> {
+    let signal_object = create_interface_instance::<Types, AbortSignal>(signal.clone(), ec)?;
     signal.set_reflector(signal_object);
     Ok(signal)
 }
 
+#[cfg(boa_backend)]
 /// <https://dom.spec.whatwg.org/#abortsignal-signal-abort>
 pub(crate) fn signal_abort(
     host: &mut impl EventDispatchHost,
     signal: &AbortSignal,
     reason: JsValue,
-) -> Completion<(), crate::js::Types> {
-    let reason = if reason.is_undefined() {
-        JsValue::from(create_interface_instance::<crate::js::Types, DOMException>(
+) -> Completion<(), Types> {
+    let reason = if <Types as JsTypes>::value_is_undefined(&reason) {
+        <Types as JsTypes>::value_from_object(create_interface_instance::<Types, DOMException>(
             DOMException::abort_error(),
             host.ec(),
         )?)
@@ -361,11 +360,12 @@ pub(crate) fn signal_abort(
     Ok(())
 }
 
+#[cfg(boa_backend)]
 /// <https://dom.spec.whatwg.org/#run-the-abort-steps>
 fn run_abort_steps(
     host: &mut impl EventDispatchHost,
     signal: &AbortSignal,
-) -> Completion<(), crate::js::Types> {
+) -> Completion<(), Types> {
     // Step 1: "For each algorithm of signal's abort algorithms: run algorithm."
     let algorithms = signal.take_abort_algorithms();
     for algorithm in algorithms {
@@ -426,7 +426,7 @@ pub(crate) fn initialize_dependent_abort_signal(
 fn append_unique_signal(signals: &mut Vec<AbortSignal>, signal: &AbortSignal) {
     if signals
         .iter()
-        .any(|existing| Gc::ptr_eq(&existing.shared, &signal.shared))
+        .any(|existing| gc_cell_ptr_eq(&existing.shared, &signal.shared))
     {
         return;
     }
