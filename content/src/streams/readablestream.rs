@@ -16,7 +16,7 @@ use boa_engine::{
     },
     symbol::JsSymbol,
 };
-use boa_gc::{Finalize, Gc, GcRef, GcRefMut, Trace};
+use boa_gc::{Gc, GcRef, GcRefMut};
 
 use crate::dom::{AbortAlgorithm as SignalAbortAlgorithm, AbortSignal};
 use crate::js::with_abort_signal_ref;
@@ -375,7 +375,7 @@ impl ReadableStreamTeeBranches {
 }
 
 /// pull and cancel algorithms.
-#[derive(Trace, Finalize)]
+#[gc_struct]
 pub(crate) struct TeeState {
     source_stream: ReadableStream,
     reader: ReadableStreamDefaultReader,
@@ -917,13 +917,13 @@ pub(crate) fn readable_stream_default_tee_cancel2_algorithm(
     Ok(cancel_promise)
 }
 
-#[derive(Clone, Trace, Finalize)]
+#[gc_struct]
 enum ReadableStreamFromIteratorKind {
     Async,
     Sync,
 }
 
-#[derive(Clone, Trace, Finalize)]
+#[gc_struct]
 struct ReadableStreamFromIteratorRecord {
     iterator: JsObject,
     next_method: JsObject,
@@ -974,7 +974,7 @@ impl ReadableStreamFromIteratorRecord {
     }
 }
 
-#[derive(Clone, Trace, Finalize)]
+#[gc_struct]
 pub(crate) struct ReadableStreamFromIterableState {
     iterator_record: ReadableStreamFromIteratorRecord,
     stream: GcCell<Option<ReadableStream>>,
@@ -1767,7 +1767,7 @@ pub(crate) fn readable_stream_has_default_reader(stream: &ReadableStream) -> boo
 
 /// Internal state for ReadableByteStreamTee algorithm, maintained across pull and cancel operations.
 /// See `readable_byte_stream_tee` for the algorithm using this state.
-#[derive(Clone, Trace, Finalize)]
+#[gc_struct]
 pub(crate) struct ByteTeeState {
     /// <https://streams.spec.whatwg.org/#abstract-opdef-readablebytestreamtee>
     source_stream: ReadableStream,
@@ -3050,7 +3050,7 @@ fn readable_stream_pipe_to(
     Ok(state.promise())
 }
 
-#[derive(Clone, Trace, Finalize)]
+#[gc_struct]
 pub(crate) struct PipeToState(GcCell<PipeToStateInner>);
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -3071,7 +3071,7 @@ enum PipeShutdownAction {
     Abort,
 }
 
-#[derive(Trace, Finalize)]
+#[gc_struct]
 pub(crate) struct PipeToStateInner {
     promise: JsObject,
     reader: ReadableStreamDefaultReader,
@@ -3742,7 +3742,7 @@ impl PipeToState {
     }
 }
 
-#[derive(Trace, Finalize)]
+#[gc_struct]
 struct AbortThenCancelState {
     source: Option<ReadableStream>,
     error: JsValue,

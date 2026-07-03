@@ -1,7 +1,6 @@
 use std::{cell::Cell, collections::VecDeque, rc::Rc};
 
 use boa_engine::{JsValue, object::JsObject};
-use boa_gc::{Finalize, Trace};
 
 use crate::streams::SizeAlgorithm;
 use crate::webidl::bindings::create_interface_instance;
@@ -32,7 +31,7 @@ use super::{
 use js_engine::{Completion, ExecutionContext, JsEngine, JsTypes};
 
 /// <https://streams.spec.whatwg.org/#readablestreamdefaultcontroller-pullalgorithm>
-#[derive(Clone, Trace, Finalize)]
+#[gc_struct]
 pub(crate) enum PullAlgorithm {
     ReturnUndefined,
     JavaScript(SourceMethod),
@@ -90,7 +89,7 @@ impl PullAlgorithm {
 }
 
 /// <https://streams.spec.whatwg.org/#readablestreamdefaultcontroller-cancelalgorithm>
-#[derive(Clone, Trace, Finalize)]
+#[gc_struct]
 pub(crate) enum CancelAlgorithm {
     ReturnUndefined,
     JavaScript(SourceMethod),
@@ -138,7 +137,7 @@ impl CancelAlgorithm {
 }
 
 /// <https://streams.spec.whatwg.org/#set-up-readable-stream-default-controller-from-underlying-source>
-#[derive(Clone, Trace, Finalize)]
+#[gc_struct]
 pub(crate) enum StartAlgorithm {
     ReturnUndefined,
     ReturnValue(JsValue),
@@ -163,7 +162,7 @@ impl StartAlgorithm {
     }
 }
 /// `EnqueueValueWithSize` computes for it.
-#[derive(Clone, Trace, Finalize)]
+#[gc_struct]
 struct QueueEntry {
     chunk: JsValue,
     #[ignore_trace]

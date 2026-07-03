@@ -103,6 +103,10 @@ pub fn gc_struct_boa(_attr: TokenStream, item: TokenStream) -> TokenStream {
             expanded.into()
         }
         Item::Enum(item_enum) => {
+            // Transform fields in each variant
+            for variant in &mut item_enum.variants {
+                transform_boa(&mut variant.fields);
+            }
             let attrs = &item_enum.attrs;
             let vis = &item_enum.vis;
             let ident = &item_enum.ident;
@@ -152,6 +156,10 @@ pub fn gc_struct_jsc(_attr: TokenStream, item: TokenStream) -> TokenStream {
             expanded.into()
         }
         Item::Enum(item_enum) => {
+            // Strip #[ignore_trace] from variant fields
+            for variant in &mut item_enum.variants {
+                transform_jsc(&mut variant.fields);
+            }
             let attrs = &item_enum.attrs;
             let vis = &item_enum.vis;
             let ident = &item_enum.ident;

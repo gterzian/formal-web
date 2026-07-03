@@ -1,13 +1,14 @@
 use boa_engine::{Context, JsValue, object::JsObject};
-use boa_gc::{Finalize, Trace};
 
+use js_engine::gc_struct;
 use js_engine::{Completion, ExecutionContext, PromiseResolvers};
 
 use super::writablestreamdefaultcontroller::WritableStreamDefaultController;
 use super::writablestreamdefaultwriter::WritableStreamDefaultWriter;
 
 /// <https://streams.spec.whatwg.org/#writablestream-state>
-#[derive(Clone, Debug, Eq, PartialEq, Trace, Finalize)]
+#[gc_struct]
+#[derive(Debug, Eq, PartialEq)]
 pub(crate) enum WritableStreamState {
     Writable,
     Erroring,
@@ -15,7 +16,7 @@ pub(crate) enum WritableStreamState {
     Errored,
 }
 
-#[derive(Clone, Trace, Finalize)]
+#[gc_struct]
 pub(crate) struct WriteRequest {
     resolvers: PromiseResolvers<crate::js::Types>,
 }
@@ -49,7 +50,7 @@ impl WriteRequest {
             .map(|_| ())
     }
 }
-#[derive(Clone, Trace, Finalize)]
+#[gc_struct]
 pub(crate) struct PendingAbortRequest {
     promise: JsObject,
     resolvers: PromiseResolvers<crate::js::Types>,
@@ -106,7 +107,7 @@ impl PendingAbortRequest {
             .map(|_| ())
     }
 }
-#[derive(Clone, Trace, Finalize)]
+#[gc_struct]
 pub(crate) enum WritableStreamController {
     Default(WritableStreamDefaultController),
 }
@@ -141,7 +142,7 @@ impl WritableStreamController {
         }
     }
 }
-#[derive(Clone, Trace, Finalize)]
+#[gc_struct]
 pub(crate) enum WritableStreamWriter {
     Default(WritableStreamDefaultWriter),
 }

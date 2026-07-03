@@ -9,8 +9,13 @@ autobins = false
 unexpected_cfgs = { level = "warn", check-cfg = ['cfg(boa_backend)', 'cfg(jsc_backend)'] }
 
 [features]
-default = ["media"]
+default = ["media", "jsc"]
 media = []
+
+# Backend selection (mutually exclusive). JSC is the default on macOS.
+# Boa + Wasmtime available by passing --no-default-features --features boa,media.
+boa = ["js_engine/boa", "dep:boa_engine", "dep:boa_gc", "dep:wasmtime"]
+jsc = ["js_engine/jsc"]
 
 [lib]
 path = "src/main.rs"
@@ -43,13 +48,10 @@ uuid = { version = "1", features = ["serde", "v4"] }
 xml5ever = "0.39.0"
 verification = { path = "../verification" }
 
-# ── Boa backend (Linux, Windows, other non-Apple platforms) ──────────────
-[target.'cfg(not(any(target_os = "macos", target_os = "ios", target_os = "tvos")))'.dependencies]
-js_engine = { path = "../js_engine", features = ["boa"] }
-boa_engine = { git = "https://github.com/boa-dev/boa", rev = "7ce9cae84ac9bf54fe528bb05b997ac24af808a4", default-features = false }
-boa_gc = { git = "https://github.com/boa-dev/boa", rev = "7ce9cae84ac9bf54fe528bb05b997ac24af808a4", features = ["thin-vec", "boa_string"] }
-wasmtime = "45.0.2"
+# js_engine is always needed; backend selection is via feature flags.
+js_engine = { path = "../js_engine", default-features = false }
 
-# ── JSC backend (macOS, iOS, tvOS) ──────────────────────────────────────
-[target.'cfg(any(target_os = "macos", target_os = "ios", target_os = "tvos"))'.dependencies]
-js_engine = { path = "../js_engine", default-features = false, features = ["jsc"] }
+# Boa + Wasmtime: optional, pulled in by the "boa" feature.
+boa_engine = { git = "https://github.com/boa-dev/boa", rev = "7ce9cae84ac9bf54fe528bb05b997ac24af808a4", default-features = false, optional = true }
+boa_gc = { git = "https://github.com/boa-dev/boa", rev = "7ce9cae84ac9bf54fe528bb05b997ac24af808a4", features = ["thin-vec", "boa_string"], optional = true }
+wasmtime = { version = "45.0.2", optional = true }

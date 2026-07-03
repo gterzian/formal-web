@@ -5,113 +5,53 @@
 Bridges between ECMAScript engines (Boa, JSC) and formal-web's
 HTML/DOM/WebIDL layers.
 
+## End state
+
+All content code operates exclusively on the generic API —
+`ExecutionContext<T>`, `EcmascriptHost<T>`, `JsTypes`.
+
+- Zero `boa_engine::*` imports in content.
+- Zero `ec_to_ctx` / `context_as_ec` bridges in content.
+- Zero `#[cfg(boa_backend)]` logic switches in content — except `build_context`
+  (the single engine-instantiation point) and `wasm/` (requires wasmtime,
+  Boa-only).
+- One message loop in `main.rs` — not two.  The loop works with the generic
+  engine type; no `#[cfg]` branches.
+- Backend-specific code lives only inside `js_engine/src/{boa,jsc}/`.
+- **WPT tests pass with zero unexpected results on both backends.**
+
 ## Architecture
 
 > **Principle:** The architecture is defined by the standards.  We don't
 > invent new layers — we follow the spec chain exactly and make it generic.
 
-**End state:** All content code (domain, webidl, bindings) operates
- exclusively on the generic JS API — `ExecutionContext<T>`,
- `EcmascriptHost<T>`, `JsTypes`.  Zero `boa_engine::*` imports in
- production code.  Zero `ec_to_ctx` / `context_as_ec` bridges.  Zero
- `_ec`-suffixed wrappers.  Backend-specific code lives only inside
- `js_engine/src/{boa,jsc}/`.  Every intermediate step — converting a
- closure, deleting a wrapper, removing a bridge — is judged by whether it
- moves toward this end state.
-
-### Migration methodology — spec-first, not Boa-first
-
-When converting Boa-specific code to the generic layer, **follow the spec
-chain**, not the Boa API shape.
-
-**Core rules:**
-1. **Go deep, not broad.** Convert a function's ENTIRE call chain, not file by file.
-2. **Zero bridges.** `ec_to_ctx`, `context_as_ec`, `_ec` wrappers, `completion_to_js_result`
-   are ALL bridges — never leave them at boundaries. Convert every called function too.
-   The only file where `ec_to_ctx` may appear is `js_engine/src/boa/engine.rs`.
-3. **Migrate the original function in place.** No `_ec` suffix in final code.
-   During migration, if a non-EC bridge must be kept for unconverted callers,
-   the migrated function takes a `_ec` suffix. When the bridge is removed,
-   drop the `_ec` suffix. See the `_ec` convention section below.
-4. **Read the spec.** Identify every ECMA-262 operation (Call, Get, PerformPromiseThen, etc.)
-   and use the corresponding `ExecutionContext<T>` trait method.
-
-**Replacement table (old → new):**
-
-| Boa-specific | Generic EC trait method |
-|---|---|
-| `JsPromise::new_pending(context)` | `ec.new_promise_pending()?` |
-| `JsPromise::from_object(p)?.then(...)` | `ec.perform_promise_then(...)` |
-| `JsPromise::from_object(x)?.state()` | `ec.promise_state(&x)?` |
-| `JsNativeError::typ().with_message(msg)` | `ec.new_type_error(msg)` |
-| `JsValue::undefined()` | `ec.value_undefined()` |
-| `NativeFunction::from_copy_closure_with_captures(...)` | `ec.create_builtin_function(...)` |
-| `resolvers.resolve.call(&u, &[v], ctx)` | `ec.call(&resolve, &undefined, &[v])` |
-| `object.get(js_string!(key), context)` | `ec.get(object, key)?` |
-| `JsUint8Array::from_iter(src, ctx)` | `typed_array_buffer` + `clone_array_buffer` + `construct` |
-
-**Anti-patterns (do NOT do):**
-- Creating `xxx_ec()` wrappers for new code (functions that start with generic API)
-- Using `completion_to_js_result` or `context_as_ec` at call sites
-- Using `JsPromise::then()`/`new_pending()` when EC trait methods exist
-- Converting one file while leaving bridges at its edges
-
-### Ownership model
-
-<https://html.spec.whatwg.org/#environment-settings-objects> defines the
-**environment settings object**, which owns a **realm execution context**.
-Our `EnvironmentSettingsObject` owns a `BoaContext` which implements
-`ExecutionContext<T>`.  The migration end state is for the EDS to own
-the generic trait type — the boundary is already correct.
-
-### 2. The two paths into JavaScript
-
-Every web standard reaches JavaScript through one of two paths.
-We follow the exact spec call chain in each case.
+### Two paths into JavaScript
 
 #### Path 1: Domain → Web IDL → ECMA-262
 
 Most web-exposed APIs (Streams, DOM) call Web IDL, which calls ECMA-262.
 
-**Example — `readableStream.cancel(reason)`:**
-
-| Layer | Spec | Our code |
+| Layer | Example spec | Our code |
 |---|---|---|
-| Domain | <https://streams.spec.whatwg.org/#readable-stream-cancel> | `content/src/streams/readablestream.rs` → `readable_stream_cancel()` |
-| Web IDL | <https://webidl.spec.whatwg.org/#a-promise-resolved-with> | `content/src/webidl/promise.rs` → `resolved_promise()` |
-| Web IDL | <https://webidl.spec.whatwg.org/#a-promise-rejected-with> | `content/src/webidl/promise.rs` → `rejected_promise()` |
-| Web IDL | <https://webidl.spec.whatwg.org/#dfn-perform-steps-once-promise-is-settled> ("react") | `content/src/webidl/promise.rs` → `transform_promise_to_undefined()` |
-| ECMA-262 | <https://tc39.es/ecma262/#sec-createbuiltinfunction> | `js_engine` → `create_builtin_function()` |
-| ECMA-262 | <https://tc39.es/ecma262/#sec-newpromisecapability> | `js_engine` → `new_promise_capability()` |
-| ECMA-262 | <https://tc39.es/ecma262/#sec-performpromisethen> | `js_engine` → `perform_promise_then()` |
-
-**Example — `eventTarget.addEventListener(type, callback)`:**
-
-| Layer | Spec | Our code |
-|---|---|---|
-| Domain | <https://dom.spec.whatwg.org/#dom-eventtarget-addeventlistener> | `content/src/js/bindings/dom/event_target.rs` → `add_event_listener()` |
-| Web IDL | <https://webidl.spec.whatwg.org/#call-a-user-objects-operation> | `content/src/webidl/callback.rs` → `call_user_objects_operation()` |
-| ECMA-262 | <https://tc39.es/ecma262/#sec-call> | `js_engine` → `ExecutionContext::call()` |
-| ECMA-262 | <https://tc39.es/ecma262/#sec-get-o-p> | `js_engine` → `ExecutionContext::get()` |
+| Domain | `readable-stream-cancel` | `content/src/streams/readablestream.rs` |
+| Web IDL | `a-promise-resolved-with`, `a-promise-rejected-with`, `react` | `content/src/webidl/promise.rs` |
+| ECMA-262 | `PerformPromiseThen`, `NewPromiseCapability`, `CreateBuiltinFunction` | `js_engine` trait |
 
 #### Path 2: Domain → ECMA-262 (bypasses Web IDL)
 
-Some HTML algorithms call ECMA-262 directly — realm creation, script
-evaluation.
+Some HTML algorithms call ECMA-262 directly (realm creation, script evaluation).
 
-| Layer | Spec | Our code |
+| Layer | Example spec | Our code |
 |---|---|---|
-| HTML | <https://html.spec.whatwg.org/#creating-a-new-javascript-realm> | `content/src/html/` → calls `js_engine::create_realm()` |
-| ECMA-262 | <https://tc39.es/ecma262/#sec-createrealm> | `js_engine` → `JsEngine::create_realm()` |
-| HTML | <https://html.spec.whatwg.org/#run-a-classic-script> | `content/src/html/` → calls `js_engine::evaluate_script()` |
-| ECMA-262 | <https://tc39.es/ecma262/#sec-runtime-semantics-scriptevaluation> | `js_engine` → `JsEngine::evaluate_script()` |
+| HTML | `creating-a-new-javascript-realm` | `content/src/html/` → `js_engine::create_realm()` |
+| ECMA-262 | `CreateRealm` | `js_engine` trait |
 
 **The rule:** read the spec, follow its call chain exactly.  Route through
 `content/src/webidl/` only when the spec calls Web IDL.  Call `js_engine`
 directly when the spec calls ECMA-262 directly.  Never insert an artificial
 intermediary layer that doesn't exist in the spec.
 
-### 3. Crate layering
+### Crate layering
 
 ```
 content/src/<domain>/           ← domain algorithms (streams, HTML, DOM)
@@ -125,141 +65,56 @@ content/src/<domain>/           ← domain algorithms (streams, HTML, DOM)
 **Rules:**
 
 1. **Content code never calls Boa APIs directly.**  Domain code calls
-   into `content/src/webidl/` when the spec calls Web IDL (§3 type
-   conversion, promise manipulation), or into the `js_engine` trait
-   when the spec calls ECMA-262 directly.  The Boa/JSC backend is
-   invisible above `js_engine/src/{boa,jsc}/`.
+   into `content/src/webidl/` when the spec calls Web IDL, or into the
+   `js_engine` trait when the spec calls ECMA-262 directly.
 
 2. **The js_engine trait only exposes ECMA-262 operations.**  Operations
    like "report an exception" or "perform a microtask checkpoint" are
-   HTML concepts, not ECMA-262 — they live on `EcmascriptHost` because
-   Web IDL needs them.  The trait never defines "convenience" methods
-   that don't correspond to a spec algorithm.
+   HTML concepts — they live on `EcmascriptHost`.
 
-3. **The webidl/ layer implements Web IDL §3.**  Type conversion
-   algorithms ("convert a JavaScript value to DOMString", "convert a
-   JavaScript value to Promise<T>"), promise manipulation ("react",
-   "a new promise", "upon fulfillment"), and the binding
-   infrastructure (interface prototypes, operation/attribute
-   definitions) all live in `content/src/webidl/`.  This layer calls
-   `js_engine` for the actual ECMA-262 operations.
+3. **The webidl/ layer implements Web IDL §3.**  Type conversion,
+   promise manipulation ("react", "upon fulfillment"), and the binding
+   infrastructure (interface prototypes, operation/attribute definitions).
 
 4. **The js/bindings/ layer defines which members exist.**  Each
-   `WebIdlInterface` impl in `content/src/js/bindings/` registers
-   operations and attributes via the Web IDL binding infrastructure.
-   The binding functions themselves are thin: extract JS args, call
-   domain, wrap result.
+   `WebIdlInterface` impl registers operations and attributes.  The
+   binding functions themselves are thin: extract JS args, call domain,
+   wrap result.
 
-5. **Ad-hoc Boa patterns must be replaced by spec algorithms.**  For
-   example, `NativeFunction::from_closure` → `create_builtin_function`,
-   `JsArray::from_iter` → `create_empty_array` + `array_push`, and
-   `JsNativeError::syntax()` → `new_syntax_error`.  If a Boa pattern
-   doesn't have a spec equivalent, it's a gap to fill, not a wrapper
-   to build.
+5. **Ad-hoc Boa patterns must be replaced by spec algorithms:**
+   `NativeFunction::from_closure` → `create_builtin_function`,
+   `JsArray::from_iter` → `create_empty_array` + `array_push`,
+   `JsNativeError::syntax()` → `new_syntax_error`.
 
 6. **Test the full chain end-to-end.**  The generic test file
-   (`content/src/generic_js_test.rs`) is a miniature version of the
-   full `content/` crate.  It demonstrates both paths: realm creation
-   (HTML → ECMA-262 directly, tested via `create_realm_and_set_bindings`)
-   and promise reaction (Streams → Web IDL "react" → ECMA-262, tested
-   via `upon_settlement_full_chain`).  No Boa-specific APIs appear in
-   any test body.
+   (`content/src/generic_js_test.rs`) proves every content pattern works
+   through the generic API with zero `boa_engine::*` imports.
 
-The `js_engine` crate exposes **only** the ECMA-262 operations that other
-standards call into (usually via Web IDL).  This is a mechanical mapping:
-read the spec call chain, expose the JS spec operation on the trait,
-implement it per engine.  No new abstractions beyond what the JS spec
-already defines.
-
-### Two categories of abstraction
-
-- **Standard**: `JsEngine<T>` / `ExecutionContext<T>` mirror ECMA-262 operations.
-- **Engine-specific**: `gc.rs` abstracts GC (no ECMA-262 equivalent).
-
-### Design principle: engine-specific code stays inside the backend
-
-Domain code and Web IDL helpers call ECMA-262 operations through the
-generic `ExecutionContext<T>` trait — never through Boa or JSC APIs.
-`ec_to_ctx` exists only in `js_engine/src/` and is an internal
-implementation detail of the engine adapters.
-
-### Concrete realization
-
-The ECMA-262 spec (§9.4) defines an **execution context** as the device
-that tracks runtime evaluation — it carries the Realm, the code evaluation
-state, the ScriptOrModule, and is pushed/popped from the execution context
-stack.  The **running execution context** (§9.4) is the top of this stack;
-all implicit ECMA-262 operations (`Call`, `Get`, `ToNumber`, `SameValue`,
-`currentRealm`, etc.) reference it through the **surrounding agent**.
-
-The HTML spec (\u00a78.1.3.2) defines a **realm execution context** as the
-execution context stored on an environment settings object — it is **the**
-stateful JS runtime shared by all scripts in a given realm.  When we
-`prepare to run script` (\u00a78.1.4.4) it becomes the top of the JS execution
-context stack.  This is what `EnvironmentSettingsObject` owns.
-
-Three traits model the split between factory and runtime:
+## Traits
 
 | Trait | Role | Spec basis |
 |---|---|---|
-| `JsEngine<T>` | **Stateless factory** — creates realms, built-in functions.  A singleton at the process level: it has no mutable state of its own.  Factory operations only. | `CreateRealm` (§9.3), `CreateBuiltinFunction` (§10.3) |
-| `ExecutionContext<T>` | **Stateful runtime** — the realm execution context.  Carries the realm, heap, global object, job queue.  Threaded through every binding function, domain method, and dispatch call.  **This is what `EnvironmentSettingsObject` owns.** | <https://html.spec.whatwg.org/#realm-execution-context> §8.1.3.2 → all of ECMA-262 §7, §9.3, §9.6 |
-| `EcmascriptHost<T>` | Subset of `ExecutionContext<T>` covering only Web IDL callback algorithms (`Get`, `IsCallable`, `Call`, `report_exception`, value construction).  A supertrait of `ExecutionContext<T>`. | §3 of Web IDL |
+| `JsEngine<T>` | **Stateless factory** — creates realms, built-in functions. Process-level singleton. | `CreateRealm` (§9.3), `CreateBuiltinFunction` (§10.3) |
+| `ExecutionContext<T>` | **Stateful runtime** — the realm execution context. Owned by `EnvironmentSettingsObject`. | HTML §8.1.3.2 → all of ECMA-262 §7 |
+| `EcmascriptHost<T>` | Subset of `ExecutionContext<T>` — `Get`, `IsCallable`, `Call`, `report_exception`, value construction. Supertrait of `ExecutionContext<T>`. | Web IDL §3 |
 
+### `ExecutionContext<T>` owns the runtime
 
-`BoaContext` (was `BoaEngine`) wraps `boa_engine::Context` and implements
-`ExecutionContext<BoaTypes>`.  The `JsEngine<BoaTypes>` impl on the same
-struct is a convenience — in a clean split the factory would be a standalone
-global.  For now they co-reside because Boa's `Context` serves both roles.
+Everything stateful: type conversion (§7.1), testing (§7.2), object
+operations (§7.3 — `get`, `set`, `call`, `construct`), iteration (§7.4),
+promise operations (`new_promise_capability`, `perform_promise_then`),
+value construction, buffer operations, `evaluate_script`.
 
-### What moves where
+### `JsEngine<T>` is the factory
 
-**`JsEngine<T>` (stateless factory — a process-level singleton):**
-- `create_realm`, `set_realm_global_object`, `set_default_global_bindings`
-- `create_builtin_function`
-- `evaluate_script`, `evaluate_module`
-- `set_host_hooks`
-- `allocate_array_buffer`, `allocate_shared_array_buffer`
-- `clone_array_buffer`, `detach_array_buffer`
-
-**`ExecutionContext<T>` (stateful runtime — the realm execution context, owned by `EnvironmentSettingsObject`):**
-- All of §7.1 Type Conversion (`to_number`, `to_string`, `to_object`, etc.)
-- All of §7.2 Testing and Comparison (`is_callable`, `same_value`, etc.)
-- All of §7.3 Operations on Objects (`get`, `set`, `call`, `construct`,
-  `define_property_or_throw`, `create_data_property`, etc.)
-- All of §7.4 Iteration (`get_iterator`, `iterator_step_value`, etc.)
-- `current_realm`, `realm_intrinsics`
-- `enqueue_job`, `run_jobs`
-- Value construction (`value_from_*`, `value_undefined`, `value_null`)
-- `promise_resolve`, `new_promise_capability`, `perform_promise_then`
-- `report_error`
-- Buffer operations (`get_value_from_buffer`, `set_value_in_buffer`, etc.)
-- `species_constructor`, `generator_start`
-
-**`EcmascriptHost<T>` (subset of `ExecutionContext<T>`):**
-- `get`, `is_callable`, `call`
-- `perform_a_microtask_checkpoint`
-- `report_exception`
-- Value construction (shared with `ExecutionContext<T>`)
-
-### Not yet abstracted (known blockers)
-
-| Operation | Blocked on |
-|---|---|
-| `ObjectInitializer`, `register_global_property` | Boa object-model construction; needs centralized `build_context` path |
-| Structured clone | Boa-internal APIs (realm access, data clone) |
-
-**Recently resolved:** `evaluate_script` was added to `ExecutionContext<T>` (session 5 — 2026-07-04).
-Now both `JsEngine<T>` (takes realm) and `ExecutionContext<T>` (uses current realm) have
-`evaluate_script`. Generic console namespace installer also created, using only EC trait
-methods (`create_plain_object` + `create_builtin_function` + `object_set_property`).
-
-None are fundamental — they just aren't done yet.
+Stateless: `create_realm`, `set_realm_global_object`, `set_default_global_bindings`,
+`create_builtin_function`, `evaluate_script` (realm-parameterized),
+`evaluate_module`, buffer allocation.
 
 ## Layout
 
 ```
-src/
+js_engine/src/
   lib.rs        Crate root
   types.rs      JsTypes — language types (§6.1) and object subtypes
   engine.rs     JsEngine<T>, EcmascriptHost<T>, Completion, HostHooks
@@ -269,28 +124,46 @@ src/
   boa/          Boa backend (feature = "boa")
   jsc/          JSC backend (feature = "jsc")
 
-`js_engine_macros/` — proc-macro crate providing `#[gc_struct]`.
+js_engine_macros/ — proc-macro crate providing `#[gc_struct]`.
 ```
 
-## Feature flags
+## Build & feature flags
 
-| Feature | Engine | Default |
-|---|---|---|
-| `boa` | Boa (git dep) | **default** |
-| `jsc` | JavaScriptCore (macOS) | opt-in |
+macOS only.  JSC is the default backend.  Boa+Wasmtime is opt-in.
 
-Mutually exclusive — only one engine at a time.
+### Content crate backend selection
 
 ```bash
-cargo check -p js_engine                          # Boa (default)
-cargo check -p js_engine --no-default-features --features jsc  # JSC
+# JSC (default on macOS — no flags needed)
+cargo build --release -p content
+
+# Boa + Wasmtime
+cargo build --release -p content --no-default-features --features boa,media
 ```
 
-## Generic API surface (proven in POC)
+The `content/build.rs` ensures the features are mutually exclusive and sets
+the `jsc_backend` / `boa_backend` cfg flags accordingly.
 
-The `generic_js_test.rs` POC (81/81 tests) proves every content pattern works
-through the generic API with zero `boa_engine::*` imports.  See the test file
-for working examples.  Key trait methods:
+### js_engine backend selection
+
+```bash
+# JSC (default)
+cargo check -p js_engine
+
+# Boa
+cargo check -p js_engine --no-default-features --features boa
+```
+
+### Feature flags
+
+| Feature | Backend | Cargo.toml default |
+|---|---|---|
+| `jsc` | JavaScriptCore (macOS) | **default** |
+| `boa` | Boa + Wasmtime | opt-in |
+
+Mutually exclusive — only one backend at a time.
+
+## Generic API surface (POC: 86/86 tests pass on Boa)
 
 ```rust
 // Platform objects: create, read, mutate native data
@@ -309,265 +182,187 @@ ec.value_from_number(n), .value_from_string(ec.js_string_from_str(s))
 ec.create_plain_object(prototype), .create_empty_array()
 ec.array_push(&arr, val)?, .object_set_property(obj, key, val)?
 ec.new_type_error(msg), .new_range_error(msg)
-Types::value_from_object(o), Types::value_as_object(&v)
 
-// Binding function signature (the standard pattern)
+// Standard binding function signature
 fn binding_fn(
     this: &Types::JsValue,
     args: &[Types::JsValue],
     ec: &mut dyn ExecutionContext<Types>,
-) -> Completion<Types::JsValue, Types>
+) -> Completion<Types::JsValue, Types>;
 ```
 
-**Note on `process_items` in POC:** Uses array-like length+indexing (`Get`
-for `"length"` then `Get` for `0..length`).  This is NOT the Web IDL
-`sequence<T>` conversion (which is iterator-based).  If using this pattern
-for `sequence<T>`, rewrite on `get_iterator`/`iterator_step_value`.
+## Replacement table (old Boa API → generic EC trait)
 
-## Spec documentation convention
-
-Every method on `JsEngine<T>` and `ExecutionContext<T>` has **only** the
-spec anchor URL as its doc comment.  Example:
-`/// <https://tc39.es/ecma262/#sec-toboolean>`.
-No prose, no summaries.  The spec IS the documentation.
-
-Infrastructure traits (`Trace`, `Finalize`, etc.) carry no spec links —
-they are not spec-defined operations.
-
-## Design notes
-
-### `with_object_any` / `with_object_any_mut`
-
-Return `Option<&dyn Any>` / `Option<&mut dyn Any>` — the caller downcasts.
-Object-safe on `&dyn ExecutionContext<T>`.  Boa backend uses unsafe lifetime
-extension (data lives in GC heap).
-
-### `with_object_any_mut_with`
-
-For patterns where mutation needs to call ECMA-262 operations, use
-`with_object_any_mut_with` which passes both `&mut dyn Any` and
-`&mut dyn ExecutionContext<T>` to a closure.
-
-### What does NOT belong on the EC trait
-
-- **`js_string_from_str`** — convenience, no spec equivalent
-- **`report_error`** (default impl) — logging convenience
-- **`report_exception`**, **`perform_a_microtask_checkpoint`** — HTML concepts, live on `EcmascriptHost`
+| Boa-specific | Generic EC trait method |
+|---|---|
+| `JsPromise::new_pending(context)` | `ec.new_promise_pending()?` |
+| `JsPromise::from_object(p)?.then(...)` | `ec.perform_promise_then(...)` |
+| `JsPromise::from_object(x)?.state()` | `ec.promise_state(&x)?` |
+| `JsNativeError::typ().with_message(msg)` | `ec.new_type_error(msg)` |
+| `JsValue::undefined()` | `ec.value_undefined()` |
+| `NativeFunction::from_copy_closure_with_captures(...)` | `ec.create_builtin_function(...)` |
+| `resolvers.resolve.call(&u, &[v], ctx)` | `ec.call(&resolve, &undefined, &[v])` |
+| `object.get(js_string!(key), context)` | `ec.get(object, key)?` |
+| `JsUint8Array::from_iter(src, ctx)` | `typed_array_buffer` + `clone_array_buffer` + `construct` |
+| `ObjectInitializer::new(context)` / `register_global_property(...)` | `ec.create_plain_object(...)` + `ec.set(global, key, val, ...)` |
 
 ## Per-backend details
 
-See module docs for implementation status and quirks:
+| Backend | Status |
+|---|---|
+| Boa | ✅ Full parity — all trait methods, all POC tests pass |
+| JSC | 🔶 Trait surface complete. 1 ignore: `SharedArrayBuffer`. `exercise_context_lifecycle` is Boa-only. |
+| GC | ✅ Complete — `#[gc_struct]`, `GcCell<T>`, `GcRootHandle<T>`. |
 
-| Backend | Module | Status |
-|---|---|---|
-| Boa | `src/boa/mod.rs` | ✅ Full parity — all trait methods implemented, all generic_js_test tests pass |
-| JSC | `src/jsc/mod.rs` | 🔶 Trait surface complete. `create_builtin_function` implements behaviour closures via JSClass + private data. `create_root` uses global-object properties instead of `JSValueProtect`. `get` handles Symbol keys via eval fallback. 1 remaining ignore: `SharedArrayBuffer` (may not be available). `exercise_context_lifecycle` (registry init + interface registration end-to-end) is Boa-only — no JSC counterpart yet. |
-| GC | `src/gc.rs` | ✅ Complete — `#[gc_struct]` attribute macro, `GcCell<T>` type alias, `GcRootHandle<T>` with Boa trace impl, `create_root` on EC trait. `Trace` is a supertrait of `boa_gc::Trace` on Boa. GC-pressure tests pass. |
+## Design notes
+
+- **`with_object_any` / `with_object_any_mut`:** Return `Option<&dyn Any>` /
+  `Option<&mut dyn Any>` — the caller downcasts.  Object-safe on
+  `&dyn ExecutionContext<T>`.
+- **`with_object_any_mut_with`:** Passes both `&mut dyn Any` and
+  `&mut dyn ExecutionContext<T>` to a closure for patterns where mutation
+  needs ECMA-262 operations.
+- **What does NOT belong on the EC trait:** `js_string_from_str` (convenience),
+  `report_error` (logging), `report_exception`/`perform_a_microtask_checkpoint`
+  (HTML concepts, on `EcmascriptHost`).
+- **Spec documentation:** Every trait method has only the spec anchor URL as
+  its doc comment — zero prose.  Infrastructure traits (`Trace`, `Finalize`)
+  carry no spec links (not spec-defined).
+- **Test-file-first:** Every new generic interface, downcast helper, or
+  host-data abstraction must first be validated in
+  `content/src/generic_js_test.rs` on both backends before production code.
 
 ## Migration status
 
-POC is **complete** — 81/81 tests pass on Boa in `content/src/generic_js_test.rs`
-(content JSC blocked on Phase E).
-(see JSC backend status for details).  The test file
-(`content/src/generic_js_test.rs`) proves every content pattern can be
-expressed through the generic API with zero structural `#[cfg]`.
+### Done
 
-### Practical end state
+- `_ec` suffix functions: **zero remaining.**
+- `completion_to_js_result` bridges: **eliminated.**
+- `evaluate_script` on `ExecutionContext<T>` (Boa + JSC).
+- Generic console namespace installer (`console_generic.rs`) — uses only
+  EC trait methods.
+- Structured clone (`safe_passing_of_structured_data.rs`) — fully generic,
+  zero Boa imports.
+- `#[gc_struct]` — backend-specific proc-macro variants, `#[ignore_trace]`
+  attribute.
+- Build system: `content/build.rs` sets `boa_backend`/`jsc_backend` cfg flags;
+  `content/Cargo.toml` uses feature flags (not target-specific deps).
+- JSC backend: `JSValueIsDate`, `object_is_regexp`/`object_is_error` via
+  `Object.prototype.toString.call(this)` eval fallback.
+- Wasm gated behind `#[cfg(boa_backend)]`.
+- **All `#[derive(Clone, Trace, Finalize)]` patterns converted to `#[gc_struct]`**
+  across Boa-only gated modules: `dom/abort.rs`, `html/global_scope.rs`,
+  `streams/*.rs`, `webidl/async_iterable.rs`.  This eliminates all direct
+  `boa_gc::Trace`/`boa_gc::Finalize` derive imports from content code.
+- **Proc-macro fix:** `#[gc_struct]` now correctly transforms `#[ignore_trace]`
+  in enum variant fields (both `gc_struct_boa` and `gc_struct_jsc`).
+- **Both backends compile clean:** `cargo check -p content` (JSC default) and
+  `cargo check -p content --no-default-features --features boa,media` (Boa)
+  both produce zero errors.
 
-**Minimum shippable:**
-- No `ec_to_ctx`, `context_as_ec`, `context_as_ec_ref`, or `context_as_engine` calls outside `js_engine` backend code.
-- No `boa_engine::*` imports in production bindings, domain algorithms, Web IDL helpers, or Wasm-facing content code.
-- Backend selection happens through compile-time aliases (`crate::js::Types`, `crate::js::Engine`).
-- Generic POC remains green.
-- Content crate compiles against both backend configurations.
-- Any backend-specific code still present is isolated to bootstrap or engine-construction boundaries only.
+### Current blockers
 
-**What the remaining work does NOT require:**
-- A large expansion of `ExecutionContext<T>` with DOM or HTML methods.
-- A second generic JS abstraction layer on top of `js_engine`.
-- An immediate trait-object rewrite of all engine ownership.
-- Backend-agnostic replacement of every bootstrap detail before the main content logic can be considered generic.
+| Blocked operation | Reason |
+|---|---|
+| `ObjectInitializer` / `register_global_property` (CSS namespace, document property) | Boa object-model construction; needs conversion to `ec.create_plain_object` + `ec.set` pattern (already done for console) |
+| `#[gc_struct]` proc-macro didn't handle enum variant fields | Fixed: both `gc_struct_boa`/`gc_struct_jsc` now transform `#[ignore_trace]` in enum variant fields |
 
-The actual missing abstractions are smaller and more local than that.
+### Remaining `#[cfg(boa_backend)]` gating to remove
 
-### Test-file-first discipline
+Every `#[cfg(boa_backend)]` in content must go except:
+- `build_context.rs` (the single engine-instantiation point)
+- `wasm/` (requires wasmtime, Boa-only)
 
-**Never add a new generic pattern directly to production code.**
-Every new generic interface, downcast helper, host-data abstraction,
-or subsystem entry-point signature must first be validated in
-`content/src/generic_js_test.rs` with compilation and passing unit tests
-on **both backends** (Boa and JSC) before it can be applied to any
-real production file.
+Files currently gated behind `#[cfg(boa_backend)]` that must be un-gated:
 
-### Current state (updated 2026-07-04 — session 5)
+| Module | Gating | Action |
+|---|---|---|
+| `dom/` | module-level `#[cfg(boa_backend)]` | Convert all `use boa_engine::*` to `Types::*` + `js_engine` trait |
+| `html/` | module-level `#[cfg(boa_backend)]` | Convert all `use boa_engine::*` to generic |
+| `streams/` | module-level `#[cfg(boa_backend)]` | Convert all `use boa_engine::*` to generic |
+| `webidl/` | module-level `#[cfg(boa_backend)]` | Convert all `use boa_engine::*` to generic |
+| `js/bindings/` | module-level `#[cfg(boa_backend)]` | Convert all `use boa_engine::*` to generic |
+| `js/downcast.rs` | module-level `#[cfg(boa_backend)]` | Convert downcast helpers to generic |
+| `js/platform_objects.rs` | module-level `#[cfg(boa_backend)]` | Already partially generic; remove remaining Boa deps |
+| `js/mod.rs` helpers | function-level `#[cfg(boa_backend)]` | Convert `builtin_with_captures_ctx` etc. to generic, or remove |
+| `main.rs` | ~21 inline `#[cfg(boa_backend)]` annotations | Remove all; unify into one generic message loop |
 
-**Phases A–E, S1–S10, T1–T2, W1–W2, G1–G3, C2–C3, B1, R1, R2, S, P, E complete.**
+**~60 files currently import `boa_engine::*`** — every one must be converted.
 
-**Phase F (generic content operation on JSC) — in progress:**
-- ✅ `evaluate_script` added to `ExecutionContext<T>` trait (Boa + JSC backends).
-- ✅ Generic console namespace installer (`content/src/js/console_generic.rs`)
-  using only EC trait methods (`create_plain_object` + `create_builtin_function`
-  + `object_set_property`). No Boa-specific APIs.
-- ✅ Single `run_content_process` (no `#[cfg]` on the function) — engine selection
-  happens inside `build_context` (`content/src/js/build_context.rs`).
-- ✅ JSC content process confirmed working via CDP: console installed, JS evaluation
-  works (`1+1`, `JSON.stringify`, function calls all return correct results).
-- ✅ Wasm infrastructure fully gated behind `#[cfg(boa_backend)]`.
-- ❌ Generic CSS namespace installer not yet created.
-- ❌ `dom`, `html`, `webidl` modules still gated behind `#[cfg(boa_backend)]`.
+### Two message loops → one
 
-**Phase E (content crate compiles on JSC) is COMPLETE.**
-- `content/Cargo.toml` uses target-specific dependencies: `boa_engine`/`boa_gc`/`wasmtime`
-  only on non-Apple platforms; `js_engine` with `jsc` feature on Apple platforms.
-- `content/build.rs` sets `boa_backend` or `jsc_backend` cfg flags based on target OS.
-- `content/src/js/mod.rs` uses `#[cfg(jsc_backend)]`/`#[cfg(not(jsc_backend))]` to select
-  `JscTypes` or `BoaTypes` as the `crate::js::Types` alias.
-- Boa-dependent modules (`dom`, `html`, `streams`, `webidl`, `wasm`, `generic_js_test`)
-  are gated behind `#[cfg(boa_backend)]`.
-- `js/bindings/`, `downcast/`, `platform_objects/` are gated behind `#[cfg(boa_backend)]`.
-- All Boa-specific helper functions in `js/mod.rs` are gated behind `#[cfg(boa_backend)]`.
-- `run_content_process()` has a JSC stub that returns an error.
-- Zero `#[cfg(feature = ...)]` references remain in content code (all migrated to
-  build.rs cfg flags `boa_backend`/`jsc_backend`).
-- `cargo check -p content` passes on macOS with zero errors, 44 warnings (unused imports
-  and dead code from gated Boa modules).
+`main.rs` currently has `run_boa_message_loop` and `run_jsc_message_loop`
+as separate functions selected by `#[cfg]`.  These must be unified into
+a single loop that works with `Engine` (the content-level type alias for
+`BoaContext` or `JscEngine`).  No `#[cfg]` on the loop itself.
 
-**`#[gc_struct]` split into backend-specific variants:**
-- `js_engine_macros` provides `gc_struct_boa` (Boa) and `gc_struct_jsc` (JSC).
-- `js_engine` conditionally re-exports the right one as `gc_struct`.
-- `#[ignore_trace]` field-level attribute: on Boa translates to `#[unsafe_ignore_trace]`,
-  on JSC is stripped.  Replaces all direct `#[unsafe_ignore_trace]` usage in content code.
-- All `#[derive(Clone, Trace, Finalize)]` in domain code replaced with `#[gc_struct]`.
+The `run_content_process` entry point already has no `#[cfg]` — the
+engine-selection happens inside `build_context`.  The message loop just
+needs to use that `Engine` value directly instead of branching.
 
-**JSC backend fixes:**
-- `JSValueIsDate` FFI declaration added to `jsc_sys.rs` (available since macOS 10.11).
-- `object_is_regexp` and `object_is_error` implemented via `JSEvaluateScript` with
-  `Object.prototype.toString.call(this)` (no `JSValueIsRegExp` in public JSC API).
-- All unused-variable warnings in JSC backend trait impls fixed.
-- Type annotation for `s.to_rust()` in `get_regexp_source`/`get_regexp_flags` fixed
-  by calling as `JscTypes::value_as_string(&result)`.
+## Remaining work order
 
-**`_ec` suffix count: ZERO — all `_ec` bridge functions eliminated.**
+### 1. Port CSS namespace to generic EC API
 
-**`completion_to_js_result` bridges: ELIMINATED.**
+Follow the `console_generic.rs` pattern: `create_plain_object` +
+`create_builtin_function` + `set`.  Move the old `bindings/css.rs`
+(which uses `ObjectInitializer` + `register_global_property`) to
+Boa-only, gated.  This clears the last blocker in the "not yet
+abstracted" table.
 
-**Wasm (Boa-only):** Gated behind `#[cfg(boa_backend)]`. No bridge changes needed.
+### 2. Convert domain/webidl/bindings modules from `boa_engine::*` to generic
 
-**Remaining bridges in content code:**
-- `wasm/namespace.rs` — `ec_to_ctx` × 6, `context_as_engine` × 1 (Boa-only).
-- `js/mod.rs` — `context_as_engine` × 1 (`builtin_with_captures_ctx`, Boa-only).
+Work module by module.  For each file:
 
-### Next session: recommended order (updated 2026-07-04 — session 5)
+- Replace `use boa_engine::...` with `use js_engine::{ExecutionContext, ...}`
+  and `crate::js::Types` aliases.
+- Replace `&mut Context` with `&mut dyn ExecutionContext<Types>`.
+- Replace Boa-specific API calls with the equivalent EC trait method
+  (see replacement table above).
+- Un-gate the module from `#[cfg(boa_backend)]`.
+- Verify on **both backends** (Boa keeps working, JSC compiles).
 
-1. **Phase F — Generic content operation on JSC (continued).**
-   Progress so far:
-   - ✅ `evaluate_script` on `ExecutionContext<T>` — Boa + JSC.
-   - ✅ Generic console namespace installer (EC trait only).
-   - ✅ Single `run_content_process` — engine selected by `build_context`.
-   - ✅ Wasm gated behind `#[cfg(boa_backend)]`.
-   - ✅ JSC confirmed working via CDP (console, JS eval).
+Recommended conversion order (lowest-level first, highest-level last):
 
-   Remaining work:
-   - Port CSS namespace installer to generic EC API (follows console pattern).
-   - Convert `environment_settings_object.rs` to use a generic EC trait object
-     instead of `BoaContext`/`JscEngine` directly (requires removing the
-     `#[cfg(boa_backend)]` gate on the `html` module first).
-   - Bring `dom`, `html`, `webidl` modules back from `#[cfg(boa_backend)]` gating
-     by converting their `use boa_engine::*` patterns to generic `Types::*` aliases.
+1. `webidl/` — callback, promise, buffer_source, array_index, bindings infra
+2. `dom/` — abort, event, dispatch, ui_event_dispatch
+3. `html/` — environment_settings_object, global_scope, location, window, windowproxy, etc.
+4. `streams/` — all stream types
+5. `js/bindings/` — all interface registrations
+6. `js/downcast.rs`, `js/platform_objects.rs`, `js/mod.rs` helpers
 
-## `_ec` suffix convention
+### 3. Unify the message loop
 
-The migration is staged: a function that takes `Context` is converted to take
-`&mut dyn ExecutionContext<Types>`.  When its callers cannot all be converted in
-one pass (because some callers chain through deeper Boa APIs), the old function
-is kept as a one-line bridge:
+After all modules are generic and un-gated, merge `run_boa_message_loop`
+and `run_jsc_message_loop` into one loop.  Remove all `#[cfg(boa_backend)]`
+from `main.rs` except for wasm-related code.
 
-```rust
-// OLD — bridge, to be deleted when all callers are converted
-pub(crate) fn get_reader(
-    &mut self, options: &JsValue, context: &mut Context,
-) -> JsResult<JsObject> {
-    self.get_reader_ec(options, js_engine::boa::context_as_ec(context))
-        .map_err(|e| JsError::from_opaque(e))
-}
+### 4. Final cleanup
 
-// NEW — the real implementation, temporary _ec suffix
-pub(crate) fn get_reader_ec(
-    &mut self, options: &JsValue,
-    ec: &mut dyn ExecutionContext<crate::js::Types>,
-) -> Completion<JsObject, crate::js::Types> {
-    // ... implementation ...
-}
-```
+- Remove `#[cfg(boa_backend)]` from `js/mod.rs` — `bindings`, `downcast`,
+  `platform_objects`, and all helper functions should be unconditionally
+  compiled.
+- The only gated items in content: `wasm/` and the internal `#[cfg]` in
+  `build_context.rs`.
+- `cargo check -p content` passes on both Boa and JSC backends with zero
+  errors.
+- POC tests (86/86 on Boa) remain green.
+- **WPT tests pass with zero unexpected results on both backends.**
+  This is the success criterion for the entire migration.
 
-**Completion: delete the bridge, drop the `_ec` suffix.**  When every caller has
-been converted to pass `&mut dyn ExecutionContext<Types>` directly, the bridge
-function is deleted and the `_ec`-suffixed function is renamed in place to its
-original name.  The same algorithm lives at the same conceptual location — the
-`_ec` is not a permanent part of the name.
+## End-of-task checklist
 
-### Rules
+- **Update this README** to reflect the current state — remaining gating,
+  blocker status, next-task order.
+- **Prune stale sections.**  This file is a living plan, not a log.
+- **Run `cargo clippy` and `cargo fmt`** on all changed files.
+- **Run WPT** on the active backend:
+  ```bash
+  # JSC (default on macOS)
+  cargo run --release -- wpt
 
-1. **Temporary, not structural.** The `_ec` suffix is a marker that says "this
-   function is already migrated but still needs a bridge while unconverted
-   callers remain."  It carries zero semantic meaning about the function's role.
-
-2. **One bridge per `_ec` function.** Every `_ec` function MUST have a non-EC
-   bridge that delegates through `context_as_ec`.  When that bridge has zero
-   callers, delete it and rename the `_ec` function.
-
-3. **Never add `_ec` to new code.** Functions that start with the generic API
-   (no Boa-specific heritage) must NEVER get an `_ec` suffix — there is nothing
-   to bridge.  They take `&mut dyn ExecutionContext<Types>` directly with no
-   suffix.
-
-4. **Never introduce a `_ec` function without a bridge.** Every migration
-   creates exactly two functions for a short time: the old bridge and the new
-   `_ec` variant.  If there are no remaining non-EC callers, convert the
-   function in place — no `_ec` suffix at all.
-
-### End state
-
-**Zero `_ec` function definitions remaining.**
-All migration bridges and `_ec` suffixes have been eliminated.
-Every function uses its original name with an EC parameter.
-
-### How to remove `_ec` from a function
-
-1. Ensure every caller of the non-EC bridge (`get_reader` in the example above)
-   has been converted to call the `_ec` variant directly.
-2. Delete the non-EC bridge function.
-3. Rename `get_reader_ec` → `get_reader`.
-4. Update all call sites to use the new name.
-5. `cargo check -p content` passes.
-
-## Working notes
-
-**`builtin_with_captures` / `builtin_callback`:** Use `crate::js::builtin_with_captures(ec, ...)`
-for EC-taking closures (zero bridges). The Context-taking `builtin_with_captures_ctx`
-bridges through `context_as_engine` — prefer the EC variant.
-
-**Test-file-first:** Validate new generic patterns in `generic_js_test.rs`
-on both backends before production code. 81/81 tests pass on Boa.
-
-**Do not introduce new `_ec` functions unnecessarily.** If the function has no
-non-EC callers, convert it in place without a suffix.  The `_ec` suffix is only
-acceptable when a corresponding non-EC bridge must be kept for unconverted
-callers.
-
-## Working during migration
-
-**End-of-task override:** Phase E is complete — content crate compiles on
-both JSC and Boa.  Standard verification steps (WPT, navigation
-verification) should now be run.  However, the content crate is still not
-functional on JSC (`run_content_process` returns an error), so only the
-Boa backend path is verified.  `cargo clippy` and `cargo fmt` should be run
-on all changed files.
-
-**Update this README at end of every task.**  The remaining-phases table,
-next-session order, ec_to_ctx counts, and phase status markers must reflect
-current state.  This file is the canonical plan — it must never be stale.
-
-**Prune the README.**  After every few sessions, remove or compress outdated
-sections (completed phase details, stale examples, duplicated design notes,
-dependency-order diagrams).  The README is a living plan, not a log.
+  # Boa
+  cargo run --release --no-default-features --features boa,media -- wpt
+  ```
+- **Run navigation verification:** `./verification/verify-navigation.sh`
+- **Goal:** zero unexpected WPT results on both backends.

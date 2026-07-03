@@ -28,6 +28,7 @@ use super::readablestreamdefaultcontroller::ReadableStreamDefaultController;
 use super::readablestreamdefaultreader::ReadableStreamDefaultReader;
 use js_engine::gc::GcCell;
 use js_engine::gc::gc_cell_new;
+use js_engine::gc_struct;
 
 /// <https://streams.spec.whatwg.org/#readablestream-state>
 #[derive(Clone, Debug, Eq, PartialEq, Trace, Finalize)]
@@ -71,7 +72,7 @@ impl SourceMethod {
     }
 }
 // A read request either produces a chunk, closes, or errors.
-#[derive(Clone, Trace, Finalize)]
+#[gc_struct]
 pub(crate) enum ReadRequest {
     DefaultReaderRead {
         resolvers: PromiseResolvers<crate::js::Types>,
@@ -88,7 +89,7 @@ pub(crate) enum ReadRequest {
     },
 }
 
-#[derive(Clone, Trace, Finalize)]
+#[gc_struct]
 pub(crate) struct ReadIntoRequest {
     resolvers: PromiseResolvers<crate::js::Types>,
 }
@@ -262,7 +263,7 @@ where
     );
     Ok(())
 }
-#[derive(Clone, Trace, Finalize)]
+#[gc_struct]
 pub(crate) enum ReadableStreamController {
     Default(ReadableStreamDefaultController),
     Byte(ReadableByteStreamController),
@@ -313,7 +314,7 @@ impl ReadableStreamController {
         }
     }
 }
-#[derive(Clone, Trace, Finalize)]
+#[gc_struct]
 pub(crate) enum ReadableStreamReader {
     Default(ReadableStreamDefaultReader),
     BYOB(ReadableStreamBYOBReader),

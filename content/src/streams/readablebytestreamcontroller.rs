@@ -26,7 +26,7 @@ use super::{
     readable_stream_fulfill_read_request, readable_stream_get_num_read_requests, type_error_value,
 };
 
-#[derive(Clone, Trace, Finalize)]
+#[gc_struct]
 pub(crate) enum ArrayBufferViewKind {
     DataView,
     Int8Array,
@@ -86,7 +86,7 @@ impl ArrayBufferViewKind {
     }
 }
 
-#[derive(Clone, Trace, Finalize)]
+#[gc_struct]
 pub(crate) struct ArrayBufferViewDescriptor {
     buffer: JsArrayBuffer,
     kind: ArrayBufferViewKind,
@@ -214,14 +214,14 @@ impl ArrayBufferViewDescriptor {
     }
 }
 
-#[derive(Clone, Trace, Finalize)]
+#[gc_struct]
 enum PullRequest {
     Default(ReadRequest),
     Byob(ReadIntoRequest),
 }
 
 /// <https://streams.spec.whatwg.org/#pull-into-descriptor>
-#[derive(Clone, Trace, Finalize)]
+#[gc_struct]
 struct PullIntoDescriptor {
     /// <https://streams.spec.whatwg.org/#pull-into-descriptor-buffer>
     view: ArrayBufferViewDescriptor,
@@ -335,7 +335,7 @@ impl PullIntoDescriptor {
     }
 }
 
-#[derive(Clone, Trace, Finalize)]
+#[gc_struct]
 struct ByteQueueEntry {
     buffer: JsArrayBuffer,
     #[ignore_trace]

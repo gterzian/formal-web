@@ -217,7 +217,7 @@ where
     target: T,
     state: T::State,
     ongoing_promise: GcCell<Option<JsObject>>,
-    #[ignore_trace]
+    #[cfg_attr(feature = "boa", unsafe_ignore_trace)]
     finished: Rc<Cell<bool>>,
 }
 

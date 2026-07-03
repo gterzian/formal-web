@@ -3579,12 +3579,9 @@ mod tests {
         let mut engine = JscEngine::new();
         let realm = engine.current_realm();
         // Evaluate a function expression.
-        let fn_val = JsEngine::evaluate_script(
-            &mut engine,
-            "(function(x) { return x * 2; })",
-            &realm,
-        )
-        .unwrap();
+        let fn_val =
+            JsEngine::evaluate_script(&mut engine, "(function(x) { return x * 2; })", &realm)
+                .unwrap();
         assert!(engine.is_callable(&fn_val));
         let fn_obj = JscTypes::value_as_object(&fn_val).unwrap();
         let undef = engine.value_undefined();

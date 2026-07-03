@@ -1,7 +1,7 @@
 use std::{mem, ptr};
 
 use boa_engine::{JsError, JsNativeError, JsResult, JsValue, object::JsObject};
-use boa_gc::{Finalize, Gc, Trace};
+use boa_gc::Gc;
 
 use crate::js::with_event_target_mut;
 use crate::streams::PipeToState;
@@ -16,7 +16,7 @@ use super::{DOMException, EventDispatchHost, EventTarget, fire_event};
 use js_engine::{Completion, ExecutionContext};
 
 /// <https://dom.spec.whatwg.org/#abortsignal-add>
-#[derive(Clone, Trace, Finalize)]
+#[gc_struct]
 pub(crate) enum AbortAlgorithm {
     #[allow(dead_code)]
     Native {
@@ -97,7 +97,7 @@ impl AbortAlgorithm {
     }
 }
 
-#[derive(Trace, Finalize)]
+#[gc_struct]
 struct AbortSignalState {
     reflector: Option<JsObject>,
     event_target: EventTarget,

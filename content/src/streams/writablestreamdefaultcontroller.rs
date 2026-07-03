@@ -4,7 +4,6 @@ use js_engine::gc_struct;
 use std::{cell::Cell, rc::Rc};
 
 use boa_engine::{JsValue, object::JsObject};
-use boa_gc::{Finalize, Trace};
 
 use js_engine::{Completion, ExecutionContext, JsTypes};
 
@@ -19,7 +18,7 @@ use crate::{
 use super::{SourceMethod, WritableStream, WritableStreamController, WritableStreamState};
 
 /// <https://streams.spec.whatwg.org/#set-up-writable-stream-default-controller-from-underlying-sink>
-#[derive(Clone, Trace, Finalize)]
+#[gc_struct]
 pub(crate) enum StartAlgorithm {
     ReturnUndefined,
     ReturnValue(JsValue),
@@ -45,7 +44,7 @@ impl StartAlgorithm {
 }
 
 /// <https://streams.spec.whatwg.org/#writablestreamdefaultcontroller-writealgorithm>
-#[derive(Clone, Trace, Finalize)]
+#[gc_struct]
 pub(crate) enum WriteAlgorithm {
     ReturnUndefined,
     JavaScript(SourceMethod),
@@ -74,7 +73,7 @@ impl WriteAlgorithm {
 }
 
 /// <https://streams.spec.whatwg.org/#writablestreamdefaultcontroller-closealgorithm>
-#[derive(Clone, Trace, Finalize)]
+#[gc_struct]
 pub(crate) enum CloseAlgorithm {
     ReturnUndefined,
     JavaScript(SourceMethod),
@@ -100,7 +99,7 @@ impl CloseAlgorithm {
 }
 
 /// <https://streams.spec.whatwg.org/#writablestreamdefaultcontroller-abortalgorithm>
-#[derive(Clone, Trace, Finalize)]
+#[gc_struct]
 pub(crate) enum AbortAlgorithm {
     ReturnUndefined,
     JavaScript(SourceMethod),
@@ -125,14 +124,14 @@ impl AbortAlgorithm {
         }
     }
 }
-#[derive(Clone, Trace, Finalize)]
+#[gc_struct]
 struct QueueEntry {
     value: QueueEntryValue,
 
     #[ignore_trace]
     size: f64,
 }
-#[derive(Clone, Trace, Finalize)]
+#[gc_struct]
 enum QueueEntryValue {
     Chunk(JsValue),
     CloseSentinel,

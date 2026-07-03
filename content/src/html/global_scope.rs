@@ -9,13 +9,14 @@ use super::environment_settings_object::EnvironmentSettingsObject;
 
 use blitz_dom::BaseDocument;
 use boa_engine::{JsValue, object::JsObject};
-use boa_gc::{Finalize, GcRefCell, Trace};
+use boa_gc::GcRefCell;
 use ipc::IpcSender;
 use ipc_messages::content::DocumentId;
 use ipc_messages::content::{
     Event as ContentEvent, NavigableId, WindowTimerClearRequest, WindowTimerKey, WindowTimerRequest,
 };
 use ipc_messages::media::{MediaCommand, VideoPaintId};
+use js_engine::gc_struct;
 use log::{debug, error};
 
 use crate::webidl::Callback;
@@ -31,7 +32,8 @@ fn log_timer_debug(message: impl AsRef<str>) {
 }
 
 /// The lifecycle state of a pending request.
-#[derive(Debug, Clone, PartialEq, Eq, Trace, Finalize)]
+#[gc_struct]
+#[derive(Debug, PartialEq, Eq)]
 pub enum PendingState {
     /// Just created, waiting for the content process to submit it.
     Pending,
@@ -50,7 +52,7 @@ pub enum PendingState {
 /// in `GlobalScope.pending_wasm_resolvers` keyed by `request_id`.  This lets
 /// domain code in `content/src/wasm/` construct and push `PendingRequest`
 /// without importing `boa_engine`.
-#[derive(Clone, Trace, Finalize)]
+#[gc_struct]
 pub enum PendingRequest {
     /// A WebAssembly module compilation or instantiate-byte request.
     WasmCompile {
@@ -93,7 +95,7 @@ pub enum GlobalScopeKind {
 }
 
 /// <https://html.spec.whatwg.org/#global-object>
-#[derive(Clone, Trace, Finalize)]
+#[gc_struct]
 pub struct CachedNodeObject {
     /// <https://dom.spec.whatwg.org/#interface-node>
     #[ignore_trace]
@@ -104,7 +106,7 @@ pub struct CachedNodeObject {
 }
 
 /// <https://html.spec.whatwg.org/#list-of-animation-frame-callbacks>
-#[derive(Clone, Trace, Finalize)]
+#[gc_struct]
 pub struct AnimationFrameCallback {
     /// <https://html.spec.whatwg.org/#animation-frame-callback-identifier>
     #[ignore_trace]
@@ -115,7 +117,7 @@ pub struct AnimationFrameCallback {
 }
 
 /// <https://html.spec.whatwg.org/#timers>
-#[derive(Trace, Finalize, Clone)]
+#[gc_struct]
 pub enum TimerHandler {
     Function {
         /// <https://webidl.spec.whatwg.org/#idl-callback-function>
@@ -129,7 +131,7 @@ pub enum TimerHandler {
 }
 
 /// <https://html.spec.whatwg.org/#timers>
-#[derive(Trace, Finalize, Clone)]
+#[gc_struct]
 pub struct WindowTimer {
     /// <https://html.spec.whatwg.org/#map-of-settimeout-and-setinterval-ids>
     #[ignore_trace]
@@ -161,7 +163,7 @@ struct TimerHost {
 }
 
 /// <https://html.spec.whatwg.org/#global-object>
-#[derive(Clone, Trace, Finalize)]
+#[gc_struct]
 pub struct GlobalScope {
     /// <https://html.spec.whatwg.org/#global-object>
     #[ignore_trace]

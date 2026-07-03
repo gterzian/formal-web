@@ -1,5 +1,5 @@
 use boa_engine::JsValue;
-use boa_gc::{Finalize, Trace};
+
 use js_engine::gc_struct;
 
 use js_engine::{Completion, ExecutionContext};
@@ -47,7 +47,7 @@ impl CountQueuingStrategy {
 }
 
 /// <https://streams.spec.whatwg.org/#size-algorithm>
-#[derive(Clone, Trace, Finalize)]
+#[gc_struct]
 pub(crate) enum SizeAlgorithm {
     ReturnOne,
     Callback { callback: Callback },

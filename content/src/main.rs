@@ -2209,7 +2209,12 @@ pub fn run_content_process(token: String) -> Result<(), String> {
                         media_sender,
                         content_command_sender,
                         trace_sender,
-                    } => (net_sender, media_sender, content_command_sender, trace_sender),
+                    } => (
+                        net_sender,
+                        media_sender,
+                        content_command_sender,
+                        trace_sender,
+                    ),
                     other => {
                         error!("first message must be ContentBootstrap, got: {other:?}");
                         return Err("wrong first message, expected ContentBootstrap".into());
@@ -2272,7 +2277,7 @@ pub fn run_content_process(token: String) -> Result<(), String> {
 
 #[cfg(boa_backend)]
 fn run_boa_message_loop(
-    cmd_rx: &crossbeam_channel::Receiver<ipc::Incoming<Command>>,
+    cmd_rx: &crossbeam_channel::Receiver<ipc::IpcIncoming<Command>>,
     wasm_rx: &crossbeam_channel::Receiver<()>,
     process: &mut ContentProcess,
 ) -> Result<(), String> {
@@ -2300,7 +2305,7 @@ fn run_boa_message_loop(
                                     let _ = process.note_command_completed();
                                 }
                             }
-                            Ok(false) => break Ok(()),
+                            Ok(false) => return Ok(()),
                             Err(error) => {
                                 error!("content error: {error}");
                                 if notify {
@@ -2309,7 +2314,7 @@ fn run_boa_message_loop(
                             }
                         }
                     }
-                    Err(_) => break Ok(()),
+                    Err(_) => return Ok(()),
                 }
             }
             recv(wasm_rx) -> _ => {
@@ -2336,7 +2341,9 @@ fn run_jsc_message_loop(
             Ok(incoming) => {
                 let command = incoming.payload;
                 match command {
-                    EvaluateScript { source, request_id, .. } => {
+                    EvaluateScript {
+                        source, request_id, ..
+                    } => {
                         let result = ExecutionContext::evaluate_script(engine, &source);
                         let eval_result = match result {
                             Ok(value) => {

@@ -1,9 +1,9 @@
 use js_engine::gc::GcCell;
 use js_engine::gc::gc_cell_new;
+use js_engine::gc_struct;
 use std::{cell::Cell, rc::Rc};
 
 use boa_engine::{JsArgs, JsValue, object::JsObject};
-use boa_gc::{Finalize, Trace};
 
 use crate::webidl::{AsyncValueIterable, rejected_promise, resolved_promise};
 
@@ -13,7 +13,7 @@ use super::{ReadableStream, ReadableStreamDefaultReader, ReadableStreamGenericRe
 
 type Types = crate::js::Types;
 
-#[derive(Clone, Trace, Finalize)]
+#[gc_struct]
 pub(crate) struct ReadableStreamAsyncIteratorState {
     /// <https://streams.spec.whatwg.org/#readablestream-async-iterator-reader>
     reader: GcCell<Option<ReadableStreamDefaultReader>>,
