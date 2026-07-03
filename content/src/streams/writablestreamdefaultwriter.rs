@@ -1,4 +1,4 @@
-use boa_engine::{JsArgs, JsError, JsValue, object::JsObject};
+use boa_engine::{JsArgs, JsValue, object::JsObject};
 
 use crate::webidl::bindings::create_interface_instance;
 use crate::webidl::{mark_promise_as_handled, rejected_promise, resolved_promise};
@@ -434,9 +434,7 @@ pub(crate) fn construct_writable_stream_default_writer(
     let stream_object = args.get_or_undefined(0).as_object().ok_or_else(|| {
         ec.new_type_error("WritableStreamDefaultWriter requires a WritableStream")
     })?;
-    let not_stream_err = ec.new_type_error("object is not a WritableStream");
-    let stream = with_writable_stream_ref(&stream_object, |stream| stream.clone())
-        .map_err(|_: JsError| not_stream_err)?;
+    let stream = with_writable_stream_ref(&stream_object, ec, |stream| stream.clone())?;
     let writer = WritableStreamDefaultWriter::new();
     writer.set_up_writable_stream_default_writer(stream, ec)?;
     Ok(writer)

@@ -530,7 +530,7 @@ impl ReadableByteStreamController {
         ec: &mut dyn ExecutionContext<crate::js::Types>,
     ) -> Completion<(), crate::js::Types> {
         if let Some(object) = self.byob_request_object.borrow_mut().take() {
-            with_readable_stream_byob_request_ref_ec(&object, ec, |request| {
+            with_readable_stream_byob_request_ref(&object, ec, |request| {
                 request.set_view_slot(None)
             })?;
         }
@@ -553,7 +553,7 @@ impl ReadableByteStreamController {
         } else {
             None
         };
-        with_readable_stream_byob_request_ref_ec(&object, ec, |request| {
+        with_readable_stream_byob_request_ref(&object, ec, |request| {
             request.set_view_slot(maybe_view)
         })
     }
@@ -1215,18 +1215,6 @@ impl ReadableByteStreamController {
 
 pub(crate) fn with_readable_byte_stream_controller_ref<R>(
     object: &JsObject,
-    f: impl FnOnce(&ReadableByteStreamController) -> R,
-) -> JsResult<R> {
-    let controller = object
-        .downcast_ref::<ReadableByteStreamController>()
-        .ok_or_else(|| {
-            JsNativeError::typ().with_message("object is not a ReadableByteStreamController")
-        })?;
-    Ok(f(&controller))
-}
-
-pub(crate) fn with_readable_byte_stream_controller_ref_ec<R>(
-    object: &JsObject,
     ec: &mut dyn ExecutionContext<crate::js::Types>,
     f: impl FnOnce(&ReadableByteStreamController) -> R,
 ) -> Completion<R, crate::js::Types> {
@@ -1241,18 +1229,6 @@ pub(crate) fn with_readable_byte_stream_controller_ref_ec<R>(
 }
 
 pub(crate) fn with_readable_stream_byob_request_ref<R>(
-    object: &JsObject,
-    f: impl FnOnce(&ReadableStreamBYOBRequest) -> R,
-) -> JsResult<R> {
-    let request = object
-        .downcast_ref::<ReadableStreamBYOBRequest>()
-        .ok_or_else(|| {
-            JsNativeError::typ().with_message("object is not a ReadableStreamBYOBRequest")
-        })?;
-    Ok(f(&request))
-}
-
-pub(crate) fn with_readable_stream_byob_request_ref_ec<R>(
     object: &JsObject,
     ec: &mut dyn ExecutionContext<crate::js::Types>,
     f: impl FnOnce(&ReadableStreamBYOBRequest) -> R,

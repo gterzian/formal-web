@@ -59,7 +59,10 @@ impl AsyncValueIterable for ReadableStream {
         let mut stream = self.clone();
 
         // Step 1: "Let reader be ? AcquireReadableStreamDefaultReader(stream)."
-        let reader_object = stream.get_reader(&JsValue::undefined(), context)?;
+        let reader_object = crate::js::completion_to_js_result(stream.get_reader(
+            &JsValue::undefined(),
+            js_engine::boa::context_as_ec(context),
+        ))?;
 
         let reader = reader_object
             .downcast_ref::<ReadableStreamDefaultReader>()

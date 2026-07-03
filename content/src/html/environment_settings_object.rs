@@ -3,7 +3,7 @@ use std::{cell::RefCell, rc::Rc, time::Instant};
 
 use blitz_dom::BaseDocument;
 use boa_engine::{
-    Context, JsError, JsResult, JsValue, Source, js_string, object::JsObject, property::Attribute,
+    Context, JsError, JsValue, Source, js_string, object::JsObject, property::Attribute,
 };
 use ipc::IpcSender;
 use ipc_messages::content::{DocumentId, Event as ContentEvent, NavigableId, WindowTimerKey};
@@ -12,7 +12,6 @@ use url::Url;
 use crate::dom::{Document, Event, EventDispatchHost};
 use crate::html::{TimerHandler, Window};
 use crate::js::bindings::html::build_context;
-use crate::js::platform_objects::with_global_scope_ec;
 use crate::js::platform_objects::with_global_scope;
 use crate::js::{install_console_namespace, install_css_namespace, install_document_property};
 use crate::webidl::bindings::{create_interface_instance, get_registry_prototype};
@@ -84,7 +83,7 @@ impl EnvironmentSettingsObject {
         // Set up timer host and navigation info on the GlobalScope through
         // the EC trait's realm_global_object + with_object_any.
         if let (Some(event_sender), Some(document_id)) = (&event_sender, document_id) {
-            with_global_scope_ec(&mut engine, |global_scope| {
+            with_global_scope(&mut engine, |global_scope| {
                 global_scope.set_timer_host(document_id, event_sender.clone());
                 Ok(())
             })
@@ -92,7 +91,7 @@ impl EnvironmentSettingsObject {
         }
         if let Some(navigable_id) = source_navigable_id {
             if let Some(event_sender) = &event_sender {
-                with_global_scope_ec(&mut engine, |global_scope| {
+                with_global_scope(&mut engine, |global_scope| {
                     global_scope.set_navigation_info(navigable_id, event_sender.clone());
                     global_scope.set_creation_url(creation_url.clone());
                     Ok(())
@@ -107,7 +106,7 @@ impl EnvironmentSettingsObject {
         )
         .map_err(|error| error.display().to_string())?;
 
-        with_global_scope_ec(&mut engine, |global_scope| {
+        with_global_scope(&mut engine, |global_scope| {
             global_scope.store_document_object(document_object);
             Ok(())
         })
@@ -161,12 +160,15 @@ impl EnvironmentSettingsObject {
         self.time_origin.elapsed().as_secs_f64() * 1000.0
     }
 
-    pub fn clear_all_window_timers(&self) -> Result<(), String> {
-        with_global_scope(self.context_ref(), |global_scope| {
-            global_scope.clear_all_timers();
-            Ok(())
-        })
-        .map_err(|error| error.to_string())
+    pub fn clear_all_window_timers(&mut self) -> Result<(), String> {
+        with_global_scope(
+            js_engine::boa::context_as_ec(self.context()),
+            |global_scope| {
+                global_scope.clear_all_timers();
+                Ok(())
+            },
+        )
+        .map_err(|error| error.display().to_string())
     }
 
     pub fn evaluate_script(&mut self, source: &str) -> Result<(), String> {
@@ -197,10 +199,9 @@ impl EnvironmentSettingsObject {
 
     /// <https://html.spec.whatwg.org/#run-the-animation-frame-callbacks>
     pub(crate) fn run_animation_frame_callbacks(&mut self, now: f64) -> Result<(), String> {
-        let callbacks = crate::js::platform_objects::take_animation_frame_callbacks(
-            &mut self.engine,
-        )
-        .map_err(|error| error.display().to_string())?;
+        let callbacks =
+            crate::js::platform_objects::take_animation_frame_callbacks(&mut self.engine)
+                .map_err(|error| error.display().to_string())?;
 
         for callback in callbacks {
             // Step 3.3: "Invoke callback with « now » and \"report\"."
@@ -230,12 +231,12 @@ impl EnvironmentSettingsObject {
             timer_id, timer_key, nesting_level
         ));
 
-        let previous_nesting_level = with_global_scope_ec(&mut self.engine, |global_scope| {
+        let previous_nesting_level = with_global_scope(&mut self.engine, |global_scope| {
             Ok(global_scope.set_current_timer_nesting_level(Some(nesting_level)))
         })
         .map_err(|error| error.display().to_string())?;
 
-        let timer = with_global_scope_ec(&mut self.engine, |global_scope| {
+        let timer = with_global_scope(&mut self.engine, |global_scope| {
             Ok(global_scope.window_timer(timer_id, timer_key))
         })
         .map_err(|error| error.display().to_string())?;
@@ -245,11 +246,14 @@ impl EnvironmentSettingsObject {
                 "run timer id={} key={} missing_registration",
                 timer_id, timer_key
             ));
-            if let Err(error) = with_global_scope_ec(&mut self.engine, |global_scope| {
+            if let Err(error) = with_global_scope(&mut self.engine, |global_scope| {
                 global_scope.set_current_timer_nesting_level(previous_nesting_level);
                 Ok(())
             }) {
-                error!("[timers] failed to reset timer nesting level: {}", error.display());
+                error!(
+                    "[timers] failed to reset timer nesting level: {}",
+                    error.display()
+                );
             }
             return Ok(());
         };
@@ -288,19 +292,25 @@ impl EnvironmentSettingsObject {
             }
         }
 
-        if let Err(error) = with_global_scope_ec(&mut self.engine, |global_scope| {
+        if let Err(error) = with_global_scope(&mut self.engine, |global_scope| {
             if let Err(error) = global_scope.complete_window_timer(timer_id, timer_key) {
                 error!("failed to complete window timer (id={timer_id} key={timer_key}): {error}");
             }
             Ok(())
         }) {
-            error!("failed to access global scope for timer completion: {}", error.display());
+            error!(
+                "failed to access global scope for timer completion: {}",
+                error.display()
+            );
         }
-        if let Err(error) = with_global_scope_ec(&mut self.engine, |global_scope| {
+        if let Err(error) = with_global_scope(&mut self.engine, |global_scope| {
             global_scope.set_current_timer_nesting_level(previous_nesting_level);
             Ok(())
         }) {
-            error!("failed to access global scope for timer nesting level: {}", error.display());
+            error!(
+                "failed to access global scope for timer nesting level: {}",
+                error.display()
+            );
         }
 
         if let Err(error) = self.perform_a_microtask_checkpoint() {

@@ -1,7 +1,9 @@
 use std::marker::PhantomData;
 use std::rc::Rc;
 
-use boa_engine::{Context, JsError, JsResult, JsValue, js_string, object::JsObject, property::Attribute};
+use boa_engine::{
+    Context, JsError, JsResult, JsValue, js_string, object::JsObject, property::Attribute,
+};
 
 use crate::dom::Document;
 use crate::js::platform_objects::{
@@ -406,7 +408,7 @@ pub(crate) fn install_document_property_with_object(
 }
 
 pub(crate) fn install_document_property(context: &mut Context) -> JsResult<()> {
-    let document = document_object(js_engine::boa::context_as_ec(context))
-        .map_err(JsError::from_opaque)?;
+    let document =
+        document_object(js_engine::boa::context_as_ec(context)).map_err(JsError::from_opaque)?;
     install_document_property_with_object(context, document)
 }

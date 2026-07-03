@@ -1,4 +1,4 @@
-use boa_engine::{JsArgs, JsError, JsNativeError, JsResult, JsValue, object::JsObject};
+use boa_engine::{JsArgs, JsValue, object::JsObject};
 
 use crate::webidl::bindings::create_interface_instance;
 use crate::webidl::rejected_promise;
@@ -171,9 +171,8 @@ pub(crate) fn construct_readable_stream_byob_reader(
         .get_or_undefined(0)
         .as_object()
         .ok_or_else(|| ec.new_type_error("ReadableStreamBYOBReader requires a ReadableStream"))?;
-    let not_stream_err = ec.new_type_error("object is not a ReadableStream");
-    let stream = with_readable_stream_ref(&stream_object, |stream: &ReadableStream| stream.clone())
-        .map_err(|_: JsError| not_stream_err)?;
+    let stream =
+        with_readable_stream_ref(&stream_object, ec, |stream: &ReadableStream| stream.clone())?;
     let reader = ReadableStreamBYOBReader::new();
     reader.set_up_readable_stream_byob_reader(stream, ec)?;
     Ok(reader)
@@ -185,9 +184,7 @@ pub(crate) fn acquire_readable_stream_byob_reader(
     ec: &mut dyn ExecutionContext<crate::js::Types>,
 ) -> Completion<JsObject, crate::js::Types> {
     let reader_object = create_readable_stream_byob_reader(ec)?;
-    let not_reader_err = ec.new_type_error("object is not a ReadableStreamBYOBReader");
-    let reader = with_readable_stream_byob_reader_ref(&reader_object, |reader| reader.clone())
-        .map_err(|_: JsError| not_reader_err)?;
+    let reader = with_readable_stream_byob_reader_ref(&reader_object, ec, |reader| reader.clone())?;
     reader.set_up_readable_stream_byob_reader(stream, ec)?;
     Ok(reader_object)
 }
@@ -219,18 +216,6 @@ pub(crate) fn readable_stream_byob_reader_release(
 }
 
 pub(crate) fn with_readable_stream_byob_reader_ref<R>(
-    object: &JsObject,
-    f: impl FnOnce(&ReadableStreamBYOBReader) -> R,
-) -> JsResult<R> {
-    let reader = object
-        .downcast_ref::<ReadableStreamBYOBReader>()
-        .ok_or_else(|| {
-            JsNativeError::typ().with_message("object is not a ReadableStreamBYOBReader")
-        })?;
-    Ok(f(&reader))
-}
-
-pub(crate) fn with_readable_stream_byob_reader_ref_ec<R>(
     object: &JsObject,
     ec: &mut dyn ExecutionContext<crate::js::Types>,
     f: impl FnOnce(&ReadableStreamBYOBReader) -> R,

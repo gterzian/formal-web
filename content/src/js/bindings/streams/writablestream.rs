@@ -5,7 +5,7 @@ use crate::streams::{
     WritableStream, WritableStreamDefaultController, WritableStreamDefaultWriter,
     construct_writable_stream, construct_writable_stream_default_writer,
     with_writable_stream_default_controller_ref, with_writable_stream_default_writer_ref,
-    with_writable_stream_ref_ec,
+    with_writable_stream_ref,
 };
 use crate::webidl::bindings::{AttributeDef, InterfaceDefinition, OperationDef, WebIdlInterface};
 
@@ -207,7 +207,7 @@ fn get_locked(
 ) -> Completion<JsValue, crate::js::Types> {
     let stream_object = <crate::js::Types as JsTypes>::value_as_object(this)
         .ok_or_else(|| ec.new_type_error("WritableStream receiver is not an object"))?;
-    let locked = with_writable_stream_ref_ec(&stream_object, ec, |stream| stream.locked())?;
+    let locked = with_writable_stream_ref(&stream_object, ec, |stream| stream.locked())?;
     Ok(JsValue::from(locked))
 }
 
@@ -218,7 +218,7 @@ fn abort_method(
 ) -> Completion<JsValue, crate::js::Types> {
     let stream_object = <crate::js::Types as JsTypes>::value_as_object(this)
         .ok_or_else(|| ec.new_type_error("WritableStream receiver is not an object"))?;
-    let stream = with_writable_stream_ref_ec(&stream_object, ec, |s| s.clone())?;
+    let stream = with_writable_stream_ref(&stream_object, ec, |s| s.clone())?;
     let promise = stream.abort(args.get_or_undefined(0).clone(), ec)?;
     Ok(crate::js::Types::value_from_object(promise))
 }
@@ -230,7 +230,7 @@ fn close_method(
 ) -> Completion<JsValue, crate::js::Types> {
     let stream_object = <crate::js::Types as JsTypes>::value_as_object(this)
         .ok_or_else(|| ec.new_type_error("WritableStream receiver is not an object"))?;
-    let stream = with_writable_stream_ref_ec(&stream_object, ec, |s| s.clone())?;
+    let stream = with_writable_stream_ref(&stream_object, ec, |s| s.clone())?;
     let promise = stream.close(ec)?;
     Ok(crate::js::Types::value_from_object(promise))
 }
@@ -242,7 +242,7 @@ fn get_writer_method(
 ) -> Completion<JsValue, crate::js::Types> {
     let stream_object = <crate::js::Types as JsTypes>::value_as_object(this)
         .ok_or_else(|| ec.new_type_error("WritableStream receiver is not an object"))?;
-    let stream = with_writable_stream_ref_ec(&stream_object, ec, |s| s.clone())?;
+    let stream = with_writable_stream_ref(&stream_object, ec, |s| s.clone())?;
     let writer = stream.get_writer(ec)?;
     Ok(crate::js::Types::value_from_object(writer))
 }

@@ -15,8 +15,7 @@ mod writablestreamsupport;
 pub(crate) use readablebytestreamcontroller::{
     ArrayBufferViewDescriptor, set_up_readable_byte_stream_controller,
     set_up_readable_byte_stream_controller_from_underlying_source,
-    with_readable_byte_stream_controller_ref, with_readable_byte_stream_controller_ref_ec,
-    with_readable_stream_byob_request_ref, with_readable_stream_byob_request_ref_ec,
+    with_readable_byte_stream_controller_ref, with_readable_stream_byob_request_ref,
 };
 pub use readablebytestreamcontroller::{ReadableByteStreamController, ReadableStreamBYOBRequest};
 pub use readablestream::ReadableStream;
@@ -24,13 +23,12 @@ pub(crate) use readablestream::{
     PipeToState, construct_readable_stream, readable_stream_add_read_request,
     readable_stream_close, readable_stream_error, readable_stream_from_iterable,
     readable_stream_fulfill_read_request, readable_stream_get_num_read_requests,
-    with_readable_stream_ref, with_readable_stream_ref_ec,
+    with_readable_stream_ref,
 };
 pub use readablestreambyobreader::ReadableStreamBYOBReader;
 pub(crate) use readablestreambyobreader::{
     acquire_readable_stream_byob_reader, construct_readable_stream_byob_reader,
     readable_stream_byob_reader_release, with_readable_stream_byob_reader_ref,
-    with_readable_stream_byob_reader_ref_ec,
 };
 pub use readablestreamdefaultcontroller::ReadableStreamDefaultController;
 pub(crate) use readablestreamdefaultcontroller::{
@@ -43,7 +41,6 @@ pub(crate) use readablestreamdefaultreader::{
     ReadableStreamGenericReader, acquire_readable_stream_default_reader,
     construct_readable_stream_default_reader, readable_stream_default_reader_error_read_requests,
     readable_stream_default_reader_release, with_readable_stream_default_reader_ref,
-    with_readable_stream_default_reader_ref_ec,
 };
 pub(crate) use readablestreamsupport::{
     ReadIntoRequest, ReadRequest, ReadableStreamController, ReadableStreamReader,
@@ -62,9 +59,7 @@ pub(crate) use transformstream::{
     with_transform_stream_ref,
 };
 pub use writablestream::WritableStream;
-pub(crate) use writablestream::{
-    construct_writable_stream, with_writable_stream_ref, with_writable_stream_ref_ec,
-};
+pub(crate) use writablestream::{construct_writable_stream, with_writable_stream_ref};
 pub use writablestreamdefaultcontroller::WritableStreamDefaultController;
 pub(crate) use writablestreamdefaultcontroller::{
     AbortAlgorithm, CloseAlgorithm, StartAlgorithm as WritableStartAlgorithm, WriteAlgorithm,

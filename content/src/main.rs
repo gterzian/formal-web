@@ -705,39 +705,45 @@ impl ContentProcess {
     /// Set the shared new-document registry on the source document's GlobalScope
     /// so that `the_rules_for_choosing_a_navigable` can register documents created
     /// during JS execution (window.open).
-    fn set_up_new_document_registry(&self, traversable_id: NavigableId) -> Result<(), String> {
-        let document_id = self
+    fn set_up_new_document_registry(&mut self, traversable_id: NavigableId) -> Result<(), String> {
+        let document_id = *self
             .active_documents_by_traversable
             .get(&traversable_id)
             .ok_or_else(|| format!("unknown traversable {traversable_id}"))?;
+        let registry = Rc::clone(&self.new_document_registry);
         let content_document = self
             .documents
-            .get(document_id)
+            .get_mut(&document_id)
             .ok_or_else(|| format!("unknown document {document_id}"))?;
-        let registry = Rc::clone(&self.new_document_registry);
-        with_global_scope(content_document.settings.context_ref(), |global_scope| {
-            global_scope.set_new_document_registry(registry);
-            Ok(())
-        })
-        .map_err(|error| format!("failed to set new document registry: {error}"))
+        with_global_scope(
+            js_engine::boa::context_as_ec(content_document.settings.context()),
+            |global_scope| {
+                global_scope.set_new_document_registry(registry);
+                Ok(())
+            },
+        )
+        .map_err(|error| format!("failed to set new document registry: {}", error.display()))
     }
 
     /// Clear the shared new-document registry from the source document's
     /// GlobalScope after JS execution completes.
-    fn tear_down_new_document_registry(&self, traversable_id: NavigableId) -> Result<(), String> {
-        let document_id = self
+    fn tear_down_new_document_registry(&mut self, traversable_id: NavigableId) -> Result<(), String> {
+        let document_id = *self
             .active_documents_by_traversable
             .get(&traversable_id)
             .ok_or_else(|| format!("unknown traversable {traversable_id}"))?;
         let content_document = self
             .documents
-            .get(document_id)
+            .get_mut(&document_id)
             .ok_or_else(|| format!("unknown document {document_id}"))?;
-        with_global_scope(content_document.settings.context_ref(), |global_scope| {
-            global_scope.clear_new_document_registry();
-            Ok(())
-        })
-        .map_err(|error| format!("failed to clear new document registry: {error}"))
+        with_global_scope(
+            js_engine::boa::context_as_ec(content_document.settings.context()),
+            |global_scope| {
+                global_scope.clear_new_document_registry();
+                Ok(())
+            },
+        )
+        .map_err(|error| format!("failed to clear new document registry: {}", error.display()))
     }
 
     /// Drain any newly-created traversable documents from the shared registry
@@ -754,15 +760,16 @@ impl ContentProcess {
         let parent_traversable_id = None;
         let top_level_traversable_id = NavigableId::new();
 
-        for (document_id, (settings, document)) in pending {
+        for (document_id, (mut settings, document)) in pending {
             if self.documents.contains_key(&document_id) {
                 continue;
             }
             // Read the traversable_id from the new document's own GlobalScope.
-            let new_traversable_id = with_global_scope(settings.context_ref(), |global_scope| {
-                Ok(global_scope.source_navigable_id())
-            })
-            .map_err(|error| format!("failed to read new traversable id: {error}"))?
+            let new_traversable_id = with_global_scope(
+                js_engine::boa::context_as_ec(settings.context()),
+                |global_scope| Ok(global_scope.source_navigable_id()),
+            )
+            .map_err(|error| format!("failed to read new traversable id: {}", error.display()))?
             .unwrap_or_else(NavigableId::new);
 
             self.documents.insert(
@@ -907,7 +914,7 @@ impl ContentProcess {
             document_id,
             None,
         ))));
-        let settings = EnvironmentSettingsObject::new(
+        let mut settings = EnvironmentSettingsObject::new(
             Rc::clone(&document),
             Url::parse("about:blank").map_err(|error| error.to_string())?,
             Some(self.event_sender.clone()),
@@ -917,14 +924,17 @@ impl ContentProcess {
 
         // Set the video-paint registry on GlobalScope so that
         // resource_selection_algorithm can register paint IDs.
-        if let Err(error) = with_global_scope(settings.context_ref(), |global_scope| {
-            global_scope.set_video_paint_registry(Rc::clone(&self.video_paint_registry));
-            if let Some(ref sender) = self.media_extension_sender {
-                global_scope.set_media_extension_sender(sender.clone());
-            }
-            Ok(())
-        }) {
-            error!("[media] failed to set video paint registry on GlobalScope: {error}");
+        if let Err(error) = with_global_scope(
+            js_engine::boa::context_as_ec(settings.context()),
+            |global_scope| {
+                global_scope.set_video_paint_registry(Rc::clone(&self.video_paint_registry));
+                if let Some(ref sender) = self.media_extension_sender {
+                    global_scope.set_media_extension_sender(sender.clone());
+                }
+                Ok(())
+            },
+        ) {
+            error!("[media] failed to set video paint registry on GlobalScope: {}", error.display());
         }
 
         // Note: This block continues <https://html.spec.whatwg.org/#creating-a-new-browsing-context>.
@@ -1009,7 +1019,7 @@ impl ContentProcess {
             document_id,
             Some(final_url.clone()),
         ))));
-        let settings = EnvironmentSettingsObject::new(
+        let mut settings = EnvironmentSettingsObject::new(
             Rc::clone(&document),
             Url::parse(&final_url).map_err(|error| error.to_string())?,
             Some(self.event_sender.clone()),
@@ -1019,14 +1029,17 @@ impl ContentProcess {
 
         // Set the video-paint registry on GlobalScope so that
         // resource_selection_algorithm can register paint IDs.
-        if let Err(error) = with_global_scope(settings.context_ref(), |global_scope| {
-            global_scope.set_video_paint_registry(Rc::clone(&self.video_paint_registry));
-            if let Some(ref sender) = self.media_extension_sender {
-                global_scope.set_media_extension_sender(sender.clone());
-            }
-            Ok(())
-        }) {
-            error!("[media] failed to set video paint registry on GlobalScope: {error}");
+        if let Err(error) = with_global_scope(
+            js_engine::boa::context_as_ec(settings.context()),
+            |global_scope| {
+                global_scope.set_video_paint_registry(Rc::clone(&self.video_paint_registry));
+                if let Some(ref sender) = self.media_extension_sender {
+                    global_scope.set_media_extension_sender(sender.clone());
+                }
+                Ok(())
+            },
+        ) {
+            error!("[media] failed to set video paint registry on GlobalScope: {}", error.display());
         }
 
         let parser_scripts = {
@@ -1177,7 +1190,7 @@ impl ContentProcess {
 
     fn destroy_document(&mut self, document_id: DocumentId) -> Result<(), String> {
         run_dom_removing_steps_for_document(self, document_id)?;
-        if let Some(content_document) = self.documents.remove(&document_id) {
+        if let Some(mut content_document) = self.documents.remove(&document_id) {
             if self
                 .active_documents_by_traversable
                 .get(&content_document.traversable_id)
@@ -1814,19 +1827,22 @@ impl ContentProcess {
     /// can resolve `_parent`/`_top` targets in
     /// `the_rules_for_choosing_a_navigable`.
     fn set_navigable_hierarchy_on_global_scope(
-        &self,
+        &mut self,
         document_id: DocumentId,
     ) -> Result<(), String> {
-        let Some(content_document) = self.documents.get(&document_id) else {
+        let Some(content_document) = self.documents.get_mut(&document_id) else {
             return Err(format!("unknown document id: {document_id}"));
         };
         let parent_traversable_id = content_document.parent_traversable_id;
         let top_level_traversable_id = content_document.top_level_traversable_id;
-        with_global_scope(content_document.settings.context_ref(), |global_scope| {
-            global_scope.set_navigable_hierarchy(parent_traversable_id, top_level_traversable_id);
-            Ok(())
-        })
-        .map_err(|error| error.to_string())
+        with_global_scope(
+            js_engine::boa::context_as_ec(content_document.settings.context()),
+            |global_scope| {
+                global_scope.set_navigable_hierarchy(parent_traversable_id, top_level_traversable_id);
+                Ok(())
+            },
+        )
+        .map_err(|error| error.display().to_string())
     }
 
     /// Drain pending WebAssembly requests from all documents and submit

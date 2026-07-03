@@ -2,7 +2,7 @@ use std::any::TypeId;
 use std::{cell::RefCell, rc::Rc};
 
 use blitz_dom::{BaseDocument, Node as BlitzNode};
-use boa_engine::{Context, JsError, JsNativeError, JsResult, JsValue, object::JsObject};
+use boa_engine::{JsValue, object::JsObject};
 use html5ever::{local_name, ns};
 use log::error;
 
@@ -33,18 +33,6 @@ pub(crate) fn init_global_object_slot(
     ec.store_host_any(TypeId::of::<GlobalObjectSlot>(), Box::new(global_object));
 }
 
-/// <https://html.spec.whatwg.org/#global-object>
-pub(crate) fn with_global_scope<R>(
-    context: &Context,
-    f: impl FnOnce(&GlobalScope) -> JsResult<R>,
-) -> JsResult<R> {
-    let global = context.global_object();
-    let window = global.downcast_ref::<Window>().ok_or_else(|| {
-        JsError::from(JsNativeError::typ().with_message("global object is not a Window"))
-    })?;
-    f(&window.global_scope)
-}
-
 // ── Generic helpers — no ec_to_ctx, pure trait-method access ───────────
 
 /// <https://html.spec.whatwg.org/#global-object>
@@ -63,7 +51,7 @@ fn global_scope_or_error<'ec>(ec: &'ec dyn ExecutionContext<Types>) -> Option<&'
 ///
 /// Like `global_scope_or_error` but constructs a `Completion` error when
 /// the global object can't be reached.
-pub(crate) fn with_global_scope_ec<R>(
+pub(crate) fn with_global_scope<R>(
     ec: &mut dyn ExecutionContext<Types>,
     f: impl FnOnce(&GlobalScope) -> Completion<R, Types>,
 ) -> Completion<R, Types> {
@@ -102,11 +90,9 @@ pub(crate) fn collect_child_subtree_node_ids(
 
 // ── Generic helpers — EC trait-based access ────────────────────────────
 
-pub(crate) fn document_object(
-    ec: &mut dyn ExecutionContext<Types>,
-) -> Completion<JsObject, Types> {
+pub(crate) fn document_object(ec: &mut dyn ExecutionContext<Types>) -> Completion<JsObject, Types> {
     let missing_err = ec.new_type_error("missing document object");
-    with_global_scope_ec(ec, |global_scope| {
+    with_global_scope(ec, |global_scope| {
         global_scope.document_object().ok_or(missing_err)
     })
 }
@@ -114,14 +100,14 @@ pub(crate) fn document_object(
 pub(crate) fn location_object(
     ec: &mut dyn ExecutionContext<Types>,
 ) -> Completion<Option<JsObject>, Types> {
-    with_global_scope_ec(ec, |global_scope| Ok(global_scope.location_object()))
+    with_global_scope(ec, |global_scope| Ok(global_scope.location_object()))
 }
 
 pub(crate) fn store_location_object(
     ec: &mut dyn ExecutionContext<Types>,
     object: JsObject,
 ) -> Completion<(), Types> {
-    with_global_scope_ec(ec, |global_scope| {
+    with_global_scope(ec, |global_scope| {
         global_scope.store_location_object(object);
         Ok(())
     })
@@ -131,7 +117,7 @@ pub(crate) fn invalidate_cached_node_ids(
     ec: &mut dyn ExecutionContext<Types>,
     node_ids: &[usize],
 ) -> Completion<(), Types> {
-    with_global_scope_ec(ec, |global_scope| {
+    with_global_scope(ec, |global_scope| {
         global_scope.invalidate_cached_node_ids(node_ids);
         Ok(())
     })
@@ -140,7 +126,7 @@ pub(crate) fn invalidate_cached_node_ids(
 pub(crate) fn take_animation_frame_callbacks(
     ec: &mut dyn ExecutionContext<Types>,
 ) -> Completion<Vec<crate::webidl::Callback>, Types> {
-    with_global_scope_ec(ec, |global_scope| {
+    with_global_scope(ec, |global_scope| {
         Ok(global_scope.take_animation_frame_callbacks())
     })
 }

@@ -3,7 +3,7 @@ use std::{
     rc::Rc,
 };
 
-use boa_engine::{Context, JsArgs, JsNativeError, JsResult, JsValue, js_string, object::JsObject};
+use boa_engine::{Context, JsArgs, JsValue, js_string, object::JsObject};
 
 use js_engine::{Completion, ExecutionContext};
 
@@ -683,16 +683,6 @@ fn create_writable_stream_object(
 }
 
 pub(crate) fn with_writable_stream_ref<R>(
-    object: &JsObject,
-    f: impl FnOnce(&WritableStream) -> R,
-) -> JsResult<R> {
-    let stream = object
-        .downcast_ref::<WritableStream>()
-        .ok_or_else(|| JsNativeError::typ().with_message("object is not a WritableStream"))?;
-    Ok(f(&stream))
-}
-
-pub(crate) fn with_writable_stream_ref_ec<R>(
     object: &JsObject,
     ec: &mut dyn ExecutionContext<crate::js::Types>,
     f: impl FnOnce(&WritableStream) -> R,

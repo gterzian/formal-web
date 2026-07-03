@@ -6,7 +6,7 @@ use std::{
 };
 
 use boa_engine::{
-    Context, JsArgs, JsError, JsNativeError, JsResult, JsValue,
+    Context, JsArgs, JsError, JsValue,
     builtins::promise::ResolvingFunctions,
     js_string,
     native_function::NativeFunction,
@@ -23,9 +23,8 @@ use crate::js::with_abort_signal_ref;
 use crate::streams::{SizeAlgorithm, extract_high_water_mark, extract_size_algorithm};
 use crate::webidl::bindings::create_interface_instance;
 use crate::webidl::{
-    error_to_rejection_reason, mark_promise_as_handled, promise_from_completion,
-    promise_from_value, rejected_promise, rejected_promise_from_error, resolved_promise,
-    transform_promise_to_undefined,
+    mark_promise_as_handled, promise_from_completion, promise_from_value, rejected_promise,
+    rejected_promise_from_error, resolved_promise, transform_promise_to_undefined,
 };
 use js_engine::EcmascriptHost;
 use js_engine::gc::GcCell;
@@ -44,8 +43,7 @@ use super::{
     rejected_type_error_promise, set_up_readable_byte_stream_controller_from_underlying_source,
     set_up_readable_stream_default_controller,
     set_up_readable_stream_default_controller_from_underlying_source, type_error_value,
-    with_readable_stream_byob_reader_ref, with_readable_stream_byob_reader_ref_ec,
-    with_readable_stream_default_reader_ref, with_readable_stream_default_reader_ref_ec,
+    with_readable_stream_byob_reader_ref, with_readable_stream_default_reader_ref,
 };
 use js_engine::{Completion, ExecutionContext};
 
@@ -180,17 +178,6 @@ impl ReadableStream {
     pub(crate) fn get_reader(
         &mut self,
         options: &JsValue,
-        context: &mut Context,
-    ) -> JsResult<JsObject> {
-        self.get_reader_ec(options, js_engine::boa::context_as_ec(context))
-            .map_err(|e| JsError::from_opaque(e))
-    }
-
-    /// Generic entry point for <https://streams.spec.whatwg.org/#rs-get-reader>.
-    /// Returns `Completion` - the binding layer uses this directly without bridging.
-    pub(crate) fn get_reader_ec(
-        &mut self,
-        options: &JsValue,
         ec: &mut dyn ExecutionContext<crate::js::Types>,
     ) -> Completion<JsObject, crate::js::Types> {
         let options_object: Option<JsObject> = if options.is_undefined() || options.is_null() {
@@ -257,7 +244,7 @@ impl ReadableStream {
         let readable_obj = readable_value.as_object().ok_or_else(|| {
             ec.new_type_error("ReadableWritablePair is missing its readable property")
         })?;
-        let _ = with_readable_stream_ref_ec(&readable_obj, ec, |stream| stream.clone())?;
+        let _ = with_readable_stream_ref(&readable_obj, ec, |stream| stream.clone())?;
 
         let writable_value = EcmascriptHost::get(&mut *ec, &transform_obj, "writable")?;
         let writable_obj = writable_value.as_object().ok_or_else(|| {
@@ -274,8 +261,7 @@ impl ReadableStream {
         let options = normalize_pipe_options(options, ec)?;
 
         // Step 2: "If ! IsWritableStreamLocked(transform[\"writable\"]) is true, throw a TypeError exception."
-        let writable_locked =
-            super::with_writable_stream_ref_ec(&writable_obj, ec, |ws| ws.locked())?;
+        let writable_locked = super::with_writable_stream_ref(&writable_obj, ec, |ws| ws.locked())?;
         if writable_locked {
             return Err(ec.new_type_error(
                 "ReadableStream.pipeThrough(): destination writable stream is locked",
@@ -284,7 +270,7 @@ impl ReadableStream {
 
         // Step 4: "Let promise be ! ReadableStreamPipeTo(this, transform[\"writable\"], options[\"preventClose\"], options[\"preventAbort\"], options[\"preventCancel\"], signal)."
         // Note: The Rust helper takes the normalized option members as separate arguments.
-        let destination = super::with_writable_stream_ref_ec(&writable_obj, ec, |ws| ws.clone())?;
+        let destination = super::with_writable_stream_ref(&writable_obj, ec, |ws| ws.clone())?;
         let promise = readable_stream_pipe_to(
             self.clone(),
             destination,
@@ -327,7 +313,7 @@ impl ReadableStream {
                 );
             }
         };
-        let dest_locked = super::with_writable_stream_ref_ec(&dest_obj, ec, |ws| ws.locked())?;
+        let dest_locked = super::with_writable_stream_ref(&dest_obj, ec, |ws| ws.locked())?;
         if dest_locked {
             return promise_rejected_with_type_error(
                 "ReadableStream.pipeTo(): destination is locked",
@@ -337,7 +323,7 @@ impl ReadableStream {
 
         let options = normalize_pipe_options(options, ec)?;
 
-        let dest = super::with_writable_stream_ref_ec(&dest_obj, ec, |ws| ws.clone())?;
+        let dest = super::with_writable_stream_ref(&dest_obj, ec, |ws| ws.clone())?;
 
         // Step 4: "Return ! ReadableStreamPipeTo(this, destination, options[\"preventClose\"], options[\"preventAbort\"], options[\"preventCancel\"], signal)."
         // Note: The Rust helper takes the normalized option members as separate arguments.
@@ -486,7 +472,7 @@ fn readable_stream_default_tee(
     // Step 3: "Let reader be ? AcquireReadableStreamDefaultReader(stream)."
     let reader_object = acquire_readable_stream_default_reader(stream.clone(), ec)?;
     let reader =
-        with_readable_stream_default_reader_ref_ec(&reader_object, ec, |reader| reader.clone())?;
+        with_readable_stream_default_reader_ref(&reader_object, ec, |reader| reader.clone())?;
 
     // Step 12: "Let cancelPromise be a new promise."
     let reader_closed_promise = reader.closed(ec)?;
@@ -1525,16 +1511,6 @@ fn get_required_callable_method(
 }
 pub(crate) fn with_readable_stream_ref<R>(
     object: &JsObject,
-    f: impl FnOnce(&ReadableStream) -> R,
-) -> JsResult<R> {
-    let stream = object
-        .downcast_ref::<ReadableStream>()
-        .ok_or_else(|| JsNativeError::typ().with_message("object is not a ReadableStream"))?;
-    Ok(f(&stream))
-}
-
-pub(crate) fn with_readable_stream_ref_ec<R>(
-    object: &JsObject,
     ec: &mut dyn ExecutionContext<crate::js::Types>,
     f: impl FnOnce(&ReadableStream) -> R,
 ) -> Completion<R, crate::js::Types> {
@@ -1982,7 +1958,7 @@ fn byte_tee_switch_to_default_reader(
     tee_state.borrow_mut().reader_generation += 1;
     readable_stream_byob_reader_release(old_reader, ec)?;
     let new_reader_object = acquire_readable_stream_default_reader(source_stream, ec)?;
-    let new_reader = with_readable_stream_default_reader_ref_ec(
+    let new_reader = with_readable_stream_default_reader_ref(
         &new_reader_object,
         ec,
         |r: &ReadableStreamDefaultReader| r.clone(),
@@ -2009,8 +1985,7 @@ fn byte_tee_switch_to_byob_reader(
     tee_state.borrow_mut().reader_generation += 1;
     readable_stream_default_reader_release(old_reader, ec)?;
     let new_reader_object = acquire_readable_stream_byob_reader(source_stream, ec)?;
-    let new_reader =
-        with_readable_stream_byob_reader_ref_ec(&new_reader_object, ec, |r| r.clone())?;
+    let new_reader = with_readable_stream_byob_reader_ref(&new_reader_object, ec, |r| r.clone())?;
     tee_state.borrow_mut().reader = ReadableStreamReader::BYOB(new_reader);
     byte_tee_forward_reader_error(&new_reader_object, tee_state, ec)
 }
@@ -2666,7 +2641,7 @@ fn readable_byte_stream_tee(
     // Steps 1-2: Assert stream and stream.[[controller]] (implicit in types).
     // Step 3: Let reader be ? AcquireReadableStreamDefaultReader(stream).
     let reader_object = acquire_readable_stream_default_reader(stream.clone(), ec)?;
-    let reader = with_readable_stream_default_reader_ref_ec(&reader_object, ec, |r| r.clone())?;
+    let reader = with_readable_stream_default_reader_ref(&reader_object, ec, |r| r.clone())?;
     let reader_closed_promise = reader.closed(ec)?;
     mark_promise_as_handled(&reader_closed_promise, ec)?;
 
@@ -2969,15 +2944,15 @@ fn readable_stream_pipe_to(
             return Ok(pipe_promise_obj);
         }
     };
-    let reader =
-        match with_readable_stream_default_reader_ref(&reader_object, |reader| reader.clone()) {
-            Ok(reader) => reader,
-            Err(error) => {
-                let reason = crate::webidl::error_to_rejection_reason(error, ec);
-                reject_promise_with_error(&pipe_resolvers, reason, ec);
-                return Ok(pipe_promise_obj);
-            }
-        };
+    let reader = match with_readable_stream_default_reader_ref(&reader_object, ec, |reader| {
+        reader.clone()
+    }) {
+        Ok(reader) => reader,
+        Err(error_value) => {
+            reject_promise_with_error(&pipe_resolvers, error_value, ec);
+            return Ok(pipe_promise_obj);
+        }
+    };
 
     // Step 10: "Let writer be ! AcquireWritableStreamDefaultWriter(dest)."
     let writer_object = match super::acquire_writable_stream_default_writer(dest.clone(), ec) {

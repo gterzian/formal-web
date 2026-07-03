@@ -2038,7 +2038,7 @@ mod tests {
     /// `host_any`, retrieve it later, and downcast to native data through
     /// `with_object_any`.  This is the generic equivalent of
     /// `context.global_object().downcast_ref::<Window>()` — the
-    /// `GlobalObjectSlot` pattern used by `with_global_scope_ec` in
+    /// `GlobalObjectSlot` pattern used by `with_global_scope` in
     /// `platform_objects.rs`.
     #[test]
     fn host_any_stored_object_downcast_via_with_object_any() {

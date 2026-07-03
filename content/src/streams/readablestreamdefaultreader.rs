@@ -1,6 +1,6 @@
 use std::mem;
 
-use boa_engine::{JsArgs, JsError, JsNativeError, JsResult, JsValue, object::JsObject};
+use boa_engine::{JsArgs, JsValue, object::JsObject};
 
 use crate::webidl::bindings::create_interface_instance;
 use crate::webidl::{mark_promise_as_handled, rejected_promise, resolved_promise};
@@ -36,9 +36,8 @@ pub(crate) trait ReadableStreamGenericReader: Clone {
         ec: &mut dyn ExecutionContext<crate::js::Types>,
     ) -> Completion<JsObject, crate::js::Types> {
         // Step 1: "Return this.[[closedPromise]]."
-        self.closed_promise_slot_value().ok_or_else(|| {
-            ec.new_type_error("ReadableStream reader is missing its closed promise")
-        })
+        self.closed_promise_slot_value()
+            .ok_or_else(|| ec.new_type_error("ReadableStream reader is missing its closed promise"))
     }
 
     /// <https://streams.spec.whatwg.org/#generic-reader-cancel>
@@ -393,9 +392,8 @@ pub(crate) fn construct_readable_stream_default_reader(
     let stream_object = args.get_or_undefined(0).as_object().ok_or_else(|| {
         ec.new_type_error("ReadableStreamDefaultReader requires a ReadableStream")
     })?;
-    let not_stream_err = ec.new_type_error("object is not a ReadableStream");
-    let stream = with_readable_stream_ref(&stream_object, |stream: &ReadableStream| stream.clone())
-        .map_err(|_: JsError| not_stream_err)?;
+    let stream =
+        with_readable_stream_ref(&stream_object, ec, |stream: &ReadableStream| stream.clone())?;
     let reader = ReadableStreamDefaultReader::new();
 
     // Step 1: "Perform ? SetUpReadableStreamDefaultReader(this, stream)."
@@ -410,9 +408,8 @@ pub(crate) fn acquire_readable_stream_default_reader(
 ) -> Completion<JsObject, crate::js::Types> {
     // Step 1: "Let reader be a new ReadableStreamDefaultReader."
     let reader_object = create_readable_stream_default_reader(ec)?;
-    let not_reader_err = ec.new_type_error("object is not a ReadableStreamDefaultReader");
-    let reader = with_readable_stream_default_reader_ref(&reader_object, |reader| reader.clone())
-        .map_err(|_: JsError| not_reader_err)?;
+    let reader =
+        with_readable_stream_default_reader_ref(&reader_object, ec, |reader| reader.clone())?;
 
     // Step 2: "Perform ? SetUpReadableStreamDefaultReader(reader, stream)."
     reader.set_up_readable_stream_default_reader(stream, ec)?;
@@ -432,18 +429,6 @@ fn create_readable_stream_default_reader(
 }
 
 pub(crate) fn with_readable_stream_default_reader_ref<R>(
-    object: &JsObject,
-    f: impl FnOnce(&ReadableStreamDefaultReader) -> R,
-) -> JsResult<R> {
-    let reader = object
-        .downcast_ref::<ReadableStreamDefaultReader>()
-        .ok_or_else(|| {
-            JsNativeError::typ().with_message("object is not a ReadableStreamDefaultReader")
-        })?;
-    Ok(f(&reader))
-}
-
-pub(crate) fn with_readable_stream_default_reader_ref_ec<R>(
     object: &JsObject,
     ec: &mut dyn ExecutionContext<crate::js::Types>,
     f: impl FnOnce(&ReadableStreamDefaultReader) -> R,
