@@ -10,6 +10,7 @@ pub mod html;
 pub mod infra;
 pub mod js;
 pub mod streams;
+#[cfg(feature = "boa")]
 pub mod wasm;
 pub mod webidl;
 
@@ -24,6 +25,7 @@ use crate::html::{
 };
 use crate::js::platform_objects::with_global_scope;
 use crate::ui_event::deserialize_ui_event;
+#[cfg(feature = "boa")]
 use crate::wasm::{
     WasmResult, WasmWorker, compile_continuation, compile_rejection, instantiate_continuation,
 };
@@ -426,7 +428,7 @@ pub(crate) struct ContentProcess {
 impl ContentProcess {
     fn new(
         event_sender: ipc::IpcSender<ContentEvent>,
-        wasm_signal_sender: crossbeam_channel::Sender<()>,
+        _wasm_signal_sender: crossbeam_channel::Sender<()>,
         event_loop_id: EventLoopId,
         network_extension_sender: ipc::IpcSender<ipc_messages::network::Request>,
         media_extension_sender: Option<ipc::IpcSender<ipc_messages::media::MediaCommand>>,
@@ -450,8 +452,11 @@ impl ContentProcess {
             clipboard_cache: clipboard_cache.clone(),
             new_document_registry: Rc::new(RefCell::new(HashMap::new())),
             video_paint_registry: Rc::new(RefCell::new(HashMap::new())),
-            wasm_worker: WasmWorker::new(wasmtime::Engine::default(), wasm_signal_sender),
+            #[cfg(feature = "boa")]
+            wasm_worker: WasmWorker::new(wasmtime::Engine::default(), _wasm_signal_sender),
+            #[cfg(feature = "boa")]
             pending_wasm_requests: HashMap::new(),
+            #[cfg(feature = "boa")]
             pending_wasm_modules: HashMap::new(),
             network_extension_sender,
             media_extension_sender,
@@ -1185,16 +1190,19 @@ impl ContentProcess {
                 error!("failed to clear window timers during document teardown: {error}");
             }
         }
-        // Clean up any pending wasm requests for this document so that
-        // worker results arriving after destruction are not misattributed,
-        // and to avoid orphaned promise entries.
-        // https://webassembly.github.io/spec/js-api/#asynchronously-compile-a-webassembly-module
-        self.pending_wasm_requests
-            .retain(|_request_id, doc_id| *doc_id != document_id);
-        self.pending_wasm_modules.retain(|request_id, _module| {
-            !self.pending_wasm_requests.contains_key(request_id)
-                || self.pending_wasm_requests.get(request_id) != Some(&document_id)
-        });
+        #[cfg(feature = "boa")]
+        {
+            // Clean up any pending wasm requests for this document so that
+            // worker results arriving after destruction are not misattributed,
+            // and to avoid orphaned promise entries.
+            // https://webassembly.github.io/spec/js-api/#asynchronously-compile-a-webassembly-module
+            self.pending_wasm_requests
+                .retain(|_request_id, doc_id| *doc_id != document_id);
+            self.pending_wasm_modules.retain(|request_id, _module| {
+                !self.pending_wasm_requests.contains_key(request_id)
+                    || self.pending_wasm_requests.get(request_id) != Some(&document_id)
+            });
+        }
         let mut local_state = self
             .local_state
             .lock()
@@ -1824,26 +1832,29 @@ impl ContentProcess {
     /// Drain pending WebAssembly requests from all documents and submit
     /// them to the background worker.
     fn drain_all_pending_wasm_requests(&mut self) {
-        let document_ids: Vec<DocumentId> = self.documents.keys().copied().collect();
+        #[cfg(feature = "boa")]
+        {
+            let document_ids: Vec<DocumentId> = self.documents.keys().copied().collect();
 
-        for document_id in document_ids {
-            let Some(content_document) = self.documents.get_mut(&document_id) else {
-                continue;
-            };
+            for document_id in document_ids {
+                let Some(content_document) = self.documents.get_mut(&document_id) else {
+                    continue;
+                };
 
-            // Submit compile batches.
-            let batches = content_document.settings.take_pending_wasm_batches();
-            for (request_id, bytes) in batches {
-                self.pending_wasm_requests.insert(request_id, document_id);
-                self.wasm_worker.submit_compile(bytes, request_id);
-            }
+                // Submit compile batches.
+                let batches = content_document.settings.take_pending_wasm_batches();
+                for (request_id, bytes) in batches {
+                    self.pending_wasm_requests.insert(request_id, document_id);
+                    self.wasm_worker.submit_compile(bytes, request_id);
+                }
 
-            // Submit instantiate requests.
-            let instantiates = content_document.settings.take_pending_wasm_instantiates();
-            for (request_id, module) in instantiates {
-                self.pending_wasm_requests.insert(request_id, document_id);
-                self.pending_wasm_modules.insert(request_id, module.clone());
-                self.wasm_worker.submit_instantiate(module, request_id);
+                // Submit instantiate requests.
+                let instantiates = content_document.settings.take_pending_wasm_instantiates();
+                for (request_id, module) in instantiates {
+                    self.pending_wasm_requests.insert(request_id, document_id);
+                    self.pending_wasm_modules.insert(request_id, module.clone());
+                    self.wasm_worker.submit_instantiate(module, request_id);
+                }
             }
         }
     }
@@ -1852,6 +1863,8 @@ impl ContentProcess {
     /// Called both at the end of `handle_command` and when the dedicated
     /// IPC signal fires.
     fn drain_wasm_results(&mut self) {
+        #[cfg(feature = "boa")]
+        {
         let completed: Vec<(u64, WasmResult)> = {
             let results = self.wasm_worker.drain_results();
             results
@@ -1968,6 +1981,7 @@ impl ContentProcess {
                 error!("WebAssembly: microtask checkpoint failed: {error}");
             }
         }
+        }
     }
 
     /// <https://html.spec.whatwg.org/#event-loop-processing-model>
@@ -1975,10 +1989,13 @@ impl ContentProcess {
     fn handle_command(&mut self, command: Command) -> Result<bool, String> {
         let result = self.handle_command_inner(command);
 
-        // After every command, drain any pending WebAssembly requests and
-        // process completed results from the shared queue.
-        self.drain_all_pending_wasm_requests();
-        self.drain_wasm_results();
+        #[cfg(feature = "boa")]
+        {
+            // After every command, drain any pending WebAssembly requests and
+            // process completed results from the shared queue.
+            self.drain_all_pending_wasm_requests();
+            self.drain_wasm_results();
+        }
 
         result
     }
@@ -2144,7 +2161,13 @@ fn content_token_from_args() -> Result<Option<String>, String> {
 
 /// Run the content extension.
 pub fn run_content_process(token: String) -> Result<(), String> {
+    #[cfg(feature = "boa")]
     let (wasm_signal_sender, wasm_rx) = crossbeam_channel::unbounded::<()>();
+    #[cfg(not(feature = "boa"))]
+    let (wasm_signal_sender, wasm_rx) = {
+        let (s, r) = crossbeam_channel::unbounded::<()>();
+        (s, r)
+    };
 
     ipc::run_extension::<Command, ContentEvent>(&token, move |server| {
         let event_sender = server.connection.sender.clone();
@@ -2227,8 +2250,11 @@ pub fn run_content_process(token: String) -> Result<(), String> {
                     }
                 }
                 recv(wasm_rx) -> _ => {
-                    process.drain_all_pending_wasm_requests();
-                    process.drain_wasm_results();
+                    #[cfg(feature = "boa")]
+                    {
+                        process.drain_all_pending_wasm_requests();
+                        process.drain_wasm_results();
+                    }
                 }
             }
         }

@@ -29,8 +29,10 @@ chain**, not the Boa API shape.
 2. **Zero bridges.** `ec_to_ctx`, `context_as_ec`, `_ec` wrappers, `completion_to_js_result`
    are ALL bridges — never leave them at boundaries. Convert every called function too.
    The only file where `ec_to_ctx` may appear is `js_engine/src/boa/engine.rs`.
-3. **Migrate the original function in place.** Do NOT create `foo_ec` wrappers —
-   change the real function's signature and fix all callers. No `_ec` suffix in final code.
+3. **Migrate the original function in place.** No `_ec` suffix in final code.
+   During migration, if a non-EC bridge must be kept for unconverted callers,
+   the migrated function takes a `_ec` suffix. When the bridge is removed,
+   drop the `_ec` suffix. See the `_ec` convention section below.
 4. **Read the spec.** Identify every ECMA-262 operation (Call, Get, PerformPromiseThen, etc.)
    and use the corresponding `ExecutionContext<T>` trait method.
 
@@ -49,7 +51,7 @@ chain**, not the Boa API shape.
 | `JsUint8Array::from_iter(src, ctx)` | `typed_array_buffer` + `clone_array_buffer` + `construct` |
 
 **Anti-patterns (do NOT do):**
-- Creating `xxx_ec()` wrappers — convert the real function
+- Creating `xxx_ec()` wrappers for new code (functions that start with generic API)
 - Using `completion_to_js_result` or `context_as_ec` at call sites
 - Using `JsPromise::then()`/`new_pending()` when EC trait methods exist
 - Converting one file while leaving bridges at its edges
@@ -443,7 +445,16 @@ All domain field types use `GcCell<T>`. Generic POC: 81/81 tests pass on Boa.
 Phase E (compile-time Types/Engine aliases) is landed — `#[cfg(feature = "jsc")]`
 selects between BoaTypes and JscTypes.
 
-**ec_to_ctx count: ~9** (was ~34; 25 eliminated across 4 sessions)
+**ec_to_ctx count: ~8** (was ~34; 26 eliminated across 5 sessions)
+  - Eliminated: `js_result_to_completion_ec` bridge (was 1 ec_to_ctx)
+  - Remaining: `wasm/namespace.rs` (6, gated behind `boa` feature),
+    `html/safe_passing_of_structured_data.rs` (1),
+    `webidl/async_iterable.rs` (1)
+
+**`_ec` suffix count: 78 function definitions, 620 total occurrences** —
+all temporary. Down from 87/654 in previous session. 9 definitions and
+34 total occurrences eliminated this session.
+See the `_ec` suffix convention section for the complete rules.
 
 **Phase S complete — byte tee closures fully EC:**
 - `readablestreamdefaultcontroller.rs` (4 ec_to_ctx eliminated)
@@ -455,28 +466,110 @@ selects between BoaTypes and JscTypes.
 - `windowproxy.rs`: 10 traps → EC-builtin-functions; handler → `ec.create_proxy()` (1)
 
 **Additional conversions (this session):**
-- `html/html_media_element.rs`: `resource_selection_algorithm` → EC (1 ec_to_ctx)
-- `html.rs`: `queue_a_microtask`/`await_a_stable_state` → EC
-  (removed `GenericJob`/`Job` Boa imports)
+- **`js_result_to_completion_ec` eliminated** — Removed the bridge from
+  `js/mod.rs` (1 ec_to_ctx). Converted `mark_close_request_in_flight` and
+  `mark_first_write_request_in_flight` in `writablestream.rs` from `JsResult`
+  to `Completion`.
+- **`_ec` cleanup in writablestreamdefaultcontroller.rs** — Removed 5 `_ec`
+  suffixes: `stream_slot_ec`, `controller_object_ec` (pure duplicates),
+  `signal_ec→signal`, `signal_value_ec→signal_value`.
+- **`_ec` cleanup in writablestreamdefaultwriter.rs** — Removed 4 `_ec`
+  suffixes: `closed_ec→closed`, `desired_size_ec` (pure duplicate),
+  `ready_ec→ready`, `with_writable_stream_default_writer_ref_ec→..._ref`.
+  Updated all callers in writablestream bindings and readablestream.rs.
 
-**Remaining ~9 ec_to_ctx by file:**
+**Remaining ~8 ec_to_ctx by file:**
 - `wasm/namespace.rs`: 6 — gated behind `boa` feature, lowest priority.
 - `html/safe_passing_of_structured_data.rs`: 1 — structured clone (Boa-internal)
 - `webidl/async_iterable.rs`: 1 — async iterator creation (`ObjectInitializer`)
-- `js/mod.rs`: 1 — `js_result_to_completion_ec` bridge helper
 
 ### Next session: recommended order
 
-1. **Phase P — Remaining singleton ec_to_ctx** — `webidl/async_iterable.rs`,
-   `html/safe_passing_of_structured_data.rs`, `js/mod.rs` (3 total).
+1. **`_ec` cleanup — writablestreamdefaultcontroller.rs** — Remove the remaining
+   `with_writable_stream_default_controller_ref_ec` bridge (non-EC version has
+   0 callers). Then tackle the `stream_slot_ec`/`controller_object_ec` duplicates
+   in `readablestreamdefaultcontroller.rs` and `transformstream.rs`.
 
 2. **Phase E validation** — `cargo check -p content --no-default-features --features jsc`.
    Note: `content/src/wasm/` is not yet gated behind `boa` feature. To make Phase E
    clean, gate `pub mod wasm` in `main.rs` behind `#[cfg(feature = "boa")]` and
    conditionally compile the `wasmtime` dep. The wasm module can be left as a
-   Boa-only feature since JSC handles WebAssembly internally.
 
-### Working notes
+2. **Phase E validation** — `cargo check -p content --no-default-features --features jsc`.
+   Note: `content/src/wasm/` is now gated behind `#[cfg(feature = "boa")]`.
+   The remaining JSC compilation blockers are GC trait bounds
+   (`boa_engine::Trace`/`#[gc_struct]`) and `unsafe_ignore_trace` attribute on
+   non-wasm structs throughout the content crate — these are pre-existing
+   Phase E issues, not wasm-specific.
+
+## `_ec` suffix convention
+
+The migration is staged: a function that takes `Context` is converted to take
+`&mut dyn ExecutionContext<Types>`.  When its callers cannot all be converted in
+one pass (because some callers chain through deeper Boa APIs), the old function
+is kept as a one-line bridge:
+
+```rust
+// OLD — bridge, to be deleted when all callers are converted
+pub(crate) fn readable_stream_cancel(
+    stream: ReadableStream, reason: JsValue, context: &mut Context,
+) -> JsResult<JsObject> {
+    readable_stream_cancel_ec(stream, reason, js_engine::boa::context_as_ec(context))
+        .map_err(|e| JsError::from_opaque(e))
+}
+
+// NEW — the real implementation, temporary _ec suffix
+pub(crate) fn readable_stream_cancel_ec(
+    stream: ReadableStream, reason: JsValue,
+    ec: &mut dyn ExecutionContext<crate::js::Types>,
+) -> Completion<JsObject, crate::js::Types> {
+    // ... implementation ...
+}
+```
+
+**Completion: delete the bridge, drop the `_ec` suffix.**  When every caller has
+been converted to pass `&mut dyn ExecutionContext<Types>` directly, the bridge
+function is deleted and the `_ec`-suffixed function is renamed in place to its
+original name.  The same algorithm lives at the same conceptual location — the
+`_ec` is not a permanent part of the name.
+
+### Rules
+
+1. **Temporary, not structural.** The `_ec` suffix is a marker that says "this
+   function is already migrated but still needs a bridge while unconverted
+   callers remain."  It carries zero semantic meaning about the function's role.
+
+2. **One bridge per `_ec` function.** Every `_ec` function MUST have a non-EC
+   bridge that delegates through `context_as_ec`.  When that bridge has zero
+   callers, delete it and rename the `_ec` function.
+
+3. **Never add `_ec` to new code.** Functions that start with the generic API
+   (no Boa-specific heritage) must NEVER get an `_ec` suffix — there is nothing
+   to bridge.  They take `&mut dyn ExecutionContext<Types>` directly with no
+   suffix.
+
+4. **Never introduce a `_ec` function without a bridge.** Every migration
+   creates exactly two functions for a short time: the old bridge and the new
+   `_ec` variant.  If there are no remaining non-EC callers, convert the
+   function in place — no `_ec` suffix at all.
+
+### End state
+
+Current count: **87 `_ec` function definitions**, **654 total `_ec` occurrences**
+(definitions + call sites across all files).  These shrink as bridges are
+removed.  At migration completion: **zero `_ec` suffixes anywhere in the
+codebase.**  Every function uses its original name with an EC parameter.
+
+### How to remove `_ec` from a function
+
+1. Ensure every caller of the non-EC bridge (`readable_stream_cancel` in the
+   example above) has been converted to call the `_ec` variant directly.
+2. Delete the non-EC bridge function.
+3. Rename `readable_stream_cancel_ec` → `readable_stream_cancel`.
+4. Update all call sites to use the new name.
+5. `cargo check -p content` passes.
+
+## Working notes
 
 **`builtin_with_captures` / `builtin_callback`:** Use `crate::js::builtin_with_captures(ec, ...)`
 for EC-taking closures (zero bridges). The Context-taking `builtin_with_captures_ctx`
@@ -488,8 +581,10 @@ on both backends before production code. 81/81 tests pass on Boa.
 **`Behaviour<T>` trait design note:** `dyn Behaviour<BoaTypes>` uses no-op
 Trace/Finalize — captures are GC-managed objects rooted by their parent.
 
-**Migrate the original function, not a copy.** When converting, change the real
-function's signature in place and fix all callers. No `_ec` suffix in final code.
+**Do not introduce new `_ec` functions unnecessarily.** If the function has no
+non-EC callers, convert it in place without a suffix.  The `_ec` suffix is only
+acceptable when a corresponding non-EC bridge must be kept for unconverted
+callers.
 
 ## Working during migration
 

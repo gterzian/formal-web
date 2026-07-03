@@ -494,20 +494,26 @@ impl WritableStream {
     }
 
     /// <https://streams.spec.whatwg.org/#writable-stream-mark-close-request-in-flight>
-    pub(crate) fn mark_close_request_in_flight(&self) -> JsResult<()> {
+    pub(crate) fn mark_close_request_in_flight(
+        &self,
+        ec: &mut dyn ExecutionContext<crate::js::Types>,
+    ) -> Completion<(), crate::js::Types> {
         debug_assert!(self.in_flight_close_request_slot().is_none());
         let close_request = self.take_close_request_slot().ok_or_else(|| {
-            JsNativeError::typ().with_message("WritableStream is missing its close request")
+            ec.new_type_error("WritableStream is missing its close request")
         })?;
         self.set_in_flight_close_request_slot(Some(close_request));
         Ok(())
     }
 
     /// <https://streams.spec.whatwg.org/#writable-stream-mark-first-write-request-in-flight>
-    pub(crate) fn mark_first_write_request_in_flight(&self) -> JsResult<()> {
+    pub(crate) fn mark_first_write_request_in_flight(
+        &self,
+        ec: &mut dyn ExecutionContext<crate::js::Types>,
+    ) -> Completion<(), crate::js::Types> {
         debug_assert!(self.in_flight_write_request_slot().is_none());
         let write_request = self.shift_write_request().ok_or_else(|| {
-            JsNativeError::typ().with_message("WritableStream has no pending write request")
+            ec.new_type_error("WritableStream has no pending write request")
         })?;
         self.set_in_flight_write_request_slot(Some(write_request));
         Ok(())

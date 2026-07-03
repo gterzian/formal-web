@@ -78,7 +78,7 @@ pub(crate) use writablestreamdefaultcontroller::{
 pub use writablestreamdefaultwriter::WritableStreamDefaultWriter;
 pub(crate) use writablestreamdefaultwriter::{
     acquire_writable_stream_default_writer, construct_writable_stream_default_writer,
-    with_writable_stream_default_writer_ref, with_writable_stream_default_writer_ref_ec,
+    with_writable_stream_default_writer_ref,
     writable_stream_default_writer_release,
 };
 pub(crate) use writablestreamsupport::{

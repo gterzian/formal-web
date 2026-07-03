@@ -3014,12 +3014,11 @@ fn readable_stream_pipe_to_ec(
             return Ok(pipe_promise_obj);
         }
     };
-    let writer = match super::with_writable_stream_default_writer_ref(&writer_object, |writer| {
+    let writer = match super::with_writable_stream_default_writer_ref(&writer_object, ec, |writer| {
         writer.clone()
     }) {
         Ok(writer) => writer,
-        Err(error) => {
-            let reason = crate::webidl::error_to_rejection_reason(error, ec);
+        Err(reason) => {
             if let Err(error) = readable_stream_default_reader_release(reader.clone(), ec) {
                 error!("[readable-stream] failed to release reader on writer error: {error:?}");
             }
@@ -3234,7 +3233,7 @@ impl PipeToState {
             let state = self.borrow();
             (state.writer.clone(), state.reader.clone())
         };
-        let ready_promise = writer.ready_ec(ec)?;
+        let ready_promise = writer.ready(ec)?;
         let reader_closed_promise = reader.closed_ec(ec)?;
 
         if matches!(
@@ -3263,7 +3262,7 @@ impl PipeToState {
             state: self.clone(),
         };
         reader.read_with_request(read_request, ec)?;
-        let writer_closed_promise = writer.closed_ec(ec)?;
+        let writer_closed_promise = writer.closed(ec)?;
 
         self.append_reaction(writer_closed_promise, ec)
     }

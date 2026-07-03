@@ -202,33 +202,11 @@ impl WritableStreamDefaultController {
         })
     }
 
-    fn stream_slot_ec(
-        &self,
-        ec: &mut dyn ExecutionContext<crate::js::Types>,
-    ) -> Completion<WritableStream, crate::js::Types> {
-        self.stream.borrow().clone().ok_or_else(|| {
-            ec.new_type_error("WritableStreamDefaultController is not attached to a stream")
-        })
-    }
-
     fn controller_object(
         &self,
         ec: &mut dyn ExecutionContext<crate::js::Types>,
     ) -> Completion<JsObject, crate::js::Types> {
         self.stream_slot(ec)?
-            .controller_object_slot()
-            .ok_or_else(|| {
-                ec.new_type_error(
-                    "WritableStreamDefaultController is missing its JavaScript object",
-                )
-            })
-    }
-
-    fn controller_object_ec(
-        &self,
-        ec: &mut dyn ExecutionContext<crate::js::Types>,
-    ) -> Completion<JsObject, crate::js::Types> {
-        self.stream_slot_ec(ec)?
             .controller_object_slot()
             .ok_or_else(|| {
                 ec.new_type_error(
@@ -245,15 +223,7 @@ impl WritableStreamDefaultController {
         *self.abort_signal.borrow_mut() = Some(signal);
     }
 
-    pub(crate) fn signal(&self) -> JsResult<AbortSignal> {
-        self.abort_signal.borrow().clone().ok_or_else(|| {
-            JsNativeError::typ()
-                .with_message("WritableStreamDefaultController is missing its abort signal")
-                .into()
-        })
-    }
-
-    pub(crate) fn signal_ec(
+    pub(crate) fn signal(
         &self,
         ec: &mut dyn ExecutionContext<crate::js::Types>,
     ) -> Completion<AbortSignal, crate::js::Types> {
@@ -271,19 +241,11 @@ impl WritableStreamDefaultController {
     }
 
     /// <https://streams.spec.whatwg.org/#ws-default-controller-signal>
-    pub(crate) fn signal_value(&self) -> JsResult<JsObject> {
-        self.signal()?.object().ok_or_else(|| {
-            JsNativeError::typ()
-                .with_message("AbortSignal is missing its JavaScript object")
-                .into()
-        })
-    }
-
-    pub(crate) fn signal_value_ec(
+    pub(crate) fn signal_value(
         &self,
         ec: &mut dyn ExecutionContext<crate::js::Types>,
     ) -> Completion<JsObject, crate::js::Types> {
-        self.signal_ec(ec)?
+        self.signal(ec)?
             .object()
             .ok_or_else(|| ec.new_type_error("AbortSignal is missing its JavaScript object"))
     }
@@ -294,7 +256,7 @@ impl WritableStreamDefaultController {
         error: JsValue,
         ec: &mut dyn ExecutionContext<crate::js::Types>,
     ) -> Completion<(), crate::js::Types> {
-        let state = self.stream_slot_ec(ec)?.state();
+        let state = self.stream_slot(ec)?.state();
         if state != WritableStreamState::Writable {
             return Ok(());
         }
@@ -323,7 +285,7 @@ impl WritableStreamDefaultController {
         reason: JsValue,
         ec: &mut dyn ExecutionContext<crate::js::Types>,
     ) -> Completion<(), crate::js::Types> {
-        let signal = self.signal_ec(ec)?;
+        let signal = self.signal(ec)?;
         let mut host = EcDispatchHost::new(ec);
         signal_abort(&mut host, &signal, reason)
     }
@@ -403,7 +365,7 @@ impl WritableStreamDefaultController {
         error: JsValue,
         ec: &mut dyn ExecutionContext<crate::js::Types>,
     ) -> Completion<(), crate::js::Types> {
-        let stream = self.stream_slot_ec(ec)?;
+        let stream = self.stream_slot(ec)?;
         debug_assert_eq!(stream.state(), WritableStreamState::Writable);
 
         self.clear_algorithms();
@@ -415,7 +377,7 @@ impl WritableStreamDefaultController {
         error: JsValue,
         ec: &mut dyn ExecutionContext<crate::js::Types>,
     ) -> Completion<(), crate::js::Types> {
-        if self.stream_slot_ec(ec)?.state() == WritableStreamState::Writable {
+        if self.stream_slot(ec)?.state() == WritableStreamState::Writable {
             self.error_controller(error, ec)?;
         }
         Ok(())
@@ -493,8 +455,7 @@ impl WritableStreamDefaultController {
         debug_assert!(self.queue.borrow().is_empty());
         let algorithm = self.close_algorithm(ec)?;
         let sink_close_promise = algorithm.call(ec)?;
-        // Note: ec_to_ctx in js_result_to_completion_ec — mark_close_request_in_flight returns JsResult.
-        crate::js::js_result_to_completion_ec(stream.mark_close_request_in_flight(), ec)?;
+        stream.mark_close_request_in_flight(ec)?;
         let stream_for_fulfilled = stream.clone();
         let on_fulfilled =
             crate::js::builtin_with_captures(ec, stream_for_fulfilled, process_close_on_fulfilled, 1);
@@ -519,8 +480,7 @@ impl WritableStreamDefaultController {
         let controller_object = self.controller_object(ec)?;
         let write_algo = self.write_algorithm(ec)?;
         let sink_write_promise = write_algo.call(&controller_object, chunk, ec)?;
-        // Note: ec_to_ctx in js_result_to_completion_ec — mark_first_write_request_in_flight returns JsResult.
-        crate::js::js_result_to_completion_ec(stream.mark_first_write_request_in_flight(), ec)?;
+        stream.mark_first_write_request_in_flight(ec)?;
 
         let controller_for_fulfilled = self.clone();
         let stream_for_fulfilled = stream.clone();

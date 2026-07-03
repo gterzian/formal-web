@@ -5,7 +5,7 @@ use crate::streams::{
     WritableStream, WritableStreamDefaultController, WritableStreamDefaultWriter,
     construct_writable_stream, construct_writable_stream_default_writer,
     with_writable_stream_default_controller_ref, with_writable_stream_default_controller_ref_ec,
-    with_writable_stream_default_writer_ref, with_writable_stream_default_writer_ref_ec,
+    with_writable_stream_default_writer_ref,
     with_writable_stream_ref_ec,
 };
 use crate::webidl::bindings::{AttributeDef, InterfaceDefinition, OperationDef, WebIdlInterface};
@@ -259,7 +259,7 @@ fn get_signal(
         })?;
     let controller =
         with_writable_stream_default_controller_ref_ec(&controller_object, ec, |c| c.clone())?;
-    let signal = controller.signal_value_ec(ec)?;
+    let signal = controller.signal_value(ec)?;
     Ok(JsValue::from(signal))
 }
 
@@ -286,8 +286,8 @@ fn get_closed(
     let writer_object = <crate::js::Types as JsTypes>::value_as_object(this).ok_or_else(|| {
         ec.new_type_error("WritableStreamDefaultWriter receiver is not an object")
     })?;
-    let writer = with_writable_stream_default_writer_ref_ec(&writer_object, ec, |w| w.clone())?;
-    let closed = writer.closed_ec(ec)?;
+    let writer = with_writable_stream_default_writer_ref(&writer_object, ec, |w| w.clone())?;
+    let closed = writer.closed(ec)?;
     Ok(JsValue::from(closed))
 }
 
@@ -299,8 +299,8 @@ fn get_desired_size(
     let writer_object = <crate::js::Types as JsTypes>::value_as_object(this).ok_or_else(|| {
         ec.new_type_error("WritableStreamDefaultWriter receiver is not an object")
     })?;
-    let writer = with_writable_stream_default_writer_ref_ec(&writer_object, ec, |w| w.clone())?;
-    let size = writer.desired_size_ec(ec)?;
+    let writer = with_writable_stream_default_writer_ref(&writer_object, ec, |w| w.clone())?;
+    let size = writer.desired_size(ec)?;
     Ok(match size {
         Some(s) => JsValue::from(s),
         None => JsValue::null(),
@@ -315,8 +315,8 @@ fn get_ready(
     let writer_object = <crate::js::Types as JsTypes>::value_as_object(this).ok_or_else(|| {
         ec.new_type_error("WritableStreamDefaultWriter receiver is not an object")
     })?;
-    let writer = with_writable_stream_default_writer_ref_ec(&writer_object, ec, |w| w.clone())?;
-    let ready = writer.ready_ec(ec)?;
+    let writer = with_writable_stream_default_writer_ref(&writer_object, ec, |w| w.clone())?;
+    let ready = writer.ready(ec)?;
     Ok(JsValue::from(ready))
 }
 
@@ -329,7 +329,7 @@ fn abort_writer_method(
         ec.new_type_error("WritableStreamDefaultWriter receiver is not an object")
     })?;
     let reason = args.get_or_undefined(0).clone();
-    let writer = with_writable_stream_default_writer_ref_ec(&writer_object, ec, |w| w.clone())?;
+    let writer = with_writable_stream_default_writer_ref(&writer_object, ec, |w| w.clone())?;
     let promise = writer.abort(reason, ec)?;
     Ok(crate::js::Types::value_from_object(promise))
 }
@@ -342,7 +342,7 @@ fn close_writer_method(
     let writer_object = <crate::js::Types as JsTypes>::value_as_object(this).ok_or_else(|| {
         ec.new_type_error("WritableStreamDefaultWriter receiver is not an object")
     })?;
-    let writer = with_writable_stream_default_writer_ref_ec(&writer_object, ec, |w| w.clone())?;
+    let writer = with_writable_stream_default_writer_ref(&writer_object, ec, |w| w.clone())?;
     let promise = writer.close(ec)?;
     Ok(crate::js::Types::value_from_object(promise))
 }
@@ -355,7 +355,7 @@ fn release_lock_method(
     let writer_object = <crate::js::Types as JsTypes>::value_as_object(this).ok_or_else(|| {
         ec.new_type_error("WritableStreamDefaultWriter receiver is not an object")
     })?;
-    let writer = with_writable_stream_default_writer_ref_ec(&writer_object, ec, |w| w.clone())?;
+    let writer = with_writable_stream_default_writer_ref(&writer_object, ec, |w| w.clone())?;
     writer.release_lock(ec)?;
     Ok(ec.value_undefined())
 }
@@ -369,7 +369,7 @@ fn write_method(
         ec.new_type_error("WritableStreamDefaultWriter receiver is not an object")
     })?;
     let chunk = args.get_or_undefined(0).clone();
-    let writer = with_writable_stream_default_writer_ref_ec(&writer_object, ec, |w| w.clone())?;
+    let writer = with_writable_stream_default_writer_ref(&writer_object, ec, |w| w.clone())?;
     let promise = writer.write(chunk, ec)?;
     Ok(crate::js::Types::value_from_object(promise))
 }
