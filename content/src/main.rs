@@ -2187,182 +2187,188 @@ fn content_token_from_args() -> Result<Option<String>, String> {
 }
 
 /// Run the content extension.
-#[cfg(boa_backend)]
 pub fn run_content_process(token: String) -> Result<(), String> {
+    #[cfg(boa_backend)]
     let (wasm_signal_sender, wasm_rx) = crossbeam_channel::unbounded::<()>();
 
     ipc::run_extension::<Command, ContentEvent>(&token, move |server| {
         let event_sender = server.connection.sender.clone();
+
+        // ── ContentBootstrap ──
+        #[cfg(boa_backend)]
         let cmd_rx = ipc::crossbeam_proxy(server.connection.receiver);
+        #[cfg(not(boa_backend))]
+        let cmd_rx = &server.connection.receiver;
 
-        // First message must be ContentBootstrap.
-        let (network_extension_sender, media_sender, content_command_sender, trace_sender) =
+        #[cfg(boa_backend)]
+        let (network_extension_sender, media_sender, content_command_sender, trace_sender) = {
             match cmd_rx.recv() {
-                Ok(incoming) => {
-                    match incoming.payload {
-                        ContentBootstrap {
-                            net_sender,
-                            media_sender,
-                            content_command_sender,
-                            trace_sender,
-                        } => (
-                            net_sender,
-                            media_sender,
-                            content_command_sender,
-                            trace_sender,
-                        ),
-                        other => {
-                            error!("first message must be ContentBootstrap, got: {other:?}");
-                            debug_assert!(false, "wrong first message: {other:?}");
-                            return Err("wrong first message, expected ContentBootstrap".into());
-                        }
-                    } // closes match incoming.payload
-                } // closes Ok arm
-                Err(_) => return Err("command channel closed before ContentBootstrap".into()),
-            };
-
-        // Notify the user agent that the bootstrap command was handled.
-        let _ = event_sender.send(ContentEvent::CommandCompleted);
-
-        let event_loop_id = EventLoopId::from_u128(0);
-        let mut process = ContentProcess::new(
-            event_sender,
-            wasm_signal_sender,
-            event_loop_id,
-            network_extension_sender,
-            media_sender,
-            content_command_sender,
-            trace_sender,
-        );
-
-        loop {
-            crossbeam_channel::select! {
-                recv(cmd_rx) -> cmd => {
-                    match cmd {
-                        Ok(incoming) => {
-                            let command = incoming.payload;
-                            let notify = matches!(
-                                &command,
-                                CreateEmptyDocument { .. }
-                                    | CreateLoadedDocument { .. }
-                                    | DestroyDocument { .. }
-                                    | DispatchEvent { .. }
-                                    | Command::RunBeforeUnload { .. }
-                                    | UpdateTheRendering { .. }
-                                    | RunWindowTimer { .. }
-                                    | CompleteDocumentFetch { .. }
-                                    | FailDocumentFetch { .. }
-                            );
-                            match process.handle_command(command) {
-                                Ok(true) => {
-                                    if notify {
-                                        let _ = process.note_command_completed();
-                                    }
-                                }
-                                Ok(false) => break,
-                                Err(error) => {
-                                    error!("content error: {error}");
-                                    if notify {
-                                        let _ = process.note_command_completed();
-                                    }
-                                }
-                            }
-                        }
-                        Err(_) => break,
+                Ok(incoming) => match incoming.payload {
+                    ContentBootstrap {
+                        net_sender,
+                        media_sender,
+                        content_command_sender,
+                        trace_sender,
+                    } => (net_sender, media_sender, content_command_sender, trace_sender),
+                    other => {
+                        error!("first message must be ContentBootstrap, got: {other:?}");
+                        return Err("wrong first message, expected ContentBootstrap".into());
                     }
-                }
-                recv(wasm_rx) -> _ => {
-                    process.drain_all_pending_wasm_requests();
-                    process.drain_wasm_results();
-                }
+                },
+                Err(_) => return Err("command channel closed before ContentBootstrap".into()),
             }
-        }
+        };
 
-        process.drain_wasm_results();
-        Ok(())
-    })
-}
-
-#[cfg(not(boa_backend))]
-pub fn run_content_process(token: String) -> Result<(), String> {
-    use js_engine::jsc::JscEngine;
-    use js_engine::{ExecutionContext, JsEngine};
-
-    ipc::run_extension::<Command, ContentEvent>(&token, move |server| {
-        let event_sender = server.connection.sender.clone();
-
-        // First message must be ContentBootstrap.
-        let _ = match server.connection.receiver.recv() {
+        #[cfg(not(boa_backend))]
+        match cmd_rx.recv() {
             Ok(incoming) => match incoming.payload {
-                ContentBootstrap {
-                    net_sender,
-                    media_sender,
-                    ..
-                } => (net_sender, media_sender),
+                ContentBootstrap { .. } => {}
                 other => {
-                    error!("JSC: first message must be ContentBootstrap, got: {other:?}");
+                    error!("first message must be ContentBootstrap, got: {other:?}");
                     return Err("wrong first message, expected ContentBootstrap".into());
                 }
             },
             Err(_) => return Err("command channel closed before ContentBootstrap".into()),
+        }
+
+        let _ = event_sender.send(ContentEvent::CommandCompleted);
+
+        // ── Engine-specific setup ──
+        #[cfg(boa_backend)]
+        let mut process = {
+            let event_loop_id = EventLoopId::from_u128(0);
+            ContentProcess::new(
+                event_sender.clone(),
+                wasm_signal_sender,
+                event_loop_id,
+                network_extension_sender,
+                media_sender,
+                content_command_sender,
+                trace_sender,
+            )
         };
 
-        let _ = event_sender.send(ContentEvent::CommandCompleted);
+        #[cfg(not(boa_backend))]
+        let mut engine = {
+            use js_engine::{ExecutionContext, JsEngine};
+            let mut e = js_engine::jsc::JscEngine::new();
+            if let Err(error) = crate::js::install_console_namespace(&mut e) {
+                error!("JSC: failed to install console namespace: {:?}", error);
+                return Err(format!("failed to install console: {:?}", error));
+            }
+            e
+        };
 
-        // Create JSC engine and install generic console.
-        let mut engine = JscEngine::new();
-        if let Err(error) = crate::js::install_console_namespace(&mut engine) {
-            error!("JSC: failed to install console namespace: {:?}", error);
-            return Err(format!("failed to install console: {:?}", error));
-        }
+        // ── Message loop ──
+        #[cfg(boa_backend)]
+        let result = run_boa_message_loop(&cmd_rx, &wasm_rx, &mut process);
 
-        // Inform embedder that initialization is complete.
-        let _ = event_sender.send(ContentEvent::CommandCompleted);
+        #[cfg(not(boa_backend))]
+        let result = run_jsc_message_loop(cmd_rx, &mut engine, &event_sender);
 
-        // Enter the IPC message loop.
-        loop {
-            match server.connection.receiver.recv() {
-                Ok(incoming) => {
-                    let command = incoming.payload;
-                    match command {
-                        EvaluateScript {
-                            source, request_id, ..
-                        } => {
-                            let result = ExecutionContext::evaluate_script(&mut engine, &source);
-                            let eval_result = match result {
-                                Ok(value) => {
-                                    let json = engine.json_stringify(value).unwrap_or_default();
-                                    ipc_messages::content::ScriptEvaluationResult {
-                                        request_id,
-                                        value_json: json,
-                                        error: None,
-                                    }
+        result
+    })
+}
+
+#[cfg(boa_backend)]
+fn run_boa_message_loop(
+    cmd_rx: &crossbeam_channel::Receiver<ipc::Incoming<Command>>,
+    wasm_rx: &crossbeam_channel::Receiver<()>,
+    process: &mut ContentProcess,
+) -> Result<(), String> {
+    loop {
+        crossbeam_channel::select! {
+            recv(cmd_rx) -> cmd => {
+                match cmd {
+                    Ok(incoming) => {
+                        let command = incoming.payload;
+                        let notify = matches!(
+                            &command,
+                            CreateEmptyDocument { .. }
+                                | CreateLoadedDocument { .. }
+                                | DestroyDocument { .. }
+                                | DispatchEvent { .. }
+                                | Command::RunBeforeUnload { .. }
+                                | UpdateTheRendering { .. }
+                                | RunWindowTimer { .. }
+                                | CompleteDocumentFetch { .. }
+                                | FailDocumentFetch { .. }
+                        );
+                        match process.handle_command(command) {
+                            Ok(true) => {
+                                if notify {
+                                    let _ = process.note_command_completed();
                                 }
-                                Err(error) => {
-                                    let error_str = engine
-                                        .to_rust_string(error)
-                                        .unwrap_or_else(|_| "unknown error".to_owned());
-                                    ipc_messages::content::ScriptEvaluationResult {
-                                        request_id,
-                                        value_json: String::new(),
-                                        error: Some(error_str),
-                                    }
+                            }
+                            Ok(false) => break Ok(()),
+                            Err(error) => {
+                                error!("content error: {error}");
+                                if notify {
+                                    let _ = process.note_command_completed();
                                 }
-                            };
-                            let _ = event_sender.send(ContentEvent::ScriptEvaluated(eval_result));
-                        }
-                        Shutdown => break,
-                        other => {
-                            trace!("JSC: unhandled command: {other:?}");
+                            }
                         }
                     }
+                    Err(_) => break Ok(()),
                 }
-                Err(_) => break,
+            }
+            recv(wasm_rx) -> _ => {
+                process.drain_all_pending_wasm_requests();
+                process.drain_wasm_results();
             }
         }
+    }
 
-        Ok(())
-    })
+    process.drain_wasm_results();
+    Ok(())
+}
+
+#[cfg(not(boa_backend))]
+fn run_jsc_message_loop(
+    cmd_rx: &ipc::IpcReceiver<Command>,
+    engine: &mut js_engine::jsc::JscEngine,
+    event_sender: &ipc::IpcSender<ContentEvent>,
+) -> Result<(), String> {
+    use js_engine::ExecutionContext;
+
+    loop {
+        match cmd_rx.recv() {
+            Ok(incoming) => {
+                let command = incoming.payload;
+                match command {
+                    EvaluateScript { source, request_id, .. } => {
+                        let result = ExecutionContext::evaluate_script(engine, &source);
+                        let eval_result = match result {
+                            Ok(value) => {
+                                let json = engine.json_stringify(value).unwrap_or_default();
+                                ScriptEvaluationResult {
+                                    request_id,
+                                    value_json: json,
+                                    error: None,
+                                }
+                            }
+                            Err(error) => {
+                                let error_str = engine
+                                    .to_rust_string(error)
+                                    .unwrap_or_else(|_| "unknown error".to_owned());
+                                ScriptEvaluationResult {
+                                    request_id,
+                                    value_json: String::new(),
+                                    error: Some(error_str),
+                                }
+                            }
+                        };
+                        let _ = event_sender.send(ContentEvent::ScriptEvaluated(eval_result));
+                    }
+                    Shutdown => break Ok(()),
+                    other => {
+                        trace!("JSC: unhandled command: {other:?}");
+                    }
+                }
+            }
+            Err(_) => break Ok(()),
+        }
+    }
 }
 
 pub fn run_content_process_from_args() -> Result<(), String> {

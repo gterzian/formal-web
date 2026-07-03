@@ -408,10 +408,12 @@ real production file.
 - ✅ Generic console namespace installer (`content/src/js/console_generic.rs`)
   using only EC trait methods (`create_plain_object` + `create_builtin_function`
   + `object_set_property`). No Boa-specific APIs.
-- ✅ Minimal JSC `run_content_process` created — creates `JscEngine`, installs
-  generic console, handles `EvaluateScript` and `Shutdown` IPC commands.
+- ✅ Single `run_content_process` (no `#[cfg]` on the function) — engine selection
+  happens inside `build_context` (`content/src/js/build_context.rs`).
+- ✅ JSC content process confirmed working via CDP: console installed, JS evaluation
+  works (`1+1`, `JSON.stringify`, function calls all return correct results).
+- ✅ Wasm infrastructure fully gated behind `#[cfg(boa_backend)]`.
 - ❌ Generic CSS namespace installer not yet created.
-- ❌ JSC `build_context` not yet implemented (no Web IDL bindings on JSC).
 - ❌ `dom`, `html`, `webidl` modules still gated behind `#[cfg(boa_backend)]`.
 
 **Phase E (content crate compiles on JSC) is COMPLETE.**
@@ -461,14 +463,15 @@ real production file.
    Progress so far:
    - ✅ `evaluate_script` on `ExecutionContext<T>` — Boa + JSC.
    - ✅ Generic console namespace installer (EC trait only).
-   - ✅ Minimal JSC `run_content_process` (console + script eval + IPC).
+   - ✅ Single `run_content_process` — engine selected by `build_context`.
+   - ✅ Wasm gated behind `#[cfg(boa_backend)]`.
+   - ✅ JSC confirmed working via CDP (console, JS eval).
 
    Remaining work:
    - Port CSS namespace installer to generic EC API (follows console pattern).
    - Convert `environment_settings_object.rs` to use a generic EC trait object
      instead of `BoaContext`/`JscEngine` directly (requires removing the
      `#[cfg(boa_backend)]` gate on the `html` module first).
-   - Create JSC `build_context` bootstrap (minimal, no Web IDL).
    - Bring `dom`, `html`, `webidl` modules back from `#[cfg(boa_backend)]` gating
      by converting their `use boa_engine::*` patterns to generic `Types::*` aliases.
 

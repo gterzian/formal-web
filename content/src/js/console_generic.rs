@@ -36,7 +36,6 @@ fn install_console_method(
     method_name: &str,
     sink: fn(&str),
 ) -> Completion<(), Types> {
-    // Build the name as a Rust String so we can clone it into the closure.
     let name_owned = method_name.to_owned();
 
     let fn_obj = ec.create_builtin_function(

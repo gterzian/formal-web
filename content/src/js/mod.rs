@@ -5,6 +5,10 @@ mod downcast;
 #[cfg(boa_backend)]
 pub(crate) mod platform_objects;
 
+/// Generic engine builder — the single entry point for creating a JS engine
+/// context.  Uses `#[cfg]` internally to switch between Boa and JSC backends.
+pub(crate) mod build_context;
+
 /// Generic bootstrap module — uses only [`ExecutionContext<T>`] trait methods.
 /// Not engine-specific; only compiled when the Boa-specific bindings are
 /// not available (JSC backend).
@@ -34,6 +38,14 @@ pub(crate) type Types = js_engine::jsc::JscTypes;
 
 #[cfg(not(jsc_backend))]
 pub(crate) type Types = js_engine::boa::BoaTypes;
+
+/// Content-level type alias for the concrete JS engine in use.
+/// `BoaContext` on Boa, `JscEngine` on JSC.
+#[cfg(boa_backend)]
+pub(crate) type Engine = js_engine::boa::BoaContext;
+
+#[cfg(not(boa_backend))]
+pub(crate) type Engine = js_engine::jsc::JscEngine;
 
 use js_engine::JsEngine;
 

@@ -3542,7 +3542,7 @@ mod tests {
 
     #[test]
     fn realm_intrinsics_finds_constructors() {
-        let mut engine = JscEngine::new();
+        let engine = JscEngine::new();
         let realm = engine.current_realm();
         let intrinsics = engine.realm_intrinsics(&realm);
         assert!(!intrinsics.object.raw.is_null());
@@ -3554,7 +3554,7 @@ mod tests {
     fn evaluate_script() {
         let mut engine = JscEngine::new();
         let realm = engine.create_realm();
-        let result = engine.evaluate_script("40 + 2", &realm).unwrap();
+        let result = JsEngine::evaluate_script(&mut engine, "40 + 2", &realm).unwrap();
         let n = engine.to_number(result).unwrap();
         assert!((n - 42.0).abs() < 0.001);
     }
@@ -3579,9 +3579,12 @@ mod tests {
         let mut engine = JscEngine::new();
         let realm = engine.current_realm();
         // Evaluate a function expression.
-        let fn_val = engine
-            .evaluate_script("(function(x) { return x * 2; })", &realm)
-            .unwrap();
+        let fn_val = JsEngine::evaluate_script(
+            &mut engine,
+            "(function(x) { return x * 2; })",
+            &realm,
+        )
+        .unwrap();
         assert!(engine.is_callable(&fn_val));
         let fn_obj = JscTypes::value_as_object(&fn_val).unwrap();
         let undef = engine.value_undefined();
