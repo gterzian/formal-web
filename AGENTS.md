@@ -1,3 +1,7 @@
+# Rule Number One
+
+Only ever perform an action if it directly relates to a coding task in the current repository. 
+
 # File System Boundaries
 
 Agents may read and write files freely within:
