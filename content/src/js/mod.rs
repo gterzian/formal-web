@@ -2,6 +2,16 @@
 pub(crate) mod bindings;
 #[cfg(boa_backend)]
 mod downcast;
+/// Generic platform-object downcast helpers: `try_with_*` functions using
+/// [`ExecutionContext::with_object_any`] / `with_object_any_mut`.
+/// Gated behind `boa_backend` because the domain types they downcast to
+/// (`AbortController`, `Event`, `EventTarget`, etc.) still require `boa_engine`.
+/// Un-gate function-by-function as each domain type is converted.
+#[cfg(boa_backend)]
+mod downcast_generic;
+/// Generic platform-object resolution helpers.
+/// Gated behind `boa_backend` because the domain types (`Element`, `Node`,
+/// `Window`, etc.) still require `boa_engine`.
 #[cfg(boa_backend)]
 pub(crate) mod platform_objects;
 
@@ -27,10 +37,16 @@ pub(crate) use console_generic::install_console_namespace;
 /// Generic CSS namespace installer available on all backends.
 #[cfg(not(boa_backend))]
 pub(crate) use css_generic::install_css_namespace;
+/// Generic platform-object downcast helpers.
 #[cfg(boa_backend)]
-pub(crate) use downcast::{
+pub(crate) use downcast_generic::{
     try_with_abort_controller_ref, try_with_abort_signal_mut, try_with_abort_signal_ref,
     try_with_event_mut, try_with_event_target_mut, try_with_event_target_ref,
+};
+
+/// Boa-specific platform-object downcast helpers.
+#[cfg(boa_backend)]
+pub(crate) use downcast::{
     with_abort_signal_ref, with_event_mut, with_event_target_mut, with_event_target_ref,
 };
 

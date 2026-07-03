@@ -290,12 +290,12 @@ Files currently gated behind `#[cfg(boa_backend)]` that must be un-gated:
 | `streams/` | module-level `#[cfg(boa_backend)]` | All 13 stream files remain |
 | `js/bindings/` | module-level `#[cfg(boa_backend)]` | ~18 binding files remain (mostly `ObjectInitializer`-based) |
 | `js/bindings/wasm/` | module-level `#[cfg(boa_backend)]` | Boa-only (wasmtime); bridge functions moved locally |
-| `js/downcast.rs` | module-level `#[cfg(boa_backend)]` | Generic `try_with_*` helpers exist; Boa-specific `with_*` helpers need removal or gating |
-| `js/platform_objects.rs` | module-level `#[cfg(boa_backend)]` | Partially generic; uses `boa_engine::{JsValue, JsObject}` directly |
+| `js/downcast_generic.rs` | module-level `#[cfg(boa_backend)]` | Generic `try_with_*` helpers extracted into dedicated file using fully-qualified `<crate::js::Types as JsTypes>` syntax. Boa-specific `with_*` kept in `downcast.rs`. Both remain Boa-gated because domain types depend on `boa_engine`. |
+| `js/platform_objects.rs` | module-level `#[cfg(boa_backend)]` | Fully converted to generic `<crate::js::Types as JsTypes>::JsObject`; no `boa_engine::*` imports. Remains Boa-gated because domain types still depend on `boa_engine`. |
 | `js/mod.rs` helpers | function-level `#[cfg(boa_backend)]` | `builtin_with_captures_ctx`, `builtin_with_captures`, `builtin_callback*`, bridge functions |
 | `main.rs` | ~21 inline `#[cfg(boa_backend)]` annotations | Many tied to `ContentProcess` which is Boa-only |
 
-**~55 files still import `boa_engine::*`** (down from ~60).
+**~55 files still import `boa_engine::*`** (down from ~60).  `platform_objects.rs` no longer imports `boa_engine` directly.
 
 ### Converted files (this session)
 
@@ -312,6 +312,9 @@ Files currently gated behind `#[cfg(boa_backend)]` that must be un-gated:
 - **`html/window.rs`:** Converted `JsValue` to generic alias; replaced `JsValue::null()` with `ec.value_null()`.
 - **`wasm/namespace.rs`, `js/bindings/wasm/mod.rs`:** Moved `a_new_promise_boa`/`rejected_promise_from_error_boa` bridge functions locally into the Boa-only wasm module.
 - **Un-gated `webidl` module** in `main.rs` (removed `#[cfg(boa_backend)]`).
+- **Split `downcast.rs` into `downcast_generic.rs` + `downcast.rs`** — generic `try_with_*` functions (using `<crate::js::Types as JsTypes>` fully-qualified syntax, `ExecutionContext::with_object_any` pattern) separated from Boa-specific `with_*` functions (using `JsObject::downcast_ref/mut`).
+- **Converted `platform_objects.rs`** — replaced `boa_engine::{JsValue, object::JsObject}` with `<crate::js::Types as JsTypes>::JsObject`/`::JsValue`. No `boa_engine::*` imports remain.
+- **Updated `js/mod.rs`** — `downcast_generic` and `downcast` both gated behind `#[cfg(boa_backend)]`; `try_with_*` re-exported from `downcast_generic`, `with_*` from `downcast`. Cleaner separation ready for per-domain un-gating.
 
 ### Two message loops → one
 
@@ -346,20 +349,29 @@ Work module by module.  For each file:
 - Un-gate the module from `#[cfg(boa_backend)]`.
 - Verify on **both backends** (Boa keeps working, JSC compiles).
 
+When using associated types from `crate::js::Types` (e.g. `JsValue`, `JsObject`)
+inside a generic function, use the fully-qualified syntax
+`<crate::js::Types as JsTypes>::JsValue` to avoid `E0223` (ambiguous
+associated type) on the Boa backend.  This is necessary because `Types`
+is a type alias, not a trait bound, and Rust's type inference does not
+resolve `Types::JsValue` in function parameter position.
+
 Conversion order (lowest-level first, highest-level last):
 
 1. `webidl/` — **DONE** (callback, promise, buffer_source, array_index,
    bindings/constant converted; module un-gated; zero `boa_engine::*` imports)
-2. `dom/` — `event.rs` done; `abort.rs`, `dispatch.rs`, `ui_event_dispatch.rs`
-   remain (blocked by downcast/platform_objects dependency)
-3. `html/` — `html.rs`, `window_or_worker_global_scope.rs`, `location.rs`,
-   `html_anchor_element.rs`, `window.rs` done; `environment_settings_object.rs`,
-   `global_scope.rs`, `windowproxy.rs` remain
-4. `streams/` — all 13 stream files remain (blocked by streams being deeply
+2. **Infrastructure:** `downcast` split + `platform_objects` conversion — **DONE** ✅
+   - `downcast_generic.rs` holds generic `try_with_*` functions
+   - `downcast.rs` holds Boa-only `with_*` functions
+   - `platform_objects.rs` converted to generic types
+   - Both modules remain Boa-gated because domain types still use `boa_engine`.
+3. `dom/` — `event.rs` done; `abort.rs`, `dispatch.rs`, `ui_event_dispatch.rs`
+   remain (each can be un-gated independently as its types are converted)
+4. `html/` — `environment_settings_object.rs`, `global_scope.rs`,
+   `windowproxy.rs` remain
+5. `streams/` — all 13 stream files remain (blocked by streams being deeply
    entangled with Boa promise/resolver types)
-5. `js/bindings/` — wasm bridges moved locally; ~17 binding files remain
-6. `js/downcast.rs`, `js/platform_objects.rs`, `js/mod.rs` helpers —
-   generic `try_with_*` variants exist; Boa-specific `with_*` remain
+6. `js/bindings/` — wasm bridges moved locally; ~17 binding files remain
 
 ### 3. Unify the message loop
 
@@ -384,3 +396,4 @@ from `main.rs` except for wasm-related code.
 
 - Make sure everything compiles wiht every feature flag. 
 - Run step 9 of the top AGENTS.md end of task steps.
+- suggest a commit message.

@@ -2,7 +2,6 @@ use std::any::TypeId;
 use std::{cell::RefCell, rc::Rc};
 
 use blitz_dom::{BaseDocument, Node as BlitzNode};
-use boa_engine::{JsValue, object::JsObject};
 use html5ever::{local_name, ns};
 use log::error;
 
@@ -11,9 +10,8 @@ use crate::html::{
     GlobalScope, HTMLAnchorElement, HTMLElement, HTMLIFrameElement, HTMLInputElement,
     HTMLVideoElement, Window,
 };
-use crate::js::Types;
 use crate::webidl::bindings::create_interface_instance;
-use js_engine::{Completion, ExecutionContext};
+use js_engine::{Completion, ExecutionContext, JsTypes};
 
 /// <https://html.spec.whatwg.org/#global-object>
 ///
@@ -27,8 +25,8 @@ pub(crate) struct GlobalObjectSlot;
 /// Store the realm's global object in `host_any`.  Call once during realm
 /// initialisation, after the global object has been created.
 pub(crate) fn init_global_object_slot(
-    ec: &mut dyn ExecutionContext<Types>,
-    global_object: JsObject,
+    ec: &mut dyn ExecutionContext<crate::js::Types>,
+    global_object: <crate::js::Types as JsTypes>::JsObject,
 ) {
     ec.store_host_any(TypeId::of::<GlobalObjectSlot>(), Box::new(global_object));
 }
@@ -40,7 +38,9 @@ pub(crate) fn init_global_object_slot(
 /// Downcast the realm's global object to `&GlobalScope` through
 /// `realm_global_object()` + `with_object_any`.  Returns `None` if the
 /// global object is not a `Window` or has no native data.
-fn global_scope_or_error<'ec>(ec: &'ec dyn ExecutionContext<Types>) -> Option<&'ec GlobalScope> {
+fn global_scope_or_error<'ec>(
+    ec: &'ec dyn ExecutionContext<crate::js::Types>,
+) -> Option<&'ec GlobalScope> {
     let global_obj = ec.realm_global_object();
     ec.with_object_any(&global_obj)
         .and_then(|data| data.downcast_ref::<Window>())
@@ -52,9 +52,9 @@ fn global_scope_or_error<'ec>(ec: &'ec dyn ExecutionContext<Types>) -> Option<&'
 /// Like `global_scope_or_error` but constructs a `Completion` error when
 /// the global object can't be reached.
 pub(crate) fn with_global_scope<R>(
-    ec: &mut dyn ExecutionContext<Types>,
-    f: impl FnOnce(&GlobalScope) -> Completion<R, Types>,
-) -> Completion<R, Types> {
+    ec: &mut dyn ExecutionContext<crate::js::Types>,
+    f: impl FnOnce(&GlobalScope) -> Completion<R, crate::js::Types>,
+) -> Completion<R, crate::js::Types> {
     match global_scope_or_error(ec) {
         Some(gs) => f(gs),
         None => Err(ec.new_type_error("global object is not a Window")),
@@ -90,7 +90,9 @@ pub(crate) fn collect_child_subtree_node_ids(
 
 // ── Generic helpers — EC trait-based access ────────────────────────────
 
-pub(crate) fn document_object(ec: &mut dyn ExecutionContext<Types>) -> Completion<JsObject, Types> {
+pub(crate) fn document_object(
+    ec: &mut dyn ExecutionContext<crate::js::Types>,
+) -> Completion<<crate::js::Types as JsTypes>::JsObject, crate::js::Types> {
     let missing_err = ec.new_type_error("missing document object");
     with_global_scope(ec, |global_scope| {
         global_scope.document_object().ok_or(missing_err)
@@ -98,15 +100,15 @@ pub(crate) fn document_object(ec: &mut dyn ExecutionContext<Types>) -> Completio
 }
 
 pub(crate) fn location_object(
-    ec: &mut dyn ExecutionContext<Types>,
-) -> Completion<Option<JsObject>, Types> {
+    ec: &mut dyn ExecutionContext<crate::js::Types>,
+) -> Completion<Option<<crate::js::Types as JsTypes>::JsObject>, crate::js::Types> {
     with_global_scope(ec, |global_scope| Ok(global_scope.location_object()))
 }
 
 pub(crate) fn store_location_object(
-    ec: &mut dyn ExecutionContext<Types>,
-    object: JsObject,
-) -> Completion<(), Types> {
+    ec: &mut dyn ExecutionContext<crate::js::Types>,
+    object: <crate::js::Types as JsTypes>::JsObject,
+) -> Completion<(), crate::js::Types> {
     with_global_scope(ec, |global_scope| {
         global_scope.store_location_object(object);
         Ok(())
@@ -114,9 +116,9 @@ pub(crate) fn store_location_object(
 }
 
 pub(crate) fn invalidate_cached_node_ids(
-    ec: &mut dyn ExecutionContext<Types>,
+    ec: &mut dyn ExecutionContext<crate::js::Types>,
     node_ids: &[usize],
-) -> Completion<(), Types> {
+) -> Completion<(), crate::js::Types> {
     with_global_scope(ec, |global_scope| {
         global_scope.invalidate_cached_node_ids(node_ids);
         Ok(())
@@ -124,8 +126,8 @@ pub(crate) fn invalidate_cached_node_ids(
 }
 
 pub(crate) fn take_animation_frame_callbacks(
-    ec: &mut dyn ExecutionContext<Types>,
-) -> Completion<Vec<crate::webidl::Callback>, Types> {
+    ec: &mut dyn ExecutionContext<crate::js::Types>,
+) -> Completion<Vec<crate::webidl::Callback>, crate::js::Types> {
     with_global_scope(ec, |global_scope| {
         Ok(global_scope.take_animation_frame_callbacks())
     })
@@ -135,8 +137,8 @@ pub(crate) fn take_animation_frame_callbacks(
 
 pub(crate) fn resolve_element_object(
     node_id: usize,
-    ec: &mut dyn ExecutionContext<Types>,
-) -> Completion<JsObject, Types> {
+    ec: &mut dyn ExecutionContext<crate::js::Types>,
+) -> Completion<<crate::js::Types as JsTypes>::JsObject, crate::js::Types> {
     // Read cache + document via immutable GlobalScope access.
     let (cached, document) = match global_scope_or_error(ec) {
         Some(gs) => (gs.cached_node_object(node_id), gs.document()),
@@ -160,8 +162,8 @@ pub(crate) fn resolve_element_object(
 pub(crate) fn object_for_existing_node(
     document: Rc<RefCell<BaseDocument>>,
     node_id: usize,
-    ec: &mut dyn ExecutionContext<Types>,
-) -> Completion<JsObject, Types> {
+    ec: &mut dyn ExecutionContext<crate::js::Types>,
+) -> Completion<<crate::js::Types as JsTypes>::JsObject, crate::js::Types> {
     let cached = match global_scope_or_error(ec) {
         Some(gs) => gs.cached_node_object(node_id),
         None => return Err(ec.new_type_error("global object is not a Window")),
@@ -184,8 +186,8 @@ pub(crate) fn object_for_existing_node(
 pub(crate) fn resolve_or_create_text_node_object(
     document: Rc<RefCell<BaseDocument>>,
     node_id: usize,
-    ec: &mut dyn ExecutionContext<Types>,
-) -> Completion<JsObject, Types> {
+    ec: &mut dyn ExecutionContext<crate::js::Types>,
+) -> Completion<<crate::js::Types as JsTypes>::JsObject, crate::js::Types> {
     let cached = match global_scope_or_error(ec) {
         Some(gs) => gs.cached_node_object(node_id),
         None => return Err(ec.new_type_error("global object is not a Window")),
@@ -209,8 +211,8 @@ pub(crate) fn resolve_or_create_text_node_object(
 fn element_object_from_document(
     document: Rc<RefCell<BaseDocument>>,
     node_id: usize,
-    ec: &mut dyn ExecutionContext<Types>,
-) -> Completion<JsObject, Types> {
+    ec: &mut dyn ExecutionContext<crate::js::Types>,
+) -> Completion<<crate::js::Types as JsTypes>::JsObject, crate::js::Types> {
     let kind = document
         .borrow()
         .get_node(node_id)

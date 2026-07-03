@@ -6,9 +6,7 @@ use crate::dom::{
     signal_abort as dom_signal_abort,
 };
 use crate::html::{Window, WindowOrWorkerGlobalScope};
-use crate::js::downcast::{
-    try_with_abort_signal_mut, try_with_abort_signal_ref, try_with_event_target_mut,
-};
+use crate::js::{try_with_abort_signal_mut, try_with_abort_signal_ref, try_with_event_target_mut};
 use crate::webidl::bindings::{
     AttributeDef, InterfaceDefinition, OperationDef, WebIdlInterface, create_interface_instance,
 };

@@ -2,7 +2,7 @@ use boa_engine::{JsArgs, JsNativeError, JsResult, JsValue};
 use std::marker::PhantomData;
 
 use crate::html::HTMLIFrameElement;
-use crate::js::downcast::try_with_event_target_mut;
+use crate::js::try_with_event_target_mut;
 use crate::webidl::bindings::{AttributeDef, InterfaceDefinition, WebIdlInterface};
 use crate::webidl::{callback_function_value, nullable_value};
 

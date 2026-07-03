@@ -7,8 +7,8 @@ use crate::html::{
     safe_passing_of_structured_data::StructuredCloneOptions,
     window_computed_style_properties_for_element,
 };
-use crate::js::downcast::try_with_event_target_mut;
 use crate::js::platform_objects;
+use crate::js::try_with_event_target_mut;
 use crate::webidl::bindings::{
     AttributeDef, InterfaceDefinition, OperationDef, WebIdlInterface, create_interface_instance,
 };
