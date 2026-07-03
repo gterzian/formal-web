@@ -32,7 +32,7 @@ pub trait JsTypes: Sized + 'static {
     // ── Object types by internal slot profile ───────────────────────────
 
     /// <https://tc39.es/ecma262/#sec-arraybuffer-objects>
-    type JsObject: Clone;
+    type JsObject: Clone + PartialEq;
 
     /// <https://tc39.es/ecma262/#sec-arraybuffer-objects>
     type ArrayBuffer: Clone;

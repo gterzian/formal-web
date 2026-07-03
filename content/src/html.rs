@@ -1,5 +1,9 @@
-use boa_engine::{Context, JsResult, JsValue};
-use js_engine::{Completion, ExecutionContext};
+use js_engine::{Completion, ExecutionContext, JsTypes};
+
+use crate::js::Types;
+
+type JsValue = <Types as JsTypes>::JsValue;
+type JsObject = <Types as JsTypes>::JsObject;
 use log::error;
 mod environment_settings_object;
 mod global_scope;
@@ -18,7 +22,6 @@ mod window;
 mod window_or_worker_global_scope;
 pub(crate) mod windowproxy;
 
-use boa_engine::object::JsObject;
 use ipc::IpcSender;
 use ipc_messages::content::{
     DocumentId, Event as ContentEvent, NavigableId, NavigateRequest, NavigationId,

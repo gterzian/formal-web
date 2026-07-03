@@ -220,6 +220,13 @@ pub struct JscObject {
     pub(crate) ctx: *mut JSContextRef,
 }
 
+impl PartialEq for JscObject {
+    fn eq(&self, other: &Self) -> bool {
+        self.raw == other.raw && self.ctx == other.ctx
+    }
+}
+impl Eq for JscObject {}
+
 impl JscObject {
     /// # Safety
     /// `raw` must be a valid `JSObjectRef` from `ctx`.

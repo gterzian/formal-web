@@ -1,31 +1,37 @@
-use boa_engine::{JsObject, JsValue, js_string, property::PropertyDescriptor};
 use std::marker::PhantomData;
 
-use js_engine::JsTypes;
+use js_engine::{Completion, ExecutionContext, JsTypes, PropertyDescriptor};
+
+use crate::js::Types;
+
+type JsValue = <Types as JsTypes>::JsValue;
 
 /// Describes a constant on an interface.
 ///
 /// https://webidl.spec.whatwg.org/#dfn-constant
 pub(crate) struct ConstantDef<T: JsTypes> {
     pub id: &'static str,
-    pub value: JsValue,
+    pub value: <T as JsTypes>::JsValue,
     pub _phantom: PhantomData<T>,
 }
 
 /// <https://webidl.spec.whatwg.org/#define-the-constants>
 pub(crate) fn define_constants(
-    target: &JsObject,
-    context: &mut boa_engine::Context,
-    constants: &[ConstantDef<crate::js::Types>],
-) -> boa_engine::JsResult<()> {
+    target: <Types as JsTypes>::JsObject,
+    ec: &mut dyn ExecutionContext<Types>,
+    constants: &[ConstantDef<Types>],
+) -> Completion<(), Types> {
     for constant in constants {
-        let desc = PropertyDescriptor::builder()
-            .value(constant.value.clone())
-            .writable(false)
-            .enumerable(true)
-            .configurable(false)
-            .build();
-        target.define_property_or_throw(js_string!(constant.id), desc, context)?;
+        let key = ec.property_key_from_str(constant.id);
+        let desc = PropertyDescriptor {
+            value: Some(constant.value.clone()),
+            writable: Some(false),
+            enumerable: Some(true),
+            configurable: Some(false),
+            get: None,
+            set: None,
+        };
+        ec.define_property_or_throw(target.clone(), key, desc)?;
     }
     Ok(())
 }

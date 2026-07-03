@@ -11,9 +11,19 @@ use wasmtime::{Func, Instance as WasmtimeInstance, Module, Store};
 use crate::html::{PendingRequest, PendingState, Window};
 use crate::wasm::conversions::{default_val_for_type, js_val_to_wasm_val, wasm_val_to_js_value};
 use crate::wasm::types::{WasmInstance, WasmModule};
-use crate::webidl::a_new_promise_boa;
-
 use js_engine::{Completion, ExecutionContext};
+
+/// Creates a new pending promise using Boa APIs directly.
+/// Wrapper for Boa-only wasm code that works with `&mut Context`.
+fn a_new_promise_boa(
+    context: &mut boa_engine::Context,
+) -> (
+    boa_engine::JsObject,
+    boa_engine::builtins::promise::ResolvingFunctions,
+) {
+    let (promise, resolvers) = boa_engine::object::builtins::JsPromise::new_pending(context);
+    (promise.into(), resolvers)
+}
 
 // ── Namespace operations ──
 

@@ -2,11 +2,14 @@ use log::error;
 use std::collections::{BTreeMap, HashMap};
 use std::mem;
 
-use boa_engine::JsValue;
 use ipc::IpcSender;
 use ipc_messages::content::{Event as ContentEvent, UserNavigationInvolvement};
 
-use js_engine::{Completion, ExecutionContext};
+use js_engine::{Completion, ExecutionContext, JsTypes};
+
+use crate::js::Types;
+
+type JsValue = <Types as JsTypes>::JsValue;
 
 use crate::dom::Element;
 use crate::dom::event::EventTarget;
@@ -58,7 +61,7 @@ impl Window {
         ec: &mut dyn ExecutionContext<crate::js::Types>,
     ) -> Completion<JsValue, crate::js::Types> {
         let Some(event_sender) = self.global_scope.event_sender() else {
-            return Ok(JsValue::null());
+            return Ok(ec.value_null());
         };
         window_open_steps(ec, url, target, features, &self.global_scope, &event_sender)
     }
@@ -275,7 +278,7 @@ pub(crate) fn window_open_steps(
     // Step 17: "If noopener is true or windowType is 'new with no opener',
     //           then return null."
     if noopener {
-        return Ok(JsValue::null());
+        return Ok(ec.value_null());
     }
 
     // Step 18: Return targetNavigable's active WindowProxy.

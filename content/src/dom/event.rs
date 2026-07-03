@@ -1,10 +1,13 @@
 use blitz_traits::events::{DomEvent, EventState};
-use boa_engine::{JsResult, object::JsObject};
 
+use crate::js::Types;
 use crate::webidl::Callback;
+use js_engine::JsTypes;
 use js_engine::gc_struct;
 
 use super::{AbortAlgorithm, AbortSignal};
+
+type JsObject = <Types as JsTypes>::JsObject;
 
 pub const NONE: u16 = 0;
 pub const CAPTURING_PHASE: u16 = 1;

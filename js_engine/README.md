@@ -272,29 +272,46 @@ fn binding_fn(
 | Blocked operation | Reason |
 |---|---|
 | `ObjectInitializer` / `register_global_property` (document property) | Boa object-model construction; needs conversion to `ec.create_plain_object` + `ec.set` pattern. CSS namespace done (`css_generic.rs`). |
-| `Callback::equals` requires engine-level object comparison | `JsObject` doesn't implement `Eq` on generic `JsTypes`; needs trait extension or bridge. Blocks `callback.rs` generic conversion. |
 
 ### Remaining `#[cfg(boa_backend)]` gating to remove
 
 Every `#[cfg(boa_backend)]` in content must go except:
 - `build_context.rs` (the single engine-instantiation point)
 - `wasm/` (requires wasmtime, Boa-only)
+- `generic_js_test.rs` (Boa/JSC test sections)
 
 Files currently gated behind `#[cfg(boa_backend)]` that must be un-gated:
 
-| Module | Gating | Action |
+| Module | Gating | Status |
 |---|---|---|
-| `dom/` | module-level `#[cfg(boa_backend)]` | Convert all `use boa_engine::*` to `Types::*` + `js_engine` trait |
-| `html/` | module-level `#[cfg(boa_backend)]` | Convert all `use boa_engine::*` to generic |
-| `streams/` | module-level `#[cfg(boa_backend)]` | Convert all `use boa_engine::*` to generic |
-| `webidl/` | module-level `#[cfg(boa_backend)]` | Convert all `use boa_engine::*` to generic |
-| `js/bindings/` | module-level `#[cfg(boa_backend)]` | Convert all `use boa_engine::*` to generic |
-| `js/downcast.rs` | module-level `#[cfg(boa_backend)]` | Convert downcast helpers to generic |
-| `js/platform_objects.rs` | module-level `#[cfg(boa_backend)]` | Already partially generic; remove remaining Boa deps |
-| `js/mod.rs` helpers | function-level `#[cfg(boa_backend)]` | Convert `builtin_with_captures_ctx` etc. to generic, or remove |
-| `main.rs` | ~21 inline `#[cfg(boa_backend)]` annotations | Remove all; unify into one generic message loop |
+| `webidl/` | module-level `#[cfg(boa_backend)]` | **DONE** — un-gated, zero `boa_engine::*` imports |
+| `dom/` | module-level `#[cfg(boa_backend)]` | `event.rs` converted; `abort.rs`, `dispatch.rs`, `ui_event_dispatch.rs` remain |
+| `html/` | module-level `#[cfg(boa_backend)]` | `html.rs`, `window_or_worker_global_scope.rs`, `location.rs`, `html_anchor_element.rs`, `window.rs` converted; `environment_settings_object.rs`, `global_scope.rs`, `windowproxy.rs` remain |
+| `streams/` | module-level `#[cfg(boa_backend)]` | All 13 stream files remain |
+| `js/bindings/` | module-level `#[cfg(boa_backend)]` | ~18 binding files remain (mostly `ObjectInitializer`-based) |
+| `js/bindings/wasm/` | module-level `#[cfg(boa_backend)]` | Boa-only (wasmtime); bridge functions moved locally |
+| `js/downcast.rs` | module-level `#[cfg(boa_backend)]` | Generic `try_with_*` helpers exist; Boa-specific `with_*` helpers need removal or gating |
+| `js/platform_objects.rs` | module-level `#[cfg(boa_backend)]` | Partially generic; uses `boa_engine::{JsValue, JsObject}` directly |
+| `js/mod.rs` helpers | function-level `#[cfg(boa_backend)]` | `builtin_with_captures_ctx`, `builtin_with_captures`, `builtin_callback*`, bridge functions |
+| `main.rs` | ~21 inline `#[cfg(boa_backend)]` annotations | Many tied to `ContentProcess` which is Boa-only |
 
-**~60 files currently import `boa_engine::*`** — every one must be converted.
+**~55 files still import `boa_engine::*`** (down from ~60).
+
+### Converted files (this session)
+
+- **`js_engine` foundation:** Added `PartialEq` to `JsTypes::JsObject` bound; implemented `PartialEq + Eq` for `JscObject`.
+- **`webidl/callback.rs`:** Converted from `boa_engine::{JsValue, JsObject}` to generic `Types::JsValue`/`JsObject`; replaced `JsObject::equals` with `PartialEq`.
+- **`webidl/bindings/constant.rs`:** Converted to generic `ExecutionContext`-based API.
+- **`webidl/promise.rs`:** Removed dead `a_new_promise_boa` and `rejected_promise_from_error_boa` bridge functions.
+- **`webidl/mod.rs`:** Removed dead re-exports.
+- **`dom/event.rs`:** Converted from `boa_engine::JsObject` to generic type alias.
+- **`html.rs` (root):** Converted from `boa_engine::{Context, JsResult, JsValue, JsObject}` to generic type aliases.
+- **`html/window_or_worker_global_scope.rs`:** Converted `JsValue` to generic alias.
+- **`html/location.rs`:** Converted `JsObject` to generic alias.
+- **`html/html_anchor_element.rs`:** Converted `JsObject` to generic alias.
+- **`html/window.rs`:** Converted `JsValue` to generic alias; replaced `JsValue::null()` with `ec.value_null()`.
+- **`wasm/namespace.rs`, `js/bindings/wasm/mod.rs`:** Moved `a_new_promise_boa`/`rejected_promise_from_error_boa` bridge functions locally into the Boa-only wasm module.
+- **Un-gated `webidl` module** in `main.rs` (removed `#[cfg(boa_backend)]`).
 
 ### Two message loops → one
 
@@ -309,7 +326,7 @@ needs to use that `Engine` value directly instead of branching.
 
 ## Remaining work order
 
-### 1. Port CSS namespace to generic EC API
+### 1. Port CSS namespace to generic EC API ✅
 
 Follow the `console_generic.rs` pattern: `create_plain_object` +
 `create_builtin_function` + `set`.  Move the old `bindings/css.rs`
@@ -329,14 +346,20 @@ Work module by module.  For each file:
 - Un-gate the module from `#[cfg(boa_backend)]`.
 - Verify on **both backends** (Boa keeps working, JSC compiles).
 
-Recommended conversion order (lowest-level first, highest-level last):
+Conversion order (lowest-level first, highest-level last):
 
-1. `webidl/` — callback, promise, buffer_source, array_index, bindings infra
-2. `dom/` — abort, event, dispatch, ui_event_dispatch
-3. `html/` — environment_settings_object, global_scope, location, window, windowproxy, etc.
-4. `streams/` — all stream types
-5. `js/bindings/` — all interface registrations
-6. `js/downcast.rs`, `js/platform_objects.rs`, `js/mod.rs` helpers
+1. `webidl/` — **DONE** (callback, promise, buffer_source, array_index,
+   bindings/constant converted; module un-gated; zero `boa_engine::*` imports)
+2. `dom/` — `event.rs` done; `abort.rs`, `dispatch.rs`, `ui_event_dispatch.rs`
+   remain (blocked by downcast/platform_objects dependency)
+3. `html/` — `html.rs`, `window_or_worker_global_scope.rs`, `location.rs`,
+   `html_anchor_element.rs`, `window.rs` done; `environment_settings_object.rs`,
+   `global_scope.rs`, `windowproxy.rs` remain
+4. `streams/` — all 13 stream files remain (blocked by streams being deeply
+   entangled with Boa promise/resolver types)
+5. `js/bindings/` — wasm bridges moved locally; ~17 binding files remain
+6. `js/downcast.rs`, `js/platform_objects.rs`, `js/mod.rs` helpers —
+   generic `try_with_*` variants exist; Boa-specific `with_*` remain
 
 ### 3. Unify the message loop
 

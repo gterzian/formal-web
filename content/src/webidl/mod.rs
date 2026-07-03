@@ -13,8 +13,7 @@ pub(crate) use callback::{
     callback_interface_type_value, invoke_callback_function, nullable_value,
 };
 pub(crate) use promise::{
-    a_new_promise, a_new_promise_boa, error_to_rejection_reason, mark_promise_as_handled,
-    promise_from_value, rejected_promise, rejected_promise_from_error,
-    rejected_promise_from_error_boa, resolved_promise, transform_promise_to_undefined,
-    upon_settlement,
+    a_new_promise, error_to_rejection_reason, mark_promise_as_handled, promise_from_value,
+    rejected_promise, rejected_promise_from_error, resolved_promise,
+    transform_promise_to_undefined, upon_settlement,
 };

@@ -32,15 +32,6 @@ pub(crate) fn a_new_promise(
     Ok((promise_obj, resolvers))
 }
 
-/// Bridge for Boa-gated wasm callers that pass `&mut Context` directly.
-#[cfg(boa_backend)]
-pub(crate) fn a_new_promise_boa(
-    context: &mut boa_engine::Context,
-) -> (JsObject, boa_engine::builtins::promise::ResolvingFunctions) {
-    let (promise, resolvers) = boa_engine::object::builtins::JsPromise::new_pending(context);
-    (promise.into(), resolvers)
-}
-
 /// <https://webidl.spec.whatwg.org/#a-promise-resolved-with>
 pub(crate) fn resolved_promise(
     value: JsValue,
@@ -109,20 +100,6 @@ pub(crate) fn rejected_promise_from_error(
     ec: &mut dyn ExecutionContext<Types>,
 ) -> JsObject {
     rejected_promise(error, ec).unwrap_or_else(|_| ec.realm_global_object())
-}
-
-/// Bridge for Boa-gated callers that pass `JsError`.
-#[cfg(boa_backend)]
-pub(crate) fn rejected_promise_from_error_boa(
-    error: boa_engine::JsError,
-    ec: &mut dyn ExecutionContext<Types>,
-) -> JsObject {
-    // Extract the opaque value if available, or fall back to a type error.
-    let reason = error
-        .as_opaque()
-        .cloned()
-        .unwrap_or_else(|| ec.new_type_error("rejected_promise_from_error: no opaque error value"));
-    rejected_promise(reason, ec).unwrap_or_else(|_| ec.realm_global_object())
 }
 
 /// <https://webidl.spec.whatwg.org/#a-promise-rejected-with>

@@ -1,8 +1,12 @@
 use std::{cell::RefCell, rc::Rc};
 
 use blitz_dom::BaseDocument;
-use boa_engine::object::JsObject;
 use ipc::IpcSender;
+
+use crate::js::Types;
+use js_engine::JsTypes;
+
+type JsObject = <Types as JsTypes>::JsObject;
 use ipc_messages::content::{Event as ContentEvent, NavigableId, UserNavigationInvolvement};
 use js_engine::gc_struct;
 use url::Url;

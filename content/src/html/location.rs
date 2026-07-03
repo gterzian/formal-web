@@ -1,10 +1,13 @@
-use boa_engine::object::JsObject;
 use ipc_messages::content::UserNavigationInvolvement;
 use log::error;
 use url::{Host, Url};
 
 use super::Window;
+use crate::js::Types;
+use js_engine::JsTypes;
 use js_engine::gc_struct;
+
+type JsObject = <Types as JsTypes>::JsObject;
 
 /// <https://html.spec.whatwg.org/#location>
 #[gc_struct]

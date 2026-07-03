@@ -1,6 +1,10 @@
-use boa_engine::{JsValue, object::JsObject};
 use js_engine::gc_struct;
 use js_engine::{Completion, ExecutionContext, JsTypes};
+
+use crate::js::Types;
+
+type JsValue = <Types as JsTypes>::JsValue;
+type JsObject = <Types as JsTypes>::JsObject;
 
 // Note: The content process reuses `Callback` for both [callback function](https://webidl.spec.whatwg.org/#idl-callback-function) type values and objects implementing a [callback interface](https://webidl.spec.whatwg.org/#dfn-callback-interface) because both Web IDL representations are a tuple of (object reference, callback context).
 // Note: The callback context remains implicit in the current single-realm content process until callback-realm bookkeeping is modeled explicitly.
@@ -16,13 +20,13 @@ impl Callback {
     }
 
     pub(crate) fn equals(&self, other: &Self) -> bool {
-        JsObject::equals(&self.object, &other.object)
+        self.object == other.object
     }
 
     /// <https://webidl.spec.whatwg.org/#callback-function-to-js>
     // Note: The callback interface type conversion back to JavaScript yields the same referenced object in the implementation, so this helper serves both representations.
     pub(crate) fn to_js_value(&self) -> JsValue {
-        JsValue::from(self.object.clone())
+        Types::value_from_object(self.object.clone())
     }
 }
 
@@ -39,9 +43,9 @@ pub(crate) enum ExceptionBehavior {
 /// <https://webidl.spec.whatwg.org/#js-to-callback-interface>
 pub(crate) fn callback_interface_type_value(
     value: &JsValue,
-    ec: &mut dyn ExecutionContext<crate::js::Types>,
-) -> Completion<Callback, crate::js::Types> {
-    let object = crate::js::Types::value_as_object(value)
+    ec: &mut dyn ExecutionContext<Types>,
+) -> Completion<Callback, Types> {
+    let object = Types::value_as_object(value)
         .ok_or_else(|| ec.new_type_error("callback interface value is not an object"))?;
     Ok(Callback::from_object(object.clone()))
 }
@@ -49,9 +53,9 @@ pub(crate) fn callback_interface_type_value(
 /// <https://webidl.spec.whatwg.org/#js-to-callback-function>
 pub(crate) fn callback_function_value(
     value: &JsValue,
-    ec: &mut dyn ExecutionContext<crate::js::Types>,
-) -> Completion<Callback, crate::js::Types> {
-    let object = crate::js::Types::value_as_object(value)
+    ec: &mut dyn ExecutionContext<Types>,
+) -> Completion<Callback, Types> {
+    let object = Types::value_as_object(value)
         .ok_or_else(|| ec.new_type_error("callback function value is not callable"))?;
     if !ec.is_callable(value) {
         return Err(ec.new_type_error("callback function value is not callable"));
@@ -62,13 +66,10 @@ pub(crate) fn callback_function_value(
 /// <https://webidl.spec.whatwg.org/#js-to-nullable>
 pub(crate) fn nullable_value<T>(
     value: &JsValue,
-    ec: &mut dyn ExecutionContext<crate::js::Types>,
-    convert_inner: impl FnOnce(
-        &JsValue,
-        &mut dyn ExecutionContext<crate::js::Types>,
-    ) -> Completion<T, crate::js::Types>,
-) -> Completion<Option<T>, crate::js::Types> {
-    if value.is_null() || value.is_undefined() {
+    ec: &mut dyn ExecutionContext<Types>,
+    convert_inner: impl FnOnce(&JsValue, &mut dyn ExecutionContext<Types>) -> Completion<T, Types>,
+) -> Completion<Option<T>, Types> {
+    if Types::value_is_null(value) || Types::value_is_undefined(value) {
         return Ok(None);
     }
     convert_inner(value, ec).map(Some)
@@ -76,12 +77,12 @@ pub(crate) fn nullable_value<T>(
 
 /// <https://webidl.spec.whatwg.org/#call-a-user-objects-operation>
 pub(crate) fn call_user_objects_operation(
-    ec: &mut dyn ExecutionContext<crate::js::Types>,
+    ec: &mut dyn ExecutionContext<Types>,
     value: &Callback,
     op_name: &str,
     args: &[JsValue],
     this_arg: Option<&JsValue>,
-) -> Completion<JsValue, crate::js::Types> {
+) -> Completion<JsValue, Types> {
     // Step 1: "Let completion be an uninitialized variable."
 
     // Step 2: "If thisArg was not given, let thisArg be undefined."
@@ -98,7 +99,7 @@ pub(crate) fn call_user_objects_operation(
     // Note: The content process does not yet model callback realms or HTML callback/script preparation stacks explicitly.
 
     // Step 9: "Let X be O."
-    let object_value = JsValue::from(object.clone());
+    let object_value = Types::value_from_object(object.clone());
     let mut callable = object.clone();
 
     // Step 10: "If IsCallable(O) is false, then:"
@@ -117,7 +118,7 @@ pub(crate) fn call_user_objects_operation(
             return Err(ec.new_type_error(&msg));
         }
 
-        let Some(operation_obj) = operation.as_object() else {
+        let Some(operation_obj) = Types::value_as_object(&operation) else {
             debug_assert!(
                 false,
                 "IsCallable returned true for a non-object callback operation"
@@ -154,26 +155,26 @@ pub(crate) fn call_user_objects_operation(
 
 /// <https://webidl.spec.whatwg.org/#invoke-a-callback-function>
 pub(crate) fn invoke_callback_function(
-    host: &mut dyn EcmascriptHost<crate::js::Types>,
+    host: &mut dyn EcmascriptHost<Types>,
     callable: &Callback,
     args: &[JsValue],
     exception_behavior: ExceptionBehavior,
     this_arg: Option<&JsValue>,
-) -> Completion<JsValue, crate::js::Types> {
+) -> Completion<JsValue, Types> {
     // Step 1: "Let completion be an uninitialized variable."
 
     // Step 2: "If thisArg was not given, let thisArg be undefined."
-    let effective_this_arg = this_arg.cloned().unwrap_or_else(JsValue::undefined);
+    let effective_this_arg = this_arg.cloned().unwrap_or_else(|| host.value_undefined());
 
     // Step 3: "Let F be the JavaScript object corresponding to callable."
     let function = callable.object.clone();
-    let function_value = JsValue::from(function.clone());
+    let function_value = Types::value_from_object(function.clone());
 
     // Step 4: "If IsCallable(F) is false:"
     if !host.is_callable(&function_value) {
         // Step 4.1: "Return the result of converting undefined to the callback function's return type."
         // Note: The current content process returns the raw ECMAScript `undefined` value here; current callers either expect `undefined`/`any` directly or immediately perform the surrounding algorithm's return-value conversion.
-        return Ok(JsValue::undefined());
+        return Ok(host.value_undefined());
     }
 
     // Step 5: "Let realm be F's associated realm."
@@ -208,7 +209,7 @@ pub(crate) fn invoke_callback_function(
             host.report_exception(error);
 
             // Return.6.3: "Return the unique undefined IDL value."
-            Ok(JsValue::undefined())
+            Ok(host.value_undefined())
         }
     }
 }

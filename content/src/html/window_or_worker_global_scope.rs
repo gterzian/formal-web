@@ -1,6 +1,8 @@
-use boa_engine::JsValue;
-
 use js_engine::{Completion, ExecutionContext, JsTypes};
+
+use crate::js::Types;
+
+type JsValue = <Types as JsTypes>::JsValue;
 
 use crate::html::{GlobalScope, TimerHandler, Window};
 use crate::webidl::Callback;

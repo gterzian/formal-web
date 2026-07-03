@@ -17,7 +17,6 @@ pub mod html;
 pub mod streams;
 #[cfg(boa_backend)]
 pub mod wasm;
-#[cfg(boa_backend)]
 pub mod webidl;
 
 #[cfg(boa_backend)]
