@@ -1,10 +1,9 @@
 use std::{cell::Cell, collections::VecDeque, rc::Rc};
 
-use boa_engine::{
-    Context, JsValue,
-    builtins::typed_array::TypedArrayKind,
-    object::{JsObject, builtins::JsArrayBuffer},
-};
+use crate::js::Types;
+type JsValue = <Types as JsTypes>::JsValue;
+type JsObject = <Types as JsTypes>::JsObject;
+type ArrayBuffer = <Types as JsTypes>::ArrayBuffer;
 
 use js_engine::{Completion, ExecutionContext, JsTypes, TypedArrayElementType};
 
@@ -35,6 +34,7 @@ pub(crate) enum ArrayBufferViewKind {
     BigUint64Array,
     Float32Array,
     Float64Array,
+    Float16Array,
 }
 
 impl ArrayBufferViewKind {
@@ -51,23 +51,25 @@ impl ArrayBufferViewKind {
             Self::BigUint64Array => TypedArrayElementType::BigUint64,
             Self::Float32Array => TypedArrayElementType::Float32,
             Self::Float64Array => TypedArrayElementType::Float64,
+            Self::Float16Array => TypedArrayElementType::Float16,
             Self::DataView => return None,
         })
     }
 
-    fn from_typed_array_kind(kind: TypedArrayKind) -> Self {
-        match kind {
-            TypedArrayKind::Int8 => Self::Int8Array,
-            TypedArrayKind::Uint8 => Self::Uint8Array,
-            TypedArrayKind::Uint8Clamped => Self::Uint8ClampedArray,
-            TypedArrayKind::Int16 => Self::Int16Array,
-            TypedArrayKind::Uint16 => Self::Uint16Array,
-            TypedArrayKind::Int32 => Self::Int32Array,
-            TypedArrayKind::Uint32 => Self::Uint32Array,
-            TypedArrayKind::BigInt64 => Self::BigInt64Array,
-            TypedArrayKind::BigUint64 => Self::BigUint64Array,
-            TypedArrayKind::Float32 => Self::Float32Array,
-            TypedArrayKind::Float64 => Self::Float64Array,
+    fn from_element_type(element_type: TypedArrayElementType) -> Self {
+        match element_type {
+            TypedArrayElementType::Int8 => Self::Int8Array,
+            TypedArrayElementType::Uint8 => Self::Uint8Array,
+            TypedArrayElementType::Uint8Clamped => Self::Uint8ClampedArray,
+            TypedArrayElementType::Int16 => Self::Int16Array,
+            TypedArrayElementType::Uint16 => Self::Uint16Array,
+            TypedArrayElementType::Int32 => Self::Int32Array,
+            TypedArrayElementType::Uint32 => Self::Uint32Array,
+            TypedArrayElementType::BigInt64 => Self::BigInt64Array,
+            TypedArrayElementType::BigUint64 => Self::BigUint64Array,
+            TypedArrayElementType::Float32 => Self::Float32Array,
+            TypedArrayElementType::Float64 => Self::Float64Array,
+            TypedArrayElementType::Float16 => Self::Float16Array,
         }
     }
 
@@ -76,14 +78,17 @@ impl ArrayBufferViewKind {
             Self::DataView | Self::Int8Array | Self::Uint8Array | Self::Uint8ClampedArray => 1,
             Self::Int16Array | Self::Uint16Array => 2,
             Self::Int32Array | Self::Uint32Array | Self::Float32Array => 4,
-            Self::BigInt64Array | Self::BigUint64Array | Self::Float64Array => 8,
+            Self::BigInt64Array
+            | Self::BigUint64Array
+            | Self::Float64Array
+            | Self::Float16Array => 8,
         }
     }
 }
 
 #[gc_struct]
 pub(crate) struct ArrayBufferViewDescriptor {
-    buffer: JsArrayBuffer,
+    buffer: ArrayBuffer,
     kind: ArrayBufferViewKind,
     #[ignore_trace]
     byte_offset: usize,
@@ -113,8 +118,8 @@ impl ArrayBufferViewDescriptor {
         }
 
         if let Some(typed_array) = <crate::js::Types as JsTypes>::object_as_typed_array(&object) {
-            let kind = typed_array
-                .kind()
+            let element_type = ec
+                .typed_array_element_type(&typed_array)
                 .ok_or_else(|| ec.new_type_error("TypedArray view is missing its kind"))?;
             let buffer = ec.typed_array_buffer(&typed_array)?;
             if ec.array_buffer_data(&buffer).is_none() {
@@ -122,7 +127,7 @@ impl ArrayBufferViewDescriptor {
             }
             Ok(Self {
                 buffer,
-                kind: ArrayBufferViewKind::from_typed_array_kind(kind),
+                kind: ArrayBufferViewKind::from_element_type(element_type),
                 byte_offset: ec.typed_array_byte_offset(&typed_array)? as usize,
                 byte_length: ec.typed_array_byte_length(&typed_array)? as usize,
             })
@@ -131,7 +136,7 @@ impl ArrayBufferViewDescriptor {
         }
     }
 
-    pub(crate) fn new_uint8(buffer: JsArrayBuffer, byte_offset: usize, byte_length: usize) -> Self {
+    pub(crate) fn new_uint8(buffer: ArrayBuffer, byte_offset: usize, byte_length: usize) -> Self {
         Self {
             buffer,
             kind: ArrayBufferViewKind::Uint8Array,
@@ -265,7 +270,7 @@ impl PullIntoDescriptor {
                 }
             }
             PullRequest::Byob(read_into_request) => {
-                let value = JsValue::from(self.filled_view(ec)?);
+                let value = <Types as JsTypes>::value_from_object(self.filled_view(ec)?);
                 read_into_request.clone().close_steps(Some(value), ec)
             }
         }
@@ -332,7 +337,7 @@ impl PullIntoDescriptor {
 
 #[gc_struct]
 struct ByteQueueEntry {
-    buffer: JsArrayBuffer,
+    buffer: ArrayBuffer,
     #[ignore_trace]
     byte_offset: usize,
     #[ignore_trace]
@@ -715,8 +720,6 @@ impl ReadableByteStreamController {
         };
 
         self.fill_pull_into_from_queue(&mut descriptor, ec)?;
-        // SAFETY: ec is backed by BoaContext repr(transparent) over Context.
-
         if descriptor.can_commit() {
             return descriptor.commit(false, ec);
         }
@@ -827,7 +830,6 @@ impl ReadableByteStreamController {
         error: JsValue,
         ec: &mut dyn ExecutionContext<crate::js::Types>,
     ) -> Completion<(), crate::js::Types> {
-        // SAFETY: ec is backed by BoaContext repr(transparent) over Context.
         let stream = self.stream_slot(ec)?;
         if stream.state() != ReadableStreamState::Readable {
             return Ok(());
@@ -836,7 +838,6 @@ impl ReadableByteStreamController {
         self.reset_queue();
         let pending = std::mem::take(&mut *self.pending_pull_intos.borrow_mut());
         self.invalidate_byob_request(ec)?;
-        // SAFETY: ec is backed by BoaContext repr(transparent) over Context.
 
         for descriptor in pending {
             descriptor.error(error.clone(), ec)?;
@@ -886,8 +887,6 @@ impl ReadableByteStreamController {
 
         self.invalidate_byob_request(ec)?;
         let stream = self.stream_slot(ec)?;
-        // SAFETY: ec is backed by BoaContext repr(transparent) over Context.
-
         if self.close_requested.get() {
             if descriptor.bytes_filled % descriptor.view.element_size() != 0 {
                 let error = type_error_value(
@@ -1106,7 +1105,6 @@ impl ReadableByteStreamController {
         ec: &mut dyn ExecutionContext<crate::js::Types>,
     ) -> Completion<(), crate::js::Types> {
         let stream = self.stream_slot(ec)?;
-        // SAFETY: ec is backed by BoaContext repr(transparent) over Context.
         // readable_stream_fulfill_read_request and readable_stream_close still require &mut Context.
         while self.queue_total_size.get() > 0
             && stream
@@ -1245,7 +1243,6 @@ pub(crate) fn set_up_readable_byte_stream_controller_from_underlying_source(
     high_water_mark: f64,
     ec: &mut dyn ExecutionContext<crate::js::Types>,
 ) -> Completion<(), crate::js::Types> {
-    // SAFETY: ec is backed by BoaContext repr(transparent) over Context.
     let controller = ReadableByteStreamController::new();
     let controller_object: JsObject = create_interface_instance::<
         crate::js::Types,
@@ -1355,7 +1352,7 @@ pub(crate) fn extract_auto_allocate_chunk_size(
 
 fn create_view_object(
     kind: &ArrayBufferViewKind,
-    buffer: JsArrayBuffer,
+    buffer: ArrayBuffer,
     byte_offset: usize,
     byte_length: usize,
     ec: &mut dyn ExecutionContext<crate::js::Types>,
@@ -1382,7 +1379,7 @@ fn create_view_object(
 }
 
 fn create_uint8_view_object(
-    buffer: JsArrayBuffer,
+    buffer: ArrayBuffer,
     byte_offset: usize,
     byte_length: usize,
     ec: &mut dyn ExecutionContext<crate::js::Types>,

@@ -267,12 +267,9 @@ fn binding_fn(
   `console_generic.rs` and `css_generic.rs` implementations (deleted
   `content/src/js/bindings/console.rs` and `content/src/js/bindings/css.rs`).
   Zero `boa_engine::*` imports in console/css namespaces.
-- **11 of 13 stream domain files converted** to generic EC API — all writable stream
-  files (`writablestream*.rs`), most readable stream files (`readablestreamsupport.rs`,
-  `readablestreamdefault*.rs`, `readablestreamasynciterator.rs`, `readablestreambyobreader.rs`,
-  `transformstream.rs`), and `strategy.rs`. Remaining: `readablestream.rs` and
-  `readablebytestreamcontroller.rs` (use Boa-specific builtins: `JsArray`, `JsPromise`,
-  `JsArrayBuffer`, `JsTypedArray`, `NativeFunction`, `Gc`).
+- **All 13 stream domain files converted** to generic EC API — `readablestream.rs` and
+  `readablebytestreamcontroller.rs` no longer use any `boa_engine::*` imports.
+  Zero `boa_engine` or `boa_gc` imports in the entire `streams/` directory.
 - **All 3 stream binding files converted** (`readablestream.rs`, `strategy.rs`,
   `writablestream.rs`).
 - **`environment_settings_object.rs` call sites updated** — console/CSS
@@ -292,8 +289,8 @@ fn binding_fn(
 
 | Blocked operation | Reason |
 |---|---|
-| `readablestream.rs` (domain) | Uses Boa-specific builtins (`JsArray`, `JsPromise`, `JsSymbol`, `NativeFunction`, `Gc`, `GcRef`) — need generic equivalents or `#[gc_struct]` rewrite |
-| `readablebytestreamcontroller.rs` (domain) | Uses Boa-specific builtins (`JsPromise`, `JsTypedArray`, `JsArrayBuffer`, `JsDataView`, `TypedArrayKind`) — need generic equivalents |
+| ~~`readablestream.rs` (domain)~~ | ✅ **RESOLVED** — all stream files fully converted, zero `boa_engine::*` imports. |
+| ~~`readablebytestreamcontroller.rs` (domain)~~ | ✅ **RESOLVED** — all stream files fully converted, zero `boa_engine::*` imports. |
 | `downcast.rs` cfg removal | Still gated because domain types depend on `boa_engine` |
 | `js/mod.rs` cfg removal | Helper functions (`builtin_with_captures_*`, `js_result_to_completion`) still use `boa_engine` types |
 | `main.rs` message loop unification | Two separate `run_*_message_loop` functions — needs merge into single generic loop |
@@ -316,7 +313,7 @@ Files currently gated behind `#[cfg(boa_backend)]` that must be un-gated:
 | `webidl/` | module-level `#[cfg(boa_backend)]` | **DONE** — un-gated, zero `boa_engine::*` imports |
 | `dom/` | module-level `#[cfg(boa_backend)]` | `event.rs` + `abort.rs` + `dispatch.rs` converted; `ui_event_dispatch.rs` remains (depends on `EnvironmentSettingsObject`) |
 | `html/` | module-level `#[cfg(boa_backend)]` | `html_anchor_element.rs`, `html_element.rs`, `html_input_element.rs`, `html_media_element.rs`, `hyperlink_element_utils.rs`, `location.rs` are generic. `environment_settings_object.rs`, `global_scope.rs`, `windowproxy.rs` remain (core engine bridge) |
-| `streams/` | module-level `#[cfg(boa_backend)]` | 11 of 13 files converted and un-gated. Remaining: `readablestream.rs`, `readablebytestreamcontroller.rs` (use Boa builtins). |
+| `streams/` | module-level `#[cfg(boa_backend)]` | **DONE** — all 13 files un-gated, zero `boa_engine::*` imports. |
 | `js/bindings/` | module-level `#[cfg(boa_backend)]` | **9 files converted this session.** ~9 remaining: `element.rs`, `abort_signal.rs`, `event_target.rs`, `node.rs`, `document.rs`, `html_element.rs`, `html_iframe_element.rs`, `hyperlink_element_utils.rs`, `window.rs`. |
 | `js/bindings/wasm/` | module-level `#[cfg(boa_backend)]` | Boa-only (wasmtime); bridge functions moved locally |
 | `js/downcast.rs` | module-level `#[cfg(boa_backend)]` | Generic `try_with_*` helpers (using `<crate::js::Types as JsTypes>` syntax) merged back into single file. `downcast_generic.rs` removed. Remains Boa-gated because `crate::dom`/`crate::html` are Boa-only. |
@@ -324,13 +321,14 @@ Files currently gated behind `#[cfg(boa_backend)]` that must be un-gated:
 | `js/mod.rs` helpers | function-level `#[cfg(boa_backend)]` | `builtin_with_captures_ctx`, `builtin_with_captures`, `builtin_callback*`, bridge functions |
 | `main.rs` | ~21 inline `#[cfg(boa_backend)]` annotations | Many tied to `ContentProcess` which is Boa-only |
 
-**~37 files still import `boa_engine::*`** (down from ~60).  Files no longer importing `boa_engine`:
+**~35 files still import `boa_engine::*`** (down from ~60).  Files no longer importing `boa_engine`:
 - Earlier sessions: `platform_objects.rs`, `dom/abort.rs`, `dom/dispatch.rs`,
   `html/html_media_element.rs`, `dom/event.rs`, `streams/strategy.rs`
 - **This session (9 files):** `dom/abort_controller.rs`, `dom/dom_exception.rs`,
   `dom/event.rs`, `dom/ui_event.rs`, `html/location.rs`,
   `html/html_input_element.rs`, `html/html_anchor_element.rs`,
   `html/html_media_element.rs`, `html/html_video_element.rs`
+- **Streams (2 files):** `readablestream.rs`, `readablebytestreamcontroller.rs`
 - `bindings/console.rs` and `bindings/css.rs` deleted (replaced by generic versions).
 
 ### Converted files (previous sessions — keep)
@@ -357,33 +355,31 @@ Files currently gated behind `#[cfg(boa_backend)]` that must be un-gated:
 
 ### Converted files (this session — stream layer + cleanup)
 
-#### Stream domain files (11 files)
+#### Stream domain files (13 files — fully migrated)
 
-Converted 11 stream domain files from `crate::js::Types` to local `Types` alias
-pattern.  Key pattern:
+All 13 stream domain files are now converted to the generic EC API with zero
+`boa_engine::*` imports.  Key pattern:
 
 ```rust
 use crate::js::Types;
 type JsValue = <Types as JsTypes>::JsValue;
 type JsObject = <Types as JsTypes>::JsObject;
+type ArrayBuffer = <Types as JsTypes>::ArrayBuffer;
 ```
 
-This replaces the fully-qualified `<crate::js::Types as JsTypes>::JsValue` syntax
-throughout the file, making code significantly more readable.
-
-Files converted: all writable stream files (`writablestream*.rs`), most readable
-stream files (`readablestreamsupport.rs`, `readablestreamdefault*.rs`,
+Files converted (in this session and prior): all writable stream files
+(`writablestream*.rs`), all readable stream files (`readablestream.rs`,
+`readablestreamsupport.rs`, `readablestreamdefault*.rs`,
 `readablestreamasynciterator.rs`, `readablestreambyobreader.rs`,
-`transformstream.rs`), `strategy.rs`, and stream binding files
-(`readablestream.rs`, `strategy.rs`, `writablestream.rs`).
+`readablebytestreamcontroller.rs`), `transformstream.rs`, `strategy.rs`, and
+stream binding files (`readablestream.rs`, `strategy.rs`, `writablestream.rs`).
 
 #### Module gating
 
 - **`dom/mod.rs`:** Removed `#[cfg(boa_backend)]` from `dispatch`, `ui_event_dispatch`,
   `signal_abort`, `dispatch_*`, `fire_event` — these are now compiled unconditionally.
 - **`streams/mod.rs`:** Removed `#[cfg(boa_backend)]` from all stream submodules
-  except `readablebytestreamcontroller` and `readablestream` (which still use
-  `boa_engine` builtins).
+  — `readablebytestreamcontroller` and `readablestream` are now un-gated.
 - **`js/mod.rs`:** Removed `#[cfg(not(boa_backend))]` from `console_generic` and
   `css_generic` — these are now always compiled.
 - **`js/bindings/mod.rs`:** Removed dead `console`/`css` module references.
@@ -418,7 +414,7 @@ Follow the `console_generic.rs` pattern: `create_plain_object` +
 Boa-only, gated.  This clears the last blocker in the "not yet
 abstracted" table.
 
-### 2. Convert remaining JS binding files (7 remaining)
+### 2. Convert remaining JS binding files (~9 remaining)
 
 Converted 2 this session: `html/html_iframe_element.rs`, `dom/abort_signal.rs`.
 

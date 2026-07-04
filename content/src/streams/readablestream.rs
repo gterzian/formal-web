@@ -5,8 +5,9 @@ use std::{
     rc::Rc,
 };
 
-use boa_engine::{JsArgs, JsValue, object::JsObject};
-use boa_gc::{Gc, GcRef, GcRefMut};
+use crate::js::Types;
+type JsValue = <Types as JsTypes>::JsValue;
+type JsObject = <Types as JsTypes>::JsObject;
 
 use crate::dom::{AbortAlgorithm as SignalAbortAlgorithm, AbortSignal};
 use crate::js::with_abort_signal_ref;
@@ -35,6 +36,7 @@ use super::{
     set_up_readable_stream_default_controller_from_underlying_source, type_error_value,
     with_readable_stream_byob_reader_ref, with_readable_stream_default_reader_ref,
 };
+use js_engine::gc::gc_cell_ptr_eq;
 use js_engine::{Completion, ExecutionContext};
 
 /// <https://streams.spec.whatwg.org/#rs-class>
@@ -61,14 +63,14 @@ pub struct ReadableStream {
 }
 
 impl ReadableStream {
-    pub(crate) fn new() -> Self {
+    pub(crate) fn new(ec: &mut dyn ExecutionContext<Types>) -> Self {
         Self {
             controller: gc_cell_new(None),
             controller_object: gc_cell_new(None),
             reader: gc_cell_new(None),
             disturbed: Rc::new(Cell::new(false)),
             state: Rc::new(RefCell::new(ReadableStreamState::Readable)),
-            stored_error: gc_cell_new(JsValue::undefined()),
+            stored_error: gc_cell_new(ec.value_undefined()),
         }
     }
 
@@ -117,13 +119,13 @@ impl ReadableStream {
     }
 
     /// <https://streams.spec.whatwg.org/#initialize-readable-stream>
-    fn initialize_readable_stream(&mut self) {
+    fn initialize_readable_stream(&mut self, ec: &mut dyn ExecutionContext<Types>) {
         // Step 1: "Set stream.[[state]] to \"readable\"."
         *self.state.borrow_mut() = ReadableStreamState::Readable;
 
         // Step 2: "Set stream.[[reader]] and stream.[[storedError]] to undefined."
         *self.reader.borrow_mut() = None;
-        *self.stored_error.borrow_mut() = JsValue::undefined();
+        *self.stored_error.borrow_mut() = ec.value_undefined();
 
         // Step 3: "Set stream.[[disturbed]] to false."
         self.disturbed.set(false);
@@ -391,7 +393,10 @@ fn default_tee_on_rejected_fn(
     tee_state: &GcCell<TeeState>,
     ec: &mut dyn ExecutionContext<crate::js::Types>,
 ) -> Completion<JsValue, crate::js::Types> {
-    let error = args.get_or_undefined(0).clone();
+    let error = args
+        .first()
+        .cloned()
+        .unwrap_or_else(|| ec.value_undefined());
     let (branch1, branch2, canceled1, canceled2, cancel_resolvers) = {
         let tee_state = tee_state.borrow();
         (
@@ -425,7 +430,7 @@ fn default_tee_on_rejected_fn(
         }
     }
 
-    Ok(JsValue::undefined())
+    Ok(ec.value_undefined())
 }
 
 /// <https://streams.spec.whatwg.org/#readable-stream-tee>
@@ -992,7 +997,7 @@ pub(crate) fn construct_readable_stream(
     args: &[JsValue],
     ec: &mut dyn ExecutionContext<crate::js::Types>,
 ) -> Completion<ReadableStream, crate::js::Types> {
-    let mut stream = ReadableStream::new();
+    let mut stream = ReadableStream::new(ec);
 
     // Step 1: "If underlyingSource is missing, set it to undefined."
     let underlying_source = if args.is_empty() {
@@ -1014,9 +1019,9 @@ pub(crate) fn construct_readable_stream(
     // Step 3: "Perform ! InitializeReadableStream(this)."
     // Note: The backing struct is returned from the data constructor, after which Boa wraps it
     // in the newly created JsObject.
-    stream.initialize_readable_stream();
+    stream.initialize_readable_stream(ec);
 
-    let strategy = args.get_or_undefined(1).clone();
+    let strategy = args.get(1).cloned().unwrap_or_else(|| ec.value_undefined());
     match underlying_source_type(underlying_source_object.as_ref(), ec)?.as_deref() {
         Some("bytes") => {
             // Step 4.1: "If strategy[\"size\"] exists, throw a RangeError exception."
@@ -1089,7 +1094,7 @@ pub(crate) fn create_readable_stream(
     let (mut stream, stream_object) = create_readable_stream_object(ec)?;
 
     // Step 5: "Perform ! InitializeReadableStream(stream)."
-    stream.initialize_readable_stream();
+    stream.initialize_readable_stream(ec);
 
     // Step 6: "Let controller be a new ReadableStreamDefaultController."
     let controller = super::ReadableStreamDefaultController::new();
@@ -1118,7 +1123,7 @@ pub(crate) fn create_readable_stream(
 fn create_readable_stream_object(
     ec: &mut dyn ExecutionContext<crate::js::Types>,
 ) -> Completion<(ReadableStream, JsObject), crate::js::Types> {
-    let stream = ReadableStream::new();
+    let stream = ReadableStream::new(ec);
     let stream_object: JsObject =
         create_interface_instance::<crate::js::Types, ReadableStream>(stream.clone(), ec)?;
     Ok((stream, stream_object))
@@ -1135,7 +1140,7 @@ fn create_readable_byte_stream(
     let (mut stream, stream_object) = create_readable_stream_object(ec)?;
 
     // Step 2: "Perform ! InitializeReadableStream(stream)."
-    stream.initialize_readable_stream();
+    stream.initialize_readable_stream(ec);
 
     // Step 3: "Let controller be a new ReadableByteStreamController."
     let controller = ReadableByteStreamController::new();
@@ -1242,7 +1247,10 @@ fn readable_stream_from_iterable_pull_on_fulfilled_fn(
     state: &ReadableStreamFromIterableState,
     ec: &mut dyn ExecutionContext<crate::js::Types>,
 ) -> Completion<JsValue, crate::js::Types> {
-    let iter_result = args.get_or_undefined(0).clone();
+    let iter_result = args
+        .first()
+        .cloned()
+        .unwrap_or_else(|| ec.value_undefined());
 
     // Step 4.4.1: "If iterResult is not an Object, throw a TypeError."
     let iter_result_object = iter_result.as_object().ok_or_else(|| {
@@ -1284,7 +1292,13 @@ fn readable_stream_from_iterable_cancel_on_fulfilled_fn(
     ec: &mut dyn ExecutionContext<crate::js::Types>,
 ) -> Completion<JsValue, crate::js::Types> {
     // Step 5.8.1: "If iterResult is not an Object, throw a TypeError."
-    if args.get_or_undefined(0).as_object().is_none() {
+    if args
+        .first()
+        .cloned()
+        .unwrap_or_else(|| ec.value_undefined())
+        .as_object()
+        .is_none()
+    {
         return Err(ec.new_type_error(
             "ReadableStream.from() iterator return() must fulfill with an object",
         ));
@@ -1411,7 +1425,9 @@ fn promise_from_sync_iterator_result_on_fulfilled_fn(
     let done_key = ec.property_key_from_str("done");
     let done_value = ec.value_from_bool(*done);
     let object = ec.create_plain_object(None);
-    ec.create_data_property(object.clone(), value_key, args.get_or_undefined(0).clone())?;
+    let value = ec.value_undefined();
+    let arg0 = args.first().cloned().unwrap_or_else(|| value);
+    ec.create_data_property(object.clone(), value_key, arg0)?;
     ec.create_data_property(object.clone(), done_key, done_value)?;
     Ok(<crate::js::Types as JsTypes>::value_from_object(object))
 }
@@ -1865,9 +1881,12 @@ fn byte_tee_forward_error_on_rejected_fn(
     let (captured_generation, tee_state) = captures;
     // Step helper: "If thisReader is not reader, return."
     if tee_state.borrow().reader_generation != *captured_generation {
-        return Ok(JsValue::undefined());
+        return Ok(ec.value_undefined());
     }
-    let error = args.get_or_undefined(0).clone();
+    let error = args
+        .first()
+        .cloned()
+        .unwrap_or_else(|| ec.value_undefined());
     let (branch1, branch2, canceled1, canceled2, cancel_resolvers) = {
         let tee = tee_state.borrow();
         (
@@ -1894,7 +1913,7 @@ fn byte_tee_forward_error_on_rejected_fn(
             error!("[readable-stream] failed to resolve cancel promise: {error:?}");
         }
     }
-    Ok(JsValue::undefined())
+    Ok(ec.value_undefined())
 }
 
 /// <https://streams.spec.whatwg.org/#abstract-opdef-readablebytestreamtee>
@@ -2185,7 +2204,7 @@ fn byte_tee_pull_byob_on_rejected_fn(
     _ec: &mut dyn ExecutionContext<crate::js::Types>,
 ) -> Completion<JsValue, crate::js::Types> {
     tee_state.borrow_mut().reading = false;
-    Ok(JsValue::undefined())
+    Ok(_ec.value_undefined())
 }
 
 /// <https://streams.spec.whatwg.org/#abstract-opdef-readablebytestreamtee>
@@ -2235,10 +2254,7 @@ fn byte_tee_pull_byob_on_fulfilled_fn(
     ec: &mut dyn ExecutionContext<crate::js::Types>,
 ) -> Completion<JsValue, crate::js::Types> {
     let (tee_state, for_branch2) = captures;
-    let arg0 = args
-        .get(0)
-        .cloned()
-        .unwrap_or_else(|| boa_engine::JsValue::undefined());
+    let arg0 = args.get(0).cloned().unwrap_or_else(|| ec.value_undefined());
     let result = ec.to_object(arg0)?;
     let done_val = js_engine::EcmascriptHost::get(ec, &result, "done")?;
     let done = ec.to_boolean(&done_val);
@@ -2468,7 +2484,7 @@ fn byte_tee_pull_byob_on_fulfilled_fn(
         ec,
     )?;
 
-    Ok(JsValue::undefined())
+    Ok(ec.value_undefined())
 }
 
 /// <https://streams.spec.whatwg.org/#abstract-opdef-readablebytestreamtee>
@@ -2588,11 +2604,8 @@ pub(crate) fn readable_byte_stream_tee_cancel1_algorithm(
             <crate::js::Types as JsTypes>::value_from_object(composite_reason_array);
         let cancel_result = readable_stream_cancel(source_stream, composite_reason, ec)?;
         let undefined = ec.value_undefined();
-        ec.call(
-            &cancel_resolvers.resolve,
-            &undefined,
-            &[JsValue::from(cancel_result)],
-        )?;
+        let cancel_value = <crate::js::Types as JsTypes>::value_from_object(cancel_result);
+        ec.call(&cancel_resolvers.resolve, &undefined, &[cancel_value])?;
     }
     Ok(cancel_promise)
 }
@@ -2624,11 +2637,8 @@ pub(crate) fn readable_byte_stream_tee_cancel2_algorithm(
             <crate::js::Types as JsTypes>::value_from_object(composite_reason_array);
         let cancel_result = readable_stream_cancel(source_stream, composite_reason, ec)?;
         let undefined = ec.value_undefined();
-        ec.call(
-            &cancel_resolvers.resolve,
-            &undefined,
-            &[JsValue::from(cancel_result)],
-        )?;
+        let cancel_value = <crate::js::Types as JsTypes>::value_from_object(cancel_result);
+        ec.call(&cancel_resolvers.resolve, &undefined, &[cancel_value])?;
     }
     Ok(cancel_promise)
 }
@@ -3097,20 +3107,12 @@ impl PipeToState {
         Self(gc_cell_new(state))
     }
 
-    fn borrow(&self) -> GcRef<'_, PipeToStateInner> {
-        self.0.borrow()
-    }
-
-    fn borrow_mut(&self) -> GcRefMut<'_, PipeToStateInner> {
-        self.0.borrow_mut()
-    }
-
     pub(crate) fn ptr_eq(&self, other: &Self) -> bool {
-        Gc::ptr_eq(&self.0, &other.0)
+        gc_cell_ptr_eq(&self.0, &other.0)
     }
 
     fn promise(&self) -> JsObject {
-        self.borrow().promise.clone()
+        self.0.borrow().promise.clone()
     }
 
     pub(crate) fn on_read_request_settled(
@@ -3150,7 +3152,7 @@ impl PipeToState {
         }
 
         let error = {
-            let state = self.borrow();
+            let state = self.0.borrow();
             state
                 .signal
                 .as_ref()
@@ -3174,7 +3176,7 @@ impl PipeToState {
         self.set_state(PipePumpState::PendingReady);
 
         let (writer, reader) = {
-            let state = self.borrow();
+            let state = self.0.borrow();
             (state.writer.clone(), state.reader.clone())
         };
         let ready_promise = writer.ready(ec)?;
@@ -3199,7 +3201,7 @@ impl PipeToState {
         self.set_state(PipePumpState::PendingRead);
 
         let (reader, writer) = {
-            let state = self.borrow();
+            let state = self.0.borrow();
             (state.reader.clone(), state.writer.clone())
         };
         let read_request = ReadRequest::ReadableStreamPipeTo {
@@ -3232,11 +3234,11 @@ impl PipeToState {
 
         let value = EcmascriptHost::get(ec, &result_object, "value")?;
         let writer = {
-            let state = self.borrow();
+            let state = self.0.borrow();
             state.writer.clone()
         };
         let write_promise = writer.write(value, ec)?;
-        self.borrow_mut().pending_writes.push_back(write_promise);
+        self.0.borrow_mut().pending_writes.push_back(write_promise);
         Ok(true)
     }
 
@@ -3259,7 +3261,7 @@ impl PipeToState {
         }
 
         let (source, dest, prevent_abort) = {
-            let state = self.borrow();
+            let state = self.0.borrow();
             (
                 state.reader.stream_slot_value(),
                 state.writer.stream_slot_value(),
@@ -3300,7 +3302,7 @@ impl PipeToState {
         }
 
         let (dest, source, prevent_cancel) = {
-            let state = self.borrow();
+            let state = self.0.borrow();
             (
                 state.writer.stream_slot_value(),
                 state.reader.stream_slot_value(),
@@ -3340,7 +3342,7 @@ impl PipeToState {
         }
 
         let (source, prevent_close) = {
-            let state = self.borrow();
+            let state = self.0.borrow();
             (state.reader.stream_slot_value(), state.prevent_close)
         };
         let Some(source) = source else {
@@ -3368,7 +3370,7 @@ impl PipeToState {
         }
 
         let (dest, source, prevent_cancel) = {
-            let state = self.borrow();
+            let state = self.0.borrow();
             (
                 state.writer.stream_slot_value(),
                 state.reader.stream_slot_value(),
@@ -3411,7 +3413,7 @@ impl PipeToState {
         ec: &mut dyn ExecutionContext<crate::js::Types>,
     ) -> Completion<(), crate::js::Types> {
         let pending_write = {
-            let mut state = self.borrow_mut();
+            let mut state = self.0.borrow_mut();
             if state.shutting_down {
                 return Ok(());
             }
@@ -3449,7 +3451,7 @@ impl PipeToState {
         ec: &mut dyn ExecutionContext<crate::js::Types>,
     ) -> Completion<(), crate::js::Types> {
         let (writer, source, dest, error, prevent_abort, prevent_cancel) = {
-            let mut state = self.borrow_mut();
+            let mut state = self.0.borrow_mut();
             state.state = PipePumpState::ShuttingDownPendingAction(action);
             (
                 state.writer.clone(),
@@ -3516,7 +3518,7 @@ impl PipeToState {
             }
         };
 
-        self.borrow_mut().shutdown_action_promise = Some(action_promise.clone());
+        self.0.borrow_mut().shutdown_action_promise = Some(action_promise.clone());
         self.append_reaction(action_promise, ec)
     }
 
@@ -3530,7 +3532,7 @@ impl PipeToState {
         }
 
         let (writer, reader, signal, mut error, resolvers) = {
-            let mut state = self.borrow_mut();
+            let mut state = self.0.borrow_mut();
             state.state = PipePumpState::Finalized;
             (
                 state.writer.clone(),
@@ -3578,19 +3580,19 @@ impl PipeToState {
     }
 
     fn current_state(&self) -> PipePumpState {
-        self.borrow().state.clone()
+        self.0.borrow().state.clone()
     }
 
     fn set_state(&self, state: PipePumpState) {
-        self.borrow_mut().state = state;
+        self.0.borrow_mut().state = state;
     }
 
     fn is_shutting_down(&self) -> bool {
-        self.borrow().shutting_down
+        self.0.borrow().shutting_down
     }
 
     fn set_shutdown_error(&self, error: Option<JsValue>) {
-        self.borrow_mut().shutdown_error = error;
+        self.0.borrow_mut().shutdown_error = error;
     }
 
     fn update_pending_shutdown_action(
@@ -3603,7 +3605,7 @@ impl PipeToState {
         }
 
         let (source, dest, prevent_cancel) = {
-            let state = self.borrow();
+            let state = self.0.borrow();
             (
                 state.reader.stream_slot_value(),
                 state.writer.stream_slot_value(),
@@ -3648,14 +3650,15 @@ impl PipeToState {
     }
 
     fn pending_write_front(&self) -> Option<JsObject> {
-        self.borrow().pending_writes.front().cloned()
+        self.0.borrow().pending_writes.front().cloned()
     }
 
     fn shutdown_action_promise_state(
         &self,
         ec: &mut dyn ExecutionContext<crate::js::Types>,
     ) -> Completion<Option<js_engine::PromiseState<crate::js::Types>>, crate::js::Types> {
-        self.borrow()
+        self.0
+            .borrow()
             .shutdown_action_promise
             .clone()
             .map(|promise| Ok(ec.promise_state(&promise)?))
@@ -3668,7 +3671,7 @@ impl PipeToState {
     ) -> Completion<(), crate::js::Types> {
         let mut handled = Vec::new();
         {
-            let mut state = self.borrow_mut();
+            let mut state = self.0.borrow_mut();
             state.pending_writes.retain(|promise_object| {
                 let ok = <crate::js::Types as JsTypes>::object_as_promise(promise_object).is_some();
                 if !ok {
@@ -3704,7 +3707,10 @@ impl PipeToState {
                 move |_args: &[<crate::js::Types as JsTypes>::JsValue], _this, inner_ec| {
                     pipe_to_on_promise_settled(
                         state.clone(),
-                        _args.get_or_undefined(0).clone(),
+                        _args
+                            .first()
+                            .cloned()
+                            .unwrap_or_else(|| inner_ec.value_undefined()),
                         inner_ec,
                     )?;
                     Ok(inner_ec.value_undefined())
@@ -3719,7 +3725,10 @@ impl PipeToState {
                 move |_args: &[<crate::js::Types as JsTypes>::JsValue], _this, inner_ec| {
                     pipe_to_on_promise_settled(
                         state.clone(),
-                        _args.get_or_undefined(0).clone(),
+                        _args
+                            .first()
+                            .cloned()
+                            .unwrap_or_else(|| inner_ec.value_undefined()),
                         inner_ec,
                     )?;
                     Ok(inner_ec.value_undefined())
@@ -3755,7 +3764,7 @@ fn pipe_to_on_promise_settled(
 
     if state_before_checks == PipePumpState::PendingRead {
         let (source, dest) = {
-            let state_ref = state.borrow();
+            let state_ref = state.0.borrow();
             (
                 state_ref.reader.stream_slot_value(),
                 state_ref.writer.stream_slot_value(),
@@ -3873,7 +3882,15 @@ fn start_abort_cancel_on_rejected_fn(
     state: &GcCell<AbortThenCancelState>,
     ec: &mut dyn ExecutionContext<crate::js::Types>,
 ) -> Completion<JsValue, crate::js::Types> {
-    finalize_abort_cancel_source(state.clone(), Some(args.get_or_undefined(0).clone()), ec)
+    finalize_abort_cancel_source(
+        state.clone(),
+        Some(
+            args.first()
+                .cloned()
+                .unwrap_or_else(|| ec.value_undefined()),
+        ),
+        ec,
+    )
 }
 
 fn abort_destination_then_cancel_on_fulfilled_fn(
@@ -3891,7 +3908,15 @@ fn abort_destination_then_cancel_on_rejected_fn(
     state: &GcCell<AbortThenCancelState>,
     ec: &mut dyn ExecutionContext<crate::js::Types>,
 ) -> Completion<JsValue, crate::js::Types> {
-    start_abort_cancel_source(state.clone(), Some(args.get_or_undefined(0).clone()), ec)
+    start_abort_cancel_source(
+        state.clone(),
+        Some(
+            args.first()
+                .cloned()
+                .unwrap_or_else(|| ec.value_undefined()),
+        ),
+        ec,
+    )
 }
 
 fn abort_destination_then_cancel_source(
@@ -3980,5 +4005,5 @@ fn finalize_abort_cancel_source(
         ec.call(&resolve, &undefined, &[undefined.clone()])?;
     }
 
-    Ok(JsValue::undefined())
+    Ok(ec.value_undefined())
 }

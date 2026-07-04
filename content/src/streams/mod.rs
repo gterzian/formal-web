@@ -1,6 +1,4 @@
-#[cfg(boa_backend)]
 mod readablebytestreamcontroller;
-#[cfg(boa_backend)]
 mod readablestream;
 mod readablestreamasynciterator;
 mod readablestreambyobreader;
