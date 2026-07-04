@@ -252,14 +252,22 @@ cargo check -p content                            # JSC  → zero errors
 cargo check -p content --no-default-features --features boa,media  # Boa → zero errors
 ```
 
+#### ✅ `EnvironmentSettingsObject` — converted to generic engine
+
+`EnvironmentSettingsObject.engine` field type is now `Engine` (the content-level
+type alias, resolved to `BoaContext` on Boa or `JscEngine` on JSC). All
+operations go through `ExecutionContext<T>` / `EcmascriptHost<T>` trait methods.
+The `context()` and `context_ref()` Boa-specific bridge methods have been
+removed. Callers (`html.rs`, `main.rs`, `ui_event_dispatch.rs`) updated to
+use `settings.engine.realm_global_object()` instead of
+`settings.context().global_object()`.
+
 #### 📋 Remaining `#[cfg(boa_backend)]` gating
 
 Files still behind `#[cfg(boa_backend)]` that must be un-gated:
 
 | Module | Blocking issue |
 |---|---|
-| `dom/ui_event_dispatch.rs` | Depends on `EnvironmentSettingsObject` (stores Boa types) |
-| `html/environment_settings_object.rs` | Core bridge — stores `BoaContext` directly |
 | `html/global_scope.rs` | Uses `boa_engine::Gc` for per-global caches |
 | `html/windowproxy.rs` | Uses `JsProxyBuilder` (public Boa API) — fine to stay |
 | `js/downcast.rs` | Domain types export Boa GC types |
@@ -272,14 +280,13 @@ Will **stay** Boa-only:
 - `wasm/` (requires wasmtime)
 - `generic_js_test.rs` (Boa/JSC test sections)
 
-**~10 files still import `boa_engine::*`** (down from ~60).
+**~8 files still import `boa_engine::*`** (down from ~60).
 
 #### 🎯 Key remaining blockers
 
-1. **`EnvironmentSettingsObject`** — stores engine-specific types (core bridge)
-2. **`GlobalScope`** — uses `boa_engine::Gc` for per-global caches
-3. **Message loop** — `main.rs` has two separate `run_*_message_loop` functions
-4. **`WindowProxy`** — uses `JsProxyBuilder` (Boa public API)
+1. **`GlobalScope`** — uses `boa_engine::Gc` for per-global caches
+2. **Message loop** — `main.rs` has two separate `run_*_message_loop` functions
+3. **`WindowProxy`** — uses `JsProxyBuilder` (Boa public API)
 
 #### 📅 Remaining work order
 

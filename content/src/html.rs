@@ -150,7 +150,7 @@ pub(crate) fn create_a_new_browsing_context_and_document(
     // Step 22: Populate with html/head/body given document.
     parse_html_into_document(&mut document.borrow_mut(), crate::EMPTY_HTML_DOCUMENT);
     // Step 10 (continued): global object is the Window.
-    let global_object = settings.context().global_object();
+    let global_object = settings.engine.realm_global_object();
     Ok((global_object, settings, document))
 }
 

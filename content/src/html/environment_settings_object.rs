@@ -2,7 +2,6 @@ use log::{debug, error};
 use std::{cell::RefCell, rc::Rc, time::Instant};
 
 use blitz_dom::BaseDocument;
-use boa_engine::{Context, JsValue, Source, js_string, object::JsObject, property::Attribute};
 use ipc::IpcSender;
 use ipc_messages::content::{DocumentId, Event as ContentEvent, NavigableId, WindowTimerKey};
 use url::Url;
@@ -11,10 +10,15 @@ use crate::dom::{Document, Event, EventDispatchHost};
 use crate::html::{TimerHandler, Window};
 use crate::js::bindings::html::build_context;
 use crate::js::platform_objects::with_global_scope;
-use crate::js::{install_console_namespace, install_css_namespace, install_document_property};
+use crate::js::{
+    Engine, Types, install_console_namespace, install_css_namespace, install_document_property,
+};
 use crate::webidl::bindings::{create_interface_instance, get_registry_prototype};
-use js_engine::boa::BoaContext;
-use js_engine::{Completion, EcmascriptHost, ExecutionContext};
+use js_engine::{Completion, EcmascriptHost, ExecutionContext, JsTypes};
+
+type JsValue = <Types as JsTypes>::JsValue;
+type JsObject = <Types as JsTypes>::JsObject;
+type JsString = <Types as JsTypes>::JsString;
 
 fn timer_debug_enabled() -> bool {
     std::env::var_os("FORMAL_WEB_DEBUG_TIMERS").is_some()
@@ -43,12 +47,7 @@ pub enum ReferrerPolicy {
 /// <https://html.spec.whatwg.org/#environment-settings-object>
 pub struct EnvironmentSettingsObject {
     /// <https://html.spec.whatwg.org/#realms-settings-objects-global-objects>
-    ///
-    /// The engine wraps a `boa_engine::Context` and implements
-    /// `JsEngine<crate::js::Types>`.  Access the underlying context via
-    /// `self.context()` for Boa-specific operations that are not yet
-    /// abstracted through `JsEngine`.
-    pub engine: BoaContext,
+    pub engine: Engine,
 
     /// <https://dom.spec.whatwg.org/#concept-document>
     pub document: Rc<RefCell<BaseDocument>>,
@@ -85,7 +84,11 @@ impl EnvironmentSettingsObject {
                 global_scope.set_timer_host(document_id, event_sender.clone());
                 Ok(())
             })
-            .map_err(|error| error.display().to_string())?;
+            .map_err(|error| {
+                engine
+                    .to_rust_string(error)
+                    .unwrap_or_else(|_| "unknown error".to_string())
+            })?;
         }
         if let Some(navigable_id) = source_navigable_id {
             if let Some(event_sender) = &event_sender {
@@ -94,7 +97,11 @@ impl EnvironmentSettingsObject {
                     global_scope.set_creation_url(creation_url.clone());
                     Ok(())
                 })
-                .map_err(|error| error.display().to_string())?;
+                .map_err(|error| {
+                    engine
+                        .to_rust_string(error)
+                        .unwrap_or_else(|_| "unknown error".to_string())
+                })?;
             }
         }
 
@@ -102,31 +109,64 @@ impl EnvironmentSettingsObject {
             Document::new(document.clone(), creation_url.clone()),
             &mut engine,
         )
-        .map_err(|error| error.display().to_string())?;
+        .map_err(|error| {
+            engine
+                .to_rust_string(error)
+                .unwrap_or_else(|_| "unknown error".to_string())
+        })?;
 
         with_global_scope(&mut engine, |global_scope| {
             global_scope.store_document_object(document_object);
             Ok(())
         })
-        .map_err(|error| error.display().to_string())?;
-        install_document_property(&mut engine).map_err(|error| error.display().to_string())?;
+        .map_err(|error| {
+            engine
+                .to_rust_string(error)
+                .unwrap_or_else(|_| "unknown error".to_string())
+        })?;
+        install_document_property(&mut engine).map_err(|error| {
+            engine
+                .to_rust_string(error)
+                .unwrap_or_else(|_| "unknown error".to_string())
+        })?;
         install_console_namespace(&mut engine)
             .map_err(|error| format!("failed to install console: {error:?}"))?;
         install_css_namespace(&mut engine)
             .map_err(|error| format!("failed to install CSS namespace: {error:?}"))?;
 
-        let global = engine.context().global_object();
+        let global = engine.realm_global_object();
+        let global_value = <Types as JsTypes>::value_from_object(global.clone());
         if let Some(window_proto) = get_registry_prototype::<crate::js::Types, Window>(&engine) {
-            global.set_prototype(Some(window_proto));
+            engine
+                .set_prototype(global.clone(), Some(window_proto))
+                .map_err(|error| {
+                    engine
+                        .to_rust_string(error)
+                        .unwrap_or_else(|_| "failed to set prototype".to_string())
+                })?;
         }
         engine
-            .context()
-            .register_global_property(js_string!("window"), global.clone(), Attribute::all())
-            .map_err(|error| error.to_string())?;
+            .create_data_property(
+                engine.realm_global_object(),
+                engine.property_key_from_str("window"),
+                global_value.clone(),
+            )
+            .map_err(|error| {
+                engine
+                    .to_rust_string(error)
+                    .unwrap_or_else(|_| "failed to register window property".to_string())
+            })?;
         engine
-            .context()
-            .register_global_property(js_string!("self"), global, Attribute::all())
-            .map_err(|error| error.to_string())?;
+            .create_data_property(
+                engine.realm_global_object(),
+                engine.property_key_from_str("self"),
+                global_value,
+            )
+            .map_err(|error| {
+                engine
+                    .to_rust_string(error)
+                    .unwrap_or_else(|_| "failed to register self property".to_string())
+            })?;
 
         Ok(Self {
             engine,
@@ -145,19 +185,11 @@ impl EnvironmentSettingsObject {
         &mut self.engine
     }
 
-    /// Access the underlying Boa context (mutable).
-    ///
-    /// Temporary compatibility shim. Prefer using `self.engine` directly
-    /// and calling `JsEngine` trait methods.
-    pub fn context(&mut self) -> &mut Context {
-        self.engine.context()
-    }
-
-    /// Access the underlying Boa context (immutable).
-    ///
-    /// Still needed for a few Boa-specific operations (e.g. downcasting).
-    pub fn context_ref(&self) -> &Context {
-        self.engine.context_ref()
+    /// Convert a JsValue error (Completion error) to a displayable String.
+    fn error_to_string(&mut self, error: <Types as JsTypes>::JsValue) -> String {
+        self.engine
+            .to_rust_string(error)
+            .unwrap_or_else(|_| "unknown error".to_string())
     }
 
     pub(crate) fn current_time_millis(&self) -> f64 {
@@ -169,47 +201,50 @@ impl EnvironmentSettingsObject {
             global_scope.clear_all_timers();
             Ok(())
         })
-        .map_err(|error| error.display().to_string())
+        .map_err(|error| self.error_to_string(error))
     }
 
     pub fn evaluate_script(&mut self, source: &str) -> Result<(), String> {
         self.evaluate_script_without_microtask_checkpoint(source)?;
-        self.perform_a_microtask_checkpoint()
+        self.perform_a_microtask_checkpoint()?;
+        Ok(())
     }
 
     fn evaluate_script_without_microtask_checkpoint(&mut self, source: &str) -> Result<(), String> {
-        self.context()
-            .eval(Source::from_bytes(source))
+        self.engine
+            .evaluate_script(source)
             .map(|_| ())
-            .map_err(|error| error.to_string())
+            .map_err(|error| self.error_to_string(error))
     }
 
     pub fn evaluate_script_to_json(&mut self, source: &str) -> Result<serde_json::Value, String> {
         let value = self
-            .context()
-            .eval(Source::from_bytes(source))
-            .map_err(|error| error.to_string())?;
+            .engine
+            .evaluate_script(source)
+            .map_err(|error| self.error_to_string(error))?;
 
         self.perform_a_microtask_checkpoint()?;
 
-        value
-            .to_json(self.context())
-            .map(|value| value.unwrap_or(serde_json::Value::Null))
-            .map_err(|error| error.to_string())
+        let json_string = self
+            .engine
+            .json_stringify(value)
+            .map_err(|error| self.error_to_string(error))?;
+        serde_json::from_str(&json_string).map_err(|error| format!("failed to parse JSON: {error}"))
     }
 
     /// <https://html.spec.whatwg.org/#run-the-animation-frame-callbacks>
     pub(crate) fn run_animation_frame_callbacks(&mut self, now: f64) -> Result<(), String> {
         let callbacks =
             crate::js::platform_objects::take_animation_frame_callbacks(&mut self.engine)
-                .map_err(|error| error.display().to_string())?;
+                .map_err(|error| self.error_to_string(error))?;
 
         for callback in callbacks {
             // Step 3.3: "Invoke callback with « now » and \"report\"."
+            let now_value = self.engine.value_from_number(now);
             if let Err(error) = crate::webidl::invoke_callback_function(
                 &mut self.engine as &mut dyn EcmascriptHost<crate::js::Types>,
                 &callback,
-                &[JsValue::from(now)],
+                &[now_value],
                 crate::webidl::ExceptionBehavior::Report,
                 None,
             ) {
@@ -235,12 +270,12 @@ impl EnvironmentSettingsObject {
         let previous_nesting_level = with_global_scope(&mut self.engine, |global_scope| {
             Ok(global_scope.set_current_timer_nesting_level(Some(nesting_level)))
         })
-        .map_err(|error| error.display().to_string())?;
+        .map_err(|error| self.error_to_string(error))?;
 
         let timer = with_global_scope(&mut self.engine, |global_scope| {
             Ok(global_scope.window_timer(timer_id, timer_key))
         })
-        .map_err(|error| error.display().to_string())?;
+        .map_err(|error| self.error_to_string(error))?;
 
         let Some(timer) = timer else {
             log_timer_debug(format!(
@@ -253,7 +288,7 @@ impl EnvironmentSettingsObject {
             }) {
                 error!(
                     "[timers] failed to reset timer nesting level: {}",
-                    error.display()
+                    self.error_to_string(error)
                 );
             }
             return Ok(());
@@ -265,7 +300,8 @@ impl EnvironmentSettingsObject {
                     "invoke timer callback id={} key={} function",
                     timer_id, timer_key
                 ));
-                let global = JsValue::from(self.context().global_object());
+                let global =
+                    <Types as JsTypes>::value_from_object(self.engine.realm_global_object());
                 if let Err(error) = crate::webidl::invoke_callback_function(
                     &mut self.engine as &mut dyn EcmascriptHost<crate::js::Types>,
                     callback,
@@ -283,12 +319,8 @@ impl EnvironmentSettingsObject {
                     timer_key,
                     source.len()
                 ));
-                if let Err(error) = self
-                    .context()
-                    .eval(Source::from_bytes(source.as_str()))
-                    .map(|_| ())
-                {
-                    error!("content error: {error}");
+                if let Err(error) = self.engine.evaluate_script(source.as_str()).map(|_| ()) {
+                    error!("content error: {error:?}");
                 }
             }
         }
@@ -301,7 +333,7 @@ impl EnvironmentSettingsObject {
         }) {
             error!(
                 "failed to access global scope for timer completion: {}",
-                error.display()
+                self.error_to_string(error)
             );
         }
         if let Err(error) = with_global_scope(&mut self.engine, |global_scope| {
@@ -310,7 +342,7 @@ impl EnvironmentSettingsObject {
         }) {
             error!(
                 "failed to access global scope for timer nesting level: {}",
-                error.display()
+                self.error_to_string(error)
             );
         }
 
@@ -322,14 +354,20 @@ impl EnvironmentSettingsObject {
 
     /// <https://html.spec.whatwg.org/#perform-a-microtask-checkpoint>
     pub fn perform_a_microtask_checkpoint(&mut self) -> Result<(), String> {
-        self.context().run_jobs().map_err(|error| error.to_string())
+        self.engine
+            .perform_a_microtask_checkpoint()
+            .map_err(|error| self.error_to_string(error))
     }
 
     /// Take all pending wasm batches (bytes + request_id) from the GlobalScope.
     /// Marks them as Processing.
     pub(crate) fn take_pending_wasm_batches(&self) -> Vec<(u64, Vec<u8>)> {
-        let global = self.context_ref().global_object();
-        if let Some(window) = global.downcast_ref::<Window>() {
+        let global = self.engine.realm_global_object();
+        if let Some(window) = self
+            .engine
+            .with_object_any(&global)
+            .and_then(|data| data.downcast_ref::<Window>())
+        {
             window.global_scope.take_pending_wasm_batches()
         } else {
             Vec::new()
@@ -339,8 +377,12 @@ impl EnvironmentSettingsObject {
     /// Take all pending wasm instantiate requests (module + request_id)
     /// from the GlobalScope.  Marks them as Processing.
     pub(crate) fn take_pending_wasm_instantiates(&self) -> Vec<(u64, wasmtime::Module)> {
-        let global = self.context_ref().global_object();
-        if let Some(window) = global.downcast_ref::<Window>() {
+        let global = self.engine.realm_global_object();
+        if let Some(window) = self
+            .engine
+            .with_object_any(&global)
+            .and_then(|data| data.downcast_ref::<Window>())
+        {
             window.global_scope.take_pending_wasm_instantiates()
         } else {
             Vec::new()
@@ -355,8 +397,11 @@ impl EnvironmentSettingsObject {
         boa_engine::object::JsObject,
         boa_engine::builtins::promise::ResolvingFunctions,
     )> {
-        let global = self.context_ref().global_object();
-        let window = global.downcast_ref::<Window>()?;
+        let global = self.engine.realm_global_object();
+        let window = self
+            .engine
+            .with_object_any(&global)
+            .and_then(|data| data.downcast_ref::<Window>())?;
         window.global_scope.consume_wasm_request(request_id)
     }
 }
@@ -403,10 +448,10 @@ impl js_engine::EcmascriptHost<crate::js::Types> for EnvironmentSettingsObject {
     fn value_from_number(&mut self, n: f64) -> JsValue {
         self.engine.value_from_number(n)
     }
-    fn value_from_string(&mut self, s: boa_engine::JsString) -> JsValue {
+    fn value_from_string(&mut self, s: JsString) -> JsValue {
         self.engine.value_from_string(s)
     }
-    fn js_string_from_str(&self, s: &str) -> boa_engine::JsString {
+    fn js_string_from_str(&self, s: &str) -> JsString {
         self.engine.js_string_from_str(s)
     }
 }

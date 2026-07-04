@@ -4,7 +4,12 @@ use std::{cell::RefCell, rc::Rc};
 use blitz_dom::{BaseDocument, Document as BlitzDocument, EventDriver, EventHandler};
 use blitz_traits::SmolStr;
 use blitz_traits::events::{BlitzKeyEvent, DomEvent, DomEventData, EventState, UiEvent};
-use boa_engine::{JsValue, object::JsObject};
+use js_engine::JsTypes;
+
+use crate::js::Types;
+
+type JsValue = <Types as JsTypes>::JsValue;
+type JsObject = <Types as JsTypes>::JsObject;
 use ipc::IpcSender;
 use ipc_messages::content::{DocumentId, Event as ContentEvent, NavigableId};
 #[cfg(target_os = "macos")]
@@ -487,10 +492,10 @@ impl js_engine::EcmascriptHost<crate::js::Types> for BlitzJSEventHandler<'_> {
     fn value_from_number(&mut self, n: f64) -> JsValue {
         self.settings.engine.value_from_number(n)
     }
-    fn value_from_string(&mut self, s: boa_engine::JsString) -> JsValue {
+    fn value_from_string(&mut self, s: <Types as JsTypes>::JsString) -> JsValue {
         self.settings.engine.value_from_string(s)
     }
-    fn js_string_from_str(&self, s: &str) -> boa_engine::JsString {
+    fn js_string_from_str(&self, s: &str) -> <Types as JsTypes>::JsString {
         self.settings.engine.js_string_from_str(s)
     }
 }
@@ -525,7 +530,7 @@ impl EventHandler for BlitzJSEventHandler<'_> {
         }
 
         let time_stamp = self.settings.current_time_millis();
-        let view = Some(self.settings.context().global_object());
+        let view = Some(self.settings.engine.realm_global_object());
         let ui_event = JsUiEvent::from_dom_event(event, view, time_stamp);
         let event_object = create_interface_instance::<crate::js::Types, JsUiEvent>(
             ui_event,

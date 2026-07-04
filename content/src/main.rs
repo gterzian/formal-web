@@ -44,6 +44,7 @@ use blitz_traits::net::{Body, Bytes, NetHandler, NetProvider, Request};
 use blitz_traits::shell::{ClipboardError, ColorScheme, ShellProvider, Viewport};
 use data_url::DataUrl;
 use html5ever::local_name;
+use js_engine::ExecutionContext;
 
 use ipc_messages::content::Command::{
     ClickElement, CompleteDocumentFetch, ContentBootstrap, CreateEmptyDocument,
@@ -879,7 +880,7 @@ impl ContentProcess {
             }
         }
 
-        let window = content_document.settings.context().global_object();
+        let window = content_document.settings.engine.realm_global_object();
         fire_event(&mut content_document.settings, &window, "load", true)
             .map_err(|error| format!("fire_event failed: {error:?}"))?;
 
