@@ -2,7 +2,9 @@ use std::marker::PhantomData;
 use std::{cell::RefCell, rc::Rc};
 
 use blitz_dom::BaseDocument;
-use boa_engine::{JsArgs, JsValue, object::JsObject};
+
+type JsValue = <crate::js::Types as JsTypes>::JsValue;
+type JsObject = <crate::js::Types as JsTypes>::JsObject;
 
 use crate::dom::{AbortSignal, Event, EventDispatchHost, EventTarget, dispatch};
 use crate::js::try_with_event_target_mut;
@@ -75,10 +77,15 @@ fn add_event_listener(
     ec: &mut dyn ExecutionContext<crate::js::Types>,
 ) -> Completion<JsValue, crate::js::Types> {
     let event_target = current_event_target_object(this, ec);
-    let type_ = ec.to_rust_string(args.get_or_undefined(0).clone())?;
-    let options = flatten_more(args.get_or_undefined(2), ec)?;
-    let callback = nullable_value(args.get_or_undefined(1), ec, callback_interface_type_value)?;
-    let receiver = JsValue::from(event_target.clone());
+    let undefined = ec.value_undefined();
+    let type_ = ec.to_rust_string(args.first().cloned().unwrap_or_else(|| undefined.clone()))?;
+    let options = flatten_more(args.get(2).unwrap_or(&undefined), ec)?;
+    let callback = nullable_value(
+        args.get(1).unwrap_or(&undefined),
+        ec,
+        callback_interface_type_value,
+    )?;
+    let receiver = crate::js::Types::value_from_object(event_target.clone());
 
     try_with_event_target_mut(&receiver, ec, |target| {
         target.add_event_listener(
@@ -92,7 +99,7 @@ fn add_event_listener(
         );
     })?;
 
-    Ok(JsValue::undefined())
+    Ok(ec.value_undefined())
 }
 
 fn remove_event_listener(
@@ -101,20 +108,24 @@ fn remove_event_listener(
     ec: &mut dyn ExecutionContext<crate::js::Types>,
 ) -> Completion<JsValue, crate::js::Types> {
     let event_target = current_event_target_object(this, ec);
-    let type_ = ec.to_rust_string(args.get_or_undefined(0).clone())?;
-    let Some(callback) =
-        nullable_value(args.get_or_undefined(1), ec, callback_interface_type_value)?
+    let undefined = ec.value_undefined();
+    let type_ = ec.to_rust_string(args.first().cloned().unwrap_or_else(|| undefined.clone()))?;
+    let Some(callback) = nullable_value(
+        args.get(1).unwrap_or(&undefined),
+        ec,
+        callback_interface_type_value,
+    )?
     else {
-        return Ok(JsValue::undefined());
+        return Ok(ec.value_undefined());
     };
-    let capture = flatten(args.get_or_undefined(2), ec)?;
-    let receiver = JsValue::from(event_target);
+    let capture = flatten(args.get(2).unwrap_or(&undefined), ec)?;
+    let receiver = crate::js::Types::value_from_object(event_target);
 
     try_with_event_target_mut(&receiver, ec, |target| {
         target.remove_event_listener_entry(&type_, &callback, capture);
     })?;
 
-    Ok(JsValue::undefined())
+    Ok(ec.value_undefined())
 }
 
 fn dispatch_event(
@@ -122,14 +133,17 @@ fn dispatch_event(
     args: &[JsValue],
     ec: &mut dyn ExecutionContext<crate::js::Types>,
 ) -> Completion<JsValue, crate::js::Types> {
-    let event_obj = match <crate::js::Types as JsTypes>::value_as_object(args.get_or_undefined(0)) {
+    let event_obj = match args
+        .first()
+        .and_then(|v| <crate::js::Types as JsTypes>::value_as_object(v))
+    {
         Some(obj) => obj,
         None => return Err(ec.new_type_error("dispatchEvent requires an Event")),
     };
     let target = current_event_target_object(this, ec);
     let mut host = EcDispatchHost::new(ec);
     let canceled = dispatch(&mut host, &target, &event_obj, false)?;
-    Ok(JsValue::from(!canceled))
+    Ok(ec.value_from_bool(!canceled))
 }
 
 /// <https://dom.spec.whatwg.org/#concept-event-dispatch>
@@ -295,14 +309,14 @@ pub(crate) fn flatten_more(
                 <crate::js::Types as JsTypes>::value_as_object(&value).ok_or_else(|| {
                     ec.new_type_error("addEventListener signal must be an AbortSignal")
                 })?;
-            Some(
-                signal_obj
-                    .downcast_ref::<AbortSignal>()
-                    .map(|signal| signal.clone())
-                    .ok_or_else(|| {
-                        ec.new_type_error("addEventListener signal must be an AbortSignal")
-                    })?,
-            )
+            let signal = ec
+                .with_object_any(&signal_obj)
+                .and_then(|d| d.downcast_ref::<AbortSignal>())
+                .map(|s| s.clone())
+                .ok_or_else(|| {
+                    ec.new_type_error("addEventListener signal must be an AbortSignal")
+                })?;
+            Some(signal)
         }
     };
     Ok(AddEventListenerOptions {

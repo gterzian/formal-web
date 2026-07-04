@@ -1,7 +1,7 @@
 use std::marker::PhantomData;
 use std::rc::Rc;
 
-use boa_engine::{Context, JsResult, JsValue, js_string, object::JsObject, property::Attribute};
+type JsValue = <crate::js::Types as JsTypes>::JsValue;
 
 use crate::dom::Document;
 use crate::js::platform_objects::{
@@ -391,18 +391,6 @@ fn set_dir(
     let dir = ec.to_rust_string(args.first().cloned().unwrap_or(value_undefined))?;
     try_with_document(this, ec, |document| document.set_dir(&dir))?;
     Ok(ec.value_undefined())
-}
-
-/// Install the `document` property on the global object using a pre-resolved
-/// Document JsObject. Accepting the document as a parameter avoids an internal
-/// `with_global_scope` call that would borrow the global object's RefCell,
-/// which would then conflict with the subsequent `register_global_property`
-/// that needs to mutably borrow the same global object.
-pub(crate) fn install_document_property_with_object(
-    context: &mut Context,
-    document: JsObject,
-) -> JsResult<()> {
-    context.register_global_property(js_string!("document"), document, Attribute::all())
 }
 
 pub(crate) fn install_document_property(

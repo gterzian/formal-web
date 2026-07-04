@@ -2,7 +2,8 @@ use std::marker::PhantomData;
 use std::rc::Rc;
 
 use blitz_dom::NodeData;
-use boa_engine::{JsArgs, JsNativeError, JsResult, JsValue};
+
+type JsValue = <crate::js::Types as JsTypes>::JsValue;
 
 use js_engine::{Completion, ExecutionContext, JsTypes};
 
@@ -13,8 +14,7 @@ use crate::js::platform_objects::{
     object_for_existing_node,
 };
 use crate::webidl::bindings::{
-    AttributeDef, ConstantDef, InterfaceDefinition, OperationDef, WebIdlInterface,
-    create_interface_instance,
+    AttributeDef, InterfaceDefinition, OperationDef, WebIdlInterface, create_interface_instance,
 };
 
 impl WebIdlInterface<crate::js::Types> for Node {
@@ -24,117 +24,6 @@ impl WebIdlInterface<crate::js::Types> for Node {
     }
 
     fn define_members(def: &mut InterfaceDefinition<crate::js::Types>) {
-        use boa_engine::JsValue;
-        // §3.7.5: Constants
-        def.add_constant(ConstantDef {
-            _phantom: PhantomData,
-
-            id: "ELEMENT_NODE",
-            value: JsValue::from(1),
-        });
-        def.add_constant(ConstantDef {
-            _phantom: PhantomData,
-
-            id: "ATTRIBUTE_NODE",
-            value: JsValue::from(2),
-        });
-        def.add_constant(ConstantDef {
-            _phantom: PhantomData,
-
-            id: "TEXT_NODE",
-            value: JsValue::from(3),
-        });
-        def.add_constant(ConstantDef {
-            _phantom: PhantomData,
-
-            id: "CDATA_SECTION_NODE",
-            value: JsValue::from(4),
-        });
-        def.add_constant(ConstantDef {
-            _phantom: PhantomData,
-
-            id: "ENTITY_REFERENCE_NODE",
-            value: JsValue::from(5),
-        });
-        def.add_constant(ConstantDef {
-            _phantom: PhantomData,
-
-            id: "ENTITY_NODE",
-            value: JsValue::from(6),
-        });
-        def.add_constant(ConstantDef {
-            _phantom: PhantomData,
-
-            id: "PROCESSING_INSTRUCTION_NODE",
-            value: JsValue::from(7),
-        });
-        def.add_constant(ConstantDef {
-            _phantom: PhantomData,
-
-            id: "COMMENT_NODE",
-            value: JsValue::from(8),
-        });
-        def.add_constant(ConstantDef {
-            _phantom: PhantomData,
-
-            id: "DOCUMENT_NODE",
-            value: JsValue::from(9),
-        });
-        def.add_constant(ConstantDef {
-            _phantom: PhantomData,
-
-            id: "DOCUMENT_TYPE_NODE",
-            value: JsValue::from(10),
-        });
-        def.add_constant(ConstantDef {
-            _phantom: PhantomData,
-
-            id: "DOCUMENT_FRAGMENT_NODE",
-            value: JsValue::from(11),
-        });
-        def.add_constant(ConstantDef {
-            _phantom: PhantomData,
-
-            id: "NOTATION_NODE",
-            value: JsValue::from(12),
-        });
-        def.add_constant(ConstantDef {
-            _phantom: PhantomData,
-
-            id: "DOCUMENT_POSITION_DISCONNECTED",
-            value: JsValue::from(0x01),
-        });
-        def.add_constant(ConstantDef {
-            _phantom: PhantomData,
-
-            id: "DOCUMENT_POSITION_PRECEDING",
-            value: JsValue::from(0x02),
-        });
-        def.add_constant(ConstantDef {
-            _phantom: PhantomData,
-
-            id: "DOCUMENT_POSITION_FOLLOWING",
-            value: JsValue::from(0x04),
-        });
-        def.add_constant(ConstantDef {
-            _phantom: PhantomData,
-
-            id: "DOCUMENT_POSITION_CONTAINS",
-            value: JsValue::from(0x08),
-        });
-        def.add_constant(ConstantDef {
-            _phantom: PhantomData,
-
-            id: "DOCUMENT_POSITION_CONTAINED_BY",
-            value: JsValue::from(0x10),
-        });
-        def.add_constant(ConstantDef {
-            _phantom: PhantomData,
-
-            id: "DOCUMENT_POSITION_IMPLEMENTATION_SPECIFIC",
-            value: JsValue::from(0x20),
-        });
-
         // §3.7.6: Regular attributes
         def.add_attribute(AttributeDef {
             _phantom: PhantomData,
@@ -346,33 +235,6 @@ impl WebIdlInterface<crate::js::Types> for Node {
 }
 
 // ── Member getters/setters/methods ──
-
-pub(crate) fn with_node_ref<R>(this: &JsValue, f: impl FnOnce(&Node) -> R) -> JsResult<R> {
-    let object = this
-        .as_object()
-        .ok_or_else(|| JsNativeError::typ().with_message("node receiver is not an object"))?;
-    if let Some(node) = object.downcast_ref::<Node>() {
-        return Ok(f(&node));
-    }
-    if let Some(document) = object.downcast_ref::<Document>() {
-        return Ok(f(&document.node));
-    }
-    if let Some(element) = object.downcast_ref::<Element>() {
-        return Ok(f(&element.node));
-    }
-    if let Some(html_element) = object.downcast_ref::<HTMLElement>() {
-        return Ok(f(&html_element.element.node));
-    }
-    if let Some(html_anchor_element) = object.downcast_ref::<HTMLAnchorElement>() {
-        return Ok(f(&html_anchor_element.html_element.element.node));
-    }
-    if let Some(html_iframe_element) = object.downcast_ref::<HTMLIFrameElement>() {
-        return Ok(f(&html_iframe_element.html_element.element.node));
-    }
-    Err(JsNativeError::typ()
-        .with_message("receiver is not a Node")
-        .into())
-}
 
 fn try_with_node_ref<R>(
     this: &JsValue,
@@ -613,40 +475,17 @@ fn set_text_content(
     Ok(ec.value_undefined())
 }
 
-/// Generic helper: downcast a JS value to `&Node` via the multi-type chain,
-/// then call a closure with the reference.  Uses `ec.with_object_any()` —
-/// no Boa-specific APIs.
-fn with_child_as_node<R>(value: &JsValue, f: impl FnOnce(&Node) -> R) -> Option<R> {
-    let obj = value.as_object()?;
-    if let Some(node) = obj.downcast_ref::<Node>() {
-        return Some(f(&*node));
-    }
-    if let Some(element) = obj.downcast_ref::<Element>() {
-        return Some(f(&element.node));
-    }
-    if let Some(html_element) = obj.downcast_ref::<HTMLElement>() {
-        return Some(f(&html_element.element.node));
-    }
-    if let Some(html_iframe) = obj.downcast_ref::<HTMLIFrameElement>() {
-        return Some(f(&html_iframe.html_element.element.node));
-    }
-    if let Some(html_anchor) = obj.downcast_ref::<HTMLAnchorElement>() {
-        return Some(f(&html_anchor.html_element.element.node));
-    }
-    None
-}
-
 fn append_child(
     this: &JsValue,
     args: &[JsValue],
     ec: &mut dyn ExecutionContext<crate::js::Types>,
 ) -> Completion<JsValue, crate::js::Types> {
-    let child_val = args.get_or_undefined(0).clone();
-    let result = with_child_as_node(args.get_or_undefined(0), |child_node| {
-        try_with_node_ref(this, ec, |node| node.append_child(child_node))
-    })
-    .ok_or_else(|| ec.new_type_error("appendChild requires a Node"))?;
-    match result? {
+    let child_val = args
+        .first()
+        .cloned()
+        .unwrap_or_else(|| ec.value_undefined());
+    let child = appendable_node(&child_val, ec)?;
+    match try_with_node_ref(this, ec, |node| node.append_child(&child))? {
         Ok(_) => Ok(child_val),
         Err(dom_exception) => Err(dom_exception_error(dom_exception, ec)),
     }
@@ -657,11 +496,18 @@ fn insert_before(
     args: &[JsValue],
     ec: &mut dyn ExecutionContext<crate::js::Types>,
 ) -> Completion<JsValue, crate::js::Types> {
-    let child_val = args.get_or_undefined(0).clone();
-    let child = appendable_node(args.get_or_undefined(0), ec)?;
-    let reference_child = match args.get_or_undefined(1) {
-        value if value.is_null() || value.is_undefined() => None,
-        value => Some(appendable_node(value, ec)?),
+    let child_val = args
+        .first()
+        .cloned()
+        .unwrap_or_else(|| ec.value_undefined());
+    let child = appendable_node(&child_val, ec)?;
+    let reference_val = args.get(1).cloned().unwrap_or_else(|| ec.value_undefined());
+    let reference_child = if crate::js::Types::value_is_null(&reference_val)
+        || crate::js::Types::value_is_undefined(&reference_val)
+    {
+        None
+    } else {
+        Some(appendable_node(&reference_val, ec)?)
     };
     match try_with_node_ref(this, ec, |node| {
         node.insert_before(&child, reference_child.as_ref())
@@ -676,8 +522,11 @@ fn remove_child(
     args: &[JsValue],
     ec: &mut dyn ExecutionContext<crate::js::Types>,
 ) -> Completion<JsValue, crate::js::Types> {
-    let child_val = args.get_or_undefined(0).clone();
-    let child = appendable_node(args.get_or_undefined(0), ec)?;
+    let child_val = args
+        .first()
+        .cloned()
+        .unwrap_or_else(|| ec.value_undefined());
+    let child = appendable_node(&child_val, ec)?;
     match try_with_node_ref(this, ec, |node| node.remove_child(&child))? {
         Ok(()) => Ok(child_val),
         Err(error_msg) => Err(ec.new_type_error(&error_msg)),
@@ -690,26 +539,28 @@ fn appendable_node(
 ) -> Completion<Node, crate::js::Types> {
     let object = crate::js::Types::value_as_object(value)
         .ok_or_else(|| ec.new_type_error("appendChild requires a Node"))?;
-    if let Some(node) = object.downcast_ref::<Node>() {
-        return Ok(Node::new(Rc::clone(&node.document), node.node_id));
-    }
-    if let Some(element) = object.downcast_ref::<Element>() {
-        return Ok(Node::new(
-            Rc::clone(&element.node.document),
-            element.node.node_id,
-        ));
-    }
-    if let Some(html_element) = object.downcast_ref::<HTMLElement>() {
-        return Ok(Node::new(
-            Rc::clone(&html_element.element.node.document),
-            html_element.element.node.node_id,
-        ));
-    }
-    if let Some(html_iframe_element) = object.downcast_ref::<HTMLIFrameElement>() {
-        return Ok(Node::new(
-            Rc::clone(&html_iframe_element.html_element.element.node.document),
-            html_iframe_element.html_element.element.node.node_id,
-        ));
+    if let Some(data) = ec.with_object_any(&object) {
+        if let Some(node) = data.downcast_ref::<Node>() {
+            return Ok(Node::new(Rc::clone(&node.document), node.node_id));
+        }
+        if let Some(element) = data.downcast_ref::<Element>() {
+            return Ok(Node::new(
+                Rc::clone(&element.node.document),
+                element.node.node_id,
+            ));
+        }
+        if let Some(html_element) = data.downcast_ref::<HTMLElement>() {
+            return Ok(Node::new(
+                Rc::clone(&html_element.element.node.document),
+                html_element.element.node.node_id,
+            ));
+        }
+        if let Some(html_iframe_element) = data.downcast_ref::<HTMLIFrameElement>() {
+            return Ok(Node::new(
+                Rc::clone(&html_iframe_element.html_element.element.node.document),
+                html_iframe_element.html_element.element.node.node_id,
+            ));
+        }
     }
     Err(ec.new_type_error("appendChild requires a Node"))
 }

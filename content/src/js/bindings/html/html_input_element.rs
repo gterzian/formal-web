@@ -1,7 +1,8 @@
 // ── HTMLInputElement JS bindings ──
 
-use boa_engine::JsValue;
 use std::marker::PhantomData;
+
+type JsValue = <crate::js::Types as JsTypes>::JsValue;
 
 use crate::html::HTMLInputElement;
 use crate::webidl::bindings::{AttributeDef, InterfaceDefinition, OperationDef, WebIdlInterface};

@@ -5,14 +5,13 @@
 //
 // Only a subset of the full IDL is exposed for the initial video cut.
 
-use boa_engine::{JsArgs, JsValue};
 use std::marker::PhantomData;
+
+type JsValue = <crate::js::Types as JsTypes>::JsValue;
 
 use crate::html::HTMLMediaElement;
 use crate::html::HTMLVideoElement;
-use crate::webidl::bindings::{
-    AttributeDef, ConstantDef, InterfaceDefinition, OperationDef, WebIdlInterface,
-};
+use crate::webidl::bindings::{AttributeDef, InterfaceDefinition, OperationDef, WebIdlInterface};
 
 use js_engine::{Completion, ExecutionContext, JsTypes};
 
@@ -46,62 +45,6 @@ impl WebIdlInterface<crate::js::Types> for HTMLMediaElement {
             let _ = def;
             return;
         }
-
-        // Constants
-        def.add_constant(ConstantDef {
-            _phantom: PhantomData,
-
-            id: "NETWORK_EMPTY",
-            value: JsValue::from(HTMLMediaElement::NETWORK_EMPTY as i32),
-        });
-        def.add_constant(ConstantDef {
-            _phantom: PhantomData,
-
-            id: "NETWORK_IDLE",
-            value: JsValue::from(HTMLMediaElement::NETWORK_IDLE as i32),
-        });
-        def.add_constant(ConstantDef {
-            _phantom: PhantomData,
-
-            id: "NETWORK_LOADING",
-            value: JsValue::from(HTMLMediaElement::NETWORK_LOADING as i32),
-        });
-        def.add_constant(ConstantDef {
-            _phantom: PhantomData,
-
-            id: "NETWORK_NO_SOURCE",
-            value: JsValue::from(HTMLMediaElement::NETWORK_NO_SOURCE as i32),
-        });
-        def.add_constant(ConstantDef {
-            _phantom: PhantomData,
-
-            id: "HAVE_NOTHING",
-            value: JsValue::from(HTMLMediaElement::HAVE_NOTHING as i32),
-        });
-        def.add_constant(ConstantDef {
-            _phantom: PhantomData,
-
-            id: "HAVE_METADATA",
-            value: JsValue::from(HTMLMediaElement::HAVE_METADATA as i32),
-        });
-        def.add_constant(ConstantDef {
-            _phantom: PhantomData,
-
-            id: "HAVE_CURRENT_DATA",
-            value: JsValue::from(HTMLMediaElement::HAVE_CURRENT_DATA as i32),
-        });
-        def.add_constant(ConstantDef {
-            _phantom: PhantomData,
-
-            id: "HAVE_FUTURE_DATA",
-            value: JsValue::from(HTMLMediaElement::HAVE_FUTURE_DATA as i32),
-        });
-        def.add_constant(ConstantDef {
-            _phantom: PhantomData,
-
-            id: "HAVE_ENOUGH_DATA",
-            value: JsValue::from(HTMLMediaElement::HAVE_ENOUGH_DATA as i32),
-        });
 
         // network state
         def.add_attribute(AttributeDef {
@@ -414,17 +357,20 @@ fn set_src(
     args: &[JsValue],
     ec: &mut dyn ExecutionContext<crate::js::Types>,
 ) -> Completion<JsValue, crate::js::Types> {
-    // Note: uses JsObject::downcast_mut.
-    // with_object_any_mut borrows ec, preventing domain method calls that need ec.
-    let src = ec.to_rust_string(args.get_or_undefined(0).clone())?;
-    let obj = this.as_object();
-    if let Some(obj) = obj {
-        if let Some(mut media) = obj.downcast_mut::<HTMLMediaElement>() {
-            media.set_src(&src, ec);
-        } else if let Some(mut video) = obj.downcast_mut::<HTMLVideoElement>() {
-            video.media_element.set_src(&src, ec);
-        }
-    }
+    let undefined = ec.value_undefined();
+    let src = ec.to_rust_string(args.first().cloned().unwrap_or_else(|| undefined))?;
+    let obj = crate::js::Types::value_as_object(this)
+        .ok_or_else(|| ec.new_type_error("expected object"))?;
+    ec.with_object_any_mut_with(
+        &obj,
+        Box::new(|data, ec2| {
+            if let Some(media) = data.downcast_mut::<HTMLMediaElement>() {
+                media.set_src(&src, ec2);
+            } else if let Some(video) = data.downcast_mut::<HTMLVideoElement>() {
+                video.media_element.set_src(&src, ec2);
+            }
+        }),
+    );
     Ok(ec.value_undefined())
 }
 
@@ -604,7 +550,8 @@ fn set_preload(
     args: &[JsValue],
     ec: &mut dyn ExecutionContext<crate::js::Types>,
 ) -> Completion<JsValue, crate::js::Types> {
-    let value = ec.to_rust_string(args.get_or_undefined(0).clone())?;
+    let undefined = ec.value_undefined();
+    let value = ec.to_rust_string(args.first().cloned().unwrap_or_else(|| undefined))?;
     try_with_media_ref(this, ec, |media| media.set_preload(&value))?;
     Ok(ec.value_undefined())
 }
@@ -628,16 +575,20 @@ fn play_method(
     _args: &[JsValue],
     ec: &mut dyn ExecutionContext<crate::js::Types>,
 ) -> Completion<JsValue, crate::js::Types> {
-    // Note: uses JsObject::downcast_mut.
-    // with_object_any_mut borrows ec, preventing domain method calls that need ec.
     let obj = crate::js::Types::value_as_object(this)
         .ok_or_else(|| ec.new_type_error("expected object"))?;
-    if let Some(mut media) = obj.downcast_mut::<HTMLMediaElement>() {
-        return media.play(ec);
-    } else if let Some(mut video) = obj.downcast_mut::<HTMLVideoElement>() {
-        return video.media_element.play(ec);
-    }
-    Err(ec.new_type_error("expected HTMLMediaElement"))
+    let mut result = Err(ec.new_type_error("expected HTMLMediaElement"));
+    ec.with_object_any_mut_with(
+        &obj,
+        Box::new(|data, ec2| {
+            if let Some(media) = data.downcast_mut::<HTMLMediaElement>() {
+                result = media.play(ec2);
+            } else if let Some(video) = data.downcast_mut::<HTMLVideoElement>() {
+                result = video.media_element.play(ec2);
+            }
+        }),
+    );
+    result
 }
 
 fn pause_method(
@@ -645,18 +596,19 @@ fn pause_method(
     _args: &[JsValue],
     ec: &mut dyn ExecutionContext<crate::js::Types>,
 ) -> Completion<JsValue, crate::js::Types> {
-    // Note: uses JsObject::downcast_mut.
-    // with_object_any_mut borrows ec, preventing domain method calls that need ec.
     let obj = crate::js::Types::value_as_object(this)
         .ok_or_else(|| ec.new_type_error("expected object"))?;
-    if let Some(mut media) = obj.downcast_mut::<HTMLMediaElement>() {
-        media.pause(ec);
-        return Ok(ec.value_undefined());
-    } else if let Some(mut video) = obj.downcast_mut::<HTMLVideoElement>() {
-        video.media_element.pause(ec);
-        return Ok(ec.value_undefined());
-    }
-    Err(ec.new_type_error("expected HTMLMediaElement"))
+    ec.with_object_any_mut_with(
+        &obj,
+        Box::new(|data, ec2| {
+            if let Some(media) = data.downcast_mut::<HTMLMediaElement>() {
+                media.pause(ec2);
+            } else if let Some(video) = data.downcast_mut::<HTMLVideoElement>() {
+                video.media_element.pause(ec2);
+            }
+        }),
+    );
+    Ok(ec.value_undefined())
 }
 
 fn can_play_type(

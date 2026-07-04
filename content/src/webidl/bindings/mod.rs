@@ -73,7 +73,6 @@ mod operation;
 pub(crate) mod registry;
 
 pub(crate) use attribute::AttributeDef;
-pub(crate) use constant::ConstantDef;
 pub(crate) use interface::{
     InterfaceDefinition, WebIdlInterface, WebIdlNamespace, create_interface_instance,
     register_interface_spec, register_namespace_spec,

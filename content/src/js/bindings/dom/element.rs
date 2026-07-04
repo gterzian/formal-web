@@ -1,5 +1,6 @@
-use boa_engine::{JsNativeError, JsResult, JsValue};
 use std::marker::PhantomData;
+
+type JsValue = <crate::js::Types as JsTypes>::JsValue;
 
 use crate::dom::{DOMException, Element};
 use crate::html::{
@@ -175,63 +176,35 @@ impl WebIdlInterface<crate::js::Types> for Element {
     }
 }
 
-pub(crate) fn with_element_ref<R>(this: &JsValue, f: impl FnOnce(&Element) -> R) -> JsResult<R> {
-    let object = this
-        .as_object()
-        .ok_or_else(|| JsNativeError::typ().with_message("element receiver is not an object"))?;
-    if let Some(element) = object.downcast_ref::<Element>() {
-        return Ok(f(&element));
-    }
-    if let Some(html_element) = object.downcast_ref::<HTMLElement>() {
-        return Ok(f(&html_element.element));
-    }
-    if let Some(html_anchor_element) = object.downcast_ref::<HTMLAnchorElement>() {
-        return Ok(f(&html_anchor_element.html_element.element));
-    }
-    if let Some(html_iframe_element) = object.downcast_ref::<HTMLIFrameElement>() {
-        return Ok(f(&html_iframe_element.html_element.element));
-    }
-    if let Some(html_input_element) = object.downcast_ref::<HTMLInputElement>() {
-        return Ok(f(&html_input_element.html_element.element));
-    }
-    if let Some(html_media_element) = object.downcast_ref::<HTMLMediaElement>() {
-        return Ok(f(&html_media_element.html_element.element));
-    }
-    if let Some(html_video_element) = object.downcast_ref::<HTMLVideoElement>() {
-        return Ok(f(&html_video_element.media_element.html_element.element));
-    }
-    Err(JsNativeError::typ()
-        .with_message("receiver is not an Element")
-        .into())
-}
-
-fn try_with_element_ref<R>(
+pub(crate) fn try_with_element_ref<R>(
     this: &JsValue,
     ec: &mut dyn ExecutionContext<crate::js::Types>,
     f: impl FnOnce(&Element) -> R,
 ) -> Completion<R, crate::js::Types> {
     let object = crate::js::Types::value_as_object(this)
         .ok_or_else(|| ec.new_type_error("element receiver is not an object"))?;
-    if let Some(element) = object.downcast_ref::<Element>() {
-        return Ok(f(&element));
-    }
-    if let Some(html_element) = object.downcast_ref::<HTMLElement>() {
-        return Ok(f(&html_element.element));
-    }
-    if let Some(html_anchor_element) = object.downcast_ref::<HTMLAnchorElement>() {
-        return Ok(f(&html_anchor_element.html_element.element));
-    }
-    if let Some(html_iframe_element) = object.downcast_ref::<HTMLIFrameElement>() {
-        return Ok(f(&html_iframe_element.html_element.element));
-    }
-    if let Some(html_input_element) = object.downcast_ref::<HTMLInputElement>() {
-        return Ok(f(&html_input_element.html_element.element));
-    }
-    if let Some(html_media_element) = object.downcast_ref::<HTMLMediaElement>() {
-        return Ok(f(&html_media_element.html_element.element));
-    }
-    if let Some(html_video_element) = object.downcast_ref::<HTMLVideoElement>() {
-        return Ok(f(&html_video_element.media_element.html_element.element));
+    if let Some(data) = ec.with_object_any(&object) {
+        if let Some(element) = data.downcast_ref::<Element>() {
+            return Ok(f(element));
+        }
+        if let Some(html_element) = data.downcast_ref::<HTMLElement>() {
+            return Ok(f(&html_element.element));
+        }
+        if let Some(html_anchor_element) = data.downcast_ref::<HTMLAnchorElement>() {
+            return Ok(f(&html_anchor_element.html_element.element));
+        }
+        if let Some(html_iframe_element) = data.downcast_ref::<HTMLIFrameElement>() {
+            return Ok(f(&html_iframe_element.html_element.element));
+        }
+        if let Some(html_input_element) = data.downcast_ref::<HTMLInputElement>() {
+            return Ok(f(&html_input_element.html_element.element));
+        }
+        if let Some(html_media_element) = data.downcast_ref::<HTMLMediaElement>() {
+            return Ok(f(&html_media_element.html_element.element));
+        }
+        if let Some(html_video_element) = data.downcast_ref::<HTMLVideoElement>() {
+            return Ok(f(&html_video_element.media_element.html_element.element));
+        }
     }
     Err(ec.new_type_error("receiver is not an Element"))
 }
@@ -292,15 +265,7 @@ fn get_class_list(
 
     // "add" method
     let add_fn = ec.create_builtin_function(
-        Box::new(
-            move |args: &[<crate::js::Types as js_engine::JsTypes>::JsValue],
-                  this_val: <crate::js::Types as js_engine::JsTypes>::JsValue,
-                  inner_ec: &mut dyn ExecutionContext<crate::js::Types>|
-                  -> Completion<
-                <crate::js::Types as js_engine::JsTypes>::JsValue,
-                crate::js::Types,
-            > { class_list_add(&this_val, args, inner_ec) },
-        ),
+        Box::new(move |args, this_val, inner_ec| class_list_add(&this_val, args, inner_ec)),
         1,
         ec.property_key_from_str("add"),
     );
@@ -312,15 +277,7 @@ fn get_class_list(
 
     // "remove" method
     let remove_fn = ec.create_builtin_function(
-        Box::new(
-            move |args: &[<crate::js::Types as js_engine::JsTypes>::JsValue],
-                  this_val: <crate::js::Types as js_engine::JsTypes>::JsValue,
-                  inner_ec: &mut dyn ExecutionContext<crate::js::Types>|
-                  -> Completion<
-                <crate::js::Types as js_engine::JsTypes>::JsValue,
-                crate::js::Types,
-            > { class_list_remove(&this_val, args, inner_ec) },
-        ),
+        Box::new(move |args, this_val, inner_ec| class_list_remove(&this_val, args, inner_ec)),
         1,
         ec.property_key_from_str("remove"),
     );
@@ -332,15 +289,7 @@ fn get_class_list(
 
     // "toggle" method
     let toggle_fn = ec.create_builtin_function(
-        Box::new(
-            move |args: &[<crate::js::Types as js_engine::JsTypes>::JsValue],
-                  this_val: <crate::js::Types as js_engine::JsTypes>::JsValue,
-                  inner_ec: &mut dyn ExecutionContext<crate::js::Types>|
-                  -> Completion<
-                <crate::js::Types as js_engine::JsTypes>::JsValue,
-                crate::js::Types,
-            > { class_list_toggle(&this_val, args, inner_ec) },
-        ),
+        Box::new(move |args, this_val, inner_ec| class_list_toggle(&this_val, args, inner_ec)),
         1,
         ec.property_key_from_str("toggle"),
     );
@@ -352,15 +301,7 @@ fn get_class_list(
 
     // "contains" method
     let contains_fn = ec.create_builtin_function(
-        Box::new(
-            move |args: &[<crate::js::Types as js_engine::JsTypes>::JsValue],
-                  this_val: <crate::js::Types as js_engine::JsTypes>::JsValue,
-                  inner_ec: &mut dyn ExecutionContext<crate::js::Types>|
-                  -> Completion<
-                <crate::js::Types as js_engine::JsTypes>::JsValue,
-                crate::js::Types,
-            > { class_list_contains(&this_val, args, inner_ec) },
-        ),
+        Box::new(move |args, this_val, inner_ec| class_list_contains(&this_val, args, inner_ec)),
         1,
         ec.property_key_from_str("contains"),
     );
@@ -378,15 +319,7 @@ fn get_class_list(
 
     // length getter
     let len_fn = ec.create_builtin_function(
-        Box::new(
-            move |_args: &[<crate::js::Types as js_engine::JsTypes>::JsValue],
-                  this_val: <crate::js::Types as js_engine::JsTypes>::JsValue,
-                  inner_ec: &mut dyn ExecutionContext<crate::js::Types>|
-                  -> Completion<
-                <crate::js::Types as js_engine::JsTypes>::JsValue,
-                crate::js::Types,
-            > { class_list_length(&this_val, &[], inner_ec) },
-        ),
+        Box::new(move |_args, this_val, inner_ec| class_list_length(&this_val, &[], inner_ec)),
         0,
         ec.property_key_from_str("get_length"),
     );
@@ -419,44 +352,52 @@ fn class_list_value(
     let element_obj = crate::js::Types::value_as_object(&element_val)
         .ok_or_else(|| ec.new_type_error("classList: element not found"))?;
 
-    if let Some(el) = element_obj.downcast_ref::<Element>() {
-        Ok(el.get_attribute("class").unwrap_or_default())
-    } else if let Some(html_el) = element_obj.downcast_ref::<HTMLElement>() {
-        Ok(html_el.element.get_attribute("class").unwrap_or_default())
-    } else if let Some(media) = element_obj.downcast_ref::<HTMLMediaElement>() {
-        Ok(media
+    let err = ec.new_type_error("classList: element data not found");
+    let data = ec.with_object_any(&element_obj).ok_or(err)?;
+
+    if let Some(el) = data.downcast_ref::<Element>() {
+        return Ok(el.get_attribute("class").unwrap_or_default());
+    }
+    if let Some(html_el) = data.downcast_ref::<HTMLElement>() {
+        return Ok(html_el.element.get_attribute("class").unwrap_or_default());
+    }
+    if let Some(media) = data.downcast_ref::<HTMLMediaElement>() {
+        return Ok(media
             .html_element
             .element
             .get_attribute("class")
-            .unwrap_or_default())
-    } else if let Some(video) = element_obj.downcast_ref::<HTMLVideoElement>() {
-        Ok(video
+            .unwrap_or_default());
+    }
+    if let Some(video) = data.downcast_ref::<HTMLVideoElement>() {
+        return Ok(video
             .media_element
             .html_element
             .element
             .get_attribute("class")
-            .unwrap_or_default())
-    } else if let Some(ifr) = element_obj.downcast_ref::<HTMLIFrameElement>() {
-        Ok(ifr
-            .html_element
-            .element
-            .get_attribute("class")
-            .unwrap_or_default())
-    } else if let Some(input) = element_obj.downcast_ref::<HTMLInputElement>() {
-        Ok(input
-            .html_element
-            .element
-            .get_attribute("class")
-            .unwrap_or_default())
-    } else if let Some(anc) = element_obj.downcast_ref::<HTMLAnchorElement>() {
-        Ok(anc
-            .html_element
-            .element
-            .get_attribute("class")
-            .unwrap_or_default())
-    } else {
-        Ok(String::new())
+            .unwrap_or_default());
     }
+    if let Some(ifr) = data.downcast_ref::<HTMLIFrameElement>() {
+        return Ok(ifr
+            .html_element
+            .element
+            .get_attribute("class")
+            .unwrap_or_default());
+    }
+    if let Some(input) = data.downcast_ref::<HTMLInputElement>() {
+        return Ok(input
+            .html_element
+            .element
+            .get_attribute("class")
+            .unwrap_or_default());
+    }
+    if let Some(anc) = data.downcast_ref::<HTMLAnchorElement>() {
+        return Ok(anc
+            .html_element
+            .element
+            .get_attribute("class")
+            .unwrap_or_default());
+    }
+    Ok(String::new())
 }
 
 fn class_list_set_value(
@@ -471,55 +412,29 @@ fn class_list_set_value(
     let element_obj = crate::js::Types::value_as_object(&element_val)
         .ok_or_else(|| ec.new_type_error("classList: element not found"))?;
 
-    if let Some(el) = element_obj.downcast_ref::<Element>() {
+    let set_class = |element: &Element| {
         if value.is_empty() {
-            el.remove_attribute("class");
+            element.remove_attribute("class");
         } else {
-            el.set_attribute("class", value);
+            element.set_attribute("class", value);
         }
-    } else if let Some(html_el) = element_obj.downcast_ref::<HTMLElement>() {
-        if value.is_empty() {
-            html_el.element.remove_attribute("class");
-        } else {
-            html_el.element.set_attribute("class", value);
-        }
-    } else if let Some(media) = element_obj.downcast_ref::<HTMLMediaElement>() {
-        if value.is_empty() {
-            media.html_element.element.remove_attribute("class");
-        } else {
-            media.html_element.element.set_attribute("class", value);
-        }
-    } else if let Some(video) = element_obj.downcast_ref::<HTMLVideoElement>() {
-        if value.is_empty() {
-            video
-                .media_element
-                .html_element
-                .element
-                .remove_attribute("class");
-        } else {
-            video
-                .media_element
-                .html_element
-                .element
-                .set_attribute("class", value);
-        }
-    } else if let Some(ifr) = element_obj.downcast_ref::<HTMLIFrameElement>() {
-        if value.is_empty() {
-            ifr.html_element.element.remove_attribute("class");
-        } else {
-            ifr.html_element.element.set_attribute("class", value);
-        }
-    } else if let Some(input) = element_obj.downcast_ref::<HTMLInputElement>() {
-        if value.is_empty() {
-            input.html_element.element.remove_attribute("class");
-        } else {
-            input.html_element.element.set_attribute("class", value);
-        }
-    } else if let Some(anc) = element_obj.downcast_ref::<HTMLAnchorElement>() {
-        if value.is_empty() {
-            anc.html_element.element.remove_attribute("class");
-        } else {
-            anc.html_element.element.set_attribute("class", value);
+    };
+
+    if let Some(data) = ec.with_object_any(&element_obj) {
+        if let Some(el) = data.downcast_ref::<Element>() {
+            set_class(el);
+        } else if let Some(html_el) = data.downcast_ref::<HTMLElement>() {
+            set_class(&html_el.element);
+        } else if let Some(media) = data.downcast_ref::<HTMLMediaElement>() {
+            set_class(&media.html_element.element);
+        } else if let Some(video) = data.downcast_ref::<HTMLVideoElement>() {
+            set_class(&video.media_element.html_element.element);
+        } else if let Some(ifr) = data.downcast_ref::<HTMLIFrameElement>() {
+            set_class(&ifr.html_element.element);
+        } else if let Some(input) = data.downcast_ref::<HTMLInputElement>() {
+            set_class(&input.html_element.element);
+        } else if let Some(anc) = data.downcast_ref::<HTMLAnchorElement>() {
+            set_class(&anc.html_element.element);
         }
     }
     Ok(())
