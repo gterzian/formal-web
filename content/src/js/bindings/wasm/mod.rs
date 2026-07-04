@@ -27,7 +27,7 @@ use crate::webidl::bindings::{
 use crate::webidl::{
     get_a_copy_of_the_buffer_source, is_buffer_source, rejected_promise_from_error,
 };
-use boa_engine::{JsError, JsNativeError, JsResult, JsValue, js_string, object::JsObject};
+use boa_engine::{JsError, JsNativeError, JsResult, JsValue, object::JsObject};
 use js_engine::boa::BoaContext;
 use js_engine::{Completion, ExecutionContext, JsTypes};
 use std::marker::PhantomData;

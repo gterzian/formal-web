@@ -118,6 +118,8 @@ pub struct PromiseResolvers<T: JsTypes> {
 }
 
 #[cfg(not(feature = "boa"))]
+// SAFETY: PromiseResolvers wraps JsObject values; on non-Boa backends
+// there is no GC tracing needed (the container types handle it).
 unsafe impl<T: JsTypes> crate::gc::Trace for PromiseResolvers<T> {}
 
 #[cfg(not(feature = "boa"))]

@@ -6,8 +6,8 @@
 //! domain method or function, and wraps the result.
 
 use boa_engine::{
-    Context, JsNativeError, JsObject, JsResult, JsValue, js_string,
-    native_function::NativeFunction, object::FunctionObjectBuilder, property::PropertyDescriptor,
+    Context, JsObject, JsResult, JsValue, js_string, native_function::NativeFunction,
+    object::FunctionObjectBuilder, property::PropertyDescriptor,
 };
 use std::marker::PhantomData;
 

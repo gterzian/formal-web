@@ -160,6 +160,15 @@ impl PartialEq for JscValue {
 }
 impl Eq for JscValue {}
 
+impl From<JscObject> for JscValue {
+    fn from(obj: JscObject) -> Self {
+        Self {
+            raw: obj.raw as *mut JSValueRef,
+            ctx: obj.ctx,
+        }
+    }
+}
+
 impl JscValue {
     /// # Safety
     /// `raw` must be a valid `JSValueRef` from `ctx`.
@@ -185,6 +194,79 @@ impl JscValue {
             return false;
         }
         unsafe { JSValueToBoolean(self.ctx, self.raw) }
+    }
+
+    /// Returns `true` if the value is `undefined`.
+    pub fn is_undefined(&self) -> bool {
+        if self.ctx.is_null() {
+            return true;
+        }
+        unsafe { JSValueGetType(self.ctx, self.raw) == JSType::kJSTypeUndefined }
+    }
+
+    /// Returns `true` if the value is `null`.
+    pub fn is_null(&self) -> bool {
+        if self.ctx.is_null() {
+            return true;
+        }
+        unsafe { JSValueGetType(self.ctx, self.raw) == JSType::kJSTypeNull }
+    }
+
+    /// If the value is an object, returns the underlying `JscObject`.
+    pub fn as_object(&self) -> Option<JscObject> {
+        if self.ctx.is_null() {
+            return None;
+        }
+        if unsafe { JSValueGetType(self.ctx, self.raw) == JSType::kJSTypeObject } {
+            Some(JscObject {
+                raw: self.raw as *mut JSObjectRef,
+                ctx: self.ctx,
+            })
+        } else {
+            None
+        }
+    }
+
+    /// Creates an `undefined` value for the given context.
+    pub fn undefined(ctx: &JscContext) -> Self {
+        let ctx_ptr = ctx.as_context_ref();
+        Self {
+            raw: unsafe { JSValueMakeUndefined(ctx_ptr) },
+            ctx: ctx_ptr,
+        }
+    }
+
+    /// Creates a `null` value for the given context.
+    pub fn null(ctx: &JscContext) -> Self {
+        let ctx_ptr = ctx.as_context_ref();
+        Self {
+            raw: unsafe { JSValueMakeNull(ctx_ptr) },
+            ctx: ctx_ptr,
+        }
+    }
+
+    /// Display the value as a string (for error messages / debugging).
+    pub fn display(&self) -> String {
+        if self.ctx.is_null() {
+            return String::from("undefined");
+        }
+        let js_str = unsafe { JSValueToStringCopy(self.ctx, self.raw, std::ptr::null_mut()) };
+        if js_str.is_null() {
+            return String::from("<error>");
+        }
+        let len = unsafe { JSStringGetLength(js_str) } as usize;
+        let max_len = len * 3 + 1;
+        let mut buf = vec![0i8; max_len];
+        let written = unsafe { JSStringGetUTF8CString(js_str, buf.as_mut_ptr(), max_len) };
+        let result = if written > 0 {
+            let slice = &buf[..(written as usize - 1)];
+            String::from_utf8_lossy(unsafe { std::mem::transmute::<&[i8], &[u8]>(slice) })
+                .into_owned()
+        } else {
+            String::from("<conversion error>")
+        };
+        unsafe { JSStringRelease(js_str) };
+        result
     }
 }
 

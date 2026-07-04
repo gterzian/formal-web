@@ -1,5 +1,5 @@
 use js_engine::{
-    Completion, ExecutionContext, JsEngine, JsTypes, JsTypesWithRealm,
+    Completion, EcmascriptHost, ExecutionContext, JsEngine, JsTypes, JsTypesWithRealm,
     PropertyDescriptor as JsPropertyDescriptor,
 };
 
@@ -223,6 +223,27 @@ where
                 // Step 1.5-1.7: Overload resolution (not yet implemented).
                 // Step 1.8: Let object be the result of internally creating
                 //   a new object implementing I, with realm and NewTarget.
+                //
+                // <https://webidl.spec.whatwg.org/#internally-create-a-new-object-implementing-the-interface>
+                // Step 4: If newTarget is not undefined — already checked above.
+                // Step 4.2: Let prototype be ? Get(newTarget, "prototype").
+                let new_target_obj = Ty::value_as_object(&new_target_or_this).ok_or_else(|| {
+                    ec.new_type_error(&format!(
+                        "{} constructor called without a valid new.target",
+                        I::NAME
+                    ))
+                })?;
+                let prototype_val = EcmascriptHost::get(ec, &new_target_obj, "prototype")?;
+                // Step 4.3: If prototype is not an Object, set prototype to
+                //   the interface prototype object for interface in targetRealm.
+                //   TODO: per-realm fallback for cross-realm subclassing.
+                let resolved_prototype = if Ty::value_as_object(&prototype_val).is_some() {
+                    Ty::value_as_object(&prototype_val).ok_or_else(|| {
+                        ec.new_type_error("TypeError: new.target.prototype is not an object")
+                    })?
+                } else {
+                    instance_prototype.clone()
+                };
                 let obj = I::create_platform_object(&new_target_or_this, args, ec)?;
                 // Step 1.9: Perform the constructor steps of constructor
                 //   with object as this and values as the argument values.
@@ -235,8 +256,7 @@ where
                 // `TraceableBox` wrapper and uses its trace/finalize function
                 // pointers instead of no-op tracing.
                 let traceable = js_engine::boa::TraceableBox::new(obj);
-                let instance =
-                    ec.create_object_with_any(instance_prototype.clone(), Box::new(traceable));
+                let instance = ec.create_object_with_any(resolved_prototype, Box::new(traceable));
                 // Step 1.11-1.13: Assert and return O.
                 Ok(Ty::value_from_object(instance))
             },
@@ -370,12 +390,33 @@ where
                 // Step 1.5-1.7: Overload resolution (not yet implemented).
                 // Step 1.8: Let object be the result of internally creating
                 //   a new object implementing I, with realm and NewTarget.
+                //
+                // <https://webidl.spec.whatwg.org/#internally-create-a-new-object-implementing-the-interface>
+                // Step 4: If newTarget is not undefined — already checked above.
+                // Step 4.2: Let prototype be ? Get(newTarget, "prototype").
+                let new_target_obj = Ty::value_as_object(&new_target_or_this).ok_or_else(|| {
+                    ec.new_type_error(&format!(
+                        "{} constructor called without a valid new.target",
+                        I::NAME
+                    ))
+                })?;
+                let prototype_val = EcmascriptHost::get(ec, &new_target_obj, "prototype")?;
+                // Step 4.3: If prototype is not an Object, set prototype to
+                //   the interface prototype object for interface in targetRealm.
+                //   TODO: per-realm fallback for cross-realm subclassing.
+                let resolved_prototype = if Ty::value_as_object(&prototype_val).is_some() {
+                    Ty::value_as_object(&prototype_val).ok_or_else(|| {
+                        ec.new_type_error("TypeError: new.target.prototype is not an object")
+                    })?
+                } else {
+                    instance_prototype.clone()
+                };
                 let obj = I::create_platform_object(&new_target_or_this, args, ec)?;
                 // Step 1.9: Perform the constructor steps of constructor
                 //   with object as this and values as the argument values.
                 //   (Handled inside create_platform_object.)
                 // Step 1.10: Let O be object, converted to a JS value.
-                let instance = ec.create_object_with_any(instance_prototype.clone(), Box::new(obj));
+                let instance = ec.create_object_with_any(resolved_prototype, Box::new(obj));
                 // Step 1.11-1.13: Assert and return O.
                 Ok(Ty::value_from_object(instance))
             },

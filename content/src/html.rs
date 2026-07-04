@@ -132,7 +132,7 @@ pub(crate) fn create_a_new_browsing_context_and_document(
     })));
     // Steps 9-10, 13: Obtain agent, create realm, set up window environment
     // settings object (handled inside EnvironmentSettingsObject::new).
-    let mut settings = EnvironmentSettingsObject::new(
+    let settings = EnvironmentSettingsObject::new(
         Rc::clone(&document),
         Url::parse("about:blank").map_err(|error| error.to_string())?,
         Some(event_sender.clone()),

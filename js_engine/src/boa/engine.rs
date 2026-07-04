@@ -1595,6 +1595,15 @@ impl ExecutionContext<BoaTypes> for BoaContext {
             promise.then(on_fulfilled, on_rejected, &mut self.context),
             &mut self.context,
         )?;
+
+        // Note: _result_capability is currently ignored because Boa's
+        // promise.then() creates its own internal capability.  Callers
+        // that need result_capability (like async iterators) must be
+        // updated to use the returned promise instead.
+        //
+        // TODO: wire result_capability by piping the .then() result
+        // through to the capability's resolve/reject functions.
+
         Ok(JsValue::from(result))
     }
 

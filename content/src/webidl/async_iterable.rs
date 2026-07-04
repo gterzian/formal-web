@@ -250,13 +250,16 @@ where
         ec: &mut dyn ExecutionContext<Types>,
     ) -> Completion<JsObject, Types> {
         // Step 9: "Let ongoingPromise be object's ongoing promise."
-        if let Some(previous) = self.ongoing_promise.borrow().clone() {
+        // Note: Extract the clone before the if-let to avoid holding
+        // the GcCell borrow guard across the entire block, which would
+        // prevent a subsequent borrow_mut() (the temporary in `if let`
+        // lives until the end of the block in Rust).
+        let ongoing = self.ongoing_promise.borrow().clone();
+        if let Some(previous) = ongoing {
             // Step 10: "If ongoingPromise is not null, then:"
             // Step 10.1: "Let afterOngoingPromiseCapability be ! NewPromiseCapability(%Promise%)."
-            let after_capability = ec
-                .new_promise_capability(ec.realm_intrinsics(&ec.current_realm()).promise)
-                .map_err(|e| e)?;
-            let after_promise = after_capability.promise.clone();
+            // Note: result_capability is not wired on the Boa backend,
+            // so we use the .then() return value as the ongoing promise.
 
             // Step 10.2: "Let onSettled be CreateBuiltinFunction(nextSteps, 0, "", « »)."
             let on_settled_fn = ec.create_builtin_function_from_behaviour(
@@ -270,16 +273,20 @@ where
 
             // Step 10.3: "Perform PerformPromiseThen(ongoingPromise, onSettled, onSettled, afterOngoingPromiseCapability)."
             let previous_promise = promise_from_object(previous, ec)?;
-            ec.perform_promise_then(
+            let then_value = ec.perform_promise_then(
                 previous_promise,
                 Some(on_settled_fn.clone()),
                 Some(on_settled_fn),
-                Some(after_capability),
+                None,
             )?;
 
+            // Run microtasks and jobs to settle the promise synchronously.
+            ec.perform_a_microtask_checkpoint()?;
+            ec.run_jobs();
+
             // Step 10.4: "Set object's ongoing promise to afterOngoingPromiseCapability.[[Promise]]."
-            let result_obj =
-                Types::value_as_object(&after_promise).unwrap_or_else(|| ec.realm_global_object());
+            let result_obj = Types::value_as_object(&then_value)
+                .ok_or_else(|| ec.new_type_error("PerformPromiseThen did not return an object"))?;
             *self.ongoing_promise.borrow_mut() = Some(result_obj.clone());
             Ok(result_obj)
         } else {
@@ -306,10 +313,10 @@ where
     /// Core nextSteps from step 8 of "invoke the next property".
     fn start_next(&self, ec: &mut dyn ExecutionContext<Types>) -> Completion<JsObject, Types> {
         // Step 8.1: "Let nextPromiseCapability be ! NewPromiseCapability(%Promise%)."
+        // Note: We create a fallback capability for the finished/error paths.
         let next_capability = ec
             .new_promise_capability(ec.realm_intrinsics(&ec.current_realm()).promise)
             .map_err(|e| e)?;
-        let next_promise_value = next_capability.promise.clone();
 
         // Step 8.2: "If object's is finished is true, then:"
         if self.finished.get() {
@@ -321,7 +328,7 @@ where
                 &undefined,
                 &[Types::value_from_object(result)],
             )?;
-            return Ok(Types::value_as_object(&next_promise_value)
+            return Ok(Types::value_as_object(&next_capability.promise)
                 .unwrap_or_else(|| ec.realm_global_object()));
         }
 
@@ -332,7 +339,7 @@ where
                 let reject_obj = Types::object_from_function(next_capability.reject);
                 let undefined = ec.value_undefined();
                 ec.call(&reject_obj, &undefined, &[error])?;
-                return Ok(Types::value_as_object(&next_promise_value)
+                return Ok(Types::value_as_object(&next_capability.promise)
                     .unwrap_or_else(|| ec.realm_global_object()));
             }
         };
@@ -356,16 +363,30 @@ where
         );
 
         // Step 8.9: "Perform PerformPromiseThen(nextPromise, onFulfilled, onRejected, nextPromiseCapability)."
+        // Note: result_capability is not wired on the Boa backend, so we
+        // use the return value of perform_promise_then (the .then() result
+        // promise) instead of next_capability.promise for the normal path.
         let next_promise_obj = promise_from_object(next_promise, ec)?;
-        ec.perform_promise_then(
+        let then_result = ec.perform_promise_then(
             next_promise_obj,
             Some(on_fulfilled),
             Some(on_rejected),
-            Some(next_capability),
+            None,
         )?;
 
+        // Run microtasks so that if nextPromise was already resolved,
+        // the onFulfilled/onRejected handlers run immediately and the
+        // result promise settles synchronously.
+        // Run microtasks to settle promise chain synchronously.
+        ec.perform_a_microtask_checkpoint()?;
+        ec.run_jobs();
+
+        // Use the .then() result as the ongoing promise.
+        let result_promise = Types::value_as_object(&then_result)
+            .ok_or_else(|| ec.new_type_error("PerformPromiseThen did not return an object"))?;
+
         // Step 8.10: "Return nextPromiseCapability.[[Promise]]."
-        Ok(Types::value_as_object(&next_promise_value).unwrap_or_else(|| ec.realm_global_object()))
+        Ok(result_promise)
     }
 
     /// <https://webidl.spec.whatwg.org/#js-asynchronous-iterator-prototype-object>
@@ -376,10 +397,11 @@ where
         ec: &mut dyn ExecutionContext<Types>,
     ) -> Completion<JsObject, Types> {
         // Step 8.1: "Let returnPromiseCapability be ! NewPromiseCapability(%Promise%)."
+        // Note: used for finished/error fast-paths; normal path uses
+        // the promise returned by perform_promise_then.
         let return_capability = ec
             .new_promise_capability(ec.realm_intrinsics(&ec.current_realm()).promise)
             .map_err(|e| e)?;
-        let return_promise_value = return_capability.promise.clone();
 
         // Step 8.2: "If object's is finished is true, then:"
         if self.finished.get() {
@@ -391,7 +413,7 @@ where
                 &undefined,
                 &[Types::value_from_object(result)],
             )?;
-            return Ok(Types::value_as_object(&return_promise_value)
+            return Ok(Types::value_as_object(&return_capability.promise)
                 .unwrap_or_else(|| ec.realm_global_object()));
         }
 
@@ -412,7 +434,7 @@ where
                     let reject_obj = Types::object_from_function(return_capability.reject);
                     let undefined = ec.value_undefined();
                     ec.call(&reject_obj, &undefined, &[error])?;
-                    return Ok(Types::value_as_object(&return_promise_value)
+                    return Ok(Types::value_as_object(&return_capability.promise)
                         .unwrap_or_else(|| ec.realm_global_object()));
                 }
             }
@@ -435,16 +457,18 @@ where
 
         // Step 14: "Perform PerformPromiseThen(object's ongoing promise, onFulfilled, undefined, returnPromiseCapability)."
         let return_promise_obj = promise_from_object(return_promise, ec)?;
-        ec.perform_promise_then(
+        let then_result = ec.perform_promise_then(
             return_promise_obj,
             Some(on_fulfilled),
             Some(on_rejected),
-            Some(return_capability),
+            None,
         )?;
 
         // Step 15: "Return returnPromiseCapability.[[Promise]]."
-        Ok(Types::value_as_object(&return_promise_value)
-            .unwrap_or_else(|| ec.realm_global_object()))
+        // Note: use the .then() return value as the result promise.
+        let result_promise = Types::value_as_object(&then_result)
+            .ok_or_else(|| ec.new_type_error("PerformPromiseThen did not return an object"))?;
+        Ok(result_promise)
     }
 }
 

@@ -510,24 +510,31 @@ Tests now PASS:
 - `streams/transform-streams/terminate`
 - `streams/readable-streams/reentrant-strategies`
 
-**Category 7: Async iterator / from**
-`ReadableStream.values()` fails because our `create_async_iterator` tries to create a default reader on a locked (or non-standard) stream:
-| Test |
-|---|
-| `streams/readable-streams/async-iterator` |
-| `streams/readable-streams/from` |
-| `streams/readable-streams/patched-global` (iterator part) |
+**Category 7: Async iterator / from (partially fixed)**
+`ReadableStream.values()` now creates a default reader correctly (was using Boa's `downcast_ref` instead of `ec.with_object_any`).  The async iterator `start_next` and `queue_operation` now use the `.then()` return value directly instead of depending on `result_capability` (which is not wired on the Boa backend).  However, promise microtask/job processing may still cause timeouts in `for await` loops and `ReadableStream.from()` because the promise returned by `it.next()` may not settle before JavaScript's `await` checks it.
+
+| Test | Status |
+|---|---|
+| `streams/readable-streams/async-iterator` | TIMEOUT — first subtest passes, but `for await` hangs waiting for promise resolution |
+| `streams/readable-streams/from` | TIMEOUT — likely same microtask issue |
+| `streams/readable-streams/patched-global` | TIMEOUT — iterator part hangs |
+
+Fix plan:
+1. Investigate whether `perform_a_microtask_checkpoint()` + `run_jobs()` after `perform_promise_then` in `start_next`/`queue_operation` is sufficient to settle the result promise synchronously.
+2. If microtask processing runs handlers but the result promise still doesn't settle, check whether Boa's `promise.then()` creates the result promise correctly when the source promise is already resolved.
+3. Consider replacing `perform_promise_then` calls with direct synchronous processing when the source promise is known to be already resolved.
+4. Alternatively, wire `result_capability` in the Boa backend's `perform_promise_then` by piping the `.then()` result through to the capability's resolve/reject functions.
 
 **Category 8: Remaining pump/handling issues (pre-existing or not yet diagnosed)**
 | Test | Status | Notes |
 |---|---|---|
-| `streams/readable-streams/bad-underlying-sources` | TIMEOUT | Pre-existing — likely generic migration issue |
-| `streams/readable-streams/cancel` | FAIL | Pre-existing — likely generic migration issue |
-| `streams/readable-streams/tee` | FAIL | Pre-existing — likely generic migration issue |
-| `streams/readable-streams/read-task-handling` | TIMEOUT | Pre-existing — likely generic migration issue |
-| `streams/readable-streams/general` | FAIL | Subclassing: assert_true expected true got false |
-| `streams/readable-streams/default-reader` | FAIL | Pre-existing — likely generic migration issue |
-| `streams/readable-streams/count-queuing-strategy-integration` | FAIL | 
+| `streams/readable-streams/bad-underlying-sources` | TIMEOUT | Likely microtask processing — `pull()` throw not properly handled |
+| `streams/readable-streams/cancel` | FAIL | Likely generic migration issue |
+| `streams/readable-streams/tee` | FAIL | Likely generic migration issue |
+| `streams/readable-streams/read-task-handling` | TIMEOUT | Likely microtask processing |
+| `streams/readable-streams/general` | FAIL | Now just `assert_true` for `instanceof` after subclassing fix — needs investigation |
+| `streams/readable-streams/default-reader` | FAIL | "TypeError: not a callable function" — likely GC tracing gap in reader or controller stored objects |
+| `streams/readable-streams/count-queuing-strategy-integration` | FAIL | Likely GC tracing or promise chain issue | 
 
 
 **FIXED this session:**
@@ -550,12 +557,30 @@ Tests now PASS:
 | `streams/transform-streams/reentrant-strategies` | TIMEOUT | **PASS** ✅ | Category 6 fix |
 | `streams/transform-streams/terminate` | TIMEOUT | **PASS** ✅ | Category 6 fix |
 | `streams/readable-streams/reentrant-strategies` | TIMEOUT | **PASS** ✅ | Category 6 fix (write algorithm sync throw) |
+| `streams/transform-streams/general` | FAIL | **PASS** ✅ | Subclassing: constructor resolves prototype from `Get(newTarget, "prototype")` per Web IDL spec |
+| `streams/writable-streams/general` | FAIL | **PASS** ✅ | Subclassing: same constructor prototype resolution fix |
+| `streams/readable-streams/async-iterator` (subtest 1) | FAIL | **PASS** ✅ | `create_async_iterator_state` uses `ec.with_object_any` instead of Boa's `downcast_ref` |
 
 ## Known issues — JSC backend
 
 | # | Problem | Root cause | Status |
 |---|---|---|---|
-| 7 | JSC backend does not compile (220+ errors) | Missing methods on `JscValue`/`JscObject` (`is_undefined`, `downcast_ref`, `downcast_mut`, `as_object`, `display`, `value_null`); `wasmtime::Module` references in non-wasm code not gated | Not started — migration override documents this as expected |
+| 7 | JSC backend does not compile (219 errors in content crate) | `wasmtime::Module` references in `global_scope.rs` not properly gated on JSC (Boa-only feature). Content code uses Boa-native `.is_undefined()`, `.downcast_ref()`, `.downcast_mut()` instead of generic `Types::value_is_undefined()` / `ec.with_object_any()`. Those Boa-specific patterns cause type errors on JSC because `JscValue` and `JscObject` don't have those methods. | **js_engine crate compiles** ✅ (5 errors fixed this session). Content crate still has 219 errors — mostly Boa-specific patterns that need generic migration. |
+
+**Fix plan for JSC:**
+1. Gate `wasmtime::Module` references in `content/src/html/global_scope.rs` behind `#[cfg(boa_backend)]`
+2. Replace `.downcast_ref::<T>()` and `.downcast_mut::<T>()` calls with `ec.with_object_any(&obj).and_then(|d| d.downcast_ref::<T>())` pattern (6 errors)
+3. Fix `JscTypes: Clone` bound error by adding `Clone` impl to `JscTypes` unit struct
+4. Add `From<f64>`, `From<bool>`, and `Default` impls for `JscValue` (8 errors)
+5. Gate non-wasm `wasmtime::Module` references behind `#[cfg(boa_backend)]` (3 errors)
+6. Fix `Rc<RefCell<AbortThenCancelState>>: Trace` and similar bounds (7 errors) — these types aren't behind `#[gc_struct]` and need `Trace` impls or `#[cfg_attr(not(feature = "boa"), derive(Trace))]`
+
+**Already fixed in this session:**
+- `js_engine` crate compiles cleanly on JSC (0 errors)
+- Added `is_undefined()`, `is_null()`, `as_object()`, `display()` to `JscValue`
+- Added `undefined(ctx)`, `null(ctx)` constructors to `JscValue`
+- Added `From<JscObject> for JscValue`
+- Fixed `property_key_from_well_known_symbol` to use trait methods instead of missing JSC methods |
 
 
 

@@ -2,10 +2,7 @@
 
 use std::sync::{Arc, Mutex};
 
-use boa_engine::{
-    Context, JsError, JsNativeError, JsResult, JsValue, builtins::promise::ResolvingFunctions,
-    js_string, native_function::NativeFunction, object::FunctionObjectBuilder, object::JsObject,
-};
+use boa_engine::{Context, JsNativeError, JsValue, js_string, object::JsObject};
 use wasmtime::{Func, Instance as WasmtimeInstance, Module, Store};
 
 use crate::html::{PendingRequest, PendingState, Window};

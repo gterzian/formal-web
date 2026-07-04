@@ -1,7 +1,6 @@
 use std::cell::RefCell;
 use std::rc::Rc;
 
-use js_engine::gc::GcCell;
 use js_engine::gc::gc_cell_new;
 use js_engine::gc_struct;
 use js_engine::{Completion, ExecutionContext, JsTypes};

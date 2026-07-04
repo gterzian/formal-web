@@ -3055,21 +3055,21 @@ impl ExecutionContext<JscTypes> for JscEngine {
     }
 
     fn property_key_from_well_known_symbol(&mut self, name: &str) -> JscPropertyKey {
+        fn is_symbol_value(value: &JscValue) -> bool {
+            let js_type: JSType = unsafe { JSValueGetType(value.ctx, value.raw) };
+            js_type == JSType::kJSTypeSymbol
+        }
         // JSC symbol references are opaque JscValues — look up from the global object.
         let global = self.context.global_object();
-        let symbol_ctor = JscPropertyKey::from_rust("Symbol");
-        let symbol_fn = self
-            .get(&global, &symbol_ctor)
-            .unwrap_or_else(|_| JscValue::undefined());
-        let symbol_obj = match symbol_fn.as_object() {
-            Some(obj) => obj.clone(),
+        let symbol_fn =
+            EcmascriptHost::get(self, &global, "Symbol").unwrap_or_else(|_| self.value_undefined());
+        let symbol_obj = match <JscTypes as JsTypes>::value_as_object(&symbol_fn) {
+            Some(obj) => obj,
             None => return JscPropertyKey::from_rust(name),
         };
-        let prop_key = JscPropertyKey::from_rust(name);
-        let sym_value = self
-            .get(&symbol_obj, &prop_key)
-            .unwrap_or_else(|_| JscValue::undefined());
-        if sym_value.is_symbol() {
+        let sym_value =
+            EcmascriptHost::get(self, &symbol_obj, name).unwrap_or_else(|_| self.value_undefined());
+        if is_symbol_value(&sym_value) {
             let sym = unsafe { JscSymbol::from_value(sym_value) };
             JscPropertyKey::Symbol(sym)
         } else {

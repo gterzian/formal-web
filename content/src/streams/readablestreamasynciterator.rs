@@ -64,22 +64,17 @@ impl AsyncValueIterable for ReadableStream {
         // Step 1: "Let reader be ? AcquireReadableStreamDefaultReader(stream)."
         let reader_object = stream.get_reader(&ec.value_undefined(), ec)?;
 
-        // Note: get_reader returns the generic JsObject type. For Boa,
-        // this IS boa_engine::JsObject, so we can transmute to access
-        // the domain-specific downcast.
-        let reader = {
-            // SAFETY: <Types as JsTypes>::JsObject is boa_engine::object::JsObject
-            // for the Boa backend. This cast lets us access downcast_ref.
-            let boa_obj: &JsObject = unsafe {
-                &*(&reader_object as *const <Types as js_engine::JsTypes>::JsObject
-                    as *const JsObject)
-            };
-            boa_obj
-                .downcast_ref::<ReadableStreamDefaultReader>()
-                .ok_or_else(|| {
+        // Step 2: Store the reader for iteration.
+        // Retrieve the domain data from the platform object.
+        let reader_any = ec.with_object_any(&reader_object);
+        let some_reader = reader_any.and_then(|d| d.downcast_ref::<ReadableStreamDefaultReader>());
+        let reader = match some_reader {
+            Some(reader) => reader.clone(),
+            None => {
+                return Err(
                     ec.new_type_error("ReadableStream async iterator requires a default reader")
-                })?
-                .clone()
+                );
+            }
         };
 
         // Step 3: "Let preventCancel be args[0][\"preventCancel\"]."
