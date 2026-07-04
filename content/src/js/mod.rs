@@ -17,23 +17,15 @@ pub(crate) mod platform_objects;
 pub(crate) mod build_context;
 
 /// Generic bootstrap modules — use only [`ExecutionContext<T>`] trait methods.
-/// Not engine-specific; compiled on all backends (not Boa-gated).
-#[cfg(not(boa_backend))]
+/// Not engine-specific; compiled on all backends.
 pub(crate) mod console_generic;
 pub(crate) mod css_generic;
 
-#[cfg(boa_backend)]
-pub(crate) use bindings::{
-    install_console_namespace, install_css_namespace, install_document_property,
-};
-
-/// Generic console namespace installer available on all backends.
-#[cfg(not(boa_backend))]
 pub(crate) use console_generic::install_console_namespace;
-
-/// Generic CSS namespace installer available on all backends.
-#[cfg(not(boa_backend))]
 pub(crate) use css_generic::install_css_namespace;
+
+#[cfg(boa_backend)]
+pub(crate) use bindings::install_document_property;
 #[cfg(boa_backend)]
 pub(crate) use downcast::{
     try_with_abort_controller_ref, try_with_abort_signal_mut, try_with_abort_signal_ref,

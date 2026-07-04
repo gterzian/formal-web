@@ -3,7 +3,6 @@ use std::{cell::RefCell, rc::Rc};
 
 use blitz_dom::{BaseDocument, Node as BlitzNode};
 use html5ever::{local_name, ns};
-use log::error;
 
 use crate::dom::{Element, Node};
 use crate::html::{

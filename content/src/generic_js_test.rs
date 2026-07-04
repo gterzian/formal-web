@@ -30,7 +30,7 @@ use std::marker::PhantomData;
 use crate::webidl::bindings::{AttributeDef, InterfaceDefinition, OperationDef, WebIdlInterface};
 use js_engine::gc::GcRootHandle;
 use js_engine::gc_struct;
-use js_engine::{Completion, ExecutionContext, JsTypes, TypedArrayElementType};
+use js_engine::{Completion, ExecutionContext, JsTypes};
 
 type TestTypes = crate::js::Types;
 type JsValue = <TestTypes as JsTypes>::JsValue;

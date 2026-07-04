@@ -2,10 +2,9 @@ use std::marker::PhantomData;
 use std::{cell::RefCell, rc::Rc};
 
 use blitz_dom::BaseDocument;
-use boa_engine::{Context, JsArgs, JsNativeError, JsResult, JsValue, js_string, object::JsObject};
+use boa_engine::{JsArgs, JsValue, object::JsObject};
 
 use crate::dom::{AbortSignal, Event, EventDispatchHost, EventTarget, dispatch};
-use crate::js::platform_objects;
 use crate::js::try_with_event_target_mut;
 use crate::webidl::{callback_interface_type_value, nullable_value};
 

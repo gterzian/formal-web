@@ -15,7 +15,7 @@ use crate::js::Types;
 use js_engine::{Completion, ExecutionContext, JsTypes};
 
 #[cfg(boa_backend)]
-use boa_engine::{JsNativeError, JsResult, JsValue, object::JsObject};
+use boa_engine::{JsNativeError, JsResult, object::JsObject};
 
 /// Downcast `this` to `&mut AbortSignal` via `with_object_any_mut`.
 pub(crate) fn try_with_abort_signal_mut<R>(

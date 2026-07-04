@@ -1,15 +1,10 @@
 use std::{cell::Cell, collections::VecDeque, rc::Rc};
 
 use boa_engine::{
-    Context, JsError, JsNativeError, JsResult, JsValue,
+    Context, JsValue,
     builtins::typed_array::TypedArrayKind,
-    js_string,
-    object::{
-        JsObject,
-        builtins::{JsArrayBuffer, JsDataView, JsPromise, JsTypedArray},
-    },
+    object::{JsObject, builtins::JsArrayBuffer},
 };
-use boa_gc::{Finalize, Trace};
 
 use js_engine::{Completion, ExecutionContext, JsTypes, TypedArrayElementType};
 
@@ -21,9 +16,9 @@ use js_engine::gc_struct;
 
 use super::{
     CancelAlgorithm, PullAlgorithm, ReadIntoRequest, ReadRequest, ReadableStream,
-    ReadableStreamController, ReadableStreamState, StartAlgorithm, extract_source_method,
-    readable_stream_add_read_request, readable_stream_close, readable_stream_error,
-    readable_stream_fulfill_read_request, readable_stream_get_num_read_requests, type_error_value,
+    ReadableStreamState, StartAlgorithm, extract_source_method, readable_stream_add_read_request,
+    readable_stream_close, readable_stream_error, readable_stream_fulfill_read_request,
+    readable_stream_get_num_read_requests, type_error_value,
 };
 
 #[gc_struct]
@@ -1295,7 +1290,7 @@ pub(crate) fn set_up_readable_byte_stream_controller_from_underlying_source(
 
 /// <https://streams.spec.whatwg.org/#set-up-readable-byte-stream-controller>
 pub(crate) fn set_up_readable_byte_stream_controller(
-    stream: ReadableStream,
+    _stream: ReadableStream,
     controller: ReadableByteStreamController,
     controller_object: &JsObject,
     start_algorithm: StartAlgorithm,

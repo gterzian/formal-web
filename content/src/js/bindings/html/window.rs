@@ -1,4 +1,4 @@
-use boa_engine::{Context, JsArgs, JsError, JsNativeError, JsResult, JsValue, object::JsObject};
+use boa_engine::{JsArgs, JsNativeError, JsResult, JsValue, object::JsObject};
 use std::marker::PhantomData;
 
 use crate::html::windowproxy::resolve_window;
@@ -15,7 +15,6 @@ use crate::webidl::bindings::{
 use crate::webidl::{callback_function_value, nullable_value};
 
 use crate::dom::Element;
-use crate::js::bindings::dom::with_element_ref;
 
 use super::hyperlink_element_utils::document_creation_url;
 use super::style_declaration_object;

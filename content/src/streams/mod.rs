@@ -2,27 +2,16 @@
 mod readablebytestreamcontroller;
 #[cfg(boa_backend)]
 mod readablestream;
-#[cfg(boa_backend)]
 mod readablestreamasynciterator;
-#[cfg(boa_backend)]
 mod readablestreambyobreader;
-#[cfg(boa_backend)]
 mod readablestreamdefaultcontroller;
-#[cfg(boa_backend)]
 mod readablestreamdefaultreader;
-#[cfg(boa_backend)]
 mod readablestreamsupport;
-#[cfg(boa_backend)]
 pub mod strategy;
-#[cfg(boa_backend)]
 mod transformstream;
-#[cfg(boa_backend)]
 mod writablestream;
-#[cfg(boa_backend)]
 mod writablestreamdefaultcontroller;
-#[cfg(boa_backend)]
 mod writablestreamdefaultwriter;
-#[cfg(boa_backend)]
 mod writablestreamsupport;
 
 pub(crate) use readablebytestreamcontroller::{

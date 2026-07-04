@@ -1,11 +1,10 @@
 use js_engine::gc::GcCell;
 use js_engine::gc::gc_cell_new;
 use js_engine::gc_struct;
+use js_engine::{Completion, ExecutionContext, JsTypes};
 use std::{cell::Cell, rc::Rc};
 
-use boa_engine::{JsValue, object::JsObject};
-
-use js_engine::{Completion, ExecutionContext, JsTypes};
+use crate::js::Types;
 
 use crate::{
     dom::{AbortSignal, create_abort_signal, signal_abort},
@@ -16,6 +15,9 @@ use crate::{
 };
 
 use super::{SourceMethod, WritableStream, WritableStreamController, WritableStreamState};
+
+type JsValue = <Types as JsTypes>::JsValue;
+type JsObject = <Types as JsTypes>::JsObject;
 
 /// <https://streams.spec.whatwg.org/#set-up-writable-stream-default-controller-from-underlying-sink>
 #[gc_struct]
@@ -30,13 +32,13 @@ impl StartAlgorithm {
     fn call(
         &self,
         controller_object: &JsObject,
-        ec: &mut dyn ExecutionContext<crate::js::Types>,
-    ) -> Completion<JsValue, crate::js::Types> {
+        ec: &mut dyn ExecutionContext<Types>,
+    ) -> Completion<JsValue, Types> {
         match self {
             Self::ReturnUndefined => Ok(ec.value_undefined()),
             Self::ReturnValue(value) => Ok(value.clone()),
             Self::JavaScript(callback) => {
-                let arg = JsValue::from(controller_object.clone());
+                let arg = Types::value_from_object(controller_object.clone());
                 callback.call(&[arg], ec)
             }
         }
@@ -56,12 +58,12 @@ impl WriteAlgorithm {
         &self,
         controller_object: &JsObject,
         chunk: JsValue,
-        ec: &mut dyn ExecutionContext<crate::js::Types>,
-    ) -> Completion<JsObject, crate::js::Types> {
+        ec: &mut dyn ExecutionContext<Types>,
+    ) -> Completion<JsObject, Types> {
         match self {
-            Self::ReturnUndefined => resolved_promise(JsValue::undefined(), ec),
+            Self::ReturnUndefined => resolved_promise(ec.value_undefined(), ec),
             Self::JavaScript(callback) => {
-                let controller_value = JsValue::from(controller_object.clone());
+                let controller_value = Types::value_from_object(controller_object.clone());
                 let call_result = callback.call(&[chunk, controller_value], ec);
                 match call_result {
                     Ok(value) => promise_from_value(value, ec),
@@ -81,12 +83,9 @@ pub(crate) enum CloseAlgorithm {
 
 impl CloseAlgorithm {
     /// <https://streams.spec.whatwg.org/#writablestreamdefaultcontroller-closealgorithm>
-    fn call(
-        &self,
-        ec: &mut dyn ExecutionContext<crate::js::Types>,
-    ) -> Completion<JsObject, crate::js::Types> {
+    fn call(&self, ec: &mut dyn ExecutionContext<Types>) -> Completion<JsObject, Types> {
         match self {
-            Self::ReturnUndefined => resolved_promise(JsValue::undefined(), ec),
+            Self::ReturnUndefined => resolved_promise(ec.value_undefined(), ec),
             Self::JavaScript(callback) => {
                 let call_result = callback.call(&[], ec);
                 match call_result {
@@ -110,10 +109,10 @@ impl AbortAlgorithm {
     fn call(
         &self,
         reason: JsValue,
-        ec: &mut dyn ExecutionContext<crate::js::Types>,
-    ) -> Completion<JsObject, crate::js::Types> {
+        ec: &mut dyn ExecutionContext<Types>,
+    ) -> Completion<JsObject, Types> {
         match self {
-            Self::ReturnUndefined => resolved_promise(JsValue::undefined(), ec),
+            Self::ReturnUndefined => resolved_promise(ec.value_undefined(), ec),
             Self::JavaScript(callback) => {
                 let call_result = callback.call(&[reason], ec);
                 match call_result {
@@ -191,8 +190,8 @@ impl WritableStreamDefaultController {
     }
     fn stream_slot(
         &self,
-        ec: &mut dyn ExecutionContext<crate::js::Types>,
-    ) -> Completion<WritableStream, crate::js::Types> {
+        ec: &mut dyn ExecutionContext<Types>,
+    ) -> Completion<WritableStream, Types> {
         self.stream.borrow().clone().ok_or_else(|| {
             ec.new_type_error("WritableStreamDefaultController is not attached to a stream")
         })
@@ -200,8 +199,8 @@ impl WritableStreamDefaultController {
 
     fn controller_object(
         &self,
-        ec: &mut dyn ExecutionContext<crate::js::Types>,
-    ) -> Completion<JsObject, crate::js::Types> {
+        ec: &mut dyn ExecutionContext<Types>,
+    ) -> Completion<JsObject, Types> {
         self.stream_slot(ec)?
             .controller_object_slot()
             .ok_or_else(|| {
@@ -221,8 +220,8 @@ impl WritableStreamDefaultController {
 
     pub(crate) fn signal(
         &self,
-        ec: &mut dyn ExecutionContext<crate::js::Types>,
-    ) -> Completion<AbortSignal, crate::js::Types> {
+        ec: &mut dyn ExecutionContext<Types>,
+    ) -> Completion<AbortSignal, Types> {
         self.abort_signal.borrow().clone().ok_or_else(|| {
             ec.new_type_error("WritableStreamDefaultController is missing its abort signal")
         })
@@ -239,8 +238,8 @@ impl WritableStreamDefaultController {
     /// <https://streams.spec.whatwg.org/#ws-default-controller-signal>
     pub(crate) fn signal_value(
         &self,
-        ec: &mut dyn ExecutionContext<crate::js::Types>,
-    ) -> Completion<JsObject, crate::js::Types> {
+        ec: &mut dyn ExecutionContext<Types>,
+    ) -> Completion<JsObject, Types> {
         self.signal(ec)?
             .object()
             .ok_or_else(|| ec.new_type_error("AbortSignal is missing its JavaScript object"))
@@ -250,8 +249,8 @@ impl WritableStreamDefaultController {
     pub(crate) fn error(
         &self,
         error: JsValue,
-        ec: &mut dyn ExecutionContext<crate::js::Types>,
-    ) -> Completion<(), crate::js::Types> {
+        ec: &mut dyn ExecutionContext<Types>,
+    ) -> Completion<(), Types> {
         let state = self.stream_slot(ec)?.state();
         if state != WritableStreamState::Writable {
             return Ok(());
@@ -263,8 +262,8 @@ impl WritableStreamDefaultController {
     pub(crate) fn abort_steps(
         &self,
         reason: JsValue,
-        ec: &mut dyn ExecutionContext<crate::js::Types>,
-    ) -> Completion<JsObject, crate::js::Types> {
+        ec: &mut dyn ExecutionContext<Types>,
+    ) -> Completion<JsObject, Types> {
         let algorithm = self.abort_algorithm(ec)?;
         let result = algorithm.call(reason, ec)?;
         self.clear_algorithms();
@@ -279,8 +278,8 @@ impl WritableStreamDefaultController {
     pub(crate) fn signal_abort(
         &self,
         reason: JsValue,
-        ec: &mut dyn ExecutionContext<crate::js::Types>,
-    ) -> Completion<(), crate::js::Types> {
+        ec: &mut dyn ExecutionContext<Types>,
+    ) -> Completion<(), Types> {
         let signal = self.signal(ec)?;
         let mut host = EcDispatchHost::new(ec);
         signal_abort(&mut host, &signal, reason)
@@ -288,8 +287,8 @@ impl WritableStreamDefaultController {
 
     fn write_algorithm(
         &self,
-        ec: &mut dyn ExecutionContext<crate::js::Types>,
-    ) -> Completion<WriteAlgorithm, crate::js::Types> {
+        ec: &mut dyn ExecutionContext<Types>,
+    ) -> Completion<WriteAlgorithm, Types> {
         self.write_algorithm.borrow().clone().ok_or_else(|| {
             ec.new_type_error("WritableStreamDefaultController is missing its write algorithm")
         })
@@ -297,8 +296,8 @@ impl WritableStreamDefaultController {
 
     fn close_algorithm(
         &self,
-        ec: &mut dyn ExecutionContext<crate::js::Types>,
-    ) -> Completion<CloseAlgorithm, crate::js::Types> {
+        ec: &mut dyn ExecutionContext<Types>,
+    ) -> Completion<CloseAlgorithm, Types> {
         self.close_algorithm.borrow().clone().ok_or_else(|| {
             ec.new_type_error("WritableStreamDefaultController is missing its close algorithm")
         })
@@ -306,32 +305,26 @@ impl WritableStreamDefaultController {
 
     fn abort_algorithm(
         &self,
-        ec: &mut dyn ExecutionContext<crate::js::Types>,
-    ) -> Completion<AbortAlgorithm, crate::js::Types> {
+        ec: &mut dyn ExecutionContext<Types>,
+    ) -> Completion<AbortAlgorithm, Types> {
         self.abort_algorithm.borrow().clone().ok_or_else(|| {
             ec.new_type_error("WritableStreamDefaultController is missing its abort algorithm")
         })
     }
 
-    fn get_desired_size(
-        &self,
-        _ec: &mut dyn ExecutionContext<crate::js::Types>,
-    ) -> Completion<f64, crate::js::Types> {
+    fn get_desired_size(&self, _ec: &mut dyn ExecutionContext<Types>) -> Completion<f64, Types> {
         Ok(self.strategy_high_water_mark.get() - self.queue_total_size.get())
     }
 
-    fn get_backpressure(
-        &self,
-        ec: &mut dyn ExecutionContext<crate::js::Types>,
-    ) -> Completion<bool, crate::js::Types> {
+    fn get_backpressure(&self, ec: &mut dyn ExecutionContext<Types>) -> Completion<bool, Types> {
         Ok(self.get_desired_size(ec)? <= 0.0)
     }
 
     fn get_chunk_size(
         &self,
         chunk: &JsValue,
-        ec: &mut dyn ExecutionContext<crate::js::Types>,
-    ) -> Completion<f64, crate::js::Types> {
+        ec: &mut dyn ExecutionContext<Types>,
+    ) -> Completion<f64, Types> {
         let Some(strategy_size_algorithm) = self.strategy_size_algorithm.borrow().clone() else {
             debug_assert_ne!(self.stream_slot(ec)?.state(), WritableStreamState::Writable,);
             return Ok(1.0);
@@ -356,8 +349,8 @@ impl WritableStreamDefaultController {
     fn error_controller(
         &self,
         error: JsValue,
-        ec: &mut dyn ExecutionContext<crate::js::Types>,
-    ) -> Completion<(), crate::js::Types> {
+        ec: &mut dyn ExecutionContext<Types>,
+    ) -> Completion<(), Types> {
         let stream = self.stream_slot(ec)?;
         debug_assert_eq!(stream.state(), WritableStreamState::Writable);
 
@@ -368,18 +361,15 @@ impl WritableStreamDefaultController {
     fn error_if_needed(
         &self,
         error: JsValue,
-        ec: &mut dyn ExecutionContext<crate::js::Types>,
-    ) -> Completion<(), crate::js::Types> {
+        ec: &mut dyn ExecutionContext<Types>,
+    ) -> Completion<(), Types> {
         if self.stream_slot(ec)?.state() == WritableStreamState::Writable {
             self.error_controller(error, ec)?;
         }
         Ok(())
     }
 
-    fn close_controller(
-        &self,
-        ec: &mut dyn ExecutionContext<crate::js::Types>,
-    ) -> Completion<(), crate::js::Types> {
+    fn close_controller(&self, ec: &mut dyn ExecutionContext<Types>) -> Completion<(), Types> {
         self.enqueue_value_with_size(QueueEntryValue::CloseSentinel, 0.0, ec)?;
         self.advance_queue_if_needed(ec)
     }
@@ -388,8 +378,8 @@ impl WritableStreamDefaultController {
         &self,
         chunk: JsValue,
         chunk_size: f64,
-        ec: &mut dyn ExecutionContext<crate::js::Types>,
-    ) -> Completion<(), crate::js::Types> {
+        ec: &mut dyn ExecutionContext<Types>,
+    ) -> Completion<(), Types> {
         let backpressure = self.get_backpressure(ec)?;
         let stream = self.stream_slot(ec)?;
         if let Err(error) =
@@ -408,8 +398,8 @@ impl WritableStreamDefaultController {
 
     fn advance_queue_if_needed(
         &self,
-        ec: &mut dyn ExecutionContext<crate::js::Types>,
-    ) -> Completion<(), crate::js::Types> {
+        ec: &mut dyn ExecutionContext<Types>,
+    ) -> Completion<(), Types> {
         let stream = self.stream_slot(ec)?;
         if !self.started() {
             return Ok(());
@@ -440,10 +430,7 @@ impl WritableStreamDefaultController {
         }
     }
 
-    fn process_close(
-        &self,
-        ec: &mut dyn ExecutionContext<crate::js::Types>,
-    ) -> Completion<(), crate::js::Types> {
+    fn process_close(&self, ec: &mut dyn ExecutionContext<Types>) -> Completion<(), Types> {
         let stream = self.stream_slot(ec)?;
         let _ = self.dequeue_value(ec)?;
         debug_assert!(self.queue.borrow().is_empty());
@@ -459,7 +446,7 @@ impl WritableStreamDefaultController {
         );
         let on_rejected =
             crate::js::builtin_with_captures(ec, stream, process_close_on_rejected, 1);
-        let promise = crate::js::Types::object_as_promise(&sink_close_promise)
+        let promise = Types::object_as_promise(&sink_close_promise)
             .ok_or_else(|| ec.new_type_error("not a Promise"))?;
         ec.perform_promise_then(promise, Some(on_fulfilled), Some(on_rejected), None)?;
         Ok(())
@@ -468,8 +455,8 @@ impl WritableStreamDefaultController {
     fn process_write(
         &self,
         chunk: JsValue,
-        ec: &mut dyn ExecutionContext<crate::js::Types>,
-    ) -> Completion<(), crate::js::Types> {
+        ec: &mut dyn ExecutionContext<Types>,
+    ) -> Completion<(), Types> {
         // Step 1: "Let stream be controller.[[stream]]."
         let stream = self.stream_slot(ec)?;
 
@@ -494,7 +481,7 @@ impl WritableStreamDefaultController {
             process_write_on_rejected,
             1,
         );
-        let promise = crate::js::Types::object_as_promise(&sink_write_promise)
+        let promise = Types::object_as_promise(&sink_write_promise)
             .ok_or_else(|| ec.new_type_error("not a Promise"))?;
         ec.perform_promise_then(promise, Some(on_fulfilled), Some(on_rejected), None)?;
         Ok(())
@@ -504,8 +491,8 @@ impl WritableStreamDefaultController {
         &self,
         value: QueueEntryValue,
         chunk_size: f64,
-        ec: &mut dyn ExecutionContext<crate::js::Types>,
-    ) -> Completion<(), crate::js::Types> {
+        ec: &mut dyn ExecutionContext<Types>,
+    ) -> Completion<(), Types> {
         if chunk_size.is_nan() || chunk_size < 0.0 {
             return Err(ec.new_range_error("queue size must be a non-negative number"));
         }
@@ -526,8 +513,8 @@ impl WritableStreamDefaultController {
 
     fn peek_queue_value(
         &self,
-        ec: &mut dyn ExecutionContext<crate::js::Types>,
-    ) -> Completion<QueueEntryValue, crate::js::Types> {
+        ec: &mut dyn ExecutionContext<Types>,
+    ) -> Completion<QueueEntryValue, Types> {
         self.queue
             .borrow()
             .first()
@@ -537,8 +524,8 @@ impl WritableStreamDefaultController {
 
     fn dequeue_value(
         &self,
-        _ec: &mut dyn ExecutionContext<crate::js::Types>,
-    ) -> Completion<QueueEntryValue, crate::js::Types> {
+        _ec: &mut dyn ExecutionContext<Types>,
+    ) -> Completion<QueueEntryValue, Types> {
         let mut queue = self.queue.borrow_mut();
         let entry = queue.remove(0);
         drop(queue);
@@ -555,22 +542,22 @@ impl WritableStreamDefaultController {
 }
 
 pub(crate) fn create_writable_stream_default_controller(
-    ec: &mut dyn ExecutionContext<crate::js::Types>,
-) -> Completion<(WritableStreamDefaultController, JsObject), crate::js::Types> {
+    ec: &mut dyn ExecutionContext<Types>,
+) -> Completion<(WritableStreamDefaultController, JsObject), Types> {
     let controller = WritableStreamDefaultController::new();
-    let controller_object = create_interface_instance::<
-        crate::js::Types,
-        WritableStreamDefaultController,
-    >(controller.clone(), ec)?
+    let controller_object = create_interface_instance::<Types, WritableStreamDefaultController>(
+        controller.clone(),
+        ec,
+    )?
     .into();
     Ok((controller, controller_object))
 }
 
 pub(crate) fn with_writable_stream_default_controller_ref<R>(
     object: &JsObject,
-    ec: &mut dyn ExecutionContext<crate::js::Types>,
+    ec: &mut dyn ExecutionContext<Types>,
     f: impl FnOnce(&WritableStreamDefaultController) -> R,
-) -> Completion<R, crate::js::Types> {
+) -> Completion<R, Types> {
     let ctrl_ref = ec
         .with_object_any(object)
         .and_then(|a| a.downcast_ref::<WritableStreamDefaultController>());
@@ -592,8 +579,8 @@ pub(crate) fn set_up_writable_stream_default_controller(
     abort_algorithm: AbortAlgorithm,
     high_water_mark: f64,
     size_algorithm: SizeAlgorithm,
-    ec: &mut dyn ExecutionContext<crate::js::Types>,
-) -> Completion<(), crate::js::Types> {
+    ec: &mut dyn ExecutionContext<Types>,
+) -> Completion<(), Types> {
     // Step 1: "Assert: stream implements WritableStream."
     // Step 2: "Assert: stream.[[controller]] is undefined."
 
@@ -661,8 +648,8 @@ pub(crate) fn set_up_writable_stream_default_controller_from_underlying_sink(
     underlying_sink_object: Option<JsObject>,
     high_water_mark: f64,
     size_algorithm: SizeAlgorithm,
-    ec: &mut dyn ExecutionContext<crate::js::Types>,
-) -> Completion<(), crate::js::Types> {
+    ec: &mut dyn ExecutionContext<Types>,
+) -> Completion<(), Types> {
     // Step 1: "Let controller be a new WritableStreamDefaultController."
     let (controller, controller_object) = create_writable_stream_default_controller(ec)?;
 
@@ -748,8 +735,8 @@ pub(crate) fn set_up_writable_stream_default_controller_from_underlying_sink(
 /// <https://streams.spec.whatwg.org/#writable-stream-default-controller-close>
 pub(crate) fn writable_stream_default_controller_close(
     controller: WritableStreamDefaultController,
-    ec: &mut dyn ExecutionContext<crate::js::Types>,
-) -> Completion<(), crate::js::Types> {
+    ec: &mut dyn ExecutionContext<Types>,
+) -> Completion<(), Types> {
     controller.close_controller(ec)
 }
 
@@ -757,8 +744,8 @@ pub(crate) fn writable_stream_default_controller_close(
 pub(crate) fn writable_stream_default_controller_error_if_needed(
     controller: WritableStreamDefaultController,
     error: JsValue,
-    ec: &mut dyn ExecutionContext<crate::js::Types>,
-) -> Completion<(), crate::js::Types> {
+    ec: &mut dyn ExecutionContext<Types>,
+) -> Completion<(), Types> {
     controller.error_if_needed(error, ec)
 }
 
@@ -766,16 +753,16 @@ pub(crate) fn writable_stream_default_controller_error_if_needed(
 pub(crate) fn writable_stream_default_controller_get_chunk_size(
     controller: WritableStreamDefaultController,
     chunk: &JsValue,
-    ec: &mut dyn ExecutionContext<crate::js::Types>,
-) -> Completion<f64, crate::js::Types> {
+    ec: &mut dyn ExecutionContext<Types>,
+) -> Completion<f64, Types> {
     controller.get_chunk_size(chunk, ec)
 }
 
 /// <https://streams.spec.whatwg.org/#writable-stream-default-controller-get-desired-size>
 pub(crate) fn writable_stream_default_controller_get_desired_size(
     controller: WritableStreamDefaultController,
-    ec: &mut dyn ExecutionContext<crate::js::Types>,
-) -> Completion<f64, crate::js::Types> {
+    ec: &mut dyn ExecutionContext<Types>,
+) -> Completion<f64, Types> {
     controller.get_desired_size(ec)
 }
 
@@ -784,28 +771,28 @@ pub(crate) fn writable_stream_default_controller_write(
     controller: WritableStreamDefaultController,
     chunk: JsValue,
     chunk_size: f64,
-    ec: &mut dyn ExecutionContext<crate::js::Types>,
-) -> Completion<(), crate::js::Types> {
+    ec: &mut dyn ExecutionContext<Types>,
+) -> Completion<(), Types> {
     controller.write_controller(chunk, chunk_size, ec)
 }
 
 fn get_callable_method(
     object: &JsObject,
     property: &'static str,
-    ec: &mut dyn ExecutionContext<crate::js::Types>,
-) -> Completion<Option<JsObject>, crate::js::Types> {
+    ec: &mut dyn ExecutionContext<Types>,
+) -> Completion<Option<JsObject>, Types> {
     let pk = ec.property_key_from_str(property);
     let value = ExecutionContext::get(ec, object.clone(), pk)?;
-    if <crate::js::Types as JsTypes>::value_is_undefined(&value) {
+    if <Types as JsTypes>::value_is_undefined(&value) {
         return Ok(None);
     }
 
-    let method = <crate::js::Types as JsTypes>::value_as_object(&value).ok_or_else(|| {
+    let method = <Types as JsTypes>::value_as_object(&value).ok_or_else(|| {
         ec.new_type_error(&format!(
             "WritableStream underlyingSink.{property} must be callable when provided"
         ))
     })?;
-    let method_val = <crate::js::Types as JsTypes>::value_from_object(method.clone());
+    let method_val = <Types as JsTypes>::value_from_object(method.clone());
     if !ec.is_callable(&method_val) {
         return Err(ec.new_type_error(&format!(
             "WritableStream underlyingSink.{property} must be callable when provided"
@@ -823,31 +810,31 @@ fn process_close_on_fulfilled(
     _args: &[JsValue],
     _this: JsValue,
     captures: &WritableStream,
-    ec: &mut dyn ExecutionContext<crate::js::Types>,
-) -> Completion<JsValue, crate::js::Types> {
+    ec: &mut dyn ExecutionContext<Types>,
+) -> Completion<JsValue, Types> {
     captures.finish_in_flight_close(ec)?;
-    Ok(JsValue::undefined())
+    Ok(ec.value_undefined())
 }
 
 fn process_close_on_rejected(
     args: &[JsValue],
     _this: JsValue,
     captures: &WritableStream,
-    ec: &mut dyn ExecutionContext<crate::js::Types>,
-) -> Completion<JsValue, crate::js::Types> {
+    ec: &mut dyn ExecutionContext<Types>,
+) -> Completion<JsValue, Types> {
     captures.finish_in_flight_close_with_error(
-        args.first().cloned().unwrap_or(JsValue::undefined()),
+        args.first().cloned().unwrap_or(ec.value_undefined()),
         ec,
     )?;
-    Ok(JsValue::undefined())
+    Ok(ec.value_undefined())
 }
 
 fn process_write_on_fulfilled(
     _args: &[JsValue],
     _this: JsValue,
     captures: &(WritableStreamDefaultController, WritableStream),
-    ec: &mut dyn ExecutionContext<crate::js::Types>,
-) -> Completion<JsValue, crate::js::Types> {
+    ec: &mut dyn ExecutionContext<Types>,
+) -> Completion<JsValue, Types> {
     let (controller, stream) = captures;
     controller.dequeue_value(ec)?;
     let state = stream.state();
@@ -858,45 +845,45 @@ fn process_write_on_fulfilled(
     }
     controller.advance_queue_if_needed(ec)?;
     stream.finish_in_flight_write(ec)?;
-    Ok(JsValue::undefined())
+    Ok(ec.value_undefined())
 }
 
 fn process_write_on_rejected(
     args: &[JsValue],
     _this: JsValue,
     captures: &(WritableStreamDefaultController, WritableStream),
-    ec: &mut dyn ExecutionContext<crate::js::Types>,
-) -> Completion<JsValue, crate::js::Types> {
+    ec: &mut dyn ExecutionContext<Types>,
+) -> Completion<JsValue, Types> {
     let (controller, stream) = captures;
     if stream.state() == WritableStreamState::Writable {
         controller.clear_algorithms();
     }
     stream.finish_in_flight_write_with_error(
-        args.first().cloned().unwrap_or(JsValue::undefined()),
+        args.first().cloned().unwrap_or(ec.value_undefined()),
         ec,
     )?;
-    Ok(JsValue::undefined())
+    Ok(ec.value_undefined())
 }
 
 fn setup_on_fulfilled(
     _args: &[JsValue],
     _this: JsValue,
     captures: &WritableStreamDefaultController,
-    ec: &mut dyn ExecutionContext<crate::js::Types>,
-) -> Completion<JsValue, crate::js::Types> {
+    ec: &mut dyn ExecutionContext<Types>,
+) -> Completion<JsValue, Types> {
     captures.set_started(true);
     captures.advance_queue_if_needed(ec)?;
-    Ok(JsValue::undefined())
+    Ok(ec.value_undefined())
 }
 
 fn setup_on_rejected(
     args: &[JsValue],
     _this: JsValue,
     captures: &WritableStreamDefaultController,
-    ec: &mut dyn ExecutionContext<crate::js::Types>,
-) -> Completion<JsValue, crate::js::Types> {
+    ec: &mut dyn ExecutionContext<Types>,
+) -> Completion<JsValue, Types> {
     captures.set_started(true);
     let stream = captures.stream_slot(ec)?;
-    stream.deal_with_rejection(args.first().cloned().unwrap_or(JsValue::undefined()), ec)?;
-    Ok(JsValue::undefined())
+    stream.deal_with_rejection(args.first().cloned().unwrap_or(ec.value_undefined()), ec)?;
+    Ok(ec.value_undefined())
 }

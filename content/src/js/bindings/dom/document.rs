@@ -10,7 +10,7 @@ use crate::js::platform_objects::{
 };
 use crate::webidl::bindings::{AttributeDef, InterfaceDefinition, OperationDef, WebIdlInterface};
 
-use js_engine::{Completion, ExecutionContext, JsTypes, PropertyDescriptor};
+use js_engine::{Completion, ExecutionContext, JsTypes};
 
 // ── WebIDL interface definition (§3) ──
 

@@ -1,7 +1,9 @@
 use log::debug;
 use std::{cell::Cell, rc::Rc};
 
-use boa_engine::{Context, JsArgs, JsResult, JsValue, object::JsObject};
+use js_engine::{Completion, ExecutionContext, JsTypes, PromiseResolvers};
+
+use crate::js::Types;
 
 use crate::streams::{SizeAlgorithm, extract_high_water_mark, extract_size_algorithm};
 use crate::webidl::bindings::create_interface_instance;
@@ -21,7 +23,9 @@ use super::{ReadableStream, WritableStream, type_error_value};
 use js_engine::gc::GcCell;
 use js_engine::gc::gc_cell_new;
 use js_engine::gc_struct;
-use js_engine::{Completion, ExecutionContext, JsTypes, PromiseResolvers};
+
+type JsValue = <Types as JsTypes>::JsValue;
+type JsObject = <Types as JsTypes>::JsObject;
 
 fn stream_debug_enabled() -> bool {
     std::env::var_os("FORMAL_WEB_DEBUG_STREAMS").is_some()
@@ -42,7 +46,7 @@ pub struct TransformStream {
 
     /// <https://streams.spec.whatwg.org/#transformstream-backpressurechangepromise>
     backpressure_change_promise: GcCell<Option<JsObject>>,
-    backpressure_change_resolvers: GcCell<Option<PromiseResolvers<crate::js::Types>>>,
+    backpressure_change_resolvers: GcCell<Option<PromiseResolvers<Types>>>,
 
     /// <https://streams.spec.whatwg.org/#transformstream-controller>
     controller: GcCell<Option<TransformStreamDefaultController>>,
@@ -74,8 +78,8 @@ impl TransformStream {
 
     pub(crate) fn readable(
         &self,
-        ec: &mut dyn ExecutionContext<crate::js::Types>,
-    ) -> Completion<ReadableStream, crate::js::Types> {
+        ec: &mut dyn ExecutionContext<Types>,
+    ) -> Completion<ReadableStream, Types> {
         self.readable
             .borrow()
             .clone()
@@ -84,8 +88,8 @@ impl TransformStream {
 
     pub(crate) fn readable_object(
         &self,
-        ec: &mut dyn ExecutionContext<crate::js::Types>,
-    ) -> Completion<JsObject, crate::js::Types> {
+        ec: &mut dyn ExecutionContext<Types>,
+    ) -> Completion<JsObject, Types> {
         self.readable_object.borrow().clone().ok_or_else(|| {
             ec.new_type_error("TransformStream is missing its readable JavaScript object")
         })
@@ -93,8 +97,8 @@ impl TransformStream {
 
     pub(crate) fn writable(
         &self,
-        ec: &mut dyn ExecutionContext<crate::js::Types>,
-    ) -> Completion<WritableStream, crate::js::Types> {
+        ec: &mut dyn ExecutionContext<Types>,
+    ) -> Completion<WritableStream, Types> {
         self.writable
             .borrow()
             .clone()
@@ -103,8 +107,8 @@ impl TransformStream {
 
     pub(crate) fn writable_object(
         &self,
-        ec: &mut dyn ExecutionContext<crate::js::Types>,
-    ) -> Completion<JsObject, crate::js::Types> {
+        ec: &mut dyn ExecutionContext<Types>,
+    ) -> Completion<JsObject, Types> {
         self.writable_object.borrow().clone().ok_or_else(|| {
             ec.new_type_error("TransformStream is missing its writable JavaScript object")
         })
@@ -112,8 +116,8 @@ impl TransformStream {
 
     pub(crate) fn controller_slot(
         &self,
-        ec: &mut dyn ExecutionContext<crate::js::Types>,
-    ) -> Completion<TransformStreamDefaultController, crate::js::Types> {
+        ec: &mut dyn ExecutionContext<Types>,
+    ) -> Completion<TransformStreamDefaultController, Types> {
         self.controller
             .borrow()
             .clone()
@@ -122,8 +126,8 @@ impl TransformStream {
 
     pub(crate) fn controller_object(
         &self,
-        ec: &mut dyn ExecutionContext<crate::js::Types>,
-    ) -> Completion<JsObject, crate::js::Types> {
+        ec: &mut dyn ExecutionContext<Types>,
+    ) -> Completion<JsObject, Types> {
         self.controller_object.borrow().clone().ok_or_else(|| {
             ec.new_type_error("TransformStream is missing its controller JavaScript object")
         })
@@ -155,7 +159,7 @@ pub struct TransformStreamDefaultController {
 
     /// <https://streams.spec.whatwg.org/#transformstreamdefaultcontroller-finishpromise>
     finish_promise: GcCell<Option<JsObject>>,
-    finish_resolvers: GcCell<Option<PromiseResolvers<crate::js::Types>>>,
+    finish_resolvers: GcCell<Option<PromiseResolvers<Types>>>,
 }
 
 /// <https://streams.spec.whatwg.org/#transformstreamdefaultcontroller-transformalgorithm>
@@ -193,8 +197,8 @@ impl TransformStreamDefaultController {
 
     fn stream_slot(
         &self,
-        ec: &mut dyn ExecutionContext<crate::js::Types>,
-    ) -> Completion<TransformStream, crate::js::Types> {
+        ec: &mut dyn ExecutionContext<Types>,
+    ) -> Completion<TransformStream, Types> {
         self.stream.borrow().clone().ok_or_else(|| {
             ec.new_type_error("TransformStreamDefaultController is not attached to a stream")
         })
@@ -202,15 +206,15 @@ impl TransformStreamDefaultController {
 
     fn controller_object(
         &self,
-        ec: &mut dyn ExecutionContext<crate::js::Types>,
-    ) -> Completion<JsObject, crate::js::Types> {
+        ec: &mut dyn ExecutionContext<Types>,
+    ) -> Completion<JsObject, Types> {
         self.stream_slot(ec)?.controller_object(ec)
     }
 
     fn readable_controller(
         &self,
-        ec: &mut dyn ExecutionContext<crate::js::Types>,
-    ) -> Completion<super::ReadableStreamDefaultController, crate::js::Types> {
+        ec: &mut dyn ExecutionContext<Types>,
+    ) -> Completion<super::ReadableStreamDefaultController, Types> {
         let stream = self.stream_slot(ec)?;
         let readable = stream.readable(ec)?;
         let controller = readable
@@ -222,8 +226,8 @@ impl TransformStreamDefaultController {
     /// <https://streams.spec.whatwg.org/#ts-default-controller-desired-size>
     pub(crate) fn desired_size(
         &self,
-        ec: &mut dyn ExecutionContext<crate::js::Types>,
-    ) -> Completion<Option<f64>, crate::js::Types> {
+        ec: &mut dyn ExecutionContext<Types>,
+    ) -> Completion<Option<f64>, Types> {
         // Step 1: "Let readableController be this.[[stream]].[[readable]].[[controller]]."
         let readable_controller = self.readable_controller(ec)?;
 
@@ -235,8 +239,8 @@ impl TransformStreamDefaultController {
     pub(crate) fn enqueue(
         &self,
         chunk: JsValue,
-        ec: &mut dyn ExecutionContext<crate::js::Types>,
-    ) -> Completion<(), crate::js::Types> {
+        ec: &mut dyn ExecutionContext<Types>,
+    ) -> Completion<(), Types> {
         transform_stream_default_controller_enqueue(self.clone(), chunk, ec)
     }
 
@@ -244,16 +248,13 @@ impl TransformStreamDefaultController {
     pub(crate) fn error(
         &self,
         reason: JsValue,
-        ec: &mut dyn ExecutionContext<crate::js::Types>,
-    ) -> Completion<(), crate::js::Types> {
+        ec: &mut dyn ExecutionContext<Types>,
+    ) -> Completion<(), Types> {
         transform_stream_default_controller_error(self.clone(), reason, ec)
     }
 
     /// <https://streams.spec.whatwg.org/#ts-default-controller-terminate>
-    pub(crate) fn terminate(
-        &self,
-        ec: &mut dyn ExecutionContext<crate::js::Types>,
-    ) -> Completion<(), crate::js::Types> {
+    pub(crate) fn terminate(&self, ec: &mut dyn ExecutionContext<Types>) -> Completion<(), Types> {
         transform_stream_default_controller_terminate(self.clone(), ec)
     }
 }
@@ -264,10 +265,10 @@ fn sink_write_algorithm_fn(
     args: &[JsValue],
     _this: JsValue,
     stream: &TransformStream,
-    ec: &mut dyn ExecutionContext<crate::js::Types>,
-) -> Completion<JsValue, crate::js::Types> {
+    ec: &mut dyn ExecutionContext<Types>,
+) -> Completion<JsValue, Types> {
     // Step 2.1: "Return ! TransformStreamDefaultSinkWriteAlgorithm(stream, chunk)."
-    let chunk = args.get_or_undefined(0).clone();
+    let chunk = args.get(0).cloned().unwrap_or_else(|| ec.value_undefined());
     let promise = transform_stream_default_sink_write_algorithm(stream.clone(), chunk, ec)?;
     Ok(JsValue::from(promise))
 }
@@ -276,10 +277,10 @@ fn sink_abort_algorithm_fn(
     args: &[JsValue],
     _this: JsValue,
     stream: &TransformStream,
-    ec: &mut dyn ExecutionContext<crate::js::Types>,
-) -> Completion<JsValue, crate::js::Types> {
+    ec: &mut dyn ExecutionContext<Types>,
+) -> Completion<JsValue, Types> {
     // Step 3.1: "Return ! TransformStreamDefaultSinkAbortAlgorithm(stream, reason)."
-    let reason = args.get_or_undefined(0).clone();
+    let reason = args.get(0).cloned().unwrap_or_else(|| ec.value_undefined());
     let promise = transform_stream_default_sink_abort_algorithm(stream.clone(), reason, ec)?;
     Ok(JsValue::from(promise))
 }
@@ -288,8 +289,8 @@ fn sink_close_algorithm_fn(
     _args: &[JsValue],
     _this: JsValue,
     stream: &TransformStream,
-    ec: &mut dyn ExecutionContext<crate::js::Types>,
-) -> Completion<JsValue, crate::js::Types> {
+    ec: &mut dyn ExecutionContext<Types>,
+) -> Completion<JsValue, Types> {
     // Step 4.1: "Return ! TransformStreamDefaultSinkCloseAlgorithm(stream)."
     let promise = transform_stream_default_sink_close_algorithm(stream.clone(), ec)?;
     Ok(JsValue::from(promise))
@@ -299,9 +300,9 @@ fn perform_transform_on_rejected_fn(
     args: &[JsValue],
     _this: JsValue,
     stream: &TransformStream,
-    ec: &mut dyn ExecutionContext<crate::js::Types>,
-) -> Completion<JsValue, crate::js::Types> {
-    let error = args.get_or_undefined(0).clone();
+    ec: &mut dyn ExecutionContext<Types>,
+) -> Completion<JsValue, Types> {
+    let error = args.get(0).cloned().unwrap_or_else(|| ec.value_undefined());
     // Step 2.1: "Perform ! TransformStreamError(controller.[[stream]], r)."
     transform_stream_error(stream, error.clone(), ec)?;
     // Step 2.2: "Throw r."
@@ -312,8 +313,8 @@ fn controller_enqueue_on_fulfilled_fn(
     _args: &[JsValue],
     _this: JsValue,
     captures: &(TransformStream, TransformStreamDefaultController, JsValue),
-    ec: &mut dyn ExecutionContext<crate::js::Types>,
-) -> Completion<JsValue, crate::js::Types> {
+    ec: &mut dyn ExecutionContext<Types>,
+) -> Completion<JsValue, Types> {
     let (stream, controller, chunk) = captures;
     // Step 3.3.1: "Let writable be stream.[[writable]]."
     let writable = stream.writable(ec)?;
@@ -342,8 +343,8 @@ fn sink_abort_on_fulfilled_fn(
         JsValue,
         bool,
     ),
-    ec: &mut dyn ExecutionContext<crate::js::Types>,
-) -> Completion<JsValue, crate::js::Types> {
+    ec: &mut dyn ExecutionContext<Types>,
+) -> Completion<JsValue, Types> {
     let (controller, readable, reason, reject_finish_on_fulfilled_cancel) = captures;
     if *reject_finish_on_fulfilled_cancel {
         // Step 7.1.1: Reject finishPromise with readable.[[storedError]].
@@ -370,10 +371,10 @@ fn sink_abort_on_rejected_fn(
     args: &[JsValue],
     _this: JsValue,
     captures: &(TransformStreamDefaultController, ReadableStream),
-    ec: &mut dyn ExecutionContext<crate::js::Types>,
-) -> Completion<JsValue, crate::js::Types> {
+    ec: &mut dyn ExecutionContext<Types>,
+) -> Completion<JsValue, Types> {
     let (controller, readable) = captures;
-    let error = args.get_or_undefined(0).clone();
+    let error = args.get(0).cloned().unwrap_or_else(|| ec.value_undefined());
     // Step 7.2.1: "Perform ! ReadableStreamDefaultControllerError(readable.[[controller]], r)."
     let readable_controller = readable
         .controller_slot()
@@ -392,8 +393,8 @@ fn sink_close_on_fulfilled_fn(
     _args: &[JsValue],
     _this: JsValue,
     captures: &(TransformStreamDefaultController, ReadableStream),
-    ec: &mut dyn ExecutionContext<crate::js::Types>,
-) -> Completion<JsValue, crate::js::Types> {
+    ec: &mut dyn ExecutionContext<Types>,
+) -> Completion<JsValue, Types> {
     let (controller, readable) = captures;
     let readable_state = readable.state();
     if readable_state == super::ReadableStreamState::Errored {
@@ -421,10 +422,10 @@ fn sink_close_on_rejected_fn(
     args: &[JsValue],
     _this: JsValue,
     captures: &(TransformStreamDefaultController, ReadableStream),
-    ec: &mut dyn ExecutionContext<crate::js::Types>,
-) -> Completion<JsValue, crate::js::Types> {
+    ec: &mut dyn ExecutionContext<Types>,
+) -> Completion<JsValue, Types> {
     let (controller, readable) = captures;
-    let error = args.get_or_undefined(0).clone();
+    let error = args.get(0).cloned().unwrap_or_else(|| ec.value_undefined());
     // Step 7.2.1: "Perform ! ReadableStreamDefaultControllerError(readable.[[controller]], r)."
     let readable_controller = readable
         .controller_slot()
@@ -449,8 +450,8 @@ fn source_cancel_on_fulfilled_fn(
         JsValue,
         bool,
     ),
-    ec: &mut dyn ExecutionContext<crate::js::Types>,
-) -> Completion<JsValue, crate::js::Types> {
+    ec: &mut dyn ExecutionContext<Types>,
+) -> Completion<JsValue, Types> {
     let (controller, stream, writable, reason, reject_finish_on_fulfilled_cancel) = captures;
     let writable_state = writable.state();
     log_stream_debug(format!(
@@ -492,10 +493,10 @@ fn source_cancel_on_rejected_fn(
         TransformStream,
         WritableStream,
     ),
-    ec: &mut dyn ExecutionContext<crate::js::Types>,
-) -> Completion<JsValue, crate::js::Types> {
+    ec: &mut dyn ExecutionContext<Types>,
+) -> Completion<JsValue, Types> {
     let (controller, stream, writable) = captures;
-    let error = args.get_or_undefined(0).clone();
+    let error = args.get(0).cloned().unwrap_or_else(|| ec.value_undefined());
     // Step 7.2.1: "Perform ! WritableStreamDefaultControllerErrorIfNeeded(writable.[[controller]], r)."
     let writable_controller = writable
         .controller_slot()
@@ -522,8 +523,8 @@ fn initialize_transform_stream(
     writable_size_algorithm: SizeAlgorithm,
     readable_high_water_mark: f64,
     readable_size_algorithm: SizeAlgorithm,
-    ec: &mut dyn ExecutionContext<crate::js::Types>,
-) -> Completion<(), crate::js::Types> {
+    ec: &mut dyn ExecutionContext<Types>,
+) -> Completion<(), Types> {
     // Step 1: "Let startAlgorithm be an algorithm that returns startPromise."
     // Note: The readable and writable setup helpers expose distinct Rust enum types for the same spec algorithm.
     let global = ec.realm_global_object();
@@ -597,8 +598,8 @@ fn initialize_transform_stream(
 fn transform_stream_error(
     stream: &TransformStream,
     error: JsValue,
-    ec: &mut dyn ExecutionContext<crate::js::Types>,
-) -> Completion<(), crate::js::Types> {
+    ec: &mut dyn ExecutionContext<Types>,
+) -> Completion<(), Types> {
     // Step 1: "Perform ! ReadableStreamDefaultControllerError(stream.[[readable]].[[controller]], e)."
     let readable = stream.readable(ec)?;
     let readable_controller = readable
@@ -616,8 +617,8 @@ fn transform_stream_error(
 fn transform_stream_error_writable_and_unblock_write(
     stream: &TransformStream,
     error: JsValue,
-    ec: &mut dyn ExecutionContext<crate::js::Types>,
-) -> Completion<(), crate::js::Types> {
+    ec: &mut dyn ExecutionContext<Types>,
+) -> Completion<(), Types> {
     // Step 1: "Perform ! TransformStreamDefaultControllerClearAlgorithms(stream.[[controller]])."
     let controller = stream.controller_slot(ec)?;
     transform_stream_default_controller_clear_algorithms(&controller);
@@ -641,8 +642,8 @@ fn transform_stream_error_writable_and_unblock_write(
 fn transform_stream_set_backpressure(
     stream: &TransformStream,
     backpressure: bool,
-    ec: &mut dyn ExecutionContext<crate::js::Types>,
-) -> Completion<(), crate::js::Types> {
+    ec: &mut dyn ExecutionContext<Types>,
+) -> Completion<(), Types> {
     // Step 1: "Assert: stream.[[backpressure]] is not backpressure."
     // Note: On first call during initialization, backpressure is undefined (treated as not-equal).
 
@@ -653,7 +654,7 @@ fn transform_stream_set_backpressure(
 
     // Step 3: "Set stream.[[backpressureChangePromise]] to a new promise."
     let (promise, resolvers) = ec.new_promise_pending()?;
-    let promise_obj = crate::js::Types::value_as_object(&promise)
+    let promise_obj = Types::value_as_object(&promise)
         .ok_or_else(|| ec.new_type_error("new_promise_pending did not return an object"))?;
     *stream.backpressure_change_promise.borrow_mut() = Some(promise_obj);
     *stream.backpressure_change_resolvers.borrow_mut() = Some(resolvers);
@@ -667,8 +668,8 @@ fn transform_stream_set_backpressure(
 /// <https://streams.spec.whatwg.org/#transform-stream-unblock-write>
 fn transform_stream_unblock_write(
     stream: &TransformStream,
-    ec: &mut dyn ExecutionContext<crate::js::Types>,
-) -> Completion<(), crate::js::Types> {
+    ec: &mut dyn ExecutionContext<Types>,
+) -> Completion<(), Types> {
     // Step 1: "If stream.[[backpressure]] is true, perform ! TransformStreamSetBackpressure(stream, false)."
     if stream.backpressure() {
         transform_stream_set_backpressure(stream, false, ec)?;
@@ -714,8 +715,8 @@ fn set_up_transform_stream_default_controller(
 fn set_up_transform_stream_default_controller_from_transformer(
     stream: &TransformStream,
     transformer: Option<&JsObject>,
-    ec: &mut dyn ExecutionContext<crate::js::Types>,
-) -> Completion<TransformStreamDefaultController, crate::js::Types> {
+    ec: &mut dyn ExecutionContext<Types>,
+) -> Completion<TransformStreamDefaultController, Types> {
     // Step 1: "Let controller be a new TransformStreamDefaultController."
     let (controller, controller_object) = create_transform_stream_default_controller(ec)?;
 
@@ -785,8 +786,8 @@ fn transform_stream_default_controller_clear_algorithms(
 fn transform_stream_default_controller_enqueue(
     controller: TransformStreamDefaultController,
     chunk: JsValue,
-    ec: &mut dyn ExecutionContext<crate::js::Types>,
-) -> Completion<(), crate::js::Types> {
+    ec: &mut dyn ExecutionContext<Types>,
+) -> Completion<(), Types> {
     // Step 1: "Let stream be controller.[[stream]]."
     let stream = controller.stream_slot(ec)?;
 
@@ -827,8 +828,8 @@ fn transform_stream_default_controller_enqueue(
 fn transform_stream_default_controller_error(
     controller: TransformStreamDefaultController,
     reason: JsValue,
-    ec: &mut dyn ExecutionContext<crate::js::Types>,
-) -> Completion<(), crate::js::Types> {
+    ec: &mut dyn ExecutionContext<Types>,
+) -> Completion<(), Types> {
     // Step 1: "Perform ! TransformStreamError(controller.[[stream]], e)."
     let stream = controller.stream_slot(ec)?;
     transform_stream_error(&stream, reason, ec)
@@ -838,8 +839,8 @@ fn transform_stream_default_controller_error(
 fn transform_stream_default_controller_perform_transform(
     controller: TransformStreamDefaultController,
     chunk: JsValue,
-    ec: &mut dyn ExecutionContext<crate::js::Types>,
-) -> Completion<JsObject, crate::js::Types> {
+    ec: &mut dyn ExecutionContext<Types>,
+) -> Completion<JsObject, Types> {
     // Step 1: "Let transformPromise be the result of performing controller.[[transformAlgorithm]], passing chunk."
     let transform_algorithm = controller.transform_algorithm.borrow().clone();
     let transform_promise = match transform_algorithm {
@@ -870,19 +871,18 @@ fn transform_stream_default_controller_perform_transform(
     let stream = controller.stream_slot(ec)?;
     let on_rejected =
         crate::js::builtin_with_captures(ec, stream, perform_transform_on_rejected_fn, 1);
-    let transform_js_promise = crate::js::Types::object_as_promise(&transform_promise)
+    let transform_js_promise = Types::object_as_promise(&transform_promise)
         .ok_or_else(|| ec.new_type_error("transformPromise is not a Promise"))?;
     let result_promise =
         ec.perform_promise_then(transform_js_promise, None, Some(on_rejected), None)?;
-    Ok(crate::js::Types::value_as_object(&result_promise)
-        .unwrap_or_else(|| ec.realm_global_object()))
+    Ok(Types::value_as_object(&result_promise).unwrap_or_else(|| ec.realm_global_object()))
 }
 
 /// <https://streams.spec.whatwg.org/#transform-stream-default-controller-terminate>
 fn transform_stream_default_controller_terminate(
     controller: TransformStreamDefaultController,
-    ec: &mut dyn ExecutionContext<crate::js::Types>,
-) -> Completion<(), crate::js::Types> {
+    ec: &mut dyn ExecutionContext<Types>,
+) -> Completion<(), Types> {
     // Step 1: "Let stream be controller.[[stream]]."
     let stream = controller.stream_slot(ec)?;
 
@@ -917,8 +917,8 @@ fn transform_stream_default_controller_terminate(
 fn transform_stream_default_sink_write_algorithm(
     stream: TransformStream,
     chunk: JsValue,
-    ec: &mut dyn ExecutionContext<crate::js::Types>,
-) -> Completion<JsObject, crate::js::Types> {
+    ec: &mut dyn ExecutionContext<Types>,
+) -> Completion<JsObject, Types> {
     // Step 1: "Assert: stream.[[writable]].[[state]] is \"writable\"."
 
     // Step 2: "Let controller be stream.[[controller]]."
@@ -942,14 +942,11 @@ fn transform_stream_default_sink_write_algorithm(
             0,
         );
 
-        let backpressure_js_promise =
-            crate::js::Types::object_as_promise(&backpressure_change_promise)
-                .ok_or_else(|| ec.new_type_error("backpressureChangePromise is not a Promise"))?;
+        let backpressure_js_promise = Types::object_as_promise(&backpressure_change_promise)
+            .ok_or_else(|| ec.new_type_error("backpressureChangePromise is not a Promise"))?;
         let result =
             ec.perform_promise_then(backpressure_js_promise, Some(on_fulfilled), None, None)?;
-        return Ok(
-            crate::js::Types::value_as_object(&result).unwrap_or_else(|| ec.realm_global_object())
-        );
+        return Ok(Types::value_as_object(&result).unwrap_or_else(|| ec.realm_global_object()));
     }
 
     // Step 4: "Return ! TransformStreamDefaultControllerPerformTransform(controller, chunk)."
@@ -960,8 +957,8 @@ fn transform_stream_default_sink_write_algorithm(
 fn transform_stream_default_sink_abort_algorithm(
     stream: TransformStream,
     reason: JsValue,
-    ec: &mut dyn ExecutionContext<crate::js::Types>,
-) -> Completion<JsObject, crate::js::Types> {
+    ec: &mut dyn ExecutionContext<Types>,
+) -> Completion<JsObject, Types> {
     // Step 1: "Let controller be stream.[[controller]]."
     let controller = stream.controller_slot(ec)?;
 
@@ -975,7 +972,7 @@ fn transform_stream_default_sink_abort_algorithm(
 
     // Step 4: "Let controller.[[finishPromise]] be a new promise."
     let (finish_promise, finish_resolvers) = ec.new_promise_pending()?;
-    let finish_promise_obj = crate::js::Types::value_as_object(&finish_promise)
+    let finish_promise_obj = Types::value_as_object(&finish_promise)
         .ok_or_else(|| ec.new_type_error("new_promise_pending did not return an object"))?;
     *controller.finish_promise.borrow_mut() = Some(finish_promise_obj.clone());
     *controller.finish_resolvers.borrow_mut() = Some(finish_resolvers);
@@ -987,7 +984,7 @@ fn transform_stream_default_sink_abort_algorithm(
         Some(TransformCancelAlgorithm::ReturnUndefined) => {
             let (cancel_value, resolvers) = ec.new_promise_pending()?;
             resolvers.resolve(ec.value_undefined(), ec)?;
-            crate::js::Types::value_as_object(&cancel_value)
+            Types::value_as_object(&cancel_value)
                 .ok_or_else(|| ec.new_type_error("new_promise_pending did not return an object"))?
         }
         Some(TransformCancelAlgorithm::JavaScript(ref callback)) => {
@@ -999,7 +996,7 @@ fn transform_stream_default_sink_abort_algorithm(
         None => {
             let (cancel_value, resolvers) = ec.new_promise_pending()?;
             resolvers.resolve(ec.value_undefined(), ec)?;
-            crate::js::Types::value_as_object(&cancel_value)
+            Types::value_as_object(&cancel_value)
                 .ok_or_else(|| ec.new_type_error("new_promise_pending did not return an object"))?
         }
     };
@@ -1026,7 +1023,7 @@ fn transform_stream_default_sink_abort_algorithm(
     let on_rejected =
         crate::js::builtin_with_captures(ec, (controller, readable), sink_abort_on_rejected_fn, 1);
 
-    let cancel_js_promise = crate::js::Types::object_as_promise(&cancel_promise)
+    let cancel_js_promise = Types::object_as_promise(&cancel_promise)
         .ok_or_else(|| ec.new_type_error("cancelPromise is not a Promise"))?;
     ec.perform_promise_then(
         cancel_js_promise,
@@ -1042,8 +1039,8 @@ fn transform_stream_default_sink_abort_algorithm(
 /// <https://streams.spec.whatwg.org/#transform-stream-default-sink-close-algorithm>
 fn transform_stream_default_sink_close_algorithm(
     stream: TransformStream,
-    ec: &mut dyn ExecutionContext<crate::js::Types>,
-) -> Completion<JsObject, crate::js::Types> {
+    ec: &mut dyn ExecutionContext<Types>,
+) -> Completion<JsObject, Types> {
     // Step 1: "Let controller be stream.[[controller]]."
     let controller = stream.controller_slot(ec)?;
 
@@ -1057,7 +1054,7 @@ fn transform_stream_default_sink_close_algorithm(
 
     // Step 4: "Let controller.[[finishPromise]] be a new promise."
     let (finish_promise, finish_resolvers) = ec.new_promise_pending()?;
-    let finish_promise_obj = crate::js::Types::value_as_object(&finish_promise)
+    let finish_promise_obj = Types::value_as_object(&finish_promise)
         .ok_or_else(|| ec.new_type_error("new_promise_pending did not return an object"))?;
     *controller.finish_promise.borrow_mut() = Some(finish_promise_obj.clone());
     *controller.finish_resolvers.borrow_mut() = Some(finish_resolvers);
@@ -1069,7 +1066,7 @@ fn transform_stream_default_sink_close_algorithm(
             // Immediately resolved promise (no enqueue needed in EC path)
             let (promise_value, resolvers) = ec.new_promise_pending()?;
             resolvers.resolve(ec.value_undefined(), ec)?;
-            crate::js::Types::value_as_object(&promise_value)
+            Types::value_as_object(&promise_value)
                 .ok_or_else(|| ec.new_type_error("new_promise_pending did not return an object"))?
         }
         Some(FlushAlgorithm::JavaScript(ref callback)) => {
@@ -1083,7 +1080,7 @@ fn transform_stream_default_sink_close_algorithm(
             // Immediately resolved promise
             let (promise_value, resolvers) = ec.new_promise_pending()?;
             resolvers.resolve(ec.value_undefined(), ec)?;
-            crate::js::Types::value_as_object(&promise_value)
+            Types::value_as_object(&promise_value)
                 .ok_or_else(|| ec.new_type_error("new_promise_pending did not return an object"))?
         }
     };
@@ -1102,7 +1099,7 @@ fn transform_stream_default_sink_close_algorithm(
     let on_rejected =
         crate::js::builtin_with_captures(ec, (controller, readable), sink_close_on_rejected_fn, 1);
 
-    let flush_js_promise = crate::js::Types::object_as_promise(&flush_promise)
+    let flush_js_promise = Types::object_as_promise(&flush_promise)
         .ok_or_else(|| ec.new_type_error("flushPromise is not a Promise"))?;
     ec.perform_promise_then(
         flush_js_promise,
@@ -1120,8 +1117,8 @@ fn transform_stream_default_sink_close_algorithm(
 /// <https://streams.spec.whatwg.org/#transform-stream-default-source-pull-algorithm>
 pub(crate) fn transform_stream_default_source_pull_algorithm(
     stream: TransformStream,
-    ec: &mut dyn ExecutionContext<crate::js::Types>,
-) -> Completion<JsObject, crate::js::Types> {
+    ec: &mut dyn ExecutionContext<Types>,
+) -> Completion<JsObject, Types> {
     // Step 1: "Assert: stream.[[backpressure]] is true."
     debug_assert!(stream.backpressure());
 
@@ -1141,8 +1138,8 @@ pub(crate) fn transform_stream_default_source_pull_algorithm(
 pub(crate) fn transform_stream_default_source_cancel_algorithm(
     stream: TransformStream,
     reason: JsValue,
-    ec: &mut dyn ExecutionContext<crate::js::Types>,
-) -> Completion<JsObject, crate::js::Types> {
+    ec: &mut dyn ExecutionContext<Types>,
+) -> Completion<JsObject, Types> {
     // Step 1: "Let controller be stream.[[controller]]."
     let controller = stream.controller_slot(ec)?;
 
@@ -1156,7 +1153,7 @@ pub(crate) fn transform_stream_default_source_cancel_algorithm(
 
     // Step 4: "Let controller.[[finishPromise]] be a new promise."
     let (finish_promise, finish_resolvers) = ec.new_promise_pending()?;
-    let finish_promise_obj = crate::js::Types::value_as_object(&finish_promise)
+    let finish_promise_obj = Types::value_as_object(&finish_promise)
         .ok_or_else(|| ec.new_type_error("new_promise_pending did not return an object"))?;
     *controller.finish_promise.borrow_mut() = Some(finish_promise_obj.clone());
     *controller.finish_resolvers.borrow_mut() = Some(finish_resolvers);
@@ -1169,7 +1166,7 @@ pub(crate) fn transform_stream_default_source_cancel_algorithm(
             // Immediately resolved promise
             let (promise_value, resolvers) = ec.new_promise_pending()?;
             resolvers.resolve(ec.value_undefined(), ec)?;
-            crate::js::Types::value_as_object(&promise_value)
+            Types::value_as_object(&promise_value)
                 .ok_or_else(|| ec.new_type_error("new_promise_pending did not return an object"))?
         }
         Some(TransformCancelAlgorithm::JavaScript(ref callback)) => {
@@ -1182,7 +1179,7 @@ pub(crate) fn transform_stream_default_source_cancel_algorithm(
             // Immediately resolved promise
             let (promise_value, resolvers) = ec.new_promise_pending()?;
             resolvers.resolve(ec.value_undefined(), ec)?;
-            crate::js::Types::value_as_object(&promise_value)
+            Types::value_as_object(&promise_value)
                 .ok_or_else(|| ec.new_type_error("new_promise_pending did not return an object"))?
         }
     };
@@ -1214,7 +1211,7 @@ pub(crate) fn transform_stream_default_source_cancel_algorithm(
         1,
     );
 
-    let cancel_js_promise = crate::js::Types::object_as_promise(&cancel_promise)
+    let cancel_js_promise = Types::object_as_promise(&cancel_promise)
         .ok_or_else(|| ec.new_type_error("cancelPromise is not a Promise"))?;
     ec.perform_promise_then(
         cancel_js_promise,
@@ -1230,11 +1227,11 @@ pub(crate) fn transform_stream_default_source_cancel_algorithm(
 // ---- Constructor helpers ----
 
 fn create_transform_stream_default_controller(
-    ec: &mut dyn ExecutionContext<crate::js::Types>,
-) -> Completion<(TransformStreamDefaultController, JsObject), crate::js::Types> {
+    ec: &mut dyn ExecutionContext<Types>,
+) -> Completion<(TransformStreamDefaultController, JsObject), Types> {
     let controller = TransformStreamDefaultController::new();
     let controller_object: JsObject = create_interface_instance::<
-        crate::js::Types,
+        Types,
         TransformStreamDefaultController,
     >(controller.clone(), ec)?
     .into();
@@ -1245,8 +1242,8 @@ fn create_transform_stream_default_controller(
 pub(crate) fn construct_transform_stream(
     _this: &JsValue,
     args: &[JsValue],
-    ec: &mut dyn ExecutionContext<crate::js::Types>,
-) -> Completion<TransformStream, crate::js::Types> {
+    ec: &mut dyn ExecutionContext<Types>,
+) -> Completion<TransformStream, Types> {
     let stream = TransformStream::new();
     let undefined = ec.value_undefined();
 
@@ -1262,11 +1259,9 @@ pub(crate) fn construct_transform_stream(
         if ec.same_value(&transformer, &null_val) || ec.same_value(&transformer, &undefined) {
             None
         } else {
-            Some(
-                crate::js::Types::value_as_object(&transformer).ok_or_else(|| {
-                    ec.new_type_error("TransformStream transformer must be an object")
-                })?,
-            )
+            Some(Types::value_as_object(&transformer).ok_or_else(|| {
+                ec.new_type_error("TransformStream transformer must be an object")
+            })?)
         };
 
     // Step 2: "Let transformerDict be transformer, converted to an IDL value of type Transformer."
@@ -1306,7 +1301,7 @@ pub(crate) fn construct_transform_stream(
 
     // Step 9: "Let startPromise be a new promise."
     let (start_promise, start_resolvers) = ec.new_promise_pending()?;
-    let start_promise_obj = crate::js::Types::value_as_object(&start_promise)
+    let start_promise_obj = Types::value_as_object(&start_promise)
         .ok_or_else(|| ec.new_type_error("startPromise is not an object"))?;
 
     // Step 10: "Perform ! InitializeTransformStream(this, startPromise, ...)."
@@ -1351,9 +1346,9 @@ pub(crate) fn construct_transform_stream(
 
 pub(crate) fn with_transform_stream_ref<R>(
     object: &JsObject,
-    ec: &mut dyn ExecutionContext<crate::js::Types>,
+    ec: &mut dyn ExecutionContext<Types>,
     f: impl FnOnce(&TransformStream) -> R,
-) -> Completion<R, crate::js::Types> {
+) -> Completion<R, Types> {
     let stream_ref = ec
         .with_object_any(object)
         .and_then(|a| a.downcast_ref::<TransformStream>());
@@ -1366,9 +1361,9 @@ pub(crate) fn with_transform_stream_ref<R>(
 
 pub(crate) fn with_transform_stream_default_controller_ref<R>(
     object: &JsObject,
-    ec: &mut dyn ExecutionContext<crate::js::Types>,
+    ec: &mut dyn ExecutionContext<Types>,
     f: impl FnOnce(&TransformStreamDefaultController) -> R,
-) -> Completion<R, crate::js::Types> {
+) -> Completion<R, Types> {
     let ctrl_ref = ec
         .with_object_any(object)
         .and_then(|a| a.downcast_ref::<TransformStreamDefaultController>());
@@ -1382,15 +1377,15 @@ pub(crate) fn with_transform_stream_default_controller_ref<R>(
 fn get_callable_method(
     object: &JsObject,
     property: &'static str,
-    ec: &mut dyn ExecutionContext<crate::js::Types>,
-) -> Completion<Option<JsObject>, crate::js::Types> {
+    ec: &mut dyn ExecutionContext<Types>,
+) -> Completion<Option<JsObject>, Types> {
     let value = js_engine::EcmascriptHost::get(ec, object, property)?;
     let undefined = ec.value_undefined();
     if ec.same_value(&value, &undefined) {
         return Ok(None);
     }
 
-    let method = crate::js::Types::value_as_object(&value).ok_or_else(|| {
+    let method = Types::value_as_object(&value).ok_or_else(|| {
         ec.new_type_error("TransformStream transformer property must be callable when provided")
     })?;
     if !ec.is_callable(&value) {

@@ -3,9 +3,9 @@ use std::{
     rc::Rc,
 };
 
-use boa_engine::{Context, JsArgs, JsValue, js_string, object::JsObject};
+use js_engine::{Completion, ExecutionContext, JsTypes};
 
-use js_engine::{Completion, ExecutionContext};
+use crate::js::Types;
 
 use crate::streams::{SizeAlgorithm, extract_high_water_mark, extract_size_algorithm};
 use crate::webidl::bindings::create_interface_instance;
@@ -23,6 +23,9 @@ use super::{
     set_up_writable_stream_default_controller_from_underlying_sink,
     writable_stream_default_controller_close,
 };
+
+type JsValue = <Types as JsTypes>::JsValue;
+type JsObject = <Types as JsTypes>::JsObject;
 
 /// <https://streams.spec.whatwg.org/#ws-class>
 #[gc_struct]
@@ -62,13 +65,14 @@ pub struct WritableStream {
 }
 
 impl WritableStream {
-    pub(crate) fn new() -> Self {
+    pub(crate) fn new(ec: &mut dyn ExecutionContext<Types>) -> Self {
+        let undefined = ec.value_undefined();
         Self {
             controller: gc_cell_new(None),
             controller_object: gc_cell_new(None),
             writer: gc_cell_new(None),
             state: Rc::new(RefCell::new(WritableStreamState::Writable)),
-            stored_error: gc_cell_new(JsValue::undefined()),
+            stored_error: gc_cell_new(undefined),
             write_requests: gc_cell_new(Vec::new()),
             in_flight_write_request: gc_cell_new(None),
             close_request: gc_cell_new(None),
@@ -169,9 +173,9 @@ impl WritableStream {
     }
 
     /// <https://streams.spec.whatwg.org/#initialize-writable-stream>
-    fn initialize_writable_stream(&mut self) {
+    fn initialize_writable_stream(&mut self, ec: &mut dyn ExecutionContext<Types>) {
         *self.state.borrow_mut() = WritableStreamState::Writable;
-        *self.stored_error.borrow_mut() = JsValue::undefined();
+        *self.stored_error.borrow_mut() = ec.value_undefined();
         *self.writer.borrow_mut() = None;
         *self.controller.borrow_mut() = None;
         *self.controller_object.borrow_mut() = None;
@@ -197,8 +201,8 @@ impl WritableStream {
     pub(crate) fn abort(
         &self,
         reason: JsValue,
-        ec: &mut dyn ExecutionContext<crate::js::Types>,
-    ) -> Completion<JsObject, crate::js::Types> {
+        ec: &mut dyn ExecutionContext<Types>,
+    ) -> Completion<JsObject, Types> {
         if self.is_writable_stream_locked() {
             return rejected_type_error_promise(
                 "Cannot abort a WritableStream that already has a writer",
@@ -212,8 +216,8 @@ impl WritableStream {
     /// <https://streams.spec.whatwg.org/#ws-close>
     pub(crate) fn close(
         &self,
-        ec: &mut dyn ExecutionContext<crate::js::Types>,
-    ) -> Completion<JsObject, crate::js::Types> {
+        ec: &mut dyn ExecutionContext<Types>,
+    ) -> Completion<JsObject, Types> {
         if self.is_writable_stream_locked() {
             return rejected_type_error_promise(
                 "Cannot close a WritableStream that already has a writer",
@@ -234,8 +238,8 @@ impl WritableStream {
     /// <https://streams.spec.whatwg.org/#ws-get-writer>
     pub(crate) fn get_writer(
         &self,
-        ec: &mut dyn ExecutionContext<crate::js::Types>,
-    ) -> Completion<JsObject, crate::js::Types> {
+        ec: &mut dyn ExecutionContext<Types>,
+    ) -> Completion<JsObject, Types> {
         acquire_writable_stream_default_writer(self.clone(), ec)
     }
 
@@ -243,13 +247,13 @@ impl WritableStream {
     pub(crate) fn abort_stream(
         &self,
         reason: JsValue,
-        ec: &mut dyn ExecutionContext<crate::js::Types>,
-    ) -> Completion<JsObject, crate::js::Types> {
+        ec: &mut dyn ExecutionContext<Types>,
+    ) -> Completion<JsObject, Types> {
         if matches!(
             self.state(),
             WritableStreamState::Closed | WritableStreamState::Errored
         ) {
-            return resolved_promise(JsValue::undefined(), ec);
+            return resolved_promise(ec.value_undefined(), ec);
         }
 
         let controller = self
@@ -261,7 +265,7 @@ impl WritableStream {
             self.state(),
             WritableStreamState::Closed | WritableStreamState::Errored
         ) {
-            return resolved_promise(JsValue::undefined(), ec);
+            return resolved_promise(ec.value_undefined(), ec);
         }
 
         if let Some(abort_request) = self.pending_abort_request_slot() {
@@ -272,7 +276,7 @@ impl WritableStream {
         let mut abort_reason = reason;
         if self.state() == WritableStreamState::Erroring {
             was_already_erroring = true;
-            abort_reason = JsValue::undefined();
+            abort_reason = ec.value_undefined();
         }
 
         let abort_request =
@@ -290,8 +294,8 @@ impl WritableStream {
     /// <https://streams.spec.whatwg.org/#writable-stream-close>
     pub(crate) fn close_stream(
         &self,
-        ec: &mut dyn ExecutionContext<crate::js::Types>,
-    ) -> Completion<JsObject, crate::js::Types> {
+        ec: &mut dyn ExecutionContext<Types>,
+    ) -> Completion<JsObject, Types> {
         match self.state() {
             WritableStreamState::Closed | WritableStreamState::Errored => {
                 return rejected_type_error_promise(
@@ -325,8 +329,8 @@ impl WritableStream {
     /// <https://streams.spec.whatwg.org/#writable-stream-add-write-request>
     pub(crate) fn add_write_request(
         &self,
-        ec: &mut dyn ExecutionContext<crate::js::Types>,
-    ) -> Completion<JsObject, crate::js::Types> {
+        ec: &mut dyn ExecutionContext<Types>,
+    ) -> Completion<JsObject, Types> {
         debug_assert!(self.is_writable_stream_locked());
         debug_assert_eq!(self.state(), WritableStreamState::Writable);
 
@@ -344,8 +348,8 @@ impl WritableStream {
     pub(crate) fn deal_with_rejection(
         &self,
         error: JsValue,
-        ec: &mut dyn ExecutionContext<crate::js::Types>,
-    ) -> Completion<(), crate::js::Types> {
+        ec: &mut dyn ExecutionContext<Types>,
+    ) -> Completion<(), Types> {
         if self.state() == WritableStreamState::Writable {
             self.start_erroring(error, ec)?;
             return Ok(());
@@ -358,8 +362,8 @@ impl WritableStream {
     /// <https://streams.spec.whatwg.org/#writable-stream-finish-erroring>
     pub(crate) fn finish_erroring(
         &self,
-        ec: &mut dyn ExecutionContext<crate::js::Types>,
-    ) -> Completion<(), crate::js::Types> {
+        ec: &mut dyn ExecutionContext<Types>,
+    ) -> Completion<(), Types> {
         debug_assert_eq!(self.state(), WritableStreamState::Erroring);
         debug_assert!(!self.has_operation_marked_in_flight());
 
@@ -393,14 +397,14 @@ impl WritableStream {
         let _ = upon_settlement(
             promise,
             Some(
-                move |_value: JsValue, ec: &mut dyn ExecutionContext<crate::js::Types>| {
+                move |_value: JsValue, ec: &mut dyn ExecutionContext<Types>| {
                     abort_request_for_fulfilled.resolve(ec)?;
                     stream_for_fulfilled.reject_close_and_closed_promise_if_needed(ec)?;
                     Ok(ec.value_undefined())
                 },
             ),
             Some(
-                move |reason: JsValue, ec: &mut dyn ExecutionContext<crate::js::Types>| {
+                move |reason: JsValue, ec: &mut dyn ExecutionContext<Types>| {
                     abort_request.reject(reason, ec)?;
                     stream_for_rejected.reject_close_and_closed_promise_if_needed(ec)?;
                     Ok(ec.value_undefined())
@@ -414,8 +418,8 @@ impl WritableStream {
     /// <https://streams.spec.whatwg.org/#writable-stream-finish-in-flight-close>
     pub(crate) fn finish_in_flight_close(
         &self,
-        ec: &mut dyn ExecutionContext<crate::js::Types>,
-    ) -> Completion<(), crate::js::Types> {
+        ec: &mut dyn ExecutionContext<Types>,
+    ) -> Completion<(), Types> {
         let close_request = self.take_in_flight_close_request_slot().ok_or_else(|| {
             ec.new_type_error("WritableStream is missing its in-flight close request")
         })?;
@@ -426,7 +430,7 @@ impl WritableStream {
             state == WritableStreamState::Writable || state == WritableStreamState::Erroring
         );
         if state == WritableStreamState::Erroring {
-            self.set_stored_error(JsValue::undefined());
+            self.set_stored_error(ec.value_undefined());
             if let Some(abort_request) = self.take_pending_abort_request_slot() {
                 abort_request.resolve(ec)?;
             }
@@ -448,8 +452,8 @@ impl WritableStream {
     pub(crate) fn finish_in_flight_close_with_error(
         &self,
         error: JsValue,
-        ec: &mut dyn ExecutionContext<crate::js::Types>,
-    ) -> Completion<(), crate::js::Types> {
+        ec: &mut dyn ExecutionContext<Types>,
+    ) -> Completion<(), Types> {
         let close_request = self.take_in_flight_close_request_slot().ok_or_else(|| {
             ec.new_type_error("WritableStream is missing its in-flight close request")
         })?;
@@ -465,8 +469,8 @@ impl WritableStream {
     /// <https://streams.spec.whatwg.org/#writable-stream-finish-in-flight-write>
     pub(crate) fn finish_in_flight_write(
         &self,
-        ec: &mut dyn ExecutionContext<crate::js::Types>,
-    ) -> Completion<(), crate::js::Types> {
+        ec: &mut dyn ExecutionContext<Types>,
+    ) -> Completion<(), Types> {
         let write_request = self.take_in_flight_write_request_slot().ok_or_else(|| {
             ec.new_type_error("WritableStream is missing its in-flight write request")
         })?;
@@ -478,8 +482,8 @@ impl WritableStream {
     pub(crate) fn finish_in_flight_write_with_error(
         &self,
         error: JsValue,
-        ec: &mut dyn ExecutionContext<crate::js::Types>,
-    ) -> Completion<(), crate::js::Types> {
+        ec: &mut dyn ExecutionContext<Types>,
+    ) -> Completion<(), Types> {
         let write_request = self.take_in_flight_write_request_slot().ok_or_else(|| {
             ec.new_type_error("WritableStream is missing its in-flight write request")
         })?;
@@ -496,8 +500,8 @@ impl WritableStream {
     /// <https://streams.spec.whatwg.org/#writable-stream-mark-close-request-in-flight>
     pub(crate) fn mark_close_request_in_flight(
         &self,
-        ec: &mut dyn ExecutionContext<crate::js::Types>,
-    ) -> Completion<(), crate::js::Types> {
+        ec: &mut dyn ExecutionContext<Types>,
+    ) -> Completion<(), Types> {
         debug_assert!(self.in_flight_close_request_slot().is_none());
         let close_request = self
             .take_close_request_slot()
@@ -509,8 +513,8 @@ impl WritableStream {
     /// <https://streams.spec.whatwg.org/#writable-stream-mark-first-write-request-in-flight>
     pub(crate) fn mark_first_write_request_in_flight(
         &self,
-        ec: &mut dyn ExecutionContext<crate::js::Types>,
-    ) -> Completion<(), crate::js::Types> {
+        ec: &mut dyn ExecutionContext<Types>,
+    ) -> Completion<(), Types> {
         debug_assert!(self.in_flight_write_request_slot().is_none());
         let write_request = self
             .shift_write_request()
@@ -522,8 +526,8 @@ impl WritableStream {
     /// <https://streams.spec.whatwg.org/#writable-stream-reject-close-and-closed-promise-if-needed>
     pub(crate) fn reject_close_and_closed_promise_if_needed(
         &self,
-        ec: &mut dyn ExecutionContext<crate::js::Types>,
-    ) -> Completion<(), crate::js::Types> {
+        ec: &mut dyn ExecutionContext<Types>,
+    ) -> Completion<(), Types> {
         debug_assert_eq!(self.state(), WritableStreamState::Errored);
 
         if let Some(close_request) = self.take_close_request_slot() {
@@ -544,8 +548,8 @@ impl WritableStream {
     pub(crate) fn start_erroring(
         &self,
         reason: JsValue,
-        ec: &mut dyn ExecutionContext<crate::js::Types>,
-    ) -> Completion<(), crate::js::Types> {
+        ec: &mut dyn ExecutionContext<Types>,
+    ) -> Completion<(), Types> {
         debug_assert!(self.stored_error().is_undefined());
         debug_assert_eq!(self.state(), WritableStreamState::Writable);
 
@@ -572,8 +576,8 @@ impl WritableStream {
     pub(crate) fn update_backpressure(
         &self,
         backpressure: bool,
-        ec: &mut dyn ExecutionContext<crate::js::Types>,
-    ) -> Completion<(), crate::js::Types> {
+        ec: &mut dyn ExecutionContext<Types>,
+    ) -> Completion<(), Types> {
         debug_assert_eq!(self.state(), WritableStreamState::Writable);
         debug_assert!(!self.close_queued_or_in_flight());
 
@@ -597,16 +601,16 @@ impl WritableStream {
 pub(crate) fn construct_writable_stream(
     _new_target: &JsValue,
     args: &[JsValue],
-    ec: &mut dyn ExecutionContext<crate::js::Types>,
-) -> Completion<WritableStream, crate::js::Types> {
-    let mut stream = WritableStream::new();
+    ec: &mut dyn ExecutionContext<Types>,
+) -> Completion<WritableStream, Types> {
+    let mut stream = WritableStream::new(ec);
 
     let underlying_sink = if args.is_empty() {
-        JsValue::null()
+        ec.value_null()
     } else {
         args[0].clone()
     };
-    let strategy = args.get_or_undefined(1).clone();
+    let strategy = args.get(1).cloned().unwrap_or_else(|| ec.value_undefined());
 
     let size_algorithm = extract_size_algorithm(&strategy, ec)?;
     let high_water_mark = extract_high_water_mark(&strategy, 1.0, ec)?;
@@ -629,7 +633,7 @@ pub(crate) fn construct_writable_stream(
     // Step 5: "Perform ! InitializeWritableStream(this)."
     // Note: The backing struct is returned from the data constructor, after which Boa wraps it
     // in the newly created JsObject.
-    stream.initialize_writable_stream();
+    stream.initialize_writable_stream(ec);
 
     // Step 6: "Perform ? SetUpWritableStreamDefaultControllerFromUnderlyingSink(this, underlyingSink, underlyingSinkDict, highWaterMark, sizeAlgorithm)."
     set_up_writable_stream_default_controller_from_underlying_sink(
@@ -650,14 +654,14 @@ pub(crate) fn create_writable_stream(
     abort_algorithm: AbortAlgorithm,
     high_water_mark: Option<f64>,
     size_algorithm: Option<SizeAlgorithm>,
-    ec: &mut dyn ExecutionContext<crate::js::Types>,
-) -> Completion<(WritableStream, JsObject), crate::js::Types> {
+    ec: &mut dyn ExecutionContext<Types>,
+) -> Completion<(WritableStream, JsObject), Types> {
     let high_water_mark = high_water_mark.unwrap_or(1.0);
     let size_algorithm = size_algorithm.unwrap_or(SizeAlgorithm::ReturnOne);
     debug_assert!(high_water_mark >= 0.0 && !high_water_mark.is_nan());
 
     let (mut stream, stream_object) = create_writable_stream_object(ec)?;
-    stream.initialize_writable_stream();
+    stream.initialize_writable_stream(ec);
     let (controller, controller_object) = create_writable_stream_default_controller(ec)?;
     set_up_writable_stream_default_controller(
         stream.clone(),
@@ -674,19 +678,20 @@ pub(crate) fn create_writable_stream(
     Ok((stream, stream_object))
 }
 fn create_writable_stream_object(
-    ec: &mut dyn ExecutionContext<crate::js::Types>,
-) -> Completion<(WritableStream, JsObject), crate::js::Types> {
-    let stream = WritableStream::new();
+    ec: &mut dyn ExecutionContext<Types>,
+) -> Completion<(WritableStream, JsObject), Types> {
+    let mut stream = WritableStream::new(ec);
+    stream.initialize_writable_stream(ec);
     let stream_object: JsObject =
-        create_interface_instance::<crate::js::Types, WritableStream>(stream.clone(), ec)?.into();
+        create_interface_instance::<Types, WritableStream>(stream.clone(), ec)?.into();
     Ok((stream, stream_object))
 }
 
 pub(crate) fn with_writable_stream_ref<R>(
     object: &JsObject,
-    ec: &mut dyn ExecutionContext<crate::js::Types>,
+    ec: &mut dyn ExecutionContext<Types>,
     f: impl FnOnce(&WritableStream) -> R,
-) -> Completion<R, crate::js::Types> {
+) -> Completion<R, Types> {
     let stream_ref = ec
         .with_object_any(object)
         .and_then(|a| a.downcast_ref::<WritableStream>());
@@ -699,8 +704,8 @@ pub(crate) fn with_writable_stream_ref<R>(
 
 fn underlying_sink_type(
     underlying_sink: Option<&JsObject>,
-    ec: &mut dyn ExecutionContext<crate::js::Types>,
-) -> Completion<Option<String>, crate::js::Types> {
+    ec: &mut dyn ExecutionContext<Types>,
+) -> Completion<Option<String>, Types> {
     let Some(underlying_sink) = underlying_sink else {
         return Ok(None);
     };

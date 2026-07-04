@@ -4,8 +4,6 @@ use std::marker::PhantomData;
 use crate::html::HTMLAnchorElement;
 use crate::webidl::bindings::{AttributeDef, InterfaceDefinition, WebIdlInterface};
 
-use super::hyperlink_element_utils::document_creation_url;
-
 use js_engine::{Completion, ExecutionContext, JsTypes};
 
 // ── WebIDL interface definition (§3) ──

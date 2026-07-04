@@ -453,7 +453,7 @@ impl HTMLMediaElement {
             }
 
             // ── Synchronous section ends here ──
-            Ok(ec.value_undefined())
+            Ok(job_ec.value_undefined())
         })
     }
 

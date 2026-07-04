@@ -1,7 +1,4 @@
-use boa_engine::{
-    Context, JsArgs, JsError, JsNativeError, JsResult, JsValue, js_string,
-    native_function::NativeFunction, object::JsObject, property::PropertyDescriptor,
-};
+use boa_engine::{JsArgs, JsNativeError, JsResult, JsValue, object::JsObject};
 use url::Url;
 
 use crate::js::platform_objects;

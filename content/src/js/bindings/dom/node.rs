@@ -2,7 +2,7 @@ use std::marker::PhantomData;
 use std::rc::Rc;
 
 use blitz_dom::NodeData;
-use boa_engine::{JsArgs, JsError, JsNativeError, JsResult, JsValue, object::builtins::JsArray};
+use boa_engine::{JsArgs, JsNativeError, JsResult, JsValue};
 
 use js_engine::{Completion, ExecutionContext, JsTypes};
 
@@ -574,7 +574,6 @@ fn set_node_value(
     args: &[JsValue],
     ec: &mut dyn ExecutionContext<crate::js::Types>,
 ) -> Completion<JsValue, crate::js::Types> {
-    let value_undefined = ec.value_undefined();
     let first = args.first();
     let value = if first.map_or(true, |v| crate::js::Types::value_is_null(v)) {
         None
@@ -590,7 +589,6 @@ fn set_text_content(
     args: &[JsValue],
     ec: &mut dyn ExecutionContext<crate::js::Types>,
 ) -> Completion<JsValue, crate::js::Types> {
-    let value_undefined = ec.value_undefined();
     let first = args.first();
     let text = if first.map_or(true, |v| crate::js::Types::value_is_null(v)) {
         None

@@ -1,10 +1,11 @@
-use boa_engine::JsValue;
-
 use js_engine::gc_struct;
+use js_engine::{Completion, ExecutionContext, JsTypes};
 
-use js_engine::{Completion, ExecutionContext};
+use crate::js::Types;
 
 use crate::webidl::{Callback, ExceptionBehavior, invoke_callback_function};
+
+type JsValue = <Types as JsTypes>::JsValue;
 
 /// <https://streams.spec.whatwg.org/#blqs-class>
 #[gc_struct]
@@ -58,8 +59,8 @@ impl SizeAlgorithm {
     pub(crate) fn size(
         &self,
         chunk: &JsValue,
-        ec: &mut dyn ExecutionContext<crate::js::Types>,
-    ) -> Completion<f64, crate::js::Types> {
+        ec: &mut dyn ExecutionContext<Types>,
+    ) -> Completion<f64, Types> {
         match self {
             Self::ReturnOne => Ok(1.0),
             Self::Callback { callback } => {
@@ -81,8 +82,8 @@ impl SizeAlgorithm {
 /// <https://streams.spec.whatwg.org/#validate-and-normalize-high-water-mark>
 pub(crate) fn validate_and_normalize_high_water_mark(
     value: &JsValue,
-    ec: &mut dyn ExecutionContext<crate::js::Types>,
-) -> Completion<f64, crate::js::Types> {
+    ec: &mut dyn ExecutionContext<Types>,
+) -> Completion<f64, Types> {
     // Step 1 (implicit): "Let highWaterMark be ? ToNumber(highWaterMark)."
     let number = ec.to_number(value.clone())?;
     // Step 2: "If highWaterMark is NaN or highWaterMark < 0, throw a RangeError exception."
@@ -97,8 +98,8 @@ pub(crate) fn validate_and_normalize_high_water_mark(
 pub(crate) fn extract_high_water_mark(
     strategy: &JsValue,
     default_high_water_mark: f64,
-    ec: &mut dyn ExecutionContext<crate::js::Types>,
-) -> Completion<f64, crate::js::Types> {
+    ec: &mut dyn ExecutionContext<Types>,
+) -> Completion<f64, Types> {
     // Step 1: "If strategy[\"highWaterMark\"] does not exist, return defaultHWM."
     if strategy.is_undefined() || strategy.is_null() {
         return Ok(default_high_water_mark);
@@ -123,8 +124,8 @@ pub(crate) fn extract_high_water_mark(
 /// <https://streams.spec.whatwg.org/#make-size-algorithm-from-size-function>
 pub(crate) fn extract_size_algorithm(
     strategy: &JsValue,
-    ec: &mut dyn ExecutionContext<crate::js::Types>,
-) -> Completion<SizeAlgorithm, crate::js::Types> {
+    ec: &mut dyn ExecutionContext<Types>,
+) -> Completion<SizeAlgorithm, Types> {
     // Step 1: "If strategy[\"size\"] does not exist, return an algorithm that returns 1."
     if strategy.is_undefined() || strategy.is_null() {
         return Ok(SizeAlgorithm::ReturnOne);
@@ -145,7 +146,7 @@ pub(crate) fn extract_size_algorithm(
     let size = size
         .as_object()
         .ok_or_else(|| ec.new_type_error("strategy.size must be callable"))?;
-    let size_value = JsValue::from(size.clone());
+    let size_value = Types::value_from_object(size.clone());
     if !ec.is_callable(&size_value) {
         return Err(ec.new_type_error("strategy.size must be callable"));
     }
@@ -158,23 +159,26 @@ pub(crate) fn extract_size_algorithm(
 /// <https://streams.spec.whatwg.org/#byte-length-queuing-strategy-size-function>
 pub(crate) fn byte_length_size(
     chunk: &JsValue,
-    ec: &mut dyn ExecutionContext<crate::js::Types>,
-) -> Completion<JsValue, crate::js::Types> {
+    ec: &mut dyn ExecutionContext<Types>,
+) -> Completion<JsValue, Types> {
     // "Return ? GetV(chunk, \"byteLength\")."
     let chunk = ec.to_object(chunk.clone())?;
     ExecutionContext::get(ec, chunk, ec.property_key_from_str("byteLength"))
 }
 
 /// <https://streams.spec.whatwg.org/#count-queuing-strategy-size-function>
-pub(crate) fn count_size(_: &JsValue) -> JsValue {
+pub(crate) fn count_size(
+    _: &JsValue,
+    ec: &mut dyn ExecutionContext<Types>,
+) -> Completion<JsValue, Types> {
     // "Return 1."
-    JsValue::from(1)
+    Ok(ec.value_from_number(1.0))
 }
 
 fn to_non_negative_number(
     value: &JsValue,
-    ec: &mut dyn ExecutionContext<crate::js::Types>,
-) -> Completion<f64, crate::js::Types> {
+    ec: &mut dyn ExecutionContext<Types>,
+) -> Completion<f64, Types> {
     let number = ec.to_number(value.clone())?;
     if !number.is_finite() || number < 0.0 {
         return Err(ec.new_range_error("queue strategy size must be a finite, non-negative number"));

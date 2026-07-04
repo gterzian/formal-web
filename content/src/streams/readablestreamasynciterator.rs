@@ -3,15 +3,16 @@ use js_engine::gc::gc_cell_new;
 use js_engine::gc_struct;
 use std::{cell::Cell, rc::Rc};
 
-use boa_engine::{JsArgs, JsValue, object::JsObject};
-
 use crate::webidl::{AsyncValueIterable, rejected_promise, resolved_promise};
 
-use js_engine::{Completion, ExecutionContext};
+use js_engine::{Completion, ExecutionContext, JsTypes};
+
+use crate::js::Types;
 
 use super::{ReadableStream, ReadableStreamDefaultReader, ReadableStreamGenericReader};
 
-type Types = crate::js::Types;
+type JsValue = <Types as JsTypes>::JsValue;
+type JsObject = <Types as JsTypes>::JsObject;
 
 #[gc_struct]
 pub(crate) struct ReadableStreamAsyncIteratorState {
@@ -61,7 +62,7 @@ impl AsyncValueIterable for ReadableStream {
         let mut stream = self.clone();
 
         // Step 1: "Let reader be ? AcquireReadableStreamDefaultReader(stream)."
-        let reader_object = stream.get_reader(&JsValue::undefined(), ec)?;
+        let reader_object = stream.get_reader(&ec.value_undefined(), ec)?;
 
         // Note: get_reader returns the generic JsObject type. For Boa,
         // this IS boa_engine::JsObject, so we can transmute to access
@@ -82,7 +83,11 @@ impl AsyncValueIterable for ReadableStream {
         };
 
         // Step 3: "Let preventCancel be args[0][\"preventCancel\"]."
-        let prevent_cancel = iterator_prevent_cancel(args.get_or_undefined(0), ec)?;
+        let value = args
+            .first()
+            .cloned()
+            .unwrap_or_else(|| ec.value_undefined());
+        let prevent_cancel = iterator_prevent_cancel(&value, ec)?;
 
         // Step 4: "Set iterator's prevent cancel to preventCancel."
         Ok(ReadableStreamAsyncIteratorState::new(
@@ -150,7 +155,6 @@ fn iterator_prevent_cancel(
     }
 
     let options_obj = ec.to_object(options.clone())?;
-    let prevent_key = ec.property_key_from_str("preventCancel");
     let prevent_val = js_engine::EcmascriptHost::get(ec, &options_obj, "preventCancel")?;
     Ok(ec.to_boolean(&prevent_val))
 }

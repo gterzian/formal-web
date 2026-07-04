@@ -2,9 +2,7 @@ use log::{debug, error};
 use std::{cell::RefCell, rc::Rc, time::Instant};
 
 use blitz_dom::BaseDocument;
-use boa_engine::{
-    Context, JsError, JsValue, Source, js_string, object::JsObject, property::Attribute,
-};
+use boa_engine::{Context, JsValue, Source, js_string, object::JsObject, property::Attribute};
 use ipc::IpcSender;
 use ipc_messages::content::{DocumentId, Event as ContentEvent, NavigableId, WindowTimerKey};
 use url::Url;
@@ -112,9 +110,10 @@ impl EnvironmentSettingsObject {
         })
         .map_err(|error| error.display().to_string())?;
         install_document_property(&mut engine).map_err(|error| error.display().to_string())?;
-        install_console_namespace(engine.context())
-            .map_err(|error: boa_engine::JsError| error.to_string())?;
-        install_css_namespace(engine.context()).map_err(|error| error.to_string())?;
+        install_console_namespace(&mut engine)
+            .map_err(|error| format!("failed to install console: {error:?}"))?;
+        install_css_namespace(&mut engine)
+            .map_err(|error| format!("failed to install CSS namespace: {error:?}"))?;
 
         let global = engine.context().global_object();
         if let Some(window_proto) = get_registry_prototype::<crate::js::Types, Window>(&engine) {

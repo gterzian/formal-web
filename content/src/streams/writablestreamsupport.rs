@@ -1,10 +1,13 @@
-use boa_engine::{Context, JsValue, object::JsObject};
-
 use js_engine::gc_struct;
-use js_engine::{Completion, ExecutionContext, PromiseResolvers};
+use js_engine::{Completion, ExecutionContext, JsTypes, PromiseResolvers};
+
+use crate::js::Types;
 
 use super::writablestreamdefaultcontroller::WritableStreamDefaultController;
 use super::writablestreamdefaultwriter::WritableStreamDefaultWriter;
+
+type JsValue = <Types as JsTypes>::JsValue;
+type JsObject = <Types as JsTypes>::JsObject;
 
 /// <https://streams.spec.whatwg.org/#writablestream-state>
 #[gc_struct]
@@ -18,24 +21,19 @@ pub(crate) enum WritableStreamState {
 
 #[gc_struct]
 pub(crate) struct WriteRequest {
-    resolvers: PromiseResolvers<crate::js::Types>,
+    resolvers: PromiseResolvers<Types>,
 }
 
 impl WriteRequest {
-    pub(crate) fn new(
-        ec: &mut dyn ExecutionContext<crate::js::Types>,
-    ) -> Completion<(Self, JsObject), crate::js::Types> {
+    pub(crate) fn new(ec: &mut dyn ExecutionContext<Types>) -> Completion<(Self, JsObject), Types> {
         let (promise, resolvers) = ec.new_promise_pending()?;
         let promise_obj = promise
             .as_object()
             .ok_or_else(|| ec.new_type_error("new_promise_pending did not return an object"))?;
         Ok((Self { resolvers }, promise_obj))
     }
-    pub(crate) fn resolve(
-        self,
-        ec: &mut dyn ExecutionContext<crate::js::Types>,
-    ) -> Completion<(), crate::js::Types> {
-        let undefined = JsValue::undefined();
+    pub(crate) fn resolve(self, ec: &mut dyn ExecutionContext<Types>) -> Completion<(), Types> {
+        let undefined = ec.value_undefined();
         let args = [undefined];
         ec.call(&self.resolvers.resolve, &args[0], &args)
             .map(|_| ())
@@ -43,9 +41,9 @@ impl WriteRequest {
     pub(crate) fn reject(
         self,
         error: JsValue,
-        ec: &mut dyn ExecutionContext<crate::js::Types>,
-    ) -> Completion<(), crate::js::Types> {
-        let undefined = JsValue::undefined();
+        ec: &mut dyn ExecutionContext<Types>,
+    ) -> Completion<(), Types> {
+        let undefined = ec.value_undefined();
         ec.call(&self.resolvers.reject, &undefined, &[error])
             .map(|_| ())
     }
@@ -53,7 +51,7 @@ impl WriteRequest {
 #[gc_struct]
 pub(crate) struct PendingAbortRequest {
     promise: JsObject,
-    resolvers: PromiseResolvers<crate::js::Types>,
+    resolvers: PromiseResolvers<Types>,
 
     /// <https://streams.spec.whatwg.org/#pending-abort-request-reason>
     reason: JsValue,
@@ -66,8 +64,8 @@ impl PendingAbortRequest {
     pub(crate) fn new(
         reason: JsValue,
         was_already_erroring: bool,
-        ec: &mut dyn ExecutionContext<crate::js::Types>,
-    ) -> Completion<Self, crate::js::Types> {
+        ec: &mut dyn ExecutionContext<Types>,
+    ) -> Completion<Self, Types> {
         let (promise, resolvers) = ec.new_promise_pending()?;
         let promise_obj = promise
             .as_object()
@@ -88,11 +86,8 @@ impl PendingAbortRequest {
     pub(crate) fn was_already_erroring(&self) -> bool {
         self.was_already_erroring
     }
-    pub(crate) fn resolve(
-        &self,
-        ec: &mut dyn ExecutionContext<crate::js::Types>,
-    ) -> Completion<(), crate::js::Types> {
-        let undefined = JsValue::undefined();
+    pub(crate) fn resolve(&self, ec: &mut dyn ExecutionContext<Types>) -> Completion<(), Types> {
+        let undefined = ec.value_undefined();
         let args = [undefined];
         ec.call(&self.resolvers.resolve, &args[0], &args)
             .map(|_| ())
@@ -100,9 +95,9 @@ impl PendingAbortRequest {
     pub(crate) fn reject(
         &self,
         error: JsValue,
-        ec: &mut dyn ExecutionContext<crate::js::Types>,
-    ) -> Completion<(), crate::js::Types> {
-        let undefined = JsValue::undefined();
+        ec: &mut dyn ExecutionContext<Types>,
+    ) -> Completion<(), Types> {
+        let undefined = ec.value_undefined();
         ec.call(&self.resolvers.reject, &undefined, &[error])
             .map(|_| ())
     }
@@ -116,8 +111,8 @@ impl WritableStreamController {
     pub(crate) fn abort_steps(
         &self,
         reason: JsValue,
-        ec: &mut dyn ExecutionContext<crate::js::Types>,
-    ) -> Completion<JsObject, crate::js::Types> {
+        ec: &mut dyn ExecutionContext<Types>,
+    ) -> Completion<JsObject, Types> {
         match self {
             Self::Default(controller) => controller.abort_steps(reason, ec),
         }
@@ -130,8 +125,8 @@ impl WritableStreamController {
     pub(crate) fn signal_abort(
         &self,
         reason: JsValue,
-        ec: &mut dyn ExecutionContext<crate::js::Types>,
-    ) -> Completion<(), crate::js::Types> {
+        ec: &mut dyn ExecutionContext<Types>,
+    ) -> Completion<(), Types> {
         match self {
             Self::Default(controller) => controller.signal_abort(reason, ec),
         }

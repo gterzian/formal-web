@@ -1,18 +1,11 @@
-use boa_engine::{
-    Context, JsResult, JsValue,
-    job::PromiseJob,
-    js_string,
-    object::{JsObject, ObjectInitializer},
-    property::Attribute,
-};
-
 use js_engine::{Completion, ExecutionContext, JsTypes, PromiseResolvers};
+
+use crate::js::Types;
 
 use crate::webidl::{
     Callback, ExceptionBehavior, invoke_callback_function, mark_promise_as_handled,
     rejected_promise,
 };
-use boa_gc::{Finalize, Trace};
 
 use super::readablebytestreamcontroller::ReadableByteStreamController;
 use super::readablestream::{
@@ -27,11 +20,13 @@ use super::readablestreambyobreader::ReadableStreamBYOBReader;
 use super::readablestreamdefaultcontroller::ReadableStreamDefaultController;
 use super::readablestreamdefaultreader::ReadableStreamDefaultReader;
 use js_engine::gc::GcCell;
-use js_engine::gc::gc_cell_new;
 use js_engine::gc_struct;
 
+type JsValue = <Types as JsTypes>::JsValue;
+type JsObject = <Types as JsTypes>::JsObject;
+
 /// <https://streams.spec.whatwg.org/#readablestream-state>
-#[derive(Clone, Debug, Eq, PartialEq, Trace, Finalize)]
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) enum ReadableStreamState {
     Readable,
     Closed,
@@ -39,7 +34,7 @@ pub(crate) enum ReadableStreamState {
 }
 /// <https://streams.spec.whatwg.org/#set-up-readable-stream-default-controller-from-underlying-source>
 // Note: This struct stores an underlying source method together with its callback `this` value so the surrounding Streams algorithms can later invoke it through Web IDL callback invocation.
-#[derive(Clone, Trace, Finalize)]
+#[gc_struct]
 pub(crate) struct SourceMethod {
     this_value: JsObject,
 
@@ -59,8 +54,8 @@ impl SourceMethod {
     pub(crate) fn call(
         &self,
         args: &[JsValue],
-        ec: &mut dyn ExecutionContext<crate::js::Types>,
-    ) -> Completion<JsValue, crate::js::Types> {
+        ec: &mut dyn ExecutionContext<Types>,
+    ) -> Completion<JsValue, Types> {
         let this_value = JsValue::from(self.this_value.clone());
         invoke_callback_function(
             ec,
@@ -75,7 +70,7 @@ impl SourceMethod {
 #[gc_struct]
 pub(crate) enum ReadRequest {
     DefaultReaderRead {
-        resolvers: PromiseResolvers<crate::js::Types>,
+        resolvers: PromiseResolvers<Types>,
     },
     ReadableStreamDefaultTee {
         tee_state: GcCell<TeeState>,
@@ -91,13 +86,11 @@ pub(crate) enum ReadRequest {
 
 #[gc_struct]
 pub(crate) struct ReadIntoRequest {
-    resolvers: PromiseResolvers<crate::js::Types>,
+    resolvers: PromiseResolvers<Types>,
 }
 
 impl ReadIntoRequest {
-    pub(crate) fn new(
-        ec: &mut dyn ExecutionContext<crate::js::Types>,
-    ) -> Completion<(Self, JsObject), crate::js::Types> {
+    pub(crate) fn new(ec: &mut dyn ExecutionContext<Types>) -> Completion<(Self, JsObject), Types> {
         let (promise, resolvers) = ec.new_promise_pending()?;
         let promise_obj = promise
             .as_object()
@@ -108,29 +101,32 @@ impl ReadIntoRequest {
     pub(crate) fn chunk_steps(
         self,
         chunk: JsValue,
-        ec: &mut dyn ExecutionContext<crate::js::Types>,
-    ) -> Completion<(), crate::js::Types> {
+        ec: &mut dyn ExecutionContext<Types>,
+    ) -> Completion<(), Types> {
         let result = create_read_result(chunk, false, ec)?;
-        ec.call(&self.resolvers.resolve, &JsValue::undefined(), &[result])
+        let undefined = ec.value_undefined();
+        ec.call(&self.resolvers.resolve, &undefined, &[result])
             .map(|_| ())
     }
 
     pub(crate) fn close_steps(
         self,
         chunk: Option<JsValue>,
-        ec: &mut dyn ExecutionContext<crate::js::Types>,
-    ) -> Completion<(), crate::js::Types> {
-        let result = create_read_result(chunk.unwrap_or(JsValue::undefined()), true, ec)?;
-        ec.call(&self.resolvers.resolve, &JsValue::undefined(), &[result])
+        ec: &mut dyn ExecutionContext<Types>,
+    ) -> Completion<(), Types> {
+        let result = create_read_result(chunk.unwrap_or(ec.value_undefined()), true, ec)?;
+        let undefined = ec.value_undefined();
+        ec.call(&self.resolvers.resolve, &undefined, &[result])
             .map(|_| ())
     }
 
     pub(crate) fn error_steps(
         self,
         error: JsValue,
-        ec: &mut dyn ExecutionContext<crate::js::Types>,
-    ) -> Completion<(), crate::js::Types> {
-        ec.call(&self.resolvers.reject, &JsValue::undefined(), &[error])
+        ec: &mut dyn ExecutionContext<Types>,
+    ) -> Completion<(), Types> {
+        let undefined = ec.value_undefined();
+        ec.call(&self.resolvers.reject, &undefined, &[error])
             .map(|_| ())
     }
 }
@@ -139,12 +135,13 @@ impl ReadRequest {
     pub(crate) fn chunk_steps(
         self,
         chunk: JsValue,
-        ec: &mut dyn ExecutionContext<crate::js::Types>,
-    ) -> Completion<(), crate::js::Types> {
+        ec: &mut dyn ExecutionContext<Types>,
+    ) -> Completion<(), Types> {
         match &self {
             Self::DefaultReaderRead { resolvers } => {
                 let result = create_read_result(chunk, false, ec)?;
-                ec.call(&resolvers.resolve, &JsValue::undefined(), &[result])
+                let undefined = ec.value_undefined();
+                ec.call(&resolvers.resolve, &undefined, &[result])
                     .map(|_| ())
             }
             Self::ReadableStreamDefaultTee {
@@ -165,7 +162,7 @@ impl ReadRequest {
                 let realm = ec.current_realm();
                 ec.enqueue_job_with_realm(
                     realm,
-                    Box::new(move |job_ec: &mut dyn ExecutionContext<crate::js::Types>| {
+                    Box::new(move |job_ec: &mut dyn ExecutionContext<Types>| {
                         let _ = state.on_read_request_settled(result, job_ec);
                     }),
                 );
@@ -174,14 +171,12 @@ impl ReadRequest {
         }
     }
 
-    pub(crate) fn close_steps(
-        self,
-        ec: &mut dyn ExecutionContext<crate::js::Types>,
-    ) -> Completion<(), crate::js::Types> {
+    pub(crate) fn close_steps(self, ec: &mut dyn ExecutionContext<Types>) -> Completion<(), Types> {
         match &self {
             Self::DefaultReaderRead { resolvers } => {
-                let result = create_read_result(JsValue::undefined(), true, ec)?;
-                ec.call(&resolvers.resolve, &JsValue::undefined(), &[result])
+                let result = create_read_result(ec.value_undefined(), true, ec)?;
+                let undefined = ec.value_undefined();
+                ec.call(&resolvers.resolve, &undefined, &[result])
                     .map(|_| ())
             }
             Self::ReadableStreamDefaultTee { tee_state, .. } => {
@@ -191,12 +186,12 @@ impl ReadRequest {
                 readable_byte_stream_tee_default_reader_close_steps(tee_state.clone(), ec)
             }
             Self::ReadableStreamPipeTo { state } => {
-                let result = create_read_result(JsValue::undefined(), true, ec)?;
+                let result = create_read_result(ec.value_undefined(), true, ec)?;
                 let state = state.clone();
                 let realm = ec.current_realm();
                 ec.enqueue_job_with_realm(
                     realm,
-                    Box::new(move |job_ec: &mut dyn ExecutionContext<crate::js::Types>| {
+                    Box::new(move |job_ec: &mut dyn ExecutionContext<Types>| {
                         let _ = state.on_read_request_settled(result, job_ec);
                     }),
                 );
@@ -208,12 +203,13 @@ impl ReadRequest {
     pub(crate) fn error_steps(
         self,
         error: JsValue,
-        ec: &mut dyn ExecutionContext<crate::js::Types>,
-    ) -> Completion<(), crate::js::Types> {
+        ec: &mut dyn ExecutionContext<Types>,
+    ) -> Completion<(), Types> {
         match &self {
-            Self::DefaultReaderRead { resolvers } => ec
-                .call(&resolvers.reject, &JsValue::undefined(), &[error])
-                .map(|_| ()),
+            Self::DefaultReaderRead { resolvers } => {
+                let undefined = ec.value_undefined();
+                ec.call(&resolvers.reject, &undefined, &[error]).map(|_| ())
+            }
             Self::ReadableStreamDefaultTee { tee_state, .. } => {
                 readable_stream_default_tee_read_request_error_steps(tee_state.clone());
                 Ok(())
@@ -227,7 +223,7 @@ impl ReadRequest {
                 let realm = ec.current_realm();
                 ec.enqueue_job_with_realm(
                     realm,
-                    Box::new(move |job_ec: &mut dyn ExecutionContext<crate::js::Types>| {
+                    Box::new(move |job_ec: &mut dyn ExecutionContext<Types>| {
                         let _ = state.on_read_request_settled(error, job_ec);
                     }),
                 );
@@ -239,11 +235,10 @@ impl ReadRequest {
 
 pub(crate) fn queue_internal_stream_microtask<F>(
     task: F,
-    ec: &mut dyn ExecutionContext<crate::js::Types>,
-) -> Completion<(), crate::js::Types>
+    ec: &mut dyn ExecutionContext<Types>,
+) -> Completion<(), Types>
 where
-    F: FnOnce(&mut dyn ExecutionContext<crate::js::Types>) -> Completion<(), crate::js::Types>
-        + 'static,
+    F: FnOnce(&mut dyn ExecutionContext<Types>) -> Completion<(), Types> + 'static,
 {
     let realm = ec.current_realm();
     ec.enqueue_job_with_realm(
@@ -273,8 +268,8 @@ impl ReadableStreamController {
     pub(crate) fn cancel_steps(
         &self,
         reason: JsValue,
-        ec: &mut dyn ExecutionContext<crate::js::Types>,
-    ) -> Completion<JsObject, crate::js::Types> {
+        ec: &mut dyn ExecutionContext<Types>,
+    ) -> Completion<JsObject, Types> {
         match self {
             Self::Default(controller) => controller.cancel_steps(reason, ec),
             Self::Byte(controller) => controller.cancel_steps(reason, ec),
@@ -283,8 +278,8 @@ impl ReadableStreamController {
     pub(crate) fn pull_steps(
         &self,
         read_request: ReadRequest,
-        ec: &mut dyn ExecutionContext<crate::js::Types>,
-    ) -> Completion<(), crate::js::Types> {
+        ec: &mut dyn ExecutionContext<Types>,
+    ) -> Completion<(), Types> {
         match self {
             Self::Default(controller) => controller.pull_steps(read_request, ec),
             Self::Byte(controller) => controller.pull_steps(read_request, ec),
@@ -292,8 +287,8 @@ impl ReadableStreamController {
     }
     pub(crate) fn release_steps(
         &self,
-        ec: &mut dyn ExecutionContext<crate::js::Types>,
-    ) -> Completion<(), crate::js::Types> {
+        ec: &mut dyn ExecutionContext<Types>,
+    ) -> Completion<(), Types> {
         match self {
             Self::Default(controller) => controller.release_steps(ec),
             Self::Byte(controller) => controller.release_steps(ec),
@@ -342,33 +337,33 @@ impl ReadableStreamReader {
 fn create_read_result(
     value: JsValue,
     done: bool,
-    ec: &mut dyn ExecutionContext<crate::js::Types>,
-) -> Completion<JsValue, crate::js::Types> {
+    ec: &mut dyn ExecutionContext<Types>,
+) -> Completion<JsValue, Types> {
     let obj = ec.create_plain_object(None);
     let done_val = ec.value_from_bool(done);
     ec.object_set_property(obj.clone(), "value", value)?;
     ec.object_set_property(obj.clone(), "done", done_val)?;
-    Ok(<crate::js::Types as JsTypes>::value_from_object(obj))
+    Ok(<Types as JsTypes>::value_from_object(obj))
 }
 
 pub(crate) fn rejected_type_error_promise(
     message: &'static str,
-    ec: &mut dyn ExecutionContext<crate::js::Types>,
-) -> Completion<JsObject, crate::js::Types> {
+    ec: &mut dyn ExecutionContext<Types>,
+) -> Completion<JsObject, Types> {
     let reason = type_error_value(message, ec)?;
     crate::webidl::rejected_promise(reason, ec)
 }
 
 pub(crate) fn type_error_value(
     message: &'static str,
-    ec: &mut dyn ExecutionContext<crate::js::Types>,
-) -> Completion<JsValue, crate::js::Types> {
+    ec: &mut dyn ExecutionContext<Types>,
+) -> Completion<JsValue, Types> {
     Ok(ec.new_type_error(message))
 }
 
 pub(crate) fn range_error_value(
     message: &'static str,
-    ec: &mut dyn ExecutionContext<crate::js::Types>,
-) -> Completion<JsValue, crate::js::Types> {
+    ec: &mut dyn ExecutionContext<Types>,
+) -> Completion<JsValue, Types> {
     Ok(ec.new_range_error(message))
 }

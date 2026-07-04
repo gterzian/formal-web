@@ -132,7 +132,6 @@ fn trap_set(
 ) -> Completion<JsValue, crate::js::Types> {
     let win = target_window(args)?;
     let key = args.get(1).cloned().unwrap_or_else(|| ec.value_undefined());
-    let receiver = args.get(3).cloned().unwrap_or_else(|| _this);
 
     // Step 2: "Check if an access between two browsing contexts should be
     //           reported, given the current global object's browsing context,

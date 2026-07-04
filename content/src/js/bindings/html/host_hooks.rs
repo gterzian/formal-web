@@ -75,9 +75,6 @@ fn build_boa_context(document: Rc<RefCell<BaseDocument>>) -> Result<Context, Str
         .build()
         .map_err(|error| error.to_string())?;
 
-    // Get a shared error-to-string helper that works with both Context and BoaContext.
-    let error_string = |error: String| -> String { error };
-
     let mut engine = js_engine::boa::BoaContext::from_context(context);
 
     initialize_registry::<crate::js::Types>(&mut engine);
@@ -93,11 +90,6 @@ fn build_boa_context(document: Rc<RefCell<BaseDocument>>) -> Result<Context, Str
     if let Err(error) = crate::js::bindings::install_wasm_namespace(&mut engine) {
         error!("[content] failed to install WebAssembly namespace: {error}");
     }
-
-    // Helper to convert Completion errors to strings for error reporting
-    let report_err = |result: js_engine::Completion<(), crate::js::Types>| -> Result<(), String> {
-        result.map_err(|error| error.display().to_string())
-    };
 
     macro_rules! reg {
         ($ty:ty) => {

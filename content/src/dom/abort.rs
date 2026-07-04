@@ -1,7 +1,6 @@
 use std::{mem, ptr};
 
 use crate::js::Types;
-#[cfg(boa_backend)]
 use crate::streams::PipeToState;
 use crate::webidl::Callback;
 use crate::webidl::bindings::create_interface_instance;
@@ -9,9 +8,7 @@ use js_engine::gc::{GcCell, gc_cell_new, gc_cell_ptr_eq};
 use js_engine::gc_struct;
 use js_engine::{Completion, ExecutionContext, JsTypes};
 
-use super::EventTarget;
-#[cfg(boa_backend)]
-use super::{DOMException, EventDispatchHost, EventTarget as _, fire_event};
+use super::{DOMException, EventDispatchHost, EventTarget, fire_event};
 
 type JsObject = <Types as JsTypes>::JsObject;
 type JsValue = <Types as JsTypes>::JsValue;
@@ -33,11 +30,11 @@ pub(crate) enum AbortAlgorithm {
         listener_id: u64,
     },
 
-    #[cfg(boa_backend)]
-    ReadableStreamPipeTo { state: PipeToState },
+    ReadableStreamPipeTo {
+        state: PipeToState,
+    },
 }
 
-#[cfg(boa_backend)]
 impl AbortAlgorithm {
     /// <https://dom.spec.whatwg.org/#abortsignal-add>
     pub(crate) fn run(&self, host: &mut impl EventDispatchHost) -> Completion<(), Types> {
@@ -62,7 +59,6 @@ impl AbortAlgorithm {
                     }
                 }
             }
-            #[cfg(boa_backend)]
             Self::ReadableStreamPipeTo { state } => {
                 state.run_abort_algorithm(host.ec())?;
             }
@@ -86,7 +82,6 @@ impl AbortAlgorithm {
                     listener_id: right_id,
                 },
             ) => left_id == right_id && left_target == right_target,
-            #[cfg(boa_backend)]
             (
                 Self::ReadableStreamPipeTo { state: left_state },
                 Self::ReadableStreamPipeTo { state: right_state },
@@ -326,7 +321,6 @@ pub(crate) fn create_abort_signal(
     Ok(signal)
 }
 
-#[cfg(boa_backend)]
 /// <https://dom.spec.whatwg.org/#abortsignal-signal-abort>
 pub(crate) fn signal_abort(
     host: &mut impl EventDispatchHost,
@@ -360,7 +354,6 @@ pub(crate) fn signal_abort(
     Ok(())
 }
 
-#[cfg(boa_backend)]
 /// <https://dom.spec.whatwg.org/#run-the-abort-steps>
 fn run_abort_steps(
     host: &mut impl EventDispatchHost,

@@ -1,24 +1,26 @@
 use std::marker::PhantomData;
 
-use boa_engine::JsValue;
+use js_engine::{Completion, ExecutionContext, JsTypes};
+
+use crate::js::Types;
+
+type JsValue = <Types as JsTypes>::JsValue;
 
 use crate::webidl::bindings::{AttributeDef, InterfaceDefinition, WebIdlInterface};
-
-use js_engine::{Completion, ExecutionContext, JsTypes};
 
 use crate::streams::{
     ByteLengthQueuingStrategy, CountQueuingStrategy, byte_length_size, count_size,
     validate_and_normalize_high_water_mark,
 };
 
-impl WebIdlInterface<crate::js::Types> for ByteLengthQueuingStrategy {
+impl WebIdlInterface<Types> for ByteLengthQueuingStrategy {
     const NAME: &'static str = "ByteLengthQueuingStrategy";
 
     fn create_platform_object(
         _new_target: &JsValue,
         args: &[JsValue],
-        ec: &mut dyn ExecutionContext<crate::js::Types>,
-    ) -> Completion<Self, crate::js::Types> {
+        ec: &mut dyn ExecutionContext<Types>,
+    ) -> Completion<Self, Types> {
         let init_value = args
             .first()
             .cloned()
@@ -30,7 +32,7 @@ impl WebIdlInterface<crate::js::Types> for ByteLengthQueuingStrategy {
         Ok(ByteLengthQueuingStrategy::new(high_water_mark))
     }
 
-    fn define_members(def: &mut InterfaceDefinition<crate::js::Types>) {
+    fn define_members(def: &mut InterfaceDefinition<Types>) {
         def.add_attribute(AttributeDef {
             _phantom: PhantomData,
 
@@ -62,14 +64,14 @@ impl WebIdlInterface<crate::js::Types> for ByteLengthQueuingStrategy {
     }
 }
 
-impl WebIdlInterface<crate::js::Types> for CountQueuingStrategy {
+impl WebIdlInterface<Types> for CountQueuingStrategy {
     const NAME: &'static str = "CountQueuingStrategy";
 
     fn create_platform_object(
         _new_target: &JsValue,
         args: &[JsValue],
-        ec: &mut dyn ExecutionContext<crate::js::Types>,
-    ) -> Completion<Self, crate::js::Types> {
+        ec: &mut dyn ExecutionContext<Types>,
+    ) -> Completion<Self, Types> {
         let init_value = args
             .first()
             .cloned()
@@ -81,7 +83,7 @@ impl WebIdlInterface<crate::js::Types> for CountQueuingStrategy {
         Ok(CountQueuingStrategy::new(high_water_mark))
     }
 
-    fn define_members(def: &mut InterfaceDefinition<crate::js::Types>) {
+    fn define_members(def: &mut InterfaceDefinition<Types>) {
         def.add_attribute(AttributeDef {
             _phantom: PhantomData,
 
@@ -116,9 +118,9 @@ impl WebIdlInterface<crate::js::Types> for CountQueuingStrategy {
 fn get_byte_length_high_water_mark(
     this: &JsValue,
     _: &[JsValue],
-    ec: &mut dyn ExecutionContext<crate::js::Types>,
-) -> Completion<JsValue, crate::js::Types> {
-    let obj = crate::js::Types::value_as_object(this)
+    ec: &mut dyn ExecutionContext<Types>,
+) -> Completion<JsValue, Types> {
+    let obj = Types::value_as_object(this)
         .ok_or_else(|| ec.new_type_error("ByteLengthQueuingStrategy receiver is not an object"))?;
     if let Some(data) = ec.with_object_any(&obj) {
         if let Some(strategy) = data.downcast_ref::<ByteLengthQueuingStrategy>() {
@@ -131,9 +133,9 @@ fn get_byte_length_high_water_mark(
 fn get_count_high_water_mark(
     this: &JsValue,
     _: &[JsValue],
-    ec: &mut dyn ExecutionContext<crate::js::Types>,
-) -> Completion<JsValue, crate::js::Types> {
-    let obj = crate::js::Types::value_as_object(this)
+    ec: &mut dyn ExecutionContext<Types>,
+) -> Completion<JsValue, Types> {
+    let obj = Types::value_as_object(this)
         .ok_or_else(|| ec.new_type_error("CountQueuingStrategy receiver is not an object"))?;
     if let Some(data) = ec.with_object_any(&obj) {
         if let Some(strategy) = data.downcast_ref::<CountQueuingStrategy>() {
@@ -146,8 +148,8 @@ fn get_count_high_water_mark(
 fn get_byte_length_size(
     _: &JsValue,
     _: &[JsValue],
-    ec: &mut dyn ExecutionContext<crate::js::Types>,
-) -> Completion<JsValue, crate::js::Types> {
+    ec: &mut dyn ExecutionContext<Types>,
+) -> Completion<JsValue, Types> {
     let function = ec.create_builtin_function(
         Box::new(move |args, _this, inner_ec| {
             byte_length_size(
@@ -158,26 +160,27 @@ fn get_byte_length_size(
         1,
         ec.property_key_from_str("size"),
     );
-    Ok(crate::js::Types::value_from_object(
-        crate::js::Types::object_from_function(function),
-    ))
+    Ok(Types::value_from_object(Types::object_from_function(
+        function,
+    )))
 }
 
 fn get_count_size(
     _: &JsValue,
     _: &[JsValue],
-    ec: &mut dyn ExecutionContext<crate::js::Types>,
-) -> Completion<JsValue, crate::js::Types> {
+    ec: &mut dyn ExecutionContext<Types>,
+) -> Completion<JsValue, Types> {
     let function = ec.create_builtin_function(
         Box::new(move |args, _this, inner_ec| {
-            Ok(count_size(
+            count_size(
                 &args.first().cloned().unwrap_or(inner_ec.value_undefined()),
-            ))
+                inner_ec,
+            )
         }),
         1,
         ec.property_key_from_str("size"),
     );
-    Ok(crate::js::Types::value_from_object(
-        crate::js::Types::object_from_function(function),
-    ))
+    Ok(Types::value_from_object(Types::object_from_function(
+        function,
+    )))
 }

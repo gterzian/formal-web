@@ -5,17 +5,7 @@ use std::{
     rc::Rc,
 };
 
-use boa_engine::{
-    Context, JsArgs, JsValue,
-    builtins::promise::ResolvingFunctions,
-    js_string,
-    native_function::NativeFunction,
-    object::{
-        JsObject,
-        builtins::{JsArray, JsFunction, JsPromise},
-    },
-    symbol::JsSymbol,
-};
+use boa_engine::{JsArgs, JsValue, object::JsObject};
 use boa_gc::{Gc, GcRef, GcRefMut};
 
 use crate::dom::{AbortAlgorithm as SignalAbortAlgorithm, AbortSignal};
@@ -23,8 +13,8 @@ use crate::js::with_abort_signal_ref;
 use crate::streams::{SizeAlgorithm, extract_high_water_mark, extract_size_algorithm};
 use crate::webidl::bindings::create_interface_instance;
 use crate::webidl::{
-    mark_promise_as_handled, promise_from_value, rejected_promise, rejected_promise_from_error,
-    resolved_promise, transform_promise_to_undefined,
+    mark_promise_as_handled, promise_from_value, rejected_promise, resolved_promise,
+    transform_promise_to_undefined,
 };
 use js_engine::EcmascriptHost;
 use js_engine::gc::GcCell;

@@ -1,5 +1,11 @@
-use boa_engine::{JsArgs, JsNativeError, JsValue};
 use std::marker::PhantomData;
+
+use js_engine::{Completion, ExecutionContext, JsTypes};
+
+use crate::js::Types;
+
+type JsValue = <Types as JsTypes>::JsValue;
+type JsObject = <Types as JsTypes>::JsObject;
 
 use crate::streams::{
     WritableStream, WritableStreamDefaultController, WritableStreamDefaultWriter,
@@ -9,20 +15,18 @@ use crate::streams::{
 };
 use crate::webidl::bindings::{AttributeDef, InterfaceDefinition, OperationDef, WebIdlInterface};
 
-use js_engine::{Completion, ExecutionContext, JsTypes};
-
-impl WebIdlInterface<crate::js::Types> for WritableStream {
+impl WebIdlInterface<Types> for WritableStream {
     const NAME: &'static str = "WritableStream";
 
     fn create_platform_object(
         new_target: &JsValue,
         args: &[JsValue],
-        ec: &mut dyn ExecutionContext<crate::js::Types>,
-    ) -> Completion<Self, crate::js::Types> {
+        ec: &mut dyn ExecutionContext<Types>,
+    ) -> Completion<Self, Types> {
         construct_writable_stream(new_target, args, ec)
     }
 
-    fn define_members(def: &mut InterfaceDefinition<crate::js::Types>) {
+    fn define_members(def: &mut InterfaceDefinition<Types>) {
         def.add_attribute(AttributeDef {
             _phantom: PhantomData,
 
@@ -70,10 +74,10 @@ impl WebIdlInterface<crate::js::Types> for WritableStream {
     }
 }
 
-impl WebIdlInterface<crate::js::Types> for WritableStreamDefaultController {
+impl WebIdlInterface<Types> for WritableStreamDefaultController {
     const NAME: &'static str = "WritableStreamDefaultController";
 
-    fn define_members(def: &mut InterfaceDefinition<crate::js::Types>) {
+    fn define_members(def: &mut InterfaceDefinition<Types>) {
         def.add_attribute(AttributeDef {
             _phantom: PhantomData,
 
@@ -101,18 +105,18 @@ impl WebIdlInterface<crate::js::Types> for WritableStreamDefaultController {
     }
 }
 
-impl WebIdlInterface<crate::js::Types> for WritableStreamDefaultWriter {
+impl WebIdlInterface<Types> for WritableStreamDefaultWriter {
     const NAME: &'static str = "WritableStreamDefaultWriter";
 
     fn create_platform_object(
         this: &JsValue,
         args: &[JsValue],
-        ec: &mut dyn ExecutionContext<crate::js::Types>,
-    ) -> Completion<Self, crate::js::Types> {
+        ec: &mut dyn ExecutionContext<Types>,
+    ) -> Completion<Self, Types> {
         construct_writable_stream_default_writer(this, args, ec)
     }
 
-    fn define_members(def: &mut InterfaceDefinition<crate::js::Types>) {
+    fn define_members(def: &mut InterfaceDefinition<Types>) {
         def.add_attribute(AttributeDef {
             _phantom: PhantomData,
 
@@ -203,9 +207,9 @@ impl WebIdlInterface<crate::js::Types> for WritableStreamDefaultWriter {
 fn get_locked(
     this: &JsValue,
     _: &[JsValue],
-    ec: &mut dyn ExecutionContext<crate::js::Types>,
-) -> Completion<JsValue, crate::js::Types> {
-    let stream_object = <crate::js::Types as JsTypes>::value_as_object(this)
+    ec: &mut dyn ExecutionContext<Types>,
+) -> Completion<JsValue, Types> {
+    let stream_object = <Types as JsTypes>::value_as_object(this)
         .ok_or_else(|| ec.new_type_error("WritableStream receiver is not an object"))?;
     let locked = with_writable_stream_ref(&stream_object, ec, |stream| stream.locked())?;
     Ok(JsValue::from(locked))
@@ -214,48 +218,50 @@ fn get_locked(
 fn abort_method(
     this: &JsValue,
     args: &[JsValue],
-    ec: &mut dyn ExecutionContext<crate::js::Types>,
-) -> Completion<JsValue, crate::js::Types> {
-    let stream_object = <crate::js::Types as JsTypes>::value_as_object(this)
+    ec: &mut dyn ExecutionContext<Types>,
+) -> Completion<JsValue, Types> {
+    let stream_object = <Types as JsTypes>::value_as_object(this)
         .ok_or_else(|| ec.new_type_error("WritableStream receiver is not an object"))?;
     let stream = with_writable_stream_ref(&stream_object, ec, |s| s.clone())?;
-    let promise = stream.abort(args.get_or_undefined(0).clone(), ec)?;
-    Ok(crate::js::Types::value_from_object(promise))
+    let promise = stream.abort(
+        args.get(0).cloned().unwrap_or_else(|| ec.value_undefined()),
+        ec,
+    )?;
+    Ok(Types::value_from_object(promise))
 }
 
 fn close_method(
     this: &JsValue,
     _: &[JsValue],
-    ec: &mut dyn ExecutionContext<crate::js::Types>,
-) -> Completion<JsValue, crate::js::Types> {
-    let stream_object = <crate::js::Types as JsTypes>::value_as_object(this)
+    ec: &mut dyn ExecutionContext<Types>,
+) -> Completion<JsValue, Types> {
+    let stream_object = <Types as JsTypes>::value_as_object(this)
         .ok_or_else(|| ec.new_type_error("WritableStream receiver is not an object"))?;
     let stream = with_writable_stream_ref(&stream_object, ec, |s| s.clone())?;
     let promise = stream.close(ec)?;
-    Ok(crate::js::Types::value_from_object(promise))
+    Ok(Types::value_from_object(promise))
 }
 
 fn get_writer_method(
     this: &JsValue,
     _: &[JsValue],
-    ec: &mut dyn ExecutionContext<crate::js::Types>,
-) -> Completion<JsValue, crate::js::Types> {
-    let stream_object = <crate::js::Types as JsTypes>::value_as_object(this)
+    ec: &mut dyn ExecutionContext<Types>,
+) -> Completion<JsValue, Types> {
+    let stream_object = <Types as JsTypes>::value_as_object(this)
         .ok_or_else(|| ec.new_type_error("WritableStream receiver is not an object"))?;
     let stream = with_writable_stream_ref(&stream_object, ec, |s| s.clone())?;
     let writer = stream.get_writer(ec)?;
-    Ok(crate::js::Types::value_from_object(writer))
+    Ok(Types::value_from_object(writer))
 }
 
 fn get_signal(
     this: &JsValue,
     _: &[JsValue],
-    ec: &mut dyn ExecutionContext<crate::js::Types>,
-) -> Completion<JsValue, crate::js::Types> {
-    let controller_object =
-        <crate::js::Types as JsTypes>::value_as_object(this).ok_or_else(|| {
-            ec.new_type_error("WritableStreamDefaultController receiver is not an object")
-        })?;
+    ec: &mut dyn ExecutionContext<Types>,
+) -> Completion<JsValue, Types> {
+    let controller_object = <Types as JsTypes>::value_as_object(this).ok_or_else(|| {
+        ec.new_type_error("WritableStreamDefaultController receiver is not an object")
+    })?;
     let controller =
         with_writable_stream_default_controller_ref(&controller_object, ec, |c| c.clone())?;
     let signal = controller.signal_value(ec)?;
@@ -265,24 +271,26 @@ fn get_signal(
 fn error_method(
     this: &JsValue,
     args: &[JsValue],
-    ec: &mut dyn ExecutionContext<crate::js::Types>,
-) -> Completion<JsValue, crate::js::Types> {
-    let controller_object =
-        <crate::js::Types as JsTypes>::value_as_object(this).ok_or_else(|| {
-            ec.new_type_error("WritableStreamDefaultController receiver is not an object")
-        })?;
+    ec: &mut dyn ExecutionContext<Types>,
+) -> Completion<JsValue, Types> {
+    let controller_object = <Types as JsTypes>::value_as_object(this).ok_or_else(|| {
+        ec.new_type_error("WritableStreamDefaultController receiver is not an object")
+    })?;
     let controller =
         with_writable_stream_default_controller_ref(&controller_object, ec, |c| c.clone())?;
-    controller.error(args.get_or_undefined(0).clone(), ec)?;
+    controller.error(
+        args.get(0).cloned().unwrap_or_else(|| ec.value_undefined()),
+        ec,
+    )?;
     Ok(ec.value_undefined())
 }
 
 fn get_closed(
     this: &JsValue,
     _: &[JsValue],
-    ec: &mut dyn ExecutionContext<crate::js::Types>,
-) -> Completion<JsValue, crate::js::Types> {
-    let writer_object = <crate::js::Types as JsTypes>::value_as_object(this).ok_or_else(|| {
+    ec: &mut dyn ExecutionContext<Types>,
+) -> Completion<JsValue, Types> {
+    let writer_object = <Types as JsTypes>::value_as_object(this).ok_or_else(|| {
         ec.new_type_error("WritableStreamDefaultWriter receiver is not an object")
     })?;
     let writer = with_writable_stream_default_writer_ref(&writer_object, ec, |w| w.clone())?;
@@ -293,9 +301,9 @@ fn get_closed(
 fn get_desired_size(
     this: &JsValue,
     _: &[JsValue],
-    ec: &mut dyn ExecutionContext<crate::js::Types>,
-) -> Completion<JsValue, crate::js::Types> {
-    let writer_object = <crate::js::Types as JsTypes>::value_as_object(this).ok_or_else(|| {
+    ec: &mut dyn ExecutionContext<Types>,
+) -> Completion<JsValue, Types> {
+    let writer_object = <Types as JsTypes>::value_as_object(this).ok_or_else(|| {
         ec.new_type_error("WritableStreamDefaultWriter receiver is not an object")
     })?;
     let writer = with_writable_stream_default_writer_ref(&writer_object, ec, |w| w.clone())?;
@@ -309,9 +317,9 @@ fn get_desired_size(
 fn get_ready(
     this: &JsValue,
     _: &[JsValue],
-    ec: &mut dyn ExecutionContext<crate::js::Types>,
-) -> Completion<JsValue, crate::js::Types> {
-    let writer_object = <crate::js::Types as JsTypes>::value_as_object(this).ok_or_else(|| {
+    ec: &mut dyn ExecutionContext<Types>,
+) -> Completion<JsValue, Types> {
+    let writer_object = <Types as JsTypes>::value_as_object(this).ok_or_else(|| {
         ec.new_type_error("WritableStreamDefaultWriter receiver is not an object")
     })?;
     let writer = with_writable_stream_default_writer_ref(&writer_object, ec, |w| w.clone())?;
@@ -322,36 +330,36 @@ fn get_ready(
 fn abort_writer_method(
     this: &JsValue,
     args: &[JsValue],
-    ec: &mut dyn ExecutionContext<crate::js::Types>,
-) -> Completion<JsValue, crate::js::Types> {
-    let writer_object = <crate::js::Types as JsTypes>::value_as_object(this).ok_or_else(|| {
+    ec: &mut dyn ExecutionContext<Types>,
+) -> Completion<JsValue, Types> {
+    let writer_object = <Types as JsTypes>::value_as_object(this).ok_or_else(|| {
         ec.new_type_error("WritableStreamDefaultWriter receiver is not an object")
     })?;
-    let reason = args.get_or_undefined(0).clone();
+    let reason = args.get(0).cloned().unwrap_or_else(|| ec.value_undefined());
     let writer = with_writable_stream_default_writer_ref(&writer_object, ec, |w| w.clone())?;
     let promise = writer.abort(reason, ec)?;
-    Ok(crate::js::Types::value_from_object(promise))
+    Ok(Types::value_from_object(promise))
 }
 
 fn close_writer_method(
     this: &JsValue,
     _: &[JsValue],
-    ec: &mut dyn ExecutionContext<crate::js::Types>,
-) -> Completion<JsValue, crate::js::Types> {
-    let writer_object = <crate::js::Types as JsTypes>::value_as_object(this).ok_or_else(|| {
+    ec: &mut dyn ExecutionContext<Types>,
+) -> Completion<JsValue, Types> {
+    let writer_object = <Types as JsTypes>::value_as_object(this).ok_or_else(|| {
         ec.new_type_error("WritableStreamDefaultWriter receiver is not an object")
     })?;
     let writer = with_writable_stream_default_writer_ref(&writer_object, ec, |w| w.clone())?;
     let promise = writer.close(ec)?;
-    Ok(crate::js::Types::value_from_object(promise))
+    Ok(Types::value_from_object(promise))
 }
 
 fn release_lock_method(
     this: &JsValue,
     _: &[JsValue],
-    ec: &mut dyn ExecutionContext<crate::js::Types>,
-) -> Completion<JsValue, crate::js::Types> {
-    let writer_object = <crate::js::Types as JsTypes>::value_as_object(this).ok_or_else(|| {
+    ec: &mut dyn ExecutionContext<Types>,
+) -> Completion<JsValue, Types> {
+    let writer_object = <Types as JsTypes>::value_as_object(this).ok_or_else(|| {
         ec.new_type_error("WritableStreamDefaultWriter receiver is not an object")
     })?;
     let writer = with_writable_stream_default_writer_ref(&writer_object, ec, |w| w.clone())?;
@@ -362,13 +370,13 @@ fn release_lock_method(
 fn write_method(
     this: &JsValue,
     args: &[JsValue],
-    ec: &mut dyn ExecutionContext<crate::js::Types>,
-) -> Completion<JsValue, crate::js::Types> {
-    let writer_object = <crate::js::Types as JsTypes>::value_as_object(this).ok_or_else(|| {
+    ec: &mut dyn ExecutionContext<Types>,
+) -> Completion<JsValue, Types> {
+    let writer_object = <Types as JsTypes>::value_as_object(this).ok_or_else(|| {
         ec.new_type_error("WritableStreamDefaultWriter receiver is not an object")
     })?;
-    let chunk = args.get_or_undefined(0).clone();
+    let chunk = args.get(0).cloned().unwrap_or_else(|| ec.value_undefined());
     let writer = with_writable_stream_default_writer_ref(&writer_object, ec, |w| w.clone())?;
     let promise = writer.write(chunk, ec)?;
-    Ok(crate::js::Types::value_from_object(promise))
+    Ok(Types::value_from_object(promise))
 }

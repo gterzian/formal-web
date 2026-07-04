@@ -263,15 +263,44 @@ fn binding_fn(
 - **`promise.rs` cleaned up:** removed dead `_boa` suffix functions; converted
   `rejected_promise_from_error`/`error_to_rejection_reason` to take `JsValue`;
   converted all function signatures to generic `ExecutionContext<Types>`.
+- **Console/css namespace switch** — both backends now use the generic
+  `console_generic.rs` and `css_generic.rs` implementations (deleted
+  `content/src/js/bindings/console.rs` and `content/src/js/bindings/css.rs`).
+  Zero `boa_engine::*` imports in console/css namespaces.
+- **11 of 13 stream domain files converted** to generic EC API — all writable stream
+  files (`writablestream*.rs`), most readable stream files (`readablestreamsupport.rs`,
+  `readablestreamdefault*.rs`, `readablestreamasynciterator.rs`, `readablestreambyobreader.rs`,
+  `transformstream.rs`), and `strategy.rs`. Remaining: `readablestream.rs` and
+  `readablebytestreamcontroller.rs` (use Boa-specific builtins: `JsArray`, `JsPromise`,
+  `JsArrayBuffer`, `JsTypedArray`, `NativeFunction`, `Gc`).
+- **All 3 stream binding files converted** (`readablestream.rs`, `strategy.rs`,
+  `writablestream.rs`).
+- **`environment_settings_object.rs` call sites updated** — console/CSS
+  installer calls now pass `&mut engine` (generic `ExecutionContext`) instead
+  of `engine.context()` (Boa-specific).
 - **Both backends compile clean:** `cargo check -p content` (JSC default) and
   `cargo check -p content --no-default-features --features boa,media` (Boa)
   both produce zero errors.
+- **9 JS binding files converted** to generic API (zero `boa_engine::*` imports):
+  `dom/abort_controller.rs`, `dom/dom_exception.rs`, `dom/event.rs`,
+  `dom/ui_event.rs`, `html/html_input_element.rs`, `html/html_anchor_element.rs`,
+  `html/html_media_element.rs`, `html/html_video_element.rs`, `html/location.rs`.
+  All use `<Types as JsTypes>::JsValue` signatures, `ec.new_type_error()` errors,
+  and pre-computed fallback values for borrow-safe closures.
 
 ### Current blockers
 
 | Blocked operation | Reason |
 |---|---|
-| `ObjectInitializer` / `register_global_property` (document property) | Boa object-model construction; needs conversion to `ec.create_plain_object` + `ec.set` pattern. CSS namespace done (`css_generic.rs`). |
+| `readablestream.rs` (domain) | Uses Boa-specific builtins (`JsArray`, `JsPromise`, `JsSymbol`, `NativeFunction`, `Gc`, `GcRef`) — need generic equivalents or `#[gc_struct]` rewrite |
+| `readablebytestreamcontroller.rs` (domain) | Uses Boa-specific builtins (`JsPromise`, `JsTypedArray`, `JsArrayBuffer`, `JsDataView`, `TypedArrayKind`) — need generic equivalents |
+| `downcast.rs` cfg removal | Still gated because domain types depend on `boa_engine` |
+| `js/mod.rs` cfg removal | Helper functions (`builtin_with_captures_*`, `js_result_to_completion`) still use `boa_engine` types |
+| `main.rs` message loop unification | Two separate `run_*_message_loop` functions — needs merge into single generic loop |
+| `ui_event_dispatch.rs` | Depends on `EnvironmentSettingsObject` conversion |
+| `environment_settings_object.rs` core bridge | Still stores `BoaContext` directly — needs generic engine pointer |
+| `global_scope.rs` | Uses `boa_engine::Gc` for per-global caches |
+| `windowproxy.rs` | Uses `JsProxyBuilder` (public Boa API) — fine to stay Boa-specific |
 
 ### Remaining `#[cfg(boa_backend)]` gating to remove
 
@@ -287,17 +316,24 @@ Files currently gated behind `#[cfg(boa_backend)]` that must be un-gated:
 | `webidl/` | module-level `#[cfg(boa_backend)]` | **DONE** — un-gated, zero `boa_engine::*` imports |
 | `dom/` | module-level `#[cfg(boa_backend)]` | `event.rs` + `abort.rs` + `dispatch.rs` converted; `ui_event_dispatch.rs` remains (depends on `EnvironmentSettingsObject`) |
 | `html/` | module-level `#[cfg(boa_backend)]` | `html_anchor_element.rs`, `html_element.rs`, `html_input_element.rs`, `html_media_element.rs`, `hyperlink_element_utils.rs`, `location.rs` are generic. `environment_settings_object.rs`, `global_scope.rs`, `windowproxy.rs` remain (core engine bridge) |
-| `streams/` | module-level `#[cfg(boa_backend)]` | All 13 stream files remain |
-| `js/bindings/` | module-level `#[cfg(boa_backend)]` | ~18 binding files remain (mostly `ObjectInitializer`-based) |
+| `streams/` | module-level `#[cfg(boa_backend)]` | 11 of 13 files converted and un-gated. Remaining: `readablestream.rs`, `readablebytestreamcontroller.rs` (use Boa builtins). |
+| `js/bindings/` | module-level `#[cfg(boa_backend)]` | **9 files converted this session.** ~9 remaining: `element.rs`, `abort_signal.rs`, `event_target.rs`, `node.rs`, `document.rs`, `html_element.rs`, `html_iframe_element.rs`, `hyperlink_element_utils.rs`, `window.rs`. |
 | `js/bindings/wasm/` | module-level `#[cfg(boa_backend)]` | Boa-only (wasmtime); bridge functions moved locally |
 | `js/downcast.rs` | module-level `#[cfg(boa_backend)]` | Generic `try_with_*` helpers (using `<crate::js::Types as JsTypes>` syntax) merged back into single file. `downcast_generic.rs` removed. Remains Boa-gated because `crate::dom`/`crate::html` are Boa-only. |
 | `js/platform_objects.rs` | module-level `#[cfg(boa_backend)]` | Fully converted to generic `<crate::js::Types as JsTypes>::JsObject`; no `boa_engine::*` imports. Remains Boa-gated because domain types still depend on `boa_engine`. |
 | `js/mod.rs` helpers | function-level `#[cfg(boa_backend)]` | `builtin_with_captures_ctx`, `builtin_with_captures`, `builtin_callback*`, bridge functions |
 | `main.rs` | ~21 inline `#[cfg(boa_backend)]` annotations | Many tied to `ContentProcess` which is Boa-only |
 
-**~49 files still import `boa_engine::*`** (down from ~60).  `platform_objects.rs`, `dom/abort.rs`, `dom/dispatch.rs`, and `html/html_media_element.rs` no longer import `boa_engine` (11 `boa_engine` imports removed combined).
+**~37 files still import `boa_engine::*`** (down from ~60).  Files no longer importing `boa_engine`:
+- Earlier sessions: `platform_objects.rs`, `dom/abort.rs`, `dom/dispatch.rs`,
+  `html/html_media_element.rs`, `dom/event.rs`, `streams/strategy.rs`
+- **This session (9 files):** `dom/abort_controller.rs`, `dom/dom_exception.rs`,
+  `dom/event.rs`, `dom/ui_event.rs`, `html/location.rs`,
+  `html/html_input_element.rs`, `html/html_anchor_element.rs`,
+  `html/html_media_element.rs`, `html/html_video_element.rs`
+- `bindings/console.rs` and `bindings/css.rs` deleted (replaced by generic versions).
 
-### Converted files (this session)
+### Converted files (previous sessions — keep)
 
 - **`js_engine` foundation:** Added `PartialEq` to `JsTypes::JsObject` bound; implemented `PartialEq + Eq` for `JscObject`.
 - **`webidl/callback.rs`:** Converted from `boa_engine::{JsValue, JsObject}` to generic `Types::JsValue`/`JsObject`; replaced `JsObject::equals` with `PartialEq`.
@@ -318,6 +354,48 @@ Files currently gated behind `#[cfg(boa_backend)]` that must be un-gated:
 - **Converted `dom/dispatch.rs`** — replaced all `JsValue::from(event.clone())` with `<Types as JsTypes>::value_from_object(event.clone())`, `&JsObject` with `&<Types as JsTypes>::JsObject`, and `object.downcast_ref::<T>()` with `ec.with_object_any(object).and_then(|d| d.downcast_ref::<T>())`. Added `ec` parameter to `debug_target_label`.
 - **Converted `html/html_media_element.rs`** — replaced `boa_engine::JsValue` and `JsValue::undefined()` with `ec.value_undefined()`.
 - **Merged `downcast_generic.rs` back into `downcast.rs`** — `downcast_generic.rs` was temporary; now deleted.
+
+### Converted files (this session — stream layer + cleanup)
+
+#### Stream domain files (11 files)
+
+Converted 11 stream domain files from `crate::js::Types` to local `Types` alias
+pattern.  Key pattern:
+
+```rust
+use crate::js::Types;
+type JsValue = <Types as JsTypes>::JsValue;
+type JsObject = <Types as JsTypes>::JsObject;
+```
+
+This replaces the fully-qualified `<crate::js::Types as JsTypes>::JsValue` syntax
+throughout the file, making code significantly more readable.
+
+Files converted: all writable stream files (`writablestream*.rs`), most readable
+stream files (`readablestreamsupport.rs`, `readablestreamdefault*.rs`,
+`readablestreamasynciterator.rs`, `readablestreambyobreader.rs`,
+`transformstream.rs`), `strategy.rs`, and stream binding files
+(`readablestream.rs`, `strategy.rs`, `writablestream.rs`).
+
+#### Module gating
+
+- **`dom/mod.rs`:** Removed `#[cfg(boa_backend)]` from `dispatch`, `ui_event_dispatch`,
+  `signal_abort`, `dispatch_*`, `fire_event` — these are now compiled unconditionally.
+- **`streams/mod.rs`:** Removed `#[cfg(boa_backend)]` from all stream submodules
+  except `readablebytestreamcontroller` and `readablestream` (which still use
+  `boa_engine` builtins).
+- **`js/mod.rs`:** Removed `#[cfg(not(boa_backend))]` from `console_generic` and
+  `css_generic` — these are now always compiled.
+- **`js/bindings/mod.rs`:** Removed dead `console`/`css` module references.
+  Deleted `bindings/console.rs` and `bindings/css.rs` (superseded by generic versions).
+
+#### Cleanup
+
+- Fixed `html_media_element.rs` compilation error: closure captured outer `ec`
+  instead of using the parameter `job_ec`.
+- Removed unused imports across ~15 files.
+- Removed dead code variables (`value_undefined`, `prevent_key`, `receiver`, etc.).
+- Both backends compile with zero errors.
 
 ### Two message loops → one
 
@@ -340,42 +418,28 @@ Follow the `console_generic.rs` pattern: `create_plain_object` +
 Boa-only, gated.  This clears the last blocker in the "not yet
 abstracted" table.
 
-### 2. Convert domain/webidl/bindings modules from `boa_engine::*` to generic
+### 2. Convert remaining JS binding files (9 remaining)
 
-Work module by module.  For each file:
+These files still import `boa_engine::*` and need the same conversion
+patterns as the 9 already done:
 
-- Replace `use boa_engine::...` with `use js_engine::{ExecutionContext, ...}`
-  and `crate::js::Types` aliases.
-- Replace `&mut Context` with `&mut dyn ExecutionContext<Types>`.
-- Replace Boa-specific API calls with the equivalent EC trait method
-  (see replacement table above).
-- Un-gate the module from `#[cfg(boa_backend)]`.
-- Verify on **both backends** (Boa keeps working, JSC compiles).
+- **Medium** (use `downcast_ref` on JsObject — works on Boa but needs
+  `ec.with_object_any` for JSC): `dom/element.rs`, `html/html_element.rs`,
+  `html/html_iframe_element.rs`, `dom/abort_signal.rs` (also uses `JsArgs`
+  with `get_or_undefined`, `create_interface_instance`, `sequence_abort_signals`).
+- **Complex** (use `Context` directly for prototype registration):
+  `dom/event_target.rs`, `dom/node.rs`, `dom/document.rs`,
+  `html/window.rs`, `html/hyperlink_element_utils.rs`.
 
-When using associated types from `crate::js::Types` (e.g. `JsValue`, `JsObject`)
-inside a generic function, use the fully-qualified syntax
-`<crate::js::Types as JsTypes>::JsValue` to avoid `E0223` (ambiguous
-associated type) on the Boa backend.  This is necessary because `Types`
-is a type alias, not a trait bound, and Rust's type inference does not
-resolve `Types::JsValue` in function parameter position.
-
-Conversion order (lowest-level first, highest-level last):
-
-1. `webidl/` — **DONE** (callback, promise, buffer_source, array_index,
-   bindings/constant converted; module un-gated; zero `boa_engine::*` imports)
-2. **Infrastructure:** `downcast` split + `platform_objects` conversion — **DONE** ✅
-   - `downcast_generic.rs` holds generic `try_with_*` functions
-   - `downcast.rs` holds Boa-only `with_*` functions
-   - `platform_objects.rs` converted to generic types
-   - Both modules remain Boa-gated because domain types still use `boa_engine`.
-3. `dom/` — `event.rs` + `abort.rs` + `dispatch.rs` done; `ui_event_dispatch.rs`
-   remains (depends on `EnvironmentSettingsObject`)
-4. `html/` — `html_media_element.rs` done; `environment_settings_object.rs`,
-   `global_scope.rs`, `windowproxy.rs` remain (core engine bridge — requires
-   redesign of how the engine is stored and accessed in `EnvironmentSettingsObject`)
-5. `streams/` — all 13 stream files remain (blocked by streams being deeply
-   entangled with Boa promise/resolver types)
-6. `js/bindings/` — wasm bridges moved locally; ~17 binding files remain
+Conversion patterns (same as this session):
+- `&JsValue` → `&<Types as JsTypes>::JsValue`
+- `Completion<JsValue, crate::js::Types>` → `Completion<<Types as JsTypes>::JsValue, Types>`
+- `ec: &mut dyn ExecutionContext<crate::js::Types>` → `ec: &mut dyn ExecutionContext<Types>`
+- `JsNativeError::typ().with_message(msg)` → `ec.new_type_error(msg)`
+- `JsArgs::get_or_undefined(N)` → `args.get(N).cloned().unwrap_or(ec.value_undefined())`
+- Borrow-safe: pre-compute error values before `with_object_any(&obj)` calls
+- `obj.downcast_ref::<T>()` keeps working on Boa; convert to
+  `ec.with_object_any(&obj).and_then(|d| d.downcast_ref::<T>())` when enabling JSC
 
 ### 3. Unify the message loop
 
