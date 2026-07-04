@@ -76,6 +76,33 @@ pub(crate) trait WebIdlInterface<T: JsTypes + JsTypesWithRealm>: 'static {
 // ── Generic helpers ──
 
 /// <https://webidl.spec.whatwg.org/#internally-create-a-new-object-implementing-the-interface>
+/// Create a platform-object JS value wrapping Rust data `T`.
+///
+/// On the Boa backend, the data is wrapped in a `TraceableBox` to preserve
+/// GC tracing through the type-erased storage.  On non-Boa backends (JSC)
+/// there is no Boa GC concerns, so the data is stored directly.
+#[cfg(feature = "boa")]
+pub(crate) fn create_interface_instance<Ty, T>(
+    data: T,
+    ec: &mut dyn ExecutionContext<Ty>,
+) -> Completion<Ty::JsObject, Ty>
+where
+    Ty: JsTypes + JsTypesWithRealm,
+    T: std::any::Any + boa_gc::Trace + boa_gc::Finalize + 'static,
+{
+    let prototype =
+        super::registry::get_prototype_from_host_defined::<Ty, T>(ec).ok_or_else(|| {
+            ec.new_type_error(&format!(
+                "interface not registered: {}",
+                std::any::type_name::<T>()
+            ))
+        })?;
+    let boxed = js_engine::boa::TraceableBox::new(data);
+    Ok(ec.create_object_with_any(prototype, Box::new(boxed)))
+}
+
+/// Non-Boa backend: no Boa GC concerns, store data directly type-erased.
+#[cfg(not(feature = "boa"))]
 pub(crate) fn create_interface_instance<Ty, T>(
     data: T,
     ec: &mut dyn ExecutionContext<Ty>,

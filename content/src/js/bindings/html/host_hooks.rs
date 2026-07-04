@@ -48,13 +48,15 @@ impl WindowHostHooks {
 
 impl HostHooks for WindowHostHooks {
     fn create_global_object(&self, intrinsics: &Intrinsics) -> JsObject {
-        let data: Box<dyn std::any::Any> = Box::new(Window::new(GlobalScope::new(
+        let data = Window::new(GlobalScope::new(
             crate::html::GlobalScopeKind::Window,
             Rc::clone(&self.document),
-        )));
+        ));
+        // Wrap in TraceableBox so the Window's GC-traced fields (GcCell<>
+        // references to Document, Event, etc.) remain visible to Boa's GC.
         JsObject::from_proto_and_data(
             intrinsics.constructors().object().prototype(),
-            js_engine::boa::NativeDataWrapper(data),
+            js_engine::boa::NativeDataWrapper(js_engine::boa::TraceableBox::new(data)),
         )
     }
 }

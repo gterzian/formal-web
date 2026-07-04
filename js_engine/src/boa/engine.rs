@@ -1288,10 +1288,46 @@ impl ExecutionContext<BoaTypes> for BoaContext {
         &self,
         typed_array: &JsTypedArray,
     ) -> Option<TypedArrayElementType> {
-        // HARD: TypedArrayKind is not publicly accessible from Boa.
-        // Callers should use BYTES_PER_ELEMENT via JS getter instead.
-        let _ = typed_array.kind();
-        None
+        let kind = typed_array.kind()?;
+        Some(match kind {
+            boa_engine::builtins::typed_array::TypedArrayKind::Int8 => TypedArrayElementType::Int8,
+            boa_engine::builtins::typed_array::TypedArrayKind::Uint8 => {
+                TypedArrayElementType::Uint8
+            }
+            boa_engine::builtins::typed_array::TypedArrayKind::Uint8Clamped => {
+                TypedArrayElementType::Uint8Clamped
+            }
+            boa_engine::builtins::typed_array::TypedArrayKind::Int16 => {
+                TypedArrayElementType::Int16
+            }
+            boa_engine::builtins::typed_array::TypedArrayKind::Uint16 => {
+                TypedArrayElementType::Uint16
+            }
+            boa_engine::builtins::typed_array::TypedArrayKind::Int32 => {
+                TypedArrayElementType::Int32
+            }
+            boa_engine::builtins::typed_array::TypedArrayKind::Uint32 => {
+                TypedArrayElementType::Uint32
+            }
+            // Float16 type: behind the `float16` feature (disabled by default since
+            // we use boa_engine with default-features=false).
+            #[cfg(feature = "float16")]
+            boa_engine::builtins::typed_array::TypedArrayKind::Float16 => {
+                TypedArrayElementType::Float16
+            }
+            boa_engine::builtins::typed_array::TypedArrayKind::Float32 => {
+                TypedArrayElementType::Float32
+            }
+            boa_engine::builtins::typed_array::TypedArrayKind::Float64 => {
+                TypedArrayElementType::Float64
+            }
+            boa_engine::builtins::typed_array::TypedArrayKind::BigInt64 => {
+                TypedArrayElementType::BigInt64
+            }
+            boa_engine::builtins::typed_array::TypedArrayKind::BigUint64 => {
+                TypedArrayElementType::BigUint64
+            }
+        })
     }
 
     fn construct_typed_array_view(
@@ -1650,28 +1686,33 @@ impl ExecutionContext<BoaTypes> for BoaContext {
         prototype: JsObject,
         data: Box<dyn std::any::Any + 'static>,
     ) -> JsObject {
-        // SAFETY: The data must be downcastable to a type that implements
-        // NativeObject.  The caller (create_interface_instance) ensures
-        // this by providing data of type T where T: NativeObject + 'static.
-        // We use the NativeDataWrapper to satisfy the NativeObject bound.
-        // The downcast on retrieval (downcast_ref) uses the correct TypeId.
-        let wrapper = NativeDataWrapper(data);
+        // The data may already be wrapped in a `TraceableBox` (when called
+        // from `create_interface_instance`), or it may be raw data (when
+        // called for prototypes, namespace objects, etc.).  Try to recover
+        // the `TraceableBox` first, otherwise wrap in a no-op box.
+        let traceable = match data.downcast::<TraceableBox>() {
+            Ok(boxed) => *boxed,
+            Err(raw) => TraceableBox::noop(raw),
+        };
+        let wrapper = NativeDataWrapper(traceable);
         JsObject::from_proto_and_data(Some(prototype), wrapper)
     }
 
     fn with_object_any(&self, object: &JsObject) -> Option<&dyn std::any::Any> {
-        let wrapper = object.downcast_ref::<NativeDataWrapper<Box<dyn std::any::Any>>>()?;
-        // SAFETY: The NativeDataWrapper is stored inside the JsObject which
-        // lives in the GC heap rooted by `self`.  The data is valid for the
-        // lifetime of `&self`.
-        Some(unsafe { &*(wrapper.0.as_ref() as *const dyn std::any::Any) })
+        let wrapper = object.downcast_ref::<NativeDataWrapper>()?;
+        // SAFETY: The TraceableBox lives in the JsObject's GC heap, which
+        // outlives this function call.  The Ref guard from downcast_ref is
+        // temporary but the pointed-to data remains valid as long as the
+        // JsObject is alive and rooted by `self`.
+        Some(unsafe { &*(wrapper.0.as_any_ref() as *const dyn std::any::Any) })
     }
 
     fn with_object_any_mut(&mut self, object: &JsObject) -> Option<&mut dyn std::any::Any> {
-        let mut wrapper = object.downcast_mut::<NativeDataWrapper<Box<dyn std::any::Any>>>()?;
-        // SAFETY: Same as `with_object_any` — the data lives in the GC heap
-        // rooted by `self`.
-        Some(unsafe { &mut *(wrapper.0.as_mut() as *mut dyn std::any::Any) })
+        let mut wrapper = object.downcast_mut::<NativeDataWrapper>()?;
+        // SAFETY: The TraceableBox lives in the JsObject's GC heap, which
+        // outlives this function call.  The RefMut guard is temporary but
+        // the pointed-to data remains valid as long as the JsObject is alive.
+        Some(unsafe { &mut *(wrapper.0.as_any_mut() as *mut dyn std::any::Any) })
     }
 
     fn with_object_any_mut_with(
@@ -1679,17 +1720,13 @@ impl ExecutionContext<BoaTypes> for BoaContext {
         object: &JsObject,
         f: Box<dyn FnOnce(&mut dyn std::any::Any, &mut dyn ExecutionContext<BoaTypes>) + '_>,
     ) {
-        let mut wrapper = match object.downcast_mut::<NativeDataWrapper<Box<dyn std::any::Any>>>() {
+        let mut wrapper = match object.downcast_mut::<NativeDataWrapper>() {
             Some(w) => w,
             None => return,
         };
-        // SAFETY: The NativeDataWrapper lives in the JsObject's GC heap,
-        // which is separate from `self` (the BoaContext stack value).
-        // `wrapper` is a RefMut guard borrowing from the JsObject's GcCell,
-        // not from `self`.  The `&mut dyn ExecutionContext` parameter to `f`
-        // borrows `self` — these are independent memory locations.
+        // SAFETY: Same as `with_object_any_mut` — the data lives in the GC heap.
         let data: &mut dyn std::any::Any =
-            unsafe { &mut *(wrapper.0.as_mut() as *mut dyn std::any::Any) };
+            unsafe { &mut *(wrapper.0.as_any_mut() as *mut dyn std::any::Any) };
         let ec: &mut dyn ExecutionContext<BoaTypes> = self;
         f(data, ec);
     }
@@ -1935,19 +1972,131 @@ impl ExecutionContext<BoaTypes> for BoaContext {
     }
 }
 
-/// Wrapper that implements `NativeObject` for arbitrary `'static` data.
+/// A type-erased container for platform object data that preserves GC
+/// tracing information through function pointers.
 ///
-/// Used by `create_object_with_data` to store Rust data inside Boa objects.
-/// The GC traits are no-ops because the content process does not relocate
-/// GC'd objects and the data is only accessed through the JS object's
-/// internal slot (via `downcast_ref`).
-/// Wraps arbitrary `'static` data for storage inside a `JsObject` via
-/// `JsObject::from_proto_and_data`.  Must be downcast-compatible with
-/// the retrieval path in `with_object_any`.
-pub struct NativeDataWrapper<T: std::any::Any + 'static>(pub T);
+/// Wraps `Box<dyn Any>` plus vtable-like function pointers for
+/// `boa_gc::Trace`/`boa_gc::Finalize` dispatch.  The function pointers
+/// are set at construction time based on the concrete type `T`, allowing
+/// the GC to traverse into platform object fields (like `GcCell<T>`)
+/// even after the concrete type has been erased to `dyn Any`.
+///
+/// # Safety
+///
+/// The caller must ensure `T` implements `boa_gc::Trace` + `boa_gc::Finalize`.
+/// This is guaranteed for `#[gc_struct]` types.
+pub struct TraceableBox {
+    inner: Box<dyn std::any::Any>,
+    // SAFETY: These function pointers must be valid for the lifetime of
+    // `inner` and must correctly trace/finalize the concrete type inside.
+    trace_fn: unsafe fn(&dyn std::any::Any, &mut boa_gc::Tracer),
+    trace_non_roots_fn: unsafe fn(&dyn std::any::Any),
+    finalize_fn: fn(&dyn std::any::Any),
+}
 
-// SAFETY: The content process is single-threaded.  `NativeDataWrapper`
-// only stores `'static` data that does not contain GC roots.
+impl TraceableBox {
+    /// Create a new `TraceableBox` for a concrete type that implements
+    /// `Trace` + `Finalize`.
+    pub fn new<T: std::any::Any + boa_gc::Trace + boa_gc::Finalize>(data: T) -> Self {
+        unsafe fn trace_impl<T: boa_gc::Trace + 'static>(
+            data: &dyn std::any::Any,
+            tracer: &mut boa_gc::Tracer,
+        ) {
+            // SAFETY: The data was created with Box::new(data) where
+            // data: T, so downcast_ref<T>() always succeeds.
+            unsafe {
+                boa_gc::Trace::trace(data.downcast_ref::<T>().unwrap_unchecked(), tracer);
+            }
+        }
+        unsafe fn trace_non_roots_impl<T: boa_gc::Trace + 'static>(data: &dyn std::any::Any) {
+            unsafe {
+                boa_gc::Trace::trace_non_roots(data.downcast_ref::<T>().unwrap_unchecked());
+            }
+        }
+        fn finalize_impl<T: boa_gc::Trace + 'static>(data: &dyn std::any::Any) {
+            data.downcast_ref::<T>().unwrap().run_finalizer();
+        }
+        TraceableBox {
+            inner: Box::new(data),
+            trace_fn: trace_impl::<T>,
+            trace_non_roots_fn: trace_non_roots_impl::<T>,
+            finalize_fn: finalize_impl::<T>,
+        }
+    }
+
+    /// Create a no-op `TraceableBox` for data that does NOT contain GC
+    /// roots (e.g. unit values for prototype objects).  This is the
+    /// fallback used when `create_object_with_any` receives data that
+    /// was not wrapped via `TraceableBox::new`.
+    pub(crate) fn noop(data: Box<dyn std::any::Any + 'static>) -> Self {
+        TraceableBox {
+            inner: data,
+            trace_fn: |_, _| {},
+            trace_non_roots_fn: |_| {},
+            finalize_fn: |_| {},
+        }
+    }
+
+    /// Downcast the inner data to a concrete type.
+    pub fn downcast_ref<T: std::any::Any>(&self) -> Option<&T> {
+        self.inner.downcast_ref::<T>()
+    }
+
+    /// Downcast the inner data to a concrete type (mutable).
+    pub fn downcast_mut<T: std::any::Any>(&mut self) -> Option<&mut T> {
+        self.inner.downcast_mut::<T>()
+    }
+
+    /// Access the inner data as `&dyn Any`.
+    pub fn as_any_ref(&self) -> &dyn std::any::Any {
+        &*self.inner
+    }
+
+    /// Access the inner data as `&mut dyn Any`.
+    pub fn as_any_mut(&mut self) -> &mut dyn std::any::Any {
+        &mut *self.inner
+    }
+
+    /// Safe access: call the stored trace function pointer.
+    pub(crate) unsafe fn trace_data(&self, tracer: &mut boa_gc::Tracer) {
+        unsafe { (self.trace_fn)(&*self.inner, tracer) }
+    }
+
+    pub(crate) unsafe fn trace_non_roots_data(&self) {
+        unsafe { (self.trace_non_roots_fn)(&*self.inner) }
+    }
+
+    pub(crate) fn finalize_data(&self) {
+        (self.finalize_fn)(&*self.inner);
+    }
+}
+
+// SAFETY: The trace/finalize functions are bound to the correct concrete
+// type at construction time.  For `noop` boxes the functions are no-ops.
+unsafe impl boa_gc::Trace for TraceableBox {
+    unsafe fn trace(&self, tracer: &mut boa_gc::Tracer) {
+        // SAFETY: trace_data calls the type-specific trace fn.
+        unsafe { self.trace_data(tracer) };
+    }
+    unsafe fn trace_non_roots(&self) {
+        unsafe { self.trace_non_roots_data() };
+    }
+    fn run_finalizer(&self) {
+        self.finalize_data();
+    }
+}
+
+impl boa_gc::Finalize for TraceableBox {}
+impl boa_engine::JsData for TraceableBox {}
+
+/// Wrapper that implements `NativeObject` for data stored in JS objects.
+///
+/// The inner `TraceableBox` preserves GC tracing through the type-erased
+/// storage, ensuring that `GcCell<T>` fields inside platform objects
+/// remain visible to the Boa GC.
+///
+/// Used by `create_object_with_any` and retrieved via `with_object_any`.
+pub struct NativeDataWrapper(pub TraceableBox);
 /// Type-erased storage wrapper for the host-defined data store.
 #[derive(Default)]
 struct HostAnyMap(std::collections::HashMap<std::any::TypeId, Box<dyn std::any::Any>>);
@@ -1960,20 +2109,25 @@ unsafe impl boa_gc::Trace for HostAnyMap {
 }
 impl boa_gc::Finalize for HostAnyMap {}
 
-// SAFETY: The wrapped data does not contain GC roots — it is only
-// accessed through the JS object's internal slot via `downcast_ref`.
-unsafe impl<T: std::any::Any + 'static> boa_gc::Trace for NativeDataWrapper<T> {
-    unsafe fn trace(&self, _: &mut boa_gc::Tracer) {}
-    unsafe fn trace_non_roots(&self) {}
-    fn run_finalizer(&self) {}
+// SAFETY: Delegates to `TraceableBox` which has type-correct trace/finalize
+// function pointers bound at construction time.  On the `noop` path (data
+// without GC roots) the functions are no-ops.
+unsafe impl boa_gc::Trace for NativeDataWrapper {
+    unsafe fn trace(&self, tracer: &mut boa_gc::Tracer) {
+        // SAFETY: TraceableBox::trace safely delegates to its stored fn.
+        unsafe { self.0.trace(tracer) };
+    }
+    unsafe fn trace_non_roots(&self) {
+        unsafe { self.0.trace_non_roots() };
+    }
+    fn run_finalizer(&self) {
+        self.0.run_finalizer();
+    }
 }
 
-impl<T: std::any::Any + 'static> boa_gc::Finalize for NativeDataWrapper<T> {}
+impl boa_gc::Finalize for NativeDataWrapper {}
 
-impl<T: std::any::Any + 'static> boa_engine::JsData for NativeDataWrapper<T> {}
-
-// Note: `NativeDataWrapper<T>` implements `NativeObject` via the blanket
-// `impl<T: Any + Trace + JsData> NativeObject for T` in boa_engine.
+impl boa_engine::JsData for NativeDataWrapper {}
 
 // ═══════════════════════════════════════════════════════════════════════════
 // EcmascriptHost<BoaTypes> — Web IDL callback operations
