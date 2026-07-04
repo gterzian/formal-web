@@ -61,7 +61,7 @@ fn asynchronously_compile_a_webassembly_module_boa(
     let window = match global.downcast_ref::<Window>() {
         Some(w) => w,
         None => {
-            return Err(crate::js::native_error_to_js_value(
+            return Err(native_error_to_js_value(
                 JsNativeError::typ().with_message("WebAssembly: global object is not a Window"),
                 context,
             ));
@@ -111,7 +111,7 @@ fn asynchronously_instantiate_a_webassembly_module_boa(
     let window = match global.downcast_ref::<Window>() {
         Some(w) => w,
         None => {
-            return Err(crate::js::native_error_to_js_value(
+            return Err(native_error_to_js_value(
                 JsNativeError::typ().with_message("WebAssembly: global object is not a Window"),
                 context,
             ));
@@ -162,7 +162,7 @@ fn instantiate_bytes_boa(
     let window = match global.downcast_ref::<Window>() {
         Some(w) => w,
         None => {
-            return Err(crate::js::native_error_to_js_value(
+            return Err(native_error_to_js_value(
                 JsNativeError::typ().with_message("WebAssembly: global object is not a Window"),
                 context,
             ));
@@ -303,7 +303,7 @@ fn initialize_an_instance_object_boa(
         Some(instance_proto),
         WasmInstance::new(exports_object, Arc::clone(store), *instance),
     );
-    crate::js::js_result_to_completion(Ok(instance_object), context)
+    js_result_to_completion(Ok(instance_object), context)
 }
 
 // ── Exports object ──
@@ -342,13 +342,13 @@ fn create_an_exports_object_boa(
         exports_object
             .set(js_string!(name.as_str()), value, false, context)
             .map_err(|_| JsNativeError::typ().with_message("failed to set export property"))
-            .map_err(|error| crate::js::native_error_to_js_value(error, context))?;
+            .map_err(|error| native_error_to_js_value(error, context))?;
     }
     // Step 3: "Perform ! SetIntegrityLevel(exportsObject, "frozen")."
     // Note: Boa does not expose SetIntegrityLevel directly; skip for now.
     //
     // Step 4: "Return exportsObject."
-    crate::js::js_result_to_completion(Ok(exports_object), context)
+    js_result_to_completion(Ok(exports_object), context)
 }
 
 /// Return `(name, externval)` pairs for all exports of an instantiated module.

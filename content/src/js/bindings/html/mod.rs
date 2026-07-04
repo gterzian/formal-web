@@ -1,3 +1,4 @@
+#[cfg(boa_backend)]
 mod host_hooks;
 mod html_anchor_element;
 mod html_element;
@@ -9,5 +10,6 @@ mod hyperlink_element_utils;
 mod location;
 mod window;
 
+#[cfg(boa_backend)]
 pub(crate) use host_hooks::build_context;
 pub(crate) use html_element::style_declaration_object;

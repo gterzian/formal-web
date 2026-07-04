@@ -1,11 +1,14 @@
 //! <https://html.spec.whatwg.org/#the-windowproxy-exotic-object>
 
-use boa_engine::{JsNativeError, JsObject, JsValue};
-
 use crate::html::Window;
 use crate::webidl::is_array_index_key;
 
 use js_engine::{Completion, ExecutionContext, JsTypes};
+
+use crate::js::Types;
+
+type JsValue = <Types as JsTypes>::JsValue;
+type JsObject = <Types as JsTypes>::JsObject;
 
 // ── Trap functions ──
 //
@@ -398,24 +401,10 @@ fn cross_origin_window_properties() -> Vec<CrossOriginPropertyEntry> {
 }
 
 #[allow(dead_code)]
-pub(crate) fn cross_origin_own_property_keys() -> Vec<boa_engine::property::PropertyKey> {
-    let mut keys: Vec<boa_engine::property::PropertyKey> = cross_origin_window_properties()
-        .into_iter()
-        .map(|p| boa_engine::property::PropertyKey::String(boa_engine::js_string!(p.property)))
-        .collect();
-    keys.push(boa_engine::property::PropertyKey::String(
-        boa_engine::js_string!("then"),
-    ));
-    keys.push(boa_engine::property::PropertyKey::Symbol(
-        boa_engine::JsSymbol::to_string_tag(),
-    ));
-    keys.push(boa_engine::property::PropertyKey::Symbol(
-        boa_engine::JsSymbol::has_instance(),
-    ));
-    keys.push(boa_engine::property::PropertyKey::Symbol(
-        boa_engine::JsSymbol::is_concat_spreadable(),
-    ));
-    keys
+pub(crate) fn cross_origin_own_property_keys() -> Vec<<Types as JsTypes>::PropertyKey> {
+    // Note: Cross-origin support requires engine-specific Symbol construction.
+    // Return empty until cross-origin is implemented.
+    Vec::new()
 }
 
 #[allow(dead_code)]

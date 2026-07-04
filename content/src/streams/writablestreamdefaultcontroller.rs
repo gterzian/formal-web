@@ -438,14 +438,14 @@ impl WritableStreamDefaultController {
         let sink_close_promise = algorithm.call(ec)?;
         stream.mark_close_request_in_flight(ec)?;
         let stream_for_fulfilled = stream.clone();
-        let on_fulfilled = crate::js::builtin_with_captures(
-            ec,
+        let on_fulfilled = ec.create_builtin_function_with_captures(
             stream_for_fulfilled,
             process_close_on_fulfilled,
             1,
+            ec.property_key_from_str(""),
         );
         let on_rejected =
-            crate::js::builtin_with_captures(ec, stream, process_close_on_rejected, 1);
+            ec.create_builtin_function_with_captures(stream, process_close_on_rejected, 1, ec.property_key_from_str(""));
         let promise = Types::object_as_promise(&sink_close_promise)
             .ok_or_else(|| ec.new_type_error("not a Promise"))?;
         ec.perform_promise_then(promise, Some(on_fulfilled), Some(on_rejected), None)?;
@@ -469,17 +469,17 @@ impl WritableStreamDefaultController {
 
         let controller_for_fulfilled = self.clone();
         let stream_for_fulfilled = stream.clone();
-        let on_fulfilled = crate::js::builtin_with_captures(
-            ec,
+        let on_fulfilled = ec.create_builtin_function_with_captures(
             (controller_for_fulfilled, stream_for_fulfilled),
             process_write_on_fulfilled,
             1,
+            ec.property_key_from_str(""),
         );
-        let on_rejected = crate::js::builtin_with_captures(
-            ec,
+        let on_rejected = ec.create_builtin_function_with_captures(
             (self.clone(), stream),
             process_write_on_rejected,
             1,
+            ec.property_key_from_str(""),
         );
         let promise = Types::object_as_promise(&sink_write_promise)
             .ok_or_else(|| ec.new_type_error("not a Promise"))?;
@@ -634,10 +634,10 @@ pub(crate) fn set_up_writable_stream_default_controller(
 
     // Step 17: "Upon fulfillment of startPromise..."
     let on_fulfilled =
-        crate::js::builtin_with_captures(ec, controller.clone(), setup_on_fulfilled, 1);
+        ec.create_builtin_function_with_captures(controller.clone(), setup_on_fulfilled, 1, ec.property_key_from_str(""));
 
     // Step 18: "Upon rejection of startPromise with reason r..."
-    let on_rejected = crate::js::builtin_with_captures(ec, controller, setup_on_rejected, 1);
+    let on_rejected = ec.create_builtin_function_with_captures(controller, setup_on_rejected, 1, ec.property_key_from_str(""));
     ec.perform_promise_then(start_promise, Some(on_fulfilled), Some(on_rejected), None)?;
     Ok(())
 }

@@ -428,9 +428,9 @@ impl ReadableStreamDefaultController {
         let pull_js_promise =
             Types::object_as_promise(&pull_promise).ok_or_else(|| ec.value_undefined())?;
         let on_fulfilled =
-            crate::js::builtin_with_captures(ec, self.clone(), pull_steps_on_fulfilled, 1);
+            ec.create_builtin_function_with_captures(self.clone(), pull_steps_on_fulfilled, 1, ec.property_key_from_str(""));
         let on_rejected =
-            crate::js::builtin_with_captures(ec, self.clone(), pull_steps_on_rejected, 1);
+            ec.create_builtin_function_with_captures(self.clone(), pull_steps_on_rejected, 1, ec.property_key_from_str(""));
         let pull_reaction_val =
             ec.perform_promise_then(pull_js_promise, Some(on_fulfilled), Some(on_rejected), None)?;
         let pull_reaction: JsObject = Types::value_as_object(&pull_reaction_val)
@@ -716,8 +716,8 @@ pub(crate) fn set_up_readable_stream_default_controller(
     let intrinsics = ec.realm_intrinsics(&realm);
     let start_promise = ec.promise_resolve(intrinsics.promise.clone(), start_result)?;
     let on_fulfilled =
-        crate::js::builtin_with_captures(ec, controller.clone(), setup_on_fulfilled, 1);
-    let on_rejected = crate::js::builtin_with_captures(ec, controller, setup_on_rejected, 1);
+        ec.create_builtin_function_with_captures(controller.clone(), setup_on_fulfilled, 1, ec.property_key_from_str(""));
+    let on_rejected = ec.create_builtin_function_with_captures(controller, setup_on_rejected, 1, ec.property_key_from_str(""));
     let start_reaction_val = ec.perform_promise_then(
         start_promise.clone(),
         Some(on_fulfilled),

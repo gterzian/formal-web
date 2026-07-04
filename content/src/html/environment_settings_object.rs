@@ -394,8 +394,8 @@ impl EnvironmentSettingsObject {
         &self,
         request_id: u64,
     ) -> Option<(
-        boa_engine::object::JsObject,
-        boa_engine::builtins::promise::ResolvingFunctions,
+        JsObject,
+        js_engine::records::PromiseResolvers<Types>,
     )> {
         let global = self.engine.realm_global_object();
         let window = self

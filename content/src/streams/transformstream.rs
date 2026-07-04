@@ -535,19 +535,19 @@ fn initialize_transform_stream(
 
     // Step 2: "Let writeAlgorithm be the following steps, taking a chunk argument:"
     let write_callback =
-        crate::js::builtin_callback(ec, stream.clone(), sink_write_algorithm_fn, 1);
+        crate::webidl::Callback::from_object(Types::object_from_function(ec.create_builtin_function_with_captures(stream.clone(), sink_write_algorithm_fn, 1, ec.property_key_from_str(""))));
     let write_algorithm =
         WriteAlgorithm::JavaScript(SourceMethod::new(global.clone(), write_callback));
 
     // Step 3: "Let abortAlgorithm be the following steps, taking a reason argument:"
     let abort_callback =
-        crate::js::builtin_callback(ec, stream.clone(), sink_abort_algorithm_fn, 1);
+        crate::webidl::Callback::from_object(Types::object_from_function(ec.create_builtin_function_with_captures(stream.clone(), sink_abort_algorithm_fn, 1, ec.property_key_from_str(""))));
     let abort_algorithm =
         AbortAlgorithm::JavaScript(SourceMethod::new(global.clone(), abort_callback));
 
     // Step 4: "Let closeAlgorithm be the following steps:"
     let close_callback =
-        crate::js::builtin_callback(ec, stream.clone(), sink_close_algorithm_fn, 0);
+        crate::webidl::Callback::from_object(Types::object_from_function(ec.create_builtin_function_with_captures(stream.clone(), sink_close_algorithm_fn, 0, ec.property_key_from_str(""))));
     let close_algorithm = CloseAlgorithm::JavaScript(SourceMethod::new(global, close_callback));
 
     // Step 5: "Set stream.[[writable]] to ! CreateWritableStream(startAlgorithm, writeAlgorithm, closeAlgorithm, abortAlgorithm, writableHighWaterMark, writableSizeAlgorithm)."
@@ -870,7 +870,7 @@ fn transform_stream_default_controller_perform_transform(
     // Step 2: "Return the result of reacting to transformPromise with the following rejection steps given the argument r:"
     let stream = controller.stream_slot(ec)?;
     let on_rejected =
-        crate::js::builtin_with_captures(ec, stream, perform_transform_on_rejected_fn, 1);
+        ec.create_builtin_function_with_captures(stream, perform_transform_on_rejected_fn, 1, ec.property_key_from_str(""));
     let transform_js_promise = Types::object_as_promise(&transform_promise)
         .ok_or_else(|| ec.new_type_error("transformPromise is not a Promise"))?;
     let result_promise =
@@ -935,11 +935,11 @@ fn transform_stream_default_sink_write_algorithm(
         // Step 3.2: "Assert: backpressureChangePromise is not undefined."
 
         // Step 3.3: "Return the result of reacting to backpressureChangePromise with the following fulfillment steps:"
-        let on_fulfilled = crate::js::builtin_with_captures(
-            ec,
+        let on_fulfilled = ec.create_builtin_function_with_captures(
             (stream, controller, chunk),
             controller_enqueue_on_fulfilled_fn,
             0,
+            ec.property_key_from_str(""),
         );
 
         let backpressure_js_promise = Types::object_as_promise(&backpressure_change_promise)
@@ -1008,8 +1008,7 @@ fn transform_stream_default_sink_abort_algorithm(
     transform_stream_default_controller_clear_algorithms(&controller);
 
     // Step 7: React to cancelPromise.
-    let on_fulfilled = crate::js::builtin_with_captures(
-        ec,
+    let on_fulfilled = ec.create_builtin_function_with_captures(
         (
             controller.clone(),
             readable.clone(),
@@ -1018,10 +1017,11 @@ fn transform_stream_default_sink_abort_algorithm(
         ),
         sink_abort_on_fulfilled_fn,
         0,
+        ec.property_key_from_str(""),
     );
 
     let on_rejected =
-        crate::js::builtin_with_captures(ec, (controller, readable), sink_abort_on_rejected_fn, 1);
+        ec.create_builtin_function_with_captures((controller, readable), sink_abort_on_rejected_fn, 1, ec.property_key_from_str(""));
 
     let cancel_js_promise = Types::object_as_promise(&cancel_promise)
         .ok_or_else(|| ec.new_type_error("cancelPromise is not a Promise"))?;
@@ -1089,15 +1089,15 @@ fn transform_stream_default_sink_close_algorithm(
     transform_stream_default_controller_clear_algorithms(&controller);
 
     // Step 7: React to flushPromise.
-    let on_fulfilled = crate::js::builtin_with_captures(
-        ec,
+    let on_fulfilled = ec.create_builtin_function_with_captures(
         (controller.clone(), readable.clone()),
         sink_close_on_fulfilled_fn,
         0,
+        ec.property_key_from_str(""),
     );
 
     let on_rejected =
-        crate::js::builtin_with_captures(ec, (controller, readable), sink_close_on_rejected_fn, 1);
+        ec.create_builtin_function_with_captures((controller, readable), sink_close_on_rejected_fn, 1, ec.property_key_from_str(""));
 
     let flush_js_promise = Types::object_as_promise(&flush_promise)
         .ok_or_else(|| ec.new_type_error("flushPromise is not a Promise"))?;
@@ -1191,8 +1191,7 @@ pub(crate) fn transform_stream_default_source_cancel_algorithm(
     transform_stream_default_controller_clear_algorithms(&controller);
 
     // Step 7: React to cancelPromise.
-    let on_fulfilled = crate::js::builtin_with_captures(
-        ec,
+    let on_fulfilled = ec.create_builtin_function_with_captures(
         (
             controller.clone(),
             stream.clone(),
@@ -1202,13 +1201,14 @@ pub(crate) fn transform_stream_default_source_cancel_algorithm(
         ),
         source_cancel_on_fulfilled_fn,
         0,
+        ec.property_key_from_str(""),
     );
 
-    let on_rejected = crate::js::builtin_with_captures(
-        ec,
+    let on_rejected = ec.create_builtin_function_with_captures(
         (controller, stream, writable),
         source_cancel_on_rejected_fn,
         1,
+        ec.property_key_from_str(""),
     );
 
     let cancel_js_promise = Types::object_as_promise(&cancel_promise)

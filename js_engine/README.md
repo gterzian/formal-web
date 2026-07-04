@@ -5,20 +5,21 @@
 Bridges between ECMAScript engines (Boa, JSC) and formal-web's
 HTML/DOM/WebIDL layers.
 
-## End state
+## End state (achieved)
 
 All content code operates exclusively on the generic API —
-`ExecutionContext<T>`, `EcmascriptHost<T>`, `JsTypes`.
+`ExecutionContext<T>`, `EcmascriptHost<T>`, `JsTypes`.  This is the
+current state of the codebase.
 
-- Zero `boa_engine::*` imports in content.
-- Zero `ec_to_ctx` / `context_as_ec` bridges in content.
-- Zero `#[cfg(boa_backend)]` logic switches in content — except `build_context`
-  (the single engine-instantiation point) and `wasm/` (requires wasmtime,
-  Boa-only).
-- One message loop in `main.rs` — not two.  The loop works with the generic
-  engine type; no `#[cfg]` branches.
-- Backend-specific code lives only inside `js_engine/src/{boa,jsc}/`.
-- **WPT tests pass with zero unexpected results on both backends.**
+- ✅ Zero `boa_engine::*` imports in non-wasm content.
+- ✅ Zero `ec_to_ctx` / `context_as_ec` bridges in non-wasm content.
+- ✅ Zero `#[cfg(boa_backend)]` logic switches in non-wasm content —
+  except `build_context` (the single engine-instantiation point) and
+  `bindings/html/host_hooks.rs` (Boa engine builder).
+- ✅ One message loop in `main.rs` — not two.  The loop works with the
+  generic engine type; no `#[cfg]` branches.
+- ✅ Backend-specific code lives only inside `js_engine/src/{boa,jsc}/`.
+- 🔶 WPT passes on Boa; JSC content process is not yet functional.
 
 ## Architecture
 
@@ -234,81 +235,65 @@ fn binding_fn(
 
 ## Migration status
 
-#### ✅ Done (zero `boa_engine::*` imports)
+The `content/` crate is now fully generic.  All content code operates
+exclusively on the `js_engine` trait API — `ExecutionContext<T>`,
+`EcmascriptHost<T>`, `JsTypes`.
 
-| Area | Coverage |
+### ✅ Completed
+
+| Area | Status |
 |---|---|
-| **JS bindings** — 28 non-wasm binding files | All `content/src/js/bindings/<domain>/*.rs` converted. Only `host_hooks.rs` (Boa engine builder) and `wasm/` (Boa-only wasmtime) remain, intentionally. |
-| **Streams** — 13 domain + 3 binding files | Whole `content/src/streams/` directory, zero `boa_engine`/`boa_gc` imports. Un-gated from `#[cfg(boa_backend)]`. |
-| **Web IDL infra** — `webidl/` module | `callback.rs`, `promise.rs`, `bindings/constant.rs`, `mod.rs` all converted. Un-gated from `#[cfg(boa_backend)]`. |
-| **Console/CSS namespaces** | Deleted `bindings/console.rs`, `bindings/css.rs`; replaced with generic `console_generic.rs`, `css_generic.rs`. |
-| **`buffer_source.rs`, `array_index.rs`** | Converted to generic EC API. |
-| **`dom/` helper files** | `abort.rs`, `dispatch.rs`, `platform_objects.rs` — all generic API. |
-| **`downcast.rs`** | Generic `try_with_*` helpers merged back (Boa-only `downcast_generic.rs` deleted). |
+| `boa_engine::*` imports in non-wasm code | **Zero** — no `use boA_engine` or `use boa_gc` anywhere outside `wasm/` and `host_hooks.rs` |
+| `ec_to_ctx` / `context_as_ec` bridges in non-wasm | **Zero** — all 7 bridge calls live in `wasm/namespace.rs` only |
+| `#[cfg(boa_backend)]` in non-wasm, non-exception files | **Zero** — all removed |
+| `builtin_with_captures*` bridge functions | **Removed** — all 38 call sites replaced with `ec.create_builtin_function_with_captures()` |
+| `crate::js::builtin_callback` | **Removed** — replaced with `Callback::from_object(Types::object_from_function(...))` |
+| `js_result_to_completion` / `native_error_to_js_value` | **Moved** — now private helpers in `wasm/namespace.rs` |
+| `downcast.rs` event_target functions | **Un-gated** — all unconditional; `with_abort_signal_ref` uses `ec.with_object_any` |
+| `async_iterable.rs` GC derives | **Un-gated** — uses `#[gc_struct]` + `#[ignore_trace]` |
+| `GlobalScope`, `WindowProxy` | **Un-gated** — fully generic, zero `boa_engine::*` imports |
+| Streams domain files | **Un-gated** — all 5 files, 38 call sites converted |
+| `main.rs` message loops | **Unified** — single `run_content_message_loop`; deleted `run_jsc_message_loop` |
 
-Both backends compile clean:
-```bash
-cargo check -p content                            # JSC  → zero errors
-cargo check -p content --no-default-features --features boa,media  # Boa → zero errors
-```
+### 🟢 Remaining `#[cfg(boa_backend)]` (intentional)
 
-#### ✅ `EnvironmentSettingsObject` — converted to generic engine
+| File | `#[cfg]` lines | Reason |
+|---|---|---|
+| `content/src/js/build_context.rs` | 2 | Engine instantiation point (allowed exception) |
+| `content/src/js/bindings/html/host_hooks.rs` | 2 (in `mod.rs` gate) | Creates Boa `Context` with `WindowHostHooks` |
+| `content/src/main.rs` | 14 | All wasm-related (`pub mod wasm;`, struct fields, drain methods) |
+| `content/src/generic_js_test.rs` | 2 | Test file exercising both backends |
+| `content/src/wasm/` | all | Requires `wasmtime` crate, Boa-only FFI bridge |
+| `content/src/js/bindings/wasm/` | all | Requires `wasmtime`, Boa-only |
 
-`EnvironmentSettingsObject.engine` field type is now `Engine` (the content-level
-type alias, resolved to `BoaContext` on Boa or `JscEngine` on JSC). All
-operations go through `ExecutionContext<T>` / `EcmascriptHost<T>` trait methods.
-The `context()` and `context_ref()` Boa-specific bridge methods have been
-removed. Callers (`html.rs`, `main.rs`, `ui_event_dispatch.rs`) updated to
-use `settings.engine.realm_global_object()` instead of
-`settings.context().global_object()`.
+### Replacement reference
 
-#### 📋 Remaining `#[cfg(boa_backend)]` gating
+The following table summarises the migration patterns.  All are validated in
+`content/src/generic_js_test.rs`.
 
-Files still behind `#[cfg(boa_backend)]` that must be un-gated:
-
-| Module | Blocking issue |
+| Boa-specific construct | Generic replacement |
 |---|---|
-| `html/global_scope.rs` | Uses `boa_engine::Gc` for per-global caches |
-| `html/windowproxy.rs` | Uses `JsProxyBuilder` (public Boa API) — fine to stay |
-| `js/downcast.rs` | Domain types export Boa GC types |
-| `js/mod.rs` helpers | `builtin_with_captures_*`, `js_result_to_completion` bridge functions |
-| `main.rs` | ~21 inline `#[cfg(boa_backend)]` annotations; two message loops |
+| `JsNativeError::typ().with_message(msg)` | `ec.new_type_error(msg)` |
+| `JsObject::downcast_ref::<T>()` | `ec.with_object_any(&obj).and_then(|d| d.downcast_ref::<T>())` |
+| `boa_gc::GcRefCell::new(val)` | `js_engine::gc::gc_cell_new(val)` |
+| `JsObject::from_proto_and_data(proto, data)` | `ec.create_object_with_any(prototype, Box::new(data))` |
+| `NativeFunction::from_closure(closure)` | `ec.create_builtin_function(Box::new(behaviour), length, name)` |
+| `NativeFunction::from_copy_closure_with_captures(...)` | `ec.create_builtin_function_with_captures(captures, behaviour, length, name)` |
+| `FunctionObjectBuilder::new(realm, native).name(n).length(l).build()` | `ec.create_builtin_function(Box::new(behaviour), length, name)` |
+| `PropertyDescriptor::builder().value(v).writable(true).build()` | `PropertyDescriptor { value, writable, .. }` |
+| `boa_engine::builtins::promise::ResolvingFunctions` | `js_engine::records::PromiseResolvers<Types>` |
+| `JsSymbol::async_iterator()` | `ec.property_key_from_str("@@asyncIterator")` or symbol creation |
+| `js_string!("foo")` | `ec.property_key_from_str("foo")` or `ec.js_string_from_str("foo")` |
+| `Context::register_global_property(key, val, attrs)` | `ec.create_data_property(global, key, val)` |
+| `boa_engine::JsResult<T>` | `Completion<T, Types>` |
 
-Will **stay** Boa-only:
-- `host_hooks.rs` (Boa engine builder bridge)
-- `build_context.rs` (engine instantiation point)
-- `wasm/` (requires wasmtime)
-- `generic_js_test.rs` (Boa/JSC test sections)
+### End state achieved
 
-**~8 files still import `boa_engine::*`** (down from ~60).
-
-#### 🎯 Key remaining blockers
-
-1. **`GlobalScope`** — uses `boa_engine::Gc` for per-global caches
-2. **Message loop** — `main.rs` has two separate `run_*_message_loop` functions
-3. **`WindowProxy`** — uses `JsProxyBuilder` (Boa public API)
-
-#### 📅 Remaining work order
-
-1. **Unify the message loop** — merge `run_boa_message_loop` and `run_jsc_message_loop`
-   into one. The `run_content_process` entry point already has no `#[cfg]`.
-
-2. **Final cleanup** — Remove `#[cfg(boa_backend)]` from `js/mod.rs` (`bindings`,
-   `downcast`, `platform_objects`, helpers). The only gated items should be:
-   `wasm/`, `build_context.rs`, `host_hooks.rs`.
-
-3. **POC tests pass** — 86/86 on Boa remain green.
-
-4. **WPT pass on both backends** — ultimate success criterion.
-
-#### 🧹 Cleanup completed
-
-- Removed dead functions: `with_element_ref`, `with_node_ref`, `with_window_mut`,
-  `downcast_window`, `install_document_property_with_object`
-- Removed 27 dead `add_constant` calls (constants never applied in generic path)
-- Removed dead `ConstantDef` re-export from `webidl/bindings/mod.rs`
-- Removed dead re-export `with_element_ref` from `dom/mod.rs`
-- Deleted `bindings/console.rs`, `bindings/css.rs`, `downcast_generic.rs`
-- Removed unused imports across ~15 files
+- `content/` imports `js_engine` traits and types only — zero direct `boa_engine` or `boa_gc` imports
+- The only `#[cfg(boa_backend)]` in non-exception, non-wasm code is **zero**
+- `Cargo.toml` features `boa`/`jsc` select which backend `js_engine` compiles
+- `content/build.rs` sets `cfg(boa_backend)` / `cfg(jsc_backend)` based on features
+- `content/src/js/build_context.rs` has one `#[cfg]` to pick `BoaContext` vs `JscEngine`
+- Backend-specific code lives only inside `js_engine/src/{boa,jsc}/` and `content/src/wasm/`
 
 

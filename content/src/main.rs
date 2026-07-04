@@ -7,30 +7,23 @@ pub(crate) mod fetch;
 pub mod infra;
 pub mod js;
 
-#[cfg(boa_backend)]
 pub mod dom;
-#[cfg(boa_backend)]
 mod generic_js_test;
-#[cfg(boa_backend)]
 pub mod html;
-#[cfg(boa_backend)]
 pub mod streams;
 #[cfg(boa_backend)]
 pub mod wasm;
 pub mod webidl;
 
-#[cfg(boa_backend)]
 use crate::dom::{
     dispatch_trusted_click_event, dispatch_ui_event, dispatch_window_event, fire_event,
 };
-#[cfg(boa_backend)]
 use crate::html::{
     EnvironmentSettingsObject, JsHtmlParserProvider, PendingParserScript,
     attach_same_origin_child_document_for_traversable, execute_parser_scripts,
     parse_html_into_document, run_dom_post_connection_steps_for_document,
     run_dom_removing_steps_for_document, run_iframe_load_event_steps_for_traversable,
 };
-#[cfg(boa_backend)]
 use crate::js::platform_objects::with_global_scope;
 use crate::ui_event::deserialize_ui_event;
 #[cfg(boa_backend)]
@@ -372,7 +365,6 @@ impl NetProvider for ContentNetProvider {
     }
 }
 
-#[cfg(boa_backend)]
 pub(crate) struct ContentDocument {
     traversable_id: NavigableId,
     parent_traversable_id: Option<NavigableId>,
@@ -395,7 +387,6 @@ struct DocumentViewportState {
     offset_y: f32,
 }
 
-#[cfg(boa_backend)]
 pub(crate) struct ContentProcess {
     event_sender: ipc::IpcSender<ContentEvent>,
     event_loop_id: EventLoopId,
@@ -419,12 +410,15 @@ pub(crate) struct ContentProcess {
         Rc<RefCell<HashMap<DocumentId, (EnvironmentSettingsObject, Rc<RefCell<BaseDocument>>)>>>,
 
     /// Background wasm compilation thread.
+    #[cfg(boa_backend)]
     wasm_worker: WasmWorker,
 
     /// Pending wasm requests waiting for background results.
     /// Maps request_id → document_id.
+    #[cfg(boa_backend)]
     pending_wasm_requests: HashMap<u64, DocumentId>,
     /// Modules from instantiate requests, needed for exports creation.
+    #[cfg(boa_backend)]
     pending_wasm_modules: HashMap<u64, wasmtime::Module>,
 
     video_paint_registry: Rc<RefCell<HashMap<(DocumentId, usize), VideoPaintId>>>,
@@ -436,7 +430,6 @@ pub(crate) struct ContentProcess {
     content_command_sender: ipc::IpcSender<Command>,
 }
 
-#[cfg(boa_backend)]
 impl ContentProcess {
     fn new(
         event_sender: ipc::IpcSender<ContentEvent>,
@@ -2188,19 +2181,13 @@ fn content_token_from_args() -> Result<Option<String>, String> {
 
 /// Run the content extension.
 pub fn run_content_process(token: String) -> Result<(), String> {
-    #[cfg(boa_backend)]
     let (wasm_signal_sender, wasm_rx) = crossbeam_channel::unbounded::<()>();
 
     ipc::run_extension::<Command, ContentEvent>(&token, move |server| {
         let event_sender = server.connection.sender.clone();
 
-        // ── ContentBootstrap ──
-        #[cfg(boa_backend)]
         let cmd_rx = ipc::crossbeam_proxy(server.connection.receiver);
-        #[cfg(not(boa_backend))]
-        let cmd_rx = &server.connection.receiver;
 
-        #[cfg(boa_backend)]
         let (network_extension_sender, media_sender, content_command_sender, trace_sender) = {
             match cmd_rx.recv() {
                 Ok(incoming) => match incoming.payload {
@@ -2224,22 +2211,8 @@ pub fn run_content_process(token: String) -> Result<(), String> {
             }
         };
 
-        #[cfg(not(boa_backend))]
-        match cmd_rx.recv() {
-            Ok(incoming) => match incoming.payload {
-                ContentBootstrap { .. } => {}
-                other => {
-                    error!("first message must be ContentBootstrap, got: {other:?}");
-                    return Err("wrong first message, expected ContentBootstrap".into());
-                }
-            },
-            Err(_) => return Err("command channel closed before ContentBootstrap".into()),
-        }
-
         let _ = event_sender.send(ContentEvent::CommandCompleted);
 
-        // ── Engine-specific setup ──
-        #[cfg(boa_backend)]
         let mut process = {
             let event_loop_id = EventLoopId::from_u128(0);
             ContentProcess::new(
@@ -2253,30 +2226,11 @@ pub fn run_content_process(token: String) -> Result<(), String> {
             )
         };
 
-        #[cfg(not(boa_backend))]
-        let mut engine = {
-            use js_engine::{ExecutionContext, JsEngine};
-            let mut e = js_engine::jsc::JscEngine::new();
-            if let Err(error) = crate::js::install_console_namespace(&mut e) {
-                error!("JSC: failed to install console namespace: {:?}", error);
-                return Err(format!("failed to install console: {:?}", error));
-            }
-            e
-        };
-
-        // ── Message loop ──
-        #[cfg(boa_backend)]
-        let result = run_boa_message_loop(&cmd_rx, &wasm_rx, &mut process);
-
-        #[cfg(not(boa_backend))]
-        let result = run_jsc_message_loop(cmd_rx, &mut engine, &event_sender);
-
-        result
+        run_content_message_loop(&cmd_rx, &wasm_rx, &mut process)
     })
 }
 
-#[cfg(boa_backend)]
-fn run_boa_message_loop(
+fn run_content_message_loop(
     cmd_rx: &crossbeam_channel::Receiver<ipc::IpcIncoming<Command>>,
     wasm_rx: &crossbeam_channel::Receiver<()>,
     process: &mut ContentProcess,
@@ -2321,59 +2275,6 @@ fn run_boa_message_loop(
                 process.drain_all_pending_wasm_requests();
                 process.drain_wasm_results();
             }
-        }
-    }
-
-    process.drain_wasm_results();
-    Ok(())
-}
-
-#[cfg(not(boa_backend))]
-fn run_jsc_message_loop(
-    cmd_rx: &ipc::IpcReceiver<Command>,
-    engine: &mut js_engine::jsc::JscEngine,
-    event_sender: &ipc::IpcSender<ContentEvent>,
-) -> Result<(), String> {
-    use js_engine::ExecutionContext;
-
-    loop {
-        match cmd_rx.recv() {
-            Ok(incoming) => {
-                let command = incoming.payload;
-                match command {
-                    EvaluateScript {
-                        source, request_id, ..
-                    } => {
-                        let result = ExecutionContext::evaluate_script(engine, &source);
-                        let eval_result = match result {
-                            Ok(value) => {
-                                let json = engine.json_stringify(value).unwrap_or_default();
-                                ScriptEvaluationResult {
-                                    request_id,
-                                    value_json: json,
-                                    error: None,
-                                }
-                            }
-                            Err(error) => {
-                                let error_str = engine
-                                    .to_rust_string(error)
-                                    .unwrap_or_else(|_| "unknown error".to_owned());
-                                ScriptEvaluationResult {
-                                    request_id,
-                                    value_json: String::new(),
-                                    error: Some(error_str),
-                                }
-                            }
-                        };
-                        let _ = event_sender.send(ContentEvent::ScriptEvaluated(eval_result));
-                    }
-                    Shutdown => break Ok(()),
-                    other => {
-                        trace!("JSC: unhandled command: {other:?}");
-                    }
-                }
-            }
-            Err(_) => break Ok(()),
         }
     }
 }

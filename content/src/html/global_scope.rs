@@ -8,18 +8,21 @@ use std::{
 use super::environment_settings_object::EnvironmentSettingsObject;
 
 use blitz_dom::BaseDocument;
-use boa_engine::{JsValue, object::JsObject};
-use boa_gc::GcRefCell;
 use ipc::IpcSender;
 use ipc_messages::content::DocumentId;
 use ipc_messages::content::{
     Event as ContentEvent, NavigableId, WindowTimerClearRequest, WindowTimerKey, WindowTimerRequest,
 };
 use ipc_messages::media::{MediaCommand, VideoPaintId};
-use js_engine::gc_struct;
+use js_engine::{JsTypes, gc_struct};
+use js_engine::gc::{GcCell, gc_cell_new};
 use log::{debug, error};
 
+use crate::js::Types;
 use crate::webidl::Callback;
+
+type JsValue = <Types as JsTypes>::JsValue;
+type JsObject = <Types as JsTypes>::JsObject;
 
 fn timer_debug_enabled() -> bool {
     std::env::var_os("FORMAL_WEB_DEBUG_TIMERS").is_some()
@@ -174,27 +177,27 @@ pub struct GlobalScope {
     document: Rc<RefCell<BaseDocument>>,
 
     /// <https://dom.spec.whatwg.org/#interface-document>
-    document_object: GcRefCell<Option<JsObject>>,
+    document_object: GcCell<Option<JsObject>>,
 
     /// <https://html.spec.whatwg.org/#dom-location>
-    location_object: GcRefCell<Option<JsObject>>,
+    location_object: GcCell<Option<JsObject>>,
 
     /// <https://webidl.spec.whatwg.org/#dfn-platform-object>
-    node_objects: GcRefCell<Vec<CachedNodeObject>>,
+    node_objects: GcCell<Vec<CachedNodeObject>>,
 
     /// <https://html.spec.whatwg.org/#animation-frame-callback-identifier>
     #[ignore_trace]
     animation_frame_callback_identifier: Cell<u32>,
 
     /// <https://html.spec.whatwg.org/#list-of-animation-frame-callbacks>
-    animation_frame_callbacks: GcRefCell<Vec<AnimationFrameCallback>>,
+    animation_frame_callbacks: GcCell<Vec<AnimationFrameCallback>>,
 
     /// <https://html.spec.whatwg.org/#timers>
     #[ignore_trace]
     timer_callback_identifier: Cell<u32>,
 
     /// <https://html.spec.whatwg.org/#map-of-settimeout-and-setinterval-ids>
-    window_timers: GcRefCell<Vec<WindowTimer>>,
+    window_timers: GcCell<Vec<WindowTimer>>,
 
     /// <https://html.spec.whatwg.org/#timer-nesting-level>
     #[ignore_trace]
@@ -263,7 +266,7 @@ pub struct GlobalScope {
     /// Generic queue of pending async requests created during JS execution.
     /// Populated by native JS functions (e.g. WebAssembly.compile) and drained
     /// by the content process after JS execution completes.
-    pending_requests: GcRefCell<Vec<PendingRequest>>,
+    pending_requests: GcCell<Vec<PendingRequest>>,
 
     /// A counter for generating unique request IDs for async wasm operations.
     #[ignore_trace]
@@ -273,11 +276,11 @@ pub struct GlobalScope {
     /// The promise and resolvers are stored here rather than in
     /// `PendingRequest` so that domain code in `content/src/wasm/` can
     /// push pending requests without importing `boa_engine`.
-    pending_wasm_resolvers: GcRefCell<
+    pending_wasm_resolvers: GcCell<
         Vec<(
             u64,
-            boa_engine::object::JsObject,
-            boa_engine::builtins::promise::ResolvingFunctions,
+            JsObject,
+            js_engine::records::PromiseResolvers<Types>,
         )>,
     >,
 }
@@ -287,13 +290,13 @@ impl GlobalScope {
         Self {
             kind,
             document,
-            document_object: GcRefCell::new(None),
-            location_object: GcRefCell::new(None),
-            node_objects: GcRefCell::new(Vec::new()),
+            document_object: gc_cell_new(None),
+            location_object: gc_cell_new(None),
+            node_objects: gc_cell_new(Vec::new()),
             animation_frame_callback_identifier: Cell::new(0),
-            animation_frame_callbacks: GcRefCell::new(Vec::new()),
+            animation_frame_callbacks: gc_cell_new(Vec::new()),
             timer_callback_identifier: Cell::new(0),
-            window_timers: GcRefCell::new(Vec::new()),
+            window_timers: gc_cell_new(Vec::new()),
             current_timer_nesting_level: Cell::new(None),
             timer_host: RefCell::new(None),
             source_navigable_id: Cell::new(None),
@@ -306,9 +309,9 @@ impl GlobalScope {
             video_paint_registry: RefCell::new(None),
             media_extension_sender: RefCell::new(None),
             creation_url: RefCell::new(None),
-            pending_requests: GcRefCell::new(Vec::new()),
+            pending_requests: gc_cell_new(Vec::new()),
             pending_wasm_request_id_counter: std::cell::Cell::new(0),
-            pending_wasm_resolvers: GcRefCell::new(Vec::new()),
+            pending_wasm_resolvers: gc_cell_new(Vec::new()),
         }
     }
 
@@ -866,8 +869,8 @@ impl GlobalScope {
     pub(crate) fn store_wasm_resolver(
         &self,
         request_id: u64,
-        promise: boa_engine::object::JsObject,
-        resolvers: boa_engine::builtins::promise::ResolvingFunctions,
+        promise: JsObject,
+        resolvers: js_engine::records::PromiseResolvers<Types>,
     ) {
         self.pending_wasm_resolvers
             .borrow_mut()
@@ -879,8 +882,8 @@ impl GlobalScope {
         &self,
         request_id: u64,
     ) -> Option<(
-        boa_engine::object::JsObject,
-        boa_engine::builtins::promise::ResolvingFunctions,
+        JsObject,
+        js_engine::records::PromiseResolvers<Types>,
     )> {
         // Remove the PendingRequest from the request queue.
         {

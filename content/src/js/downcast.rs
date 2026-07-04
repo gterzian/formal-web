@@ -6,16 +6,12 @@
 use crate::dom::{
     AbortController, AbortSignal, Document, Element, Event, EventTarget, Node, UIEvent,
 };
-#[cfg(boa_backend)]
-use crate::html::HTMLMediaElement;
 use crate::html::{
-    HTMLAnchorElement, HTMLElement, HTMLIFrameElement, HTMLInputElement, HTMLVideoElement, Window,
+    HTMLAnchorElement, HTMLElement, HTMLIFrameElement, HTMLInputElement, HTMLMediaElement,
+    HTMLVideoElement, Window,
 };
 use crate::js::Types;
 use js_engine::{Completion, ExecutionContext, JsTypes};
-
-#[cfg(boa_backend)]
-use boa_engine::{JsNativeError, JsResult, object::JsObject};
 
 /// Downcast `this` to `&mut AbortSignal` via `with_object_any_mut`.
 pub(crate) fn try_with_abort_signal_mut<R>(
@@ -83,8 +79,6 @@ pub(crate) fn try_with_event_mut<R>(
 /// Downcast `this` to `&mut EventTarget` via `with_object_any_mut`.
 ///
 /// Walks all known platform-object types that contain an `EventTarget` field.
-/// Gated behind `#[cfg(boa_backend)]` because `HTMLMediaElement` still requires `boa_engine`.
-#[cfg(boa_backend)]
 pub(crate) fn try_with_event_target_mut<R>(
     this: &<Types as JsTypes>::JsValue,
     ec: &mut dyn ExecutionContext<Types>,
@@ -143,7 +137,6 @@ pub(crate) fn try_with_event_target_mut<R>(
 }
 
 /// Downcast `this` to `&EventTarget` via `with_object_any`.
-#[cfg(boa_backend)]
 pub(crate) fn try_with_event_target_ref<R>(
     this: &<Types as JsTypes>::JsValue,
     ec: &mut dyn ExecutionContext<Types>,
@@ -198,16 +191,15 @@ pub(crate) fn try_with_event_target_ref<R>(
     Err(ec.new_type_error("receiver is not an EventTarget"))
 }
 
-// ── Boa-specific helpers — used by unconverted modules ────────────────
-
-/// Boa-specific: downcast via `JsObject::downcast_ref`.
-#[cfg(boa_backend)]
+/// Generic: downcast via `ec.with_object_any`.
 pub(crate) fn with_abort_signal_ref<R>(
-    object: &JsObject,
+    object: &<Types as JsTypes>::JsObject,
+    ec: &mut dyn ExecutionContext<Types>,
     f: impl FnOnce(&AbortSignal) -> R,
-) -> JsResult<R> {
-    let signal = object
-        .downcast_ref::<AbortSignal>()
-        .ok_or_else(|| JsNativeError::typ().with_message("object is not an AbortSignal"))?;
-    Ok(f(&signal))
+) -> Completion<R, Types> {
+    let signal = ec
+        .with_object_any(object)
+        .and_then(|data| data.downcast_ref::<AbortSignal>())
+        .ok_or_else(|| ec.new_type_error("object is not an AbortSignal"))?;
+    Ok(f(signal))
 }
