@@ -296,18 +296,56 @@ The following table summarises the migration patterns.  All are validated in
 - `content/src/js/build_context.rs` has one `#[cfg]` to pick `BoaContext` vs `JscEngine`
 - Backend-specific code lives only inside `js_engine/src/{boa,jsc}/` and `content/src/wasm/`
 
-## Known issues — Boa backend
+## Boa backend — WPT inventory (2026-07-04)
 
-These are not `js_engine` trait issues but downstream binding/infrastructure problems:
+Default WPT suite: 81 tests.  Unexpected failures: 48.
 
-| # | Problem | Root cause | Session to fix |
+### ✅ PASS (tests that were expected PASS and pass)
+
+| Test | Notes |
+|---|---|
+| `CSS.supports-*` (3 tests) | CSS.supports() works |
+| `dom/nodes/Element-hasAttribute` | |
+| `dom/nodes/Element-insertAdjacentText` | |
+| `dom/nodes/Element-remove` | |
+| `dom/nodes/Node-constants` | Fixed this session (added constants to Node constructor + prototype) |
+| `html/dom/document.title-01/03/05` | |
+| `html/dom/document-dir` | |
+| `html/iframe-element/*` (2) | |
+| `html/HTMLAnchorElement/*` (2) | |
+| `formal/wasm-compile-instantiate` | |
+| `formal/event-constructor` | Fixed this session |
+| `formal/stream-constructor` | Fixed this session |
+
+### ❌ UNEXPECTED FAIL — all 48 caused by one regression
+
+**All 48 unexpected failures share the same root cause:** the content process
+panics (SIGABRT) when `console.log` is called inside a promise microtask
+(`.then()` callback).  This was introduced by our changes.
+
+**Triggering experiment:**
+- `reader.read().then(function(v){})` — ✅ works (empty callback)
+- `reader.read().then(function(v){ console.log("done"); })` — ❌ crashes
+- `console.log("done")` — ✅ works (outside microtask)
+- `reader.read()` (no `.then()`) — ✅ works
+
+The crash backtrace shows the panic originates in `console_generic::stdout_sink`
+(which calls `println!`) when invoked from a microtask job.  All 48 stream tests
+fail because the WPT harness (`testharness.js`) uses `console.log` in test
+callbacks that run as microtasks.
+
+**Other gaps (non-stream, non-console):**
+| Test | Failure |
+|---|---|
+| `html/structured-clone/*` (2) | `structuredClone` not implemented |
+| `wasm/jsapi/*` | WASM global not a Window |
+
+## Known issues — JSC backend
+
+| # | Problem | Root cause | Status |
 |---|---|---|---|
-| 1 | `new ReadableStream()` / `new WritableStream()` / `new TransformStream()` throw "not a constructor" | Web IDL constructor registration on the global object is not linking correctly | Next |
-| 2 | `new Event('click')` throws "not a constructor" | Same Web IDL constructor binding issue (Event interface) | Next |
-| 3 | `document.title` setter does not persist the value | Title setter may not be wired to the document title update path | Next |
-| 4 | `data:` URL navigation fails with "network request failed: builder error" | Net crate URL builder rejects `data:` scheme | Next |
-| 5 | `create_builtin_function_with_captures` not object-safe — needed `builtin_with_captures` helper in `content/src/js/mod.rs` | Trait method with generic `C: Trace` parameter cannot be called through `dyn ExecutionContext` | This session (fixed) |
-| 6 | `#[gc_struct]` on generic structs with `where T: Trait` + `T::AssociatedType` fields fails (E0220) | Proc macro `gc_struct_boa` doesn't propagate generic where clause through `#[derive(...)]` correctly | This session (worked around with manual `#[cfg_attr]` derives) |
+| 7 | JSC backend does not compile (220+ errors) | Missing methods on `JscValue`/`JscObject` (`is_undefined`, `downcast_ref`, `downcast_mut`, `as_object`, `display`, `value_null`); `wasmtime::Module` references in non-wasm code not gated | Not started — migration override documents this as expected |
+| 8 | `run_content_process()` returns an error on JSC | Content process startup fails — JSC integration not functional | Known (pre-existing) |
 
 ## Known issues — JSC backend
 

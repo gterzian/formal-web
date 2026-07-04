@@ -3009,6 +3009,31 @@ impl ExecutionContext<JscTypes> for JscEngine {
         JscObject { raw, ctx: ctx_ptr }
     }
 
+    // ── Web IDL Constructor Factory ─────────────────────────────────────
+
+    /// <https://webidl.spec.whatwg.org/#create-an-interface-object>
+    ///
+    /// Creates a constructable built-in function for use as a Web IDL
+    /// interface constructor.
+    ///
+    /// Note: JSC backend not yet functional — delegates to
+    /// create_builtin_function.  Proper JSC constructor creation with
+    /// [[Construct]] is deferred until JSC integration is restored.
+    fn create_constructor(
+        &mut self,
+        behaviour: Box<
+            dyn Fn(
+                &[JscValue],
+                JscValue,
+                &mut dyn ExecutionContext<JscTypes>,
+            ) -> Completion<JscValue, JscTypes>,
+        >,
+        length: u32,
+        name: JscPropertyKey,
+    ) -> JscFunction {
+        self.create_builtin_function(behaviour, length, name)
+    }
+
     // ── Property Key Construction ─────────────────────────────────────────
 
     fn property_key_from_str(&self, s: &str) -> JscPropertyKey {

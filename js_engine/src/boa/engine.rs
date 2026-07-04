@@ -1787,6 +1787,49 @@ impl ExecutionContext<BoaTypes> for BoaContext {
             .build()
     }
 
+    // ── Web IDL Constructor Factory ─────────────────────────────────────
+
+    /// <https://webidl.spec.whatwg.org/#create-an-interface-object>
+    fn create_constructor(
+        &mut self,
+        behaviour: Box<
+            dyn Fn(
+                &[JsValue],
+                JsValue,
+                &mut dyn ExecutionContext<BoaTypes>,
+            ) -> Completion<JsValue, BoaTypes>,
+        >,
+        length: u32,
+        name: PropertyKey,
+    ) -> JsFunction {
+        let realm = self.current_realm();
+        let name_str = match &name {
+            PropertyKey::String(s) => s.clone(),
+            PropertyKey::Symbol(_) => boa_engine::js_string!(""),
+            _ => boa_engine::js_string!(""),
+        };
+
+        // SAFETY: BoaContext is `#[repr(transparent)]` over Context.
+        let native = unsafe {
+            NativeFunction::from_closure(Box::new(
+                move |this: &JsValue,
+                      args: &[JsValue],
+                      context: &mut Context|
+                      -> JsResult<JsValue> {
+                    let engine: &mut BoaContext =
+                        &mut *(context as *mut Context as *mut BoaContext);
+                    behaviour(args, this.clone(), engine).map_err(|e| JsError::from_opaque(e))
+                },
+            ))
+        };
+
+        FunctionObjectBuilder::new(&realm, native)
+            .name(name_str)
+            .length(length as usize)
+            .constructor(true)
+            .build()
+    }
+
     // ── String Utilities ─────────────────────────────────────────────
 
     fn js_string_to_rust_string(&self, s: &boa_engine::JsString) -> String {

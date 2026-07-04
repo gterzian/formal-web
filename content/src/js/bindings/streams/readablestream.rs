@@ -385,10 +385,10 @@ fn get_locked(
 ) -> Completion<JsValue, Types> {
     let stream_object = Types::value_as_object(this)
         .ok_or_else(|| ec.new_type_error("ReadableStream receiver is not an object"))?;
-    let stream = stream_object
-        .downcast_ref::<ReadableStream>()
-        .ok_or_else(|| ec.new_type_error("object is not a ReadableStream"))?;
-    Ok(JsValue::from(stream.locked()))
+    let locked = with_readable_stream_ref(&stream_object, ec, |stream: &ReadableStream| {
+        stream.locked()
+    })?;
+    Ok(JsValue::from(locked))
 }
 
 fn cancel_method(

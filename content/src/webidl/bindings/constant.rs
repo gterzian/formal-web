@@ -1,30 +1,53 @@
 use std::marker::PhantomData;
 
-use js_engine::{Completion, ExecutionContext, JsTypes, PropertyDescriptor};
+use js_engine::{
+    Completion, EcmascriptHost, ExecutionContext, JsTypes, JsTypesWithRealm, PropertyDescriptor,
+};
 
-use crate::js::Types;
-
-type JsValue = <Types as JsTypes>::JsValue;
+/// The value of a Web IDL constant.
+///
+/// https://webidl.spec.whatwg.org/#dfn-constant
+pub(crate) enum ConstValue<T: JsTypes> {
+    Number(f64),
+    Raw(<T as JsTypes>::JsValue),
+}
 
 /// Describes a constant on an interface.
 ///
 /// https://webidl.spec.whatwg.org/#dfn-constant
 pub(crate) struct ConstantDef<T: JsTypes> {
     pub id: &'static str,
-    pub value: <T as JsTypes>::JsValue,
+    pub value: ConstValue<T>,
     pub _phantom: PhantomData<T>,
 }
 
+impl<T: JsTypes> ConstantDef<T> {
+    pub fn number(id: &'static str, n: f64) -> Self {
+        Self {
+            id,
+            value: ConstValue::Number(n),
+            _phantom: PhantomData,
+        }
+    }
+}
+
 /// <https://webidl.spec.whatwg.org/#define-the-constants>
-pub(crate) fn define_constants(
-    target: <Types as JsTypes>::JsObject,
-    ec: &mut dyn ExecutionContext<Types>,
-    constants: &[ConstantDef<Types>],
-) -> Completion<(), Types> {
+pub(crate) fn define_constants<Ty>(
+    target: Ty::JsObject,
+    ec: &mut dyn ExecutionContext<Ty>,
+    constants: &[ConstantDef<Ty>],
+) -> Completion<(), Ty>
+where
+    Ty: JsTypes + JsTypesWithRealm,
+{
     for constant in constants {
         let key = ec.property_key_from_str(constant.id);
+        let value = match &constant.value {
+            ConstValue::Number(n) => EcmascriptHost::value_from_number(ec, *n),
+            ConstValue::Raw(v) => v.clone(),
+        };
         let desc = PropertyDescriptor {
-            value: Some(constant.value.clone()),
+            value: Some(value),
             writable: Some(false),
             enumerable: Some(true),
             configurable: Some(false),

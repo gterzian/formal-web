@@ -799,6 +799,20 @@ pub trait ExecutionContext<T: JsTypes + JsTypesWithRealm>: EcmascriptHost<T> {
         name: T::PropertyKey,
     ) -> T::Function;
 
+    /// <https://webidl.spec.whatwg.org/#create-an-interface-object>
+    fn create_constructor(
+        &mut self,
+        behaviour: Box<
+            dyn Fn(
+                &[T::JsValue],
+                T::JsValue,
+                &mut dyn ExecutionContext<T>,
+            ) -> Completion<T::JsValue, T>,
+        >,
+        length: u32,
+        name: T::PropertyKey,
+    ) -> T::Function;
+
     // ── Proxy Creation (§10.5.14) ─────────────────────────────────
 
     /// <https://tc39.es/ecma262/#sec-proxycreate>

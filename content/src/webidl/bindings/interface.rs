@@ -102,29 +102,66 @@ where
     I: WebIdlInterface<Ty> + 'static,
     E: JsEngine<Ty> + ExecutionContext<Ty>,
 {
+    // <https://webidl.spec.whatwg.org/#create-an-interface-object>
+    // Step 2: Let constructorProto be realm.[[Intrinsics]].[[%Function.prototype%]].
+    // Step 3: If I inherits ... (handled via constructorProto wiring).
     let realm = engine.current_realm();
     let intrinsics = engine.realm_intrinsics(&realm);
+    // Step 11: Let proto be the result of creating an interface prototype
+    //   object of interface I in realm.
     let proto = engine.create_object_with_any(intrinsics.object_prototype.clone(), Box::new(()));
     let mut def = InterfaceDefinition::<Ty>::new();
     I::define_members(&mut def);
     let proto_val = Ty::value_from_object(proto.clone());
     super::attribute::define_regular_attributes::<Ty, E>(engine, &proto_val, &def.attributes)?;
     super::operation::define_regular_operations::<Ty, E>(engine, &proto_val, &def.operations)?;
-    let op_prototype = intrinsics.object_prototype.clone();
-    let constructor_fn = engine.create_builtin_function(
+    // The constructor's instances should have the interface's prototype
+    // object (proto) in their prototype chain, not Object.prototype.
+    // Clone proto now before it's moved into the descriptor assignments.
+    // <https://webidl.spec.whatwg.org/#ref-for-define-the-constants①>
+    // Define the constants on the interface prototype object as well.
+    super::constant::define_constants::<Ty>(proto.clone(), engine, &def.constants)?;
+    let instance_prototype = proto.clone();
+    let constructor_fn = engine.create_constructor(
         Box::new(
             move |args: &[Ty::JsValue],
-                  new_target: Ty::JsValue,
+                  new_target_or_this: Ty::JsValue,
                   ec: &mut dyn ExecutionContext<Ty>| {
-                let obj = I::create_platform_object(&new_target, args, ec)?;
-                let instance = ec.create_object_with_any(op_prototype.clone(), Box::new(obj));
+                // https://webidl.spec.whatwg.org/#create-an-interface-object
+                // Step 1: Let steps be I's overridden constructor steps...
+                // Step 1.1: If I was not declared with a constructor
+                //   operation, then throw a TypeError.
+                //   Note: handled by I::create_platform_object default impl.
+                // Step 1.2: If NewTarget is undefined, then throw a TypeError.
+                //   Note: Boa's [[Call]] passes `undefined` as `this` for
+                //   constructable functions; [[Construct]] passes `new.target`.
+                if Ty::value_is_undefined(&new_target_or_this) {
+                    return Err(ec.new_type_error(&format!("{} is not a constructor", I::NAME)));
+                }
+                // Step 1.3: Let args be the passed arguments.
+                // Step 1.4: Let n be the size of args.
+                // Step 1.5-1.7: Overload resolution (not yet implemented).
+                // Step 1.8: Let object be the result of internally creating
+                //   a new object implementing I, with realm and NewTarget.
+                let obj = I::create_platform_object(&new_target_or_this, args, ec)?;
+                // Step 1.9: Perform the constructor steps of constructor
+                //   with object as this and values as the argument values.
+                //   (Handled inside create_platform_object.)
+                // Step 1.10: Let O be object, converted to a JS value.
+                let instance = ec.create_object_with_any(instance_prototype.clone(), Box::new(obj));
+                // Step 1.11-1.13: Assert and return O.
                 Ok(Ty::value_from_object(instance))
             },
         ),
         I::constructor_length() as u32,
         engine.property_key_from_str(I::NAME),
     );
+    // Step 10: Let F be CreateBuiltinFunction(steps, length, id,
+    //   « [[Unforgeables]] », realm, constructorProto).
+    //   Note: create_constructor creates a constructable built-in function.
     let f_obj = Ty::object_from_function(constructor_fn);
+    // Step 12: Perform ! DefinePropertyOrThrow(F, "prototype",
+    //   PropertyDescriptor{[[Value]]: proto, [[Writable]]: false, ...}).
     let proto_desc = JsPropertyDescriptor {
         value: Some(Ty::value_from_object(proto.clone())),
         writable: Some(false),
@@ -138,6 +175,7 @@ where
         engine.property_key_from_str("prototype"),
         proto_desc,
     )?;
+    // Set proto.constructor to F (spec implicit in OrdinaryCreateFromConstructor).
     let ctor_ref = JsPropertyDescriptor {
         value: Some(Ty::value_from_object(f_obj.clone())),
         writable: Some(true),
@@ -152,8 +190,13 @@ where
         ctor_ref,
     )?;
     let f_val = Ty::value_from_object(f_obj.clone());
+    // Step 13: Define the constants of interface I on F given realm.
+    super::constant::define_constants::<Ty>(f_obj.clone(), engine, &def.constants)?;
+    // Step 14-15: Define static attributes and static operations on F.
     super::attribute::define_static_attributes::<Ty, E>(engine, &f_val, &def.attributes)?;
     super::operation::define_static_operations::<Ty, E>(engine, &f_val, &def.operations)?;
+    // Step 16: Return F.
+    //   Note: store in registry so create_interface_instance can find F's prototype.
     super::registry::register_in_host_defined::<Ty, I>(engine, proto.clone(), f_obj.clone());
     let install_desc = JsPropertyDescriptor {
         value: Some(Ty::value_from_object(f_obj)),

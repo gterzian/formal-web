@@ -14,7 +14,8 @@ use crate::js::platform_objects::{
     object_for_existing_node,
 };
 use crate::webidl::bindings::{
-    AttributeDef, InterfaceDefinition, OperationDef, WebIdlInterface, create_interface_instance,
+    AttributeDef, ConstantDef, InterfaceDefinition, OperationDef, WebIdlInterface,
+    create_interface_instance,
 };
 
 impl WebIdlInterface<crate::js::Types> for Node {
@@ -24,6 +25,29 @@ impl WebIdlInterface<crate::js::Types> for Node {
     }
 
     fn define_members(def: &mut InterfaceDefinition<crate::js::Types>) {
+        // https://dom.spec.whatwg.org/#interface-node
+        // Node constants per §4.4
+        def.add_constant(ConstantDef::number("ELEMENT_NODE", 1.0));
+        def.add_constant(ConstantDef::number("ATTRIBUTE_NODE", 2.0));
+        def.add_constant(ConstantDef::number("TEXT_NODE", 3.0));
+        def.add_constant(ConstantDef::number("CDATA_SECTION_NODE", 4.0));
+        def.add_constant(ConstantDef::number("ENTITY_REFERENCE_NODE", 5.0));
+        def.add_constant(ConstantDef::number("ENTITY_NODE", 6.0));
+        def.add_constant(ConstantDef::number("PROCESSING_INSTRUCTION_NODE", 7.0));
+        def.add_constant(ConstantDef::number("COMMENT_NODE", 8.0));
+        def.add_constant(ConstantDef::number("DOCUMENT_NODE", 9.0));
+        def.add_constant(ConstantDef::number("DOCUMENT_TYPE_NODE", 10.0));
+        def.add_constant(ConstantDef::number("DOCUMENT_FRAGMENT_NODE", 11.0));
+        def.add_constant(ConstantDef::number("NOTATION_NODE", 12.0));
+        def.add_constant(ConstantDef::number("DOCUMENT_POSITION_DISCONNECTED", 1.0));
+        def.add_constant(ConstantDef::number("DOCUMENT_POSITION_PRECEDING", 2.0));
+        def.add_constant(ConstantDef::number("DOCUMENT_POSITION_FOLLOWING", 4.0));
+        def.add_constant(ConstantDef::number("DOCUMENT_POSITION_CONTAINS", 8.0));
+        def.add_constant(ConstantDef::number("DOCUMENT_POSITION_CONTAINED_BY", 16.0));
+        def.add_constant(ConstantDef::number(
+            "DOCUMENT_POSITION_IMPLEMENTATION_SPECIFIC",
+            32.0,
+        ));
         // §3.7.6: Regular attributes
         def.add_attribute(AttributeDef {
             _phantom: PhantomData,
