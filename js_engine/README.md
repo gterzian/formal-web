@@ -310,7 +310,7 @@ All `get_readable_stream_from_iterator_record` lookups now use Symbol keys.
 | `JsSymbol::async_iterator()` | `ec.property_key_from_str("@@asyncIterator")` or symbol creation |
 | `Context::register_global_property(key, val, attrs)` | `ec.create_data_property(global, key, val)` |
 
-## Boa backend — WPT inventory (2026-07-04)
+## Boa backend — WPT inventory (2026-07-05)
 
 Default WPT suite: ~97 tests.
 
@@ -449,7 +449,7 @@ Attempted to cfg-gate `register_interface_spec` into two versions with `from_pro
 4. Run the single failing test via `cargo run --release --no-default-features --features boa,media -- wpt` and capture stderr.
 5. Compare the failing code path with the corresponding pre-migration code on `main` (use `git show main:content/src/streams/...`). |
 
-**Remaining unexpected results (WPT run 2026-07-04, 32 unexpected/97 tests):**
+**Remaining unexpected results (WPT run 2026-07-05, 13 unexpected/97 tests):**
 
 **Pre-existing (not migration-related):**
 | Test | Failure | Notes |
@@ -466,13 +466,49 @@ Both `create_interface_instance` (domain code) and `register_interface_spec` (co
 
 **Testing note:** Whether this resolves the "TypeError: not a callable function" failures depends on whether the GC was collecting stored `JsObject` references inside constructor-created instances specifically.  The previous fix already covered domain-created objects; this session extends coverage to constructor-created objects.  Run WPT to verify.
 
-**Category 6: Backward propagation pump stall**
-Tests that TIMEOUT waiting for pipeTo to propagate events backward (dest→source):
-| Test |
-|---|
-| `streams/piping/close-propagation-backward` |
-| `streams/piping/error-propagation-backward` |
-| `streams/piping/general` (piping section) |
+**Category 6 ✅ FIXED — Backward propagation pump stall**
+
+Three root causes were identified and fixed:
+
+1. **Write-algorithm sync throw not reaching `process_write`:**
+   `WriteAlgorithm::call` was converting synchronous throws from JS
+   sinks into rejected promises via `rejected_promise(error)`.  This
+   postponed the error to a microtask, but the pipe-to pump cannot
+   rely on microtasks because the ready promise might still be fulfilled
+   when checked.  Fix: propagate the `Err` directly so `process_write`
+   invokes `finish_in_flight_write_with_error` synchronously.
+
+2. **`process_write` spec order violation:**
+   `mark_first_write_request_in_flight` was called AFTER the write
+   algorithm, so a synchronous throw prevented the in-flight slot from
+   being set.  Fix: swap to spec order (mark in-flight first, then call
+   the write algorithm; handle errors with `finish_in_flight_write_with_error`).
+   Same fix applied to `process_close`.
+
+3. **Action promise never settled (`transform_promise_to_undefined`):**
+   `transform_promise_to_undefined` passed a `result_capability` to
+   `perform_promise_then`, but the trait impl ignored it (`_result_capability`,
+   called `promise.then()` which creates its own capability).  The
+   caller's capability promise was never resolved, so the shutdown action
+   promise stayed pending forever.  Fix: pass `None` for the capability
+   and use the `.then()` return value directly.
+
+4. **Shutdown action sync error bypassed finalize:**
+   When the cancel/close/abort action throws synchronously, the error
+   propagated through `?` up the call stack, bypassing the
+   `ShuttingDownPendingAction` handler and `finalize`.  Fix: catch the
+   error in `shutdown`, call `set_shutdown_error` with it, and finalize.
+
+Tests now PASS:
+- `streams/piping/close-propagation-backward`
+- `streams/piping/error-propagation-backward`
+- `streams/piping/general` (piping section)
+- `streams/transform-streams/backpressure`
+- `streams/transform-streams/cancel`
+- `streams/transform-streams/errors`
+- `streams/transform-streams/reentrant-strategies`
+- `streams/transform-streams/terminate`
+- `streams/readable-streams/reentrant-strategies`
 
 **Category 7: Async iterator / from**
 `ReadableStream.values()` fails because our `create_async_iterator` tries to create a default reader on a locked (or non-standard) stream:
@@ -482,26 +518,16 @@ Tests that TIMEOUT waiting for pipeTo to propagate events backward (dest→sourc
 | `streams/readable-streams/from` |
 | `streams/readable-streams/patched-global` (iterator part) |
 
-**Category 8: General pump/handling TIMEOUTs**
-Various stream tests that time out, likely due to pump-stall or promise-not-settling issues:
-| Test |
-|---|
-| `streams/readable-streams/bad-underlying-sources` |
-| `streams/readable-streams/cancel` |
-| `streams/readable-streams/reentrant-strategies` |
-| `streams/readable-streams/tee` |
-| `streams/readable-streams/read-task-handling` |
-| `streams/transform-streams/backpressure` |
-| `streams/transform-streams/cancel` |
-| `streams/transform-streams/errors` |
-| `streams/transform-streams/general` |
-| `streams/transform-streams/reentrant-strategies` |
-| `streams/transform-streams/terminate` |
-| `streams/writable-streams/aborting` |
-| `streams/writable-streams/close` |
-| `streams/writable-streams/constructor` |
-| `streams/writable-streams/general` |
-| `streams/writable-streams/write` |
+**Category 8: Remaining pump/handling issues (pre-existing or not yet diagnosed)**
+| Test | Status | Notes |
+|---|---|---|
+| `streams/readable-streams/bad-underlying-sources` | TIMEOUT | Pre-existing — likely generic migration issue |
+| `streams/readable-streams/cancel` | FAIL | Pre-existing — likely generic migration issue |
+| `streams/readable-streams/tee` | FAIL | Pre-existing — likely generic migration issue |
+| `streams/readable-streams/read-task-handling` | TIMEOUT | Pre-existing — likely generic migration issue |
+| `streams/readable-streams/general` | FAIL | Subclassing: assert_true expected true got false |
+| `streams/readable-streams/default-reader` | FAIL | Pre-existing — likely generic migration issue |
+| `streams/readable-streams/count-queuing-strategy-integration` | FAIL | 
 
 
 **FIXED this session:**
@@ -515,6 +541,15 @@ Various stream tests that time out, likely due to pump-stall or promise-not-sett
 | `create_interface_instance` spec alignment | No spec steps | **DONE** ✅ | Added spec-faithful step comments matching the algorithm; GC concern documented as Note |
 | `get_function_realm` on trait | Missing | **ADDED** ✅ | Added to `ExecutionContext` trait, Boa impl returns current realm |
 | `BoaContext::create_platform_object` | Missing | **ADDED** ✅ | Public method preserving GC traits; path for future `from_proto_and_data` direct use |
+| `streams/piping/close-propagation-backward` | TIMEOUT | **PASS** ✅ | Category 6 fix (see above) |
+| `streams/piping/error-propagation-backward` | TIMEOUT | **PASS** ✅ | Category 6 fix (see above) |
+| `streams/piping/general` | TIMEOUT | **PASS** ✅ | Category 6 fix (see above) |
+| `streams/transform-streams/backpressure` | TIMEOUT | **PASS** ✅ | Category 6 fix (write algorithm sync throw) |
+| `streams/transform-streams/cancel` | TIMEOUT | **PASS** ✅ | Category 6 fix |
+| `streams/transform-streams/errors` | TIMEOUT | **PASS** ✅ | Category 6 fix |
+| `streams/transform-streams/reentrant-strategies` | TIMEOUT | **PASS** ✅ | Category 6 fix |
+| `streams/transform-streams/terminate` | TIMEOUT | **PASS** ✅ | Category 6 fix |
+| `streams/readable-streams/reentrant-strategies` | TIMEOUT | **PASS** ✅ | Category 6 fix (write algorithm sync throw) |
 
 ## Known issues — JSC backend
 

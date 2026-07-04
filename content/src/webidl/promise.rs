@@ -119,8 +119,6 @@ pub(crate) fn transform_promise_to_undefined(
     promise_object: &JsObject,
     ec: &mut dyn ExecutionContext<Types>,
 ) -> Completion<JsObject, Types> {
-    let realm = ec.current_realm();
-    let intrinsics = ec.realm_intrinsics(&realm);
     let not_promise_err =
         ec.new_type_error("transform_promise_to_undefined: value is not a Promise");
     // Step 1-2 of react: CreateBuiltinFunction returning undefined on fulfillment.
@@ -135,18 +133,15 @@ pub(crate) fn transform_promise_to_undefined(
         1,
         ec.property_key_from_str(""),
     );
-    // Step 5 of react: "Let constructor be %Promise%."
-    let promise_constructor = intrinsics.promise;
-    // Step 6 of react: "Let newCapability be ? NewPromiseCapability(constructor)."
-    let capability = ec.new_promise_capability(promise_constructor)?;
-    let result_promise = capability.promise.clone();
-    // Step 7 of react: "PerformPromiseThen(promise, onFulfilled, onRejected, newCapability)."
+    // Step 7 of react: "PerformPromiseThen(promise, onFulfilled, ...)."
+    // Note: We pass None for result_capability because our trait impl
+    // ignores it (calls promise.then() which creates its own).  The
+    // returned promise resolves to undefined when promise_object settles.
     let js_promise =
         <Types as JsTypes>::object_as_promise(promise_object).ok_or_else(|| not_promise_err)?;
-    ec.perform_promise_then(js_promise, Some(on_fulfilled), None, Some(capability))?;
+    let result = ec.perform_promise_then(js_promise, Some(on_fulfilled), None, None)?;
     // Step 8 of react: "Return newCapability."
-    Ok(<Types as JsTypes>::value_as_object(&result_promise)
-        .unwrap_or_else(|| ec.realm_global_object()))
+    Ok(<Types as JsTypes>::value_as_object(&result).unwrap_or_else(|| ec.realm_global_object()))
 }
 
 /// <https://webidl.spec.whatwg.org/#mark-a-promise-as-handled>

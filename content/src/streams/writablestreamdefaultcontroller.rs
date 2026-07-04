@@ -67,7 +67,14 @@ impl WriteAlgorithm {
                 let call_result = callback.call(&[chunk, controller_value], ec);
                 match call_result {
                     Ok(value) => promise_from_value(value, ec),
-                    Err(error_value) => rejected_promise(error_value, ec),
+                    Err(error_value) => {
+                        // Propagate synchronous throws directly so the caller
+                        // (process_write) can invoke FinishInFlightWriteWithError
+                        // and error the stream synchronously.  Converting to a
+                        // rejected promise postpones the error handling to a
+                        // microtask, which the pipe-to pump cannot rely on.
+                        return Err(error_value);
+                    }
                 }
             }
         }
@@ -432,11 +439,30 @@ impl WritableStreamDefaultController {
 
     fn process_close(&self, ec: &mut dyn ExecutionContext<Types>) -> Completion<(), Types> {
         let stream = self.stream_slot(ec)?;
-        let _ = self.dequeue_value(ec)?;
-        debug_assert!(self.queue.borrow().is_empty());
-        let algorithm = self.close_algorithm(ec)?;
-        let sink_close_promise = algorithm.call(ec)?;
+
+        // Step 1: "Perform ! WritableStreamMarkCloseRequestInFlight(stream)."
         stream.mark_close_request_in_flight(ec)?;
+
+        // Step 2: "Perform ! DequeueValue(controller)."
+        let _ = self.dequeue_value(ec)?;
+
+        // Step 3: "Assert: controller.[[queue]] is empty."
+        debug_assert!(self.queue.borrow().is_empty());
+
+        // Step 4: "Let sinkClosePromise be the result of performing controller.[[closeAlgorithm]]."
+        let algorithm = self.close_algorithm(ec)?;
+        let sink_close_promise = match algorithm.call(ec) {
+            Ok(promise) => promise,
+            Err(error) => {
+                // If the close algorithm throws synchronously, error the stream
+                // via FinishInFlightCloseWithError.
+                stream.finish_in_flight_close_with_error(error, ec)?;
+                return Ok(());
+            }
+        };
+
+        // Step 5: "Perform ! WritableStreamDefaultControllerClearAlgorithms(controller)."
+        self.clear_algorithms();
         let stream_for_fulfilled = stream.clone();
         let on_fulfilled = crate::js::builtin_with_captures(
             ec,
@@ -461,11 +487,20 @@ impl WritableStreamDefaultController {
         let stream = self.stream_slot(ec)?;
 
         // Step 2: "Perform ! WritableStreamMarkFirstWriteRequestInFlight(stream)."
+        stream.mark_first_write_request_in_flight(ec)?;
+
         // Step 3: "Let sinkWritePromise be the result of performing controller.[[writeAlgorithm]], passing in chunk."
         let controller_object = self.controller_object(ec)?;
         let write_algo = self.write_algorithm(ec)?;
-        let sink_write_promise = write_algo.call(&controller_object, chunk, ec)?;
-        stream.mark_first_write_request_in_flight(ec)?;
+        let sink_write_promise = match write_algo.call(&controller_object, chunk, ec) {
+            Ok(promise) => promise,
+            Err(error) => {
+                // If the write algorithm throws synchronously, error the stream
+                // via FinishInFlightWriteWithError.
+                stream.finish_in_flight_write_with_error(error, ec)?;
+                return Ok(());
+            }
+        };
 
         let controller_for_fulfilled = self.clone();
         let stream_for_fulfilled = stream.clone();

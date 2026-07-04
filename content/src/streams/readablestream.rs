@@ -3432,7 +3432,14 @@ impl PipeToState {
         }
 
         if let Some(action) = action {
-            return self.perform_action(action, ec);
+            // If the action throws synchronously (e.g. cancel() throws),
+            // treat it as rejection of the action promise: finalize with
+            // the thrown error instead of the original shutdown_error.
+            if let Err(error) = self.perform_action(action, ec) {
+                self.set_shutdown_error(Some(error));
+                return self.finalize(ec);
+            }
+            return Ok(());
         }
 
         self.finalize(ec)
@@ -3809,6 +3816,7 @@ fn pipe_to_on_promise_settled(
             if state.is_shutting_down() {
                 return Ok(());
             }
+
             state.wait_for_writer_ready(ec)?;
         }
         PipePumpState::ShuttingDownWithPendingWrites(action) => {
