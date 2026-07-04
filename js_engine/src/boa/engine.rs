@@ -144,6 +144,27 @@ impl BoaContext {
     pub fn into_context(self) -> Context {
         self.context
     }
+
+    /// Create a platform object that preserves GC tracing through its
+    /// type-erased storage.
+    ///
+    /// Unlike `create_object_with_any`, this method keeps the concrete type
+    /// `T` through to `JsObject::from_proto_and_data`, so the Boa GC can
+    /// trace through `GcCell<T>` fields inside platform objects.  This is
+    /// the correct path for all Web IDL platform objects (those created
+    /// via `create_interface_instance`).
+    ///
+    /// `create_object_with_any` should only be used for objects that don't
+    /// need GC tracing (prototypes, namespace objects, etc.).
+    pub fn create_platform_object<
+        T: boa_gc::Trace + boa_gc::Finalize + boa_engine::JsData + 'static,
+    >(
+        &mut self,
+        prototype: JsObject,
+        data: T,
+    ) -> JsObject {
+        JsObject::from_proto_and_data(Some(prototype), data)
+    }
 }
 
 impl Default for BoaContext {
@@ -1161,6 +1182,33 @@ impl ExecutionContext<BoaTypes> for BoaContext {
         BoaTypes: JsTypesWithRealm,
     {
         self.context.global_object()
+    }
+
+    // ── §7.3 Functions ────────────────────────────────────────────────────
+
+    fn get_function_realm(
+        &mut self,
+        _function: &JsObject,
+    ) -> Completion<boa_engine::realm::Realm, BoaTypes>
+    where
+        BoaTypes: JsTypesWithRealm,
+    {
+        // <https://tc39.es/ecma262/#sec-getfunctionrealm>
+        //
+        // Steps 1-3 require accessing the function's [[Realm]] internal slot,
+        // which is stored as `pub(crate)` on Boa's NativeFunction and is not
+        // accessible from outside the `boa_engine` crate.  Bound function and
+        // Proxy exotic object checks are also not possible through the public
+        // API.  In practice, for the Web IDL `internally-create-a-new-object-
+        // implementing-the-interface` algorithm, `newTarget` is always created
+        // in the current realm, so returning the current realm (step 4) is
+        // correct for all current uses.
+        //
+        // Note: If cross-realm subclassing is needed, this must be updated
+        // to extract the function's realm through Boa's internal API.
+        //
+        // Step 4: Return the current Realm Record.
+        Ok(self.context.realm().clone())
     }
 
     // ── §9.6 Jobs ─────────────────────────────────────────────────────────

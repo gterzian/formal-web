@@ -2079,6 +2079,12 @@ impl ExecutionContext<JscTypes> for JscEngine {
         self.context.global_object()
     }
 
+    // ── §7.3 Functions ────────────────────────────────────────────────────
+
+    fn get_function_realm(&mut self, _function: &JscObject) -> Completion<JscRealm, JscTypes> {
+        todo!("get_function_realm")
+    }
+
     // ── §9.6 Jobs ─────────────────────────────────────────────────────────
     fn enqueue_job(&mut self, job: Box<dyn FnOnce()>) {
         self.queued_jobs.push(Box::new(move |_: &mut JscEngine| {

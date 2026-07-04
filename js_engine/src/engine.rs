@@ -397,6 +397,9 @@ pub trait ExecutionContext<T: JsTypes + JsTypesWithRealm>: EcmascriptHost<T> {
         default_constructor: T::Constructor,
     ) -> Completion<T::Constructor, T>;
 
+    /// <https://tc39.es/ecma262/#sec-getfunctionrealm>
+    fn get_function_realm(&mut self, function: &T::JsObject) -> Completion<T::Realm, T>;
+
     // ────────────────────────────────────────────────────────────────────────
     // §7.4 Iteration
     // ────────────────────────────────────────────────────────────────────────
