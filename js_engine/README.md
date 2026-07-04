@@ -5,22 +5,6 @@
 Bridges between ECMAScript engines (Boa, JSC) and formal-web's
 HTML/DOM/WebIDL layers.
 
-## End state (achieved)
-
-All content code operates exclusively on the generic API —
-`ExecutionContext<T>`, `EcmascriptHost<T>`, `JsTypes`.  This is the
-current state of the codebase.
-
-- ✅ Zero `boa_engine::*` imports in non-wasm content.
-- ✅ Zero `ec_to_ctx` / `context_as_ec` bridges in non-wasm content.
-- ✅ Zero `#[cfg(boa_backend)]` logic switches in non-wasm content —
-  except `build_context` (the single engine-instantiation point) and
-  `bindings/html/host_hooks.rs` (Boa engine builder).
-- ✅ One message loop in `main.rs` — not two.  The loop works with the
-  generic engine type; no `#[cfg]` branches.
-- ✅ Backend-specific code lives only inside `js_engine/src/{boa,jsc}/`.
-- 🔶 WPT passes on Boa; JSC content process is not yet functional.
-
 ## Architecture
 
 > **Principle:** The architecture is defined by the standards.  We don't
@@ -164,7 +148,7 @@ cargo check -p js_engine --no-default-features --features boa
 
 Mutually exclusive — only one backend at a time.
 
-## Generic API surface (POC: 86/86 tests pass on Boa)
+## Generic API surface
 
 ```rust
 // Platform objects: create, read, mutate native data
@@ -192,27 +176,12 @@ fn binding_fn(
 ) -> Completion<Types::JsValue, Types>;
 ```
 
-## Replacement table (old Boa API → generic EC trait)
-
-| Boa-specific | Generic EC trait method |
-|---|---|
-| `JsPromise::new_pending(context)` | `ec.new_promise_pending()?` |
-| `JsPromise::from_object(p)?.then(...)` | `ec.perform_promise_then(...)` |
-| `JsPromise::from_object(x)?.state()` | `ec.promise_state(&x)?` |
-| `JsNativeError::typ().with_message(msg)` | `ec.new_type_error(msg)` |
-| `JsValue::undefined()` | `ec.value_undefined()` |
-| `NativeFunction::from_copy_closure_with_captures(...)` | `ec.create_builtin_function(...)` |
-| `resolvers.resolve.call(&u, &[v], ctx)` | `ec.call(&resolve, &undefined, &[v])` |
-| `object.get(js_string!(key), context)` | `ec.get(object, key)?` |
-| `JsUint8Array::from_iter(src, ctx)` | `typed_array_buffer` + `clone_array_buffer` + `construct` |
-| `ObjectInitializer::new(context)` / `register_global_property(...)` | `ec.create_plain_object(...)` + `ec.set(global, key, val, ...)` |
-
 ## Per-backend details
 
 | Backend | Status |
 |---|---|
-| Boa | ✅ Full parity — all trait methods, all POC tests pass |
-| JSC | 🔶 Trait surface complete. 1 ignore: `SharedArrayBuffer`. `exercise_context_lifecycle` is Boa-only. |
+| Boa | ✅ Full parity — all trait methods pass |
+| JSC | 🔶 Trait surface complete. `exercise_context_lifecycle` is Boa-only. |
 | GC | ✅ Complete — `#[gc_struct]`, `GcCell<T>`, `GcRootHandle<T>`. |
 
 ## Design notes
@@ -233,27 +202,47 @@ fn binding_fn(
   host-data abstraction must first be validated in
   `content/src/generic_js_test.rs` on both backends before production code.
 
-## Migration status
+## Debugging workflow
 
-The `content/` crate is now fully generic.  All content code operates
-exclusively on the `js_engine` trait API — `ExecutionContext<T>`,
-`EcmascriptHost<T>`, `JsTypes`.
+Use the **browser extension** (`.pi/extensions/browser/`) for fast interactive
+feedback during development, and **WPT** for full regression verification.
 
-### ✅ Completed
+### Quick feedback: browser extension
 
-| Area | Status |
-|---|---|
-| `boa_engine::*` imports in non-wasm code | **Zero** — no `use boA_engine` or `use boa_gc` anywhere outside `wasm/` and `host_hooks.rs` |
-| `ec_to_ctx` / `context_as_ec` bridges in non-wasm | **Zero** — all 7 bridge calls live in `wasm/namespace.rs` only |
-| `#[cfg(boa_backend)]` in non-wasm, non-exception files | **Zero** — all removed |
-| `builtin_with_captures*` bridge functions | **Removed** — all 38 call sites replaced with `ec.create_builtin_function_with_captures()` |
-| `crate::js::builtin_callback` | **Removed** — replaced with `Callback::from_object(Types::object_from_function(...))` |
-| `js_result_to_completion` / `native_error_to_js_value` | **Moved** — now private helpers in `wasm/namespace.rs` |
-| `downcast.rs` event_target functions | **Un-gated** — all unconditional; `with_abort_signal_ref` uses `ec.with_object_any` |
-| `async_iterable.rs` GC derives | **Un-gated** — uses `#[gc_struct]` + `#[ignore_trace]` |
-| `GlobalScope`, `WindowProxy` | **Un-gated** — fully generic, zero `boa_engine::*` imports |
-| Streams domain files | **Un-gated** — all 5 files, 38 call sites converted |
-| `main.rs` message loops | **Unified** — single `run_content_message_loop`; deleted `run_jsc_message_loop` |
+```bash
+# 1. Build and start formal-web with CDP on a test page
+cargo build --release --no-default-features --features boa,media
+./target/release/formal-web cdp --port 9222 \
+  --startup-url "file:///path/to/test.html"
+
+# 2. Inside pi, connect the extension
+# (the /browser-connect command connects automatically on first use)
+
+# 3. Use browser_evaluate to run JavaScript
+browser_evaluate({ expression: "document.getElementById('out').textContent" })
+browser_evaluate({ expression: "console.log('test'); 42" })
+```
+
+The CDP tools (`browser_navigate`, `browser_evaluate`, `browser_get_text`,
+`browser_screenshot`, etc.) give sub-second turnaround without needing to
+restart the browser process.  Create minimal `.html` test pages in
+`scratchpad/` to isolate specific patterns before running the WPT suite.
+
+### Full verification: WPT
+
+```bash
+cargo run --release --no-default-features --features boa,media -- wpt
+```
+
+The WPT runner tests all covered APIs against the web-platform-tests suite
+in `vendor/wpt/`.  Always run WPT before committing changes to verify no
+regressions were introduced.  When debugging a WPT failure, isolate the
+specific test first:
+
+1. Find the test in `vendor/wpt/` (e.g. `streams/piping/close-propagation-forward.any.js`)
+2. Read the test assertions to understand the expected behavior
+3. Create a minimal reproduction in `scratchpad/` and run via CDP
+4. Add `log::debug!` or `error!` traces, iterate with CDP, then run WPT to confirm the fix
 
 ### 🟢 Remaining `#[cfg(boa_backend)]` (intentional)
 
@@ -268,37 +257,27 @@ exclusively on the `js_engine` trait API — `ExecutionContext<T>`,
 
 ### Replacement reference
 
-The following table summarises the migration patterns.  All are validated in
-`content/src/generic_js_test.rs`.
-
-| Boa-specific construct | Generic replacement |
+| Boa-specific | Generic replacement |
 |---|---|
+| `js_string!("foo")` | `ec.property_key_from_str("foo")` or `ec.js_string_from_str("foo")` |
 | `JsNativeError::typ().with_message(msg)` | `ec.new_type_error(msg)` |
-| `JsObject::downcast_ref::<T>()` | `ec.with_object_any(&obj).and_then(|d| d.downcast_ref::<T>())` |
-| `boa_gc::GcRefCell::new(val)` | `js_engine::gc::gc_cell_new(val)` |
-| `JsObject::from_proto_and_data(proto, data)` | `ec.create_object_with_any(prototype, Box::new(data))` |
+| `JsPromise::new_pending(context)` | `ec.new_promise_pending()?` |
+| `JsPromise::from_object(p)?.then(...)` | `ec.perform_promise_then(...)` |
+| `JsPromise::from_object(x)?.state()` | `ec.promise_state(&x)?` |
 | `NativeFunction::from_closure(closure)` | `ec.create_builtin_function(Box::new(behaviour), length, name)` |
 | `NativeFunction::from_copy_closure_with_captures(...)` | `ec.create_builtin_function_with_captures(captures, behaviour, length, name)` |
-| `FunctionObjectBuilder::new(realm, native).name(n).length(l).build()` | `ec.create_builtin_function(Box::new(behaviour), length, name)` |
+| `JsObject::downcast_ref::<T>()` | `ec.with_object_any(&obj).and_then(|d| d.downcast_ref::<T>())` |
+| `JsObject::from_proto_and_data(proto, data)` | `ec.create_object_with_any(prototype, Box::new(data))` |
+| `boa_gc::GcRefCell::new(val)` | `js_engine::gc::gc_cell_new(val)` |
+| `boa_engine::JsResult<T>` | `Completion<T, Types>` |
 | `PropertyDescriptor::builder().value(v).writable(true).build()` | `PropertyDescriptor { value, writable, .. }` |
 | `boa_engine::builtins::promise::ResolvingFunctions` | `js_engine::records::PromiseResolvers<Types>` |
 | `JsSymbol::async_iterator()` | `ec.property_key_from_str("@@asyncIterator")` or symbol creation |
-| `js_string!("foo")` | `ec.property_key_from_str("foo")` or `ec.js_string_from_str("foo")` |
 | `Context::register_global_property(key, val, attrs)` | `ec.create_data_property(global, key, val)` |
-| `boa_engine::JsResult<T>` | `Completion<T, Types>` |
-
-### End state achieved
-
-- `content/` imports `js_engine` traits and types only — zero direct `boa_engine` or `boa_gc` imports
-- The only `#[cfg(boa_backend)]` in non-exception, non-wasm code is **zero**
-- `Cargo.toml` features `boa`/`jsc` select which backend `js_engine` compiles
-- `content/build.rs` sets `cfg(boa_backend)` / `cfg(jsc_backend)` based on features
-- `content/src/js/build_context.rs` has one `#[cfg]` to pick `BoaContext` vs `JscEngine`
-- Backend-specific code lives only inside `js_engine/src/{boa,jsc}/` and `content/src/wasm/`
 
 ## Boa backend — WPT inventory (2026-07-04)
 
-Default WPT suite: 81 tests.  Unexpected failures: 48.
+Default WPT suite: ~97 tests.
 
 ### ✅ PASS (tests that were expected PASS and pass)
 
@@ -308,50 +287,102 @@ Default WPT suite: 81 tests.  Unexpected failures: 48.
 | `dom/nodes/Element-hasAttribute` | |
 | `dom/nodes/Element-insertAdjacentText` | |
 | `dom/nodes/Element-remove` | |
-| `dom/nodes/Node-constants` | Fixed this session (added constants to Node constructor + prototype) |
+| `dom/nodes/Node-constants` | |
 | `html/dom/document.title-01/03/05` | |
 | `html/dom/document-dir` | |
 | `html/iframe-element/*` (2) | |
 | `html/HTMLAnchorElement/*` (2) | |
-| `formal/wasm-compile-instantiate` | |
-| `formal/event-constructor` | Fixed this session |
-| `formal/stream-constructor` | Fixed this session |
+| `streams/piping/general-addition` | |
+| `streams/piping/multiple-propagation` | |
+| `streams/piping/pipe-through` | |
+| `streams/piping/then-interception` | |
+| `streams/readable-streams/constructor` | |
+| `streams/readable-streams/bad-strategies` | |
+| `streams/readable-streams/floating-point-total-queue-size` | |
+| `streams/readable-streams/garbage-collection` | |
+| `streams/readable-byte-streams/construct-byob-request` | |
+| `streams/readable-byte-streams/crashtests/tee-locked-stream` | |
+| `streams/writable-streams/error` | |
+| `streams/writable-streams/bad-strategies` | |
+| `streams/transform-streams/properties` | |
+| `streams/transform-streams/patched-global` | |
+| `streams/transform-streams/formal-debug-terminate` | |
 
-### ❌ UNEXPECTED FAIL — all 48 caused by one regression
+### ❌ UNEXPECTED FAIL (fix plan)
 
-**All 48 unexpected failures share the same root cause:** the content process
-panics (SIGABRT) when `console.log` is called inside a promise microtask
-(`.then()` callback).  This was introduced by our changes.
+The console.log crash in microtasks has been **fixed** (`println!` → `writeln!`
+with explicit stdout handle).  Remaining failures are logic errors from the
+generic migration.  The plan below lists each category, the root cause
+hypothesis, and the concrete fix steps.
 
-**Triggering experiment:**
-- `reader.read().then(function(v){})` — ✅ works (empty callback)
-- `reader.read().then(function(v){ console.log("done"); })` — ❌ crashes
-- `console.log("done")` — ✅ works (outside microtask)
-- `reader.read()` (no `.then()`) — ✅ works
+---
 
-The crash backtrace shows the panic originates in `console_generic::stdout_sink`
-(which calls `println!`) when invoked from a microtask job.  All 48 stream tests
-fail because the WPT harness (`testharness.js`) uses `console.log` in test
-callbacks that run as microtasks.
+**Category 1: PipeTo — only first chunk written (close-propagation-forward,
+error-propagation-forward)**
 
-**Other gaps (non-stream, non-console):**
-| Test | Failure |
+| Aspect | Detail |
 |---|---|
-| `html/structured-clone/*` (2) | `structuredClone` not implemented |
-| `wasm/jsapi/*` | WASM global not a Window |
+| Symptom | `assert_array_equals` shows only `["write", "a"]` instead of `["write", "a", "write", "b"]` |
+| Hypothesis | Neither `pipe_to_on_promise_settled` nor `append_reaction`'s reaction re-enters the pump loop after the first write completes. The state machine gets stuck at `PendingRead` or `PendingReady` after the first write finishes. |
+| Fix plan | 1. Add `log::debug!` traces to `pipe_to_on_promise_settled` showing entry, state, write result. Run the `close-propagation-forward` WPT test and trace the state machine transitions.<br>2. Compare the reaction flow against the pre-migration `main` branch: check whether the old code used `JsPromise::then()` vs new `ec.perform_promise_then()`, and whether the old code's `pipe_reaction_function` (which created `NativeFunction` per call) differs from the new `append_reaction` (which creates `create_builtin_function` each time).<br>3. Verify `resolve_ready_promise` is called at the right time: when the first write completes, `process_write_on_fulfilled` calls `finish_in_flight_write` → `update_backpressure`, which should resolve the ready promise, which should trigger `append_reaction`'s callback, which should call `read_chunk` again.<br>4. Check if the issue is that the ready promise was already resolved (no transition), so the reaction never fires. If so, the pump needs an explicit kick after write completion rather than relying on ready-promise state transitions. |
+
+**Category 2: PipeTo — timeout (close-propagation-backward,
+error-propagation-backward, flow-control, general, transform-streams)**
+
+| Aspect | Detail |
+|---|---|
+| Symptom | Test times out waiting for pipeTo to complete |
+| Hypothesis | Same root cause as Category 1, but the test hangs instead of asserting because no writes complete. The timeout tests involve backpressure, error propagation, or async iteration — all of which require the pump to continue after the initial write. |
+| Fix plan | Same as Category 1. After fixing the pump-livelock for the simple forward-propagation case, re-test these. Some may additionally need the microtask flush in the event loop (`flush_microtasks`) to process jobs across multiple event-loop iterations. |
+
+**Category 3: "TypeError: not a callable function" in basic stream tests
+(count-queuing-strategy-integration, general, default-reader partial)**
+
+| Aspect | Detail |
+|---|---|
+| Symptom | `promise_test` returns an unhandled rejection with this TypeError |
+| Hypothesis | Works in manual browser CDP test but not under WPT `promise_test`. The WPT harness wraps the test in a `Promise` and attaches `.then()`/`.catch()`. If our `Promise.prototype.then` is somehow different from native, or if a callback we register (e.g. size algorithm, pull algorithm) is not recognized as callable by `IsCallable()` in a nested microtask context, this error surfaces. |
+| Fix plan | 1. Isolate: run the simplest WPT stream test (`count-queuing-strategy-integration.any.js`) directly via `formal-web wpt --test ...` and capture the content-process stderr for the exact stack trace.<br>2. Check the `SizeAlgorithm::Callback` path: `invoke_callback_function` at `content/src/webidl/callback.rs` line ~139 calls `host.is_callable(&function_value)`. If the function object created by `ec.create_builtin_function` inside `get_count_size` (strategy.rs getter) returns `false` for `is_callable`, the callback silently returns `undefined` instead of `1`, breaking the queuing strategy.<br>3. Workaround: replace `invoke_callback_function`'s silent `return Ok(host.value_undefined())` with `return Err(host.new_type_error(...))` for the non-callable case, to surface the real error location. |
+
+**Category 4: Byte stream — "ReadableStream is missing its controller"
+(read-min, templated, respond-after-enqueue)**
+
+| Aspect | Detail |
+|---|---|
+| Symptom | All BYOB read operations fail because the controller slot is `None` |
+| Hypothesis | During `AcquireReadableStreamBYOBReader`, the reader acquires the stream and calls `ReadableStreamBYOBReaderRead` which calls `ReadableByteStreamControllerPullSteps`. The controller's `stream` slot should be set during `SetUpReadableByteStreamController`. If the generic migration changed how the controller's `stream_slot` is initialized or how `with_object_any` downcasts the controller, the slot may remain `None`. |
+| Fix plan | 1. Check `set_up_readable_byte_stream_controller` in `readablebytestreamcontroller.rs` — verify `controller.set_stream(stream.clone())` is called.<br>2. Check `ReadableByteStreamController::stream_slot` — compare with old `stream.borrow().clone()` pattern (was `Gc<GcRefCell<Option<ReadableStream>>>`). Ensure the new `GcCell` access pattern matches.<br>3. Check that `ReadableStreamBYOBReader` is correctly registered as a platform object in the Web IDL bindings so `create_interface_instance` properly attaches the native data. |
+
+**Category 5: Async iterator / from — "requires a default reader"
+(async-iterator, from)**
+
+| Aspect | Detail |
+|---|---|
+| Symptom | `ReadableStream.values()` throws "requires a default reader" or from() throws "requires an async iterable or iterable" |
+| Hypothesis | `values()` calls `getReader()` which checks the controller slot. If the controller is `None`, the error is "ReadableStream is missing its controller", not this. The "requires a default reader" error comes from `readable_stream_default_reader_read` when `stream` is `None` — meaning the reader was not properly attached to the stream. <br><br>`from()` looks up `@@asyncIterator` using string key `"asyncIterator"` instead of `Symbol.asyncIterator` (documented in the code). Standard iterables (arrays, Set, Map, generators) only expose `Symbol.iterator` / `Symbol.asyncIterator`, not string properties, so `from()` can't find them. |
+| Fix plan | 1. **from()**: Add `symbol_property_key` support to the `ExecutionContext` trait (or pass the `JsSymbol::async_iterator()` value through the generic interface). Use it in `get_readable_stream_from_iterator_record` instead of `ec.property_key_from_str("asyncIterator")`.<br>2. **async iterator (values())**: Check `values_method` in the bindings — it calls `getReader()` which should work if the controller is attached. The "requires a default reader" error may be from `acquire_readable_stream_default_reader` failing because the `ReadableStream` object lacks native data (not wrapped by `create_interface_instance`). Verify that `ReadableStream` platform objects are created via `create_interface_instance` everywhere, not via `ec.create_object_with_any`. |
+
+---
+
+**Workflow for each category:**
+1. Read the relevant test in `vendor/wpt/streams/` to understand exactly what it asserts.
+2. Use the browser extension (`browser_evaluate`) to reproduce the specific assertion in isolation.
+3. Add `log::debug!` traces or `error!` in the suspected code path.
+4. Run the single failing test via `cargo run --release --no-default-features --features boa,media -- wpt` and capture stderr.
+5. Compare the failing code path with the corresponding pre-migration code on `main` (use `git show main:content/src/streams/...`). |
+
+**Other (pre-existing, not migration-related):**
+| Test | Failure | Status |
+|---|---|---|
+| `html/structured-clone/*` | `structuredClone` not implemented; `Blob` undefined; `BorrowError` panic | Pre-existing |
+| `wasm/jsapi/*` | WASM global not a Window | Pre-existing |
+| `formal/wasm-compile-instantiate` | WASM global not a Window | Pre-existing |
 
 ## Known issues — JSC backend
 
 | # | Problem | Root cause | Status |
 |---|---|---|---|
 | 7 | JSC backend does not compile (220+ errors) | Missing methods on `JscValue`/`JscObject` (`is_undefined`, `downcast_ref`, `downcast_mut`, `as_object`, `display`, `value_null`); `wasmtime::Module` references in non-wasm code not gated | Not started — migration override documents this as expected |
-| 8 | `run_content_process()` returns an error on JSC | Content process startup fails — JSC integration not functional | Known (pre-existing) |
 
-## Known issues — JSC backend
-
-| # | Problem | Root cause | Status |
-|---|---|---|---|
-| 7 | JSC backend does not compile (220+ errors) | Missing methods on `JscValue`/`JscObject` (`is_undefined`, `downcast_ref`, `downcast_mut`, `as_object`, `display`, `value_null`); `wasmtime::Module` references in non-wasm code not gated | Not started — migration override documents this as expected |
-| 8 | `run_content_process()` returns an error on JSC | Content process startup fails — JSC integration not functional | Known (pre-existing) |
 
 

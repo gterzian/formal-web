@@ -2020,6 +2020,19 @@ impl ContentProcess {
         result
     }
 
+    /// Drain the ECMAScript microtask queue for all active documents.
+    /// This ensures promise reaction jobs and generic jobs progress
+    /// even when no script evaluation triggers a checkpoint.
+    fn flush_microtasks(&mut self) -> Result<(), String> {
+        for document in self.documents.values_mut() {
+            document
+                .settings
+                .perform_a_microtask_checkpoint()
+                .map_err(|error| format!("microtask checkpoint failed: {error}"))?;
+        }
+        Ok(())
+    }
+
     fn handle_command_inner(&mut self, command: Command) -> Result<bool, String> {
         match command {
             Command::SetEventLoopId(event_loop_id) => {
@@ -2266,6 +2279,12 @@ fn run_content_message_loop(
                                     let _ = process.note_command_completed();
                                 }
                             }
+                        }
+
+                        // Drain ECMAScript microtask queue (promise jobs, generic jobs)
+                        // after every command so pending promise reactions progress.
+                        if let Err(error) = process.flush_microtasks() {
+                            error!("failed to flush microtasks: {error}");
                         }
                     }
                     Err(_) => return Ok(()),

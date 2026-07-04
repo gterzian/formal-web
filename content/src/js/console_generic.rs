@@ -91,10 +91,12 @@ fn install_console_method(
     )
 }
 
+use std::io::Write;
+
 fn stdout_sink(line: &str) {
-    println!("{line}");
+    let _ = writeln!(std::io::stdout(), "{line}");
 }
 
 fn stderr_sink(line: &str) {
-    eprintln!("{line}");
+    let _ = writeln!(std::io::stderr(), "{line}");
 }
