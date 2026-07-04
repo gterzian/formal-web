@@ -1,7 +1,8 @@
 // ── HTMLVideoElement JS bindings ──
 
-use boa_engine::{JsArgs, JsValue};
 use std::marker::PhantomData;
+
+type JsValue = <crate::js::Types as JsTypes>::JsValue;
 
 use crate::html::HTMLVideoElement;
 use crate::webidl::bindings::{AttributeDef, InterfaceDefinition, WebIdlInterface};
@@ -173,7 +174,8 @@ fn set_poster(
     args: &[JsValue],
     ec: &mut dyn ExecutionContext<crate::js::Types>,
 ) -> Completion<JsValue, crate::js::Types> {
-    let poster = ec.to_rust_string(args.get_or_undefined(0).clone())?;
+    let undef = ec.value_undefined();
+    let poster = ec.to_rust_string(args.first().cloned().unwrap_or(undef))?;
     try_with_video_ref(this, ec, |v| v.set_poster(&poster))?;
     Ok(ec.value_undefined())
 }
@@ -192,7 +194,7 @@ fn set_plays_inline(
     args: &[JsValue],
     ec: &mut dyn ExecutionContext<crate::js::Types>,
 ) -> Completion<JsValue, crate::js::Types> {
-    let value = args.first().map_or(false, |v| v.to_boolean());
+    let value = args.first().map_or(false, |v| ec.to_boolean(v));
     try_with_video_ref(this, ec, |v| v.set_plays_inline(value))?;
     Ok(ec.value_undefined())
 }
@@ -211,7 +213,8 @@ fn set_width(
     args: &[JsValue],
     ec: &mut dyn ExecutionContext<crate::js::Types>,
 ) -> Completion<JsValue, crate::js::Types> {
-    let value = ec.to_rust_string(args.get_or_undefined(0).clone())?;
+    let undef = ec.value_undefined();
+    let value = ec.to_rust_string(args.first().cloned().unwrap_or(undef))?;
     try_with_video_ref(this, ec, |v| v.set_width(&value))?;
     Ok(ec.value_undefined())
 }
@@ -230,7 +233,8 @@ fn set_height(
     args: &[JsValue],
     ec: &mut dyn ExecutionContext<crate::js::Types>,
 ) -> Completion<JsValue, crate::js::Types> {
-    let value = ec.to_rust_string(args.get_or_undefined(0).clone())?;
+    let undef = ec.value_undefined();
+    let value = ec.to_rust_string(args.first().cloned().unwrap_or(undef))?;
     try_with_video_ref(this, ec, |v| v.set_height(&value))?;
     Ok(ec.value_undefined())
 }

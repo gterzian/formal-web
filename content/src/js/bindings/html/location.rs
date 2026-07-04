@@ -1,6 +1,6 @@
 use std::marker::PhantomData;
 
-use boa_engine::JsValue;
+type JsValue = <crate::js::Types as JsTypes>::JsValue;
 
 use crate::dom::DOMException;
 use crate::html::{Location, LocationError};

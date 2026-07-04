@@ -1,7 +1,23 @@
-use boa_engine::JsValue;
 use std::marker::PhantomData;
 
 use crate::dom::DOMException;
+type JsValue = <crate::js::Types as JsTypes>::JsValue;
+
+fn with_dom_exception_ref<R>(
+    this: &JsValue,
+    ec: &mut dyn ExecutionContext<crate::js::Types>,
+    f: impl FnOnce(&DOMException) -> R,
+) -> Completion<R, crate::js::Types> {
+    let obj = crate::js::Types::value_as_object(this)
+        .ok_or_else(|| ec.new_type_error("DOMException receiver is not an object"))?;
+    if let Some(data) = ec.with_object_any(&obj) {
+        if let Some(exception) = data.downcast_ref::<DOMException>() {
+            return Ok(f(exception));
+        }
+    }
+    Err(ec.new_type_error("receiver is not a DOMException"))
+}
+
 use crate::webidl::bindings::{AttributeDef, InterfaceDefinition, WebIdlInterface};
 
 use js_engine::{Completion, ExecutionContext, JsTypes};
@@ -80,12 +96,8 @@ fn get_name(
     _: &[JsValue],
     ec: &mut dyn ExecutionContext<crate::js::Types>,
 ) -> Completion<JsValue, crate::js::Types> {
-    let obj = crate::js::Types::value_as_object(this)
-        .ok_or_else(|| ec.new_type_error("DOMException receiver is not an object"))?;
-    let exception = obj
-        .downcast_ref::<DOMException>()
-        .ok_or_else(|| ec.new_type_error("receiver is not a DOMException"))?;
-    Ok(ec.value_from_string(ec.js_string_from_str(exception.name_value())))
+    let name = with_dom_exception_ref(this, ec, |ex| ex.name_value().to_string())?;
+    Ok(ec.value_from_string(ec.js_string_from_str(&name)))
 }
 
 fn get_message(
@@ -93,12 +105,8 @@ fn get_message(
     _: &[JsValue],
     ec: &mut dyn ExecutionContext<crate::js::Types>,
 ) -> Completion<JsValue, crate::js::Types> {
-    let obj = crate::js::Types::value_as_object(this)
-        .ok_or_else(|| ec.new_type_error("DOMException receiver is not an object"))?;
-    let exception = obj
-        .downcast_ref::<DOMException>()
-        .ok_or_else(|| ec.new_type_error("receiver is not a DOMException"))?;
-    Ok(ec.value_from_string(ec.js_string_from_str(exception.message_value())))
+    let msg = with_dom_exception_ref(this, ec, |ex| ex.message_value().to_string())?;
+    Ok(ec.value_from_string(ec.js_string_from_str(&msg)))
 }
 
 fn get_code(
@@ -106,10 +114,6 @@ fn get_code(
     _: &[JsValue],
     ec: &mut dyn ExecutionContext<crate::js::Types>,
 ) -> Completion<JsValue, crate::js::Types> {
-    let obj = crate::js::Types::value_as_object(this)
-        .ok_or_else(|| ec.new_type_error("DOMException receiver is not an object"))?;
-    let exception = obj
-        .downcast_ref::<DOMException>()
-        .ok_or_else(|| ec.new_type_error("receiver is not a DOMException"))?;
-    Ok(ec.value_from_number(exception.code_value() as f64))
+    let val = with_dom_exception_ref(this, ec, |ex| ex.code_value())?;
+    Ok(ec.value_from_number(val as f64))
 }

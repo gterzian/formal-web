@@ -1,7 +1,23 @@
-use boa_engine::JsValue;
 use std::marker::PhantomData;
 
 use crate::dom::Event;
+type JsValue = <crate::js::Types as JsTypes>::JsValue;
+
+fn with_event_ref<R>(
+    this: &JsValue,
+    ec: &mut dyn ExecutionContext<crate::js::Types>,
+    f: impl FnOnce(&Event) -> R,
+) -> Completion<R, crate::js::Types> {
+    let obj = crate::js::Types::value_as_object(this)
+        .ok_or_else(|| ec.new_type_error("Event receiver is not an object"))?;
+    if let Some(data) = ec.with_object_any(&obj) {
+        if let Some(event) = data.downcast_ref::<Event>() {
+            return Ok(f(event));
+        }
+    }
+    Err(ec.new_type_error("receiver is not an Event"))
+}
+
 use crate::webidl::bindings::{AttributeDef, InterfaceDefinition, OperationDef, WebIdlInterface};
 
 use js_engine::{Completion, ExecutionContext, JsTypes};
@@ -224,12 +240,8 @@ fn get_type(
     _: &[JsValue],
     ec: &mut dyn ExecutionContext<crate::js::Types>,
 ) -> Completion<JsValue, crate::js::Types> {
-    let obj = crate::js::Types::value_as_object(this)
-        .ok_or_else(|| ec.new_type_error("Event receiver is not an object"))?;
-    let event = obj
-        .downcast_ref::<Event>()
-        .ok_or_else(|| ec.new_type_error("receiver is not an Event"))?;
-    Ok(ec.value_from_string(ec.js_string_from_str(event.type_value())))
+    let type_value = with_event_ref(this, ec, |event| event.type_value().to_string())?;
+    Ok(ec.value_from_string(ec.js_string_from_str(&type_value)))
 }
 
 fn get_target(
@@ -237,14 +249,8 @@ fn get_target(
     _: &[JsValue],
     ec: &mut dyn ExecutionContext<crate::js::Types>,
 ) -> Completion<JsValue, crate::js::Types> {
-    let obj = crate::js::Types::value_as_object(this)
-        .ok_or_else(|| ec.new_type_error("Event receiver is not an object"))?;
-    let event = obj
-        .downcast_ref::<Event>()
-        .ok_or_else(|| ec.new_type_error("receiver is not an Event"))?;
-    Ok(event
-        .target_value()
-        .clone()
+    let target = with_event_ref(this, ec, |event| event.target_value())?;
+    Ok(target
         .map(crate::js::Types::value_from_object)
         .unwrap_or_else(|| ec.value_null()))
 }
@@ -254,14 +260,8 @@ fn get_current_target(
     _: &[JsValue],
     ec: &mut dyn ExecutionContext<crate::js::Types>,
 ) -> Completion<JsValue, crate::js::Types> {
-    let obj = crate::js::Types::value_as_object(this)
-        .ok_or_else(|| ec.new_type_error("Event receiver is not an object"))?;
-    let event = obj
-        .downcast_ref::<Event>()
-        .ok_or_else(|| ec.new_type_error("receiver is not an Event"))?;
-    Ok(event
-        .current_target_value()
-        .clone()
+    let target = with_event_ref(this, ec, |event| event.current_target_value())?;
+    Ok(target
         .map(crate::js::Types::value_from_object)
         .unwrap_or_else(|| ec.value_null()))
 }
@@ -271,12 +271,8 @@ fn get_event_phase(
     _: &[JsValue],
     ec: &mut dyn ExecutionContext<crate::js::Types>,
 ) -> Completion<JsValue, crate::js::Types> {
-    let obj = crate::js::Types::value_as_object(this)
-        .ok_or_else(|| ec.new_type_error("Event receiver is not an object"))?;
-    let event = obj
-        .downcast_ref::<Event>()
-        .ok_or_else(|| ec.new_type_error("receiver is not an Event"))?;
-    Ok(ec.value_from_number(event.event_phase_value() as f64))
+    let val = with_event_ref(this, ec, |event| event.event_phase_value())?;
+    Ok(ec.value_from_number(val as f64))
 }
 
 fn get_bubbles(
@@ -284,12 +280,8 @@ fn get_bubbles(
     _: &[JsValue],
     ec: &mut dyn ExecutionContext<crate::js::Types>,
 ) -> Completion<JsValue, crate::js::Types> {
-    let obj = crate::js::Types::value_as_object(this)
-        .ok_or_else(|| ec.new_type_error("Event receiver is not an object"))?;
-    let event = obj
-        .downcast_ref::<Event>()
-        .ok_or_else(|| ec.new_type_error("receiver is not an Event"))?;
-    Ok(ec.value_from_bool(event.bubbles_value()))
+    let val = with_event_ref(this, ec, |event| event.bubbles_value())?;
+    Ok(ec.value_from_bool(val))
 }
 
 fn get_cancelable(
@@ -297,12 +289,8 @@ fn get_cancelable(
     _: &[JsValue],
     ec: &mut dyn ExecutionContext<crate::js::Types>,
 ) -> Completion<JsValue, crate::js::Types> {
-    let obj = crate::js::Types::value_as_object(this)
-        .ok_or_else(|| ec.new_type_error("Event receiver is not an object"))?;
-    let event = obj
-        .downcast_ref::<Event>()
-        .ok_or_else(|| ec.new_type_error("receiver is not an Event"))?;
-    Ok(ec.value_from_bool(event.cancelable_value()))
+    let val = with_event_ref(this, ec, |event| event.cancelable_value())?;
+    Ok(ec.value_from_bool(val))
 }
 
 fn get_default_prevented(
@@ -310,12 +298,8 @@ fn get_default_prevented(
     _: &[JsValue],
     ec: &mut dyn ExecutionContext<crate::js::Types>,
 ) -> Completion<JsValue, crate::js::Types> {
-    let obj = crate::js::Types::value_as_object(this)
-        .ok_or_else(|| ec.new_type_error("Event receiver is not an object"))?;
-    let event = obj
-        .downcast_ref::<Event>()
-        .ok_or_else(|| ec.new_type_error("receiver is not an Event"))?;
-    Ok(ec.value_from_bool(event.default_prevented()))
+    let val = with_event_ref(this, ec, |event| event.default_prevented())?;
+    Ok(ec.value_from_bool(val))
 }
 
 fn get_cancel_bubble(
@@ -323,12 +307,8 @@ fn get_cancel_bubble(
     _: &[JsValue],
     ec: &mut dyn ExecutionContext<crate::js::Types>,
 ) -> Completion<JsValue, crate::js::Types> {
-    let obj = crate::js::Types::value_as_object(this)
-        .ok_or_else(|| ec.new_type_error("Event receiver is not an object"))?;
-    let event = obj
-        .downcast_ref::<Event>()
-        .ok_or_else(|| ec.new_type_error("receiver is not an Event"))?;
-    Ok(ec.value_from_bool(event.cancel_bubble()))
+    let val = with_event_ref(this, ec, |event| event.cancel_bubble())?;
+    Ok(ec.value_from_bool(val))
 }
 
 fn set_cancel_bubble(
@@ -336,14 +316,17 @@ fn set_cancel_bubble(
     args: &[JsValue],
     ec: &mut dyn ExecutionContext<crate::js::Types>,
 ) -> Completion<JsValue, crate::js::Types> {
+    let undef = ec.value_undefined();
+    let value = args.first().map_or(false, |v| ec.to_boolean(v));
+    let not_event = ec.new_type_error("receiver is not an Event");
     let obj = crate::js::Types::value_as_object(this)
         .ok_or_else(|| ec.new_type_error("Event receiver is not an object"))?;
-    let mut event = obj
-        .downcast_mut::<Event>()
-        .ok_or_else(|| ec.new_type_error("receiver is not an Event"))?;
-    let value = args.first().map_or(false, |v| v.to_boolean());
+    let event = ec
+        .with_object_any_mut(&obj)
+        .and_then(|data| data.downcast_mut::<Event>())
+        .ok_or(not_event)?;
     event.set_cancel_bubble(value);
-    Ok(ec.value_undefined())
+    Ok(undef)
 }
 
 fn get_is_trusted(
@@ -353,10 +336,8 @@ fn get_is_trusted(
 ) -> Completion<JsValue, crate::js::Types> {
     let obj = crate::js::Types::value_as_object(this)
         .ok_or_else(|| ec.new_type_error("Event receiver is not an object"))?;
-    let event = obj
-        .downcast_ref::<Event>()
-        .ok_or_else(|| ec.new_type_error("receiver is not an Event"))?;
-    Ok(ec.value_from_bool(event.is_trusted()))
+    let val = with_event_ref(this, ec, |event| event.is_trusted())?;
+    Ok(ec.value_from_bool(val))
 }
 
 fn get_time_stamp(
@@ -366,10 +347,8 @@ fn get_time_stamp(
 ) -> Completion<JsValue, crate::js::Types> {
     let obj = crate::js::Types::value_as_object(this)
         .ok_or_else(|| ec.new_type_error("Event receiver is not an object"))?;
-    let event = obj
-        .downcast_ref::<Event>()
-        .ok_or_else(|| ec.new_type_error("receiver is not an Event"))?;
-    Ok(ec.value_from_number(event.time_stamp_value()))
+    let val = with_event_ref(this, ec, |event| event.time_stamp_value())?;
+    Ok(ec.value_from_number(val))
 }
 
 fn stop_propagation(
@@ -377,13 +356,16 @@ fn stop_propagation(
     _: &[JsValue],
     ec: &mut dyn ExecutionContext<crate::js::Types>,
 ) -> Completion<JsValue, crate::js::Types> {
+    let not_event = ec.new_type_error("receiver is not an Event");
+    let undef = ec.value_undefined();
     let obj = crate::js::Types::value_as_object(this)
         .ok_or_else(|| ec.new_type_error("Event receiver is not an object"))?;
-    let mut event = obj
-        .downcast_mut::<Event>()
-        .ok_or_else(|| ec.new_type_error("receiver is not an Event"))?;
+    let event = ec
+        .with_object_any_mut(&obj)
+        .and_then(|data| data.downcast_mut::<Event>())
+        .ok_or(not_event)?;
     event.stop_propagation();
-    Ok(ec.value_undefined())
+    Ok(undef)
 }
 
 fn stop_immediate_propagation(
@@ -391,13 +373,16 @@ fn stop_immediate_propagation(
     _: &[JsValue],
     ec: &mut dyn ExecutionContext<crate::js::Types>,
 ) -> Completion<JsValue, crate::js::Types> {
+    let not_event = ec.new_type_error("receiver is not an Event");
+    let undef = ec.value_undefined();
     let obj = crate::js::Types::value_as_object(this)
         .ok_or_else(|| ec.new_type_error("Event receiver is not an object"))?;
-    let mut event = obj
-        .downcast_mut::<Event>()
-        .ok_or_else(|| ec.new_type_error("receiver is not an Event"))?;
+    let event = ec
+        .with_object_any_mut(&obj)
+        .and_then(|data| data.downcast_mut::<Event>())
+        .ok_or(not_event)?;
     event.stop_immediate_propagation();
-    Ok(ec.value_undefined())
+    Ok(undef)
 }
 
 fn prevent_default(
@@ -405,11 +390,14 @@ fn prevent_default(
     _: &[JsValue],
     ec: &mut dyn ExecutionContext<crate::js::Types>,
 ) -> Completion<JsValue, crate::js::Types> {
+    let not_event = ec.new_type_error("receiver is not an Event");
+    let undef = ec.value_undefined();
     let obj = crate::js::Types::value_as_object(this)
         .ok_or_else(|| ec.new_type_error("Event receiver is not an object"))?;
-    let mut event = obj
-        .downcast_mut::<Event>()
-        .ok_or_else(|| ec.new_type_error("receiver is not an Event"))?;
+    let event = ec
+        .with_object_any_mut(&obj)
+        .and_then(|data| data.downcast_mut::<Event>())
+        .ok_or(not_event)?;
     event.prevent_default();
-    Ok(ec.value_undefined())
+    Ok(undef)
 }

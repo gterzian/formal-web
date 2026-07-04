@@ -1,5 +1,6 @@
-use boa_engine::{JsArgs, JsValue};
 use std::marker::PhantomData;
+
+type JsValue = <crate::js::Types as JsTypes>::JsValue;
 
 use crate::html::HTMLAnchorElement;
 use crate::webidl::bindings::{AttributeDef, InterfaceDefinition, WebIdlInterface};
@@ -120,7 +121,8 @@ fn set_href(
     args: &[JsValue],
     ec: &mut dyn ExecutionContext<crate::js::Types>,
 ) -> Completion<JsValue, crate::js::Types> {
-    let href = ec.to_rust_string(args.get_or_undefined(0).clone())?;
+    let undef = ec.value_undefined();
+    let href = ec.to_rust_string(args.first().cloned().unwrap_or(undef))?;
     try_with_html_anchor_element_ref(this, ec, |anchor| anchor.set_href(&href))?;
     Ok(ec.value_undefined())
 }
@@ -139,7 +141,8 @@ fn set_target(
     args: &[JsValue],
     ec: &mut dyn ExecutionContext<crate::js::Types>,
 ) -> Completion<JsValue, crate::js::Types> {
-    let target = ec.to_rust_string(args.get_or_undefined(0).clone())?;
+    let undef = ec.value_undefined();
+    let target = ec.to_rust_string(args.first().cloned().unwrap_or(undef))?;
     try_with_html_anchor_element_ref(this, ec, |anchor| anchor.set_target(&target))?;
     Ok(ec.value_undefined())
 }
@@ -158,7 +161,8 @@ fn set_download(
     args: &[JsValue],
     ec: &mut dyn ExecutionContext<crate::js::Types>,
 ) -> Completion<JsValue, crate::js::Types> {
-    let download = ec.to_rust_string(args.get_or_undefined(0).clone())?;
+    let undef = ec.value_undefined();
+    let download = ec.to_rust_string(args.first().cloned().unwrap_or(undef))?;
     try_with_html_anchor_element_ref(this, ec, |anchor| anchor.set_download(&download))?;
     Ok(ec.value_undefined())
 }
@@ -177,7 +181,8 @@ fn set_rel(
     args: &[JsValue],
     ec: &mut dyn ExecutionContext<crate::js::Types>,
 ) -> Completion<JsValue, crate::js::Types> {
-    let rel = ec.to_rust_string(args.get_or_undefined(0).clone())?;
+    let undef = ec.value_undefined();
+    let rel = ec.to_rust_string(args.first().cloned().unwrap_or(undef))?;
     try_with_html_anchor_element_ref(this, ec, |anchor| anchor.set_rel(&rel))?;
     Ok(ec.value_undefined())
 }
@@ -197,7 +202,8 @@ fn set_referrer_policy(
     args: &[JsValue],
     ec: &mut dyn ExecutionContext<crate::js::Types>,
 ) -> Completion<JsValue, crate::js::Types> {
-    let referrer_policy = ec.to_rust_string(args.get_or_undefined(0).clone())?;
+    let undef = ec.value_undefined();
+    let referrer_policy = ec.to_rust_string(args.first().cloned().unwrap_or(undef))?;
     try_with_html_anchor_element_ref(this, ec, |anchor| {
         anchor.set_referrer_policy(&referrer_policy)
     })?;

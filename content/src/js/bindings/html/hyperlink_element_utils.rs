@@ -1,5 +1,7 @@
-use boa_engine::{JsArgs, JsNativeError, JsResult, JsValue, object::JsObject};
 use url::Url;
+
+type JsValue = <crate::js::Types as JsTypes>::JsValue;
+type JsObject = <crate::js::Types as JsTypes>::JsObject;
 
 use crate::js::platform_objects;
 use crate::{
@@ -19,21 +21,6 @@ pub(crate) fn document_creation_url(
         .and_then(|any| any.downcast_ref::<Document>())
         .ok_or(missing_err)?;
     Ok(document.creation_url.clone())
-}
-
-fn with_hyperlink_element_utils_ref<R>(
-    this: &JsValue,
-    f: impl FnOnce(&dyn HyperlinkElementUtils) -> R,
-) -> JsResult<R> {
-    let object = this
-        .as_object()
-        .ok_or_else(|| JsNativeError::typ().with_message("hyperlink receiver is not an object"))?;
-    if let Some(anchor) = object.downcast_ref::<HTMLAnchorElement>() {
-        return Ok(f(&*anchor));
-    }
-    Err(JsNativeError::typ()
-        .with_message("receiver does not implement HyperlinkElementUtils")
-        .into())
 }
 
 fn try_with_hyperlink_element_utils_ref<R>(

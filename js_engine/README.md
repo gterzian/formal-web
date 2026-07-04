@@ -314,20 +314,20 @@ Files currently gated behind `#[cfg(boa_backend)]` that must be un-gated:
 | `dom/` | module-level `#[cfg(boa_backend)]` | `event.rs` + `abort.rs` + `dispatch.rs` converted; `ui_event_dispatch.rs` remains (depends on `EnvironmentSettingsObject`) |
 | `html/` | module-level `#[cfg(boa_backend)]` | `html_anchor_element.rs`, `html_element.rs`, `html_input_element.rs`, `html_media_element.rs`, `hyperlink_element_utils.rs`, `location.rs` are generic. `environment_settings_object.rs`, `global_scope.rs`, `windowproxy.rs` remain (core engine bridge) |
 | `streams/` | module-level `#[cfg(boa_backend)]` | **DONE** — all 13 files un-gated, zero `boa_engine::*` imports. |
-| `js/bindings/` | module-level `#[cfg(boa_backend)]` | **9 files converted this session.** ~9 remaining: `element.rs`, `abort_signal.rs`, `event_target.rs`, `node.rs`, `document.rs`, `html_element.rs`, `html_iframe_element.rs`, `hyperlink_element_utils.rs`, `window.rs`. |
+| `js/bindings/` | module-level `#[cfg(boa_backend)]` | **21 files converted.** ~8 remaining: `document.rs`, `element.rs`, `event_target.rs`, `node.rs`, `host_hooks.rs`, `html_input_element.rs`, `html_media_element.rs`, `html/window.rs`. |
 | `js/bindings/wasm/` | module-level `#[cfg(boa_backend)]` | Boa-only (wasmtime); bridge functions moved locally |
 | `js/downcast.rs` | module-level `#[cfg(boa_backend)]` | Generic `try_with_*` helpers (using `<crate::js::Types as JsTypes>` syntax) merged back into single file. `downcast_generic.rs` removed. Remains Boa-gated because `crate::dom`/`crate::html` are Boa-only. |
 | `js/platform_objects.rs` | module-level `#[cfg(boa_backend)]` | Fully converted to generic `<crate::js::Types as JsTypes>::JsObject`; no `boa_engine::*` imports. Remains Boa-gated because domain types still depend on `boa_engine`. |
 | `js/mod.rs` helpers | function-level `#[cfg(boa_backend)]` | `builtin_with_captures_ctx`, `builtin_with_captures`, `builtin_callback*`, bridge functions |
 | `main.rs` | ~21 inline `#[cfg(boa_backend)]` annotations | Many tied to `ContentProcess` which is Boa-only |
 
-**~35 files still import `boa_engine::*`** (down from ~60).  Files no longer importing `boa_engine`:
+**~17 files still import `boa_engine::*`** (down from ~60).  Files no longer importing `boa_engine`:
 - Earlier sessions: `platform_objects.rs`, `dom/abort.rs`, `dom/dispatch.rs`,
   `html/html_media_element.rs`, `dom/event.rs`, `streams/strategy.rs`
 - **This session (9 files):** `dom/abort_controller.rs`, `dom/dom_exception.rs`,
   `dom/event.rs`, `dom/ui_event.rs`, `html/location.rs`,
-  `html/html_input_element.rs`, `html/html_anchor_element.rs`,
-  `html/html_media_element.rs`, `html/html_video_element.rs`
+  `html/html_anchor_element.rs`, `html/html_element.rs`,
+  `html/html_video_element.rs`, `html/hyperlink_element_utils.rs`
 - **Streams (2 files):** `readablestream.rs`, `readablebytestreamcontroller.rs`
 - `bindings/console.rs` and `bindings/css.rs` deleted (replaced by generic versions).
 

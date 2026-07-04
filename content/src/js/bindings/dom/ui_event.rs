@@ -1,7 +1,23 @@
-use boa_engine::JsValue;
 use std::marker::PhantomData;
 
 use crate::dom::{Event, UIEvent};
+type JsValue = <crate::js::Types as JsTypes>::JsValue;
+
+fn with_ui_event_ref<R>(
+    this: &JsValue,
+    ec: &mut dyn ExecutionContext<crate::js::Types>,
+    f: impl FnOnce(&UIEvent) -> R,
+) -> Completion<R, crate::js::Types> {
+    let obj = crate::js::Types::value_as_object(this)
+        .ok_or_else(|| ec.new_type_error("UIEvent receiver is not an object"))?;
+    if let Some(data) = ec.with_object_any(&obj) {
+        if let Some(ui_event) = data.downcast_ref::<UIEvent>() {
+            return Ok(f(ui_event));
+        }
+    }
+    Err(ec.new_type_error("receiver is not a UIEvent"))
+}
+
 use crate::webidl::bindings::{AttributeDef, InterfaceDefinition, WebIdlInterface};
 
 use super::event::init_flag;
@@ -85,14 +101,8 @@ fn get_view(
     _: &[JsValue],
     ec: &mut dyn ExecutionContext<crate::js::Types>,
 ) -> Completion<JsValue, crate::js::Types> {
-    let obj = crate::js::Types::value_as_object(this)
-        .ok_or_else(|| ec.new_type_error("UIEvent receiver is not an object"))?;
-    let ui_event = obj
-        .downcast_ref::<UIEvent>()
-        .ok_or_else(|| ec.new_type_error("receiver is not a UIEvent"))?;
-    Ok(ui_event
-        .view_value()
-        .clone()
+    let view = with_ui_event_ref(this, ec, |ui_event| ui_event.view_value())?;
+    Ok(view
         .map(crate::js::Types::value_from_object)
         .unwrap_or_else(|| ec.value_null()))
 }
@@ -102,10 +112,6 @@ fn get_detail(
     _: &[JsValue],
     ec: &mut dyn ExecutionContext<crate::js::Types>,
 ) -> Completion<JsValue, crate::js::Types> {
-    let obj = crate::js::Types::value_as_object(this)
-        .ok_or_else(|| ec.new_type_error("UIEvent receiver is not an object"))?;
-    let ui_event = obj
-        .downcast_ref::<UIEvent>()
-        .ok_or_else(|| ec.new_type_error("receiver is not a UIEvent"))?;
-    Ok(ec.value_from_number(ui_event.detail_value() as f64))
+    let val = with_ui_event_ref(this, ec, |ui_event| ui_event.detail_value())?;
+    Ok(ec.value_from_number(val as f64))
 }

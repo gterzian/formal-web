@@ -1,7 +1,8 @@
 use std::collections::BTreeMap;
 use std::marker::PhantomData;
 
-use boa_engine::{JsArgs, JsValue, object::JsObject};
+type JsValue = <crate::js::Types as JsTypes>::JsValue;
+type JsObject = <crate::js::Types as JsTypes>::JsObject;
 
 use crate::dom::Element;
 use crate::html::{
@@ -134,7 +135,8 @@ fn set_title(
     args: &[JsValue],
     ec: &mut dyn ExecutionContext<crate::js::Types>,
 ) -> Completion<JsValue, crate::js::Types> {
-    let title = ec.to_rust_string(args.get_or_undefined(0).clone())?;
+    let undef = ec.value_undefined();
+    let title = ec.to_rust_string(args.first().cloned().unwrap_or(undef))?;
     try_with_html_element_ref(this, ec, |html_element| html_element.set_title(&title))?;
     Ok(ec.value_undefined())
 }
@@ -153,7 +155,8 @@ fn set_lang(
     args: &[JsValue],
     ec: &mut dyn ExecutionContext<crate::js::Types>,
 ) -> Completion<JsValue, crate::js::Types> {
-    let lang = ec.to_rust_string(args.get_or_undefined(0).clone())?;
+    let undef = ec.value_undefined();
+    let lang = ec.to_rust_string(args.first().cloned().unwrap_or(undef))?;
     try_with_html_element_ref(this, ec, |html_element| html_element.set_lang(&lang))?;
     Ok(ec.value_undefined())
 }
@@ -172,7 +175,8 @@ fn set_dir(
     args: &[JsValue],
     ec: &mut dyn ExecutionContext<crate::js::Types>,
 ) -> Completion<JsValue, crate::js::Types> {
-    let dir = ec.to_rust_string(args.get_or_undefined(0).clone())?;
+    let undef = ec.value_undefined();
+    let dir = ec.to_rust_string(args.first().cloned().unwrap_or(undef))?;
     try_with_html_element_ref(this, ec, |html_element| html_element.set_dir(&dir))?;
     Ok(ec.value_undefined())
 }
@@ -191,7 +195,7 @@ fn set_hidden(
     args: &[JsValue],
     ec: &mut dyn ExecutionContext<crate::js::Types>,
 ) -> Completion<JsValue, crate::js::Types> {
-    let hidden = args.first().map_or(false, |v| v.to_boolean());
+    let hidden = args.first().map_or(false, |v| ec.to_boolean(v));
     try_with_html_element_ref(this, ec, |html_element| html_element.set_hidden(hidden))?;
     Ok(ec.value_undefined())
 }
@@ -486,8 +490,9 @@ pub(crate) fn style_declaration_object(
     let getter_fn = ec.create_builtin_function(
         Box::new(|args, this, ec| {
             // Step 1.1: convert to ASCII lowercase.
+            let undef = ec.value_undefined();
             let property_name = ec
-                .to_rust_string(args.get_or_undefined(0).clone())?
+                .to_rust_string(args.first().cloned().unwrap_or(undef))?
                 .trim()
                 .to_ascii_lowercase();
 
@@ -508,7 +513,9 @@ pub(crate) fn style_declaration_object(
         1,
         ec.property_key_from_str("getPropertyValue"),
     );
-    let getter_value = <crate::js::Types as JsTypes>::value_from_object(getter_fn.into());
+    let getter_value = <crate::js::Types as JsTypes>::value_from_object(
+        <crate::js::Types as JsTypes>::object_from_function(getter_fn),
+    );
     let getter_key = ec.property_key_from_str("getPropertyValue");
     let desc = js_engine::PropertyDescriptor {
         value: Some(getter_value),

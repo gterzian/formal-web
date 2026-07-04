@@ -1,5 +1,6 @@
-use boa_engine::JsValue;
 use std::marker::PhantomData;
+
+type JsValue = <crate::js::Types as JsTypes>::JsValue;
 
 use crate::dom::{AbortController, AbortSignal, create_abort_signal};
 use crate::js::try_with_abort_controller_ref;
