@@ -456,8 +456,23 @@ pub(crate) fn pipe_to_native_method(
     args: &[JsValue],
     ec: &mut dyn ExecutionContext<Types>,
 ) -> Completion<JsValue, Types> {
-    let promise = pipe_to_operation(this, args, ec)?;
-    Ok(JsValue::from(promise))
+    // <https://streams.spec.whatwg.org/#rs-pipeTo>
+    // Step 1: "Let promise be a new promise."
+    // Brand-check errors (this/destination not a stream) and option-getter
+    // exceptions must reject the promise, not throw synchronously.
+    match pipe_to_operation(this, args, ec) {
+        Ok(promise) => Ok(JsValue::from(promise)),
+        Err(error) => {
+            let (promise, resolvers) = ec.new_promise_pending()?;
+            let undefined = ec.value_undefined();
+            // Call resolvers.reject with the error to reject the promise.
+            if let Err(reject_error) = ec.call(&resolvers.reject, &undefined, &[error]) {
+                // Spec: If rejecting fails, ignore (edge case).
+                drop(reject_error);
+            }
+            Ok(JsValue::from(promise))
+        }
+    }
 }
 
 fn tee_method(

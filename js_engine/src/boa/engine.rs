@@ -1690,6 +1690,11 @@ impl ExecutionContext<BoaTypes> for BoaContext {
         // from `create_interface_instance`), or it may be raw data (when
         // called for prototypes, namespace objects, etc.).  Try to recover
         // the `TraceableBox` first, otherwise wrap in a no-op box.
+        // The data may already be wrapped in a `TraceableBox` (when called
+        // from `create_interface_instance` / `host_hooks.rs`), or it may be
+        // raw data (prototype objects, namespace objects, etc.).  In the
+        // latter case, use no-op tracing — safe because those objects don't
+        // contain `GcCell<T>` fields.
         let traceable = match data.downcast::<TraceableBox>() {
             Ok(boxed) => *boxed,
             Err(raw) => TraceableBox::noop(raw),

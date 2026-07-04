@@ -5,6 +5,14 @@
 Bridges between ECMAScript engines (Boa, JSC) and formal-web's
 HTML/DOM/WebIDL layers.
 
+## Documentation methodology
+
+This README documents both successful fixes and **failed attempts**.
+A failed attempt with a clear description of what was tried and why it
+didn't work is more useful than a TODO comment or a suggested-but-untested
+fix.  If a problem can be fixed it should be; if it can't, describe the
+blocker in detail — the next person to hit it will have the full context.
+
 ## Architecture
 
 > **Principle:** The architecture is defined by the standards.  We don't
@@ -391,7 +399,17 @@ steps.
 - `js_engine/Cargo.toml` — added `float16` feature forwarding
 - `content/src/webidl/bindings/interface.rs` — cfg-gated `create_interface_instance` to use `TraceableBox` on Boa
 - `content/src/js/bindings/html/host_hooks.rs` — wrap `Window` data in `TraceableBox::new` |
-| But note | The `TraceableBox` approach only wraps data that goes through `create_interface_instance` (i.e., platform objects). Direct calls to `create_object_with_any` with raw data (e.g., prototype objects, namespace objects, async iterators) use the no-op fallback path. This is correct because those objects don't contain `GcCell<T>` fields that need GC tracing. |
+| But note | The `TraceableBox` approach only wraps data that goes through `create_interface_instance`. The constructor path in `register_interface_spec` also stores platform objects via `ec.create_object_with_any` and would need the same wrapping, but the generic `I: WebIdlInterface<Ty>` bound doesn't include `Trace + Finalize`. |
+
+**Failed attempt: constructor path GC fix via `register_interface_spec` cfg-gating**
+
+Attempted to cfg-gate `register_interface_spec` into two versions — Boa with `I: WebIdlInterface<Ty> + NativeObject` and JSC with the original `I: WebIdlInterface<Ty> + 'static` — so the Boa constructor closure could call `JsObject::from_proto_and_data(prototype, obj)` directly (same as pre-generic code). Two problems stopped this:
+
+1. **Type mismatch between `Ty::JsObject` and `JsObject`.** Inside the generic closure, `instance_prototype` is `Ty::JsObject`. `from_proto_and_data` expects `JsObject`. Even though on Boa `Ty::JsObject == JsObject`, Rust's type system can't prove it in a generic context. `transmute` failed because associated types have no known size. `transmute_copy` risked double-frees. Going through `JsValue` as intermediary hit the same wall at the return site.
+
+2. **`#[cfg]` on where-clause bounds is unstable** in Rust 1.94.0. The two-function approach (cfg-gated bodies) worked but required duplicating the entire 170-line function body, and the type-conversion issue above blocked it anyway.
+
+**Root cause:** The generic switch introduced `NativeDataWrapper<Box<dyn Any>>` which type-erases the concrete platform-object type. Before the switch, `from_proto_and_data(proto, concrete_obj)` was used directly and the GC traced through the concrete `T: NativeObject`. Fixing this fully requires either (a) a mechanism to pass the concrete type's GC vtable through the `Box<dyn Any>` boundary without requiring the bound at the call site, or (b) reverting the constructor path to use `Context` directly (bypassing the generic `ExecutionContext` trait) with a cfg gate.
 
 **Category 4: Byte stream — "ReadableByteStreamController is missing its stream"
 (read-min, templated, respond-after-enqueue)**
@@ -422,12 +440,75 @@ steps.
 4. Run the single failing test via `cargo run --release --no-default-features --features boa,media -- wpt` and capture stderr.
 5. Compare the failing code path with the corresponding pre-migration code on `main` (use `git show main:content/src/streams/...`). |
 
-**Other (pre-existing, not migration-related):**
-| Test | Failure | Status |
+**Remaining unexpected results (WPT run 2026-07-04, 32 unexpected/97 tests):**
+
+**Pre-existing (not migration-related):**
+| Test | Failure | Notes |
 |---|---|---|
-| `html/structured-clone/*` | `structuredClone` not implemented; `Blob` undefined; `BorrowError` panic | Pre-existing |
-| `wasm/jsapi/*` | WASM global not a Window | Pre-existing |
-| `formal/wasm-compile-instantiate` | WASM global not a Window | Pre-existing |
+| `formal/wasm-compile-instantiate` | "WASM global not a Window" | Wasm namespace needs Window check |
+| `wasm/jsapi/constructor/compile` | Branding, promise type | Pre-existing |
+| `wasm/jsapi/module/exports` | Branding failures | Pre-existing |
+| `wasm/jsapi/constructor/validate` | PASS ✅ | Pre-existing |
+| `html/webappapis/structured-clone/structured-clone.any.js` | ERROR (BorrowError panic + Blob undefined) | Pre-existing |
+| `html/webappapis/structured-clone/structured-clone-cross-realm-method.html` | SKIP | Pre-existing |
+
+**Category 3: "TypeError: not a callable function" (GC tracing)**
+All tests that fail with "TypeError: not a callable function" in microtask/react callbacks are caused by the Boa GC collecting `JsObject` references stored inside platform objects. The `TraceableBox` fix applied to `create_interface_instance` does NOT cover the constructor path in `register_interface_spec`, which stores data directly via `ec.create_object_with_any` bypassing the GC trace wrapper. Affected tests:
+
+| Test | Sub-failures |
+|---|---|
+| `streams/readable-streams/count-queuing-strategy-integration` | 3 FAILs |
+| `streams/readable-streams/default-reader` | 1 FAIL + TIMEOUT |
+| `streams/readable-streams/general` | 9 FAILs (plus subclassing) |
+| `streams/readable-streams/templated` | 15 FAILs |
+| `streams/readable-byte-streams/templated` | 2 FAILs |
+| `streams/readable-byte-streams/read-min` | ERROR (BorrowError panic) |
+
+**Category 6: Backward propagation pump stall**
+Tests that TIMEOUT waiting for pipeTo to propagate events backward (dest→source):
+| Test |
+|---|
+| `streams/piping/close-propagation-backward` |
+| `streams/piping/error-propagation-backward` |
+| `streams/piping/general` (piping section) |
+
+**Category 7: Async iterator / from**
+`ReadableStream.values()` fails because our `create_async_iterator` tries to create a default reader on a locked (or non-standard) stream:
+| Test |
+|---|
+| `streams/readable-streams/async-iterator` |
+| `streams/readable-streams/from` |
+| `streams/readable-streams/patched-global` (iterator part) |
+
+**Category 8: General pump/handling TIMEOUTs**
+Various stream tests that time out, likely due to pump-stall or promise-not-settling issues:
+| Test |
+|---|
+| `streams/readable-streams/bad-underlying-sources` |
+| `streams/readable-streams/cancel` |
+| `streams/readable-streams/reentrant-strategies` |
+| `streams/readable-streams/tee` |
+| `streams/readable-streams/read-task-handling` |
+| `streams/transform-streams/backpressure` |
+| `streams/transform-streams/cancel` |
+| `streams/transform-streams/errors` |
+| `streams/transform-streams/general` |
+| `streams/transform-streams/reentrant-strategies` |
+| `streams/transform-streams/terminate` |
+| `streams/writable-streams/aborting` |
+| `streams/writable-streams/close` |
+| `streams/writable-streams/constructor` |
+| `streams/writable-streams/general` |
+| `streams/writable-streams/write` |
+
+
+**FIXED this session:**
+| Test | Before | After | Fix |
+|---|---|---|---|
+| `streams/piping/throwing-options` | FAIL | **PASS** ✅ | `pipe_to_native_method` wraps errors in rejected promises |
+| `streams/piping/general` (brand checks) | FAIL | **PASS** ✅ | Same fix |
+| `streams/readable-byte-streams/respond-after-enqueue` | FAIL | **PASS** ✅ | `typed_array_element_type` returning proper values |
+| `streams/readable-byte-streams/read-min` | FAIL → ERROR | **Still ERROR** | BorrowError panic separate issue |
 
 ## Known issues — JSC backend
 
