@@ -3044,6 +3044,33 @@ impl ExecutionContext<JscTypes> for JscEngine {
         JscPropertyKey::String(JscString::from_rust(&index.to_string()))
     }
 
+    fn property_key_from_symbol(&self, sym: &JscSymbol) -> JscPropertyKey {
+        JscPropertyKey::Symbol(sym.clone())
+    }
+
+    fn property_key_from_well_known_symbol(&mut self, name: &str) -> JscPropertyKey {
+        // JSC symbol references are opaque JscValues — look up from the global object.
+        let global = self.context.global_object();
+        let symbol_ctor = JscPropertyKey::from_rust("Symbol");
+        let symbol_fn = self
+            .get(&global, &symbol_ctor)
+            .unwrap_or_else(|_| JscValue::undefined());
+        let symbol_obj = match symbol_fn.as_object() {
+            Some(obj) => obj.clone(),
+            None => return JscPropertyKey::from_rust(name),
+        };
+        let prop_key = JscPropertyKey::from_rust(name);
+        let sym_value = self
+            .get(&symbol_obj, &prop_key)
+            .unwrap_or_else(|_| JscValue::undefined());
+        if sym_value.is_symbol() {
+            let sym = unsafe { JscSymbol::from_value(sym_value) };
+            JscPropertyKey::Symbol(sym)
+        } else {
+            JscPropertyKey::from_rust(name)
+        }
+    }
+
     fn property_key_to_rust_string(&self, key: &JscPropertyKey) -> String {
         match key {
             JscPropertyKey::String(s) => s.to_rust(),

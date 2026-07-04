@@ -1351,12 +1351,7 @@ fn get_readable_stream_from_iterator_record(
     let iterable_object = <crate::js::Types as JsTypes>::value_as_object(&async_iterable)
         .ok_or_else(|| ec.new_type_error("ReadableStream.from() argument must be an object"))?;
 
-    let async_iterator_key = ec.property_key_from_str("asyncIterator");
-    // Note: @@asyncIterator is Symbol.asyncIterator, not the string "asyncIterator".
-    // We use the property name that the iterable exposes — @@asyncIterator and @@iterator
-    // are accessed via Symbol well-known symbols, which requires symbol PropertyKey
-    // support on the EC trait.  For now, the from-iterable code path is not exposed
-    // to user code, so this approximate lookup suffices.
+    let async_iterator_key = ec.property_key_from_well_known_symbol("asyncIterator");
     let async_iter_method_value =
         ExecutionContext::get(ec, iterable_object.clone(), async_iterator_key)?;
 
@@ -1386,8 +1381,7 @@ fn get_readable_stream_from_iterator_record(
         });
     }
 
-    let iterator_key = ec.property_key_from_str("iterator");
-    // Note: Same approximation — @@iterator is Symbol.iterator.
+    let iterator_key = ec.property_key_from_well_known_symbol("iterator");
     let iter_method_value = ExecutionContext::get(ec, iterable_object.clone(), iterator_key)?;
     let iterator_method = get_optional_callable_method_value(
         iter_method_value,

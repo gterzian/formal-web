@@ -1566,6 +1566,35 @@ impl ExecutionContext<BoaTypes> for BoaContext {
         )
     }
 
+    fn property_key_from_symbol(&self, sym: &JsSymbol) -> PropertyKey {
+        PropertyKey::from(sym.clone())
+    }
+
+    fn property_key_from_well_known_symbol(&mut self, name: &str) -> PropertyKey {
+        let sym = match name {
+            "asyncIterator" => JsSymbol::async_iterator(),
+            "hasInstance" => JsSymbol::has_instance(),
+            "isConcatSpreadable" => JsSymbol::is_concat_spreadable(),
+            "iterator" => JsSymbol::iterator(),
+            "match" => JsSymbol::r#match(),
+            "matchAll" => JsSymbol::match_all(),
+            "replace" => JsSymbol::replace(),
+            "search" => JsSymbol::search(),
+            "species" => JsSymbol::species(),
+            "split" => JsSymbol::split(),
+            "toPrimitive" => JsSymbol::to_primitive(),
+            "toStringTag" => JsSymbol::to_string_tag(),
+            "unscopables" => JsSymbol::unscopables(),
+            "dispose" => JsSymbol::dispose(),
+            "asyncDispose" => JsSymbol::async_dispose(),
+            _ => {
+                // Fallback: treat as a string key
+                return PropertyKey::from(boa_engine::js_string!(name));
+            }
+        };
+        PropertyKey::from(sym)
+    }
+
     fn property_key_to_rust_string(&self, key: &PropertyKey) -> String {
         match key {
             PropertyKey::String(s) => s.to_std_string_escaped(),

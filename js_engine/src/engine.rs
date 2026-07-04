@@ -701,6 +701,15 @@ pub trait ExecutionContext<T: JsTypes + JsTypesWithRealm>: EcmascriptHost<T> {
     /// a sequence by numeric index).
     fn property_key_from_index(&self, index: u32) -> T::PropertyKey;
 
+    /// Create a `PropertyKey` from a `JsSymbol` reference.
+    /// Used for accessing well-known symbol properties (e.g. `@@asyncIterator`,
+    /// `@@iterator`) in iterable and async-iterable algorithms.
+    fn property_key_from_symbol(&self, sym: &T::JsSymbol) -> T::PropertyKey;
+
+    /// Create a `PropertyKey` from a well-known Symbol name (e.g. "asyncIterator",
+    /// "iterator", "hasInstance", "toPrimitive").
+    fn property_key_from_well_known_symbol(&mut self, name: &str) -> T::PropertyKey;
+
     /// Convert a `PropertyKey` to its string representation.
     /// Returns the string name of the property, or the string form of an index.
     /// Symbols are represented as their `Symbol(name)` string.

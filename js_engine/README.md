@@ -244,6 +244,22 @@ specific test first:
 3. Create a minimal reproduction in `scratchpad/` and run via CDP
 4. Add `log::debug!` or `error!` traces, iterate with CDP, then run WPT to confirm the fix
 
+### `ExecutionContext` — Symbol property keys
+
+Two methods were added for well-known Symbol access:
+
+```rust
+fn property_key_from_symbol(&self, sym: &T::JsSymbol) -> T::PropertyKey;
+fn property_key_from_well_known_symbol(&mut self, name: &str) -> T::PropertyKey;
+```
+
+Supported well-known symbol names: `asyncIterator`, `hasInstance`,
+`isConcatSpreadable`, `iterator`, `match`, `matchAll`, `replace`,
+`search`, `species`, `split`, `toPrimitive`, `toStringTag`,
+`unscopables`, `dispose`, `asyncDispose`.
+
+All `get_readable_stream_from_iterator_record` lookups now use Symbol keys.
+
 ### 🟢 Remaining `#[cfg(boa_backend)]` (intentional)
 
 | File | `#[cfg]` lines | Reason |
@@ -337,6 +353,15 @@ Additionally, `write_controller` was computing backpressure *before*
 enqueueing, causing `update_backpressure` to use the stale value. Fix:
 compute backpressure after enqueueing so it reflects the actual queue state.
 
+**Category 4** (byte stream controller `stream` slot never set): added
+`*controller.stream.borrow_mut() = Some(stream)` to
+`set_up_readable_byte_stream_controller`.
+
+**Category 5** (Symbol-based iterator lookup): added
+`property_key_from_symbol` / `property_key_from_well_known_symbol` to
+`ExecutionContext` trait. Updated `get_readable_stream_from_iterator_record`
+to use Symbol keys for `@@asyncIterator` and `@@iterator`.
+
 Fixes: `close-propagation-forward`, `error-propagation-forward`, `flow-control`,
 `transform-streams`, `flush`, `formal-debug-order`, `lipfuzz`, `strategies`,
 `writable-streams/bad-underlying-sinks`, `writable-streams/byte-length-queuing-strategy`,
@@ -359,17 +384,18 @@ steps.
 | Aspect | Detail |
 |---|---|
 | Symptom | `promise_test` returns an unhandled rejection with this TypeError |
-| Hypothesis | Works in manual browser CDP test but not under WPT `promise_test`. The WPT harness wraps the test in a `Promise` and attaches `.then()`/`.catch()`. If our `Promise.prototype.then` is somehow different from native, or if a callback we register (e.g. size algorithm, pull algorithm) is not recognized as callable by `IsCallable()` in a nested microtask context, this error surfaces. |
-| Fix plan | 1. Isolate: run the simplest WPT stream test (`count-queuing-strategy-integration.any.js`) directly via `formal-web wpt --test ...` and capture the content-process stderr for the exact stack trace.<br>2. Check the `SizeAlgorithm::Callback` path: `invoke_callback_function` at `content/src/webidl/callback.rs` line ~139 calls `host.is_callable(&function_value)`. If the function object created by `ec.create_builtin_function` inside `get_count_size` (strategy.rs getter) returns `false` for `is_callable`, the callback silently returns `undefined` instead of `1`, breaking the queuing strategy.<br>3. Workaround: replace `invoke_callback_function`'s silent `return Ok(host.value_undefined())` with `return Err(host.new_type_error(...))` for the non-callable case, to surface the real error location. |
+| Investigation | The error "not a callable function" comes from Boa's internal `[[Call]]` operation (`non_existent_call` in `core/engine/src/object/internal_methods/mod.rs`). The `invoke_callback_function` `is_callable` check passes — the stored function IS callable at the time it's stored and at the time it's invoked. The error surfaces as a *rejected Promise*, not a synchronous throw, suggesting it comes from a promise reaction job (microtask) rather than from direct `ec.call()` invocation.<br><br>Key finding: `JsObject::call()` in Boa pushes arguments to the VM stack and uses the VM calling convention, then calls `self.__call__()`. For NativeFunction objects, `__call__` is `native_function_call` which directly invokes the closure. For regular functions, `__call__` is `function_call` which may enter the bytecode interpreter. If the VM is in an unexpected state or the call target was garbage-collected, this could produce the error.<br><br>Most likely root cause: `NativeDataWrapper<T>` in `js_engine/src/boa/engine.rs` has a no-op `Trace` implementation, meaning any `JsObject` references stored inside Rust data via `create_object_with_any` / `create_interface_instance` are invisible to the Boa GC. If the GC runs during a test, these `JsObject` references (e.g. `Callback::object`, promise resolve/reject functions) can be freed. This matches the symptom perfectly — the function object is valid when stored and checked, but becomes invalid when the promise reaction job tries to call it later as a microtask. |
+| Fix plan | 1. Make `NativeDataWrapper<T>` properly trace its inner `T` when `T: Trace`. This requires changing `NativeDataWrapper<T>` from storing `Box<dyn std::any::Any>` to storing a type that implements both `Any` and `Trace`, and updating `create_object_with_any` / `with_object_any` / `with_object_any_mut` to use the new type.<br>2. Alternative short-term workaround: ensure the Boa GC does not run during tests by disabling automatic GC collection (`context.gc()` or similar).<br>3. Workaround in `invoke_callback_function`: replace the silent `return Ok(host.value_undefined())` with `return Err(host.new_type_error(...))` for the non-callable case to surface the real error location. |
 
-**Category 4: Byte stream — "ReadableStream is missing its controller"
+**Category 4: Byte stream — "ReadableByteStreamController is missing its stream"
 (read-min, templated, respond-after-enqueue)**
 
 | Aspect | Detail |
 |---|---|
-| Symptom | All BYOB read operations fail because the controller slot is `None` |
-| Hypothesis | During `AcquireReadableStreamBYOBReader`, the reader acquires the stream and calls `ReadableStreamBYOBReaderRead` which calls `ReadableByteStreamControllerPullSteps`. The controller's `stream` slot should be set during `SetUpReadableByteStreamController`. If the generic migration changed how the controller's `stream_slot` is initialized or how `with_object_any` downcasts the controller, the slot may remain `None`. |
-| Fix plan | 1. Check `set_up_readable_byte_stream_controller` in `readablebytestreamcontroller.rs` — verify `controller.set_stream(stream.clone())` is called.<br>2. Check `ReadableByteStreamController::stream_slot` — compare with old `stream.borrow().clone()` pattern (was `Gc<GcRefCell<Option<ReadableStream>>>`). Ensure the new `GcCell` access pattern matches.<br>3. Check that `ReadableStreamBYOBReader` is correctly registered as a platform object in the Web IDL bindings so `create_interface_instance` properly attaches the native data. |
+| Symptom | All BYOB read operations fail because the stream's controller slot is `None` (";ReadableStream is missing its controller") |
+| Root cause | `set_up_readable_byte_stream_controller` in `readablebytestreamcontroller.rs` took `_stream: ReadableStream` (prefixed with underscore, unused!) and never set the stream's controller slot. Both the controller→stream link AND the stream→controller link were missing. |
+| Fix | 1. Added `*controller.stream.borrow_mut() = Some(stream.clone());` to set controller's stream slot.<br>2. Added `stream.set_controller_slot(Some(ReadableStreamController::Byte(...)))` and `stream.set_controller_object_slot(Some(...))` to set stream's controller slot. |
+| Remaining | After the controller fix, tests now fail with "TypedArray view is missing its kind" — this is a separate issue in `ec.typed_array_element_type()` returning `None` for TypedArrays. |
 
 **Category 5: Async iterator / from — "requires a default reader"
 (async-iterator, from)**
@@ -377,8 +403,9 @@ steps.
 | Aspect | Detail |
 |---|---|
 | Symptom | `ReadableStream.values()` throws "requires a default reader" or from() throws "requires an async iterable or iterable" |
-| Hypothesis | `values()` calls `getReader()` which checks the controller slot. If the controller is `None`, the error is "ReadableStream is missing its controller", not this. The "requires a default reader" error comes from `readable_stream_default_reader_read` when `stream` is `None` — meaning the reader was not properly attached to the stream. <br><br>`from()` looks up `@@asyncIterator` using string key `"asyncIterator"` instead of `Symbol.asyncIterator` (documented in the code). Standard iterables (arrays, Set, Map, generators) only expose `Symbol.iterator` / `Symbol.asyncIterator`, not string properties, so `from()` can't find them. |
-| Fix plan | 1. **from()**: Add `symbol_property_key` support to the `ExecutionContext` trait (or pass the `JsSymbol::async_iterator()` value through the generic interface). Use it in `get_readable_stream_from_iterator_record` instead of `ec.property_key_from_str("asyncIterator")`.<br>2. **async iterator (values())**: Check `values_method` in the bindings — it calls `getReader()` which should work if the controller is attached. The "requires a default reader" error may be from `acquire_readable_stream_default_reader` failing because the `ReadableStream` object lacks native data (not wrapped by `create_interface_instance`). Verify that `ReadableStream` platform objects are created via `create_interface_instance` everywhere, not via `ec.create_object_with_any`. |
+| Root cause | `from()` looked up `@@asyncIterator` using string key `"asyncIterator"` instead of `Symbol.asyncIterator`. Standard iterables (arrays, Set, Map, generators) only expose `Symbol.iterator` / `Symbol.asyncIterator`, not string properties, so `from()` couldn't find them. |
+| Fix | Added `property_key_from_symbol` and `property_key_from_well_known_symbol` methods to `ExecutionContext` trait (Boa + JSC backends). Updated `get_readable_stream_from_iterator_record` to use `ec.property_key_from_well_known_symbol("asyncIterator")` and `ec.property_key_from_well_known_symbol("iterator")`. |
+| Remaining | The `values()` error may still occur if `ReadableStream` platform objects are not created via `create_interface_instance`. Verify that `ReadableStream` platform objects are created via `create_interface_instance` everywhere, not via `ec.create_object_with_any`. |
 
 ---
 

@@ -15,9 +15,9 @@ use js_engine::gc_struct;
 
 use super::{
     CancelAlgorithm, PullAlgorithm, ReadIntoRequest, ReadRequest, ReadableStream,
-    ReadableStreamState, StartAlgorithm, extract_source_method, readable_stream_add_read_request,
-    readable_stream_close, readable_stream_error, readable_stream_fulfill_read_request,
-    readable_stream_get_num_read_requests, type_error_value,
+    ReadableStreamController, ReadableStreamState, StartAlgorithm, extract_source_method,
+    readable_stream_add_read_request, readable_stream_close, readable_stream_error,
+    readable_stream_fulfill_read_request, readable_stream_get_num_read_requests, type_error_value,
 };
 
 #[gc_struct]
@@ -1287,7 +1287,7 @@ pub(crate) fn set_up_readable_byte_stream_controller_from_underlying_source(
 
 /// <https://streams.spec.whatwg.org/#set-up-readable-byte-stream-controller>
 pub(crate) fn set_up_readable_byte_stream_controller(
-    _stream: ReadableStream,
+    stream: ReadableStream,
     controller: ReadableByteStreamController,
     controller_object: &JsObject,
     start_algorithm: StartAlgorithm,
@@ -1297,6 +1297,13 @@ pub(crate) fn set_up_readable_byte_stream_controller(
     auto_allocate_chunk_size: Option<usize>,
     ec: &mut dyn ExecutionContext<crate::js::Types>,
 ) -> Completion<(), crate::js::Types> {
+    // Step 2 (implicit): Set controller.[[stream]] to stream.
+    *controller.stream.borrow_mut() = Some(stream.clone());
+
+    // Step 3 (implicit): Set stream.[[controller]] to controller.
+    stream.set_controller_slot(Some(ReadableStreamController::Byte(controller.clone())));
+    stream.set_controller_object_slot(Some(controller_object.clone()));
+
     controller.close_requested.set(false);
     controller.started.set(false);
     controller.pull_again.set(false);
