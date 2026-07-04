@@ -380,7 +380,6 @@ impl WritableStreamDefaultController {
         chunk_size: f64,
         ec: &mut dyn ExecutionContext<Types>,
     ) -> Completion<(), Types> {
-        let backpressure = self.get_backpressure(ec)?;
         let stream = self.stream_slot(ec)?;
         if let Err(error) =
             self.enqueue_value_with_size(QueueEntryValue::Chunk(chunk), chunk_size, ec)
@@ -390,6 +389,7 @@ impl WritableStreamDefaultController {
         }
 
         if !stream.close_queued_or_in_flight() && stream.state() == WritableStreamState::Writable {
+            let backpressure = self.get_backpressure(ec)?;
             stream.update_backpressure(backpressure, ec)?;
         }
 
@@ -837,6 +837,9 @@ fn process_write_on_fulfilled(
 ) -> Completion<JsValue, Types> {
     let (controller, stream) = captures;
     controller.dequeue_value(ec)?;
+    // Note: finish_in_flight_write must be called before advance_queue_if_needed,
+    // so the in-flight slot is available for the next queued write.
+    stream.finish_in_flight_write(ec)?;
     let state = stream.state();
     debug_assert!(state == WritableStreamState::Writable || state == WritableStreamState::Erroring);
     if !stream.close_queued_or_in_flight() && state == WritableStreamState::Writable {
@@ -844,7 +847,6 @@ fn process_write_on_fulfilled(
         stream.update_backpressure(backpressure, ec)?;
     }
     controller.advance_queue_if_needed(ec)?;
-    stream.finish_in_flight_write(ec)?;
     Ok(ec.value_undefined())
 }
 

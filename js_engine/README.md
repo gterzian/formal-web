@@ -292,48 +292,66 @@ Default WPT suite: ~97 tests.
 | `html/dom/document-dir` | |
 | `html/iframe-element/*` (2) | |
 | `html/HTMLAnchorElement/*` (2) | |
+| `streams/piping/close-propagation-forward` | |
+| `streams/piping/error-propagation-forward` | |
+| `streams/piping/flow-control` | |
 | `streams/piping/general-addition` | |
 | `streams/piping/multiple-propagation` | |
 | `streams/piping/pipe-through` | |
 | `streams/piping/then-interception` | |
+| `streams/piping/transform-streams` | |
 | `streams/readable-streams/constructor` | |
 | `streams/readable-streams/bad-strategies` | |
 | `streams/readable-streams/floating-point-total-queue-size` | |
 | `streams/readable-streams/garbage-collection` | |
 | `streams/readable-byte-streams/construct-byob-request` | |
 | `streams/readable-byte-streams/crashtests/tee-locked-stream` | |
-| `streams/writable-streams/error` | |
-| `streams/writable-streams/bad-strategies` | |
-| `streams/transform-streams/properties` | |
-| `streams/transform-streams/patched-global` | |
+| `streams/transform-streams/flush` | |
+| `streams/transform-streams/formal-debug-order` | |
 | `streams/transform-streams/formal-debug-terminate` | |
+| `streams/transform-streams/lipfuzz` | |
+| `streams/transform-streams/patched-global` | |
+| `streams/transform-streams/properties` | |
+| `streams/transform-streams/strategies` | |
+| `streams/writable-streams/bad-strategies` | |
+| `streams/writable-streams/bad-underlying-sinks` | |
+| `streams/writable-streams/byte-length-queuing-strategy` | |
+| `streams/writable-streams/count-queuing-strategy` | |
+| `streams/writable-streams/error` | |
+| `streams/writable-streams/floating-point-total-queue-size` | |
+| `streams/writable-streams/properties` | |
+| `streams/writable-streams/reentrant-strategy` | |
+| `streams/writable-streams/start` | |
+
+### ✅ FIXED (Categories 1 and 2 — PipeTo pump stall)
+
+The PipeTo pump was stalling after the first write because
+`process_write_on_fulfilled` called `advance_queue_if_needed` before
+`finish_in_flight_write`. Since the in-flight write slot was still occupied,
+`advance_queue_if_needed` returned early without starting the next queued
+write or close sentinel. Fix: swapped the order so `finish_in_flight_write`
+runs first (freeing the in-flight slot), then `advance_queue_if_needed`
+picks up the next operation.
+
+Additionally, `write_controller` was computing backpressure *before*
+enqueueing, causing `update_backpressure` to use the stale value. Fix:
+compute backpressure after enqueueing so it reflects the actual queue state.
+
+Fixes: `close-propagation-forward`, `error-propagation-forward`, `flow-control`,
+`transform-streams`, `flush`, `formal-debug-order`, `lipfuzz`, `strategies`,
+`writable-streams/bad-underlying-sinks`, `writable-streams/byte-length-queuing-strategy`,
+`writable-streams/count-queuing-strategy`, `writable-streams/floating-point-total-queue-size`,
+`writable-streams/reentrant-strategy`.
 
 ### ❌ UNEXPECTED FAIL (fix plan)
 
 The console.log crash in microtasks has been **fixed** (`println!` → `writeln!`
-with explicit stdout handle).  Remaining failures are logic errors from the
-generic migration.  The plan below lists each category, the root cause
-hypothesis, and the concrete fix steps.
+with explicit stdout handle).  The PipeTo pump stall (Categories 1 and 2) has been
+**fixed**.  Remaining failures are logic errors from the generic migration.  The
+plan below lists each category, the root cause hypothesis, and the concrete fix
+steps.
 
 ---
-
-**Category 1: PipeTo — only first chunk written (close-propagation-forward,
-error-propagation-forward)**
-
-| Aspect | Detail |
-|---|---|
-| Symptom | `assert_array_equals` shows only `["write", "a"]` instead of `["write", "a", "write", "b"]` |
-| Hypothesis | Neither `pipe_to_on_promise_settled` nor `append_reaction`'s reaction re-enters the pump loop after the first write completes. The state machine gets stuck at `PendingRead` or `PendingReady` after the first write finishes. |
-| Fix plan | 1. Add `log::debug!` traces to `pipe_to_on_promise_settled` showing entry, state, write result. Run the `close-propagation-forward` WPT test and trace the state machine transitions.<br>2. Compare the reaction flow against the pre-migration `main` branch: check whether the old code used `JsPromise::then()` vs new `ec.perform_promise_then()`, and whether the old code's `pipe_reaction_function` (which created `NativeFunction` per call) differs from the new `append_reaction` (which creates `create_builtin_function` each time).<br>3. Verify `resolve_ready_promise` is called at the right time: when the first write completes, `process_write_on_fulfilled` calls `finish_in_flight_write` → `update_backpressure`, which should resolve the ready promise, which should trigger `append_reaction`'s callback, which should call `read_chunk` again.<br>4. Check if the issue is that the ready promise was already resolved (no transition), so the reaction never fires. If so, the pump needs an explicit kick after write completion rather than relying on ready-promise state transitions. |
-
-**Category 2: PipeTo — timeout (close-propagation-backward,
-error-propagation-backward, flow-control, general, transform-streams)**
-
-| Aspect | Detail |
-|---|---|
-| Symptom | Test times out waiting for pipeTo to complete |
-| Hypothesis | Same root cause as Category 1, but the test hangs instead of asserting because no writes complete. The timeout tests involve backpressure, error propagation, or async iteration — all of which require the pump to continue after the initial write. |
-| Fix plan | Same as Category 1. After fixing the pump-livelock for the simple forward-propagation case, re-test these. Some may additionally need the microtask flush in the event loop (`flush_microtasks`) to process jobs across multiple event-loop iterations. |
 
 **Category 3: "TypeError: not a callable function" in basic stream tests
 (count-queuing-strategy-integration, general, default-reader partial)**
