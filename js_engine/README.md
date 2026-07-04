@@ -296,4 +296,24 @@ The following table summarises the migration patterns.  All are validated in
 - `content/src/js/build_context.rs` has one `#[cfg]` to pick `BoaContext` vs `JscEngine`
 - Backend-specific code lives only inside `js_engine/src/{boa,jsc}/` and `content/src/wasm/`
 
+## Known issues — Boa backend
+
+These are not `js_engine` trait issues but downstream binding/infrastructure problems:
+
+| # | Problem | Root cause | Session to fix |
+|---|---|---|---|
+| 1 | `new ReadableStream()` / `new WritableStream()` / `new TransformStream()` throw "not a constructor" | Web IDL constructor registration on the global object is not linking correctly | Next |
+| 2 | `new Event('click')` throws "not a constructor" | Same Web IDL constructor binding issue (Event interface) | Next |
+| 3 | `document.title` setter does not persist the value | Title setter may not be wired to the document title update path | Next |
+| 4 | `data:` URL navigation fails with "network request failed: builder error" | Net crate URL builder rejects `data:` scheme | Next |
+| 5 | `create_builtin_function_with_captures` not object-safe — needed `builtin_with_captures` helper in `content/src/js/mod.rs` | Trait method with generic `C: Trace` parameter cannot be called through `dyn ExecutionContext` | This session (fixed) |
+| 6 | `#[gc_struct]` on generic structs with `where T: Trait` + `T::AssociatedType` fields fails (E0220) | Proc macro `gc_struct_boa` doesn't propagate generic where clause through `#[derive(...)]` correctly | This session (worked around with manual `#[cfg_attr]` derives) |
+
+## Known issues — JSC backend
+
+| # | Problem | Root cause | Status |
+|---|---|---|---|
+| 7 | JSC backend does not compile (220+ errors) | Missing methods on `JscValue`/`JscObject` (`is_undefined`, `downcast_ref`, `downcast_mut`, `as_object`, `display`, `value_null`); `wasmtime::Module` references in non-wasm code not gated | Not started — migration override documents this as expected |
+| 8 | `run_content_process()` returns an error on JSC | Content process startup fails — JSC integration not functional | Known (pre-existing) |
+
 

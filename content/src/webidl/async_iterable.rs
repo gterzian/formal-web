@@ -208,7 +208,11 @@ pub(crate) trait AsyncValueIterable:
 // ── DefaultAsyncIterator ──────────────────────────────────────────────────
 
 /// <https://webidl.spec.whatwg.org/#js-default-asynchronous-iterator-object>
-#[gc_struct]
+#[derive(Clone)]
+#[cfg_attr(
+    feature = "boa",
+    derive(boa_gc::Finalize, boa_gc::Trace, boa_engine::JsData)
+)]
 struct DefaultAsyncIterator<T>
 where
     T: AsyncValueIterable,
@@ -216,9 +220,14 @@ where
     target: T,
     state: T::State,
     ongoing_promise: GcCell<Option<JsObject>>,
-    #[ignore_trace]
+    #[cfg_attr(feature = "boa", unsafe_ignore_trace)]
     finished: Rc<Cell<bool>>,
 }
+
+#[cfg(not(feature = "boa"))]
+unsafe impl<T: AsyncValueIterable + 'static> js_engine::gc::Trace for DefaultAsyncIterator<T> {}
+#[cfg(not(feature = "boa"))]
+impl<T: AsyncValueIterable + 'static> js_engine::gc::Finalize for DefaultAsyncIterator<T> {}
 
 impl<T> DefaultAsyncIterator<T>
 where

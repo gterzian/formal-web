@@ -540,7 +540,7 @@ fn readable_stream_default_tee(
 
     // Step 19: "Upon rejection of reader.[[closedPromise]] with reason r,"
     let on_rejected =
-        ec.create_builtin_function_with_captures(tee_state, default_tee_on_rejected_fn, 1, ec.property_key_from_str(""));
+        crate::js::builtin_with_captures(ec, tee_state, default_tee_on_rejected_fn, 1);
     let forward_error_promise =
         <crate::js::Types as JsTypes>::object_as_promise(&reader_closed_promise)
             .ok_or_else(|| ec.new_type_error("reader_closed_promise is not a Promise"))?;
@@ -1224,11 +1224,11 @@ pub(crate) fn readable_stream_from_iterable_pull_algorithm(
     // Step 4.3: "Let nextPromise be a promise resolved with nextResult.[[Value]]."
 
     // Step 4.4: "Return the result of reacting to nextPromise with the following fulfillment steps, given iterResult:"
-    let on_fulfilled = ec.create_builtin_function_with_captures(
+    let on_fulfilled = crate::js::builtin_with_captures(
+        ec,
         state,
         readable_stream_from_iterable_pull_on_fulfilled_fn,
         1,
-        ec.property_key_from_str(""),
     );
 
     let js_promise = <crate::js::Types as JsTypes>::object_as_promise(&next_promise)
@@ -1327,11 +1327,11 @@ pub(crate) fn readable_stream_from_iterable_cancel_algorithm(
     };
 
     // Step 5.8: "Return the result of reacting to returnPromise with the following fulfillment steps, given iterResult:"
-    let on_fulfilled = ec.create_builtin_function_with_captures(
+    let on_fulfilled = crate::js::builtin_with_captures(
+        ec,
         (),
         readable_stream_from_iterable_cancel_on_fulfilled_fn,
         1,
-        ec.property_key_from_str(""),
     );
 
     let js_promise = <crate::js::Types as JsTypes>::object_as_promise(&return_promise)
@@ -1466,11 +1466,11 @@ fn promise_from_sync_iterator_result(
             return rejected_promise(error, ec);
         }
     };
-    let on_fulfilled = ec.create_builtin_function_with_captures(
+    let on_fulfilled = crate::js::builtin_with_captures(
+        ec,
         done,
         promise_from_sync_iterator_result_on_fulfilled_fn,
         0,
-        ec.property_key_from_str(""),
     );
 
     let js_promise = <crate::js::Types as JsTypes>::object_as_promise(&value_promise)
@@ -1931,11 +1931,11 @@ fn byte_tee_forward_reader_error(
 
     // Step helper: "Let thisReader be reader" for the forwardReaderError closure.
     let generation_at_attach = tee_state.borrow().reader_generation;
-    let on_rejected = ec.create_builtin_function_with_captures(
+    let on_rejected = crate::js::builtin_with_captures(
+        ec,
         (generation_at_attach, tee_state.clone()),
         byte_tee_forward_error_on_rejected_fn,
         1,
-        ec.property_key_from_str(""),
     );
     ec.perform_promise_then(closed_promise, None, Some(on_rejected), None)?;
     Ok(())
@@ -2223,18 +2223,18 @@ fn readable_byte_stream_tee_pull_with_byob_reader(
     byte_tee_switch_to_byob_reader(&tee_state, ec)?;
     let byob_reader = tee_state.borrow().reader.as_byob_reader().unwrap();
 
-    let on_fulfilled = ec.create_builtin_function_with_captures(
+    let on_fulfilled = crate::js::builtin_with_captures(
+        ec,
         (tee_state.clone(), for_branch2),
         byte_tee_pull_byob_on_fulfilled_fn,
         1,
-        ec.property_key_from_str(""),
     );
 
-    let on_rejected = ec.create_builtin_function_with_captures(
+    let on_rejected = crate::js::builtin_with_captures(
+        ec,
         tee_state.clone(),
         byte_tee_pull_byob_on_rejected_fn,
         0,
-        ec.property_key_from_str(""),
     );
 
     let (read_into_request, promise_obj) = ReadIntoRequest::new(ec)?;
@@ -3937,17 +3937,17 @@ fn abort_destination_then_cancel_source(
         resolvers,
     });
 
-    let on_fulfilled = ec.create_builtin_function_with_captures(
+    let on_fulfilled = crate::js::builtin_with_captures(
+        ec,
         state.clone(),
         abort_destination_then_cancel_on_fulfilled_fn,
         0,
-        ec.property_key_from_str(""),
     );
-    let on_rejected = ec.create_builtin_function_with_captures(
+    let on_rejected = crate::js::builtin_with_captures(
+        ec,
         state.clone(),
         abort_destination_then_cancel_on_rejected_fn,
         1,
-        ec.property_key_from_str(""),
     );
     let js_promise = <crate::js::Types as JsTypes>::object_as_promise(&abort_promise)
         .ok_or_else(|| ec.new_type_error("abort_promise is not a Promise"))?;
@@ -3973,9 +3973,9 @@ fn start_abort_cancel_source(
     };
 
     let on_fulfilled =
-        ec.create_builtin_function_with_captures(state.clone(), start_abort_cancel_on_fulfilled_fn, 0, ec.property_key_from_str(""));
+        crate::js::builtin_with_captures(ec, state.clone(), start_abort_cancel_on_fulfilled_fn, 0);
     let on_rejected =
-        ec.create_builtin_function_with_captures(state, start_abort_cancel_on_rejected_fn, 1, ec.property_key_from_str(""));
+        crate::js::builtin_with_captures(ec, state, start_abort_cancel_on_rejected_fn, 1);
 
     let promise = <crate::js::Types as JsTypes>::object_as_promise(&cancel_promise)
         .ok_or_else(|| ec.new_type_error("cancel_promise is not a Promise"))?;

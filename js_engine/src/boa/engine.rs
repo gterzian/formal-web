@@ -1869,7 +1869,10 @@ impl ExecutionContext<BoaTypes> for BoaContext {
 /// The GC traits are no-ops because the content process does not relocate
 /// GC'd objects and the data is only accessed through the JS object's
 /// internal slot (via `downcast_ref`).
-struct NativeDataWrapper<T: std::any::Any + 'static>(T);
+/// Wraps arbitrary `'static` data for storage inside a `JsObject` via
+/// `JsObject::from_proto_and_data`.  Must be downcast-compatible with
+/// the retrieval path in `with_object_any`.
+pub struct NativeDataWrapper<T: std::any::Any + 'static>(pub T);
 
 // SAFETY: The content process is single-threaded.  `NativeDataWrapper`
 // only stores `'static` data that does not contain GC roots.

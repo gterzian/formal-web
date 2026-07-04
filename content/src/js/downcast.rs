@@ -197,9 +197,10 @@ pub(crate) fn with_abort_signal_ref<R>(
     ec: &mut dyn ExecutionContext<Types>,
     f: impl FnOnce(&AbortSignal) -> R,
 ) -> Completion<R, Types> {
+    let type_error = ec.new_type_error("object is not an AbortSignal");
     let signal = ec
         .with_object_any(object)
         .and_then(|data| data.downcast_ref::<AbortSignal>())
-        .ok_or_else(|| ec.new_type_error("object is not an AbortSignal"))?;
+        .ok_or(type_error)?;
     Ok(f(signal))
 }

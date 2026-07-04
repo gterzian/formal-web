@@ -14,8 +14,8 @@ use ipc_messages::content::{
     Event as ContentEvent, NavigableId, WindowTimerClearRequest, WindowTimerKey, WindowTimerRequest,
 };
 use ipc_messages::media::{MediaCommand, VideoPaintId};
-use js_engine::{JsTypes, gc_struct};
 use js_engine::gc::{GcCell, gc_cell_new};
+use js_engine::{JsTypes, gc_struct};
 use log::{debug, error};
 
 use crate::js::Types;
@@ -276,13 +276,8 @@ pub struct GlobalScope {
     /// The promise and resolvers are stored here rather than in
     /// `PendingRequest` so that domain code in `content/src/wasm/` can
     /// push pending requests without importing `boa_engine`.
-    pending_wasm_resolvers: GcCell<
-        Vec<(
-            u64,
-            JsObject,
-            js_engine::records::PromiseResolvers<Types>,
-        )>,
-    >,
+    pending_wasm_resolvers:
+        GcCell<Vec<(u64, JsObject, js_engine::records::PromiseResolvers<Types>)>>,
 }
 
 impl GlobalScope {
@@ -881,10 +876,7 @@ impl GlobalScope {
     pub(crate) fn consume_wasm_request(
         &self,
         request_id: u64,
-    ) -> Option<(
-        JsObject,
-        js_engine::records::PromiseResolvers<Types>,
-    )> {
+    ) -> Option<(JsObject, js_engine::records::PromiseResolvers<Types>)> {
         // Remove the PendingRequest from the request queue.
         {
             let mut requests = self.pending_requests.borrow_mut();

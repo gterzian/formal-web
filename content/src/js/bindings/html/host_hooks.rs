@@ -48,12 +48,13 @@ impl WindowHostHooks {
 
 impl HostHooks for WindowHostHooks {
     fn create_global_object(&self, intrinsics: &Intrinsics) -> JsObject {
+        let data: Box<dyn std::any::Any> = Box::new(Window::new(GlobalScope::new(
+            crate::html::GlobalScopeKind::Window,
+            Rc::clone(&self.document),
+        )));
         JsObject::from_proto_and_data(
             intrinsics.constructors().object().prototype(),
-            Window::new(GlobalScope::new(
-                crate::html::GlobalScopeKind::Window,
-                Rc::clone(&self.document),
-            )),
+            js_engine::boa::NativeDataWrapper(data),
         )
     }
 }

@@ -10,8 +10,13 @@ name = "formal-web"
 path = "src/main.rs"
 
 [features]
-default = ["media"]
+default = ["media", "jsc"]
 media = []
+
+# Backend selection for helper process prebuilding.
+# Mutually exclusive — only one should be active.
+jsc = []
+boa = []
 
 [dependencies]
 automation = { path = "automation" }

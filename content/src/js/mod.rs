@@ -41,3 +41,56 @@ pub(crate) type Engine = js_engine::jsc::JscEngine;
 
 #[cfg(not(jsc_backend))]
 pub(crate) type Engine = js_engine::boa::BoaContext;
+
+use js_engine::{Behaviour, Completion, ExecutionContext, gc::Trace};
+
+/// Create a built-in function with traceable captures.
+///
+/// Object-safe helper: wraps the captures + function pointer into a
+/// [`Behaviour`] impl and delegates to
+/// [`ExecutionContext::create_builtin_function_from_behaviour`].
+/// This avoids calling the non-object-safe
+/// [`ExecutionContext::create_builtin_function_with_captures`] through
+/// a `dyn ExecutionContext` trait object.
+pub(crate) fn builtin_with_captures<C: Trace + 'static>(
+    ec: &mut dyn ExecutionContext<Types>,
+    captures: C,
+    behaviour: fn(
+        &[<Types as js_engine::JsTypes>::JsValue],
+        <Types as js_engine::JsTypes>::JsValue,
+        &C,
+        &mut dyn ExecutionContext<Types>,
+    ) -> Completion<<Types as js_engine::JsTypes>::JsValue, Types>,
+    length: u32,
+) -> <Types as js_engine::JsTypes>::Function {
+    struct Captured<C> {
+        captures: C,
+        fn_ptr: fn(
+            &[<Types as js_engine::JsTypes>::JsValue],
+            <Types as js_engine::JsTypes>::JsValue,
+            &C,
+            &mut dyn ExecutionContext<Types>,
+        ) -> Completion<<Types as js_engine::JsTypes>::JsValue, Types>,
+    }
+
+    impl<C: 'static> Behaviour<Types> for Captured<C> {
+        fn call(
+            &self,
+            args: &[<Types as js_engine::JsTypes>::JsValue],
+            this: <Types as js_engine::JsTypes>::JsValue,
+            ec: &mut dyn ExecutionContext<Types>,
+        ) -> Completion<<Types as js_engine::JsTypes>::JsValue, Types> {
+            (self.fn_ptr)(args, this, &self.captures, ec)
+        }
+    }
+
+    let name = ec.property_key_from_str("");
+    ec.create_builtin_function_from_behaviour(
+        Box::new(Captured {
+            captures,
+            fn_ptr: behaviour,
+        }),
+        length,
+        name,
+    )
+}

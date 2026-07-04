@@ -393,10 +393,7 @@ impl EnvironmentSettingsObject {
     pub(crate) fn consume_wasm_request(
         &self,
         request_id: u64,
-    ) -> Option<(
-        JsObject,
-        js_engine::records::PromiseResolvers<Types>,
-    )> {
+    ) -> Option<(JsObject, js_engine::records::PromiseResolvers<Types>)> {
         let global = self.engine.realm_global_object();
         let window = self
             .engine

@@ -1021,9 +1021,9 @@ impl ReadableByteStreamController {
 
         let captured_controller = self.clone();
         let on_fulfilled =
-            ec.create_builtin_function_with_captures(captured_controller, pull_steps_on_fulfilled, 1, ec.property_key_from_str(""));
+            crate::js::builtin_with_captures(ec, captured_controller, pull_steps_on_fulfilled, 1);
         let on_rejected =
-            ec.create_builtin_function_with_captures(self.clone(), pull_steps_on_rejected, 1, ec.property_key_from_str(""));
+            crate::js::builtin_with_captures(ec, self.clone(), pull_steps_on_rejected, 1);
 
         let promise = <crate::js::Types as JsTypes>::object_as_promise(&pull_promise)
             .ok_or_else(|| ec.new_type_error("pull result is not a Promise"))?;
@@ -1312,8 +1312,8 @@ pub(crate) fn set_up_readable_byte_stream_controller(
     let start_promise = resolved_promise(start_result, ec)?;
 
     let on_fulfilled =
-        ec.create_builtin_function_with_captures(controller.clone(), setup_on_fulfilled, 1, ec.property_key_from_str(""));
-    let on_rejected = ec.create_builtin_function_with_captures(controller, setup_on_rejected, 1, ec.property_key_from_str(""));
+        crate::js::builtin_with_captures(ec, controller.clone(), setup_on_fulfilled, 1);
+    let on_rejected = crate::js::builtin_with_captures(ec, controller, setup_on_rejected, 1);
     let start_js_promise = <crate::js::Types as JsTypes>::object_as_promise(&start_promise)
         .ok_or_else(|| ec.new_type_error("start result is not a Promise"))?;
     ec.perform_promise_then(

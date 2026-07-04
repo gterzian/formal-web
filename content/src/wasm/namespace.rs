@@ -11,7 +11,41 @@ use wasmtime::{Func, Instance as WasmtimeInstance, Module, Store};
 use crate::html::{PendingRequest, PendingState, Window};
 use crate::wasm::conversions::{default_val_for_type, js_val_to_wasm_val, wasm_val_to_js_value};
 use crate::wasm::types::{WasmInstance, WasmModule};
-use js_engine::{Completion, ExecutionContext};
+use js_engine::{Completion, ExecutionContext, records::PromiseResolvers};
+
+/// Convert Boa-native `ResolvingFunctions` to generic `PromiseResolvers<crate::js::Types>`.
+fn resolvers_to_generic(
+    resolvers: boa_engine::builtins::promise::ResolvingFunctions,
+) -> PromiseResolvers<crate::js::Types> {
+    PromiseResolvers {
+        resolve: resolvers.resolve.into(),
+        reject: resolvers.reject.into(),
+    }
+}
+
+/// Convert a `JsResult<T>` into a `Completion<T, Types>` by translating
+/// any Boa error into its opaque form (a `JsValue`).
+fn js_result_to_completion<T>(
+    result: boa_engine::JsResult<T>,
+    context: &mut boa_engine::Context,
+) -> js_engine::Completion<T, crate::js::Types> {
+    result.map_err(|error| {
+        error
+            .into_opaque(context)
+            .unwrap_or_else(|_| boa_engine::JsValue::undefined())
+    })
+}
+
+/// Convert a `JsNativeError` into a `JsValue` suitable as a `Completion` error.
+fn native_error_to_js_value(
+    error: boa_engine::JsNativeError,
+    context: &mut boa_engine::Context,
+) -> boa_engine::JsValue {
+    let js_error: boa_engine::JsError = error.into();
+    js_error
+        .into_opaque(context)
+        .unwrap_or_else(|_| boa_engine::JsValue::undefined())
+}
 
 /// Creates a new pending promise using Boa APIs directly.
 /// Wrapper for Boa-only wasm code that works with `&mut Context`.
@@ -76,9 +110,11 @@ fn asynchronously_compile_a_webassembly_module_boa(
             is_instantiate: false,
             state: PendingState::Pending,
         });
-    window
-        .global_scope
-        .store_wasm_resolver(request_id, promise.clone(), resolvers);
+    window.global_scope.store_wasm_resolver(
+        request_id,
+        promise.clone(),
+        resolvers_to_generic(resolvers),
+    );
     // Step 3: "Return promise."
     Ok(JsValue::from(promise))
 }
@@ -125,9 +161,11 @@ fn asynchronously_instantiate_a_webassembly_module_boa(
             request_id,
             state: PendingState::Pending,
         });
-    window
-        .global_scope
-        .store_wasm_resolver(request_id, promise.clone(), resolvers);
+    window.global_scope.store_wasm_resolver(
+        request_id,
+        promise.clone(),
+        resolvers_to_generic(resolvers),
+    );
     // Step 7: "Return promise."
     Ok(JsValue::from(promise))
 }
@@ -177,9 +215,11 @@ fn instantiate_bytes_boa(
             is_instantiate: true,
             state: PendingState::Pending,
         });
-    window
-        .global_scope
-        .store_wasm_resolver(request_id, promise.clone(), resolvers);
+    window.global_scope.store_wasm_resolver(
+        request_id,
+        promise.clone(),
+        resolvers_to_generic(resolvers),
+    );
     Ok(JsValue::from(promise))
 }
 
@@ -187,7 +227,7 @@ fn instantiate_bytes_boa(
 
 /// <https://webassembly.github.io/spec/js-api/#asynchronously-compile-a-webassembly-module>
 pub(crate) fn compile_continuation(
-    resolvers: &ResolvingFunctions,
+    resolvers: &PromiseResolvers<crate::js::Types>,
     module: wasmtime::Module,
     bytes: Vec<u8>,
     ec: &mut dyn ExecutionContext<crate::js::Types>,
@@ -199,7 +239,7 @@ pub(crate) fn compile_continuation(
 
 /// <https://webassembly.github.io/spec/js-api/#asynchronously-compile-a-webassembly-module>
 fn compile_continuation_boa(
-    resolvers: &ResolvingFunctions,
+    resolvers: &PromiseResolvers<crate::js::Types>,
     module: wasmtime::Module,
     bytes: Vec<u8>,
     context: &mut Context,
@@ -210,11 +250,11 @@ fn compile_continuation_boa(
     // Note: builtinSetNames and importedStringModule are not yet supported.
     let module_proto = get_wasm_module_prototype_boa(context)
         .unwrap_or_else(|| context.intrinsics().constructors().object().prototype());
+    let resolve: JsObject = resolvers.resolve.clone();
     let module_object =
         JsObject::from_proto_and_data(Some(module_proto), WasmModule::new(module, bytes));
     // Step 2.2.5.2: "Resolve promise with moduleObject."
-    resolvers
-        .resolve
+    resolve
         .call(&JsValue::undefined(), &[module_object.into()], context)
         .map_err(|error| error.into_opaque(context).unwrap_or(JsValue::undefined()))?;
     Ok(())
@@ -222,7 +262,7 @@ fn compile_continuation_boa(
 
 /// <https://webassembly.github.io/spec/js-api/#asynchronously-compile-a-webassembly-module>
 pub(crate) fn compile_rejection(
-    resolvers: &ResolvingFunctions,
+    resolvers: &PromiseResolvers<crate::js::Types>,
     message: String,
     ec: &mut dyn ExecutionContext<crate::js::Types>,
 ) -> Completion<(), crate::js::Types> {
@@ -233,15 +273,15 @@ pub(crate) fn compile_rejection(
 
 /// <https://webassembly.github.io/spec/js-api/#asynchronously-compile-a-webassembly-module>
 fn compile_rejection_boa(
-    resolvers: &ResolvingFunctions,
+    resolvers: &PromiseResolvers<crate::js::Types>,
     message: String,
     context: &mut Context,
 ) -> Completion<(), crate::js::Types> {
     // Step 2.2.1: "If module is error, reject promise with a CompileError exception
     //              and return."
     let error = create_compile_error_boa(&message, context);
-    resolvers
-        .reject
+    let reject: JsObject = resolvers.reject.clone();
+    reject
         .call(&JsValue::undefined(), &[error], context)
         .map_err(|error| error.into_opaque(context).unwrap_or(JsValue::undefined()))?;
     Ok(())
@@ -252,7 +292,7 @@ pub(crate) fn instantiate_continuation(
     module: &Module,
     instance: &WasmtimeInstance,
     store: &Arc<Mutex<Store<()>>>,
-    resolvers: &ResolvingFunctions,
+    resolvers: &PromiseResolvers<crate::js::Types>,
     ec: &mut dyn ExecutionContext<crate::js::Types>,
 ) -> Completion<(), crate::js::Types> {
     // SAFETY: ec is backed by BoaContext repr(transparent) over Context.
@@ -265,7 +305,7 @@ fn instantiate_continuation_boa(
     module: &Module,
     instance: &WasmtimeInstance,
     store: &Arc<Mutex<Store<()>>>,
-    resolvers: &ResolvingFunctions,
+    resolvers: &PromiseResolvers<crate::js::Types>,
     context: &mut Context,
 ) -> Completion<(), crate::js::Types> {
     // Note: Step 6.1.1 (instantiate the core) was already done by the worker.
@@ -274,8 +314,8 @@ fn instantiate_continuation_boa(
     // Step 6.1.3: "Initialize instanceObject from module and instance."
     let instance_object = initialize_an_instance_object_boa(module, instance, store, context)?;
     // Step 6.1.4: "Resolve promise with instanceObject."
-    resolvers
-        .resolve
+    let resolve: JsObject = resolvers.resolve.clone();
+    resolve
         .call(&JsValue::undefined(), &[instance_object.into()], context)
         .map_err(|error| error.into_opaque(context).unwrap_or(JsValue::undefined()))?;
     Ok(())
