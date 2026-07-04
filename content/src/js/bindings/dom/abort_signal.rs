@@ -1,4 +1,3 @@
-use boa_engine::{JsArgs, JsValue};
 use std::marker::PhantomData;
 
 use crate::dom::{
@@ -16,16 +15,21 @@ use super::event_target::EcDispatchHost;
 
 use js_engine::{Completion, ExecutionContext, JsTypes};
 
+use crate::js::Types;
+
+type JsValue = <Types as JsTypes>::JsValue;
+type JsObject = <Types as JsTypes>::JsObject;
+
 // ── WebIDL interface definition (§3) ──
 
-impl WebIdlInterface<crate::js::Types> for AbortSignal {
+impl WebIdlInterface<Types> for AbortSignal {
     const NAME: &'static str = "AbortSignal";
 
     fn parent_name() -> Option<&'static str> {
         Some("EventTarget")
     }
 
-    fn define_members(def: &mut InterfaceDefinition<crate::js::Types>) {
+    fn define_members(def: &mut InterfaceDefinition<Types>) {
         def.add_attribute(AttributeDef {
             _phantom: PhantomData,
 
@@ -114,8 +118,8 @@ impl WebIdlInterface<crate::js::Types> for AbortSignal {
 
 pub(crate) fn abort_reason_from_argument(
     argument: Option<&JsValue>,
-    ec: &mut dyn ExecutionContext<crate::js::Types>,
-) -> Completion<JsValue, crate::js::Types> {
+    ec: &mut dyn ExecutionContext<Types>,
+) -> Completion<JsValue, Types> {
     let Some(argument) = argument else {
         return abort_error_value(ec);
     };
@@ -127,21 +131,16 @@ pub(crate) fn abort_reason_from_argument(
     Ok(argument.clone())
 }
 
-pub(crate) fn timeout_reason(
-    ec: &mut dyn ExecutionContext<crate::js::Types>,
-) -> Completion<JsValue, crate::js::Types> {
-    let exc = create_interface_instance::<crate::js::Types, DOMException>(
-        DOMException::timeout_error(),
-        ec,
-    )?;
-    Ok(crate::js::Types::value_from_object(exc))
+pub(crate) fn timeout_reason(ec: &mut dyn ExecutionContext<Types>) -> Completion<JsValue, Types> {
+    let exc = create_interface_instance::<Types, DOMException>(DOMException::timeout_error(), ec)?;
+    Ok(<Types as JsTypes>::value_from_object(exc))
 }
 
 pub(crate) fn signal_abort(
     signal: &AbortSignal,
     reason: JsValue,
-    ec: &mut dyn ExecutionContext<crate::js::Types>,
-) -> Completion<(), crate::js::Types> {
+    ec: &mut dyn ExecutionContext<Types>,
+) -> Completion<(), Types> {
     let mut host = EcDispatchHost::new(ec);
     dom_signal_abort(&mut host, signal, reason)
 }
@@ -149,24 +148,22 @@ pub(crate) fn signal_abort(
 pub(crate) fn abort_static(
     _: &JsValue,
     args: &[JsValue],
-    ec: &mut dyn ExecutionContext<crate::js::Types>,
-) -> Completion<JsValue, crate::js::Types> {
+    ec: &mut dyn ExecutionContext<Types>,
+) -> Completion<JsValue, Types> {
     let reason = abort_reason_from_argument(args.get(0), ec)?;
-    let value_undefined = ec.value_undefined();
     let signal = create_abort_signal(AbortSignal::aborted_with_reason(reason), ec)?;
-    Ok(crate::js::Types::value_from_object(
-        signal.object().ok_or(value_undefined)?,
+    Ok(<Types as JsTypes>::value_from_object(
+        signal.object().ok_or_else(|| ec.value_undefined())?,
     ))
 }
 
 pub(crate) fn timeout_static(
     _: &JsValue,
     args: &[JsValue],
-    ec: &mut dyn ExecutionContext<crate::js::Types>,
-) -> Completion<JsValue, crate::js::Types> {
-    use crate::js::Types;
-
-    let milliseconds = ec.to_length(args.get_or_undefined(0).clone())?;
+    ec: &mut dyn ExecutionContext<Types>,
+) -> Completion<JsValue, Types> {
+    let value_undefined = ec.value_undefined();
+    let milliseconds = ec.to_length(args.get(0).cloned().unwrap_or(value_undefined))?;
     let signal = create_abort_signal(AbortSignal::new(ec), ec)?;
 
     // Create the timeout callback as a builtin function.
@@ -181,14 +178,16 @@ pub(crate) fn timeout_static(
         ec.property_key_from_str(""),
     );
 
-    let callback_val = Types::value_from_object(Types::object_from_function(callback_fn));
+    let callback_val = <Types as JsTypes>::value_from_object(
+        <Types as JsTypes>::object_from_function(callback_fn),
+    );
     let ms_val = ec.value_from_number(milliseconds as f64);
 
     // Get the Window from the global object and schedule the timeout.
     // Use with_object_any_mut_with to avoid borrow conflict between
     // the downcast result and the subsequent set_timeout call.
     let global = ec.global_object();
-    let mut set_result: Completion<u32, crate::js::Types> = Ok(0);
+    let mut set_result: Completion<u32, Types> = Ok(0);
     ec.with_object_any_mut_with(
         &global,
         Box::new(|data, ec2| {
@@ -200,7 +199,7 @@ pub(crate) fn timeout_static(
     );
     set_result?;
 
-    Ok(Types::value_from_object(
+    Ok(<Types as JsTypes>::value_from_object(
         signal.object().ok_or_else(|| ec.value_undefined())?,
     ))
 }
@@ -208,13 +207,13 @@ pub(crate) fn timeout_static(
 pub(crate) fn any_static(
     _: &JsValue,
     args: &[JsValue],
-    ec: &mut dyn ExecutionContext<crate::js::Types>,
-) -> Completion<JsValue, crate::js::Types> {
+    ec: &mut dyn ExecutionContext<Types>,
+) -> Completion<JsValue, Types> {
     let value_undefined = ec.value_undefined();
-    let signals = sequence_abort_signals(args.get_or_undefined(0), ec)?;
+    let signals = sequence_abort_signals(args.get(0).unwrap_or(&value_undefined), ec)?;
     let result_signal = create_abort_signal(AbortSignal::new(ec), ec)?;
     initialize_dependent_abort_signal(&result_signal, &signals);
-    Ok(crate::js::Types::value_from_object(
+    Ok(<Types as JsTypes>::value_from_object(
         result_signal.object().ok_or(value_undefined)?,
     ))
 }
@@ -222,9 +221,9 @@ pub(crate) fn any_static(
 fn get_aborted(
     this: &JsValue,
     _: &[JsValue],
-    ec: &mut dyn ExecutionContext<crate::js::Types>,
-) -> Completion<JsValue, crate::js::Types> {
-    let obj = crate::js::Types::value_as_object(this)
+    ec: &mut dyn ExecutionContext<Types>,
+) -> Completion<JsValue, Types> {
+    let obj = <Types as JsTypes>::value_as_object(this)
         .ok_or_else(|| ec.new_type_error("AbortSignal receiver is not an object"))?;
     if let Some(data) = ec.with_object_any(&obj) {
         if let Some(signal) = data.downcast_ref::<AbortSignal>() {
@@ -237,9 +236,9 @@ fn get_aborted(
 fn get_reason(
     this: &JsValue,
     _: &[JsValue],
-    ec: &mut dyn ExecutionContext<crate::js::Types>,
-) -> Completion<JsValue, crate::js::Types> {
-    let obj = crate::js::Types::value_as_object(this)
+    ec: &mut dyn ExecutionContext<Types>,
+) -> Completion<JsValue, Types> {
+    let obj = <Types as JsTypes>::value_as_object(this)
         .ok_or_else(|| ec.new_type_error("AbortSignal receiver is not an object"))?;
     if let Some(data) = ec.with_object_any(&obj) {
         if let Some(signal) = data.downcast_ref::<AbortSignal>() {
@@ -252,9 +251,9 @@ fn get_reason(
 fn throw_if_aborted(
     this: &JsValue,
     _: &[JsValue],
-    ec: &mut dyn ExecutionContext<crate::js::Types>,
-) -> Completion<JsValue, crate::js::Types> {
-    let obj = crate::js::Types::value_as_object(this)
+    ec: &mut dyn ExecutionContext<Types>,
+) -> Completion<JsValue, Types> {
+    let obj = <Types as JsTypes>::value_as_object(this)
         .ok_or_else(|| ec.new_type_error("AbortSignal receiver is not an object"))?;
     if let Some(data) = ec.with_object_any(&obj) {
         if let Some(signal) = data.downcast_ref::<AbortSignal>() {
@@ -270,9 +269,9 @@ fn throw_if_aborted(
 fn get_onabort(
     this: &JsValue,
     _: &[JsValue],
-    ec: &mut dyn ExecutionContext<crate::js::Types>,
-) -> Completion<JsValue, crate::js::Types> {
-    let obj = crate::js::Types::value_as_object(this)
+    ec: &mut dyn ExecutionContext<Types>,
+) -> Completion<JsValue, Types> {
+    let obj = <Types as JsTypes>::value_as_object(this)
         .ok_or_else(|| ec.new_type_error("AbortSignal receiver is not an object"))?;
     if let Some(data) = ec.with_object_any(&obj) {
         if let Some(signal) = data.downcast_ref::<AbortSignal>() {
@@ -288,11 +287,15 @@ fn get_onabort(
 fn set_onabort(
     this: &JsValue,
     args: &[JsValue],
-    ec: &mut dyn ExecutionContext<crate::js::Types>,
-) -> Completion<JsValue, crate::js::Types> {
-    let signal_object = crate::js::Types::value_as_object(this)
+    ec: &mut dyn ExecutionContext<Types>,
+) -> Completion<JsValue, Types> {
+    let signal_object = <Types as JsTypes>::value_as_object(this)
         .ok_or_else(|| ec.new_type_error("AbortSignal receiver is not an object"))?;
-    let callback = nullable_value(args.get_or_undefined(0), ec, callback_function_value)?;
+    let callback = nullable_value(
+        args.get(0).unwrap_or(&ec.value_undefined()),
+        ec,
+        callback_function_value,
+    )?;
 
     let previous =
         try_with_abort_signal_mut(this, ec, |signal| signal.replace_onabort(callback.clone()))?;
@@ -322,9 +325,9 @@ fn set_onabort(
 
 fn sequence_abort_signals(
     value: &JsValue,
-    ec: &mut dyn ExecutionContext<crate::js::Types>,
-) -> Completion<Vec<AbortSignal>, crate::js::Types> {
-    let object = crate::js::Types::value_as_object(value).ok_or_else(|| {
+    ec: &mut dyn ExecutionContext<Types>,
+) -> Completion<Vec<AbortSignal>, Types> {
+    let object = <Types as JsTypes>::value_as_object(value).ok_or_else(|| {
         ec.new_type_error("AbortSignal.any() requires a sequence of AbortSignal objects")
     })?;
     let length_key = ec.property_key_from_str("length");
@@ -335,7 +338,7 @@ fn sequence_abort_signals(
     for index in 0..length {
         let index_key = ec.property_key_from_index(index as u32);
         let signal_value = ExecutionContext::get(ec, object.clone(), index_key)?;
-        let signal_object = crate::js::Types::value_as_object(&signal_value)
+        let signal_object = <Types as JsTypes>::value_as_object(&signal_value)
             .ok_or_else(|| ec.new_type_error("AbortSignal.any() requires AbortSignal objects"))?;
         let signal = try_with_abort_signal_ref(&signal_object, ec, |signal| signal.clone())?;
         signals.push(signal);
@@ -344,14 +347,9 @@ fn sequence_abort_signals(
     Ok(signals)
 }
 
-fn abort_error_value(
-    ec: &mut dyn ExecutionContext<crate::js::Types>,
-) -> Completion<JsValue, crate::js::Types> {
-    match create_interface_instance::<crate::js::Types, DOMException>(
-        DOMException::abort_error(),
-        ec,
-    ) {
-        Ok(obj) => Ok(crate::js::Types::value_from_object(obj)),
+fn abort_error_value(ec: &mut dyn ExecutionContext<Types>) -> Completion<JsValue, Types> {
+    match create_interface_instance::<Types, DOMException>(DOMException::abort_error(), ec) {
+        Ok(obj) => Ok(<Types as JsTypes>::value_from_object(obj)),
         Err(e) => Err(e),
     }
 }

@@ -418,28 +418,18 @@ Follow the `console_generic.rs` pattern: `create_plain_object` +
 Boa-only, gated.  This clears the last blocker in the "not yet
 abstracted" table.
 
-### 2. Convert remaining JS binding files (9 remaining)
+### 2. Convert remaining JS binding files (7 remaining)
+
+Converted 2 this session: `html/html_iframe_element.rs`, `dom/abort_signal.rs`.
 
 These files still import `boa_engine::*` and need the same conversion
-patterns as the 9 already done:
+patterns as the 11 already done:
 
 - **Medium** (use `downcast_ref` on JsObject — works on Boa but needs
-  `ec.with_object_any` for JSC): `dom/element.rs`, `html/html_element.rs`,
-  `html/html_iframe_element.rs`, `dom/abort_signal.rs` (also uses `JsArgs`
-  with `get_or_undefined`, `create_interface_instance`, `sequence_abort_signals`).
+  `ec.with_object_any` for JSC): `dom/element.rs`, `html/html_element.rs`.
 - **Complex** (use `Context` directly for prototype registration):
   `dom/event_target.rs`, `dom/node.rs`, `dom/document.rs`,
   `html/window.rs`, `html/hyperlink_element_utils.rs`.
-
-Conversion patterns (same as this session):
-- `&JsValue` → `&<Types as JsTypes>::JsValue`
-- `Completion<JsValue, crate::js::Types>` → `Completion<<Types as JsTypes>::JsValue, Types>`
-- `ec: &mut dyn ExecutionContext<crate::js::Types>` → `ec: &mut dyn ExecutionContext<Types>`
-- `JsNativeError::typ().with_message(msg)` → `ec.new_type_error(msg)`
-- `JsArgs::get_or_undefined(N)` → `args.get(N).cloned().unwrap_or(ec.value_undefined())`
-- Borrow-safe: pre-compute error values before `with_object_any(&obj)` calls
-- `obj.downcast_ref::<T>()` keeps working on Boa; convert to
-  `ec.with_object_any(&obj).and_then(|d| d.downcast_ref::<T>())` when enabling JSC
 
 ### 3. Unify the message loop
 
