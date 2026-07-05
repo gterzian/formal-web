@@ -1,4 +1,4 @@
-use log::{debug, error};
+use log::{debug, error, trace};
 use std::{cell::RefCell, rc::Rc, time::Instant};
 
 use blitz_dom::BaseDocument;
@@ -347,7 +347,7 @@ impl EnvironmentSettingsObject {
         }
 
         if let Err(error) = self.perform_a_microtask_checkpoint() {
-            error!("content error: {error}");
+            error!("[timer microtask] content error: {error}");
         }
         Ok(())
     }

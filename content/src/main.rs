@@ -861,12 +861,12 @@ impl ContentProcess {
             .get_mut(&document_id)
             .ok_or_else(|| format!("unknown document id: {document_id}"))?;
 
-        for script in pending_document_load.scripts {
+        for (script_idx, script) in pending_document_load.scripts.iter().enumerate() {
             match script {
                 DeferredScriptState::Inline { source }
                 | DeferredScriptState::ExternalReady { source } => {
-                    if let Err(error) = content_document.settings.evaluate_script(&source) {
-                        error!("content error: {error}");
+                    if let Err(error) = content_document.settings.evaluate_script(source) {
+                        error!("[deferred eval #{script_idx}] content error: {error}");
                     }
                 }
                 DeferredScriptState::ExternalPending { .. }
@@ -1113,7 +1113,7 @@ impl ContentProcess {
 
         for (script_index, src) in deferred_fetches {
             if let Err(error) = self.start_deferred_script_fetch(document_id, script_index, &src) {
-                error!("content error: {error}");
+                error!("[deferred fetch] content error: {error}");
                 self.mark_deferred_script_failed(document_id, script_index);
             }
         }
@@ -2021,10 +2021,8 @@ impl ContentProcess {
         result
     }
 
-    /// Drain the ECMAScript microtask queue for all active documents.
-    /// This ensures promise reaction jobs and generic jobs progress
-    /// even when no script evaluation triggers a checkpoint.
-    fn flush_microtasks(&mut self) -> Result<(), String> {
+    /// <https://html.spec.whatwg.org/#perform-a-microtask-checkpoint>
+    fn perform_microtask_checkpoint(&mut self) -> Result<(), String> {
         for document in self.documents.values_mut() {
             document
                 .settings
@@ -2271,6 +2269,11 @@ fn run_content_message_loop(
                             Ok(true) => {
                                 if notify {
                                     let _ = process.note_command_completed();
+                                    // <https://html.spec.whatwg.org/#event-loop-processing-model>
+                                    // Step 2.8: Perform a microtask checkpoint.
+                                    if let Err(error) = process.perform_microtask_checkpoint() {
+                                        error!("microtask checkpoint after task failed: {error}");
+                                    }
                                 }
                             }
                             Ok(false) => return Ok(()),
@@ -2278,14 +2281,13 @@ fn run_content_message_loop(
                                 error!("content error: {error}");
                                 if notify {
                                     let _ = process.note_command_completed();
+                                    // <https://html.spec.whatwg.org/#event-loop-processing-model>
+                                    // Step 2.8: Perform a microtask checkpoint.
+                                    if let Err(error) = process.perform_microtask_checkpoint() {
+                                        error!("microtask checkpoint after task failed: {error}");
+                                    }
                                 }
                             }
-                        }
-
-                        // Drain ECMAScript microtask queue (promise jobs, generic jobs)
-                        // after every command so pending promise reactions progress.
-                        if let Err(error) = process.flush_microtasks() {
-                            error!("failed to flush microtasks: {error}");
                         }
                     }
                     Err(_) => return Ok(()),
@@ -2294,6 +2296,13 @@ fn run_content_message_loop(
             recv(wasm_rx) -> _ => {
                 process.drain_all_pending_wasm_requests();
                 process.drain_wasm_results();
+
+                // <https://html.spec.whatwg.org/#perform-a-microtask-checkpoint>
+                // Wasm compilation results resolve promises, so run a microtask
+                // checkpoint after they are processed.
+                if let Err(error) = process.perform_microtask_checkpoint() {
+                    error!("microtask checkpoint after wasm failed: {error}");
+                }
             }
         }
     }

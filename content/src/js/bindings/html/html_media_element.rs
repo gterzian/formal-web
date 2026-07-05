@@ -39,12 +39,9 @@ impl WebIdlInterface<crate::js::Types> for HTMLMediaElement {
     }
 
     fn define_members(def: &mut InterfaceDefinition<crate::js::Types>) {
-        #[cfg(not(feature = "media"))]
-        {
-            // No members when media is disabled — the interface exists but is empty.
-            let _ = def;
-            return;
-        }
+        // Note: Members are always defined (even without the `media` feature)
+        // so that the prototype has entries for e.g. `play`, `src`. When media
+        // is disabled the method bodies are no-ops returning sensible defaults.
 
         // network state
         def.add_attribute(AttributeDef {
