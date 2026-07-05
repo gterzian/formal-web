@@ -40,5 +40,5 @@
 mod engine;
 mod types;
 
-pub use engine::{JscEngine, JscTypes};
+pub use engine::{JscEngine, JscTypes, set_current_engine, clear_current_engine};
 pub use types::*;

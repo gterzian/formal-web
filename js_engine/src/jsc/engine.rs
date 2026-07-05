@@ -11,11 +11,56 @@
 //! - **Module evaluation** — requires SPI.
 //! - **SharedArrayBuffer** — available on newer macOS only.
 
+use std::cell::RefCell;
 use std::collections::HashMap;
 use std::ffi::{c_char, c_void};
 use std::sync::LazyLock;
 
 use super::types::*;
+
+// ── Current engine (thread-local) ────────────────────────────────────
+//
+// The JscEngine may be moved during initialization (local→return value→
+// ESO field→ContentDocument field).  Raw `self` pointers captured in
+// builtin function closures become dangling after each move.
+//
+// Instead of capturing the engine pointer, we set a thread-local
+// "current engine" before entering any code path that might trigger JS
+// callbacks, and clear it after.  The builtin function callbacks read
+// this thread-local to find the engine.
+thread_local! {
+    static CURRENT_ENGINE: RefCell<Option<*mut JscEngine>> = const { RefCell::new(None) };
+}
+
+/// Set the current engine for the duration of a scope.
+/// Builtin function callbacks will use this to find `ec`.
+///
+/// Must be called before any code that might invoke JS callbacks
+/// (script evaluation, event dispatching, timer callbacks).
+pub fn set_current_engine(engine: &mut JscEngine) {
+    let ptr = engine as *mut JscEngine;
+    CURRENT_ENGINE.with(|current| {
+        *current.borrow_mut() = Some(ptr);
+    });
+}
+
+/// Clear the current engine.  Call after the scope completes.
+pub fn clear_current_engine() {
+    CURRENT_ENGINE.with(|current| {
+        *current.borrow_mut() = None;
+    });
+}
+
+/// Get the current engine pointer.  Panics if none is set.
+fn with_current_engine<R>(f: impl FnOnce(&mut JscEngine) -> R) -> R {
+    CURRENT_ENGINE.with(|current| {
+        let ptr = current
+            .borrow()
+            .expect("no current engine set — set_current_engine must be called before entering JS");
+        let engine = unsafe { &mut *ptr };
+        f(engine)
+    })
+}
 use crate::jsc_sys::*;
 use crate::{
     Completion, EcmascriptHost, ExecutionContext, HostHooks, IntegrityLevel, IteratorKind,
@@ -97,21 +142,28 @@ extern "C" fn builtin_call_as_function(
 ) -> *mut JSValueRef {
     let stored_ptr = unsafe { JSObjectGetPrivate(function) } as *mut StoredBehaviour;
     if stored_ptr.is_null() {
-        return unsafe { JSValueMakeUndefined(ctx) };
+            return unsafe { JSValueMakeUndefined(ctx) };
     }
     let stored: &StoredBehaviour = unsafe { &*stored_ptr };
 
-    let args_slice = unsafe { std::slice::from_raw_parts(arguments, argument_count) };
-    let jsc_args: Vec<JscValue> = args_slice
-        .iter()
-        .map(|raw| JscValue { raw: *raw, ctx })
-        .collect();
+    let jsc_args: Vec<JscValue> = if argument_count == 0 || arguments.is_null() {
+            Vec::new()
+    } else {
+        let args_slice = unsafe { std::slice::from_raw_parts(arguments, argument_count) };
+        args_slice
+            .iter()
+            .map(|raw| JscValue { raw: *raw, ctx })
+            .collect()
+    };
+
     let this_val = JscValue {
         raw: this_object as *mut JSValueRef,
         ctx,
     };
 
-    match stored(&jsc_args, this_val) {
+    let call_result = stored(&jsc_args, this_val);
+
+    match call_result {
         Ok(result) => result.raw,
         Err(err) => {
             unsafe {
@@ -651,13 +703,12 @@ impl JsEngine<JscTypes> for JscEngine {
         length: u32,
         name: JscPropertyKey,
     ) -> JscFunction {
-        let engine_ptr: *mut JscEngine = self;
-
         let wrapped: StoredBehaviour = Box::new(
             move |args: &[JscValue], this_val: JscValue| -> Completion<JscValue, JscTypes> {
-                let engine: &mut JscEngine = unsafe { &mut *engine_ptr };
-                let ec: &mut dyn ExecutionContext<JscTypes> = engine;
-                behaviour(args, this_val, &captures, ec)
+                with_current_engine(|engine| {
+                    let ec: &mut dyn ExecutionContext<JscTypes> = engine;
+                    behaviour(args, this_val, &captures, ec)
+                })
             },
         );
 
@@ -716,9 +767,9 @@ impl JsEngine<JscTypes> for JscEngine {
     where
         JscTypes: JsTypesWithRealm,
     {
-        let script = JscString::from_rust(source);
-        let mut exception: *mut JSValueRef = std::ptr::null_mut();
-        let result = unsafe {
+            let script = JscString::from_rust(source);
+            let mut exception: *mut JSValueRef = std::ptr::null_mut();
+            let result = unsafe {
             JSEvaluateScript(
                 self.context.as_context_ref(),
                 script.raw,
@@ -728,7 +779,7 @@ impl JsEngine<JscTypes> for JscEngine {
                 &mut exception,
             )
         };
-        if !exception.is_null() {
+            if !exception.is_null() {
             return Err(JscValue {
                 raw: exception,
                 ctx: self.ctx_ptr(),
@@ -2909,17 +2960,15 @@ impl ExecutionContext<JscTypes> for JscEngine {
         length: u32,
         name: JscPropertyKey,
     ) -> JscFunction {
-        // Capture a raw engine pointer so the wrapped closure can produce
-        // `&mut dyn ExecutionContext` without receiving it from the C callback.
-        // SAFETY: the content process is single-threaded, and the engine
-        // outlives all builtin function objects created from it.
-        let engine_ptr: *mut JscEngine = self;
-
-        // Wrap the user's behaviour: capture engine_ptr and use it as `ec`.
+        // Capture the ctx pointer (stable for the engine's lifetime) instead
+        // of `self as *mut JscEngine` (the engine may be moved after
+        // initialization).  At callback time, look up the engine from the
+        // context-to-engine registry.
         let wrapped: StoredBehaviour = Box::new(move |args, this_val| {
-            let engine: &mut JscEngine = unsafe { &mut *engine_ptr };
-            let ec: &mut dyn ExecutionContext<JscTypes> = engine;
-            behaviour(args, this_val, ec)
+            with_current_engine(|engine| {
+                let ec: &mut dyn ExecutionContext<JscTypes> = engine;
+                behaviour(args, this_val, ec)
+            })
         });
 
         // Leak the Box to get a stable raw pointer for JSC private data.
@@ -2984,12 +3033,11 @@ impl ExecutionContext<JscTypes> for JscEngine {
         length: u32,
         name: JscPropertyKey,
     ) -> JscFunction {
-        let engine_ptr: *mut JscEngine = self;
-
         let wrapped: StoredBehaviour = Box::new(move |args, this_val| {
-            let engine: &mut JscEngine = unsafe { &mut *engine_ptr };
-            let ec: &mut dyn ExecutionContext<JscTypes> = engine;
-            behaviour.call(args, this_val, ec)
+            with_current_engine(|engine| {
+                let ec: &mut dyn ExecutionContext<JscTypes> = engine;
+                behaviour.call(args, this_val, ec)
+            })
         });
 
         let leaked: *mut StoredBehaviour = Box::into_raw(Box::new(wrapped));
@@ -3372,11 +3420,12 @@ impl ExecutionContext<JscTypes> for JscEngine {
     }
 
     fn evaluate_script(&mut self, source: &str) -> Completion<JscValue, JscTypes> {
-        let script = JscString::from_rust(source);
-        let mut exception: *mut JSValueRef = std::ptr::null_mut();
-        let result = unsafe {
+            let script = JscString::from_rust(source);
+            let ctx_ref = self.context.as_context_ref();
+            let mut exception: *mut JSValueRef = std::ptr::null_mut();
+            let result = unsafe {
             JSEvaluateScript(
-                self.context.as_context_ref(),
+                ctx_ref,
                 script.raw,
                 std::ptr::null_mut(),
                 std::ptr::null_mut(),
@@ -3384,7 +3433,7 @@ impl ExecutionContext<JscTypes> for JscEngine {
                 &mut exception,
             )
         };
-        if !exception.is_null() {
+            if !exception.is_null() {
             return Err(JscValue {
                 raw: exception,
                 ctx: self.ctx_ptr(),

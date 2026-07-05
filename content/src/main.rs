@@ -875,8 +875,14 @@ impl ContentProcess {
         }
 
         let window = content_document.settings.engine.realm_global_object();
-        fire_event(&mut content_document.settings, &window, "load", true)
-            .map_err(|error| format!("fire_event failed: {error:?}"))?;
+        {
+            #[cfg(jsc_backend)]
+            js_engine::jsc::set_current_engine(&mut content_document.settings.engine);
+            fire_event(&mut content_document.settings, &window, "load", true)
+                .map_err(|error| format!("fire_event failed: {error:?}"))?;
+            #[cfg(jsc_backend)]
+            js_engine::jsc::clear_current_engine();
+        }
 
         let traversable_id = content_document.traversable_id;
         self.active_documents_by_traversable

@@ -245,7 +245,7 @@ fn binding_fn(
 | Backend | Status |
 |---|---|
 | Boa | ✅ Full parity — all trait methods pass |
-| JSC | ✅ Trait surface complete. Content crate compiles cleanly (2026-07-05). |
+| JSC | ✅ Trait surface complete. Content process initializes without SIGSEGV (2026-07-06). DOM event dispatch not yet wired up. |
 | GC | ✅ Complete — `#[gc_struct]`, `GcCell<T>`, `GcRootHandle<T>`. |
 
 ## Design notes
@@ -274,7 +274,12 @@ feedback during development, and **WPT** for full regression verification.
 ### Quick feedback: browser extension
 
 ```bash
-# 1. Build and start formal-web with CDP on a test page
+# 1. Build and start formal-web with CDP (JSC is the default on macOS)
+cargo build --release
+./target/release/formal-web cdp --port 9222 \
+  --startup-url "file:///path/to/test.html"
+
+# Boa backend (opt-in):
 cargo build --release --no-default-features --features boa,media
 ./target/release/formal-web cdp --port 9222 \
   --startup-url "file:///path/to/test.html"
@@ -697,62 +702,64 @@ See `js_engine/src/gc.rs` for the `GcRootHandle` API.
 
 | # | Problem | Root cause | Status |
 |---|---|---|---|
-| 7 | Content process crashes with SIGSEGV after initialization | `create_builtin_function_from_behaviour` crashes after `JSObjectSetPrototype` succeeds — during or after the `JSObjectSetProperty` for the `length` property. Exact same code in `create_builtin_function` (called hundreds of times) works fine. Only `from_behaviour` path crashes. | 🔴 SIGSEGV on startup (`formal-web`). Content crate compiles cleanly. |
+| 7 | Content process crashes with SIGSEGV on startup | `create_builtin_function` on JSC captured `self as *mut JscEngine` in closures stored as private data on JS function objects. The engine is created as a local in `build_context`, then moved (return value → `EnvironmentSettingsObject` → `ContentDocument`). Each move invalidates the captured raw pointer. When a builtin function is called (e.g. `console.log()`), dereferencing the stale pointer causes SIGSEGV. | ✅ **FIXED** (2026-07-06) |
+| 8 | `install_css_namespace` crashes via `Behaviour` trait path | On JSC, `create_builtin_function_from_behaviour` (the `Box<dyn Behaviour>` path) crashes. The root cause was the same as #7 (stale engine pointer), but manifests first in this path. | ✅ **FIXED** (2026-07-06) |
+| 9 | `cargo build --release` (workspace root) resolves wrong features | `js_engine` is in `default-members` with `default = ["boa"]`. When built as a workspace member, cargo unifies `boa` (from `js_engine`'s own defaults) with `jsc` (from `content`'s dependency request). Both features active on `js_engine` causes `gc_struct_boa` to be used even when `content` expects `jsc`. | ✅ **FIXED** (2026-07-06) — removed `js_engine` and `js_engine_macros` from `default-members` in root `Cargo.toml`. |
 
-**FIXED (2026-07-05 session):** Content crate now compiles on JSC with zero errors.
+## SIGSEGV in JSC builtin functions — root cause and fix
 
-Fixes applied:
-1. `JscTypes: Clone + Copy` — required by `#[gc_struct]` derive.
-2. `Default`, `From<bool>`, `From<f64>`, `From<JscPropertyKey>` for `JscValue` — type infrastructure.
-3. `PartialEq<str>`, `PartialEq<&str>` for `JscString` — string comparison in content code.
-4. `as_string()` method on `JscValue`, `downcast_ref<T>()`, `downcast_mut<T>()`, `data()`, `data_mut()` stubs on `JscObject`.
-5. Blanket `Trace` impls for `()`, `bool`, `u64`, `i64`, `u32`, `i32`, `usize`, `String`, `Rc<RefCell<T>>`, tuples up to 5 elements.
-6. `unsafe impl Trace for JscValue {}` (cfg-gated).
-7. `#[cfg(boa_backend)]` gating on `wasmtime::Module` references.
-8. `build_context` import fix, `WasmInstantiate` variant gating.
-9. Full JSC `build_context` initialization (Window, GlobalScope, interface specs, prototype wiring).
+**Symptom:** Content process crashes with SIGSEGV during the first call to a
+builtin function (e.g. `console.log()`), after full build context initialization
+succeeds.  `cargo run --release` produces `child status: signal: 11 (SIGSEGV)`.
 
-## Failed debugging attempt: SIGSEGV in `create_builtin_function_from_behaviour`
+**Root cause:** `create_builtin_function` (and variants) captured `self as *mut JscEngine`
+where `self` was `&mut JscEngine`.  The engine starts as a local variable in
+`build_context_inner`, then is moved through the return value into
+`EnvironmentSettingsObject`, then into `ContentDocument`.  Each `memcpy`-based
+move invalidates the captured raw pointer.  When the closure is later invoked from
+JSC's C callback (`builtin_call_as_function`), dereferencing the stale pointer
+dereferences freed stack memory → SIGSEGV.
 
-**Symptom:** Content process crashes with SIGSEGV during `install_css_namespace` which
-calls `create_builtin_function_from_behaviour`. `create_builtin_function` and
-`create_builtin_function_with_captures` work fine (called hundreds of times during
-interface registration).
+**Fix:** Use a thread-local `CURRENT_ENGINE` (`RefCell<Option<*mut JscEngine>>`)
+instead of capturing the engine pointer.  Call `set_current_engine(&mut engine)`
+before JS execution and `clear_current_engine()` after.  Callbacks look up the
+engine from the thread-local at invocation time:
 
-**Traced through logging:**
-1. `JSObjectMake` succeeds
-2. `current_realm()` works
-3. `realm_intrinsics()` completes (all 22 fetch_ctor + 15 fetch_proto)
-4. `JSObjectSetPrototype()` succeeds
-5. Crash during subsequent `JSObjectSetProperty(length)` — the exact same code in
-   `create_builtin_function` works fine.
+```rust
+thread_local! {
+    static CURRENT_ENGINE: RefCell<Option<*mut JscEngine>> = const { RefCell::new(None) };
+}
 
-**What was tried:**
-- Added step-by-step logging in all three `create_builtin_function*` variants.
-- Verified `realm_intrinsics` completes successfully (returns valid `Function.prototype`,
-  all prototypes are fetched correctly).
-- Confirmed `raw` pointer from `JSObjectMake` is non-null and valid.
-- Moved `install_css_namespace` after all `register_interface_spec` calls (same crash).
-- Checked for heap corruption from leaked `StoredBehaviour` Boxes (each `Box::into_raw`
-  leaks a `Box<dyn Fn(...)>` as private data on JSC function objects; `builtin_finalize`
-  drops them on GC).
+fn with_current_engine<R>(f: impl FnOnce(&mut JscEngine) -> R) -> R {
+    CURRENT_ENGINE.with(|current| {
+        let ptr = current.borrow()
+            .expect("no current engine set");
+        let engine = unsafe { &mut *ptr };
+        f(engine)
+    })
+}
+```
 
-**Hypothesis (untested):** The crash may be a JSC-internal heap corruption from the
-hundreds of `Box::into_raw` calls creating private-data references. Or a macOS JSC
-version-specific bug where `JSObjectSetProperty` on a custom-class function object
-(with `callAsFunction` + `finalize` callbacks) crashes when setting `length` after
-many such objects have already been created.
+All three closure-creation paths (`create_builtin_function`,
+`create_builtin_function_with_captures`, `create_builtin_function_from_behaviour`)
+now capture a thread-local lookup instead of `engine_ptr`.
 
-**Next steps to try:**
-1. Replace `create_builtin_function_from_behaviour` with `create_builtin_function`
-   in `install_css_namespace` to confirm the crash is specific to the `Behaviour`
-   trait object path.
-2. Use `lldb` with `process attach` to get a proper stack trace from the content
-   child process at the moment of SIGSEGV.
-3. Try the macOS 10.15+ JSC API (`JSObjectMakeDeferredPromise`, `ForKey` property
-   family) to reduce reliance on eval-based workarounds.
-4. Build with `debug = true` profile and re-run, checking for Rust runtime panics
-   that might masquerade as SIGSEGV.
+`set_current_engine` / `clear_current_engine` are called from:
+- `EnvironmentSettingsObject::evaluate_script_without_microtask_checkpoint`
+- `EnvironmentSettingsObject::evaluate_script_to_json`
+- `continue_document_load` (wrapping `fire_event` for the `load` event)
+
+**Additional fix:** `install_css_namespace` was using `create_builtin_function_from_behaviour`
+(the `Behaviour` trait object path).  Switched to `create_builtin_function` (closure path)
+since `CssBehaviour` has no captures and the two paths are equivalent.
+
+**Files changed:**
+- `js_engine/src/jsc/engine.rs` — Added `CURRENT_ENGINE` thread-local,
+  `set_current_engine()`, `clear_current_engine()`, `with_current_engine()`.
+- `js_engine/src/jsc/mod.rs` — Exported `set_current_engine` / `clear_current_engine`.
+- `content/src/html/environment_settings_object.rs` — Set/clear engine around script eval.
+- `content/src/main.rs` — Set/clear engine around load event dispatch.
+- `content/src/js/css_generic.rs` — Replaced `from_behaviour` with `create_builtin_function`.
 
 
 

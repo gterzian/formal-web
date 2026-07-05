@@ -13,8 +13,9 @@ path = "src/main.rs"
 default = ["media", "jsc"]
 media = []
 
-# Backend selection for helper process prebuilding.
-# Mutually exclusive — only one should be active.
+# Backend selection.
+# These are intentionally empty — the actual backend selection happens
+# in the content crate's features, which each member resolves independently.
 jsc = []
 boa = []
 
@@ -47,19 +48,10 @@ members = [
 ]
 default-members = [
     ".",
-    "automation",
-    "content",
-    "ipc",
-    "ipc/xpc-sys",
     "embedder",
-    "ipc_messages",
-    "js_engine",
-    "js_engine_macros",
-    "media",
+    "content",
     "net",
-    "user_agent",
-    "verification",
-    "webview",
+    "media",
 ]
 
 [workspace.dependencies]
