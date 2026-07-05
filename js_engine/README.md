@@ -605,7 +605,7 @@ Fix plan:
 | `wasm/jsapi/constructor/compile` | FAIL | "global object is not a Window" — pre-existing |
 | `wasm/jsapi/module/exports` | FAIL | "not a WebAssembly.Module" — pre-existing |
 
-**Failed fix attempts (2026-07-05):**
+**Failed fix attempts (2026-07-05 and 2026-07-06):**
 
 1. **Extended `eprintln!` instrumentation** — Added debug logs to `BoaContext::call`, `perform_promise_then`, `setup_on_fulfilled`, `invoke_callback_function`, `call_pull_if_needed`, and `perform_a_microtask_checkpoint`.  Findings:
    - `BoaContext::call` never fails (zero "callback is not callable" hits).  The error is NOT from `EcmascriptHost::call`.
@@ -623,9 +623,50 @@ Fix plan:
   c.enqueue("hello");
 ')` produces `{value:"hello",done:false}`.  The issue is specific to the page-load evaluation path, not the stream code itself.
 
-**Hypothesis (untested):** The error may involve a platform object GC timing issue.  After the test function returns, the JS variables `rs`, `reader`, and `controller` go out of scope.  If the Boa GC runs between the test function and the promise reaction microtask, the stream's `TraceableBox` may be collected, dropping the `ReadableStream` Rust data, which drops the reader's `read_requests` `GcCell`, which finally drops the `PromiseResolvers` containing the promise resolve/reject `JsObject` references.  The promise itself (kept alive by the `.then()` chain in the test) would never resolve — but the "not a callable function" rejection suggests something different happens, possibly a NativeFunction closure running on a dangling reference.  This theory has not been tested.
+4. **Comprehensive promise tracing** (2026-07-06) — Added `log::warn!` at every promise creation point:
+   `new_promise_pending`, `promise_resolve`, `resolved_promise`, `rejected_promise`,
+   `new_promise_capability`, `perform_promise_then`, and `mark_promise_as_handled`.
+   Counted exactly 10 promises in the single-subtest flow:
+   - 2 from `setup_on_fulfilled` reaction (`start_reaction` + internal capability)
+   - 2 from `mark_promise_as_handled` (discarded promises for start_reaction and start_promise)
+   - 2 from `reader.read()` (`closed_promise` and `read_promise` P1)
+   - 4 from `call_pull_if_needed` inside `setup_on_fulfilled` microtask
+     (`pull_promise`, `pull_reaction`, 2 discarded from `mark_promise_as_handled`)
+   Finding: **ALL Rust promise operations return Ok**.  The `resolvers.resolve` for P1
+   succeeds (confirmed by log).  `BoaContext::call` NEVER returns "not a callable function".
+   The error comes from INSIDE Boa's JavaScript-level promise reaction processing —
+   specifically, a promise created by `PromiseCapability::new` inside Boa's
+   `Promise.prototype.then()` or `PerformPromiseThen` has non-callable resolve/reject
+   functions.
 
-**Potential fix approach (untested):** Use `GcRootHandle` to root the read promise's `PromiseResolvers.resolve`/`.reject` objects, or root the stream platform object itself, keeping the platform objects alive through the microtask boundary.  See `js_engine/src/gc.rs` for the `GcRootHandle` API.
+5. **`BoaContext::call` error message check** (2026-07-06) — Instrumented `BoaContext::call`
+   to log the exact error string when `function.call()` returns an error.  Result:
+   **Zero occurrences** — the "not a callable function" error is NOT from our Rust-side
+   `ec.call()`.  It is thrown by Boa's internal `non_existent_call` during a JS-level
+   `[[Call]]` invocation.  This means it happens inside a promise reaction microtask
+   when Boa tries to call the capability's resolve/reject function or the handler
+   function stored in the `ReactionRecord`.
+
+6. **Checked all `create_builtin_function` call sites** for GC-unsafe captures —
+   Every active call site captures only function pointers or nothing.  Stream callbacks
+   (`setup_on_fulfilled`, `pull_steps_on_fulfilled`, etc.) use `builtin_with_captures`
+   → `create_builtin_function_with_captures` (properly traced).  No GC-tracing gap
+   found in any active Rust→JS callback path.
+
+7. **Reduced test to single subtest** and confirmed the same failure.
+
+**Next steps for someone investigating:**
+The error only reproduces in WPT (page-load), not in CDP (`Runtime.evaluate`).
+This suggests an environmental difference in the promise processing path.
+Recommended approach: bisect which promise is the source of the rejection by
+wrapping every `new_promise_pending`/`resolved_promise`/`rejected_promise` call
+in a `.then`/`.catch` with unique error metadata, or add a `window.addEventListener`
+handler that captures `e.reason.stack` in the WPT test page itself.
+
+**Potential fix approach (untested):** Use `GcRootHandle` to root the read promise's
+`PromiseResolvers.resolve`/`.reject` objects, or root the stream platform object
+itself, keeping the platform objects alive through the microtask boundary.
+See `js_engine/src/gc.rs` for the `GcRootHandle` API.
 
 
 **FIXED this session:**
