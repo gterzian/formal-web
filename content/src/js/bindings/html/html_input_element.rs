@@ -51,10 +51,13 @@ fn get_value(
 ) -> Completion<JsValue, crate::js::Types> {
     let obj = crate::js::Types::value_as_object(this)
         .ok_or_else(|| ec.new_type_error("expected object"))?;
-    let input = obj
-        .downcast_ref::<HTMLInputElement>()
-        .ok_or_else(|| ec.new_type_error("expected HTMLInputElement"))?;
-    Ok(ec.value_from_string(ec.js_string_from_str(&input.value())))
+    let err = ec.new_type_error("expected HTMLInputElement");
+    let value = ec
+        .with_object_any(&obj)
+        .and_then(|data| data.downcast_ref::<HTMLInputElement>())
+        .map(|input| input.value())
+        .ok_or(err)?;
+    Ok(ec.value_from_string(ec.js_string_from_str(&value)))
 }
 
 fn focus_method(
@@ -73,16 +76,19 @@ fn set_value(
     args: &[JsValue],
     ec: &mut dyn ExecutionContext<crate::js::Types>,
 ) -> Completion<JsValue, crate::js::Types> {
-    let obj = crate::js::Types::value_as_object(this)
-        .ok_or_else(|| ec.new_type_error("expected object"))?;
-    let input = obj
-        .downcast_ref::<HTMLInputElement>()
-        .ok_or_else(|| ec.new_type_error("expected HTMLInputElement"))?;
+    // Extract value string first, before borrowing ec via with_object_any.
     let value = if let Some(v) = args.first() {
         ec.to_rust_string(v.clone())?
     } else {
         String::default()
     };
+    let obj = crate::js::Types::value_as_object(this)
+        .ok_or_else(|| ec.new_type_error("expected object"))?;
+    let err = ec.new_type_error("expected HTMLInputElement");
+    let input = ec
+        .with_object_any(&obj)
+        .and_then(|data| data.downcast_ref::<HTMLInputElement>())
+        .ok_or(err)?;
     input.set_value(&value);
     Ok(ec.value_undefined())
 }
