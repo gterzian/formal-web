@@ -686,27 +686,6 @@ impl WebIdlInterface<TestTypes> for TestButton {
     fn define_members(_def: &mut InterfaceDefinition<TestTypes>) {}
 }
 
-#[cfg(boa_backend)]
-#[allow(dead_code)]
-pub(crate) fn exercise_context_lifecycle() -> Result<(), String> {
-    use crate::webidl::bindings::{initialize_registry, register_interface_spec};
-    use boa_engine::context::ContextBuilder;
-    use js_engine::boa::BoaContext;
-
-    let context = ContextBuilder::new()
-        .build()
-        .map_err(|error| error.to_string())?;
-    let mut boa_context = BoaContext::from_context(context);
-
-    initialize_registry::<TestTypes>(&mut boa_context);
-
-    register_interface_spec::<TestTypes, TestWidget, _>(&mut boa_context).ok();
-    register_interface_spec::<TestTypes, TestButton, _>(&mut boa_context).ok();
-    wire_test_interface_prototypes(&mut boa_context);
-
-    Ok(())
-}
-
 // ═══════════════════════════════════════════════════════════════════════════
 // Unit tests — exercise the generic API through real assertions.
 // ═══════════════════════════════════════════════════════════════════════════
@@ -722,6 +701,7 @@ mod tests {
     };
 
     use js_engine::PropertyDescriptor;
+    use js_engine::TypedArrayElementType;
     use js_engine::{EcmascriptHost, ExecutionContext, JsEngine};
 
     // ── Backend-specific setup ───────────────────────────────────────
@@ -1653,7 +1633,7 @@ mod tests {
         let val = engine.get_value_from_buffer(
             &ab,
             0,
-            js_engine::TypedArrayElementType::Uint8,
+            TypedArrayElementType::Uint8,
             false,
             js_engine::SharedMemoryOrder::SeqCst,
         );
@@ -1663,7 +1643,7 @@ mod tests {
             .set_value_in_buffer(
                 &ab,
                 0,
-                js_engine::TypedArrayElementType::Uint8,
+                TypedArrayElementType::Uint8,
                 v255,
                 false,
                 js_engine::SharedMemoryOrder::SeqCst,

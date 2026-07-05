@@ -505,7 +505,7 @@ Attempted to cfg-gate `register_interface_spec` into two versions with `from_pro
 4. Run the single failing test via `cargo run --release --no-default-features --features boa,media -- wpt` and capture stderr.
 5. Compare the failing code path with the corresponding pre-migration code on `main` (use `git show main:content/src/streams/...`). |
 
-**Remaining unexpected results (WPT run 2026-07-05, 13 unexpected/97 tests):**
+**Remaining unexpected results (WPT run 2026-07-05, 17 unexpected/97 tests):**
 
 **Pre-existing (not migration-related):**
 | Test | Failure | Notes |
@@ -596,7 +596,36 @@ Fix plan:
 | `streams/readable-streams/read-task-handling` | TIMEOUT | Likely microtask processing |
 | `streams/readable-streams/general` | FAIL | Now just `assert_true` for `instanceof` after subclassing fix — needs investigation |
 | `streams/readable-streams/default-reader` | FAIL | "TypeError: not a callable function" — likely GC tracing gap in reader or controller stored objects |
-| `streams/readable-streams/count-queuing-strategy-integration` | FAIL | Likely GC tracing or promise chain issue | 
+| `streams/readable-streams/count-queuing-strategy-integration` | FAIL | Likely GC tracing or promise chain issue |
+| `streams/readable-streams/async-iterator` | TIMEOUT + prototype FAIL | Category 7 partial fix left remaining timeout |
+| `streams/readable-streams/from` | TIMEOUT | Likely same microtask issue as async-iterator |
+| `streams/readable-streams/patched-global` | TIMEOUT | Iterator part hangs |
+| `streams/readable-byte-streams/templated` | FAIL | "TypeError: not a callable function" — same root cause as default-reader |
+| `formal/wasm-compile-instantiate` | FAIL | "global object is not a Window" — wasm branding |
+| `wasm/jsapi/constructor/compile` | FAIL | "global object is not a Window" — pre-existing |
+| `wasm/jsapi/module/exports` | FAIL | "not a WebAssembly.Module" — pre-existing |
+
+**Failed fix attempts (2026-07-05):**
+
+1. **Extended `eprintln!` instrumentation** — Added debug logs to `BoaContext::call`, `perform_promise_then`, `setup_on_fulfilled`, `invoke_callback_function`, `call_pull_if_needed`, and `perform_a_microtask_checkpoint`.  Findings:
+   - `BoaContext::call` never fails (zero "callback is not callable" hits).  The error is NOT from `EcmascriptHost::call`.
+   - `setup_on_fulfilled` runs successfully and `call_pull_if_needed` succeeds for all test cases.
+   - `perform_promise_then` IS called during ReadableStream construction.
+   - The "TypeError: not a callable function" comes from Boa's internal `[[Call]]` operation (`non_existent_call` in `object/internal_methods/mod.rs`), not from any of our generic trait call paths.
+   - The error surfaces as an unhandled rejection caught by the WPT `promise_test` framework's `.catch()` handler.
+
+2. **Added microtask flush after load event** in `continue_document_load` — added `perform_a_microtask_checkpoint()` call after `fire_event("load")` in `content/src/main.rs`.  Did NOT fix any failures, confirming the issue is not simply a missing microtask flush.
+
+3. **Verified the same code works via CDP interactive testing** — `Runtime.evaluate('
+  let c; const rs = new ReadableStream({ start(ctrl) { c = ctrl; } });
+  const reader = rs.getReader();
+  reader.read().then(v => result = v);
+  c.enqueue("hello");
+')` produces `{value:"hello",done:false}`.  The issue is specific to the page-load evaluation path, not the stream code itself.
+
+**Hypothesis (untested):** The error may involve a platform object GC timing issue.  After the test function returns, the JS variables `rs`, `reader`, and `controller` go out of scope.  If the Boa GC runs between the test function and the promise reaction microtask, the stream's `TraceableBox` may be collected, dropping the `ReadableStream` Rust data, which drops the reader's `read_requests` `GcCell`, which finally drops the `PromiseResolvers` containing the promise resolve/reject `JsObject` references.  The promise itself (kept alive by the `.then()` chain in the test) would never resolve — but the "not a callable function" rejection suggests something different happens, possibly a NativeFunction closure running on a dangling reference.  This theory has not been tested.
+
+**Potential fix approach (untested):** Use `GcRootHandle` to root the read promise's `PromiseResolvers.resolve`/`.reject` objects, or root the stream platform object itself, keeping the platform objects alive through the microtask boundary.  See `js_engine/src/gc.rs` for the `GcRootHandle` API.
 
 
 **FIXED this session:**

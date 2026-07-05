@@ -8,6 +8,7 @@ pub mod infra;
 pub mod js;
 
 pub mod dom;
+#[cfg(test)]
 mod generic_js_test;
 pub mod html;
 pub mod streams;
