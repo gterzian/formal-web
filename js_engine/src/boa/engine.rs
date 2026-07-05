@@ -17,7 +17,23 @@
 //!
 //! - `evaluate_module` — module loader not wired (`todo!()`)
 //! - `generator_start` — VM internal (`todo!()`)
-//! - `enqueue_job` — no-op (Boa job trait not wired)
+//!
+//! ### Silent no-ops (return plausible-looking fake data)
+//!
+//! These methods return default values instead of implementing the full
+//! spec algorithm.  Unlike `todo!()` they do not panic, so callers get
+//! no error signal:
+//!
+//! - `get_value_from_buffer` — always returns `undefined`
+//! - `set_value_in_buffer` — always `Ok(())`, does nothing
+//! - `is_detached_buffer` — always `false` (Boa's `JsArrayBuffer` doesn't
+//!   expose `[[IsDetached]]` through its public API)
+//! - `is_fixed_length_array_buffer` — always `true` (resizable ArrayBuffers
+//!   not supported)
+//! - `species_constructor` — always returns `default_constructor`, ignores
+//!   `@@species` entirely
+//! - `set_host_hooks` — no-op for Boa (host hooks are set during
+//!   `ContextBuilder::host_hooks()`, not at runtime)
 //!
 //! See `js_engine/README.md` for the migration plan and
 //! `super::mod.rs` for known Boa-specific quirks.
@@ -56,6 +72,15 @@ use super::types::BoaTypes;
 // `Trace`.  The trait object itself holds no GC-managed data — the
 // concrete captures inside the Behaviour impl are already rooted by
 // their parent stream/controller objects.
+//
+// # Safety invariant
+//
+// See the invariant doc on `Behaviour<T>` in `engine.rs`:
+// "implementors must NOT capture GC-managed references."
+// This no-op trace relies on that invariant.  Any future implementor
+// that adds `JsObject`/`GcCell` captures must migrate to
+// `create_builtin_function_with_captures` / `builtin_with_captures`
+// instead of going through the `Behaviour` trait object path.
 unsafe impl boa_gc::Trace for dyn crate::Behaviour<BoaTypes> {
     unsafe fn trace(&self, _tracer: &mut boa_gc::Tracer) {}
     unsafe fn trace_non_roots(&self) {}
@@ -488,11 +513,17 @@ impl ExecutionContext<BoaTypes> for BoaContext {
     }
 
     fn to_length(&mut self, value: JsValue) -> Completion<u64, BoaTypes> {
+        // <https://tc39.es/ecma262/#sec-tolength>
+        //
+        // Note: Spec returns a Number (u64 in our trait type).
         let number = into_completion(value.to_number(&mut self.context), &mut self.context)?;
+        // Step 1: Let length be ? ToIntegerOrInfinity(arg).
+        // Step 2: If length ≤ 0, return +0𝔽.
         if number.is_nan() || number <= 0.0 {
             Ok(0)
         } else {
-            Ok((number.min(f64::from(u32::MAX))) as u64)
+            // Step 3: Return 𝔽(min(length, 2^53 - 1)).
+            Ok((number.min(9007199254740991.0)) as u64)
         }
     }
 
@@ -508,7 +539,12 @@ impl ExecutionContext<BoaTypes> for BoaContext {
     }
 
     fn to_index(&mut self, value: JsValue) -> Completion<u64, BoaTypes> {
+        // <https://tc39.es/ecma262/#sec-toindex>
+        //
+        // Note: Our trait returns u64.  The spec's output is a mathematical
+        // integer, which we represent as u64.
         let n = into_completion(value.to_number(&mut self.context), &mut self.context)?;
+        // Step 1: Let int be ? ToIntegerOrInfinity(arg).
         if n.is_nan() || n < 0.0 || !n.is_finite() {
             return Err(JsValue::from(
                 JsNativeError::range()
@@ -517,13 +553,24 @@ impl ExecutionContext<BoaTypes> for BoaContext {
             ));
         }
         let integer = n.trunc() as u64;
-        if integer as f64 != n || integer > 9007199254740992 {
+        // Ensure no precision loss from the truncation
+        if integer as f64 != n {
             return Err(JsValue::from(
                 JsNativeError::range()
                     .with_message("Invalid index")
                     .into_opaque(&mut self.context),
             ));
         }
+        // Step 2: If int is not in the inclusive interval from 0 to 2^53 - 1,
+        // throw a RangeError exception.
+        if integer > 9007199254740991 {
+            return Err(JsValue::from(
+                JsNativeError::range()
+                    .with_message("Invalid index")
+                    .into_opaque(&mut self.context),
+            ));
+        }
+        // Step 3: Return int.
         Ok(integer)
     }
 
@@ -639,52 +686,80 @@ impl ExecutionContext<BoaTypes> for BoaContext {
         desc_obj: JsObject,
     ) -> Completion<PropertyDescriptor<BoaTypes>, BoaTypes> {
         // <https://tc39.es/ecma262/#sec-topropertydescriptor>
-        let enumerable_val = crate::EcmascriptHost::get(self, &desc_obj, "enumerable")?;
-        let configurable_val = crate::EcmascriptHost::get(self, &desc_obj, "configurable")?;
-        let value = {
-            let val = crate::EcmascriptHost::get(self, &desc_obj, "value")?;
-            if !val.is_undefined() { Some(val) } else { None }
-        };
-        let writable_val = crate::EcmascriptHost::get(self, &desc_obj, "writable")?;
-        let get_val = crate::EcmascriptHost::get(self, &desc_obj, "get")?;
-        let set_val = crate::EcmascriptHost::get(self, &desc_obj, "set")?;
+        //
+        // Step 1: If obj is not an Object, throw a TypeError exception.
+        // (guaranteed by the JsObject parameter type)
 
-        let enumerable = if !enumerable_val.is_undefined() {
-            Some(self.to_boolean(&enumerable_val))
-        } else {
-            None
-        };
-        let configurable = if !configurable_val.is_undefined() {
-            Some(self.to_boolean(&configurable_val))
-        } else {
-            None
-        };
-        let writable = if !writable_val.is_undefined() {
-            Some(self.to_boolean(&writable_val))
-        } else {
-            None
-        };
-        let get_fn = if !get_val.is_undefined() && !get_val.is_null() {
-            let obj = self.to_object(get_val)?;
-            JsFunction::from_object(obj)
-        } else {
-            None
-        };
-        let set_fn = if !set_val.is_undefined() && !set_val.is_null() {
-            let obj = self.to_object(set_val)?;
-            JsFunction::from_object(obj)
-        } else {
-            None
+        // Step 2: Let propertyDesc be a new Property Descriptor that initially has no fields.
+        let mut desc = PropertyDescriptor {
+            value: None,
+            writable: None,
+            get: None,
+            set: None,
+            enumerable: None,
+            configurable: None,
         };
 
-        Ok(PropertyDescriptor {
-            value,
-            writable,
-            get: get_fn,
-            set: set_fn,
-            enumerable,
-            configurable,
-        })
+        // Step 3: Let hasEnumerable be ? HasProperty(obj, "enumerable").
+        // Step 4: If hasEnumerable is true, then ...
+        if let Some(enumerable) = has_property_then_get_boolean(self, &desc_obj, "enumerable")? {
+            desc.enumerable = Some(enumerable);
+        }
+
+        // Step 5: Let hasConfigurable be ? HasProperty(obj, "configurable").
+        // Step 6: If hasConfigurable is true, then ...
+        if let Some(configurable) = has_property_then_get_boolean(self, &desc_obj, "configurable")?
+        {
+            desc.configurable = Some(configurable);
+        }
+
+        // Step 7-8: Let hasValue be ? HasProperty(obj, "value"). If hasValue is true, then ...
+        if has_property(self, &desc_obj, "value")? {
+            let value = crate::EcmascriptHost::get(self, &desc_obj, "value")?;
+            desc.value = Some(value);
+        }
+
+        // Step 9-10: Let hasWritable be ? HasProperty(obj, "writable"). If hasWritable is true, then ...
+        if let Some(writable) = has_property_then_get_boolean(self, &desc_obj, "writable")? {
+            desc.writable = Some(writable);
+        }
+
+        // Step 11-13: Let hasGet be ? HasProperty(obj, "get"). If hasGet is true, then ...
+        if has_property(self, &desc_obj, "get")? {
+            let getter = crate::EcmascriptHost::get(self, &desc_obj, "get")?;
+            if getter.is_object() && !self.is_callable(&getter) {
+                // Step 13: If IsCallable(getter) is false and getter is not undefined, throw a TypeError.
+                return Err(self.new_type_error("getter must be callable or undefined"));
+            }
+            if getter.is_object() {
+                let obj = getter.as_object().unwrap().clone();
+                desc.get = JsFunction::from_object(obj);
+            }
+        }
+
+        // Step 14-16: Let hasSet be ? HasProperty(obj, "set"). If hasSet is true, then ...
+        if has_property(self, &desc_obj, "set")? {
+            let setter = crate::EcmascriptHost::get(self, &desc_obj, "set")?;
+            if setter.is_object() && !self.is_callable(&setter) {
+                return Err(self.new_type_error("setter must be callable or undefined"));
+            }
+            if setter.is_object() {
+                let obj = setter.as_object().unwrap().clone();
+                desc.set = JsFunction::from_object(obj);
+            }
+        }
+
+        // Step 17-18: If propertyDesc has a [[Getter]] or [[Setter]], check no [[Value]] or [[Writable]].
+        if (desc.get.is_some() || desc.set.is_some())
+            && (desc.value.is_some() || desc.writable.is_some())
+        {
+            return Err(self.new_type_error(
+                "Invalid property descriptor: cannot have both accessor and data fields",
+            ));
+        }
+
+        // Step 19: Return propertyDesc.
+        Ok(desc)
     }
 
     fn define_property_or_throw(
@@ -789,49 +864,24 @@ impl ExecutionContext<BoaTypes> for BoaContext {
         object: JsObject,
         property_key: PropertyKey,
     ) -> Completion<Option<PropertyDescriptor<BoaTypes>>, BoaTypes> {
-        let global = self.context.global_object();
-        let object_ctor_val = into_completion(
-            global.get(
-                PropertyKey::from(boa_engine::js_string!("Object")),
-                &mut self.context,
-            ),
-            &mut self.context,
-        )?;
-        let object_ctor = object_ctor_val.as_object().ok_or_else(|| {
-            JsValue::from(
-                JsNativeError::typ()
-                    .with_message("Object constructor is not available")
-                    .into_opaque(&mut self.context),
-            )
-        })?;
-        let descriptor_fn_val = into_completion(
-            object_ctor.get(
-                PropertyKey::from(boa_engine::js_string!("getOwnPropertyDescriptor")),
-                &mut self.context,
-            ),
-            &mut self.context,
-        )?;
-        let descriptor_fn =
-            JsFunction::from_object(descriptor_fn_val.as_object().ok_or_else(|| {
-                JsValue::from(
-                    JsNativeError::typ()
-                        .with_message("Object.getOwnPropertyDescriptor is not callable")
-                        .into_opaque(&mut self.context),
-                )
-            })?)
-            .ok_or_else(|| {
-                JsValue::from(
-                    JsNativeError::typ()
-                        .with_message("Object.getOwnPropertyDescriptor is not callable")
-                        .into_opaque(&mut self.context),
-                )
-            })?;
-
-        let key_value = boa_property_key_to_value(&property_key);
+        // <https://tc39.es/ecma262/#sec-ordinarygetownproperty>
+        //
+        // Use Boa's internal `__get_own_property__` via the built-in
+        // Object.getOwnPropertyDescriptor function, accessed through
+        // the intrinsics (not the global) to avoid user-space hijacking.
+        //
+        // Note: we call the Rust-level `OrdinaryObject::get_own_property_descriptor`
+        // directly rather than going through the global binding.  This avoids
+        // user code reassigning Object or patching getOwnPropertyDescriptor.
+        // The per-element call still uses ToObject on the argument, but since
+        // our `object` parameter is already a JsObject this is a no-op.
         let descriptor_val = into_completion(
-            descriptor_fn.call(
-                &JsValue::from(object_ctor.clone()),
-                &[JsValue::from(object), key_value],
+            boa_engine::builtins::object::OrdinaryObject::get_own_property_descriptor(
+                &JsValue::undefined(),
+                &[
+                    JsValue::from(object),
+                    boa_property_key_to_value(&property_key),
+                ],
                 &mut self.context,
             ),
             &mut self.context,
@@ -1837,6 +1887,16 @@ impl ExecutionContext<BoaTypes> for BoaContext {
         };
 
         // SAFETY: BoaContext is `#[repr(transparent)]` over Context.
+        //
+        // NOTE: `NativeFunction::from_closure` does not require `Trace` on the
+        // captured closure, so any `JsObject`/`JsValue`/`GcCell` references
+        // inside `behaviour`'s captures are INVISIBLE to the Boa GC.  If a GC
+        // cycle runs while the native function is alive, those references may
+        // be collected, producing "TypeError: not a callable function" or UAF.
+        //
+        // All current callers capture only function pointers and/or `Rc<...>`
+        // without GC references.  Any future caller that needs captured GC
+        // data must use `create_builtin_function_with_captures` instead.
         let native = unsafe {
             NativeFunction::from_closure(Box::new(
                 move |this: &JsValue,
@@ -1938,6 +1998,16 @@ impl ExecutionContext<BoaTypes> for BoaContext {
         };
 
         // SAFETY: BoaContext is `#[repr(transparent)]` over Context.
+        //
+        // NOTE: `NativeFunction::from_closure` does not require `Trace` on the
+        // captured closure, so any `JsObject`/`JsValue`/`GcCell` references
+        // inside `behaviour`'s captures are INVISIBLE to the Boa GC.  If a GC
+        // cycle runs while the native function is alive, those references may
+        // be collected, producing "TypeError: not a callable function" or UAF.
+        //
+        // All current callers capture only function pointers and/or `Rc<...>`
+        // without GC references.  Any future caller that needs captured GC
+        // data must use `create_builtin_function_with_captures` instead.
         let native = unsafe {
             NativeFunction::from_closure(Box::new(
                 move |this: &JsValue,
@@ -2339,6 +2409,34 @@ fn descriptor_field_value(
     Ok(Some(value))
 }
 
+/// Check if an object has a given property.
+fn has_property(
+    ec: &mut dyn ExecutionContext<BoaTypes>,
+    obj: &JsObject,
+    field_name: &str,
+) -> Completion<bool, BoaTypes> {
+    let key = PropertyKey::from(boa_engine::js_string!(field_name));
+    let field_key: PropertyKey = key;
+    ec.has_property(obj.clone(), field_key)
+}
+
+/// If an object has a given property, return its ToBoolean value.
+/// Returns `Ok(None)` if the property does not exist.
+fn has_property_then_get_boolean(
+    ec: &mut dyn ExecutionContext<BoaTypes>,
+    obj: &JsObject,
+    field_name: &str,
+) -> Completion<Option<bool>, BoaTypes> {
+    let field_key = PropertyKey::from(boa_engine::js_string!(field_name));
+    let present = ec.has_property(obj.clone(), field_key.clone())?;
+    if !present {
+        return Ok(None);
+    }
+    // Use ExecutionContext::get (takes PropertyKey), not EcmascriptHost::get (takes &str).
+    let val = ExecutionContext::get(ec, obj.clone(), field_key)?;
+    Ok(Some(ec.to_boolean(&val)))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2462,7 +2560,7 @@ mod tests {
     fn evaluate_script_via_engine() {
         let mut engine = BoaContext::new();
         let realm = engine.create_realm();
-        let result = engine.evaluate_script("40 + 2", &realm).unwrap();
+        let result = crate::JsEngine::evaluate_script(&mut engine, "40 + 2", &realm).unwrap();
         let n = engine.to_number(result).unwrap();
         assert!((n - 42.0).abs() < 0.001);
     }
@@ -2485,9 +2583,12 @@ mod tests {
     fn is_callable_and_call() {
         let mut engine = BoaContext::new();
         let realm = engine.current_realm();
-        let fn_val = engine
-            .evaluate_script("(function(x) { return x * 2; })", &realm)
-            .unwrap();
+        let fn_val = crate::JsEngine::evaluate_script(
+            &mut engine,
+            "(function(x) { return x * 2; })",
+            &realm,
+        )
+        .unwrap();
         assert!(engine.is_callable(&fn_val));
         let fn_obj = fn_val.as_object().unwrap().clone();
         let undef = engine.value_undefined();

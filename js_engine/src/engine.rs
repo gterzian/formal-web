@@ -99,6 +99,27 @@ pub type Completion<T, Ty> = Result<T, <Ty as JsTypes>::JsValue>;
 /// its own captures (state) internally.  Implementations receive JS args,
 /// the `this` value, and the execution context.  The captures are opaque
 /// to the engine backend — only the concrete impl knows their type.
+///
+/// # GC safety invariant
+///
+/// On the Boa backend, [`create_builtin_function_from_behaviour`] stores
+/// `Box<dyn Behaviour>` with a **no-op `Trace`** implementation
+/// (see `js_engine/src/boa/engine.rs`).  This means any `JsObject`,
+/// `JsValue`, or `GcCell` references inside the Behaviour impl's captured
+/// state are invisible to the Boa garbage collector.
+///
+/// **Therefore: implementors must NOT capture GC-managed references.**
+/// The captures must be either:
+/// - Plain Rust data (function pointers, integers, strings, `Rc<...>`,
+///   `Arc<...>` with no `JsObject`/`JsValue` fields), or
+/// - Already independently rooted by a parent `JsObject` (e.g. through a
+///   `TraceableBox` that lives in the JS heap).
+///
+/// For call sites that need to capture `GcCell<T>` or `JsObject` references,
+/// use [`crate::ExecutionContext::create_builtin_function_with_captures`]
+/// or the content-level `builtin_with_captures` helper instead, which
+/// properly require `C: Trace` and store the captures in GC-traced heap
+/// allocations.
 pub trait Behaviour<T: JsTypes> {
     fn call(
         &self,

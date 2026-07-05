@@ -13,6 +13,62 @@ didn't work is more useful than a TODO comment or a suggested-but-untested
 fix.  If a problem can be fixed it should be; if it can't, describe the
 blocker in detail — the next person to hit it will have the full context.
 
+## Boa backend spec-correctness fixes (2026-07-05)
+
+Fixes applied to `js_engine/src/boa/engine.rs` following a comprehensive review:
+
+### Spec-correctness bugs fixed
+
+1. **`to_property_descriptor`** — Previously used `is_undefined()` to decide field
+   presence, conflating "absent" with "\[\[Value\]\] is undefined".  Now uses
+   `HasProperty` per spec §6.2.6.5.  Also added the
+   getter/setter-not-callable TypeError check and the data+accessor conflict check.
+
+2. **`to_length`** — Clamped to `u32::MAX` instead of `2^53 - 1` per spec §7.1.21.
+   Lengths above ~4.29B were silently truncated.  Now clamps to `9007199254740991`.
+
+3. **`to_index`** — Off-by-one: compared `> 9007199254740992` (2^53) instead of
+   `> 9007199254740991` (2^53 - 1) per spec §7.1.23.  Values equal to 2^53
+   incorrectly passed validation.
+
+4. **`get_own_property`** — Looked up `Object.getOwnPropertyDescriptor` through
+   the global binding (user-hijackable).  Now calls
+   `OrdinaryObject::get_own_property_descriptor` directly through Boa's public
+   builtin API, bypassing user-space overrides of `Object`.
+
+### GC tracing fix for `DefaultAsyncIterator`
+
+`DefaultAsyncIterator<T>` (created by `create_default_async_iterator_object` in
+`content/src/webidl/async_iterable.rs`) wraps its state (including
+`ReadableStreamAsyncIteratorState` containing a reader with `GcCell<Option<JsObject>>`)
+in `Box::new(iterator)` and passes it to `ec.create_object_with_any()`. On the Boa
+backend, `create_object_with_any` only preserves GC tracing if the data is wrapped in
+`TraceableBox` first — otherwise it falls through to `TraceableBox::noop()` with no-op
+trace/finalize, making any `GcCell<JsObject>` fields inside the iterator invisible to
+the Boa GC.
+
+**Fix:** Added `#[cfg(boa_backend)]` gating in `create_default_async_iterator_object`
+to wrap the iterator in `TraceableBox::new(iterator)` before passing to
+`create_object_with_any`. This ensures `ongoing_promise` (a `GcCell<Option<JsObject>>`)
+and the reader's `closed_promise` are properly traced.
+
+This is the same bug class as the earlier `TraceableBox` fix for platform objects
+(`create_interface_instance` / `register_interface_spec`).
+
+### Documentation gaps
+
+- Module doc comment updated to list all silent no-op methods (`get_value_from_buffer`,
+  `set_value_in_buffer`, `is_detached_buffer`, `is_fixed_length_array_buffer`,
+  `species_constructor`, `set_host_hooks`) alongside the existing `todo!()` entries.
+- `Behaviour` trait doc updated with a GC safety invariant section explaining that
+   implementors must NOT capture GC-managed references because the trait object's
+   `Trace` impl is a no-op.
+- No-op `Trace` impl on `dyn Behaviour<BoaTypes>` now references the trait's
+   invariant doc.
+- `create_builtin_function` and `create_constructor` now carry inline NOTE comments
+   about the GC tracing risk when capturing closures with GC references.
+
+
 ## Architecture
 
 > **Principle:** The architecture is defined by the standards.  We don't

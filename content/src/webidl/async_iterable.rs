@@ -545,7 +545,20 @@ where
     T: AsyncValueIterable,
 {
     let prototype = create_async_iterator_prototype::<T>(ec);
-    ec.create_object_with_any(prototype, Box::new(iterator))
+
+    // Wrap in TraceableBox on the Boa backend so the GC can trace through
+    // the GcCell<Option<JsObject>> (ongoing_promise) and the state's reader
+    // field stored inside the type-erased Box<dyn Any>.  Without this, the
+    // Boa GC cannot see those references and may collect them.
+    #[cfg(boa_backend)]
+    {
+        let boxed = js_engine::boa::TraceableBox::new(iterator);
+        ec.create_object_with_any(prototype, Box::new(boxed))
+    }
+    #[cfg(not(boa_backend))]
+    {
+        ec.create_object_with_any(prototype, Box::new(iterator))
+    }
 }
 
 // ── Binding function helpers ───────────────────────────────────────────────
