@@ -571,6 +571,30 @@ impl JscEngine {
             ctx: self.ctx_ptr(),
         })
     }
+
+    /// Associate Rust data with an existing JSC object (e.g., the global object).
+    /// This is used by the JSC build_context to attach a Window to the realm's
+    /// global object so `with_object_any` can find it.
+    /// Public because it is called from the content crate's build_context.
+    pub fn associate_existing_object(
+        &mut self,
+        object: &JscObject,
+        data: Box<dyn std::any::Any + 'static>,
+    ) {
+        use std::collections::HashMap;
+        let map_type_id = std::any::TypeId::of::<HashMap<usize, Box<dyn std::any::Any>>>();
+        let mut map: HashMap<usize, Box<dyn std::any::Any>> = self
+            .remove_host_any(&map_type_id)
+            .map(|boxed| {
+                *boxed
+                    .downcast::<HashMap<usize, Box<dyn std::any::Any>>>()
+                    .unwrap()
+            })
+            .unwrap_or_default();
+        let key = object.as_raw() as usize;
+        map.insert(key, data);
+        self.store_host_any(map_type_id, Box::new(map));
+    }
 }
 
 impl Default for JscEngine {
@@ -653,6 +677,7 @@ impl JsEngine<JscTypes> for JscEngine {
             raw: unsafe { JSValueMakeNumber(ctx_ptr, length as f64) },
             ctx: ctx_ptr,
         };
+
         let mut exc: *mut JSValueRef = std::ptr::null_mut();
         unsafe {
             JSObjectSetProperty(

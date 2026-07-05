@@ -6,7 +6,7 @@ mod html_iframe_element;
 pub(crate) mod html_input_element;
 pub(crate) mod html_media_element;
 pub(crate) mod html_video_element;
-mod hyperlink_element_utils;
+pub(crate) mod hyperlink_element_utils;
 mod location;
 mod window;
 

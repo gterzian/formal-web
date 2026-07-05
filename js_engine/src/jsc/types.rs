@@ -214,7 +214,9 @@ impl From<JscObject> for JscValue {
 /// prefer keeping the key type separate.
 impl From<JscPropertyKey> for JscValue {
     fn from(_key: JscPropertyKey) -> Self {
-        panic!("Cannot create JscValue from JscPropertyKey without a context; use ec.property_key_to_value()")
+        panic!(
+            "Cannot create JscValue from JscPropertyKey without a context; use ec.property_key_to_value()"
+        )
     }
 }
 

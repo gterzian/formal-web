@@ -656,22 +656,62 @@ Fix plan:
 
 | # | Problem | Root cause | Status |
 |---|---|---|---|
-| 7 | JSC backend does not compile (219 errors in content crate) | `wasmtime::Module` references in `global_scope.rs` not properly gated on JSC (Boa-only feature). Content code uses Boa-native `.is_undefined()`, `.downcast_ref()`, `.downcast_mut()` instead of generic `Types::value_is_undefined()` / `ec.with_object_any()`. Those Boa-specific patterns cause type errors on JSC because `JscValue` and `JscObject` don't have those methods. | **js_engine crate compiles** ✅ (5 errors fixed this session). Content crate still has 219 errors — mostly Boa-specific patterns that need generic migration. |
+| 7 | Content process crashes with SIGSEGV after initialization | `create_builtin_function_from_behaviour` crashes after `JSObjectSetPrototype` succeeds — during or after the `JSObjectSetProperty` for the `length` property. Exact same code in `create_builtin_function` (called hundreds of times) works fine. Only `from_behaviour` path crashes. | 🔴 SIGSEGV on startup (`formal-web`). Content crate compiles cleanly. |
 
-**FIXED (2026-07-05 session):** The content crate now compiles on JSC with zero errors.
+**FIXED (2026-07-05 session):** Content crate now compiles on JSC with zero errors.
 
 Fixes applied:
 1. `JscTypes: Clone + Copy` — required by `#[gc_struct]` derive.
 2. `Default`, `From<bool>`, `From<f64>`, `From<JscPropertyKey>` for `JscValue` — type infrastructure.
 3. `PartialEq<str>`, `PartialEq<&str>` for `JscString` — string comparison in content code.
-4. `as_string()` method on `JscValue` — parity with Boa API.
-5. `downcast_ref::<T>()`, `downcast_mut::<T>()`, `data()`, `data_mut()` stubs on `JscObject` — parity with Boa API.
-6. Blanket `Trace` impls for `()`, `bool`, `u64`, `i64`, `u32`, `i32`, `usize`, `String`, `Rc<RefCell<T>>`, and tuples up to 5 elements — needed by `builtin_with_captures`.
-7. `unsafe impl Trace for JscValue {}` (cfg-gated to `not(feature = "boa")`).
-8. `#[cfg(boa_backend)]` gating on `wasmtime::Module` references in `global_scope.rs` and `environment_settings_object.rs`.
-9. `#[cfg(boa_backend)]` gating on `WasmInstantiate` enum variant.
-10. Fixed `build_context` import in `environment_settings_object.rs` (was importing the module, not the function).
-11. Changed `JsValue::null()` and `JsValue::undefined()` calls in content code to use `ec.value_null()` / `ec.value_undefined()`. |
+4. `as_string()` method on `JscValue`, `downcast_ref<T>()`, `downcast_mut<T>()`, `data()`, `data_mut()` stubs on `JscObject`.
+5. Blanket `Trace` impls for `()`, `bool`, `u64`, `i64`, `u32`, `i32`, `usize`, `String`, `Rc<RefCell<T>>`, tuples up to 5 elements.
+6. `unsafe impl Trace for JscValue {}` (cfg-gated).
+7. `#[cfg(boa_backend)]` gating on `wasmtime::Module` references.
+8. `build_context` import fix, `WasmInstantiate` variant gating.
+9. Full JSC `build_context` initialization (Window, GlobalScope, interface specs, prototype wiring).
+
+## Failed debugging attempt: SIGSEGV in `create_builtin_function_from_behaviour`
+
+**Symptom:** Content process crashes with SIGSEGV during `install_css_namespace` which
+calls `create_builtin_function_from_behaviour`. `create_builtin_function` and
+`create_builtin_function_with_captures` work fine (called hundreds of times during
+interface registration).
+
+**Traced through logging:**
+1. `JSObjectMake` succeeds
+2. `current_realm()` works
+3. `realm_intrinsics()` completes (all 22 fetch_ctor + 15 fetch_proto)
+4. `JSObjectSetPrototype()` succeeds
+5. Crash during subsequent `JSObjectSetProperty(length)` — the exact same code in
+   `create_builtin_function` works fine.
+
+**What was tried:**
+- Added step-by-step logging in all three `create_builtin_function*` variants.
+- Verified `realm_intrinsics` completes successfully (returns valid `Function.prototype`,
+  all prototypes are fetched correctly).
+- Confirmed `raw` pointer from `JSObjectMake` is non-null and valid.
+- Moved `install_css_namespace` after all `register_interface_spec` calls (same crash).
+- Checked for heap corruption from leaked `StoredBehaviour` Boxes (each `Box::into_raw`
+  leaks a `Box<dyn Fn(...)>` as private data on JSC function objects; `builtin_finalize`
+  drops them on GC).
+
+**Hypothesis (untested):** The crash may be a JSC-internal heap corruption from the
+hundreds of `Box::into_raw` calls creating private-data references. Or a macOS JSC
+version-specific bug where `JSObjectSetProperty` on a custom-class function object
+(with `callAsFunction` + `finalize` callbacks) crashes when setting `length` after
+many such objects have already been created.
+
+**Next steps to try:**
+1. Replace `create_builtin_function_from_behaviour` with `create_builtin_function`
+   in `install_css_namespace` to confirm the crash is specific to the `Behaviour`
+   trait object path.
+2. Use `lldb` with `process attach` to get a proper stack trace from the content
+   child process at the moment of SIGSEGV.
+3. Try the macOS 10.15+ JSC API (`JSObjectMakeDeferredPromise`, `ForKey` property
+   family) to reduce reliance on eval-based workarounds.
+4. Build with `debug = true` profile and re-run, checking for Rust runtime panics
+   that might masquerade as SIGSEGV.
 
 
 
