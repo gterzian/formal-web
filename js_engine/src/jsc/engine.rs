@@ -27,6 +27,7 @@ use crate::{
 };
 
 /// Marker type for JSC engine implementations.
+#[derive(Clone, Copy)]
 pub struct JscTypes;
 
 // ═══════════════════════════════════════════════════════════════════════════

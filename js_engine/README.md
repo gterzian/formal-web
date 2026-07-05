@@ -245,7 +245,7 @@ fn binding_fn(
 | Backend | Status |
 |---|---|
 | Boa | ✅ Full parity — all trait methods pass |
-| JSC | 🔶 Trait surface complete. `exercise_context_lifecycle` is Boa-only. |
+| JSC | ✅ Trait surface complete. Content crate compiles cleanly (2026-07-05). |
 | GC | ✅ Complete — `#[gc_struct]`, `GcCell<T>`, `GcRootHandle<T>`. |
 
 ## Design notes
@@ -658,20 +658,20 @@ Fix plan:
 |---|---|---|---|
 | 7 | JSC backend does not compile (219 errors in content crate) | `wasmtime::Module` references in `global_scope.rs` not properly gated on JSC (Boa-only feature). Content code uses Boa-native `.is_undefined()`, `.downcast_ref()`, `.downcast_mut()` instead of generic `Types::value_is_undefined()` / `ec.with_object_any()`. Those Boa-specific patterns cause type errors on JSC because `JscValue` and `JscObject` don't have those methods. | **js_engine crate compiles** ✅ (5 errors fixed this session). Content crate still has 219 errors — mostly Boa-specific patterns that need generic migration. |
 
-**Fix plan for JSC:**
-1. Gate `wasmtime::Module` references in `content/src/html/global_scope.rs` behind `#[cfg(boa_backend)]`
-2. Replace `.downcast_ref::<T>()` and `.downcast_mut::<T>()` calls with `ec.with_object_any(&obj).and_then(|d| d.downcast_ref::<T>())` pattern (6 errors)
-3. Fix `JscTypes: Clone` bound error by adding `Clone` impl to `JscTypes` unit struct
-4. Add `From<f64>`, `From<bool>`, and `Default` impls for `JscValue` (8 errors)
-5. Gate non-wasm `wasmtime::Module` references behind `#[cfg(boa_backend)]` (3 errors)
-6. Fix `Rc<RefCell<AbortThenCancelState>>: Trace` and similar bounds (7 errors) — these types aren't behind `#[gc_struct]` and need `Trace` impls or `#[cfg_attr(not(feature = "boa"), derive(Trace))]`
+**FIXED (2026-07-05 session):** The content crate now compiles on JSC with zero errors.
 
-**Already fixed in this session:**
-- `js_engine` crate compiles cleanly on JSC (0 errors)
-- Added `is_undefined()`, `is_null()`, `as_object()`, `display()` to `JscValue`
-- Added `undefined(ctx)`, `null(ctx)` constructors to `JscValue`
-- Added `From<JscObject> for JscValue`
-- Fixed `property_key_from_well_known_symbol` to use trait methods instead of missing JSC methods |
+Fixes applied:
+1. `JscTypes: Clone + Copy` — required by `#[gc_struct]` derive.
+2. `Default`, `From<bool>`, `From<f64>`, `From<JscPropertyKey>` for `JscValue` — type infrastructure.
+3. `PartialEq<str>`, `PartialEq<&str>` for `JscString` — string comparison in content code.
+4. `as_string()` method on `JscValue` — parity with Boa API.
+5. `downcast_ref::<T>()`, `downcast_mut::<T>()`, `data()`, `data_mut()` stubs on `JscObject` — parity with Boa API.
+6. Blanket `Trace` impls for `()`, `bool`, `u64`, `i64`, `u32`, `i32`, `usize`, `String`, `Rc<RefCell<T>>`, and tuples up to 5 elements — needed by `builtin_with_captures`.
+7. `unsafe impl Trace for JscValue {}` (cfg-gated to `not(feature = "boa")`).
+8. `#[cfg(boa_backend)]` gating on `wasmtime::Module` references in `global_scope.rs` and `environment_settings_object.rs`.
+9. `#[cfg(boa_backend)]` gating on `WasmInstantiate` enum variant.
+10. Fixed `build_context` import in `environment_settings_object.rs` (was importing the module, not the function).
+11. Changed `JsValue::null()` and `JsValue::undefined()` calls in content code to use `ec.value_null()` / `ec.value_undefined()`. |
 
 
 

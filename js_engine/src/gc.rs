@@ -305,6 +305,22 @@ mod jsc_gc_impl {
         }
     }
 
+    // Blanket Trace impls for common types used as captures with
+    // `builtin_with_captures` on the JSC backend.
+    unsafe impl Trace for () {}
+    unsafe impl Trace for bool {}
+    unsafe impl Trace for u64 {}
+    unsafe impl Trace for i64 {}
+    unsafe impl Trace for u32 {}
+    unsafe impl Trace for i32 {}
+    unsafe impl Trace for usize {}
+    unsafe impl Trace for String {}
+    unsafe impl<T> Trace for std::rc::Rc<std::cell::RefCell<T>> {}
+    unsafe impl<A: Trace, B: Trace> Trace for (A, B) {}
+    unsafe impl<A: Trace, B: Trace, C: Trace> Trace for (A, B, C) {}
+    unsafe impl<A: Trace, B: Trace, C: Trace, D: Trace> Trace for (A, B, C, D) {}
+    unsafe impl<A: Trace, B: Trace, C: Trace, D: Trace, E: Trace> Trace for (A, B, C, D, E) {}
+
     #[allow(dead_code)]
     pub extern "C" fn jsc_generic_finalizer<V>(object: *mut std::ffi::c_void) {
         unsafe {

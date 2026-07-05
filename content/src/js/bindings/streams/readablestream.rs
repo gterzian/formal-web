@@ -523,7 +523,7 @@ fn get_desired_size(
     let size = controller.desired_size(ec)?;
     Ok(match size {
         Some(s) => JsValue::from(s),
-        None => JsValue::null(),
+        None => ec.value_null(),
     })
 }
 
@@ -540,7 +540,7 @@ fn get_byte_desired_size(
     let size = controller.desired_size(ec)?;
     Ok(match size {
         Some(s) => JsValue::from(s),
-        None => JsValue::null(),
+        None => ec.value_null(),
     })
 }
 
@@ -557,7 +557,7 @@ fn get_byob_request(
     let byob_request = controller.byob_request(ec)?;
     Ok(match byob_request {
         Some(req) => JsValue::from(req),
-        None => JsValue::null(),
+        None => ec.value_null(),
     })
 }
 
@@ -812,7 +812,7 @@ fn respond_with_new_view_method(
 }
 
 fn with_readable_stream_default_controller_ref<R>(
-    object: &boa_engine::object::JsObject,
+    object: &JsObject,
     ec: &mut dyn ExecutionContext<Types>,
     f: impl FnOnce(&ReadableStreamDefaultController) -> R,
 ) -> Completion<R, Types> {

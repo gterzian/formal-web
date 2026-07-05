@@ -310,7 +310,7 @@ fn get_desired_size(
     let size = writer.desired_size(ec)?;
     Ok(match size {
         Some(s) => JsValue::from(s),
-        None => JsValue::null(),
+        None => ec.value_null(),
     })
 }
 

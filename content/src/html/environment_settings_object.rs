@@ -8,7 +8,7 @@ use url::Url;
 
 use crate::dom::{Document, Event, EventDispatchHost};
 use crate::html::{TimerHandler, Window};
-use crate::js::bindings::html::build_context;
+use crate::js::build_context::build_context;
 use crate::js::platform_objects::with_global_scope;
 use crate::js::{
     Engine, Types, install_console_namespace, install_css_namespace, install_document_property,
@@ -376,6 +376,7 @@ impl EnvironmentSettingsObject {
 
     /// Take all pending wasm instantiate requests (module + request_id)
     /// from the GlobalScope.  Marks them as Processing.
+    #[cfg(boa_backend)]
     pub(crate) fn take_pending_wasm_instantiates(&self) -> Vec<(u64, wasmtime::Module)> {
         let global = self.engine.realm_global_object();
         if let Some(window) = self

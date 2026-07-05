@@ -14,6 +14,7 @@
 use std::ffi::CString;
 use std::os::raw::c_char;
 
+use crate::gc::Trace;
 use crate::jsc_sys::*;
 
 // ── JscContext (owned) ────────────────────────────────────────────────────
@@ -128,6 +129,18 @@ impl PartialEq for JscString {
 }
 impl Eq for JscString {}
 
+impl PartialEq<str> for JscString {
+    fn eq(&self, other: &str) -> bool {
+        self.to_rust() == other
+    }
+}
+
+impl PartialEq<&str> for JscString {
+    fn eq(&self, other: &&str) -> bool {
+        self.to_rust() == *other
+    }
+}
+
 impl std::hash::Hash for JscString {
     fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
         self.to_rust().hash(state);
@@ -160,12 +173,48 @@ impl PartialEq for JscValue {
 }
 impl Eq for JscValue {}
 
+// SAFETY: JSC garbage collection handles JS values natively — no Rust
+// tracing is needed.  The marker impl is required for trait bounds on
+// capture types passed to `builtin_with_captures`.
+#[cfg(not(feature = "boa"))]
+unsafe impl Trace for JscValue {}
+
+impl Default for JscValue {
+    fn default() -> Self {
+        JscValue {
+            raw: std::ptr::null_mut(),
+            ctx: std::ptr::null_mut(),
+        }
+    }
+}
+
+impl From<bool> for JscValue {
+    fn from(_b: bool) -> Self {
+        panic!("Cannot create JscValue from bool without a context; use ec.value_from_bool()")
+    }
+}
+
+impl From<f64> for JscValue {
+    fn from(_n: f64) -> Self {
+        panic!("Cannot create JscValue from f64 without a context; use ec.value_from_number()")
+    }
+}
+
 impl From<JscObject> for JscValue {
     fn from(obj: JscObject) -> Self {
         Self {
             raw: obj.raw as *mut JSValueRef,
             ctx: obj.ctx,
         }
+    }
+}
+
+/// Converting a `JscPropertyKey` to a `JscValue` may require a context
+/// (for creating a JSString from the key).  This is a best-effort impl;
+/// prefer keeping the key type separate.
+impl From<JscPropertyKey> for JscValue {
+    fn from(_key: JscPropertyKey) -> Self {
+        panic!("Cannot create JscValue from JscPropertyKey without a context; use ec.property_key_to_value()")
     }
 }
 
@@ -242,6 +291,23 @@ impl JscValue {
         Self {
             raw: unsafe { JSValueMakeNull(ctx_ptr) },
             ctx: ctx_ptr,
+        }
+    }
+
+    /// If the value is a string, returns the underlying `JscString`.
+    pub fn as_string(&self) -> Option<JscString> {
+        if self.ctx.is_null() {
+            return None;
+        }
+        if unsafe { JSValueIsString(self.ctx, self.raw) } {
+            let mut exc: *mut JSValueRef = std::ptr::null_mut();
+            let raw = unsafe { JSValueToStringCopy(self.ctx, self.raw, &mut exc) };
+            if !exc.is_null() || raw.is_null() {
+                return None;
+            }
+            Some(unsafe { JscString::from_raw(raw) })
+        } else {
+            None
         }
     }
 
@@ -343,6 +409,38 @@ impl JscObject {
             return false;
         }
         unsafe { JSObjectIsConstructor(self.ctx, self.raw) }
+    }
+
+    // ── Generic downcast helpers (compatible with Boa's JsObject methods) ──
+
+    /// Downcast the object's native data to a concrete type `T`.
+    ///
+    /// For JSC, data is stored in a host-side HashMap keyed by object pointer
+    /// (via `create_object_with_any` / `with_object_any`).  This method exists
+    /// for parity with Boa's `JsObject::downcast_ref`.  Prefer using
+    /// `ec.with_object_any(&obj)` directly.
+    pub fn downcast_ref<T: 'static>(&self) -> Option<&T> {
+        None
+    }
+
+    /// Downcast the object's native data to a mutable concrete type `T`.
+    ///
+    /// Prefer using `ec.with_object_any_mut(&obj)` directly.
+    pub fn downcast_mut<T: 'static>(&mut self) -> Option<&mut T> {
+        None
+    }
+
+    /// Get the `ArrayBuffer`'s backing data as a byte slice.
+    ///
+    /// Falls back to `None` since this is not directly supported via JSC's
+    /// public C API.  Use `JSObjectGetArrayBufferBytesPtr` on newer macOS.
+    pub fn data(&self) -> Option<&[u8]> {
+        None
+    }
+
+    /// Get the `ArrayBuffer`'s backing data as a mutable byte slice.
+    pub fn data_mut(&self) -> Option<&mut [u8]> {
+        None
     }
 }
 

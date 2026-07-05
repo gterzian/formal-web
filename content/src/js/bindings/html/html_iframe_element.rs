@@ -191,7 +191,7 @@ fn set_onload(
     args: &[JsValue],
     ec: &mut dyn ExecutionContext<Types>,
 ) -> Completion<JsValue, Types> {
-    let iframe_object = <Types as JsTypes>::value_as_object(this)
+    let mut iframe_object = <Types as JsTypes>::value_as_object(this)
         .ok_or_else(|| ec.new_type_error("HTMLIFrameElement receiver is not an object"))?;
     let callback = nullable_value(
         args.get(0).unwrap_or(&ec.value_undefined()),
@@ -245,7 +245,7 @@ fn set_onerror(
     args: &[JsValue],
     ec: &mut dyn ExecutionContext<Types>,
 ) -> Completion<JsValue, Types> {
-    let iframe_object = <Types as JsTypes>::value_as_object(this)
+    let mut iframe_object = <Types as JsTypes>::value_as_object(this)
         .ok_or_else(|| ec.new_type_error("HTMLIFrameElement receiver is not an object"))?;
     let callback = nullable_value(
         args.get(0).unwrap_or(&ec.value_undefined()),

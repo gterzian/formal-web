@@ -235,7 +235,7 @@ fn trap_own_keys(
 fn target_window(args: &[JsValue]) -> Result<JsObject, JsValue> {
     args.first()
         .and_then(|value| value.as_object())
-        .ok_or_else(|| JsValue::undefined())
+        .ok_or_else(|| JsValue::default())
 }
 
 // ── Public API ──

@@ -1411,7 +1411,7 @@ fn pull_steps_on_fulfilled(
         captures.pull_again.set(false);
         captures.call_pull_if_needed(ec)?;
     }
-    Ok(JsValue::undefined())
+    Ok(ec.value_undefined())
 }
 
 fn pull_steps_on_rejected(
@@ -1421,7 +1421,7 @@ fn pull_steps_on_rejected(
     ec: &mut dyn ExecutionContext<crate::js::Types>,
 ) -> Completion<JsValue, crate::js::Types> {
     captures.error_steps(args.first().cloned().unwrap_or_default(), ec)?;
-    Ok(JsValue::undefined())
+    Ok(ec.value_undefined())
 }
 
 fn setup_on_fulfilled(
@@ -1432,7 +1432,7 @@ fn setup_on_fulfilled(
 ) -> Completion<JsValue, crate::js::Types> {
     captures.started.set(true);
     captures.call_pull_if_needed(ec)?;
-    Ok(JsValue::undefined())
+    Ok(ec.value_undefined())
 }
 
 fn setup_on_rejected(
@@ -1442,5 +1442,5 @@ fn setup_on_rejected(
     ec: &mut dyn ExecutionContext<crate::js::Types>,
 ) -> Completion<JsValue, crate::js::Types> {
     captures.error_steps(args.first().cloned().unwrap_or_default(), ec)?;
-    Ok(JsValue::undefined())
+    Ok(ec.value_undefined())
 }

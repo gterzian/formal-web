@@ -78,6 +78,7 @@ pub enum PendingRequest {
     ///
     /// An instantiate(moduleObject, importObject) request.
     /// The module is already compiled — this only needs instantiation.
+    #[cfg(boa_backend)]
     WasmInstantiate {
         /// The previously compiled wasm module.
         #[ignore_trace]
@@ -840,6 +841,7 @@ impl GlobalScope {
 
     /// Mark all instantiate-type pending wasm requests as Processing and
     /// return their module + request_id.  Called by the content process.
+    #[cfg(boa_backend)]
     pub(crate) fn take_pending_wasm_instantiates(&self) -> Vec<(u64, wasmtime::Module)> {
         let mut requests = self.pending_requests.borrow_mut();
         let mut instantiates = Vec::new();
@@ -884,6 +886,7 @@ impl GlobalScope {
                 PendingRequest::WasmCompile {
                     request_id: rid, ..
                 } => *rid == request_id,
+                #[cfg(boa_backend)]
                 PendingRequest::WasmInstantiate {
                     request_id: rid, ..
                 } => *rid == request_id,
