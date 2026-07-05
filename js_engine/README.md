@@ -460,11 +460,17 @@ Attempted to cfg-gate `register_interface_spec` into two versions with `from_pro
 | `wasm/jsapi/constructor/validate` | PASS ✅ | Pre-existing |
 | `html/webappapis/structured-clone/structured-clone.any.js` | ERROR (BorrowError panic + Blob undefined) | Pre-existing |
 | `html/webappapis/structured-clone/structured-clone-cross-realm-method.html` | SKIP | Pre-existing |
-
 **Category 3 ✅ FIXED (GC tracing — both paths now covered)**
 Both `create_interface_instance` (domain code) and `register_interface_spec` (constructor) paths now wrap platform data in `TraceableBox` on the Boa backend, ensuring GC trace/finalize function pointers survive type-erasure through `Box<dyn Any>`.  The `register_interface_spec` fix was achieved by splitting into two cfg-gated versions with `Trace + Finalize + JsData` bounds on the Boa version.
 
-**Testing note:** Whether this resolves the "TypeError: not a callable function" failures depends on whether the GC was collecting stored `JsObject` references inside constructor-created instances specifically.  The previous fix already covered domain-created objects; this session extends coverage to constructor-created objects.  Run WPT to verify.
+Additionally, THIS SESSION fixed a broader GC trace gap: the `Behaviour` trait object (used by `builtin_with_captures` to wrap captures for stream/controller callback closures) had a **no-op `boa_gc::Trace` implementation**, meaning any `GcCell<T>` or `JsObject` references inside captured domain objects were invisible to the Boa GC and could be collected.  The fix:
+
+1. **`content/src/js/mod.rs`** — `builtin_with_captures` is now cfg-gated:
+   - **Boa backend**: downcasts `&mut dyn ExecutionContext<BoaTypes>` to `&mut BoaContext` and calls `create_builtin_function_with_captures` directly, which stores the concrete captures type `C: Trace + 'static` in the NativeFunction's `Gc<Closure<C>>` heap allocation with proper GC tracing.
+   - **JSC backend**: uses the existing `Behaviour` trait object path (JSC has no GC).
+2. **`content/src/webidl/async_iterable.rs`** — refactored all direct `create_builtin_function_from_behaviour` callers (NextOnFulfilled, NextOnRejected, OperationOnSettled, ReturnOnFulfilled, ReThrowRejected) to use `builtin_with_captures` instead, and added `#[gc_struct]` to their capture types so the Boa backend properly traces through `GcCell<Option<JsObject>>` fields in `DefaultAsyncIterator<T>`.
+
+**Testing note:** The "TypeError: not a callable function" failures persisted in WPT runs after this fix, indicating the GC tracing gap in `Behaviour` was not the primary cause of those specific WPT failures.  The failures may involve microtask/job processing in the WPT environment or other logic issues.  See Category 8 below.
 
 **Category 6 ✅ FIXED — Backward propagation pump stall**
 

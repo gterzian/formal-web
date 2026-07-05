@@ -128,6 +128,8 @@ shared dependency resolution and incremental compilation.
 - **Root binary** (`formal-web`): runs the embedder directly in-process, creating the window and event loop.
 - **Embedder crate** (`embedder`): a library used by the root binary that owns the winit event loop, window, chrome, and automation plumbing. A standalone `formal-web-embedder` binary is also produced for direct use.
 - **Helper processes** (`formal-web-content`, `formal-web-net`, `formal-web-media`): spawned by the embedder.
+- **`js_engine` crate**: a generic JS engine trait and ECMA-262 abstract operations. Two backends: Boa+Wasmtime (default) and JSC (macOS opt-in). See `js_engine/README.md`.
+- **`js_engine_macros` crate**: proc-macro companion providing `#[gc_struct]` for GC-traced platform objects.
 
 ### Three verbs
 

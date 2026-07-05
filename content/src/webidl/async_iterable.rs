@@ -3,7 +3,7 @@ use js_engine::gc::gc_cell_new;
 use js_engine::gc_struct;
 use std::{cell::Cell, rc::Rc};
 
-use js_engine::{Behaviour, Completion, ExecutionContext, JsTypes};
+use js_engine::{Completion, ExecutionContext, JsTypes};
 
 use super::promise::resolved_promise;
 
@@ -28,138 +28,142 @@ enum IteratorOperation {
     Return(JsValue),
 }
 
-// ── Behaviour captures for builtin functions ──────────────────────────────
+// ── Helper: re-export builtin_with_captures for shorter reference ───────
 
-/// Behaviour for onFulfilled of `start_next`:
-/// checks result's done property, sets finished state, returns iter result.
-struct NextOnFulfilled<T: AsyncValueIterable> {
+use crate::js::builtin_with_captures;
+
+// ── Capture types for builtin function callbacks ─────────────────────────
+
+/// Captures for onFulfilled of `start_next`.
+#[gc_struct]
+struct NextOnFulfilledCaptures<T: AsyncValueIterable> {
     iterator: DefaultAsyncIterator<T>,
 }
 
-impl<T: AsyncValueIterable> Behaviour<Types> for NextOnFulfilled<T> {
-    fn call(
-        &self,
-        args: &[JsValue],
-        _this: JsValue,
-        ec: &mut dyn ExecutionContext<Types>,
-    ) -> Completion<JsValue, Types> {
-        let result = args
-            .first()
-            .cloned()
-            .unwrap_or_else(|| ec.value_undefined());
+/// Behaviour function for onFulfilled of `start_next`:
+/// checks result's done property, sets finished state, returns iter result.
+fn next_on_fulfilled_behaviour<T: AsyncValueIterable>(
+    args: &[JsValue],
+    _this: JsValue,
+    captures: &NextOnFulfilledCaptures<T>,
+    ec: &mut dyn ExecutionContext<Types>,
+) -> Completion<JsValue, Types> {
+    let result = args
+        .first()
+        .cloned()
+        .unwrap_or_else(|| ec.value_undefined());
 
-        // Try to extract the "done" property from the resolved value.
-        // If it's an iterator result object ({value, done}), check done.
-        if let Some(result_object) = Types::value_as_object(&result) {
-            let done_result = js_engine::EcmascriptHost::get(ec, &result_object, "done");
-            if let Ok(done_val) = done_result {
-                if ec.to_boolean(&done_val) {
-                    // Step 8.5.2: "If next is end of iteration, then:"
-                    self.iterator.finished.set(true);
-                    self.iterator
-                        .target
-                        .finish_async_iterator(&self.iterator.state, ec)?;
-                    // Return CreateIteratorResultObject(undefined, true)
-                    return Ok(Types::value_from_object(create_iterator_result_object(
-                        ec.value_undefined(),
-                        true,
-                        ec,
-                    )));
-                }
+    // Try to extract the "done" property from the resolved value.
+    // If it's an iterator result object ({value, done}), check done.
+    if let Some(result_object) = Types::value_as_object(&result) {
+        let done_result = js_engine::EcmascriptHost::get(ec, &result_object, "done");
+        if let Ok(done_val) = done_result {
+            if ec.to_boolean(&done_val) {
+                // Step 8.5.2: "If next is end of iteration, then:"
+                captures.iterator.finished.set(true);
+                captures
+                    .iterator
+                    .target
+                    .finish_async_iterator(&captures.iterator.state, ec)?;
+                // Return CreateIteratorResultObject(undefined, true)
+                return Ok(Types::value_from_object(create_iterator_result_object(
+                    ec.value_undefined(),
+                    true,
+                    ec,
+                )));
             }
         }
-
-        // Step 8.5.4: Return the result as-is (the value is the iteration value)
-        Ok(result)
     }
+
+    // Step 8.5.4: Return the result as-is (the value is the iteration value)
+    Ok(result)
 }
 
-/// Behaviour for onRejected of `start_next`:
-/// sets finished state and throws the reason.
-struct NextOnRejected<T: AsyncValueIterable> {
+/// Captures for onRejected of `start_next`.
+#[gc_struct]
+struct NextOnRejectedCaptures<T: AsyncValueIterable> {
     iterator: DefaultAsyncIterator<T>,
 }
 
-impl<T: AsyncValueIterable> Behaviour<Types> for NextOnRejected<T> {
-    fn call(
-        &self,
-        args: &[JsValue],
-        _this: JsValue,
-        ec: &mut dyn ExecutionContext<Types>,
-    ) -> Completion<JsValue, Types> {
-        // Step 8.7.2: "Set object's is finished to true."
-        self.iterator.finished.set(true);
+/// Behaviour function for onRejected of `start_next`:
+/// sets finished state and throws the reason.
+fn next_on_rejected_behaviour<T: AsyncValueIterable>(
+    args: &[JsValue],
+    _this: JsValue,
+    captures: &NextOnRejectedCaptures<T>,
+    ec: &mut dyn ExecutionContext<Types>,
+) -> Completion<JsValue, Types> {
+    // Step 8.7.2: "Set object's is finished to true."
+    captures.iterator.finished.set(true);
 
-        self.iterator
-            .target
-            .finish_async_iterator(&self.iterator.state, ec)?;
+    captures
+        .iterator
+        .target
+        .finish_async_iterator(&captures.iterator.state, ec)?;
 
-        // Step 8.7.3: "Throw reason."
-        let reason = args
-            .first()
-            .cloned()
-            .unwrap_or_else(|| ec.value_undefined());
-        Err(reason)
-    }
+    // Step 8.7.3: "Throw reason."
+    let reason = args
+        .first()
+        .cloned()
+        .unwrap_or_else(|| ec.value_undefined());
+    Err(reason)
 }
 
-/// Behaviour for onSettled of `queue_operation`:
-/// chains the next operation after a previous promise settles.
-struct OperationOnSettled<T: AsyncValueIterable> {
+/// Captures for onSettled of `queue_operation`.
+#[gc_struct]
+struct OperationOnSettledCaptures<T: AsyncValueIterable> {
     iterator: DefaultAsyncIterator<T>,
     operation: IteratorOperation,
 }
 
-impl<T: AsyncValueIterable> Behaviour<Types> for OperationOnSettled<T> {
-    fn call(
-        &self,
-        _args: &[JsValue],
-        _this: JsValue,
-        ec: &mut dyn ExecutionContext<Types>,
-    ) -> Completion<JsValue, Types> {
-        let promise = self.iterator.start_operation(self.operation.clone(), ec)?;
-        Ok(Types::value_from_object(promise))
-    }
+/// Behaviour function for onSettled of `queue_operation`:
+/// chains the next operation after a previous promise settles.
+fn operation_on_settled_behaviour<T: AsyncValueIterable>(
+    _args: &[JsValue],
+    _this: JsValue,
+    captures: &OperationOnSettledCaptures<T>,
+    ec: &mut dyn ExecutionContext<Types>,
+) -> Completion<JsValue, Types> {
+    let promise = captures
+        .iterator
+        .start_operation(captures.operation.clone(), ec)?;
+    Ok(Types::value_from_object(promise))
 }
 
-/// Behaviour for onFulfilled of `start_return`:
-/// returns CreateIteratorResultObject(value, true) regardless of fulfillment value.
-struct ReturnOnFulfilled {
+/// Captures for onFulfilled of `start_return`.
+#[gc_struct]
+struct ReturnOnFulfilledCaptures {
     value: JsValue,
 }
 
-impl Behaviour<Types> for ReturnOnFulfilled {
-    fn call(
-        &self,
-        _args: &[JsValue],
-        _this: JsValue,
-        ec: &mut dyn ExecutionContext<Types>,
-    ) -> Completion<JsValue, Types> {
-        // Step 12.1: "Return CreateIteratorResultObject(value, true)."
-        Ok(Types::value_from_object(create_iterator_result_object(
-            self.value.clone(),
-            true,
-            ec,
-        )))
-    }
+/// Behaviour function for onFulfilled of `start_return`:
+/// returns CreateIteratorResultObject(value, true) regardless of fulfillment value.
+fn return_on_fulfilled_behaviour(
+    _args: &[JsValue],
+    _this: JsValue,
+    captures: &ReturnOnFulfilledCaptures,
+    ec: &mut dyn ExecutionContext<Types>,
+) -> Completion<JsValue, Types> {
+    // Step 12.1: "Return CreateIteratorResultObject(value, true)."
+    Ok(Types::value_from_object(create_iterator_result_object(
+        captures.value.clone(),
+        true,
+        ec,
+    )))
 }
 
-/// Behaviour for onRejected of `start_return`:
-/// re-throws the rejection reason.
-struct ReThrowRejected;
-
-impl Behaviour<Types> for ReThrowRejected {
-    fn call(
-        &self,
-        args: &[JsValue],
-        _this: JsValue,
-        _ec: &mut dyn ExecutionContext<Types>,
-    ) -> Completion<JsValue, Types> {
-        Err(args
-            .first()
-            .cloned()
-            .unwrap_or_else(|| unreachable!("Rejection should have a reason")))
-    }
+/// Captures for onRejected of `start_return` (no data).
+/// Behaviour function: re-throws the rejection reason.
+fn re_throw_rejected_behaviour(
+    args: &[JsValue],
+    _this: JsValue,
+    _captures: &(),
+    _ec: &mut dyn ExecutionContext<Types>,
+) -> Completion<JsValue, Types> {
+    Err(args
+        .first()
+        .cloned()
+        .unwrap_or_else(|| unreachable!("Rejection should have a reason")))
 }
 
 // ── AsyncValueIterable trait ──────────────────────────────────────────────
@@ -262,13 +266,14 @@ where
             // so we use the .then() return value as the ongoing promise.
 
             // Step 10.2: "Let onSettled be CreateBuiltinFunction(nextSteps, 0, "", « »)."
-            let on_settled_fn = ec.create_builtin_function_from_behaviour(
-                Box::new(OperationOnSettled {
+            let on_settled_fn = builtin_with_captures(
+                ec,
+                OperationOnSettledCaptures {
                     iterator: self.clone(),
                     operation,
-                }),
+                },
+                operation_on_settled_behaviour::<T>,
                 0,
-                ec.property_key_from_str(""),
             );
 
             // Step 10.3: "Perform PerformPromiseThen(ongoingPromise, onSettled, onSettled, afterOngoingPromiseCapability)."
@@ -345,21 +350,23 @@ where
         };
 
         // Step 8.5–8.6: Create onFulfilled
-        let on_fulfilled = ec.create_builtin_function_from_behaviour(
-            Box::new(NextOnFulfilled {
+        let on_fulfilled = builtin_with_captures(
+            ec,
+            NextOnFulfilledCaptures {
                 iterator: self.clone(),
-            }),
+            },
+            next_on_fulfilled_behaviour::<T>,
             1,
-            ec.property_key_from_str(""),
         );
 
         // Step 8.7–8.8: Create onRejected
-        let on_rejected = ec.create_builtin_function_from_behaviour(
-            Box::new(NextOnRejected {
+        let on_rejected = builtin_with_captures(
+            ec,
+            NextOnRejectedCaptures {
                 iterator: self.clone(),
-            }),
+            },
+            next_on_rejected_behaviour::<T>,
             1,
-            ec.property_key_from_str(""),
         );
 
         // Step 8.9: "Perform PerformPromiseThen(nextPromise, onFulfilled, onRejected, nextPromiseCapability)."
@@ -441,19 +448,16 @@ where
         };
 
         // Step 12–13: "Let onFulfilled be CreateBuiltinFunction(fulfillSteps, 1, "", « »)."
-        let on_fulfilled = ec.create_builtin_function_from_behaviour(
-            Box::new(ReturnOnFulfilled {
+        let on_fulfilled = builtin_with_captures(
+            ec,
+            ReturnOnFulfilledCaptures {
                 value: value.clone(),
-            }),
+            },
+            return_on_fulfilled_behaviour,
             1,
-            ec.property_key_from_str(""),
         );
 
-        let on_rejected = ec.create_builtin_function_from_behaviour(
-            Box::new(ReThrowRejected),
-            1,
-            ec.property_key_from_str(""),
-        );
+        let on_rejected = builtin_with_captures(ec, (), re_throw_rejected_behaviour, 1);
 
         // Step 14: "Perform PerformPromiseThen(object's ongoing promise, onFulfilled, undefined, returnPromiseCapability)."
         let return_promise_obj = promise_from_object(return_promise, ec)?;
@@ -622,17 +626,14 @@ where
     let return_result = iterator.queue_operation(IteratorOperation::Return(value.clone()), ec)?;
 
     // Step 12–15: Wrap the return result through onFulfilled (CreateIteratorResultObject)
-    let on_fulfilled = ec.create_builtin_function_from_behaviour(
-        Box::new(ReturnOnFulfilled { value }),
+    let on_fulfilled = builtin_with_captures(
+        ec,
+        ReturnOnFulfilledCaptures { value },
+        return_on_fulfilled_behaviour,
         1,
-        ec.property_key_from_str(""),
     );
 
-    let on_rejected = ec.create_builtin_function_from_behaviour(
-        Box::new(ReThrowRejected),
-        1,
-        ec.property_key_from_str(""),
-    );
+    let on_rejected = builtin_with_captures(ec, (), re_throw_rejected_behaviour, 1);
 
     let capability = ec
         .new_promise_capability(ec.realm_intrinsics(&ec.current_realm()).promise)

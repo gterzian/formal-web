@@ -21,7 +21,7 @@ patterns.
 - `content/src/main.rs` and the root modules resume embedder-driven HTML algorithms and content IPC entry points.
 - `content/src/dom` holds native DOM [platform objects](https://webidl.spec.whatwg.org/#dfn-platform-object) and DOM Standard algorithm implementations.
 - `content/src/html` holds parser, document lifecycle, navigation helpers, and HTML global-object [platform objects](https://webidl.spec.whatwg.org/#dfn-platform-object).
-- `content/src/js` holds generic JS engine integration (via the `js_engine` trait), wrapper identity, and JavaScript dispatch glue.
+- `content/src/js` holds the content crate's JS integration layer: type aliases pointing to the concrete `js_engine` backend, generic platform-object resolution and downcast helpers, and JavaScript dispatch glue. The `js_engine` trait itself lives in the top-level `js_engine/` crate (see its `README.md`).
 - `content/src/webidl` holds shared Web IDL callback and promise algorithms (implements Web IDL §3 JavaScript binding).
 - `content/src/streams` holds native Streams [platform objects](https://webidl.spec.whatwg.org/#dfn-platform-object) and Streams Standard algorithms.
 - `content/src/infra` holds shared Infra Standard helpers.

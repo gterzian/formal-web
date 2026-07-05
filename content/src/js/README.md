@@ -1,10 +1,11 @@
 # content/src/js
 
-`content/src/js` integrates the generic `js_engine` trait with the content
-process and keeps JavaScript-facing wrapper identity separate from DOM and
-HTML [platform object](https://webidl.spec.whatwg.org/#dfn-platform-object)
-state.  The actual engine backend (Boa or JSC) is selected by a feature flag
-in `js_engine`; content code only sees the generic traits.
+`content/src/js` is the content crate's JS integration layer.  It provides
+type aliases (`Types`, `Engine`) pointing to the concrete `js_engine` backend
+(selected by feature flag in the top-level `js_engine/` crate), and keeps
+JavaScript-facing wrapper identity separate from DOM and HTML
+[platform object](https://webidl.spec.whatwg.org/#dfn-platform-object)
+state.  Content code only sees the generic traits from the `js_engine` crate.
 
 - `content/src/html/environment_settings_object.rs` owns the realm execution
   context (currently `BoaContext` implementing `ExecutionContext<T>`),
