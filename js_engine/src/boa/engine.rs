@@ -2324,6 +2324,7 @@ mod tests {
             }),
             1,
             PropertyKey::from(boa_engine::js_string!("double")),
+            false,
         );
 
         // Register the function on the global object.

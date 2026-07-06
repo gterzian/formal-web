@@ -35,7 +35,7 @@ impl<T: JsTypes> InterfaceDefinition<T> {
 
 /// Trait for Web IDL platform objects.
 ///
-/// https://webidl.spec.whatwg.org/#js-interfaces
+/// <https://webidl.spec.whatwg.org/#js-interfaces>
 pub(crate) trait WebIdlInterface<T: JsTypes + JsTypesWithRealm>: 'static {
     const NAME: &'static str;
     fn parent_name() -> Option<&'static str> {
@@ -57,6 +57,7 @@ pub(crate) trait WebIdlInterface<T: JsTypes + JsTypesWithRealm>: 'static {
         Self::is_global()
     }
 
+    /// <https://webidl.spec.whatwg.org/#call-a-user-objects-operation>
     fn create_platform_object(
         _new_target: &T::JsValue,
         _args: &[T::JsValue],
@@ -83,9 +84,11 @@ pub(crate) trait WebIdlInterface<T: JsTypes + JsTypesWithRealm>: 'static {
 /// This function implements the Web IDL spec algorithm and separates the GC
 /// concern: the Boa backend wraps platform data in `TraceableBox` before
 /// type-erasing through `Box<dyn Any>`, preserving GC trace/finalize function
-/// pointers.  The `create_interface_instance` function carries the `Trace +
-/// Finalize + JsData` bounds because all platform object types use `#[gc_struct]`
-/// which derives them.
+/// pointers. The non-Boa backend stores data directly.
+///
+/// All platform object types use `#[gc_struct]` which derives `Trace +
+/// Finalize + JsData`. These derive bounds satisfy the Boa backend's GC
+/// tracing requirements.
 ///
 /// Use `create_interface_instance` for domain-created platform objects.
 /// The constructor path in `register_interface_spec` follows a similar pattern.
@@ -111,12 +114,11 @@ where
 
     // Step 2: "If newTarget is undefined, then:"
     //   Domain callers (not constructors) always use the standard prototype.
-
     // Steps 3-8: newTarget handling, MakeBasicObject — handled below.
 
     // Step 9: "Set instance.[[Prototype]] to prototype."
     //   Wrap data in TraceableBox for GC root tracing, then type-erase
-    //   through create_object_with_any.  The Boa backend recovers the
+    //   through create_object_with_any. The Boa backend recovers the
     //   trace/finalize function pointers from the TraceableBox.
     let boxed = js_engine::boa::TraceableBox::new(data);
     let instance = ec.create_object_with_any(prototype, Box::new(boxed));
@@ -135,7 +137,9 @@ where
     Ok(instance)
 }
 
-/// Non-Boa backend (JSC): no Boa GC concerns.  Store data as `Box<dyn Any>`.
+/// <https://webidl.spec.whatwg.org/#internally-create-a-new-object-implementing-the-interface>
+///
+/// Non-Boa backend (JSC): no GC tracing concern — store data as `Box<dyn Any>`.
 #[cfg(not(feature = "boa"))]
 pub(crate) fn create_interface_instance<Ty, T>(
     data: T,
@@ -147,7 +151,7 @@ where
 {
     // <https://webidl.spec.whatwg.org/#internally-create-a-new-object-implementing-the-interface>
 
-    // Step 1: Assert interface is exposed.
+    // Step 1: "Assert: interface is exposed in realm."
     let prototype =
         super::registry::get_prototype_from_host_defined::<Ty, T>(ec).ok_or_else(|| {
             ec.new_type_error(&format!(
@@ -156,19 +160,31 @@ where
             ))
         })?;
 
-    // Step 2-3: newTarget undefined for domain callers — standard prototype.
+    // Step 2: "If newTarget is undefined, then:"
+    //   Domain callers (not constructors) always use the standard prototype.
+    // Steps 3-8: newTarget handling, MakeBasicObject — handled below.
 
-    // Steps 4-9: MakeBasicObject with prototype.  JSC stores Box<dyn Any>.
+    // Step 9: "Set instance.[[Prototype]] to prototype."
     let instance = ec.create_object_with_any(prototype, Box::new(data));
 
-    // Steps 10-13: TODO — unforgeables, [Global], indexed/named properties.
+    // Steps 10-11: "Let interfaces be the inclusive inherited interfaces..."
+    //   TODO: Unforgeable property copying from ancestor interface objects.
 
-    // Step 14: Return instance.
+    // Step 12: "If interface is declared with the [Global] extended attribute..."
+    //   [Global] handling is done during registration (see register_interface_spec).
+
+    // Step 13: "Otherwise, if interfaces contains an interface which supports
+    //   indexed properties, named properties, or both:"
+    //   Not yet implemented.
+
+    // Step 14: "Return instance."
     Ok(instance)
 }
 
 // ── Concrete registration ──
 
+/// <https://webidl.spec.whatwg.org/#create-an-interface-object>
+///
 /// Boa backend: wrap platform-object data in `TraceableBox` so the GC
 /// can trace through type-erased storage, preventing premature collection
 /// of `JsObject` references inside constructor-created instances.
@@ -183,51 +199,71 @@ where
     E: JsEngine<Ty> + ExecutionContext<Ty>,
 {
     // <https://webidl.spec.whatwg.org/#create-an-interface-object>
-    // Step 2: Let constructorProto be realm.[[Intrinsics]].[[%Function.prototype%]].
-    // Step 3: If I inherits ... (handled via constructorProto wiring).
+
     let realm = engine.current_realm();
     let intrinsics = engine.realm_intrinsics(&realm);
-    // Step 11: Let proto be the result of creating an interface prototype
-    //   object of interface I in realm.
+
+    // Step 2: "Let constructorProto be realm.[[Intrinsics]].[[%Function.prototype%]]."
+    // Step 3: "If I inherits from some other interface P, then set constructorProto
+    //   to the interface object of P in realm."
+    //   Note: prototype chain wiring is done explicitly in host_hooks.rs via
+    //   `wire_registry_prototype`. The constructorProto is not yet wired — the
+    //   default %Function.prototype% is used, and subclass constructors inherit
+    //   from their parent interface object via a separate call.
+
+    // Step 11: "Let proto be the result of creating an interface prototype
+    //   object of interface I in realm."
     let proto = engine.create_object_with_any(intrinsics.object_prototype.clone(), Box::new(()));
+
+    // ── Define members on prototype ──
     let mut def = InterfaceDefinition::<Ty>::new();
     I::define_members(&mut def);
     let proto_val = Ty::value_from_object(proto.clone());
+
     super::attribute::define_regular_attributes::<Ty, E>(engine, &proto_val, &def.attributes)?;
     super::operation::define_regular_operations::<Ty, E>(engine, &proto_val, &def.operations)?;
-    // The constructor's instances should have the interface's prototype
-    // object (proto) in their prototype chain, not Object.prototype.
-    // Clone proto now before it's moved into the descriptor assignments.
+
     // <https://webidl.spec.whatwg.org/#ref-for-define-the-constants①>
-    // Define the constants on the interface prototype object as well.
+    // "Define the constants on the interface prototype object."
     super::constant::define_constants::<Ty>(proto.clone(), engine, &def.constants)?;
+
+    // ── Create the interface constructor function ──
     let instance_prototype = proto.clone();
+
     let constructor_fn = engine.create_builtin_function(
         Box::new({
             let instance_prototype_for_fn = instance_prototype.clone();
             move |args: &[Ty::JsValue],
                   new_target_or_this: Ty::JsValue,
                   ec: &mut dyn ExecutionContext<Ty>| {
-                // https://webidl.spec.whatwg.org/#create-an-interface-object
-                // Step 1: Let steps be I's overridden constructor steps...
-                // Step 1.1: If I was not declared with a constructor
-                //   operation, then throw a TypeError.
-                //   Note: handled by I::create_platform_object default impl.
-                // Step 1.2: If NewTarget is undefined, then throw a TypeError.
+                // <https://webidl.spec.whatwg.org/#create-an-interface-object>
+                //
+                // Step 1: "Let steps be I's overridden constructor steps if they exist..."
+                //
+                // Step 1.1: "If I was not declared with a constructor operation,
+                //   then throw a TypeError."
+                //   Note: handled by I::create_platform_object default impl, which
+                //   returns "Illegal constructor".
+                //
+                // Step 1.2: "If NewTarget is undefined, then throw a TypeError."
                 //   Note: Boa's [[Call]] passes `undefined` as `this` for
                 //   constructable functions; [[Construct]] passes `new.target`.
                 if Ty::value_is_undefined(&new_target_or_this) {
                     return Err(ec.new_type_error(&format!("{} is not a constructor", I::NAME)));
                 }
-                // Step 1.3: Let args be the passed arguments.
-                // Step 1.4: Let n be the size of args.
-                // Step 1.5-1.7: Overload resolution (not yet implemented).
-                // Step 1.8: Let object be the result of internally creating
-                //   a new object implementing I, with realm and NewTarget.
+
+                // Step 1.3: "Let args be the passed arguments."
+                // Step 1.4: "Let n be the size of args."
+                // Step 1.5: "Let id be the identifier of interface I."
+                // Steps 1.6-1.7: Overload resolution (not yet implemented).
+
+                // Step 1.8: "Let object be the result of internally creating a new
+                //   object implementing I, with realm and NewTarget."
                 //
                 // <https://webidl.spec.whatwg.org/#internally-create-a-new-object-implementing-the-interface>
-                // Step 4: If newTarget is not undefined — already checked above.
-                // Step 4.2: Let prototype be ? Get(newTarget, "prototype").
+                //
+                // Step 4: "If newTarget is not undefined — already checked above.
+                //   Step 4.2: "Let prototype be ? Get(newTarget, "prototype")."
                 let new_target_obj = Ty::value_as_object(&new_target_or_this).ok_or_else(|| {
                     ec.new_type_error(&format!(
                         "{} constructor called without a valid new.target",
@@ -235,9 +271,11 @@ where
                     ))
                 })?;
                 let prototype_val = EcmascriptHost::get(ec, &new_target_obj, "prototype")?;
-                // Step 4.3: If prototype is not an Object, set prototype to
-                //   the interface prototype object for interface in targetRealm.
-                //   TODO: per-realm fallback for cross-realm subclassing.
+
+                // Step 4.3: "If prototype is not an Object, set prototype to the
+                //   interface prototype object for interface in targetRealm."
+                //   Note: cross-realm fallback not yet implemented; always falls
+                //   back to the current realm's prototype object.
                 let resolved_prototype = if Ty::value_as_object(&prototype_val).is_some() {
                     Ty::value_as_object(&prototype_val).ok_or_else(|| {
                         ec.new_type_error("TypeError: new.target.prototype is not an object")
@@ -245,20 +283,25 @@ where
                 } else {
                     instance_prototype_for_fn.clone()
                 };
+
+                // Step 1.8 (cont): call I::create_platform_object.
                 let obj = I::create_platform_object(&new_target_or_this, args, ec)?;
-                // Step 1.9: Perform the constructor steps of constructor
-                //   with object as this and values as the argument values.
-                //   (Handled inside create_platform_object.)
-                // Step 1.10: Let O be object, converted to a JS value.
+
+                // Step 1.9: "Perform the constructor steps of constructor with
+                //   object as this and values as the argument values."
+                //   Note: handled inside create_platform_object.
+
+                // Step 1.10: "Let O be object, converted to a JavaScript value."
                 //
                 // Note: GC tracing for the stored platform data is handled
                 // by wrapping in `TraceableBox` before type-erasing through
-                // `create_object_with_any`.  The Boa backend detects the
+                // `create_object_with_any`. The Boa backend detects the
                 // `TraceableBox` wrapper and uses its trace/finalize function
                 // pointers instead of no-op tracing.
                 let traceable = js_engine::boa::TraceableBox::new(obj);
                 let instance = ec.create_object_with_any(resolved_prototype, Box::new(traceable));
-                // Step 1.11-1.13: Assert and return O.
+
+                // Steps 1.11-1.13: Assert and return O.
                 Ok(Ty::value_from_object(instance))
             }
         }),
@@ -266,12 +309,15 @@ where
         engine.property_key_from_str(I::NAME),
         true,
     );
-    // Step 10: Let F be CreateBuiltinFunction(steps, length, id,
-    //   « [[Unforgeables]] », realm, constructorProto).
+
+    // Step 10: "Let F be CreateBuiltinFunction(steps, length, id, « [[Unforgeables]] »,
+    //   realm, constructorProto)."
     //   Note: is_constructor=true makes a constructable built-in function.
     let f_obj = Ty::object_from_function(constructor_fn);
-    // Step 12: Perform ! DefinePropertyOrThrow(F, "prototype",
-    //   PropertyDescriptor{[[Value]]: proto, [[Writable]]: false, ...}).
+
+    // Step 12: "Perform ! DefinePropertyOrThrow(F, "prototype",
+    //   PropertyDescriptor{[[Value]]: proto, [[Writable]]: false,
+    //   [[Enumerable]]: false, [[Configurable]]: false})."
     let proto_desc = JsPropertyDescriptor {
         value: Some(Ty::value_from_object(proto.clone())),
         writable: Some(false),
@@ -285,6 +331,7 @@ where
         engine.property_key_from_str("prototype"),
         proto_desc,
     )?;
+
     // Set proto.constructor to F (spec implicit in OrdinaryCreateFromConstructor).
     let ctor_ref = JsPropertyDescriptor {
         value: Some(Ty::value_from_object(f_obj.clone())),
@@ -299,15 +346,22 @@ where
         engine.property_key_from_str("constructor"),
         ctor_ref,
     )?;
+
     let f_val = Ty::value_from_object(f_obj.clone());
-    // Step 13: Define the constants of interface I on F given realm.
+
+    // Step 13: "Define the constants of interface I on F given realm."
     super::constant::define_constants::<Ty>(f_obj.clone(), engine, &def.constants)?;
-    // Step 14-15: Define static attributes and static operations on F.
+
+    // Step 14: "Define the static attributes of interface I on F given realm."
     super::attribute::define_static_attributes::<Ty, E>(engine, &f_val, &def.attributes)?;
+
+    // Step 15: "Define the static operations of interface I on F given realm."
     super::operation::define_static_operations::<Ty, E>(engine, &f_val, &def.operations)?;
-    // Step 16: Return F.
+
+    // Step 16: "Return F."
     //   Note: store in registry so create_interface_instance can find F's prototype.
     super::registry::register_in_host_defined::<Ty, I>(engine, proto.clone(), f_obj.clone());
+
     let install_desc = JsPropertyDescriptor {
         value: Some(Ty::value_from_object(f_obj)),
         writable: Some(true),
@@ -342,6 +396,8 @@ where
     Ok(())
 }
 
+/// <https://webidl.spec.whatwg.org/#create-an-interface-object>
+///
 /// Non-Boa backend: store platform-object data directly (no GC tracing
 /// concerns on JSC).
 #[cfg(not(feature = "boa"))]
@@ -352,51 +408,71 @@ where
     E: JsEngine<Ty> + ExecutionContext<Ty>,
 {
     // <https://webidl.spec.whatwg.org/#create-an-interface-object>
-    // Step 2: Let constructorProto be realm.[[Intrinsics]].[[%Function.prototype%]].
-    // Step 3: If I inherits ... (handled via constructorProto wiring).
+
     let realm = engine.current_realm();
     let intrinsics = engine.realm_intrinsics(&realm);
-    // Step 11: Let proto be the result of creating an interface prototype
-    //   object of interface I in realm.
+
+    // Step 2: "Let constructorProto be realm.[[Intrinsics]].[[%Function.prototype%]]."
+    // Step 3: "If I inherits from some other interface P, then set constructorProto
+    //   to the interface object of P in realm."
+    //   Note: prototype chain wiring is done explicitly in host_hooks.rs via
+    //   `wire_registry_prototype`. The constructorProto is not yet wired — the
+    //   default %Function.prototype% is used, and subclass constructors inherit
+    //   from their parent interface object via a separate call.
+
+    // Step 11: "Let proto be the result of creating an interface prototype
+    //   object of interface I in realm."
     let proto = engine.create_object_with_any(intrinsics.object_prototype.clone(), Box::new(()));
+
+    // ── Define members on prototype ──
     let mut def = InterfaceDefinition::<Ty>::new();
     I::define_members(&mut def);
     let proto_val = Ty::value_from_object(proto.clone());
+
     super::attribute::define_regular_attributes::<Ty, E>(engine, &proto_val, &def.attributes)?;
     super::operation::define_regular_operations::<Ty, E>(engine, &proto_val, &def.operations)?;
-    // The constructor's instances should have the interface's prototype
-    // object (proto) in their prototype chain, not Object.prototype.
-    // Clone proto now before it's moved into the descriptor assignments.
+
     // <https://webidl.spec.whatwg.org/#ref-for-define-the-constants①>
-    // Define the constants on the interface prototype object as well.
+    // "Define the constants on the interface prototype object."
     super::constant::define_constants::<Ty>(proto.clone(), engine, &def.constants)?;
+
+    // ── Create the interface constructor function ──
     let instance_prototype = proto.clone();
+
     let constructor_fn = engine.create_builtin_function(
         Box::new({
             let instance_prototype_for_fn = instance_prototype.clone();
             move |args: &[Ty::JsValue],
                   new_target_or_this: Ty::JsValue,
                   ec: &mut dyn ExecutionContext<Ty>| {
-                // https://webidl.spec.whatwg.org/#create-an-interface-object
-                // Step 1: Let steps be I's overridden constructor steps...
-                // Step 1.1: If I was not declared with a constructor
-                //   operation, then throw a TypeError.
-                //   Note: handled by I::create_platform_object default impl.
-                // Step 1.2: If NewTarget is undefined, then throw a TypeError.
+                // <https://webidl.spec.whatwg.org/#create-an-interface-object>
+                //
+                // Step 1: "Let steps be I's overridden constructor steps if they exist..."
+                //
+                // Step 1.1: "If I was not declared with a constructor operation,
+                //   then throw a TypeError."
+                //   Note: handled by I::create_platform_object default impl, which
+                //   returns "Illegal constructor".
+                //
+                // Step 1.2: "If NewTarget is undefined, then throw a TypeError."
                 //   Note: Boa's [[Call]] passes `undefined` as `this` for
                 //   constructable functions; [[Construct]] passes `new.target`.
                 if Ty::value_is_undefined(&new_target_or_this) {
                     return Err(ec.new_type_error(&format!("{} is not a constructor", I::NAME)));
                 }
-                // Step 1.3: Let args be the passed arguments.
-                // Step 1.4: Let n be the size of args.
-                // Step 1.5-1.7: Overload resolution (not yet implemented).
-                // Step 1.8: Let object be the result of internally creating
-                //   a new object implementing I, with realm and NewTarget.
+
+                // Step 1.3: "Let args be the passed arguments."
+                // Step 1.4: "Let n be the size of args."
+                // Step 1.5: "Let id be the identifier of interface I."
+                // Steps 1.6-1.7: Overload resolution (not yet implemented).
+
+                // Step 1.8: "Let object be the result of internally creating a new
+                //   object implementing I, with realm and NewTarget."
                 //
                 // <https://webidl.spec.whatwg.org/#internally-create-a-new-object-implementing-the-interface>
-                // Step 4: If newTarget is not undefined — already checked above.
-                // Step 4.2: Let prototype be ? Get(newTarget, "prototype").
+                //
+                // Step 4: "If newTarget is not undefined — already checked above.
+                //   Step 4.2: "Let prototype be ? Get(newTarget, "prototype")."
                 let new_target_obj = Ty::value_as_object(&new_target_or_this).ok_or_else(|| {
                     ec.new_type_error(&format!(
                         "{} constructor called without a valid new.target",
@@ -404,9 +480,11 @@ where
                     ))
                 })?;
                 let prototype_val = EcmascriptHost::get(ec, &new_target_obj, "prototype")?;
-                // Step 4.3: If prototype is not an Object, set prototype to
-                //   the interface prototype object for interface in targetRealm.
-                //   TODO: per-realm fallback for cross-realm subclassing.
+
+                // Step 4.3: "If prototype is not an Object, set prototype to the
+                //   interface prototype object for interface in targetRealm."
+                //   Note: cross-realm fallback not yet implemented; always falls
+                //   back to the current realm's prototype object.
                 let resolved_prototype = if Ty::value_as_object(&prototype_val).is_some() {
                     Ty::value_as_object(&prototype_val).ok_or_else(|| {
                         ec.new_type_error("TypeError: new.target.prototype is not an object")
@@ -414,13 +492,18 @@ where
                 } else {
                     instance_prototype_for_fn.clone()
                 };
+
+                // Step 1.8 (cont): call I::create_platform_object.
                 let obj = I::create_platform_object(&new_target_or_this, args, ec)?;
-                // Step 1.9: Perform the constructor steps of constructor
-                //   with object as this and values as the argument values.
-                //   (Handled inside create_platform_object.)
-                // Step 1.10: Let O be object, converted to a JS value.
+
+                // Step 1.9: "Perform the constructor steps of constructor with
+                //   object as this and values as the argument values."
+                //   Note: handled inside create_platform_object.
+
+                // Step 1.10: "Let O be object, converted to a JavaScript value."
                 let instance = ec.create_object_with_any(resolved_prototype, Box::new(obj));
-                // Step 1.11-1.13: Assert and return O.
+
+                // Steps 1.11-1.13: Assert and return O.
                 Ok(Ty::value_from_object(instance))
             }
         }),
@@ -428,12 +511,15 @@ where
         engine.property_key_from_str(I::NAME),
         true,
     );
-    // Step 10: Let F be CreateBuiltinFunction(steps, length, id,
-    //   « [[Unforgeables]] », realm, constructorProto).
+
+    // Step 10: "Let F be CreateBuiltinFunction(steps, length, id, « [[Unforgeables]] »,
+    //   realm, constructorProto)."
     //   Note: is_constructor=true makes a constructable built-in function.
     let f_obj = Ty::object_from_function(constructor_fn);
-    // Step 12: Perform ! DefinePropertyOrThrow(F, "prototype",
-    //   PropertyDescriptor{[[Value]]: proto, [[Writable]]: false, ...}).
+
+    // Step 12: "Perform ! DefinePropertyOrThrow(F, "prototype",
+    //   PropertyDescriptor{[[Value]]: proto, [[Writable]]: false,
+    //   [[Enumerable]]: false, [[Configurable]]: false})."
     let proto_desc = JsPropertyDescriptor {
         value: Some(Ty::value_from_object(proto.clone())),
         writable: Some(false),
@@ -447,6 +533,7 @@ where
         engine.property_key_from_str("prototype"),
         proto_desc,
     )?;
+
     // Set proto.constructor to F (spec implicit in OrdinaryCreateFromConstructor).
     let ctor_ref = JsPropertyDescriptor {
         value: Some(Ty::value_from_object(f_obj.clone())),
@@ -461,15 +548,22 @@ where
         engine.property_key_from_str("constructor"),
         ctor_ref,
     )?;
+
     let f_val = Ty::value_from_object(f_obj.clone());
-    // Step 13: Define the constants of interface I on F given realm.
+
+    // Step 13: "Define the constants of interface I on F given realm."
     super::constant::define_constants::<Ty>(f_obj.clone(), engine, &def.constants)?;
-    // Step 14-15: Define static attributes and static operations on F.
+
+    // Step 14: "Define the static attributes of interface I on F given realm."
     super::attribute::define_static_attributes::<Ty, E>(engine, &f_val, &def.attributes)?;
+
+    // Step 15: "Define the static operations of interface I on F given realm."
     super::operation::define_static_operations::<Ty, E>(engine, &f_val, &def.operations)?;
-    // Step 16: Return F.
+
+    // Step 16: "Return F."
     //   Note: store in registry so create_interface_instance can find F's prototype.
     super::registry::register_in_host_defined::<Ty, I>(engine, proto.clone(), f_obj.clone());
+
     let install_desc = JsPropertyDescriptor {
         value: Some(Ty::value_from_object(f_obj)),
         writable: Some(true),
@@ -512,6 +606,7 @@ pub(crate) fn define_global_property_references<Ty: JsTypes>(
 
 // ── Namespace trait + registration ──
 
+/// <https://webidl.spec.whatwg.org/#namespace-object>
 pub(crate) trait WebIdlNamespace<T: JsTypes + JsTypesWithRealm>: 'static {
     const NAME: &'static str;
     fn define_members(def: &mut InterfaceDefinition<T>)
@@ -519,6 +614,7 @@ pub(crate) trait WebIdlNamespace<T: JsTypes + JsTypesWithRealm>: 'static {
         Self: Sized;
 }
 
+/// <https://webidl.spec.whatwg.org/#create-a-namespace-object>
 pub(crate) fn register_namespace_spec<Ty, I, E>(engine: &mut E) -> Completion<(), Ty>
 where
     Ty: JsTypes + JsTypesWithRealm,

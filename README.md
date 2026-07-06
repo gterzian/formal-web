@@ -25,9 +25,24 @@ rustup run 1.94.0 cargo build --release
 rustup run 1.94.0 cargo run --release
 ```
 
-> `cargo run --release` only rebuilds the root binary — it does **not**
-> rebuild the `formal-web-media` binary.  When switching between backends,
-> rebuild the media binary explicitly with the desired feature flags.
+### JS engine backend
+
+Two JS engine backends are available:
+
+- **Boa** (default) — Rust-native JS engine with Wasmtime for WebAssembly.
+  Production-ready for everyday development.
+- **JSC** (macOS opt-in) — Uses JavaScriptCore via the system framework.
+  Currently experimental.
+
+Switch with feature flags:
+
+```bash
+# Boa (default) — no special flags needed
+rustup run 1.94.0 cargo run --release
+
+# JSC (experimental, macOS only)
+rustup run 1.94.0 cargo run --release --no-default-features --features jsc,media
+```
 
 ### macOS (GStreamer — opt-in)
 

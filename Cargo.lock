@@ -1789,9 +1789,12 @@ version = "0.1.0"
 dependencies = [
  "automation",
  "clap",
+ "content",
  "embedder",
  "env_logger",
  "log",
+ "media",
+ "net",
  "verification",
  "wpt_runner",
 ]

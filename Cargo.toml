@@ -10,19 +10,21 @@ name = "formal-web"
 path = "src/main.rs"
 
 [features]
-default = ["media", "jsc"]
-media = []
+default = ["media", "boa"]
+media = ["dep:media"]
 
 # Backend selection.
-# These are intentionally empty — the actual backend selection happens
-# in the content crate's features, which each member resolves independently.
+# These propagate to the content crate via workspace dependency resolution.
 jsc = []
-boa = []
+boa = ["dep:content"]
 
 [dependencies]
 automation = { path = "automation" }
 clap = { version = "4.5", features = ["derive"] }
+content = { path = "content", optional = true }
 embedder = { path = "embedder" }
+media = { path = "media", optional = true }
+net = { path = "net" }
 wpt_runner = { path = "tests/wpt_runner" }
 verification = { path = "verification" }
 log = "0.4"

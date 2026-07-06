@@ -41,29 +41,32 @@ never appear on the prototype.  Operations (methods) register fine via
 value descriptors.  Suspected in the `PropertyDescriptor<BoaTypes>` →
 Boa native descriptor conversion for `get`+`set`-only descriptors.
 
-### 3. 🔴 `create_builtin_function` doesn't produce constructable functions
+### 3. ✅ `create_builtin_function` produces constructable functions (verified)
 
-Every interface constructor — `Event`, `AbortController`, `Element`, etc. —
-fails when called with `new`:
+`create_builtin_function(behaviour, length, name, true)` correctly creates
+constructable functions on the Boa backend.  All 86 unit tests pass,
+including `register_interface_spec` (which creates interface constructors),
+`construct_calls_constructor`, and `create_builtin_function_and_call`.
 
-    TypeError: function is not a constructor (evaluating 'new Event(...)')
+The `FunctionObjectBuilder::constructor(true)` + `from_copy_closure_with_captures`
+path sets `NativeFunctionObject.constructor = Some(ConstructorKind::Base)`,
+which causes `NativeFunctionObject::internal_methods()` to return the
+`&CONSTRUCTOR` vtable (including `native_function_construct`).
 
-The constructor IS marked via `FunctionObjectBuilder::constructor(true)`
-in `create_builtin_function`, but Boa rejects it at call time.  The old
-code used `NativeFunction::from_fn_ptr` with a direct
-`FunctionObjectBuilder`; the new code uses
-`from_copy_closure_with_captures` which might not properly integrate
-with Boa's [[Construct]] plumbing.
+### 4. 🔴 15 unexpected Boa WPT failures — introduced by migration
 
-This is the most blocking bug — no JS code that constructs platform
-objects will work until this is resolved.
+81 executed, 66 PASS.  The 15 unexpected regressions were introduced by
+the generic JS layer migration.  The goal for Boa is
+**zero unexpected failures** — every migration regression must be fixed.
 
-### 4. 🟡 15 unexpected Boa WPT failures
-
-81 executed, 66 PASS.  The 15 unexpected are all pre-existing:
-readable-stream tests fail with "TypeError: not a callable function"
-(Boa promise microtask issue), plus wasm branding failures.  Not
-introduced by this refactor.
+Breakdown:
+- 13 readable-stream tests: `TypeError: not a callable function` — Boa
+  promise microtask issue (the stream's `pull` algorithm sees an
+  uninitialized function because microtasks aren't flushed at the right
+  points)
+- 2 wasm branding tests: `Module.exports: argument is not a
+  WebAssembly.Module` — wasm module internal slot not wired through
+  `create_builtin_function`
 
 ### 3. 🟡 JSC backend not functional
 
@@ -95,8 +98,8 @@ condition; full JSC integration deferred.
    all remaining `JsObject::downcast_ref::<T>()` calls that bypass
    `ec.with_object_any()`.
 
-5. **Fix readable-stream WPT failures** — Pre-existing Boa promise
-   microtask issue ("TypeError: not a callable function").
+5. **Fix readable-stream WPT failures** — Boa promise microtask issue
+   ("TypeError: not a callable function"). Introduced by migration.
 
 6. **Restore JSC backend** — Wire `addEventListener`/DOM event
    infrastructure on JSC; fix the content-process infinite loop.

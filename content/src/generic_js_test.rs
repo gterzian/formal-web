@@ -30,7 +30,7 @@ use std::marker::PhantomData;
 use crate::webidl::bindings::{AttributeDef, InterfaceDefinition, OperationDef, WebIdlInterface};
 use js_engine::gc::GcRootHandle;
 use js_engine::gc_struct;
-use js_engine::{Completion, ExecutionContext, JsTypes};
+use js_engine::{Completion, ExecutionContext, JsEngine, JsTypes};
 
 type TestTypes = crate::js::Types;
 type JsValue = <TestTypes as JsTypes>::JsValue;
@@ -1152,9 +1152,7 @@ mod tests {
         assert!(!engine.is_callable(&undef));
 
         let realm = engine.current_realm();
-        let fn_val = engine
-            .evaluate_script("(function(x) { return x * 2; })", &realm)
-            .unwrap();
+        let fn_val = JsEngine::evaluate_script(&mut engine, "(function(x) { return x * 2; })", &realm).unwrap();
         assert!(engine.is_callable(&fn_val));
 
         let fn_obj = TestTypes::value_as_object(&fn_val).unwrap();
@@ -1210,6 +1208,7 @@ mod tests {
             }),
             1,
             engine.property_key_from_str("observe_fulfillment"),
+            false,
         );
 
         let promise_obj = TestTypes::value_as_object(&rooted_capability.promise.value).unwrap();
@@ -1237,7 +1236,7 @@ mod tests {
     fn evaluate_script_returns_value() {
         let mut engine = setup();
         let realm = engine.current_realm();
-        let result = engine.evaluate_script("40 + 2", &realm).unwrap();
+        let result = JsEngine::evaluate_script(&mut engine, "40 + 2", &realm).unwrap();
         assert!((engine.to_number(result).unwrap() - 42.0).abs() < 0.001);
     }
 
@@ -1296,7 +1295,7 @@ mod tests {
         let obj = create_widget(TestWidget::new(), &mut engine);
         let js_obj = TestTypes::value_from_object(obj);
         let realm = engine.current_realm();
-        let fn_val = engine.evaluate_script("(function() {})", &realm).unwrap();
+        let fn_val = JsEngine::evaluate_script(&mut engine, "(function() {})", &realm).unwrap();
         store_callback(&js_obj, &[fn_val.clone()], &mut engine).unwrap();
         flush_microtasks_test(&js_obj, &[], &mut engine).unwrap();
 
@@ -1508,6 +1507,7 @@ mod tests {
             Box::new(|_args, _this, inner_ec| Ok(inner_ec.value_from_number(7.0))),
             0,
             engine.property_key_from_str("get_computed"),
+            false,
         );
         let accessor_desc = PropertyDescriptor {
             value: None,
@@ -1556,9 +1556,7 @@ mod tests {
     fn get_method_returns_callable() {
         let mut engine = setup();
         let realm = engine.current_realm();
-        let fn_val = engine
-            .evaluate_script("(function() { return 42; })", &realm)
-            .unwrap();
+        let fn_val = JsEngine::evaluate_script(&mut engine, "(function() { return 42; })", &realm).unwrap();
         let obj = TestTypes::value_as_object(&fn_val).unwrap();
         let pk = engine.property_key_from_str("call");
         let method = engine
@@ -1770,6 +1768,7 @@ mod tests {
             Box::new(|_args, _this, inner_ec| Ok(inner_ec.value_from_number(42.0))),
             0,
             pk,
+            false,
         );
         let builtin_obj = TestTypes::object_from_function(builtin);
         let undef = engine.value_undefined();
@@ -1824,6 +1823,7 @@ mod tests {
             }),
             1,
             empty_pk,
+            false,
         );
 
         // Create a resolved source promise to attach the handler to.
@@ -1864,6 +1864,7 @@ mod tests {
             Box::new(|_args, _this, inner_ec| Ok(inner_ec.value_undefined())),
             1,
             empty_pk,
+            false,
         );
 
         // Create a rejected promise.
@@ -1918,6 +1919,7 @@ mod tests {
             ),
             1,
             empty_pk,
+            false,
         );
         let result_cap = engine
             .new_promise_capability(intrinsics.promise.clone())
@@ -1946,23 +1948,19 @@ mod tests {
         let mut engine = setup();
         let realm = engine.current_realm();
         // Map
-        let map_val = engine
-            .evaluate_script("new Map([['k','v']])", &realm)
-            .unwrap();
+        let map_val = JsEngine::evaluate_script(&mut engine, "new Map([['k','v']])", &realm).unwrap();
         assert!(TestTypes::object_as_map(&TestTypes::value_as_object(&map_val).unwrap()).is_some());
         // Set
-        let set_val = engine.evaluate_script("new Set([1,2,3])", &realm).unwrap();
+        let set_val = JsEngine::evaluate_script(&mut engine, "new Set([1,2,3])", &realm).unwrap();
         assert!(TestTypes::object_as_set(&TestTypes::value_as_object(&set_val).unwrap()).is_some());
         // TypedArray
-        let ta_val = engine.evaluate_script("new Uint8Array(4)", &realm).unwrap();
+        let ta_val = JsEngine::evaluate_script(&mut engine, "new Uint8Array(4)", &realm).unwrap();
         assert!(
             TestTypes::object_as_typed_array(&TestTypes::value_as_object(&ta_val).unwrap())
                 .is_some()
         );
         // DataView
-        let dv_val = engine
-            .evaluate_script("new DataView(new ArrayBuffer(8))", &realm)
-            .unwrap();
+        let dv_val = JsEngine::evaluate_script(&mut engine, "new DataView(new ArrayBuffer(8))", &realm).unwrap();
         assert!(
             TestTypes::object_as_data_view(&TestTypes::value_as_object(&dv_val).unwrap()).is_some()
         );
@@ -2156,6 +2154,7 @@ mod tests {
             Box::new(|_args, _this, inner_ec| Ok(inner_ec.value_from_number(7.0))),
             0,
             engine.property_key_from_str("get_computedLength"),
+            false,
         );
 
         // PropertyDescriptor with only a getter (accessor property).
@@ -2205,6 +2204,7 @@ mod tests {
             }),
             1,
             engine.property_key_from_str("set_accessorProp"),
+            false,
         );
 
         let getter_fn = engine.create_builtin_function(
@@ -2216,6 +2216,7 @@ mod tests {
             }),
             0,
             engine.property_key_from_str("get_accessorProp"),
+            false,
         );
 
         let descriptor = PropertyDescriptor {
@@ -2252,9 +2253,7 @@ mod tests {
         let mut engine = setup();
         let realm = engine.current_realm();
         // Create and root a callback.
-        let fn_val = engine
-            .evaluate_script("(function() { return 42; })", &realm)
-            .unwrap();
+        let fn_val = JsEngine::evaluate_script(&mut engine, "(function() { return 42; })", &realm).unwrap();
         let root = engine.create_root(&fn_val);
 
         // Allocate many throwaway objects to create GC pressure.
@@ -2333,6 +2332,7 @@ mod tests {
             }),
             1,
             engine.property_key_from_str("getPropertyValue"),
+            false,
         );
         let method_key = engine.property_key_from_str("getPropertyValue");
         let method_val =
@@ -2357,6 +2357,7 @@ mod tests {
             }),
             0,
             engine.property_key_from_str("get_cssText"),
+            false,
         );
 
         let backing_for_setter = backing.clone();
@@ -2369,6 +2370,7 @@ mod tests {
             }),
             1,
             engine.property_key_from_str("set_cssText"),
+            false,
         );
 
         let css_text_key = engine.property_key_from_str("cssText");
@@ -2454,6 +2456,7 @@ mod tests {
             }),
             0,
             engine.property_key_from_str("incrementer"),
+            false,
         );
 
         let undef = engine.value_undefined();
@@ -2484,15 +2487,13 @@ mod tests {
         let realm = engine.current_realm();
 
         // Case 1: callable function → detected as Function
-        let fn_val = engine
-            .evaluate_script("(function() { return 42; })", &realm)
-            .unwrap();
+        let fn_val = JsEngine::evaluate_script(&mut engine, "(function() { return 42; })", &realm).unwrap();
         let fn_obj = TestTypes::value_as_object(&fn_val);
         assert!(fn_obj.is_some());
         assert!(engine.is_callable(&fn_val));
 
         // Case 2: non-callable object → falls through to string conversion
-        let obj_val = engine.evaluate_script("({})", &realm).unwrap();
+        let obj_val = JsEngine::evaluate_script(&mut engine, "({})", &realm).unwrap();
         assert!(TestTypes::value_as_object(&obj_val).is_some());
         assert!(!engine.is_callable(&obj_val));
         // Would fall through to to_rust_string in timer_handler.
@@ -2549,9 +2550,7 @@ mod tests {
         button.widget.title = "GCTest".into();
 
         // Root a callback stored on the inner widget.
-        let fn_val = engine
-            .evaluate_script("(function() { return 'nested'; })", &realm)
-            .unwrap();
+        let fn_val = JsEngine::evaluate_script(&mut engine, "(function() { return 'nested'; })", &realm).unwrap();
         button.widget.on_change = Some(engine.create_root(&fn_val));
 
         let obj = create_button(button, &mut engine);
@@ -2583,49 +2582,25 @@ mod tests {
         assert_eq!(s, "nested");
     }
 
-    // ── create_builtin_function_with_captures — traceable captures ─
-
-    /// Captures struct for [`create_builtin_function_with_captures`] tests.
-    /// Holds a counter that the builtin function increments on each call.
-    #[gc_struct]
-    pub(crate) struct Incrementor {
-        count: std::cell::Cell<f64>,
-    }
-
-    impl Incrementor {
-        fn new() -> Self {
-            Self {
-                count: std::cell::Cell::new(0.0),
-            }
-        }
-    }
-
-    /// Behaviour function for the incrementor builtin.
-    /// Receives `&Incrementor` as the captures reference.
-    fn incrementor_behaviour(
-        args: &[JsValue],
-        _this: JsValue,
-        captures: &Incrementor,
-        ec: &mut dyn ExecutionContext<TestTypes>,
-    ) -> Completion<JsValue, TestTypes> {
-        let delta = if let Some(arg) = args.first() {
-            ec.to_number(arg.clone()).unwrap_or(1.0)
-        } else {
-            1.0
-        };
-        let old = captures.count.get();
-        captures.count.set(old + delta);
-        Ok(ec.value_from_number(old))
-    }
+    // ── create_builtin_function — tests with captured state ─
 
     #[test]
     fn create_builtin_function_with_captures_increments() {
         let mut engine = setup();
-        let captures = Incrementor::new();
+        let count = Rc::new(std::cell::Cell::new(0.0));
         let pk = engine.property_key_from_str("inc");
+        let count_for_fn = count.clone();
         let func = engine.create_builtin_function(
-            captures,
-            incrementor_behaviour,
+            Box::new(move |args, _this, ec| {
+                let delta = if let Some(arg) = args.first() {
+                    ec.to_number(arg.clone()).unwrap_or(1.0)
+                } else {
+                    1.0
+                };
+                let old = count_for_fn.get();
+                count_for_fn.set(old + delta);
+                Ok(ec.value_from_number(old))
+            }),
             0,
             pk,
             false,
@@ -2653,11 +2628,20 @@ mod tests {
     #[test]
     fn create_builtin_function_with_captures_survives_allocation_pressure() {
         let mut engine = setup();
-        let captures = Incrementor::new();
+        let count = Rc::new(std::cell::Cell::new(0.0));
         let pk = engine.property_key_from_str("inc");
+        let count_for_fn = count.clone();
         let func = engine.create_builtin_function(
-            captures,
-            incrementor_behaviour,
+            Box::new(move |args, _this, ec| {
+                let delta = if let Some(arg) = args.first() {
+                    ec.to_number(arg.clone()).unwrap_or(1.0)
+                } else {
+                    1.0
+                };
+                let old = count_for_fn.get();
+                count_for_fn.set(old + delta);
+                Ok(ec.value_from_number(old))
+            }),
             0,
             pk,
             false,
@@ -2685,17 +2669,25 @@ mod tests {
 
     /// Validates that `create_builtin_function` works through
     /// `&mut dyn ExecutionContext<T>` via `ec.create_builtin_function()`.
-    /// Uses direct captures (Incrementor) instead of a `Behaviour` trait object.
     #[test]
     fn create_builtin_function_through_ec_trait() {
         let mut engine = setup();
-        let captures = Incrementor::new();
+        let count = Rc::new(std::cell::Cell::new(0.0));
         let pk = engine.property_key_from_str("inc");
+        let count_for_fn = count.clone();
 
         let ec: &mut dyn ExecutionContext<TestTypes> = &mut engine;
         let func = ec.create_builtin_function(
-            captures,
-            incrementor_behaviour,
+            Box::new(move |args, _this, ec| {
+                let delta = if let Some(arg) = args.first() {
+                    ec.to_number(arg.clone()).unwrap_or(1.0)
+                } else {
+                    1.0
+                };
+                let old = count_for_fn.get();
+                count_for_fn.set(old + delta);
+                Ok(ec.value_from_number(old))
+            }),
             0,
             pk,
             false,
@@ -2715,12 +2707,21 @@ mod tests {
     #[test]
     fn create_builtin_function_survives_allocation_pressure() {
         let mut engine = setup();
-        let captures = Incrementor::new();
+        let count = Rc::new(std::cell::Cell::new(0.0));
         let pk = engine.property_key_from_str("inc");
+        let count_for_fn = count.clone();
         let ec: &mut dyn ExecutionContext<TestTypes> = &mut engine;
         let func = ec.create_builtin_function(
-            captures,
-            incrementor_behaviour,
+            Box::new(move |args, _this, ec| {
+                let delta = if let Some(arg) = args.first() {
+                    ec.to_number(arg.clone()).unwrap_or(1.0)
+                } else {
+                    1.0
+                };
+                let old = count_for_fn.get();
+                count_for_fn.set(old + delta);
+                Ok(ec.value_from_number(old))
+            }),
             0,
             pk,
             false,
@@ -2748,7 +2749,7 @@ mod tests {
         let mut engine = setup();
         let realm = engine.current_realm();
         let intrinsics = engine.realm_intrinsics(&realm);
-        let bi_val = engine.evaluate_script("123n", &realm).unwrap();
+        let bi_val = JsEngine::evaluate_script(&mut engine, "123n", &realm).unwrap();
         let bi = <TestTypes as JsTypes>::value_as_bigint(&bi_val);
         assert!(
             bi.is_some(),
