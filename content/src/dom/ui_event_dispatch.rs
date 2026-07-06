@@ -425,7 +425,10 @@ impl EventDispatchHost for BlitzJSEventHandler<'_> {
     }
 
     fn has_activation_behavior(&mut self, target: &JsObject) -> bool {
-        target.downcast_ref::<HTMLAnchorElement>().is_some()
+        self.ec()
+            .with_object_any(target)
+            .and_then(|data| data.downcast_ref::<HTMLAnchorElement>())
+            .is_some()
     }
 
     fn run_activation_behavior(
@@ -433,7 +436,12 @@ impl EventDispatchHost for BlitzJSEventHandler<'_> {
         target: &JsObject,
         event: &JsObject,
     ) -> Completion<(), crate::js::Types> {
-        if let Some(anchor) = target.downcast_ref::<HTMLAnchorElement>() {
+        let anchor = self
+            .ec()
+            .with_object_any(target)
+            .and_then(|data| data.downcast_ref::<HTMLAnchorElement>())
+            .map(|a| a.clone());
+        if let Some(anchor) = anchor {
             let result = anchor.activation_behavior(
                 self.source_navigable_id,
                 self.parent_navigable_id,
@@ -542,7 +550,12 @@ impl EventHandler for BlitzJSEventHandler<'_> {
             return;
         }
 
-        if let Some(ui_event) = event_object.downcast_ref::<JsUiEvent>() {
+        let ui_event = self
+            .ec()
+            .with_object_any(&event_object)
+            .and_then(|data| data.downcast_ref::<JsUiEvent>())
+            .map(|u| u.clone());
+        if let Some(ui_event) = ui_event {
             ui_event.apply_to_event_state(event_state);
         }
 

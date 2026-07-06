@@ -21,20 +21,44 @@ The Boa backend now uses only `NativeFunction::from_copy_closure_with_captures`.
 
 ## Problems found
 
-### 1. 🔴 Missing anchor activation behavior
+### 1. 🟡 Direct `JsObject::downcast_ref<T>()` broken for wrapped platform objects
 
-`HTMLAnchorElement::activation_behavior` exists but is never wired to the
-event dispatch layer.  `EventDispatchHost::has_activation_behavior` and
-`run_activation_behavior` have default no-op implementations in
-`dispatch.rs`, and `UiEventDispatchHost` in `ui_event_dispatch.rs` does
-not override them.  Clicking an `<a href="...">` dispatches the event
-but never navigates.
+`create_interface_instance` stores data as `NativeDataWrapper(TraceableBox(T))`
+inside the JsObject.  Boa's native `downcast_ref::<T>()` can't see through
+the wrapper.  Must use `ec.with_object_any(&obj).and_then(|d| d.downcast_ref::<T>())`.
 
-**Risk:** Other trait-method overrides or callback wire-ups may have been
-silently lost.  The Rust compiler does not warn about default trait
-methods returning `false` or `Ok(())`.
+**Fixed in this session:** `content/src/dom/ui_event_dispatch.rs` —
+`has_activation_behavior`, `run_activation_behavior`, `apply_to_event_state`.
 
-### 2. 🟡 15 unexpected Boa WPT failures
+**Unfixed:** `content/src/html/location.rs:565` (`self.window.downcast_ref::<Window>()`)
+requires threading `ec` through all Location methods.
+
+### 2. 🔴 Attribute accessor descriptors not registering on prototypes
+
+`define_regular_attributes` builds accessor descriptors via
+`create_builtin_fn` + `define_property_or_throw`, but the properties
+never appear on the prototype.  Operations (methods) register fine via
+value descriptors.  Suspected in the `PropertyDescriptor<BoaTypes>` →
+Boa native descriptor conversion for `get`+`set`-only descriptors.
+
+### 3. 🔴 `create_builtin_function` doesn't produce constructable functions
+
+Every interface constructor — `Event`, `AbortController`, `Element`, etc. —
+fails when called with `new`:
+
+    TypeError: function is not a constructor (evaluating 'new Event(...)')
+
+The constructor IS marked via `FunctionObjectBuilder::constructor(true)`
+in `create_builtin_function`, but Boa rejects it at call time.  The old
+code used `NativeFunction::from_fn_ptr` with a direct
+`FunctionObjectBuilder`; the new code uses
+`from_copy_closure_with_captures` which might not properly integrate
+with Boa's [[Construct]] plumbing.
+
+This is the most blocking bug — no JS code that constructs platform
+objects will work until this is resolved.
+
+### 4. 🟡 15 unexpected Boa WPT failures
 
 81 executed, 66 PASS.  The 15 unexpected are all pre-existing:
 readable-stream tests fail with "TypeError: not a callable function"
@@ -49,22 +73,33 @@ condition; full JSC integration deferred.
 
 ## Tasks for migration completion
 
-1. **Diff against `main`** — Compare every file touched by the refactor
-   against `main` to catch silently-lost hook overrides, trait method
-   implementations, and callback wire-ups.  Focus on `EventDispatchHost`,
-   `UiEventDispatchHost`, and similar hook traits with default no-ops.
+1. **🔴 `create_builtin_function` doesn't produce constructable functions** —
+   `js_engine/src/boa/engine.rs`.  The `FunctionObjectBuilder::constructor(true)`
+   + `build()` path works for `NativeFunction::from_fn_ptr` but not for
+   `from_copy_closure_with_captures`.  The returned function lacks
+   `[[Construct]]` despite the flag being set.  Likely fix: switch back to
+   `from_fn_ptr` and thread captures through a different mechanism, or
+   use `ConstructorBuilder` instead of `FunctionObjectBuilder`.
 
-2. **Fix anchor activation** — Override `has_activation_behavior` and
-   `run_activation_behavior` in `UiEventDispatchHost` to detect
-   `HTMLAnchorElement` targets.
+2. **🔴 Fix attribute accessor descriptor registration** —
+   `define_regular_attributes` builds accessor descriptors but the
+   properties never appear on the prototype.  Operations (value descriptors)
+   work fine.  Needs comparison of data-descriptor vs accessor-descriptor
+   paths in `define_property_or_throw` → Boa native conversion.
 
-3. **Fix readable-stream WPT failures** — Resolve the pre-existing Boa
-   promise microtask issue causing "TypeError: not a callable function"
-   in 47 readable-stream tests.
+3. **🟡 Fix `location.rs` direct downcast** —
+   `self.window.downcast_ref::<Window>()` always returns `None`.  Needs
+   an `ec` parameter threaded through Location navigation methods.
 
-4. **Restore JSC backend** — Wire `addEventListener`/DOM event
+4. **🔍 Audit remaining direct `downcast_ref` calls** — Find and convert
+   all remaining `JsObject::downcast_ref::<T>()` calls that bypass
+   `ec.with_object_any()`.
+
+5. **Fix readable-stream WPT failures** — Pre-existing Boa promise
+   microtask issue ("TypeError: not a callable function").
+
+6. **Restore JSC backend** — Wire `addEventListener`/DOM event
    infrastructure on JSC; fix the content-process infinite loop.
 
-5. **Prune historical notes** — Remove the extensive Category 1-8 fix
-   attempts, GC tracing investigations, and per-test WPT inventories
-   from this README once the above tasks are complete.
+7. **Prune historical notes** — Remove Category 1-8 fix attempts, GC
+   tracing investigations, and per-test WPT inventories.

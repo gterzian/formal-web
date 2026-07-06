@@ -1,6 +1,12 @@
 # Rule Number One
 
-Only ever perform an action if it directly relates to a coding task in the current repository. 
+Only ever perform an action if it directly relates to a coding task in the current repository.
+
+# Rule Number Two: External Network
+
+Never navigate to external domains or make network requests to external
+hosts without explicit prior approval from the user.  Use only local
+resources (localhost, file://, in-repository artifacts).
 
 # File System Boundaries
 
