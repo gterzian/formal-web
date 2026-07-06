@@ -67,7 +67,7 @@ where
         .ok_or_else(|| engine.new_type_error("target is not an object in operation definition"))?;
 
     for op in operations {
-        let method = engine.create_builtin_function(
+        let method = engine.create_builtin_fn(
             Box::new({
                 let op_method = op.method;
                 move |args, this, ec| op_method(&this, args, ec)

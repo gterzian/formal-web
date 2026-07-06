@@ -150,7 +150,7 @@ fn get_byte_length_size(
     _: &[JsValue],
     ec: &mut dyn ExecutionContext<Types>,
 ) -> Completion<JsValue, Types> {
-    let function = ec.create_builtin_function(
+    let function = ec.create_builtin_fn(
         Box::new(move |args, _this, inner_ec| {
             byte_length_size(
                 &args.first().cloned().unwrap_or(inner_ec.value_undefined()),
@@ -170,7 +170,7 @@ fn get_count_size(
     _: &[JsValue],
     ec: &mut dyn ExecutionContext<Types>,
 ) -> Completion<JsValue, Types> {
-    let function = ec.create_builtin_function(
+    let function = ec.create_builtin_fn(
         Box::new(move |args, _this, inner_ec| {
             count_size(
                 &args.first().cloned().unwrap_or(inner_ec.value_undefined()),

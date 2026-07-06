@@ -121,7 +121,7 @@ pub(crate) fn transform_promise_to_undefined(
     let not_promise_err =
         ec.new_type_error("transform_promise_to_undefined: value is not a Promise");
     // Step 1-2 of react: CreateBuiltinFunction returning undefined on fulfillment.
-    let on_fulfilled = ec.create_builtin_function(
+    let on_fulfilled = ec.create_builtin_fn(
         Box::new(
             |_args: &[JsValue],
              _this: JsValue,
@@ -152,7 +152,7 @@ pub(crate) fn mark_promise_as_handled(
 ) -> Completion<(), Types> {
     let not_promise_err = ec.new_type_error("mark_promise_as_handled: value is not a Promise");
     // CreateBuiltinFunction returning undefined on rejection.
-    let on_rejected = ec.create_builtin_function(
+    let on_rejected = ec.create_builtin_fn(
         Box::new(
             |_args: &[JsValue],
              _this: JsValue,
@@ -252,7 +252,7 @@ where
     // Step 2 of react: CreateBuiltinFunction(onFulfilledSteps, 1, "", « »)
     let on_fulfilled_fn: Option<<Types as JsTypes>::Function> = if fulfilled_cell.is_some() {
         let cell = fulfilled_cell.unwrap();
-        Some(ec.create_builtin_function(
+        Some(ec.create_builtin_fn(
             Box::new(
                 move |args: &[JsValue],
                       _this: JsValue,
@@ -279,7 +279,7 @@ where
     // Step 4 of react: CreateBuiltinFunction(onRejectedSteps, 1, "", « »)
     let on_rejected_fn: Option<<Types as JsTypes>::Function> = if rejected_cell.is_some() {
         let cell = rejected_cell.unwrap();
-        Some(ec.create_builtin_function(
+        Some(ec.create_builtin_fn(
             Box::new(
                 move |args: &[JsValue],
                       _this: JsValue,
@@ -389,7 +389,7 @@ where
     //   3.2: Set rejected to true.
     //   3.3: Perform failureSteps given arg.
     // Step 4: Let rejectionHandler be CreateBuiltinFunction(rejectionHandlerSteps, 1, "", « »).
-    let rejection_handler = ec.create_builtin_function(
+    let rejection_handler = ec.create_builtin_fn(
         Box::new(
             move |args: &[JsValue],
                   _this: JsValue,
@@ -457,7 +457,7 @@ where
         // Step 9.3: Let fulfillmentHandler be CreateBuiltinFunction(fulfillmentHandler, 1, "", « »).
         let state_for_fulfillment = state.clone();
         let success_cell_for_fulfillment: Rc<RefCell<Option<TSuccess>>> = success_cell.clone();
-        let fulfillment_handler = ec.create_builtin_function(
+        let fulfillment_handler = ec.create_builtin_fn(
             Box::new(
                 move |args: &[JsValue],
                       _this: JsValue,

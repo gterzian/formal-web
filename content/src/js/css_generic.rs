@@ -19,7 +19,7 @@ pub(crate) fn install_css_namespace(ec: &mut dyn ExecutionContext<Types>) -> Com
     let css_obj = ec.create_plain_object(None);
 
     // Install the `supports` method.
-    let fn_obj = ec.create_builtin_function(
+    let fn_obj = ec.create_builtin_fn(
         Box::new(|args, _this, ec| {
             let result = if args.len() >= 2 {
                 // Invoked as supports(property, value) — 2 required arguments.

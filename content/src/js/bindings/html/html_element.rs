@@ -235,7 +235,7 @@ fn get_style(
     }
 
     // getPropertyValue method
-    let get_property_value_fn = ec.create_builtin_function(
+    let get_property_value_fn = ec.create_builtin_fn(
         Box::new(move |args, this_ec_val, inner_ec| {
             let property_name = if let Some(arg) = args.first() {
                 inner_ec
@@ -275,7 +275,7 @@ fn get_style(
     )?;
 
     // Implement cssText as a live getter/setter backed by the element's style attribute.
-    let css_text_getter = ec.create_builtin_function(
+    let css_text_getter = ec.create_builtin_fn(
         Box::new(move |_args, this_ec_val, inner_ec| {
             let element_val = {
                 let this_obj = Types::value_as_object(&this_ec_val).ok_or_else(|| {
@@ -294,7 +294,7 @@ fn get_style(
         ec.property_key_from_str("get cssText"),
     );
 
-    let css_text_setter = ec.create_builtin_function(
+    let css_text_setter = ec.create_builtin_fn(
         Box::new(move |args, this_ec_val, inner_ec| {
             let value = if let Some(arg) = args.first() {
                 inner_ec.to_rust_string(arg.clone())?
@@ -487,7 +487,7 @@ pub(crate) fn style_declaration_object(
     }
 
     // Add getPropertyValue method.
-    let getter_fn = ec.create_builtin_function(
+    let getter_fn = ec.create_builtin_fn(
         Box::new(|args, this, ec| {
             // Step 1.1: convert to ASCII lowercase.
             let undef = ec.value_undefined();

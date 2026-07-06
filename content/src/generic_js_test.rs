@@ -2623,8 +2623,13 @@ mod tests {
         let mut engine = setup();
         let captures = Incrementor::new();
         let pk = engine.property_key_from_str("inc");
-        let func =
-            engine.create_builtin_function_with_captures(captures, incrementor_behaviour, 0, pk);
+        let func = engine.create_builtin_function(
+            captures,
+            incrementor_behaviour,
+            0,
+            pk,
+            false,
+        );
         let func_obj = TestTypes::object_from_function(func);
         let undef = engine.value_undefined();
 
@@ -2650,8 +2655,13 @@ mod tests {
         let mut engine = setup();
         let captures = Incrementor::new();
         let pk = engine.property_key_from_str("inc");
-        let func =
-            engine.create_builtin_function_with_captures(captures, incrementor_behaviour, 0, pk);
+        let func = engine.create_builtin_function(
+            captures,
+            incrementor_behaviour,
+            0,
+            pk,
+            false,
+        );
         let func_obj = TestTypes::object_from_function(func);
         let undef = engine.value_undefined();
 
@@ -2671,45 +2681,24 @@ mod tests {
         assert!((engine.to_number(result).unwrap() - 7.0).abs() < 0.001);
     }
 
-    // ── create_builtin_function_from_behaviour — object-safe EC trait ─
+    // ── create_builtin_function — single unified API ─
 
-    /// Validates that `create_builtin_function_from_behaviour` works through
-    /// `&mut dyn ExecutionContext<T>`.  The [`js_engine::Behaviour`] trait
-    /// object carries the captures, avoiding the generic `C: Trace` bound
-    /// that would make the trait non-dyn-compatible.
+    /// Validates that `create_builtin_function` works through
+    /// `&mut dyn ExecutionContext<T>` via `ec.create_builtin_function()`.
+    /// Uses direct captures (Incrementor) instead of a `Behaviour` trait object.
     #[test]
-    fn create_builtin_function_from_behaviour_through_ec() {
+    fn create_builtin_function_through_ec_trait() {
         let mut engine = setup();
         let captures = Incrementor::new();
         let pk = engine.property_key_from_str("inc");
 
-        struct CapturedIncrementor {
-            captures: Incrementor,
-        }
-
-        impl js_engine::Behaviour<TestTypes> for CapturedIncrementor {
-            fn call(
-                &self,
-                args: &[JsValue],
-                _this: JsValue,
-                ec: &mut dyn ExecutionContext<TestTypes>,
-            ) -> Completion<JsValue, TestTypes> {
-                let delta = if let Some(arg) = args.first() {
-                    ec.to_number(arg.clone()).unwrap_or(1.0)
-                } else {
-                    1.0
-                };
-                let old = self.captures.count.get();
-                self.captures.count.set(old + delta);
-                Ok(ec.value_from_number(old))
-            }
-        }
-
         let ec: &mut dyn ExecutionContext<TestTypes> = &mut engine;
-        let func = ec.create_builtin_function_from_behaviour(
-            Box::new(CapturedIncrementor { captures }),
+        let func = ec.create_builtin_function(
+            captures,
+            incrementor_behaviour,
             0,
             pk,
+            false,
         );
         let func_obj = TestTypes::object_from_function(func);
         let undef = engine.value_undefined();
@@ -2724,39 +2713,17 @@ mod tests {
     }
 
     #[test]
-    fn create_builtin_function_from_behaviour_survives_allocation_pressure() {
+    fn create_builtin_function_survives_allocation_pressure() {
         let mut engine = setup();
-
-        struct CapturedIncrementor {
-            captures: Incrementor,
-        }
-
-        impl js_engine::Behaviour<TestTypes> for CapturedIncrementor {
-            fn call(
-                &self,
-                args: &[JsValue],
-                _this: JsValue,
-                ec: &mut dyn ExecutionContext<TestTypes>,
-            ) -> Completion<JsValue, TestTypes> {
-                let delta = if let Some(arg) = args.first() {
-                    ec.to_number(arg.clone()).unwrap_or(1.0)
-                } else {
-                    1.0
-                };
-                let old = self.captures.count.get();
-                self.captures.count.set(old + delta);
-                Ok(ec.value_from_number(old))
-            }
-        }
-
+        let captures = Incrementor::new();
         let pk = engine.property_key_from_str("inc");
         let ec: &mut dyn ExecutionContext<TestTypes> = &mut engine;
-        let func = ec.create_builtin_function_from_behaviour(
-            Box::new(CapturedIncrementor {
-                captures: Incrementor::new(),
-            }),
+        let func = ec.create_builtin_function(
+            captures,
+            incrementor_behaviour,
             0,
             pk,
+            false,
         );
         let func_obj = TestTypes::object_from_function(func);
         let undef = engine.value_undefined();

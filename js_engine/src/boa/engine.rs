@@ -65,29 +65,22 @@ use crate::{
 
 use super::types::BoaTypes;
 
-// ── GC Trace for Behaviour trait object ────────────────────────────
-//
-// `Box<dyn Behaviour<BoaTypes>>` is passed as captures to
-// `NativeFunction::from_copy_closure_with_captures`, which requires
-// `Trace`.  The trait object itself holds no GC-managed data — the
-// concrete captures inside the Behaviour impl are already rooted by
-// their parent stream/controller objects.
-//
-// # Safety invariant
-//
-// See the invariant doc on `Behaviour<T>` in `engine.rs`:
-// "implementors must NOT capture GC-managed references."
-// This no-op trace relies on that invariant.  Any future implementor
-// that adds `JsObject`/`GcCell` captures must migrate to
-// `create_builtin_function_with_captures` / `builtin_with_captures`
-// instead of going through the `Behaviour` trait object path.
-unsafe impl boa_gc::Trace for dyn crate::Behaviour<BoaTypes> {
+/// Crate-local wrapper that implements `boa_gc::Trace` with a no-op trace.
+/// `create_builtin_function` wraps the behaviour closure in `GcBox`
+/// so `from_copy_closure_with_captures` receives a type satisfying `C: boa_gc::Trace`.
+pub(crate) struct GcBox<T>(pub(crate) T);
+
+// SAFETY: GcBox<T> stores T by value.  The no-op trace is correct because
+// the captured closure data inside T does not contain GC-reachable
+// references that aren't already independently rooted.
+unsafe impl<T: 'static> boa_gc::Trace for GcBox<T> {
     unsafe fn trace(&self, _tracer: &mut boa_gc::Tracer) {}
     unsafe fn trace_non_roots(&self) {}
     fn run_finalizer(&self) {}
 }
 
-impl boa_gc::Finalize for dyn crate::Behaviour<BoaTypes> {}
+impl<T: 'static> boa_gc::Finalize for GcBox<T> {}
+
 
 /// Boa execution context.  Wraps a `boa_engine::Context` (the stateful JS
 /// runtime: realm, heap, global object) and implements
@@ -256,48 +249,6 @@ impl JsEngine<BoaTypes> for BoaContext {
         Ok(())
     }
 
-    // ── §10.3 Built-in Function Objects ──────────────────────────────────
-
-    /// <https://tc39.es/ecma262/#sec-createbuiltinfunction>
-    fn create_builtin_function_with_captures<C: crate::gc::Trace + boa_engine::Trace + 'static>(
-        &mut self,
-        captures: C,
-        behaviour: fn(
-            &[JsValue],
-            JsValue,
-            &C,
-            &mut dyn ExecutionContext<BoaTypes>,
-        ) -> Completion<JsValue, BoaTypes>,
-        length: u32,
-        name: PropertyKey,
-    ) -> JsFunction {
-        let realm = self.current_realm();
-        let name_str = match &name {
-            PropertyKey::String(s) => s.clone(),
-            PropertyKey::Symbol(_) => boa_engine::js_string!(""),
-            _ => boa_engine::js_string!(""),
-        };
-
-        let native = NativeFunction::from_copy_closure_with_captures(
-            move |_this: &JsValue,
-                  args: &[JsValue],
-                  captures: &C,
-                  context: &mut Context|
-                  -> JsResult<JsValue> {
-                let engine: &mut BoaContext =
-                    unsafe { &mut *(context as *mut Context as *mut BoaContext) };
-                behaviour(args, _this.clone(), captures, engine)
-                    .map_err(|e| JsError::from_opaque(e))
-            },
-            captures,
-        );
-
-        FunctionObjectBuilder::new(&realm, native)
-            .name(name_str)
-            .length(length as usize)
-            .build()
-    }
-
     // ── §16 Script and Module evaluation ──────────────────────────────────
 
     fn evaluate_script(
@@ -421,6 +372,56 @@ impl JsEngine<BoaTypes> for BoaContext {
 // ═══════════════════════════════════════════════════════════════════════════
 
 impl ExecutionContext<BoaTypes> for BoaContext {
+    // ── §10.3 Built-in Function Objects ──────────────────────────────────
+
+    /// <https://tc39.es/ecma262/#sec-createbuiltinfunction>
+    fn create_builtin_function(
+        &mut self,
+        behaviour: Box<
+            dyn Fn(
+                &[JsValue],
+                JsValue,
+                &mut dyn ExecutionContext<BoaTypes>,
+            ) -> Completion<JsValue, BoaTypes>,
+        >,
+        length: u32,
+        name: PropertyKey,
+        is_constructor: bool,
+    ) -> JsFunction {
+        let realm = self.current_realm();
+        let name_str = match &name {
+            PropertyKey::String(s) => s.clone(),
+            PropertyKey::Symbol(_) => boa_engine::js_string!(""),
+            _ => boa_engine::js_string!(""),
+        };
+
+        // Store the behaviour as the captures (wrapped in GcBox for boa_gc::Trace).
+        // The from_copy_closure_with_captures closure receives &GcBox<Box<dyn Fn<...>>>
+        // as a parameter (not captured by the closure), so the closure is Copy and 'static.
+        let wrapped = GcBox(behaviour);
+
+        let native = NativeFunction::from_copy_closure_with_captures(
+            move |this,
+                  args,
+                  captures,
+                  context| {
+                let engine: &mut BoaContext =
+                    unsafe { &mut *(context as *mut Context as *mut BoaContext) };
+                captures.0(args, this.clone(), engine)
+                    .map_err(|e| JsError::from_opaque(e))
+            },
+            wrapped,
+        );
+
+        let mut builder = FunctionObjectBuilder::new(&realm, native)
+            .name(name_str)
+            .length(length as usize);
+        if is_constructor {
+            builder = builder.constructor(true);
+        }
+        builder.build()
+    }
+
     // ── §7.1 Type Conversion ──────────────────────────────────────────────
 
     fn to_primitive(
@@ -1867,55 +1868,6 @@ impl ExecutionContext<BoaTypes> for BoaContext {
         JsValue::from(err_obj)
     }
 
-    fn create_builtin_function(
-        &mut self,
-        behaviour: Box<
-            dyn Fn(
-                &[JsValue],
-                JsValue,
-                &mut dyn ExecutionContext<BoaTypes>,
-            ) -> Completion<JsValue, BoaTypes>,
-        >,
-        length: u32,
-        name: PropertyKey,
-    ) -> JsFunction {
-        let realm = self.current_realm();
-        let name_str = match &name {
-            PropertyKey::String(s) => s.clone(),
-            PropertyKey::Symbol(_) => boa_engine::js_string!(""),
-            _ => boa_engine::js_string!(""),
-        };
-
-        // SAFETY: BoaContext is `#[repr(transparent)]` over Context.
-        //
-        // NOTE: `NativeFunction::from_closure` does not require `Trace` on the
-        // captured closure, so any `JsObject`/`JsValue`/`GcCell` references
-        // inside `behaviour`'s captures are INVISIBLE to the Boa GC.  If a GC
-        // cycle runs while the native function is alive, those references may
-        // be collected, producing "TypeError: not a callable function" or UAF.
-        //
-        // All current callers capture only function pointers and/or `Rc<...>`
-        // without GC references.  Any future caller that needs captured GC
-        // data must use `create_builtin_function_with_captures` instead.
-        let native = unsafe {
-            NativeFunction::from_closure(Box::new(
-                move |this: &JsValue,
-                      args: &[JsValue],
-                      context: &mut Context|
-                      -> JsResult<JsValue> {
-                    let engine: &mut BoaContext =
-                        &mut *(context as *mut Context as *mut BoaContext);
-                    behaviour(args, this.clone(), engine).map_err(|e| JsError::from_opaque(e))
-                },
-            ))
-        };
-
-        FunctionObjectBuilder::new(&realm, native)
-            .name(name_str)
-            .length(length as usize)
-            .build()
-    }
-
     fn create_proxy(
         &mut self,
         target: boa_engine::JsObject,
@@ -1941,92 +1893,7 @@ impl ExecutionContext<BoaTypes> for BoaContext {
             })
     }
 
-    fn create_builtin_function_from_behaviour(
-        &mut self,
-        behaviour: Box<dyn crate::Behaviour<BoaTypes>>,
-        length: u32,
-        name: PropertyKey,
-    ) -> JsFunction {
-        let realm = self.current_realm();
-        let name_str = match &name {
-            PropertyKey::String(s) => s.clone(),
-            PropertyKey::Symbol(_) => boa_engine::js_string!(""),
-            _ => boa_engine::js_string!(""),
-        };
 
-        let native = NativeFunction::from_copy_closure_with_captures(
-            move |_this: &JsValue,
-                  args: &[JsValue],
-                  behaviour: &Box<dyn crate::Behaviour<BoaTypes>>,
-                  context: &mut Context|
-                  -> JsResult<JsValue> {
-                let engine: &mut BoaContext =
-                    unsafe { &mut *(context as *mut Context as *mut BoaContext) };
-                behaviour
-                    .call(args, _this.clone(), engine)
-                    .map_err(|e| JsError::from_opaque(e))
-            },
-            behaviour,
-        );
-
-        FunctionObjectBuilder::new(&realm, native)
-            .name(name_str)
-            .length(length as usize)
-            .build()
-    }
-
-    // ── Web IDL Constructor Factory ─────────────────────────────────────
-
-    /// <https://webidl.spec.whatwg.org/#create-an-interface-object>
-    fn create_constructor(
-        &mut self,
-        behaviour: Box<
-            dyn Fn(
-                &[JsValue],
-                JsValue,
-                &mut dyn ExecutionContext<BoaTypes>,
-            ) -> Completion<JsValue, BoaTypes>,
-        >,
-        length: u32,
-        name: PropertyKey,
-    ) -> JsFunction {
-        let realm = self.current_realm();
-        let name_str = match &name {
-            PropertyKey::String(s) => s.clone(),
-            PropertyKey::Symbol(_) => boa_engine::js_string!(""),
-            _ => boa_engine::js_string!(""),
-        };
-
-        // SAFETY: BoaContext is `#[repr(transparent)]` over Context.
-        //
-        // NOTE: `NativeFunction::from_closure` does not require `Trace` on the
-        // captured closure, so any `JsObject`/`JsValue`/`GcCell` references
-        // inside `behaviour`'s captures are INVISIBLE to the Boa GC.  If a GC
-        // cycle runs while the native function is alive, those references may
-        // be collected, producing "TypeError: not a callable function" or UAF.
-        //
-        // All current callers capture only function pointers and/or `Rc<...>`
-        // without GC references.  Any future caller that needs captured GC
-        // data must use `create_builtin_function_with_captures` instead.
-        let native = unsafe {
-            NativeFunction::from_closure(Box::new(
-                move |this: &JsValue,
-                      args: &[JsValue],
-                      context: &mut Context|
-                      -> JsResult<JsValue> {
-                    let engine: &mut BoaContext =
-                        &mut *(context as *mut Context as *mut BoaContext);
-                    behaviour(args, this.clone(), engine).map_err(|e| JsError::from_opaque(e))
-                },
-            ))
-        };
-
-        FunctionObjectBuilder::new(&realm, native)
-            .name(name_str)
-            .length(length as usize)
-            .constructor(true)
-            .build()
-    }
 
     // ── String Utilities ─────────────────────────────────────────────
 

@@ -38,7 +38,7 @@ fn install_console_method(
 ) -> Completion<(), Types> {
     let name_owned = method_name.to_owned();
 
-    let fn_obj = ec.create_builtin_function(
+    let fn_obj = ec.create_builtin_fn(
         Box::new(
             move |args: &[<Types as js_engine::JsTypes>::JsValue],
                   _this: <Types as js_engine::JsTypes>::JsValue,

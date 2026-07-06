@@ -168,7 +168,7 @@ pub(crate) fn timeout_static(
 
     // Create the timeout callback as a builtin function.
     let signal_for_callback = signal.clone();
-    let callback_fn = ec.create_builtin_function(
+    let callback_fn = ec.create_builtin_fn(
         Box::new(move |_args, _this, inner_ec| {
             let reason = timeout_reason(inner_ec).unwrap_or_else(|_| inner_ec.value_undefined());
             signal_abort(&signal_for_callback, reason, inner_ec)?;

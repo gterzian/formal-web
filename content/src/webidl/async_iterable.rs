@@ -28,9 +28,7 @@ enum IteratorOperation {
     Return(JsValue),
 }
 
-// ── Helper: re-export builtin_with_captures for shorter reference ───────
 
-use crate::js::builtin_with_captures;
 
 // ── Capture types for builtin function callbacks ─────────────────────────
 
@@ -266,14 +264,16 @@ where
             // so we use the .then() return value as the ongoing promise.
 
             // Step 10.2: "Let onSettled be CreateBuiltinFunction(nextSteps, 0, "", « »)."
-            let on_settled_fn = builtin_with_captures(
-                ec,
-                OperationOnSettledCaptures {
-                    iterator: self.clone(),
-                    operation,
-                },
-                operation_on_settled_behaviour::<T>,
+            let on_settled_fn = ec.create_builtin_fn(
+                Box::new({
+                    let c = OperationOnSettledCaptures {
+                        iterator: self.clone(),
+                        operation,
+                    };
+                    move |args, this, ec| operation_on_settled_behaviour::<T>(args, this, &c, ec)
+                }),
                 0,
+                ec.property_key_from_str(""),
             );
 
             // Step 10.3: "Perform PerformPromiseThen(ongoingPromise, onSettled, onSettled, afterOngoingPromiseCapability)."
@@ -350,23 +350,27 @@ where
         };
 
         // Step 8.5–8.6: Create onFulfilled
-        let on_fulfilled = builtin_with_captures(
-            ec,
-            NextOnFulfilledCaptures {
-                iterator: self.clone(),
-            },
-            next_on_fulfilled_behaviour::<T>,
+        let on_fulfilled = ec.create_builtin_fn(
+            Box::new({
+                let c = NextOnFulfilledCaptures {
+                    iterator: self.clone(),
+                };
+                move |args, this, ec| next_on_fulfilled_behaviour::<T>(args, this, &c, ec)
+            }),
             1,
+            ec.property_key_from_str(""),
         );
 
         // Step 8.7–8.8: Create onRejected
-        let on_rejected = builtin_with_captures(
-            ec,
-            NextOnRejectedCaptures {
-                iterator: self.clone(),
-            },
-            next_on_rejected_behaviour::<T>,
+        let on_rejected = ec.create_builtin_fn(
+            Box::new({
+                let c = NextOnRejectedCaptures {
+                    iterator: self.clone(),
+                };
+                move |args, this, ec| next_on_rejected_behaviour::<T>(args, this, &c, ec)
+            }),
             1,
+            ec.property_key_from_str(""),
         );
 
         // Step 8.9: "Perform PerformPromiseThen(nextPromise, onFulfilled, onRejected, nextPromiseCapability)."
@@ -448,16 +452,25 @@ where
         };
 
         // Step 12–13: "Let onFulfilled be CreateBuiltinFunction(fulfillSteps, 1, "", « »)."
-        let on_fulfilled = builtin_with_captures(
-            ec,
-            ReturnOnFulfilledCaptures {
-                value: value.clone(),
-            },
-            return_on_fulfilled_behaviour,
+        let on_fulfilled = ec.create_builtin_fn(
+            Box::new({
+                let c = ReturnOnFulfilledCaptures {
+                    value: value.clone(),
+                };
+                move |args, this, ec| return_on_fulfilled_behaviour(args, this, &c, ec)
+            }),
             1,
+            ec.property_key_from_str(""),
         );
 
-        let on_rejected = builtin_with_captures(ec, (), re_throw_rejected_behaviour, 1);
+        let on_rejected = ec.create_builtin_fn(
+            Box::new({
+                let c = ();
+                move |args, this, ec| re_throw_rejected_behaviour(args, this, &c, ec)
+            }),
+            1,
+            ec.property_key_from_str(""),
+        );
 
         // Step 14: "Perform PerformPromiseThen(object's ongoing promise, onFulfilled, undefined, returnPromiseCapability)."
         let return_promise_obj = promise_from_object(return_promise, ec)?;
@@ -507,7 +520,7 @@ where
 
     // Create the `next` method — a built-in function that delegates to
     // async_iterator_next_inner.
-    let next_fn = ec.create_builtin_function(
+    let next_fn = ec.create_builtin_fn(
         Box::new(
             |args: &[JsValue], this: JsValue, ec: &mut dyn ExecutionContext<Types>| {
                 async_iterator_next_inner::<T>(this, args, ec)
@@ -521,7 +534,7 @@ where
 
     // Create the `return` method if the interface has a return algorithm
     if T::has_async_iterator_return() {
-        let return_fn = ec.create_builtin_function(
+        let return_fn = ec.create_builtin_fn(
             Box::new(
                 |args: &[JsValue], this: JsValue, ec: &mut dyn ExecutionContext<Types>| {
                     async_iterator_return_inner::<T>(this, args, ec)
@@ -639,14 +652,23 @@ where
     let return_result = iterator.queue_operation(IteratorOperation::Return(value.clone()), ec)?;
 
     // Step 12–15: Wrap the return result through onFulfilled (CreateIteratorResultObject)
-    let on_fulfilled = builtin_with_captures(
-        ec,
-        ReturnOnFulfilledCaptures { value },
-        return_on_fulfilled_behaviour,
+    let on_fulfilled = ec.create_builtin_fn(
+        Box::new({
+            let c = ReturnOnFulfilledCaptures { value };
+            move |args, this, ec| return_on_fulfilled_behaviour(args, this, &c, ec)
+        }),
         1,
+        ec.property_key_from_str(""),
     );
 
-    let on_rejected = builtin_with_captures(ec, (), re_throw_rejected_behaviour, 1);
+    let on_rejected = ec.create_builtin_fn(
+        Box::new({
+            let c = ();
+            move |args, this, ec| re_throw_rejected_behaviour(args, this, &c, ec)
+        }),
+        1,
+        ec.property_key_from_str(""),
+    );
 
     let capability = ec
         .new_promise_capability(ec.realm_intrinsics(&ec.current_realm()).promise)

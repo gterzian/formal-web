@@ -54,11 +54,6 @@
 //!   data (ESO, active script) is captured at callback-creation time and
 //!   restored at callback-call time.  Today every closure manually threads
 //!   `&mut dyn ExecutionContext<T>` instead.
-//! - **P3: `create_builtin_function` not yet used by content code.**
-//!   Content still uses Boa's `FunctionObjectBuilder` + `NativeFunction`
-//!   because converting all native function registrations is a large
-//!   mechanical change and the current interface registry stores
-//!   `T::JsObject` not `T::Function`.
 //! - **P4: `set_host_hooks` is a no-op for Boa.**  Boa host hooks are set
 //!   during `ContextBuilder::host_hooks()`, not at runtime.
 //! - **P7: `Callback` is Boa-concrete.**  Derives `boa_gc::Trace`/`Finalize`.
@@ -86,48 +81,6 @@ use crate::{Numeric, PreferredType, PropertyDescriptor, RootedPromiseCapability}
 /// - `Err(e)` corresponds to a throw completion `*e*`.
 /// Rust's `?` corresponds to the spec's `?` (ReturnIfAbrupt).
 pub type Completion<T, Ty> = Result<T, <Ty as JsTypes>::JsValue>;
-
-// ────────────────────────────────────────────────────────────────────────────
-// Object-safe callback that carries its own captures state.
-// Used by create_builtin_function_from_behaviour on ExecutionContext<T>
-// to pass type-erased captures through the trait-object boundary.
-// ────────────────────────────────────────────────────────────────────────────
-
-/// <https://tc39.es/ecma262/#sec-createbuiltinfunction>
-///
-/// Object-safe trait for a builtin function's behaviour closure, carrying
-/// its own captures (state) internally.  Implementations receive JS args,
-/// the `this` value, and the execution context.  The captures are opaque
-/// to the engine backend — only the concrete impl knows their type.
-///
-/// # GC safety invariant
-///
-/// On the Boa backend, [`create_builtin_function_from_behaviour`] stores
-/// `Box<dyn Behaviour>` with a **no-op `Trace`** implementation
-/// (see `js_engine/src/boa/engine.rs`).  This means any `JsObject`,
-/// `JsValue`, or `GcCell` references inside the Behaviour impl's captured
-/// state are invisible to the Boa garbage collector.
-///
-/// **Therefore: implementors must NOT capture GC-managed references.**
-/// The captures must be either:
-/// - Plain Rust data (function pointers, integers, strings, `Rc<...>`,
-///   `Arc<...>` with no `JsObject`/`JsValue` fields), or
-/// - Already independently rooted by a parent `JsObject` (e.g. through a
-///   `TraceableBox` that lives in the JS heap).
-///
-/// For call sites that need to capture `GcCell<T>` or `JsObject` references,
-/// use [`crate::ExecutionContext::create_builtin_function_with_captures`]
-/// or the content-level `builtin_with_captures` helper instead, which
-/// properly require `C: Trace` and store the captures in GC-traced heap
-/// allocations.
-pub trait Behaviour<T: JsTypes> {
-    fn call(
-        &self,
-        args: &[T::JsValue],
-        this: T::JsValue,
-        ec: &mut dyn ExecutionContext<T>,
-    ) -> Completion<T::JsValue, T>;
-}
 
 // ────────────────────────────────────────────────────────────────────────────
 // <https://webidl.spec.whatwg.org/#call-a-user-objects-operation>
@@ -800,52 +753,6 @@ pub trait ExecutionContext<T: JsTypes + JsTypesWithRealm>: EcmascriptHost<T> {
 
     // ── Built-in Function Construction (§10.3.4) ─────────────────────
 
-    /// <https://tc39.es/ecma262/#sec-createbuiltinfunction>
-    ///
-    /// The behaviour closure receives the JS arguments, the `this` value,
-    /// and a `&mut dyn ExecutionContext<T>` for calling any ECMA-262
-    /// runtime operation.  The realm defaults to the current Realm Record.
-    fn create_builtin_function(
-        &mut self,
-        behaviour: Box<
-            dyn Fn(
-                &[T::JsValue],
-                T::JsValue,
-                &mut dyn ExecutionContext<T>,
-            ) -> Completion<T::JsValue, T>,
-        >,
-        length: u32,
-        name: T::PropertyKey,
-    ) -> T::Function;
-
-    /// <https://tc39.es/ecma262/#sec-createbuiltinfunction>
-    ///
-    /// Object-safe variant: the behaviour is a [`Behaviour`] trait object
-    /// that carries its own captures state internally.  Callers implement
-    /// [`Behaviour`] on a struct holding the captures and the fn pointer;
-    /// the engine backend only sees the trait object and calls through
-    /// the vtable.
-    fn create_builtin_function_from_behaviour(
-        &mut self,
-        behaviour: Box<dyn Behaviour<T>>,
-        length: u32,
-        name: T::PropertyKey,
-    ) -> T::Function;
-
-    /// <https://webidl.spec.whatwg.org/#create-an-interface-object>
-    fn create_constructor(
-        &mut self,
-        behaviour: Box<
-            dyn Fn(
-                &[T::JsValue],
-                T::JsValue,
-                &mut dyn ExecutionContext<T>,
-            ) -> Completion<T::JsValue, T>,
-        >,
-        length: u32,
-        name: T::PropertyKey,
-    ) -> T::Function;
-
     // ── Proxy Creation (§10.5.14) ─────────────────────────────────
 
     /// <https://tc39.es/ecma262/#sec-proxycreate>
@@ -954,6 +861,48 @@ pub trait ExecutionContext<T: JsTypes + JsTypesWithRealm>: EcmascriptHost<T> {
         }
     }
 
+    /// <https://tc39.es/ecma262/#sec-createbuiltinfunction>
+    ///
+    /// Creates a built-in function whose behaviour is a boxed closure.
+    /// The behaviour closure receives the JS arguments, the `this` value,
+    /// and a `&mut dyn ExecutionContext<T>`.  The closure's captures are
+    /// stored in the engine's heap and are NOT GC-traced — callers must
+    /// ensure the closure does not capture GC-managed references, or must
+    /// root those references independently.
+    ///
+    /// `is_constructor` controls whether the function gets the `[[Construct]]`
+    /// internal method (making it usable with `new`).
+    fn create_builtin_function(
+        &mut self,
+        behaviour: Box<
+            dyn Fn(
+                &[T::JsValue],
+                T::JsValue,
+                &mut dyn ExecutionContext<T>,
+            ) -> Completion<T::JsValue, T>,
+        >,
+        length: u32,
+        name: T::PropertyKey,
+        is_constructor: bool,
+    ) -> T::Function;
+
+    /// Convenience: create a non-constructor builtin function.
+    /// Shorthand for `create_builtin_function(behaviour, length, name, false)`.
+    fn create_builtin_fn(
+        &mut self,
+        behaviour: Box<
+            dyn Fn(
+                &[T::JsValue],
+                T::JsValue,
+                &mut dyn ExecutionContext<T>,
+            ) -> Completion<T::JsValue, T>,
+        >,
+        length: u32,
+        name: T::PropertyKey,
+    ) -> T::Function {
+        self.create_builtin_function(behaviour, length, name, false)
+    }
+
     /// Root a promise capability so it can be stored across algorithm steps.
     fn root_promise_capability(
         &mut self,
@@ -1000,33 +949,6 @@ pub trait JsEngine<T: JsTypes> {
     fn set_default_global_bindings(&mut self, realm: &T::Realm) -> Completion<(), T>
     where
         T: JsTypesWithRealm;
-
-    // ────────────────────────────────────────────────────────────────────────
-    // §10.3 Built-in Function Objects
-    // ────────────────────────────────────────────────────────────────────────
-
-    /// <https://tc39.es/ecma262/#sec-createbuiltinfunction>
-    ///
-    /// Creates a built-in function whose behaviour closure receives a
-    /// traceable captures struct (instead of an opaque boxed closure).
-    /// The captures struct is stored alongside the function pointer and
-    /// traced by the GC, so domain objects held inside the struct can
-    /// safely survive garbage collections.
-    ///
-    /// `behaviour` is a function pointer (not a closure) receiving `&C`
-    /// as its third argument.
-    fn create_builtin_function_with_captures<C: crate::gc::Trace + 'static>(
-        &mut self,
-        captures: C,
-        behaviour: fn(
-            &[T::JsValue],
-            T::JsValue,
-            &C,
-            &mut dyn ExecutionContext<T>,
-        ) -> Completion<T::JsValue, T>,
-        length: u32,
-        name: T::PropertyKey,
-    ) -> T::Function;
 
     // ────────────────────────────────────────────────────────────────────────
     // §16.1 / §16.2 Script and Module evaluation

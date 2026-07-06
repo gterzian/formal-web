@@ -66,7 +66,7 @@ where
     let target_obj = Ty::value_as_object(target)
         .ok_or_else(|| engine.new_type_error("target is not an object in attribute definition"))?;
     for attr in attributes {
-        let getter_fn = engine.create_builtin_function(
+        let getter_fn = engine.create_builtin_fn(
             Box::new({
                 let getter = attr.getter;
                 move |args, this, ec| getter(&this, args, ec)
@@ -83,7 +83,7 @@ where
             configurable: Some(!attr.unforgeable),
         };
         if let Some(setter) = attr.setter {
-            let setter_fn = engine.create_builtin_function(
+            let setter_fn = engine.create_builtin_fn(
                 Box::new(move |args, this, ec| setter(&this, args, ec)),
                 1,
                 engine.property_key_from_str(attr.id),

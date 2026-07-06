@@ -475,7 +475,7 @@ fn create_exported_function_wrapper_boa(
     // Bridge once to get the generic EC — the closure below uses
     // ec directly, eliminating per-invocation context_as_ec bridges.
     let engine = js_engine::boa::context_as_engine(context);
-    let js_func = engine.create_builtin_function(
+    let js_func = engine.create_builtin_fn(
         Box::new(move |args, _this, ec| {
             let mut store_guard = store.lock().unwrap();
             let func_type = func.ty(&*store_guard);

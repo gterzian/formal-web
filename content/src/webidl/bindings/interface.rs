@@ -202,8 +202,9 @@ where
     // Define the constants on the interface prototype object as well.
     super::constant::define_constants::<Ty>(proto.clone(), engine, &def.constants)?;
     let instance_prototype = proto.clone();
-    let constructor_fn = engine.create_constructor(
-        Box::new(
+    let constructor_fn = engine.create_builtin_function(
+        Box::new({
+            let instance_prototype_for_fn = instance_prototype.clone();
             move |args: &[Ty::JsValue],
                   new_target_or_this: Ty::JsValue,
                   ec: &mut dyn ExecutionContext<Ty>| {
@@ -242,7 +243,7 @@ where
                         ec.new_type_error("TypeError: new.target.prototype is not an object")
                     })?
                 } else {
-                    instance_prototype.clone()
+                    instance_prototype_for_fn.clone()
                 };
                 let obj = I::create_platform_object(&new_target_or_this, args, ec)?;
                 // Step 1.9: Perform the constructor steps of constructor
@@ -259,14 +260,15 @@ where
                 let instance = ec.create_object_with_any(resolved_prototype, Box::new(traceable));
                 // Step 1.11-1.13: Assert and return O.
                 Ok(Ty::value_from_object(instance))
-            },
-        ),
+            }
+        }),
         I::constructor_length() as u32,
         engine.property_key_from_str(I::NAME),
+        true,
     );
     // Step 10: Let F be CreateBuiltinFunction(steps, length, id,
     //   « [[Unforgeables]] », realm, constructorProto).
-    //   Note: create_constructor creates a constructable built-in function.
+    //   Note: is_constructor=true makes a constructable built-in function.
     let f_obj = Ty::object_from_function(constructor_fn);
     // Step 12: Perform ! DefinePropertyOrThrow(F, "prototype",
     //   PropertyDescriptor{[[Value]]: proto, [[Writable]]: false, ...}).
@@ -369,8 +371,9 @@ where
     // Define the constants on the interface prototype object as well.
     super::constant::define_constants::<Ty>(proto.clone(), engine, &def.constants)?;
     let instance_prototype = proto.clone();
-    let constructor_fn = engine.create_constructor(
-        Box::new(
+    let constructor_fn = engine.create_builtin_function(
+        Box::new({
+            let instance_prototype_for_fn = instance_prototype.clone();
             move |args: &[Ty::JsValue],
                   new_target_or_this: Ty::JsValue,
                   ec: &mut dyn ExecutionContext<Ty>| {
@@ -409,7 +412,7 @@ where
                         ec.new_type_error("TypeError: new.target.prototype is not an object")
                     })?
                 } else {
-                    instance_prototype.clone()
+                    instance_prototype_for_fn.clone()
                 };
                 let obj = I::create_platform_object(&new_target_or_this, args, ec)?;
                 // Step 1.9: Perform the constructor steps of constructor
@@ -419,14 +422,15 @@ where
                 let instance = ec.create_object_with_any(resolved_prototype, Box::new(obj));
                 // Step 1.11-1.13: Assert and return O.
                 Ok(Ty::value_from_object(instance))
-            },
-        ),
+            }
+        }),
         I::constructor_length() as u32,
         engine.property_key_from_str(I::NAME),
+        true,
     );
     // Step 10: Let F be CreateBuiltinFunction(steps, length, id,
     //   « [[Unforgeables]] », realm, constructorProto).
-    //   Note: create_constructor creates a constructable built-in function.
+    //   Note: is_constructor=true makes a constructable built-in function.
     let f_obj = Ty::object_from_function(constructor_fn);
     // Step 12: Perform ! DefinePropertyOrThrow(F, "prototype",
     //   PropertyDescriptor{[[Value]]: proto, [[Writable]]: false, ...}).

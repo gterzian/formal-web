@@ -264,7 +264,7 @@ fn get_class_list(
     let token_list = ec.create_plain_object(None);
 
     // "add" method
-    let add_fn = ec.create_builtin_function(
+    let add_fn = ec.create_builtin_fn(
         Box::new(move |args, this_val, inner_ec| class_list_add(&this_val, args, inner_ec)),
         1,
         ec.property_key_from_str("add"),
@@ -276,7 +276,7 @@ fn get_class_list(
     )?;
 
     // "remove" method
-    let remove_fn = ec.create_builtin_function(
+    let remove_fn = ec.create_builtin_fn(
         Box::new(move |args, this_val, inner_ec| class_list_remove(&this_val, args, inner_ec)),
         1,
         ec.property_key_from_str("remove"),
@@ -288,7 +288,7 @@ fn get_class_list(
     )?;
 
     // "toggle" method
-    let toggle_fn = ec.create_builtin_function(
+    let toggle_fn = ec.create_builtin_fn(
         Box::new(move |args, this_val, inner_ec| class_list_toggle(&this_val, args, inner_ec)),
         1,
         ec.property_key_from_str("toggle"),
@@ -300,7 +300,7 @@ fn get_class_list(
     )?;
 
     // "contains" method
-    let contains_fn = ec.create_builtin_function(
+    let contains_fn = ec.create_builtin_fn(
         Box::new(move |args, this_val, inner_ec| class_list_contains(&this_val, args, inner_ec)),
         1,
         ec.property_key_from_str("contains"),
@@ -318,7 +318,7 @@ fn get_class_list(
     ec.object_set_property(token_list.clone(), "__element", obj_clone)?;
 
     // length getter
-    let len_fn = ec.create_builtin_function(
+    let len_fn = ec.create_builtin_fn(
         Box::new(move |_args, this_val, inner_ec| class_list_length(&this_val, &[], inner_ec)),
         0,
         ec.property_key_from_str("get_length"),

@@ -78,13 +78,13 @@ fn link_property(
     >,
 ) -> Completion<(), crate::js::Types> {
     let name_key = ec.property_key_from_str(name);
-    let get_fn = ec.create_builtin_function(
+    let get_fn = ec.create_builtin_fn(
         Box::new(move |args, this_val, inner_ec| getter(&this_val, args, inner_ec)),
         0,
         ec.property_key_from_str(name),
     );
     let set_fn = setter.map(|set_fn_ptr| {
-        ec.create_builtin_function(
+        ec.create_builtin_fn(
             Box::new(move |args, this_val, inner_ec| set_fn_ptr(&this_val, args, inner_ec)),
             1,
             ec.property_key_from_str(name),

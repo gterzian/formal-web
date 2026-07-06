@@ -306,7 +306,7 @@ mod jsc_gc_impl {
     }
 
     // Blanket Trace impls for common types used as captures with
-    // `builtin_with_captures` on the JSC backend.
+    // `create_builtin_function`.
     unsafe impl Trace for () {}
     unsafe impl Trace for bool {}
     unsafe impl Trace for u64 {}
@@ -316,6 +316,7 @@ mod jsc_gc_impl {
     unsafe impl Trace for usize {}
     unsafe impl Trace for String {}
     unsafe impl<T> Trace for std::rc::Rc<std::cell::RefCell<T>> {}
+    unsafe impl<T> Trace for std::rc::Rc<std::cell::Cell<T>> {}
     unsafe impl<A: Trace, B: Trace> Trace for (A, B) {}
     unsafe impl<A: Trace, B: Trace, C: Trace> Trace for (A, B, C) {}
     unsafe impl<A: Trace, B: Trace, C: Trace, D: Trace> Trace for (A, B, C, D) {}

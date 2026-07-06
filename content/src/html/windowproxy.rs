@@ -21,7 +21,7 @@ type JsObject = <Types as JsTypes>::JsObject;
 // Window as the proxy target, `args[0]` IS the Window in every trap call.
 //
 // These functions are used as built-in function behaviours: each is wrapped
-// with `ec.create_builtin_function()` and set as a property on the handler
+// with `ec.create_builtin_fn()` and set as a property on the handler
 // object passed to `ec.create_proxy()`.
 
 /// <https://html.spec.whatwg.org/#windowproxy-getprototypeof>
@@ -277,7 +277,7 @@ pub(crate) fn create_window_proxy(
         (trap_own_keys, 1, "ownKeys"),
     ];
     for &(trap_fn, length, name) in traps.iter() {
-        let builtin_fn = ec.create_builtin_function(
+        let builtin_fn = ec.create_builtin_fn(
             Box::new(move |args, this, ec| trap_fn(args, this, ec)),
             length,
             ec.property_key_from_str(name),
