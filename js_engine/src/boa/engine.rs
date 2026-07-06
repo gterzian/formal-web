@@ -81,6 +81,20 @@ unsafe impl<T: 'static> boa_gc::Trace for GcBox<T> {
 
 impl<T: 'static> boa_gc::Finalize for GcBox<T> {}
 
+/// Captures for the `resolve` wrapper used when piping a `.then()` result
+/// through a capability.
+#[derive(boa_gc::Trace, boa_gc::Finalize)]
+struct PromiseThenResolve {
+    func: JsFunction,
+}
+
+/// Captures for the `reject` wrapper used when piping a `.then()` result
+/// through a capability.
+#[derive(boa_gc::Trace, boa_gc::Finalize)]
+struct PromiseThenReject {
+    func: JsFunction,
+}
+
 
 /// Boa execution context.  Wraps a `boa_engine::Context` (the stateful JS
 /// runtime: realm, heap, global object) and implements
@@ -1640,20 +1654,54 @@ impl ExecutionContext<BoaTypes> for BoaContext {
         promise: JsPromise,
         on_fulfilled: Option<JsFunction>,
         on_rejected: Option<JsFunction>,
-        _result_capability: Option<PromiseCapability<BoaTypes>>,
+        result_capability: Option<PromiseCapability<BoaTypes>>,
     ) -> Completion<JsValue, BoaTypes> {
         let result = into_completion(
             promise.then(on_fulfilled, on_rejected, &mut self.context),
             &mut self.context,
         )?;
 
-        // Note: _result_capability is currently ignored because Boa's
-        // promise.then() creates its own internal capability.  Callers
-        // that need result_capability (like async iterators) must be
-        // updated to use the returned promise instead.
-        //
-        // TODO: wire result_capability by piping the .then() result
-        // through to the capability's resolve/reject functions.
+        // If a result_capability was provided, pipe the .then() result
+        // through the capability's promise by chaining a second .then().
+        // This ensures callers that create a PromiseCapability and pass
+        // it to perform_promise_then (e.g. stream code) have their
+        // capability's promise properly resolved/rejected.
+        if let Some(cap) = result_capability {
+            let realm = self.context.realm().clone();
+
+            // Create resolve wrapper: call cap.resolve with the value
+            let resolve = cap.resolve;
+            let resolve_native = NativeFunction::from_copy_closure_with_captures(
+                move |_this, args, captures, context| {
+                    let value = args.first().cloned().unwrap_or_else(|| JsValue::undefined());
+                    let resolve = &captures.func;
+                    resolve.call(&JsValue::undefined(), &[value], context)
+                },
+                PromiseThenResolve { func: resolve },
+            );
+            let resolve_fn: JsFunction = FunctionObjectBuilder::new(&realm, resolve_native)
+                .name(boa_engine::js_string!(""))
+                .length(1)
+                .build();
+
+            // Create reject wrapper: call cap.reject with the reason
+            let reject = cap.reject;
+            let reject_native = NativeFunction::from_copy_closure_with_captures(
+                move |_this, args, captures, context| {
+                    let reason = args.first().cloned().unwrap_or_else(|| JsValue::undefined());
+                    let reject = &captures.func;
+                    reject.call(&JsValue::undefined(), &[reason], context)
+                },
+                PromiseThenReject { func: reject },
+            );
+            let reject_fn: JsFunction = FunctionObjectBuilder::new(&realm, reject_native)
+                .name(boa_engine::js_string!(""))
+                .length(1)
+                .build();
+
+            // Chain .then() on the result promise to pipe through to capability
+            let _ = result.then(Some(resolve_fn), Some(reject_fn), &mut self.context);
+        }
 
         Ok(JsValue::from(result))
     }

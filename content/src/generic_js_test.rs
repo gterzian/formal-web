@@ -700,6 +700,7 @@ mod tests {
         atomic::{AtomicUsize, Ordering},
     };
 
+    use js_engine::PromiseState;
     use js_engine::PropertyDescriptor;
     use js_engine::TypedArrayElementType;
     use js_engine::{EcmascriptHost, ExecutionContext, JsEngine};
@@ -1238,6 +1239,164 @@ mod tests {
         let realm = engine.current_realm();
         let result = JsEngine::evaluate_script(&mut engine, "40 + 2", &realm).unwrap();
         assert!((engine.to_number(result).unwrap() - 42.0).abs() < 0.001);
+    }
+
+    #[test]
+    fn js_promise_resolve_then_from_evaluate_script() {
+        // Regression test: promises created through JavaScript evaluation
+        // must have their .then() handlers scheduled correctly.
+        // <https://html.spec.whatwg.org/#perform-a-microtask-checkpoint>
+        let mut engine = setup();
+        let realm = engine.current_realm();
+
+        // Set up a global variable to capture the result.
+        let _ = JsEngine::evaluate_script(
+            &mut engine,
+            "var promiseResult = 'not called';
+             Promise.resolve(42).then(function(v) { promiseResult = 'resolved: ' + v; });",
+            &realm,
+        );
+
+        // Run microtasks to flush promise jobs.
+        let _ = engine.perform_a_microtask_checkpoint();
+
+        // Read the result back.
+        let global = engine.global_object();
+        let pk = engine.property_key_from_str("promiseResult");
+        let result = ExecutionContext::get(&mut engine, global, pk).unwrap();
+        let result_str = engine.to_rust_string(result).unwrap();
+        assert_eq!(
+            result_str, "resolved: 42",
+            "Promise.resolve().then() handler should fire: got '{result_str}'"
+        );
+    }
+
+    #[test]
+    fn js_async_function_await_resolves() {
+        // Regression test: async functions must resolve their awaited values.
+        let mut engine = setup();
+        let realm = engine.current_realm();
+
+        let _ = JsEngine::evaluate_script(
+            &mut engine,
+            "var asyncResult = 'not called';
+             async function test() {
+               var x = await 1;
+               asyncResult = 'awaited: ' + x;
+             }
+             test();",
+            &realm,
+        );
+
+        // Run microtasks to flush promise jobs.
+        let _ = engine.perform_a_microtask_checkpoint();
+
+        let global = engine.global_object();
+        let pk = engine.property_key_from_str("asyncResult");
+        let result = ExecutionContext::get(&mut engine, global, pk).unwrap();
+        let result_str = engine.to_rust_string(result).unwrap();
+        assert_eq!(
+            result_str, "awaited: 1",
+            "async function await should resolve: got '{result_str}'"
+        );
+    }
+
+    #[test]
+    fn perform_promise_then_with_result_capability() {
+        // Regression test: when perform_promise_then is called with a
+        // result_capability, the capability's promise must be resolved
+        // after the handler fires.  The stream code relies on this.
+        let mut engine = setup();
+        let realm = engine.current_realm();
+        let intrinsics = engine.realm_intrinsics(&realm);
+
+        // Create a promise via JavaScript that we'll chain onto.
+        let source_promise = JsEngine::evaluate_script(
+            &mut engine,
+            "Promise.resolve(42)",
+            &realm,
+        ).unwrap();
+        let source_obj = TestTypes::value_as_object(&source_promise).unwrap();
+        let source_promise_js = TestTypes::object_as_promise(&source_obj).unwrap();
+
+        // Create a handler that captures the resolved value.
+        let observed = Rc::new(Cell::new(0_u32));
+        let observed_for_handler = Rc::clone(&observed);
+        let on_fulfilled = engine.create_builtin_function(
+            Box::new(move |args, _this, inner_ec| {
+                let value = args
+                    .first()
+                    .cloned()
+                    .unwrap_or_else(|| inner_ec.value_undefined());
+                observed_for_handler.set(inner_ec.to_uint32(value).unwrap_or(0));
+                Ok(inner_ec.value_undefined())
+            }),
+            1,
+            engine.property_key_from_str("handler"),
+            false,
+        );
+
+        // Create a capability that should resolve when the handler fires.
+        let capability = engine.new_promise_capability(intrinsics.promise.clone()).unwrap();
+        let result_promise = capability.promise.clone();
+
+        // Call perform_promise_then WITH the capability.
+        let _ = engine.perform_promise_then(
+            source_promise_js,
+            Some(on_fulfilled),
+            None,
+            Some(capability),
+        ).unwrap();
+
+        // Run microtasks.
+        engine.run_jobs();
+
+        // Check that the handler was called.
+        assert_eq!(
+            observed.get(),
+            42_u32,
+            "perform_promise_then handler should fire"
+        );
+
+        // Check that the capability's promise resolved.
+        let cap_obj = TestTypes::value_as_object(&result_promise).unwrap();
+        let cap_state = engine.promise_state(&cap_obj).unwrap();
+        match cap_state {
+            PromiseState::Fulfilled(_) => {} // success!
+            other => panic!(
+                "capability promise should be fulfilled after handler, got {:?}",
+                other
+            ),
+        }
+    }
+
+    #[test]
+    fn js_new_promise_constructor_then() {
+        // Regression test: new Promise(r => r(x)).then() must fire.
+        let mut engine = setup();
+        let realm = engine.current_realm();
+
+        let _ = JsEngine::evaluate_script(
+            &mut engine,
+            "var newPromiseResult = 'not called';
+             new Promise(function(resolve) {
+               resolve(99);
+             }).then(function(v) {
+               newPromiseResult = 'resolved: ' + v;
+             });",
+            &realm,
+        );
+
+        let _ = engine.perform_a_microtask_checkpoint();
+
+        let global = engine.global_object();
+        let pk = engine.property_key_from_str("newPromiseResult");
+        let result = ExecutionContext::get(&mut engine, global, pk).unwrap();
+        let result_str = engine.to_rust_string(result).unwrap();
+        assert_eq!(
+            result_str, "resolved: 99",
+            "new Promise(r=>r(x)).then() should fire: got '{result_str}'"
+        );
     }
 
     #[test]
