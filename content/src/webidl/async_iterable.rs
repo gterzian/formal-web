@@ -5,6 +5,8 @@ use std::{cell::Cell, rc::Rc};
 
 use js_engine::{Completion, ExecutionContext, JsTypes};
 
+use crate::js::create_builtin_fn_with_traced_captures;
+
 use super::promise::resolved_promise;
 
 type Types = crate::js::Types;
@@ -262,16 +264,17 @@ where
             // so we use the .then() return value as the ongoing promise.
 
             // Step 10.2: "Let onSettled be CreateBuiltinFunction(nextSteps, 0, "", « »)."
-            let on_settled_fn = ec.create_builtin_fn(
-                Box::new({
-                    let c = OperationOnSettledCaptures {
-                        iterator: self.clone(),
-                        operation,
-                    };
-                    move |args, this, ec| operation_on_settled_behaviour::<T>(args, this, &c, ec)
-                }),
+            let name_key = ec.property_key_from_str("");
+            let on_settled_fn = create_builtin_fn_with_traced_captures(
+                ec,
+                OperationOnSettledCaptures {
+                    iterator: self.clone(),
+                    operation,
+                },
+                operation_on_settled_behaviour::<T>,
                 0,
-                ec.property_key_from_str(""),
+                name_key,
+                false,
             );
 
             // Step 10.3: "Perform PerformPromiseThen(ongoingPromise, onSettled, onSettled, afterOngoingPromiseCapability)."
@@ -348,27 +351,28 @@ where
         };
 
         // Step 8.5–8.6: Create onFulfilled
-        let on_fulfilled = ec.create_builtin_fn(
-            Box::new({
-                let c = NextOnFulfilledCaptures {
-                    iterator: self.clone(),
-                };
-                move |args, this, ec| next_on_fulfilled_behaviour::<T>(args, this, &c, ec)
-            }),
+        let name_key = ec.property_key_from_str("");
+        let on_fulfilled = create_builtin_fn_with_traced_captures(
+            ec,
+            NextOnFulfilledCaptures {
+                iterator: self.clone(),
+            },
+            next_on_fulfilled_behaviour::<T>,
             1,
-            ec.property_key_from_str(""),
+            name_key.clone(),
+            false,
         );
 
         // Step 8.7–8.8: Create onRejected
-        let on_rejected = ec.create_builtin_fn(
-            Box::new({
-                let c = NextOnRejectedCaptures {
-                    iterator: self.clone(),
-                };
-                move |args, this, ec| next_on_rejected_behaviour::<T>(args, this, &c, ec)
-            }),
+        let on_rejected = create_builtin_fn_with_traced_captures(
+            ec,
+            NextOnRejectedCaptures {
+                iterator: self.clone(),
+            },
+            next_on_rejected_behaviour::<T>,
             1,
-            ec.property_key_from_str(""),
+            name_key,
+            false,
         );
 
         // Step 8.9: "Perform PerformPromiseThen(nextPromise, onFulfilled, onRejected, nextPromiseCapability)."
@@ -450,24 +454,25 @@ where
         };
 
         // Step 12–13: "Let onFulfilled be CreateBuiltinFunction(fulfillSteps, 1, "", « »)."
-        let on_fulfilled = ec.create_builtin_fn(
-            Box::new({
-                let c = ReturnOnFulfilledCaptures {
-                    value: value.clone(),
-                };
-                move |args, this, ec| return_on_fulfilled_behaviour(args, this, &c, ec)
-            }),
+        let name_key = ec.property_key_from_str("");
+        let on_fulfilled = create_builtin_fn_with_traced_captures(
+            ec,
+            ReturnOnFulfilledCaptures {
+                value: value.clone(),
+            },
+            return_on_fulfilled_behaviour,
             1,
-            ec.property_key_from_str(""),
+            name_key.clone(),
+            false,
         );
 
-        let on_rejected = ec.create_builtin_fn(
-            Box::new({
-                let c = ();
-                move |args, this, ec| re_throw_rejected_behaviour(args, this, &c, ec)
-            }),
+        let on_rejected = create_builtin_fn_with_traced_captures(
+            ec,
+            (),
+            re_throw_rejected_behaviour,
             1,
-            ec.property_key_from_str(""),
+            name_key,
+            false,
         );
 
         // Step 14: "Perform PerformPromiseThen(object's ongoing promise, onFulfilled, undefined, returnPromiseCapability)."
@@ -650,22 +655,23 @@ where
     let return_result = iterator.queue_operation(IteratorOperation::Return(value.clone()), ec)?;
 
     // Step 12–15: Wrap the return result through onFulfilled (CreateIteratorResultObject)
-    let on_fulfilled = ec.create_builtin_fn(
-        Box::new({
-            let c = ReturnOnFulfilledCaptures { value };
-            move |args, this, ec| return_on_fulfilled_behaviour(args, this, &c, ec)
-        }),
+    let name_key = ec.property_key_from_str("");
+    let on_fulfilled = create_builtin_fn_with_traced_captures(
+        ec,
+        ReturnOnFulfilledCaptures { value },
+        return_on_fulfilled_behaviour,
         1,
-        ec.property_key_from_str(""),
+        name_key.clone(),
+        false,
     );
 
-    let on_rejected = ec.create_builtin_fn(
-        Box::new({
-            let c = ();
-            move |args, this, ec| re_throw_rejected_behaviour(args, this, &c, ec)
-        }),
+    let on_rejected = create_builtin_fn_with_traced_captures(
+        ec,
+        (),
+        re_throw_rejected_behaviour,
         1,
-        ec.property_key_from_str(""),
+        name_key,
+        false,
     );
 
     let capability = ec

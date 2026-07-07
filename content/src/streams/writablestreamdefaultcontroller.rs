@@ -4,7 +4,7 @@ use js_engine::gc_struct;
 use js_engine::{Completion, ExecutionContext, JsTypes};
 use std::{cell::Cell, rc::Rc};
 
-use crate::js::Types;
+use crate::js::{Types, create_builtin_fn_with_traced_captures};
 
 use crate::{
     dom::{AbortSignal, create_abort_signal, signal_abort},
@@ -463,22 +463,22 @@ impl WritableStreamDefaultController {
 
         // Step 5: "Perform ! WritableStreamDefaultControllerClearAlgorithms(controller)."
         self.clear_algorithms();
-        let stream_for_fulfilled = stream.clone();
-        let on_fulfilled = ec.create_builtin_fn(
-            Box::new({
-                let c = stream_for_fulfilled;
-                move |args, this, ec| process_close_on_fulfilled(args, this, &c, ec)
-            }),
+        let name_key = ec.property_key_from_str("");
+        let on_fulfilled = create_builtin_fn_with_traced_captures(
+            ec,
+            stream.clone(),
+            process_close_on_fulfilled,
             1,
-            ec.property_key_from_str(""),
+            name_key.clone(),
+            false,
         );
-        let on_rejected = ec.create_builtin_fn(
-            Box::new({
-                let c = stream;
-                move |args, this, ec| process_close_on_rejected(args, this, &c, ec)
-            }),
+        let on_rejected = create_builtin_fn_with_traced_captures(
+            ec,
+            stream,
+            process_close_on_rejected,
             1,
-            ec.property_key_from_str(""),
+            name_key,
+            false,
         );
         let promise = Types::object_as_promise(&sink_close_promise)
             .ok_or_else(|| ec.new_type_error("not a Promise"))?;
@@ -510,23 +510,22 @@ impl WritableStreamDefaultController {
             }
         };
 
-        let controller_for_fulfilled = self.clone();
-        let stream_for_fulfilled = stream.clone();
-        let on_fulfilled = ec.create_builtin_fn(
-            Box::new({
-                let c = (controller_for_fulfilled, stream_for_fulfilled);
-                move |args, this, ec| process_write_on_fulfilled(args, this, &c, ec)
-            }),
+        let name_key = ec.property_key_from_str("");
+        let on_fulfilled = create_builtin_fn_with_traced_captures(
+            ec,
+            (self.clone(), stream.clone()),
+            process_write_on_fulfilled,
             1,
-            ec.property_key_from_str(""),
+            name_key.clone(),
+            false,
         );
-        let on_rejected = ec.create_builtin_fn(
-            Box::new({
-                let c = (self.clone(), stream);
-                move |args, this, ec| process_write_on_rejected(args, this, &c, ec)
-            }),
+        let on_rejected = create_builtin_fn_with_traced_captures(
+            ec,
+            (self.clone(), stream),
+            process_write_on_rejected,
             1,
-            ec.property_key_from_str(""),
+            name_key,
+            false,
         );
         let promise = Types::object_as_promise(&sink_write_promise)
             .ok_or_else(|| ec.new_type_error("not a Promise"))?;
@@ -680,23 +679,24 @@ pub(crate) fn set_up_writable_stream_default_controller(
     let start_promise = ec.promise_resolve(intrinsics.promise.clone(), start_result)?;
 
     // Step 17: "Upon fulfillment of startPromise..."
-    let on_fulfilled = ec.create_builtin_fn(
-        Box::new({
-            let c = controller.clone();
-            move |args, this, ec| setup_on_fulfilled(args, this, &c, ec)
-        }),
+    let name_key = ec.property_key_from_str("");
+    let on_fulfilled = create_builtin_fn_with_traced_captures(
+        ec,
+        controller.clone(),
+        setup_on_fulfilled,
         1,
-        ec.property_key_from_str(""),
+        name_key.clone(),
+        false,
     );
 
     // Step 18: "Upon rejection of startPromise with reason r..."
-    let on_rejected = ec.create_builtin_fn(
-        Box::new({
-            let c = controller;
-            move |args, this, ec| setup_on_rejected(args, this, &c, ec)
-        }),
+    let on_rejected = create_builtin_fn_with_traced_captures(
+        ec,
+        controller,
+        setup_on_rejected,
         1,
-        ec.property_key_from_str(""),
+        name_key,
+        false,
     );
     ec.perform_promise_then(start_promise, Some(on_fulfilled), Some(on_rejected), None)?;
     Ok(())

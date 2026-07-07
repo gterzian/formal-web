@@ -2,7 +2,7 @@ use std::{cell::Cell, collections::VecDeque, rc::Rc};
 
 use js_engine::{Completion, ExecutionContext, JsTypes};
 
-use crate::js::Types;
+use crate::js::{Types, create_builtin_fn_with_traced_captures};
 
 use crate::streams::SizeAlgorithm;
 use crate::webidl::bindings::create_interface_instance;
@@ -427,21 +427,22 @@ impl ReadableStreamDefaultController {
 
         let pull_js_promise =
             Types::object_as_promise(&pull_promise).ok_or_else(|| ec.value_undefined())?;
-        let on_fulfilled = ec.create_builtin_fn(
-            Box::new({
-                let c = self.clone();
-                move |args, this, ec| pull_steps_on_fulfilled(args, this, &c, ec)
-            }),
+        let name_key = ec.property_key_from_str("");
+        let on_fulfilled = create_builtin_fn_with_traced_captures(
+            ec,
+            self.clone(),
+            pull_steps_on_fulfilled,
             1,
-            ec.property_key_from_str(""),
+            name_key.clone(),
+            false,
         );
-        let on_rejected = ec.create_builtin_fn(
-            Box::new({
-                let c = self.clone();
-                move |args, this, ec| pull_steps_on_rejected(args, this, &c, ec)
-            }),
+        let on_rejected = create_builtin_fn_with_traced_captures(
+            ec,
+            self.clone(),
+            pull_steps_on_rejected,
             1,
-            ec.property_key_from_str(""),
+            name_key,
+            false,
         );
         let pull_reaction_val =
             ec.perform_promise_then(pull_js_promise, Some(on_fulfilled), Some(on_rejected), None)?;
@@ -727,21 +728,22 @@ pub(crate) fn set_up_readable_stream_default_controller(
     let realm = ec.current_realm();
     let intrinsics = ec.realm_intrinsics(&realm);
     let start_promise = ec.promise_resolve(intrinsics.promise.clone(), start_result)?;
-    let on_fulfilled = ec.create_builtin_fn(
-        Box::new({
-            let c = controller.clone();
-            move |args, this, ec| setup_on_fulfilled(args, this, &c, ec)
-        }),
+    let name_key = ec.property_key_from_str("");
+    let on_fulfilled = create_builtin_fn_with_traced_captures(
+        ec,
+        controller.clone(),
+        setup_on_fulfilled,
         1,
-        ec.property_key_from_str(""),
+        name_key.clone(),
+        false,
     );
-    let on_rejected = ec.create_builtin_fn(
-        Box::new({
-            let c = controller;
-            move |args, this, ec| setup_on_rejected(args, this, &c, ec)
-        }),
+    let on_rejected = create_builtin_fn_with_traced_captures(
+        ec,
+        controller,
+        setup_on_rejected,
         1,
-        ec.property_key_from_str(""),
+        name_key,
+        false,
     );
     let start_reaction_val = ec.perform_promise_then(
         start_promise.clone(),

@@ -141,10 +141,11 @@ condition; full JSC integration deferred.
 2. ✅ **`perform_promise_then` pipes result_capability** — FIXED.
    The capability promise now correctly resolves after the handler fires.
 
-3. 👷 **`create_builtin_fn_with_captures` added** —
-   New standalone function `js_engine::boa::create_builtin_fn_with_captures`
-   stores captures as a concrete traceable type, enabling Boa GC to trace
-   through captured JS references.  Callers NOT YET CONVERTED.
+3. ✅ **`create_builtin_fn_with_captures` added** —
+   Standalone function `js_engine::boa::create_builtin_fn_with_captures`
+   stores captures as a concrete traceable type.  Added helper function
+   `crate::js::create_builtin_fn_with_traced_captures` in content crate
+   with `#[cfg]`-based backend dispatch.
 
 4. ✅ **Wasm branding tests** — FIXED.
    `instantiate_fn` now uses `ec.with_object_any()` to access `WasmModule`.
@@ -163,15 +164,26 @@ condition; full JSC integration deferred.
    all remaining `JsObject::downcast_ref::<T>()` calls that bypass
    `ec.with_object_any()`.
 
-8. 🏗️ **Convert stream closures to use `create_builtin_fn_with_captures`** —
-   Stream controllers, readers, and async iterables capture `#[gc_struct]`
-   types containing `JsObject`s.  Each closure using `create_builtin_fn`
-   with captured domain data should be switched to the new function.
+8. ✅ **Convert stream closures to use `create_builtin_fn_with_captures`** —
+   All stream domain closures (`ReadableStreamDefaultController`,
+   `ReadableByteStreamController`, `WritableStreamDefaultController`,
+   `ReadableStream`, `TransformStream`, `ReadableStreamFromIterableState`,
+   `AbortThenCancelState`, `TeeState`, `ByteTeeState`, etc.) converted
+   to use `create_builtin_fn_with_traced_captures`.  Also converted
+   `webidl/async_iterable.rs` closures.
 
-9. 🔴 **Investigate WPT stream test failures** — 13 readable-stream tests
-   fail with `TypeError: not a callable function`.  Likely caused by the
-   GC-traceability gap in `create_builtin_function` (tasks 3+8); after all
-   captures are properly traced these should resolve.
+9. 🟡 **WPT stream test failures** — Migration fixed many failures but
+   some remain with `TypeError: not a callable function` in:
+   - `default-reader.any.js` (7)
+   - `from.any.js` (20)
+   - `cancel.any.js` (2)
+   - `count-queuing-strategy-integration.any.js` (3)
+   - `templated.any.js` (2)
+   - `general.any.js` (3)
+   
+   These may have a root cause beyond `GcBox` no-op tracing — possibly
+   related to attribute descriptor registration (task 5) or another
+   issue in how native functions interact with Boa's job queue.
 
 10. **Restore JSC backend** — Wire `addEventListener`/DOM event
     infrastructure on JSC; fix the content-process infinite loop.

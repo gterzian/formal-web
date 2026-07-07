@@ -1,6 +1,6 @@
 use std::{cell::Cell, collections::VecDeque, rc::Rc};
 
-use crate::js::Types;
+use crate::js::{Types, create_builtin_fn_with_traced_captures};
 type JsValue = <Types as JsTypes>::JsValue;
 type JsObject = <Types as JsTypes>::JsObject;
 type ArrayBuffer = <Types as JsTypes>::ArrayBuffer;
@@ -1019,22 +1019,22 @@ impl ReadableByteStreamController {
             None => resolved_promise(ec.value_undefined(), ec)?,
         };
 
-        let captured_controller = self.clone();
-        let on_fulfilled = ec.create_builtin_fn(
-            Box::new({
-                let c = captured_controller;
-                move |args, this, ec| pull_steps_on_fulfilled(args, this, &c, ec)
-            }),
+        let name_key = ec.property_key_from_str("");
+        let on_fulfilled = create_builtin_fn_with_traced_captures(
+            ec,
+            self.clone(),
+            pull_steps_on_fulfilled,
             1,
-            ec.property_key_from_str(""),
+            name_key.clone(),
+            false,
         );
-        let on_rejected = ec.create_builtin_fn(
-            Box::new({
-                let c = self.clone();
-                move |args, this, ec| pull_steps_on_rejected(args, this, &c, ec)
-            }),
+        let on_rejected = create_builtin_fn_with_traced_captures(
+            ec,
+            self.clone(),
+            pull_steps_on_rejected,
             1,
-            ec.property_key_from_str(""),
+            name_key,
+            false,
         );
 
         let promise = <crate::js::Types as JsTypes>::object_as_promise(&pull_promise)
@@ -1330,21 +1330,22 @@ pub(crate) fn set_up_readable_byte_stream_controller(
     let start_result = start_algorithm.call(controller_object, ec)?;
     let start_promise = resolved_promise(start_result, ec)?;
 
-    let on_fulfilled = ec.create_builtin_fn(
-        Box::new({
-            let c = controller.clone();
-            move |args, this, ec| setup_on_fulfilled(args, this, &c, ec)
-        }),
+    let name_key = ec.property_key_from_str("");
+    let on_fulfilled = create_builtin_fn_with_traced_captures(
+        ec,
+        controller.clone(),
+        setup_on_fulfilled,
         1,
-        ec.property_key_from_str(""),
+        name_key.clone(),
+        false,
     );
-    let on_rejected = ec.create_builtin_fn(
-        Box::new({
-            let c = controller;
-            move |args, this, ec| setup_on_rejected(args, this, &c, ec)
-        }),
+    let on_rejected = create_builtin_fn_with_traced_captures(
+        ec,
+        controller,
+        setup_on_rejected,
         1,
-        ec.property_key_from_str(""),
+        name_key,
+        false,
     );
     let start_js_promise = <crate::js::Types as JsTypes>::object_as_promise(&start_promise)
         .ok_or_else(|| ec.new_type_error("start result is not a Promise"))?;
