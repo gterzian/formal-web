@@ -233,8 +233,14 @@ fn instantiate_fn(
             return Ok(JsValue::from(rejected_promise_from_error_boa(error, ec)));
         }
     };
-    let wasm_module = match module_object.downcast_ref::<WasmModule>() {
-        Some(m) => m,
+    // Extract the WasmModule data through with_object_any, cloning the
+    // inner wasmtime::Module (a handle) to avoid borrowing ec.
+    let wasm_module_clone = ec
+        .with_object_any(&module_object)
+        .and_then(|data| data.downcast_ref::<WasmModule>())
+        .map(|m| m.module.clone());
+    let wasm_module_inner = match wasm_module_clone {
+        Some(module) => WasmModule::new(module, Vec::new()),
         None => {
             let error: JsError = JsNativeError::typ()
                 .with_message("WebAssembly.instantiate: first argument does not implement the Module interface")
@@ -242,7 +248,7 @@ fn instantiate_fn(
             return Ok(JsValue::from(rejected_promise_from_error_boa(error, ec)));
         }
     };
-    asynchronously_instantiate_a_webassembly_module(&*wasm_module, ec).or_else(|opaque| {
+    asynchronously_instantiate_a_webassembly_module(&wasm_module_inner, ec).or_else(|opaque| {
         let error: JsError = JsError::from_opaque(opaque);
         Ok(JsValue::from(rejected_promise_from_error_boa(error, ec)))
     })

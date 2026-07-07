@@ -1233,7 +1233,9 @@ pub(crate) fn readable_stream_from_iterable_pull_algorithm(
     let on_fulfilled = ec.create_builtin_fn(
         Box::new({
             let c = state;
-            move |args, this, ec| readable_stream_from_iterable_pull_on_fulfilled_fn(args, this, &c, ec)
+            move |args, this, ec| {
+                readable_stream_from_iterable_pull_on_fulfilled_fn(args, this, &c, ec)
+            }
         }),
         1,
         ec.property_key_from_str(""),
@@ -1338,7 +1340,9 @@ pub(crate) fn readable_stream_from_iterable_cancel_algorithm(
     let on_fulfilled = ec.create_builtin_fn(
         Box::new({
             let c = ();
-            move |args, this, ec| readable_stream_from_iterable_cancel_on_fulfilled_fn(args, this, &c, ec)
+            move |args, this, ec| {
+                readable_stream_from_iterable_cancel_on_fulfilled_fn(args, this, &c, ec)
+            }
         }),
         1,
         ec.property_key_from_str(""),
@@ -1473,7 +1477,9 @@ fn promise_from_sync_iterator_result(
     let on_fulfilled = ec.create_builtin_fn(
         Box::new({
             let c = done;
-            move |args, this, ec| promise_from_sync_iterator_result_on_fulfilled_fn(args, this, &c, ec)
+            move |args, this, ec| {
+                promise_from_sync_iterator_result_on_fulfilled_fn(args, this, &c, ec)
+            }
         }),
         0,
         ec.property_key_from_str(""),

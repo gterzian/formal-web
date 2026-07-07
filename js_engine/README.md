@@ -27,13 +27,16 @@ The Boa backend now uses only `NativeFunction::from_copy_closure_with_captures`.
 inside the JsObject.  Boa's native `downcast_ref::<T>()` can't see through
 the wrapper.  Must use `ec.with_object_any(&obj).and_then(|d| d.downcast_ref::<T>())`.
 
-**Fixed in this session:** `content/src/dom/ui_event_dispatch.rs` —
-`has_activation_behavior`, `run_activation_behavior`, `apply_to_event_state`.
+**Fixed:**
+- `content/src/dom/ui_event_dispatch.rs` — `has_activation_behavior`,
+  `run_activation_behavior`, `apply_to_event_state`.
+- `content/src/js/bindings/wasm/mod.rs` — `instantiate_fn` now uses
+  `ec.with_object_any(&module_object)` instead of direct `downcast_ref::<WasmModule>()`.
 
-**Unfixed:** `content/src/html/location.rs:565` (`self.window.downcast_ref::<Window>()`)
-requires threading `ec` through all Location methods.
+**Unfixed:** `content/src/html/location.rs` (`self.window.downcast_ref::<Window>()`)
+requires threading `ec` through all Location navigation methods.
 
-### 2. 🔴 Attribute accessor descriptors not registering on prototypes
+### 2. 🟡 Attribute accessor descriptors not registering on prototypes
 
 `define_regular_attributes` builds accessor descriptors via
 `create_builtin_fn` + `define_property_or_throw`, but the properties
@@ -54,6 +57,47 @@ which causes `NativeFunctionObject::internal_methods()` to return the
 `&CONSTRUCTOR` vtable (including `native_function_construct`).
 
 ### 4. ✅ `perform_promise_then` result_capability piping — FIXED (2026-07-06)
+
+### 5. 🔴 GC-traceable builtin function captures — NEW (2026-07-07)
+
+`create_builtin_function` stores the behaviour closure in
+`GcBox<Box<dyn Fn(...)>>` with a **no-op `Trace`** impl.  Any `JsObject`,
+`GcCell`, or other GC-managed value captured inside the closure is invisible
+to Boa's garbage collector.  This can cause "not a callable function" errors
+when the GC collects the captured objects.
+
+**Partial fix:** Added `create_builtin_fn_with_captures` in
+`js_engine/src/boa/engine.rs` — a standalone function that stores the
+captures as a concrete traceable type `C: boa_gc::Trace + 'static`
+directly in `NativeFunction::from_copy_closure_with_captures`, preserving
+proper GC reachability.
+
+**Not yet converted:** All callers in streams (`readablestreamdefaultcontroller.rs`,
+`writablestreamdefaultcontroller.rs`, `transformstream.rs`, `readablestream.rs`,
+`async_iterable.rs`) still use the closure-based `create_builtin_fn`, which
+has the no-op trace issue.
+
+### 6. 🔴 Investigate WPT stream test failures
+
+13 readable-stream tests fail with `TypeError: not a callable function`.
+Not caused by basic promise resolution (which works correctly).  Likely
+related to how native functions created by `create_builtin_function` interact
+with promise reaction jobs in certain edge cases.  Run isolated WPT stream
+tests to capture actual error messages.
+
+### 7. 🔴 Fix wasm branding tests
+
+2 tests fail with `Module.exports: argument is not a WebAssembly.Module`.
+
+**Fixed in this session:** `content/src/js/bindings/wasm/mod.rs` —
+`instantiate_fn` now uses `ec.with_object_any(&module_object)` to access
+the `WasmModule` data through the `TraceableBox` wrapper.
+
+### 8. Restore JSC backend — Wire `addEventListener`/DOM event
+infrastructure on JSC; fix the content-process infinite loop.
+
+### 9. Prune historical notes — Remove Category 1-8 fix attempts, GC
+tracing investigations, and per-test WPT inventories.
 
 The `BoaContext::perform_promise_then` trait implementation was ignoring
 the `result_capability` parameter.  Callers (stream code, async iterators)
@@ -97,33 +141,40 @@ condition; full JSC integration deferred.
 2. ✅ **`perform_promise_then` pipes result_capability** — FIXED.
    The capability promise now correctly resolves after the handler fires.
 
-3. **🔴 Fix attribute accessor descriptor registration** —
+3. 👷 **`create_builtin_fn_with_captures` added** —
+   New standalone function `js_engine::boa::create_builtin_fn_with_captures`
+   stores captures as a concrete traceable type, enabling Boa GC to trace
+   through captured JS references.  Callers NOT YET CONVERTED.
+
+4. ✅ **Wasm branding tests** — FIXED.
+   `instantiate_fn` now uses `ec.with_object_any()` to access `WasmModule`.
+
+5. 🔴 **Fix attribute accessor descriptor registration** —
    `define_regular_attributes` builds accessor descriptors but the
    properties never appear on the prototype.  Operations (value descriptors)
    work fine.  Needs comparison of data-descriptor vs accessor-descriptor
    paths in `define_property_or_throw` → Boa native conversion.
 
-4. **🟡 Fix `location.rs` direct downcast** —
+6. 🟡 **Fix `location.rs` direct downcast** —
    `self.window.downcast_ref::<Window>()` always returns `None`.  Needs
    an `ec` parameter threaded through Location navigation methods.
 
-5. **🔍 Audit remaining direct `downcast_ref` calls** — Find and convert
+7. 🔍 **Audit remaining direct `downcast_ref` calls** — Find and convert
    all remaining `JsObject::downcast_ref::<T>()` calls that bypass
    `ec.with_object_any()`.
 
-6. **🔴 Investigate WPT stream test failures** — 13 readable-stream tests
-   fail with `TypeError: not a callable function`.  Not caused by basic
-   promise resolution (which works correctly).  Likely related to how
-   native functions created by `create_builtin_function` interact with
-   promise reaction jobs in certain edge cases.  Run isolated WPT stream
-   tests to capture actual error messages.
+8. 🏗️ **Convert stream closures to use `create_builtin_fn_with_captures`** —
+   Stream controllers, readers, and async iterables capture `#[gc_struct]`
+   types containing `JsObject`s.  Each closure using `create_builtin_fn`
+   with captured domain data should be switched to the new function.
 
-7. **🔴 Fix wasm branding tests** — 2 tests fail with
-   `Module.exports: argument is not a WebAssembly.Module`.  Wasm module
-   internal slot not wired through `create_builtin_function`.
+9. 🔴 **Investigate WPT stream test failures** — 13 readable-stream tests
+   fail with `TypeError: not a callable function`.  Likely caused by the
+   GC-traceability gap in `create_builtin_function` (tasks 3+8); after all
+   captures are properly traced these should resolve.
 
-8. **Restore JSC backend** — Wire `addEventListener`/DOM event
-   infrastructure on JSC; fix the content-process infinite loop.
+10. **Restore JSC backend** — Wire `addEventListener`/DOM event
+    infrastructure on JSC; fix the content-process infinite loop.
 
-9. **Prune historical notes** — Remove Category 1-8 fix attempts, GC
-   tracing investigations, and per-test WPT inventories.
+11. **Prune historical notes** — Remove Category 1-8 fix attempts, GC
+    tracing investigations, and per-test WPT inventories.

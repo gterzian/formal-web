@@ -534,44 +534,41 @@ fn initialize_transform_stream(
         ReadableStartAlgorithm::ReturnValue(JsValue::from(start_promise));
 
     // Step 2: "Let writeAlgorithm be the following steps, taking a chunk argument:"
-    let write_callback = crate::webidl::Callback::from_object(Types::object_from_function(
-        ec.create_builtin_fn(
+    let write_callback =
+        crate::webidl::Callback::from_object(Types::object_from_function(ec.create_builtin_fn(
             Box::new({
                 let c = stream.clone();
                 move |args, this, ec| sink_write_algorithm_fn(args, this, &c, ec)
             }),
             1,
             ec.property_key_from_str(""),
-        ),
-    ));
+        )));
     let write_algorithm =
         WriteAlgorithm::JavaScript(SourceMethod::new(global.clone(), write_callback));
 
     // Step 3: "Let abortAlgorithm be the following steps, taking a reason argument:"
-    let abort_callback = crate::webidl::Callback::from_object(Types::object_from_function(
-        ec.create_builtin_fn(
+    let abort_callback =
+        crate::webidl::Callback::from_object(Types::object_from_function(ec.create_builtin_fn(
             Box::new({
                 let c = stream.clone();
                 move |args, this, ec| sink_abort_algorithm_fn(args, this, &c, ec)
             }),
             1,
             ec.property_key_from_str(""),
-        ),
-    ));
+        )));
     let abort_algorithm =
         AbortAlgorithm::JavaScript(SourceMethod::new(global.clone(), abort_callback));
 
     // Step 4: "Let closeAlgorithm be the following steps:"
-    let close_callback = crate::webidl::Callback::from_object(Types::object_from_function(
-        ec.create_builtin_fn(
+    let close_callback =
+        crate::webidl::Callback::from_object(Types::object_from_function(ec.create_builtin_fn(
             Box::new({
                 let c = stream.clone();
                 move |args, this, ec| sink_close_algorithm_fn(args, this, &c, ec)
             }),
             0,
             ec.property_key_from_str(""),
-        ),
-    ));
+        )));
     let close_algorithm = CloseAlgorithm::JavaScript(SourceMethod::new(global, close_callback));
 
     // Step 5: "Set stream.[[writable]] to ! CreateWritableStream(startAlgorithm, writeAlgorithm, closeAlgorithm, abortAlgorithm, writableHighWaterMark, writableSizeAlgorithm)."

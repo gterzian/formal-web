@@ -28,8 +28,6 @@ enum IteratorOperation {
     Return(JsValue),
 }
 
-
-
 // ── Capture types for builtin function callbacks ─────────────────────────
 
 /// Captures for onFulfilled of `start_next`.

@@ -558,10 +558,18 @@ impl Location {
         _history_handling: NavigationHistoryBehavior,
     ) -> Result<(), LocationError> {
         // Step 1: "Let navigable be location's relevant global object's navigable."
-        // Note: Location's relevant global object is the Window stored as
-        // self.window. We reach the GlobalScope through the Window via
-        // `downcast_ref` — boa's safe API for accessing native data from
-        // a JsObject handle.
+        // Note: Location uses `downcast_ref` through the `window` handle.
+        // This is safe — the Window JsObject is stored as a `#[gc_struct]`
+        // field, and direct `downcast_ref` works because the Location's
+        // `window` field is a raw JsObject handle (not wrapped in
+        // `TraceableBox`).  The downcast finds the Window's NativeDataWrapper
+        // and recovers the concrete type.
+        //
+        // TODO: When Location is created via `create_interface_instance`,
+        // the `window` field becomes a raw JsObject (not TraceableBox), so
+        // `downcast_ref` works.  If the storage strategy changes, switch to
+        // `ec.with_object_any(&self.window).and_then(|data| data.downcast_ref::<Window>())`
+        // and thread `ec` through the navigate call chain.
         let window = self.window.downcast_ref::<Window>().ok_or_else(|| {
             LocationError::NotSupported(String::from(
                 "Location window is not a valid Window object",

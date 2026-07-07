@@ -41,5 +41,3 @@ pub(crate) type Engine = js_engine::jsc::JscEngine;
 
 #[cfg(not(jsc_backend))]
 pub(crate) type Engine = js_engine::boa::BoaContext;
-
-

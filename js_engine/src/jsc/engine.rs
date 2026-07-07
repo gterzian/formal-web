@@ -142,12 +142,12 @@ extern "C" fn builtin_call_as_function(
 ) -> *mut JSValueRef {
     let stored_ptr = unsafe { JSObjectGetPrivate(function) } as *mut StoredBehaviour;
     if stored_ptr.is_null() {
-            return unsafe { JSValueMakeUndefined(ctx) };
+        return unsafe { JSValueMakeUndefined(ctx) };
     }
     let stored: &StoredBehaviour = unsafe { &*stored_ptr };
 
     let jsc_args: Vec<JscValue> = if argument_count == 0 || arguments.is_null() {
-            Vec::new()
+        Vec::new()
     } else {
         let args_slice = unsafe { std::slice::from_raw_parts(arguments, argument_count) };
         args_slice
@@ -693,9 +693,9 @@ impl JsEngine<JscTypes> for JscEngine {
     where
         JscTypes: JsTypesWithRealm,
     {
-            let script = JscString::from_rust(source);
-            let mut exception: *mut JSValueRef = std::ptr::null_mut();
-            let result = unsafe {
+        let script = JscString::from_rust(source);
+        let mut exception: *mut JSValueRef = std::ptr::null_mut();
+        let result = unsafe {
             JSEvaluateScript(
                 self.context.as_context_ref(),
                 script.raw,
@@ -705,7 +705,7 @@ impl JsEngine<JscTypes> for JscEngine {
                 &mut exception,
             )
         };
-            if !exception.is_null() {
+        if !exception.is_null() {
             return Err(JscValue {
                 raw: exception,
                 ctx: self.ctx_ptr(),
@@ -2947,8 +2947,6 @@ impl ExecutionContext<JscTypes> for JscEngine {
         }
     }
 
-
-
     // ── Property Key Construction ─────────────────────────────────────────
 
     fn property_key_from_str(&self, s: &str) -> JscPropertyKey {
@@ -3255,10 +3253,10 @@ impl ExecutionContext<JscTypes> for JscEngine {
     }
 
     fn evaluate_script(&mut self, source: &str) -> Completion<JscValue, JscTypes> {
-            let script = JscString::from_rust(source);
-            let ctx_ref = self.context.as_context_ref();
-            let mut exception: *mut JSValueRef = std::ptr::null_mut();
-            let result = unsafe {
+        let script = JscString::from_rust(source);
+        let ctx_ref = self.context.as_context_ref();
+        let mut exception: *mut JSValueRef = std::ptr::null_mut();
+        let result = unsafe {
             JSEvaluateScript(
                 ctx_ref,
                 script.raw,
@@ -3268,7 +3266,7 @@ impl ExecutionContext<JscTypes> for JscEngine {
                 &mut exception,
             )
         };
-            if !exception.is_null() {
+        if !exception.is_null() {
             return Err(JscValue {
                 raw: exception,
                 ctx: self.ctx_ptr(),

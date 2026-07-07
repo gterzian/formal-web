@@ -95,7 +95,6 @@ struct PromiseThenReject {
     func: JsFunction,
 }
 
-
 /// Boa execution context.  Wraps a `boa_engine::Context` (the stateful JS
 /// runtime: realm, heap, global object) and implements
 /// `ExecutionContext<BoaTypes>`.  Also carries `JsEngine<BoaTypes>`
@@ -415,14 +414,10 @@ impl ExecutionContext<BoaTypes> for BoaContext {
         let wrapped = GcBox(behaviour);
 
         let native = NativeFunction::from_copy_closure_with_captures(
-            move |this,
-                  args,
-                  captures,
-                  context| {
+            move |this, args, captures, context| {
                 let engine: &mut BoaContext =
                     unsafe { &mut *(context as *mut Context as *mut BoaContext) };
-                captures.0(args, this.clone(), engine)
-                    .map_err(|e| JsError::from_opaque(e))
+                captures.0(args, this.clone(), engine).map_err(JsError::from_opaque)
             },
             wrapped,
         );
@@ -1673,7 +1668,10 @@ impl ExecutionContext<BoaTypes> for BoaContext {
             let resolve = cap.resolve;
             let resolve_native = NativeFunction::from_copy_closure_with_captures(
                 move |_this, args, captures, context| {
-                    let value = args.first().cloned().unwrap_or_else(|| JsValue::undefined());
+                    let value = args
+                        .first()
+                        .cloned()
+                        .unwrap_or_else(|| JsValue::undefined());
                     let resolve = &captures.func;
                     resolve.call(&JsValue::undefined(), &[value], context)
                 },
@@ -1688,7 +1686,10 @@ impl ExecutionContext<BoaTypes> for BoaContext {
             let reject = cap.reject;
             let reject_native = NativeFunction::from_copy_closure_with_captures(
                 move |_this, args, captures, context| {
-                    let reason = args.first().cloned().unwrap_or_else(|| JsValue::undefined());
+                    let reason = args
+                        .first()
+                        .cloned()
+                        .unwrap_or_else(|| JsValue::undefined());
                     let reject = &captures.func;
                     reject.call(&JsValue::undefined(), &[reason], context)
                 },
@@ -1940,8 +1941,6 @@ impl ExecutionContext<BoaTypes> for BoaContext {
                     .unwrap_or_else(|_| boa_engine::JsValue::undefined())
             })
     }
-
-
 
     // ── String Utilities ─────────────────────────────────────────────
 
@@ -2350,6 +2349,69 @@ fn has_property_then_get_boolean(
     // Use ExecutionContext::get (takes PropertyKey), not EcmascriptHost::get (takes &str).
     let val = ExecutionContext::get(ec, obj.clone(), field_key)?;
     Ok(Some(ec.to_boolean(&val)))
+}
+
+/// <https://tc39.es/ecma262/#sec-createbuiltinfunction>
+///
+/// Creates a built-in function whose captures are stored as a concrete
+/// traceable type `C`, enabling Boa's GC to trace through JS-object
+/// references inside the captures.
+///
+/// Use this instead of [`BoaContext::create_builtin_function`] when the
+/// behaviour closure captures values that contain `JsObject` or `GcCell`
+/// fields (e.g., stream controllers, readers, promises).  The default
+/// `create_builtin_function` wraps all captures in a `Box<dyn Fn(...)>`
+/// with no-op GC tracing, which can cause "not a callable function" errors
+/// when Boa's GC collects the captured objects.
+///
+/// The `C` type must implement `boa_gc::Trace + 'static`.  For `#[gc_struct]`
+/// types this is automatically derived.
+pub fn create_builtin_fn_with_captures<C: boa_gc::Trace + 'static>(
+    ec: &mut dyn ExecutionContext<BoaTypes>,
+    captures: C,
+    behaviour: fn(
+        &[JsValue],
+        JsValue,
+        &C,
+        &mut dyn ExecutionContext<BoaTypes>,
+    ) -> Completion<JsValue, BoaTypes>,
+    length: u32,
+    name: PropertyKey,
+    is_constructor: bool,
+) -> JsFunction {
+    // SAFETY: On the Boa backend, `ec` is always a `BoaContext` (repr
+    // transparent over `Context`).  `ec_to_ctx` performs the raw pointer
+    // cast from `&mut dyn ExecutionContext<BoaTypes>` to `&mut Context`,
+    // which is correct because `BoaContext` is `#[repr(transparent)]`.
+    let context = unsafe { ec_to_ctx(ec) };
+    let boa = context_as_engine(context);
+
+    let realm = boa.current_realm();
+    let name_str = match &name {
+        PropertyKey::String(s) => s.clone(),
+        PropertyKey::Symbol(_) => boa_engine::js_string!(""),
+        _ => boa_engine::js_string!(""),
+    };
+
+    // Store captures C directly in the NativeFunction (not wrapped in
+    // GcBox).  The `C` type implements boa_gc::Trace, so Boa's GC
+    // automatically traces through all JsObject references inside it.
+    let native = NativeFunction::from_copy_closure_with_captures(
+        move |this, args, captures, context| {
+            let engine: &mut BoaContext =
+                unsafe { &mut *(context as *mut Context as *mut BoaContext) };
+            behaviour(args, this.clone(), captures, engine).map_err(JsError::from_opaque)
+        },
+        captures,
+    );
+
+    let mut builder = FunctionObjectBuilder::new(&realm, native)
+        .name(name_str)
+        .length(length as usize);
+    if is_constructor {
+        builder = builder.constructor(true);
+    }
+    builder.build()
 }
 
 #[cfg(test)]

@@ -60,5 +60,3 @@ pub use records::{
     RealmIntrinsics, RootedPromiseCapability,
 };
 pub use types::{JsTypes, JsTypesWithRealm};
-
-

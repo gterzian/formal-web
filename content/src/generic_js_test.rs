@@ -1153,7 +1153,9 @@ mod tests {
         assert!(!engine.is_callable(&undef));
 
         let realm = engine.current_realm();
-        let fn_val = JsEngine::evaluate_script(&mut engine, "(function(x) { return x * 2; })", &realm).unwrap();
+        let fn_val =
+            JsEngine::evaluate_script(&mut engine, "(function(x) { return x * 2; })", &realm)
+                .unwrap();
         assert!(engine.is_callable(&fn_val));
 
         let fn_obj = TestTypes::value_as_object(&fn_val).unwrap();
@@ -1311,11 +1313,8 @@ mod tests {
         let intrinsics = engine.realm_intrinsics(&realm);
 
         // Create a promise via JavaScript that we'll chain onto.
-        let source_promise = JsEngine::evaluate_script(
-            &mut engine,
-            "Promise.resolve(42)",
-            &realm,
-        ).unwrap();
+        let source_promise =
+            JsEngine::evaluate_script(&mut engine, "Promise.resolve(42)", &realm).unwrap();
         let source_obj = TestTypes::value_as_object(&source_promise).unwrap();
         let source_promise_js = TestTypes::object_as_promise(&source_obj).unwrap();
 
@@ -1337,16 +1336,20 @@ mod tests {
         );
 
         // Create a capability that should resolve when the handler fires.
-        let capability = engine.new_promise_capability(intrinsics.promise.clone()).unwrap();
+        let capability = engine
+            .new_promise_capability(intrinsics.promise.clone())
+            .unwrap();
         let result_promise = capability.promise.clone();
 
         // Call perform_promise_then WITH the capability.
-        let _ = engine.perform_promise_then(
-            source_promise_js,
-            Some(on_fulfilled),
-            None,
-            Some(capability),
-        ).unwrap();
+        let _ = engine
+            .perform_promise_then(
+                source_promise_js,
+                Some(on_fulfilled),
+                None,
+                Some(capability),
+            )
+            .unwrap();
 
         // Run microtasks.
         engine.run_jobs();
@@ -1715,7 +1718,8 @@ mod tests {
     fn get_method_returns_callable() {
         let mut engine = setup();
         let realm = engine.current_realm();
-        let fn_val = JsEngine::evaluate_script(&mut engine, "(function() { return 42; })", &realm).unwrap();
+        let fn_val =
+            JsEngine::evaluate_script(&mut engine, "(function() { return 42; })", &realm).unwrap();
         let obj = TestTypes::value_as_object(&fn_val).unwrap();
         let pk = engine.property_key_from_str("call");
         let method = engine
@@ -2107,7 +2111,8 @@ mod tests {
         let mut engine = setup();
         let realm = engine.current_realm();
         // Map
-        let map_val = JsEngine::evaluate_script(&mut engine, "new Map([['k','v']])", &realm).unwrap();
+        let map_val =
+            JsEngine::evaluate_script(&mut engine, "new Map([['k','v']])", &realm).unwrap();
         assert!(TestTypes::object_as_map(&TestTypes::value_as_object(&map_val).unwrap()).is_some());
         // Set
         let set_val = JsEngine::evaluate_script(&mut engine, "new Set([1,2,3])", &realm).unwrap();
@@ -2119,7 +2124,9 @@ mod tests {
                 .is_some()
         );
         // DataView
-        let dv_val = JsEngine::evaluate_script(&mut engine, "new DataView(new ArrayBuffer(8))", &realm).unwrap();
+        let dv_val =
+            JsEngine::evaluate_script(&mut engine, "new DataView(new ArrayBuffer(8))", &realm)
+                .unwrap();
         assert!(
             TestTypes::object_as_data_view(&TestTypes::value_as_object(&dv_val).unwrap()).is_some()
         );
@@ -2412,7 +2419,8 @@ mod tests {
         let mut engine = setup();
         let realm = engine.current_realm();
         // Create and root a callback.
-        let fn_val = JsEngine::evaluate_script(&mut engine, "(function() { return 42; })", &realm).unwrap();
+        let fn_val =
+            JsEngine::evaluate_script(&mut engine, "(function() { return 42; })", &realm).unwrap();
         let root = engine.create_root(&fn_val);
 
         // Allocate many throwaway objects to create GC pressure.
@@ -2646,7 +2654,8 @@ mod tests {
         let realm = engine.current_realm();
 
         // Case 1: callable function → detected as Function
-        let fn_val = JsEngine::evaluate_script(&mut engine, "(function() { return 42; })", &realm).unwrap();
+        let fn_val =
+            JsEngine::evaluate_script(&mut engine, "(function() { return 42; })", &realm).unwrap();
         let fn_obj = TestTypes::value_as_object(&fn_val);
         assert!(fn_obj.is_some());
         assert!(engine.is_callable(&fn_val));
@@ -2709,7 +2718,9 @@ mod tests {
         button.widget.title = "GCTest".into();
 
         // Root a callback stored on the inner widget.
-        let fn_val = JsEngine::evaluate_script(&mut engine, "(function() { return 'nested'; })", &realm).unwrap();
+        let fn_val =
+            JsEngine::evaluate_script(&mut engine, "(function() { return 'nested'; })", &realm)
+                .unwrap();
         button.widget.on_change = Some(engine.create_root(&fn_val));
 
         let obj = create_button(button, &mut engine);
