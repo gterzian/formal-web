@@ -149,7 +149,25 @@ static BUILTIN_CONSTRUCTOR_CLASS: LazyLock<JscClass> =
 /// avoid eval_script_raw (which causes nested JSEvaluateScript crashes).
 static PLAIN_OBJECT_CLASS: LazyLock<JscClass> = LazyLock::new(|| {
     JscClass(unsafe {
-        JSClassCreate(&JSClassDefinition {version:0,attributes:kJSClassAttributeNone,className:b"FormalWebPlain\0".as_ptr()as*const c_char,parentClass:std::ptr::null_mut(),staticValues:std::ptr::null(),staticFunctions:std::ptr::null(),initialize:None,finalize:None,hasProperty:None,getProperty:None,setProperty:None,deleteProperty:None,getPropertyNames:None,callAsFunction:None,callAsConstructor:None,hasInstance:None,convertToType:None,})
+        JSClassCreate(&JSClassDefinition {
+            version: 0,
+            attributes: kJSClassAttributeNone,
+            className: b"FormalWebPlain\0".as_ptr() as *const c_char,
+            parentClass: std::ptr::null_mut(),
+            staticValues: std::ptr::null(),
+            staticFunctions: std::ptr::null(),
+            initialize: None,
+            finalize: None,
+            hasProperty: None,
+            getProperty: None,
+            setProperty: None,
+            deleteProperty: None,
+            getPropertyNames: None,
+            callAsFunction: None,
+            callAsConstructor: None,
+            hasInstance: None,
+            convertToType: None,
+        })
     })
 });
 

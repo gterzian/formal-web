@@ -5,7 +5,10 @@ use crate::dom::{
     signal_abort as dom_signal_abort,
 };
 use crate::html::{Window, WindowOrWorkerGlobalScope};
-use crate::js::{try_with_abort_signal_mut, try_with_abort_signal_ref, try_with_event_target_mut};
+use crate::js::{
+    create_builtin_fn_with_traced_captures, try_with_abort_signal_mut, try_with_abort_signal_ref,
+    try_with_event_target_mut,
+};
 use crate::webidl::bindings::{
     AttributeDef, InterfaceDefinition, OperationDef, WebIdlInterface, create_interface_instance,
 };
@@ -167,17 +170,15 @@ pub(crate) fn timeout_static(
     let signal = create_abort_signal(AbortSignal::new(ec), ec)?;
 
     // Create the timeout callback as a builtin function.
-    let signal_for_callback = signal.clone();
-    let callback_fn = ec.create_builtin_fn(
-        Box::new(move |_args, _this, inner_ec| {
-            let reason = timeout_reason(inner_ec).unwrap_or_else(|_| inner_ec.value_undefined());
-            signal_abort(&signal_for_callback, reason, inner_ec)?;
-            Ok(inner_ec.value_undefined())
-        }),
+    let name_key = ec.property_key_from_str("");
+    let callback_fn = create_builtin_fn_with_traced_captures(
+        ec,
+        signal.clone(),
+        abort_signal_timeout_callback_fn,
         0,
-        ec.property_key_from_str(""),
+        name_key,
+        false,
     );
-
     let callback_val = <Types as JsTypes>::value_from_object(
         <Types as JsTypes>::object_from_function(callback_fn),
     );
@@ -202,6 +203,19 @@ pub(crate) fn timeout_static(
     Ok(<Types as JsTypes>::value_from_object(
         signal.object().ok_or_else(|| ec.value_undefined())?,
     ))
+}
+
+/// Handler for `AbortSignal.timeout` callback.
+/// Aborts the signal with a timeout reason.
+fn abort_signal_timeout_callback_fn(
+    _args: &[JsValue],
+    _this: JsValue,
+    signal: &AbortSignal,
+    inner_ec: &mut dyn ExecutionContext<Types>,
+) -> Completion<JsValue, Types> {
+    let reason = timeout_reason(inner_ec).unwrap_or_else(|_| inner_ec.value_undefined());
+    signal_abort(signal, reason, inner_ec)?;
+    Ok(inner_ec.value_undefined())
 }
 
 pub(crate) fn any_static(

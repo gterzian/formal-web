@@ -5,7 +5,7 @@ use std::{
 
 use js_engine::{Completion, ExecutionContext, JsTypes};
 
-use crate::js::Types;
+use crate::js::{Types, create_builtin_fn_with_traced_captures};
 
 use crate::streams::{SizeAlgorithm, extract_high_water_mark, extract_size_algorithm};
 use crate::webidl::bindings::create_interface_instance;
@@ -395,36 +395,60 @@ impl WritableStream {
         let stream_for_rejected = self.clone();
 
         let name_key = ec.property_key_from_str("");
-        let on_fulfilled = ec.create_builtin_fn(
-            Box::new(
-                move |_args: &[JsValue], _this: JsValue, ec: &mut dyn ExecutionContext<Types>| {
-                    abort_request_for_fulfilled.resolve(ec)?;
-                    stream_for_fulfilled.reject_close_and_closed_promise_if_needed(ec)?;
-                    Ok(ec.value_undefined())
-                },
-            ),
+        let on_fulfilled = create_builtin_fn_with_traced_captures(
+            ec,
+            (abort_request_for_fulfilled, stream_for_fulfilled),
+            writable_stream_finish_erroring_on_fulfilled_fn,
             1,
             name_key.clone(),
+            false,
         );
-        let on_rejected = ec.create_builtin_fn(
-            Box::new(
-                move |args: &[JsValue], _this: JsValue, ec: &mut dyn ExecutionContext<Types>| {
-                    let reason = args
-                        .first()
-                        .cloned()
-                        .unwrap_or_else(|| ec.value_undefined());
-                    abort_request.reject(reason, ec)?;
-                    stream_for_rejected.reject_close_and_closed_promise_if_needed(ec)?;
-                    Ok(ec.value_undefined())
-                },
-            ),
+        let on_rejected = create_builtin_fn_with_traced_captures(
+            ec,
+            (abort_request, stream_for_rejected),
+            writable_stream_finish_erroring_on_rejected_fn,
             1,
             name_key,
+            false,
         );
         let _ = upon_settlement(promise, Some(on_fulfilled), Some(on_rejected), ec)?;
         Ok(())
     }
+}
 
+/// Handler for `finish_erroring` on_fulfilled closure.
+/// Resolves the abort request and rejects close/closed promise if needed.
+fn writable_stream_finish_erroring_on_fulfilled_fn(
+    _args: &[JsValue],
+    _this: JsValue,
+    captures: &(PendingAbortRequest, WritableStream),
+    ec: &mut dyn ExecutionContext<Types>,
+) -> Completion<JsValue, Types> {
+    let (abort_request, stream) = captures;
+    abort_request.clone().resolve(ec)?;
+    stream.reject_close_and_closed_promise_if_needed(ec)?;
+    Ok(ec.value_undefined())
+}
+
+/// Handler for `finish_erroring` on_rejected closure.
+/// Rejects the abort request with the reason and rejects close/closed promise if needed.
+fn writable_stream_finish_erroring_on_rejected_fn(
+    args: &[JsValue],
+    _this: JsValue,
+    captures: &(PendingAbortRequest, WritableStream),
+    ec: &mut dyn ExecutionContext<Types>,
+) -> Completion<JsValue, Types> {
+    let (abort_request, stream) = captures;
+    let reason = args
+        .first()
+        .cloned()
+        .unwrap_or_else(|| ec.value_undefined());
+    abort_request.clone().reject(reason, ec)?;
+    stream.reject_close_and_closed_promise_if_needed(ec)?;
+    Ok(ec.value_undefined())
+}
+
+impl WritableStream {
     /// <https://streams.spec.whatwg.org/#writable-stream-finish-in-flight-close>
     pub(crate) fn finish_in_flight_close(
         &self,

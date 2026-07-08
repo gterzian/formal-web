@@ -121,6 +121,17 @@ Closures passed to builtin function creation must NOT capture JS values;
 state is passed through the captures type `C` (a `#[gc_struct]` type
 with proper `Trace`).
 
+**Audit rule:** Every `ec.create_builtin_fn(Box::new(...))` or
+`ec.create_builtin_function(Box::new(...), ..., true)` call site must
+be verified to capture only function pointers or Rust primitive types
+(no `JsObject`, `JsValue`, `GcCell`, `PromiseResolvers`, or other
+GC-managed types).  If the closure captures any GC-traced type, convert
+to `create_builtin_fn_with_traced_captures` with concrete captures `C`.
+
+As of 2026-07-09, all capture-GC-value call sites have been converted;
+the remaining `ec.create_builtin_fn(Box::new(...))` sites capture only
+fn pointers or Rust primitives (see §9 for audit table).
+
 ### 6. ✅ Wasm branding tests — FIXED (2026-07-08)
 
 `module_exports_binding` and `get_instance_exports_binding` now use
@@ -136,7 +147,7 @@ pattern is `TypeError: not a callable function` as unhandled promise
 rejections, affecting all readable-stream tests that involve reading,
 canceling, teeing, or async-iterating.
 
-**Investigation status (2026-07-09):** Addressed by fixing the
+**Investigation — Phase 1 (2026-07-09):** Addressed by fixing the
 `GcBox` no-op Trace issue (see #5).  The `GcBox` wrapper was the
 mechanism by which captured `JsObject` references became invisible
 to Boa's GC.  However, diagnostic logging showed that the remaining
@@ -150,14 +161,35 @@ The error comes from Boa's VM (`non_existent_call` in
 value that has no `[[Call]]` internal method.  Further investigation
 is needed to pinpoint which JS-level call triggers this.
 
-**Also fixed:** `cancel_steps` in both default and byte controllers
-now catches errors from the cancel algorithm and returns a rejected
-promise instead of propagating the exception (fixes the "cancel
-callback raises an exception" test).
+**Also fixed (2026-07-09):** `cancel_steps` in both default and byte
+controllers now catches errors from the cancel algorithm and returns
+a rejected promise instead of propagating the exception (fixes the
+"cancel callback raises an exception" test).
 
 Piping, transform-stream, and writable-stream tests pass — these use
 `ReadableStreamPipeTo`/`TransformStreamDefaultSourcePull` read request
 variants that avoid calling `resolvers.resolve` through `ec.call()`.
+
+**Investigation — Phase 2 (2026-07-09):** Converted remaining
+`ec.create_builtin_fn(Box::new(...))` calls that capture
+`JsObject`/`JsValue` references to `create_builtin_fn_with_traced_captures`.
+These used `UnsafeFnBox` (no-op Trace) which made captured closures'
+GC references invisible to Boa's collector, causing the "not a callable
+function" errors when the GC collected `JsFunction` objects referenced
+by promise reaction handlers.
+
+Converted files:
+- **`content/src/streams/writablestream.rs`** — `finish_erroring`
+  on_fulfilled/on_rejected closures captured `WritableStream` and
+  `PendingAbortRequest` (both contain `GcCell<JsObject>` and
+  `PromiseResolvers<Types>` references).
+- **`content/src/js/bindings/dom/abort_signal.rs`** — `AbortSignal.timeout`
+  callback closure captured `AbortSignal` (contains `GcCell<JsObject>`
+  and `GcCell<JsValue>`).
+
+All other `ec.create_builtin_fn(Box::new(...))` call sites capture
+only function pointers or Rust-only types (String, Arc, etc.) that
+don't need GC tracing, so they are safe.
 
 ### 8. 🟡 WASM compile/instantiate in worker context
 
@@ -168,7 +200,31 @@ IPC-based worker dispatch that requires a Window.  Affects:
 - `formal/wasm-compile-instantiate.html`
 - `wasm/jsapi/constructor/compile.any.js` subtests
 
-### 9. ✅ JSC backend — builtin function creation and event dispatch
+### 9. ✅ Remaining deprecated `ec.create_builtin_fn` calls audited (2026-07-09)
+
+All remaining `ec.create_builtin_fn(Box::new(...))` calls that capture
+GC-traced values (`JsObject`, `JsValue`, `GcCell`, `PromiseResolvers`,
+etc.) have been converted to `create_builtin_fn_with_traced_captures`.
+
+| File | Status | Notes |
+|---|---|---|
+| `streams/writablestream.rs` | ✅ Fixed | `PendingAbortRequest` + `WritableStream` captures |
+| `js/bindings/dom/abort_signal.rs` | ✅ Fixed | `AbortSignal` capture |
+| `webidl/bindings/attribute.rs` | ✅ Safe | fn pointer only |
+| `webidl/bindings/operation.rs` | ✅ Safe | fn pointer only |
+| `webidl/promise.rs` | 🔴 Unused | `wait_for_all` only; not in stream path |
+| `webidl/async_iterable.rs` | ✅ Safe | no captures |
+| `html/windowproxy.rs` | ✅ Safe | fn pointer only |
+| `wasm/namespace.rs` | ✅ Safe | Wasmtime types, no GC data |
+| `js/bindings/dom/element.rs` | ✅ Safe | fn pointer only |
+| `js/bindings/html/host_hooks.rs` | ✅ Safe | fn pointer only |
+| `js/bindings/html/html_element.rs` | ✅ Safe | no captures |
+| `js/bindings/html/hyperlink_element_utils.rs` | ✅ Safe | fn pointer only |
+| `js/bindings/streams/strategy.rs` | ✅ Safe | no captures |
+| `js/css_generic.rs` | ✅ Safe | no captures |
+| `js/console_generic.rs` | ✅ Safe | `String` capture only, no GC data |
+
+### 10. ✅ JSC backend — builtin function creation and event dispatch
 
 `create_builtin_fn_static`, `create_builtin_fn`, and `create_builtin_function`
 are implemented on JSC using a custom JSClass with `callAsFunction` and
@@ -192,7 +248,7 @@ instead of `eval_script_raw`, avoiding nested-`JSEvaluateScript` crashes.
 evaluation for all descriptor types (instead of `JSObjectSetProperty` which
 crashes on eval-created objects).
 
-### 10. 🔍 Audit remaining direct `downcast_ref` calls
+### 11. 🔍 Audit remaining direct `downcast_ref` calls
 
 Find and convert all remaining `JsObject::downcast_ref::<T>()` calls that
 bypass `ec.with_object_any()`.  Many files in `content/src/` still use
@@ -235,8 +291,12 @@ call site needs individual verification.
 
 6. 🟡 **WPT stream test failures** — `TypeError: not a callable function`
    in all readable-stream reading/canceling/teeing/async-iterator tests.
-   Likely a Boa runtime issue with `JsFunction` handles inside opaque
-   `PromiseJob` closures that are invisible to the GC.
+   Phase 2 fix: converted remaining `ec.create_builtin_fn` calls that
+   capture GC values in `writablestream.rs` and `abort_signal.rs` to
+   `create_builtin_fn_with_traced_captures`.  The error likely still
+   involves `JsFunction` handles inside opaque `PromiseJob` closures
+   that are invisible to the GC, or another Boa internal issue with
+   promise reaction resolution.
 
 7. 🟡 **WASM worker-context tests** — `WebAssembly.compile` and
    `WebAssembly.instantiate` require a `Window` global object.
@@ -252,7 +312,15 @@ call site needs individual verification.
    `evaluate_script`.  `create_plain_object` uses `JSObjectMake` avoiding
    nested-eval crashes.  All `#[cfg(jsc_backend)]` ad-hoc blocks removed.
 
-10. **Prune historical notes** — Remove Category 1-8 fix attempts, GC
+10. ✅  **Remaining `ec.create_builtin_fn` captures fixed** —
+    Converted remaining unsafe `ec.create_builtin_fn(Box::new(...))`
+    calls that capture GC-traced values in `writablestream.rs`
+    (`PendingAbortRequest` + `WritableStream`) and `abort_signal.rs`
+    (`AbortSignal`).  All other call sites capture only function
+    pointers or Rust primitive types (no GC data).  See audit table
+    in issue §11.
+
+11. **Prune historical notes** — Remove Category 1-8 fix attempts, GC
     tracing investigations, and per-test WPT inventories from this
     document (completed).
 
