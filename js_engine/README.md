@@ -182,19 +182,15 @@ to find `&mut dyn ExecutionContext<JscTypes>`.
 `ExecutionContext::evaluate_script` (and `JsEngine::evaluate_script`) to
 ensure builtin function callbacks always find the engine.
 
-Event dispatch (`BlitzJSEventHandler::handle_event`), timer execution
-(`run_window_timer`), and `update_the_rendering` also set
-`set_current_engine`/`clear_current_engine` for JSC, so `addEventListener`,
-`removeEventListener`, `setTimeout`, `requestAnimationFrame`, and related
-APIs work correctly.
+All ad-hoc `#[cfg(jsc_backend)]` blocks have been removed from content/
+code (`handle_event`, `dispatch_events`, `run_window_timer`, etc.) because
+the engine methods internally handle `CURRENT_ENGINE`.
 
-`define_property_or_throw` uses `JSObjectSetProperty` for value descriptors;
-accessor (getter/setter) descriptors store a placeholder value.  Full
-`Object.defineProperty` support for accessors via script evaluation is
-deferred — the prototype-chain-based `[[Get]]`/`[[Set]]` operations still
-work through `ec.get`/`ec.set` but accessor definitions on
-`Object.create`-created objects may not be accessible via `in` or
-`Object.getOwnPropertyDescriptor` from evaluated script.
+`create_plain_object` now uses `JSObjectMake` with `PLAIN_OBJECT_CLASS`
+instead of `eval_script_raw`, avoiding nested-`JSEvaluateScript` crashes.
+`define_property_or_throw` uses `Object.defineProperty` via script
+evaluation for all descriptor types (instead of `JSObjectSetProperty` which
+crashes on eval-created objects).
 
 ### 10. 🔍 Audit remaining direct `downcast_ref` calls
 
@@ -249,12 +245,12 @@ call site needs individual verification.
    all remaining direct `JsObject::downcast_ref::<T>()` calls that bypass
    `ec.with_object_any()`.
 
-9. ✅ **JSC backend — builtin functions and event dispatch** —
+9. ✅ **JSC backend — builtin function creation** —
    `create_builtin_function`/`create_builtin_fn`/`create_builtin_fn_static`
    implemented using custom JSClass with `callAsFunction`/`callAsConstructor`;
    `CURRENT_ENGINE` thread-local set automatically in `call`, `construct`,
-   `evaluate_script`.  Event dispatch, timers, and rendering callbacks all
-   set `CURRENT_ENGINE` before entering JS.
+   `evaluate_script`.  `create_plain_object` uses `JSObjectMake` avoiding
+   nested-eval crashes.  All `#[cfg(jsc_backend)]` ad-hoc blocks removed.
 
 10. **Prune historical notes** — Remove Category 1-8 fix attempts, GC
     tracing investigations, and per-test WPT inventories from this
@@ -262,9 +258,15 @@ call site needs individual verification.
 
 ## Remaining JSC limitations
 
-- `define_property_or_throw` only handles value descriptors; accessor
-  (getter/setter) descriptors store placeholder `undefined` values.
-- `Object.defineProperty` via script evaluation is deferred.
+- `define_property_or_throw` uses `Object.defineProperty` via script eval;
+  accessor (getter/setter) descriptors store placeholder `undefined` values.
+- The global object's prototype is immutable on JSC
+  (`JSObjectSetPrototype`/`Object.setPrototypeOf` fail silently).
+  This means methods on `Window.prototype`, `EventTarget.prototype`, etc.
+  are NOT inherited by the global object — only constructors are exposed.
+  Requires a native solution (e.g., installing methods on global at
+  build_context time, or using JSC's `JSClassGetProperty` hook on the
+  global object).
 - Setting properties on objects created via `eval("{}")`
   (`create_plain_object(None)`) causes SIGSEGV on macOS 26.
 - Iterator operations (`get_iterator`, `get_iterator_step_value`)
@@ -272,3 +274,19 @@ call site needs individual verification.
 - DataView and TypedArray view construction are `todo!()`.
 - JSC's C API does not expose the microtask queue — `run_jobs` only
   drains the Rust-side job queue, not JSC's internal promise queue.
+
+## Stable build
+
+Both Boa (default) and JSC (macOS opt-in) backends compile:
+```bash
+# Boa (default)
+cargo build --release
+
+# JSC (macOS)
+cargo build --release --no-default-features --features jsc
+```
+The JSC backend has functional builtin function creation and interface
+registration.  The global object prototype chain limitation prevents
+`Window.prototype` methods from being inherited by the global object.
+This is a pre-existing JSC limitation that requires a native integration
+path for full Web API support.

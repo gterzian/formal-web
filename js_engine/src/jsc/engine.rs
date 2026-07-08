@@ -145,6 +145,14 @@ static BUILTIN_CLASS: LazyLock<JscClass> =
 static BUILTIN_CONSTRUCTOR_CLASS: LazyLock<JscClass> =
     LazyLock::new(|| JscClass(unsafe { JSClassCreate(&builtin_class_def(true)) }));
 
+/// JSClass for plain objects (no callbacks).  Uses JSObjectMake to
+/// avoid eval_script_raw (which causes nested JSEvaluateScript crashes).
+static PLAIN_OBJECT_CLASS: LazyLock<JscClass> = LazyLock::new(|| {
+    JscClass(unsafe {
+        JSClassCreate(&JSClassDefinition {version:0,attributes:kJSClassAttributeNone,className:b"FormalWebPlain\0".as_ptr()as*const c_char,parentClass:std::ptr::null_mut(),staticValues:std::ptr::null(),staticFunctions:std::ptr::null(),initialize:None,finalize:None,hasProperty:None,getProperty:None,setProperty:None,deleteProperty:None,getPropertyNames:None,callAsFunction:None,callAsConstructor:None,hasInstance:None,convertToType:None,})
+    })
+});
+
 /// Shared helper: builtin function behaviour invoker.
 /// Retrieves `ec` from the thread-local `CURRENT_ENGINE` so the stored
 /// closure can be called with the full trait-method signature.
@@ -270,27 +278,8 @@ fn make_builtin_function(
     let stored_ptr = Box::into_raw(stored) as *mut std::ffi::c_void;
     unsafe { JSObjectSetPrivate(raw_obj, stored_ptr) };
 
-    // Set the `name` property on the function object.
-    let name_str = match name {
-        JscPropertyKey::String(s) => s.clone(),
-        JscPropertyKey::Symbol(_) => JscString::from_rust(""),
-    };
-    let name_key = JscString::from_rust("name");
-    let name_val = JscValue {
-        raw: unsafe { JSValueMakeString(ctx, name_str.raw) },
-        ctx,
-    };
-    let mut exc: *mut JSValueRef = std::ptr::null_mut();
-    unsafe {
-        JSObjectSetProperty(
-            ctx,
-            raw_obj,
-            name_key.raw,
-            name_val.raw,
-            kJSPropertyAttributeDontEnum,
-            &mut exc,
-        );
-    }
+    // Note: Skipping `name` property because JSObjectSetProperty on
+    // JSClass-created function objects causes crashes on macOS 26.
 
     JscObject { raw: raw_obj, ctx }
 }
@@ -3335,62 +3324,14 @@ impl ExecutionContext<JscTypes> for JscEngine {
     // ── Object Construction ──────────────────────────────────────────
 
     fn create_plain_object(&mut self, prototype: Option<&JscObject>) -> JscObject {
-        match prototype {
-            Some(_proto) => {
-                // Create object with prototype via Object.create(proto)
-                let proto_key = JscString::from_rust("__formal_web_create_proto");
-                let global = self.context.global_object();
-                let mut exc: *mut JSValueRef = std::ptr::null_mut();
-                unsafe {
-                    JSObjectSetProperty(
-                        self.context.as_context_ref(),
-                        global.raw,
-                        proto_key.raw,
-                        _proto.as_value_ref(),
-                        kJSPropertyAttributeNone,
-                        &mut exc,
-                    );
-                }
-                if !exc.is_null() {
-                    let (result, _) = self.eval_script_raw("({})");
-                    return JscObject {
-                        raw: result as *mut JSObjectRef,
-                        ctx: self.ctx_ptr(),
-                    };
-                }
-                let (result, exception) =
-                    self.eval_script_raw("Object.create(__formal_web_create_proto)");
-                unsafe {
-                    JSObjectDeleteProperty(
-                        self.context.as_context_ref(),
-                        global.raw,
-                        proto_key.raw,
-                        std::ptr::null_mut(),
-                    );
-                }
-                if !exception.is_null() || result.is_null() {
-                    let (result, _) = self.eval_script_raw("({})");
-                    return JscObject {
-                        raw: result as *mut JSObjectRef,
-                        ctx: self.ctx_ptr(),
-                    };
-                }
-                JscObject {
-                    raw: result as *mut JSObjectRef,
-                    ctx: self.ctx_ptr(),
-                }
-            }
-            None => {
-                let (result, exception) = self.eval_script_raw("({})");
-                if !exception.is_null() || result.is_null() {
-                    return self.context.global_object();
-                }
-                JscObject {
-                    raw: result as *mut JSObjectRef,
-                    ctx: self.ctx_ptr(),
-                }
+        let ctx = self.ctx_ptr();
+        let raw_obj = unsafe { JSObjectMake(ctx, PLAIN_OBJECT_CLASS.0, std::ptr::null_mut()) };
+        if let Some(proto) = prototype {
+            unsafe {
+                JSObjectSetPrototype(ctx, raw_obj, proto.as_value_ref());
             }
         }
+        JscObject { raw: raw_obj, ctx }
     }
 
     fn json_stringify(&mut self, value: JscValue) -> Completion<String, JscTypes> {
@@ -3625,8 +3566,7 @@ impl EcmascriptHost<JscTypes> for JscEngine {
         Ok(())
     }
     fn report_exception(&mut self, error: JscValue) {
-        log::error!("uncaught callback error");
-        let _ = error;
+        log::error!("uncaught callback error: {}", error.display());
     }
 
     fn value_undefined(&mut self) -> JscValue {

@@ -15,13 +15,13 @@ media = ["dep:media"]
 
 # Backend selection.
 # These propagate to the content crate via workspace dependency resolution.
-jsc = []
-boa = ["dep:content"]
+jsc = ["dep:content", "content/jsc"]
+boa = ["dep:content", "content/boa", "content/media"]
 
 [dependencies]
 automation = { path = "automation" }
 clap = { version = "4.5", features = ["derive"] }
-content = { path = "content", optional = true }
+content = { path = "content", optional = true, default-features = false }
 embedder = { path = "embedder" }
 media = { path = "media", optional = true }
 net = { path = "net" }

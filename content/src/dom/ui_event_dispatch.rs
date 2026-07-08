@@ -516,9 +516,6 @@ impl EventHandler for BlitzJSEventHandler<'_> {
         doc: &mut dyn BlitzDocument,
         event_state: &mut EventState,
     ) {
-        #[cfg(jsc_backend)]
-        js_engine::jsc::set_current_engine(&mut self.settings.engine);
-
         if input_debug_enabled() {
             let target_label = debug_blitz_node_label(doc, event.target);
             let chain_labels = chain
@@ -550,8 +547,6 @@ impl EventHandler for BlitzJSEventHandler<'_> {
         .expect("UIEvent construction must succeed");
         if let Err(error) = dispatch_with_chain(self, chain, &event_object) {
             error!("failed to dispatch UI event through JavaScript listeners: {error:?}");
-            #[cfg(jsc_backend)]
-            js_engine::jsc::clear_current_engine();
             return;
         }
 
@@ -578,8 +573,5 @@ impl EventHandler for BlitzJSEventHandler<'_> {
         if let Err(error) = self.settings.perform_a_microtask_checkpoint() {
             error!("failed to run a microtask checkpoint after UI event dispatch: {error}");
         }
-
-        #[cfg(jsc_backend)]
-        js_engine::jsc::clear_current_engine();
     }
 }

@@ -211,21 +211,15 @@ impl EnvironmentSettingsObject {
     }
 
     fn evaluate_script_without_microtask_checkpoint(&mut self, source: &str) -> Result<(), String> {
-        #[cfg(jsc_backend)]
-        js_engine::jsc::set_current_engine(&mut self.engine);
         let result = self
             .engine
             .evaluate_script(source)
             .map(|_| ())
             .map_err(|error| self.error_to_string(error));
-        #[cfg(jsc_backend)]
-        js_engine::jsc::clear_current_engine();
         result
     }
 
     pub fn evaluate_script_to_json(&mut self, source: &str) -> Result<serde_json::Value, String> {
-        #[cfg(jsc_backend)]
-        js_engine::jsc::set_current_engine(&mut self.engine);
         let value = self
             .engine
             .evaluate_script(source)
@@ -237,8 +231,6 @@ impl EnvironmentSettingsObject {
             .engine
             .json_stringify(value)
             .map_err(|error| self.error_to_string(error))?;
-        #[cfg(jsc_backend)]
-        js_engine::jsc::clear_current_engine();
         serde_json::from_str(&json_string).map_err(|error| format!("failed to parse JSON: {error}"))
     }
 
