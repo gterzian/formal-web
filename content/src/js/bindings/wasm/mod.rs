@@ -42,7 +42,7 @@ fn rejected_promise_from_error_boa(
     let reason = error
         .as_opaque()
         .cloned()
-        .unwrap_or_else(|| ec.new_type_error("rejected_promise_from_error: no opaque error value"));
+        .unwrap_or_else(|| ec.new_type_error("rejected_promise_from_error: error is not opaque"));
     rejected_promise_from_error(reason, ec)
 }
 

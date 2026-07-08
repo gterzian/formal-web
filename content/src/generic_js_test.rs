@@ -30,7 +30,7 @@ use std::marker::PhantomData;
 use crate::webidl::bindings::{AttributeDef, InterfaceDefinition, OperationDef, WebIdlInterface};
 use js_engine::gc::GcRootHandle;
 use js_engine::gc_struct;
-use js_engine::{Completion, ExecutionContext, JsEngine, JsTypes};
+use js_engine::{Completion, ExecutionContext, JsTypes};
 
 type TestTypes = crate::js::Types;
 type JsValue = <TestTypes as JsTypes>::JsValue;
@@ -3091,5 +3091,77 @@ mod tests {
         let _: JsObject = intrinsics.reference_error_prototype;
         let _: JsObject = intrinsics.uri_error_prototype;
         let _: JsObject = intrinsics.eval_error_prototype;
+    }
+
+    /// Verify that attribute accessor descriptors defined on a prototype
+    /// via `define_regular_attributes` are accessible through JavaScript
+    /// evaluation (full JS prototype chain lookup).
+    #[test]
+    fn attribute_accessor_descriptors_accessible_via_js_eval() {
+        let mut engine = setup();
+        let realm = engine.current_realm();
+
+        // Verify TestWidget constructor is installed on the global
+        let exists =
+            JsEngine::evaluate_script(&mut engine, "typeof TestWidget !== 'undefined'", &realm)
+                .unwrap();
+        assert!(engine.to_boolean(&exists), "TestWidget should be defined");
+
+        // Simple `in` check for attribute on prototype
+        let has_title =
+            JsEngine::evaluate_script(&mut engine, "'title' in TestWidget.prototype", &realm)
+                .unwrap();
+        assert!(
+            engine.to_boolean(&has_title),
+            "title should be on prototype"
+        );
+
+        let has_visible =
+            JsEngine::evaluate_script(&mut engine, "'visible' in TestWidget.prototype", &realm)
+                .unwrap();
+        assert!(
+            engine.to_boolean(&has_visible),
+            "visible should be on prototype"
+        );
+
+        let has_count =
+            JsEngine::evaluate_script(&mut engine, "'count' in TestWidget.prototype", &realm)
+                .unwrap();
+        assert!(
+            engine.to_boolean(&has_count),
+            "count should be on prototype"
+        );
+
+        // Construct via JS and access attribute through prototype chain.
+        // This proves getter accessor descriptors work correctly.
+        let result =
+            JsEngine::evaluate_script(&mut engine, "new TestWidget().title", &realm).unwrap();
+        let title = engine.to_rust_string(result).unwrap();
+        assert_eq!(title, "Untitled");
+
+        // Set via JS assignment (triggers setter on prototype)
+        let result = JsEngine::evaluate_script(
+            &mut engine,
+            "var w = new TestWidget(); w.title = 'Hello'; w.title",
+            &realm,
+        )
+        .unwrap();
+        let title = engine.to_rust_string(result).unwrap();
+        assert_eq!(title, "Hello");
+
+        // Read-only attribute (visible — no setter)
+        let result =
+            JsEngine::evaluate_script(&mut engine, "new TestWidget().visible", &realm).unwrap();
+        assert!(engine.to_boolean(&result), "visible should be true");
+
+        // Method access through prototype chain
+        let result = JsEngine::evaluate_script(
+            &mut engine,
+            "var w = new TestWidget(); w.increment(); w.count",
+            &realm,
+        )
+        .unwrap();
+        let count = engine.to_number(result).unwrap();
+        assert!((count - 1.0).abs() < 0.001, "expected count=1, got {count}");
     }
 }

@@ -130,9 +130,11 @@ fn module_exports_binding(
         .ok_or_else(|| ec.new_type_error("Module.exports: missing argument"))?;
     let module_object = <crate::js::Types as JsTypes>::value_as_object(module_value)
         .ok_or_else(|| ec.new_type_error("Module.exports: argument must be a Module object"))?;
-    let wasm_module = module_object
-        .downcast_ref::<WasmModule>()
-        .ok_or_else(|| ec.new_type_error("Module.exports: argument is not a WebAssembly.Module"))?;
+    let not_module_err = ec.new_type_error("Module.exports: argument is not a WebAssembly.Module");
+    let wasm_module = ec
+        .with_object_any(&module_object)
+        .and_then(|data| data.downcast_ref::<WasmModule>())
+        .ok_or(not_module_err)?;
 
     let descriptors = wasm_module.export_descriptors();
     let exports_array = ec.create_empty_array();
@@ -159,9 +161,12 @@ fn get_instance_exports_binding(
 ) -> Completion<JsValue, crate::js::Types> {
     let object = crate::js::Types::value_as_object(this)
         .ok_or_else(|| ec.new_type_error("Instance.exports getter: receiver is not an object"))?;
-    let instance = object.downcast_ref::<WasmInstance>().ok_or_else(|| {
-        ec.new_type_error("Instance.exports getter: receiver is not a WebAssembly.Instance")
-    })?;
+    let not_instance_err =
+        ec.new_type_error("Instance.exports getter: receiver is not a WebAssembly.Instance");
+    let instance = ec
+        .with_object_any(&object)
+        .and_then(|data| data.downcast_ref::<WasmInstance>())
+        .ok_or(not_instance_err)?;
     Ok(JsValue::from(instance.exports.clone()))
 }
 
