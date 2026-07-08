@@ -24,8 +24,6 @@ fn build_context_inner(document: Rc<RefCell<BaseDocument>>) -> Result<Engine, St
 #[cfg(not(boa_backend))]
 fn build_context_inner(document: Rc<RefCell<BaseDocument>>) -> Result<Engine, String> {
     use js_engine::ExecutionContext as _;
-    use js_engine::JsEngine as _;
-    use js_engine::JsTypes as _;
     use js_engine::jsc::JscEngine;
 
     use crate::dom::{

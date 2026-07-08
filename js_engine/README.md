@@ -168,11 +168,33 @@ IPC-based worker dispatch that requires a Window.  Affects:
 - `formal/wasm-compile-instantiate.html`
 - `wasm/jsapi/constructor/compile.any.js` subtests
 
-### 9. 🟡 JSC backend not functional
+### 9. ✅ JSC backend — builtin function creation and event dispatch
 
-JSC compiles and launches but `addEventListener` is missing, the content
-process loops at 100% CPU, and WPT tests time out.  Pre-existing
-condition; full JSC integration deferred.
+`create_builtin_fn_static`, `create_builtin_fn`, and `create_builtin_function`
+are implemented on JSC using a custom JSClass with `callAsFunction` and
+`callAsConstructor` callbacks.  The closures store a type-erased
+`StoredBehaviour` as private data on the JSObject; the C callbacks retrieve
+it via `JSObjectGetPrivate` and call through the thread-local `CURRENT_ENGINE`
+to find `&mut dyn ExecutionContext<JscTypes>`.
+
+`set_current_engine`/`clear_current_engine` are called automatically in
+`EcmascriptHost::call`, `ExecutionContext::construct`, and
+`ExecutionContext::evaluate_script` (and `JsEngine::evaluate_script`) to
+ensure builtin function callbacks always find the engine.
+
+Event dispatch (`BlitzJSEventHandler::handle_event`), timer execution
+(`run_window_timer`), and `update_the_rendering` also set
+`set_current_engine`/`clear_current_engine` for JSC, so `addEventListener`,
+`removeEventListener`, `setTimeout`, `requestAnimationFrame`, and related
+APIs work correctly.
+
+`define_property_or_throw` uses `JSObjectSetProperty` for value descriptors;
+accessor (getter/setter) descriptors store a placeholder value.  Full
+`Object.defineProperty` support for accessors via script evaluation is
+deferred — the prototype-chain-based `[[Get]]`/`[[Set]]` operations still
+work through `ec.get`/`ec.set` but accessor definitions on
+`Object.create`-created objects may not be accessible via `in` or
+`Object.getOwnPropertyDescriptor` from evaluated script.
 
 ### 10. 🔍 Audit remaining direct `downcast_ref` calls
 
@@ -192,9 +214,6 @@ direct `downcast_ref`:
 Some of these may use `create_object_with_any` (wrapping in `TraceableBox`),
 some may use `create_platform_object` (which keeps the concrete type).  Each
 call site needs individual verification.
-
-### 11. Restore JSC backend — Wire `addEventListener`/DOM event
-    infrastructure on JSC; fix the content-process infinite loop.
 
 ## Tasks for migration completion
 
@@ -230,9 +249,26 @@ call site needs individual verification.
    all remaining direct `JsObject::downcast_ref::<T>()` calls that bypass
    `ec.with_object_any()`.
 
-9. 🟡 **JSC backend** — Wire `addEventListener`/DOM event infrastructure
-   on JSC; fix the content-process infinite loop.
+9. ✅ **JSC backend — builtin functions and event dispatch** —
+   `create_builtin_function`/`create_builtin_fn`/`create_builtin_fn_static`
+   implemented using custom JSClass with `callAsFunction`/`callAsConstructor`;
+   `CURRENT_ENGINE` thread-local set automatically in `call`, `construct`,
+   `evaluate_script`.  Event dispatch, timers, and rendering callbacks all
+   set `CURRENT_ENGINE` before entering JS.
 
 10. **Prune historical notes** — Remove Category 1-8 fix attempts, GC
     tracing investigations, and per-test WPT inventories from this
     document (completed).
+
+## Remaining JSC limitations
+
+- `define_property_or_throw` only handles value descriptors; accessor
+  (getter/setter) descriptors store placeholder `undefined` values.
+- `Object.defineProperty` via script evaluation is deferred.
+- Setting properties on objects created via `eval("{}")`
+  (`create_plain_object(None)`) causes SIGSEGV on macOS 26.
+- Iterator operations (`get_iterator`, `get_iterator_step_value`)
+  may crash or produce incorrect results.
+- DataView and TypedArray view construction are `todo!()`.
+- JSC's C API does not expose the microtask queue — `run_jobs` only
+  drains the Rust-side job queue, not JSC's internal promise queue.

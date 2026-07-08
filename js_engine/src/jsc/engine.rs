@@ -13,7 +13,7 @@
 
 use std::cell::RefCell;
 use std::collections::HashMap;
-use std::ffi::{c_char, c_void};
+use std::ffi::c_char;
 use std::sync::LazyLock;
 
 use super::types::*;
@@ -72,7 +72,7 @@ use crate::{
 };
 
 /// Marker type for JSC engine implementations.
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Debug)]
 pub struct JscTypes;
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -93,9 +93,15 @@ pub struct JscTypes;
 // 4. The `finalize` callback drops the Box, freeing the closure.
 
 /// Type stored as private data on each builtin function object.
-/// Captures an engine pointer so it can produce `&mut dyn ExecutionContext`
-/// without receiving it from the C callback.
-type StoredBehaviour = Box<dyn Fn(&[JscValue], JscValue) -> Completion<JscValue, JscTypes>>;
+/// The closure matches the trait method signature, with `ec` retrieved
+/// from the thread-local `CURRENT_ENGINE` inside the wrapper.
+type StoredBehaviour = Box<
+    dyn Fn(
+        &[JscValue],
+        JscValue,
+        &mut dyn ExecutionContext<JscTypes>,
+    ) -> Completion<JscValue, JscTypes>,
+>;
 
 /// Wrapper around `*mut JSClassRef` that implements `Sync` + `Send` so it
 /// can be stored in a `LazyLock` static.  The content process is
@@ -104,10 +110,9 @@ pub(crate) struct JscClass(pub(crate) *mut JSClassRef);
 unsafe impl Send for JscClass {}
 unsafe impl Sync for JscClass {}
 
-/// JSClass for builtin function objects.  Created once, reused for all
-/// `create_builtin_function` calls.
-static BUILTIN_CLASS: LazyLock<JscClass> = LazyLock::new(|| {
-    let def = JSClassDefinition {
+/// Shared helper: create the JSClassDefinition for builtin objects.
+fn builtin_class_def(call_as_constructor: bool) -> JSClassDefinition {
+    JSClassDefinition {
         version: 0,
         attributes: kJSClassAttributeNone,
         className: b"FormalWebBuiltin\0".as_ptr() as *const c_char,
@@ -122,12 +127,73 @@ static BUILTIN_CLASS: LazyLock<JscClass> = LazyLock::new(|| {
         deleteProperty: None,
         getPropertyNames: None,
         callAsFunction: Some(builtin_call_as_function),
-        callAsConstructor: None,
+        callAsConstructor: if call_as_constructor {
+            Some(builtin_call_as_constructor)
+        } else {
+            None
+        },
         hasInstance: None,
         convertToType: None,
-    };
-    JscClass(unsafe { JSClassCreate(&def) })
-});
+    }
+}
+
+/// JSClass for builtin function objects (non-constructor).
+static BUILTIN_CLASS: LazyLock<JscClass> =
+    LazyLock::new(|| JscClass(unsafe { JSClassCreate(&builtin_class_def(false)) }));
+
+/// JSClass for builtin constructor function objects.
+static BUILTIN_CONSTRUCTOR_CLASS: LazyLock<JscClass> =
+    LazyLock::new(|| JscClass(unsafe { JSClassCreate(&builtin_class_def(true)) }));
+
+/// Shared helper: builtin function behaviour invoker.
+/// Retrieves `ec` from the thread-local `CURRENT_ENGINE` so the stored
+/// closure can be called with the full trait-method signature.
+unsafe fn invoke_stored_behaviour(
+    stored_ptr: *mut StoredBehaviour,
+    ctx: *mut JSContextRef,
+    this_object: *mut JSObjectRef,
+    argument_count: usize,
+    arguments: *const *mut JSValueRef,
+) -> Result<*mut JSValueRef, *mut JSValueRef> {
+    unsafe {
+        let stored: &StoredBehaviour = &*stored_ptr;
+
+        let jsc_args: Vec<JscValue> = if argument_count == 0 || arguments.is_null() {
+            Vec::new()
+        } else {
+            let args_slice = std::slice::from_raw_parts(arguments, argument_count);
+            args_slice
+                .iter()
+                .map(|raw| JscValue { raw: *raw, ctx })
+                .collect()
+        };
+
+        let this_val = JscValue {
+            raw: this_object as *mut JSValueRef,
+            ctx,
+        };
+
+        // Extract the engine pointer from CURRENT_ENGINE.
+        let engine_ptr: *mut JscEngine = CURRENT_ENGINE.with(|current| match *current.borrow() {
+            Some(ptr) => ptr,
+            None => std::ptr::null_mut(),
+        });
+        if engine_ptr.is_null() {
+            // CURRENT_ENGINE not set — return undefined to avoid SIGBUS.
+            // This can happen when a builtin function is invoked outside
+            // the normal set_current_engine scope (e.g., during GC finalization).
+            return Ok(JSValueMakeUndefined(ctx));
+        }
+        let ec: &mut dyn ExecutionContext<JscTypes> = &mut *engine_ptr;
+
+        let call_result = stored(&jsc_args, this_val, ec);
+
+        match call_result {
+            Ok(result) => Ok(result.raw),
+            Err(err) => Err(err.raw),
+        }
+    }
+}
 
 /// `callAsFunction` for builtin objects.  Retrieves the `StoredBehaviour`
 /// pointer from private data, converts C args to `JscValue` slices, and
@@ -144,38 +210,93 @@ extern "C" fn builtin_call_as_function(
     if stored_ptr.is_null() {
         return unsafe { JSValueMakeUndefined(ctx) };
     }
-    let stored: &StoredBehaviour = unsafe { &*stored_ptr };
-
-    let jsc_args: Vec<JscValue> = if argument_count == 0 || arguments.is_null() {
-        Vec::new()
-    } else {
-        let args_slice = unsafe { std::slice::from_raw_parts(arguments, argument_count) };
-        args_slice
-            .iter()
-            .map(|raw| JscValue { raw: *raw, ctx })
-            .collect()
-    };
-
-    let this_val = JscValue {
-        raw: this_object as *mut JSValueRef,
-        ctx,
-    };
-
-    let call_result = stored(&jsc_args, this_val);
-
-    match call_result {
-        Ok(result) => result.raw,
-        Err(err) => {
+    match unsafe {
+        invoke_stored_behaviour(stored_ptr, ctx, this_object, argument_count, arguments)
+    } {
+        Ok(raw) => raw,
+        Err(err_raw) => {
             unsafe {
-                *exception = err.raw;
+                *exception = err_raw;
             }
             std::ptr::null_mut()
         }
     }
 }
 
+/// `callAsConstructor` for builtin constructor objects.
+///
+/// In JSC's C API, `function` is the constructor function being called
+/// (which serves as `new.target`), and `thisObject` is the pre-allocated
+/// `this` for the constructor body.  Our Web IDL constructors need
+/// `new.target` as the second argument, so we pass `function` instead.
+extern "C" fn builtin_call_as_constructor(
+    ctx: *mut JSContextRef,
+    function: *mut JSObjectRef,
+    _this_object: *mut JSObjectRef,
+    argument_count: usize,
+    arguments: *const *mut JSValueRef,
+    exception: *mut *mut JSValueRef,
+) -> *mut JSValueRef {
+    let stored_ptr = unsafe { JSObjectGetPrivate(function) } as *mut StoredBehaviour;
+    if stored_ptr.is_null() {
+        return unsafe { JSValueMakeUndefined(ctx) };
+    }
+    // Pass `function` (the constructor / new.target) as `new_target_or_this`.
+    match unsafe { invoke_stored_behaviour(stored_ptr, ctx, function, argument_count, arguments) } {
+        Ok(raw) => raw,
+        Err(err_raw) => {
+            unsafe {
+                *exception = err_raw;
+            }
+            std::ptr::null_mut()
+        }
+    }
+}
+
+/// Shared helper: create a JSC function object from a `StoredBehaviour`.
+fn make_builtin_function(
+    ctx: *mut JSContextRef,
+    behaviour: StoredBehaviour,
+    name: &JscPropertyKey,
+    is_constructor: bool,
+) -> JscObject {
+    let class_ref = if is_constructor {
+        BUILTIN_CONSTRUCTOR_CLASS.0
+    } else {
+        BUILTIN_CLASS.0
+    };
+    let raw_obj = unsafe { JSObjectMake(ctx, class_ref, std::ptr::null_mut()) };
+    let stored = Box::new(behaviour);
+    let stored_ptr = Box::into_raw(stored) as *mut std::ffi::c_void;
+    unsafe { JSObjectSetPrivate(raw_obj, stored_ptr) };
+
+    // Set the `name` property on the function object.
+    let name_str = match name {
+        JscPropertyKey::String(s) => s.clone(),
+        JscPropertyKey::Symbol(_) => JscString::from_rust(""),
+    };
+    let name_key = JscString::from_rust("name");
+    let name_val = JscValue {
+        raw: unsafe { JSValueMakeString(ctx, name_str.raw) },
+        ctx,
+    };
+    let mut exc: *mut JSValueRef = std::ptr::null_mut();
+    unsafe {
+        JSObjectSetProperty(
+            ctx,
+            raw_obj,
+            name_key.raw,
+            name_val.raw,
+            kJSPropertyAttributeDontEnum,
+            &mut exc,
+        );
+    }
+
+    JscObject { raw: raw_obj, ctx }
+}
+
 /// `finalize` for builtin objects.  Drops the `StoredBehaviour` Box,
-/// freeing the captured closure and engine pointer.
+/// freeing the captured closure.
 extern "C" fn builtin_finalize(object: *mut JSObjectRef) {
     let stored_ptr = unsafe { JSObjectGetPrivate(object) } as *mut StoredBehaviour;
     if !stored_ptr.is_null() {
@@ -592,6 +713,11 @@ impl JscEngine {
     }
 
     /// Evaluate a JS expression and return the raw result + any exception.
+    ///
+    /// # Safety
+    ///
+    /// `self` must remain valid for the duration of the script evaluation.
+    /// Nested calls must not mutate `self`'s context reference.
     fn eval_script_raw(&self, source: &str) -> (*mut JSValueRef, *mut JSValueRef) {
         let script = JscString::from_rust(source);
         let mut exception: *mut JSValueRef = std::ptr::null_mut();
@@ -693,6 +819,12 @@ impl JsEngine<JscTypes> for JscEngine {
     where
         JscTypes: JsTypesWithRealm,
     {
+        let previous = CURRENT_ENGINE.with(|current| current.borrow_mut().take());
+        let ptr = self as *mut JscEngine;
+        CURRENT_ENGINE.with(|current| {
+            *current.borrow_mut() = Some(ptr);
+        });
+
         let script = JscString::from_rust(source);
         let mut exception: *mut JSValueRef = std::ptr::null_mut();
         let result = unsafe {
@@ -705,6 +837,11 @@ impl JsEngine<JscTypes> for JscEngine {
                 &mut exception,
             )
         };
+
+        CURRENT_ENGINE.with(|current| {
+            *current.borrow_mut() = previous;
+        });
+
         if !exception.is_null() {
             return Err(JscValue {
                 raw: exception,
@@ -880,20 +1017,21 @@ impl JsEngine<JscTypes> for JscEngine {
 impl ExecutionContext<JscTypes> for JscEngine {
     fn create_builtin_fn_static(
         &mut self,
-        _behaviour: fn(
+        behaviour: fn(
             &[JscValue],
             JscValue,
             &mut dyn ExecutionContext<JscTypes>,
         ) -> Completion<JscValue, JscTypes>,
         _length: u32,
-        _name: JscPropertyKey,
+        name: JscPropertyKey,
     ) -> JscFunction {
-        unimplemented!("create_builtin_fn_static on JSC backend")
+        let stored: StoredBehaviour = Box::new(move |args, this, ec| behaviour(args, this, ec));
+        make_builtin_function(self.ctx_ptr(), stored, &name, false)
     }
 
     fn create_builtin_fn(
         &mut self,
-        _behaviour: Box<
+        behaviour: Box<
             dyn Fn(
                 &[JscValue],
                 JscValue,
@@ -901,14 +1039,15 @@ impl ExecutionContext<JscTypes> for JscEngine {
             ) -> Completion<JscValue, JscTypes>,
         >,
         _length: u32,
-        _name: JscPropertyKey,
+        name: JscPropertyKey,
     ) -> JscFunction {
-        unimplemented!("create_builtin_fn on JSC backend")
+        let stored: StoredBehaviour = behaviour;
+        make_builtin_function(self.ctx_ptr(), stored, &name, false)
     }
 
     fn create_builtin_function(
         &mut self,
-        _behaviour: Box<
+        behaviour: Box<
             dyn Fn(
                 &[JscValue],
                 JscValue,
@@ -916,10 +1055,11 @@ impl ExecutionContext<JscTypes> for JscEngine {
             ) -> Completion<JscValue, JscTypes>,
         >,
         _length: u32,
-        _name: JscPropertyKey,
-        _is_constructor: bool,
+        name: JscPropertyKey,
+        is_constructor: bool,
     ) -> JscFunction {
-        unimplemented!("create_builtin_function on JSC backend")
+        let stored: StoredBehaviour = behaviour;
+        make_builtin_function(self.ctx_ptr(), stored, &name, is_constructor)
     }
 
     // ── §7.1 Type Conversion ──────────────────────────────────────────────
@@ -1399,29 +1539,150 @@ impl ExecutionContext<JscTypes> for JscEngine {
         &mut self,
         object: JscObject,
         property_key: JscPropertyKey,
-        _descriptor: PropertyDescriptor<JscTypes>,
+        descriptor: PropertyDescriptor<JscTypes>,
     ) -> Completion<(), JscTypes> {
         let Some(prop_str) = self.property_key_to_jsstring(&property_key) else {
             return Ok(());
         };
-        if let Some(value) = &_descriptor.value {
-            let mut exception: *mut JSValueRef = std::ptr::null_mut();
+
+        // For simple value descriptors, use JSObjectSetProperty directly.
+        // Accessor descriptors (getter/setter) store a placeholder until
+        // full Object.defineProperty support via script eval is added.
+        //
+        // Store operands on the global object, eval, then clean up.
+        let global = self.context.global_object();
+        let mut exc: *mut JSValueRef = std::ptr::null_mut();
+        let prop_name = prop_str.to_rust();
+        let escaped_name = prop_name.replace('\\', "\\\\").replace('\'', "\\'");
+
+        // Store target.
+        let obj_key = JscString::from_rust("__fw_dpo_target");
+        unsafe {
+            JSObjectSetProperty(
+                self.context.as_context_ref(),
+                global.raw,
+                obj_key.raw,
+                object.as_value_ref(),
+                kJSPropertyAttributeNone,
+                &mut exc,
+            );
+        }
+        if !exc.is_null() {
+            return Err(JscValue {
+                raw: exc,
+                ctx: self.ctx_ptr(),
+            });
+        }
+
+        // Store descriptor values as globals.
+        let mut parts: Vec<String> = Vec::new();
+
+        if let Some(getter) = &descriptor.get {
+            let get_key = JscString::from_rust("__fw_dpo_get");
             unsafe {
                 JSObjectSetProperty(
                     self.context.as_context_ref(),
-                    object.raw,
-                    prop_str.raw,
-                    value.raw,
+                    global.raw,
+                    get_key.raw,
+                    getter.as_value_ref(),
                     kJSPropertyAttributeNone,
-                    &mut exception,
-                )
-            };
-            if !exception.is_null() {
+                    &mut exc,
+                );
+            }
+            if !exc.is_null() {
                 return Err(JscValue {
-                    raw: exception,
+                    raw: exc,
                     ctx: self.ctx_ptr(),
                 });
             }
+            parts.push(String::from("get: __fw_dpo_get"));
+        }
+        if let Some(setter) = &descriptor.set {
+            let set_key = JscString::from_rust("__fw_dpo_set");
+            unsafe {
+                JSObjectSetProperty(
+                    self.context.as_context_ref(),
+                    global.raw,
+                    set_key.raw,
+                    setter.as_value_ref(),
+                    kJSPropertyAttributeNone,
+                    &mut exc,
+                );
+            }
+            if !exc.is_null() {
+                return Err(JscValue {
+                    raw: exc,
+                    ctx: self.ctx_ptr(),
+                });
+            }
+            parts.push(String::from("set: __fw_dpo_set"));
+        }
+        if let Some(value) = &descriptor.value {
+            let val_key = JscString::from_rust("__fw_dpo_val");
+            unsafe {
+                JSObjectSetProperty(
+                    self.context.as_context_ref(),
+                    global.raw,
+                    val_key.raw,
+                    value.raw,
+                    kJSPropertyAttributeNone,
+                    &mut exc,
+                );
+            }
+            if !exc.is_null() {
+                return Err(JscValue {
+                    raw: exc,
+                    ctx: self.ctx_ptr(),
+                });
+            }
+            parts.push(String::from("value: __fw_dpo_val"));
+            parts.push(if descriptor.writable.unwrap_or(true) {
+                String::from("writable: true")
+            } else {
+                String::from("writable: false")
+            });
+        }
+        parts.push(if descriptor.enumerable.unwrap_or(true) {
+            String::from("enumerable: true")
+        } else {
+            String::from("enumerable: false")
+        });
+        parts.push(if descriptor.configurable.unwrap_or(true) {
+            String::from("configurable: true")
+        } else {
+            String::from("configurable: false")
+        });
+
+        let desc_expr = parts.join(", ");
+        let script = format!(
+            "Object.defineProperty(__fw_dpo_target, '{}', {{{}}})",
+            escaped_name, desc_expr
+        );
+        let (_result, exception) = self.eval_script_raw(&script);
+
+        // Cleanup temp globals
+        unsafe {
+            let keys = [
+                JscString::from_rust("__fw_dpo_target"),
+                JscString::from_rust("__fw_dpo_get"),
+                JscString::from_rust("__fw_dpo_set"),
+                JscString::from_rust("__fw_dpo_val"),
+            ];
+            for key in &keys {
+                JSObjectDeleteProperty(
+                    self.context.as_context_ref(),
+                    global.raw,
+                    key.raw,
+                    std::ptr::null_mut(),
+                );
+            }
+        }
+
+        if !exception.is_null() {
+            return Err(JscValue {
+                raw: exception,
+                ctx: self.ctx_ptr(),
+            });
         }
         Ok(())
     }
@@ -1731,6 +1992,12 @@ impl ExecutionContext<JscTypes> for JscEngine {
         args: &[JscValue],
         _new_target: Option<JscConstructor>,
     ) -> Completion<JscObject, JscTypes> {
+        let previous = CURRENT_ENGINE.with(|current| current.borrow_mut().take());
+        let ptr = self as *mut JscEngine;
+        CURRENT_ENGINE.with(|current| {
+            *current.borrow_mut() = Some(ptr);
+        });
+
         let args_raw: Vec<*mut JSValueRef> = args.iter().map(|v| v.raw).collect();
         let mut exception: *mut JSValueRef = std::ptr::null_mut();
         let result = unsafe {
@@ -1742,6 +2009,11 @@ impl ExecutionContext<JscTypes> for JscEngine {
                 &mut exception,
             )
         };
+
+        CURRENT_ENGINE.with(|current| {
+            *current.borrow_mut() = previous;
+        });
+
         if !exception.is_null() {
             return Err(JscValue {
                 raw: exception,
@@ -3224,6 +3496,12 @@ impl ExecutionContext<JscTypes> for JscEngine {
     }
 
     fn evaluate_script(&mut self, source: &str) -> Completion<JscValue, JscTypes> {
+        let previous = CURRENT_ENGINE.with(|current| current.borrow_mut().take());
+        let ptr = self as *mut JscEngine;
+        CURRENT_ENGINE.with(|current| {
+            *current.borrow_mut() = Some(ptr);
+        });
+
         let script = JscString::from_rust(source);
         let ctx_ref = self.context.as_context_ref();
         let mut exception: *mut JSValueRef = std::ptr::null_mut();
@@ -3237,6 +3515,11 @@ impl ExecutionContext<JscTypes> for JscEngine {
                 &mut exception,
             )
         };
+
+        CURRENT_ENGINE.with(|current| {
+            *current.borrow_mut() = previous;
+        });
+
         if !exception.is_null() {
             return Err(JscValue {
                 raw: exception,
@@ -3291,6 +3574,16 @@ impl EcmascriptHost<JscTypes> for JscEngine {
         this_arg: &JscValue,
         args: &[JscValue],
     ) -> Completion<JscValue, JscTypes> {
+        // Ensure CURRENT_ENGINE is set before the JS call so that any
+        // builtin function callback (callAsFunction / callAsConstructor)
+        // can find the engine via with_current_engine.
+        // Save and restore so nested calls don't corrupt the state.
+        let previous = CURRENT_ENGINE.with(|current| current.borrow_mut().take());
+        let ptr = self as *mut JscEngine;
+        CURRENT_ENGINE.with(|current| {
+            *current.borrow_mut() = Some(ptr);
+        });
+
         let this_obj = if unsafe { JSValueGetType(self.context.as_context_ref(), this_arg.raw) }
             == JSType::kJSTypeObject
         {
@@ -3310,6 +3603,12 @@ impl EcmascriptHost<JscTypes> for JscEngine {
                 &mut exception,
             )
         };
+
+        // Restore previous CURRENT_ENGINE value.
+        CURRENT_ENGINE.with(|current| {
+            *current.borrow_mut() = previous;
+        });
+
         if !exception.is_null() {
             return Err(JscValue {
                 raw: exception,

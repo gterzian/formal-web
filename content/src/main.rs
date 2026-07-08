@@ -1266,7 +1266,9 @@ impl ContentProcess {
 
             // Note: This continues <https://dom.spec.whatwg.org/#concept-event-fire> after `FormalWeb.UserAgent.queueDispatchedEvent` writes the serialized UI event batch to the content process.
             let event = deserialize_ui_event(&event)?;
-            dispatch_ui_event(
+            #[cfg(jsc_backend)]
+            js_engine::jsc::set_current_engine(&mut document.settings.engine);
+            let dispatch_result = dispatch_ui_event(
                 document_id,
                 document.traversable_id,
                 document.parent_traversable_id,
@@ -1277,7 +1279,10 @@ impl ContentProcess {
                 document.viewport_offset_x,
                 document.viewport_offset_y,
                 event,
-            )?;
+            );
+            #[cfg(jsc_backend)]
+            js_engine::jsc::clear_current_engine();
+            dispatch_result?;
         }
 
         Ok(())
@@ -2148,7 +2153,16 @@ impl ContentProcess {
                 traversable_id,
                 document_id,
             } => {
-                self.update_the_rendering(traversable_id, document_id)?;
+                #[cfg(jsc_backend)]
+                {
+                    if let Some(doc) = self.documents.get_mut(&document_id) {
+                        js_engine::jsc::set_current_engine(&mut doc.settings.engine);
+                    }
+                }
+                let result = self.update_the_rendering(traversable_id, document_id);
+                #[cfg(jsc_backend)]
+                js_engine::jsc::clear_current_engine();
+                result?;
                 Ok(true)
             }
             RunWindowTimer {
@@ -2157,7 +2171,16 @@ impl ContentProcess {
                 timer_key,
                 nesting_level,
             } => {
-                self.run_window_timer(document_id, timer_id, timer_key, nesting_level)?;
+                #[cfg(jsc_backend)]
+                {
+                    if let Some(doc) = self.documents.get_mut(&document_id) {
+                        js_engine::jsc::set_current_engine(&mut doc.settings.engine);
+                    }
+                }
+                let result = self.run_window_timer(document_id, timer_id, timer_key, nesting_level);
+                #[cfg(jsc_backend)]
+                js_engine::jsc::clear_current_engine();
+                result?;
                 Ok(true)
             }
             CompleteDocumentFetch {
