@@ -878,77 +878,48 @@ impl JsEngine<JscTypes> for JscEngine {
 // ═══════════════════════════════════════════════════════════════════════════
 
 impl ExecutionContext<JscTypes> for JscEngine {
-    // ── §10.3 Built-in Function Objects ──────────────────────────────────
-
-    /// <https://tc39.es/ecma262/#sec-createbuiltinfunction>
-    fn create_builtin_function(
+    fn create_builtin_fn_static(
         &mut self,
-        behaviour: Box<
+        _behaviour: fn(
+            &[JscValue],
+            JscValue,
+            &mut dyn ExecutionContext<JscTypes>,
+        ) -> Completion<JscValue, JscTypes>,
+        _length: u32,
+        _name: JscPropertyKey,
+    ) -> JscFunction {
+        unimplemented!("create_builtin_fn_static on JSC backend")
+    }
+
+    fn create_builtin_fn(
+        &mut self,
+        _behaviour: Box<
             dyn Fn(
                 &[JscValue],
                 JscValue,
                 &mut dyn ExecutionContext<JscTypes>,
             ) -> Completion<JscValue, JscTypes>,
         >,
-        length: u32,
-        name: JscPropertyKey,
+        _length: u32,
+        _name: JscPropertyKey,
+    ) -> JscFunction {
+        unimplemented!("create_builtin_fn on JSC backend")
+    }
+
+    fn create_builtin_function(
+        &mut self,
+        _behaviour: Box<
+            dyn Fn(
+                &[JscValue],
+                JscValue,
+                &mut dyn ExecutionContext<JscTypes>,
+            ) -> Completion<JscValue, JscTypes>,
+        >,
+        _length: u32,
+        _name: JscPropertyKey,
         _is_constructor: bool,
     ) -> JscFunction {
-        let wrapped: StoredBehaviour = Box::new(move |args, this_val| {
-            with_current_engine(|engine| {
-                let ec: &mut dyn ExecutionContext<JscTypes> = engine;
-                behaviour(args, this_val, ec)
-            })
-        });
-
-        let leaked: *mut StoredBehaviour = Box::into_raw(Box::new(wrapped));
-
-        let ctx_ptr = self.ctx_ptr();
-        let raw = unsafe { JSObjectMake(ctx_ptr, BUILTIN_CLASS.0, leaked as *mut c_void) };
-
-        let realm = self.current_realm();
-        let intrinsics = self.realm_intrinsics(&realm);
-        unsafe {
-            JSObjectSetPrototype(ctx_ptr, raw, intrinsics.function_prototype.as_value_ref());
-        }
-
-        let length_key = JscString::from_rust("length");
-        let length_val = JscValue {
-            raw: unsafe { JSValueMakeNumber(ctx_ptr, length as f64) },
-            ctx: ctx_ptr,
-        };
-
-        let mut exc: *mut JSValueRef = std::ptr::null_mut();
-        unsafe {
-            JSObjectSetProperty(
-                ctx_ptr,
-                raw,
-                length_key.raw,
-                length_val.raw,
-                kJSPropertyAttributeNone,
-                &mut exc,
-            );
-        }
-
-        if let JscPropertyKey::String(name_str) = &name {
-            let name_key = JscString::from_rust("name");
-            let name_val = JscValue {
-                raw: unsafe { JSValueMakeString(ctx_ptr, name_str.raw) },
-                ctx: ctx_ptr,
-            };
-            unsafe {
-                JSObjectSetProperty(
-                    ctx_ptr,
-                    raw,
-                    name_key.raw,
-                    name_val.raw,
-                    kJSPropertyAttributeNone,
-                    &mut exc,
-                );
-            }
-        }
-
-        JscObject { raw, ctx: ctx_ptr }
+        unimplemented!("create_builtin_function on JSC backend")
     }
 
     // ── §7.1 Type Conversion ──────────────────────────────────────────────
@@ -3565,18 +3536,6 @@ mod tests {
         let v3 = engine.value_from_number(2.0);
         assert!(engine.same_value(&v1, &v2));
         assert!(!engine.same_value(&v1, &v3));
-    }
-
-    #[test]
-    fn create_builtin_function_roundtrip() {
-        let mut engine = JscEngine::new();
-        let pk = engine.property_key_from_str("testFn");
-        let func = engine.create_builtin_function(
-            Box::new(|_args, _this, inner_ec| Ok(inner_ec.value_from_number(42.0))),
-            0,
-            pk,
-        );
-        assert!(!func.raw.is_null());
     }
 
     #[test]

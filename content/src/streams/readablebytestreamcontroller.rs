@@ -8,7 +8,7 @@ type ArrayBuffer = <Types as JsTypes>::ArrayBuffer;
 use js_engine::{Completion, ExecutionContext, JsTypes, TypedArrayElementType};
 
 use crate::webidl::bindings::create_interface_instance;
-use crate::webidl::resolved_promise;
+use crate::webidl::{rejected_promise, resolved_promise};
 use js_engine::gc::GcCell;
 use js_engine::gc::gc_cell_new;
 use js_engine::gc_struct;
@@ -662,7 +662,10 @@ impl ReadableByteStreamController {
 
         let cancel_algorithm = self.cancel_algorithm.borrow().clone();
         let result = match cancel_algorithm {
-            Some(cancel_algorithm) => cancel_algorithm.call(reason, ec)?,
+            Some(cancel_algorithm) => match cancel_algorithm.call(reason, ec) {
+                Ok(promise) => promise,
+                Err(error) => rejected_promise(error, ec)?,
+            },
             None => resolved_promise(ec.value_undefined(), ec)?,
         };
         self.clear_algorithms();

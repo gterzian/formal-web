@@ -863,15 +863,38 @@ pub trait ExecutionContext<T: JsTypes + JsTypesWithRealm>: EcmascriptHost<T> {
 
     /// <https://tc39.es/ecma262/#sec-createbuiltinfunction>
     ///
-    /// Creates a built-in function whose behaviour is a boxed closure.
-    /// The behaviour closure receives the JS arguments, the `this` value,
-    /// and a `&mut dyn ExecutionContext<T>`.  The closure's captures are
-    /// stored in the engine's heap and are NOT GC-traced — callers must
-    /// ensure the closure does not capture GC-managed references, or must
-    /// root those references independently.
-    ///
-    /// `is_constructor` controls whether the function gets the `[[Construct]]`
-    /// internal method (making it usable with `new`).
+    /// Create a built-in function from a stateless function pointer.
+    /// The function pointer has no captures, so it is always GC-safe.
+    fn create_builtin_fn_static(
+        &mut self,
+        behaviour: fn(
+            &[T::JsValue],
+            T::JsValue,
+            &mut dyn ExecutionContext<T>,
+        ) -> Completion<T::JsValue, T>,
+        length: u32,
+        name: T::PropertyKey,
+    ) -> T::Function;
+
+    /// Create a builtin function from a boxed closure.
+    /// DEPRECATED: use `create_builtin_fn_static` (stateless) or
+    /// `create_builtin_fn_with_captures` (with concrete captures).
+    fn create_builtin_fn(
+        &mut self,
+        behaviour: Box<
+            dyn Fn(
+                &[T::JsValue],
+                T::JsValue,
+                &mut dyn ExecutionContext<T>,
+            ) -> Completion<T::JsValue, T>,
+        >,
+        length: u32,
+        name: T::PropertyKey,
+    ) -> T::Function;
+
+    /// Create a builtin constructor from a boxed closure.
+    /// DEPRECATED: use `create_builtin_fn_static` (stateless) or
+    /// `create_builtin_fn_with_captures` (with concrete captures).
     fn create_builtin_function(
         &mut self,
         behaviour: Box<
@@ -885,23 +908,6 @@ pub trait ExecutionContext<T: JsTypes + JsTypesWithRealm>: EcmascriptHost<T> {
         name: T::PropertyKey,
         is_constructor: bool,
     ) -> T::Function;
-
-    /// Convenience: create a non-constructor builtin function.
-    /// Shorthand for `create_builtin_function(behaviour, length, name, false)`.
-    fn create_builtin_fn(
-        &mut self,
-        behaviour: Box<
-            dyn Fn(
-                &[T::JsValue],
-                T::JsValue,
-                &mut dyn ExecutionContext<T>,
-            ) -> Completion<T::JsValue, T>,
-        >,
-        length: u32,
-        name: T::PropertyKey,
-    ) -> T::Function {
-        self.create_builtin_function(behaviour, length, name, false)
-    }
 
     /// Root a promise capability so it can be stored across algorithm steps.
     fn root_promise_capability(

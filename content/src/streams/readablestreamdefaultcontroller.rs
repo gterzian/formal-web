@@ -6,7 +6,7 @@ use crate::js::{Types, create_builtin_fn_with_traced_captures};
 
 use crate::streams::SizeAlgorithm;
 use crate::webidl::bindings::create_interface_instance;
-use crate::webidl::{mark_promise_as_handled, resolved_promise};
+use crate::webidl::{mark_promise_as_handled, rejected_promise, resolved_promise};
 use js_engine::gc::GcCell;
 use js_engine::gc::gc_cell_new;
 use js_engine::gc_struct;
@@ -316,7 +316,10 @@ impl ReadableStreamDefaultController {
 
         // Step 2: "Let result be the result of performing this.[[cancelAlgorithm]], passing reason."
         let result = match cancel_algorithm {
-            Some(cancel_algorithm) => cancel_algorithm.call(reason, ec)?,
+            Some(cancel_algorithm) => match cancel_algorithm.call(reason, ec) {
+                Ok(promise) => promise,
+                Err(error) => rejected_promise(error, ec)?,
+            },
             None => resolved_promise(ec.value_undefined(), ec)?,
         };
 

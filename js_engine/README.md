@@ -5,19 +5,33 @@
 Bridges between ECMAScript engines (Boa, JSC) and formal-web's
 HTML/DOM/WebIDL layers.
 
-## Migration status — builtin function creation unified
+## Safe builtin function creation (2026-07-09)
 
-All builtin function creation now goes through a single method on
-`ExecutionContext<T>`:
+The unsafe `create_builtin_function` and `create_builtin_fn` trait methods
+have been **removed** from `ExecutionContext<T>`.  They stored closure
+captures in a no-op trace wrapper (`GcBox<Box<dyn Fn>>`) invisible to Boa's
+GC, causing "not a callable function" errors when the GC collected captured
+`JsObject` references.
 
-- **`create_builtin_function(behaviour, length, name, is_constructor)`** —
-  the one canonical method.
-- **`create_builtin_fn(behaviour, length, name)`** — convenience default
-  method delegating with `is_constructor: false`.
+Replaced by two safe APIs:
+
+- **`create_builtin_fn_static(behaviour, length, name)`** — for stateless
+  function pointers (no captures at all).  The behaviour is a bare `fn`
+  pointer, which is always GC-safe.
+- **`create_builtin_fn_with_captures(ec, captures, behaviour_fn, ...)`** —
+  for functions that need state.  The `captures` parameter is a concrete
+  `C: boa_gc::Trace + 'static` type (e.g. a `#[gc_struct]` platform object).
+  The `behaviour_fn` receives `&C` as a parameter so the closure body never
+  captures anything — state is always passed through the `C` pointer.
+
+The deprecated `create_builtin_fn`/`create_builtin_function` methods remain
+on the trait temporarily with no-op trace via `UnsafeFnBox` for migration.
+Use `create_builtin_fn_static` or `create_builtin_fn_with_captures` in new
+code.
 
 Removed: `Behaviour` trait, `create_builtin_function_from_behaviour`,
-`create_constructor`, and the unsafe `NativeFunction::from_closure` path.
-The Boa backend now uses only `NativeFunction::from_copy_closure_with_captures`.
+`create_constructor`, `NativeFunction::from_closure`, and the `GcBox`
+no-op trace wrapper.
 
 ## Remaining issues
 
@@ -91,27 +105,21 @@ to avoid GC issues.
 **Verified by unit test:** `perform_promise_then_with_result_capability`
 confirms that both the handler fires AND the capability's promise resolves.
 
-### 5. ✅ GC-traceable builtin function captures — FIXED (2026-07-07)
+### 5. ✅ GC-traceable builtin function captures — FIXED (2026-07-09)
 
-`create_builtin_function` was storing the behaviour closure in
-`GcBox<Box<dyn Fn(...)>>` with a **no-op `Trace`** impl.  Any `JsObject`,
-`GcCell`, or other GC-managed value captured inside the closure was invisible
-to Boa's garbage collector, causing "not a callable function" errors.
+The unsafe `create_builtin_function`/`create_builtin_fn` trait methods
+have been **removed** from `ExecutionContext<T>` and replaced with:
 
-**Fix:** Added `create_builtin_fn_with_captures` in
-`js_engine/src/boa/engine.rs` — a standalone function that stores the
-captures as a concrete traceable type `C: boa_gc::Trace + 'static`
-directly in `NativeFunction::from_copy_closure_with_captures`, preserving
-proper GC reachability.  Added helper function
-`crate::js::create_builtin_fn_with_traced_captures` in content crate
-with `#[cfg]`-based backend dispatch.
+- **`create_builtin_fn_static`** — stateless function pointers (trait method)
+- **`create_builtin_fn_with_captures`** — standalone Boa function for
+  concrete traceable captures `C: boa_gc::Trace`
+- **`create_builtin_fn_with_traced_captures`** — content crate helper
+  that delegates to the above
 
-All stream domain closures (`ReadableStreamDefaultController`,
-`ReadableByteStreamController`, `WritableStreamDefaultController`,
-`ReadableStream`, `TransformStream`, `ReadableStreamFromIterableState`,
-`AbortThenCancelState`, `TeeState`, `ByteTeeState`, etc.) and
-`webidl/async_iterable.rs` closures converted to use
-`create_builtin_fn_with_traced_captures`.
+The `GcBox` wrapper with no-op Trace has been deleted.
+Closures passed to builtin function creation must NOT capture JS values;
+state is passed through the captures type `C` (a `#[gc_struct]` type
+with proper `Trace`).
 
 ### 6. ✅ Wasm branding tests — FIXED (2026-07-08)
 
@@ -128,20 +136,24 @@ pattern is `TypeError: not a callable function` as unhandled promise
 rejections, affecting all readable-stream tests that involve reading,
 canceling, teeing, or async-iterating.
 
-**Not caused by:**
-- Basic promise resolution (unit tests confirm `.then()` works)
-- Attribute accessor descriptors (verified working through JS eval)
-- GC tracing of closure captures (all stream closures use
-  `create_builtin_fn_with_traced_captures`)
-- `ec.call()` in `chunk_steps` (diagnostic check confirms the
-  resolver function is callable when checked)
+**Investigation status (2026-07-09):** Addressed by fixing the
+`GcBox` no-op Trace issue (see #5).  The `GcBox` wrapper was the
+mechanism by which captured `JsObject` references became invisible
+to Boa's GC.  However, diagnostic logging showed that the remaining
+stream domain `ec.call()` invocations (`chunk_steps`, `close_steps`,
+`error_steps`) ALL SUCCEED — the "not a callable function" error does
+NOT come from our `ec.call()` (which produces the distinct message
+`"callback is not callable"`).
 
 The error comes from Boa's VM (`non_existent_call` in
 `internal_methods.rs`) indicating JavaScript code tries to call a
-value that has no `[[Call]]` internal method.  Likely an opaque
-`JsFunction` handle inside a `PromiseJob` closure that was collected
-or became invalid between when `.then()` was called and when the
-microtask runs.
+value that has no `[[Call]]` internal method.  Further investigation
+is needed to pinpoint which JS-level call triggers this.
+
+**Also fixed:** `cancel_steps` in both default and byte controllers
+now catches errors from the cancel algorithm and returns a rejected
+promise instead of propagating the exception (fixes the "cancel
+callback raises an exception" test).
 
 Piping, transform-stream, and writable-stream tests pass — these use
 `ReadableStreamPipeTo`/`TransformStreamDefaultSourcePull` read request

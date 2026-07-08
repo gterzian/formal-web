@@ -5,9 +5,18 @@ use js_engine::gc::gc_cell_new;
 use js_engine::gc_struct;
 use js_engine::{Completion, ExecutionContext, JsTypes};
 
-use crate::js::Types;
+use crate::js::{Types, create_builtin_fn_static};
 
 type JsValue = <Types as JsTypes>::JsValue;
+
+/// Helper: a builtin function that ignores its arguments and returns undefined.
+pub(crate) fn resolve_to_undefined_impl(
+    _args: &[JsValue],
+    _this: JsValue,
+    ec: &mut dyn ExecutionContext<Types>,
+) -> Completion<JsValue, Types> {
+    Ok(ec.value_undefined())
+}
 type JsObject = <Types as JsTypes>::JsObject;
 
 /// **Web IDL Promise Manipulation**
@@ -120,18 +129,8 @@ pub(crate) fn transform_promise_to_undefined(
 ) -> Completion<JsObject, Types> {
     let not_promise_err =
         ec.new_type_error("transform_promise_to_undefined: value is not a Promise");
-    // Step 1-2 of react: CreateBuiltinFunction returning undefined on fulfillment.
-    let on_fulfilled = ec.create_builtin_fn(
-        Box::new(
-            |_args: &[JsValue],
-             _this: JsValue,
-             on_fulfilled_ec: &mut dyn ExecutionContext<Types>| {
-                Ok(on_fulfilled_ec.value_undefined())
-            },
-        ),
-        1,
-        ec.property_key_from_str(""),
-    );
+    let name_key = ec.property_key_from_str("");
+    let on_fulfilled = create_builtin_fn_static(ec, resolve_to_undefined_impl, 1, name_key);
     // Step 7 of react: "PerformPromiseThen(promise, onFulfilled, ...)."
     // Note: We pass None for result_capability because our trait impl
     // ignores it (calls promise.then() which creates its own).  The
@@ -151,18 +150,8 @@ pub(crate) fn mark_promise_as_handled(
     ec: &mut dyn ExecutionContext<Types>,
 ) -> Completion<(), Types> {
     let not_promise_err = ec.new_type_error("mark_promise_as_handled: value is not a Promise");
-    // CreateBuiltinFunction returning undefined on rejection.
-    let on_rejected = ec.create_builtin_fn(
-        Box::new(
-            |_args: &[JsValue],
-             _this: JsValue,
-             on_rejected_ec: &mut dyn ExecutionContext<Types>| {
-                Ok(on_rejected_ec.value_undefined())
-            },
-        ),
-        1,
-        ec.property_key_from_str(""),
-    );
+    let name_key = ec.property_key_from_str("");
+    let on_rejected = create_builtin_fn_static(ec, resolve_to_undefined_impl, 1, name_key);
     // PerformPromiseThen with rejection-only handler.
     let js_promise =
         <Types as JsTypes>::object_as_promise(promise_object).ok_or_else(|| not_promise_err)?;
@@ -185,20 +174,12 @@ pub(crate) fn mark_promise_as_handled(
 ///
 /// Performs steps upon fulfillment of a promise.  Returns a new promise
 /// that resolves with the result of the steps.
-pub(crate) fn upon_fulfillment<F>(
+pub(crate) fn upon_fulfillment(
     promise: JsObject,
-    steps: F,
+    on_fulfilled: Option<<Types as JsTypes>::Function>,
     ec: &mut dyn ExecutionContext<Types>,
-) -> Completion<JsObject, Types>
-where
-    F: FnOnce(JsValue, &mut dyn ExecutionContext<Types>) -> Completion<JsValue, Types> + 'static,
-{
-    upon_settlement::<F, fn(JsValue, &mut dyn ExecutionContext<Types>) -> Completion<JsValue, Types>>(
-        promise,
-        Some(steps),
-        None,
-        ec,
-    )
+) -> Completion<JsObject, Types> {
+    upon_settlement(promise, on_fulfilled, None, ec)
 }
 
 /// <https://webidl.spec.whatwg.org/#upon-rejection>
@@ -206,102 +187,31 @@ where
 /// Performs steps upon rejection of a promise.  Returns a new promise
 /// that resolves with the result of the steps (or rejects if the steps
 /// return a rejected promise).
-pub(crate) fn upon_rejection<R>(
+pub(crate) fn upon_rejection(
     promise: JsObject,
-    steps: R,
+    on_rejected: Option<<Types as JsTypes>::Function>,
     ec: &mut dyn ExecutionContext<Types>,
-) -> Completion<JsObject, Types>
-where
-    R: FnOnce(JsValue, &mut dyn ExecutionContext<Types>) -> Completion<JsValue, Types> + 'static,
-{
-    upon_settlement::<fn(JsValue, &mut dyn ExecutionContext<Types>) -> Completion<JsValue, Types>, R>(
-        promise,
-        None,
-        Some(steps),
-        ec,
-    )
+) -> Completion<JsObject, Types> {
+    upon_settlement(promise, None, on_rejected, ec)
 }
 
 /// <https://webidl.spec.whatwg.org/#react>
 ///
 /// Reacts to a promise with optional fulfillment and rejection steps.
-/// Wraps CreateBuiltinFunction + NewPromiseCapability + PerformPromiseThen
-/// into a single call.  Returns the new promise capability's promise.
-pub(crate) fn upon_settlement<F, R>(
+/// Wraps NewPromiseCapability + PerformPromiseThen into a single call.
+/// Returns the new promise capability's promise.
+///
+/// `on_fulfilled` and `on_rejected` are already-created JS functions
+/// (e.g. from `create_builtin_fn_static` or `create_builtin_fn_with_traced_captures`).
+pub(crate) fn upon_settlement(
     promise: JsObject,
-    on_fulfilled: Option<F>,
-    on_rejected: Option<R>,
+    on_fulfilled: Option<<Types as JsTypes>::Function>,
+    on_rejected: Option<<Types as JsTypes>::Function>,
     ec: &mut dyn ExecutionContext<Types>,
-) -> Completion<JsObject, Types>
-where
-    F: FnOnce(JsValue, &mut dyn ExecutionContext<Types>) -> Completion<JsValue, Types> + 'static,
-    R: FnOnce(JsValue, &mut dyn ExecutionContext<Types>) -> Completion<JsValue, Types> + 'static,
-{
-    // Extract everything we need from `ec` before creating closures,
-    // since create_builtin_function takes &mut self.
+) -> Completion<JsObject, Types> {
     let realm = ec.current_realm();
     let global = ec.realm_global_object();
     let not_promise_err = ec.new_type_error("upon_settlement: value is not a Promise");
-
-    // Wrap FnOnce steps in RefCell so they satisfy the Fn bound required
-    // by create_builtin_function.  Each callback is called at most once
-    // (promise reactions are single-fire).
-    let fulfilled_cell = on_fulfilled.map(|s| RefCell::new(Some(s)));
-    let rejected_cell = on_rejected.map(|s| RefCell::new(Some(s)));
-
-    // Step 2 of react: CreateBuiltinFunction(onFulfilledSteps, 1, "", « »)
-    let on_fulfilled_fn: Option<<Types as JsTypes>::Function> = if fulfilled_cell.is_some() {
-        let cell = fulfilled_cell.unwrap();
-        Some(ec.create_builtin_fn(
-            Box::new(
-                move |args: &[JsValue],
-                      _this: JsValue,
-                      inner_ec: &mut dyn ExecutionContext<Types>|
-                      -> Completion<JsValue, Types> {
-                    let value = args
-                        .first()
-                        .cloned()
-                        .unwrap_or_else(|| inner_ec.value_undefined());
-                    if let Some(steps) = cell.borrow_mut().take() {
-                        steps(value, inner_ec)
-                    } else {
-                        Ok(inner_ec.value_undefined())
-                    }
-                },
-            ),
-            1,
-            ec.property_key_from_str(""),
-        ))
-    } else {
-        None
-    };
-
-    // Step 4 of react: CreateBuiltinFunction(onRejectedSteps, 1, "", « »)
-    let on_rejected_fn: Option<<Types as JsTypes>::Function> = if rejected_cell.is_some() {
-        let cell = rejected_cell.unwrap();
-        Some(ec.create_builtin_fn(
-            Box::new(
-                move |args: &[JsValue],
-                      _this: JsValue,
-                      inner_ec: &mut dyn ExecutionContext<Types>|
-                      -> Completion<JsValue, Types> {
-                    let reason = args
-                        .first()
-                        .cloned()
-                        .unwrap_or_else(|| inner_ec.value_undefined());
-                    if let Some(steps) = cell.borrow_mut().take() {
-                        steps(reason, inner_ec)
-                    } else {
-                        Ok(inner_ec.value_undefined())
-                    }
-                },
-            ),
-            1,
-            ec.property_key_from_str(""),
-        ))
-    } else {
-        None
-    };
 
     // Step 5 of react: Let constructor be %Promise%.
     let intrinsics = ec.realm_intrinsics(&realm);
@@ -314,12 +224,7 @@ where
     // Step 7 of react: PerformPromiseThen(promise, onFulfilled, onRejected, newCapability).
     let js_promise =
         <Types as JsTypes>::object_as_promise(&promise).ok_or_else(|| not_promise_err.clone())?;
-    ec.perform_promise_then(
-        js_promise,
-        on_fulfilled_fn,
-        on_rejected_fn,
-        Some(capability),
-    )?;
+    ec.perform_promise_then(js_promise, on_fulfilled, on_rejected, Some(capability))?;
 
     // Step 8 of react: Return newCapability.
     Ok(Types::value_as_object(&result_promise).unwrap_or(global))

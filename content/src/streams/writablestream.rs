@@ -394,24 +394,34 @@ impl WritableStream {
         let stream_for_fulfilled = self.clone();
         let stream_for_rejected = self.clone();
 
-        let _ = upon_settlement(
-            promise,
-            Some(
-                move |_value: JsValue, ec: &mut dyn ExecutionContext<Types>| {
+        let name_key = ec.property_key_from_str("");
+        let on_fulfilled = ec.create_builtin_fn(
+            Box::new(
+                move |_args: &[JsValue], _this: JsValue, ec: &mut dyn ExecutionContext<Types>| {
                     abort_request_for_fulfilled.resolve(ec)?;
                     stream_for_fulfilled.reject_close_and_closed_promise_if_needed(ec)?;
                     Ok(ec.value_undefined())
                 },
             ),
-            Some(
-                move |reason: JsValue, ec: &mut dyn ExecutionContext<Types>| {
+            1,
+            name_key.clone(),
+        );
+        let on_rejected = ec.create_builtin_fn(
+            Box::new(
+                move |args: &[JsValue], _this: JsValue, ec: &mut dyn ExecutionContext<Types>| {
+                    let reason = args
+                        .first()
+                        .cloned()
+                        .unwrap_or_else(|| ec.value_undefined());
                     abort_request.reject(reason, ec)?;
                     stream_for_rejected.reject_close_and_closed_promise_if_needed(ec)?;
                     Ok(ec.value_undefined())
                 },
             ),
-            ec,
-        )?;
+            1,
+            name_key,
+        );
+        let _ = upon_settlement(promise, Some(on_fulfilled), Some(on_rejected), ec)?;
         Ok(())
     }
 

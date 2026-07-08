@@ -65,21 +65,29 @@ use crate::{
 
 use super::types::BoaTypes;
 
-/// Crate-local wrapper that implements `boa_gc::Trace` with a no-op trace.
-/// `create_builtin_function` wraps the behaviour closure in `GcBox`
-/// so `from_copy_closure_with_captures` receives a type satisfying `C: boa_gc::Trace`.
-pub(crate) struct GcBox<T>(pub(crate) T);
+/// Zero-sized marker type for "no captures" — implements `Trace` with no fields.
+#[derive(Clone, boa_gc::Finalize, boa_gc::Trace, boa_engine::JsData)]
+pub(crate) struct NoCaptures;
 
-// SAFETY: GcBox<T> stores T by value.  The no-op trace is correct because
-// the captured closure data inside T does not contain GC-reachable
-// references that aren't already independently rooted.
-unsafe impl<T: 'static> boa_gc::Trace for GcBox<T> {
+/// Wrapper for `Box<dyn Fn>` as GC captures with no-op trace.
+/// DEPRECATED: use concrete traceable captures instead.
+pub(crate) struct UnsafeFnBox(
+    Box<
+        dyn Fn(
+            &[JsValue],
+            JsValue,
+            &mut dyn ExecutionContext<BoaTypes>,
+        ) -> Completion<JsValue, BoaTypes>,
+    >,
+);
+
+// SAFETY: No-op trace — the inner Box<dyn Fn> is not traced.
+unsafe impl boa_gc::Trace for UnsafeFnBox {
     unsafe fn trace(&self, _tracer: &mut boa_gc::Tracer) {}
     unsafe fn trace_non_roots(&self) {}
     fn run_finalizer(&self) {}
 }
-
-impl<T: 'static> boa_gc::Finalize for GcBox<T> {}
+impl boa_gc::Finalize for UnsafeFnBox {}
 
 /// Captures for the `resolve` wrapper used when piping a `.then()` result
 /// through a capability.
@@ -387,7 +395,51 @@ impl JsEngine<BoaTypes> for BoaContext {
 impl ExecutionContext<BoaTypes> for BoaContext {
     // ── §10.3 Built-in Function Objects ──────────────────────────────────
 
-    /// <https://tc39.es/ecma262/#sec-createbuiltinfunction>
+    fn create_builtin_fn_static(
+        &mut self,
+        behaviour: fn(
+            &[JsValue],
+            JsValue,
+            &mut dyn ExecutionContext<BoaTypes>,
+        ) -> Completion<JsValue, BoaTypes>,
+        length: u32,
+        name: PropertyKey,
+    ) -> JsFunction {
+        create_builtin_fn_with_captures(
+            self,
+            NoCaptures,
+            move |args, this, _captures, ec| behaviour(args, this, ec),
+            length,
+            name,
+            false,
+        )
+    }
+
+    fn create_builtin_fn(
+        &mut self,
+        behaviour: Box<
+            dyn Fn(
+                &[JsValue],
+                JsValue,
+                &mut dyn ExecutionContext<BoaTypes>,
+            ) -> Completion<JsValue, BoaTypes>,
+        >,
+        length: u32,
+        name: PropertyKey,
+    ) -> JsFunction {
+        // Store the Box<dyn Fn> as captures with no-op trace.
+        // DEPRECATED: the Box's inner captures are not GC-visible.
+        let wrapped = UnsafeFnBox(behaviour);
+        create_builtin_fn_with_captures(
+            self,
+            wrapped,
+            |args, this, captures, ec| captures.0(args, this, ec),
+            length,
+            name,
+            false,
+        )
+    }
+
     fn create_builtin_function(
         &mut self,
         behaviour: Box<
@@ -401,34 +453,15 @@ impl ExecutionContext<BoaTypes> for BoaContext {
         name: PropertyKey,
         is_constructor: bool,
     ) -> JsFunction {
-        let realm = self.current_realm();
-        let name_str = match &name {
-            PropertyKey::String(s) => s.clone(),
-            PropertyKey::Symbol(_) => boa_engine::js_string!(""),
-            _ => boa_engine::js_string!(""),
-        };
-
-        // Store the behaviour as the captures (wrapped in GcBox for boa_gc::Trace).
-        // The from_copy_closure_with_captures closure receives &GcBox<Box<dyn Fn<...>>>
-        // as a parameter (not captured by the closure), so the closure is Copy and 'static.
-        let wrapped = GcBox(behaviour);
-
-        let native = NativeFunction::from_copy_closure_with_captures(
-            move |this, args, captures, context| {
-                let engine: &mut BoaContext =
-                    unsafe { &mut *(context as *mut Context as *mut BoaContext) };
-                captures.0(args, this.clone(), engine).map_err(JsError::from_opaque)
-            },
+        let wrapped = UnsafeFnBox(behaviour);
+        create_builtin_fn_with_captures(
+            self,
             wrapped,
-        );
-
-        let mut builder = FunctionObjectBuilder::new(&realm, native)
-            .name(name_str)
-            .length(length as usize);
-        if is_constructor {
-            builder = builder.constructor(true);
-        }
-        builder.build()
+            |args, this, captures, ec| captures.0(args, this, ec),
+            length,
+            name,
+            is_constructor,
+        )
     }
 
     // ── §7.1 Type Conversion ──────────────────────────────────────────────
@@ -2366,15 +2399,20 @@ fn has_property_then_get_boolean(
 ///
 /// The `C` type must implement `boa_gc::Trace + 'static`.  For `#[gc_struct]`
 /// types this is automatically derived.
-pub fn create_builtin_fn_with_captures<C: boa_gc::Trace + 'static>(
+pub fn create_builtin_fn_with_captures<
+    C: boa_gc::Trace + 'static,
+    F: Fn(
+            &[JsValue],
+            JsValue,
+            &C,
+            &mut dyn ExecutionContext<BoaTypes>,
+        ) -> Completion<JsValue, BoaTypes>
+        + Copy
+        + 'static,
+>(
     ec: &mut dyn ExecutionContext<BoaTypes>,
     captures: C,
-    behaviour: fn(
-        &[JsValue],
-        JsValue,
-        &C,
-        &mut dyn ExecutionContext<BoaTypes>,
-    ) -> Completion<JsValue, BoaTypes>,
+    behaviour: F,
     length: u32,
     name: PropertyKey,
     is_constructor: bool,

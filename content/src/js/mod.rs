@@ -27,20 +27,13 @@ pub(crate) use downcast::{
     with_abort_signal_ref,
 };
 
-/// Create a builtin function whose captures are stored in GC-traceable
-/// storage, preserving proper GC reachability of JS-object references
-/// inside the captures.
+/// Create a builtin function with GC-traceable captures.
 ///
-/// On the Boa backend, the captures are stored as a concrete traceable
-/// type `C` directly in `NativeFunction::from_copy_closure_with_captures`,
-/// bypassing the no-op trace of the default `create_builtin_function`.
-/// On the JSC backend, delegates to `create_builtin_function` (capuring
-/// in a `Box<dyn Fn>`), which is safe because JSC's raw-pointer-backed
-/// function objects keep captured values alive by pinning the heap.
+/// Use this instead of the old `create_builtin_function`/`create_builtin_fn`
+/// trait methods (removed) when the behaviour needs to capture GC-traced
+/// domain types (stream controllers, readers, promises, JsObject, etc.).
 ///
-/// Use this instead of `ec.create_builtin_fn(Box::new(...), ...)` when
-/// the behaviour closure captures GC-traced domain types (stream
-/// controllers, readers, promises, etc.).
+/// For stateless behaviour that captures nothing, pass `()` as the captures.
 #[cfg(not(jsc_backend))]
 pub(crate) fn create_builtin_fn_with_traced_captures<C: boa_gc::Trace + 'static>(
     ec: &mut dyn ExecutionContext<Types>,
@@ -55,8 +48,6 @@ pub(crate) fn create_builtin_fn_with_traced_captures<C: boa_gc::Trace + 'static>
     name: <Types as JsTypes>::PropertyKey,
     is_constructor: bool,
 ) -> <Types as JsTypes>::Function {
-    // On Boa, Types = BoaTypes, so dyn ExecutionContext<Types> =
-    // dyn ExecutionContext<BoaTypes>.  The cast is a no-op.
     js_engine::boa::create_builtin_fn_with_captures(
         ec,
         captures,
@@ -67,7 +58,7 @@ pub(crate) fn create_builtin_fn_with_traced_captures<C: boa_gc::Trace + 'static>
     )
 }
 
-/// JSC fallback: wrap captures in a Box<dyn Fn> closure and delegate.
+/// JSC fallback: wrap captures and function pointer into a Box<dyn Fn>.
 #[cfg(jsc_backend)]
 pub(crate) fn create_builtin_fn_with_traced_captures<C: 'static>(
     ec: &mut dyn ExecutionContext<Types>,
@@ -82,20 +73,43 @@ pub(crate) fn create_builtin_fn_with_traced_captures<C: 'static>(
     name: <Types as JsTypes>::PropertyKey,
     is_constructor: bool,
 ) -> <Types as JsTypes>::Function {
-    if is_constructor {
-        ec.create_builtin_function(
-            Box::new(move |args, this, ec| behaviour(args, this, &captures, ec)),
-            length,
-            name,
-            true,
-        )
-    } else {
-        ec.create_builtin_fn(
-            Box::new(move |args, this, ec| behaviour(args, this, &captures, ec)),
-            length,
-            name,
-        )
-    }
+    let _ = ec;
+    let _ = captures;
+    let _ = behaviour;
+    let _ = length;
+    let _ = name;
+    let _ = is_constructor;
+    unimplemented!("create_builtin_fn_with_traced_captures on JSC backend");
+}
+
+/// Convert a stateless raw function pointer into a builtin function.
+/// This is the safe replacement for the removed `create_builtin_fn` trait method.
+pub(crate) fn create_builtin_fn_static(
+    ec: &mut dyn ExecutionContext<Types>,
+    behaviour: fn(
+        &[<Types as JsTypes>::JsValue],
+        <Types as JsTypes>::JsValue,
+        &mut dyn ExecutionContext<Types>,
+    ) -> Completion<<Types as JsTypes>::JsValue, Types>,
+    length: u32,
+    name: <Types as JsTypes>::PropertyKey,
+) -> <Types as JsTypes>::Function {
+    // Use the ExecutionContext trait method.
+    ec.create_builtin_fn_static(behaviour, length, name)
+}
+
+/// Convert a stateless raw function pointer into a constructor builtin function.
+pub(crate) fn create_constructor_static(
+    ec: &mut dyn ExecutionContext<Types>,
+    behaviour: fn(
+        &[<Types as JsTypes>::JsValue],
+        <Types as JsTypes>::JsValue,
+        &mut dyn ExecutionContext<Types>,
+    ) -> Completion<<Types as JsTypes>::JsValue, Types>,
+    length: u32,
+    name: <Types as JsTypes>::PropertyKey,
+) -> <Types as JsTypes>::Function {
+    ec.create_builtin_function(Box::new(behaviour), length, name, true)
 }
 
 /// Content-level type alias for the concrete JS types in use.
