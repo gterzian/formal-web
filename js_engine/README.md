@@ -293,10 +293,33 @@ call site needs individual verification.
    in all readable-stream reading/canceling/teeing/async-iterator tests.
    Phase 2 fix: converted remaining `ec.create_builtin_fn` calls that
    capture GC values in `writablestream.rs` and `abort_signal.rs` to
-   `create_builtin_fn_with_traced_captures`.  The error likely still
-   involves `JsFunction` handles inside opaque `PromiseJob` closures
-   that are invisible to the GC, or another Boa internal issue with
-   promise reaction resolution.
+   `create_builtin_fn_with_traced_captures`.
+
+   **2026-07-09 investigation (documented path, no solution found):**
+   - Added `log::warn!` instrumentation to every `PullAlgorithm::call()`,
+     `CancelAlgorithm::call()`, `StartAlgorithm::call()` variant.
+   - Added instrumentation to `SourceMethod::call()` (the `invoke_callback_function`
+     wrapper) and all four native promise handler functions
+     (`setup_on_fulfilled`, `setup_on_rejected`, `pull_steps_on_fulfilled`,
+     `pull_steps_on_rejected`).
+   - Ran `RUST_LOG=warn` against `streams/readable-streams/cancel.any.js`
+     (single failing test: "cancel() on a locked stream should fail").
+   - **Confirmed:** Every algorithm call (`PullAlgorithm`, `CancelAlgorithm`,
+     `StartAlgorithm`) returned `Ok`. The only `Err` was from the
+     "cancel callback raises an exception" test, which intentionally throws
+     and is correctly caught by `cancel_steps` → `rejected_promise(error, ec)`.
+   - **Confirmed:** All four native promise handler functions ARE called by
+     Boa's promise job machinery. `setup_on_fulfilled` fired 11 times,
+     `pull_steps_on_fulfilled` fired 12+ times across the test run.
+     Neither `setup_on_rejected` nor `pull_steps_on_rejected` ever fired
+     (no start or pull algorithm ever rejected — expected behavior).
+   - **Excluded:** The `TypeError: not a callable function` does NOT come
+     from our algorithm call chain or our GC-traceable promise handlers.
+     Both the algorithm calls and the promise handler invocations complete
+     successfully. The error comes from Boa's JavaScript VM internally
+     (`non_existent_call` in `internal_methods.rs` or VM opcode)
+     during JavaScript-level execution unrelated to our Rust promise
+     handler invocations.
 
 7. 🟡 **WASM worker-context tests** — `WebAssembly.compile` and
    `WebAssembly.instantiate` require a `Window` global object.
@@ -342,6 +365,44 @@ call site needs individual verification.
 - DataView and TypedArray view construction are `todo!()`.
 - JSC's C API does not expose the microtask queue — `run_jobs` only
   drains the Rust-side job queue, not JSC's internal promise queue.
+
+## Session investigation log
+
+Each session that investigates an open issue should append a log entry here.
+Log only what was done and what was ruled out — no speculation on solutions.
+The purpose is to let the next session pick up where the last one left off
+without repeating dead ends.
+
+### 2026-07-09 — WPT stream test `TypeError: not a callable function`
+
+**Files changed:** `writablestream.rs`, `abort_signal.rs` (ec.create_builtin_fn →
+create_builtin_fn_with_traced_captures), `js_engine/README.md` (documentation).
+
+**Instrumentation added:** log::warn! at every PullAlgorithm/CancelAlgorithm/
+StartAlgorithm variant, SourceMethod::call(), setup_on_fulfilled/rejected,
+pull_steps_on_fulfilled/rejected, readable_stream_cancel.
+
+**What was confirmed:**
+- All algorithm calls return Ok (except expected exception test).
+- All four promise handler functions fire (called by Boa's promise job system).
+
+**What was ruled out:**
+- The error is NOT from algorithm calls failing (they all succeed).
+- The error is NOT from our GC-traceable promise handlers failing to fire
+  (they all fire correctly).
+- The error is NOT from the `UnsafeFnBox` GC capture issue (the remaining
+  `ec.create_builtin_fn(Box::new(...))` sites capture only fn pointers or
+  Rust primitives; see §9 audit table).
+- The error comes from Boa's JavaScript VM (`non_existent_call`) during
+  JavaScript-level execution, not from our Rust promise handler invocations.
+
+**Not investigated:** The specific JavaScript code path within Boa's VM that
+produces "not a callable function". Candidate: `new_type_error` creates opaque
+JsError values via `JsNativeError::typ().with_message(...).into_opaque()`;
+the WPT test harness's `promise_test` wrapper or the test JavaScript code may
+attempt operations on the error object that trigger the non-callable error.
+
+---
 
 ## Stable build
 
