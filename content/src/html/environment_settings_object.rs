@@ -8,7 +8,7 @@ use url::Url;
 
 use crate::dom::{Document, Event, EventDispatchHost};
 use crate::html::{TimerHandler, Window};
-use crate::js::build_context::build_context;
+use crate::js::build_context::{build_context, build_realm};
 use crate::js::platform_objects::with_global_scope;
 use crate::js::{
     Engine, Types, install_console_namespace, install_css_namespace, install_document_property,
@@ -73,9 +73,24 @@ impl EnvironmentSettingsObject {
         source_navigable_id: Option<NavigableId>,
         document_id: Option<DocumentId>,
     ) -> Result<Self, String> {
-        // Build the engine. WindowHostHooks creates the Window and its
-        // GlobalScope during build().
-        let mut engine = build_context(Rc::clone(&document))?;
+        Self::new_in_realm(None, document, creation_url, event_sender, source_navigable_id, document_id)
+    }
+
+    /// Like `new`, but creates the realm within an existing engine (sharing
+    /// the same JS context / GC heap).  Used by `window.open`.
+    pub fn new_in_realm(
+        parent: Option<&mut Engine>,
+        document: Rc<RefCell<BaseDocument>>,
+        creation_url: Url,
+        event_sender: Option<IpcSender<ContentEvent>>,
+        source_navigable_id: Option<NavigableId>,
+        document_id: Option<DocumentId>,
+    ) -> Result<Self, String> {
+        // Build the engine (fresh or child realm).
+        let mut engine = match parent {
+            Some(parent) => build_realm(parent, Rc::clone(&document))?,
+            None => build_context(Rc::clone(&document))?,
+        };
 
         // Set up timer host and navigation info on the GlobalScope through
         // the EC trait's realm_global_object + with_object_any.

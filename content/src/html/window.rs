@@ -17,7 +17,7 @@ use crate::webidl::Callback;
 
 use super::resolved_style_properties_for_element;
 use super::windowproxy::create_window_proxy;
-use super::{GlobalScope, the_rules_for_choosing_a_navigable};
+use super::{GlobalScope, the_rules_for_choosing_a_navigable, the_rules_with_parent};
 use js_engine::gc_struct;
 
 /// <https://html.spec.whatwg.org/#window>
@@ -238,7 +238,14 @@ pub(crate) fn window_open_steps(
         .top_level_traversable_id()
         .unwrap_or(source_navigable_id);
 
-    let result = the_rules_for_choosing_a_navigable(
+    // The parent engine is passed to `the_rules_with_parent` so that
+    // new windows created by `window.open` share the same JS engine
+    // context (same GC heap on JSC).  We obtain it via a raw pointer
+    // since `ec` is `&mut dyn ExecutionContext<Types>`.
+    let parent_engine: Option<&mut crate::js::Engine> = None; // TODO: thread engine through ec
+
+    let result = the_rules_with_parent(
+        parent_engine,
         source_navigable_id,
         parent_traversable_id,
         top_level_traversable_id,

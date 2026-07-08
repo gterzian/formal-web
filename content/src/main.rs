@@ -1249,6 +1249,19 @@ impl ContentProcess {
             // without a blocking IPC round-trip.
             self.set_clipboard_cache(prefetched_clipboard_text);
 
+            // Extract traversable_id before borrowing self.documents.
+            let traversable_id = self
+                .documents
+                .get(&document_id)
+                .map(|doc| doc.traversable_id)
+                .unwrap_or(NavigableId::new());
+
+            // Set up shared registry so window.open can register new documents
+            // (same as click_element does).
+            if let Err(error) = self.set_up_new_document_registry(traversable_id) {
+                warn!("failed to set up new document registry for UI event: {error}");
+            }
+
             let Some(document) = self.documents.get_mut(&document_id) else {
                 continue;
             };
@@ -1262,7 +1275,7 @@ impl ContentProcess {
             let event = deserialize_ui_event(&event)?;
             dispatch_ui_event(
                 document_id,
-                document.traversable_id,
+                traversable_id,
                 document.parent_traversable_id,
                 document.top_level_traversable_id,
                 Rc::clone(&document.document),
@@ -1272,6 +1285,13 @@ impl ContentProcess {
                 document.viewport_offset_y,
                 event,
             )?;
+
+            if let Err(error) = self.tear_down_new_document_registry(traversable_id) {
+                warn!("failed to tear down new document registry: {error}");
+            }
+            if let Err(error) = self.drain_new_traversable_documents() {
+                warn!("failed to drain new traversable documents: {error}");
+            }
         }
 
         Ok(())

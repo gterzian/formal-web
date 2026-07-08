@@ -681,11 +681,30 @@ impl GlobalScope {
         ),
         String,
     > {
+        self.create_document_in_realm(None, new_traversable_id, new_document_id)
+    }
+
+    /// Like `create_document`, but shares the parent engine's JS context.
+    /// Used for `window.open` with opener (auxiliary BC).
+    pub(crate) fn create_document_in_realm(
+        &self,
+        parent: Option<&mut crate::js::Engine>,
+        new_traversable_id: NavigableId,
+        new_document_id: DocumentId,
+    ) -> Result<
+        (
+            JsObject,
+            super::environment_settings_object::EnvironmentSettingsObject,
+            Rc<RefCell<BaseDocument>>,
+        ),
+        String,
+    > {
         let event_sender = self.event_sender();
         let event_sender = event_sender
             .as_ref()
             .ok_or_else(|| String::from("GlobalScope has no event sender"))?;
-        crate::html::create_a_new_browsing_context_and_document(
+        crate::html::create_a_new_realm(
+            parent,
             event_sender,
             new_traversable_id,
             new_document_id,

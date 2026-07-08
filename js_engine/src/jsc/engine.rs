@@ -619,6 +619,10 @@ impl JsTypesWithRealm for JscTypes {
 /// `EcmascriptHost<JscTypes>`.
 pub struct JscEngine {
     context: JscContext,
+    /// The realm's global object (e.g. the Window for this document).
+    /// Multiple realms share the same `context` (same JSContextRef, same GC
+    /// heap) but each has its own global object for Web IDL operations.
+    realm_global: JscObject,
     host_data: HashMap<std::any::TypeId, Box<dyn std::any::Any>>,
     /// Monotonically-increasing counter for GC-root property names.
     next_root_id: u64,
@@ -627,8 +631,33 @@ pub struct JscEngine {
 
 impl JscEngine {
     pub fn new() -> Self {
+        let context = JscContext::new();
+        let realm_global = context.global_object();
         Self {
-            context: JscContext::new(),
+            context,
+            realm_global,
+            host_data: HashMap::new(),
+            next_root_id: 0,
+            queued_jobs: Vec::new(),
+        }
+    }
+
+    /// Create a new realm sharing the same JSC context (same JSGlobalContextRef,
+    /// same GC heap).  Each realm has its own global object, host_data, roots,
+    /// and job queue.
+    ///
+    /// Use for `window.open` and similar cross-document navigation where the
+    /// new document should share the opener's JS engine.
+    pub fn new_shared_realm(&self) -> Self {
+        let ctx_ptr = self.context.as_context_ref();
+        let raw_obj = unsafe { JSObjectMake(ctx_ptr, GLOBAL_CONTEXT_CLASS.0, std::ptr::null_mut()) };
+        let realm_global = JscObject {
+            raw: raw_obj,
+            ctx: ctx_ptr,
+        };
+        Self {
+            context: self.context.clone(),
+            realm_global,
             host_data: HashMap::new(),
             next_root_id: 0,
             queued_jobs: Vec::new(),
@@ -2017,16 +2046,23 @@ impl ExecutionContext<JscTypes> for JscEngine {
             )
         };
 
-        CURRENT_ENGINE.with(|current| {
-            *current.borrow_mut() = previous;
-        });
-
         if !exception.is_null() {
+            CURRENT_ENGINE.with(|current| {
+                *current.borrow_mut() = previous;
+            });
             return Err(JscValue {
                 raw: exception,
                 ctx: self.ctx_ptr(),
             });
         }
+
+        // Drain JSC's internal microtask queue (same rationale as call()).
+        let _ = self.eval_script_raw("void 0");
+
+        CURRENT_ENGINE.with(|current| {
+            *current.borrow_mut() = previous;
+        });
+
         Ok(JscObject {
             raw: result,
             ctx: self.ctx_ptr(),
@@ -2402,7 +2438,7 @@ impl ExecutionContext<JscTypes> for JscEngine {
     where
         JscTypes: JsTypesWithRealm,
     {
-        self.context.global_object()
+        self.realm_global
     }
 
     // ── §7.3 Functions ────────────────────────────────────────────────────
@@ -3072,13 +3108,6 @@ impl ExecutionContext<JscTypes> for JscEngine {
         prototype: JscObject,
         data: Box<dyn std::any::Any + 'static>,
     ) -> JscObject {
-        // Note: proper JSC object-with-data creation requires defining a
-        // JSClass with a finalize callback and using JSObjectMake with
-        // private data (JSObjectSetPrivate).  The current implementation
-        // stores data in a side-table keyed by object pointer.
-        //
-        // TODO(Phase 5 real-code): use JSClassDefinition + JSObjectMake
-        // with jsc_generic_finalizer to free data on GC.  See gc.rs.
         let obj = self.create_plain_object(Some(&prototype));
         let obj_ptr = obj.as_raw() as usize;
         // Retrieve existing map or create new one, then insert.
@@ -3090,6 +3119,28 @@ impl ExecutionContext<JscTypes> for JscEngine {
             .unwrap_or_default();
         map.insert(obj_ptr, data);
         self.store_host_any(map_type_id, Box::new(map));
+
+        // Root the object by storing a reference on the global object so
+        // JSC's GC does not collect it while Rust still holds the pointer.
+        // We use a non-enumerable counter property, similar to create_root.
+        let root_id = self.next_root_id;
+        self.next_root_id = self.next_root_id.wrapping_add(1);
+        let prop_name = format!("__fw_any_root_{root_id}");
+        let root_key = JscString::from_rust(&prop_name);
+        let global = self.context.global_object();
+        let ctx_ptr = self.ctx_ptr();
+        let mut exc: *mut JSValueRef = std::ptr::null_mut();
+        unsafe {
+            JSObjectSetProperty(
+                ctx_ptr,
+                global.raw,
+                root_key.raw,
+                obj.as_value_ref(),
+                kJSPropertyAttributeDontEnum,
+                &mut exc,
+            );
+        }
+
         obj
     }
 
@@ -3245,10 +3296,71 @@ impl ExecutionContext<JscTypes> for JscEngine {
 
     fn create_proxy(
         &mut self,
-        _target: JscObject,
-        _handler: JscObject,
+        target: JscObject,
+        handler: JscObject,
     ) -> Completion<JscObject, JscTypes> {
-        Err(self.new_type_error("Proxy not yet supported on JSC backend"))
+        let global = self.context.global_object();
+        let ctx_ptr = self.ctx_ptr();
+
+        // Store target and handler on temp globals, then eval `new Proxy(...)`.
+        let target_key = JscString::from_rust("__fw_proxy_target");
+        let handler_key = JscString::from_rust("__fw_proxy_handler");
+        let mut exc: *mut JSValueRef = std::ptr::null_mut();
+
+        unsafe {
+            JSObjectSetProperty(
+                ctx_ptr,
+                global.raw,
+                target_key.raw,
+                target.as_value_ref(),
+                kJSPropertyAttributeNone,
+                &mut exc,
+            );
+        }
+        if !exc.is_null() {
+            return Err(JscValue {
+                raw: exc,
+                ctx: ctx_ptr,
+            });
+        }
+
+        unsafe {
+            JSObjectSetProperty(
+                ctx_ptr,
+                global.raw,
+                handler_key.raw,
+                handler.as_value_ref(),
+                kJSPropertyAttributeNone,
+                &mut exc,
+            );
+        }
+        if !exc.is_null() {
+            return Err(JscValue {
+                raw: exc,
+                ctx: ctx_ptr,
+            });
+        }
+
+        let (result, exception) =
+            self.eval_script_raw("new Proxy(__fw_proxy_target, __fw_proxy_handler)");
+
+        // Cleanup
+        unsafe {
+            JSObjectDeleteProperty(ctx_ptr, global.raw, target_key.raw, std::ptr::null_mut());
+            JSObjectDeleteProperty(ctx_ptr, global.raw, handler_key.raw, std::ptr::null_mut());
+        }
+
+        if !exception.is_null() {
+            return Err(JscValue {
+                raw: exception,
+                ctx: ctx_ptr,
+            });
+        }
+
+        Ok(JscObject {
+            raw: result as *mut JSObjectRef,
+            ctx: ctx_ptr,
+        })
     }
 
     // ── Error Reporting ──────────────────────────────────────────────────
@@ -3563,17 +3675,28 @@ impl EcmascriptHost<JscTypes> for JscEngine {
             )
         };
 
-        // Restore previous CURRENT_ENGINE value.
-        CURRENT_ENGINE.with(|current| {
-            *current.borrow_mut() = previous;
-        });
-
         if !exception.is_null() {
+            CURRENT_ENGINE.with(|current| {
+                *current.borrow_mut() = previous;
+            });
             return Err(JscValue {
                 raw: exception,
                 ctx: self.ctx_ptr(),
             });
         }
+
+        // Drain JSC's internal microtask queue by evaluating a no-op.
+        // JSEvaluateScript drains microtasks at the end of script evaluation.
+        // CURRENT_ENGINE is still set here so that any builtin function
+        // callbacks triggered by microtasks (e.g. promise reaction handlers)
+        // can find the engine.
+        let _ = self.eval_script_raw("void 0");
+
+        // Restore previous CURRENT_ENGINE value.
+        CURRENT_ENGINE.with(|current| {
+            *current.borrow_mut() = previous;
+        });
+
         Ok(JscValue {
             raw: result,
             ctx: self.ctx_ptr(),

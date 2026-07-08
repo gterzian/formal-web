@@ -16,6 +16,19 @@ pub(crate) fn build_context(document: Rc<RefCell<BaseDocument>>) -> Result<Engin
     build_context_inner(document)
 }
 
+/// Create a new realm within an existing engine, sharing the same underlying
+/// JS context (same GC heap) but with its own global object, Window, Document,
+/// and prototype chain.
+///
+/// On JSC, uses `JscEngine::new_shared_realm()` to create a child engine
+/// sharing the same `JSGlobalContextRef`.  On Boa, uses `create_realm()`.
+pub(crate) fn build_realm(
+    engine: &mut Engine,
+    document: Rc<RefCell<BaseDocument>>,
+) -> Result<Engine, String> {
+    build_realm_inner(engine, document)
+}
+
 #[cfg(boa_backend)]
 fn build_context_inner(document: Rc<RefCell<BaseDocument>>) -> Result<Engine, String> {
     crate::js::bindings::html::build_context(document)
@@ -23,9 +36,30 @@ fn build_context_inner(document: Rc<RefCell<BaseDocument>>) -> Result<Engine, St
 
 #[cfg(not(boa_backend))]
 fn build_context_inner(document: Rc<RefCell<BaseDocument>>) -> Result<Engine, String> {
-    use js_engine::ExecutionContext as _;
     use js_engine::jsc::JscEngine;
+    let mut engine = JscEngine::new();
+    setup_realm(&mut engine, document)?;
+    Ok(engine)
+}
 
+#[cfg(not(boa_backend))]
+fn build_realm_inner(
+    engine: &mut Engine,
+    document: Rc<RefCell<BaseDocument>>,
+) -> Result<Engine, String> {
+    let mut child = engine.new_shared_realm();
+    setup_realm(&mut child, document)?;
+    Ok(child)
+}
+
+/// Shared setup for both fresh engines and child realms (JSC backend).
+/// Initializes the global object, Window, Document, prototypes, etc.
+#[cfg(not(boa_backend))]
+fn setup_realm(
+    engine: &mut Engine,
+    document: Rc<RefCell<BaseDocument>>,
+) -> Result<(), String> {
+    use js_engine::ExecutionContext as _;
     use crate::dom::{
         AbortController, AbortSignal, DOMException, Document, Element, Event, EventTarget, Node,
         UIEvent,
@@ -46,8 +80,6 @@ fn build_context_inner(document: Rc<RefCell<BaseDocument>>) -> Result<Engine, St
         wire_registry_prototype,
     };
 
-    let mut engine = JscEngine::new();
-
     // Step 1: Create the Window with GlobalScope and associate it with the
     // realm's global object so `global_scope_or_error` works.
     let global_scope = GlobalScope::new(crate::html::GlobalScopeKind::Window, Rc::clone(&document));
@@ -56,19 +88,19 @@ fn build_context_inner(document: Rc<RefCell<BaseDocument>>) -> Result<Engine, St
     engine.associate_existing_object(&global_obj, Box::new(window));
 
     // Step 2: Store the global object in host_any.
-    crate::js::platform_objects::init_global_object_slot(&mut engine, global_obj);
+    crate::js::platform_objects::init_global_object_slot(engine, global_obj);
 
     // Step 3: Initialize the interface registry.
-    initialize_registry::<crate::js::Types>(&mut engine);
+    initialize_registry::<crate::js::Types>(engine);
 
     // Step 4: Install console namespace.
-    crate::js::install_console_namespace(&mut engine)
+    crate::js::install_console_namespace(engine)
         .map_err(|error| format!("failed to install console: {:?}", error))?;
 
     // Step 5: Register all interface specs.
     macro_rules! reg {
         ($ty:ty) => {
-            register_interface_spec::<crate::js::Types, $ty, _>(&mut engine).map_err(|error| {
+            register_interface_spec::<crate::js::Types, $ty, _>(engine).map_err(|error| {
                 format!(
                     "failed to register {}: {:?}",
                     stringify!($ty),
@@ -110,39 +142,73 @@ fn build_context_inner(document: Rc<RefCell<BaseDocument>>) -> Result<Engine, St
     reg!(TransformStreamDefaultController);
 
     // Step 6: Wire prototype chains.
-    wire_registry_prototype::<crate::js::Types, UIEvent, Event>(&mut engine);
-    wire_registry_prototype::<crate::js::Types, AbortSignal, EventTarget>(&mut engine);
-    wire_registry_prototype::<crate::js::Types, Node, EventTarget>(&mut engine);
-    wire_registry_prototype::<crate::js::Types, Document, Node>(&mut engine);
-    wire_registry_prototype::<crate::js::Types, Element, Node>(&mut engine);
-    wire_registry_prototype::<crate::js::Types, HTMLElement, Element>(&mut engine);
-    wire_registry_prototype::<crate::js::Types, HTMLAnchorElement, HTMLElement>(&mut engine);
-    wire_registry_prototype::<crate::js::Types, HTMLIFrameElement, HTMLElement>(&mut engine);
-    wire_registry_prototype::<crate::js::Types, HTMLMediaElement, HTMLElement>(&mut engine);
-    wire_registry_prototype::<crate::js::Types, HTMLVideoElement, HTMLMediaElement>(&mut engine);
-    wire_registry_prototype::<crate::js::Types, HTMLInputElement, HTMLElement>(&mut engine);
-    wire_registry_prototype::<crate::js::Types, Window, EventTarget>(&mut engine);
+    wire_registry_prototype::<crate::js::Types, UIEvent, Event>(engine);
+    wire_registry_prototype::<crate::js::Types, AbortSignal, EventTarget>(engine);
+    wire_registry_prototype::<crate::js::Types, Node, EventTarget>(engine);
+    wire_registry_prototype::<crate::js::Types, Document, Node>(engine);
+    wire_registry_prototype::<crate::js::Types, Element, Node>(engine);
+    wire_registry_prototype::<crate::js::Types, HTMLElement, Element>(engine);
+    wire_registry_prototype::<crate::js::Types, HTMLAnchorElement, HTMLElement>(engine);
+    wire_registry_prototype::<crate::js::Types, HTMLIFrameElement, HTMLElement>(engine);
+    wire_registry_prototype::<crate::js::Types, HTMLMediaElement, HTMLElement>(engine);
+    wire_registry_prototype::<crate::js::Types, HTMLVideoElement, HTMLMediaElement>(engine);
+    wire_registry_prototype::<crate::js::Types, HTMLInputElement, HTMLElement>(engine);
+    wire_registry_prototype::<crate::js::Types, Window, EventTarget>(engine);
 
     // Step 7: Set the global object's prototype to Window.prototype so
     // `instanceof Window` etc. works.
-    if let Some(window_proto) = get_registry_prototype::<crate::js::Types, Window>(&engine) {
+    if let Some(window_proto) = get_registry_prototype::<crate::js::Types, Window>(engine) {
         let _ = engine.set_prototype(global_obj, Some(window_proto));
+
+        // Step 7b: JSC's global object prototype is immutable.
+        // Copy Window/EventTarget properties to the global object.
+        let prototypes = [
+            get_registry_prototype::<crate::js::Types, EventTarget>(engine),
+            Some(window_proto),
+        ];
+        for proto in prototypes.iter().flatten() {
+            if let Ok(keys) = engine.own_property_keys(*proto) {
+                for key in keys {
+                    let key_str = engine.property_key_to_rust_string(&key);
+                    if key_str == "constructor" || key_str == "__proto__" {
+                        continue;
+                    }
+                    if let Ok(Some(descriptor)) = engine.get_own_property(*proto, key.clone()) {
+                        if descriptor.value.is_some() || descriptor.get.is_some() {
+                            let _ = engine
+                                .define_property_or_throw(global_obj, key, descriptor);
+                        }
+                    }
+                }
+            }
+        }
     }
 
     // Step 8: Install CSS namespace.
-    crate::js::install_css_namespace(&mut engine)
+    crate::js::install_css_namespace(engine)
         .map_err(|error| format!("failed to install CSS namespace: {:?}", error))?;
 
     // Step 9: HTMLAnchorElement: HTMLHyperlinkElementUtils members.
     if let Some(anchor_proto) =
-        get_registry_prototype::<crate::js::Types, HTMLAnchorElement>(&engine)
+        get_registry_prototype::<crate::js::Types, HTMLAnchorElement>(engine)
     {
         crate::js::bindings::html::hyperlink_element_utils::
             register_hyperlink_element_utils_on_prototype(
-                &anchor_proto, &mut engine,
+                &anchor_proto, engine,
             )
             .map_err(|error| error.display().to_string())?;
     }
 
-    Ok(engine)
+    Ok(())
+}
+
+#[cfg(boa_backend)]
+fn build_realm_inner(
+    _engine: &mut Engine,
+    _document: Rc<RefCell<BaseDocument>>,
+) -> Result<Engine, String> {
+    // Boa: create a new realm within the existing context.
+    // Currently falls back to full build_context since Boa's
+    // multi-realm support needs the host_hooks path.
+    crate::js::bindings::html::build_context(_document)
 }

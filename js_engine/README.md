@@ -353,54 +353,99 @@ call site needs individual verification.
   accessor (getter/setter) descriptors store placeholder `undefined` values.
 - The global object's prototype is immutable on JSC
   (`JSObjectSetPrototype`/`Object.setPrototypeOf` fail silently).
-  This means methods on `Window.prototype`, `EventTarget.prototype`, etc.
-  are NOT inherited by the global object — only constructors are exposed.
-  Requires a native solution (e.g., installing methods on global at
-  build_context time, or using JSC's `JSClassGetProperty` hook on the
-  global object).
+  Properties from `Window.prototype` and `EventTarget.prototype` are now
+  copied to the global object at build_context time, making
+  `addEventListener`, `setTimeout`, etc. accessible from the global scope.
+  `instanceof Window` still returns `false` — the actual [[Prototype]]
+  slot remains unchanged.
 - Setting properties on objects created via `eval("{}")`
   (`create_plain_object(None)`) causes SIGSEGV on macOS 26.
+- `create_proxy` is implemented via `new Proxy(target, handler)` script
+  evaluation (JSC supports Proxy natively), enabling WindowProxy creation
+  for `window.open()`.
 - Iterator operations (`get_iterator`, `get_iterator_step_value`)
   may crash or produce incorrect results.
 - DataView and TypedArray view construction are `todo!()`.
 - JSC's C API does not expose the microtask queue — `run_jobs` only
-  drains the Rust-side job queue, not JSC's internal promise queue.
+  drains the Rust-side job queue.  Microtask draining is now triggered
+  by evaluating `void 0` at the end of `call()` and `construct()`,
+  since JSC drains pending microtasks after each `JSEvaluateScript`
+  call.  This enables basic promise resolution (e.g.
+  `Promise.resolve().then(...)` works).  However, native JSC async
+  operations (e.g. `WebAssembly.compile()`) create promises resolved
+  by background threads and still require the event loop to complete.
+- `create_object_with_any` roots its objects on the JSC global (as
+  non-enumerable `__fw_any_root_*` properties) to prevent JSC's GC
+  from collecting them while Rust still holds raw pointers.  Without
+  rooting, `try_with_event_target_ref` fails with "receiver is not an
+  EventTarget" because the side-table HashMap key (object pointer)
+  becomes stale after GC.
+- `JscEngine` supports multi-realm via `new_shared_realm()` — creates
+  a child engine sharing the same `JSGlobalContextRef` (same GC heap)
+  but with its own global object, host_data, and job queue.  Used by
+  `window.open` so the new window's objects live in the opener's GC
+  heap, enabling cross-window WindowProxy references.
+- `JscContext` implements `Clone` (via `JSGlobalContextRetain`), so
+  multiple `JscEngine`s can share the same underlying JS context.
 
-## Session investigation log
+## JSC backend current state
 
-Each session that investigates an open issue should append a log entry here.
-Log only what was done and what was ruled out — no speculation on solutions.
-The purpose is to let the next session pick up where the last one left off
-without repeating dead ends.
+### Working
+- **Global methods:** `addEventListener`, `removeEventListener`, `dispatchEvent`,
+  `setTimeout`, `clearTimeout`, `setInterval`, `clearInterval`,
+  `requestAnimationFrame`, `cancelAnimationFrame` are accessible from the global
+  scope (copied from `Window.prototype` and `EventTarget.prototype` at
+  build_context time; the global object's [[Prototype]] itself cannot be set
+  on JSC).
+- **DOM events:** Click, mouse, and other UI events dispatch correctly (GC
+  rooting in `create_object_with_any` prevents `receiver is not an EventTarget`).
+- **Microtasks:** `Promise.resolve().then(...)` resolves — microtask drain via
+  `void 0` evaluation at end of `call()` and `construct()` triggers JSC's
+  internal `drainMicrotasks()`.
+- **WindowProxy:** `window.open` creates a WindowProxy via native JSC
+  `new Proxy()` (JSC supports Proxy natively).
+- **Multi-realm:** `JscEngine::new_shared_realm()` creates a child engine
+  sharing the same `JSGlobalContextRef` (same GC heap). `build_realm()` wired
+  into `window.open` via `the_rules_with_parent()`.
+- **Synchronous WebAssembly:** `new WebAssembly.Module()` and
+  `new WebAssembly.Instance()` work (JSC's native sync path).
+- **Builtin functions:** `create_builtin_fn_static`, `create_builtin_fn`,
+  `create_builtin_function` use custom JSClass with `callAsFunction`/`callAsConstructor`.
 
-### 2026-07-09 — WPT stream test `TypeError: not a callable function`
+### Tried and failed
+- **Microtask drain in `run_jobs()`:** Evaluating `void 0` from `run_jobs()`
+  caused SIGSEGV because `run_jobs()` can be called from contexts where
+  `CURRENT_ENGINE` is not set, or during active JS execution (nested eval).
+  Moved to `call()`/`construct()` where `CURRENT_ENGINE` is managed.
+- **`JSValueProtect` for GC rooting:** Causes SIGSEGV on eval-created values.
+  Object rooting via non-enumerable global properties works instead.
+- **`JSObjectSetProperty` on `JSObjectMakeFunctionWithCallback` objects:**
+  Crashes on macOS 26. The `name` property on builtin function objects is
+  skipped.
+- **`JSObjectSetPrototype` on the global object:** Fails silently (immutable).
+  Property copying is the only viable workaround via the public C API.
 
-**Files changed:** `writablestream.rs`, `abort_signal.rs` (ec.create_builtin_fn →
-create_builtin_fn_with_traced_captures), `js_engine/README.md` (documentation).
-
-**Instrumentation added:** log::warn! at every PullAlgorithm/CancelAlgorithm/
-StartAlgorithm variant, SourceMethod::call(), setup_on_fulfilled/rejected,
-pull_steps_on_fulfilled/rejected, readable_stream_cancel.
-
-**What was confirmed:**
-- All algorithm calls return Ok (except expected exception test).
-- All four promise handler functions fire (called by Boa's promise job system).
-
-**What was ruled out:**
-- The error is NOT from algorithm calls failing (they all succeed).
-- The error is NOT from our GC-traceable promise handlers failing to fire
-  (they all fire correctly).
-- The error is NOT from the `UnsafeFnBox` GC capture issue (the remaining
-  `ec.create_builtin_fn(Box::new(...))` sites capture only fn pointers or
-  Rust primitives; see §9 audit table).
-- The error comes from Boa's JavaScript VM (`non_existent_call`) during
-  JavaScript-level execution, not from our Rust promise handler invocations.
-
-**Not investigated:** The specific JavaScript code path within Boa's VM that
-produces "not a callable function". Candidate: `new_type_error` creates opaque
-JsError values via `JsNativeError::typ().with_message(...).into_opaque()`;
-the WPT test harness's `promise_test` wrapper or the test JavaScript code may
-attempt operations on the error object that trigger the non-callable error.
+### Remaining problems
+- **Streams API (ReadableStream, TransformStream):** SIGBUS/SIGABRT when
+  accessed on JSC.  The `create_builtin_fn_with_traced_captures` callbacks
+  and/or promise capability creation need JSC-specific adaptation.
+- **Async WebAssembly:** `WebAssembly.compile()` uses JSC's native async path
+  which requires the event loop for background compilation to complete.
+  Synchronous `new WebAssembly.Module()` works.
+- **`get_prototype_of`:** Stub on JSC — prevents dynamic prototype chain
+  traversal in the global property copying code.
+- **`window.open` navigable creation:** The `new_document_registry`
+  infrastructure is wired up but `window.open` still fails at
+  `the_rules_for_choosing_a_navigable` registration step
+  (`no new_document_registry set on GlobalScope`) for the UI event dispatch
+  path.  The parent engine threading is `None` pending a way to extract
+  `&mut Engine` from `&mut dyn ExecutionContext<Types>`.
+- **Iterator operations:** `get_iterator`, `get_iterator_step_value` may
+  crash or produce incorrect results.
+- **DataView / TypedArray view construction:** `todo!()`.
+- **`get_function_realm`:** `todo!()`.
+- **`object_as_map`/`set`/`weakmap`/etc.:** No-op downcasts (operate at the
+  JSC object level; typed operations not exposed by C API).
 
 ---
 

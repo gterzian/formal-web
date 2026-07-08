@@ -46,6 +46,13 @@ impl JscContext {
     }
 }
 
+impl Clone for JscContext {
+    fn clone(&self) -> Self {
+        let raw = unsafe { JSGlobalContextRetain(self.raw) };
+        Self { raw }
+    }
+}
+
 impl Default for JscContext {
     fn default() -> Self {
         Self::new()

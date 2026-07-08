@@ -546,7 +546,11 @@ impl EventHandler for BlitzJSEventHandler<'_> {
         )
         .expect("UIEvent construction must succeed");
         if let Err(error) = dispatch_with_chain(self, chain, &event_object) {
-            error!("failed to dispatch UI event through JavaScript listeners: {error:?}");
+            let error_msg = self
+                .ec()
+                .to_rust_string(error.clone())
+                .unwrap_or_else(|_| format!("{error:?}"));
+            error!("failed to dispatch UI event through JavaScript listeners: {error_msg}");
             return;
         }
 
