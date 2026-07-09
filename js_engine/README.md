@@ -486,9 +486,14 @@ event.rs, etc.) use the helper functions from `downcast.rs` or call
   (JavaScript `Symbol.iterator` issues on JSC).
 - **`object_as_map`/`set`/`weakmap`/etc.:** No-op downcasts (operate at the
   JSC object level; typed operations not exposed by C API).
-- **Unit tests (JSC):** 14/14 js_engine tests pass.  30/91 content generic_js_test
-  tests pass individually; 5 crash with SIGBUS (known JSC memory corruption under
-  GC pressure or eval-based property access).
+- **Unit tests (JSC):** 14/14 js_engine tests pass.  41/91 content generic_js_test
+  tests pass individually (up from 30).  GC root tests (`gc_root_survives_throwaway_pressure`,
+  `rooted_promise_capability_survives_gc_pressure`) now pass after fixing
+  `GcRootHandle::drop` closure memory corruption (captured `JscString` was stale
+  at cleanup time; now creates fresh `JscString` from owned `String`).
+  2 remaining crashes:
+  - `attribute_accessor_descriptors_accessible_via_js_eval` (SIGBUS)
+  - `nested_struct_gc_root_propagates` (SIGSEGV)
 
 ---
 
@@ -822,7 +827,11 @@ function identity, and IDL harness setup.
 **What was confirmed:**
 - All 10 `todo!()` calls in JSC engine replaced with working implementations
 - 14/14 js_engine unit tests pass
-- 30/91 generic_js_test tests pass on JSC backend (up from ~5 before fixes)
+- 41/91 generic_js_test tests pass on JSC backend (up from ~5 before fixes)
+- GC root tests (`gc_root_survives_throwaway_pressure`, `rooted_promise_capability_survives_gc_pressure`,
+  `create_builtin_function_survives_allocation_pressure`) now pass after fixing `GcRootHandle::drop`
+  closure — captured `JscString` was causing SIGSEGV at cleanup time.  Fix: capture owned `String`
+  and create fresh `JscString` at cleanup time via `JSContextGetGlobalObject`.
 - JSC unit test `allocate_array_buffer` and `clone_and_detach_array_buffer` both pass
 - `construct_typed_array_view_and_read_metadata` passes
 - `construct_data_view_and_read_metadata` passes
@@ -831,14 +840,14 @@ function identity, and IDL harness setup.
 - `test_button_inherits_widget_accessors_via_prototype_chain` passes (accessor get/set works)
 
 **What was ruled out:**
-- The SIGBUS crashes are not caused by missing TypedArray/DataView/realm implementations.
-  They occur in tests that create objects, set properties, and exercise GC pressure
-  (e.g., `gc_root_survives_throwaway_pressure`, `rooted_promise_capability_survives_gc_pressure`,
-  `register_interface_spec`, `attribute_accessor_descriptors_accessible_via_js_eval`).
-  Root cause appears to be JSC memory corruption when objects created with custom
-  `JSClass` (via `JSObjectMake` + `PLAIN_OBJECT_CLASS`) are garbage collected.
+- GC root crash: `GcRootHandle::drop` crashed because the closure captured a `JscString`
+  whose `ReFCell<RefCell<*mut...>>` couldn't be safely accessed during drop.  Fixed by
+  capturing an owned `String` and creating a fresh `JscString` at cleanup time.
+- `nested_struct_gc_root_propagates` and `attribute_accessor_descriptors_accessible_via_js_eval`
+  still crash — these involve custom JSClass objects created via `create_object_with_any`
+  that interact with JSC's GC during `JSObjectSetProperty`.
 
 **Not investigated:**
 - `get_iterator_and_step_value` test fails — JavaScript `Symbol.iterator` interaction
   with JSC's eval-based iterator creation (known pre-existing issue)
-- Root cause of SIGBUS in GC-pressure tests
+- Root cause of remaining SIGSEGV in `nested_struct_gc_root_propagates`

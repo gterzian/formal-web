@@ -4083,18 +4083,17 @@ impl ExecutionContext<JscTypes> for JscEngine {
             );
         }
         // On drop, delete the property to allow GC.
-        let cleanup_key = key;
-        let cleanup_ctx = ctx_ptr;
-        let cleanup_global_raw = global.raw;
+        // Capture the property name as an owned String (not JscString) so
+        // we can create a fresh JscString at cleanup time when the
+        // engine's context is guaranteed valid.
+        let root_name_str = prop_name.clone();
+        let ctx_raw = self.context.raw as *mut JSContextRef;
         crate::gc::GcRootHandle {
             value: *value,
             unroot_action: Some(Box::new(move |_val| unsafe {
-                JSObjectDeleteProperty(
-                    cleanup_ctx,
-                    cleanup_global_raw,
-                    cleanup_key.raw,
-                    std::ptr::null_mut(),
-                );
+                let name = JscString::from_rust(&root_name_str);
+                let global = JSContextGetGlobalObject(ctx_raw);
+                JSObjectDeleteProperty(ctx_raw, global, name.raw, std::ptr::null_mut());
             })),
         }
     }
@@ -4459,5 +4458,31 @@ mod tests {
         let ab =
             JsEngine::allocate_array_buffer(&mut engine, intrinsics.array_buffer, 8, None).unwrap();
         assert!(!ab.raw.is_null());
+    }
+
+    #[test]
+    fn gc_root_survives_loop() {
+        let mut engine = JscEngine::new();
+        let realm = engine.current_realm();
+        // Create and root a callback.
+        let fn_val =
+            JsEngine::evaluate_script(&mut engine, "(function() { return 42; })", &realm).unwrap();
+        let root = engine.create_root(&fn_val);
+
+        // Allocate many throwaway objects to exercise JSC GC.
+        for i in 0..1000 {
+            let throwaway = engine.create_empty_array();
+            let num_val = engine.value_from_number(i as f64);
+            let _ = engine.array_push(&throwaway, num_val);
+        }
+
+        // The rooted callback must still be callable after GC pressure.
+        let fn_obj = JscTypes::value_as_object(&root.value).unwrap();
+        let undef = engine.value_undefined();
+        let result = EcmascriptHost::call(&mut engine, &fn_obj, &undef, &[]).unwrap();
+        let n = engine.to_number(result).unwrap();
+        assert!((n - 42.0).abs() < 0.001);
+
+        drop(root);
     }
 }
