@@ -70,6 +70,9 @@ export function collectSession(
     if (lines.length > 0) {
       jsonlContent += "\n";
     }
+
+    // Sanitize collected session: replace absolute local paths with a dev placeholder.
+    jsonlContent = jsonlContent.replaceAll("/Users/Gregory", "/Users/dev");
   } catch {
     return undefined;
   }
