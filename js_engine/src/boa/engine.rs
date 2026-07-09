@@ -1906,13 +1906,24 @@ impl ExecutionContext<BoaTypes> for BoaContext {
     }
 
     fn with_object_any(&self, object: &JsObject) -> Option<&dyn std::any::Any> {
-        let wrapper = object.downcast_ref::<NativeDataWrapper>()?;
-        // SAFETY: The TraceableBox lives in the JsObject's GC heap, which
-        // outlives this function call.  The Ref guard from downcast_ref is
-        // temporary but the pointed-to data remains valid as long as the
-        // JsObject is alive and rooted by `self`.
-        Some(unsafe { &*(wrapper.0.as_any_ref() as *const dyn std::any::Any) })
+        // Use try_borrow instead of downcast_ref to avoid panicking when
+        // the JsObject's GcRefCell is already mutably borrowed (e.g. during
+        // re-entrant property access inside Boa's VM).
+        if !object.is::<NativeDataWrapper>() {
+            return None;
+        }
+        let borrow = object.try_borrow().ok()?;
+        // SAFETY: we verified is::<NativeDataWrapper>(), so the data is
+        // Object<NativeDataWrapper>.  GcRef::cast changes only the type
+        // parameter, keeping the same Ref guard valid.
+        let cast: boa_gc::GcRef<'_, boa_engine::object::Object<NativeDataWrapper>> =
+            unsafe { boa_gc::GcRef::cast(borrow) };
+        // SAFETY: The TraceableBox lives in the GC heap and outlives this
+        // function call.
+        Some(unsafe { &*(cast.data().0.as_any_ref() as *const dyn std::any::Any) })
     }
+
+
 
     fn with_object_any_mut(&mut self, object: &JsObject) -> Option<&mut dyn std::any::Any> {
         let mut wrapper = object.downcast_mut::<NativeDataWrapper>()?;

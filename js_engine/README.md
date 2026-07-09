@@ -640,11 +640,26 @@ and `chunk_steps`/`close_steps` confirmed:
 - WPT suite: 82 tests executed, 0 unexpected results vs 26 previously
 
 **What was ruled out:**
-- The read-min.any.js BorrowError is NOT a simple fix — it's caused by Boa's JsObject
-  GcRefCell being mutably borrowed during `call_pull_if_needed` reentrancy
-  (`respond` → `call_pull_if_needed` → pull function → `respond`).  The same controller
-  object is accessed via `with_object_any` while a property access is in progress on the
-  same JS object's GcRefCell.  Deep Boa GC tracing issue.
+- The read-min.any.js BorrowError trace (investigated 2026-07-09):
+  The crash is at `ordinary_get_own_property` (Boa internal_methods/mod.rs:638)
+  calling `obj.borrow()` on the controller_object's GcRefCell during a
+  re-entrant `c.byobRequest` property access.  Chain:
+  ```
+  pull_into → call_pull_if_needed → pull_algorithm.call(&controller_object, ec)
+    → JS pull fn → c.byobRequest → getter → respond(2)
+      → early return → call_pull_if_needed [RE-ENTRANT]
+        → pull_algorithm.call(&controller_object, ec)
+          → JS pull fn → c.byobRequest
+            → __get__ → ordinary_get_own_property → obj.borrow() → PANIC
+  ```
+  Our code holds no mutable borrows on JsObjects when entering JS. The
+  conflicting mutable borrow is from Boa's internal VM machinery (possibly
+  the IC cache write at `get_by_name` line 72, or a `RefMut` in the vtable
+  dispatch for `__get`).  Root cause not yet identified.  Disabled with
+  detailed metadata.  Band-aid solutions rejected:
+  - Microtask deferral (async band-aid, violates spec)
+  - `try_borrow` in with_object_any (crash is in Boa's own code, not ours)
+  - Caching controller data on struct (only handles one re-entrancy depth)
 
 **Not investigated:**
 - `readable-byte-streams/general.any.js` (disabled, byte stream general tests)
