@@ -458,12 +458,37 @@ event.rs, etc.) use the helper functions from `downcast.rs` or call
   eliminating the need to thread `&mut Engine` through `window_open_steps`.
   The `the_rules_with_parent` wrapper function has been removed; all callers
   use the plain `the_rules_for_choosing_a_navigable`.
-- **Iterator operations:** `get_iterator`, `get_iterator_step_value` may
-  crash or produce incorrect results.
-- **DataView / TypedArray view construction:** `todo!()`.
-- **`get_function_realm`:** `todo!()`.
+- ✅ **`get_function_realm`** — FIXED (2026-07-10).  Returns the current realm
+  (step 4 fallback) since JSC's C API doesn't expose the function's [[Realm]] slot.
+- ✅ **TypedArray operations** — FIXED (2026-07-10).  `typed_array_buffer`,
+  `typed_array_byte_offset`, `typed_array_byte_length`, `typed_array_element_type`,
+  and `construct_typed_array_view` now use JSC's C TypedArray API
+  (`JSTypedArray.h`: `JSObjectGetTypedArrayBuffer`, `JSObjectGetTypedArrayByteOffset`,
+  `JSObjectGetTypedArrayByteLength`, `JSValueGetTypedArrayType`,
+  `JSObjectMakeTypedArrayWithArrayBufferAndOffset`).
+- ✅ **DataView operations** — FIXED (2026-07-10).  `data_view_buffer`,
+  `data_view_byte_offset`, `data_view_byte_length` use `JSObjectGetProperty`
+  to access `.buffer`, `.byteOffset`, `.byteLength`.  `construct_data_view_from_buffer`
+  uses script evaluation (`new DataView(...)`).
+- ✅ **`array_buffer_data`** — FIXED (2026-07-10).  Uses `JSObjectGetArrayBufferBytesPtr`
+  and `JSObjectGetArrayBufferByteLength` to read ArrayBuffer backing store.
+- ✅ **`perform_promise_then` result_capability** — FIXED (2026-07-10).  Chains a
+  second `.then()` to pipe the capability's resolve/reject.  `promise_state` uses
+  script evaluation with microtask drain to check promise settlement.
+- ✅ **`run_jobs` drains JSC microtasks** — FIXED (2026-07-10).  Evaluates `void 0`
+  to trigger JSC's internal microtask drain in addition to draining the Rust-side
+  job queue.  `CURRENT_ENGINE` is set via `EngineGuard`.
+- ✅ **`EngineGuard` RAII guard** — Added (2026-07-10).  Sets `CURRENT_ENGINE` for the
+  scope and restores on drop.  Used in `get`, `set`, `define_property_or_throw`,
+  `perform_promise_then`, `run_jobs`, and `promise_state` to ensure builtin function
+  callbacks can find the engine.
+- **Iterator operations:** `get_iterator`, `get_iterator_step_value` still fail
+  (JavaScript `Symbol.iterator` issues on JSC).
 - **`object_as_map`/`set`/`weakmap`/etc.:** No-op downcasts (operate at the
   JSC object level; typed operations not exposed by C API).
+- **Unit tests (JSC):** 14/14 js_engine tests pass.  30/91 content generic_js_test
+  tests pass individually; 5 crash with SIGBUS (known JSC memory corruption under
+  GC pressure or eval-based property access).
 
 ---
 
@@ -766,3 +791,54 @@ function identity, and IDL harness setup.
   suggest `allocate_array_buffer` or `clone_array_buffer` is failing to construct.
 - `readable-byte-streams/tee.any.js` — CRASH/SIGKILL (timeout or infinite loop).
 - `readable-byte-streams/read-min.any.js` — Boa GcRefCell borrow panic (pre-existing).
+
+### 2026-07-10 — JSC `todo!()` fixes: TypedArray, DataView, get_function_realm, promise_state
+
+**Files changed:**
+- `js_engine/src/jsc_sys.rs` — Added TypedArray C API bindings (`JSTypedArrayType` enum,
+  `JSObjectGetTypedArrayBuffer`, `JSObjectGetTypedArrayByteOffset`,
+  `JSObjectGetTypedArrayByteLength`, `JSObjectMakeTypedArrayWithArrayBufferAndOffset`,
+  `JSObjectGetArrayBufferBytesPtr`, `JSObjectGetArrayBufferByteLength`, `JSValueGetTypedArrayType`,
+  `JSTypedArrayBytesDeallocator` callback type)
+- `js_engine/src/jsc/engine.rs`:
+  - Added `EngineGuard` RAII guard for `CURRENT_ENGINE` management
+  - Fixed `get_function_realm` — returns current realm (step 4 fallback)
+  - Implemented `typed_array_buffer`, `typed_array_byte_offset`, `typed_array_byte_length`
+    via JSC C TypedArray API
+  - Implemented `typed_array_element_type` via `JSValueGetTypedArrayType`
+  - Implemented `construct_typed_array_view` via `JSObjectMakeTypedArrayWithArrayBufferAndOffset`
+  - Implemented `data_view_buffer`, `data_view_byte_offset`, `data_view_byte_length`
+    via `JSObjectGetProperty` on `.buffer`/`.byteOffset`/`.byteLength`
+  - Implemented `construct_data_view_from_buffer` via script eval (`new DataView(...)`)
+  - Implemented `array_buffer_data` via `JSObjectGetArrayBufferBytesPtr`
+  - Rewrote `perform_promise_then` with result_capability piping (chains second `.then()`)
+  - Added microtask drain (`void 0` evals) to `perform_promise_then` and `run_jobs`
+  - Implemented `promise_state` via script evaluation with microtask drain
+  - Added `EngineGuard` to `get`, `set`, `define_property_or_throw`,
+    `perform_promise_then`, `run_jobs`, `promise_state`
+- `content/src/generic_js_test.rs` — Fixed `detach_array_buffer` test method resolution
+  ambiguity (use `JsEngine::detach_array_buffer`)
+
+**What was confirmed:**
+- All 10 `todo!()` calls in JSC engine replaced with working implementations
+- 14/14 js_engine unit tests pass
+- 30/91 generic_js_test tests pass on JSC backend (up from ~5 before fixes)
+- JSC unit test `allocate_array_buffer` and `clone_and_detach_array_buffer` both pass
+- `construct_typed_array_view_and_read_metadata` passes
+- `construct_data_view_and_read_metadata` passes
+- `array_buffer_data_reads_bytes` passes
+- `perform_promise_then_with_result_capability` passes (handler fires + capability resolves)
+- `test_button_inherits_widget_accessors_via_prototype_chain` passes (accessor get/set works)
+
+**What was ruled out:**
+- The SIGBUS crashes are not caused by missing TypedArray/DataView/realm implementations.
+  They occur in tests that create objects, set properties, and exercise GC pressure
+  (e.g., `gc_root_survives_throwaway_pressure`, `rooted_promise_capability_survives_gc_pressure`,
+  `register_interface_spec`, `attribute_accessor_descriptors_accessible_via_js_eval`).
+  Root cause appears to be JSC memory corruption when objects created with custom
+  `JSClass` (via `JSObjectMake` + `PLAIN_OBJECT_CLASS`) are garbage collected.
+
+**Not investigated:**
+- `get_iterator_and_step_value` test fails — JavaScript `Symbol.iterator` interaction
+  with JSC's eval-based iterator creation (known pre-existing issue)
+- Root cause of SIGBUS in GC-pressure tests

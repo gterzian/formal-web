@@ -61,6 +61,30 @@ fn with_current_engine<R>(f: impl FnOnce(&mut JscEngine) -> R) -> R {
         f(engine)
     })
 }
+
+/// RAII guard that sets the current engine for the scope and restores the
+/// previous value on drop.  Use at every `ExecutionContext` entry point that
+/// may trigger JS callbacks (property access, method calls, descriptor
+/// definition).
+pub(crate) struct EngineGuard {
+    previous: Option<*mut JscEngine>,
+}
+
+impl EngineGuard {
+    pub fn new(engine: *mut JscEngine) -> Self {
+        let previous = CURRENT_ENGINE.with(|current| current.borrow_mut().replace(engine));
+        EngineGuard { previous }
+    }
+}
+
+impl Drop for EngineGuard {
+    fn drop(&mut self) {
+        CURRENT_ENGINE.with(|current| {
+            *current.borrow_mut() = self.previous;
+        });
+    }
+}
+
 use crate::jsc_sys::*;
 use crate::{
     Completion, EcmascriptHost, ExecutionContext, HostHooks, IntegrityLevel, IteratorKind,
@@ -1468,6 +1492,7 @@ impl ExecutionContext<JscTypes> for JscEngine {
         object: JscObject,
         property_key: JscPropertyKey,
     ) -> Completion<JscValue, JscTypes> {
+        let _guard = EngineGuard::new(self as *mut JscEngine);
         match &property_key {
             JscPropertyKey::String(prop_str) => {
                 let mut exception: *mut JSValueRef = std::ptr::null_mut();
@@ -1572,6 +1597,7 @@ impl ExecutionContext<JscTypes> for JscEngine {
         value: JscValue,
         _throw: bool,
     ) -> Completion<(), JscTypes> {
+        let _guard = EngineGuard::new(self as *mut JscEngine);
         let Some(prop_str) = self.property_key_to_jsstring(&property_key) else {
             return Ok(());
         };
@@ -1609,6 +1635,7 @@ impl ExecutionContext<JscTypes> for JscEngine {
         property_key: JscPropertyKey,
         descriptor: PropertyDescriptor<JscTypes>,
     ) -> Completion<(), JscTypes> {
+        let _guard = EngineGuard::new(self as *mut JscEngine);
         let Some(prop_str) = self.property_key_to_jsstring(&property_key) else {
             return Ok(());
         };
@@ -2475,8 +2502,22 @@ impl ExecutionContext<JscTypes> for JscEngine {
 
     // ── §7.3 Functions ────────────────────────────────────────────────────
 
+    // <https://tc39.es/ecma262/#sec-getfunctionrealm>
+    //
+    // Steps 1-3 require accessing the function's [[Realm]] slot, which is
+    // not available through JSC's public C API.  In practice, for the Web IDL
+    // `internally-create-a-new-object-implementing-the-interface` algorithm,
+    // `newTarget` is always created in the current realm, so returning the
+    // current realm (step 4) is correct for all current uses.
+    //
+    // Note: If cross-realm subclassing is needed, this must be updated
+    // to extract the function's realm through JSC's internal API.
+    //
+    // Step 4: Return the current Realm Record.
     fn get_function_realm(&mut self, _function: &JscObject) -> Completion<JscRealm, JscTypes> {
-        todo!("get_function_realm")
+        Ok(JscRealm {
+            raw: self.context.raw,
+        })
     }
 
     // ── §9.6 Jobs ─────────────────────────────────────────────────────────
@@ -2496,10 +2537,21 @@ impl ExecutionContext<JscTypes> for JscEngine {
             }));
     }
     fn run_jobs(&mut self) {
+        // Note: JSC's C API does not expose the microtask queue.
+        // Microtask draining is triggered by `void 0` eval which causes
+        // JSC to drain pending microtasks after each JSEvaluateScript call.
+        // We evaluate `void 0` here to drain any pending JSC microtasks,
+        // and also drain the Rust-side job queue with CURRENT_ENGINE set.
+        let _guard = EngineGuard::new(self as *mut JscEngine);
+        // Drain JSC microtasks by evaluating void 0.
+        self.eval_script_raw("void 0");
+        // Drain Rust-side job queue.
         let jobs = std::mem::take(&mut self.queued_jobs);
         for job in jobs {
             job(self);
         }
+        // Drain any microtasks that the Rust jobs may have triggered.
+        self.eval_script_raw("void 0");
     }
 
     // ── §25 ArrayBuffer — runtime queries ─────────────────────────────────
@@ -2708,72 +2760,368 @@ impl ExecutionContext<JscTypes> for JscEngine {
 
     fn typed_array_buffer(
         &mut self,
-        _typed_array: &JscTypedArray,
+        typed_array: &JscTypedArray,
     ) -> Completion<JscArrayBuffer, JscTypes> {
-        todo!("typed_array_buffer not yet implemented for JSC")
+        let mut exception: *mut JSValueRef = std::ptr::null_mut();
+        let buffer = unsafe {
+            JSObjectGetTypedArrayBuffer(
+                self.context.as_context_ref(),
+                typed_array.raw,
+                &mut exception,
+            )
+        };
+        if !exception.is_null() {
+            return Err(JscValue {
+                raw: exception,
+                ctx: self.ctx_ptr(),
+            });
+        }
+        if buffer.is_null() {
+            return Err(self.make_string("TypedArray buffer is null"));
+        }
+        Ok(JscObject {
+            raw: buffer,
+            ctx: self.ctx_ptr(),
+        })
     }
 
     fn typed_array_byte_offset(
         &mut self,
-        _typed_array: &JscTypedArray,
+        typed_array: &JscTypedArray,
     ) -> Completion<u64, JscTypes> {
-        todo!("typed_array_byte_offset not yet implemented for JSC")
+        let mut exception: *mut JSValueRef = std::ptr::null_mut();
+        let offset = unsafe {
+            JSObjectGetTypedArrayByteOffset(
+                self.context.as_context_ref(),
+                typed_array.raw,
+                &mut exception,
+            )
+        };
+        if !exception.is_null() {
+            return Err(JscValue {
+                raw: exception,
+                ctx: self.ctx_ptr(),
+            });
+        }
+        Ok(offset as u64)
     }
 
     fn typed_array_byte_length(
         &mut self,
-        _typed_array: &JscTypedArray,
+        typed_array: &JscTypedArray,
     ) -> Completion<u64, JscTypes> {
-        todo!("typed_array_byte_length not yet implemented for JSC")
+        let mut exception: *mut JSValueRef = std::ptr::null_mut();
+        let byte_length = unsafe {
+            JSObjectGetTypedArrayByteLength(
+                self.context.as_context_ref(),
+                typed_array.raw,
+                &mut exception,
+            )
+        };
+        if !exception.is_null() {
+            return Err(JscValue {
+                raw: exception,
+                ctx: self.ctx_ptr(),
+            });
+        }
+        Ok(byte_length as u64)
     }
 
     fn typed_array_element_type(
         &self,
-        _typed_array: &JscTypedArray,
+        typed_array: &JscTypedArray,
     ) -> Option<TypedArrayElementType> {
-        None
+        let mut exception: *mut JSValueRef = std::ptr::null_mut();
+        let array_type = unsafe {
+            JSValueGetTypedArrayType(
+                self.context.as_context_ref(),
+                typed_array.as_value_ref(),
+                &mut exception,
+            )
+        };
+        if !exception.is_null() {
+            return None;
+        }
+        Some(match array_type {
+            JSTypedArrayType::kJSTypedArrayTypeInt8Array => TypedArrayElementType::Int8,
+            JSTypedArrayType::kJSTypedArrayTypeUint8Array => TypedArrayElementType::Uint8,
+            JSTypedArrayType::kJSTypedArrayTypeUint8ClampedArray => {
+                TypedArrayElementType::Uint8Clamped
+            }
+            JSTypedArrayType::kJSTypedArrayTypeInt16Array => TypedArrayElementType::Int16,
+            JSTypedArrayType::kJSTypedArrayTypeUint16Array => TypedArrayElementType::Uint16,
+            JSTypedArrayType::kJSTypedArrayTypeInt32Array => TypedArrayElementType::Int32,
+            JSTypedArrayType::kJSTypedArrayTypeUint32Array => TypedArrayElementType::Uint32,
+            // Float16 is not available in the C API enum
+            JSTypedArrayType::kJSTypedArrayTypeFloat32Array => TypedArrayElementType::Float32,
+            JSTypedArrayType::kJSTypedArrayTypeFloat64Array => TypedArrayElementType::Float64,
+            JSTypedArrayType::kJSTypedArrayTypeBigInt64Array => TypedArrayElementType::BigInt64,
+            JSTypedArrayType::kJSTypedArrayTypeBigUint64Array => TypedArrayElementType::BigUint64,
+            _ => return None,
+        })
     }
 
     fn construct_typed_array_view(
         &mut self,
-        _element_type: TypedArrayElementType,
-        _buffer: JscArrayBuffer,
-        _byte_offset: u64,
-        _byte_length: u64,
+        element_type: TypedArrayElementType,
+        buffer: JscArrayBuffer,
+        byte_offset: u64,
+        byte_length: u64,
     ) -> Completion<JscTypedArray, JscTypes> {
-        todo!("construct_typed_array_view not yet implemented for JSC")
+        let jsc_type = match element_type {
+            TypedArrayElementType::Int8 => JSTypedArrayType::kJSTypedArrayTypeInt8Array,
+            TypedArrayElementType::Uint8 => JSTypedArrayType::kJSTypedArrayTypeUint8Array,
+            TypedArrayElementType::Uint8Clamped => {
+                JSTypedArrayType::kJSTypedArrayTypeUint8ClampedArray
+            }
+            TypedArrayElementType::Int16 => JSTypedArrayType::kJSTypedArrayTypeInt16Array,
+            TypedArrayElementType::Uint16 => JSTypedArrayType::kJSTypedArrayTypeUint16Array,
+            TypedArrayElementType::Int32 => JSTypedArrayType::kJSTypedArrayTypeInt32Array,
+            TypedArrayElementType::Uint32 => JSTypedArrayType::kJSTypedArrayTypeUint32Array,
+            TypedArrayElementType::Float32 => JSTypedArrayType::kJSTypedArrayTypeFloat32Array,
+            TypedArrayElementType::Float64 => JSTypedArrayType::kJSTypedArrayTypeFloat64Array,
+            TypedArrayElementType::BigInt64 => JSTypedArrayType::kJSTypedArrayTypeBigInt64Array,
+            TypedArrayElementType::BigUint64 => JSTypedArrayType::kJSTypedArrayTypeBigUint64Array,
+            TypedArrayElementType::Float16 => {
+                // Float16 not available in JSC C API; create a Uint8 view instead
+                JSTypedArrayType::kJSTypedArrayTypeUint8Array
+            }
+        };
+        // Calculate number of elements from byte_length and element size.
+        let element_size = match element_type {
+            TypedArrayElementType::Int8
+            | TypedArrayElementType::Uint8
+            | TypedArrayElementType::Uint8Clamped
+            | TypedArrayElementType::Float16 => 1,
+            TypedArrayElementType::Int16 | TypedArrayElementType::Uint16 => 2,
+            TypedArrayElementType::Int32
+            | TypedArrayElementType::Uint32
+            | TypedArrayElementType::Float32 => 4,
+            TypedArrayElementType::Float64
+            | TypedArrayElementType::BigInt64
+            | TypedArrayElementType::BigUint64 => 8,
+        };
+        let num_elements = if byte_length == 0 {
+            0
+        } else {
+            (byte_length as usize) / element_size
+        };
+        let mut exception: *mut JSValueRef = std::ptr::null_mut();
+        let result = unsafe {
+            JSObjectMakeTypedArrayWithArrayBufferAndOffset(
+                self.context.as_context_ref(),
+                jsc_type,
+                buffer.raw,
+                byte_offset as usize,
+                num_elements,
+                &mut exception,
+            )
+        };
+        if !exception.is_null() {
+            return Err(JscValue {
+                raw: exception,
+                ctx: self.ctx_ptr(),
+            });
+        }
+        if result.is_null() {
+            return Err(self.make_string("Failed to construct TypedArray view"));
+        }
+        Ok(JscObject {
+            raw: result,
+            ctx: self.ctx_ptr(),
+        })
     }
 
     // ── §25.3 DataView Objects ────────────────────────────────────────────
+    //
+    // Note: JSC's C API does not expose DataView-specific functions.
+    // Property access (`.buffer`, `.byteOffset`, `.byteLength`) is used
+    // for query operations and script evaluation for construction.
 
     fn data_view_buffer(
         &mut self,
-        _data_view: &JscDataView,
+        data_view: &JscDataView,
     ) -> Completion<JscArrayBuffer, JscTypes> {
-        todo!("data_view_buffer not yet implemented for JSC")
+        let buffer_key = JscString::from_rust("buffer");
+        let mut exception: *mut JSValueRef = std::ptr::null_mut();
+        let buffer_val = unsafe {
+            JSObjectGetProperty(
+                self.context.as_context_ref(),
+                data_view.raw,
+                buffer_key.raw,
+                &mut exception,
+            )
+        };
+        if !exception.is_null() {
+            return Err(JscValue {
+                raw: exception,
+                ctx: self.ctx_ptr(),
+            });
+        }
+        if unsafe { JSValueGetType(self.context.as_context_ref(), buffer_val) }
+            != JSType::kJSTypeObject
+        {
+            return Err(self.make_string("DataView buffer is not an object"));
+        }
+        Ok(JscObject {
+            raw: buffer_val as *mut JSObjectRef,
+            ctx: self.ctx_ptr(),
+        })
     }
 
-    fn data_view_byte_offset(&mut self, _data_view: &JscDataView) -> Completion<u64, JscTypes> {
-        todo!("data_view_byte_offset not yet implemented for JSC")
+    fn data_view_byte_offset(&mut self, data_view: &JscDataView) -> Completion<u64, JscTypes> {
+        let offset_key = JscString::from_rust("byteOffset");
+        let mut exception: *mut JSValueRef = std::ptr::null_mut();
+        let offset_val = unsafe {
+            JSObjectGetProperty(
+                self.context.as_context_ref(),
+                data_view.raw,
+                offset_key.raw,
+                &mut exception,
+            )
+        };
+        if !exception.is_null() {
+            return Err(JscValue {
+                raw: exception,
+                ctx: self.ctx_ptr(),
+            });
+        }
+        let offset =
+            unsafe { JSValueToNumber(self.context.as_context_ref(), offset_val, &mut exception) };
+        if !exception.is_null() {
+            return Err(JscValue {
+                raw: exception,
+                ctx: self.ctx_ptr(),
+            });
+        }
+        Ok(offset as u64)
     }
 
-    fn data_view_byte_length(&mut self, _data_view: &JscDataView) -> Completion<u64, JscTypes> {
-        todo!("data_view_byte_length not yet implemented for JSC")
+    fn data_view_byte_length(&mut self, data_view: &JscDataView) -> Completion<u64, JscTypes> {
+        let length_key = JscString::from_rust("byteLength");
+        let mut exception: *mut JSValueRef = std::ptr::null_mut();
+        let length_val = unsafe {
+            JSObjectGetProperty(
+                self.context.as_context_ref(),
+                data_view.raw,
+                length_key.raw,
+                &mut exception,
+            )
+        };
+        if !exception.is_null() {
+            return Err(JscValue {
+                raw: exception,
+                ctx: self.ctx_ptr(),
+            });
+        }
+        let byte_len =
+            unsafe { JSValueToNumber(self.context.as_context_ref(), length_val, &mut exception) };
+        if !exception.is_null() {
+            return Err(JscValue {
+                raw: exception,
+                ctx: self.ctx_ptr(),
+            });
+        }
+        Ok(byte_len as u64)
     }
 
     fn construct_data_view_from_buffer(
         &mut self,
-        _buffer: JscArrayBuffer,
-        _byte_offset: u64,
-        _byte_length: u64,
+        buffer: JscArrayBuffer,
+        byte_offset: u64,
+        byte_length: u64,
     ) -> Completion<JscDataView, JscTypes> {
-        todo!("construct_data_view_from_buffer not yet implemented for JSC")
+        // JSC C API has no JSObjectMakeDataView function, so use
+        // script evaluation to construct the DataView.
+        let global = self.context.global_object();
+        let buf_key = JscString::from_rust("__fw_dv_buffer");
+        let mut exc: *mut JSValueRef = std::ptr::null_mut();
+        unsafe {
+            JSObjectSetProperty(
+                self.context.as_context_ref(),
+                global.raw,
+                buf_key.raw,
+                buffer.as_value_ref(),
+                kJSPropertyAttributeDontEnum,
+                &mut exc,
+            )
+        };
+        if !exc.is_null() {
+            return Err(JscValue {
+                raw: exc,
+                ctx: self.ctx_ptr(),
+            });
+        }
+        let script = format!(
+            "new DataView(__fw_dv_buffer, {}, {})",
+            byte_offset, byte_length
+        );
+        let script_str = JscString::from_rust(&script);
+        let result = unsafe {
+            JSEvaluateScript(
+                self.context.as_context_ref(),
+                script_str.raw,
+                std::ptr::null_mut(),
+                std::ptr::null_mut(),
+                1,
+                &mut exc,
+            )
+        };
+        // Clean up temporary property.
+        unsafe {
+            JSObjectDeleteProperty(
+                self.context.as_context_ref(),
+                global.raw,
+                buf_key.raw,
+                std::ptr::null_mut(),
+            );
+        }
+        if !exc.is_null() {
+            return Err(JscValue {
+                raw: exc,
+                ctx: self.ctx_ptr(),
+            });
+        }
+        if result.is_null() {
+            return Err(self.make_string("Failed to construct DataView"));
+        }
+        Ok(JscObject {
+            raw: result as *mut JSObjectRef,
+            ctx: self.ctx_ptr(),
+        })
     }
 
     // ── §25.1 ArrayBuffer — data access ───────────────────────────────────
 
-    fn array_buffer_data(&self, _array_buffer: &JscArrayBuffer) -> Option<Vec<u8>> {
-        None
+    fn array_buffer_data(&self, array_buffer: &JscArrayBuffer) -> Option<Vec<u8>> {
+        // Note: JSObjectGetArrayBufferBytesPtr returns a temporary pointer.
+        // We copy the data immediately to avoid lifetime issues.
+        let mut exception: *mut JSValueRef = std::ptr::null_mut();
+        let ptr = unsafe {
+            JSObjectGetArrayBufferBytesPtr(
+                self.context.as_context_ref(),
+                array_buffer.raw,
+                &mut exception,
+            )
+        };
+        if !exception.is_null() || ptr.is_null() {
+            return None;
+        }
+        let byte_length = unsafe {
+            JSObjectGetArrayBufferByteLength(
+                self.context.as_context_ref(),
+                array_buffer.raw,
+                &mut exception,
+            )
+        };
+        if !exception.is_null() {
+            return None;
+        }
+        let mut result = vec![0u8; byte_length];
+        unsafe {
+            std::ptr::copy_nonoverlapping(ptr as *const u8, result.as_mut_ptr(), byte_length);
+        }
+        Some(result)
     }
 
     // ── §22.2 Date ────────────────────────────────────────────────────────
@@ -2990,11 +3338,14 @@ impl ExecutionContext<JscTypes> for JscEngine {
         promise: JscPromise,
         on_fulfilled: Option<JscFunction>,
         on_rejected: Option<JscFunction>,
-        _result_capability: Option<PromiseCapability<JscTypes>>,
+        result_capability: Option<PromiseCapability<JscTypes>>,
     ) -> Completion<JscValue, JscTypes> {
+        let _guard = EngineGuard::new(self as *mut JscEngine);
         let global = self.context.global_object();
-        let promise_key = JscString::from_rust("__formal_web_then_promise");
         let mut exc: *mut JSValueRef = std::ptr::null_mut();
+
+        // Store promise on global.
+        let promise_key = JscString::from_rust("__formal_web_then_promise");
         unsafe {
             JSObjectSetProperty(
                 self.context.as_context_ref(),
@@ -3012,7 +3363,10 @@ impl ExecutionContext<JscTypes> for JscEngine {
             });
         }
 
-        if let Some(on_fulfilled) = on_fulfilled {
+        let onf_expr: &str;
+        let onr_expr: &str;
+
+        if let Some(ref on_fulfilled) = on_fulfilled {
             let onf_key = JscString::from_rust("__formal_web_then_onf");
             unsafe {
                 JSObjectSetProperty(
@@ -3030,8 +3384,12 @@ impl ExecutionContext<JscTypes> for JscEngine {
                     ctx: self.ctx_ptr(),
                 });
             }
+            onf_expr = "__formal_web_then_onf";
+        } else {
+            onf_expr = "undefined";
         }
-        if let Some(on_rejected) = on_rejected {
+
+        if let Some(ref on_rejected) = on_rejected {
             let onr_key = JscString::from_rust("__formal_web_then_onr");
             unsafe {
                 JSObjectSetProperty(
@@ -3049,43 +3407,81 @@ impl ExecutionContext<JscTypes> for JscEngine {
                     ctx: self.ctx_ptr(),
                 });
             }
+            onr_expr = "__formal_web_then_onr";
+        } else {
+            onr_expr = "undefined";
         }
 
-        let onf_expr = if on_fulfilled.is_some() {
-            "__formal_web_then_onf"
+        // If a result_capability is provided, chain a second .then() to
+        // pipe the capability's resolve/reject.
+        let script = if let Some(ref cap) = result_capability {
+            // Store the capability's resolve and reject on global.
+            let cap_resolve_key = JscString::from_rust("__formal_web_then_cap_resolve");
+            unsafe {
+                JSObjectSetProperty(
+                    self.context.as_context_ref(),
+                    global.raw,
+                    cap_resolve_key.raw,
+                    cap.resolve.as_value_ref(),
+                    kJSPropertyAttributeNone,
+                    &mut exc,
+                )
+            };
+            if !exc.is_null() {
+                return Err(JscValue {
+                    raw: exc,
+                    ctx: self.ctx_ptr(),
+                });
+            }
+            let cap_reject_key = JscString::from_rust("__formal_web_then_cap_reject");
+            unsafe {
+                JSObjectSetProperty(
+                    self.context.as_context_ref(),
+                    global.raw,
+                    cap_reject_key.raw,
+                    cap.reject.as_value_ref(),
+                    kJSPropertyAttributeNone,
+                    &mut exc,
+                )
+            };
+            if !exc.is_null() {
+                return Err(JscValue {
+                    raw: exc,
+                    ctx: self.ctx_ptr(),
+                });
+            }
+            format!(
+                "__formal_web_then_promise.then({}, {}).then(__formal_web_then_cap_resolve, __formal_web_then_cap_reject)",
+                onf_expr, onr_expr
+            )
         } else {
-            "undefined"
+            format!("__formal_web_then_promise.then({}, {})", onf_expr, onr_expr)
         };
-        let onr_expr = if on_rejected.is_some() {
-            "__formal_web_then_onr"
-        } else {
-            "undefined"
-        };
-        let script = format!("__formal_web_then_promise.then({}, {})", onf_expr, onr_expr);
-        let (result, exception) = self.eval_script_raw(&script);
 
-        // Cleanup temp globals
+        let (result, exception) = self.eval_script_raw(&script);
+        // Drain JSC microtasks so that .then() handlers fire.
+        // For chained .then() (with result_capability), two drain cycles
+        // are needed: one for the first .then() and one for the second.
+        self.eval_script_raw("void 0");
+        self.eval_script_raw("void 0");
+
+        // Cleanup temp globals.
         unsafe {
-            JSObjectDeleteProperty(
-                self.context.as_context_ref(),
-                global.raw,
-                promise_key.raw,
-                &mut exc,
-            );
-            let onf_key = JscString::from_rust("__formal_web_then_onf");
-            JSObjectDeleteProperty(
-                self.context.as_context_ref(),
-                global.raw,
-                onf_key.raw,
-                std::ptr::null_mut(),
-            );
-            let onr_key = JscString::from_rust("__formal_web_then_onr");
-            JSObjectDeleteProperty(
-                self.context.as_context_ref(),
-                global.raw,
-                onr_key.raw,
-                std::ptr::null_mut(),
-            );
+            let cleanup_keys = [
+                JscString::from_rust("__formal_web_then_promise"),
+                JscString::from_rust("__formal_web_then_onf"),
+                JscString::from_rust("__formal_web_then_onr"),
+                JscString::from_rust("__formal_web_then_cap_resolve"),
+                JscString::from_rust("__formal_web_then_cap_reject"),
+            ];
+            for key in &cleanup_keys {
+                JSObjectDeleteProperty(
+                    self.context.as_context_ref(),
+                    global.raw,
+                    key.raw,
+                    std::ptr::null_mut(),
+                );
+            }
         }
 
         if !exception.is_null() {
@@ -3102,11 +3498,108 @@ impl ExecutionContext<JscTypes> for JscEngine {
 
     fn promise_state(
         &mut self,
-        _promise: &JscObject,
+        promise: &JscObject,
     ) -> Completion<crate::enums::PromiseState<JscTypes>, JscTypes> {
-        // JSC: Runtime promise state inspection is not supported via the C API.
-        // Callers should restructure to avoid needing this.
-        Ok(crate::enums::PromiseState::Pending)
+        // Use script evaluation to check the promise's internal state.
+        // Register global flags via .then() handlers, then drain microtasks
+        // with void 0 to let the handlers fire, then check the flags.
+        let _guard = EngineGuard::new(self as *mut JscEngine);
+        let global = self.context.global_object();
+        let mut exc: *mut JSValueRef = std::ptr::null_mut();
+
+        // Store promise and create flags.
+        let p_key = JscString::from_rust("__fw_ps_promise");
+        unsafe {
+            JSObjectSetProperty(
+                self.context.as_context_ref(),
+                global.raw,
+                p_key.raw,
+                promise.as_value_ref(),
+                kJSPropertyAttributeNone,
+                &mut exc,
+            )
+        };
+        if !exc.is_null() {
+            return Err(JscValue {
+                raw: exc,
+                ctx: self.ctx_ptr(),
+            });
+        }
+
+        // Evaluate: attach .then() that sets global flags, then drain.
+        let setup_script = r#"
+            __fw_ps_state = "pending";
+            __fw_ps_value = undefined;
+            __fw_ps_promise.then(
+                function(v) { __fw_ps_state = "fulfilled"; __fw_ps_value = v; },
+                function(r) { __fw_ps_state = "rejected"; __fw_ps_value = r; }
+            );
+        "#;
+        self.eval_script_raw(setup_script);
+        // Drain microtasks so the .then() handlers fire.
+        self.eval_script_raw("void 0");
+
+        // Read the state flag.
+        let state_key = JscString::from_rust("__fw_ps_state");
+        let state_val = unsafe {
+            JSObjectGetProperty(
+                self.context.as_context_ref(),
+                global.raw,
+                state_key.raw,
+                &mut exc,
+            )
+        };
+        // Read the value flag.
+        let value_key = JscString::from_rust("__fw_ps_value");
+        let value_val = unsafe {
+            JSObjectGetProperty(
+                self.context.as_context_ref(),
+                global.raw,
+                value_key.raw,
+                &mut exc,
+            )
+        };
+
+        // Cleanup.
+        unsafe {
+            let cleanup_keys = [
+                JscString::from_rust("__fw_ps_promise"),
+                JscString::from_rust("__fw_ps_state"),
+                JscString::from_rust("__fw_ps_value"),
+            ];
+            for key in &cleanup_keys {
+                JSObjectDeleteProperty(
+                    self.context.as_context_ref(),
+                    global.raw,
+                    key.raw,
+                    std::ptr::null_mut(),
+                );
+            }
+        }
+
+        let ctx_ptr = self.ctx_ptr();
+        if !state_val.is_null() && unsafe { JSValueIsString(ctx_ptr, state_val) } {
+            let str_exc: *mut JSValueRef = std::ptr::null_mut();
+            let state_raw = unsafe { JSValueToStringCopy(ctx_ptr, state_val, str_exc as *mut _) };
+            if !state_raw.is_null() {
+                let state_str = unsafe { JscString::from_raw(state_raw) }.to_rust();
+                match state_str.as_str() {
+                    "fulfilled" => Ok(crate::enums::PromiseState::Fulfilled(JscValue {
+                        raw: value_val,
+                        ctx: ctx_ptr,
+                    })),
+                    "rejected" => Ok(crate::enums::PromiseState::Rejected(JscValue {
+                        raw: value_val,
+                        ctx: ctx_ptr,
+                    })),
+                    _ => Ok(crate::enums::PromiseState::Pending),
+                }
+            } else {
+                Ok(crate::enums::PromiseState::Pending)
+            }
+        } else {
+            Ok(crate::enums::PromiseState::Pending)
+        }
     }
 
     // ── §27.5 Generator ───────────────────────────────────────────────────

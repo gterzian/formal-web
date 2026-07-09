@@ -356,3 +356,116 @@ unsafe extern "C" {
         data: *mut c_void,
     ) -> *mut JSObjectRef;
 }
+
+// ── Typed Array types ─────────────────────────────────────────────────────
+
+pub type JSTypedArrayBytesDeallocator =
+    Option<unsafe extern "C" fn(bytes: *mut c_void, deallocatorContext: *mut c_void)>;
+
+#[repr(C)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum JSTypedArrayType {
+    kJSTypedArrayTypeInt8Array = 0,
+    kJSTypedArrayTypeInt16Array = 1,
+    kJSTypedArrayTypeInt32Array = 2,
+    kJSTypedArrayTypeUint8Array = 3,
+    kJSTypedArrayTypeUint8ClampedArray = 4,
+    kJSTypedArrayTypeUint16Array = 5,
+    kJSTypedArrayTypeUint32Array = 6,
+    kJSTypedArrayTypeFloat32Array = 7,
+    kJSTypedArrayTypeFloat64Array = 8,
+    kJSTypedArrayTypeArrayBuffer = 9,
+    kJSTypedArrayTypeNone = 10,
+    kJSTypedArrayTypeBigInt64Array = 11,
+    kJSTypedArrayTypeBigUint64Array = 12,
+}
+
+unsafe extern "C" {
+    // ── Typed Array construction ───────────────────────────────────────────
+    pub fn JSObjectMakeTypedArray(
+        ctx: *mut JSContextRef,
+        arrayType: JSTypedArrayType,
+        length: usize,
+        exception: *mut *mut JSValueRef,
+    ) -> *mut JSObjectRef;
+
+    pub fn JSObjectMakeTypedArrayWithBytesNoCopy(
+        ctx: *mut JSContextRef,
+        arrayType: JSTypedArrayType,
+        bytes: *mut c_void,
+        byteLength: usize,
+        bytesDeallocator: JSTypedArrayBytesDeallocator,
+        deallocatorContext: *mut c_void,
+        exception: *mut *mut JSValueRef,
+    ) -> *mut JSObjectRef;
+
+    pub fn JSObjectMakeTypedArrayWithArrayBuffer(
+        ctx: *mut JSContextRef,
+        arrayType: JSTypedArrayType,
+        buffer: *mut JSObjectRef,
+        exception: *mut *mut JSValueRef,
+    ) -> *mut JSObjectRef;
+
+    pub fn JSObjectMakeTypedArrayWithArrayBufferAndOffset(
+        ctx: *mut JSContextRef,
+        arrayType: JSTypedArrayType,
+        buffer: *mut JSObjectRef,
+        byteOffset: usize,
+        length: usize,
+        exception: *mut *mut JSValueRef,
+    ) -> *mut JSObjectRef;
+
+    // ── Typed Array accessors ──────────────────────────────────────────────
+
+    pub fn JSObjectGetTypedArrayBytesPtr(
+        ctx: *mut JSContextRef,
+        object: *mut JSObjectRef,
+        exception: *mut *mut JSValueRef,
+    ) -> *mut c_void;
+
+    pub fn JSObjectGetTypedArrayLength(
+        ctx: *mut JSContextRef,
+        object: *mut JSObjectRef,
+        exception: *mut *mut JSValueRef,
+    ) -> usize;
+
+    pub fn JSObjectGetTypedArrayByteLength(
+        ctx: *mut JSContextRef,
+        object: *mut JSObjectRef,
+        exception: *mut *mut JSValueRef,
+    ) -> usize;
+
+    pub fn JSObjectGetTypedArrayByteOffset(
+        ctx: *mut JSContextRef,
+        object: *mut JSObjectRef,
+        exception: *mut *mut JSValueRef,
+    ) -> usize;
+
+    pub fn JSObjectGetTypedArrayBuffer(
+        ctx: *mut JSContextRef,
+        object: *mut JSObjectRef,
+        exception: *mut *mut JSValueRef,
+    ) -> *mut JSObjectRef;
+
+    // ── Array Buffer accessors ─────────────────────────────────────────────
+
+    pub fn JSObjectGetArrayBufferBytesPtr(
+        ctx: *mut JSContextRef,
+        object: *mut JSObjectRef,
+        exception: *mut *mut JSValueRef,
+    ) -> *mut c_void;
+
+    pub fn JSObjectGetArrayBufferByteLength(
+        ctx: *mut JSContextRef,
+        object: *mut JSObjectRef,
+        exception: *mut *mut JSValueRef,
+    ) -> usize;
+
+    // ── Typed Array type query ─────────────────────────────────────────────
+
+    pub fn JSValueGetTypedArrayType(
+        ctx: *mut JSContextRef,
+        value: *mut JSValueRef,
+        exception: *mut *mut JSValueRef,
+    ) -> JSTypedArrayType;
+}

@@ -1829,7 +1829,7 @@ mod tests {
             intrinsics.array_buffer.clone(),
         )
         .unwrap();
-        let _ = engine.detach_array_buffer(ab, None);
+        let _ = JsEngine::detach_array_buffer(&mut engine, ab, None);
     }
 
     #[cfg_attr(

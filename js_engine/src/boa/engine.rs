@@ -1923,8 +1923,6 @@ impl ExecutionContext<BoaTypes> for BoaContext {
         Some(unsafe { &*(cast.data().0.as_any_ref() as *const dyn std::any::Any) })
     }
 
-
-
     fn with_object_any_mut(&mut self, object: &JsObject) -> Option<&mut dyn std::any::Any> {
         let mut wrapper = object.downcast_mut::<NativeDataWrapper>()?;
         // SAFETY: The TraceableBox lives in the JsObject's GC heap, which
