@@ -355,84 +355,92 @@ event.rs, etc.) use the helper functions from `downcast.rs` or call
     tracing investigations, and per-test WPT inventories from this
     document (completed).
 
-## Remaining JSC limitations
+## JSC backend current state (2026-07-10)
 
-- `define_property_or_throw` uses `Object.defineProperty` via script eval;
-  accessor (getter/setter) descriptors store placeholder `undefined` values.
-- The global object's prototype is immutable on JSC
-  (`JSObjectSetPrototype`/`Object.setPrototypeOf` fail silently).
-  Properties from `Window.prototype` and `EventTarget.prototype` are now
-  copied to the global object at build_context time, making
-  `addEventListener`, `setTimeout`, etc. accessible from the global scope.
-  `instanceof Window` still returns `false` — the actual [[Prototype]]
-  slot remains unchanged.
-- Setting properties on objects created via `eval("{}")`
-  (`create_plain_object(None)`) causes SIGSEGV on macOS 26.
-- `create_proxy` is implemented via `new Proxy(target, handler)` script
-  evaluation (JSC supports Proxy natively), enabling WindowProxy creation
-  for `window.open()`.
-- Iterator operations (`get_iterator`, `get_iterator_step_value`)
-  may crash or produce incorrect results.
-- DataView and TypedArray view construction are `todo!()`.
-- JSC's C API does not expose the microtask queue — `run_jobs` only
-  drains the Rust-side job queue.  Microtask draining is now triggered
-  by evaluating `void 0` at the end of `call()` and `construct()`,
-  since JSC drains pending microtasks after each `JSEvaluateScript`
-  call.  This enables basic promise resolution (e.g.
-  `Promise.resolve().then(...)` works).  However, native JSC async
-  operations (e.g. `WebAssembly.compile()`) create promises resolved
-  by background threads and still require the event loop to complete.
-- `create_object_with_any` roots its objects on the JSC global (as
-  non-enumerable `__fw_any_root_*` properties) to prevent JSC's GC
-  from collecting them while Rust still holds raw pointers.  Without
-  rooting, `try_with_event_target_ref` fails with "receiver is not an
-  EventTarget" because the side-table HashMap key (object pointer)
-  becomes stale after GC.
-- `JscEngine` supports multi-realm via `new_shared_realm()` — creates
-  a child engine sharing the same `JSGlobalContextRef` (same GC heap)
-  but with its own global object, host_data, and job queue.  Used by
-  `window.open` so the new window's objects live in the opener's GC
-  heap, enabling cross-window WindowProxy references.
-- `JscContext` implements `Clone` (via `JSGlobalContextRetain`), so
-  multiple `JscEngine`s can share the same underlying JS context.
+### Build
+```bash
+# JSC backend (macOS)
+rustup run 1.94.0 cargo build --release --no-default-features --features jsc
 
-## JSC backend current state
+# Boa backend (default)
+rustup run 1.94.0 cargo build --release
+
+# Check
+rustup run 1.94.0 cargo check --no-default-features --features jsc
+```
+
+### Run
+```bash
+# Launch CDP server (JSC)
+RUST_LOG=warn target/release/formal-web cdp --port 9222
+
+# Launch headed browser (JSC)
+RUST_LOG=warn target/release/formal-web
+
+# WPT (Boa only)
+PYTHON=python3.12 cargo run --release -- wpt
+```
+
+### Unit tests
+```bash
+cargo test --no-default-features --features jsc -p content generic_js_test   # 90 pass
+cargo test -p content generic_js_test                                          # 90 pass
+```
 
 ### Working
-- **Global methods:** `addEventListener`, `removeEventListener`, `dispatchEvent`,
+- Global methods: `addEventListener`, `removeEventListener`, `dispatchEvent`,
   `setTimeout`, `clearTimeout`, `setInterval`, `clearInterval`,
-  `requestAnimationFrame`, `cancelAnimationFrame` are accessible from the global
-  scope (copied from `Window.prototype` and `EventTarget.prototype` at
-  build_context time; the global object's [[Prototype]] itself cannot be set
-  on JSC).
-- **DOM events:** Click, mouse, and other UI events dispatch correctly (GC
-  rooting in `create_object_with_any` prevents `receiver is not an EventTarget`).
-- **Microtasks:** `Promise.resolve().then(...)` resolves — microtask drain via
-  `void 0` evaluation at end of `call()` and `construct()` triggers JSC's
-  internal `drainMicrotasks()`.
-- **WindowProxy:** `window.open` creates a WindowProxy via native JSC
-  `new Proxy()` (JSC supports Proxy natively).
-- **Multi-realm:** `JscEngine::new_shared_realm()` creates a child engine
-  sharing the same `JSGlobalContextRef` (same GC heap). `build_realm()` wired
-  into `window.open` via `the_rules_with_parent()`.
-- **Synchronous WebAssembly:** `new WebAssembly.Module()` and
-  `new WebAssembly.Instance()` work (JSC's native sync path).
-- **Builtin functions:** `create_builtin_fn_static`, `create_builtin_fn`,
-  `create_builtin_function` use custom JSClass with `callAsFunction`/`callAsConstructor`.
+  `requestAnimationFrame`, `cancelAnimationFrame`.
+- DOM events dispatch correctly (GC rooting prevents stale pointer issues).
+- `ReadableStream`, `TransformStream`, `WritableStream` constructors and
+  basic operations (enqueue, read, cancel, transform).
+- `ReadableStream.prototype.values`, `pipeTo`, `cancel` methods registered.
+- `Promise.resolve().then(...)` chains resolve correctly.
+- `new WebAssembly.Module()`, `new WebAssembly.Instance()` sync path.
+- `window.open()` creates WindowProxy via native JSC `Proxy`.
+- Multi-realm via `new_shared_realm()` (same GC heap, separate global).
+- TypedArray, DataView, ArrayBuffer operations via JSC C API.
 
-### Tried and failed
-- **Microtask drain in `run_jobs()`:** Evaluating `void 0` from `run_jobs()`
-  caused SIGSEGV because `run_jobs()` can be called from contexts where
-  `CURRENT_ENGINE` is not set, or during active JS execution (nested eval).
-  Moved to `call()`/`construct()` where `CURRENT_ENGINE` is managed.
-- **`JSValueProtect` for GC rooting:** Causes SIGSEGV on eval-created values.
-  Object rooting via non-enumerable global properties works instead.
-- **`JSObjectSetProperty` on `JSObjectMakeFunctionWithCallback` objects:**
-  Crashes on macOS 26. The `name` property on builtin function objects is
-  skipped.
-- **`JSObjectSetPrototype` on the global object:** Fails silently (immutable).
-  Property copying is the only viable workaround via the public C API.
+### Remaining JSC limitations
 
+**Function.prototype inheritance (macOS 26)**
+`JSObjectSetPrototype` crashes on `JSObjectMake`-created objects.
+Builtin functions lack `.bind()`, `.call()`, `.apply()`.  Affects:
+- `c.enqueue.bind(c)` patterns in stream tests
+- `callback is not a function` errors (`Element-remove.html`)
+
+Workaround: JS wrapper functions via `ec.evaluate_script()` have full
+Function.prototype — use these for APIs that need `.bind()`.
+
+**Microtask draining**
+`run_jobs` uses a cached `(function(){})` called via `JSObjectCallAsFunction`
+(purely indigenous), avoiding `JSEvaluateScript` compilation per call.
+`perform_promise_then` calls `.then()` directly via `JSObjectGetProperty` +
+`JSObjectCallAsFunction` instead of JSEvaluateScript.
+
+**GC rooting**
+- `new_promise_capability` roots promise/resolve/reject on the global.
+- `create_object_with_any` roots objects as non-enumerable global properties.
+
+**Known issues**
+- `define_property_or_throw` uses `Object.defineProperty` via script eval.
+- Global object prototype immutable; properties copied to global at setup.
+- Setting properties on `eval("{}")`-created objects SIGSEGV (use `JSObjectMake`).
+- Async `WebAssembly.compile()`/`WebAssembly.instantiate()` times out (needs
+  event loop for background compilation).
+- `structuredClone` returns `null` (Blob not implemented).
+- `instanceof Window` returns `false` (global [[Prototype]] immutable).
+
+### Performance profile
+Before (2026-07-09): 100% of CPU in `JSEvaluateScript("void 0")` per
+microtask checkpoint → full parse/compile/GC churn.
+
+After (2026-07-10): dominant path is `JSObjectCallAsFunction(drain_noop)`
+→ microtask processing; no JSEvaluateScript compilation overhead.
+
+2062/2148 samples in one test run were inside
+`run_jobs` → `JSObjectCallAsFunction` → `drainMicrotasks`,
+indicating the microtask checkpoint is the primary work cycle.
 ### Remaining problems
 - ✅ **Streams API (ReadableStream, TransformStream)** — FIXED (2026-07-09).
   `create_builtin_fn_with_traced_captures` was `unimplemented!()` on JSC.

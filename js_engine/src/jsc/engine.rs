@@ -325,6 +325,9 @@ fn make_builtin_function(
 
     // Note: Skipping `name` property because JSObjectSetProperty on
     // JSClass-created function objects causes crashes on macOS 26.
+    // Note: Function.prototype methods (.bind, .call, .apply) are not
+    // available on builtin function objects because JSObjectSetPrototype
+    // also crashes on macOS 26 for these objects.
 
     JscObject { raw: raw_obj, ctx }
 }
@@ -780,6 +783,8 @@ pub struct JscEngine {
     /// Monotonically-increasing counter for GC-root property names.
     next_root_id: u64,
     queued_jobs: Vec<Box<dyn FnOnce(&mut JscEngine)>>,
+    /// Cached no-op function for microtask draining.
+    drain_noop: *mut JSObjectRef,
 }
 
 /// Drop `host_data` (which contains `GcRootHandle` unroot closures) and
@@ -805,6 +810,7 @@ impl JscEngine {
             host_data: HashMap::new(),
             next_root_id: 0,
             queued_jobs: Vec::new(),
+            drain_noop: std::ptr::null_mut(),
         }
     }
 
@@ -834,6 +840,7 @@ impl JscEngine {
             host_data: HashMap::new(),
             next_root_id: 0,
             queued_jobs: Vec::new(),
+            drain_noop: std::ptr::null_mut(),
         }
     }
 
@@ -855,6 +862,7 @@ impl JscEngine {
             host_data: HashMap::new(),
             next_root_id: 0,
             queued_jobs: Vec::new(),
+            drain_noop: std::ptr::null_mut(),
         }
     }
     pub fn context(&self) -> &JscContext {
@@ -2688,15 +2696,54 @@ impl ExecutionContext<JscTypes> for JscEngine {
         // We evaluate `void 0` here to drain any pending JSC microtasks,
         // and also drain the Rust-side job queue with CURRENT_ENGINE set.
         let _guard = EngineGuard::new(self as *mut JscEngine);
-        // Drain JSC microtasks by evaluating void 0.
-        self.eval_script_raw("void 0");
+        // Lazily create a no-op function for microtask draining.
+        // Calling a JS function (instead of evaluating a script)
+        // avoids the compilation overhead of JSEvaluateScript.
+        if self.drain_noop.is_null() {
+            let script = "(function(){})";
+            let (result, exception) = self.eval_script_raw(script);
+            if exception.is_null() {
+                self.drain_noop = result as *mut JSObjectRef;
+            }
+        }
+
+        // Drain JSC microtasks by calling the noop.
+        if !self.drain_noop.is_null() {
+            unsafe {
+                JSObjectCallAsFunction(
+                    self.context.as_context_ref(),
+                    self.drain_noop,
+                    std::ptr::null_mut(),
+                    0,
+                    std::ptr::null(),
+                    std::ptr::null_mut(),
+                );
+            }
+        } else {
+            self.eval_script_raw("void 0");
+        }
+
         // Drain Rust-side job queue.
         let jobs = std::mem::take(&mut self.queued_jobs);
         for job in jobs {
             job(self);
         }
+
         // Drain any microtasks that the Rust jobs may have triggered.
-        self.eval_script_raw("void 0");
+        if !self.drain_noop.is_null() {
+            unsafe {
+                JSObjectCallAsFunction(
+                    self.context.as_context_ref(),
+                    self.drain_noop,
+                    std::ptr::null_mut(),
+                    0,
+                    std::ptr::null(),
+                    std::ptr::null_mut(),
+                );
+            }
+        } else {
+            self.eval_script_raw("void 0");
+        }
     }
 
     // ── §25 ArrayBuffer — runtime queries ─────────────────────────────────
@@ -3635,6 +3682,35 @@ impl ExecutionContext<JscTypes> for JscEngine {
                 ctx: self.ctx_ptr(),
             });
         }
+
+        // Root the promise, resolve, and reject values on the global object
+        // to prevent JSC's GC from collecting them while Rust code holds raw
+        // pointers.  These are stored as non-enumerable properties with a
+        // counter-based name, matching the pattern used by create_object_with_any
+        // and create_root.
+        let global = self.context.global_object();
+        let ctx_ptr = self.ctx_ptr();
+        for (raw, tag) in [
+            (promise_raw, "promise"),
+            (resolve_raw, "resolve"),
+            (reject_raw, "reject"),
+        ] {
+            let root_id = self.next_root_id;
+            self.next_root_id = self.next_root_id.wrapping_add(1);
+            let prop_name = format!("__fw_pcap_root_{root_id}_{tag}");
+            let root_key = JscString::from_rust(&prop_name);
+            unsafe {
+                JSObjectSetProperty(
+                    ctx_ptr,
+                    global.raw,
+                    root_key.raw,
+                    raw,
+                    kJSPropertyAttributeDontEnum,
+                    &mut exc,
+                );
+            }
+        }
+
         Ok(PromiseCapability {
             promise: JscValue {
                 raw: promise_raw,
@@ -3679,158 +3755,78 @@ impl ExecutionContext<JscTypes> for JscEngine {
         result_capability: Option<PromiseCapability<JscTypes>>,
     ) -> Completion<JscValue, JscTypes> {
         let _guard = EngineGuard::new(self as *mut JscEngine);
-        let global = self.context.global_object();
+        let ctx = self.context.as_context_ref();
         let mut exc: *mut JSValueRef = std::ptr::null_mut();
 
-        // Store promise on global.
-        let promise_key = JscString::from_rust("__formal_web_then_promise");
-        unsafe {
-            JSObjectSetProperty(
-                self.context.as_context_ref(),
-                global.raw,
-                promise_key.raw,
-                promise.as_value_ref(),
-                kJSPropertyAttributeNone,
+        // Get the "then" method from the promise via C API to avoid
+        // JSEvaluateScript compilation overhead.
+        let then_str = JscString::from_rust("then");
+        let then_method = unsafe {
+            JSObjectGetProperty(ctx, promise.raw, then_str.raw, &mut exc)
+        };
+        if then_method.is_null() || !exc.is_null() {
+            return Err(JscValue { raw: exc, ctx });
+        }
+
+        // Build args: promise.then(onFulfilled, onRejected)
+        let onf_raw = on_fulfilled
+            .as_ref()
+            .map(|f| f.as_value_ref())
+            .unwrap_or_else(|| unsafe { JSValueMakeUndefined(ctx) });
+        let onr_raw = on_rejected
+            .as_ref()
+            .map(|f| f.as_value_ref())
+            .unwrap_or_else(|| unsafe { JSValueMakeUndefined(ctx) });
+        let then_args = [onf_raw, onr_raw];
+
+        let result = unsafe {
+            JSObjectCallAsFunction(
+                ctx,
+                then_method as *mut JSObjectRef,
+                promise.raw,
+                then_args.len(),
+                then_args.as_ptr(),
                 &mut exc,
             )
         };
-        if !exc.is_null() {
-            return Err(JscValue {
-                raw: exc,
-                ctx: self.ctx_ptr(),
-            });
-        }
-
-        let onf_expr: &str;
-        let onr_expr: &str;
-
-        if let Some(ref on_fulfilled) = on_fulfilled {
-            let onf_key = JscString::from_rust("__formal_web_then_onf");
-            unsafe {
-                JSObjectSetProperty(
-                    self.context.as_context_ref(),
-                    global.raw,
-                    onf_key.raw,
-                    on_fulfilled.as_value_ref(),
-                    kJSPropertyAttributeNone,
-                    &mut exc,
-                )
-            };
-            if !exc.is_null() {
-                return Err(JscValue {
-                    raw: exc,
-                    ctx: self.ctx_ptr(),
-                });
-            }
-            onf_expr = "__formal_web_then_onf";
-        } else {
-            onf_expr = "undefined";
-        }
-
-        if let Some(ref on_rejected) = on_rejected {
-            let onr_key = JscString::from_rust("__formal_web_then_onr");
-            unsafe {
-                JSObjectSetProperty(
-                    self.context.as_context_ref(),
-                    global.raw,
-                    onr_key.raw,
-                    on_rejected.as_value_ref(),
-                    kJSPropertyAttributeNone,
-                    &mut exc,
-                )
-            };
-            if !exc.is_null() {
-                return Err(JscValue {
-                    raw: exc,
-                    ctx: self.ctx_ptr(),
-                });
-            }
-            onr_expr = "__formal_web_then_onr";
-        } else {
-            onr_expr = "undefined";
+        if !exc.is_null() || result.is_null() {
+            return Err(JscValue { raw: exc, ctx });
         }
 
         // If a result_capability is provided, chain a second .then() to
-        // pipe the capability's resolve/reject.
-        let script = if let Some(ref cap) = result_capability {
-            // Store the capability's resolve and reject on global.
-            let cap_resolve_key = JscString::from_rust("__formal_web_then_cap_resolve");
-            unsafe {
-                JSObjectSetProperty(
-                    self.context.as_context_ref(),
-                    global.raw,
-                    cap_resolve_key.raw,
-                    cap.resolve.as_value_ref(),
-                    kJSPropertyAttributeNone,
-                    &mut exc,
-                )
+        // pipe the capability's resolve/reject into the result promise.
+        if let Some(ref cap) = result_capability {
+            let then_method2 = unsafe {
+                JSObjectGetProperty(ctx, result as *mut JSObjectRef, then_str.raw, &mut exc)
             };
-            if !exc.is_null() {
-                return Err(JscValue {
-                    raw: exc,
-                    ctx: self.ctx_ptr(),
-                });
+            if then_method2.is_null() || !exc.is_null() {
+                return Err(JscValue { raw: exc, ctx });
             }
-            let cap_reject_key = JscString::from_rust("__formal_web_then_cap_reject");
-            unsafe {
-                JSObjectSetProperty(
-                    self.context.as_context_ref(),
-                    global.raw,
-                    cap_reject_key.raw,
-                    cap.reject.as_value_ref(),
-                    kJSPropertyAttributeNone,
-                    &mut exc,
-                )
-            };
-            if !exc.is_null() {
-                return Err(JscValue {
-                    raw: exc,
-                    ctx: self.ctx_ptr(),
-                });
-            }
-            format!(
-                "__formal_web_then_promise.then({}, {}).then(__formal_web_then_cap_resolve, __formal_web_then_cap_reject)",
-                onf_expr, onr_expr
-            )
-        } else {
-            format!("__formal_web_then_promise.then({}, {})", onf_expr, onr_expr)
-        };
-
-        let (result, exception) = self.eval_script_raw(&script);
-        // Drain JSC microtasks so that .then() handlers fire.
-        // For chained .then() (with result_capability), two drain cycles
-        // are needed: one for the first .then() and one for the second.
-        self.eval_script_raw("void 0");
-        self.eval_script_raw("void 0");
-
-        // Cleanup temp globals.
-        unsafe {
-            let cleanup_keys = [
-                JscString::from_rust("__formal_web_then_promise"),
-                JscString::from_rust("__formal_web_then_onf"),
-                JscString::from_rust("__formal_web_then_onr"),
-                JscString::from_rust("__formal_web_then_cap_resolve"),
-                JscString::from_rust("__formal_web_then_cap_reject"),
+            let chain_args = [
+                cap.resolve.as_value_ref(),
+                cap.reject.as_value_ref(),
             ];
-            for key in &cleanup_keys {
-                JSObjectDeleteProperty(
-                    self.context.as_context_ref(),
-                    global.raw,
-                    key.raw,
-                    std::ptr::null_mut(),
-                );
+            let _ = unsafe {
+                JSObjectCallAsFunction(
+                    ctx,
+                    then_method2 as *mut JSObjectRef,
+                    result as *mut JSObjectRef,
+                    chain_args.len(),
+                    chain_args.as_ptr(),
+                    &mut exc,
+                )
+            };
+            if !exc.is_null() {
+                return Err(JscValue { raw: exc, ctx });
             }
         }
 
-        if !exception.is_null() {
-            return Err(JscValue {
-                raw: exception,
-                ctx: self.ctx_ptr(),
-            });
-        }
+        // Drain JSC microtasks so that .then() handlers fire.
+        self.drain_microtasks();
+
         Ok(JscValue {
             raw: result,
-            ctx: self.ctx_ptr(),
+            ctx,
         })
     }
 

@@ -74,7 +74,25 @@ pub struct JscString {
 
 impl JscString {
     pub fn from_rust(s: &str) -> Self {
-        let c_str = CString::new(s).expect("JSString contains null byte");
+        // JSC's C API expects null-terminated strings without embedded null
+        // bytes. If the Rust string contains null bytes (e.g. malformed
+        // data from structured clone or error messages), replace them with
+        // the Unicode replacement character instead of panicking.
+        let c_str = match CString::new(s) {
+            Ok(c_str) => c_str,
+            Err(error) => {
+                log::warn!(
+                    "JscString::from_rust got string with null byte at position {}; replacing",
+                    error.nul_position(),
+                );
+                let sanitized: String = s
+                    .chars()
+                    .map(|c| if c == '\0' { '\u{FFFD}' } else { c })
+                    .collect();
+                CString::new(sanitized)
+                    .expect("sanitized string should not contain null bytes")
+            }
+        };
         let raw = unsafe { JSStringCreateWithUTF8CString(c_str.as_ptr()) };
         assert!(!raw.is_null());
         Self { raw }
@@ -196,14 +214,18 @@ impl Default for JscValue {
 }
 
 impl From<bool> for JscValue {
-    fn from(_b: bool) -> Self {
-        panic!("Cannot create JscValue from bool without a context; use ec.value_from_bool()")
+    fn from(b: bool) -> Self {
+        panic!(
+            "Cannot create JscValue from bool({b}) without a context; use ec.value_from_bool()"
+        )
     }
 }
 
 impl From<f64> for JscValue {
-    fn from(_n: f64) -> Self {
-        panic!("Cannot create JscValue from f64 without a context; use ec.value_from_number()")
+    fn from(n: f64) -> Self {
+        panic!(
+            "Cannot create JscValue from f64({n}) without a context; use ec.value_from_number()"
+        )
     }
 }
 

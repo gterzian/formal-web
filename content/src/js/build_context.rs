@@ -200,6 +200,85 @@ fn setup_realm(engine: &mut Engine, document: Rc<RefCell<BaseDocument>>) -> Resu
             .map_err(|error| error.display().to_string())?;
     }
 
+    // Step 10: ReadableStream methods: values, @@asyncIterator, pipeTo.
+    // These are registered in host_hooks.rs for Boa; here for JSC.
+    if let Some(rs_proto) = get_registry_prototype::<crate::js::Types, ReadableStream>(engine) {
+        let values_fn: <crate::js::Types as js_engine::JsTypes>::JsObject = engine
+            .create_builtin_fn(
+                Box::new(|args, this, ec| {
+                    crate::js::bindings::streams::readablestream::values_method(&this, args, ec)
+                }),
+                0,
+                engine.property_key_from_str("values"),
+            )
+            .into();
+
+        let pipe_to_native_fn: <crate::js::Types as js_engine::JsTypes>::JsObject = engine
+            .create_builtin_fn(
+                Box::new(|args, this, ec| {
+                    crate::js::bindings::streams::readablestream::pipe_to_native_method(
+                        &this, args, ec,
+                    )
+                }),
+                2,
+                engine.property_key_from_str("pipeTo"),
+            )
+            .into();
+
+        // values descriptor
+        let values_value = <crate::js::Types as js_engine::JsTypes>::value_from_object(values_fn.clone());
+        let values_desc = js_engine::records::PropertyDescriptor::<crate::js::Types> {
+            value: Some(values_value),
+            writable: Some(true),
+            enumerable: Some(true),
+            configurable: Some(true),
+            get: None,
+            set: None,
+        };
+        let _ = engine.define_property_or_throw(
+            rs_proto,
+            engine.property_key_from_str("values"),
+            values_desc,
+        );
+
+        // __formalWebReadableStreamPipeToNative (native backstop)
+        let native_value = <crate::js::Types as js_engine::JsTypes>::value_from_object(pipe_to_native_fn.clone());
+        let native_desc = js_engine::records::PropertyDescriptor::<crate::js::Types> {
+            value: Some(native_value),
+            writable: Some(true),
+            configurable: Some(true),
+            enumerable: None,
+            get: None,
+            set: None,
+        };
+        let _ = engine.define_property_or_throw(
+            rs_proto,
+            engine.property_key_from_str("__formalWebReadableStreamPipeToNative"),
+            native_desc,
+        );
+
+        // pipeTo: JS wrapper that calls the native backstop.
+        let wrapper_source = "(function pipeTo(dest, opts) { return this.__formalWebReadableStreamPipeToNative(dest, opts); })";
+        if let Ok(wrapper_val) = engine.evaluate_script(wrapper_source) {
+            if let Some(wrapper_obj) = <crate::js::Types as js_engine::JsTypes>::value_as_object(&wrapper_val) {
+                let pipe_value = <crate::js::Types as js_engine::JsTypes>::value_from_object(wrapper_obj);
+                let pipe_to_desc = js_engine::records::PropertyDescriptor::<crate::js::Types> {
+                    value: Some(pipe_value),
+                    writable: Some(true),
+                    configurable: Some(true),
+                    enumerable: None,
+                    get: None,
+                    set: None,
+                };
+                let _ = engine.define_property_or_throw(
+                    rs_proto,
+                    engine.property_key_from_str("pipeTo"),
+                    pipe_to_desc,
+                );
+            }
+        }
+    }
+
     Ok(())
 }
 
