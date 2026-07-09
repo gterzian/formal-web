@@ -119,9 +119,8 @@ pub(crate) fn create_a_new_browsing_context_and_document(
     create_a_new_realm(None, event_sender, traversable_id, document_id)
 }
 
-/// Like `create_a_new_browsing_context_and_document`, but shares the
-/// existing engine's JS context (same GC heap).  The new realm can
-/// reference objects from the opener's context.  Used by `window.open`.
+/// Create a new realm within an existing JS engine (sharing the same
+/// JS context / GC heap on JSC).  Used by `window.open`.
 pub(crate) fn create_a_new_realm(
     parent: Option<&mut crate::js::Engine>,
     event_sender: &IpcSender<ContentEvent>,
@@ -150,7 +149,7 @@ pub(crate) fn create_a_new_realm(
         ..DocumentConfig::default()
     })));
     // Steps 9-10, 13: Obtain agent, create realm, set up window environment
-    // settings object (handled inside EnvironmentSettingsObject::new).
+    // settings object.
     let settings = EnvironmentSettingsObject::new_in_realm(
         parent,
         Rc::clone(&document),
@@ -207,22 +206,6 @@ pub(crate) struct ChosenNavigableResult {
 
 /// <https://html.spec.whatwg.org/#the-rules-for-choosing-a-navigable>
 pub(crate) fn the_rules_for_choosing_a_navigable(
-    source_navigable_id: NavigableId,
-    parent_navigable_id: Option<NavigableId>,
-    top_level_navigable_id: NavigableId,
-    target_name: &str,
-    noopener: bool,
-    global_scope: Option<&GlobalScope>,
-    window_global: Option<<crate::js::Types as js_engine::JsTypes>::JsObject>,
-) -> ChosenNavigableResult {
-    the_rules_with_parent(None, source_navigable_id, parent_navigable_id, top_level_navigable_id, target_name, noopener, global_scope, window_global)
-}
-
-/// Like `the_rules_for_choosing_a_navigable`, but shares the opener's JS
-/// engine (same GC heap).  The new realm's global object is in the same
-/// context, so cross-window references (WindowProxy) work on JSC.
-pub(crate) fn the_rules_with_parent(
-    parent_engine: Option<&mut crate::js::Engine>,
     source_navigable_id: NavigableId,
     parent_navigable_id: Option<NavigableId>,
     top_level_navigable_id: NavigableId,
@@ -301,11 +284,9 @@ pub(crate) fn the_rules_with_parent(
                 let new_traversable_id = NavigableId::new();
                 let new_document_id = DocumentId::new();
 
-                let (global_object, settings, document) = match global_scope.create_document_in_realm(
-                    parent_engine,
-                    new_traversable_id,
-                    new_document_id,
-                ) {
+                let (global_object, settings, document) = match global_scope
+                    .create_document_in_realm(new_traversable_id, new_document_id)
+                {
                     Ok(result) => result,
                     Err(error) => {
                         error!(

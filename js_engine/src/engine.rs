@@ -146,6 +146,8 @@ pub trait EcmascriptHost<T: JsTypes> {
 
 /// <https://tc39.es/ecma262/#sec-execution-contexts>
 pub trait ExecutionContext<T: JsTypes + JsTypesWithRealm>: EcmascriptHost<T> {
+    /// Downcast to `&mut dyn Any` for extracting the concrete engine type.
+    fn as_any_mut(&mut self) -> &mut dyn core::any::Any;
     // ────────────────────────────────────────────────────────────────────────
     // §7.1 Type Conversion
     // ────────────────────────────────────────────────────────────────────────

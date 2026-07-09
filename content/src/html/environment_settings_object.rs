@@ -73,7 +73,14 @@ impl EnvironmentSettingsObject {
         source_navigable_id: Option<NavigableId>,
         document_id: Option<DocumentId>,
     ) -> Result<Self, String> {
-        Self::new_in_realm(None, document, creation_url, event_sender, source_navigable_id, document_id)
+        Self::new_in_realm(
+            None,
+            document,
+            creation_url,
+            event_sender,
+            source_navigable_id,
+            document_id,
+        )
     }
 
     /// Like `new`, but creates the realm within an existing engine (sharing

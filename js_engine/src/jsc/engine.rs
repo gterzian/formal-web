@@ -648,15 +648,43 @@ impl JscEngine {
     ///
     /// Use for `window.open` and similar cross-document navigation where the
     /// new document should share the opener's JS engine.
+    /// Create a new realm sharing the same JSC context (same JSGlobalContextRef,
+    /// same GC heap).  Each realm has its own global object, host_data, roots,
+    /// and job queue.
+    ///
+    /// Use for `window.open` and similar cross-document navigation where the
+    /// new document should share the opener's JS engine.
     pub fn new_shared_realm(&self) -> Self {
         let ctx_ptr = self.context.as_context_ref();
-        let raw_obj = unsafe { JSObjectMake(ctx_ptr, GLOBAL_CONTEXT_CLASS.0, std::ptr::null_mut()) };
+        let raw_obj =
+            unsafe { JSObjectMake(ctx_ptr, GLOBAL_CONTEXT_CLASS.0, std::ptr::null_mut()) };
         let realm_global = JscObject {
             raw: raw_obj,
             ctx: ctx_ptr,
         };
         Self {
             context: self.context.clone(),
+            realm_global,
+            host_data: HashMap::new(),
+            next_root_id: 0,
+            queued_jobs: Vec::new(),
+        }
+    }
+
+    /// Create a new engine sharing the given JSC context (same JSGlobalContextRef,
+    /// same GC heap).  Used when the original engine is not available — the
+    /// context is stored separately (e.g. in GlobalScope) for use by
+    /// `create_document_in_realm`.
+    pub fn new_from_context(context: JscContext) -> Self {
+        let ctx_ptr = context.as_context_ref();
+        let raw_obj =
+            unsafe { JSObjectMake(ctx_ptr, GLOBAL_CONTEXT_CLASS.0, std::ptr::null_mut()) };
+        let realm_global = JscObject {
+            raw: raw_obj,
+            ctx: ctx_ptr,
+        };
+        Self {
+            context,
             realm_global,
             host_data: HashMap::new(),
             next_root_id: 0,
@@ -1051,6 +1079,10 @@ impl JsEngine<JscTypes> for JscEngine {
 // ═══════════════════════════════════════════════════════════════════════════
 
 impl ExecutionContext<JscTypes> for JscEngine {
+    fn as_any_mut(&mut self) -> &mut dyn core::any::Any {
+        self
+    }
+
     fn create_builtin_fn_static(
         &mut self,
         behaviour: fn(

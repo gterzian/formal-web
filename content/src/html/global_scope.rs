@@ -7,7 +7,7 @@ use std::{
 
 use super::environment_settings_object::EnvironmentSettingsObject;
 
-use blitz_dom::BaseDocument;
+use blitz_dom::{BaseDocument, DocumentConfig};
 use ipc::IpcSender;
 use ipc_messages::content::DocumentId;
 use ipc_messages::content::{
@@ -259,6 +259,14 @@ pub struct GlobalScope {
     #[ignore_trace]
     media_extension_sender: RefCell<Option<IpcSender<MediaCommand>>>,
 
+    /// JSC engine context (cloned `JscContext`) for creating shared realms.
+    /// On Boa this is `None` (creates a fresh context for each realm).
+    /// Stored as `Rc<dyn Any>` to keep the backend-agnostic abstraction.
+    /// Uses `Rc` instead of `Box` because the JSC `#[gc_struct]` derive
+    /// adds `#[derive(Clone)]`.
+    #[ignore_trace]
+    engine_context: Option<Rc<dyn core::any::Any + Send>>,
+
     /// <https://html.spec.whatwg.org/#concept-document-creation-url>
     /// The creation URL of this window's Document.
     #[ignore_trace]
@@ -304,6 +312,7 @@ impl GlobalScope {
             new_document_registry: RefCell::new(None),
             video_paint_registry: RefCell::new(None),
             media_extension_sender: RefCell::new(None),
+            engine_context: None,
             creation_url: RefCell::new(None),
             pending_requests: gc_cell_new(Vec::new()),
             pending_wasm_request_id_counter: std::cell::Cell::new(0),
@@ -681,14 +690,14 @@ impl GlobalScope {
         ),
         String,
     > {
-        self.create_document_in_realm(None, new_traversable_id, new_document_id)
+        self.create_document_in_realm(new_traversable_id, new_document_id)
     }
 
-    /// Like `create_document`, but shares the parent engine's JS context.
+    /// Like `create_document`, but passes the stored engine context so the
+    /// new realm shares the same JS context / GC heap on JSC.
     /// Used for `window.open` with opener (auxiliary BC).
     pub(crate) fn create_document_in_realm(
         &self,
-        parent: Option<&mut crate::js::Engine>,
         new_traversable_id: NavigableId,
         new_document_id: DocumentId,
     ) -> Result<
@@ -703,12 +712,12 @@ impl GlobalScope {
         let event_sender = event_sender
             .as_ref()
             .ok_or_else(|| String::from("GlobalScope has no event sender"))?;
-        crate::html::create_a_new_realm(
-            parent,
-            event_sender,
-            new_traversable_id,
-            new_document_id,
-        )
+        // Build a temporary parent engine from the stored engine context.
+        // `create_a_new_realm` will use this to create a shared realm,
+        // ensuring the new window's objects live in the same GC heap on JSC.
+        let mut temp_engine = self.build_temp_parent_engine()?;
+        let parent: Option<&mut crate::js::Engine> = temp_engine.as_mut();
+        crate::html::create_a_new_realm(parent, event_sender, new_traversable_id, new_document_id)
     }
 
     /// Set the shared new-document registry that both GlobalScope and
@@ -761,6 +770,35 @@ impl GlobalScope {
 
     pub(crate) fn allocate_media_pipeline_id(&self) -> ipc_messages::media::MediaPipelineId {
         ipc_messages::media::MediaPipelineId(uuid::Uuid::new_v4())
+    }
+
+    /// Store the engine context so new realms can share the same JS engine
+    /// (same GC heap on JSC).  Called during engine setup, before any JS
+    /// execution that might trigger `window.open`.
+    pub(crate) fn set_engine_context(&mut self, context: Box<dyn core::any::Any + Send>) {
+        self.engine_context = Some(Rc::from(context));
+    }
+
+    /// Build a temporary parent engine from the stored engine context.
+    /// On JSC, creates an engine sharing the same JSC context (same GC heap).
+    /// On Boa, returns `None` (the caller's `build_realm` creates a fresh context).
+    fn build_temp_parent_engine(&self) -> Result<Option<crate::js::Engine>, String> {
+        #[cfg(not(boa_backend))]
+        {
+            use js_engine::jsc::{JscContext, JscEngine};
+            let ctx = self
+                .engine_context
+                .as_ref()
+                .and_then(|c| c.downcast_ref::<JscContext>())
+                .ok_or_else(|| "no engine context available for shared realm".to_string())?;
+            Ok(Some(JscEngine::new_from_context(ctx.clone())))
+        }
+        #[cfg(boa_backend)]
+        {
+            // Boa: `build_realm` ignores the parent engine, so returning None
+            // creates a fresh context (which is the expected behavior).
+            Ok(None)
+        }
     }
 
     pub(crate) fn set_video_paint_registry(

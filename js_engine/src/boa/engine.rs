@@ -393,6 +393,10 @@ impl JsEngine<BoaTypes> for BoaContext {
 // ═══════════════════════════════════════════════════════════════════════════
 
 impl ExecutionContext<BoaTypes> for BoaContext {
+    fn as_any_mut(&mut self) -> &mut dyn core::any::Any {
+        self
+    }
+
     // ── §10.3 Built-in Function Objects ──────────────────────────────────
 
     fn create_builtin_fn_static(

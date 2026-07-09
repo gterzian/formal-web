@@ -319,6 +319,13 @@ ever correct.
 - Treat `vendor/` and vendored WPT resources as read-only unless the task explicitly requires vendor changes.
 - The words "runtime", "sidecar", and "carrier" are forbidden in this repo.
 - **Method doc comments:** A method that implements a spec algorithm should have only the spec link as its doc comment. All explanation, step references, and context belong in `//` comments inside the method body. A `// Note:` below the link is acceptable only for brief continuations of the algorithm that cannot be expressed as body comments. Why? Because the entire thing is a runtime, one that implements the Web, and so neither concept should ever be used to model or document some component of what is basically one big integrated system. No component is more or less of a "sidecar" than any other — each plays a specific role. Instead of reaching for these forbidden words, think about what the thing you want to name does, what its role in the system is, and come up with something descriptive.
+- **Document only verified facts.** Never speculate about root causes, fixes, or
+  explanations for observed behavior unless you have confirmed them through
+  instrumentation, debugging, or testing.  When documenting an issue, state
+  only what was observed, what was tried, and what was ruled out.  A statement
+  like "this might be caused by X" is speculation unless X was verified.
+  Prefer phrasing like "symptom: X works then crashes; Y was tried and failed;
+  Z was not investigated" over "the issue is likely due to X".
 
 # Error Logging
 

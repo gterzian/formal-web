@@ -73,13 +73,15 @@ pub(crate) fn create_builtin_fn_with_traced_captures<C: 'static>(
     name: <Types as JsTypes>::PropertyKey,
     is_constructor: bool,
 ) -> <Types as JsTypes>::Function {
-    let _ = ec;
-    let _ = captures;
-    let _ = behaviour;
-    let _ = length;
-    let _ = name;
-    let _ = is_constructor;
-    unimplemented!("create_builtin_fn_with_traced_captures on JSC backend");
+    let closure = Box::new(
+        move |args: &[<Types as JsTypes>::JsValue],
+              this: <Types as JsTypes>::JsValue,
+              ec2: &mut dyn ExecutionContext<Types>|
+              -> Completion<<Types as JsTypes>::JsValue, Types> {
+            (behaviour)(args, this, &captures, ec2)
+        },
+    );
+    ec.create_builtin_function(closure, length, name, is_constructor)
 }
 
 /// Convert a stateless raw function pointer into a builtin function.

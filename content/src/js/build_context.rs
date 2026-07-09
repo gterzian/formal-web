@@ -55,11 +55,7 @@ fn build_realm_inner(
 /// Shared setup for both fresh engines and child realms (JSC backend).
 /// Initializes the global object, Window, Document, prototypes, etc.
 #[cfg(not(boa_backend))]
-fn setup_realm(
-    engine: &mut Engine,
-    document: Rc<RefCell<BaseDocument>>,
-) -> Result<(), String> {
-    use js_engine::ExecutionContext as _;
+fn setup_realm(engine: &mut Engine, document: Rc<RefCell<BaseDocument>>) -> Result<(), String> {
     use crate::dom::{
         AbortController, AbortSignal, DOMException, Document, Element, Event, EventTarget, Node,
         UIEvent,
@@ -79,11 +75,17 @@ fn setup_realm(
         get_registry_prototype, initialize_registry, register_interface_spec,
         wire_registry_prototype,
     };
+    use js_engine::ExecutionContext as _;
 
     // Step 1: Create the Window with GlobalScope and associate it with the
     // realm's global object so `global_scope_or_error` works.
     let global_scope = GlobalScope::new(crate::html::GlobalScopeKind::Window, Rc::clone(&document));
-    let window = Window::new(global_scope);
+    let mut window = Window::new(global_scope);
+    // Store the engine context so `create_document_in_realm` can create shared
+    // realms for `window.open` (same GC heap on JSC).
+    window
+        .global_scope
+        .set_engine_context(Box::new(engine.context().clone()));
     let global_obj = engine.realm_global_object();
     engine.associate_existing_object(&global_obj, Box::new(window));
 
@@ -175,8 +177,7 @@ fn setup_realm(
                     }
                     if let Ok(Some(descriptor)) = engine.get_own_property(*proto, key.clone()) {
                         if descriptor.value.is_some() || descriptor.get.is_some() {
-                            let _ = engine
-                                .define_property_or_throw(global_obj, key, descriptor);
+                            let _ = engine.define_property_or_throw(global_obj, key, descriptor);
                         }
                     }
                 }

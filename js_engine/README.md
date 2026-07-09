@@ -426,20 +426,30 @@ call site needs individual verification.
   Property copying is the only viable workaround via the public C API.
 
 ### Remaining problems
-- **Streams API (ReadableStream, TransformStream):** SIGBUS/SIGABRT when
-  accessed on JSC.  The `create_builtin_fn_with_traced_captures` callbacks
-  and/or promise capability creation need JSC-specific adaptation.
+- ✅ **Streams API (ReadableStream, TransformStream)** — FIXED (2026-07-09).
+  `create_builtin_fn_with_traced_captures` was `unimplemented!()` on JSC.
+  It now wraps captures in a `Box<dyn Fn>` closure and calls
+  `ec.create_builtin_function`, matching the existing JSC pattern for
+  captured builtin functions.
 - **Async WebAssembly:** `WebAssembly.compile()` uses JSC's native async path
   which requires the event loop for background compilation to complete.
   Synchronous `new WebAssembly.Module()` works.
 - **`get_prototype_of`:** Stub on JSC — prevents dynamic prototype chain
   traversal in the global property copying code.
-- **`window.open` navigable creation:** The `new_document_registry`
-  infrastructure is wired up but `window.open` still fails at
-  `the_rules_for_choosing_a_navigable` registration step
-  (`no new_document_registry set on GlobalScope`) for the UI event dispatch
-  path.  The parent engine threading is `None` pending a way to extract
-  `&mut Engine` from `&mut dyn ExecutionContext<Types>`.
+- **DOM operations crash after initial success:** `document.createElement`
+  works (returns an element, setting `textContent` works), but subsequent
+  operations or unrelated JS evaluations cause SIGBUS/SIGABRT.  Same pattern
+  with `new ReadableStream()` (crashes) vs `ReadableStream.from()` (works).
+  The crash happens in the content process, not in the main/CDP process.
+  `ReadableStream.from()` returns a stream whose `getReader()` and `read()`
+  work, but `instanceof ReadableStream` returns `false`.
+- ✅ **`window.open` navigable creation** — FIXED (2026-07-09).
+  The engine context (`JscContext`) is stored in `GlobalScope.engine_context`
+  during engine setup (`setup_realm` in `build_context.rs`).
+  `create_document_in_realm` reads it directly to create shared realms,
+  eliminating the need to thread `&mut Engine` through `window_open_steps`.
+  The `the_rules_with_parent` wrapper function has been removed; all callers
+  use the plain `the_rules_for_choosing_a_navigable`.
 - **Iterator operations:** `get_iterator`, `get_iterator_step_value` may
   crash or produce incorrect results.
 - **DataView / TypedArray view construction:** `todo!()`.
@@ -464,3 +474,44 @@ registration.  The global object prototype chain limitation prevents
 `Window.prototype` methods from being inherited by the global object.
 This is a pre-existing JSC limitation that requires a native integration
 path for full Web API support.
+
+## Session investigation log
+
+### 2026-07-09 — JSC `window.open` and Streams fixes for StartupExample.html
+
+**Files changed:**
+- `js_engine/src/engine.rs` — Added `as_any_mut()` to `ExecutionContext` trait
+- `js_engine/src/boa/engine.rs` — Implemented `as_any_mut()` for `BoaContext`
+- `js_engine/src/jsc/engine.rs` — Implemented `as_any_mut()` for `JscEngine`;
+  added `new_from_context()` constructor
+- `content/src/js/mod.rs` — Implemented `create_builtin_fn_with_traced_captures`
+  for JSC backend (was `unimplemented!()`)
+- `content/src/html/global_scope.rs` — Added `engine_context` field, setter,
+  and `build_temp_parent_engine()` helper; changed `create_document_in_realm`
+  to read engine context from self instead of receiving `parent` parameter
+- `content/src/html.rs` — Removed `the_rules_with_parent` function;
+  `the_rules_for_choosing_a_navigable` no longer delegates to it
+- `content/src/html/window.rs` — Removed `the_rules_with_parent` import;
+  `window_open_steps` calls `the_rules_for_choosing_a_navigable` directly
+- `content/src/js/build_context.rs` — Store engine context (`JscContext`
+  clone) in GlobalScope during `setup_realm`
+
+**What was confirmed:**
+- Both JSC and Boa backends compile without errors
+- `Engine` context is stored in `GlobalScope.engine_context` as `Rc<dyn Any + Send>`
+- `create_document_in_realm` reads the context and builds a temporary parent
+  engine, which `build_realm` uses to create a shared realm via
+  `new_shared_realm()` on JSC
+- `create_builtin_fn_with_traced_captures` on JSC wraps captures in a
+  `Box<dyn Fn>` closure and delegates to `ec.create_builtin_function`
+- The `the_rules_with_parent` wrapper has been removed; `window_open_steps`
+  calls the plain `the_rules_for_choosing_a_navigable` directly
+
+**What was ruled out:**
+- Passing `parent: Option<&mut Engine>` through `the_rules_with_parent` was
+  the old approach, removed per feedback by storing engine context in
+  GlobalScope instead
+
+**Not investigated:**
+- `get_function_realm` on JSC (still `todo!()` but not needed for startup page)
+- Iterator operations on JSC (may still crash)
