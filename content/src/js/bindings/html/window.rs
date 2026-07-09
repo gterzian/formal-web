@@ -194,7 +194,7 @@ fn structured_clone_method(
     let window_object = current_window_object_from(this, ec);
     let undefined = ec.value_undefined();
     let value = args.first().cloned().unwrap_or_else(|| undefined.clone());
-    let options = args.get(1).and_then(parse_structured_clone_options);
+    let options = parse_structured_clone_options(args.get(1), ec);
 
     let mut result = Err(ec.new_type_error("receiver is not a Window"));
     ec.with_object_any_mut_with(
@@ -208,11 +208,51 @@ fn structured_clone_method(
     result
 }
 
-fn parse_structured_clone_options(value: &JsValue) -> Option<StructuredCloneOptions> {
-    let _object = crate::js::Types::value_as_object(value)?;
-    // Try to get options["transfer"]
-    // For now, we create a simple options check
-    None
+fn parse_structured_clone_options(
+    options_arg: Option<&JsValue>,
+    ec: &mut dyn ExecutionContext<crate::js::Types>,
+) -> Option<StructuredCloneOptions> {
+    let options_val = options_arg?;
+    let object = <crate::js::Types as JsTypes>::value_as_object(options_val)?;
+    // Get options["transfer"]
+    let transfer_key = ec.property_key_from_str("transfer");
+    let Ok(transfer_value) =
+        ExecutionContext::<crate::js::Types>::get(ec, object.clone(), transfer_key)
+    else {
+        return Some(StructuredCloneOptions { transfer: None });
+    };
+    if transfer_value.is_undefined() {
+        return Some(StructuredCloneOptions { transfer: None });
+    }
+    // Convert JS array to Vec<JsValue>
+    let transfer_object = match <crate::js::Types as JsTypes>::value_as_object(&transfer_value) {
+        Some(obj) => obj,
+        None => return Some(StructuredCloneOptions { transfer: None }),
+    };
+    let length_key = ec.property_key_from_str("length");
+    let Ok(length_val) =
+        ExecutionContext::<crate::js::Types>::get(ec, transfer_object.clone(), length_key)
+    else {
+        return Some(StructuredCloneOptions { transfer: None });
+    };
+    let Ok(length) = ec.to_length(length_val) else {
+        return Some(StructuredCloneOptions { transfer: None });
+    };
+    if length == 0 {
+        return Some(StructuredCloneOptions { transfer: None });
+    }
+    let mut transfer = Vec::with_capacity(length as usize);
+    for i in 0..length {
+        let idx_key = ec.property_key_from_str(&i.to_string());
+        if let Ok(item) =
+            ExecutionContext::<crate::js::Types>::get(ec, transfer_object.clone(), idx_key)
+        {
+            transfer.push(item);
+        }
+    }
+    Some(StructuredCloneOptions {
+        transfer: Some(transfer),
+    })
 }
 
 fn open_method(

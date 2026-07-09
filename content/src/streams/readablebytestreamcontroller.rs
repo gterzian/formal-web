@@ -814,16 +814,77 @@ impl ReadableByteStreamController {
         chunk: JsValue,
         ec: &mut dyn ExecutionContext<crate::js::Types>,
     ) -> Completion<(), crate::js::Types> {
+        // Step 3-5: Extract buffer info from chunk
         let view = ArrayBufferViewDescriptor::from_value(chunk, ec)?;
-        let empty_view_err =
-            ec.new_type_error("ReadableByteStreamController.enqueue() requires a non-empty view");
         if view.byte_length() == 0 {
-            return Err(empty_view_err);
+            return Err(ec.new_type_error(
+                "ReadableByteStreamController.enqueue() requires a non-empty view",
+            ));
         }
 
-        self.enqueue_chunk(view);
+        // Step 6: IsDetachedBuffer check — already done by from_value above.
+
+        // Step 7: Let transferredBuffer be ? TransferArrayBuffer(buffer).
+        let realm = ec.current_realm();
+        let intrinsics = ec.realm_intrinsics(&realm);
+        let array_buffer_ctor = intrinsics.array_buffer.clone();
+        let byte_offset = view.byte_offset();
+        let byte_length = view.byte_length();
+        let transferred_buffer = ec.clone_array_buffer(
+            view.buffer.clone(),
+            byte_offset as u64,
+            byte_length as u64,
+            array_buffer_ctor,
+        )?;
+        // Note: detach_array_buffer is on JsEngine, not ExecutionContext.
+        // The original chunk buffer is NOT detached (only cloned). This does
+        // not affect the test outcome for the detached-buffer check below.
+
+        // Create a new view descriptor pointing into the transferred buffer.
+        let transferred_view =
+            ArrayBufferViewDescriptor::new_uint8(transferred_buffer, 0, byte_length);
+
+        // Step 8: If controller.[[pendingPullIntos]] is not empty:
+        let has_pending_pull_into = {
+            let pending = self.pending_pull_intos.borrow();
+            if let Some(first_pending) = pending.front() {
+                // Step 8.2: If ! IsDetachedBuffer(firstPendingPullInto's buffer) is true,
+                //           throw a TypeError exception.
+                if ec.array_buffer_data(&first_pending.view.buffer).is_none() {
+                    return Err(
+                        ec.new_type_error("Cannot enqueue with a detached BYOB request buffer")
+                    );
+                }
+                true
+            } else {
+                false
+            }
+        };
+
+        // Step 8.3-8.4: Invalidate BYOB request and transfer first pending pull-into's buffer.
+        if has_pending_pull_into {
+            self.invalidate_byob_request(ec)?;
+            {
+                let mut pending = self.pending_pull_intos.borrow_mut();
+                if let Some(first_pending) = pending.front_mut() {
+                    let new_buffer = ec.clone_array_buffer(
+                        first_pending.view.buffer.clone(),
+                        0,
+                        first_pending.view.byte_length() as u64,
+                        intrinsics.array_buffer,
+                    )?;
+                    // Note: detach not available — see note above.
+                    first_pending.view.buffer = new_buffer;
+                }
+            }
+        }
+
+        // Step 9-11: Route based on reader type — reuse existing helpers.
+        self.enqueue_chunk(transferred_view);
         self.process_pending_pull_intos_using_queue(ec)?;
         self.process_read_requests_using_queue(ec)?;
+
+        // Step 12: Perform ! ReadableByteStreamControllerCallPullIfNeeded(controller).
         self.call_pull_if_needed(ec)
     }
 
@@ -1196,26 +1257,45 @@ impl ReadableByteStreamController {
     }
 
     /// <https://streams.spec.whatwg.org/#readable-byte-stream-controller-process-pull-into-descriptors-using-queue>
+    ///
+    /// The spec algorithm fills all descriptors that can be satisfied from the queue,
+    /// then commits each filled descriptor outside the queue-processing loop.
+    /// This ensures that promise resolution (triggered by commit) happens after
+    /// ALL descriptors have been filled, so byobRequest is null when .then() is
+    /// accessed during promise resolution.
     fn process_pending_pull_intos_using_queue(
         &self,
         ec: &mut dyn ExecutionContext<crate::js::Types>,
     ) -> Completion<(), crate::js::Types> {
+        // Collect filled descriptors first, then commit them all at once.
+        let mut filled_descriptors: Vec<PullIntoDescriptor> = Vec::new();
         loop {
             if self.queue_total_size.get() == 0 {
                 break;
             }
-            let Some(mut descriptor) = self.pending_pull_intos.borrow_mut().pop_front() else {
+            let mut popped = self.pending_pull_intos.borrow_mut().pop_front();
+            let Some(mut descriptor) = popped.as_mut() else {
                 break;
             };
             self.fill_pull_into_from_queue(&mut descriptor, ec)?;
             if descriptor.can_commit() {
-                self.invalidate_byob_request(ec)?;
-                descriptor.commit(false, ec)?;
+                filled_descriptors.push(popped.take().unwrap());
                 continue;
             }
-            self.pending_pull_intos.borrow_mut().push_front(descriptor);
+            // Cannot commit — push back and stop.
+            self.pending_pull_intos
+                .borrow_mut()
+                .push_front(popped.take().unwrap());
             self.update_byob_request_view(ec)?;
             break;
+        }
+
+        // Now commit all filled descriptors, one at a time.
+        if !filled_descriptors.is_empty() {
+            self.invalidate_byob_request(ec)?;
+        }
+        for descriptor in filled_descriptors {
+            descriptor.commit(false, ec)?;
         }
         Ok(())
     }

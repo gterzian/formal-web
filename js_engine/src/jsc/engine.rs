@@ -2522,6 +2522,14 @@ impl ExecutionContext<JscTypes> for JscEngine {
         JsEngine::clone_array_buffer(self, src, src_byte_offset, src_length, clone_constructor)
     }
 
+    fn detach_array_buffer(
+        &mut self,
+        array_buffer: JscArrayBuffer,
+        key: Option<JscValue>,
+    ) -> Completion<(), JscTypes> {
+        JsEngine::detach_array_buffer(self, array_buffer, key)
+    }
+
     fn is_detached_buffer(&self, array_buffer: &JscArrayBuffer) -> bool {
         // Check if the buffer's byteLength is 0 and it's detached:
         // A detached buffer in JSC has [[ArrayBufferByteLength]] == 0

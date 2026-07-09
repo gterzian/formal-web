@@ -1368,6 +1368,14 @@ impl ExecutionContext<BoaTypes> for BoaContext {
         JsEngine::clone_array_buffer(self, src, src_byte_offset, src_length, clone_constructor)
     }
 
+    fn detach_array_buffer(
+        &mut self,
+        array_buffer: JsArrayBuffer,
+        key: Option<JsValue>,
+    ) -> Completion<(), BoaTypes> {
+        JsEngine::detach_array_buffer(self, array_buffer, key)
+    }
+
     fn is_detached_buffer(&self, _array_buffer: &JsArrayBuffer) -> bool {
         false // HARD: Boa's JsArrayBuffer doesn't expose is_detached publicly
     }

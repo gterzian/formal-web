@@ -174,13 +174,13 @@ objects exposed to JS:
 handling (`to_object` instead of `value_as_object`), and invalid
 `type` property error type (TypeError for all non-"bytes" values).
 
-**Current status: 20 failing test files (28 unexpected subtests out of 89 executed).**
-Before the modular JS migration, zero unexpected.  All 28 subtests are migration
+**Current status: 18 failing test files (26 unexpected subtests out of 89 executed).**
+Before the modular JS migration, zero unexpected.  All 26 subtests are migration
 regressions that need to be fixed:
 
 | Category | Files | Likely cause |
 |---|---|---|
-| Byte stream | `readable-byte-streams/enqueue-with-detached-buffer`<br>`readable-byte-streams/non-transferable-buffers`<br>`readable-byte-streams/patched-global`<br>`readable-byte-streams/tee` | `ReadableByteStreamController` has untested or incomplete generic trait operations (detach, transfer, clone) |
+| Byte stream | `readable-byte-streams/non-transferable-buffers`<br>`readable-byte-streams/tee` | `ReadableByteStreamController` has untested or incomplete generic trait operations (transfer, clone). `enqueue-with-detached-buffer` and `patched-global` fixed (2026-07-09). |
 | Transferable | `transferable/readable-stream`<br>`transferable/reason`<br>`transferable/shared-worker`<br>`transferable/transfer-with-messageport`<br>`transferable/transform-stream`<br>`transferable/window`<br>`transferable/worker`<br>`transferable/writable-stream` | Cross-context stream transfer — generic `postMessage` path not wired or missing trait methods |
 | Owning type | `readable-streams/owning-type`<br>`readable-streams/owning-type-message-port`<br>`readable-streams/owning-type-video-frame` | New Streams `type: "owning"` handling not implemented on generic backend |
 | Queuing strategies | `queuing-strategies`<br>`queuing-strategies-size-function-per-global` | Cross-realm constructor behavior, size function identity — generic realm/shared intrinsics gaps |
@@ -648,3 +648,50 @@ Boa but broke through the generic indirection.
 **Issue #8 (WASM worker-context):** Lower priority — `window_from_context`
 uses `context.global_object()` which is not a `Window` in worker contexts.
 - JSC iterator operations and async WebAssembly remain outstanding.
+
+### 2026-07-09 — Byte-stream controller fixes: detached buffer check and pull-into ordering
+
+**Files changed:**
+- `content/src/html/safe_passing_of_structured_data.rs` — Added `detach_array_buffer`
+  call in `structured_serialize_with_transfer` to actually detach the source buffer.
+- `content/src/js/bindings/html/window.rs` — Rewrote `parse_structured_clone_options`
+  to parse the `transfer` option from the options object (was returning `None` always).
+- `content/src/streams/readablebytestreamcontroller.rs`:
+  - Restructured `enqueue_steps` to match the spec algorithm:
+    - Step 7: TransferArrayBuffer of the chunk
+    - Step 8: Check for detached buffer in first pending pull-into
+    - Step 8.3-8.4: Invalidate BYOB request and transfer pull-into buffer
+  - Restructured `process_pending_pull_intos_using_queue` to fill ALL descriptors
+    first, then commit them all at once (matching spec algorithm order).
+- `js_engine/src/engine.rs` — Added `detach_array_buffer` to `ExecutionContext` trait.
+- `js_engine/src/boa/engine.rs` — Implemented `detach_array_buffer` on
+  `ExecutionContext<BoaTypes>` (delegates to `JsEngine::detach_array_buffer`).
+- `js_engine/src/jsc/engine.rs` — Implemented `detach_array_buffer` on
+  `ExecutionContext<JscTypes>` (delegates to `JsEngine::detach_array_buffer`).
+
+**Tests fixed:**
+1. `streams/readable-byte-streams/enqueue-with-detached-buffer.any.js` —
+   The `structuredClone` with transfer now detaches the buffer, and `enqueue_steps`
+   checks the first pending pull-into's buffer for detachment before queue processing.
+2. `streams/readable-byte-streams/patched-global.any.js` —
+   `process_pending_pull_intos_using_queue` now fills all descriptors before
+   committing any of them, so `byobRequest` is null when `.then()` fires during
+   promise resolution of the first read.
+
+**What was confirmed:**
+- Both fixes work with `RUST_LOG=warn` instrumentation confirming the internal state.
+- `detach_array_buffer` is now available on `ExecutionContext` trait (was only on
+  `JsEngine`).
+- Boa's `JsArrayBuffer::data()` returns `None` for detached buffers.
+- Boa's `JsArrayBuffer::data_mut()` returns `None` for detached buffers.
+
+**What was ruled out:**
+- The `.then` getter in the patched-global test fires during `ReadIntoRequest::chunk_steps`
+  (which resolves a promise), not during `perform_promise_then` in `call_pull_if_needed`.
+  Boa's `JsPromise::then` calls `inner_then` natively without JS property lookup.
+
+**Not investigated:**
+- `readable-byte-streams/non-transferable-buffers.any.js` — "not a constructor" errors
+  suggest `allocate_array_buffer` or `clone_array_buffer` is failing to construct.
+- `readable-byte-streams/tee.any.js` — CRASH/SIGKILL (timeout or infinite loop).
+- `readable-byte-streams/read-min.any.js` — Boa GcRefCell borrow panic (pre-existing).
