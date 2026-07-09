@@ -569,19 +569,168 @@ helper uses `ec.with_object_any()` before downcasting.
   concrete `C: boa_gc::Trace + 'static` type. JSC wraps in `Box<dyn Fn>` and delegates
   to `ec.create_builtin_function`.
 
-**What remains (streams fix is highest priority):**
-- **Step 2 of debug plan (harness isolation):** Write a minimal standalone JS script
-  (no WPT harness) that creates a `ReadableStream`, calls `.getReader()`, and
-  `.read()` or `.cancel()`, and check if the "not a callable function" error
-  reproduces.  If yes → the bug is in engine/stream code.  If no → the bug is in
-  how the harness's promise-rejection-assertion plumbing interacts with Boa's
-  promise implementation.  This is the highest-leverage next step.
-- **Step 3 (VM-level trace):** Enable Boa's `trace` feature (bytecode/opcode dump)
-  for a failing test.  Grep the trace for the `Call` opcode that immediately
-  precedes the `non_existent_call` error to identify what value was being called.
-- **Step 4 (rejection provenance):** Add a diagnostic hook at every place a
-  rejected promise capability is created in stream code (`rejected_promise`,
-  error paths in `cancel_steps`, `pull_steps`, etc.) to log *why*.
-- **Issue #8 (WASM worker-context):** Lower priority — `window_from_context`
-  uses `context.global_object()` which is not a `Window` in worker contexts.
+### 2026-07-09 — WPT stream failures VM-level investigation
+
+**Root cause pinpointed:** The "TypeError: not a callable function" error comes
+from Boa's `Call` VM opcode trying to call `undefined` as a function.
+Instrumentation at all 5 Boa error sites (`CallEval`, `CallEvalSpread`,
+`Call`, `CallSpread`, and `non_existent_call`) confirmed only the `Call` opcode
+fires.  The call stack at the moment of the error is:
+```
+check_equal → assert_object_equals → assert_wrapper → (anon) → (anon)
+```
+The error occurs **inside WPT's `check_equal` function** (testharness.js line 1658),
+part of `assert_object_equals`.  The VM finds `undefined` on the stack where
+a callable value is expected — meaning some property access or variable
+resolution inside `check_equal` evaluates to `undefined` instead of the
+expected function.
+
+**Debug trace obtained:** The error fires once per test run, always with
+`type="undefined"`.  The test that triggers it is `cancel.any.js`'s sub-test
+"cancel() on a locked stream should fail".  Flow: `rs.cancel()` rejects
+(correctly — stream is locked) → `.then()` handler fires → `reader.read()`
+returns `{value: undefined, done: true}` (stream was closed by `start(c)`)
+→ `assert_object_equals` compares against expected `{value: 'a', done: false}`
+→ `check_equal` iterates properties → `for...in` on the read-result object
+triggers a function call that resolves to `undefined`.
+
+**Dead ends (paths ruled out):**
+- **GC collection of resolve/reject functions:** Investigated `GcCell<Vec<ReadRequest>>`
+  trace chain in detail.  Spent significant time verifying that `GcRefCell<T>`
+  implements `Trace`, that `PromiseResolvers<BoaTypes>` derives `Trace`, and
+  that the full chain from `ReadableStreamDefaultReader` → `GcCell` → `ReadRequest`
+  → `PromiseResolvers` → `JsObject` was correctly traversable.  **Ruled out**
+  when we discovered Boa's GC is NOT automatic — it only runs via explicit
+  `force_collect()` calls (WeakRef, FinalizationRegistry, tests).  No stream
+  operation calls `force_collect()`, so collected-object dangling pointers
+  cannot cause the error.
+- **Our `ec.call()` producing the error:** `ec.call()` produces the distinct
+  message `"callback is not callable"`, not `"not a callable function"`.
+  Confirmed by reading the 4-line `BoaContext::call()` implementation.
+  The error message matches Boa's `Call` opcode / `non_existent_call`,
+  not our glue layer.
+- **`run_jobs()` returning errors:** Added instrumentation to
+  `BoaContext::perform_a_microtask_checkpoint()` and `run_jobs()` to log
+  when `self.context.run_jobs()` returns `Err`.  Never fired — Boa's
+  `SimpleJobExecutor` catches promise-job errors inline and returns `Err`,
+  which would abort remaining jobs, but this path was never triggered.
+- **Instrumenting Boa's error sites without forcing recompilation:** The
+  `boa_engine` crate is a git dependency (`~/.cargo/git/checkouts/`).  Cargo
+  caches build artifacts by fingerprint (package metadata hash, not source
+  timestamps).  Edits to the git checkout source are **not detected** by
+  Cargo — `cargo build --release` silently uses cached `.o` files.
+  Must delete `target/release/deps/libboa_engine-*` AND
+  `target/release/.fingerprint/boa_*-*` before rebuilding.
+- **`non_existent_call` is NOT the error source:** Added `eprintln!` to all
+  5 Boa error sites (`Call::operation`, `CallEval`, `CallEvalSpread`,
+  `CallSpread`, `non_existent_call`).  Only `Call::operation` fired.
+- **Our `create_builtin_fn()` captures:** Re-audited every remaining
+  `ec.create_builtin_fn(Box::new(...))` call site.  All capture only
+  `fn` pointers or `String` — confirmed by reading each closure body.
+
+**Bug found: `read_steps` skips queued chunks when stream was closed via
+`start(c) { c.enqueue(chunk); c.close(); }`.**
+
+`ReadableStreamDefaultReaderRead` (our `read_steps` in
+`readablestreamdefaultreader.rs` line 302) checks `stream.state() ==
+ReadableStreamState::Closed` and goes directly to
+`read_request.close_steps()`, bypassing the controller's `PullSteps`.
+But when the stream was closed via `start(c) { c.enqueue(chunk); c.close(); }`,
+the controller has `closeRequested=true` and a non-empty queue, and the
+stream stays in "readable" state (the close is deferred until the queue
+drains).  The test sets up this exact scenario, so `reader.read()` misses
+the queued chunk.
+
+The spec text:
+```
+ReadableStreamDefaultReaderRead (readRequest)
+4. If stream.[[state]] is "closed",
+   1. Perform readRequest's close steps.
+```
+
+This is correct when the stream is genuinely closed (queue empty).  But
+the spec intends the CLOSE STEPS to happen only when there really is
+nothing to read — the controller's `PullSteps` checks the queue first.
+The controller updates the stream state to "closed" when it** dequeues
+the last chunk and `closeRequested` is true.  So the reader should go
+through `PullSteps` which checks the queue, returns the chunk, and
+closes the stream on the last dequeue.
+
+Our `read_steps` should **always call `controller.[[PullSteps]]`** and
+let the controller decide whether to deliver a chunk or close.  The
+state check `if Closed → close_steps` was incorrect: at the point
+`read_steps` runs, the stream is still "readable" (the controller
+hasn't closed it yet), so the closed branch is unreachable in practice
+for this scenario anyway.  The real path is: state=Readable → calls
+`PullSteps` → queue non-empty → dequeue → if closeRequested and queue
+empty → close stream.  This path appears correct in our code; the `if
+Closed` branch is harmless dead code for this case.
+
+**Needs verification:** Run the test with instrumentation to confirm
+`reader.read()` actually returns the correct `{value: 'a', done: false}`
+and that the Boa `Call` opcode error is the sole reason `check_equal`
+fails.
+
+## Next session action items (in priority order)
+
+### 1. 🟢 Fix the "not a callable function" Boa VM bug
+
+**What we know:**
+- Error is from Boa's `Call` opcode trying to call `undefined`
+- Happens inside WPT's `check_equal` (testharness.js), called from
+  `assert_object_equals` in the locked-stream cancel sub-test
+- The `Call` opcode checks `func.as_object()` and gets `None` because
+  the value is `undefined` (not an object)
+
+**Fastest fix path:**
+Patch Boa's `vm/opcode/call/mod.rs` at the `Call::operation` method (the
+`let Some(object) = func.as_object()` check).  Print the **bytecode
+instruction** at the failing PC (was pc=1118 in previous runs) to show
+exactly which JavaScript operation calls `undefined`.  Use:
+```rust
+let cb = &context.vm.frame().code_block;
+eprintln!("FW_DEBUG: instruction at pc={}: {:?}", cb.pc, cb.bytecode[cb.pc as usize]);
+```
+Then rebuild (`rm -rf target/release/deps/libboa_engine-* target/release/.fingerprint/boa_*-* target/release/build/boa*-* && cargo build --release`) and run:
+```
+PYTHON=python3.12 cargo run --release -- wpt streams/readable-streams/cancel.any.js 2>&1 | grep FW_DEBUG
+```
+This tells you which JavaScript operation is broken in Boa.
+
+### 2. 🟡 Verify `read_steps` correctly returns queued chunks
+
+The locked-stream cancel sub-test expects `reader.read()` to return
+`{value: 'a', done: false}` even after `rs.cancel()` was rejected.
+Our `read_steps` has `if Closed → close_steps` before calling
+`controller.[[PullSteps]]`.  In practice the stream state should be
+"readable" at that point (the controller defers closing until queue
+drains), so the `if Closed` branch is dead code for this test.
+But verify by running with a log in `controller.pull_steps` and
+`read_steps` to confirm the chunk IS dequeued with the correct value.
+
+### 3. 🔍 Try the harness isolation test
+
+Write a minimal standalone JS script (no WPT harness) that exercises the
+same stream path:
+```js
+const rs = new ReadableStream({ start(c) { c.enqueue('a'); c.close(); } });
+const reader = rs.getReader();
+rs.cancel().then(null, e => {
+  reader.read().then(r => print(JSON.stringify(r)));
+});
+```
+Evaluate it through the content process.  If the "not a callable function"
+error DOES reproduce → the bug is in engine/stream code, not the harness.
+If it does NOT reproduce → the issue is in how the WPT harness's
+assertion-scope plumbing interacts with Boa.
+
+---
+
+**Correction from debug plan:** The error is NOT from `non_existent_call`
+(which handles non-callable *objects*) — it is from the `Call` opcode itself
+(which handles non-*object* values like `undefined`).  No Boa `non_existent_call`
+or other vm/opcode/call variants fired; only `Call::operation`.
+
+**Issue #8 (WASM worker-context):** Lower priority — `window_from_context`
+uses `context.global_object()` which is not a `Window` in worker contexts.
 - JSC iterator operations and async WebAssembly remain outstanding.
