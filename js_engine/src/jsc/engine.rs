@@ -365,6 +365,32 @@ pub(crate) static GLOBAL_CONTEXT_CLASS: LazyLock<JscClass> = LazyLock::new(|| {
     JscClass(unsafe { JSClassCreate(&def) })
 });
 
+/// Helper: check if Object.prototype.toString.call(obj) matches a given
+/// @@toStringTag (e.g. "Boolean", "Number", "String", "BigInt", "RegExp").
+fn object_type_tag_matches(o: &JscObject, tag: &str) -> bool {
+    if o.ctx.is_null() {
+        return false;
+    }
+    let script = JscString::from_rust(&format!(
+        "Object.prototype.toString.call(this)==='[object {}]'",
+        tag
+    ));
+    let result = unsafe {
+        JSEvaluateScript(
+            o.ctx,
+            script.raw,
+            o.raw,
+            std::ptr::null_mut(),
+            0,
+            std::ptr::null_mut(),
+        )
+    };
+    if result.is_null() {
+        return false;
+    }
+    unsafe { JSValueToBoolean(o.ctx, result) }
+}
+
 impl JsTypes for JscTypes {
     type JsString = JscString;
     type JsSymbol = JscSymbol;
@@ -557,19 +583,21 @@ impl JsTypes for JscTypes {
         Some(*o)
     }
 
-    fn object_is_boolean_wrapper(_o: &Self::JsObject) -> bool {
-        // JSC C API has no direct boolean-object check; fallible approximation
-        false
+    fn object_is_boolean_wrapper(o: &Self::JsObject) -> bool {
+        // JSC C API has no direct boolean-object check, so use
+        // Object.prototype.toString.call(this) === '[object Boolean]'
+        object_type_tag_matches(o, "Boolean")
     }
-    fn object_is_number_wrapper(_o: &Self::JsObject) -> bool {
-        false
+    fn object_is_number_wrapper(o: &Self::JsObject) -> bool {
+        object_type_tag_matches(o, "Number")
     }
-    fn object_is_string_wrapper(_o: &Self::JsObject) -> bool {
-        false
+    fn object_is_string_wrapper(o: &Self::JsObject) -> bool {
+        object_type_tag_matches(o, "String")
     }
-    fn object_is_bigint_wrapper(_o: &Self::JsObject) -> bool {
-        false
+    fn object_is_bigint_wrapper(o: &Self::JsObject) -> bool {
+        object_type_tag_matches(o, "BigInt")
     }
+
     fn object_is_date(o: &Self::JsObject) -> bool {
         if o.ctx.is_null() {
             return false;
@@ -623,17 +651,115 @@ impl JsTypes for JscTypes {
         unsafe { JSValueToBoolean(o.ctx, result) }
     }
 
-    fn boolean_wrapper_data(_o: &Self::JsObject) -> Option<bool> {
-        None
+    fn boolean_wrapper_data(o: &Self::JsObject) -> Option<bool> {
+        if o.ctx.is_null() {
+            return None;
+        }
+        let script = JscString::from_rust("Boolean.prototype.valueOf.call(this)");
+        let result = unsafe {
+            JSEvaluateScript(
+                o.ctx,
+                script.raw,
+                o.raw,
+                std::ptr::null_mut(),
+                0,
+                std::ptr::null_mut(),
+            )
+        };
+        if result.is_null() {
+            return None;
+        }
+        let is_bool = unsafe { JSValueGetType(o.ctx, result) == JSType::kJSTypeBoolean };
+        if !is_bool {
+            return None;
+        }
+        Some(unsafe { JSValueToBoolean(o.ctx, result) })
     }
-    fn number_wrapper_data(_o: &Self::JsObject) -> Option<f64> {
-        None
+    fn number_wrapper_data(o: &Self::JsObject) -> Option<f64> {
+        if o.ctx.is_null() {
+            return None;
+        }
+        let script = JscString::from_rust("Number.prototype.valueOf.call(this)");
+        let result = unsafe {
+            JSEvaluateScript(
+                o.ctx,
+                script.raw,
+                o.raw,
+                std::ptr::null_mut(),
+                0,
+                std::ptr::null_mut(),
+            )
+        };
+        if result.is_null() {
+            return None;
+        }
+        let is_number = unsafe { JSValueGetType(o.ctx, result) == JSType::kJSTypeNumber };
+        if !is_number {
+            return None;
+        }
+        let mut exc: *mut JSValueRef = std::ptr::null_mut();
+        let n = unsafe { JSValueToNumber(o.ctx, result, &mut exc) };
+        if !exc.is_null() {
+            return None;
+        }
+        Some(n)
     }
-    fn string_wrapper_data(_o: &Self::JsObject) -> Option<Self::JsString> {
-        None
+    fn string_wrapper_data(o: &Self::JsObject) -> Option<Self::JsString> {
+        if o.ctx.is_null() {
+            return None;
+        }
+        let script = JscString::from_rust("String.prototype.valueOf.call(this)");
+        let result = unsafe {
+            JSEvaluateScript(
+                o.ctx,
+                script.raw,
+                o.raw,
+                std::ptr::null_mut(),
+                0,
+                std::ptr::null_mut(),
+            )
+        };
+        if result.is_null() {
+            return None;
+        }
+        if !unsafe { crate::jsc_sys::JSValueIsString(o.ctx, result) } {
+            return None;
+        }
+        let mut exc: *mut JSValueRef = std::ptr::null_mut();
+        let raw = unsafe { crate::jsc_sys::JSValueToStringCopy(o.ctx, result, &mut exc) };
+        if !exc.is_null() || raw.is_null() {
+            return None;
+        }
+        Some(unsafe { JscString::from_raw(raw) })
     }
-    fn bigint_wrapper_data(_o: &Self::JsObject) -> Option<Self::JsBigInt> {
-        None
+    fn bigint_wrapper_data(o: &Self::JsObject) -> Option<Self::JsBigInt> {
+        if o.ctx.is_null() {
+            return None;
+        }
+        let script = JscString::from_rust("BigInt.prototype.valueOf.call(this)");
+        let result = unsafe {
+            JSEvaluateScript(
+                o.ctx,
+                script.raw,
+                o.raw,
+                std::ptr::null_mut(),
+                0,
+                std::ptr::null_mut(),
+            )
+        };
+        if result.is_null() {
+            return None;
+        }
+        let is_bigint = unsafe { JSValueGetType(o.ctx, result) == JSType::kJSTypeBigInt };
+        if !is_bigint {
+            return None;
+        }
+        Some(JscBigInt {
+            value: JscValue {
+                raw: result,
+                ctx: o.ctx,
+            },
+        })
     }
 }
 
@@ -2218,7 +2344,10 @@ impl ExecutionContext<JscTypes> for JscEngine {
             }),
         )?;
         let method = method.ok_or_else(|| JscUndefined::get(&self.context))?;
-        let iter_val = EcmascriptHost::call(self, &method, &JscUndefined::get(&self.context), &[])?;
+        // ECMA-262 GetIterator: "Let iterator be ? Call(method, obj)."
+        // The method (e.g. Array.prototype[Symbol.iterator]) must be called
+        // with the original iterable as `this`.
+        let iter_val = EcmascriptHost::call(self, &method, &object, &[])?;
         let iter_obj = iter_val.raw as *mut JSObjectRef;
         let next_str = JscString::from_rust("next");
         let mut exc: *mut JSValueRef = std::ptr::null_mut();
@@ -3192,30 +3321,223 @@ impl ExecutionContext<JscTypes> for JscEngine {
 
     // ── §24.1 Map ────────────────────────────────────────────────────────
 
-    fn map_get_entries(
-        &mut self,
-        _map: &JscMap,
-    ) -> Completion<Vec<(JscValue, JscValue)>, JscTypes> {
-        Err(self.new_type_error("map_get_entries not yet implemented for JSC"))
+    fn map_get_entries(&mut self, map: &JscMap) -> Completion<Vec<(JscValue, JscValue)>, JscTypes> {
+        let global = self.context.global_object();
+        let ctx = self.context.as_context_ref();
+        let map_key = JscString::from_rust("__fw_map");
+        let mut exc: *mut JSValueRef = std::ptr::null_mut();
+        unsafe {
+            JSObjectSetProperty(
+                ctx,
+                global.raw,
+                map_key.raw,
+                map.as_value_ref(),
+                kJSPropertyAttributeNone,
+                &mut exc,
+            );
+        }
+        if !exc.is_null() {
+            return Err(JscValue {
+                raw: exc,
+                ctx: self.ctx_ptr(),
+            });
+        }
+
+        // Eval: Array.from(__fw_map.entries())
+        let (result, exception) =
+            self.eval_script_raw("Array.from(__fw_map.entries()).map(e=>({key:e[0],value:e[1]}))");
+        unsafe {
+            JSObjectDeleteProperty(ctx, global.raw, map_key.raw, std::ptr::null_mut());
+        }
+        if !exception.is_null() {
+            return Err(JscValue {
+                raw: exception,
+                ctx: self.ctx_ptr(),
+            });
+        }
+
+        // Parse the result array: iterate indices, extract key/value from each entry object
+        let result_obj = JscObject {
+            raw: result as *mut JSObjectRef,
+            ctx: self.ctx_ptr(),
+        };
+        let len_val = EcmascriptHost::get(self, &result_obj, "length")?;
+        let len = self.to_length(len_val)? as usize;
+        let mut entries = Vec::with_capacity(len);
+        for i in 0..len {
+            let idx_key = JscPropertyKey::String(JscString::from_rust(&i.to_string()));
+            let entry = ExecutionContext::get(self, result_obj.clone(), idx_key)?;
+            let entry_obj = JscTypes::value_as_object(&entry)
+                .ok_or_else(|| self.new_type_error("map entry is not an object"))?;
+            let key = EcmascriptHost::get(self, &entry_obj, "key")?;
+            let value = EcmascriptHost::get(self, &entry_obj, "value")?;
+            entries.push((key, value));
+        }
+        Ok(entries)
     }
 
     fn map_set_entry(
         &mut self,
-        _map: &JscMap,
-        _key: JscValue,
-        _value: JscValue,
+        map: &JscMap,
+        key: JscValue,
+        value: JscValue,
     ) -> Completion<(), JscTypes> {
-        Err(self.new_type_error("map_set_entry not yet implemented for JSC"))
+        let global = self.context.global_object();
+        let ctx = self.context.as_context_ref();
+        let map_key = JscString::from_rust("__fw_map");
+        let key_key = JscString::from_rust("__fw_map_key");
+        let val_key = JscString::from_rust("__fw_map_val");
+        let mut exc: *mut JSValueRef = std::ptr::null_mut();
+        unsafe {
+            JSObjectSetProperty(
+                ctx,
+                global.raw,
+                map_key.raw,
+                map.as_value_ref(),
+                kJSPropertyAttributeNone,
+                &mut exc,
+            );
+            if exc.is_null() {
+                JSObjectSetProperty(
+                    ctx,
+                    global.raw,
+                    key_key.raw,
+                    key.raw,
+                    kJSPropertyAttributeNone,
+                    &mut exc,
+                );
+            }
+            if exc.is_null() {
+                JSObjectSetProperty(
+                    ctx,
+                    global.raw,
+                    val_key.raw,
+                    value.raw,
+                    kJSPropertyAttributeNone,
+                    &mut exc,
+                );
+            }
+        }
+        if !exc.is_null() {
+            unsafe {
+                JSObjectDeleteProperty(ctx, global.raw, map_key.raw, std::ptr::null_mut());
+            }
+            return Err(JscValue {
+                raw: exc,
+                ctx: self.ctx_ptr(),
+            });
+        }
+        let (_result, exception) = self.eval_script_raw("__fw_map.set(__fw_map_key, __fw_map_val)");
+        unsafe {
+            JSObjectDeleteProperty(ctx, global.raw, map_key.raw, std::ptr::null_mut());
+            JSObjectDeleteProperty(ctx, global.raw, key_key.raw, std::ptr::null_mut());
+            JSObjectDeleteProperty(ctx, global.raw, val_key.raw, std::ptr::null_mut());
+        }
+        if !exception.is_null() {
+            return Err(JscValue {
+                raw: exception,
+                ctx: self.ctx_ptr(),
+            });
+        }
+        Ok(())
     }
 
     // ── §24.2 Set ────────────────────────────────────────────────────────
 
-    fn set_get_values(&mut self, _set: &JscSet) -> Completion<Vec<JscValue>, JscTypes> {
-        Err(self.new_type_error("set_get_values not yet implemented for JSC"))
+    fn set_get_values(&mut self, set: &JscSet) -> Completion<Vec<JscValue>, JscTypes> {
+        let global = self.context.global_object();
+        let ctx = self.context.as_context_ref();
+        let set_key = JscString::from_rust("__fw_set");
+        let mut exc: *mut JSValueRef = std::ptr::null_mut();
+        unsafe {
+            JSObjectSetProperty(
+                ctx,
+                global.raw,
+                set_key.raw,
+                set.as_value_ref(),
+                kJSPropertyAttributeNone,
+                &mut exc,
+            );
+        }
+        if !exc.is_null() {
+            return Err(JscValue {
+                raw: exc,
+                ctx: self.ctx_ptr(),
+            });
+        }
+        // Eval: Array.from(__fw_set.values())
+        let (result, exception) = self.eval_script_raw("Array.from(__fw_set.values())");
+        unsafe {
+            JSObjectDeleteProperty(ctx, global.raw, set_key.raw, std::ptr::null_mut());
+        }
+        if !exception.is_null() {
+            return Err(JscValue {
+                raw: exception,
+                ctx: self.ctx_ptr(),
+            });
+        }
+        let result_obj = JscObject {
+            raw: result as *mut JSObjectRef,
+            ctx: self.ctx_ptr(),
+        };
+        let len_val = EcmascriptHost::get(self, &result_obj, "length")?;
+        let len = self.to_length(len_val)? as usize;
+        let mut values = Vec::with_capacity(len);
+        for i in 0..len {
+            let idx_key = JscPropertyKey::String(JscString::from_rust(&i.to_string()));
+            let val = ExecutionContext::get(self, result_obj.clone(), idx_key)?;
+            values.push(val);
+        }
+        Ok(values)
     }
 
-    fn set_add_entry(&mut self, _set: &JscSet, _value: JscValue) -> Completion<(), JscTypes> {
-        Err(self.new_type_error("set_add_entry not yet implemented for JSC"))
+    fn set_add_entry(&mut self, set: &JscSet, value: JscValue) -> Completion<(), JscTypes> {
+        let global = self.context.global_object();
+        let ctx = self.context.as_context_ref();
+        let set_key = JscString::from_rust("__fw_set");
+        let val_key = JscString::from_rust("__fw_set_val");
+        let mut exc: *mut JSValueRef = std::ptr::null_mut();
+        unsafe {
+            JSObjectSetProperty(
+                ctx,
+                global.raw,
+                set_key.raw,
+                set.as_value_ref(),
+                kJSPropertyAttributeNone,
+                &mut exc,
+            );
+            if exc.is_null() {
+                JSObjectSetProperty(
+                    ctx,
+                    global.raw,
+                    val_key.raw,
+                    value.raw,
+                    kJSPropertyAttributeNone,
+                    &mut exc,
+                );
+            }
+        }
+        if !exc.is_null() {
+            unsafe {
+                JSObjectDeleteProperty(ctx, global.raw, set_key.raw, std::ptr::null_mut());
+            }
+            return Err(JscValue {
+                raw: exc,
+                ctx: self.ctx_ptr(),
+            });
+        }
+        let (_result, exception) = self.eval_script_raw("__fw_set.add(__fw_set_val)");
+        unsafe {
+            JSObjectDeleteProperty(ctx, global.raw, set_key.raw, std::ptr::null_mut());
+            JSObjectDeleteProperty(ctx, global.raw, val_key.raw, std::ptr::null_mut());
+        }
+        if !exception.is_null() {
+            return Err(JscValue {
+                raw: exception,
+                ctx: self.ctx_ptr(),
+            });
+        }
+        Ok(())
     }
 
     // ── §27 Promise ───────────────────────────────────────────────────────

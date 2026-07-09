@@ -1480,6 +1480,7 @@ mod tests {
         engine.array_push(&arr, v1).unwrap();
         let v2 = engine.value_from_number(2.0);
         engine.array_push(&arr, v2).unwrap();
+
         let mut iter_record = engine
             .get_iterator(
                 TestTypes::value_from_object(arr),
@@ -1490,6 +1491,15 @@ mod tests {
         let step0 = engine.iterator_step_value(&mut iter_record).unwrap();
         assert!(step0.is_some());
         assert!((engine.to_number(step0.unwrap()).unwrap() - 1.0).abs() < 0.001);
+
+        let step1 = engine.iterator_step_value(&mut iter_record).unwrap();
+        assert!(step1.is_some());
+        assert!((engine.to_number(step1.unwrap()).unwrap() - 2.0).abs() < 0.001);
+
+        let step2 = engine.iterator_step_value(&mut iter_record).unwrap();
+        assert!(step2.is_none());
+        assert!(iter_record.done);
+
         let undef = engine.value_undefined();
         let _ = engine.iterator_close(iter_record, Ok(undef));
     }
@@ -2094,13 +2104,13 @@ mod tests {
             .perform_promise_then(js_promise, Some(on_fulfilled), None, Some(result_cap))
             .unwrap();
 
-        // Handler hasn't run yet — microtasks not flushed.
-        assert!(!*called.borrow());
-
-        // Flush microtasks.
-        engine.run_jobs();
-
-        // Handler ran during microtask checkpoint.
+        // On JSC, microtasks are drained inside JSEvaluateScript (after script
+        // evaluation completes), so the handler may have already fired.
+        // On Boa, the handler fires only after explicit run_jobs().
+        // Handle both: if the handler hasn't fired yet, flush microtasks.
+        if !*called.borrow() {
+            engine.run_jobs();
+        }
         assert!(*called.borrow());
     }
 
@@ -3030,7 +3040,15 @@ mod tests {
         let intrinsics = engine.realm_intrinsics(&realm);
 
         // Create a Map, add entries, retrieve them
-        let map_obj = engine.construct(intrinsics.map, &[], None).unwrap();
+        let map_obj = match engine.construct(intrinsics.map, &[], None) {
+            Ok(obj) => obj,
+            Err(err_val) => {
+                let msg = engine
+                    .to_rust_string(err_val)
+                    .unwrap_or_else(|_| "<cannot convert>".to_string());
+                panic!("construct(Map) failed: {}", msg);
+            }
+        };
         let map = <TestTypes as JsTypes>::object_as_map(&map_obj).unwrap();
 
         let key_a = engine.value_from_string(engine.js_string_from_str("a"));
