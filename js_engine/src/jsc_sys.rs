@@ -214,6 +214,22 @@ pub type JSObjectCallAsFunctionCallback = unsafe extern "C" fn(
     exception: *mut *mut JSValueRef,
 ) -> *mut JSValueRef;
 
+/// Callback type for JSClass callAsConstructor.
+/// Same as JSObjectCallAsConstructorCallback in C API:
+///   typedef JSObjectRef (*JSObjectCallAsConstructorCallback)(
+///       JSContextRef ctx, JSObjectRef constructor,
+///       size_t argumentCount, const JSValueRef arguments[],
+///       JSValueRef* exception);
+/// Note: 5 parameters, returns JSObjectRef. This differs from
+/// JSObjectCallAsFunctionCallback (6 parameters + JSValueRef return).
+pub type JSObjectCallAsConstructorCallback = unsafe extern "C" fn(
+    ctx: *mut JSContextRef,
+    constructor: *mut JSObjectRef,
+    argumentCount: usize,
+    arguments: *const *mut JSValueRef,
+    exception: *mut *mut JSValueRef,
+) -> *mut JSObjectRef;
+
 pub type JSObjectFinalizeCallback = unsafe extern "C" fn(object: *mut JSObjectRef);
 
 unsafe extern "C" {
@@ -321,7 +337,7 @@ pub struct JSClassDefinition {
         ),
     >,
     pub callAsFunction: Option<JSObjectCallAsFunctionCallback>,
-    pub callAsConstructor: Option<JSObjectCallAsFunctionCallback>,
+    pub callAsConstructor: Option<JSObjectCallAsConstructorCallback>,
     pub hasInstance: Option<
         unsafe extern "C" fn(
             ctx: *mut JSContextRef,

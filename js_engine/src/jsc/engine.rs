@@ -275,25 +275,28 @@ extern "C" fn builtin_call_as_function(
 
 /// `callAsConstructor` for builtin constructor objects.
 ///
-/// In JSC's C API, `function` is the constructor function being called
-/// (which serves as `new.target`), and `thisObject` is the pre-allocated
-/// `this` for the constructor body.  Our Web IDL constructors need
-/// `new.target` as the second argument, so we pass `function` instead.
+/// This callback matches the C API signature:
+///   JSObjectRef (*)(JSContextRef, JSObjectRef, size_t, const JSValueRef[], JSValueRef*)
+/// (5 parameters, no thisObject).  The `constructor` parameter is the
+/// constructor function being called and serves as `new.target`.
+/// Our Web IDL constructors need `new.target`, so we pass `constructor`
+/// as the `new_target_or_this` argument to the stored behaviour.
 extern "C" fn builtin_call_as_constructor(
     ctx: *mut JSContextRef,
-    function: *mut JSObjectRef,
-    _this_object: *mut JSObjectRef,
+    constructor: *mut JSObjectRef,
     argument_count: usize,
     arguments: *const *mut JSValueRef,
     exception: *mut *mut JSValueRef,
-) -> *mut JSValueRef {
-    let stored_ptr = unsafe { JSObjectGetPrivate(function) } as *mut StoredBehaviour;
+) -> *mut JSObjectRef {
+    let stored_ptr = unsafe { JSObjectGetPrivate(constructor) } as *mut StoredBehaviour;
     if stored_ptr.is_null() {
-        return unsafe { JSValueMakeUndefined(ctx) };
+        return std::ptr::null_mut();
     }
-    // Pass `function` (the constructor / new.target) as `new_target_or_this`.
-    match unsafe { invoke_stored_behaviour(stored_ptr, ctx, function, argument_count, arguments) } {
-        Ok(raw) => raw,
+    // Pass `constructor` (the constructor / new.target) as the `new_target_or_this`.
+    match unsafe {
+        invoke_stored_behaviour(stored_ptr, ctx, constructor, argument_count, arguments)
+    } {
+        Ok(raw) => raw as *mut JSObjectRef,
         Err(err_raw) => {
             unsafe {
                 *exception = err_raw;
@@ -651,6 +654,19 @@ pub struct JscEngine {
     /// Monotonically-increasing counter for GC-root property names.
     next_root_id: u64,
     queued_jobs: Vec<Box<dyn FnOnce(&mut JscEngine)>>,
+}
+
+/// Drop `host_data` (which contains `GcRootHandle` unroot closures) and
+/// `queued_jobs` before `context` (which releases `JSGlobalContextRef`),
+/// ensuring cleanup closures can still access the JS context.
+impl Drop for JscEngine {
+    fn drop(&mut self) {
+        // Drop host_data and queued_jobs first, before context is dropped.
+        // Rust drops fields in declaration order; by taking these early we
+        // ensure unroot actions run while the JSGlobalContextRef is still valid.
+        self.host_data.clear();
+        self.queued_jobs.clear();
+    }
 }
 
 impl JscEngine {
