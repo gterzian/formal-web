@@ -309,6 +309,19 @@ mutable state (e.g. a counter accessed from multiple OS threads).  Do not
 reach for them as a convenience — a plain local is simpler, testable, and
 ever correct.
 
+# Never Assume Test Failures Are Pre-Existing
+
+Every test failure is a regression until proven otherwise.  Never
+assume a test failure is "pre-existing" or an "unimplemented feature"
+without first verifying the exact test baseline.  If you do not know
+the baseline, say so — do not fabricate one.
+
+When investigating a failing test, ask: did this test ever pass?  If
+you changed code that a test exercises, that test is your responsibility
+until it passes.  Dismissing failures as "not yet implemented" is a
+form of speculation: you are guessing that the feature never worked,
+instead of checking whether it did.
+
 # Spec Fidelity
 
 - Describe current architecture and behavior; keep task history out of repository docs.

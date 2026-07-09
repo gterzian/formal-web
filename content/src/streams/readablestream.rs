@@ -1029,7 +1029,8 @@ pub(crate) fn construct_readable_stream(
     stream.initialize_readable_stream(ec);
 
     let strategy = args.get(1).cloned().unwrap_or_else(|| ec.value_undefined());
-    match underlying_source_type(underlying_source_object.as_ref(), ec)?.as_deref() {
+    let underlying_type = underlying_source_type(underlying_source_object.as_ref(), ec)?;
+    match underlying_type.as_deref() {
         Some("bytes") => {
             // Step 4.1: "If strategy[\"size\"] exists, throw a RangeError exception."
             if strategy_has_size(&strategy, ec)? {
@@ -1051,6 +1052,7 @@ pub(crate) fn construct_readable_stream(
             return Ok(stream);
         }
         Some(_) => {
+            // Web IDL: any value that is not the enum value "bytes" fails conversion.
             return Err(ec.new_type_error(
                 "ReadableStream underlyingSource.type must be \"bytes\" when present",
             ));
@@ -1361,8 +1363,11 @@ fn get_readable_stream_from_iterator_record(
     async_iterable: JsValue,
     ec: &mut dyn ExecutionContext<crate::js::Types>,
 ) -> Completion<ReadableStreamFromIteratorRecord, crate::js::Types> {
-    let iterable_object = <crate::js::Types as JsTypes>::value_as_object(&async_iterable)
-        .ok_or_else(|| ec.new_type_error("ReadableStream.from() argument must be an object"))?;
+    // Step: "Let asyncIterable be ? ToObject(asyncIterable)."
+    if async_iterable.is_undefined() || async_iterable.is_null() {
+        return Err(ec.new_type_error("ReadableStream.from() argument must be an object"));
+    }
+    let iterable_object = ec.to_object(async_iterable)?;
 
     let async_iterator_key = ec.property_key_from_well_known_symbol("asyncIterator");
     let async_iter_method_value =
@@ -1428,10 +1433,12 @@ fn promise_from_sync_iterator_result_on_fulfilled_fn(
     done: &bool,
     ec: &mut dyn ExecutionContext<crate::js::Types>,
 ) -> Completion<JsValue, crate::js::Types> {
+    let realm = ec.current_realm();
+    let intrinsics = ec.realm_intrinsics(&realm);
     let value_key = ec.property_key_from_str("value");
     let done_key = ec.property_key_from_str("done");
     let done_value = ec.value_from_bool(*done);
-    let object = ec.create_plain_object(None);
+    let object = ec.create_plain_object(Some(&intrinsics.object_prototype));
     let value = ec.value_undefined();
     let arg0 = args.first().cloned().unwrap_or_else(|| value);
     ec.create_data_property(object.clone(), value_key, arg0)?;
@@ -2795,8 +2802,17 @@ fn underlying_source_type(
         return Ok(None);
     }
 
-    Ok(Some(ec.to_rust_string(value)?))
+    // Null is not undefined — Web IDL treats it as an invalid value for an enum.
+    if value.is_null() {
+        return Ok(Some(String::new()));
+    }
+
+    // Convert via ToString to trigger any toString() side effects / errors.
+    let type_str = ec.to_rust_string(value)?;
+
+    Ok(Some(type_str))
 }
+
 fn strategy_has_size(
     strategy: &JsValue,
     ec: &mut dyn ExecutionContext<crate::js::Types>,

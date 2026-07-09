@@ -500,7 +500,9 @@ fn create_iterator_result_object(
     done: bool,
     ec: &mut dyn ExecutionContext<Types>,
 ) -> JsObject {
-    let obj = ec.create_plain_object(None);
+    let realm = ec.current_realm();
+    let intrinsics = ec.realm_intrinsics(&realm);
+    let obj = ec.create_plain_object(Some(&intrinsics.object_prototype));
     let done_value = ec.value_from_bool(done);
     let _ = ec.object_set_property(obj.clone(), "value", value);
     let _ = ec.object_set_property(obj.clone(), "done", done_value);

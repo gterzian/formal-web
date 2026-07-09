@@ -339,7 +339,9 @@ fn create_read_result(
     done: bool,
     ec: &mut dyn ExecutionContext<Types>,
 ) -> Completion<JsValue, Types> {
-    let obj = ec.create_plain_object(None);
+    let realm = ec.current_realm();
+    let intrinsics = ec.realm_intrinsics(&realm);
+    let obj = ec.create_plain_object(Some(&intrinsics.object_prototype));
     let done_val = ec.value_from_bool(done);
     ec.object_set_property(obj.clone(), "value", value)?;
     ec.object_set_property(obj.clone(), "done", done_val)?;
