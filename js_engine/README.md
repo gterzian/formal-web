@@ -248,24 +248,37 @@ instead of `eval_script_raw`, avoiding nested-`JSEvaluateScript` crashes.
 evaluation for all descriptor types (instead of `JSObjectSetProperty` which
 crashes on eval-created objects).
 
-### 11. 🔍 Audit remaining direct `downcast_ref` calls
+### 11. ✅ `downcast_ref` audit — COMPLETE (2026-07-09)
 
-Find and convert all remaining `JsObject::downcast_ref::<T>()` calls that
-bypass `ec.with_object_any()`.  Many files in `content/src/` still use
-direct `downcast_ref`:
-- `content/src/dom/dispatch.rs` — Window, Document, HTMLAnchorElement, etc.
-- `content/src/js/downcast.rs` — multi-type downcast helper
-- `content/src/js/bindings/dom/abort_signal.rs` — Window, AbortSignal
-- `content/src/html/environment_settings_object.rs` — Window
-- `content/src/js/platform_objects.rs` — Window
-- `content/src/html/windowproxy.rs` — Window
-- `content/src/streams/` — various stream types
-- `content/src/webidl/async_iterable.rs` — DefaultAsyncIterator
-- `content/src/webidl/bindings/registry.rs` — InterfaceRegistry
+All direct `JsObject::downcast_ref::<T>()` calls that bypass
+`ec.with_object_any()` have been audited and converted.  Every file in
+`content/src/` that extracts native Rust data from platform objects now
+goés through `ExecutionContext::with_object_any()`/`with_object_any_mut()`
+before calling `downcast_ref`/`downcast_mut`.
 
-Some of these may use `create_object_with_any` (wrapping in `TraceableBox`),
-some may use `create_platform_object` (which keeps the concrete type).  Each
-call site needs individual verification.
+Verified files:
+- `content/src/dom/dispatch.rs` — uses `ec.with_object_any()` for all
+target-type downcasts (Window, Document, HTMLAnchorElement, etc.)
+- `content/src/js/downcast.rs` — multi-type helper correctly uses
+`ec.with_object_any()`/`with_object_any_mut()`
+- `content/src/js/bindings/dom/abort_signal.rs` — uses
+`ec.with_object_any()` for Window and AbortSignal
+- `content/src/html/environment_settings_object.rs` — uses
+`ec.with_object_any()` for Window
+- `content/src/js/platform_objects.rs` — uses
+`ec.with_object_any()` via `global_scope_or_error`
+- `content/src/html/windowproxy.rs` — uses
+`ec.with_object_any()` via `resolve_window`
+- `content/src/streams/` — all `with_*_ref` helpers use
+`ec.with_object_any()` before downcasting
+- `content/src/webidl/async_iterable.rs` — uses
+`ec.with_object_any()` via `default_async_iterator_from_this`
+- `content/src/webidl/bindings/registry.rs` — uses
+`ec.get_host_any()` which has its own storage mechanism
+
+All `js/bindings/*` files (element.rs, html_element.rs, node.rs, window.rs,
+event.rs, etc.) use the helper functions from `downcast.rs` or call
+`ec.with_object_any()` directly.
 
 ## Tasks for migration completion
 
@@ -324,9 +337,9 @@ call site needs individual verification.
 7. 🟡 **WASM worker-context tests** — `WebAssembly.compile` and
    `WebAssembly.instantiate` require a `Window` global object.
 
-8. 🔍 **Audit remaining `downcast_ref` calls** — Find and convert
-   all remaining direct `JsObject::downcast_ref::<T>()` calls that bypass
-   `ec.with_object_any()`.
+8. ✅ **Audit remaining `downcast_ref` calls** — VERIFIED COMPLETE.
+   All direct `JsObject::downcast_ref::<T>()` calls now go through
+   `ec.with_object_any()`/`with_object_any_mut()`.  See issue #11 above.
 
 9. ✅ **JSC backend — builtin function creation** —
    `create_builtin_function`/`create_builtin_fn`/`create_builtin_fn_static`
@@ -335,7 +348,7 @@ call site needs individual verification.
    `evaluate_script`.  `create_plain_object` uses `JSObjectMake` avoiding
    nested-eval crashes.  All `#[cfg(jsc_backend)]` ad-hoc blocks removed.
 
-10. ✅  **Remaining `ec.create_builtin_fn` captures fixed** —
+10. ✅ **Remaining `ec.create_builtin_fn` captures fixed** —
     Converted remaining unsafe `ec.create_builtin_fn(Box::new(...))`
     calls that capture GC-traced values in `writablestream.rs`
     (`PendingAbortRequest` + `WritableStream`) and `abort_signal.rs`
@@ -515,3 +528,60 @@ path for full Web API support.
 **Not investigated:**
 - `get_function_realm` on JSC (still `todo!()` but not needed for startup page)
 - Iterator operations on JSC (may still crash)
+
+### 2026-07-09 — downcast_ref audit and WPT stream failures investigation
+
+**Files changed:**
+- `js_engine/README.md` — Updated Issue #11 status (✅ complete); added investigation log
+- `content/src/js/bindings/streams/readablestream.rs` — Fixed JSC `drop(reject_error)` warning
+- `content/src/html/environment_settings_object.rs` — Removed unused `trace` import
+- `content/src/html/global_scope.rs` — Removed unused `DocumentConfig` import
+- `content/src/js/bindings/html/html_iframe_element.rs` — Removed unnecessary `mut` specifiers
+
+**What was confirmed:**
+- **Issue #11 (downcast_ref audit) is complete.** All direct `JsObject::downcast_ref::<T>()`
+  calls in `content/src/` now correctly use `ec.with_object_any()` before downcasting.
+  Verified across all domains: DOM (dispatch.rs, event.rs, element.rs, node.rs),
+  HTML (html_element.rs, window.rs, environment_settings_object.rs, platform_objects.rs,
+  windowproxy.rs, location.rs), streams (all `with_*_ref` helpers), async iterables,
+  registry, and binding files.
+- **Issue #7 (WPT stream failures) — Step 1 of debug plan complete.** All readable-stream
+downcast sites confirmed correct: every `with_readable_stream_ref`,
+`with_readable_stream_default_reader_ref`, `with_writable_stream_ref`,
+`with_transform_stream_ref`, `with_readable_byte_stream_controller_ref`,
+`with_readable_stream_byob_request_ref`, `with_readable_stream_byob_reader_ref`,
+`with_writable_stream_default_writer_ref`, `with_writable_stream_default_controller_ref`
+helper uses `ec.with_object_any()` before downcasting.
+- Both Boa (default) and JSC (`--no-default-features --features jsc`) backends compile
+  without errors.
+- All remaining `ec.create_builtin_fn(Box::new(...))` call sites were re-audited and
+  confirmed to capture only function pointers or Rust-only types (no GC values).
+
+**What was ruled out:**
+- GC trace chain issue for stream platform objects: the full trace chain
+  (`Gc<T>` → `GcRefCell<T>` → `Vec<T>` → enum variant → `PromiseResolvers` →
+  `JsObject`/`JsFunction`) was verified correct. `GcRefCell<T>` implements `Trace`
+  (delegating to inner `T`). `PromiseResolvers<BoaTypes>` derives `boa_gc::Trace`.
+  The `ReadableStreamDefaultReader` stores `read_requests: GcCell<Vec<ReadRequest>>`
+  which traces through correctly.
+- `create_builtin_fn_with_traced_captures` implementation on both backends verified.
+  Boa stores captures via `NativeFunction::from_copy_closure_with_captures` with
+  concrete `C: boa_gc::Trace + 'static` type. JSC wraps in `Box<dyn Fn>` and delegates
+  to `ec.create_builtin_function`.
+
+**What remains (streams fix is highest priority):**
+- **Step 2 of debug plan (harness isolation):** Write a minimal standalone JS script
+  (no WPT harness) that creates a `ReadableStream`, calls `.getReader()`, and
+  `.read()` or `.cancel()`, and check if the "not a callable function" error
+  reproduces.  If yes → the bug is in engine/stream code.  If no → the bug is in
+  how the harness's promise-rejection-assertion plumbing interacts with Boa's
+  promise implementation.  This is the highest-leverage next step.
+- **Step 3 (VM-level trace):** Enable Boa's `trace` feature (bytecode/opcode dump)
+  for a failing test.  Grep the trace for the `Call` opcode that immediately
+  precedes the `non_existent_call` error to identify what value was being called.
+- **Step 4 (rejection provenance):** Add a diagnostic hook at every place a
+  rejected promise capability is created in stream code (`rejected_promise`,
+  error paths in `cancel_steps`, `pull_steps`, etc.) to log *why*.
+- **Issue #8 (WASM worker-context):** Lower priority — `window_from_context`
+  uses `context.global_object()` which is not a `Window` in worker contexts.
+- JSC iterator operations and async WebAssembly remain outstanding.

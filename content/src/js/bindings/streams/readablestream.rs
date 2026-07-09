@@ -468,7 +468,7 @@ pub(crate) fn pipe_to_native_method(
             // Call resolvers.reject with the error to reject the promise.
             if let Err(reject_error) = ec.call(&resolvers.reject, &undefined, &[error]) {
                 // Spec: If rejecting fails, ignore (edge case).
-                drop(reject_error);
+                let _ = reject_error;
             }
             Ok(JsValue::from(promise))
         }

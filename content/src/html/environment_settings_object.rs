@@ -1,4 +1,4 @@
-use log::{debug, error, trace};
+use log::{debug, error};
 use std::{cell::RefCell, rc::Rc, time::Instant};
 
 use blitz_dom::BaseDocument;

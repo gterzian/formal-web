@@ -7,7 +7,7 @@ use std::{
 
 use super::environment_settings_object::EnvironmentSettingsObject;
 
-use blitz_dom::{BaseDocument, DocumentConfig};
+use blitz_dom::BaseDocument;
 use ipc::IpcSender;
 use ipc_messages::content::DocumentId;
 use ipc_messages::content::{
