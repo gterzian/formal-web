@@ -238,14 +238,6 @@ embedder finds them by default.
 
 # Local Extensions
 
-## pi-share-hf — Session Collection
-
-The `.pi/extensions/pi-share-hf/` extension archives pi sessions to `.pi/collected-sessions/`.
-
-- **Auto-collection on shutdown:** When pi exits, the session is automatically saved to a unique file in `.pi/collected-sessions/`. No manual action is needed.
-- **`/collect-session` command** — Interactive command to archive the current session at any point.
-- **`upload_session` tool** — Stub only; not yet implemented. Will eventually upload collected sessions to a remote destination (e.g. Hugging Face dataset).
-
 ## pi-browser — CDP Browser Tools
 
 The `.pi/extensions/browser/` extension wraps formal-web's CDP server into
@@ -489,9 +481,7 @@ At the end of each task, run the following steps **in order**:
 
 7. **Suggest a commit message** — Whenever asked for a commit message (whether at end-of-task or any other time), propose a message for the current `git diff HEAD` (the uncommitted changes), not for the entire session's work.  Run `git diff --stat HEAD` to see what changed, and `git diff HEAD` to read the diff before writing the message.
 
-8. Do NOT use `collect_session` — that tool has been removed. Sessions are collected automatically on shutdown.
-
-9. Review the entire session (your entire context window) and make sure that Rule Number One was respected (see top of file), and if not alert the user.
+8. Review the entire session (your entire context window) and make sure that Rule Number One was respected (see top of file), and if not alert the user.
 
 
 # Forbidden commands
