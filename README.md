@@ -106,14 +106,5 @@ The following procesess are used:
 
 ## Extensions
 
-- [**`pi-share-hf`**](.pi/extensions/pi-share-hf/README.md) — Archives pi coding sessions to `.pi/collected-sessions/`
 - [**`browser`**](.pi/extensions/browser/README.md) — Wraps CDP server into agent-callable dev tools
 - [**`web_standards`**](.pi/extensions/web_standards/README.md) — Lazily loaded web spec content for interactive reading
-
-## Session archiving
-
-Sessions are archived to `.pi/collected-sessions/` on shutdown.  Upload with:
-
-```bash
-./sync-hf-sessions.sh
-```
