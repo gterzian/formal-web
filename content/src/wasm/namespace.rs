@@ -8,6 +8,7 @@ use wasmtime::{Func, Instance as WasmtimeInstance, Module, Store};
 use crate::html::{PendingRequest, PendingState, Window};
 use crate::wasm::conversions::{default_val_for_type, js_val_to_wasm_val, wasm_val_to_js_value};
 use crate::wasm::types::{WasmInstance, WasmModule};
+use crate::webidl::bindings::create_interface_instance;
 use js_engine::{Completion, ExecutionContext, records::PromiseResolvers};
 
 /// Convert Boa-native `ResolvingFunctions` to generic `PromiseResolvers<crate::js::Types>`.
@@ -305,12 +306,16 @@ fn compile_continuation_boa(
     //                builtinSetNames, importedStringModule, and let moduleObject
     //                be the result."
     // Note: builtinSetNames and importedStringModule are not yet supported.
-    let module_proto = get_wasm_module_prototype_boa(context)
-        .unwrap_or_else(|| context.intrinsics().constructors().object().prototype());
-    let resolve: JsObject = resolvers.resolve.clone();
-    let module_object =
-        JsObject::from_proto_and_data(Some(module_proto), WasmModule::new(module, bytes));
+    // Use create_interface_instance to wrap data in NativeDataWrapper so
+    // ec.with_object_any can find it later during instantiate.
+    let ec = js_engine::boa::context_as_ec(context);
+    let module_object: JsObject = create_interface_instance::<crate::js::Types, WasmModule>(
+        WasmModule::new(module, bytes),
+        ec,
+    )?
+    .into();
     // Step 2.2.5.2: "Resolve promise with moduleObject."
+    let resolve: JsObject = resolvers.resolve.clone();
     resolve
         .call(&JsValue::undefined(), &[module_object.into()], context)
         .map_err(|error| error.into_opaque(context).unwrap_or(JsValue::undefined()))?;
@@ -394,12 +399,14 @@ fn initialize_an_instance_object_boa(
     // Step 2: "Set instanceObject.[[Instance]] to instance."
     // Step 3: "Set instanceObject.[[Exports]] to exportsObject."
     // These are both done by constructing the WasmInstance with those fields.
-    let instance_proto = get_wasm_instance_prototype_boa(context)
-        .unwrap_or_else(|| context.intrinsics().constructors().object().prototype());
-    let instance_object = JsObject::from_proto_and_data(
-        Some(instance_proto),
+    // Use create_interface_instance to wrap data in NativeDataWrapper so
+    // ec.with_object_any can find it during exports getter access.
+    let ec = js_engine::boa::context_as_ec(context);
+    let instance_object: JsObject = create_interface_instance::<crate::js::Types, WasmInstance>(
         WasmInstance::new(exports_object, Arc::clone(store), *instance),
-    );
+        ec,
+    )?
+    .into();
     js_result_to_completion(Ok(instance_object), context)
 }
 

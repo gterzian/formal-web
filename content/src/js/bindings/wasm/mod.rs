@@ -39,10 +39,21 @@ fn rejected_promise_from_error_boa(
     error: boa_engine::JsError,
     ec: &mut dyn ExecutionContext<crate::js::Types>,
 ) -> <crate::js::Types as JsTypes>::JsObject {
-    let reason = error
-        .as_opaque()
-        .cloned()
-        .unwrap_or_else(|| ec.new_type_error("rejected_promise_from_error: error is not opaque"));
+    let reason = match error.as_opaque() {
+        Some(value) => value.clone(),
+        None => {
+            // Native error (e.g. TypeError) — convert to opaque JsValue.
+            let ec_any = ec.as_any_mut();
+            let boa_ctx = ec_any
+                .downcast_mut::<js_engine::boa::BoaContext>()
+                .expect("rejected_promise_from_error_boa only works on Boa backend");
+            let ctx: &mut boa_engine::Context = boa_ctx.context();
+            match error.into_opaque(ctx) {
+                Ok(value) => value,
+                Err(_) => ec.new_type_error("rejected_promise_from_error: cannot convert error"),
+            }
+        }
+    };
     rejected_promise_from_error(reason, ec)
 }
 

@@ -424,7 +424,17 @@ impl ReadableStreamDefaultController {
         let controller_object = self.controller_object(ec)?;
         let pull_algorithm = self.pull_algorithm.borrow().clone();
         let pull_promise: JsObject = match pull_algorithm {
-            Some(pull_algorithm) => pull_algorithm.call(&controller_object, ec)?,
+            Some(pull_algorithm) => match pull_algorithm.call(&controller_object, ec) {
+                Ok(promise) => promise,
+                Err(error) => {
+                    // Step 6 (throw -> rejection): "If pullAlgorithm throws, treat it as a
+                    // rejected promise. Error the stream immediately (synchronously) rather
+                    // than deferring to microtask, so that subsequent reads see the errored
+                    // state."
+                    self.error_steps(error.clone(), ec)?;
+                    rejected_promise(error, ec)?
+                }
+            },
             None => resolved_promise(ec.value_undefined(), ec)?,
         };
 
@@ -725,7 +735,7 @@ pub(crate) fn set_up_readable_stream_default_controller(
     stream.set_controller_object_slot(Some(controller_object.clone()));
 
     // Step 9: "Let startResult be the result of performing startAlgorithm. (This might throw an exception.)"
-    let start_result = start_algorithm.call(controller_object, ec)?;
+    let start_result = start_algorithm.call(&controller_object, ec)?;
 
     // Step 10: "Let startPromise be a promise resolved with startResult."
     let realm = ec.current_realm();

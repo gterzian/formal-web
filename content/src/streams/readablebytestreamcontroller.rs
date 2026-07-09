@@ -1078,9 +1078,16 @@ impl ReadableByteStreamController {
         self.pulling.set(true);
         let controller_object = self.controller_object(ec)?;
         let pull_algorithm = self.pull_algorithm.borrow().clone();
-        let pull_promise = match pull_algorithm {
-            Some(pull_algorithm) => pull_algorithm.call(&controller_object, ec)?,
-            None => resolved_promise(ec.value_undefined(), ec)?,
+        let pull_promise_result = match pull_algorithm {
+            Some(pull_algorithm) => pull_algorithm.call(&controller_object, ec),
+            None => Ok(resolved_promise(ec.value_undefined(), ec)?),
+        };
+        let pull_promise = match pull_promise_result {
+            Ok(promise) => promise,
+            Err(error) => {
+                self.error_steps(error.clone(), ec)?;
+                rejected_promise(error, ec)?
+            }
         };
 
         let name_key = ec.property_key_from_str("");
