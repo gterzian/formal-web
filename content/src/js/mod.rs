@@ -16,9 +16,11 @@ pub(crate) mod build_context;
 /// Not engine-specific; compiled on all backends.
 pub(crate) mod console_generic;
 pub(crate) mod css_generic;
+pub(crate) mod testutils;
 
 pub(crate) use console_generic::install_console_namespace;
 pub(crate) use css_generic::install_css_namespace;
+pub(crate) use testutils::install_testutils_namespace;
 
 pub(crate) use bindings::install_document_property;
 pub(crate) use downcast::{

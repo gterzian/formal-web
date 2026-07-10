@@ -2280,6 +2280,10 @@ impl EcmascriptHost<BoaTypes> for BoaContext {
         log::error!("uncaught callback error: {message}");
     }
 
+    fn gc(&mut self) {
+        boa_gc::force_collect();
+    }
+
     fn value_undefined(&mut self) -> JsValue {
         JsValue::undefined()
     }

@@ -201,6 +201,7 @@ unsafe extern "C" {
     // ── GC protection (not in public headers; available on macOS) ────────
     pub fn JSValueProtect(ctx: *mut JSContextRef, value: *mut JSValueRef);
     pub fn JSValueUnprotect(ctx: *mut JSContextRef, value: *mut JSValueRef);
+    pub fn JSGarbageCollect(ctx: *mut JSContextRef);
 }
 
 // ── Function construction ─────────────────────────────────────────────────

@@ -458,6 +458,10 @@ impl js_engine::EcmascriptHost<crate::js::Types> for EnvironmentSettingsObject {
         self.engine.report_exception(error)
     }
 
+    fn gc(&mut self) {
+        self.engine.gc()
+    }
+
     fn value_undefined(&mut self) -> JsValue {
         self.engine.value_undefined()
     }

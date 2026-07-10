@@ -147,97 +147,63 @@ before `host_data` (containing `GcRootHandle` unroot closures).  The unroot
 closure's `ctx_raw` became dangling, causing SIGSEGV.  Fixed by explicit
 `Drop for JscEngine` that clears `host_data` and `queued_jobs` first.
 
-## Unresolved items
+## Completed refactoring (2026-07-11)
 
-## Planned refactoring: `JSValueProtect`/`JSValueUnprotect` + native C API
+### TestUtils namespace (`gc()` method)
 
-### Background
+Implemented the [`TestUtils`] gc() namespace per
+<https://testutils.spec.whatwg.org/#the-testutils-namespace>:
 
-The JSC backend stores `JSObjectRef` raw pointers inside Rust structs (`Callback`,
-`TimerHandler`, `GcRootHandle`, etc.).  JSC's garbage collector has no visibility
-into Rust heap allocations, so objects referenced only by Rust code are collected,
-causing use-after-free SIGSEGV when Rust later tries to call them.
-
-Boa avoids this because its GC (`boa_gc`) traces through Rust structs via `Trace`.
-JSC's C API provides `JSValueProtect`/`JSValueUnprotect` for explicit rooting,
-but the current code base uses global-object properties (in `create_root`) and
-`JSEvaluateScript` eval (in `make_builtin_function`) instead.
+- Added `fn gc(&mut self)` to the `EcmascriptHost` trait (`js_engine/src/engine.rs`)
+- **JSC:** calls `JSGarbageCollect(self.ctx_ptr())`
+- **Boa:** calls `boa_gc::force_collect()`
+- **Delegating wrappers:** `EcDispatchHost`, `EnvironmentSettingsObject`,
+  `BlitzJSEventHandler` all forward to their inner engine
+- Namespace installed at `TestUtils.gc()` via
+  `content/src/js/testutils.rs` (same pattern as `console`)
+- Test page at `scratchpad/gc-protection-test.html`
 
 ### Phase 1: `JSValueProtect`/`JSValueUnprotect` everywhere
 
-Replace the global-object-property rooting in `create_root` with direct
-`JSValueProtect`/`JSValueUnprotect` calls:
+`create_root` already used `JSValueProtect`/`JSValueUnprotect`.  Three additional
+sites were converted from the old global-object-property rooting pattern:
 
-```rust
-fn create_root(&mut self, value: &JscValue) -> GcRootHandle<JscTypes> {
-    let ctx = self.ctx_ptr();
-    unsafe { JSValueProtect(ctx, value.raw); }
-    GcRootHandle {
-        value: *value,
-        unroot_action: Some(Box::new(move |_val| unsafe {
-            JSValueUnprotect(ctx, value.raw);
-        })),
-    }
-}
-```
+1. **`drain_noop`** — `JSValueProtect` on creation in `drain_microtasks()`,
+   `JSValueUnprotect` in `Drop for JscEngine`.
+2. **`new_promise_capability`** — Replaced `__fw_pcap_root_{id}_{tag}` global
+   properties with temporary `JSValueProtect`/`JSValueUnprotect` around the
+   three promise-capability values.  The caller (`create_promise_capability`
+   in `engine.rs`) adds permanent protection via `create_root`.
+3. **`create_object_with_any`** — Replaced `__fw_any_root_{id}` global
+   properties with `JSValueProtect`.  Protected object pointers tracked in
+   `JscEngine.protected_objects` for cleanup in `Drop`.
 
-Then add explicit protection at every point where a JS object reference enters
-Rust-only storage:
-
-| Storage point | Type | Fix |
-|---|---|---|
-| `Callback` struct | `content/src/webidl/callback.rs` | Protect on `from_object()` / Clone, unprotect on Drop.  Needs `ec` arg for context. |
-| `TimerHandler::Function` | `content/src/html/global_scope.rs` | Store protected handle alongside callback, unprotect on timer clear/complete. |
-| `WindowTimer.arguments` | `content/src/html/global_scope.rs` | Same as above — `Vec<JsValue>` elements need protection. |
-| Event listeners | `content/src/dom/event_target.rs` | Protected `Callback` in listener records. |
-| Stream pull/cancel/close callbacks | stream controllers | Protected `Callback` in controller state. |
-| `drain_noop` function | `js_engine/src/jsc/engine.rs` | `JSValueProtect` on creation. |
-| `fn_call` (Function.prototype.call) | `js_engine/src/jsc/engine.rs` | Already a property of `Function.prototype` which is always alive — no protection needed. |
+A new `protected_objects: Vec<*mut JSValueRef>` field was added to `JscEngine`
+to track JSValueProtect'd objects for cleanup on engine teardown.
 
 ### Phase 2: Replace `JSEvaluateScript` with native C API
 
-The current code uses `JSEvaluateScript` for things that the JSC C API can do
-directly.  Every eval call drains JSC's microtask queue, which can trigger GC
-at unexpected times (and is a performance bottleneck).
+| Change | File | Description |
+|---|---|---|
+| `make_builtin_function` bind/call/apply copy | `jsc/engine.rs` | New `copy_function_prototype_methods()` helper uses `JSObjectGetProperty(Function.prototype, name) + JSObjectSetProperty(...)`.  `toString` still uses eval because `JSObjectMakeFunctionWithCallback` has pointer-mismatch issues on macOS 26. |
+| `create_builtin_fn` `.length` | `jsc/engine.rs` | Direct `JSObjectSetProperty(func, "length", value, ReadOnly \| DontEnum)` replaces eval with `Object.defineProperty(__fw_fn_len, ...)` + temp global property. |
+| `get_fn_call()` | `jsc/engine.rs` | Traverses `Function → prototype → call` via C API instead of `eval("Function.prototype.call")`. |
 
-| Current approach | Native C API replacement |
+### Remaining work
+
+| Area | What needs doing |
 |---|---|
-| `JSEvaluateScript` with `Object.defineProperty` copy of `bind`/`call`/`apply`/`toString` from `Function.prototype` | `JSObjectGetProperty(Function.prototype, name) + JSObjectSetProperty(obj, name, prop, kJSPropertyAttributeReadOnly | kJSPropertyAttributeDontEnum)` — avoids eval entirely. |
-| `JSEvaluateScript` with `Object.defineProperty` to set `.length` | `JSObjectSetProperty(obj, "length", len_val, kJSPropertyAttributeReadOnly | kJSPropertyAttributeDontEnum)` — sets read-only, non-enumerable directly. |
-| `JSEvaluateScript("Function.prototype.call")` in `get_fn_call()` | Cache `Function.prototype.call` via C API at engine creation. |
-| `JSEvaluateScript` with Proxy for constructor `new.target` support | **Cannot be eliminated** — JSC's C API has no `JSProxyCreate`.  The Proxy eval is the only option unless `callAsConstructor` exposes `new.target` in a future JSC version. |
-| `promise_state()` eval with `.then()` flags | `JSPromiseGetStatus` (not available in public C API — eval is currently the only option). |
-
-### Phase 3: `create_builtin_fn` eval removal
-
-The `create_builtin_fn` method uses eval to set `.length`:
-
-```rust
-let script = format!(
-    "Object.defineProperty(__fw_fn_len, 'length', {{value:{length},writable:false,configurable:true,enumerable:false}})"
-);
-```
-
-Replace with:
-
-```rust
-let length_key = JscString::from_rust("length");
-let length_val = unsafe { JSValueMakeNumber(ctx, length as f64) };
-unsafe {
-    JSObjectSetProperty(
-        ctx,
-        func.raw,
-        length_key.raw,
-        length_val,
-        kJSPropertyAttributeReadOnly | kJSPropertyAttributeDontEnum,
-        &mut exc,
-    );
-}
-```
+| `Callback` struct | `content/src/webidl/callback.rs` — Protect on `from_object()` / Clone, unprotect on Drop.  Needs `ec` arg for context. |
+| `TimerHandler::Function` | `content/src/html/global_scope.rs` — Store protected handle alongside callback. |
+| `WindowTimer.arguments` | `content/src/html/global_scope.rs` — `Vec<JsValue>` elements need protection. |
+| Event listeners | `content/src/dom/event.rs` — Protected `Callback` in listener records. |
+| Stream callbacks | stream controllers — Protected `Callback` in controller state. |
+| Constructor Proxy eval | Cannot be eliminated (JSC C API has no `JSProxyCreate`). |
+| `promise_state()` eval | `JSPromiseGetStatus` not in public C API. |
 
 ### Phase 4: Verify pass-rate parity
 
-After Phases 1-3, run the full WPT suite on both backends and confirm
+After all remaining items, run the full WPT suite on both backends and confirm
 `executed=N unexpected=0` on both.  Any remaining discrepancy needs either
 a JSC bug fix (preferred) or shared metadata (last resort).
 

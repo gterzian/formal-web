@@ -456,22 +456,21 @@ fn make_builtin_function(
         // Note: Constructor functions do NOT inherit Function.prototype
         // methods because JSObjectSetPrototype crashes on
         // JSObjectMake()-created objects on macOS 26.
-        // Copy bind, call, apply, toString from Function.prototype
-        // so these methods are available for constructor functions.
+        // Copy bind, call, apply from Function.prototype via native C API
+        // to avoid eval overhead and unpredictable microtask drainage.
+        // toString is still set via eval (see Note below).
+        let global = unsafe { JSContextGetGlobalObject(ctx) };
+        copy_function_prototype_methods(ctx, raw_obj, global);
+
+        // Note: toString uses eval because the native C API cannot create
+        // a function with custom toString output without
+        // JSObjectMakeFunctionWithCallback, which has pointer-mismatch
+        // issues on macOS 26 (see FUNCTION_REGISTRY docs).
         let name_rust = name_str.to_rust();
-        let copy_script = format!(
-            r#"(function(ctor){{
-                var fp=Function.prototype;
-                var hop=Object.prototype.hasOwnProperty;
-                if(!hop.call(ctor,'bind')) Object.defineProperty(ctor,'bind',{{value:fp.bind,writable:true,configurable:true}});
-                if(!hop.call(ctor,'call')) Object.defineProperty(ctor,'call',{{value:fp.call,writable:true,configurable:true}});
-                if(!hop.call(ctor,'apply')) Object.defineProperty(ctor,'apply',{{value:fp.apply,writable:true,configurable:true}});
-                if(!hop.call(ctor,'toString')) Object.defineProperty(ctor,'toString',{{value:function(){{return 'function {name_rust}() {{ [native code] }}'}},writable:true,configurable:true}});
-            }})(this)"#,
+        let ctor_temp_key = format!(
+            "__fw_base_ctor_{}",
+            name_rust.replace(|c: char| !c.is_alphanumeric(), "_")
         );
-        // Step 1: Store the base constructor on a temp global property
-        // for the subsequent Proxy creation script.
-        let ctor_temp_key = format!("__fw_base_ctor_{}", name_rust.replace(|c: char| !c.is_alphanumeric(), "_"));
         let ctor_key = JscString::from_rust(&ctor_temp_key);
         let mut exc: *mut JSValueRef = std::ptr::null_mut();
         unsafe {
@@ -484,9 +483,15 @@ fn make_builtin_function(
                 &mut exc,
             );
         }
-        // Step 2: Copy Function.prototype methods to the base constructor.
+        // Step 2: Set a native-looking toString on the base constructor.
+        // This still uses eval because the C API cannot create a function
+        // with custom toString output without JSObjectMakeFunctionWithCallback,
+        // which has pointer-mismatch issues on macOS 26.
         if exc.is_null() {
-            let script = JscString::from_rust(&copy_script);
+            let tostring_script = format!(
+                r#"Object.defineProperty(this,'toString',{{value:function(){{return 'function {name_rust}() {{ [native code] }}'}},writable:true,configurable:true}})"#
+            );
+            let script = JscString::from_rust(&tostring_script);
             let mut eval_exc: *mut JSValueRef = std::ptr::null_mut();
             unsafe {
                 JSEvaluateScript(
@@ -558,25 +563,20 @@ fn make_builtin_function(
         // callAsFunction and finalize).  Functions created this way do
         // NOT inherit Function.prototype (bind/call/apply/toString)
         // because JSObjectSetPrototype crashes on macOS 26 for objects
-        // with callbacks.  Copy these methods via eval, same pattern as
-        // constructor functions.
+        // with callbacks.  Copy bind, call, apply via native C API;
+        // toString is set via eval (see Note in constructor branch).
         let class_ref = BUILTIN_CLASS.0;
         let raw_obj = unsafe { JSObjectMake(ctx, class_ref, std::ptr::null_mut()) };
         let stored = Box::new(behaviour);
         let stored_ptr = Box::into_raw(stored) as *mut std::ffi::c_void;
         unsafe { JSObjectSetPrivate(raw_obj, stored_ptr) };
+        let global = unsafe { JSContextGetGlobalObject(ctx) };
+        copy_function_prototype_methods(ctx, raw_obj, global);
         let name_rust = name_str.to_rust();
-        let copy_script = format!(
-            r#"(function(fn){{
-                var fp=Function.prototype;
-                var hop=Object.prototype.hasOwnProperty;
-                if(!hop.call(fn,'bind')) Object.defineProperty(fn,'bind',{{value:fp.bind,writable:true,configurable:true}});
-                if(!hop.call(fn,'call')) Object.defineProperty(fn,'call',{{value:fp.call,writable:true,configurable:true}});
-                if(!hop.call(fn,'apply')) Object.defineProperty(fn,'apply',{{value:fp.apply,writable:true,configurable:true}});
-                if(!hop.call(fn,'toString')) Object.defineProperty(fn,'toString',{{value:function(){{return 'function {name_rust}() {{ [native code] }}'}},writable:true,configurable:true}});
-            }})(this)"#,
+        let tostring_script = format!(
+            r#"Object.defineProperty(this,'toString',{{value:function(){{return 'function {name_rust}() {{ [native code] }}'}},writable:true,configurable:true}})"#
         );
-        let script_str = JscString::from_rust(&copy_script);
+        let script_str = JscString::from_rust(&tostring_script);
         let mut eval_exc: *mut JSValueRef = std::ptr::null_mut();
         unsafe {
             JSEvaluateScript(
@@ -589,6 +589,58 @@ fn make_builtin_function(
             );
         }
         JscObject { raw: raw_obj, ctx }
+    }
+}
+
+/// Copy `bind`, `call`, and `apply` methods from `Function.prototype` to
+/// the given target object using the native C API, avoiding JSEvaluateScript.
+///
+/// `toString` is NOT copied here because creating a custom toString function
+/// with the correct `[native code]` output via C API would require
+/// `JSObjectMakeFunctionWithCallback`, which has pointer-mismatch issues
+/// on macOS 26 (see FUNCTION_REGISTRY docs).  The caller handles toString
+/// separately.
+///
+/// Sets each property as `writable: true, configurable: true,
+/// enumerable: false` (matching the current eval-based behavior).
+fn copy_function_prototype_methods(
+    ctx: *mut JSContextRef,
+    target: *mut JSObjectRef,
+    global: *mut JSObjectRef,
+) {
+    unsafe {
+        let function_key = JscString::from_rust("Function");
+        let mut exc: *mut JSValueRef = std::ptr::null_mut();
+        let function_ctor = JSObjectGetProperty(ctx, global, function_key.raw, &mut exc);
+        if exc.is_null() && !function_ctor.is_null() {
+            let prototype_key = JscString::from_rust("prototype");
+            let mut exc2: *mut JSValueRef = std::ptr::null_mut();
+            let fp = JSObjectGetProperty(
+                ctx,
+                function_ctor as *mut JSObjectRef,
+                prototype_key.raw,
+                &mut exc2,
+            );
+            if exc2.is_null() && !fp.is_null() {
+                for method_name in &["bind", "call", "apply"] {
+                    let method_key = JscString::from_rust(method_name);
+                    let mut exc3: *mut JSValueRef = std::ptr::null_mut();
+                    let method =
+                        JSObjectGetProperty(ctx, fp as *mut JSObjectRef, method_key.raw, &mut exc3);
+                    if exc3.is_null() && !method.is_null() {
+                        let name_key = JscString::from_rust(method_name);
+                        JSObjectSetProperty(
+                            ctx,
+                            target,
+                            name_key.raw,
+                            method,
+                            kJSPropertyAttributeDontEnum,
+                            &mut exc3,
+                        );
+                    }
+                }
+            }
+        }
     }
 }
 
@@ -1042,6 +1094,9 @@ pub struct JscEngine {
     host_data: HashMap<std::any::TypeId, Box<dyn std::any::Any>>,
     /// Monotonically-increasing counter for GC-root property names.
     next_root_id: u64,
+    /// Tracks objects protected via `JSValueProtect` so they can be
+    /// unprotected when the engine is dropped.
+    protected_objects: Vec<*mut JSValueRef>,
     queued_jobs: Vec<Box<dyn FnOnce(&mut JscEngine)>>,
     /// Cached no-op function for microtask draining.
     drain_noop: *mut JSObjectRef,
@@ -1061,6 +1116,21 @@ impl Drop for JscEngine {
         // ensure unroot actions run while the JSGlobalContextRef is still valid.
         self.host_data.clear();
         self.queued_jobs.clear();
+        // Unprotect the drain_noop function before the context is released.
+        let ctx_ptr = self.context.as_context_ref();
+        if !self.drain_noop.is_null() {
+            unsafe {
+                JSValueUnprotect(ctx_ptr, self.drain_noop as *mut JSValueRef);
+            }
+        }
+        // Unprotect any objects protected via create_object_with_any.
+        for protected in self.protected_objects.drain(..) {
+            if !protected.is_null() {
+                unsafe {
+                    JSValueUnprotect(ctx_ptr, protected);
+                }
+            }
+        }
         // Free registry-stored behaviour pointers that were leaked
         // via Box::into_raw in make_builtin_function for non-constructor
         // functions.  The JSC engine is being torn down, so no more
@@ -1088,6 +1158,7 @@ impl JscEngine {
             realm_global,
             host_data: HashMap::new(),
             next_root_id: 0,
+            protected_objects: Vec::new(),
             queued_jobs: Vec::new(),
             drain_noop: std::ptr::null_mut(),
             fn_call: None,
@@ -1119,6 +1190,7 @@ impl JscEngine {
             realm_global,
             host_data: HashMap::new(),
             next_root_id: 0,
+            protected_objects: Vec::new(),
             queued_jobs: Vec::new(),
             drain_noop: std::ptr::null_mut(),
             fn_call: None,
@@ -1142,6 +1214,7 @@ impl JscEngine {
             realm_global,
             host_data: HashMap::new(),
             next_root_id: 0,
+            protected_objects: Vec::new(),
             queued_jobs: Vec::new(),
             drain_noop: std::ptr::null_mut(),
             fn_call: None,
@@ -1304,6 +1377,10 @@ impl JscEngine {
             let (result, exception) = self.eval_script_raw(script);
             if exception.is_null() {
                 self.drain_noop = result as *mut JSObjectRef;
+                // Protect the no-op function from GC while the engine lives.
+                unsafe {
+                    JSValueProtect(ctx_ptr, result);
+                }
             }
         }
         if !self.drain_noop.is_null() {
@@ -1332,19 +1409,56 @@ impl JscEngine {
         if let Some(ref call_fn) = self.fn_call {
             return call_fn.raw;
         }
-        let (result, exception) = self.eval_script_raw("Function.prototype.call");
-        if !exception.is_null() {
-            // Fallback: use the global object's call property if available.
-            let global = self.realm_global.raw;
+        // Get Function.prototype.call via native C API instead of eval.
+        let ctx_ptr = self.ctx_ptr();
+        let global = unsafe { JSContextGetGlobalObject(ctx_ptr) };
+        let function_key = JscString::from_rust("Function");
+        let mut exc: *mut JSValueRef = std::ptr::null_mut();
+        let function_ctor =
+            unsafe { JSObjectGetProperty(ctx_ptr, global, function_key.raw, &mut exc) };
+        if !exc.is_null() || function_ctor.is_null() {
+            // Fallback: use the global object.
+            let global_obj = self.realm_global.raw;
             self.fn_call = Some(JscObject {
-                raw: global,
-                ctx: self.ctx_ptr(),
+                raw: global_obj,
+                ctx: ctx_ptr,
             });
-            return global;
+            return global_obj;
+        }
+        let prototype_key = JscString::from_rust("prototype");
+        let mut exc2: *mut JSValueRef = std::ptr::null_mut();
+        let fp = unsafe {
+            JSObjectGetProperty(
+                ctx_ptr,
+                function_ctor as *mut JSObjectRef,
+                prototype_key.raw,
+                &mut exc2,
+            )
+        };
+        if !exc2.is_null() || fp.is_null() {
+            let global_obj = self.realm_global.raw;
+            self.fn_call = Some(JscObject {
+                raw: global_obj,
+                ctx: ctx_ptr,
+            });
+            return global_obj;
+        }
+        let call_key = JscString::from_rust("call");
+        let mut exc3: *mut JSValueRef = std::ptr::null_mut();
+        let call_fn = unsafe {
+            JSObjectGetProperty(ctx_ptr, fp as *mut JSObjectRef, call_key.raw, &mut exc3)
+        };
+        if !exc3.is_null() || call_fn.is_null() {
+            let global_obj = self.realm_global.raw;
+            self.fn_call = Some(JscObject {
+                raw: global_obj,
+                ctx: ctx_ptr,
+            });
+            return global_obj;
         }
         let fn_call = JscObject {
-            raw: result as *mut JSObjectRef,
-            ctx: self.ctx_ptr(),
+            raw: call_fn as *mut JSObjectRef,
+            ctx: ctx_ptr,
         };
         self.fn_call = Some(fn_call);
         fn_call.raw
@@ -1623,45 +1737,21 @@ impl ExecutionContext<JscTypes> for JscEngine {
     ) -> JscFunction {
         let stored: StoredBehaviour = behaviour;
         let func = make_builtin_function(self.ctx_ptr(), stored, &name, false);
-        // Set the .length property to match the spec-required value.
+        // Set the .length property using the native C API to avoid eval.
+        // The .length must be read-only and non-enumerable per spec.
         let ctx_ptr = self.ctx_ptr();
-        let length_key = JscString::from_rust("__fw_fn_len");
+        let length_key = JscString::from_rust("length");
+        let length_val = unsafe { JSValueMakeNumber(ctx_ptr, length as f64) };
         let mut exc: *mut JSValueRef = std::ptr::null_mut();
         unsafe {
             JSObjectSetProperty(
                 ctx_ptr,
-                JSContextGetGlobalObject(ctx_ptr),
+                func.raw,
                 length_key.raw,
-                func.as_value_ref(),
-                kJSPropertyAttributeNone,
+                length_val,
+                kJSPropertyAttributeReadOnly | kJSPropertyAttributeDontEnum,
                 &mut exc,
             );
-        }
-        if exc.is_null() {
-            let len_val = unsafe { JSValueMakeNumber(ctx_ptr, length as f64) };
-            let script = JscString::from_rust(&format!(
-                "Object.defineProperty(__fw_fn_len, 'length', {{value:{length},writable:false,configurable:true,enumerable:false}})"
-            ));
-            let mut eval_exc: *mut JSValueRef = std::ptr::null_mut();
-            unsafe {
-                JSEvaluateScript(
-                    ctx_ptr,
-                    script.raw,
-                    std::ptr::null_mut(),
-                    std::ptr::null_mut(),
-                    0,
-                    &mut eval_exc,
-                );
-            }
-            let mut cleanup_exc: *mut JSValueRef = std::ptr::null_mut();
-            unsafe {
-                JSObjectDeleteProperty(
-                    ctx_ptr,
-                    JSContextGetGlobalObject(ctx_ptr),
-                    length_key.raw,
-                    &mut cleanup_exc,
-                );
-            }
         }
         func
     }
@@ -4040,35 +4130,21 @@ impl ExecutionContext<JscTypes> for JscEngine {
             });
         }
 
-        // Root the promise, resolve, and reject values on the global object
-        // to prevent JSC's GC from collecting them while Rust code holds raw
-        // pointers.  These are stored as non-enumerable properties with a
-        // counter-based name, matching the pattern used by create_object_with_any
-        // and create_root.
-        let global = self.context.global_object();
+        // Temporarily protect the promise, resolve, and reject values with
+        // JSValueProtect so JSC's GC does not collect them while Rust code
+        // holds raw pointers.  The caller (create_promise_capability in
+        // engine.rs) immediately adds permanent protection via create_root,
+        // which calls JSValueProtect again (reference-counted).  We unprotect
+        // here after building the capability, leaving the caller's protect
+        // as the sole reference.
         let ctx_ptr = self.ctx_ptr();
-        for (raw, tag) in [
-            (promise_raw, "promise"),
-            (resolve_raw, "resolve"),
-            (reject_raw, "reject"),
-        ] {
-            let root_id = self.next_root_id;
-            self.next_root_id = self.next_root_id.wrapping_add(1);
-            let prop_name = format!("__fw_pcap_root_{root_id}_{tag}");
-            let root_key = JscString::from_rust(&prop_name);
-            unsafe {
-                JSObjectSetProperty(
-                    ctx_ptr,
-                    global.raw,
-                    root_key.raw,
-                    raw,
-                    kJSPropertyAttributeDontEnum,
-                    &mut exc,
-                );
-            }
+        unsafe {
+            JSValueProtect(ctx_ptr, promise_raw);
+            JSValueProtect(ctx_ptr, resolve_raw);
+            JSValueProtect(ctx_ptr, reject_raw);
         }
 
-        Ok(PromiseCapability {
+        let capability = PromiseCapability {
             promise: JscValue {
                 raw: promise_raw,
                 ctx: self.ctx_ptr(),
@@ -4081,7 +4157,18 @@ impl ExecutionContext<JscTypes> for JscEngine {
                 raw: reject_raw as *mut JSObjectRef,
                 ctx: self.ctx_ptr(),
             },
-        })
+        };
+
+        // Unprotect our temporary protection — the caller will add its own
+        // via create_root.  Between protect and unprotect no JS callbacks
+        // execute (pure Rust code), so GC cannot collect the values.
+        unsafe {
+            JSValueUnprotect(ctx_ptr, promise_raw);
+            JSValueUnprotect(ctx_ptr, resolve_raw);
+            JSValueUnprotect(ctx_ptr, reject_raw);
+        }
+
+        Ok(capability)
     }
 
     fn new_promise_pending(
@@ -4336,26 +4423,14 @@ impl ExecutionContext<JscTypes> for JscEngine {
         map.insert(obj_ptr, data);
         self.store_host_any(map_type_id, Box::new(map));
 
-        // Root the object by storing a reference on the global object so
-        // JSC's GC does not collect it while Rust still holds the pointer.
-        // We use a non-enumerable counter property, similar to create_root.
-        let root_id = self.next_root_id;
-        self.next_root_id = self.next_root_id.wrapping_add(1);
-        let prop_name = format!("__fw_any_root_{root_id}");
-        let root_key = JscString::from_rust(&prop_name);
-        let global = self.context.global_object();
+        // Protect the object with JSValueProtect so JSC's GC does not
+        // collect it while Rust still holds the pointer (via host_data).
+        // Cleanup happens in JscEngine::drop.
         let ctx_ptr = self.ctx_ptr();
-        let mut exc: *mut JSValueRef = std::ptr::null_mut();
         unsafe {
-            JSObjectSetProperty(
-                ctx_ptr,
-                global.raw,
-                root_key.raw,
-                obj.as_value_ref(),
-                kJSPropertyAttributeDontEnum,
-                &mut exc,
-            );
+            JSValueProtect(ctx_ptr, obj.as_value_ref());
         }
+        self.protected_objects.push(obj.as_value_ref());
 
         obj
     }
@@ -4924,6 +4999,13 @@ impl EcmascriptHost<JscTypes> for JscEngine {
     }
     fn report_exception(&mut self, error: JscValue) {
         log::error!("uncaught callback error: {}", error.display());
+    }
+
+    fn gc(&mut self) {
+        let ctx_ptr = self.ctx_ptr();
+        unsafe {
+            crate::jsc_sys::JSGarbageCollect(ctx_ptr);
+        }
     }
 
     fn value_undefined(&mut self) -> JscValue {

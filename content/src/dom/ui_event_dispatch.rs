@@ -488,6 +488,10 @@ impl js_engine::EcmascriptHost<crate::js::Types> for BlitzJSEventHandler<'_> {
         self.settings.engine.report_exception(error)
     }
 
+    fn gc(&mut self) {
+        self.settings.engine.gc()
+    }
+
     fn value_undefined(&mut self) -> JsValue {
         self.settings.engine.value_undefined()
     }

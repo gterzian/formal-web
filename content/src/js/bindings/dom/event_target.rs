@@ -192,6 +192,10 @@ impl<T: JsTypes + js_engine::JsTypesWithRealm> js_engine::EcmascriptHost<T>
         self.ec.report_exception(error);
     }
 
+    fn gc(&mut self) {
+        self.ec.gc();
+    }
+
     fn value_undefined(&mut self) -> T::JsValue {
         self.ec.value_undefined()
     }

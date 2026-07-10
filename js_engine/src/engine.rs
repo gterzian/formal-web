@@ -113,6 +113,11 @@ pub trait EcmascriptHost<T: JsTypes> {
     /// Report an exception thrown from a callback to the host environment.
     fn report_exception(&mut self, error: T::JsValue);
 
+    /// <https://testutils.spec.whatwg.org/#the-testutils-namespace>
+    /// Perform implementation-defined garbage collection covering at least
+    /// the entry realm.
+    fn gc(&mut self);
+
     // ── Value construction — needed by CreateBuiltinFunction closures ────
 
     /// <https://tc39.es/ecma262/#sec-ecmascript-language-types>
