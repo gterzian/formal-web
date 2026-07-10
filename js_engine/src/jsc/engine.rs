@@ -258,6 +258,10 @@ unsafe fn invoke_stored_behaviour(
             // CURRENT_ENGINE not set — return undefined to avoid SIGBUS.
             // This can happen when a builtin function is invoked outside
             // the normal set_current_engine scope (e.g., during GC finalization).
+            log::warn!(
+                "invoke_stored_behaviour: CURRENT_ENGINE not set — returning undefined (ctx={:p})",
+                ctx
+            );
             return Ok(JSValueMakeUndefined(ctx));
         }
         let ec: &mut dyn ExecutionContext<JscTypes> = &mut *engine_ptr;
