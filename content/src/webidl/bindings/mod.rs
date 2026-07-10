@@ -81,5 +81,6 @@ pub(crate) use interface::{
 pub(crate) use operation::OperationDef;
 pub(crate) use registry::{
     get_registry_prototype, initialize as initialize_registry,
+    wire_constructor_prototype as wire_registry_constructor_prototype,
     wire_prototype as wire_registry_prototype,
 };

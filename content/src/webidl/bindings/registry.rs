@@ -136,6 +136,29 @@ where
     }
 }
 
+/// Wire the constructor prototype chain so subclass constructors inherit
+/// from their parent interface object (spec Step 3 of
+/// <https://webidl.spec.whatwg.org/#create-an-interface-object>).
+pub(crate) fn wire_constructor_prototype<Ty, TChild, TParent>(ec: &mut dyn ExecutionContext<Ty>)
+where
+    Ty: JsTypes + JsTypesWithRealm,
+    TChild: 'static,
+    TParent: 'static,
+{
+    let (child_ctor, parent_ctor) = {
+        let reg = with_registry_ref::<Ty, _>(ec, |registry| {
+            (
+                registry.get_constructor::<TChild>().cloned(),
+                registry.get_constructor::<TParent>().cloned(),
+            )
+        });
+        reg
+    };
+    if let (Some(child), Some(parent)) = (child_ctor, parent_ctor) {
+        let _ = ec.set_prototype(child, Some(parent));
+    }
+}
+
 /// Get a prototype from the registry (generic, takes ExecutionContext).
 pub(crate) fn get_registry_prototype<Ty, I>(ec: &dyn ExecutionContext<Ty>) -> Option<Ty::JsObject>
 where

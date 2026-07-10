@@ -30,7 +30,8 @@ use crate::streams::{
     WritableStreamDefaultController, WritableStreamDefaultWriter,
 };
 use crate::webidl::bindings::{
-    get_registry_prototype, initialize_registry, register_interface_spec, wire_registry_prototype,
+    get_registry_prototype, initialize_registry, register_interface_spec,
+    wire_registry_constructor_prototype, wire_registry_prototype,
 };
 // Note: AbortSignal static methods (abort, timeout, any) are registered via
 // static operations in `AbortSignal::define_members`.
@@ -154,6 +155,30 @@ fn build_boa_context(document: Rc<RefCell<BaseDocument>>) -> Result<Context, Str
     wire_registry_prototype::<crate::js::Types, HTMLVideoElement, HTMLMediaElement>(&mut engine);
     wire_registry_prototype::<crate::js::Types, HTMLInputElement, HTMLElement>(&mut engine);
     wire_registry_prototype::<crate::js::Types, Window, EventTarget>(&mut engine);
+
+    // ── Wire constructor prototype chain (spec Step 3) ──
+    wire_registry_constructor_prototype::<crate::js::Types, UIEvent, Event>(&mut engine);
+    wire_registry_constructor_prototype::<crate::js::Types, AbortSignal, EventTarget>(&mut engine);
+    wire_registry_constructor_prototype::<crate::js::Types, Node, EventTarget>(&mut engine);
+    wire_registry_constructor_prototype::<crate::js::Types, Document, Node>(&mut engine);
+    wire_registry_constructor_prototype::<crate::js::Types, Element, Node>(&mut engine);
+    wire_registry_constructor_prototype::<crate::js::Types, HTMLElement, Element>(&mut engine);
+    wire_registry_constructor_prototype::<crate::js::Types, HTMLAnchorElement, HTMLElement>(
+        &mut engine,
+    );
+    wire_registry_constructor_prototype::<crate::js::Types, HTMLIFrameElement, HTMLElement>(
+        &mut engine,
+    );
+    wire_registry_constructor_prototype::<crate::js::Types, HTMLMediaElement, HTMLElement>(
+        &mut engine,
+    );
+    wire_registry_constructor_prototype::<crate::js::Types, HTMLVideoElement, HTMLMediaElement>(
+        &mut engine,
+    );
+    wire_registry_constructor_prototype::<crate::js::Types, HTMLInputElement, HTMLElement>(
+        &mut engine,
+    );
+    wire_registry_constructor_prototype::<crate::js::Types, Window, EventTarget>(&mut engine);
 
     // ── Post-registration wiring ──
 

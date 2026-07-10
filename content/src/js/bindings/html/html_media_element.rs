@@ -391,8 +391,38 @@ fn get_error(
     _args: &[JsValue],
     ec: &mut dyn ExecutionContext<crate::js::Types>,
 ) -> Completion<JsValue, crate::js::Types> {
-    let _ = try_with_media_ref(this, ec, |_media| ())?;
-    Ok(ec.value_null())
+    use crate::js::Types;
+    let media_error = try_with_media_ref(this, ec, |media| media.error())?;
+    match media_error {
+        Some(err) => {
+            // Note: Returns a plain JS object rather than a MediaError platform
+            // object.  MediaError needs its own WebIdlInterface impl for full
+            // spec compliance.
+            let obj = ec.create_plain_object(None);
+            let code_key = ec.property_key_from_str("code");
+            let code_desc = js_engine::PropertyDescriptor {
+                value: Some(ec.value_from_number(err.code as f64)),
+                writable: Some(false),
+                enumerable: Some(true),
+                configurable: Some(true),
+                get: None,
+                set: None,
+            };
+            ec.define_property_or_throw(obj.clone(), code_key, code_desc)?;
+            let message_key = ec.property_key_from_str("message");
+            let message_desc = js_engine::PropertyDescriptor {
+                value: Some(ec.value_from_string(ec.js_string_from_str(&err.message))),
+                writable: Some(false),
+                enumerable: Some(true),
+                configurable: Some(true),
+                get: None,
+                set: None,
+            };
+            ec.define_property_or_throw(obj.clone(), message_key, message_desc)?;
+            Ok(Types::value_from_object(obj))
+        }
+        None => Ok(ec.value_null()),
+    }
 }
 
 fn get_autoplay(
