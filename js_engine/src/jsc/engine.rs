@@ -178,7 +178,11 @@ fn builtin_class_def(call_as_constructor: bool) -> JSClassDefinition {
         } else {
             None
         },
-        hasInstance: None,
+        hasInstance: if call_as_constructor {
+            Some(builtin_has_instance)
+        } else {
+            None
+        },
         convertToType: None,
     }
 }
@@ -331,6 +335,58 @@ extern "C" fn registry_call_as_function(
     }
 }
 
+/// `hasInstance` callback for builtin constructor objects.
+///
+/// Implements the `@@hasInstance` well-known symbol for `instanceof`
+/// checks.  Walks the instance's prototype chain and returns `true` if
+/// any prototype matches the constructor's `.prototype` property.
+/// This is necessary because constructor functions created via our
+/// custom JSClass do not inherit from Function.prototype (which
+/// provides the default `@@hasInstance`), because `JSObjectSetPrototype`
+/// crashes on `JSObjectMake`-created objects with callbacks on macOS 26.
+extern "C" fn builtin_has_instance(
+    ctx: *mut JSContextRef,
+    constructor: *mut JSObjectRef,
+    possible_instance: *mut JSValueRef,
+    exception: *mut *mut JSValueRef,
+) -> bool {
+    // Get constructor.prototype
+    let proto_key =
+        unsafe { JSStringCreateWithUTF8CString(b"prototype\0" as *const u8 as *const i8) };
+    let proto_val = unsafe { JSObjectGetProperty(ctx, constructor, proto_key, exception) };
+    unsafe { JSStringRelease(proto_key) };
+    if !unsafe { *exception }.is_null() || proto_val.is_null() {
+        return false;
+    }
+
+    // Check if possible_instance is an object (non-null, non-undefined)
+    if unsafe { JSValueGetType(ctx, possible_instance) } != JSType::kJSTypeObject {
+        return false;
+    }
+
+    let instance_obj = possible_instance as *mut JSObjectRef;
+
+    // Walk the prototype chain of possible_instance using JSObjectGetPrototype
+    let mut current = unsafe { JSObjectGetPrototype(ctx, instance_obj) };
+    while !current.is_null() {
+        // Check if current is null (null prototype)
+        if unsafe { JSValueIsNull(ctx, current) } {
+            break;
+        }
+        // Compare with constructor.prototype
+        if unsafe { JSValueIsStrictEqual(ctx, current, proto_val) } {
+            return true;
+        }
+        // Move to the next prototype
+        if unsafe { JSValueGetType(ctx, current) } != JSType::kJSTypeObject {
+            break;
+        }
+        current = unsafe { JSObjectGetPrototype(ctx, current as *mut JSObjectRef) };
+    }
+
+    false
+}
+
 /// `callAsConstructor` for builtin constructor objects.
 ///
 /// This callback matches the C API signature:
@@ -397,8 +453,56 @@ fn make_builtin_function(
         // Note: Constructor functions do NOT inherit Function.prototype
         // methods because JSObjectSetPrototype crashes on
         // JSObjectMake()-created objects on macOS 26.
-        // This is acceptable because constructors are typically called
-        // with `new` rather than `.bind()` in WPT tests.
+        // Copy bind, call, apply, toString from Function.prototype
+        // so these methods are available for constructor functions.
+        let name_rust = name_str.to_rust();
+        let copy_script = format!(
+            r#"(function(ctor){{
+                var fp=Function.prototype;
+                var hop=Object.prototype.hasOwnProperty;
+                if(!hop.call(ctor,'bind')) Object.defineProperty(ctor,'bind',{{value:fp.bind,writable:true,configurable:true}});
+                if(!hop.call(ctor,'call')) Object.defineProperty(ctor,'call',{{value:fp.call,writable:true,configurable:true}});
+                if(!hop.call(ctor,'apply')) Object.defineProperty(ctor,'apply',{{value:fp.apply,writable:true,configurable:true}});
+                if(!hop.call(ctor,'toString')) Object.defineProperty(ctor,'toString',{{value:function(){{return 'function {name_rust}() {{ [native code] }}'}},writable:true,configurable:true}});
+            }})(this)"#,
+        );
+        // We need a temporary reference to the constructor.  Store it
+        // as a global, eval the copy script with `this` = ctor, clean up.
+        let ctor_key = JscString::from_rust("__fw_ctor_copy");
+        let mut exc: *mut JSValueRef = std::ptr::null_mut();
+        unsafe {
+            JSObjectSetProperty(
+                ctx,
+                JSContextGetGlobalObject(ctx),
+                ctor_key.raw,
+                raw_obj as *mut JSValueRef,
+                kJSPropertyAttributeNone,
+                &mut exc,
+            );
+        }
+        if exc.is_null() {
+            let script = JscString::from_rust(&copy_script);
+            let mut eval_exc: *mut JSValueRef = std::ptr::null_mut();
+            unsafe {
+                JSEvaluateScript(
+                    ctx,
+                    script.raw,
+                    raw_obj,
+                    std::ptr::null_mut(),
+                    0,
+                    &mut eval_exc,
+                );
+            }
+            let mut cleanup_exc: *mut JSValueRef = std::ptr::null_mut();
+            unsafe {
+                JSObjectDeleteProperty(
+                    ctx,
+                    JSContextGetGlobalObject(ctx),
+                    ctor_key.raw,
+                    &mut cleanup_exc,
+                );
+            }
+        }
         JscObject { raw: raw_obj, ctx }
     } else {
         // Non-constructor: use JSObjectMakeFunctionWithCallback.

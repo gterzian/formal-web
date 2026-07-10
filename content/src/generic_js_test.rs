@@ -3182,4 +3182,197 @@ mod tests {
         let count = engine.to_number(result).unwrap();
         assert!((count - 1.0).abs() < 0.001, "expected count=1, got {count}");
     }
+
+    /// Verify that `instanceof` works for platform objects on JSC.
+    /// The `hasInstance` callback on BUILTIN_CONSTRUCTOR_CLASS walks the
+    /// prototype chain to check against constructor.prototype.
+    #[cfg(not(feature = "boa"))]
+    #[test]
+    fn instanceof_works_for_platform_object_on_jsc() {
+        let mut engine = setup();
+        let realm = engine.current_realm();
+        let _intrinsics = engine.realm_intrinsics(&realm);
+
+        // Register TestWidget interface (creates constructor + prototype).
+        use crate::webidl::bindings::{initialize_registry, register_interface_spec};
+        initialize_registry(&mut engine);
+        register_interface_spec::<TestTypes, TestWidget, _>(&mut engine).ok();
+
+        // Create an instance via create_interface_instance.
+        let mut widget = TestWidget::new();
+        widget.title = "InstanceOfTest".into();
+        let obj = crate::webidl::bindings::create_interface_instance::<TestTypes, TestWidget>(
+            widget,
+            &mut engine,
+        )
+        .unwrap();
+        let js_obj = TestTypes::value_from_object(obj);
+
+        // Store the object on the global so JS eval can access it.
+        let global = engine.global_object();
+        engine
+            .set(
+                global.clone(),
+                engine.property_key_from_str("__fw_instanceof_test_obj"),
+                js_obj,
+                true,
+            )
+            .unwrap();
+
+        // Test instanceof via JS eval.
+        let result = JsEngine::evaluate_script(
+            &mut engine,
+            "__fw_instanceof_test_obj instanceof TestWidget",
+            &realm,
+        )
+        .unwrap();
+        assert!(
+            engine.to_boolean(&result),
+            "instanceof TestWidget should return true"
+        );
+
+        // Test that unrelated constructor returns false.
+        let result = JsEngine::evaluate_script(
+            &mut engine,
+            "__fw_instanceof_test_obj instanceof Object",
+            &realm,
+        )
+        .unwrap();
+        assert!(
+            engine.to_boolean(&result),
+            "instanceof Object should return true"
+        );
+
+        // Test that non-object returns false.
+        let result = JsEngine::evaluate_script(
+            &mut engine,
+            "var __fw_not_an_instance = {}; __fw_not_an_instance instanceof TestWidget",
+            &realm,
+        )
+        .unwrap();
+        assert!(
+            !engine.to_boolean(&result),
+            "plain object instanceof TestWidget should return false"
+        );
+    }
+
+    /// Verify that builtin constructor functions have Function.prototype
+    /// methods (bind, call, apply) on JSC.  These are copied during
+    /// `make_builtin_function` because JSObjectSetPrototype crashes on
+    /// objects with callAsConstructor callbacks on macOS 26.
+    #[cfg(not(feature = "boa"))]
+    #[test]
+    fn constructor_has_function_prototype_methods_on_jsc() {
+        let mut engine = setup();
+        let realm = engine.current_realm();
+        let intrinsics = engine.realm_intrinsics(&realm);
+
+        // Register TestWidget (creates constructor via register_interface_spec).
+        use crate::webidl::bindings::{initialize_registry, register_interface_spec};
+        initialize_registry(&mut engine);
+        register_interface_spec::<TestTypes, TestWidget, _>(&mut engine).ok();
+
+        // Test that .bind exists on the constructor.
+        let result =
+            JsEngine::evaluate_script(&mut engine, "typeof TestWidget.bind === 'function'", &realm)
+                .unwrap();
+        assert!(
+            engine.to_boolean(&result),
+            "TestWidget.bind should be a function"
+        );
+
+        // Test that .call exists on the constructor.
+        let result =
+            JsEngine::evaluate_script(&mut engine, "typeof TestWidget.call === 'function'", &realm)
+                .unwrap();
+        assert!(
+            engine.to_boolean(&result),
+            "TestWidget.call should be a function"
+        );
+
+        // Test that .apply exists on the constructor.
+        let result = JsEngine::evaluate_script(
+            &mut engine,
+            "typeof TestWidget.apply === 'function'",
+            &realm,
+        )
+        .unwrap();
+        assert!(
+            engine.to_boolean(&result),
+            "TestWidget.apply should be a function"
+        );
+
+        // Test that .toString exists by checking its type (it's copied from
+        // Function.prototype during constructor creation).
+        let result =
+            JsEngine::evaluate_script(&mut engine, "typeof TestWidget.toString", &realm).unwrap();
+        let type_str = engine.to_rust_string(result).unwrap();
+        assert_eq!(
+            type_str, "function",
+            "TestWidget.toString should be a function, got: {type_str}"
+        );
+
+        // Check toString() output contains the function name.
+        let result =
+            JsEngine::evaluate_script(&mut engine, "TestWidget.toString()", &realm).unwrap();
+        let str = engine.to_rust_string(result).unwrap();
+        assert!(
+            str.contains("function TestWidget"),
+            "TestWidget.toString() should return a function source string, got: {str}"
+        );
+
+        // Test that .call exists and is callable (doesn't throw).
+        let result =
+            JsEngine::evaluate_script(&mut engine, "typeof TestWidget.call === 'function'", &realm)
+                .unwrap();
+        assert!(
+            engine.to_boolean(&result),
+            "TestWidget.call should be callable"
+        );
+
+        // Test that .call can be invoked without crash (the constructor may or
+        // may not throw depending on how JSC handles null this, but must not
+        // cause SIGBUS/SIGABRT).
+        let result = JsEngine::evaluate_script(
+            &mut engine,
+            r#"
+                try {
+                    TestWidget.call(null);
+                    'completed-no-crash';
+                } catch(e) {
+                    'error-caught-no-crash';
+                }
+            "#,
+            &realm,
+        )
+        .unwrap();
+        let msg = engine.to_rust_string(result).unwrap();
+        // Accept either completion (no crash is the actual requirement).
+        assert!(
+            msg == "completed-no-crash" || msg == "error-caught-no-crash",
+            "TestWidget.call(null) should not crash, got: {msg}"
+        );
+
+        // Test that Object.keys or hasOwnProperty works (no crash from
+        // Object.defineProperty on constructor during registration).
+        let result =
+            JsEngine::evaluate_script(&mut engine, "Object.keys(TestWidget).length >= 1", &realm)
+                .unwrap();
+        assert!(
+            engine.to_boolean(&result),
+            "TestWidget should have at least one own property (prototype)"
+        );
+
+        // Test intrinsics constructors have Function.prototype methods.
+        let result = JsEngine::evaluate_script(
+            &mut engine,
+            "typeof Function.prototype.bind === 'function' && typeof Function.prototype.call === 'function'",
+            &realm,
+        )
+        .unwrap();
+        assert!(
+            engine.to_boolean(&result),
+            "Function.prototype methods should exist"
+        );
+    }
 }

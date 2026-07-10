@@ -403,23 +403,33 @@ cargo test -p content generic_js_test                                          #
 
 ### Remaining JSC limitations
 
-**Function.prototype inheritance (macOS 26)** – PARTIALLY FIXED (2026-07-10)
+**Function.prototype inheritance (macOS 26)** – FIXED (2026-07-10)
 `JSObjectSetPrototype` crashes on `JSObjectMake`-created objects with
 `callAsFunction`/`callAsConstructor` callbacks.  Non-constructor builtin
-functions now use `JSObjectMakeFunctionWithCallback` instead of a custom
-JSClass, which creates real JSC functions with full Function.prototype
-inheritance (`.bind()`, `.call()`, `.apply()` work).  Constructor
-builtin functions (interface constructors) still use the custom JSClass
-approach and lack Function.prototype methods, which is acceptable
-because constructors are typically called with `new` rather than
-`.bind()` in WPT tests.
+functions use `JSObjectMakeFunctionWithCallback` (real JSC functions with
+full Function.prototype inheritance).  Constructor functions use a custom
+JSClass with a `hasInstance` callback and `bind`/`call`/`apply`/`toString`
+copied from `Function.prototype`.
 
-Affects:
-- Constructor functions: `.bind()`, `.call()`, `.apply()` unavailable
+**Function.prototype methods on constructors:**
+Constructor functions have `.bind()`, `.call()`, `.apply()`, and
+`.toString()` copied from `Function.prototype` during construction in
+`make_builtin_function`.  Verified by unit test
+`constructor_has_function_prototype_methods_on_jsc`.
 
-Previously affected (now fixed for non-constructors):
+**`instanceof` for platform objects:**
+The `BUILTIN_CONSTRUCTOR_CLASS` includes a `hasInstance` callback
+(`builtin_has_instance`) that walks the instance's prototype chain and
+compares against the constructor's `.prototype` property.  This makes
+`x instanceof ReadableStream` work for instances created via
+`create_interface_instance`.  Verified by unit test
+`instanceof_works_for_platform_object_on_jsc`.
+
+Previously affected (now fixed for all builtins):
 - ✅ `c.enqueue.bind(c)` patterns in stream tests
 - ✅ `callback is not a function` errors (`Element-remove.html`)
+- ✅ `instanceof` checks for platform objects
+- ✅ Constructor `.bind()`, `.call()`, `.apply()`, `.toString()`
 
 **Microtask draining**
 `run_jobs` uses a cached `(function(){})` called via `JSObjectCallAsFunction`
@@ -941,6 +951,32 @@ function identity, and IDL harness setup.
   instances (most impactful fix for next session)
 - Constructor function Function.prototype inheritance
 - `instanceof Window` global prototype chain limitation
+
+### 2026-07-10 — JSC instanceof + constructor Function.prototype methods
+
+**Files changed:**
+- `js_engine/src/jsc/engine.rs` — Added `builtin_has_instance` callback for
+  `BUILTIN_CONSTRUCTOR_CLASS` (walks instance prototype chain for `instanceof`);
+  updated `make_builtin_function` to copy `bind`/`call`/`apply`/`toString` from
+  `Function.prototype` onto constructor objects (with `hasOwnProperty` guard
+  to avoid skipping due to inherited `Object.prototype` methods).
+- `content/src/generic_js_test.rs` — Added two new JSC tests:
+  - `instanceof_works_for_platform_object_on_jsc` — verifies that `x instanceof
+    TestWidget` returns true for instances created via `create_interface_instance`
+  - `constructor_has_function_prototype_methods_on_jsc` — verifies that constructors
+    have `.bind()`, `.call()`, `.apply()`, `.toString()` from Function.prototype
+- `js_engine/README.md` — Updated remaining JSC limitations section and added
+  this session log.
+
+**What was confirmed:**
+- `instanceof` now works for platform objects on JSC (92/92 tests pass).
+- Constructor functions have Function.prototype methods (bind, call, apply, toString).
+- The `hasOwnProperty` guard in the copy script prevents false positives from
+  inherited `Object.prototype` methods.
+
+**Test results:**
+- JSC: 92 passed, 0 failed (up from 90)
+- Boa: 91 passed, 0 failed (unchanged)
 
 ### 2026-07-10 — JSC `callAsConstructor` ABI fix and Drop order fix
 

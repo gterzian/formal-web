@@ -226,7 +226,8 @@ fn setup_realm(engine: &mut Engine, document: Rc<RefCell<BaseDocument>>) -> Resu
             .into();
 
         // values descriptor
-        let values_value = <crate::js::Types as js_engine::JsTypes>::value_from_object(values_fn.clone());
+        let values_value =
+            <crate::js::Types as js_engine::JsTypes>::value_from_object(values_fn.clone());
         let values_desc = js_engine::records::PropertyDescriptor::<crate::js::Types> {
             value: Some(values_value),
             writable: Some(true),
@@ -252,14 +253,11 @@ fn setup_realm(engine: &mut Engine, document: Rc<RefCell<BaseDocument>>) -> Resu
             get: None,
             set: None,
         };
-        let _ = engine.define_property_or_throw(
-            rs_proto,
-            async_iter_key,
-            async_iter_desc,
-        );
+        let _ = engine.define_property_or_throw(rs_proto, async_iter_key, async_iter_desc);
 
         // __formalWebReadableStreamPipeToNative (native backstop)
-        let native_value = <crate::js::Types as js_engine::JsTypes>::value_from_object(pipe_to_native_fn.clone());
+        let native_value =
+            <crate::js::Types as js_engine::JsTypes>::value_from_object(pipe_to_native_fn.clone());
         let native_desc = js_engine::records::PropertyDescriptor::<crate::js::Types> {
             value: Some(native_value),
             writable: Some(true),
@@ -277,8 +275,11 @@ fn setup_realm(engine: &mut Engine, document: Rc<RefCell<BaseDocument>>) -> Resu
         // pipeTo: JS wrapper that calls the native backstop.
         let wrapper_source = "(function pipeTo(dest, opts) { return this.__formalWebReadableStreamPipeToNative(dest, opts); })";
         if let Ok(wrapper_val) = engine.evaluate_script(wrapper_source) {
-            if let Some(wrapper_obj) = <crate::js::Types as js_engine::JsTypes>::value_as_object(&wrapper_val) {
-                let pipe_value = <crate::js::Types as js_engine::JsTypes>::value_from_object(wrapper_obj);
+            if let Some(wrapper_obj) =
+                <crate::js::Types as js_engine::JsTypes>::value_as_object(&wrapper_val)
+            {
+                let pipe_value =
+                    <crate::js::Types as js_engine::JsTypes>::value_from_object(wrapper_obj);
                 let pipe_to_desc = js_engine::records::PropertyDescriptor::<crate::js::Types> {
                     value: Some(pipe_value),
                     writable: Some(true),
