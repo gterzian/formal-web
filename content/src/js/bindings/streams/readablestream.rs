@@ -1,5 +1,3 @@
-use std::marker::PhantomData;
-
 use js_engine::{Completion, ExecutionContext, JsTypes};
 
 use crate::js::Types;
@@ -34,8 +32,6 @@ impl WebIdlInterface<Types> for ReadableStream {
 
     fn define_members(def: &mut InterfaceDefinition<Types>) {
         def.add_attribute(AttributeDef {
-            _phantom: PhantomData,
-
             id: "locked",
             getter: get_locked,
             setter: None,
@@ -48,8 +44,6 @@ impl WebIdlInterface<Types> for ReadableStream {
             legacy_lenient_setter: false,
         });
         def.add_operation(OperationDef {
-            _phantom: PhantomData,
-
             id: "pipeThrough",
             length: 2,
             method: pipe_through_method,
@@ -58,8 +52,6 @@ impl WebIdlInterface<Types> for ReadableStream {
             promise_type: false,
         });
         def.add_operation(OperationDef {
-            _phantom: PhantomData,
-
             id: "cancel",
             length: 1,
             method: cancel_method,
@@ -68,8 +60,6 @@ impl WebIdlInterface<Types> for ReadableStream {
             promise_type: false,
         });
         def.add_operation(OperationDef {
-            _phantom: PhantomData,
-
             id: "getReader",
             length: 1,
             method: get_reader_method,
@@ -78,8 +68,6 @@ impl WebIdlInterface<Types> for ReadableStream {
             promise_type: false,
         });
         def.add_operation(OperationDef {
-            _phantom: PhantomData,
-
             id: "tee",
             length: 0,
             method: tee_method,
@@ -89,8 +77,6 @@ impl WebIdlInterface<Types> for ReadableStream {
         });
         // https://streams.spec.whatwg.org/#readablestream-static-methods
         def.add_operation(OperationDef {
-            _phantom: PhantomData,
-
             id: "from",
             length: 1,
             method: from_static,
@@ -106,8 +92,6 @@ impl WebIdlInterface<Types> for ReadableStreamDefaultController {
 
     fn define_members(def: &mut InterfaceDefinition<Types>) {
         def.add_attribute(AttributeDef {
-            _phantom: PhantomData,
-
             id: "desiredSize",
             getter: get_desired_size,
             setter: None,
@@ -120,8 +104,6 @@ impl WebIdlInterface<Types> for ReadableStreamDefaultController {
             legacy_lenient_setter: false,
         });
         def.add_operation(OperationDef {
-            _phantom: PhantomData,
-
             id: "close",
             length: 0,
             method: close_method,
@@ -130,8 +112,6 @@ impl WebIdlInterface<Types> for ReadableStreamDefaultController {
             promise_type: false,
         });
         def.add_operation(OperationDef {
-            _phantom: PhantomData,
-
             id: "enqueue",
             length: 1,
             method: enqueue_method,
@@ -140,8 +120,6 @@ impl WebIdlInterface<Types> for ReadableStreamDefaultController {
             promise_type: false,
         });
         def.add_operation(OperationDef {
-            _phantom: PhantomData,
-
             id: "error",
             length: 1,
             method: error_method,
@@ -157,8 +135,6 @@ impl WebIdlInterface<Types> for ReadableByteStreamController {
 
     fn define_members(def: &mut InterfaceDefinition<Types>) {
         def.add_attribute(AttributeDef {
-            _phantom: PhantomData,
-
             id: "byobRequest",
             getter: get_byob_request,
             setter: None,
@@ -171,8 +147,6 @@ impl WebIdlInterface<Types> for ReadableByteStreamController {
             legacy_lenient_setter: false,
         });
         def.add_attribute(AttributeDef {
-            _phantom: PhantomData,
-
             id: "desiredSize",
             getter: get_byte_desired_size,
             setter: None,
@@ -185,8 +159,6 @@ impl WebIdlInterface<Types> for ReadableByteStreamController {
             legacy_lenient_setter: false,
         });
         def.add_operation(OperationDef {
-            _phantom: PhantomData,
-
             id: "close",
             length: 0,
             method: close_byte_method,
@@ -195,8 +167,6 @@ impl WebIdlInterface<Types> for ReadableByteStreamController {
             promise_type: false,
         });
         def.add_operation(OperationDef {
-            _phantom: PhantomData,
-
             id: "enqueue",
             length: 1,
             method: enqueue_byte_method,
@@ -205,8 +175,6 @@ impl WebIdlInterface<Types> for ReadableByteStreamController {
             promise_type: false,
         });
         def.add_operation(OperationDef {
-            _phantom: PhantomData,
-
             id: "error",
             length: 1,
             method: error_byte_method,
@@ -230,8 +198,6 @@ impl WebIdlInterface<Types> for ReadableStreamDefaultReader {
 
     fn define_members(def: &mut InterfaceDefinition<Types>) {
         def.add_attribute(AttributeDef {
-            _phantom: PhantomData,
-
             id: "closed",
             getter: get_closed,
             setter: None,
@@ -244,8 +210,6 @@ impl WebIdlInterface<Types> for ReadableStreamDefaultReader {
             legacy_lenient_setter: false,
         });
         def.add_operation(OperationDef {
-            _phantom: PhantomData,
-
             id: "cancel",
             length: 1,
             method: cancel_reader_method,
@@ -254,8 +218,6 @@ impl WebIdlInterface<Types> for ReadableStreamDefaultReader {
             promise_type: false,
         });
         def.add_operation(OperationDef {
-            _phantom: PhantomData,
-
             id: "read",
             length: 0,
             method: read_method,
@@ -264,8 +226,6 @@ impl WebIdlInterface<Types> for ReadableStreamDefaultReader {
             promise_type: false,
         });
         def.add_operation(OperationDef {
-            _phantom: PhantomData,
-
             id: "releaseLock",
             length: 0,
             method: release_lock_method,
@@ -289,8 +249,6 @@ impl WebIdlInterface<Types> for ReadableStreamBYOBReader {
 
     fn define_members(def: &mut InterfaceDefinition<Types>) {
         def.add_attribute(AttributeDef {
-            _phantom: PhantomData,
-
             id: "closed",
             getter: get_byob_closed,
             setter: None,
@@ -303,8 +261,6 @@ impl WebIdlInterface<Types> for ReadableStreamBYOBReader {
             legacy_lenient_setter: false,
         });
         def.add_operation(OperationDef {
-            _phantom: PhantomData,
-
             id: "cancel",
             length: 1,
             method: cancel_byob_reader_method,
@@ -313,8 +269,6 @@ impl WebIdlInterface<Types> for ReadableStreamBYOBReader {
             promise_type: false,
         });
         def.add_operation(OperationDef {
-            _phantom: PhantomData,
-
             id: "read",
             length: 2,
             method: read_byob_method,
@@ -323,8 +277,6 @@ impl WebIdlInterface<Types> for ReadableStreamBYOBReader {
             promise_type: false,
         });
         def.add_operation(OperationDef {
-            _phantom: PhantomData,
-
             id: "releaseLock",
             length: 0,
             method: release_byob_lock_method,
@@ -340,8 +292,6 @@ impl WebIdlInterface<Types> for ReadableStreamBYOBRequest {
 
     fn define_members(def: &mut InterfaceDefinition<Types>) {
         def.add_attribute(AttributeDef {
-            _phantom: PhantomData,
-
             id: "view",
             getter: get_byob_view,
             setter: None,
@@ -354,8 +304,6 @@ impl WebIdlInterface<Types> for ReadableStreamBYOBRequest {
             legacy_lenient_setter: false,
         });
         def.add_operation(OperationDef {
-            _phantom: PhantomData,
-
             id: "respond",
             length: 1,
             method: respond_method,
@@ -364,8 +312,6 @@ impl WebIdlInterface<Types> for ReadableStreamBYOBRequest {
             promise_type: false,
         });
         def.add_operation(OperationDef {
-            _phantom: PhantomData,
-
             id: "respondWithNewView",
             length: 1,
             method: respond_with_new_view_method,

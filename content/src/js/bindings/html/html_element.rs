@@ -1,5 +1,4 @@
 use std::collections::BTreeMap;
-use std::marker::PhantomData;
 
 type JsValue = <crate::js::Types as JsTypes>::JsValue;
 type JsObject = <crate::js::Types as JsTypes>::JsObject;
@@ -24,8 +23,6 @@ impl WebIdlInterface<crate::js::Types> for HTMLElement {
 
     fn define_members(def: &mut InterfaceDefinition<crate::js::Types>) {
         def.add_attribute(AttributeDef {
-            _phantom: PhantomData,
-
             id: "title",
             getter: get_title,
             setter: Some(set_title),
@@ -38,8 +35,6 @@ impl WebIdlInterface<crate::js::Types> for HTMLElement {
             legacy_lenient_setter: false,
         });
         def.add_attribute(AttributeDef {
-            _phantom: PhantomData,
-
             id: "lang",
             getter: get_lang,
             setter: Some(set_lang),
@@ -52,8 +47,6 @@ impl WebIdlInterface<crate::js::Types> for HTMLElement {
             legacy_lenient_setter: false,
         });
         def.add_attribute(AttributeDef {
-            _phantom: PhantomData,
-
             id: "dir",
             getter: get_dir,
             setter: Some(set_dir),
@@ -66,8 +59,6 @@ impl WebIdlInterface<crate::js::Types> for HTMLElement {
             legacy_lenient_setter: false,
         });
         def.add_attribute(AttributeDef {
-            _phantom: PhantomData,
-
             id: "hidden",
             getter: get_hidden,
             setter: Some(set_hidden),
@@ -80,8 +71,6 @@ impl WebIdlInterface<crate::js::Types> for HTMLElement {
             legacy_lenient_setter: false,
         });
         def.add_attribute(AttributeDef {
-            _phantom: PhantomData,
-
             id: "style",
             getter: get_style,
             setter: None,

@@ -1,5 +1,3 @@
-use std::marker::PhantomData;
-
 use crate::dom::{Event, UIEvent};
 type JsValue = <crate::js::Types as JsTypes>::JsValue;
 
@@ -64,8 +62,6 @@ impl WebIdlInterface<crate::js::Types> for UIEvent {
 
     fn define_members(def: &mut InterfaceDefinition<crate::js::Types>) {
         def.add_attribute(AttributeDef {
-            _phantom: PhantomData,
-
             id: "view",
             getter: get_view,
             setter: None,
@@ -78,8 +74,6 @@ impl WebIdlInterface<crate::js::Types> for UIEvent {
             legacy_lenient_setter: false,
         });
         def.add_attribute(AttributeDef {
-            _phantom: PhantomData,
-
             id: "detail",
             getter: get_detail,
             setter: None,

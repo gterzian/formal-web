@@ -1,7 +1,5 @@
 // ── HTMLVideoElement JS bindings ──
 
-use std::marker::PhantomData;
-
 type JsValue = <crate::js::Types as JsTypes>::JsValue;
 
 use crate::html::HTMLVideoElement;
@@ -41,8 +39,6 @@ impl WebIdlInterface<crate::js::Types> for HTMLVideoElement {
         }
 
         def.add_attribute(AttributeDef {
-            _phantom: PhantomData,
-
             id: "videoWidth",
             getter: get_video_width,
             setter: None,
@@ -55,8 +51,6 @@ impl WebIdlInterface<crate::js::Types> for HTMLVideoElement {
             legacy_lenient_setter: false,
         });
         def.add_attribute(AttributeDef {
-            _phantom: PhantomData,
-
             id: "videoHeight",
             getter: get_video_height,
             setter: None,
@@ -69,8 +63,6 @@ impl WebIdlInterface<crate::js::Types> for HTMLVideoElement {
             legacy_lenient_setter: false,
         });
         def.add_attribute(AttributeDef {
-            _phantom: PhantomData,
-
             id: "poster",
             getter: get_poster,
             setter: Some(set_poster),
@@ -83,8 +75,6 @@ impl WebIdlInterface<crate::js::Types> for HTMLVideoElement {
             legacy_lenient_setter: false,
         });
         def.add_attribute(AttributeDef {
-            _phantom: PhantomData,
-
             id: "playsInline",
             getter: get_plays_inline,
             setter: Some(set_plays_inline),
@@ -97,8 +87,6 @@ impl WebIdlInterface<crate::js::Types> for HTMLVideoElement {
             legacy_lenient_setter: false,
         });
         def.add_attribute(AttributeDef {
-            _phantom: PhantomData,
-
             id: "width",
             getter: get_width,
             setter: Some(set_width),
@@ -111,8 +99,6 @@ impl WebIdlInterface<crate::js::Types> for HTMLVideoElement {
             legacy_lenient_setter: false,
         });
         def.add_attribute(AttributeDef {
-            _phantom: PhantomData,
-
             id: "height",
             getter: get_height,
             setter: Some(set_height),

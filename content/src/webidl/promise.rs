@@ -29,16 +29,6 @@ type JsObject = <Types as JsTypes>::JsObject;
 /// - `promise_from_value` → § js-to-promise
 /// - `transform_promise_to_undefined` → § dfn-perform-steps-once-promise-is-settled
 
-/// <https://webidl.spec.whatwg.org/#a-new-promise>
-pub(crate) fn a_new_promise(
-    ec: &mut dyn ExecutionContext<Types>,
-) -> Completion<(JsObject, js_engine::PromiseResolvers<Types>), Types> {
-    let (promise, resolvers) = ec.new_promise_pending()?;
-    let promise_obj =
-        <Types as JsTypes>::value_as_object(&promise).unwrap_or_else(|| ec.realm_global_object());
-    Ok((promise_obj, resolvers))
-}
-
 /// <https://webidl.spec.whatwg.org/#a-promise-resolved-with>
 pub(crate) fn resolved_promise(
     value: JsValue,
@@ -109,16 +99,6 @@ pub(crate) fn rejected_promise_from_error(
     rejected_promise(error, ec).unwrap_or_else(|_| ec.realm_global_object())
 }
 
-/// <https://webidl.spec.whatwg.org/#a-promise-rejected-with>
-///
-/// Converts a `JsValue` error into a JS rejection reason (identity, already a value).
-pub(crate) fn error_to_rejection_reason(
-    error: JsValue,
-    _ec: &mut dyn ExecutionContext<Types>,
-) -> JsValue {
-    error
-}
-
 /// <https://webidl.spec.whatwg.org/#dfn-perform-steps-once-promise-is-settled>
 ///
 /// Chains a promise to return `undefined` when settled.  Implements the pattern:
@@ -169,31 +149,6 @@ pub(crate) fn mark_promise_as_handled(
 // code never reaches for NativeFunction::from_closure / to_js_function.
 // For the Boa backend the closure is registered via NativeFunction; for JSC
 // it would use the JSC callback API.
-
-/// <https://webidl.spec.whatwg.org/#upon-fulfillment>
-///
-/// Performs steps upon fulfillment of a promise.  Returns a new promise
-/// that resolves with the result of the steps.
-pub(crate) fn upon_fulfillment(
-    promise: JsObject,
-    on_fulfilled: Option<<Types as JsTypes>::Function>,
-    ec: &mut dyn ExecutionContext<Types>,
-) -> Completion<JsObject, Types> {
-    upon_settlement(promise, on_fulfilled, None, ec)
-}
-
-/// <https://webidl.spec.whatwg.org/#upon-rejection>
-///
-/// Performs steps upon rejection of a promise.  Returns a new promise
-/// that resolves with the result of the steps (or rejects if the steps
-/// return a rejected promise).
-pub(crate) fn upon_rejection(
-    promise: JsObject,
-    on_rejected: Option<<Types as JsTypes>::Function>,
-    ec: &mut dyn ExecutionContext<Types>,
-) -> Completion<JsObject, Types> {
-    upon_settlement(promise, None, on_rejected, ec)
-}
 
 /// <https://webidl.spec.whatwg.org/#react>
 ///
@@ -259,6 +214,9 @@ struct WaitAllState {
 ///
 /// Wait for all with a list of Promise<T> values, performing success steps
 /// (given a list of T values) or failure steps (given a rejection reason).
+///
+/// Note: Spec-complete but not yet wired to any domain call site.
+#[allow(dead_code)]
 pub(crate) fn wait_for_all<TSuccess, TFailure>(
     promises: Vec<JsObject>,
     success_steps: TSuccess,
@@ -421,6 +379,9 @@ where
 ///
 /// Creates a new Promise that resolves when all promises in the list have
 /// fulfilled, or rejects on the first rejection.
+///
+/// Note: Spec-complete but not yet wired to any domain call site.
+#[allow(dead_code)]
 pub(crate) fn wait_for_all_get_promise(
     promises: Vec<JsObject>,
     ec: &mut dyn ExecutionContext<Types>,

@@ -1,5 +1,3 @@
-use std::marker::PhantomData;
-
 use crate::dom::{
     AbortSignal, DOMException, create_abort_signal, initialize_dependent_abort_signal,
     signal_abort as dom_signal_abort,
@@ -21,7 +19,6 @@ use js_engine::{Completion, ExecutionContext, JsTypes};
 use crate::js::Types;
 
 type JsValue = <Types as JsTypes>::JsValue;
-type JsObject = <Types as JsTypes>::JsObject;
 
 // ── WebIDL interface definition (§3) ──
 
@@ -34,8 +31,6 @@ impl WebIdlInterface<Types> for AbortSignal {
 
     fn define_members(def: &mut InterfaceDefinition<Types>) {
         def.add_attribute(AttributeDef {
-            _phantom: PhantomData,
-
             id: "aborted",
             getter: get_aborted,
             setter: None,
@@ -48,8 +43,6 @@ impl WebIdlInterface<Types> for AbortSignal {
             legacy_lenient_setter: false,
         });
         def.add_attribute(AttributeDef {
-            _phantom: PhantomData,
-
             id: "reason",
             getter: get_reason,
             setter: None,
@@ -62,8 +55,6 @@ impl WebIdlInterface<Types> for AbortSignal {
             legacy_lenient_setter: false,
         });
         def.add_attribute(AttributeDef {
-            _phantom: PhantomData,
-
             id: "onabort",
             getter: get_onabort,
             setter: Some(set_onabort),
@@ -76,8 +67,6 @@ impl WebIdlInterface<Types> for AbortSignal {
             legacy_lenient_setter: false,
         });
         def.add_operation(OperationDef {
-            _phantom: PhantomData,
-
             id: "throwIfAborted",
             length: 0,
             method: throw_if_aborted,
@@ -87,8 +76,6 @@ impl WebIdlInterface<Types> for AbortSignal {
         });
         // https://dom.spec.whatwg.org/#AbortSignal-static-members
         def.add_operation(OperationDef {
-            _phantom: PhantomData,
-
             id: "abort",
             length: 1,
             method: abort_static,
@@ -97,8 +84,6 @@ impl WebIdlInterface<Types> for AbortSignal {
             promise_type: false,
         });
         def.add_operation(OperationDef {
-            _phantom: PhantomData,
-
             id: "timeout",
             length: 1,
             method: timeout_static,
@@ -107,8 +92,6 @@ impl WebIdlInterface<Types> for AbortSignal {
             promise_type: false,
         });
         def.add_operation(OperationDef {
-            _phantom: PhantomData,
-
             id: "any",
             length: 1,
             method: any_static,

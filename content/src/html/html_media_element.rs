@@ -216,6 +216,9 @@ impl HTMLMediaElement {
     }
 
     /// <https://html.spec.whatwg.org/#dom-media-error>
+    ///
+    /// Note: Spec-complete but not yet wired to the bindings layer.
+    #[allow(dead_code)]
     pub(crate) fn error(&self) -> Option<MediaError> {
         self.error.clone()
     }

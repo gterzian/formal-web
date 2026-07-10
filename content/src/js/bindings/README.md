@@ -143,7 +143,7 @@ Bindings (arg extraction + webidl conversion):
 Domain (algorithm):
   content/src/wasm/namespace.rs
   fn compile_fn(bytes: Vec<u8>, ec: &mut dyn ExecutionContext<T>) -> Completion<T::JsValue, T> {
-      let (promise, resolvers) = a_new_promise(ec); // webidl helper
+      let (promise, resolvers) = ec.new_promise_pending()?; // js_engine trait
       // ... push pending request, store resolvers ...
       Ok(T::Types::value_from_object(promise))
   }

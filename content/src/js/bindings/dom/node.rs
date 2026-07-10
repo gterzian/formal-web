@@ -1,4 +1,3 @@
-use std::marker::PhantomData;
 use std::rc::Rc;
 
 use blitz_dom::NodeData;
@@ -50,8 +49,6 @@ impl WebIdlInterface<crate::js::Types> for Node {
         ));
         // §3.7.6: Regular attributes
         def.add_attribute(AttributeDef {
-            _phantom: PhantomData,
-
             id: "nodeType",
             getter: get_node_type,
             setter: None,
@@ -64,8 +61,6 @@ impl WebIdlInterface<crate::js::Types> for Node {
             legacy_lenient_setter: false,
         });
         def.add_attribute(AttributeDef {
-            _phantom: PhantomData,
-
             id: "ownerDocument",
             getter: get_owner_document,
             setter: None,
@@ -78,8 +73,6 @@ impl WebIdlInterface<crate::js::Types> for Node {
             legacy_lenient_setter: false,
         });
         def.add_attribute(AttributeDef {
-            _phantom: PhantomData,
-
             id: "parentNode",
             getter: get_parent_node,
             setter: None,
@@ -92,8 +85,6 @@ impl WebIdlInterface<crate::js::Types> for Node {
             legacy_lenient_setter: false,
         });
         def.add_attribute(AttributeDef {
-            _phantom: PhantomData,
-
             id: "childNodes",
             getter: get_child_nodes,
             setter: None,
@@ -106,8 +97,6 @@ impl WebIdlInterface<crate::js::Types> for Node {
             legacy_lenient_setter: false,
         });
         def.add_attribute(AttributeDef {
-            _phantom: PhantomData,
-
             id: "firstChild",
             getter: get_first_child,
             setter: None,
@@ -120,8 +109,6 @@ impl WebIdlInterface<crate::js::Types> for Node {
             legacy_lenient_setter: false,
         });
         def.add_attribute(AttributeDef {
-            _phantom: PhantomData,
-
             id: "lastChild",
             getter: get_last_child,
             setter: None,
@@ -134,8 +121,6 @@ impl WebIdlInterface<crate::js::Types> for Node {
             legacy_lenient_setter: false,
         });
         def.add_attribute(AttributeDef {
-            _phantom: PhantomData,
-
             id: "previousSibling",
             getter: get_previous_sibling,
             setter: None,
@@ -148,8 +133,6 @@ impl WebIdlInterface<crate::js::Types> for Node {
             legacy_lenient_setter: false,
         });
         def.add_attribute(AttributeDef {
-            _phantom: PhantomData,
-
             id: "nextSibling",
             getter: get_next_sibling,
             setter: None,
@@ -162,8 +145,6 @@ impl WebIdlInterface<crate::js::Types> for Node {
             legacy_lenient_setter: false,
         });
         def.add_attribute(AttributeDef {
-            _phantom: PhantomData,
-
             id: "nodeName",
             getter: get_node_name,
             setter: None,
@@ -176,8 +157,6 @@ impl WebIdlInterface<crate::js::Types> for Node {
             legacy_lenient_setter: false,
         });
         def.add_attribute(AttributeDef {
-            _phantom: PhantomData,
-
             id: "nodeValue",
             getter: get_node_value,
             setter: Some(set_node_value),
@@ -190,8 +169,6 @@ impl WebIdlInterface<crate::js::Types> for Node {
             legacy_lenient_setter: false,
         });
         def.add_attribute(AttributeDef {
-            _phantom: PhantomData,
-
             id: "textContent",
             getter: get_text_content,
             setter: Some(set_text_content),
@@ -206,8 +183,6 @@ impl WebIdlInterface<crate::js::Types> for Node {
 
         // §3.7.7: Regular operations
         def.add_operation(OperationDef {
-            _phantom: PhantomData,
-
             id: "hasChildNodes",
             length: 0,
             method: has_child_nodes,
@@ -216,8 +191,6 @@ impl WebIdlInterface<crate::js::Types> for Node {
             promise_type: false,
         });
         def.add_operation(OperationDef {
-            _phantom: PhantomData,
-
             id: "appendChild",
             length: 1,
             method: append_child,
@@ -226,8 +199,6 @@ impl WebIdlInterface<crate::js::Types> for Node {
             promise_type: false,
         });
         def.add_operation(OperationDef {
-            _phantom: PhantomData,
-
             id: "insertBefore",
             length: 2,
             method: insert_before,
@@ -236,8 +207,6 @@ impl WebIdlInterface<crate::js::Types> for Node {
             promise_type: false,
         });
         def.add_operation(OperationDef {
-            _phantom: PhantomData,
-
             id: "removeChild",
             length: 1,
             method: remove_child,
@@ -246,8 +215,6 @@ impl WebIdlInterface<crate::js::Types> for Node {
             promise_type: false,
         });
         def.add_operation(OperationDef {
-            _phantom: PhantomData,
-
             id: "remove",
             length: 0,
             method: remove,

@@ -1,5 +1,3 @@
-use std::marker::PhantomData;
-
 use js_engine::{Completion, ExecutionContext, JsTypes};
 
 use crate::js::Types;
@@ -34,8 +32,6 @@ impl WebIdlInterface<Types> for ByteLengthQueuingStrategy {
 
     fn define_members(def: &mut InterfaceDefinition<Types>) {
         def.add_attribute(AttributeDef {
-            _phantom: PhantomData,
-
             id: "highWaterMark",
             getter: get_byte_length_high_water_mark,
             setter: None,
@@ -48,8 +44,6 @@ impl WebIdlInterface<Types> for ByteLengthQueuingStrategy {
             legacy_lenient_setter: false,
         });
         def.add_attribute(AttributeDef {
-            _phantom: PhantomData,
-
             id: "size",
             getter: get_byte_length_size,
             setter: None,
@@ -85,8 +79,6 @@ impl WebIdlInterface<Types> for CountQueuingStrategy {
 
     fn define_members(def: &mut InterfaceDefinition<Types>) {
         def.add_attribute(AttributeDef {
-            _phantom: PhantomData,
-
             id: "highWaterMark",
             getter: get_count_high_water_mark,
             setter: None,
@@ -99,8 +91,6 @@ impl WebIdlInterface<Types> for CountQueuingStrategy {
             legacy_lenient_setter: false,
         });
         def.add_attribute(AttributeDef {
-            _phantom: PhantomData,
-
             id: "size",
             getter: get_count_size,
             setter: None,

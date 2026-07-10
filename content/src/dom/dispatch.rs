@@ -13,7 +13,6 @@ use super::event::{EventListener, NONE};
 use super::{BUBBLING_PHASE, CAPTURING_PHASE, Document, Element, Event, Node};
 
 type JsObject = <Types as JsTypes>::JsObject;
-type JsValue = <Types as JsTypes>::JsValue;
 
 fn dispatch_debug_enabled() -> bool {
     std::env::var_os("FORMAL_WEB_DEBUG_INPUT").is_some()

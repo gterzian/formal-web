@@ -1,29 +1,176 @@
 # content/src/webidl
 
 `content/src/webidl` implements the algorithms defined in Web IDL §3
-(JavaScript binding): type conversion between IDL and JavaScript values,
-promise manipulation ("react", "a new promise", "upon fulfillment"),
-and the binding infrastructure for exposing Web IDL interfaces to JS.
+(JavaScript binding).  It has two distinct roles:
 
-**Architecture:** This layer sits between domain code (streams, HTML, DOM)
-and the generic `js_engine` trait.  When a spec algorithm calls Web IDL —
-for type conversion, callback invocation, or promise reaction — domain code
-routes through here.  When a spec algorithm calls ECMA-262 directly (e.g.
-realm creation in HTML §8.1.3.3), domain code calls `js_engine` directly,
-bypassing this layer.  See `js_engine/README.md` for the full design
-philosophy.
+1. **Domain-facing capabilities** — wrappers around JS operations used by
+   other web standards (Streams, HTML, DOM): promise creation, promise
+   reaction, type conversion, callback invocation.  These live at the
+   `content/src/webidl/` top level (`promise.rs`, `callback.rs`, `buffer_source.rs`).
+
+2. **JS binding infrastructure** — implements the Web IDL §3 algorithms
+   for exposing platform objects to JavaScript: interface object creation,
+   attribute/operation/constant definition, namespace registration.
+   These live in `content/src/webidl/bindings/` and are the generic infra
+   that `content/src/js/bindings/` calls into.
+
+**Architecture:**
 
 ```
-Web spec  →  content/src/webidl/  →  js_engine trait
-(Streams,   (invoke_callback_fn,     (Get, IsCallable,
- HTML, DOM)  call_user_obj_op)        Call, ToNumber, …)
+Domain code  →  content/src/webidl/  →  js_engine trait
+(Streams,     (promise helpers,       (new_promise_pending,
+ HTML, DOM)    callback, buf source)   perform_promise_then,
+                                        create_builtin_fn, …)
+
+Bindings      →  content/src/webidl/bindings/  →  js_engine trait
+(Window,       (register_interface_spec,         (create_builtin_fn,
+ Event,         AttributeDef, OperationDef)        define_property_or_throw,
+ ReadableStream)                                   create_object_with_any, …)
 ```
 
-- Callback-interface conversion, `call a user object's operation`, and promise helpers belong here.
-- This layer depends on abstract `EcmascriptHost<T>` hooks (`get`, `is_callable`, `call`) from `js_engine` — no engine-specific context APIs.
-- DOM event dispatch and other callback sites call into this layer instead of calling Boa directly.
-- Promise helpers follow the Web IDL promise algorithms (`#js-promise-manipulation`, `#a-promise-resolved-with`, `#a-promise-rejected-with`, `#js-to-promise`).
-- Use the `web_standards` extension (`spec_lookup`) with `https://webidl.spec.whatwg.org/` to read the Web IDL spec.
+Every call through this layer ends up at abstract `js_engine` trait methods
+(`ExecutionContext<T>`, `JsEngine<T’>`) — no engine-specific APIs leak above.
+
+## Domain-facing capabilities
+
+### Promise manipulation
+
+`promise.rs` implements the Web IDL promise algorithms:
+
+- `https://webidl.spec.whatwg.org/#a-promise-resolved-with` — `resolved_promise()`
+- `https://webidl.spec.whatwg.org/#a-promise-rejected-with` — `rejected_promise()`
+- `https://webidl.spec.whatwg.org/#js-to-promise` — `promise_from_value()`
+- `https://webidl.spec.whatwg.org/#dfn-perform-steps-once-promise-is-settled` — `transform_promise_to_undefined()`
+- `https://webidl.spec.whatwg.org/#mark-a-promise-as-handled` — `mark_promise_as_handled()`
+- `https://webidl.spec.whatwg.org/#react` — `upon_settlement()`
+
+These are called by domain code in Streams, HTML, and DOM.  Each follows
+its spec algorithm with `// Step N:` comments and uses only the
+`ExecutionContext<T>` trait — no engine-specific APIs.
+
+**Removed functions:** `a_new_promise()` was removed during the generic JS
+migration — callers now use `ec.new_promise_pending()` directly.
+`wait_for_all()` and `wait_for_all_get_promise()` are spec-complete but
+not yet wired to any domain call site (kept with `#[allow(dead_code)]`).
+
+### Callback invocation
+
+`callback.rs` implements:
+- `https://webidl.spec.whatwg.org/#call-a-user-objects-operation` — `call_user_objects_operation()`
+- `https://webidl.spec.whatwg.org/#invoke-a-callback-function` — `invoke_callback_function()`
+- `https://webidl.spec.whatwg.org/#dfn-callback-interface` — `callback_interface_type_value()`
+- `https://webidl.spec.whatwg.org/#dfn-callback-type` — `callback_function_value()`
+
+These are used by DOM event dispatch and other algorithm callbacks.
+
+## JS binding infrastructure (`bindings/`)
+
+`content/src/webidl/bindings/` implements the algorithms from Web IDL §3
+JavaScript binding.  It provides generic traits — NOT domain-specific — that
+the bindings layer (`content/src/js/bindings/`) calls into.
+
+| Module | Spec section | Purpose |
+|---|---|---|
+| `interface.rs` | [#js-interfaces](https://webidl.spec.whatwg.org/#js-interfaces) | `WebIdlInterface`, `WebIdlNamespace` traits, `register_interface_spec`, `register_namespace_spec`, `create_interface_instance` |
+| `attribute.rs` | [#js-attributes](https://webidl.spec.whatwg.org/#js-attributes) | `AttributeDef`, `define_regular_attributes`, `define_static_attributes` |
+| `operation.rs` | [#js-operations](https://webidl.spec.whatwg.org/#js-operations) | `OperationDef`, `define_regular_operations`, `define_static_operations` |
+| `constant.rs` | [#js-constants](https://webidl.spec.whatwg.org/#js-constants) | `ConstantDef`, `define_constants` |
+| `registry.rs` | — (domain registry) | `InterfaceRegistry`, `register_in_host_defined`, `wire_prototype` |
+
+### Spec compliance: `register_interface_spec`
+
+`register_interface_spec` implements <https://webidl.spec.whatwg.org/#create-an-interface-object>.
+
+**Followed:**
+- Step 10: Creates a built-in function with `create_builtin_function(steps, length, id, constructor=true)`
+- Step 11: Creates an interface prototype object and defines regular attributes/operations on it
+- Step 12: Sets `F.prototype` to the prototype object with `[[Writable]]: false, [[Enumerable]]: false, [[Configurable]]: false`
+- Step 13-15: Defines constants, static attributes, and static operations on F
+- Step 16: Installs F on the global object (or legacy namespace)
+
+**Gaps:**
+| Step | Status |
+|---|---|
+| Step 3: constructorProto inheritance from parent interface | Not wired — parent constructorProto falls back to `%Function.prototype%`. Prototype chain wiring is done explicitly in `host_hooks.rs` via `wire_registry_prototype`. |
+| Steps 4-7: `[[Unforgeables]]` slot | Not implemented. Unforgeable attributes/operations are handled by `configurable: false` on the descriptor but not stored on a shared `[[Unforgeables]]` object. |
+| Step 1.1-1.7: Overloaded constructor resolution | Not implemented — only single-argument constructors. Overload resolution is deferred. |
+
+### Spec compliance: Attributes
+
+`define_regular_attributes` / `define_static_attributes` / `define_attributes_on_target`
+implements the attribute getter/setter creation algorithm from
+<https://webidl.spec.whatwg.org/#define-the-attributes>.
+
+**Followed:**
+- Property descriptor: `{get: getter, set: setter, enumerable: true, configurable: configurable}`
+  where `configurable` is `false` for unforgeable attributes
+- Getter/setter are created as built-in functions via `create_builtin_fn`
+
+**Gaps:**
+| Step | Status |
+|---|---|
+| Step 1.1: "If attr is not exposed in realm, then continue" | Not implemented — realm-based exposure checking is deferred. |
+| Step 1.8: Observable array type | Not implemented — observable array types are not yet supported. |
+| Attribute getter ([[LegacyLenientThis]] handling) | Delegated to the user-provided getter function rather than auto-generated by the binding infra. The `legacy_lenient_this` field exists on `AttributeDef` but is not used by the infra. |
+
+### Spec compliance: Operations
+
+`define_regular_operations` / `define_static_operations` / `define_operations_on_target`
+implements the operation function creation algorithm from
+<https://webidl.spec.whatwg.org/#define-the-operations>.
+
+**Followed:**
+- Property descriptor: `{value: method, writable: modifiable, enumerable: true, configurable: modifiable}`
+  where `modifiable` is `false` for unforgeable operations
+- Method is created as a built-in function via `create_builtin_fn` with the correct `length`
+
+**Gaps:**
+| Step | Status |
+|---|---|
+| Step 1.1: "If op is not exposed in realm, then continue" | Not implemented — realm-based exposure checking is deferred. |
+| Steps 2.1.1-2.1.5: `this`-value normalization, security check, overload resolution | Delegated to the user-provided method function. The spec algorithm for "creating an operation function" that wraps `this`-checking and security checks is not auto-generated. |
+
+### Spec compliance: Namespace objects
+
+`register_namespace_spec` implements
+<https://webidl.spec.whatwg.org/#create-a-namespace-object>.
+
+**Followed:** Creates a plain object with `%Object.prototype%`, defines regular
+attributes and operations on it, installs as a property on the global object.
+
+**Gaps:** Simple creation only — no namespace prototype handling or extended
+attribute support (e.g. `[Exposed]`).
+
+## Design decisions
+
+### `PhantomData<T>` removed
+
+The `AttributeDef`, `OperationDef`, and `ConstantDef` structs previously had
+`_phantom: PhantomData<T>` fields. These were unnecessary because `T` is
+already used through associated type projections (`T::JsValue`) and trait
+bounds (`ExecutionContext<T>`) in the struct fields. Removed during the
+generic JS migration (July 2026).
+
+### `this`-value checking is manual
+
+The Web IDL spec defines attribute getter/setter and operation function
+creation algorithms that wrap `this`-value normalization and security
+checks around the user-provided steps.  Our binding infra delegates this
+to the user-provided function pointer (e.g., `try_with_html_iframe_element_ref`
+in the binding functions).  This is a deliberate simplification: the
+binding infra would need to know the interface type to generate the
+`this`-checking code, which would require type-level dispatch or macros.
+
+The check looks like:
+```rust
+let obj = T::value_as_object(this).ok_or_else(|| ec.new_type_error("..."))?;
+if let Some(data) = ec.with_object_any(&obj) {
+    if let Some(domain_obj) = data.downcast_ref::<MyInterface>() {
+        return Ok(/* ... */);
+    }
+}
+Err(ec.new_type_error("receiver is not a MyInterface"))
+```
 
 ## Boa integration of [platform objects](https://webidl.spec.whatwg.org/#dfn-platform-object)
 

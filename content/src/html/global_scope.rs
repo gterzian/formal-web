@@ -264,6 +264,10 @@ pub struct GlobalScope {
     /// Stored as `Rc<dyn Any>` to keep the backend-agnostic abstraction.
     /// Uses `Rc` instead of `Box` because the JSC `#[gc_struct]` derive
     /// adds `#[derive(Clone)]`.
+    ///
+    /// Note: This field is only read on JSC (`#[cfg(not(boa_backend))]`), so
+    /// `#[allow(dead_code)]` suppresses the Boa-backend warning.
+    #[allow(dead_code)]
     #[ignore_trace]
     engine_context: Option<Rc<dyn core::any::Any + Send>>,
 
@@ -671,28 +675,6 @@ impl GlobalScope {
         }
     }
 
-    /// <https://html.spec.whatwg.org/#creating-a-new-browsing-context>
-    /// Content-process portion of "create a new browsing context and document".
-    /// The caller must store the returned `EnvironmentSettingsObject` in a
-    /// Rust container — if it is dropped the embedded `Context` is dropped
-    /// and the `JsObject` becomes a dangling pointer.
-    pub(crate) fn create_document(
-        &self,
-        new_traversable_id: NavigableId,
-        new_document_id: DocumentId,
-        _parent_traversable_id: Option<NavigableId>,
-        _top_level_traversable_id: NavigableId,
-    ) -> Result<
-        (
-            JsObject,
-            super::environment_settings_object::EnvironmentSettingsObject,
-            Rc<RefCell<BaseDocument>>,
-        ),
-        String,
-    > {
-        self.create_document_in_realm(new_traversable_id, new_document_id)
-    }
-
     /// Like `create_document`, but passes the stored engine context so the
     /// new realm shares the same JS context / GC heap on JSC.
     /// Used for `window.open` with opener (auxiliary BC).
@@ -775,6 +757,8 @@ impl GlobalScope {
     /// Store the engine context so new realms can share the same JS engine
     /// (same GC heap on JSC).  Called during engine setup, before any JS
     /// execution that might trigger `window.open`.
+    /// Note: Only used on JSC backend (Boa creates fresh contexts).
+    #[allow(dead_code)]
     pub(crate) fn set_engine_context(&mut self, context: Box<dyn core::any::Any + Send>) {
         self.engine_context = Some(Rc::from(context));
     }

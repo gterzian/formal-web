@@ -1,5 +1,3 @@
-use std::marker::PhantomData;
-
 type JsValue = <crate::js::Types as JsTypes>::JsValue;
 
 use crate::dom::DOMException;
@@ -28,7 +26,6 @@ impl WebIdlInterface<crate::js::Types> for Location {
 
     fn define_members(def: &mut InterfaceDefinition<crate::js::Types>) {
         def.add_attribute(AttributeDef {
-            _phantom: PhantomData,
             id: "href",
             getter: get_href,
             setter: Some(set_href),
@@ -41,7 +38,6 @@ impl WebIdlInterface<crate::js::Types> for Location {
             legacy_lenient_setter: false,
         });
         def.add_attribute(AttributeDef {
-            _phantom: PhantomData,
             id: "origin",
             getter: get_origin,
             setter: None,
@@ -54,7 +50,6 @@ impl WebIdlInterface<crate::js::Types> for Location {
             legacy_lenient_setter: false,
         });
         def.add_attribute(AttributeDef {
-            _phantom: PhantomData,
             id: "protocol",
             getter: get_protocol,
             setter: Some(set_protocol),
@@ -67,7 +62,6 @@ impl WebIdlInterface<crate::js::Types> for Location {
             legacy_lenient_setter: false,
         });
         def.add_attribute(AttributeDef {
-            _phantom: PhantomData,
             id: "host",
             getter: get_host,
             setter: Some(set_host),
@@ -80,7 +74,6 @@ impl WebIdlInterface<crate::js::Types> for Location {
             legacy_lenient_setter: false,
         });
         def.add_attribute(AttributeDef {
-            _phantom: PhantomData,
             id: "hostname",
             getter: get_hostname,
             setter: Some(set_hostname),
@@ -93,7 +86,6 @@ impl WebIdlInterface<crate::js::Types> for Location {
             legacy_lenient_setter: false,
         });
         def.add_attribute(AttributeDef {
-            _phantom: PhantomData,
             id: "port",
             getter: get_port,
             setter: Some(set_port),
@@ -106,7 +98,6 @@ impl WebIdlInterface<crate::js::Types> for Location {
             legacy_lenient_setter: false,
         });
         def.add_attribute(AttributeDef {
-            _phantom: PhantomData,
             id: "pathname",
             getter: get_pathname,
             setter: Some(set_pathname),
@@ -119,7 +110,6 @@ impl WebIdlInterface<crate::js::Types> for Location {
             legacy_lenient_setter: false,
         });
         def.add_attribute(AttributeDef {
-            _phantom: PhantomData,
             id: "search",
             getter: get_search,
             setter: Some(set_search),
@@ -132,7 +122,6 @@ impl WebIdlInterface<crate::js::Types> for Location {
             legacy_lenient_setter: false,
         });
         def.add_attribute(AttributeDef {
-            _phantom: PhantomData,
             id: "hash",
             getter: get_hash,
             setter: Some(set_hash),
@@ -145,7 +134,6 @@ impl WebIdlInterface<crate::js::Types> for Location {
             legacy_lenient_setter: false,
         });
         def.add_attribute(AttributeDef {
-            _phantom: PhantomData,
             id: "ancestorOrigins",
             getter: get_ancestor_origins,
             setter: None,
@@ -158,7 +146,6 @@ impl WebIdlInterface<crate::js::Types> for Location {
             legacy_lenient_setter: false,
         });
         def.add_operation(OperationDef {
-            _phantom: PhantomData,
             id: "assign",
             length: 1,
             method: assign_method,
@@ -167,7 +154,6 @@ impl WebIdlInterface<crate::js::Types> for Location {
             promise_type: false,
         });
         def.add_operation(OperationDef {
-            _phantom: PhantomData,
             id: "replace",
             length: 1,
             method: replace_method,
@@ -176,7 +162,6 @@ impl WebIdlInterface<crate::js::Types> for Location {
             promise_type: false,
         });
         def.add_operation(OperationDef {
-            _phantom: PhantomData,
             id: "reload",
             length: 0,
             method: reload_method,
@@ -185,7 +170,6 @@ impl WebIdlInterface<crate::js::Types> for Location {
             promise_type: false,
         });
         def.add_operation(OperationDef {
-            _phantom: PhantomData,
             id: "toString",
             length: 0,
             method: to_string_method,

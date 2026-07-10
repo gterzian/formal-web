@@ -2,9 +2,6 @@
 ///
 /// Bindings layer: defines which members the namespace exposes.
 /// All algorithm logic lives in `content/src/testutils/`.
-
-use std::marker::PhantomData;
-
 use crate::testutils::TestUtils;
 use crate::webidl::bindings::{
     InterfaceDefinition, OperationDef, WebIdlNamespace, register_namespace_spec,
@@ -20,8 +17,6 @@ impl WebIdlNamespace<crate::js::Types> for TestUtilsNamespace {
     fn define_members(def: &mut InterfaceDefinition<crate::js::Types>) {
         // <https://testutils.spec.whatwg.org/#dom-testutils-gc>
         def.add_operation(OperationDef {
-            _phantom: PhantomData,
-
             id: "gc",
             length: 0,
             method: gc_fn,

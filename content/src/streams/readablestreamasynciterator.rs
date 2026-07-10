@@ -12,7 +12,6 @@ use crate::js::Types;
 use super::{ReadableStream, ReadableStreamDefaultReader, ReadableStreamGenericReader};
 
 type JsValue = <Types as JsTypes>::JsValue;
-type JsObject = <Types as JsTypes>::JsObject;
 
 #[gc_struct]
 pub(crate) struct ReadableStreamAsyncIteratorState {

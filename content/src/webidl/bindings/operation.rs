@@ -1,5 +1,3 @@
-use std::marker::PhantomData;
-
 use js_engine::{
     Completion, ExecutionContext, JsEngine, JsTypes, JsTypesWithRealm, PropertyDescriptor,
 };
@@ -20,7 +18,6 @@ pub(crate) struct OperationDef<T: JsTypes> {
     pub static_: bool,
     pub unforgeable: bool,
     pub promise_type: bool,
-    pub _phantom: PhantomData<T>,
 }
 
 /// <https://webidl.spec.whatwg.org/#define-the-regular-operations>

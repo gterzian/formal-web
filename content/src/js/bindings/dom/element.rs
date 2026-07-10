@@ -1,5 +1,3 @@
-use std::marker::PhantomData;
-
 type JsValue = <crate::js::Types as JsTypes>::JsValue;
 
 use crate::dom::{DOMException, Element};
@@ -26,8 +24,6 @@ impl WebIdlInterface<crate::js::Types> for Element {
     fn define_members(def: &mut InterfaceDefinition<crate::js::Types>) {
         // §3.7.6: Regular attributes
         def.add_attribute(AttributeDef {
-            _phantom: PhantomData,
-
             id: "id",
             getter: get_id,
             setter: None,
@@ -40,8 +36,6 @@ impl WebIdlInterface<crate::js::Types> for Element {
             legacy_lenient_setter: false,
         });
         def.add_attribute(AttributeDef {
-            _phantom: PhantomData,
-
             id: "tagName",
             getter: get_tag_name,
             setter: None,
@@ -54,8 +48,6 @@ impl WebIdlInterface<crate::js::Types> for Element {
             legacy_lenient_setter: false,
         });
         def.add_attribute(AttributeDef {
-            _phantom: PhantomData,
-
             id: "innerHTML",
             getter: get_inner_html,
             setter: Some(set_inner_html),
@@ -68,8 +60,6 @@ impl WebIdlInterface<crate::js::Types> for Element {
             legacy_lenient_setter: false,
         });
         def.add_attribute(AttributeDef {
-            _phantom: PhantomData,
-
             id: "classList",
             getter: get_class_list,
             setter: None,
@@ -84,8 +74,6 @@ impl WebIdlInterface<crate::js::Types> for Element {
 
         // §3.7.7: Regular operations
         def.add_operation(OperationDef {
-            _phantom: PhantomData,
-
             id: "querySelector",
             length: 1,
             method: query_selector,
@@ -94,8 +82,6 @@ impl WebIdlInterface<crate::js::Types> for Element {
             promise_type: false,
         });
         def.add_operation(OperationDef {
-            _phantom: PhantomData,
-
             id: "querySelectorAll",
             length: 1,
             method: query_selector_all,
@@ -104,8 +90,6 @@ impl WebIdlInterface<crate::js::Types> for Element {
             promise_type: false,
         });
         def.add_operation(OperationDef {
-            _phantom: PhantomData,
-
             id: "insertAdjacentText",
             length: 2,
             method: insert_adjacent_text,
@@ -114,8 +98,6 @@ impl WebIdlInterface<crate::js::Types> for Element {
             promise_type: false,
         });
         def.add_operation(OperationDef {
-            _phantom: PhantomData,
-
             id: "setAttribute",
             length: 2,
             method: set_attribute,
@@ -124,8 +106,6 @@ impl WebIdlInterface<crate::js::Types> for Element {
             promise_type: false,
         });
         def.add_operation(OperationDef {
-            _phantom: PhantomData,
-
             id: "setAttributeNS",
             length: 3,
             method: set_attribute_ns,
@@ -134,8 +114,6 @@ impl WebIdlInterface<crate::js::Types> for Element {
             promise_type: false,
         });
         def.add_operation(OperationDef {
-            _phantom: PhantomData,
-
             id: "getAttribute",
             length: 1,
             method: get_attribute,
@@ -144,8 +122,6 @@ impl WebIdlInterface<crate::js::Types> for Element {
             promise_type: false,
         });
         def.add_operation(OperationDef {
-            _phantom: PhantomData,
-
             id: "hasAttribute",
             length: 1,
             method: has_attribute,
@@ -154,8 +130,6 @@ impl WebIdlInterface<crate::js::Types> for Element {
             promise_type: false,
         });
         def.add_operation(OperationDef {
-            _phantom: PhantomData,
-
             id: "removeAttribute",
             length: 1,
             method: remove_attribute,
@@ -164,8 +138,6 @@ impl WebIdlInterface<crate::js::Types> for Element {
             promise_type: false,
         });
         def.add_operation(OperationDef {
-            _phantom: PhantomData,
-
             id: "getBoundingClientRect",
             length: 0,
             method: get_bounding_client_rect,

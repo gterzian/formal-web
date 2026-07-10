@@ -514,34 +514,6 @@ fn create_exported_function_wrapper_boa(
 
 // ── Helpers ──
 
-fn get_wasm_module_prototype_boa(context: &mut Context) -> Option<JsObject> {
-    let ns = context
-        .global_object()
-        .get(js_string!("WebAssembly"), context)
-        .ok()?;
-    let ns_obj = ns.as_object()?;
-    let ctor = ns_obj.get(js_string!("Module"), context).ok()?;
-    let ctor_obj = ctor.as_object()?;
-    ctor_obj
-        .get(js_string!("prototype"), context)
-        .ok()
-        .and_then(|p| p.as_object().map(|o| o.clone()))
-}
-
-fn get_wasm_instance_prototype_boa(context: &mut Context) -> Option<JsObject> {
-    let ns = context
-        .global_object()
-        .get(js_string!("WebAssembly"), context)
-        .ok()?;
-    let ns_obj = ns.as_object()?;
-    let ctor = ns_obj.get(js_string!("Instance"), context).ok()?;
-    let ctor_obj = ctor.as_object()?;
-    ctor_obj
-        .get(js_string!("prototype"), context)
-        .ok()
-        .and_then(|p| p.as_object().map(|o| o.clone()))
-}
-
 fn create_compile_error_boa(message: &str, context: &mut Context) -> JsValue {
     // Use the registered CompileError constructor on the WebAssembly namespace.
     if let Ok(ns) = context

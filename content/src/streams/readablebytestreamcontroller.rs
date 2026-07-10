@@ -165,6 +165,8 @@ impl ArrayBufferViewDescriptor {
         matches!(self.kind, ArrayBufferViewKind::DataView)
     }
 
+    /// Note: Spec-complete but not yet wired to any domain call site.
+    #[allow(dead_code)]
     pub(crate) fn bytes(
         &self,
         ec: &mut dyn ExecutionContext<crate::js::Types>,

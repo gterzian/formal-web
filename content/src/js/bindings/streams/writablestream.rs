@@ -1,11 +1,8 @@
-use std::marker::PhantomData;
-
 use js_engine::{Completion, ExecutionContext, JsTypes};
 
 use crate::js::Types;
 
 type JsValue = <Types as JsTypes>::JsValue;
-type JsObject = <Types as JsTypes>::JsObject;
 
 use crate::streams::{
     WritableStream, WritableStreamDefaultController, WritableStreamDefaultWriter,
@@ -28,8 +25,6 @@ impl WebIdlInterface<Types> for WritableStream {
 
     fn define_members(def: &mut InterfaceDefinition<Types>) {
         def.add_attribute(AttributeDef {
-            _phantom: PhantomData,
-
             id: "locked",
             getter: get_locked,
             setter: None,
@@ -42,8 +37,6 @@ impl WebIdlInterface<Types> for WritableStream {
             legacy_lenient_setter: false,
         });
         def.add_operation(OperationDef {
-            _phantom: PhantomData,
-
             id: "abort",
             length: 1,
             method: abort_method,
@@ -52,8 +45,6 @@ impl WebIdlInterface<Types> for WritableStream {
             promise_type: false,
         });
         def.add_operation(OperationDef {
-            _phantom: PhantomData,
-
             id: "close",
             length: 0,
             method: close_method,
@@ -62,8 +53,6 @@ impl WebIdlInterface<Types> for WritableStream {
             promise_type: false,
         });
         def.add_operation(OperationDef {
-            _phantom: PhantomData,
-
             id: "getWriter",
             length: 0,
             method: get_writer_method,
@@ -79,8 +68,6 @@ impl WebIdlInterface<Types> for WritableStreamDefaultController {
 
     fn define_members(def: &mut InterfaceDefinition<Types>) {
         def.add_attribute(AttributeDef {
-            _phantom: PhantomData,
-
             id: "signal",
             getter: get_signal,
             setter: None,
@@ -93,8 +80,6 @@ impl WebIdlInterface<Types> for WritableStreamDefaultController {
             legacy_lenient_setter: false,
         });
         def.add_operation(OperationDef {
-            _phantom: PhantomData,
-
             id: "error",
             length: 1,
             method: error_method,
@@ -118,8 +103,6 @@ impl WebIdlInterface<Types> for WritableStreamDefaultWriter {
 
     fn define_members(def: &mut InterfaceDefinition<Types>) {
         def.add_attribute(AttributeDef {
-            _phantom: PhantomData,
-
             id: "closed",
             getter: get_closed,
             setter: None,
@@ -132,8 +115,6 @@ impl WebIdlInterface<Types> for WritableStreamDefaultWriter {
             legacy_lenient_setter: false,
         });
         def.add_attribute(AttributeDef {
-            _phantom: PhantomData,
-
             id: "desiredSize",
             getter: get_desired_size,
             setter: None,
@@ -146,8 +127,6 @@ impl WebIdlInterface<Types> for WritableStreamDefaultWriter {
             legacy_lenient_setter: false,
         });
         def.add_attribute(AttributeDef {
-            _phantom: PhantomData,
-
             id: "ready",
             getter: get_ready,
             setter: None,
@@ -160,8 +139,6 @@ impl WebIdlInterface<Types> for WritableStreamDefaultWriter {
             legacy_lenient_setter: false,
         });
         def.add_operation(OperationDef {
-            _phantom: PhantomData,
-
             id: "abort",
             length: 1,
             method: abort_writer_method,
@@ -170,8 +147,6 @@ impl WebIdlInterface<Types> for WritableStreamDefaultWriter {
             promise_type: false,
         });
         def.add_operation(OperationDef {
-            _phantom: PhantomData,
-
             id: "close",
             length: 0,
             method: close_writer_method,
@@ -180,8 +155,6 @@ impl WebIdlInterface<Types> for WritableStreamDefaultWriter {
             promise_type: false,
         });
         def.add_operation(OperationDef {
-            _phantom: PhantomData,
-
             id: "releaseLock",
             length: 0,
             method: release_lock_method,
@@ -190,8 +163,6 @@ impl WebIdlInterface<Types> for WritableStreamDefaultWriter {
             promise_type: false,
         });
         def.add_operation(OperationDef {
-            _phantom: PhantomData,
-
             id: "write",
             length: 1,
             method: write_method,

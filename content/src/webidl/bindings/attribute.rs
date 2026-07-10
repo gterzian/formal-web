@@ -1,5 +1,3 @@
-use std::marker::PhantomData;
-
 use js_engine::{
     Completion, ExecutionContext, JsEngine, JsTypes, JsTypesWithRealm, PropertyDescriptor,
 };
@@ -20,7 +18,6 @@ pub(crate) struct AttributeDef<T: JsTypes> {
     pub replaceable: bool,
     pub put_forwards: Option<&'static str>,
     pub legacy_lenient_setter: bool,
-    pub _phantom: PhantomData<T>,
 }
 
 /// <https://webidl.spec.whatwg.org/#define-the-regular-attributes>

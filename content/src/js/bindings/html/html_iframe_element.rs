@@ -1,5 +1,3 @@
-use std::marker::PhantomData;
-
 use crate::html::HTMLIFrameElement;
 use crate::js::try_with_event_target_mut;
 use crate::webidl::bindings::{AttributeDef, InterfaceDefinition, WebIdlInterface};
@@ -10,7 +8,6 @@ use js_engine::{Completion, ExecutionContext, JsTypes};
 use crate::js::Types;
 
 type JsValue = <Types as JsTypes>::JsValue;
-type JsObject = <Types as JsTypes>::JsObject;
 
 // ── WebIDL interface definition (§3) ──
 
@@ -23,8 +20,6 @@ impl WebIdlInterface<Types> for HTMLIFrameElement {
 
     fn define_members(def: &mut InterfaceDefinition<Types>) {
         def.add_attribute(AttributeDef {
-            _phantom: PhantomData,
-
             id: "src",
             getter: get_src,
             setter: Some(set_src),
@@ -37,8 +32,6 @@ impl WebIdlInterface<Types> for HTMLIFrameElement {
             legacy_lenient_setter: false,
         });
         def.add_attribute(AttributeDef {
-            _phantom: PhantomData,
-
             id: "srcdoc",
             getter: get_srcdoc,
             setter: Some(set_srcdoc),
@@ -51,8 +44,6 @@ impl WebIdlInterface<Types> for HTMLIFrameElement {
             legacy_lenient_setter: false,
         });
         def.add_attribute(AttributeDef {
-            _phantom: PhantomData,
-
             id: "name",
             getter: get_name,
             setter: Some(set_name),
@@ -65,8 +56,6 @@ impl WebIdlInterface<Types> for HTMLIFrameElement {
             legacy_lenient_setter: false,
         });
         def.add_attribute(AttributeDef {
-            _phantom: PhantomData,
-
             id: "width",
             getter: get_width,
             setter: Some(set_width),
@@ -79,8 +68,6 @@ impl WebIdlInterface<Types> for HTMLIFrameElement {
             legacy_lenient_setter: false,
         });
         def.add_attribute(AttributeDef {
-            _phantom: PhantomData,
-
             id: "height",
             getter: get_height,
             setter: Some(set_height),
@@ -93,8 +80,6 @@ impl WebIdlInterface<Types> for HTMLIFrameElement {
             legacy_lenient_setter: false,
         });
         def.add_attribute(AttributeDef {
-            _phantom: PhantomData,
-
             id: "contentDocument",
             getter: get_content_document,
             setter: None,
@@ -107,8 +92,6 @@ impl WebIdlInterface<Types> for HTMLIFrameElement {
             legacy_lenient_setter: false,
         });
         def.add_attribute(AttributeDef {
-            _phantom: PhantomData,
-
             id: "contentWindow",
             getter: get_content_window,
             setter: None,
@@ -121,8 +104,6 @@ impl WebIdlInterface<Types> for HTMLIFrameElement {
             legacy_lenient_setter: false,
         });
         def.add_attribute(AttributeDef {
-            _phantom: PhantomData,
-
             id: "onload",
             getter: get_onload,
             setter: Some(set_onload),
@@ -135,8 +116,6 @@ impl WebIdlInterface<Types> for HTMLIFrameElement {
             legacy_lenient_setter: false,
         });
         def.add_attribute(AttributeDef {
-            _phantom: PhantomData,
-
             id: "onerror",
             getter: get_onerror,
             setter: Some(set_onerror),
@@ -191,7 +170,7 @@ fn set_onload(
     args: &[JsValue],
     ec: &mut dyn ExecutionContext<Types>,
 ) -> Completion<JsValue, Types> {
-    let mut iframe_object = <Types as JsTypes>::value_as_object(this)
+    let iframe_object = <Types as JsTypes>::value_as_object(this)
         .ok_or_else(|| ec.new_type_error("HTMLIFrameElement receiver is not an object"))?;
     let callback = nullable_value(
         args.get(0).unwrap_or(&ec.value_undefined()),
@@ -245,7 +224,7 @@ fn set_onerror(
     args: &[JsValue],
     ec: &mut dyn ExecutionContext<Types>,
 ) -> Completion<JsValue, Types> {
-    let mut iframe_object = <Types as JsTypes>::value_as_object(this)
+    let iframe_object = <Types as JsTypes>::value_as_object(this)
         .ok_or_else(|| ec.new_type_error("HTMLIFrameElement receiver is not an object"))?;
     let callback = nullable_value(
         args.get(0).unwrap_or(&ec.value_undefined()),

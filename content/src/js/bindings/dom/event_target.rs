@@ -1,4 +1,3 @@
-use std::marker::PhantomData;
 use std::{cell::RefCell, rc::Rc};
 
 use blitz_dom::BaseDocument;
@@ -39,8 +38,6 @@ impl WebIdlInterface<crate::js::Types> for EventTarget {
 
     fn define_members(def: &mut InterfaceDefinition<crate::js::Types>) {
         def.add_operation(OperationDef {
-            _phantom: PhantomData,
-
             id: "addEventListener",
             length: 3,
             method: add_event_listener,
@@ -49,8 +46,6 @@ impl WebIdlInterface<crate::js::Types> for EventTarget {
             promise_type: false,
         });
         def.add_operation(OperationDef {
-            _phantom: PhantomData,
-
             id: "removeEventListener",
             length: 3,
             method: remove_event_listener,
@@ -59,8 +54,6 @@ impl WebIdlInterface<crate::js::Types> for EventTarget {
             promise_type: false,
         });
         def.add_operation(OperationDef {
-            _phantom: PhantomData,
-
             id: "dispatchEvent",
             length: 1,
             method: dispatch_event,

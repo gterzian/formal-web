@@ -1,5 +1,3 @@
-use std::marker::PhantomData;
-
 type JsValue = <crate::js::Types as JsTypes>::JsValue;
 
 use crate::html::HTMLAnchorElement;
@@ -19,8 +17,6 @@ impl WebIdlInterface<crate::js::Types> for HTMLAnchorElement {
     fn define_members(def: &mut InterfaceDefinition<crate::js::Types>) {
         // HTMLAnchorElement own attributes
         def.add_attribute(AttributeDef {
-            _phantom: PhantomData,
-
             id: "href",
             getter: get_href,
             setter: Some(set_href),
@@ -33,8 +29,6 @@ impl WebIdlInterface<crate::js::Types> for HTMLAnchorElement {
             legacy_lenient_setter: false,
         });
         def.add_attribute(AttributeDef {
-            _phantom: PhantomData,
-
             id: "target",
             getter: get_target,
             setter: Some(set_target),
@@ -47,8 +41,6 @@ impl WebIdlInterface<crate::js::Types> for HTMLAnchorElement {
             legacy_lenient_setter: false,
         });
         def.add_attribute(AttributeDef {
-            _phantom: PhantomData,
-
             id: "download",
             getter: get_download,
             setter: Some(set_download),
@@ -61,8 +53,6 @@ impl WebIdlInterface<crate::js::Types> for HTMLAnchorElement {
             legacy_lenient_setter: false,
         });
         def.add_attribute(AttributeDef {
-            _phantom: PhantomData,
-
             id: "rel",
             getter: get_rel,
             setter: Some(set_rel),
@@ -75,8 +65,6 @@ impl WebIdlInterface<crate::js::Types> for HTMLAnchorElement {
             legacy_lenient_setter: false,
         });
         def.add_attribute(AttributeDef {
-            _phantom: PhantomData,
-
             id: "referrerPolicy",
             getter: get_referrer_policy,
             setter: Some(set_referrer_policy),

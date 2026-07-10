@@ -30,7 +30,6 @@ use crate::webidl::{
 use boa_engine::{JsError, JsNativeError, JsResult, JsValue, object::JsObject};
 use js_engine::boa::BoaContext;
 use js_engine::{Completion, ExecutionContext, JsTypes};
-use std::marker::PhantomData;
 
 /// Bridge for Boa-gated wasm callers that pass `JsError`.
 /// Converts `boa_engine::JsError` into a rejected promise via the generic
@@ -72,8 +71,6 @@ impl WebIdlNamespace<crate::js::Types> for WasmNamespace {
     fn define_members(def: &mut InterfaceDefinition<crate::js::Types>) {
         // <https://www.w3.org/TR/wasm-js-api/#dom-webassembly-validate>
         def.add_operation(OperationDef {
-            _phantom: PhantomData,
-
             id: "validate",
             length: 1,
             method: validate_fn,
@@ -84,8 +81,6 @@ impl WebIdlNamespace<crate::js::Types> for WasmNamespace {
 
         // <https://www.w3.org/TR/wasm-js-api/#dom-webassembly-compile>
         def.add_operation(OperationDef {
-            _phantom: PhantomData,
-
             id: "compile",
             length: 1,
             method: compile_fn,
@@ -96,8 +91,6 @@ impl WebIdlNamespace<crate::js::Types> for WasmNamespace {
 
         // <https://www.w3.org/TR/wasm-js-api/#dom-webassembly-instantiate>
         def.add_operation(OperationDef {
-            _phantom: PhantomData,
-
             id: "instantiate",
             length: 1,
             method: instantiate_fn,
@@ -108,8 +101,6 @@ impl WebIdlNamespace<crate::js::Types> for WasmNamespace {
 
         // <https://www.w3.org/TR/wasm-js-api/#dom-webassembly-jstag>
         def.add_attribute(AttributeDef {
-            _phantom: PhantomData,
-
             id: "JSTag",
             getter: interfaces::get_wasm_jstag,
             setter: None,

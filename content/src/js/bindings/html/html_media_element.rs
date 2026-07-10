@@ -5,8 +5,6 @@
 //
 // Only a subset of the full IDL is exposed for the initial video cut.
 
-use std::marker::PhantomData;
-
 type JsValue = <crate::js::Types as JsTypes>::JsValue;
 
 use crate::html::HTMLMediaElement;
@@ -45,8 +43,6 @@ impl WebIdlInterface<crate::js::Types> for HTMLMediaElement {
 
         // network state
         def.add_attribute(AttributeDef {
-            _phantom: PhantomData,
-
             id: "networkState",
             getter: get_network_state,
             setter: None,
@@ -59,8 +55,6 @@ impl WebIdlInterface<crate::js::Types> for HTMLMediaElement {
             legacy_lenient_setter: false,
         });
         def.add_attribute(AttributeDef {
-            _phantom: PhantomData,
-
             id: "readyState",
             getter: get_ready_state,
             setter: None,
@@ -73,8 +67,6 @@ impl WebIdlInterface<crate::js::Types> for HTMLMediaElement {
             legacy_lenient_setter: false,
         });
         def.add_attribute(AttributeDef {
-            _phantom: PhantomData,
-
             id: "src",
             getter: get_src,
             setter: Some(set_src),
@@ -87,8 +79,6 @@ impl WebIdlInterface<crate::js::Types> for HTMLMediaElement {
             legacy_lenient_setter: false,
         });
         def.add_attribute(AttributeDef {
-            _phantom: PhantomData,
-
             id: "currentSrc",
             getter: get_current_src,
             setter: None,
@@ -101,8 +91,6 @@ impl WebIdlInterface<crate::js::Types> for HTMLMediaElement {
             legacy_lenient_setter: false,
         });
         def.add_attribute(AttributeDef {
-            _phantom: PhantomData,
-
             id: "duration",
             getter: get_duration,
             setter: None,
@@ -115,8 +103,6 @@ impl WebIdlInterface<crate::js::Types> for HTMLMediaElement {
             legacy_lenient_setter: false,
         });
         def.add_attribute(AttributeDef {
-            _phantom: PhantomData,
-
             id: "paused",
             getter: get_paused,
             setter: None,
@@ -129,8 +115,6 @@ impl WebIdlInterface<crate::js::Types> for HTMLMediaElement {
             legacy_lenient_setter: false,
         });
         def.add_attribute(AttributeDef {
-            _phantom: PhantomData,
-
             id: "seeking",
             getter: get_seeking,
             setter: None,
@@ -143,8 +127,6 @@ impl WebIdlInterface<crate::js::Types> for HTMLMediaElement {
             legacy_lenient_setter: false,
         });
         def.add_attribute(AttributeDef {
-            _phantom: PhantomData,
-
             id: "currentTime",
             getter: get_current_time,
             setter: Some(set_current_time),
@@ -157,8 +139,6 @@ impl WebIdlInterface<crate::js::Types> for HTMLMediaElement {
             legacy_lenient_setter: false,
         });
         def.add_attribute(AttributeDef {
-            _phantom: PhantomData,
-
             id: "error",
             getter: get_error,
             setter: None,
@@ -171,8 +151,6 @@ impl WebIdlInterface<crate::js::Types> for HTMLMediaElement {
             legacy_lenient_setter: false,
         });
         def.add_attribute(AttributeDef {
-            _phantom: PhantomData,
-
             id: "autoplay",
             getter: get_autoplay,
             setter: Some(set_autoplay),
@@ -185,8 +163,6 @@ impl WebIdlInterface<crate::js::Types> for HTMLMediaElement {
             legacy_lenient_setter: false,
         });
         def.add_attribute(AttributeDef {
-            _phantom: PhantomData,
-
             id: "loop",
             getter: get_loop,
             setter: Some(set_loop),
@@ -199,8 +175,6 @@ impl WebIdlInterface<crate::js::Types> for HTMLMediaElement {
             legacy_lenient_setter: false,
         });
         def.add_attribute(AttributeDef {
-            _phantom: PhantomData,
-
             id: "controls",
             getter: get_controls,
             setter: Some(set_controls),
@@ -213,8 +187,6 @@ impl WebIdlInterface<crate::js::Types> for HTMLMediaElement {
             legacy_lenient_setter: false,
         });
         def.add_attribute(AttributeDef {
-            _phantom: PhantomData,
-
             id: "muted",
             getter: get_muted,
             setter: Some(set_muted),
@@ -227,8 +199,6 @@ impl WebIdlInterface<crate::js::Types> for HTMLMediaElement {
             legacy_lenient_setter: false,
         });
         def.add_attribute(AttributeDef {
-            _phantom: PhantomData,
-
             id: "volume",
             getter: get_volume,
             setter: Some(set_volume),
@@ -242,8 +212,6 @@ impl WebIdlInterface<crate::js::Types> for HTMLMediaElement {
         });
         // Operations
         def.add_operation(OperationDef {
-            _phantom: PhantomData,
-
             id: "load",
             length: 0,
             method: load_method,
@@ -252,8 +220,6 @@ impl WebIdlInterface<crate::js::Types> for HTMLMediaElement {
             promise_type: false,
         });
         def.add_operation(OperationDef {
-            _phantom: PhantomData,
-
             id: "play",
             length: 0,
             method: play_method,
@@ -262,8 +228,6 @@ impl WebIdlInterface<crate::js::Types> for HTMLMediaElement {
             promise_type: true,
         });
         def.add_operation(OperationDef {
-            _phantom: PhantomData,
-
             id: "pause",
             length: 0,
             method: pause_method,
@@ -272,8 +236,6 @@ impl WebIdlInterface<crate::js::Types> for HTMLMediaElement {
             promise_type: false,
         });
         def.add_operation(OperationDef {
-            _phantom: PhantomData,
-
             id: "canPlayType",
             length: 1,
             method: can_play_type,
@@ -283,8 +245,6 @@ impl WebIdlInterface<crate::js::Types> for HTMLMediaElement {
         });
 
         def.add_attribute(AttributeDef {
-            _phantom: PhantomData,
-
             id: "preload",
             getter: get_preload,
             setter: Some(set_preload),

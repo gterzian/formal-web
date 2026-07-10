@@ -1,5 +1,3 @@
-use std::marker::PhantomData;
-
 use crate::dom::DOMException;
 type JsValue = <crate::js::Types as JsTypes>::JsValue;
 
@@ -47,8 +45,6 @@ impl WebIdlInterface<crate::js::Types> for DOMException {
 
     fn define_members(def: &mut InterfaceDefinition<crate::js::Types>) {
         def.add_attribute(AttributeDef {
-            _phantom: PhantomData,
-
             id: "name",
             getter: get_name,
             setter: None,
@@ -61,8 +57,6 @@ impl WebIdlInterface<crate::js::Types> for DOMException {
             legacy_lenient_setter: false,
         });
         def.add_attribute(AttributeDef {
-            _phantom: PhantomData,
-
             id: "message",
             getter: get_message,
             setter: None,
@@ -75,8 +69,6 @@ impl WebIdlInterface<crate::js::Types> for DOMException {
             legacy_lenient_setter: false,
         });
         def.add_attribute(AttributeDef {
-            _phantom: PhantomData,
-
             id: "code",
             getter: get_code,
             setter: None,

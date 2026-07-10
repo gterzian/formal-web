@@ -9,7 +9,6 @@ use boa_engine::{
     Context, JsObject, JsResult, JsValue, js_string, native_function::NativeFunction,
     object::FunctionObjectBuilder, property::PropertyDescriptor,
 };
-use std::marker::PhantomData;
 
 use crate::wasm::{WasmInstance, WasmModule};
 use crate::webidl::bindings::{AttributeDef, InterfaceDefinition, OperationDef, WebIdlInterface};
@@ -33,8 +32,6 @@ impl WebIdlInterface<crate::js::Types> for WasmModule {
 
     fn define_members(def: &mut InterfaceDefinition<crate::js::Types>) {
         def.add_operation(OperationDef {
-            _phantom: PhantomData,
-
             id: "exports",
             length: 1,
             method: module_exports_binding,
@@ -45,8 +42,6 @@ impl WebIdlInterface<crate::js::Types> for WasmModule {
         // <https://webassembly.github.io/spec/js-api/#dom-module-imports>
         // Note: Not yet implemented.
         def.add_operation(OperationDef {
-            _phantom: PhantomData,
-
             id: "imports",
             length: 1,
             method: |_this, _args, ec| {
@@ -59,8 +54,6 @@ impl WebIdlInterface<crate::js::Types> for WasmModule {
         // <https://webassembly.github.io/spec/js-api/#dom-module-customsections>
         // Note: Not yet implemented.
         def.add_operation(OperationDef {
-            _phantom: PhantomData,
-
             id: "customSections",
             length: 2,
             method: |_this, _args, ec| {
@@ -102,8 +95,6 @@ impl WebIdlInterface<crate::js::Types> for WasmInstance {
 
     fn define_members(def: &mut InterfaceDefinition<crate::js::Types>) {
         def.add_attribute(AttributeDef {
-            _phantom: PhantomData,
-
             id: "exports",
             getter: get_instance_exports_binding,
             setter: None,

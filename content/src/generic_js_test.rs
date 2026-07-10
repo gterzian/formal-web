@@ -25,8 +25,6 @@
 //! new_promise_capability → perform_promise_then — as a miniature
 //! version of the full `content/` crate.
 
-use std::marker::PhantomData;
-
 use crate::webidl::bindings::{AttributeDef, InterfaceDefinition, OperationDef, WebIdlInterface};
 use js_engine::gc::GcRootHandle;
 use js_engine::gc_struct;
@@ -531,7 +529,6 @@ impl WebIdlInterface<TestTypes> for TestWidget {
 
     fn define_members(def: &mut InterfaceDefinition<TestTypes>) {
         def.add_attribute(AttributeDef {
-            _phantom: PhantomData,
             id: "title",
             getter: get_title,
             setter: Some(set_title),
@@ -544,7 +541,6 @@ impl WebIdlInterface<TestTypes> for TestWidget {
             legacy_lenient_setter: false,
         });
         def.add_attribute(AttributeDef {
-            _phantom: PhantomData,
             id: "visible",
             getter: get_visible,
             setter: None,
@@ -557,7 +553,6 @@ impl WebIdlInterface<TestTypes> for TestWidget {
             legacy_lenient_setter: false,
         });
         def.add_attribute(AttributeDef {
-            _phantom: PhantomData,
             id: "count",
             getter: get_count,
             setter: Some(set_count),
@@ -570,7 +565,6 @@ impl WebIdlInterface<TestTypes> for TestWidget {
             legacy_lenient_setter: false,
         });
         def.add_operation(OperationDef {
-            _phantom: PhantomData,
             id: "increment",
             length: 0,
             method: increment,
@@ -579,7 +573,6 @@ impl WebIdlInterface<TestTypes> for TestWidget {
             promise_type: false,
         });
         def.add_operation(OperationDef {
-            _phantom: PhantomData,
             id: "toObject",
             length: 0,
             method: to_object,
@@ -588,7 +581,6 @@ impl WebIdlInterface<TestTypes> for TestWidget {
             promise_type: false,
         });
         def.add_operation(OperationDef {
-            _phantom: PhantomData,
             id: "toArray",
             length: 0,
             method: to_array,
@@ -597,7 +589,6 @@ impl WebIdlInterface<TestTypes> for TestWidget {
             promise_type: false,
         });
         def.add_operation(OperationDef {
-            _phantom: PhantomData,
             id: "formatLabel",
             length: 1,
             method: format_label,
@@ -606,7 +597,6 @@ impl WebIdlInterface<TestTypes> for TestWidget {
             promise_type: false,
         });
         def.add_operation(OperationDef {
-            _phantom: PhantomData,
             id: "delayedTitle",
             length: 0,
             method: delayed_title,
@@ -615,7 +605,6 @@ impl WebIdlInterface<TestTypes> for TestWidget {
             promise_type: true,
         });
         def.add_operation(OperationDef {
-            _phantom: PhantomData,
             id: "withCallback",
             length: 1,
             method: with_callback,
@@ -624,7 +613,6 @@ impl WebIdlInterface<TestTypes> for TestWidget {
             promise_type: false,
         });
         def.add_operation(OperationDef {
-            _phantom: PhantomData,
             id: "processItems",
             length: 1,
             method: process_items,
@@ -633,7 +621,6 @@ impl WebIdlInterface<TestTypes> for TestWidget {
             promise_type: false,
         });
         def.add_operation(OperationDef {
-            _phantom: PhantomData,
             id: "create",
             length: 2,
             method: create_static,
@@ -642,7 +629,6 @@ impl WebIdlInterface<TestTypes> for TestWidget {
             promise_type: false,
         });
         def.add_operation(OperationDef {
-            _phantom: PhantomData,
             id: "fromTags",
             length: 1,
             method: from_tags,
@@ -651,7 +637,6 @@ impl WebIdlInterface<TestTypes> for TestWidget {
             promise_type: false,
         });
         def.add_operation(OperationDef {
-            _phantom: PhantomData,
             id: "storeCallback",
             length: 1,
             method: store_callback,

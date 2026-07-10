@@ -1,5 +1,3 @@
-use std::marker::PhantomData;
-
 use crate::webidl::bindings::{AttributeDef, InterfaceDefinition, OperationDef, WebIdlInterface};
 
 use crate::streams::{
@@ -22,8 +20,6 @@ impl WebIdlInterface<crate::js::Types> for TransformStream {
 
     fn define_members(def: &mut InterfaceDefinition<crate::js::Types>) {
         def.add_attribute(AttributeDef {
-            _phantom: PhantomData,
-
             id: "readable",
             getter: get_readable,
             setter: None,
@@ -36,8 +32,6 @@ impl WebIdlInterface<crate::js::Types> for TransformStream {
             legacy_lenient_setter: false,
         });
         def.add_attribute(AttributeDef {
-            _phantom: PhantomData,
-
             id: "writable",
             getter: get_writable,
             setter: None,
@@ -57,8 +51,6 @@ impl WebIdlInterface<crate::js::Types> for TransformStreamDefaultController {
 
     fn define_members(def: &mut InterfaceDefinition<crate::js::Types>) {
         def.add_attribute(AttributeDef {
-            _phantom: PhantomData,
-
             id: "desiredSize",
             getter: get_desired_size,
             setter: None,
@@ -71,8 +63,6 @@ impl WebIdlInterface<crate::js::Types> for TransformStreamDefaultController {
             legacy_lenient_setter: false,
         });
         def.add_operation(OperationDef {
-            _phantom: PhantomData,
-
             id: "enqueue",
             length: 1,
             method: controller_enqueue,
@@ -81,8 +71,6 @@ impl WebIdlInterface<crate::js::Types> for TransformStreamDefaultController {
             promise_type: false,
         });
         def.add_operation(OperationDef {
-            _phantom: PhantomData,
-
             id: "error",
             length: 1,
             method: controller_error,
@@ -91,8 +79,6 @@ impl WebIdlInterface<crate::js::Types> for TransformStreamDefaultController {
             promise_type: false,
         });
         def.add_operation(OperationDef {
-            _phantom: PhantomData,
-
             id: "terminate",
             length: 0,
             method: controller_terminate,

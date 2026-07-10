@@ -1,5 +1,3 @@
-use std::marker::PhantomData;
-
 type JsValue = <crate::js::Types as JsTypes>::JsValue;
 
 use crate::dom::{AbortController, AbortSignal, create_abort_signal};
@@ -26,8 +24,6 @@ impl WebIdlInterface<crate::js::Types> for AbortController {
 
     fn define_members(def: &mut InterfaceDefinition<crate::js::Types>) {
         def.add_attribute(AttributeDef {
-            _phantom: PhantomData,
-
             id: "signal",
             getter: get_signal,
             setter: None,
@@ -40,8 +36,6 @@ impl WebIdlInterface<crate::js::Types> for AbortController {
             legacy_lenient_setter: false,
         });
         def.add_operation(OperationDef {
-            _phantom: PhantomData,
-
             id: "abort",
             length: 1,
             method: abort,

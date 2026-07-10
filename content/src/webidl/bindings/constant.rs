@@ -1,5 +1,3 @@
-use std::marker::PhantomData;
-
 use js_engine::{
     Completion, EcmascriptHost, ExecutionContext, JsTypes, JsTypesWithRealm, PropertyDescriptor,
 };
@@ -18,7 +16,6 @@ pub(crate) enum ConstValue<T: JsTypes> {
 pub(crate) struct ConstantDef<T: JsTypes> {
     pub id: &'static str,
     pub value: ConstValue<T>,
-    pub _phantom: PhantomData<T>,
 }
 
 impl<T: JsTypes> ConstantDef<T> {
@@ -26,7 +23,6 @@ impl<T: JsTypes> ConstantDef<T> {
         Self {
             id,
             value: ConstValue::Number(n),
-            _phantom: PhantomData,
         }
     }
 }

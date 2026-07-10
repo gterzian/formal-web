@@ -1,7 +1,5 @@
 // ── HTMLInputElement JS bindings ──
 
-use std::marker::PhantomData;
-
 type JsValue = <crate::js::Types as JsTypes>::JsValue;
 
 use crate::html::HTMLInputElement;
@@ -18,8 +16,6 @@ impl WebIdlInterface<crate::js::Types> for HTMLInputElement {
 
     fn define_members(def: &mut InterfaceDefinition<crate::js::Types>) {
         def.add_attribute(AttributeDef {
-            _phantom: PhantomData,
-
             id: "value",
             getter: get_value,
             setter: Some(set_value),
@@ -32,8 +28,6 @@ impl WebIdlInterface<crate::js::Types> for HTMLInputElement {
             legacy_lenient_setter: false,
         });
         def.add_operation(OperationDef {
-            _phantom: PhantomData,
-
             id: "focus",
             length: 0,
             method: focus_method,

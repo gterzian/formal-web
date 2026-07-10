@@ -100,20 +100,6 @@ pub(crate) fn create_builtin_fn_static(
     ec.create_builtin_fn_static(behaviour, length, name)
 }
 
-/// Convert a stateless raw function pointer into a constructor builtin function.
-pub(crate) fn create_constructor_static(
-    ec: &mut dyn ExecutionContext<Types>,
-    behaviour: fn(
-        &[<Types as JsTypes>::JsValue],
-        <Types as JsTypes>::JsValue,
-        &mut dyn ExecutionContext<Types>,
-    ) -> Completion<<Types as JsTypes>::JsValue, Types>,
-    length: u32,
-    name: <Types as JsTypes>::PropertyKey,
-) -> <Types as JsTypes>::Function {
-    ec.create_builtin_function(Box::new(behaviour), length, name, true)
-}
-
 /// Content-level type alias for the concrete JS types in use.
 /// Set by the build script based on the target platform:
 /// `jsc_backend` on Apple platforms, `boa_backend` on others.

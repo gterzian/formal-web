@@ -1,5 +1,3 @@
-use std::marker::PhantomData;
-
 use crate::dom::{Event, UIEvent};
 type JsValue = <crate::js::Types as JsTypes>::JsValue;
 
@@ -54,8 +52,6 @@ impl WebIdlInterface<crate::js::Types> for Event {
     fn define_members(def: &mut InterfaceDefinition<crate::js::Types>) {
         // §3.7.6: Regular attributes
         def.add_attribute(AttributeDef {
-            _phantom: PhantomData,
-
             id: "type",
             getter: get_type,
             setter: None,
@@ -68,8 +64,6 @@ impl WebIdlInterface<crate::js::Types> for Event {
             legacy_lenient_setter: false,
         });
         def.add_attribute(AttributeDef {
-            _phantom: PhantomData,
-
             id: "target",
             getter: get_target,
             setter: None,
@@ -82,8 +76,6 @@ impl WebIdlInterface<crate::js::Types> for Event {
             legacy_lenient_setter: false,
         });
         def.add_attribute(AttributeDef {
-            _phantom: PhantomData,
-
             id: "currentTarget",
             getter: get_current_target,
             setter: None,
@@ -96,8 +88,6 @@ impl WebIdlInterface<crate::js::Types> for Event {
             legacy_lenient_setter: false,
         });
         def.add_attribute(AttributeDef {
-            _phantom: PhantomData,
-
             id: "eventPhase",
             getter: get_event_phase,
             setter: None,
@@ -110,8 +100,6 @@ impl WebIdlInterface<crate::js::Types> for Event {
             legacy_lenient_setter: false,
         });
         def.add_attribute(AttributeDef {
-            _phantom: PhantomData,
-
             id: "bubbles",
             getter: get_bubbles,
             setter: None,
@@ -124,8 +112,6 @@ impl WebIdlInterface<crate::js::Types> for Event {
             legacy_lenient_setter: false,
         });
         def.add_attribute(AttributeDef {
-            _phantom: PhantomData,
-
             id: "cancelable",
             getter: get_cancelable,
             setter: None,
@@ -138,8 +124,6 @@ impl WebIdlInterface<crate::js::Types> for Event {
             legacy_lenient_setter: false,
         });
         def.add_attribute(AttributeDef {
-            _phantom: PhantomData,
-
             id: "defaultPrevented",
             getter: get_default_prevented,
             setter: None,
@@ -152,8 +136,6 @@ impl WebIdlInterface<crate::js::Types> for Event {
             legacy_lenient_setter: false,
         });
         def.add_attribute(AttributeDef {
-            _phantom: PhantomData,
-
             id: "cancelBubble",
             getter: get_cancel_bubble,
             setter: Some(set_cancel_bubble),
@@ -166,8 +148,6 @@ impl WebIdlInterface<crate::js::Types> for Event {
             legacy_lenient_setter: false,
         });
         def.add_attribute(AttributeDef {
-            _phantom: PhantomData,
-
             id: "isTrusted",
             getter: get_is_trusted,
             setter: None,
@@ -180,8 +160,6 @@ impl WebIdlInterface<crate::js::Types> for Event {
             legacy_lenient_setter: false,
         });
         def.add_attribute(AttributeDef {
-            _phantom: PhantomData,
-
             id: "timeStamp",
             getter: get_time_stamp,
             setter: None,
@@ -196,8 +174,6 @@ impl WebIdlInterface<crate::js::Types> for Event {
 
         // §3.7.7: Regular operations
         def.add_operation(OperationDef {
-            _phantom: PhantomData,
-
             id: "stopPropagation",
             length: 0,
             method: stop_propagation,
@@ -206,8 +182,6 @@ impl WebIdlInterface<crate::js::Types> for Event {
             promise_type: false,
         });
         def.add_operation(OperationDef {
-            _phantom: PhantomData,
-
             id: "stopImmediatePropagation",
             length: 0,
             method: stop_immediate_propagation,
@@ -216,8 +190,6 @@ impl WebIdlInterface<crate::js::Types> for Event {
             promise_type: false,
         });
         def.add_operation(OperationDef {
-            _phantom: PhantomData,
-
             id: "preventDefault",
             length: 0,
             method: prevent_default,
