@@ -190,7 +190,7 @@ fn setup_realm(engine: &mut Engine, document: Rc<RefCell<BaseDocument>>) -> Resu
         .map_err(|error| format!("failed to install CSS namespace: {:?}", error))?;
 
     // Step X: Install TestUtils namespace (gc() method).
-    crate::js::install_testutils_namespace(engine)
+    crate::js::bindings::testutils::install_testutils_namespace(engine)
         .map_err(|error| format!("failed to install TestUtils namespace: {:?}", error))?;
 
     // Step 9: HTMLAnchorElement: HTMLHyperlinkElementUtils members.

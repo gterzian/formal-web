@@ -247,5 +247,13 @@ fn build_boa_context(document: Rc<RefCell<BaseDocument>>) -> Result<Context, Str
             .map_err(|error| error.to_string())?;
     }
 
+    // ── Install TestUtils namespace ──
+    if let Err(error) = crate::js::bindings::testutils::install_testutils_namespace(&mut engine) {
+        error!(
+            "[content] failed to install TestUtils namespace: {:?}",
+            error
+        );
+    }
+
     Ok(engine.into_context())
 }

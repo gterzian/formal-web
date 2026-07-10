@@ -6,6 +6,7 @@ pub mod css;
 pub(crate) mod fetch;
 pub mod infra;
 pub mod js;
+pub mod testutils;
 
 pub mod dom;
 #[cfg(test)]

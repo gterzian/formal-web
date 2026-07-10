@@ -117,6 +117,7 @@ fn module_exports_binding<T: JsTypes>(
 | Putting spec-algorithm logic (iterating wasm exports, computing descriptors, creating promises) in the JS bindings glue | The binding should be a thin call → wrap; the algorithm lives in the domain layer |
 | Using `FunctionObjectBuilder` or Boa-native APIs directly in JS bindings | Use `WebIdlInterface`, `OperationDef`, `register_interface_spec` from `content/src/webidl/bindings/` instead |
 | Adding domain-specific conditionals to `content/src/webidl/bindings/` | The infra must stay generic; use the trait methods (`legacy_namespace()`, `constructor_length()`) to customize |
+| **Manually installing a namespace via `create_plain_object` + `create_builtin_fn`** | Use `WebIdlNamespace` + `register_namespace_spec` from `content/src/webidl/bindings/` instead.  The Web IDL infra handles namespace-object creation, member installation, and global registration automatically.  See `content/src/js/bindings/wasm/mod.rs` for a correct example, or `content/src/js/bindings/testutils/mod.rs`. |
 
 ### Concrete example: WebAssembly.namespace operations (promise-returning)
 

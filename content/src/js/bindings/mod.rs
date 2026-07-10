@@ -1,6 +1,7 @@
 pub(crate) mod dom;
 pub(crate) mod html;
 pub(crate) mod streams;
+pub(crate) mod testutils;
 #[cfg(boa_backend)]
 pub(crate) mod wasm;
 

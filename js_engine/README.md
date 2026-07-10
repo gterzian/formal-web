@@ -151,7 +151,7 @@ closure's `ctx_raw` became dangling, causing SIGSEGV.  Fixed by explicit
 
 ### TestUtils namespace (`gc()` method)
 
-Implemented the [`TestUtils`] gc() namespace per
+Implemented the `TestUtils` namespace per
 <https://testutils.spec.whatwg.org/#the-testutils-namespace>:
 
 - Added `fn gc(&mut self)` to the `EcmascriptHost` trait (`js_engine/src/engine.rs`)
@@ -159,9 +159,12 @@ Implemented the [`TestUtils`] gc() namespace per
 - **Boa:** calls `boa_gc::force_collect()`
 - **Delegating wrappers:** `EcDispatchHost`, `EnvironmentSettingsObject`,
   `BlitzJSEventHandler` all forward to their inner engine
-- Namespace installed at `TestUtils.gc()` via
-  `content/src/js/testutils.rs` (same pattern as `console`)
-- Test page at `scratchpad/gc-protection-test.html`
+- Proper folder structure: `content/src/testutils/` (domain) +
+  `content/src/js/bindings/testutils/` (JS bindings), following the
+  same pattern as `css/` and `streams/`
+- Added `JSGarbageCollect` to `jsc_sys.rs` FFI bindings
+- Test pages at `scratchpad/gc-protection-test.html` and
+  `scratchpad/jsc-protection-test.html`
 
 ### Phase 1: `JSValueProtect`/`JSValueUnprotect` everywhere
 
@@ -185,7 +188,8 @@ to track JSValueProtect'd objects for cleanup on engine teardown.
 
 | Change | File | Description |
 |---|---|---|
-| `make_builtin_function` bind/call/apply copy | `jsc/engine.rs` | New `copy_function_prototype_methods()` helper uses `JSObjectGetProperty(Function.prototype, name) + JSObjectSetProperty(...)`.  `toString` still uses eval because `JSObjectMakeFunctionWithCallback` has pointer-mismatch issues on macOS 26. |
+| `make_builtin_function` bind/call/apply copy | `jsc/engine.rs` | New `copy_function_prototype_methods()` helper uses `JSObjectGetProperty(Function.prototype, name) + JSObjectSetProperty(...)`. |
+| `make_builtin_function` toString | `jsc/engine.rs` | New `set_builtin_to_string()` creates one shared BUILTIN_CLASS function (reads `this.name` at call time) cached in a thread-local, avoiding per-function JSEvaluateScript.  `.name` set as `ReadOnly|DontEnum` on every builtin. |
 | `create_builtin_fn` `.length` | `jsc/engine.rs` | Direct `JSObjectSetProperty(func, "length", value, ReadOnly \| DontEnum)` replaces eval with `Object.defineProperty(__fw_fn_len, ...)` + temp global property. |
 | `get_fn_call()` | `jsc/engine.rs` | Traverses `Function → prototype → call` via C API instead of `eval("Function.prototype.call")`. |
 

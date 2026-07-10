@@ -453,19 +453,28 @@ fn make_builtin_function(
         let stored = Box::new(behaviour);
         let stored_ptr = Box::into_raw(stored) as *mut std::ffi::c_void;
         unsafe { JSObjectSetPrivate(raw_obj, stored_ptr) };
+        // Set the function name as a read-only property so toString can
+        // read `this.name` without per-function eval.
+        let name_key_for_prop = JscString::from_rust("name");
+        let name_val = unsafe { JSValueMakeString(ctx, name_str.raw) };
+        unsafe {
+            JSObjectSetProperty(
+                ctx,
+                raw_obj,
+                name_key_for_prop.raw,
+                name_val,
+                kJSPropertyAttributeReadOnly | kJSPropertyAttributeDontEnum,
+                std::ptr::null_mut(),
+            );
+        }
+
         // Note: Constructor functions do NOT inherit Function.prototype
         // methods because JSObjectSetPrototype crashes on
         // JSObjectMake()-created objects on macOS 26.
         // Copy bind, call, apply from Function.prototype via native C API
         // to avoid eval overhead and unpredictable microtask drainage.
-        // toString is still set via eval (see Note below).
         let global = unsafe { JSContextGetGlobalObject(ctx) };
         copy_function_prototype_methods(ctx, raw_obj, global);
-
-        // Note: toString uses eval because the native C API cannot create
-        // a function with custom toString output without
-        // JSObjectMakeFunctionWithCallback, which has pointer-mismatch
-        // issues on macOS 26 (see FUNCTION_REGISTRY docs).
         let name_rust = name_str.to_rust();
         let ctor_temp_key = format!(
             "__fw_base_ctor_{}",
@@ -483,27 +492,10 @@ fn make_builtin_function(
                 &mut exc,
             );
         }
-        // Step 2: Set a native-looking toString on the base constructor.
-        // This still uses eval because the C API cannot create a function
-        // with custom toString output without JSObjectMakeFunctionWithCallback,
-        // which has pointer-mismatch issues on macOS 26.
-        if exc.is_null() {
-            let tostring_script = format!(
-                r#"Object.defineProperty(this,'toString',{{value:function(){{return 'function {name_rust}() {{ [native code] }}'}},writable:true,configurable:true}})"#
-            );
-            let script = JscString::from_rust(&tostring_script);
-            let mut eval_exc: *mut JSValueRef = std::ptr::null_mut();
-            unsafe {
-                JSEvaluateScript(
-                    ctx,
-                    script.raw,
-                    raw_obj,
-                    std::ptr::null_mut(),
-                    0,
-                    &mut eval_exc,
-                );
-            }
-        }
+        // Step 2: Set a native-looking toString via cached BUILTIN_CLASS
+        // function.  Avoids JSEvaluateScript per-function overhead.
+        set_builtin_to_string(ctx, raw_obj);
+
         // Step 3: Create a Proxy that wraps the base constructor.
         // The Proxy's `construct` trap receives `newTarget` (the actual
         // new.target), which the JSC C API's callAsConstructor callback
@@ -570,36 +562,31 @@ fn make_builtin_function(
         let stored = Box::new(behaviour);
         let stored_ptr = Box::into_raw(stored) as *mut std::ffi::c_void;
         unsafe { JSObjectSetPrivate(raw_obj, stored_ptr) };
-        let global = unsafe { JSContextGetGlobalObject(ctx) };
-        copy_function_prototype_methods(ctx, raw_obj, global);
-        let name_rust = name_str.to_rust();
-        let tostring_script = format!(
-            r#"Object.defineProperty(this,'toString',{{value:function(){{return 'function {name_rust}() {{ [native code] }}'}},writable:true,configurable:true}})"#
-        );
-        let script_str = JscString::from_rust(&tostring_script);
-        let mut eval_exc: *mut JSValueRef = std::ptr::null_mut();
+        // Set the function name so toString can read `this.name`.
+        let name_key_for_prop = JscString::from_rust("name");
+        let name_val = unsafe { JSValueMakeString(ctx, name_str.raw) };
         unsafe {
-            JSEvaluateScript(
+            JSObjectSetProperty(
                 ctx,
-                script_str.raw,
                 raw_obj,
+                name_key_for_prop.raw,
+                name_val,
+                kJSPropertyAttributeReadOnly | kJSPropertyAttributeDontEnum,
                 std::ptr::null_mut(),
-                0,
-                &mut eval_exc,
             );
         }
+        let global = unsafe { JSContextGetGlobalObject(ctx) };
+        copy_function_prototype_methods(ctx, raw_obj, global);
+        set_builtin_to_string(ctx, raw_obj);
         JscObject { raw: raw_obj, ctx }
     }
 }
 
 /// Copy `bind`, `call`, and `apply` methods from `Function.prototype` to
-/// the given target object using the native C API, avoiding JSEvaluateScript.
+/// the given target object via native C API, avoiding JSEvaluateScript.
 ///
-/// `toString` is NOT copied here because creating a custom toString function
-/// with the correct `[native code]` output via C API would require
-/// `JSObjectMakeFunctionWithCallback`, which has pointer-mismatch issues
-/// on macOS 26 (see FUNCTION_REGISTRY docs).  The caller handles toString
-/// separately.
+/// `toString` is handled separately by `set_builtin_to_string` which uses
+/// a cached BUILTIN_CLASS function instead of per-function eval.
 ///
 /// Sets each property as `writable: true, configurable: true,
 /// enumerable: false` (matching the current eval-based behavior).
@@ -641,6 +628,64 @@ fn copy_function_prototype_methods(
                 }
             }
         }
+    }
+}
+
+/// Cached toString function for builtin objects.
+/// Uses a BUILTIN_CLASS function with stored behaviour that reads
+/// `this.name` at call time, avoiding per-function JSEvaluateScript.
+thread_local! {
+    static BUILTIN_TO_STRING: std::cell::RefCell<Option<*mut JSObjectRef>> =
+        const { std::cell::RefCell::new(None) };
+}
+
+/// Set a native-looking `toString` on a builtin function object.
+///
+/// Creates or retrieves a cached BUILTIN_CLASS function whose stored
+/// behaviour reads `this.name` at call time and returns
+/// `"function <name>() { [native code] }"`.
+fn set_builtin_to_string(ctx: *mut JSContextRef, target: *mut JSObjectRef) {
+    let to_string_fn = BUILTIN_TO_STRING.with(|cell| {
+        if let Some(fn_ptr) = *cell.borrow() {
+            return fn_ptr;
+        }
+        // Create a new shared toString function.
+        let class_ref = BUILTIN_CLASS.0;
+        let raw_obj = unsafe { JSObjectMake(ctx, class_ref, std::ptr::null_mut()) };
+        let stored: StoredBehaviour = Box::new(
+            |_args: &[JscValue],
+             this: JscValue,
+             ec: &mut dyn ExecutionContext<JscTypes>|
+             -> Completion<JscValue, JscTypes> {
+                let name_prop = EcmascriptHost::get(
+                    ec,
+                    &JscObject {
+                        raw: this.raw as *mut JSObjectRef,
+                        ctx: this.ctx,
+                    },
+                    "name",
+                )?;
+                let name_str = ec.to_rust_string(name_prop).unwrap_or_default();
+                let result = format!("function {}() {{ [native code] }}", name_str);
+                Ok(ec.value_from_string(ec.js_string_from_str(&result)))
+            },
+        );
+        let stored_ptr = Box::into_raw(Box::new(stored)) as *mut std::ffi::c_void;
+        unsafe { JSObjectSetPrivate(raw_obj, stored_ptr) };
+        *cell.borrow_mut() = Some(raw_obj);
+        raw_obj
+    });
+
+    let to_string_key = JscString::from_rust("toString");
+    unsafe {
+        JSObjectSetProperty(
+            ctx,
+            target,
+            to_string_key.raw,
+            to_string_fn as *mut JSValueRef,
+            kJSPropertyAttributeDontEnum,
+            std::ptr::null_mut(),
+        );
     }
 }
 
