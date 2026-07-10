@@ -36,6 +36,7 @@ impl WebIdlInterface<crate::js::Types> for Location {
             replaceable: false,
             put_forwards: None,
             legacy_lenient_setter: false,
+            exposed: None,
         });
         def.add_attribute(AttributeDef {
             id: "origin",
@@ -48,6 +49,7 @@ impl WebIdlInterface<crate::js::Types> for Location {
             replaceable: false,
             put_forwards: None,
             legacy_lenient_setter: false,
+            exposed: None,
         });
         def.add_attribute(AttributeDef {
             id: "protocol",
@@ -60,6 +62,7 @@ impl WebIdlInterface<crate::js::Types> for Location {
             replaceable: false,
             put_forwards: None,
             legacy_lenient_setter: false,
+            exposed: None,
         });
         def.add_attribute(AttributeDef {
             id: "host",
@@ -72,6 +75,7 @@ impl WebIdlInterface<crate::js::Types> for Location {
             replaceable: false,
             put_forwards: None,
             legacy_lenient_setter: false,
+            exposed: None,
         });
         def.add_attribute(AttributeDef {
             id: "hostname",
@@ -84,6 +88,7 @@ impl WebIdlInterface<crate::js::Types> for Location {
             replaceable: false,
             put_forwards: None,
             legacy_lenient_setter: false,
+            exposed: None,
         });
         def.add_attribute(AttributeDef {
             id: "port",
@@ -96,6 +101,7 @@ impl WebIdlInterface<crate::js::Types> for Location {
             replaceable: false,
             put_forwards: None,
             legacy_lenient_setter: false,
+            exposed: None,
         });
         def.add_attribute(AttributeDef {
             id: "pathname",
@@ -108,6 +114,7 @@ impl WebIdlInterface<crate::js::Types> for Location {
             replaceable: false,
             put_forwards: None,
             legacy_lenient_setter: false,
+            exposed: None,
         });
         def.add_attribute(AttributeDef {
             id: "search",
@@ -120,6 +127,7 @@ impl WebIdlInterface<crate::js::Types> for Location {
             replaceable: false,
             put_forwards: None,
             legacy_lenient_setter: false,
+            exposed: None,
         });
         def.add_attribute(AttributeDef {
             id: "hash",
@@ -132,6 +140,7 @@ impl WebIdlInterface<crate::js::Types> for Location {
             replaceable: false,
             put_forwards: None,
             legacy_lenient_setter: false,
+            exposed: None,
         });
         def.add_attribute(AttributeDef {
             id: "ancestorOrigins",
@@ -144,6 +153,7 @@ impl WebIdlInterface<crate::js::Types> for Location {
             replaceable: false,
             put_forwards: None,
             legacy_lenient_setter: false,
+            exposed: None,
         });
         def.add_operation(OperationDef {
             id: "assign",
@@ -152,6 +162,7 @@ impl WebIdlInterface<crate::js::Types> for Location {
             static_: false,
             unforgeable: false,
             promise_type: false,
+            exposed: None,
         });
         def.add_operation(OperationDef {
             id: "replace",
@@ -160,6 +171,7 @@ impl WebIdlInterface<crate::js::Types> for Location {
             static_: false,
             unforgeable: false,
             promise_type: false,
+            exposed: None,
         });
         def.add_operation(OperationDef {
             id: "reload",
@@ -168,6 +180,7 @@ impl WebIdlInterface<crate::js::Types> for Location {
             static_: false,
             unforgeable: false,
             promise_type: false,
+            exposed: None,
         });
         def.add_operation(OperationDef {
             id: "toString",
@@ -176,6 +189,7 @@ impl WebIdlInterface<crate::js::Types> for Location {
             static_: false,
             unforgeable: false,
             promise_type: false,
+            exposed: None,
         });
     }
 }

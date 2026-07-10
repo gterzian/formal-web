@@ -42,6 +42,7 @@ impl WebIdlInterface<Types> for ReadableStream {
             replaceable: false,
             put_forwards: None,
             legacy_lenient_setter: false,
+            exposed: None,
         });
         def.add_operation(OperationDef {
             id: "pipeThrough",
@@ -50,6 +51,7 @@ impl WebIdlInterface<Types> for ReadableStream {
             static_: false,
             unforgeable: false,
             promise_type: false,
+            exposed: None,
         });
         def.add_operation(OperationDef {
             id: "cancel",
@@ -58,6 +60,7 @@ impl WebIdlInterface<Types> for ReadableStream {
             static_: false,
             unforgeable: false,
             promise_type: false,
+            exposed: None,
         });
         def.add_operation(OperationDef {
             id: "getReader",
@@ -66,6 +69,7 @@ impl WebIdlInterface<Types> for ReadableStream {
             static_: false,
             unforgeable: false,
             promise_type: false,
+            exposed: None,
         });
         def.add_operation(OperationDef {
             id: "tee",
@@ -74,6 +78,7 @@ impl WebIdlInterface<Types> for ReadableStream {
             static_: false,
             unforgeable: false,
             promise_type: false,
+            exposed: None,
         });
         // https://streams.spec.whatwg.org/#readablestream-static-methods
         def.add_operation(OperationDef {
@@ -83,6 +88,7 @@ impl WebIdlInterface<Types> for ReadableStream {
             static_: true,
             unforgeable: false,
             promise_type: false,
+            exposed: None,
         });
     }
 }
@@ -102,6 +108,7 @@ impl WebIdlInterface<Types> for ReadableStreamDefaultController {
             replaceable: false,
             put_forwards: None,
             legacy_lenient_setter: false,
+            exposed: None,
         });
         def.add_operation(OperationDef {
             id: "close",
@@ -110,6 +117,7 @@ impl WebIdlInterface<Types> for ReadableStreamDefaultController {
             static_: false,
             unforgeable: false,
             promise_type: false,
+            exposed: None,
         });
         def.add_operation(OperationDef {
             id: "enqueue",
@@ -118,6 +126,7 @@ impl WebIdlInterface<Types> for ReadableStreamDefaultController {
             static_: false,
             unforgeable: false,
             promise_type: false,
+            exposed: None,
         });
         def.add_operation(OperationDef {
             id: "error",
@@ -126,6 +135,7 @@ impl WebIdlInterface<Types> for ReadableStreamDefaultController {
             static_: false,
             unforgeable: false,
             promise_type: false,
+            exposed: None,
         });
     }
 }
@@ -145,6 +155,7 @@ impl WebIdlInterface<Types> for ReadableByteStreamController {
             replaceable: false,
             put_forwards: None,
             legacy_lenient_setter: false,
+            exposed: None,
         });
         def.add_attribute(AttributeDef {
             id: "desiredSize",
@@ -157,6 +168,7 @@ impl WebIdlInterface<Types> for ReadableByteStreamController {
             replaceable: false,
             put_forwards: None,
             legacy_lenient_setter: false,
+            exposed: None,
         });
         def.add_operation(OperationDef {
             id: "close",
@@ -165,6 +177,7 @@ impl WebIdlInterface<Types> for ReadableByteStreamController {
             static_: false,
             unforgeable: false,
             promise_type: false,
+            exposed: None,
         });
         def.add_operation(OperationDef {
             id: "enqueue",
@@ -173,6 +186,7 @@ impl WebIdlInterface<Types> for ReadableByteStreamController {
             static_: false,
             unforgeable: false,
             promise_type: false,
+            exposed: None,
         });
         def.add_operation(OperationDef {
             id: "error",
@@ -181,6 +195,7 @@ impl WebIdlInterface<Types> for ReadableByteStreamController {
             static_: false,
             unforgeable: false,
             promise_type: false,
+            exposed: None,
         });
     }
 }
@@ -208,6 +223,7 @@ impl WebIdlInterface<Types> for ReadableStreamDefaultReader {
             replaceable: false,
             put_forwards: None,
             legacy_lenient_setter: false,
+            exposed: None,
         });
         def.add_operation(OperationDef {
             id: "cancel",
@@ -216,6 +232,7 @@ impl WebIdlInterface<Types> for ReadableStreamDefaultReader {
             static_: false,
             unforgeable: false,
             promise_type: false,
+            exposed: None,
         });
         def.add_operation(OperationDef {
             id: "read",
@@ -224,6 +241,7 @@ impl WebIdlInterface<Types> for ReadableStreamDefaultReader {
             static_: false,
             unforgeable: false,
             promise_type: false,
+            exposed: None,
         });
         def.add_operation(OperationDef {
             id: "releaseLock",
@@ -232,6 +250,7 @@ impl WebIdlInterface<Types> for ReadableStreamDefaultReader {
             static_: false,
             unforgeable: false,
             promise_type: false,
+            exposed: None,
         });
     }
 }
@@ -259,6 +278,7 @@ impl WebIdlInterface<Types> for ReadableStreamBYOBReader {
             replaceable: false,
             put_forwards: None,
             legacy_lenient_setter: false,
+            exposed: None,
         });
         def.add_operation(OperationDef {
             id: "cancel",
@@ -267,6 +287,7 @@ impl WebIdlInterface<Types> for ReadableStreamBYOBReader {
             static_: false,
             unforgeable: false,
             promise_type: false,
+            exposed: None,
         });
         def.add_operation(OperationDef {
             id: "read",
@@ -275,6 +296,7 @@ impl WebIdlInterface<Types> for ReadableStreamBYOBReader {
             static_: false,
             unforgeable: false,
             promise_type: false,
+            exposed: None,
         });
         def.add_operation(OperationDef {
             id: "releaseLock",
@@ -283,6 +305,7 @@ impl WebIdlInterface<Types> for ReadableStreamBYOBReader {
             static_: false,
             unforgeable: false,
             promise_type: false,
+            exposed: None,
         });
     }
 }
@@ -302,6 +325,7 @@ impl WebIdlInterface<Types> for ReadableStreamBYOBRequest {
             replaceable: false,
             put_forwards: None,
             legacy_lenient_setter: false,
+            exposed: None,
         });
         def.add_operation(OperationDef {
             id: "respond",
@@ -310,6 +334,7 @@ impl WebIdlInterface<Types> for ReadableStreamBYOBRequest {
             static_: false,
             unforgeable: false,
             promise_type: false,
+            exposed: None,
         });
         def.add_operation(OperationDef {
             id: "respondWithNewView",
@@ -318,6 +343,7 @@ impl WebIdlInterface<Types> for ReadableStreamBYOBRequest {
             static_: false,
             unforgeable: false,
             promise_type: false,
+            exposed: None,
         });
     }
 }

@@ -44,6 +44,7 @@ impl WebIdlInterface<crate::js::Types> for EventTarget {
             static_: false,
             unforgeable: false,
             promise_type: false,
+            exposed: None,
         });
         def.add_operation(OperationDef {
             id: "removeEventListener",
@@ -52,6 +53,7 @@ impl WebIdlInterface<crate::js::Types> for EventTarget {
             static_: false,
             unforgeable: false,
             promise_type: false,
+            exposed: None,
         });
         def.add_operation(OperationDef {
             id: "dispatchEvent",
@@ -60,6 +62,7 @@ impl WebIdlInterface<crate::js::Types> for EventTarget {
             static_: false,
             unforgeable: false,
             promise_type: false,
+            exposed: None,
         });
     }
 }

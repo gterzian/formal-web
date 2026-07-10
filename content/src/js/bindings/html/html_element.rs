@@ -33,6 +33,7 @@ impl WebIdlInterface<crate::js::Types> for HTMLElement {
             replaceable: false,
             put_forwards: None,
             legacy_lenient_setter: false,
+            exposed: None,
         });
         def.add_attribute(AttributeDef {
             id: "lang",
@@ -45,6 +46,7 @@ impl WebIdlInterface<crate::js::Types> for HTMLElement {
             replaceable: false,
             put_forwards: None,
             legacy_lenient_setter: false,
+            exposed: None,
         });
         def.add_attribute(AttributeDef {
             id: "dir",
@@ -57,6 +59,7 @@ impl WebIdlInterface<crate::js::Types> for HTMLElement {
             replaceable: false,
             put_forwards: None,
             legacy_lenient_setter: false,
+            exposed: None,
         });
         def.add_attribute(AttributeDef {
             id: "hidden",
@@ -69,6 +72,7 @@ impl WebIdlInterface<crate::js::Types> for HTMLElement {
             replaceable: false,
             put_forwards: None,
             legacy_lenient_setter: false,
+            exposed: None,
         });
         def.add_attribute(AttributeDef {
             id: "style",
@@ -81,6 +85,7 @@ impl WebIdlInterface<crate::js::Types> for HTMLElement {
             replaceable: false,
             put_forwards: None,
             legacy_lenient_setter: false,
+            exposed: None,
         });
     }
 }

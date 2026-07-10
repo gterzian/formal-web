@@ -34,6 +34,7 @@ impl WebIdlInterface<crate::js::Types> for AbortController {
             replaceable: false,
             put_forwards: None,
             legacy_lenient_setter: false,
+            exposed: None,
         });
         def.add_operation(OperationDef {
             id: "abort",
@@ -42,6 +43,7 @@ impl WebIdlInterface<crate::js::Types> for AbortController {
             static_: false,
             unforgeable: false,
             promise_type: false,
+            exposed: None,
         });
     }
 }

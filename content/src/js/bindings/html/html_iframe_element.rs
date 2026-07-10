@@ -30,6 +30,7 @@ impl WebIdlInterface<Types> for HTMLIFrameElement {
             replaceable: false,
             put_forwards: None,
             legacy_lenient_setter: false,
+            exposed: None,
         });
         def.add_attribute(AttributeDef {
             id: "srcdoc",
@@ -42,6 +43,7 @@ impl WebIdlInterface<Types> for HTMLIFrameElement {
             replaceable: false,
             put_forwards: None,
             legacy_lenient_setter: false,
+            exposed: None,
         });
         def.add_attribute(AttributeDef {
             id: "name",
@@ -54,6 +56,7 @@ impl WebIdlInterface<Types> for HTMLIFrameElement {
             replaceable: false,
             put_forwards: None,
             legacy_lenient_setter: false,
+            exposed: None,
         });
         def.add_attribute(AttributeDef {
             id: "width",
@@ -66,6 +69,7 @@ impl WebIdlInterface<Types> for HTMLIFrameElement {
             replaceable: false,
             put_forwards: None,
             legacy_lenient_setter: false,
+            exposed: None,
         });
         def.add_attribute(AttributeDef {
             id: "height",
@@ -78,6 +82,7 @@ impl WebIdlInterface<Types> for HTMLIFrameElement {
             replaceable: false,
             put_forwards: None,
             legacy_lenient_setter: false,
+            exposed: None,
         });
         def.add_attribute(AttributeDef {
             id: "contentDocument",
@@ -90,6 +95,7 @@ impl WebIdlInterface<Types> for HTMLIFrameElement {
             replaceable: false,
             put_forwards: None,
             legacy_lenient_setter: false,
+            exposed: None,
         });
         def.add_attribute(AttributeDef {
             id: "contentWindow",
@@ -102,6 +108,7 @@ impl WebIdlInterface<Types> for HTMLIFrameElement {
             replaceable: false,
             put_forwards: None,
             legacy_lenient_setter: false,
+            exposed: None,
         });
         def.add_attribute(AttributeDef {
             id: "onload",
@@ -114,6 +121,7 @@ impl WebIdlInterface<Types> for HTMLIFrameElement {
             replaceable: false,
             put_forwards: None,
             legacy_lenient_setter: false,
+            exposed: None,
         });
         def.add_attribute(AttributeDef {
             id: "onerror",
@@ -126,6 +134,7 @@ impl WebIdlInterface<Types> for HTMLIFrameElement {
             replaceable: false,
             put_forwards: None,
             legacy_lenient_setter: false,
+            exposed: None,
         });
     }
 }

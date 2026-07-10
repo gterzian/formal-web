@@ -34,6 +34,7 @@ impl WebIdlInterface<crate::js::Types> for Element {
             replaceable: false,
             put_forwards: None,
             legacy_lenient_setter: false,
+            exposed: None,
         });
         def.add_attribute(AttributeDef {
             id: "tagName",
@@ -46,6 +47,7 @@ impl WebIdlInterface<crate::js::Types> for Element {
             replaceable: false,
             put_forwards: None,
             legacy_lenient_setter: false,
+            exposed: None,
         });
         def.add_attribute(AttributeDef {
             id: "innerHTML",
@@ -58,6 +60,7 @@ impl WebIdlInterface<crate::js::Types> for Element {
             replaceable: false,
             put_forwards: None,
             legacy_lenient_setter: false,
+            exposed: None,
         });
         def.add_attribute(AttributeDef {
             id: "classList",
@@ -70,6 +73,7 @@ impl WebIdlInterface<crate::js::Types> for Element {
             replaceable: false,
             put_forwards: None,
             legacy_lenient_setter: false,
+            exposed: None,
         });
 
         // §3.7.7: Regular operations
@@ -80,6 +84,7 @@ impl WebIdlInterface<crate::js::Types> for Element {
             static_: false,
             unforgeable: false,
             promise_type: false,
+            exposed: None,
         });
         def.add_operation(OperationDef {
             id: "querySelectorAll",
@@ -88,6 +93,7 @@ impl WebIdlInterface<crate::js::Types> for Element {
             static_: false,
             unforgeable: false,
             promise_type: false,
+            exposed: None,
         });
         def.add_operation(OperationDef {
             id: "insertAdjacentText",
@@ -96,6 +102,7 @@ impl WebIdlInterface<crate::js::Types> for Element {
             static_: false,
             unforgeable: false,
             promise_type: false,
+            exposed: None,
         });
         def.add_operation(OperationDef {
             id: "setAttribute",
@@ -104,6 +111,7 @@ impl WebIdlInterface<crate::js::Types> for Element {
             static_: false,
             unforgeable: false,
             promise_type: false,
+            exposed: None,
         });
         def.add_operation(OperationDef {
             id: "setAttributeNS",
@@ -112,6 +120,7 @@ impl WebIdlInterface<crate::js::Types> for Element {
             static_: false,
             unforgeable: false,
             promise_type: false,
+            exposed: None,
         });
         def.add_operation(OperationDef {
             id: "getAttribute",
@@ -120,6 +129,7 @@ impl WebIdlInterface<crate::js::Types> for Element {
             static_: false,
             unforgeable: false,
             promise_type: false,
+            exposed: None,
         });
         def.add_operation(OperationDef {
             id: "hasAttribute",
@@ -128,6 +138,7 @@ impl WebIdlInterface<crate::js::Types> for Element {
             static_: false,
             unforgeable: false,
             promise_type: false,
+            exposed: None,
         });
         def.add_operation(OperationDef {
             id: "removeAttribute",
@@ -136,6 +147,7 @@ impl WebIdlInterface<crate::js::Types> for Element {
             static_: false,
             unforgeable: false,
             promise_type: false,
+            exposed: None,
         });
         def.add_operation(OperationDef {
             id: "getBoundingClientRect",
@@ -144,6 +156,7 @@ impl WebIdlInterface<crate::js::Types> for Element {
             static_: false,
             unforgeable: false,
             promise_type: false,
+            exposed: None,
         });
     }
 }

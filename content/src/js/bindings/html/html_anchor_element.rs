@@ -27,6 +27,7 @@ impl WebIdlInterface<crate::js::Types> for HTMLAnchorElement {
             replaceable: false,
             put_forwards: None,
             legacy_lenient_setter: false,
+            exposed: None,
         });
         def.add_attribute(AttributeDef {
             id: "target",
@@ -39,6 +40,7 @@ impl WebIdlInterface<crate::js::Types> for HTMLAnchorElement {
             replaceable: false,
             put_forwards: None,
             legacy_lenient_setter: false,
+            exposed: None,
         });
         def.add_attribute(AttributeDef {
             id: "download",
@@ -51,6 +53,7 @@ impl WebIdlInterface<crate::js::Types> for HTMLAnchorElement {
             replaceable: false,
             put_forwards: None,
             legacy_lenient_setter: false,
+            exposed: None,
         });
         def.add_attribute(AttributeDef {
             id: "rel",
@@ -63,6 +66,7 @@ impl WebIdlInterface<crate::js::Types> for HTMLAnchorElement {
             replaceable: false,
             put_forwards: None,
             legacy_lenient_setter: false,
+            exposed: None,
         });
         def.add_attribute(AttributeDef {
             id: "referrerPolicy",
@@ -75,6 +79,7 @@ impl WebIdlInterface<crate::js::Types> for HTMLAnchorElement {
             replaceable: false,
             put_forwards: None,
             legacy_lenient_setter: false,
+            exposed: None,
         });
     }
 }

@@ -42,6 +42,7 @@ impl WebIdlInterface<Types> for ByteLengthQueuingStrategy {
             replaceable: false,
             put_forwards: None,
             legacy_lenient_setter: false,
+            exposed: None,
         });
         def.add_attribute(AttributeDef {
             id: "size",
@@ -54,6 +55,7 @@ impl WebIdlInterface<Types> for ByteLengthQueuingStrategy {
             replaceable: false,
             put_forwards: None,
             legacy_lenient_setter: false,
+            exposed: None,
         });
     }
 }
@@ -89,6 +91,7 @@ impl WebIdlInterface<Types> for CountQueuingStrategy {
             replaceable: false,
             put_forwards: None,
             legacy_lenient_setter: false,
+            exposed: None,
         });
         def.add_attribute(AttributeDef {
             id: "size",
@@ -101,6 +104,7 @@ impl WebIdlInterface<Types> for CountQueuingStrategy {
             replaceable: false,
             put_forwards: None,
             legacy_lenient_setter: false,
+            exposed: None,
         });
     }
 }

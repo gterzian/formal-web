@@ -18,6 +18,10 @@ pub(crate) struct OperationDef<T: JsTypes> {
     pub static_: bool,
     pub unforgeable: bool,
     pub promise_type: bool,
+    /// Optional exposure restriction, e.g. "Window" or "Window,Worker".
+    /// `None` means exposed in all realms (the common case).
+    /// Implements Step 1.1 of <https://webidl.spec.whatwg.org/#define-the-operations>.
+    pub exposed: Option<&'static str>,
 }
 
 /// <https://webidl.spec.whatwg.org/#define-the-regular-operations>
@@ -64,6 +68,12 @@ where
         .ok_or_else(|| engine.new_type_error("target is not an object in operation definition"))?;
 
     for op in operations {
+        // Step 1.1: "If op is not exposed in realm, then continue."
+        if let Some(exposed_globals) = op.exposed {
+            if exposed_globals != "Window" {
+                continue;
+            }
+        }
         let method = engine.create_builtin_fn(
             Box::new({
                 let op_method = op.method;

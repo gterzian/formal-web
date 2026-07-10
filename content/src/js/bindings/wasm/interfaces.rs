@@ -38,6 +38,7 @@ impl WebIdlInterface<crate::js::Types> for WasmModule {
             static_: true,
             unforgeable: false,
             promise_type: false,
+            exposed: None,
         });
         // <https://webassembly.github.io/spec/js-api/#dom-module-imports>
         // Note: Not yet implemented.
@@ -50,6 +51,7 @@ impl WebIdlInterface<crate::js::Types> for WasmModule {
             static_: true,
             unforgeable: false,
             promise_type: false,
+            exposed: None,
         });
         // <https://webassembly.github.io/spec/js-api/#dom-module-customsections>
         // Note: Not yet implemented.
@@ -62,6 +64,7 @@ impl WebIdlInterface<crate::js::Types> for WasmModule {
             static_: true,
             unforgeable: false,
             promise_type: false,
+            exposed: None,
         });
     }
 
@@ -105,6 +108,7 @@ impl WebIdlInterface<crate::js::Types> for WasmInstance {
             replaceable: false,
             put_forwards: None,
             legacy_lenient_setter: false,
+            exposed: None,
         });
     }
 }

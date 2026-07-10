@@ -539,6 +539,7 @@ impl WebIdlInterface<TestTypes> for TestWidget {
             replaceable: false,
             put_forwards: None,
             legacy_lenient_setter: false,
+            exposed: None,
         });
         def.add_attribute(AttributeDef {
             id: "visible",
@@ -551,6 +552,7 @@ impl WebIdlInterface<TestTypes> for TestWidget {
             replaceable: false,
             put_forwards: None,
             legacy_lenient_setter: false,
+            exposed: None,
         });
         def.add_attribute(AttributeDef {
             id: "count",
@@ -563,6 +565,7 @@ impl WebIdlInterface<TestTypes> for TestWidget {
             replaceable: false,
             put_forwards: None,
             legacy_lenient_setter: false,
+            exposed: None,
         });
         def.add_operation(OperationDef {
             id: "increment",
@@ -571,6 +574,7 @@ impl WebIdlInterface<TestTypes> for TestWidget {
             static_: false,
             unforgeable: false,
             promise_type: false,
+            exposed: None,
         });
         def.add_operation(OperationDef {
             id: "toObject",
@@ -579,6 +583,7 @@ impl WebIdlInterface<TestTypes> for TestWidget {
             static_: false,
             unforgeable: false,
             promise_type: false,
+            exposed: None,
         });
         def.add_operation(OperationDef {
             id: "toArray",
@@ -587,6 +592,7 @@ impl WebIdlInterface<TestTypes> for TestWidget {
             static_: false,
             unforgeable: false,
             promise_type: false,
+            exposed: None,
         });
         def.add_operation(OperationDef {
             id: "formatLabel",
@@ -595,6 +601,7 @@ impl WebIdlInterface<TestTypes> for TestWidget {
             static_: false,
             unforgeable: false,
             promise_type: false,
+            exposed: None,
         });
         def.add_operation(OperationDef {
             id: "delayedTitle",
@@ -603,6 +610,7 @@ impl WebIdlInterface<TestTypes> for TestWidget {
             static_: false,
             unforgeable: false,
             promise_type: true,
+            exposed: None,
         });
         def.add_operation(OperationDef {
             id: "withCallback",
@@ -611,6 +619,7 @@ impl WebIdlInterface<TestTypes> for TestWidget {
             static_: false,
             unforgeable: false,
             promise_type: false,
+            exposed: None,
         });
         def.add_operation(OperationDef {
             id: "processItems",
@@ -619,6 +628,7 @@ impl WebIdlInterface<TestTypes> for TestWidget {
             static_: false,
             unforgeable: false,
             promise_type: false,
+            exposed: None,
         });
         def.add_operation(OperationDef {
             id: "create",
@@ -627,6 +637,7 @@ impl WebIdlInterface<TestTypes> for TestWidget {
             static_: true,
             unforgeable: false,
             promise_type: false,
+            exposed: None,
         });
         def.add_operation(OperationDef {
             id: "fromTags",
@@ -635,6 +646,7 @@ impl WebIdlInterface<TestTypes> for TestWidget {
             static_: true,
             unforgeable: false,
             promise_type: false,
+            exposed: None,
         });
         def.add_operation(OperationDef {
             id: "storeCallback",
@@ -643,6 +655,7 @@ impl WebIdlInterface<TestTypes> for TestWidget {
             static_: false,
             unforgeable: false,
             promise_type: false,
+            exposed: None,
         });
     }
 }

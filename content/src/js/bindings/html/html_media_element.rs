@@ -53,6 +53,7 @@ impl WebIdlInterface<crate::js::Types> for HTMLMediaElement {
             replaceable: false,
             put_forwards: None,
             legacy_lenient_setter: false,
+            exposed: None,
         });
         def.add_attribute(AttributeDef {
             id: "readyState",
@@ -65,6 +66,7 @@ impl WebIdlInterface<crate::js::Types> for HTMLMediaElement {
             replaceable: false,
             put_forwards: None,
             legacy_lenient_setter: false,
+            exposed: None,
         });
         def.add_attribute(AttributeDef {
             id: "src",
@@ -77,6 +79,7 @@ impl WebIdlInterface<crate::js::Types> for HTMLMediaElement {
             replaceable: false,
             put_forwards: None,
             legacy_lenient_setter: false,
+            exposed: None,
         });
         def.add_attribute(AttributeDef {
             id: "currentSrc",
@@ -89,6 +92,7 @@ impl WebIdlInterface<crate::js::Types> for HTMLMediaElement {
             replaceable: false,
             put_forwards: None,
             legacy_lenient_setter: false,
+            exposed: None,
         });
         def.add_attribute(AttributeDef {
             id: "duration",
@@ -101,6 +105,7 @@ impl WebIdlInterface<crate::js::Types> for HTMLMediaElement {
             replaceable: false,
             put_forwards: None,
             legacy_lenient_setter: false,
+            exposed: None,
         });
         def.add_attribute(AttributeDef {
             id: "paused",
@@ -113,6 +118,7 @@ impl WebIdlInterface<crate::js::Types> for HTMLMediaElement {
             replaceable: false,
             put_forwards: None,
             legacy_lenient_setter: false,
+            exposed: None,
         });
         def.add_attribute(AttributeDef {
             id: "seeking",
@@ -125,6 +131,7 @@ impl WebIdlInterface<crate::js::Types> for HTMLMediaElement {
             replaceable: false,
             put_forwards: None,
             legacy_lenient_setter: false,
+            exposed: None,
         });
         def.add_attribute(AttributeDef {
             id: "currentTime",
@@ -137,6 +144,7 @@ impl WebIdlInterface<crate::js::Types> for HTMLMediaElement {
             replaceable: false,
             put_forwards: None,
             legacy_lenient_setter: false,
+            exposed: None,
         });
         def.add_attribute(AttributeDef {
             id: "error",
@@ -149,6 +157,7 @@ impl WebIdlInterface<crate::js::Types> for HTMLMediaElement {
             replaceable: false,
             put_forwards: None,
             legacy_lenient_setter: false,
+            exposed: None,
         });
         def.add_attribute(AttributeDef {
             id: "autoplay",
@@ -161,6 +170,7 @@ impl WebIdlInterface<crate::js::Types> for HTMLMediaElement {
             replaceable: false,
             put_forwards: None,
             legacy_lenient_setter: false,
+            exposed: None,
         });
         def.add_attribute(AttributeDef {
             id: "loop",
@@ -173,6 +183,7 @@ impl WebIdlInterface<crate::js::Types> for HTMLMediaElement {
             replaceable: false,
             put_forwards: None,
             legacy_lenient_setter: false,
+            exposed: None,
         });
         def.add_attribute(AttributeDef {
             id: "controls",
@@ -185,6 +196,7 @@ impl WebIdlInterface<crate::js::Types> for HTMLMediaElement {
             replaceable: false,
             put_forwards: None,
             legacy_lenient_setter: false,
+            exposed: None,
         });
         def.add_attribute(AttributeDef {
             id: "muted",
@@ -197,6 +209,7 @@ impl WebIdlInterface<crate::js::Types> for HTMLMediaElement {
             replaceable: false,
             put_forwards: None,
             legacy_lenient_setter: false,
+            exposed: None,
         });
         def.add_attribute(AttributeDef {
             id: "volume",
@@ -209,6 +222,7 @@ impl WebIdlInterface<crate::js::Types> for HTMLMediaElement {
             replaceable: false,
             put_forwards: None,
             legacy_lenient_setter: false,
+            exposed: None,
         });
         // Operations
         def.add_operation(OperationDef {
@@ -218,6 +232,7 @@ impl WebIdlInterface<crate::js::Types> for HTMLMediaElement {
             static_: false,
             unforgeable: false,
             promise_type: false,
+            exposed: None,
         });
         def.add_operation(OperationDef {
             id: "play",
@@ -226,6 +241,7 @@ impl WebIdlInterface<crate::js::Types> for HTMLMediaElement {
             static_: false,
             unforgeable: false,
             promise_type: true,
+            exposed: None,
         });
         def.add_operation(OperationDef {
             id: "pause",
@@ -234,6 +250,7 @@ impl WebIdlInterface<crate::js::Types> for HTMLMediaElement {
             static_: false,
             unforgeable: false,
             promise_type: false,
+            exposed: None,
         });
         def.add_operation(OperationDef {
             id: "canPlayType",
@@ -242,6 +259,7 @@ impl WebIdlInterface<crate::js::Types> for HTMLMediaElement {
             static_: false,
             unforgeable: false,
             promise_type: false,
+            exposed: None,
         });
 
         def.add_attribute(AttributeDef {
@@ -255,6 +273,7 @@ impl WebIdlInterface<crate::js::Types> for HTMLMediaElement {
             replaceable: false,
             put_forwards: None,
             legacy_lenient_setter: false,
+            exposed: None,
         });
     }
 }

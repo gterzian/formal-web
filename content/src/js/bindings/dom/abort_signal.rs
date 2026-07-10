@@ -41,6 +41,7 @@ impl WebIdlInterface<Types> for AbortSignal {
             replaceable: false,
             put_forwards: None,
             legacy_lenient_setter: false,
+            exposed: None,
         });
         def.add_attribute(AttributeDef {
             id: "reason",
@@ -53,6 +54,7 @@ impl WebIdlInterface<Types> for AbortSignal {
             replaceable: false,
             put_forwards: None,
             legacy_lenient_setter: false,
+            exposed: None,
         });
         def.add_attribute(AttributeDef {
             id: "onabort",
@@ -65,6 +67,7 @@ impl WebIdlInterface<Types> for AbortSignal {
             replaceable: false,
             put_forwards: None,
             legacy_lenient_setter: false,
+            exposed: None,
         });
         def.add_operation(OperationDef {
             id: "throwIfAborted",
@@ -73,6 +76,7 @@ impl WebIdlInterface<Types> for AbortSignal {
             static_: false,
             unforgeable: false,
             promise_type: false,
+            exposed: None,
         });
         // https://dom.spec.whatwg.org/#AbortSignal-static-members
         def.add_operation(OperationDef {
@@ -82,6 +86,7 @@ impl WebIdlInterface<Types> for AbortSignal {
             static_: true,
             unforgeable: false,
             promise_type: false,
+            exposed: None,
         });
         def.add_operation(OperationDef {
             id: "timeout",
@@ -90,6 +95,7 @@ impl WebIdlInterface<Types> for AbortSignal {
             static_: true,
             unforgeable: false,
             promise_type: false,
+            exposed: None,
         });
         def.add_operation(OperationDef {
             id: "any",
@@ -98,6 +104,7 @@ impl WebIdlInterface<Types> for AbortSignal {
             static_: true,
             unforgeable: false,
             promise_type: false,
+            exposed: None,
         });
     }
 }

@@ -16,6 +16,8 @@ pub(crate) enum ConstValue<T: JsTypes> {
 pub(crate) struct ConstantDef<T: JsTypes> {
     pub id: &'static str,
     pub value: ConstValue<T>,
+    /// Optional exposure restriction, e.g. "Window" or "Window,Worker".
+    pub exposed: Option<&'static str>,
 }
 
 impl<T: JsTypes> ConstantDef<T> {
@@ -23,6 +25,7 @@ impl<T: JsTypes> ConstantDef<T> {
         Self {
             id,
             value: ConstValue::Number(n),
+            exposed: None,
         }
     }
 }
@@ -37,6 +40,12 @@ where
     Ty: JsTypes + JsTypesWithRealm,
 {
     for constant in constants {
+        // Step 1.1: "If const is not exposed in realm, then continue."
+        if let Some(exposed_globals) = constant.exposed {
+            if exposed_globals != "Window" {
+                continue;
+            }
+        }
         let key = ec.property_key_from_str(constant.id);
         let value = match &constant.value {
             ConstValue::Number(n) => EcmascriptHost::value_from_number(ec, *n),

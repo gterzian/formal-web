@@ -26,6 +26,7 @@ impl WebIdlInterface<crate::js::Types> for HTMLInputElement {
             replaceable: false,
             put_forwards: None,
             legacy_lenient_setter: false,
+            exposed: None,
         });
         def.add_operation(OperationDef {
             id: "focus",
@@ -34,6 +35,7 @@ impl WebIdlInterface<crate::js::Types> for HTMLInputElement {
             static_: false,
             unforgeable: false,
             promise_type: false,
+            exposed: None,
         });
     }
 }

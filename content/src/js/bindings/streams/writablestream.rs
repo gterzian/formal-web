@@ -35,6 +35,7 @@ impl WebIdlInterface<Types> for WritableStream {
             replaceable: false,
             put_forwards: None,
             legacy_lenient_setter: false,
+            exposed: None,
         });
         def.add_operation(OperationDef {
             id: "abort",
@@ -43,6 +44,7 @@ impl WebIdlInterface<Types> for WritableStream {
             static_: false,
             unforgeable: false,
             promise_type: false,
+            exposed: None,
         });
         def.add_operation(OperationDef {
             id: "close",
@@ -51,6 +53,7 @@ impl WebIdlInterface<Types> for WritableStream {
             static_: false,
             unforgeable: false,
             promise_type: false,
+            exposed: None,
         });
         def.add_operation(OperationDef {
             id: "getWriter",
@@ -59,6 +62,7 @@ impl WebIdlInterface<Types> for WritableStream {
             static_: false,
             unforgeable: false,
             promise_type: false,
+            exposed: None,
         });
     }
 }
@@ -78,6 +82,7 @@ impl WebIdlInterface<Types> for WritableStreamDefaultController {
             replaceable: false,
             put_forwards: None,
             legacy_lenient_setter: false,
+            exposed: None,
         });
         def.add_operation(OperationDef {
             id: "error",
@@ -86,6 +91,7 @@ impl WebIdlInterface<Types> for WritableStreamDefaultController {
             static_: false,
             unforgeable: false,
             promise_type: false,
+            exposed: None,
         });
     }
 }
@@ -113,6 +119,7 @@ impl WebIdlInterface<Types> for WritableStreamDefaultWriter {
             replaceable: false,
             put_forwards: None,
             legacy_lenient_setter: false,
+            exposed: None,
         });
         def.add_attribute(AttributeDef {
             id: "desiredSize",
@@ -125,6 +132,7 @@ impl WebIdlInterface<Types> for WritableStreamDefaultWriter {
             replaceable: false,
             put_forwards: None,
             legacy_lenient_setter: false,
+            exposed: None,
         });
         def.add_attribute(AttributeDef {
             id: "ready",
@@ -137,6 +145,7 @@ impl WebIdlInterface<Types> for WritableStreamDefaultWriter {
             replaceable: false,
             put_forwards: None,
             legacy_lenient_setter: false,
+            exposed: None,
         });
         def.add_operation(OperationDef {
             id: "abort",
@@ -145,6 +154,7 @@ impl WebIdlInterface<Types> for WritableStreamDefaultWriter {
             static_: false,
             unforgeable: false,
             promise_type: false,
+            exposed: None,
         });
         def.add_operation(OperationDef {
             id: "close",
@@ -153,6 +163,7 @@ impl WebIdlInterface<Types> for WritableStreamDefaultWriter {
             static_: false,
             unforgeable: false,
             promise_type: false,
+            exposed: None,
         });
         def.add_operation(OperationDef {
             id: "releaseLock",
@@ -161,6 +172,7 @@ impl WebIdlInterface<Types> for WritableStreamDefaultWriter {
             static_: false,
             unforgeable: false,
             promise_type: false,
+            exposed: None,
         });
         def.add_operation(OperationDef {
             id: "write",
@@ -169,6 +181,7 @@ impl WebIdlInterface<Types> for WritableStreamDefaultWriter {
             static_: false,
             unforgeable: false,
             promise_type: false,
+            exposed: None,
         });
     }
 }

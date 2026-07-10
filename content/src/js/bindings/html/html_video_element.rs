@@ -49,6 +49,7 @@ impl WebIdlInterface<crate::js::Types> for HTMLVideoElement {
             replaceable: false,
             put_forwards: None,
             legacy_lenient_setter: false,
+            exposed: None,
         });
         def.add_attribute(AttributeDef {
             id: "videoHeight",
@@ -61,6 +62,7 @@ impl WebIdlInterface<crate::js::Types> for HTMLVideoElement {
             replaceable: false,
             put_forwards: None,
             legacy_lenient_setter: false,
+            exposed: None,
         });
         def.add_attribute(AttributeDef {
             id: "poster",
@@ -73,6 +75,7 @@ impl WebIdlInterface<crate::js::Types> for HTMLVideoElement {
             replaceable: false,
             put_forwards: None,
             legacy_lenient_setter: false,
+            exposed: None,
         });
         def.add_attribute(AttributeDef {
             id: "playsInline",
@@ -85,6 +88,7 @@ impl WebIdlInterface<crate::js::Types> for HTMLVideoElement {
             replaceable: false,
             put_forwards: None,
             legacy_lenient_setter: false,
+            exposed: None,
         });
         def.add_attribute(AttributeDef {
             id: "width",
@@ -97,6 +101,7 @@ impl WebIdlInterface<crate::js::Types> for HTMLVideoElement {
             replaceable: false,
             put_forwards: None,
             legacy_lenient_setter: false,
+            exposed: None,
         });
         def.add_attribute(AttributeDef {
             id: "height",
@@ -109,6 +114,7 @@ impl WebIdlInterface<crate::js::Types> for HTMLVideoElement {
             replaceable: false,
             put_forwards: None,
             legacy_lenient_setter: false,
+            exposed: None,
         });
     }
 }

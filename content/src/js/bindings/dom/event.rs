@@ -62,6 +62,7 @@ impl WebIdlInterface<crate::js::Types> for Event {
             replaceable: false,
             put_forwards: None,
             legacy_lenient_setter: false,
+            exposed: None,
         });
         def.add_attribute(AttributeDef {
             id: "target",
@@ -74,6 +75,7 @@ impl WebIdlInterface<crate::js::Types> for Event {
             replaceable: false,
             put_forwards: None,
             legacy_lenient_setter: false,
+            exposed: None,
         });
         def.add_attribute(AttributeDef {
             id: "currentTarget",
@@ -86,6 +88,7 @@ impl WebIdlInterface<crate::js::Types> for Event {
             replaceable: false,
             put_forwards: None,
             legacy_lenient_setter: false,
+            exposed: None,
         });
         def.add_attribute(AttributeDef {
             id: "eventPhase",
@@ -98,6 +101,7 @@ impl WebIdlInterface<crate::js::Types> for Event {
             replaceable: false,
             put_forwards: None,
             legacy_lenient_setter: false,
+            exposed: None,
         });
         def.add_attribute(AttributeDef {
             id: "bubbles",
@@ -110,6 +114,7 @@ impl WebIdlInterface<crate::js::Types> for Event {
             replaceable: false,
             put_forwards: None,
             legacy_lenient_setter: false,
+            exposed: None,
         });
         def.add_attribute(AttributeDef {
             id: "cancelable",
@@ -122,6 +127,7 @@ impl WebIdlInterface<crate::js::Types> for Event {
             replaceable: false,
             put_forwards: None,
             legacy_lenient_setter: false,
+            exposed: None,
         });
         def.add_attribute(AttributeDef {
             id: "defaultPrevented",
@@ -134,6 +140,7 @@ impl WebIdlInterface<crate::js::Types> for Event {
             replaceable: false,
             put_forwards: None,
             legacy_lenient_setter: false,
+            exposed: None,
         });
         def.add_attribute(AttributeDef {
             id: "cancelBubble",
@@ -146,6 +153,7 @@ impl WebIdlInterface<crate::js::Types> for Event {
             replaceable: false,
             put_forwards: None,
             legacy_lenient_setter: false,
+            exposed: None,
         });
         def.add_attribute(AttributeDef {
             id: "isTrusted",
@@ -158,6 +166,7 @@ impl WebIdlInterface<crate::js::Types> for Event {
             replaceable: false,
             put_forwards: None,
             legacy_lenient_setter: false,
+            exposed: None,
         });
         def.add_attribute(AttributeDef {
             id: "timeStamp",
@@ -170,6 +179,7 @@ impl WebIdlInterface<crate::js::Types> for Event {
             replaceable: false,
             put_forwards: None,
             legacy_lenient_setter: false,
+            exposed: None,
         });
 
         // §3.7.7: Regular operations
@@ -180,6 +190,7 @@ impl WebIdlInterface<crate::js::Types> for Event {
             static_: false,
             unforgeable: false,
             promise_type: false,
+            exposed: None,
         });
         def.add_operation(OperationDef {
             id: "stopImmediatePropagation",
@@ -188,6 +199,7 @@ impl WebIdlInterface<crate::js::Types> for Event {
             static_: false,
             unforgeable: false,
             promise_type: false,
+            exposed: None,
         });
         def.add_operation(OperationDef {
             id: "preventDefault",
@@ -196,6 +208,7 @@ impl WebIdlInterface<crate::js::Types> for Event {
             static_: false,
             unforgeable: false,
             promise_type: false,
+            exposed: None,
         });
     }
 }

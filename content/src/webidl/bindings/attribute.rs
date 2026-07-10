@@ -18,6 +18,10 @@ pub(crate) struct AttributeDef<T: JsTypes> {
     pub replaceable: bool,
     pub put_forwards: Option<&'static str>,
     pub legacy_lenient_setter: bool,
+    /// Optional exposure restriction, e.g. "Window" or "Window,Worker".
+    /// `None` means exposed in all realms (the common case).
+    /// Implements Step 1.1 of <https://webidl.spec.whatwg.org/#define-the-attributes>.
+    pub exposed: Option<&'static str>,
 }
 
 /// <https://webidl.spec.whatwg.org/#define-the-regular-attributes>
@@ -63,6 +67,15 @@ where
     let target_obj = Ty::value_as_object(target)
         .ok_or_else(|| engine.new_type_error("target is not an object in attribute definition"))?;
     for attr in attributes {
+        // Step 1.1: "If attr is not exposed in realm, then continue."
+        if let Some(exposed_globals) = attr.exposed {
+            // Note: For now, "Window" is the only supported global type.
+            // When Worker/other globals are supported, this will check
+            // the current realm's global type against the list.
+            if exposed_globals != "Window" {
+                continue;
+            }
+        }
         let getter_fn = engine.create_builtin_fn(
             Box::new({
                 let getter = attr.getter;

@@ -30,6 +30,7 @@ impl WebIdlInterface<crate::js::Types> for TransformStream {
             replaceable: false,
             put_forwards: None,
             legacy_lenient_setter: false,
+            exposed: None,
         });
         def.add_attribute(AttributeDef {
             id: "writable",
@@ -42,6 +43,7 @@ impl WebIdlInterface<crate::js::Types> for TransformStream {
             replaceable: false,
             put_forwards: None,
             legacy_lenient_setter: false,
+            exposed: None,
         });
     }
 }
@@ -61,6 +63,7 @@ impl WebIdlInterface<crate::js::Types> for TransformStreamDefaultController {
             replaceable: false,
             put_forwards: None,
             legacy_lenient_setter: false,
+            exposed: None,
         });
         def.add_operation(OperationDef {
             id: "enqueue",
@@ -69,6 +72,7 @@ impl WebIdlInterface<crate::js::Types> for TransformStreamDefaultController {
             static_: false,
             unforgeable: false,
             promise_type: false,
+            exposed: None,
         });
         def.add_operation(OperationDef {
             id: "error",
@@ -77,6 +81,7 @@ impl WebIdlInterface<crate::js::Types> for TransformStreamDefaultController {
             static_: false,
             unforgeable: false,
             promise_type: false,
+            exposed: None,
         });
         def.add_operation(OperationDef {
             id: "terminate",
@@ -85,6 +90,7 @@ impl WebIdlInterface<crate::js::Types> for TransformStreamDefaultController {
             static_: false,
             unforgeable: false,
             promise_type: false,
+            exposed: None,
         });
     }
 }

@@ -59,6 +59,7 @@ impl WebIdlInterface<crate::js::Types> for Node {
             replaceable: false,
             put_forwards: None,
             legacy_lenient_setter: false,
+            exposed: None,
         });
         def.add_attribute(AttributeDef {
             id: "ownerDocument",
@@ -71,6 +72,7 @@ impl WebIdlInterface<crate::js::Types> for Node {
             replaceable: false,
             put_forwards: None,
             legacy_lenient_setter: false,
+            exposed: None,
         });
         def.add_attribute(AttributeDef {
             id: "parentNode",
@@ -83,6 +85,7 @@ impl WebIdlInterface<crate::js::Types> for Node {
             replaceable: false,
             put_forwards: None,
             legacy_lenient_setter: false,
+            exposed: None,
         });
         def.add_attribute(AttributeDef {
             id: "childNodes",
@@ -95,6 +98,7 @@ impl WebIdlInterface<crate::js::Types> for Node {
             replaceable: false,
             put_forwards: None,
             legacy_lenient_setter: false,
+            exposed: None,
         });
         def.add_attribute(AttributeDef {
             id: "firstChild",
@@ -107,6 +111,7 @@ impl WebIdlInterface<crate::js::Types> for Node {
             replaceable: false,
             put_forwards: None,
             legacy_lenient_setter: false,
+            exposed: None,
         });
         def.add_attribute(AttributeDef {
             id: "lastChild",
@@ -119,6 +124,7 @@ impl WebIdlInterface<crate::js::Types> for Node {
             replaceable: false,
             put_forwards: None,
             legacy_lenient_setter: false,
+            exposed: None,
         });
         def.add_attribute(AttributeDef {
             id: "previousSibling",
@@ -131,6 +137,7 @@ impl WebIdlInterface<crate::js::Types> for Node {
             replaceable: false,
             put_forwards: None,
             legacy_lenient_setter: false,
+            exposed: None,
         });
         def.add_attribute(AttributeDef {
             id: "nextSibling",
@@ -143,6 +150,7 @@ impl WebIdlInterface<crate::js::Types> for Node {
             replaceable: false,
             put_forwards: None,
             legacy_lenient_setter: false,
+            exposed: None,
         });
         def.add_attribute(AttributeDef {
             id: "nodeName",
@@ -155,6 +163,7 @@ impl WebIdlInterface<crate::js::Types> for Node {
             replaceable: false,
             put_forwards: None,
             legacy_lenient_setter: false,
+            exposed: None,
         });
         def.add_attribute(AttributeDef {
             id: "nodeValue",
@@ -167,6 +176,7 @@ impl WebIdlInterface<crate::js::Types> for Node {
             replaceable: false,
             put_forwards: None,
             legacy_lenient_setter: false,
+            exposed: None,
         });
         def.add_attribute(AttributeDef {
             id: "textContent",
@@ -179,6 +189,7 @@ impl WebIdlInterface<crate::js::Types> for Node {
             replaceable: false,
             put_forwards: None,
             legacy_lenient_setter: false,
+            exposed: None,
         });
 
         // §3.7.7: Regular operations
@@ -189,6 +200,7 @@ impl WebIdlInterface<crate::js::Types> for Node {
             static_: false,
             unforgeable: false,
             promise_type: false,
+            exposed: None,
         });
         def.add_operation(OperationDef {
             id: "appendChild",
@@ -197,6 +209,7 @@ impl WebIdlInterface<crate::js::Types> for Node {
             static_: false,
             unforgeable: false,
             promise_type: false,
+            exposed: None,
         });
         def.add_operation(OperationDef {
             id: "insertBefore",
@@ -205,6 +218,7 @@ impl WebIdlInterface<crate::js::Types> for Node {
             static_: false,
             unforgeable: false,
             promise_type: false,
+            exposed: None,
         });
         def.add_operation(OperationDef {
             id: "removeChild",
@@ -213,6 +227,7 @@ impl WebIdlInterface<crate::js::Types> for Node {
             static_: false,
             unforgeable: false,
             promise_type: false,
+            exposed: None,
         });
         def.add_operation(OperationDef {
             id: "remove",
@@ -221,6 +236,7 @@ impl WebIdlInterface<crate::js::Types> for Node {
             static_: false,
             unforgeable: false,
             promise_type: false,
+            exposed: None,
         });
     }
 }

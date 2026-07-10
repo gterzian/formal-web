@@ -77,6 +77,7 @@ impl WebIdlNamespace<crate::js::Types> for WasmNamespace {
             static_: false,
             unforgeable: false,
             promise_type: false,
+            exposed: None,
         });
 
         // <https://www.w3.org/TR/wasm-js-api/#dom-webassembly-compile>
@@ -87,6 +88,7 @@ impl WebIdlNamespace<crate::js::Types> for WasmNamespace {
             static_: false,
             unforgeable: false,
             promise_type: true,
+            exposed: None,
         });
 
         // <https://www.w3.org/TR/wasm-js-api/#dom-webassembly-instantiate>
@@ -97,6 +99,7 @@ impl WebIdlNamespace<crate::js::Types> for WasmNamespace {
             static_: false,
             unforgeable: false,
             promise_type: true,
+            exposed: None,
         });
 
         // <https://www.w3.org/TR/wasm-js-api/#dom-webassembly-jstag>
@@ -111,6 +114,7 @@ impl WebIdlNamespace<crate::js::Types> for WasmNamespace {
             replaceable: false,
             put_forwards: None,
             legacy_lenient_setter: false,
+            exposed: None,
         });
     }
 }

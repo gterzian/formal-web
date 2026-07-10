@@ -29,6 +29,7 @@ impl WebIdlInterface<crate::js::Types> for Document {
             static_: false,
             unforgeable: false,
             promise_type: false,
+            exposed: None,
         });
         def.add_operation(OperationDef {
             id: "querySelector",
@@ -37,6 +38,7 @@ impl WebIdlInterface<crate::js::Types> for Document {
             static_: false,
             unforgeable: false,
             promise_type: false,
+            exposed: None,
         });
         def.add_operation(OperationDef {
             id: "querySelectorAll",
@@ -45,6 +47,7 @@ impl WebIdlInterface<crate::js::Types> for Document {
             static_: false,
             unforgeable: false,
             promise_type: false,
+            exposed: None,
         });
         def.add_operation(OperationDef {
             id: "getElementsByTagName",
@@ -53,6 +56,7 @@ impl WebIdlInterface<crate::js::Types> for Document {
             static_: false,
             unforgeable: false,
             promise_type: false,
+            exposed: None,
         });
         def.add_operation(OperationDef {
             id: "createElement",
@@ -61,6 +65,7 @@ impl WebIdlInterface<crate::js::Types> for Document {
             static_: false,
             unforgeable: false,
             promise_type: false,
+            exposed: None,
         });
         def.add_operation(OperationDef {
             id: "createElementNS",
@@ -69,6 +74,7 @@ impl WebIdlInterface<crate::js::Types> for Document {
             static_: false,
             unforgeable: false,
             promise_type: false,
+            exposed: None,
         });
         def.add_operation(OperationDef {
             id: "createTextNode",
@@ -77,6 +83,7 @@ impl WebIdlInterface<crate::js::Types> for Document {
             static_: false,
             unforgeable: false,
             promise_type: false,
+            exposed: None,
         });
         def.add_operation(OperationDef {
             id: "createComment",
@@ -85,6 +92,7 @@ impl WebIdlInterface<crate::js::Types> for Document {
             static_: false,
             unforgeable: false,
             promise_type: false,
+            exposed: None,
         });
 
         // §3.7.6: Regular attributes
@@ -99,6 +107,7 @@ impl WebIdlInterface<crate::js::Types> for Document {
             replaceable: false,
             put_forwards: None,
             legacy_lenient_setter: false,
+            exposed: None,
         });
         def.add_attribute(AttributeDef {
             id: "documentElement",
@@ -111,6 +120,7 @@ impl WebIdlInterface<crate::js::Types> for Document {
             replaceable: false,
             put_forwards: None,
             legacy_lenient_setter: false,
+            exposed: None,
         });
         def.add_attribute(AttributeDef {
             id: "title",
@@ -123,6 +133,7 @@ impl WebIdlInterface<crate::js::Types> for Document {
             replaceable: false,
             put_forwards: None,
             legacy_lenient_setter: false,
+            exposed: None,
         });
         def.add_attribute(AttributeDef {
             id: "dir",
@@ -135,6 +146,7 @@ impl WebIdlInterface<crate::js::Types> for Document {
             replaceable: false,
             put_forwards: None,
             legacy_lenient_setter: false,
+            exposed: None,
         });
     }
 }

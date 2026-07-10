@@ -23,6 +23,7 @@ impl WebIdlNamespace<crate::js::Types> for TestUtilsNamespace {
             static_: false,
             unforgeable: false,
             promise_type: true,
+            exposed: None,
         });
     }
 }

@@ -46,6 +46,7 @@ impl WebIdlInterface<crate::js::Types> for Window {
             replaceable: false,
             put_forwards: None,
             legacy_lenient_setter: false,
+            exposed: None,
         });
         def.add_attribute(AttributeDef {
             id: "parent",
@@ -58,6 +59,7 @@ impl WebIdlInterface<crate::js::Types> for Window {
             replaceable: false,
             put_forwards: None,
             legacy_lenient_setter: false,
+            exposed: None,
         });
         def.add_attribute(AttributeDef {
             id: "top",
@@ -70,6 +72,7 @@ impl WebIdlInterface<crate::js::Types> for Window {
             replaceable: false,
             put_forwards: None,
             legacy_lenient_setter: false,
+            exposed: None,
         });
         def.add_attribute(AttributeDef {
             id: "location",
@@ -82,6 +85,7 @@ impl WebIdlInterface<crate::js::Types> for Window {
             replaceable: false,
             put_forwards: None,
             legacy_lenient_setter: false,
+            exposed: None,
         });
         def.add_operation(OperationDef {
             id: "requestAnimationFrame",
@@ -90,6 +94,7 @@ impl WebIdlInterface<crate::js::Types> for Window {
             static_: false,
             unforgeable: false,
             promise_type: false,
+            exposed: None,
         });
         def.add_operation(OperationDef {
             id: "cancelAnimationFrame",
@@ -98,6 +103,7 @@ impl WebIdlInterface<crate::js::Types> for Window {
             static_: false,
             unforgeable: false,
             promise_type: false,
+            exposed: None,
         });
         def.add_operation(OperationDef {
             id: "setTimeout",
@@ -106,6 +112,7 @@ impl WebIdlInterface<crate::js::Types> for Window {
             static_: false,
             unforgeable: false,
             promise_type: false,
+            exposed: None,
         });
         def.add_operation(OperationDef {
             id: "clearTimeout",
@@ -114,6 +121,7 @@ impl WebIdlInterface<crate::js::Types> for Window {
             static_: false,
             unforgeable: false,
             promise_type: false,
+            exposed: None,
         });
         def.add_operation(OperationDef {
             id: "setInterval",
@@ -122,6 +130,7 @@ impl WebIdlInterface<crate::js::Types> for Window {
             static_: false,
             unforgeable: false,
             promise_type: false,
+            exposed: None,
         });
         def.add_operation(OperationDef {
             id: "clearInterval",
@@ -130,6 +139,7 @@ impl WebIdlInterface<crate::js::Types> for Window {
             static_: false,
             unforgeable: false,
             promise_type: false,
+            exposed: None,
         });
         def.add_operation(OperationDef {
             id: "getComputedStyle",
@@ -138,6 +148,7 @@ impl WebIdlInterface<crate::js::Types> for Window {
             static_: false,
             unforgeable: false,
             promise_type: false,
+            exposed: None,
         });
         def.add_operation(OperationDef {
             id: "open",
@@ -146,6 +157,7 @@ impl WebIdlInterface<crate::js::Types> for Window {
             static_: false,
             unforgeable: false,
             promise_type: false,
+            exposed: None,
         });
         def.add_operation(OperationDef {
             id: "structuredClone",
@@ -154,6 +166,7 @@ impl WebIdlInterface<crate::js::Types> for Window {
             static_: false,
             unforgeable: false,
             promise_type: false,
+            exposed: None,
         });
     }
 }

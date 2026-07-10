@@ -55,6 +55,7 @@ impl WebIdlInterface<crate::js::Types> for DOMException {
             replaceable: false,
             put_forwards: None,
             legacy_lenient_setter: false,
+            exposed: None,
         });
         def.add_attribute(AttributeDef {
             id: "message",
@@ -67,6 +68,7 @@ impl WebIdlInterface<crate::js::Types> for DOMException {
             replaceable: false,
             put_forwards: None,
             legacy_lenient_setter: false,
+            exposed: None,
         });
         def.add_attribute(AttributeDef {
             id: "code",
@@ -79,6 +81,7 @@ impl WebIdlInterface<crate::js::Types> for DOMException {
             replaceable: false,
             put_forwards: None,
             legacy_lenient_setter: false,
+            exposed: None,
         });
     }
 }

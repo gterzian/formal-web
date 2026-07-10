@@ -72,6 +72,7 @@ impl WebIdlInterface<crate::js::Types> for UIEvent {
             replaceable: false,
             put_forwards: None,
             legacy_lenient_setter: false,
+            exposed: None,
         });
         def.add_attribute(AttributeDef {
             id: "detail",
@@ -84,6 +85,7 @@ impl WebIdlInterface<crate::js::Types> for UIEvent {
             replaceable: false,
             put_forwards: None,
             legacy_lenient_setter: false,
+            exposed: None,
         });
     }
 }
