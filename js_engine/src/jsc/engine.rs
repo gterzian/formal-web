@@ -4745,38 +4745,18 @@ impl ExecutionContext<JscTypes> for JscEngine {
     }
 
     fn create_root(&mut self, value: &JscValue) -> crate::gc::GcRootHandle<JscTypes> {
-        // Store the value as a non-enumerable property on the global object
-        // to keep it alive in JSC's GC graph.  This avoids JSValueProtect
-        // which SIGSEGVs on eval-created values on some macOS versions.
-        let root_id = self.next_root_id;
-        self.next_root_id = self.next_root_id.wrapping_add(1);
-        let prop_name = format!("__fw_root_{root_id}");
-        let key = JscString::from_rust(&prop_name);
-        let mut exc: *mut JSValueRef = std::ptr::null_mut();
-        let global = self.context.global_object();
+        // Use JSValueProtect to keep the value alive in JSC's GC graph.
+        // JSValueProtect/JSValueUnprotect maintain an internal reference
+        // count so the value survives GC cycles until unprotected.
         let ctx_ptr = self.ctx_ptr();
+        let value_raw = value.raw;
         unsafe {
-            JSObjectSetProperty(
-                ctx_ptr,
-                global.raw,
-                key.raw,
-                value.raw,
-                kJSPropertyAttributeDontEnum,
-                &mut exc,
-            );
+            JSValueProtect(ctx_ptr, value_raw);
         }
-        // On drop, delete the property to allow GC.
-        // Capture the property name as an owned String (not JscString) so
-        // we can create a fresh JscString at cleanup time when the
-        // engine's context is guaranteed valid.
-        let root_name_str = prop_name.clone();
-        let ctx_raw = self.context.raw as *mut JSContextRef;
         crate::gc::GcRootHandle {
             value: *value,
             unroot_action: Some(Box::new(move |_val| unsafe {
-                let name = JscString::from_rust(&root_name_str);
-                let global = JSContextGetGlobalObject(ctx_raw);
-                JSObjectDeleteProperty(ctx_raw, global, name.raw, std::ptr::null_mut());
+                JSValueUnprotect(ctx_ptr, value_raw);
             })),
         }
     }

@@ -149,6 +149,98 @@ closure's `ctx_raw` became dangling, causing SIGSEGV.  Fixed by explicit
 
 ## Unresolved items
 
+## Planned refactoring: `JSValueProtect`/`JSValueUnprotect` + native C API
+
+### Background
+
+The JSC backend stores `JSObjectRef` raw pointers inside Rust structs (`Callback`,
+`TimerHandler`, `GcRootHandle`, etc.).  JSC's garbage collector has no visibility
+into Rust heap allocations, so objects referenced only by Rust code are collected,
+causing use-after-free SIGSEGV when Rust later tries to call them.
+
+Boa avoids this because its GC (`boa_gc`) traces through Rust structs via `Trace`.
+JSC's C API provides `JSValueProtect`/`JSValueUnprotect` for explicit rooting,
+but the current code base uses global-object properties (in `create_root`) and
+`JSEvaluateScript` eval (in `make_builtin_function`) instead.
+
+### Phase 1: `JSValueProtect`/`JSValueUnprotect` everywhere
+
+Replace the global-object-property rooting in `create_root` with direct
+`JSValueProtect`/`JSValueUnprotect` calls:
+
+```rust
+fn create_root(&mut self, value: &JscValue) -> GcRootHandle<JscTypes> {
+    let ctx = self.ctx_ptr();
+    unsafe { JSValueProtect(ctx, value.raw); }
+    GcRootHandle {
+        value: *value,
+        unroot_action: Some(Box::new(move |_val| unsafe {
+            JSValueUnprotect(ctx, value.raw);
+        })),
+    }
+}
+```
+
+Then add explicit protection at every point where a JS object reference enters
+Rust-only storage:
+
+| Storage point | Type | Fix |
+|---|---|---|
+| `Callback` struct | `content/src/webidl/callback.rs` | Protect on `from_object()` / Clone, unprotect on Drop.  Needs `ec` arg for context. |
+| `TimerHandler::Function` | `content/src/html/global_scope.rs` | Store protected handle alongside callback, unprotect on timer clear/complete. |
+| `WindowTimer.arguments` | `content/src/html/global_scope.rs` | Same as above — `Vec<JsValue>` elements need protection. |
+| Event listeners | `content/src/dom/event_target.rs` | Protected `Callback` in listener records. |
+| Stream pull/cancel/close callbacks | stream controllers | Protected `Callback` in controller state. |
+| `drain_noop` function | `js_engine/src/jsc/engine.rs` | `JSValueProtect` on creation. |
+| `fn_call` (Function.prototype.call) | `js_engine/src/jsc/engine.rs` | Already a property of `Function.prototype` which is always alive — no protection needed. |
+
+### Phase 2: Replace `JSEvaluateScript` with native C API
+
+The current code uses `JSEvaluateScript` for things that the JSC C API can do
+directly.  Every eval call drains JSC's microtask queue, which can trigger GC
+at unexpected times (and is a performance bottleneck).
+
+| Current approach | Native C API replacement |
+|---|---|
+| `JSEvaluateScript` with `Object.defineProperty` copy of `bind`/`call`/`apply`/`toString` from `Function.prototype` | `JSObjectGetProperty(Function.prototype, name) + JSObjectSetProperty(obj, name, prop, kJSPropertyAttributeReadOnly | kJSPropertyAttributeDontEnum)` — avoids eval entirely. |
+| `JSEvaluateScript` with `Object.defineProperty` to set `.length` | `JSObjectSetProperty(obj, "length", len_val, kJSPropertyAttributeReadOnly | kJSPropertyAttributeDontEnum)` — sets read-only, non-enumerable directly. |
+| `JSEvaluateScript("Function.prototype.call")` in `get_fn_call()` | Cache `Function.prototype.call` via C API at engine creation. |
+| `JSEvaluateScript` with Proxy for constructor `new.target` support | **Cannot be eliminated** — JSC's C API has no `JSProxyCreate`.  The Proxy eval is the only option unless `callAsConstructor` exposes `new.target` in a future JSC version. |
+| `promise_state()` eval with `.then()` flags | `JSPromiseGetStatus` (not available in public C API — eval is currently the only option). |
+
+### Phase 3: `create_builtin_fn` eval removal
+
+The `create_builtin_fn` method uses eval to set `.length`:
+
+```rust
+let script = format!(
+    "Object.defineProperty(__fw_fn_len, 'length', {{value:{length},writable:false,configurable:true,enumerable:false}})"
+);
+```
+
+Replace with:
+
+```rust
+let length_key = JscString::from_rust("length");
+let length_val = unsafe { JSValueMakeNumber(ctx, length as f64) };
+unsafe {
+    JSObjectSetProperty(
+        ctx,
+        func.raw,
+        length_key.raw,
+        length_val,
+        kJSPropertyAttributeReadOnly | kJSPropertyAttributeDontEnum,
+        &mut exc,
+    );
+}
+```
+
+### Phase 4: Verify pass-rate parity
+
+After Phases 1-3, run the full WPT suite on both backends and confirm
+`executed=N unexpected=0` on both.  Any remaining discrepancy needs either
+a JSC bug fix (preferred) or shared metadata (last resort).
+
 - **Piping test timeouts on JSC** — Tests using `delay()` (via
   `step_timeout`/`setTimeout`) time out on JSC but pass on Boa.  Root cause
   not identified.
