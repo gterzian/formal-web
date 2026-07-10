@@ -303,11 +303,10 @@ extern "C" fn builtin_call_as_function(
     }
 }
 
-/// `callAsFunction` for builtin objects created via
-/// `JSObjectMakeFunctionWithCallback`.  Looks up the `StoredBehaviour`
-/// from the thread-local `FUNCTION_REGISTRY` keyed by the function
-/// object's pointer.  These functions inherit from Function.prototype
-/// and support `.bind()`, `.call()`, `.apply()`.
+// Legacy callback for builtin functions created via `JSObjectMakeFunctionWithCallback`
+// with FUNCTION_REGISTRY lookup.  No longer actively used on macOS 26 because
+// the function pointer passed by JSC may differ from the stored pointer.
+// Kept for reference and potential future use.
 extern "C" fn registry_call_as_function(
     ctx: *mut JSContextRef,
     function: *mut JSObjectRef,
@@ -470,9 +469,10 @@ fn make_builtin_function(
                 if(!hop.call(ctor,'toString')) Object.defineProperty(ctor,'toString',{{value:function(){{return 'function {name_rust}() {{ [native code] }}'}},writable:true,configurable:true}});
             }})(this)"#,
         );
-        // We need a temporary reference to the constructor.  Store it
-        // as a global, eval the copy script with `this` = ctor, clean up.
-        let ctor_key = JscString::from_rust("__fw_ctor_copy");
+        // Step 1: Store the base constructor on a temp global property
+        // for the subsequent Proxy creation script.
+        let ctor_temp_key = format!("__fw_base_ctor_{}", name_rust.replace(|c: char| !c.is_alphanumeric(), "_"));
+        let ctor_key = JscString::from_rust(&ctor_temp_key);
         let mut exc: *mut JSValueRef = std::ptr::null_mut();
         unsafe {
             JSObjectSetProperty(
@@ -484,6 +484,7 @@ fn make_builtin_function(
                 &mut exc,
             );
         }
+        // Step 2: Copy Function.prototype methods to the base constructor.
         if exc.is_null() {
             let script = JscString::from_rust(&copy_script);
             let mut eval_exc: *mut JSValueRef = std::ptr::null_mut();
@@ -497,6 +498,45 @@ fn make_builtin_function(
                     &mut eval_exc,
                 );
             }
+        }
+        // Step 3: Create a Proxy that wraps the base constructor.
+        // The Proxy's `construct` trap receives `newTarget` (the actual
+        // new.target), which the JSC C API's callAsConstructor callback
+        // does NOT expose.  We use `newTarget.prototype` to set the correct
+        // prototype on the created instance, enabling subclass instanceof.
+        let proxy_script = format!(
+            r#"(function(){{
+                var base = globalThis["{0}"];
+                delete globalThis["{0}"];
+                var hop=Object.prototype.hasOwnProperty;
+                return new Proxy(base, {{
+                    construct(target, args, newTarget) {{
+                        var instance = Reflect.construct(target, args, target);
+                        var proto = newTarget.prototype;
+                        if (typeof proto === 'object' && proto !== null) {{
+                            Object.setPrototypeOf(instance, proto);
+                        }}
+                        return instance;
+                    }}
+                }});
+            }})()"#,
+            ctor_temp_key
+        );
+        let proxy_script_str = JscString::from_rust(&proxy_script);
+        let mut proxy_exc: *mut JSValueRef = std::ptr::null_mut();
+        let proxy_result = unsafe {
+            JSEvaluateScript(
+                ctx,
+                proxy_script_str.raw,
+                std::ptr::null_mut(),
+                std::ptr::null_mut(),
+                0,
+                &mut proxy_exc,
+            )
+        };
+        if !proxy_exc.is_null() || proxy_result.is_null() {
+            // Fallback to the base constructor if Proxy creation fails.
+            // Clean up the temp global property if it still exists.
             let mut cleanup_exc: *mut JSValueRef = std::ptr::null_mut();
             unsafe {
                 JSObjectDeleteProperty(
@@ -506,24 +546,48 @@ fn make_builtin_function(
                     &mut cleanup_exc,
                 );
             }
+            JscObject { raw: raw_obj, ctx }
+        } else {
+            JscObject {
+                raw: proxy_result as *mut JSObjectRef,
+                ctx,
+            }
         }
-        JscObject { raw: raw_obj, ctx }
     } else {
-        // Non-constructor: use JSObjectMakeFunctionWithCallback.
-        // Creates a real JSC function with proper Function.prototype,
-        // supporting .bind(), .call(), .apply().
-        // Store behaviour as a leaked pointer in the FUNCTION_REGISTRY,
-        // keyed by the function object's raw pointer.
+        // Non-constructor: use BUILTIN_CLASS (custom JSClass with
+        // callAsFunction and finalize).  Functions created this way do
+        // NOT inherit Function.prototype (bind/call/apply/toString)
+        // because JSObjectSetPrototype crashes on macOS 26 for objects
+        // with callbacks.  Copy these methods via eval, same pattern as
+        // constructor functions.
+        let class_ref = BUILTIN_CLASS.0;
+        let raw_obj = unsafe { JSObjectMake(ctx, class_ref, std::ptr::null_mut()) };
         let stored = Box::new(behaviour);
-        let stored_ptr = Box::into_raw(stored);
-        let raw_obj = unsafe {
-            JSObjectMakeFunctionWithCallback(ctx, name_str.raw, Some(registry_call_as_function))
-        };
-        let fun_key = raw_obj as usize;
-        FUNCTION_REGISTRY.with(|reg| {
-            reg.borrow_mut().insert(fun_key, stored_ptr);
-        });
-
+        let stored_ptr = Box::into_raw(stored) as *mut std::ffi::c_void;
+        unsafe { JSObjectSetPrivate(raw_obj, stored_ptr) };
+        let name_rust = name_str.to_rust();
+        let copy_script = format!(
+            r#"(function(fn){{
+                var fp=Function.prototype;
+                var hop=Object.prototype.hasOwnProperty;
+                if(!hop.call(fn,'bind')) Object.defineProperty(fn,'bind',{{value:fp.bind,writable:true,configurable:true}});
+                if(!hop.call(fn,'call')) Object.defineProperty(fn,'call',{{value:fp.call,writable:true,configurable:true}});
+                if(!hop.call(fn,'apply')) Object.defineProperty(fn,'apply',{{value:fp.apply,writable:true,configurable:true}});
+                if(!hop.call(fn,'toString')) Object.defineProperty(fn,'toString',{{value:function(){{return 'function {name_rust}() {{ [native code] }}'}},writable:true,configurable:true}});
+            }})(this)"#,
+        );
+        let script_str = JscString::from_rust(&copy_script);
+        let mut eval_exc: *mut JSValueRef = std::ptr::null_mut();
+        unsafe {
+            JSEvaluateScript(
+                ctx,
+                script_str.raw,
+                raw_obj,
+                std::ptr::null_mut(),
+                0,
+                &mut eval_exc,
+            );
+        }
         JscObject { raw: raw_obj, ctx }
     }
 }
@@ -981,6 +1045,9 @@ pub struct JscEngine {
     queued_jobs: Vec<Box<dyn FnOnce(&mut JscEngine)>>,
     /// Cached no-op function for microtask draining.
     drain_noop: *mut JSObjectRef,
+    /// Cached `Function.prototype.call` for correct this-binding when
+    /// calling JS functions with non-object `this` values.
+    fn_call: Option<JscObject>,
 }
 
 /// Drop `host_data` (which contains `GcRootHandle` unroot closures) and
@@ -1023,6 +1090,7 @@ impl JscEngine {
             next_root_id: 0,
             queued_jobs: Vec::new(),
             drain_noop: std::ptr::null_mut(),
+            fn_call: None,
         }
     }
 
@@ -1053,6 +1121,7 @@ impl JscEngine {
             next_root_id: 0,
             queued_jobs: Vec::new(),
             drain_noop: std::ptr::null_mut(),
+            fn_call: None,
         }
     }
 
@@ -1075,6 +1144,7 @@ impl JscEngine {
             next_root_id: 0,
             queued_jobs: Vec::new(),
             drain_noop: std::ptr::null_mut(),
+            fn_call: None,
         }
     }
     pub fn context(&self) -> &JscContext {
@@ -1250,6 +1320,34 @@ impl JscEngine {
         } else {
             self.eval_script_raw("void 0");
         }
+    }
+
+    /// Get or lazily create a cached `Function.prototype.call` reference.
+    /// Used by `call()` to invoke JS functions with correct `this` binding
+    /// for non-object `this` values (undefined, null, primitives).
+    /// `JSObjectCallAsFunction` with a null `thisObject` substitutes the
+    /// global object, which is incorrect for strict-mode functions created
+    /// via method definitions (`[[ThisMode]] = strict`).
+    fn get_fn_call(&mut self) -> *mut JSObjectRef {
+        if let Some(ref call_fn) = self.fn_call {
+            return call_fn.raw;
+        }
+        let (result, exception) = self.eval_script_raw("Function.prototype.call");
+        if !exception.is_null() {
+            // Fallback: use the global object's call property if available.
+            let global = self.realm_global.raw;
+            self.fn_call = Some(JscObject {
+                raw: global,
+                ctx: self.ctx_ptr(),
+            });
+            return global;
+        }
+        let fn_call = JscObject {
+            raw: result as *mut JSObjectRef,
+            ctx: self.ctx_ptr(),
+        };
+        self.fn_call = Some(fn_call);
+        fn_call.raw
     }
 }
 
@@ -1520,11 +1618,52 @@ impl ExecutionContext<JscTypes> for JscEngine {
                 &mut dyn ExecutionContext<JscTypes>,
             ) -> Completion<JscValue, JscTypes>,
         >,
-        _length: u32,
+        length: u32,
         name: JscPropertyKey,
     ) -> JscFunction {
         let stored: StoredBehaviour = behaviour;
-        make_builtin_function(self.ctx_ptr(), stored, &name, false)
+        let func = make_builtin_function(self.ctx_ptr(), stored, &name, false);
+        // Set the .length property to match the spec-required value.
+        let ctx_ptr = self.ctx_ptr();
+        let length_key = JscString::from_rust("__fw_fn_len");
+        let mut exc: *mut JSValueRef = std::ptr::null_mut();
+        unsafe {
+            JSObjectSetProperty(
+                ctx_ptr,
+                JSContextGetGlobalObject(ctx_ptr),
+                length_key.raw,
+                func.as_value_ref(),
+                kJSPropertyAttributeNone,
+                &mut exc,
+            );
+        }
+        if exc.is_null() {
+            let len_val = unsafe { JSValueMakeNumber(ctx_ptr, length as f64) };
+            let script = JscString::from_rust(&format!(
+                "Object.defineProperty(__fw_fn_len, 'length', {{value:{length},writable:false,configurable:true,enumerable:false}})"
+            ));
+            let mut eval_exc: *mut JSValueRef = std::ptr::null_mut();
+            unsafe {
+                JSEvaluateScript(
+                    ctx_ptr,
+                    script.raw,
+                    std::ptr::null_mut(),
+                    std::ptr::null_mut(),
+                    0,
+                    &mut eval_exc,
+                );
+            }
+            let mut cleanup_exc: *mut JSValueRef = std::ptr::null_mut();
+            unsafe {
+                JSObjectDeleteProperty(
+                    ctx_ptr,
+                    JSContextGetGlobalObject(ctx_ptr),
+                    length_key.raw,
+                    &mut cleanup_exc,
+                );
+            }
+        }
+        func
     }
 
     fn create_builtin_function(
@@ -4731,24 +4870,45 @@ impl EcmascriptHost<JscTypes> for JscEngine {
             *current.borrow_mut() = Some(ptr);
         });
 
-        let this_obj = if unsafe { JSValueGetType(self.context.as_context_ref(), this_arg.raw) }
-            == JSType::kJSTypeObject
-        {
-            this_arg.raw as *mut JSObjectRef
-        } else {
-            std::ptr::null_mut()
-        };
-        let args_raw: Vec<*mut JSValueRef> = args.iter().map(|v| v.raw).collect();
+        let this_type = unsafe { JSValueGetType(self.context.as_context_ref(), this_arg.raw) };
         let mut exception: *mut JSValueRef = std::ptr::null_mut();
-        let result = unsafe {
-            JSObjectCallAsFunction(
-                self.context.as_context_ref(),
-                callable.raw,
-                this_obj,
-                args_raw.len(),
-                args_raw.as_ptr(),
-                &mut exception,
-            )
+        let result = if this_type == JSType::kJSTypeObject {
+            // Fast path: `this` is an object — pass directly to JSObjectCallAsFunction.
+            let this_obj = this_arg.raw as *mut JSObjectRef;
+            let args_raw: Vec<*mut JSValueRef> = args.iter().map(|v| v.raw).collect();
+            unsafe {
+                JSObjectCallAsFunction(
+                    self.context.as_context_ref(),
+                    callable.raw,
+                    this_obj,
+                    args_raw.len(),
+                    args_raw.as_ptr(),
+                    &mut exception,
+                )
+            }
+        } else {
+            // `this` is undefined, null, or a primitive.
+            // JSObjectCallAsFunction with a null thisObject substitutes the
+            // global object, violating [[Call]] semantics for strict-mode
+            // functions (method definitions, arrow functions that captured
+            // lexical this, etc.).
+            // Use Function.prototype.call to invoke the function with
+            // the correct `this` value:
+            //   fn.call(thisArg, arg0, arg1, ...)
+            let call_fn = self.get_fn_call();
+            let args_raw: Vec<*mut JSValueRef> = std::iter::once(this_arg.raw)
+                .chain(args.iter().map(|v| v.raw))
+                .collect();
+            unsafe {
+                JSObjectCallAsFunction(
+                    self.context.as_context_ref(),
+                    call_fn,
+                    callable.raw,
+                    args_raw.len(),
+                    args_raw.as_ptr(),
+                    &mut exception,
+                )
+            }
         };
 
         if !exception.is_null() {
