@@ -9,6 +9,8 @@ use super::interface::WebIdlInterface;
 pub(crate) struct InterfaceEntry<T: JsTypes> {
     pub(crate) prototype: T::JsObject,
     pub(crate) constructor: T::JsObject,
+    /// <https://webidl.spec.whatwg.org/#internally-create-a-new-object-implementing-the-interface>
+    pub(crate) unforgeables: Option<T::JsObject>,
 }
 
 /// Registry of Web IDL interfaces.
@@ -37,6 +39,7 @@ impl<T: JsTypes> InterfaceRegistry<T> {
             InterfaceEntry {
                 prototype,
                 constructor,
+                unforgeables: None,
             },
         );
     }
@@ -47,6 +50,21 @@ impl<T: JsTypes> InterfaceRegistry<T> {
 
     pub(crate) fn get_constructor<U: 'static>(&self) -> Option<&T::JsObject> {
         self.map.get(&TypeId::of::<U>()).map(|e| &e.constructor)
+    }
+
+    pub(crate) fn get_unforgeables<U: 'static>(&self) -> Option<&T::JsObject> {
+        self.map
+            .get(&TypeId::of::<U>())
+            .and_then(|e| e.unforgeables.as_ref())
+    }
+
+    pub(crate) fn set_unforgeables<U: 'static>(
+        &mut self,
+        unforgeables: T::JsObject,
+    ) {
+        if let Some(entry) = self.map.get_mut(&TypeId::of::<U>()) {
+            entry.unforgeables = Some(unforgeables);
+        }
     }
 }
 
@@ -102,6 +120,32 @@ pub(crate) fn register_in_host_defined<Ty, I>(
     with_registry_mut::<Ty, _>(ec, |registry| {
         registry.register::<I>(prototype, constructor);
     });
+}
+
+/// Set the [[Unforgeables]] slot for an interface in the registry.
+pub(crate) fn set_unforgeables_for_interface<Ty, I>(
+    ec: &mut dyn ExecutionContext<Ty>,
+    unforgeables: Ty::JsObject,
+) where
+    Ty: JsTypes + JsTypesWithRealm,
+    I: 'static,
+{
+    with_registry_mut::<Ty, _>(ec, |registry| {
+        registry.set_unforgeables::<I>(unforgeables);
+    });
+}
+
+/// Get the [[Unforgeables]] from the registry.
+pub(crate) fn get_unforgeables_from_host_defined<Ty, I>(
+    ec: &dyn ExecutionContext<Ty>,
+) -> Option<Ty::JsObject>
+where
+    Ty: JsTypes + JsTypesWithRealm,
+    I: 'static,
+{
+    with_registry_ref::<Ty, _>(ec, |registry| {
+        registry.get_unforgeables::<I>().cloned()
+    })
 }
 
 /// Get a prototype from the registry.

@@ -17,7 +17,6 @@ use crate::streams::{
 use crate::webidl::bindings::{AttributeDef, InterfaceDefinition, OperationDef, WebIdlInterface};
 use crate::webidl::create_value_async_iterator;
 
-// ── WebIDL interface definitions (§3) ──
 
 impl WebIdlInterface<Types> for ReadableStream {
     const NAME: &'static str = "ReadableStream";
@@ -348,7 +347,6 @@ impl WebIdlInterface<Types> for ReadableStreamBYOBRequest {
     }
 }
 
-// ── Member getters/setters/methods ──
 
 fn get_locked(
     this: &JsValue,

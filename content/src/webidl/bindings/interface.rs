@@ -74,24 +74,7 @@ pub(crate) trait WebIdlInterface<T: JsTypes + JsTypesWithRealm>: 'static {
         Self: Sized;
 }
 
-// ── Generic helpers ──
-
 /// <https://webidl.spec.whatwg.org/#internally-create-a-new-object-implementing-the-interface>
-///
-/// Create a platform object implementing the interface identified by type `T`,
-/// wrapping the domain Rust data `T` into a JS object.
-///
-/// This function implements the Web IDL spec algorithm and separates the GC
-/// concern: the Boa backend wraps platform data in `TraceableBox` before
-/// type-erasing through `Box<dyn Any>`, preserving GC trace/finalize function
-/// pointers. The non-Boa backend stores data directly.
-///
-/// All platform object types use `#[gc_struct]` which derives `Trace +
-/// Finalize + JsData`. These derive bounds satisfy the Boa backend's GC
-/// tracing requirements.
-///
-/// Use `create_interface_instance` for domain-created platform objects.
-/// The constructor path in `register_interface_spec` follows a similar pattern.
 #[cfg(feature = "boa")]
 pub(crate) fn create_interface_instance<Ty, T>(
     data: T,
@@ -138,8 +121,6 @@ where
 }
 
 /// <https://webidl.spec.whatwg.org/#internally-create-a-new-object-implementing-the-interface>
-///
-/// Non-Boa backend (JSC): no GC tracing concern — store data as `Box<dyn Any>`.
 #[cfg(not(feature = "boa"))]
 pub(crate) fn create_interface_instance<Ty, T>(
     data: T,
@@ -181,16 +162,7 @@ where
     Ok(instance)
 }
 
-// ── Concrete registration ──
-
 /// <https://webidl.spec.whatwg.org/#create-an-interface-object>
-///
-/// Boa backend: wrap platform-object data in `TraceableBox` so the GC
-/// can trace through type-erased storage, preventing premature collection
-/// of `JsObject` references inside constructor-created instances.
-///
-/// All WebIdlInterface implementors use `#[gc_struct]` which derives
-/// `Trace + Finalize + JsData`, satisfying the extra bounds.
 #[cfg(feature = "boa")]
 pub(crate) fn register_interface_spec<Ty, I, E>(engine: &mut E) -> Completion<(), Ty>
 where
@@ -215,7 +187,6 @@ where
     //   object of interface I in realm."
     let proto = engine.create_object_with_any(intrinsics.object_prototype.clone(), Box::new(()));
 
-    // ── Define members on prototype ──
     let mut def = InterfaceDefinition::<Ty>::new();
     I::define_members(&mut def);
     let proto_val = Ty::value_from_object(proto.clone());
@@ -227,12 +198,25 @@ where
     // "Define the constants on the interface prototype object."
     super::constant::define_constants::<Ty>(proto.clone(), engine, &def.constants)?;
 
-    // ── Create the interface constructor function ──
+    // Step 4: "Let unforgeables be OrdinaryObjectCreate(null)."
+    // Step 5: "Define the unforgeable regular operations of I on unforgeables, given realm."
+    // Step 6: "Define the unforgeable regular attributes of I on unforgeables, given realm."
+    let unforgeables_obj = engine.create_plain_object(None);
+    let unforgeables_val = Ty::value_from_object(unforgeables_obj.clone());
+    super::operation::define_unforgeable_regular_operations::<Ty, E>(
+        engine, &unforgeables_val, &def.operations,
+    )?;
+    super::attribute::define_unforgeable_regular_attributes::<Ty, E>(
+        engine, &unforgeables_val, &def.attributes,
+    )?;
+
     let instance_prototype = proto.clone();
+    let unforgeables_for_closure = unforgeables_obj.clone();
 
     let constructor_fn = engine.create_builtin_function(
         Box::new({
             let instance_prototype_for_fn = instance_prototype.clone();
+            let _unforgeables_ref = unforgeables_for_closure.clone();
             move |args: &[Ty::JsValue],
                   new_target_or_this: Ty::JsValue,
                   ec: &mut dyn ExecutionContext<Ty>| {
@@ -301,6 +285,25 @@ where
                 let traceable = js_engine::boa::TraceableBox::new(obj);
                 let instance = ec.create_object_with_any(resolved_prototype, Box::new(traceable));
 
+                // Step 11: "For every interface ancestor interface in interfaces:"
+                // Note: only copies from own interface's [[Unforgeables]]; ancestor
+                // iteration deferred until [[PrimaryInterface]] tracking is added.
+                //   Step 11.1: "Let unforgeables be the value of the [[Unforgeables]] slot…"
+                //   Step 11.2: "Let keys be ! unforgeables.[[OwnPropertyKeys]]()."
+                //   Step 11.3: "For each element key of keys:"
+                //   Step 11.3.1: "Let descriptor be ! unforgeables.[[GetOwnProperty]](key)."
+                //   Step 11.3.2: "Perform ! DefinePropertyOrThrow(instance, key, descriptor)."
+                if let Some(entry) =
+                    super::registry::get_unforgeables_from_host_defined::<Ty, I>(ec)
+                {
+                    let own_keys = ec.own_property_keys(entry.clone())?;
+                    for key in own_keys {
+                        if let Some(d) = ec.get_own_property(entry.clone(), key.clone())? {
+                            ec.define_property_or_throw(instance.clone(), key, d)?;
+                        }
+                    }
+                }
+
                 // Steps 1.11-1.13: Assert and return O.
                 Ok(Ty::value_from_object(instance))
             }
@@ -308,6 +311,11 @@ where
         I::constructor_length() as u32,
         engine.property_key_from_str(I::NAME),
         true,
+    );
+
+    // Step 7: "Set F.[[Unforgeables]] to unforgeables."
+    super::registry::set_unforgeables_for_interface::<Ty, I>(
+        engine, unforgeables_obj.clone(),
     );
 
     // Step 10: "Let F be CreateBuiltinFunction(steps, length, id, « [[Unforgeables]] »,
@@ -397,9 +405,6 @@ where
 }
 
 /// <https://webidl.spec.whatwg.org/#create-an-interface-object>
-///
-/// Non-Boa backend: store platform-object data directly (no GC tracing
-/// concerns on JSC).
 #[cfg(not(feature = "boa"))]
 pub(crate) fn register_interface_spec<Ty, I, E>(engine: &mut E) -> Completion<(), Ty>
 where
@@ -424,7 +429,6 @@ where
     //   object of interface I in realm."
     let proto = engine.create_object_with_any(intrinsics.object_prototype.clone(), Box::new(()));
 
-    // ── Define members on prototype ──
     let mut def = InterfaceDefinition::<Ty>::new();
     I::define_members(&mut def);
     let proto_val = Ty::value_from_object(proto.clone());
@@ -436,12 +440,25 @@ where
     // "Define the constants on the interface prototype object."
     super::constant::define_constants::<Ty>(proto.clone(), engine, &def.constants)?;
 
-    // ── Create the interface constructor function ──
+    // Step 4: "Let unforgeables be OrdinaryObjectCreate(null)."
+    // Step 5: "Define the unforgeable regular operations of I on unforgeables, given realm."
+    // Step 6: "Define the unforgeable regular attributes of I on unforgeables, given realm."
+    let unforgeables_obj = engine.create_plain_object(None);
+    let unforgeables_val = Ty::value_from_object(unforgeables_obj.clone());
+    super::operation::define_unforgeable_regular_operations::<Ty, E>(
+        engine, &unforgeables_val, &def.operations,
+    )?;
+    super::attribute::define_unforgeable_regular_attributes::<Ty, E>(
+        engine, &unforgeables_val, &def.attributes,
+    )?;
+
     let instance_prototype = proto.clone();
+    let unforgeables_for_closure = unforgeables_obj.clone();
 
     let constructor_fn = engine.create_builtin_function(
         Box::new({
             let instance_prototype_for_fn = instance_prototype.clone();
+            let _unforgeables_ref = unforgeables_for_closure.clone();
             move |args: &[Ty::JsValue],
                   new_target_or_this: Ty::JsValue,
                   ec: &mut dyn ExecutionContext<Ty>| {
@@ -503,6 +520,21 @@ where
                 // Step 1.10: "Let O be object, converted to a JavaScript value."
                 let instance = ec.create_object_with_any(resolved_prototype, Box::new(obj));
 
+                // Step 11: "For every interface ancestor interface in interfaces:"
+                // Note: only copies from own interface's [[Unforgeables]]; ancestor
+                // iteration deferred until [[PrimaryInterface]] tracking is added.
+                if let Some(entry) =
+                    super::registry::get_unforgeables_from_host_defined::<Ty, I>(ec)
+                {
+                    if let Ok(own_keys) = ec.own_property_keys(entry.clone()) {
+                        for key in own_keys {
+                            if let Ok(Some(d)) = ec.get_own_property(entry.clone(), key.clone()) {
+                                let _ = ec.define_property_or_throw(instance.clone(), key, d);
+                            }
+                        }
+                    }
+                }
+
                 // Steps 1.11-1.13: Assert and return O.
                 Ok(Ty::value_from_object(instance))
             }
@@ -510,6 +542,11 @@ where
         I::constructor_length() as u32,
         engine.property_key_from_str(I::NAME),
         true,
+    );
+
+    // Step 7: "Set F.[[Unforgeables]] to unforgeables."
+    super::registry::set_unforgeables_for_interface::<Ty, I>(
+        engine, unforgeables_obj.clone(),
     );
 
     // Step 10: "Let F be CreateBuiltinFunction(steps, length, id, « [[Unforgeables]] »,
@@ -603,8 +640,6 @@ pub(crate) fn define_global_property_references<Ty: JsTypes>(
 ) -> Completion<(), Ty> {
     Ok(())
 }
-
-// ── Namespace trait + registration ──
 
 /// <https://webidl.spec.whatwg.org/#namespace-object>
 pub(crate) trait WebIdlNamespace<T: JsTypes + JsTypesWithRealm>: 'static {

@@ -1,4 +1,3 @@
-// ── Fetch Standard domain model ────────────────────────────────────────────
 //
 // Event-loop side implementation.
 // <https://fetch.spec.whatwg.org/>

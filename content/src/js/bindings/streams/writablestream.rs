@@ -186,7 +186,6 @@ impl WebIdlInterface<Types> for WritableStreamDefaultWriter {
     }
 }
 
-// ── Member getters/setters/methods ──
 
 fn get_locked(
     this: &JsValue,

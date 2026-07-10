@@ -139,17 +139,6 @@ pub(crate) fn mark_promise_as_handled(
     Ok(())
 }
 
-// ── Web IDL Promise Reaction (upon fulfillment / upon rejection) ────────
-//
-// Implements <https://webidl.spec.whatwg.org/#upon-fulfillment>,
-// <https://webidl.spec.whatwg.org/#upon-rejection>, and the underlying
-// <https://webidl.spec.whatwg.org/#react> algorithm.
-//
-// These wrap the engine-specific promise-chaining mechanism so that domain
-// code never reaches for NativeFunction::from_closure / to_js_function.
-// For the Boa backend the closure is registered via NativeFunction; for JSC
-// it would use the JSC callback API.
-
 /// <https://webidl.spec.whatwg.org/#react>
 ///
 /// Reacts to a promise with optional fulfillment and rejection steps.
@@ -184,11 +173,6 @@ pub(crate) fn upon_settlement(
     // Step 8 of react: Return newCapability.
     Ok(Types::value_as_object(&result_promise).unwrap_or(global))
 }
-
-// ── Wait for all ──────────────────────────────────────────────────────
-//
-// Implements <https://webidl.spec.whatwg.org/#wait-for-all> and
-// <https://webidl.spec.whatwg.org/#get-a-promise-to-wait-for-all>.
 
 /// Shared mutable state for the "wait for all" algorithm.
 #[gc_struct]

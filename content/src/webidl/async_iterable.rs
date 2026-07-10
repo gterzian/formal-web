@@ -13,7 +13,6 @@ type Types = crate::js::Types;
 type JsValue = <Types as JsTypes>::JsValue;
 type JsObject = <Types as JsTypes>::JsObject;
 
-// ── Helper to convert a JsObject to a Promise ────────────────────────────
 
 fn promise_from_object(
     obj: JsObject,
@@ -22,7 +21,6 @@ fn promise_from_object(
     Types::object_as_promise(&obj).ok_or_else(|| ec.new_type_error("value is not a Promise"))
 }
 
-// ── Iterator operation ────────────────────────────────────────────────────
 
 #[gc_struct]
 enum IteratorOperation {
@@ -30,7 +28,6 @@ enum IteratorOperation {
     Return(JsValue),
 }
 
-// ── Capture types for builtin function callbacks ─────────────────────────
 
 /// Captures for onFulfilled of `start_next`.
 #[gc_struct]
@@ -164,7 +161,6 @@ fn re_throw_rejected_behaviour(
         .unwrap_or_else(|| unreachable!("Rejection should have a reason")))
 }
 
-// ── AsyncValueIterable trait ──────────────────────────────────────────────
 
 /// <https://webidl.spec.whatwg.org/#asynchronous-iterator-initialization-steps>
 pub(crate) trait AsyncValueIterable:
@@ -207,7 +203,6 @@ pub(crate) trait AsyncValueIterable:
     }
 }
 
-// ── DefaultAsyncIterator ──────────────────────────────────────────────────
 
 /// <https://webidl.spec.whatwg.org/#js-default-asynchronous-iterator-object>
 #[derive(Clone)]
@@ -316,7 +311,6 @@ where
     }
 
     /// <https://webidl.spec.whatwg.org/#js-asynchronous-iterator-prototype-object>
-    /// Core nextSteps from step 8 of "invoke the next property".
     fn start_next(&self, ec: &mut dyn ExecutionContext<Types>) -> Completion<JsObject, Types> {
         // Step 8.1: "Let nextPromiseCapability be ! NewPromiseCapability(%Promise%)."
         // Note: We create a fallback capability for the finished/error paths.
@@ -403,7 +397,6 @@ where
     }
 
     /// <https://webidl.spec.whatwg.org/#js-asynchronous-iterator-prototype-object>
-    /// Core returnSteps from step 8 of "invoke the return property".
     fn start_return(
         &self,
         value: JsValue,
@@ -492,7 +485,6 @@ where
     }
 }
 
-// ── Helper: CreateIteratorResultObject ─────────────────────────────────────
 
 /// <https://tc39.es/ecma262/#sec-createiterresultobject>
 fn create_iterator_result_object(
@@ -512,7 +504,6 @@ fn create_iterator_result_object(
 // Note: Workaround for the move-after-move pattern above —
 // we need to avoid cloning JsObject on every call.
 
-// ── Prototype and object construction ─────────────────────────────────────
 
 fn create_async_iterator_prototype<T>(ec: &mut dyn ExecutionContext<Types>) -> JsObject
 where
@@ -579,7 +570,6 @@ where
     }
 }
 
-// ── Binding function helpers ───────────────────────────────────────────────
 
 fn default_async_iterator_from_this<T>(
     this: &JsValue,
@@ -693,7 +683,6 @@ where
     Ok(result_promise)
 }
 
-// ── Public entry point ────────────────────────────────────────────────────
 
 /// <https://webidl.spec.whatwg.org/#js-asynchronous-iterable>
 pub(crate) fn create_value_async_iterator<T>(

@@ -26,7 +26,6 @@ use crate::webidl::bindings::{AttributeDef, InterfaceDefinition, OperationDef, W
 
 use js_engine::{Completion, ExecutionContext, JsTypes};
 
-// ── WebIDL interface definition (§3) ──
 
 impl WebIdlInterface<crate::js::Types> for Event {
     const NAME: &'static str = "Event";

@@ -22,7 +22,6 @@ use super::event::init_flag;
 
 use js_engine::{Completion, ExecutionContext, JsTypes};
 
-// ── WebIDL interface definition (§3) ──
 
 impl WebIdlInterface<crate::js::Types> for UIEvent {
     const NAME: &'static str = "UIEvent";
@@ -90,7 +89,6 @@ impl WebIdlInterface<crate::js::Types> for UIEvent {
     }
 }
 
-// ── Member getters/setters/methods ──
 
 fn get_view(
     this: &JsValue,

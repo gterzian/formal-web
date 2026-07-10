@@ -220,7 +220,6 @@ impl HTMLMediaElement {
         self.error.clone()
     }
 
-    // ── Media element load algorithm ──
 
     /// <https://html.spec.whatwg.org/#media-element-load-algorithm>
     ///
@@ -372,7 +371,6 @@ impl HTMLMediaElement {
         }
 
         await_a_stable_state(ec, move |job_ec| {
-            // ── Synchronous section starts here ──
 
             // Step 5: ⌛ If blocked-on-parser flag is false, populate list of pending text tracks.
             // Note: No-op — text track support not yet implemented.
@@ -452,7 +450,6 @@ impl HTMLMediaElement {
                 // require access to the media element and are tracked as a gap.
             }
 
-            // ── Synchronous section ends here ──
             Ok(job_ec.value_undefined())
         })
     }

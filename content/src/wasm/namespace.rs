@@ -71,7 +71,6 @@ fn window_from_context(context: &mut Context) -> Option<&Window> {
         .and_then(|data| data.downcast_ref::<Window>())
 }
 
-// ── Namespace operations ──
 
 /// <https://webassembly.github.io/spec/js-api/#dom-webassembly-validate>
 pub(crate) fn validate_wasm_module(stable_bytes: &[u8]) -> bool {
@@ -281,7 +280,6 @@ fn instantiate_bytes_boa(
     Ok(JsValue::from(promise))
 }
 
-// ── Promise resolution (called by the content process on completion) ──
 
 /// <https://webassembly.github.io/spec/js-api/#asynchronously-compile-a-webassembly-module>
 pub(crate) fn compile_continuation(
@@ -410,7 +408,6 @@ fn initialize_an_instance_object_boa(
     js_result_to_completion(Ok(instance_object), context)
 }
 
-// ── Exports object ──
 
 /// <https://webassembly.github.io/spec/js-api/#create-an-exports-object>
 fn create_an_exports_object_boa(
@@ -472,7 +469,6 @@ fn instance_export_list(
         .collect()
 }
 
-// ── Exported function wrapper (spec step: "creating a new Exported Function") ──
 
 fn create_exported_function_wrapper_boa(
     func: Func,
@@ -512,7 +508,6 @@ fn create_exported_function_wrapper_boa(
     Ok(js_func.into())
 }
 
-// ── Helpers ──
 
 fn create_compile_error_boa(message: &str, context: &mut Context) -> JsValue {
     // Use the registered CompileError constructor on the WebAssembly namespace.

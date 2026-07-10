@@ -111,10 +111,8 @@ pub(crate) fn window_computed_style_properties_for_element(
     decls
 }
 
-// ──────────────────────────────────────────────────────────────────────────────
 // Window open steps
 // https://html.spec.whatwg.org/#window-open-steps
-// ──────────────────────────────────────────────────────────────────────────────
 
 /// <https://html.spec.whatwg.org/#window-open-steps>
 pub(crate) fn window_open_steps(

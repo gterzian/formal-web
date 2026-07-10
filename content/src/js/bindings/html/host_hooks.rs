@@ -90,7 +90,6 @@ fn build_boa_context(document: Rc<RefCell<BaseDocument>>) -> Result<Context, Str
         crate::js::platform_objects::init_global_object_slot(&mut engine, global_obj);
     }
 
-    // ── Install WebAssembly namespace ──
     if let Err(error) = crate::js::bindings::install_wasm_namespace(&mut engine) {
         error!("[content] failed to install WebAssembly namespace: {error}");
     }
@@ -156,7 +155,6 @@ fn build_boa_context(document: Rc<RefCell<BaseDocument>>) -> Result<Context, Str
     wire_registry_prototype::<crate::js::Types, HTMLInputElement, HTMLElement>(&mut engine);
     wire_registry_prototype::<crate::js::Types, Window, EventTarget>(&mut engine);
 
-    // ── Wire constructor prototype chain (spec Step 3) ──
     wire_registry_constructor_prototype::<crate::js::Types, UIEvent, Event>(&mut engine);
     wire_registry_constructor_prototype::<crate::js::Types, AbortSignal, EventTarget>(&mut engine);
     wire_registry_constructor_prototype::<crate::js::Types, Node, EventTarget>(&mut engine);
@@ -180,7 +178,6 @@ fn build_boa_context(document: Rc<RefCell<BaseDocument>>) -> Result<Context, Str
     );
     wire_registry_constructor_prototype::<crate::js::Types, Window, EventTarget>(&mut engine);
 
-    // ── Post-registration wiring ──
 
     // HTMLAnchorElement: HTMLHyperlinkElementUtils members (§HTMLHyperlinkElementUtils)
     if let Some(proto) = get_registry_prototype::<crate::js::Types, HTMLAnchorElement>(&engine) {
@@ -272,7 +269,6 @@ fn build_boa_context(document: Rc<RefCell<BaseDocument>>) -> Result<Context, Str
             .map_err(|error| error.to_string())?;
     }
 
-    // ── Install TestUtils namespace ──
     if let Err(error) = crate::js::bindings::testutils::install_testutils_namespace(&mut engine) {
         error!(
             "[content] failed to install TestUtils namespace: {:?}",

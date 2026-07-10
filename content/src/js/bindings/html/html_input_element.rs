@@ -1,4 +1,3 @@
-// ── HTMLInputElement JS bindings ──
 
 type JsValue = <crate::js::Types as JsTypes>::JsValue;
 

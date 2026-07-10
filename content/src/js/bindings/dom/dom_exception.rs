@@ -20,7 +20,6 @@ use crate::webidl::bindings::{AttributeDef, InterfaceDefinition, WebIdlInterface
 
 use js_engine::{Completion, ExecutionContext, JsTypes};
 
-// ── WebIDL interface definition (§3) ──
 
 impl WebIdlInterface<crate::js::Types> for DOMException {
     const NAME: &'static str = "DOMException";

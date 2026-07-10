@@ -19,7 +19,6 @@ pub(crate) struct AddEventListenerOptions {
     pub signal: Option<AbortSignal>,
 }
 
-// ── WebIDL interface definition (§3) ──
 
 use crate::webidl::bindings::{
     InterfaceDefinition, OperationDef, WebIdlInterface, create_interface_instance,

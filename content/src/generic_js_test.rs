@@ -34,7 +34,6 @@ type TestTypes = crate::js::Types;
 type JsValue = <TestTypes as JsTypes>::JsValue;
 type JsObject = <TestTypes as JsTypes>::JsObject;
 
-// ── Domain type ──────────────────────────────────────────────────────────
 
 /// A toy domain struct exercising the full generic-API binding pattern.
 ///
@@ -664,7 +663,6 @@ impl WebIdlInterface<TestTypes> for TestWidget {
 // Context lifecycle exercise (Boa-only)
 // ═══════════════════════════════════════════════════════════════════════════
 
-// ── TestButton Web IDL interface (minimal — just for registration) ──
 
 impl WebIdlInterface<TestTypes> for TestButton {
     const NAME: &'static str = "TestButton";
@@ -703,7 +701,6 @@ mod tests {
     use js_engine::TypedArrayElementType;
     use js_engine::{EcmascriptHost, ExecutionContext, JsEngine};
 
-    // ── Backend-specific setup ───────────────────────────────────────
 
     /// Create an initialized engine context with the TestWidget interface
     /// registered (Boa) or available (JSC).
@@ -739,7 +736,6 @@ mod tests {
         engine
     }
 
-    // ── Widget creation helper ────────────────────────────────────────
 
     /// Create a TestWidget platform object, delegating to the cfg-gated
     /// `create_test_widget` helper.
@@ -752,7 +748,6 @@ mod tests {
         create_test_button(button, ec).unwrap()
     }
 
-    // ── Multi-type downcast chain tests ────────────────────────────
 
     #[test]
     fn multi_downcast_button_seen_as_button_and_widget() {
@@ -841,7 +836,6 @@ mod tests {
         assert!((engine.to_number(count_val).unwrap() - 1.0).abs() < 0.001);
     }
 
-    // ── Tests ────────────────────────────────────────────────────────
 
     #[test]
     fn widget_get_title_returns_default() {
@@ -1468,7 +1462,6 @@ mod tests {
         assert!(has_callback);
     }
 
-    // ── Iterator operations (§7.4) ─────────────────────────────────
 
     #[test]
     fn get_iterator_and_step_value() {
@@ -1519,7 +1512,6 @@ mod tests {
         let _ = engine.async_iterator_close(iter_record, Ok(undef));
     }
 
-    // ── More type conversions (§7.1) ───────────────────────────────
 
     #[test]
     fn integer_conversions() {
@@ -1564,7 +1556,6 @@ mod tests {
         assert_eq!(engine.canonical_numeric_index_string(&s2), None);
     }
 
-    // ── More object operations (§7.3) ──────────────────────────────
 
     #[test]
     fn require_object_coercible() {
@@ -1789,7 +1780,6 @@ mod tests {
         let _result_val = TestTypes::value_from_object(result);
     }
 
-    // ── Buffer operations ──────────────────────────────────────────
 
     #[test]
     fn get_and_set_value_in_buffer() {
@@ -1854,7 +1844,6 @@ mod tests {
             .unwrap();
     }
 
-    // ── TypedArray §23.2 Construction and Metadata ──────────────────
 
     #[test]
     fn construct_typed_array_view_and_read_metadata() {
@@ -1904,7 +1893,6 @@ mod tests {
         assert_eq!(data.unwrap().len(), 8);
     }
 
-    // ── JSON and BigInt ────────────────────────────────────────────
 
     #[test]
     fn json_stringify_roundtrip() {
@@ -1929,7 +1917,6 @@ mod tests {
         assert!(parsed.is_some());
     }
 
-    // ── Engine factory operations ──────────────────────────────────
 
     #[test]
     fn create_builtin_function_and_call() {
@@ -2112,7 +2099,6 @@ mod tests {
         assert!(*called.borrow());
     }
 
-    // ── Object downcasts ───────────────────────────────────────────
 
     #[test]
     fn object_downcasts_all_types() {
@@ -2140,7 +2126,6 @@ mod tests {
         );
     }
 
-    // ── GC object round-trip (create_object_with_any + with_object_any) ─
 
     /// Exercises the GC integration: create a JS object with native Rust
     /// data via `create_object_with_any`, then retrieve it via
@@ -2184,7 +2169,6 @@ mod tests {
         assert_eq!(count, 99);
     }
 
-    // ── Host data JsObject round-trip ──────────────────────────────
 
     /// Validates the global-object access pattern: store a `JsObject` in
     /// `host_any`, retrieve it later, and downcast to native data through
@@ -2243,7 +2227,6 @@ mod tests {
         assert!(TestTypes::value_as_object(&TestTypes::value_from_object(global_obj)).is_some());
     }
 
-    // ── with_object_any_mut borrow limitation ────────────────────
 
     /// Validates that mutable downcast via `with_object_any_mut` followed by
     /// an `ec` method call works correctly — the mutable borrow from
@@ -2309,7 +2292,6 @@ mod tests {
         assert!((engine.to_number(count_val).unwrap() - 99.0).abs() < 0.001);
     }
 
-    // ── PropertyDescriptor with getter from create_builtin_function ──
 
     /// Validates constructing a `PropertyDescriptor` whose `get` field is a
     /// function created via `create_builtin_function`, applying it to an
@@ -2415,7 +2397,6 @@ mod tests {
         assert!((engine.to_number(result).unwrap() - 99.0).abs() < 0.001);
     }
 
-    // ── GC rooting pressure tests ───────────────────────────────────
 
     /// Allocates many throwaway objects to create GC pressure, then
     /// verifies a `GcRootHandle`-rooted callback still survives.
@@ -2449,7 +2430,6 @@ mod tests {
         drop(root);
     }
 
-    // ── ObjectInitializer composite pattern ──────────────────────────
 
     /// Validates the generic equivalent of Boa's `ObjectInitializer`
     /// pattern: create a plain object, set multiple data properties,
@@ -2463,10 +2443,8 @@ mod tests {
     fn object_initializer_composite_build_and_reflect() {
         let mut engine = setup();
 
-        // ── Step 1: create plain object (equivalent to ObjectInitializer::new + build) ──
         let obj = engine.create_plain_object(None);
 
-        // ── Step 2: set data properties (equivalent to initializer.property(...)) ──
         let font_size_key = engine.property_key_from_str("font-size");
         let font_size_camel_key = engine.property_key_from_str("fontSize");
         let color_key = engine.property_key_from_str("color");
@@ -2493,7 +2471,6 @@ mod tests {
             )
             .unwrap();
 
-        // ── Step 3: attach a method (equivalent to initializer.function(...)) ──
         let get_property_value_fn = engine.create_builtin_function(
             Box::new(move |args, _this, inner_ec| {
                 let prop_name = args
@@ -2516,8 +2493,6 @@ mod tests {
             .set(obj.clone(), method_key.clone(), method_val, false)
             .unwrap();
 
-        // ── Step 4: define accessor property with getter + setter
-        //           (equivalent to defining cssText with builder.get(...).set(...)) ──
         let backing = engine.create_plain_object(None);
         let backing_for_getter = backing.clone();
 
@@ -2561,21 +2536,18 @@ mod tests {
             .define_property_or_throw(obj.clone(), css_text_key.clone(), accessor_desc)
             .unwrap();
 
-        // ── Step 5: store a back-reference (equivalent to style_obj.set("__element", ...)) ──
         let ref_key = engine.property_key_from_str("__element");
         let ref_val = TestTypes::value_from_object(obj.clone());
         engine
             .set(obj.clone(), ref_key.clone(), ref_val, false)
             .unwrap();
 
-        // ── Verify: read data properties back ──
         let read_font_size =
             ExecutionContext::get(&mut engine, obj.clone(), font_size_key).unwrap();
         assert_eq!(engine.to_rust_string(read_font_size).unwrap(), "12px");
         let read_color = ExecutionContext::get(&mut engine, obj.clone(), color_key).unwrap();
         assert_eq!(engine.to_rust_string(read_color).unwrap(), "#000");
 
-        // ── Verify: call the method ──
         let method_obj = ExecutionContext::get(&mut engine, obj.clone(), method_key).unwrap();
         let method_callable = TestTypes::value_as_object(&method_obj).unwrap();
         let arg = engine.value_from_string(engine.js_string_from_str("fontSize"));
@@ -2588,7 +2560,6 @@ mod tests {
         .unwrap();
         assert_eq!(engine.to_rust_string(result).unwrap(), "value_of_fontSize");
 
-        // ── Verify: set via accessor, then read back ──
         let new_css = engine.value_from_string(engine.js_string_from_str("color: red;"));
         engine
             .set(obj.clone(), css_text_key.clone(), new_css, false)
@@ -2596,11 +2567,9 @@ mod tests {
         let read_css = ExecutionContext::get(&mut engine, obj.clone(), css_text_key).unwrap();
         assert_eq!(engine.to_rust_string(read_css).unwrap(), "color: red;");
 
-        // ── Verify: back-reference is accessible ──
         let read_ref = ExecutionContext::get(&mut engine, obj.clone(), ref_key).unwrap();
         assert!(TestTypes::value_as_object(&read_ref).is_some());
 
-        // ── Verify: own property keys include all expected entries ──
         let keys = engine.own_property_keys(obj.clone()).unwrap();
         assert!(
             keys.len() >= 6,
@@ -2609,7 +2578,6 @@ mod tests {
         );
     }
 
-    // ── Builtin function with captured mutable state ─────────────────
 
     /// Validates `create_builtin_function` with `move` closure that
     /// captures and mutates external state. This mirrors the
@@ -2647,7 +2615,6 @@ mod tests {
         assert_eq!(counter.get(), 2);
     }
 
-    // ── Timer callback detection pattern ──────────────────────────────
 
     /// Validates the `timer_handler` pattern: given a JS value, determine
     /// whether it's a callable function or a string.  This is the exact
@@ -2683,7 +2650,6 @@ mod tests {
         assert_eq!(source, "console.log('hi')");
     }
 
-    // ── Timeout value conversion pattern ─────────────────────────────
 
     /// Validates the `timeout_ms` pattern: convert a JS value to an IDL
     /// long (via `ToNumber`), clamp negative to zero, floor, saturate at
@@ -2760,7 +2726,6 @@ mod tests {
         assert_eq!(s, "nested");
     }
 
-    // ── create_builtin_function — tests with captured state ─
 
     #[test]
     fn create_builtin_function_with_captures_increments() {
@@ -2843,7 +2808,6 @@ mod tests {
         assert!((engine.to_number(result).unwrap() - 7.0).abs() < 0.001);
     }
 
-    // ── create_builtin_function — single unified API ─
 
     /// Validates that `create_builtin_function` works through
     /// `&mut dyn ExecutionContext<T>` via `ec.create_builtin_function()`.
@@ -2920,7 +2884,6 @@ mod tests {
         assert!((engine.to_number(result).unwrap() - 7.0).abs() < 0.001);
     }
 
-    // ── §6.1 Language type detection ─────────────────────────────────
 
     #[test]
     fn bigint_primitive_detection() {

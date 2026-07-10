@@ -1,4 +1,3 @@
-// ── HTMLMediaElement JS bindings ──
 //
 // Note: These bindings define *which members* HTMLMediaElement exposes.
 // Domain methods on HTMLMediaElement implement *what those members do*.
@@ -278,7 +277,6 @@ impl WebIdlInterface<crate::js::Types> for HTMLMediaElement {
     }
 }
 
-// ── Multi-type downcast helper ──────────────────────────────────────
 // Tries HTMLMediaElement first, then HTMLVideoElement → .media_element.
 
 fn try_with_media_ref<R>(
@@ -299,7 +297,6 @@ fn try_with_media_ref<R>(
     Err(ec.new_type_error("expected HTMLMediaElement"))
 }
 
-// ── Attribute getters/setters ──
 
 fn get_network_state(
     this: &JsValue,
@@ -562,7 +559,6 @@ fn set_preload(
     Ok(ec.value_undefined())
 }
 
-// ── Operations ──
 
 fn load_method(
     this: &JsValue,

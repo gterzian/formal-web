@@ -30,7 +30,6 @@ pub(crate) fn init_global_object_slot(
     ec.store_host_any(TypeId::of::<GlobalObjectSlot>(), Box::new(global_object));
 }
 
-// ── Generic helpers — no ec_to_ctx, pure trait-method access ───────────
 
 /// <https://html.spec.whatwg.org/#global-object>
 ///
@@ -87,7 +86,6 @@ pub(crate) fn collect_child_subtree_node_ids(
     node_ids
 }
 
-// ── Generic helpers — EC trait-based access ────────────────────────────
 
 pub(crate) fn document_object(
     ec: &mut dyn ExecutionContext<crate::js::Types>,
@@ -132,7 +130,6 @@ pub(crate) fn take_animation_frame_callbacks(
     })
 }
 
-// ── Complex wrappers (need mutable ec during creation) ─────────────
 
 pub(crate) fn resolve_element_object(
     node_id: usize,
@@ -205,7 +202,6 @@ pub(crate) fn resolve_or_create_text_node_object(
     Ok(object)
 }
 
-// ── Implementation helper — element kind dispatch ──────────────────────
 
 fn element_object_from_document(
     document: Rc<RefCell<BaseDocument>>,

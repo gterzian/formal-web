@@ -26,7 +26,6 @@ use js_engine::{
 /// <https://html.spec.whatwg.org/#safe-passing-of-structured-data>
 type Types = crate::js::Types;
 
-// ── Convenience aliases for associated types ──────────────────────────
 type JsValue = <Types as JsTypes>::JsValue;
 type JsObject = <Types as JsTypes>::JsObject;
 type JsString = <Types as JsTypes>::JsString;
@@ -40,9 +39,7 @@ type MapType = <Types as JsTypes>::Map;
 type SetType = <Types as JsTypes>::Set;
 type Constructor = <Types as JsTypes>::Constructor;
 
-// ──────────────────────────────────────────────────────────────────────────────
 // Traits for platform objects (bridge layer)
-// ──────────────────────────────────────────────────────────────────────────────
 
 /// <https://html.spec.whatwg.org/#serializable-objects>
 ///
@@ -79,9 +76,7 @@ pub trait Transferable: std::fmt::Debug {
     ) -> Completion<(), Types>;
 }
 
-// ──────────────────────────────────────────────────────────────────────────────
 // Pure-data types (IPC-safe)
-// ──────────────────────────────────────────────────────────────────────────────
 
 /// A primitive JavaScript value in a portable, serializable form.
 #[derive(Debug, Clone)]
@@ -170,9 +165,7 @@ pub enum SerializedRecord {
     Object(Vec<(Vec<u16>, SerializedRecord)>),
 }
 
-// ──────────────────────────────────────────────────────────────────────────────
 // Memory map (for cycle/duplicate detection)
-// ──────────────────────────────────────────────────────────────────────────────
 
 /// The memory map used for cycle and duplicate detection during (de)serialization.
 ///
@@ -205,9 +198,7 @@ impl MemoryMap {
     }
 }
 
-// ──────────────────────────────────────────────────────────────────────────────
 // DataCloneError helper
-// ──────────────────────────────────────────────────────────────────────────────
 
 fn data_clone_error(ec: &mut dyn ExecutionContext<Types>) -> JsValue {
     let obj = create_interface_instance::<Types, DOMException>(
@@ -221,9 +212,7 @@ fn data_clone_error(ec: &mut dyn ExecutionContext<Types>) -> JsValue {
     Types::value_from_object(obj)
 }
 
-// ──────────────────────────────────────────────────────────────────────────────
 // Bridge: JsValue → PrimitiveValue
-// ──────────────────────────────────────────────────────────────────────────────
 
 /// Convert a JsValue to its portable PrimitiveValue representation.
 fn js_value_to_primitive(
@@ -274,9 +263,7 @@ fn property_key_to_string(
     Ok(key_str.encode_utf16().collect())
 }
 
-// ──────────────────────────────────────────────────────────────────────────────
 // StructuredSerializeInternal
-// ──────────────────────────────────────────────────────────────────────────────
 
 /// <https://html.spec.whatwg.org/#structuredserializeinternal>
 fn structured_serialize_internal(
@@ -466,9 +453,7 @@ fn structured_serialize_internal(
         .expect("entry must exist in memory"))
 }
 
-// ──────────────────────────────────────────────────────────────────────────────
 // Serialization helpers
-// ──────────────────────────────────────────────────────────────────────────────
 
 /// <https://html.spec.whatwg.org/#structuredserializeinternal>
 /// Step 13.2: non-shared ArrayBuffer.
@@ -869,9 +854,7 @@ fn serialize_array(
         .expect("Array entry must exist in memory"))
 }
 
-// ──────────────────────────────────────────────────────────────────────────────
 // Public API: simple serialize entry points
-// ──────────────────────────────────────────────────────────────────────────────
 
 /// <https://html.spec.whatwg.org/#structuredserialize>
 pub fn structured_serialize(
@@ -891,9 +874,7 @@ pub fn structured_serialize_for_storage(
     structured_serialize_internal(value, true, &mut memory, ec)
 }
 
-// ──────────────────────────────────────────────────────────────────────────────
 // StructuredSerializeWithTransfer
-// ──────────────────────────────────────────────────────────────────────────────
 
 /// Represents the result of [`structured_serialize_with_transfer`].
 pub struct SerializeWithTransferResult {
@@ -1026,9 +1007,7 @@ fn is_transferable_platform_object(_object: &JsObject) -> bool {
     false // TODO
 }
 
-// ──────────────────────────────────────────────────────────────────────────────
 // StructuredDeserialize
-// ──────────────────────────────────────────────────────────────────────────────
 
 /// <https://html.spec.whatwg.org/#structureddeserialize>
 fn structured_deserialize(
@@ -1392,9 +1371,7 @@ fn deserialize_error(
     Ok(Types::value_from_object(error_obj))
 }
 
-// ──────────────────────────────────────────────────────────────────────────────
 // StructuredDeserializeWithTransfer
-// ──────────────────────────────────────────────────────────────────────────────
 
 /// The result of [`structured_deserialize_with_transfer`].
 /// Corresponds to the Record { [[Deserialized]]: deserialized, [[TransferredValues]]: transferredValues }
@@ -1478,9 +1455,7 @@ pub fn structured_deserialize_with_transfer(
     })
 }
 
-// ──────────────────────────────────────────────────────────────────────────────
 // structuredClone API (WindowOrWorkerGlobalScope)
-// ──────────────────────────────────────────────────────────────────────────────
 
 /// <https://html.spec.whatwg.org/#dom-structuredclone>
 pub fn structured_clone(
@@ -1508,9 +1483,7 @@ pub struct StructuredCloneOptions {
     pub transfer: Option<Vec<JsValue>>,
 }
 
-// ──────────────────────────────────────────────────────────────────────────────
 // Utility functions
-// ──────────────────────────────────────────────────────────────────────────────
 
 /// Reverse of EscapeRegExpPattern (spec 22.2.3.2.5).
 /// The source getter escapes `\/`, `\n`, `\r`, `\u2028`, `\u2029`.

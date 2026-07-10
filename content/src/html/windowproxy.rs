@@ -10,7 +10,6 @@ use crate::js::Types;
 type JsValue = <Types as JsTypes>::JsValue;
 type JsObject = <Types as JsTypes>::JsObject;
 
-// ── Trap functions ──
 //
 // Each trap is called by the Proxy internal methods and receives:
 //     fn(args: &[JsValue], _this: JsValue, ec: &mut dyn ExecutionContext<crate::js::Types>)
@@ -226,7 +225,6 @@ fn trap_own_keys(
     Ok(<crate::js::Types as JsTypes>::value_from_object(key_array))
 }
 
-// ── Helper ──
 
 /// Extract the target Window from the proxy trap arguments.
 ///
@@ -238,7 +236,6 @@ fn target_window(args: &[JsValue]) -> Result<JsObject, JsValue> {
         .ok_or_else(|| JsValue::default())
 }
 
-// ── Public API ──
 
 /// <https://html.spec.whatwg.org/#the-windowproxy-exotic-object>
 ///
@@ -320,7 +317,6 @@ pub(crate) fn resolve_window(
     ec.global_object()
 }
 
-// ── Cross-origin support (unreachable in single-origin content process) ──
 
 #[allow(dead_code)]
 struct CrossOriginPropertyEntry {

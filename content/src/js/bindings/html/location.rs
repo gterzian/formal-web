@@ -19,7 +19,6 @@ use crate::webidl::bindings::{
     AttributeDef, InterfaceDefinition, OperationDef, WebIdlInterface, create_interface_instance,
 };
 
-// ── WebIDL interface definition (§3) ──
 
 impl WebIdlInterface<crate::js::Types> for Location {
     const NAME: &'static str = "Location";
@@ -194,7 +193,6 @@ impl WebIdlInterface<crate::js::Types> for Location {
     }
 }
 
-// ── Generic helpers ──
 
 fn try_with_location_ref<R>(
     this: &JsValue,
@@ -255,7 +253,6 @@ fn entry_settings_object(
     })
 }
 
-// ── Getters ──
 
 fn get_href(
     this: &JsValue,
@@ -364,7 +361,6 @@ fn get_hash(
     Ok(ec.value_from_string(ec.js_string_from_str(hash.as_str())))
 }
 
-// ── Setters ──
 
 fn set_href(
     this: &JsValue,
@@ -478,7 +474,6 @@ fn set_hash(
     map_location_result(result, ec)
 }
 
-// ── Methods ──
 
 fn assign_method(
     this: &JsValue,

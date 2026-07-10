@@ -5,7 +5,6 @@ use crate::webidl::bindings::{AttributeDef, InterfaceDefinition, WebIdlInterface
 
 use js_engine::{Completion, ExecutionContext, JsTypes};
 
-// ── WebIDL interface definition (§3) ──
 
 impl WebIdlInterface<crate::js::Types> for HTMLAnchorElement {
     const NAME: &'static str = "HTMLAnchorElement";

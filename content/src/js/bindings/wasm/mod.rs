@@ -56,7 +56,6 @@ fn rejected_promise_from_error_boa(
     rejected_promise_from_error(reason, ec)
 }
 
-// ── Namespace type ──
 
 /// Marker type for the `WebAssembly` namespace.
 struct WasmNamespace;
@@ -119,7 +118,6 @@ impl WebIdlNamespace<crate::js::Types> for WasmNamespace {
     }
 }
 
-// ── Installation entry point ──
 
 /// <https://webassembly.github.io/spec/js-api/#webassembly-namespace>
 pub(crate) fn install_wasm_namespace(engine: &mut BoaContext) -> JsResult<()> {
@@ -155,7 +153,6 @@ fn resolve_wasm_namespace(
     Ok(namespace)
 }
 
-// ── Namespace operation bindings ──
 //
 // Each binding function is a thin wrapper: extract JS arguments,
 // call the corresponding domain function in `content/src/wasm/namespace.rs`,

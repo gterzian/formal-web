@@ -95,7 +95,6 @@ impl WebIdlInterface<crate::js::Types> for TransformStreamDefaultController {
     }
 }
 
-// ── Binding functions ──
 
 /// <https://streams.spec.whatwg.org/#ts-readable>
 fn get_readable(

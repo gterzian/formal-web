@@ -241,7 +241,6 @@ impl WebIdlInterface<crate::js::Types> for Node {
     }
 }
 
-// ── Member getters/setters/methods ──
 
 fn try_with_node_ref<R>(
     this: &JsValue,

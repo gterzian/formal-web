@@ -41,6 +41,23 @@ where
     define_attributes_on_target(engine, target, &regular)
 }
 
+/// <https://webidl.spec.whatwg.org/#define-the-unforgeable-regular-attributes>
+pub(crate) fn define_unforgeable_regular_attributes<Ty, E>(
+    engine: &mut E,
+    target: &Ty::JsValue,
+    attributes: &[AttributeDef<Ty>],
+) -> Completion<(), Ty>
+where
+    Ty: JsTypes + JsTypesWithRealm,
+    E: JsEngine<Ty> + ExecutionContext<Ty>,
+{
+    let unforgeable: Vec<&AttributeDef<Ty>> = attributes
+        .iter()
+        .filter(|a| !a.static_ && a.unforgeable)
+        .collect();
+    define_attributes_on_target(engine, target, &unforgeable)
+}
+
 /// <https://webidl.spec.whatwg.org/#define-the-static-attributes>
 pub(crate) fn define_static_attributes<Ty, E>(
     engine: &mut E,

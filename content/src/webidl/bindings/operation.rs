@@ -41,6 +41,23 @@ where
     define_operations_on_target(engine, target, &regular)
 }
 
+/// <https://webidl.spec.whatwg.org/#define-the-unforgeable-regular-operations>
+pub(crate) fn define_unforgeable_regular_operations<Ty, E>(
+    engine: &mut E,
+    target: &Ty::JsValue,
+    operations: &[OperationDef<Ty>],
+) -> Completion<(), Ty>
+where
+    Ty: JsTypes + JsTypesWithRealm,
+    E: JsEngine<Ty> + ExecutionContext<Ty>,
+{
+    let unforgeable: Vec<&OperationDef<Ty>> = operations
+        .iter()
+        .filter(|o| !o.static_ && o.unforgeable)
+        .collect();
+    define_operations_on_target(engine, target, &unforgeable)
+}
+
 /// <https://webidl.spec.whatwg.org/#define-the-static-operations>
 pub(crate) fn define_static_operations<Ty, E>(
     engine: &mut E,
