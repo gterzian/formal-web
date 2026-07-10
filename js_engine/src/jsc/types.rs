@@ -89,8 +89,7 @@ impl JscString {
                     .chars()
                     .map(|c| if c == '\0' { '\u{FFFD}' } else { c })
                     .collect();
-                CString::new(sanitized)
-                    .expect("sanitized string should not contain null bytes")
+                CString::new(sanitized).expect("sanitized string should not contain null bytes")
             }
         };
         let raw = unsafe { JSStringCreateWithUTF8CString(c_str.as_ptr()) };
@@ -215,17 +214,13 @@ impl Default for JscValue {
 
 impl From<bool> for JscValue {
     fn from(b: bool) -> Self {
-        panic!(
-            "Cannot create JscValue from bool({b}) without a context; use ec.value_from_bool()"
-        )
+        panic!("Cannot create JscValue from bool({b}) without a context; use ec.value_from_bool()")
     }
 }
 
 impl From<f64> for JscValue {
     fn from(n: f64) -> Self {
-        panic!(
-            "Cannot create JscValue from f64({n}) without a context; use ec.value_from_number()"
-        )
+        panic!("Cannot create JscValue from f64({n}) without a context; use ec.value_from_number()")
     }
 }
 

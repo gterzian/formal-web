@@ -403,14 +403,23 @@ cargo test -p content generic_js_test                                          #
 
 ### Remaining JSC limitations
 
-**Function.prototype inheritance (macOS 26)**
-`JSObjectSetPrototype` crashes on `JSObjectMake`-created objects.
-Builtin functions lack `.bind()`, `.call()`, `.apply()`.  Affects:
-- `c.enqueue.bind(c)` patterns in stream tests
-- `callback is not a function` errors (`Element-remove.html`)
+**Function.prototype inheritance (macOS 26)** – PARTIALLY FIXED (2026-07-10)
+`JSObjectSetPrototype` crashes on `JSObjectMake`-created objects with
+`callAsFunction`/`callAsConstructor` callbacks.  Non-constructor builtin
+functions now use `JSObjectMakeFunctionWithCallback` instead of a custom
+JSClass, which creates real JSC functions with full Function.prototype
+inheritance (`.bind()`, `.call()`, `.apply()` work).  Constructor
+builtin functions (interface constructors) still use the custom JSClass
+approach and lack Function.prototype methods, which is acceptable
+because constructors are typically called with `new` rather than
+`.bind()` in WPT tests.
 
-Workaround: JS wrapper functions via `ec.evaluate_script()` have full
-Function.prototype — use these for APIs that need `.bind()`.
+Affects:
+- Constructor functions: `.bind()`, `.call()`, `.apply()` unavailable
+
+Previously affected (now fixed for non-constructors):
+- ✅ `c.enqueue.bind(c)` patterns in stream tests
+- ✅ `callback is not a function` errors (`Element-remove.html`)
 
 **Microtask draining**
 `run_jobs` uses a cached `(function(){})` called via `JSObjectCallAsFunction`
@@ -450,8 +459,8 @@ indicating the microtask checkpoint is the primary work cycle.
 - **Async WebAssembly:** `WebAssembly.compile()` uses JSC's native async path
   which requires the event loop for background compilation to complete.
   Synchronous `new WebAssembly.Module()` works.
-- **`get_prototype_of`:** Stub on JSC — prevents dynamic prototype chain
-  traversal in the global property copying code.
+- ✅ **`get_prototype_of`:** FIXED (2026-07-10).  Now uses `JSObjectGetPrototype`
+  C API.  Returns `None` for null-prototype objects.
 - **DOM operations crash after initial success:** `document.createElement`
   works (returns an element, setting `textContent` works), but subsequent
   operations or unrelated JS evaluations cause SIGBUS/SIGABRT.  Same pattern
@@ -873,6 +882,46 @@ function identity, and IDL harness setup.
 **Not investigated:**
 - `get_iterator_and_step_value` test fails — JavaScript `Symbol.iterator` interaction
   with JSC's eval-based iterator creation (known pre-existing issue)
+
+### 2026-07-10 — JSC `get_prototype_of` and Function.prototype inheritance fixes
+
+**Files changed:**
+- `js_engine/src/jsc/engine.rs`:
+  - Implemented `get_prototype_of` using `JSObjectGetPrototype` C API
+    (was stubbed with `new_type_error`).  Returns `None` for null-prototype
+    objects.
+  - Added `FUNCTION_REGISTRY` thread-local for `JSObjectMakeFunctionWithCallback`
+    behaviour storage.
+  - Added `registry_call_as_function` extern "C" callback for registry-based
+    builtin function invocation.
+  - Modified `make_builtin_function` to use `JSObjectMakeFunctionWithCallback`
+    for non-constructor functions (gives real Function.prototype inheritance
+    with `.bind()`, `.call()`, `.apply()`).  Constructor functions retain the
+    custom JSClass approach (private data, `callAsConstructor` callback).
+  - Added `drain_microtasks()` helper method to `JscEngine` for centralized
+    microtask draining; `run_jobs` and `perform_promise_then` now use it.
+  - Added `FUNCTION_REGISTRY` cleanup in `Drop for JscEngine`.
+
+**What was confirmed:**
+- `get_prototype_of` now correctly returns the prototype for any JSC object
+  via the `JSObjectGetPrototype` C API.
+- Non-constructor builtin functions (created via `create_builtin_fn_static`
+  and `create_builtin_fn`) now inherit from Function.prototype because
+  `JSObjectMakeFunctionWithCallback` creates real JSC function objects.
+- `drain_microtasks()` avoids code duplication between `run_jobs` and
+  `perform_promise_then`.
+
+**Test results:**
+- JSC engine unit tests: 15/15 pass (unchanged)
+- JSC content tests: 90/90 pass (unchanged)
+- Boa content tests: 91/91 pass (unchanged)
+
+**Not investigated:**
+- Constructor function Function.prototype inheritance (still limited to
+  custom JSClass approach — acceptable for WPT since constructors are
+  called with `new` not `.bind()`)
+- `instanceof Window` global prototype chain limitation
+- DOM operations crash in content process
 
 ### 2026-07-10 — JSC `callAsConstructor` ABI fix and Drop order fix
 

@@ -127,6 +127,16 @@ type StoredBehaviour = Box<
     ) -> Completion<JscValue, JscTypes>,
 >;
 
+/// Registry mapping function object pointers to their stored behaviour.
+/// Used by `JSObjectMakeFunctionWithCallback`-created functions which
+/// cannot store private data.  Entries live for the lifetime of the
+/// engine (builtin functions are never removed).
+thread_local! {
+    static FUNCTION_REGISTRY: std::cell::RefCell<
+        std::collections::HashMap<usize, *mut StoredBehaviour>
+    > = std::cell::RefCell::new(std::collections::HashMap::new());
+}
+
 /// Wrapper around `*mut JSClassRef` that implements `Sync` + `Send` so it
 /// can be stored in a `LazyLock` static.  The content process is
 /// single-threaded; `Send`/`Sync` impls are a formality.
@@ -245,9 +255,9 @@ unsafe fn invoke_stored_behaviour(
     }
 }
 
-/// `callAsFunction` for builtin objects.  Retrieves the `StoredBehaviour`
-/// pointer from private data, converts C args to `JscValue` slices, and
-/// calls the wrapped closure.
+/// `callAsFunction` for builtin objects created via custom JSClass.
+/// Retrieves the `StoredBehaviour` pointer from private data, converts
+/// C args to `JscValue` slices, and calls the wrapped closure.
 extern "C" fn builtin_call_as_function(
     ctx: *mut JSContextRef,
     function: *mut JSObjectRef,
@@ -257,6 +267,42 @@ extern "C" fn builtin_call_as_function(
     exception: *mut *mut JSValueRef,
 ) -> *mut JSValueRef {
     let stored_ptr = unsafe { JSObjectGetPrivate(function) } as *mut StoredBehaviour;
+    if stored_ptr.is_null() {
+        return unsafe { JSValueMakeUndefined(ctx) };
+    }
+    match unsafe {
+        invoke_stored_behaviour(stored_ptr, ctx, this_object, argument_count, arguments)
+    } {
+        Ok(raw) => raw,
+        Err(err_raw) => {
+            unsafe {
+                *exception = err_raw;
+            }
+            std::ptr::null_mut()
+        }
+    }
+}
+
+/// `callAsFunction` for builtin objects created via
+/// `JSObjectMakeFunctionWithCallback`.  Looks up the `StoredBehaviour`
+/// from the thread-local `FUNCTION_REGISTRY` keyed by the function
+/// object's pointer.  These functions inherit from Function.prototype
+/// and support `.bind()`, `.call()`, `.apply()`.
+extern "C" fn registry_call_as_function(
+    ctx: *mut JSContextRef,
+    function: *mut JSObjectRef,
+    this_object: *mut JSObjectRef,
+    argument_count: usize,
+    arguments: *const *mut JSValueRef,
+    exception: *mut *mut JSValueRef,
+) -> *mut JSValueRef {
+    let key = function as usize;
+    let stored_ptr: *mut StoredBehaviour = FUNCTION_REGISTRY.with(|reg| {
+        reg.borrow()
+            .get(&key)
+            .copied()
+            .unwrap_or(std::ptr::null_mut())
+    });
     if stored_ptr.is_null() {
         return unsafe { JSValueMakeUndefined(ctx) };
     }
@@ -307,29 +353,59 @@ extern "C" fn builtin_call_as_constructor(
 }
 
 /// Shared helper: create a JSC function object from a `StoredBehaviour`.
+///
+/// For non-constructor functions, uses `JSObjectMakeFunctionWithCallback`
+/// which creates a real JSC function inheriting from Function.prototype.
+/// These functions support `.bind()`, `.call()`, `.apply()`.
+///
+/// For constructor functions, uses a custom JSClass with
+/// `callAsConstructor` (private-data based).  Constructor functions
+/// do NOT inherit Function.prototype methods because
+/// `JSObjectSetPrototype` crashes on `JSObjectMake`-created objects
+/// on macOS 26.
 fn make_builtin_function(
     ctx: *mut JSContextRef,
     behaviour: StoredBehaviour,
     name: &JscPropertyKey,
     is_constructor: bool,
 ) -> JscObject {
-    let class_ref = if is_constructor {
-        BUILTIN_CONSTRUCTOR_CLASS.0
-    } else {
-        BUILTIN_CLASS.0
+    let name_str = match name {
+        JscPropertyKey::String(s) => s.clone(),
+        JscPropertyKey::Symbol(_) => JscString::from_rust(""),
     };
-    let raw_obj = unsafe { JSObjectMake(ctx, class_ref, std::ptr::null_mut()) };
-    let stored = Box::new(behaviour);
-    let stored_ptr = Box::into_raw(stored) as *mut std::ffi::c_void;
-    unsafe { JSObjectSetPrivate(raw_obj, stored_ptr) };
 
-    // Note: Skipping `name` property because JSObjectSetProperty on
-    // JSClass-created function objects causes crashes on macOS 26.
-    // Note: Function.prototype methods (.bind, .call, .apply) are not
-    // available on builtin function objects because JSObjectSetPrototype
-    // also crashes on macOS 26 for these objects.
+    if is_constructor {
+        // Constructor: use custom JSClass with callAsConstructor callback.
+        // Private-data based storage.
+        let class_ref = BUILTIN_CONSTRUCTOR_CLASS.0;
+        let raw_obj = unsafe { JSObjectMake(ctx, class_ref, std::ptr::null_mut()) };
+        let stored = Box::new(behaviour);
+        let stored_ptr = Box::into_raw(stored) as *mut std::ffi::c_void;
+        unsafe { JSObjectSetPrivate(raw_obj, stored_ptr) };
+        // Note: Constructor functions do NOT inherit Function.prototype
+        // methods because JSObjectSetPrototype crashes on
+        // JSObjectMake()-created objects on macOS 26.
+        // This is acceptable because constructors are typically called
+        // with `new` rather than `.bind()` in WPT tests.
+        JscObject { raw: raw_obj, ctx }
+    } else {
+        // Non-constructor: use JSObjectMakeFunctionWithCallback.
+        // Creates a real JSC function with proper Function.prototype,
+        // supporting .bind(), .call(), .apply().
+        // Store behaviour as a leaked pointer in the FUNCTION_REGISTRY,
+        // keyed by the function object's raw pointer.
+        let stored = Box::new(behaviour);
+        let stored_ptr = Box::into_raw(stored);
+        let raw_obj = unsafe {
+            JSObjectMakeFunctionWithCallback(ctx, name_str.raw, Some(registry_call_as_function))
+        };
+        let fun_key = raw_obj as usize;
+        FUNCTION_REGISTRY.with(|reg| {
+            reg.borrow_mut().insert(fun_key, stored_ptr);
+        });
 
-    JscObject { raw: raw_obj, ctx }
+        JscObject { raw: raw_obj, ctx }
+    }
 }
 
 /// `finalize` for builtin objects.  Drops the `StoredBehaviour` Box,
@@ -790,6 +866,7 @@ pub struct JscEngine {
 /// Drop `host_data` (which contains `GcRootHandle` unroot closures) and
 /// `queued_jobs` before `context` (which releases `JSGlobalContextRef`),
 /// ensuring cleanup closures can still access the JS context.
+/// Also cleans up the FUNCTION_REGISTRY to free leaked behaviour pointers.
 impl Drop for JscEngine {
     fn drop(&mut self) {
         // Drop host_data and queued_jobs first, before context is dropped.
@@ -797,6 +874,21 @@ impl Drop for JscEngine {
         // ensure unroot actions run while the JSGlobalContextRef is still valid.
         self.host_data.clear();
         self.queued_jobs.clear();
+        // Free registry-stored behaviour pointers that were leaked
+        // via Box::into_raw in make_builtin_function for non-constructor
+        // functions.  The JSC engine is being torn down, so no more
+        // callbacks will fire.
+        FUNCTION_REGISTRY.with(|reg| {
+            let entries: Vec<*mut StoredBehaviour> =
+                reg.borrow_mut().drain().map(|(_, ptr)| ptr).collect();
+            for ptr in entries {
+                if !ptr.is_null() {
+                    unsafe {
+                        drop(Box::from_raw(ptr));
+                    }
+                }
+            }
+        });
     }
 }
 
@@ -1010,6 +1102,34 @@ impl JscEngine {
         let key = object.as_raw() as usize;
         map.insert(key, data);
         self.store_host_any(map_type_id, Box::new(map));
+    }
+
+    /// Drain JSC's internal microtask queue.
+    /// Uses a cached no-op function call (not JSEvaluateScript) to avoid
+    /// the compilation overhead of `void 0` eval.
+    fn drain_microtasks(&mut self) {
+        let ctx_ptr = self.context.as_context_ref();
+        if self.drain_noop.is_null() {
+            let script = "(function(){})";
+            let (result, exception) = self.eval_script_raw(script);
+            if exception.is_null() {
+                self.drain_noop = result as *mut JSObjectRef;
+            }
+        }
+        if !self.drain_noop.is_null() {
+            unsafe {
+                JSObjectCallAsFunction(
+                    ctx_ptr,
+                    self.drain_noop,
+                    std::ptr::null_mut(),
+                    0,
+                    std::ptr::null(),
+                    std::ptr::null_mut(),
+                );
+            }
+        } else {
+            self.eval_script_raw("void 0");
+        }
     }
 }
 
@@ -1966,9 +2086,24 @@ impl ExecutionContext<JscTypes> for JscEngine {
         Ok(())
     }
 
-    fn get_prototype_of(&mut self, _object: JscObject) -> Completion<Option<JscObject>, JscTypes> {
-        // Stub — not yet used by JSC proxy code
-        Err(self.new_type_error("get_prototype_of not yet implemented on JSC backend"))
+    fn get_prototype_of(&mut self, object: JscObject) -> Completion<Option<JscObject>, JscTypes> {
+        // <https://tc39.es/ecma262/#sec-ordinarygetprototypeof>
+        let prototype = unsafe { JSObjectGetPrototype(self.context.as_context_ref(), object.raw) };
+        if prototype.is_null() {
+            return Ok(None);
+        }
+        // Check for null prototype.
+        if unsafe { JSValueIsNull(self.context.as_context_ref(), prototype) } {
+            return Ok(None);
+        }
+        let js_type = unsafe { JSValueGetType(self.context.as_context_ref(), prototype) };
+        if js_type != JSType::kJSTypeObject {
+            return Ok(None);
+        }
+        Ok(Some(JscObject {
+            raw: prototype as *mut JSObjectRef,
+            ctx: self.ctx_ptr(),
+        }))
     }
 
     fn set_prototype(
@@ -2691,37 +2826,13 @@ impl ExecutionContext<JscTypes> for JscEngine {
     }
     fn run_jobs(&mut self) {
         // Note: JSC's C API does not expose the microtask queue.
-        // Microtask draining is triggered by `void 0` eval which causes
-        // JSC to drain pending microtasks after each JSEvaluateScript call.
-        // We evaluate `void 0` here to drain any pending JSC microtasks,
-        // and also drain the Rust-side job queue with CURRENT_ENGINE set.
+        // Microtask draining is triggered by calling a no-op function
+        // which causes JSC to drain pending microtasks after each call.
+        // We also drain the Rust-side job queue with CURRENT_ENGINE set.
         let _guard = EngineGuard::new(self as *mut JscEngine);
-        // Lazily create a no-op function for microtask draining.
-        // Calling a JS function (instead of evaluating a script)
-        // avoids the compilation overhead of JSEvaluateScript.
-        if self.drain_noop.is_null() {
-            let script = "(function(){})";
-            let (result, exception) = self.eval_script_raw(script);
-            if exception.is_null() {
-                self.drain_noop = result as *mut JSObjectRef;
-            }
-        }
 
-        // Drain JSC microtasks by calling the noop.
-        if !self.drain_noop.is_null() {
-            unsafe {
-                JSObjectCallAsFunction(
-                    self.context.as_context_ref(),
-                    self.drain_noop,
-                    std::ptr::null_mut(),
-                    0,
-                    std::ptr::null(),
-                    std::ptr::null_mut(),
-                );
-            }
-        } else {
-            self.eval_script_raw("void 0");
-        }
+        // Drain JSC microtasks.
+        self.drain_microtasks();
 
         // Drain Rust-side job queue.
         let jobs = std::mem::take(&mut self.queued_jobs);
@@ -2730,20 +2841,7 @@ impl ExecutionContext<JscTypes> for JscEngine {
         }
 
         // Drain any microtasks that the Rust jobs may have triggered.
-        if !self.drain_noop.is_null() {
-            unsafe {
-                JSObjectCallAsFunction(
-                    self.context.as_context_ref(),
-                    self.drain_noop,
-                    std::ptr::null_mut(),
-                    0,
-                    std::ptr::null(),
-                    std::ptr::null_mut(),
-                );
-            }
-        } else {
-            self.eval_script_raw("void 0");
-        }
+        self.drain_microtasks();
     }
 
     // ── §25 ArrayBuffer — runtime queries ─────────────────────────────────
@@ -3761,9 +3859,7 @@ impl ExecutionContext<JscTypes> for JscEngine {
         // Get the "then" method from the promise via C API to avoid
         // JSEvaluateScript compilation overhead.
         let then_str = JscString::from_rust("then");
-        let then_method = unsafe {
-            JSObjectGetProperty(ctx, promise.raw, then_str.raw, &mut exc)
-        };
+        let then_method = unsafe { JSObjectGetProperty(ctx, promise.raw, then_str.raw, &mut exc) };
         if then_method.is_null() || !exc.is_null() {
             return Err(JscValue { raw: exc, ctx });
         }
@@ -3802,10 +3898,7 @@ impl ExecutionContext<JscTypes> for JscEngine {
             if then_method2.is_null() || !exc.is_null() {
                 return Err(JscValue { raw: exc, ctx });
             }
-            let chain_args = [
-                cap.resolve.as_value_ref(),
-                cap.reject.as_value_ref(),
-            ];
+            let chain_args = [cap.resolve.as_value_ref(), cap.reject.as_value_ref()];
             let _ = unsafe {
                 JSObjectCallAsFunction(
                     ctx,
@@ -3824,10 +3917,7 @@ impl ExecutionContext<JscTypes> for JscEngine {
         // Drain JSC microtasks so that .then() handlers fire.
         self.drain_microtasks();
 
-        Ok(JscValue {
-            raw: result,
-            ctx,
-        })
+        Ok(JscValue { raw: result, ctx })
     }
 
     fn promise_state(
@@ -4792,6 +4882,63 @@ mod tests {
         let ab =
             JsEngine::allocate_array_buffer(&mut engine, intrinsics.array_buffer, 8, None).unwrap();
         assert!(!ab.raw.is_null());
+    }
+
+    #[test]
+    fn get_prototype_of_returns_non_null() {
+        let mut engine = JscEngine::new();
+        // Plain objects (no explicit prototype) still have a default prototype
+        // from their JSClass.  Verify get_prototype_of returns Some(object).
+        let obj = engine.create_plain_object(None);
+        let obj_proto = engine
+            .get_prototype_of(obj)
+            .unwrap()
+            .expect("plain object should have a prototype");
+        assert!(!obj_proto.raw.is_null(), "prototype should not be null");
+        // Verify the prototype is itself an object (has a non-null prototype).
+        let _second_proto = engine
+            .get_prototype_of(obj_proto)
+            .unwrap()
+            .expect("class prototype's prototype should be Object.prototype");
+        // Object.prototype's prototype is null - verify.
+        let third_proto = engine.get_prototype_of(_second_proto).unwrap();
+        assert!(
+            third_proto.is_none(),
+            "Object.prototype's [[Prototype]] should be null"
+        );
+    }
+
+    #[test]
+    fn get_prototype_of_null_prototype_object() {
+        let mut engine = JscEngine::new();
+        // Create an object with null prototype via eval
+        let realm = engine.current_realm();
+        let null_proto_obj =
+            JsEngine::evaluate_script(&mut engine, "Object.create(null)", &realm).unwrap();
+        let obj = JscTypes::value_as_object(&null_proto_obj).unwrap();
+        let proto = engine.get_prototype_of(obj).unwrap();
+        assert!(
+            proto.is_none(),
+            "null-prototype object should have no prototype"
+        );
+    }
+
+    #[test]
+    fn set_prototype_and_get_prototype_of_roundtrip() {
+        let mut engine = JscEngine::new();
+        let obj = engine.create_plain_object(None);
+        let proto = engine.create_plain_object(None);
+        engine
+            .set_prototype(obj.clone(), Some(proto.clone()))
+            .unwrap();
+        let retrieved = engine
+            .get_prototype_of(obj)
+            .unwrap()
+            .expect("set prototype should be retrievable via get_prototype_of");
+        assert_eq!(
+            retrieved.raw, proto.raw,
+            "get_prototype_of should return the prototype set by set_prototype"
+        );
     }
 
     #[test]
