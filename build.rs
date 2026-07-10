@@ -85,7 +85,8 @@ fn prebuild_binaries(prebuild_list: &[(&str, &str)]) -> Result<(), String> {
     } else {
         // JSC backend
         if has_media {
-            // Default — content defaults are media+jsc, already correct
+            // Content defaults are ["media", "boa"] — must override to jsc+media.
+            command.args(["--no-default-features", "--features", "jsc,media"]);
         } else {
             // JSC without media
             command.args(["--no-default-features", "--features", "jsc"]);

@@ -241,6 +241,23 @@ fn setup_realm(engine: &mut Engine, document: Rc<RefCell<BaseDocument>>) -> Resu
             values_desc,
         );
 
+        // @@asyncIterator: same function as values (per spec
+        // ReadableStream.prototype[@@asyncIterator] = ReadableStream.prototype.values)
+        let async_iter_key = engine.property_key_from_well_known_symbol("asyncIterator");
+        let async_iter_desc = js_engine::records::PropertyDescriptor::<crate::js::Types> {
+            value: Some(values_value.clone()),
+            writable: Some(true),
+            configurable: Some(true),
+            enumerable: None,
+            get: None,
+            set: None,
+        };
+        let _ = engine.define_property_or_throw(
+            rs_proto,
+            async_iter_key,
+            async_iter_desc,
+        );
+
         // __formalWebReadableStreamPipeToNative (native backstop)
         let native_value = <crate::js::Types as js_engine::JsTypes>::value_from_object(pipe_to_native_fn.clone());
         let native_desc = js_engine::records::PropertyDescriptor::<crate::js::Types> {

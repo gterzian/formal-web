@@ -214,13 +214,23 @@ impl Default for JscValue {
 
 impl From<bool> for JscValue {
     fn from(b: bool) -> Self {
-        panic!("Cannot create JscValue from bool({b}) without a context; use ec.value_from_bool()")
+        // Look up the current engine's context from the thread-local
+        // (set by EngineGuard at every ExecutionContext entry point).
+        let ctx = super::engine::current_engine_context();
+        JscValue {
+            raw: unsafe { JSValueMakeBoolean(ctx, b) },
+            ctx,
+        }
     }
 }
 
 impl From<f64> for JscValue {
     fn from(n: f64) -> Self {
-        panic!("Cannot create JscValue from f64({n}) without a context; use ec.value_from_number()")
+        let ctx = super::engine::current_engine_context();
+        JscValue {
+            raw: unsafe { JSValueMakeNumber(ctx, n) },
+            ctx,
+        }
     }
 }
 

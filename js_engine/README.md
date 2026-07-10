@@ -883,7 +883,7 @@ function identity, and IDL harness setup.
 - `get_iterator_and_step_value` test fails — JavaScript `Symbol.iterator` interaction
   with JSC's eval-based iterator creation (known pre-existing issue)
 
-### 2026-07-10 — JSC `get_prototype_of` and Function.prototype inheritance fixes
+### 2026-07-10 — JSC `get_prototype_of`, Function.prototype inheritance, build.rs fix, From<bool> fix
 
 **Files changed:**
 - `js_engine/src/jsc/engine.rs`:
@@ -901,27 +901,46 @@ function identity, and IDL harness setup.
   - Added `drain_microtasks()` helper method to `JscEngine` for centralized
     microtask draining; `run_jobs` and `perform_promise_then` now use it.
   - Added `FUNCTION_REGISTRY` cleanup in `Drop for JscEngine`.
+  - Made `CURRENT_ENGINE` accessible via `current_engine_context()` accessor.
+- `js_engine/src/jsc/types.rs`:
+  - Fixed `From<bool>` and `From<f64>` implementations: no longer panic;
+    they use `current_engine_context()` to create proper JSC values.
+- `js_engine/README.md` — Updated limitations and session logs.
+- `build.rs` — Fixed JSC+media prebuild bug: was relying on content crate
+  defaults (which are `["media", "boa"]`) instead of passing
+  `--no-default-features --features jsc,media`.
+- `content/src/js/build_context.rs` — Added `@@asyncIterator` registration
+  for ReadableStream on JSC (was missing, causing
+  `s[Symbol.asyncIterator] is not a function` errors).
 
 **What was confirmed:**
-- `get_prototype_of` now correctly returns the prototype for any JSC object
-  via the `JSObjectGetPrototype` C API.
-- Non-constructor builtin functions (created via `create_builtin_fn_static`
-  and `create_builtin_fn`) now inherit from Function.prototype because
-  `JSObjectMakeFunctionWithCallback` creates real JSC function objects.
-- `drain_microtasks()` avoids code duplication between `run_jobs` and
-  `perform_promise_then`.
+- JSC content processes now launch and run WPT tests (82 tests executed).
+- The `build.rs` fix prevents the `features boa and jsc are mutually exclusive`
+  error when building with `--no-default-features --features jsc,media`.
+- `From<bool>`/`From<f64>` no longer panic when invoked from generic code;
+  they use `CURRENT_ENGINE` thread-local to get the JS context.
 
 **Test results:**
-- JSC engine unit tests: 15/15 pass (unchanged)
-- JSC content tests: 90/90 pass (unchanged)
-- Boa content tests: 91/91 pass (unchanged)
+- JSC engine unit tests: 18/18 pass
+- JSC content tests: 90/90 pass
+- Boa content tests: 91/91 pass
+- **WPT (JSC): 82 executed, 44 unexpected** — first successful JSC WPT run
+
+**WPT failure patterns on JSC (44 unexpected):**
+1. `undefined is not an object (evaluating 'reader.read')` — 
+   `create_object_with_any` instances don't find prototype methods
+   (likely JSObjectSetPrototype not working on PLAIN_OBJECT_CLASS on macOS 26)
+2. `instanceof X expected true got false` — prototype chain not visible to
+   instanceof operator for platform objects
+3. SIGSEGV crashes during stream test teardown
+4. Stream piping timeouts
+5. `structuredClone` Blob dependency not implemented
 
 **Not investigated:**
-- Constructor function Function.prototype inheritance (still limited to
-  custom JSClass approach — acceptable for WPT since constructors are
-  called with `new` not `.bind()`)
+- Root cause of prototype method lookup failure for create_object_with_any
+  instances (most impactful fix for next session)
+- Constructor function Function.prototype inheritance
 - `instanceof Window` global prototype chain limitation
-- DOM operations crash in content process
 
 ### 2026-07-10 — JSC `callAsConstructor` ABI fix and Drop order fix
 

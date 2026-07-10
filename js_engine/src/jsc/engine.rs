@@ -32,6 +32,18 @@ thread_local! {
     static CURRENT_ENGINE: RefCell<Option<*mut JscEngine>> = const { RefCell::new(None) };
 }
 
+/// Accessor for the current engine pointer from sibling modules.
+/// Returns the raw `JSContextRef` if an engine is set, or null otherwise.
+pub(crate) fn current_engine_context() -> *mut JSContextRef {
+    CURRENT_ENGINE.with(|current| match *current.borrow() {
+        Some(ptr) => {
+            let engine = unsafe { &*ptr };
+            engine.context().as_context_ref()
+        }
+        None => std::ptr::null_mut(),
+    })
+}
+
 /// Set the current engine for the duration of a scope.
 /// Builtin function callbacks will use this to find `ec`.
 ///
