@@ -544,7 +544,7 @@ fn initialize_transform_stream(
         false,
     );
     let write_callback =
-        crate::webidl::Callback::from_object(Types::object_from_function(write_fn));
+        crate::webidl::Callback::from_object(Types::object_from_function(write_fn), ec);
     let write_algorithm =
         WriteAlgorithm::JavaScript(SourceMethod::new(global.clone(), write_callback));
 
@@ -558,7 +558,7 @@ fn initialize_transform_stream(
         false,
     );
     let abort_callback =
-        crate::webidl::Callback::from_object(Types::object_from_function(abort_fn));
+        crate::webidl::Callback::from_object(Types::object_from_function(abort_fn), ec);
     let abort_algorithm =
         AbortAlgorithm::JavaScript(SourceMethod::new(global.clone(), abort_callback));
 
@@ -572,7 +572,7 @@ fn initialize_transform_stream(
         false,
     );
     let close_callback =
-        crate::webidl::Callback::from_object(Types::object_from_function(close_fn));
+        crate::webidl::Callback::from_object(Types::object_from_function(close_fn), ec);
     let close_algorithm = CloseAlgorithm::JavaScript(SourceMethod::new(global, close_callback));
 
     // Step 5: "Set stream.[[writable]] to ! CreateWritableStream(startAlgorithm, writeAlgorithm, closeAlgorithm, abortAlgorithm, writableHighWaterMark, writableSizeAlgorithm)."
@@ -759,7 +759,7 @@ fn set_up_transform_stream_default_controller_from_transformer(
         if let Some(transform) = get_callable_method(transformer_obj, "transform", ec)? {
             transform_algorithm = TransformAlgorithm::JavaScript(SourceMethod::new(
                 transformer_obj.clone(),
-                crate::webidl::Callback::from_object(transform),
+                crate::webidl::Callback::from_object(transform, ec),
             ));
         }
 
@@ -767,7 +767,7 @@ fn set_up_transform_stream_default_controller_from_transformer(
         if let Some(flush) = get_callable_method(transformer_obj, "flush", ec)? {
             flush_algorithm = FlushAlgorithm::JavaScript(SourceMethod::new(
                 transformer_obj.clone(),
-                crate::webidl::Callback::from_object(flush),
+                crate::webidl::Callback::from_object(flush, ec),
             ));
         }
 
@@ -775,7 +775,7 @@ fn set_up_transform_stream_default_controller_from_transformer(
         if let Some(cancel) = get_callable_method(transformer_obj, "cancel", ec)? {
             cancel_algorithm = TransformCancelAlgorithm::JavaScript(SourceMethod::new(
                 transformer_obj.clone(),
-                crate::webidl::Callback::from_object(cancel),
+                crate::webidl::Callback::from_object(cancel, ec),
             ));
         }
     }
@@ -1386,7 +1386,7 @@ pub(crate) fn construct_transform_stream(
             let controller_value = JsValue::from(controller.controller_object(ec)?);
             let source_method = SourceMethod::new(
                 transformer_obj.clone(),
-                crate::webidl::Callback::from_object(start),
+                crate::webidl::Callback::from_object(start, ec),
             );
             let result = source_method.call(&[controller_value], ec)?;
             ec.call(&start_resolvers.resolve, &undefined, &[result])?;

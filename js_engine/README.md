@@ -35,9 +35,9 @@ rustup run 1.94.0 cargo build --release -p js_engine
 ### Build — JSC backend (macOS only)
 
 The `js_engine` crate compiles and all 18 unit tests pass on JSC.
-The `content` crate has pre-existing compilation errors on JSC (4 errors:
-`create_builtin_fn_with_captures` type mismatch in generic wrapper,
-`iframe_object` mutability).  These are unrelated to the `js_engine` changes.
+The `content` crate previously had pre-existing compilation errors on both
+backends (`iframe_object` mutability).  These were fixed in the 2026-07-11
+session.
 
 The root `formal-web` binary and WPT runner cannot be built with JSC until
 the `content` crate errors are resolved.
@@ -132,7 +132,7 @@ rustup run 1.94.0 cargo run --release -- wpt dom/nodes/Element-hasAttribute.html
 # JSC — not available until content crate compiles on JSC
 ```
 
-Latest Boa WPT result (2026-07-11): `executed=83 unexpected=0`
+Latest Boa WPT result (2026-07-11): `executed=84 unexpected=0`
 
 ### What works on each backend
 
@@ -279,6 +279,57 @@ to track JSValueProtect'd objects for cleanup on engine teardown.
 | `create_builtin_fn_with_captures` `.length` | `jsc/engine.rs` | Direct `JSObjectSetProperty(func, "length", value, ReadOnly \| DontEnum)` on the standalone function path.  The trait impl methods (`create_builtin_function`, `create_builtin_fn_static`) only gained `.length` support in the 2026-07-11 critical-fixes pass. |
 | `get_fn_call()` | `jsc/engine.rs` | Traverses `Function → prototype → call` via C API instead of `eval("Function.prototype.call")`. |
 
+### Session investigation log
+
+#### 2026-07-11 — Callback GC protection for JSC backend
+
+**Files changed:**
+- `content/src/webidl/callback.rs` — Added `root: Option<Rc<GcRootHandle<Types>>>` field
+  (JSC-only), changed `from_object()` to take `ec` and protect the value.
+- `content/src/streams/strategy.rs` — Pass `ec` to `Callback::from_object()`.
+- `content/src/streams/writablestreamdefaultcontroller.rs` — Pass `ec` to
+  `Callback::from_object()`.
+- `content/src/streams/readablestreamdefaultcontroller.rs` — Pass `ec`.
+- `content/src/streams/transformstream.rs` — Pass `ec` (7 call sites).
+- `content/src/html/window_or_worker_global_scope.rs` — Pass `ec`.
+- `content/src/js/bindings/html/html_iframe_element.rs` — Fixed `iframe_object`
+  mutability compilation errors (`mut iframe` bindings).
+- `js_engine/README.md` — Updated status.
+- `tests/formal/include.ini` — Added `callback-gc-protection.html`.
+- `tests/formal/tests/callback-gc-protection.html` — New test (10 sub-tests).
+
+**Instrumentation added:** `Rc<GcRootHandle<Types>>` field in `Callback` struct.
+On JSC, `create_root()` calls `JSValueProtect` on construction; the `Rc`
+refcount keeps the protection alive across all `Clone`/`Drop` cycles. Only
+the final `Drop` (when all references are released) calls `JSValueUnprotect`.
+On Boa, `create_root()` is a no-op and the `root` field doesn't exist.
+
+**What was confirmed:**
+- `Callback` is used in `SourceMethod` (stream pull/write/close/abort/transform/flush
+  algorithms), `TimerHandler` (setTimeout/setInterval), and event listeners.
+- All call sites have `ec` available for the new `from_object` signature.
+- Full WPT suite passes: `executed=84 unexpected=0` (previously 83 — new
+  `callback-gc-protection.html` test added).
+- New callback GC protection test has 10 sub-tests that all pass:
+  - ReadableStream pull callback survives GC
+  - ReadableStream cancel callback survives GC
+  - WritableStream write/close/abort callbacks survive GC
+  - TransformStream transform/flush callbacks survive GC
+  - Multiple GC cycles with repeated callback invocation
+  - Strategy size callback survives GC
+
+**What was ruled out:**
+- Using `GcRootHandle` directly (without `Rc`) would not handle clones
+  correctly — on JSC, `GcRootHandle::clone()` creates a new handle without
+  an unroot action, so dropping the clone would lose the protection.
+- Using `from_object` without `ec` would not allow protection on JSC.
+
+**Not investigated:**
+- `WindowTimer.arguments` (`Vec<JsValue>`) elements are not individually
+  protected on JSC. These are JS values stored alongside timers and could
+  be GC'd while a timer is pending. Same pattern affects any `Vec<JsValue>`
+  or `Vec<JsObject>` stored in Rust-owned structs.
+
 ### Critical fixes (2026-07-11)
 
 Fixed spec-correctness bugs in the JSC backend (`js_engine/src/jsc/engine.rs`):
@@ -319,15 +370,15 @@ Added `Intrinsics` struct and `resolve_global_path` helper on `JscEngine`, repla
 
 ### Remaining work
 
-| Area | What needs doing |
-|---|---|
-| `Callback` struct | `content/src/webidl/callback.rs` — Protect on `from_object()` / Clone, unprotect on Drop.  Needs `ec` arg for context. |
-| `TimerHandler::Function` | `content/src/html/global_scope.rs` — Store protected handle alongside callback. |
-| `WindowTimer.arguments` | `content/src/html/global_scope.rs` — `Vec<JsValue>` elements need protection. |
-| Event listeners | `content/src/dom/event.rs` — Protected `Callback` in listener records. |
-| Stream callbacks | stream controllers — Protected `Callback` in controller state. |
-| Constructor Proxy eval | Cannot be eliminated (JSC C API has no `JSProxyCreate`). |
-| `promise_state()` eval | `JSPromiseGetStatus` not in public C API. |
+| Area | What needs doing | Status |
+|---|---|---|
+| `Callback` struct | `Rc<GcRootHandle>` protects `JsObject` across Clone/Drop. | Fixed (2026-07-11) |
+| `TimerHandler::Function` | Uses `Callback` which is now protected. Covered. | Fixed (inherits Callback fix) |
+| `WindowTimer.arguments` | `Vec<JsValue>` elements need protection. Same pattern applies to any `Vec<JsValue>` in Rust-owned structs. | Unfixed |
+| Event listeners | Uses `Callback` which is now protected. Covered. | Fixed (inherits Callback fix) |
+| Stream callbacks | `SourceMethod` wraps `Callback`. Covered. | Fixed (inherits Callback fix) |
+| Constructor Proxy eval | Cannot be eliminated (JSC C API has no `JSProxyCreate`). | Acknowledged |
+| `promise_state()` eval | `JSPromiseGetStatus` not in public C API. | Acknowledged |
 
 ### Phase 4: Verify pass-rate parity
 

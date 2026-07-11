@@ -1,7 +1,7 @@
+use js_engine::gc_struct;
 use js_engine::{
     Completion, ExecutionContext, JsEngine, JsTypes, JsTypesWithRealm, PropertyDescriptor,
 };
-use js_engine::gc_struct;
 
 /// Describes a single operation (method) on an interface.
 ///
@@ -95,7 +95,11 @@ where
         #[gc_struct]
         struct OpCapture<T: JsTypes> {
             #[ignore_trace]
-            func: fn(&T::JsValue, &[T::JsValue], &mut dyn ExecutionContext<T>) -> Completion<T::JsValue, T>,
+            func: fn(
+                &T::JsValue,
+                &[T::JsValue],
+                &mut dyn ExecutionContext<T>,
+            ) -> Completion<T::JsValue, T>,
         }
 
         fn op_fn<T: JsTypes>(

@@ -117,7 +117,7 @@ fn timer_handler(
     if let Some(object) = <crate::js::Types as JsTypes>::value_as_object(value) {
         if ec.is_callable(value) {
             return Ok(TimerHandler::Function {
-                callback: Callback::from_object(object),
+                callback: Callback::from_object(object, ec),
             });
         }
     }

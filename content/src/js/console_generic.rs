@@ -1,5 +1,5 @@
-use js_engine::{Completion, ExecutionContext};
 use js_engine::gc_struct;
+use js_engine::{Completion, ExecutionContext};
 
 use crate::js::Types;
 
@@ -87,12 +87,7 @@ fn install_console_method(
     let fn_obj = {
         let capture = ConsoleCapture { sink };
         crate::js::create_builtin_fn_with_traced_captures(
-            ec,
-            capture,
-            console_fn,
-            0,
-            name_key,
-            false,
+            ec, capture, console_fn, 0, name_key, false,
         )
     };
 

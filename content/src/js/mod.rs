@@ -1,6 +1,6 @@
+use js_engine::JsTypesWithRealm;
 use js_engine::gc_struct;
 use js_engine::{Completion, ExecutionContext, JsTypes};
-use js_engine::JsTypesWithRealm;
 
 pub(crate) mod bindings;
 /// Generic platform-object downcast helpers:
@@ -50,7 +50,14 @@ where
     T: JsTypes + JsTypesWithRealm,
     C: js_engine::gc::Trace + 'static,
 {
-    js_engine::boa::create_builtin_fn_with_captures(ec, captures, behaviour, length, name, is_constructor)
+    js_engine::boa::create_builtin_fn_with_captures(
+        ec,
+        captures,
+        behaviour,
+        length,
+        name,
+        is_constructor,
+    )
 }
 
 #[cfg(jsc_backend)]
@@ -99,7 +106,12 @@ where
     };
 
     let result = js_engine::jsc::create_builtin_fn_with_captures(
-        jsc_ec, captures, jsc_behaviour, length, jsc_name, is_constructor,
+        jsc_ec,
+        captures,
+        jsc_behaviour,
+        length,
+        jsc_name,
+        is_constructor,
     );
 
     // SAFETY: T::Function and JscFunction have same size at runtime.

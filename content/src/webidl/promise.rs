@@ -250,7 +250,8 @@ where
         handler_ec: &mut dyn ExecutionContext<Types>,
     ) -> Completion<JsValue, Types>
     where
-        TFailure: FnOnce(JsValue, &mut dyn ExecutionContext<Types>) -> Completion<(), Types> + 'static,
+        TFailure:
+            FnOnce(JsValue, &mut dyn ExecutionContext<Types>) -> Completion<(), Types> + 'static,
     {
         let arg = args
             .first()
@@ -337,7 +338,8 @@ where
             handler_ec: &mut dyn ExecutionContext<Types>,
         ) -> Completion<JsValue, Types>
         where
-            TSuccess: FnOnce(Vec<JsValue>, &mut dyn ExecutionContext<Types>) -> Completion<(), Types> + 'static,
+            TSuccess: FnOnce(Vec<JsValue>, &mut dyn ExecutionContext<Types>) -> Completion<(), Types>
+                + 'static,
         {
             let arg = args
                 .first()

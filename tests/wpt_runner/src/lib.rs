@@ -2069,11 +2069,8 @@ fn build_runner_executable(build_profile: RunnerBuildProfile) -> Result<(), Stri
     )];
 
     for (manifest_path, binary_name) in &runner_builds {
-        let target_path = target_profile_dir.join(format!(
-            "{}{}",
-            binary_name,
-            std::env::consts::EXE_SUFFIX
-        ));
+        let target_path =
+            target_profile_dir.join(format!("{}{}", binary_name, std::env::consts::EXE_SUFFIX));
         if target_path.is_file() {
             continue;
         }
@@ -2091,11 +2088,8 @@ fn build_runner_executable(build_profile: RunnerBuildProfile) -> Result<(), Stri
     let embedder_builds = [(repo_root.join("embedder/Cargo.toml"), BROWSER_BINARY_NAME)];
 
     for (manifest_path, binary_name) in &embedder_builds {
-        let target_path = target_profile_dir.join(format!(
-            "{}{}",
-            binary_name,
-            std::env::consts::EXE_SUFFIX
-        ));
+        let target_path =
+            target_profile_dir.join(format!("{}{}", binary_name, std::env::consts::EXE_SUFFIX));
         if target_path.is_file() {
             continue;
         }
@@ -2110,11 +2104,8 @@ fn build_runner_executable(build_profile: RunnerBuildProfile) -> Result<(), Stri
     }
 
     for (manifest_path, binary_name) in &embedder_builds {
-        let target_path = target_profile_dir.join(format!(
-            "{}{}",
-            binary_name,
-            std::env::consts::EXE_SUFFIX
-        ));
+        let target_path =
+            target_profile_dir.join(format!("{}{}", binary_name, std::env::consts::EXE_SUFFIX));
         if target_path.is_file() {
             // Already built by a previous run — skip the rebuild so crash
             // restarts and subsequent WPT sessions start instantly.

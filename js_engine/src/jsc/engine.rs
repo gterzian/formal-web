@@ -1850,7 +1850,12 @@ where
         dst.assume_init()
     };
     let result = create_builtin_fn_with_captures_impl(
-        jsc_ec, captures, jsc_behaviour, length, jsc_name, is_constructor,
+        jsc_ec,
+        captures,
+        jsc_behaviour,
+        length,
+        jsc_name,
+        is_constructor,
     );
     // SAFETY: T::Function and JscObject have identical layout at runtime.
     unsafe {

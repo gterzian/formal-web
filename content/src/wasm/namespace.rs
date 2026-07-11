@@ -9,8 +9,8 @@ use crate::html::{PendingRequest, PendingState, Window};
 use crate::wasm::conversions::{default_val_for_type, js_val_to_wasm_val, wasm_val_to_js_value};
 use crate::wasm::types::{WasmInstance, WasmModule};
 use crate::webidl::bindings::create_interface_instance;
-use js_engine::{Completion, ExecutionContext, JsTypes, records::PromiseResolvers};
 use js_engine::gc_struct;
+use js_engine::{Completion, ExecutionContext, JsTypes, records::PromiseResolvers};
 
 /// Convert Boa-native `ResolvingFunctions` to generic `PromiseResolvers<crate::js::Types>`.
 fn resolvers_to_generic(
@@ -500,7 +500,9 @@ fn create_exported_function_wrapper_boa(
             .results()
             .map(|val_type| default_val_for_type(&val_type))
             .collect();
-        captures.func.call(&mut *store_guard, &params, &mut results)
+        captures
+            .func
+            .call(&mut *store_guard, &params, &mut results)
             .map_err(|error| ec.new_type_error(&format!("WebAssembly trap: {}", error)))?;
         if results.len() == 1 {
             wasm_val_to_js_value(&results[0], ec).map_err(|err_val| err_val)
@@ -515,10 +517,7 @@ fn create_exported_function_wrapper_boa(
     let name_key = engine.property_key_from_str("");
     let js_func = crate::js::create_builtin_fn_with_traced_captures(
         engine,
-        WasmExportCapture {
-            func,
-            store,
-        },
+        WasmExportCapture { func, store },
         wasm_export_fn,
         0,
         name_key,

@@ -152,7 +152,7 @@ pub(crate) fn extract_size_algorithm(
     }
 
     Ok(SizeAlgorithm::Callback {
-        callback: Callback::from_object(size.clone()),
+        callback: Callback::from_object(size.clone(), ec),
     })
 }
 

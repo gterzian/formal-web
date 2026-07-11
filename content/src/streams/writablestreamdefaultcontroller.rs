@@ -748,7 +748,7 @@ pub(crate) fn set_up_writable_stream_default_controller_from_underlying_sink(
         if let Some(start) = start {
             start_algorithm = StartAlgorithm::JavaScript(SourceMethod::new(
                 underlying_sink.clone(),
-                crate::webidl::Callback::from_object(start),
+                crate::webidl::Callback::from_object(start, ec),
             ));
         }
 
@@ -756,7 +756,7 @@ pub(crate) fn set_up_writable_stream_default_controller_from_underlying_sink(
         if let Some(write) = write {
             write_algorithm = WriteAlgorithm::JavaScript(SourceMethod::new(
                 underlying_sink.clone(),
-                crate::webidl::Callback::from_object(write),
+                crate::webidl::Callback::from_object(write, ec),
             ));
         }
 
@@ -764,7 +764,7 @@ pub(crate) fn set_up_writable_stream_default_controller_from_underlying_sink(
         if let Some(close) = close {
             close_algorithm = CloseAlgorithm::JavaScript(SourceMethod::new(
                 underlying_sink.clone(),
-                crate::webidl::Callback::from_object(close),
+                crate::webidl::Callback::from_object(close, ec),
             ));
         }
 
@@ -772,7 +772,7 @@ pub(crate) fn set_up_writable_stream_default_controller_from_underlying_sink(
         if let Some(abort) = abort {
             abort_algorithm = AbortAlgorithm::JavaScript(SourceMethod::new(
                 underlying_sink,
-                crate::webidl::Callback::from_object(abort),
+                crate::webidl::Callback::from_object(abort, ec),
             ));
         }
     }

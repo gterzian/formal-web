@@ -855,7 +855,7 @@ pub(crate) fn extract_source_method(
 
     Ok(Some(SourceMethod::new(
         source_object.clone(),
-        crate::webidl::Callback::from_object(callback),
+        crate::webidl::Callback::from_object(callback, ec),
     )))
 }
 
