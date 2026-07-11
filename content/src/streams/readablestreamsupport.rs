@@ -158,12 +158,14 @@ impl ReadRequest {
             }
             Self::ReadableStreamPipeTo { state } => {
                 let result = create_read_result(chunk, false, ec)?;
+                let _root = ec.protect_value(&result);
                 let state = state.clone();
                 let realm = ec.current_realm();
                 ec.enqueue_job_with_realm(
                     realm,
                     Box::new(move |job_ec: &mut dyn ExecutionContext<Types>| {
                         let _ = state.on_read_request_settled(result, job_ec);
+                        drop(_root);
                     }),
                 );
                 Ok(())
@@ -187,12 +189,14 @@ impl ReadRequest {
             }
             Self::ReadableStreamPipeTo { state } => {
                 let result = create_read_result(ec.value_undefined(), true, ec)?;
+                let _root = ec.protect_value(&result);
                 let state = state.clone();
                 let realm = ec.current_realm();
                 ec.enqueue_job_with_realm(
                     realm,
                     Box::new(move |job_ec: &mut dyn ExecutionContext<Types>| {
                         let _ = state.on_read_request_settled(result, job_ec);
+                        drop(_root);
                     }),
                 );
                 Ok(())
@@ -219,12 +223,14 @@ impl ReadRequest {
                 Ok(())
             }
             Self::ReadableStreamPipeTo { state } => {
+                let _root = ec.protect_value(&error);
                 let state = state.clone();
                 let realm = ec.current_realm();
                 ec.enqueue_job_with_realm(
                     realm,
                     Box::new(move |job_ec: &mut dyn ExecutionContext<Types>| {
                         let _ = state.on_read_request_settled(error, job_ec);
+                        drop(_root);
                     }),
                 );
                 Ok(())

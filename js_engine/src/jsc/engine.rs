@@ -744,8 +744,12 @@ fn copy_function_prototype_methods(
 // Cached toString function for builtin objects.
 // Uses a BUILTIN_CLASS function with stored behaviour that reads
 // `this.name` at call time, avoiding per-function JSEvaluateScript.
+// Cache for the shared toString function: (JSObjectRef, JSValueRef for unprotect).
+// The second element is used only for JSValueUnprotect on engine teardown.
+type CachedToString = (Option<*mut JSObjectRef>, Option<*mut JSValueRef>);
+
 thread_local! {
-    static BUILTIN_TO_STRING: std::cell::RefCell<Option<*mut JSObjectRef>> =
+    static BUILTIN_TO_STRING: std::cell::RefCell<Option<CachedToString>> =
         const { std::cell::RefCell::new(None) };
 }
 
@@ -755,9 +759,15 @@ thread_local! {
 /// behaviour reads `this.name` at call time and returns
 /// `"function <name>() { [native code] }"`.
 fn set_builtin_to_string(ctx: *mut JSContextRef, target: *mut JSObjectRef) {
+    // Use a pair of (raw_ptr, protect_references) to protect the cached
+    // toString function from JSC GC. Without protection, JSC may collect
+    // the function when all builtins that reference it are gone, leaving
+    // a dangling pointer in the thread_local cache.
     let to_string_fn = BUILTIN_TO_STRING.with(|cell| {
-        if let Some(fn_ptr) = *cell.borrow() {
-            return fn_ptr;
+        if let Some((fn_ptr, _)) = *cell.borrow() {
+            if let Some(ptr) = fn_ptr {
+                return ptr;
+            }
         }
         // Create a new shared toString function.
         let class_ref = BUILTIN_CLASS.0;
@@ -782,7 +792,9 @@ fn set_builtin_to_string(ctx: *mut JSContextRef, target: *mut JSObjectRef) {
         );
         let stored_ptr = Box::into_raw(Box::new(stored)) as *mut std::ffi::c_void;
         unsafe { JSObjectSetPrivate(raw_obj, stored_ptr) };
-        *cell.borrow_mut() = Some(raw_obj);
+        // Protect the toString function from GC so the cache doesn't dangle.
+        unsafe { JSValueProtect(ctx, raw_obj as *mut JSValueRef); }
+        *cell.borrow_mut() = Some((Some(raw_obj), Some(raw_obj as *mut JSValueRef)));
         raw_obj
     });
 
@@ -4917,6 +4929,21 @@ impl ExecutionContext<JscTypes> for JscEngine {
         // Use JSValueProtect to keep the value alive in JSC's GC graph.
         // JSValueProtect/JSValueUnprotect maintain an internal reference
         // count so the value survives GC cycles until unprotected.
+        let ctx_ptr = self.ctx_ptr();
+        let value_raw = value.raw;
+        unsafe {
+            JSValueProtect(ctx_ptr, value_raw);
+        }
+        crate::gc::GcRootHandle::new(
+            *value,
+            Some(Box::new(move |_val| unsafe {
+                JSValueUnprotect(ctx_ptr, value_raw);
+            })),
+        )
+    }
+
+    fn protect_value(&mut self, value: &JscValue) -> crate::gc::GcRootHandle<JscTypes> {
+        // Same as create_root: JSValueProtect + unprotect on drop.
         let ctx_ptr = self.ctx_ptr();
         let value_raw = value.raw;
         unsafe {

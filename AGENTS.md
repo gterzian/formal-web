@@ -229,6 +229,22 @@ cargo build --release   # rebuilds EVERY workspace binary
 cargo run --release     # all processes are in sync
 ```
 
+### README pruning
+
+The `js_engine/README.md` (and any other `README.md`) tracks only:
+- Things that **still need to be fixed** (unfixed bugs, pre-existing issues)
+- **Dead-end investigations** for currently-unfixed issues (so future sessions
+  know what was already tried and ruled out)
+
+Do NOT document:
+- Completed fixes (they're in the code and git history)
+- Architecture design notes or historical session logs for fixed issues
+- Infrastructure descriptions for things that already work
+
+The goal is concise, actionable documentation: a future session should be able
+to read the README and know exactly what remains to be done, and what approaches
+have already failed for each remaining issue.
+
 ### Process binary search paths
 
 When the embedder spawns a helper process, it searches the directory
@@ -303,16 +319,19 @@ ever correct.
 
 # Never Assume Test Failures Are Pre-Existing
 
-Every test failure is a regression until proven otherwise.  Never
-assume a test failure is "pre-existing" or an "unimplemented feature"
-without first verifying the exact test baseline.  If you do not know
-the baseline, say so — do not fabricate one.
+Every test failure is a regression until proven otherwise.  A failure
+is NOT "pre-existing to the current session" — it might pre-exist on
+the current branch, but that still means the branch has a bug that
+needs fixing.  Never dismiss a failure as "pre-existing" without first
+verifying the test baseline (e.g., reverting changes and running the
+same test).  If you do not know the baseline, say so — do not
+fabricate one.
 
-When investigating a failing test, ask: did this test ever pass?  If
-you changed code that a test exercises, that test is your responsibility
-until it passes.  Dismissing failures as "not yet implemented" is a
-form of speculation: you are guessing that the feature never worked,
-instead of checking whether it did.
+When investigating a failing test, ask: did this test ever pass on
+this branch?  If you changed code that a test exercises, that test is
+your responsibility until it passes.  Dismissing failures as "not yet
+implemented" is a form of speculation: you are guessing that the
+feature never worked, instead of checking whether it did.
 
 # Spec Fidelity
 
@@ -457,7 +476,12 @@ At the end of each task, run the following steps **in order**:
 
 5. Think very hard about any general lessons learned in the session, and what parts of the documentation chain should be updated to reflect such general lessons, and then also update it. 
 
-6. **Run all verification steps** — Every end-of-task run executes ALL verification steps unconditionally. Do not skip any step based on a subjective assessment of "relevance" — changes to seemingly unrelated files (test pages, configuration, documentation) routinely break downstream steps in this multi-process system. Running everything catches regressions the agent cannot predict.
+6. **Prune READMEs** — Strip completed fixes and historical session logs from
+   the documentation chain. The README should track only remaining work and
+   dead-end investigations for currently-unfixed issues (see "README pruning"
+   above).
+
+7. **Run all verification steps** — Every end-of-task run executes ALL verification steps unconditionally. Do not skip any step based on a subjective assessment of "relevance" — changes to seemingly unrelated files (test pages, configuration, documentation) routinely break downstream steps in this multi-process system. Running everything catches regressions the agent cannot predict.
 
    **Migration override:** Phase E is complete — content crate compiles on
    both JSC and Boa. Standard verification steps (WPT, navigation

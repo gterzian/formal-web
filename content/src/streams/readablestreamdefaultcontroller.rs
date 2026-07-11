@@ -340,24 +340,30 @@ impl ReadableStreamDefaultController {
 
         // Step 2: "If this.[[queue]] is not empty,"
         if !self.queue_is_empty() {
-            let (chunk, should_close_stream) = {
+            let (chunk, should_close_stream, _chunk_root) = {
                 let mut queue = self.queue.borrow_mut();
 
                 // Step 2.1: "Let chunk be ! DequeueValue(this)."
                 let entry = queue
                     .pop_front()
                     .expect("queue was checked to be non-empty");
+                let chunk_value = entry.chunk.borrow().clone();
+                // Protect the chunk immediately after extraction so it
+                // survives JSC GC even after the QueueEntry's JsValueCell
+                // is dropped (which calls JSValueUnprotect).
+                let _chunk_root = ec.protect_value(&chunk_value);
                 {
-                    let mut new_size = self.queue_total_size.get() - entry.size;
+                    let new_size = self.queue_total_size.get() - entry.size;
                     if new_size <= 0.0 {
-                        new_size = 0.0;
+                        self.queue_total_size.set(0.0);
+                    } else {
+                        self.queue_total_size.set(new_size);
                     }
-                    self.queue_total_size.set(new_size);
                 }
 
                 // Step 2.2: "If this.[[closeRequested]] is true and this.[[queue]] is empty,"
                 let should_close_stream = self.close_requested.get() && queue.is_empty();
-                (entry.chunk.borrow().clone(), should_close_stream)
+                (chunk_value, should_close_stream, _chunk_root)
             };
 
             if should_close_stream {
