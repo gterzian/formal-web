@@ -95,7 +95,6 @@ impl WebIdlInterface<crate::js::Types> for TransformStreamDefaultController {
     }
 }
 
-
 /// <https://streams.spec.whatwg.org/#ts-readable>
 fn get_readable(
     this: &<crate::js::Types as JsTypes>::JsValue,

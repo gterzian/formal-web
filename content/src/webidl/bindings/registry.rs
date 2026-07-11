@@ -58,10 +58,7 @@ impl<T: JsTypes> InterfaceRegistry<T> {
             .and_then(|e| e.unforgeables.as_ref())
     }
 
-    pub(crate) fn set_unforgeables<U: 'static>(
-        &mut self,
-        unforgeables: T::JsObject,
-    ) {
+    pub(crate) fn set_unforgeables<U: 'static>(&mut self, unforgeables: T::JsObject) {
         if let Some(entry) = self.map.get_mut(&TypeId::of::<U>()) {
             entry.unforgeables = Some(unforgeables);
         }
@@ -143,9 +140,7 @@ where
     Ty: JsTypes + JsTypesWithRealm,
     I: 'static,
 {
-    with_registry_ref::<Ty, _>(ec, |registry| {
-        registry.get_unforgeables::<I>().cloned()
-    })
+    with_registry_ref::<Ty, _>(ec, |registry| registry.get_unforgeables::<I>().cloned())
 }
 
 /// Get a prototype from the registry.

@@ -21,7 +21,6 @@ use super::style_declaration_object;
 
 use js_engine::{Completion, ExecutionContext, JsTypes};
 
-
 impl WebIdlInterface<crate::js::Types> for Window {
     const NAME: &'static str = "Window";
 

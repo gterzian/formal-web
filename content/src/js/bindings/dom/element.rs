@@ -12,7 +12,6 @@ use crate::webidl::bindings::{
 
 use js_engine::{Completion, ExecutionContext, JsTypes};
 
-
 impl WebIdlInterface<crate::js::Types> for Element {
     const NAME: &'static str = "Element";
 

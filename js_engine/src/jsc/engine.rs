@@ -4303,6 +4303,12 @@ impl ExecutionContext<JscTypes> for JscEngine {
             if !exc.is_null() {
                 return Err(JscValue { raw: exc, ctx });
             }
+
+            // Drain JSC microtasks so that .then() handlers fire.
+            self.drain_microtasks();
+
+            // Return resultCapability.[[Promise]] per spec.
+            return Ok(cap.promise.clone());
         }
 
         // Drain JSC microtasks so that .then() handlers fire.

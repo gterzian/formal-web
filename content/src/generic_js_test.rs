@@ -34,7 +34,6 @@ type TestTypes = crate::js::Types;
 type JsValue = <TestTypes as JsTypes>::JsValue;
 type JsObject = <TestTypes as JsTypes>::JsObject;
 
-
 /// A toy domain struct exercising the full generic-API binding pattern.
 ///
 /// The `on_change` field uses `GcRootHandle<TestTypes>` which is a generic
@@ -663,7 +662,6 @@ impl WebIdlInterface<TestTypes> for TestWidget {
 // Context lifecycle exercise (Boa-only)
 // ═══════════════════════════════════════════════════════════════════════════
 
-
 impl WebIdlInterface<TestTypes> for TestButton {
     const NAME: &'static str = "TestButton";
 
@@ -701,7 +699,6 @@ mod tests {
     use js_engine::TypedArrayElementType;
     use js_engine::{EcmascriptHost, ExecutionContext, JsEngine};
 
-
     /// Create an initialized engine context with the TestWidget interface
     /// registered (Boa) or available (JSC).
     /// Returns the concrete engine type so callers can use both
@@ -736,7 +733,6 @@ mod tests {
         engine
     }
 
-
     /// Create a TestWidget platform object, delegating to the cfg-gated
     /// `create_test_widget` helper.
     fn create_widget(widget: TestWidget, ec: &mut dyn ExecutionContext<TestTypes>) -> JsObject {
@@ -747,7 +743,6 @@ mod tests {
     fn create_button(button: TestButton, ec: &mut dyn ExecutionContext<TestTypes>) -> JsObject {
         create_test_button(button, ec).unwrap()
     }
-
 
     #[test]
     fn multi_downcast_button_seen_as_button_and_widget() {
@@ -835,7 +830,6 @@ mod tests {
         let count_val = ExecutionContext::get(&mut engine, obj, count_key).unwrap();
         assert!((engine.to_number(count_val).unwrap() - 1.0).abs() < 0.001);
     }
-
 
     #[test]
     fn widget_get_title_returns_default() {
@@ -1462,7 +1456,6 @@ mod tests {
         assert!(has_callback);
     }
 
-
     #[test]
     fn get_iterator_and_step_value() {
         let mut engine = setup();
@@ -1512,7 +1505,6 @@ mod tests {
         let _ = engine.async_iterator_close(iter_record, Ok(undef));
     }
 
-
     #[test]
     fn integer_conversions() {
         let mut engine = setup();
@@ -1555,7 +1547,6 @@ mod tests {
         let s2 = engine.js_string_from_str("not_a_number");
         assert_eq!(engine.canonical_numeric_index_string(&s2), None);
     }
-
 
     #[test]
     fn require_object_coercible() {
@@ -1780,7 +1771,6 @@ mod tests {
         let _result_val = TestTypes::value_from_object(result);
     }
 
-
     #[test]
     fn get_and_set_value_in_buffer() {
         let mut engine = setup();
@@ -1844,7 +1834,6 @@ mod tests {
             .unwrap();
     }
 
-
     #[test]
     fn construct_typed_array_view_and_read_metadata() {
         let mut engine = setup();
@@ -1893,7 +1882,6 @@ mod tests {
         assert_eq!(data.unwrap().len(), 8);
     }
 
-
     #[test]
     fn json_stringify_roundtrip() {
         let mut engine = setup();
@@ -1916,7 +1904,6 @@ mod tests {
         let parsed = engine.string_to_bigint(s);
         assert!(parsed.is_some());
     }
-
 
     #[test]
     fn create_builtin_function_and_call() {
@@ -2099,7 +2086,6 @@ mod tests {
         assert!(*called.borrow());
     }
 
-
     #[test]
     fn object_downcasts_all_types() {
         let mut engine = setup();
@@ -2125,7 +2111,6 @@ mod tests {
             TestTypes::object_as_data_view(&TestTypes::value_as_object(&dv_val).unwrap()).is_some()
         );
     }
-
 
     /// Exercises the GC integration: create a JS object with native Rust
     /// data via `create_object_with_any`, then retrieve it via
@@ -2168,7 +2153,6 @@ mod tests {
             .count;
         assert_eq!(count, 99);
     }
-
 
     /// Validates the global-object access pattern: store a `JsObject` in
     /// `host_any`, retrieve it later, and downcast to native data through
@@ -2226,7 +2210,6 @@ mod tests {
         // It's a valid JsObject.
         assert!(TestTypes::value_as_object(&TestTypes::value_from_object(global_obj)).is_some());
     }
-
 
     /// Validates that mutable downcast via `with_object_any_mut` followed by
     /// an `ec` method call works correctly — the mutable borrow from
@@ -2291,7 +2274,6 @@ mod tests {
         let count_val = get_count(&js_obj, &[], &mut engine).unwrap();
         assert!((engine.to_number(count_val).unwrap() - 99.0).abs() < 0.001);
     }
-
 
     /// Validates constructing a `PropertyDescriptor` whose `get` field is a
     /// function created via `create_builtin_function`, applying it to an
@@ -2397,7 +2379,6 @@ mod tests {
         assert!((engine.to_number(result).unwrap() - 99.0).abs() < 0.001);
     }
 
-
     /// Allocates many throwaway objects to create GC pressure, then
     /// verifies a `GcRootHandle`-rooted callback still survives.
     /// This exercises the key property `create_root` exists to provide:
@@ -2429,7 +2410,6 @@ mod tests {
         // GcRootHandle; on JSC the hidden global-object root prevents collection.
         drop(root);
     }
-
 
     /// Validates the generic equivalent of Boa's `ObjectInitializer`
     /// pattern: create a plain object, set multiple data properties,
@@ -2578,7 +2558,6 @@ mod tests {
         );
     }
 
-
     /// Validates `create_builtin_function` with `move` closure that
     /// captures and mutates external state. This mirrors the
     /// `NativeFunction::from_copy_closure_with_captures` pattern in
@@ -2615,7 +2594,6 @@ mod tests {
         assert_eq!(counter.get(), 2);
     }
 
-
     /// Validates the `timer_handler` pattern: given a JS value, determine
     /// whether it's a callable function or a string.  This is the exact
     /// pattern from HTML §8.7 Step 9.7 → Web IDL "invoke a callback
@@ -2649,7 +2627,6 @@ mod tests {
         let source = engine.to_rust_string(str_val).unwrap();
         assert_eq!(source, "console.log('hi')");
     }
-
 
     /// Validates the `timeout_ms` pattern: convert a JS value to an IDL
     /// long (via `ToNumber`), clamp negative to zero, floor, saturate at
@@ -2725,7 +2702,6 @@ mod tests {
         let s = engine.to_rust_string(result).unwrap();
         assert_eq!(s, "nested");
     }
-
 
     #[test]
     fn create_builtin_function_with_captures_increments() {
@@ -2808,7 +2784,6 @@ mod tests {
         assert!((engine.to_number(result).unwrap() - 7.0).abs() < 0.001);
     }
 
-
     /// Validates that `create_builtin_function` works through
     /// `&mut dyn ExecutionContext<T>` via `ec.create_builtin_function()`.
     #[test]
@@ -2883,7 +2858,6 @@ mod tests {
         let result = js_engine::EcmascriptHost::call(&mut engine, &func_obj, &undef, &[]).unwrap();
         assert!((engine.to_number(result).unwrap() - 7.0).abs() < 0.001);
     }
-
 
     #[test]
     fn bigint_primitive_detection() {

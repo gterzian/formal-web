@@ -1,4 +1,3 @@
-
 type JsValue = <crate::js::Types as JsTypes>::JsValue;
 
 use crate::html::HTMLInputElement;

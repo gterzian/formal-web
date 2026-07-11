@@ -186,7 +186,6 @@ impl WebIdlInterface<Types> for WritableStreamDefaultWriter {
     }
 }
 
-
 fn get_locked(
     this: &JsValue,
     _: &[JsValue],

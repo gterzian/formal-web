@@ -297,7 +297,6 @@ fn try_with_media_ref<R>(
     Err(ec.new_type_error("expected HTMLMediaElement"))
 }
 
-
 fn get_network_state(
     this: &JsValue,
     _args: &[JsValue],
@@ -558,7 +557,6 @@ fn set_preload(
     try_with_media_ref(this, ec, |media| media.set_preload(&value))?;
     Ok(ec.value_undefined())
 }
-
 
 fn load_method(
     this: &JsValue,

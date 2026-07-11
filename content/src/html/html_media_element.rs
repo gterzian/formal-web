@@ -220,7 +220,6 @@ impl HTMLMediaElement {
         self.error.clone()
     }
 
-
     /// <https://html.spec.whatwg.org/#media-element-load-algorithm>
     ///
     /// Note: Steps 2–5 (pending task management, abort event) and step 8 (playbackRate)
@@ -371,7 +370,6 @@ impl HTMLMediaElement {
         }
 
         await_a_stable_state(ec, move |job_ec| {
-
             // Step 5: ⌛ If blocked-on-parser flag is false, populate list of pending text tracks.
             // Note: No-op — text track support not yet implemented.
 

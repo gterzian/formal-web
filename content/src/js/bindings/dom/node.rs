@@ -241,7 +241,6 @@ impl WebIdlInterface<crate::js::Types> for Node {
     }
 }
 
-
 fn try_with_node_ref<R>(
     this: &JsValue,
     ec: &mut dyn ExecutionContext<crate::js::Types>,

@@ -22,7 +22,6 @@ use super::event::init_flag;
 
 use js_engine::{Completion, ExecutionContext, JsTypes};
 
-
 impl WebIdlInterface<crate::js::Types> for UIEvent {
     const NAME: &'static str = "UIEvent";
 
@@ -88,7 +87,6 @@ impl WebIdlInterface<crate::js::Types> for UIEvent {
         });
     }
 }
-
 
 fn get_view(
     this: &JsValue,

@@ -80,8 +80,7 @@ pub(crate) use interface::{
 };
 pub(crate) use operation::{OperationDef, define_unforgeable_regular_operations};
 pub(crate) use registry::{
-    get_registry_prototype, get_unforgeables_from_host_defined,
-    initialize as initialize_registry,
+    get_registry_prototype, get_unforgeables_from_host_defined, initialize as initialize_registry,
     set_unforgeables_for_interface,
     wire_constructor_prototype as wire_registry_constructor_prototype,
     wire_prototype as wire_registry_prototype,

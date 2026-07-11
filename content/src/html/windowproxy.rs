@@ -225,7 +225,6 @@ fn trap_own_keys(
     Ok(<crate::js::Types as JsTypes>::value_from_object(key_array))
 }
 
-
 /// Extract the target Window from the proxy trap arguments.
 ///
 /// The proxy target IS W (the Window object), passed as `args[0]` by the
@@ -235,7 +234,6 @@ fn target_window(args: &[JsValue]) -> Result<JsObject, JsValue> {
         .and_then(|value| value.as_object())
         .ok_or_else(|| JsValue::default())
 }
-
 
 /// <https://html.spec.whatwg.org/#the-windowproxy-exotic-object>
 ///
@@ -316,7 +314,6 @@ pub(crate) fn resolve_window(
     // For non-object values, fall back to the global object.
     ec.global_object()
 }
-
 
 #[allow(dead_code)]
 struct CrossOriginPropertyEntry {

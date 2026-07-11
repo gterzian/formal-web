@@ -178,7 +178,6 @@ fn build_boa_context(document: Rc<RefCell<BaseDocument>>) -> Result<Context, Str
     );
     wire_registry_constructor_prototype::<crate::js::Types, Window, EventTarget>(&mut engine);
 
-
     // HTMLAnchorElement: HTMLHyperlinkElementUtils members (§HTMLHyperlinkElementUtils)
     if let Some(proto) = get_registry_prototype::<crate::js::Types, HTMLAnchorElement>(&engine) {
         hyperlink_element_utils::register_hyperlink_element_utils_on_prototype(&proto, &mut engine)

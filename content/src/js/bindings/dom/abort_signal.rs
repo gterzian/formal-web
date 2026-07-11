@@ -20,7 +20,6 @@ use crate::js::Types;
 
 type JsValue = <Types as JsTypes>::JsValue;
 
-
 impl WebIdlInterface<Types> for AbortSignal {
     const NAME: &'static str = "AbortSignal";
 

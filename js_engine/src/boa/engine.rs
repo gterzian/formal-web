@@ -590,27 +590,20 @@ impl ExecutionContext<BoaTypes> for BoaContext {
         //
         // Note: Our trait returns u64.  The spec's output is a mathematical
         // integer, which we represent as u64.
-        let n = into_completion(value.to_number(&mut self.context), &mut self.context)?;
+        //
         // Step 1: Let int be ? ToIntegerOrInfinity(arg).
-        if n.is_nan() || n < 0.0 || !n.is_finite() {
-            return Err(JsValue::from(
-                JsNativeError::range()
-                    .with_message("Invalid index")
-                    .into_opaque(&mut self.context),
-            ));
-        }
-        let integer = n.trunc() as u64;
-        // Ensure no precision loss from the truncation
-        if integer as f64 != n {
-            return Err(JsValue::from(
-                JsNativeError::range()
-                    .with_message("Invalid index")
-                    .into_opaque(&mut self.context),
-            ));
-        }
+        let number = into_completion(value.to_number(&mut self.context), &mut self.context)?;
+        // ToIntegerOrInfinity: NaN, +0, -0 → 0; +∞ → +∞; -∞ → -∞; otherwise truncate.
+        let integer = if number.is_nan() || number == 0.0 {
+            0.0
+        } else if !number.is_finite() {
+            number
+        } else {
+            number.trunc()
+        };
         // Step 2: If int is not in the inclusive interval from 0 to 2^53 - 1,
         // throw a RangeError exception.
-        if integer > 9007199254740991 {
+        if integer < 0.0 || integer > 9007199254740991.0 {
             return Err(JsValue::from(
                 JsNativeError::range()
                     .with_message("Invalid index")
@@ -618,7 +611,7 @@ impl ExecutionContext<BoaTypes> for BoaContext {
             ));
         }
         // Step 3: Return int.
-        Ok(integer)
+        Ok(integer as u64)
     }
 
     // ── §7.2 Testing and Comparison ───────────────────────────────────────
@@ -1747,6 +1740,9 @@ impl ExecutionContext<BoaTypes> for BoaContext {
 
             // Chain .then() on the result promise to pipe through to capability
             let _ = result.then(Some(resolve_fn), Some(reject_fn), &mut self.context);
+
+            // Return resultCapability.[[Promise]] per spec step.
+            return Ok(JsValue::from(cap.promise));
         }
 
         Ok(JsValue::from(result))

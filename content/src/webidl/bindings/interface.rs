@@ -204,10 +204,14 @@ where
     let unforgeables_obj = engine.create_plain_object(None);
     let unforgeables_val = Ty::value_from_object(unforgeables_obj.clone());
     super::operation::define_unforgeable_regular_operations::<Ty, E>(
-        engine, &unforgeables_val, &def.operations,
+        engine,
+        &unforgeables_val,
+        &def.operations,
     )?;
     super::attribute::define_unforgeable_regular_attributes::<Ty, E>(
-        engine, &unforgeables_val, &def.attributes,
+        engine,
+        &unforgeables_val,
+        &def.attributes,
     )?;
 
     let instance_prototype = proto.clone();
@@ -314,9 +318,7 @@ where
     );
 
     // Step 7: "Set F.[[Unforgeables]] to unforgeables."
-    super::registry::set_unforgeables_for_interface::<Ty, I>(
-        engine, unforgeables_obj.clone(),
-    );
+    super::registry::set_unforgeables_for_interface::<Ty, I>(engine, unforgeables_obj.clone());
 
     // Step 10: "Let F be CreateBuiltinFunction(steps, length, id, « [[Unforgeables]] »,
     //   realm, constructorProto)."
@@ -446,10 +448,14 @@ where
     let unforgeables_obj = engine.create_plain_object(None);
     let unforgeables_val = Ty::value_from_object(unforgeables_obj.clone());
     super::operation::define_unforgeable_regular_operations::<Ty, E>(
-        engine, &unforgeables_val, &def.operations,
+        engine,
+        &unforgeables_val,
+        &def.operations,
     )?;
     super::attribute::define_unforgeable_regular_attributes::<Ty, E>(
-        engine, &unforgeables_val, &def.attributes,
+        engine,
+        &unforgeables_val,
+        &def.attributes,
     )?;
 
     let instance_prototype = proto.clone();
@@ -545,9 +551,7 @@ where
     );
 
     // Step 7: "Set F.[[Unforgeables]] to unforgeables."
-    super::registry::set_unforgeables_for_interface::<Ty, I>(
-        engine, unforgeables_obj.clone(),
-    );
+    super::registry::set_unforgeables_for_interface::<Ty, I>(engine, unforgeables_obj.clone());
 
     // Step 10: "Let F be CreateBuiltinFunction(steps, length, id, « [[Unforgeables]] »,
     //   realm, constructorProto)."

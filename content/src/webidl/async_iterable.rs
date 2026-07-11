@@ -13,7 +13,6 @@ type Types = crate::js::Types;
 type JsValue = <Types as JsTypes>::JsValue;
 type JsObject = <Types as JsTypes>::JsObject;
 
-
 fn promise_from_object(
     obj: JsObject,
     ec: &mut dyn ExecutionContext<Types>,
@@ -21,13 +20,11 @@ fn promise_from_object(
     Types::object_as_promise(&obj).ok_or_else(|| ec.new_type_error("value is not a Promise"))
 }
 
-
 #[gc_struct]
 enum IteratorOperation {
     Next,
     Return(JsValue),
 }
-
 
 /// Captures for onFulfilled of `start_next`.
 #[gc_struct]
@@ -161,7 +158,6 @@ fn re_throw_rejected_behaviour(
         .unwrap_or_else(|| unreachable!("Rejection should have a reason")))
 }
 
-
 /// <https://webidl.spec.whatwg.org/#asynchronous-iterator-initialization-steps>
 pub(crate) trait AsyncValueIterable:
     Clone + js_engine::gc::Trace + js_engine::gc::Finalize + 'static
@@ -202,7 +198,6 @@ pub(crate) trait AsyncValueIterable:
         resolved_promise(ec.value_undefined(), ec)
     }
 }
-
 
 /// <https://webidl.spec.whatwg.org/#js-default-asynchronous-iterator-object>
 #[derive(Clone)]
@@ -485,7 +480,6 @@ where
     }
 }
 
-
 /// <https://tc39.es/ecma262/#sec-createiterresultobject>
 fn create_iterator_result_object(
     value: JsValue,
@@ -503,7 +497,6 @@ fn create_iterator_result_object(
 
 // Note: Workaround for the move-after-move pattern above —
 // we need to avoid cloning JsObject on every call.
-
 
 fn create_async_iterator_prototype<T>(ec: &mut dyn ExecutionContext<Types>) -> JsObject
 where
@@ -569,7 +562,6 @@ where
         ec.create_object_with_any(prototype, Box::new(iterator))
     }
 }
-
 
 fn default_async_iterator_from_this<T>(
     this: &JsValue,
@@ -682,7 +674,6 @@ where
     // Step 15: "Return returnPromiseCapability.[[Promise]]."
     Ok(result_promise)
 }
-
 
 /// <https://webidl.spec.whatwg.org/#js-asynchronous-iterable>
 pub(crate) fn create_value_async_iterator<T>(

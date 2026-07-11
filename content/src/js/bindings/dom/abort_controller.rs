@@ -8,7 +8,6 @@ use super::abort_signal::{abort_reason_from_argument, signal_abort};
 
 use js_engine::{Completion, ExecutionContext, JsTypes};
 
-
 impl WebIdlInterface<crate::js::Types> for AbortController {
     const NAME: &'static str = "AbortController";
 

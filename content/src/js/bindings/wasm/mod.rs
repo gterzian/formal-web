@@ -56,7 +56,6 @@ fn rejected_promise_from_error_boa(
     rejected_promise_from_error(reason, ec)
 }
 
-
 /// Marker type for the `WebAssembly` namespace.
 struct WasmNamespace;
 
@@ -117,7 +116,6 @@ impl WebIdlNamespace<crate::js::Types> for WasmNamespace {
         });
     }
 }
-
 
 /// <https://webassembly.github.io/spec/js-api/#webassembly-namespace>
 pub(crate) fn install_wasm_namespace(engine: &mut BoaContext) -> JsResult<()> {

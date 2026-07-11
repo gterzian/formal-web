@@ -30,7 +30,6 @@ pub(crate) fn init_global_object_slot(
     ec.store_host_any(TypeId::of::<GlobalObjectSlot>(), Box::new(global_object));
 }
 
-
 /// <https://html.spec.whatwg.org/#global-object>
 ///
 /// Downcast the realm's global object to `&GlobalScope` through
@@ -86,7 +85,6 @@ pub(crate) fn collect_child_subtree_node_ids(
     node_ids
 }
 
-
 pub(crate) fn document_object(
     ec: &mut dyn ExecutionContext<crate::js::Types>,
 ) -> Completion<<crate::js::Types as JsTypes>::JsObject, crate::js::Types> {
@@ -129,7 +127,6 @@ pub(crate) fn take_animation_frame_callbacks(
         Ok(global_scope.take_animation_frame_callbacks())
     })
 }
-
 
 pub(crate) fn resolve_element_object(
     node_id: usize,
@@ -201,7 +198,6 @@ pub(crate) fn resolve_or_create_text_node_object(
 
     Ok(object)
 }
-
 
 fn element_object_from_document(
     document: Rc<RefCell<BaseDocument>>,

@@ -71,7 +71,6 @@ fn window_from_context(context: &mut Context) -> Option<&Window> {
         .and_then(|data| data.downcast_ref::<Window>())
 }
 
-
 /// <https://webassembly.github.io/spec/js-api/#dom-webassembly-validate>
 pub(crate) fn validate_wasm_module(stable_bytes: &[u8]) -> bool {
     // Step 2: "Compile stableBytes as a WebAssembly module and store the results as module."
@@ -280,7 +279,6 @@ fn instantiate_bytes_boa(
     Ok(JsValue::from(promise))
 }
 
-
 /// <https://webassembly.github.io/spec/js-api/#asynchronously-compile-a-webassembly-module>
 pub(crate) fn compile_continuation(
     resolvers: &PromiseResolvers<crate::js::Types>,
@@ -408,7 +406,6 @@ fn initialize_an_instance_object_boa(
     js_result_to_completion(Ok(instance_object), context)
 }
 
-
 /// <https://webassembly.github.io/spec/js-api/#create-an-exports-object>
 fn create_an_exports_object_boa(
     module: &Module,
@@ -469,7 +466,6 @@ fn instance_export_list(
         .collect()
 }
 
-
 fn create_exported_function_wrapper_boa(
     func: Func,
     store: Arc<Mutex<Store<()>>>,
@@ -507,7 +503,6 @@ fn create_exported_function_wrapper_boa(
     );
     Ok(js_func.into())
 }
-
 
 fn create_compile_error_boa(message: &str, context: &mut Context) -> JsValue {
     // Use the registered CompileError constructor on the WebAssembly namespace.
