@@ -3817,8 +3817,8 @@ fn pipe_to_append_reaction_fn(
         .first()
         .cloned()
         .unwrap_or_else(|| ec.value_undefined());
-    pipe_to_on_promise_settled(state.clone(), value, ec)
-        .map(|_| ec.value_undefined())
+    pipe_to_on_promise_settled(state.clone(), value, ec)?;
+    Ok(ec.value_undefined())
 }
 
 /// <https://streams.spec.whatwg.org/#readable-stream-pipe-to>

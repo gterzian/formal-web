@@ -72,39 +72,40 @@ global object, which is not a constructor, throwing
 Fixed by passing `constructor.raw` as the `thisObject` parameter to
 `JSObjectCallAsFunction`.
 
-**WPT test status after fix (2026-07-11, 98 tests):**
+**WPT test status after 2026-07-11 session:**
 
-**PASS (30):**
-- CSS.supports (3), DOM Element tests (3)
+**PASS:**
+- CSS.supports (3), DOM Element tests (3), Node-constants
 - HTML: document.title (3), document-dir, iframe (2), anchor (2)
-- Streams readable: bad-strategies, cancel, constructor, count-queuing-strategy,
+- Streams readable: bad-strategies, constructor, count-queuing-strategy,
   crashtests/garbage-collection, default-reader, floating-point-total-queue-size,
-  garbage-collection, read-task-handling, reentrant-strategies
+  reentrant-strategies
 - Streams piping: general-addition, throwing-options
 - Streams readable-byte: construct-byob-request, tee-locked-stream
 - Streams transform: formal-debug-order, formal-debug-terminate, patched-global,
   properties
-- Streams writable: bad-strategies, bad-underlying-sinks, byte-length-queuing-strategy,
-  constructor, count-queuing-strategy, error, floating-point-total-queue-size,
-  properties, start
+- Streams writable: constructor, count-queuing-strategy, error,
+  floating-point-total-queue-size, properties, start
 - WASM: validate
+- Formal: gc-protection
 
-**ERROR (SIGSEGV/SIGBUS crash — content process dies) (28):**
-- Most piping tests, readable-streams with complex async, transform-streams
-- Root cause: JsObject/JsValue references stored in Rust-side GcCell fields
-  are invisible to JSC's GC.  On JSC, every JS-valued field in a Rust struct
-  must be independently protected via `JSValueProtect`.  The `Callback`,
-  `PromiseResolvers`, and reader/writer promise fields are now protected,
-  but PipeToStateInner, ReadableStream, WritableStream, TeeState, and many
-  other stream internals still have unprotected JsObject/JsValue fields,
-  causing SIGSEGV when the GC collects them while Rust still holds pointers.
-  See "Remaining work" below.
+**ERROR (SIGSEGV crash — content process dies):**
+- streams/readable-streams: cancel, floating-point-total-queue-size,
+  garbage-collection, read-task-handling
+- streams/writable-streams: bad-strategies, bad-underlying-sinks,
+  byte-length-queuing-strategy
+- ALL piping tests except general-addition and throwing-options
+- Formal: callback-gc-protection, wasm-compile-instantiate
+- html/webappapis/structured-clone/structured-clone.any.js
 
-**FAIL (no crash, spec-compliance issues) (6):**
-- readable-byte-streams: enqueue-with-detached-buffer, patched-global
-- readable-streams: from, patched-global
-- structured-clone.any.js (Blob not implemented)
-- dom/nodes/Node-constants.html
+Root cause: JsObject/JsValue references stored in Rust-side GcCell fields
+are invisible to JSC's GC.  The `Callback`, `PromiseResolvers`, and
+reader/writer promise fields are now protected, but many more stream
+internals still have unprotected fields.  See "Remaining work" below.
+
+**FAIL (no crash, spec-compliance issues):**
+- Wasm compile (timeout)
+- structured-clone (Blob not implemented)
 
 **Pre-existing expected failures (metadata):**
 - Various streams tests with TODO metadata (BYOB, cross-realm, transferable)
@@ -290,64 +291,82 @@ A practical reference for embedders writing against the public JSC C API.
 
 `.then()` handlers are NEVER invoked synchronously as part of the call that
 registered or triggered them.  `PerformPromiseThen` and the resolve/reject
-algorithms only ever enqueue a `PromiseReactionJob` — they never call the
-handler function directly, inline, as part of their own execution.  This is
+algorithms only ever enqueue a `PromiseReactionJob`.  This is
 engine-internals, separate from anything about the C API's lock behavior,
 and JSC gets this right (it passes Test262).
 
 Beyond that, ECMA-262 says almost nothing about when queued Jobs actually
 run.  The relevant abstract operation just says a Job runs "at some future
 point in time, when there is no running execution context and the execution
-context stack is empty" — and explicitly leaves the scheduling of that to
-the host.  ECMA-262 doesn't define an event loop at all; that's
-intentionally punted to the embedder.
+context stack is empty" — and explicitly leaves the scheduling to the host.
 
-So: JSC draining the queue exactly when the JS-lock's recursive count hits
+JSC drains the microtask queue when the JS-lock's recursive count hits
 zero — i.e., when the execution context stack has genuinely gone empty from
-JSC's point of view — is a completely valid reading of "no running execution
-context."  It's not synchronous invocation of a handler within the call that
-resolved the promise; it's the queued Job running in a fresh entry once that
-call has fully returned.  That satisfies A+ and ECMA-262.
+JSC's point of view.  This satisfies A+ and ECMA-262.
 
-### HTML's microtask checkpoint
+### HTML's microtask checkpoint vs JSC's drain-on-unlock
 
 HTML is prescriptive about where microtask checkpoints happen: after each
 task, after invoking a callback, at specific points in the "clean up after
-running script" steps, etc.  That's a much finer-grained, spec-defined
-notion of "turn boundary" than "whenever the native embedder's outermost
-lock scope happens to unwind."
+running script" steps, etc.  JSC's drain-on-unlock is a proxy for that,
+and the two usually coincide — but they're not the same thing.
 
-JSC's drain-on-unlock is a proxy for that, and the two usually coincide —
-but they're not the same thing, and the gap is the batching trick: if a
-native embedder nests several logically-distinct HTML-spec "tasks" or
-callback invocations inside one bigger native lock scope (to avoid multiple
-drains), JSC won't insert a checkpoint between them, even though HTML's
-algorithm would require one.  That's not an ECMA-262 violation, but it is
-a place where the engine could silently diverge from the HTML spec's
-ordering guarantees — e.g., a `queueMicrotask` call made between two
-"should-be-separate" callback invocations might not run when HTML says it
-should, because from JSC's perspective those two invocations were never
-actually separate turns.
+**Key gap for formal-web:** JSC microtasks only drain when the outermost
+C API call returns (lock count reaches 0).  Nested calls (e.g.,
+`JSObjectCallAsFunction` called inside another `JSObjectCallAsFunction`)
+do NOT trigger drains.  This means `.then()` handlers on already-resolved
+promises enqueued within a nested scope don't fire until the outer scope
+returns.
 
-### Practical implications for formal-web
+**Impact on pipeTo:** The `perform_promise_then` calls inside
+`transform_promise_to_undefined` and `append_reaction` both happen
+within the outer `pipeTo` call scope.  Handlers enqueued by `.then()`
+on resolved promises don't fire until `pipeTo` returns.  This is correct
+but means the shutdown handler (`pipe_to_append_reaction_fn`) fires
+asynchronously, during the microtask drain after `pipeTo` returns.
 
-For formal-web's explicit event-loop model, the embedding layer must ensure
-that every place HTML says "perform a microtask checkpoint" corresponds to
-an actual native-call boundary that lets the lock count hit zero —
-otherwise you get technically-ECMA-262-legal-but-HTML-nonconformant timing,
-which is the kind of gap that shows up as WPT failures rather than crashes.
+**`promise_state` broken in nested scopes:** The JSC implementation of
+`promise_state` uses `JSEvaluateScript` to set up `.then()` flags and
+then `void 0` to drain microtasks.  Within a nested lock scope, the
+`void 0` drain doesn't work, so `promise_state` always returns `Pending`.
+This means `shutdown_action_promise_state` returns `Pending` when called
+from within the pipeTo setup, preventing `finalize` from running
+synchronously.
 
-The `ReadableStreamPipeTo` chunk_steps code uses `enqueue_job_with_realm`
-to advance the pipe state machine.  On Boa, this queues a Rust-side job
-that gets drained by `run_jobs`.  On JSC, this queue is separate from
-the microtask queue, and jobs never drain unless `run_jobs` is called
-explicitly.  Calling `run_jobs` from inside a builtin function callback
-(the `.then()` handler) creates a second `&mut` borrow of the JscEngine
-through the trait object, which is undefined behavior.
+**Rust job queue:** `enqueue_job_with_realm` is separate from JSC's
+microtask queue.  Jobs never drain without explicit `run_jobs()` calls.
+Calling `run_jobs` from within a builtin function callback creates a
+double `&mut` borrow of `JscEngine` through the trait object (UB).
 
-**Fix needed:** Instead of `enqueue_job_with_realm` for pipeTo read
-results, use `perform_promise_then` to chain reactions through JSC's
-microtask queue, which drains automatically.
+### Fixes applied in this session
+
+1. **Replaced `enqueue_job_with_realm` with `perform_promise_then`**
+   for `ReadableStreamPipeTo` read/close/error steps
+   (`schedule_pipe_to_on_settled`).  Now uses JSC's microtask queue.
+
+2. **Synchronous shutdown check in `perform_action`** — After setting
+   up the shutdown action promise and `append_reaction`, check if the
+   promise is already settled (Fulfilled/Rejected) via
+   `shutdown_action_promise_state`.  If settled, call `finalize`
+   immediately instead of waiting for the async `.then()` handler.
+   (Mitigates the nested-lock microtask issue.)
+
+3. **GC protection for JsObject fields** — Protected `Callback`,
+   `PromiseResolvers`, reader/writer promise fields, and
+   `shutdown_error` via `JSValueProtect`/`JSValueUnprotect`.
+
+### Remaining issues
+
+1. **SIGSEGV from collected JsObjects** — Many more stream internal
+   JsObject/JsValue fields are unprotected.  Need systematic protection
+   of all JsObject fields in `PipeToStateInner`, `ReadableStream`,
+   `WritableStream`, `TeeState`, etc.
+
+2. **`promise_state` broken in nested scopes** — The eval-based
+   implementation never works inside nested JS calls.  Need a different
+   approach (track promise state in Rust alongside the JSC promise).
+
+3. **All piping tests crash with SIGSEGV** — Root cause is (1) above.
 
 ### Session investigation log
 
