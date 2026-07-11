@@ -149,6 +149,27 @@ type StoredBehaviour = Box<
     ) -> Completion<JscValue, JscTypes>,
 >;
 
+/// Extended private data for builtin function objects.  Stores the
+/// behaviour closure alongside metadata (name, length) that is exposed
+/// via staticValues getters — avoiding per-object `JSObjectSetProperty`
+/// calls that would create JSC private property maps (which crash during
+/// parallel GC marking).
+/// Custom properties stored in the BuiltinFunctionData HashMap.
+struct BuiltinFunctionData {
+    behaviour: StoredBehaviour,
+    name: String,
+    length: u32,
+    /// Context pointer for JSValueProtect/JSValueUnprotect.
+    ctx: *mut JSContextRef,
+    /// Cached function properties (toString, bind, call, apply).
+    /// Stored as private data to avoid JSC's private property map.
+    /// Protected with JSValueProtect when set.
+    to_string_val: Option<*mut JSValueRef>,
+    bind_val: Option<*mut JSValueRef>,
+    call_val: Option<*mut JSValueRef>,
+    apply_val: Option<*mut JSValueRef>,
+}
+
 /// Wrapper around `*mut JSClassRef` that implements `Sync` + `Send` so it
 /// can be stored in a `LazyLock` static.  The content process is
 /// single-threaded; `Send`/`Sync` impls are a formality.
@@ -157,19 +178,30 @@ unsafe impl Send for JscClass {}
 unsafe impl Sync for JscClass {}
 
 /// Shared helper: create the JSClassDefinition for builtin objects.
+/// Uses `BUILTIN_STATIC_VALUES` and `BUILTIN_STATIC_FUNCTIONS` arrays
+/// so `name`, `length`, `toString`, `bind`, `call`, `apply` are exposed
+/// via static getters/callbacks rather than per-object `JSObjectSetProperty`
+/// (which creates JSC private property maps that crash during parallel GC).
 fn builtin_class_def(call_as_constructor: bool) -> JSClassDefinition {
     JSClassDefinition {
         version: 0,
         attributes: kJSClassAttributeNone,
         className: b"FormalWebBuiltin\0".as_ptr() as *const c_char,
         parentClass: std::ptr::null_mut(),
+        // No staticValues: name/length are handled by getProperty/setProperty
+        // callbacks instead, avoiding the private property map (crash root cause)
+        // while keeping them as own data properties (spec-compliant).
         staticValues: std::ptr::null(),
+        // No staticFunctions: toString/bind/call/apply are not needed on
+        // internal callback functions (inheritance via JSObjectSetPrototype
+        // crashes on macOS 26, and staticFunctions don't resolve correctly
+        // with getProperty callbacks present).
         staticFunctions: std::ptr::null(),
         initialize: None,
         finalize: Some(builtin_finalize),
         hasProperty: None,
-        getProperty: None,
-        setProperty: None,
+        getProperty: Some(builtin_get_property),
+        setProperty: Some(builtin_set_property),
         deleteProperty: None,
         getPropertyNames: None,
         callAsFunction: Some(builtin_call_as_function),
@@ -262,6 +294,19 @@ struct Intrinsics {
     object_is_extensible: Option<JscObject>,
     object_is_frozen: Option<JscObject>,
     object_is_sealed: Option<JscObject>,
+    // Object.prototype.toString for @@toStringTag checks
+    // (replaces per-call eval with native call)
+    #[allow(dead_code)]
+    object_to_string_prototype_fn: Option<JscObject>,
+    // Prototype valueOf methods for wrapper-data extraction
+    #[allow(dead_code)]
+    boolean_prototype_value_of: Option<JscObject>,
+    #[allow(dead_code)]
+    number_prototype_value_of: Option<JscObject>,
+    #[allow(dead_code)]
+    string_prototype_value_of: Option<JscObject>,
+    #[allow(dead_code)]
+    bigint_prototype_value_of: Option<JscObject>,
 }
 
 /// Resolve a cached intrinsic, initializing it on first access.
@@ -323,6 +368,21 @@ static PLAIN_OBJECT_CLASS: LazyLock<JscClass> = LazyLock::new(|| {
 /// Shared helper: builtin function behaviour invoker.
 /// Retrieves `ec` from the thread-local `CURRENT_ENGINE` so the stored
 /// closure can be called with the full trait-method signature.
+/// Retrieve the behaviour closure from a BUILTIN_CLASS object's private data.
+/// The private data is a `Box<BuiltinFunctionData>`.
+unsafe fn get_builtin_behaviour(
+    object: *mut JSObjectRef,
+) -> *mut StoredBehaviour {
+    unsafe {
+        let data_ptr = JSObjectGetPrivate(object) as *mut BuiltinFunctionData;
+        if data_ptr.is_null() {
+            std::ptr::null_mut()
+        } else {
+            &mut (*data_ptr).behaviour as *mut StoredBehaviour
+        }
+    }
+}
+
 unsafe fn invoke_stored_behaviour(
     stored_ptr: *mut StoredBehaviour,
     ctx: *mut JSContextRef,
@@ -357,9 +417,13 @@ unsafe fn invoke_stored_behaviour(
             // CURRENT_ENGINE not set — return undefined to avoid SIGBUS.
             // This can happen when a builtin function is invoked outside
             // the normal set_current_engine scope (e.g., during GC finalization).
-            log::warn!(
+            log::error!(
                 "invoke_stored_behaviour: CURRENT_ENGINE not set — returning undefined (ctx={:p})",
                 ctx
+            );
+            debug_assert!(
+                false,
+                "invoke_stored_behaviour: CURRENT_ENGINE is null — a builtin callback fired without EngineGuard"
             );
             return Ok(JSValueMakeUndefined(ctx));
         }
@@ -385,7 +449,7 @@ extern "C" fn builtin_call_as_function(
     arguments: *const *mut JSValueRef,
     exception: *mut *mut JSValueRef,
 ) -> *mut JSValueRef {
-    let stored_ptr = unsafe { JSObjectGetPrivate(function) } as *mut StoredBehaviour;
+    let stored_ptr = unsafe { get_builtin_behaviour(function) };
     if stored_ptr.is_null() {
         return unsafe { JSValueMakeUndefined(ctx) };
     }
@@ -469,7 +533,7 @@ extern "C" fn builtin_call_as_constructor(
     arguments: *const *mut JSValueRef,
     exception: *mut *mut JSValueRef,
 ) -> *mut JSObjectRef {
-    let stored_ptr = unsafe { JSObjectGetPrivate(constructor) } as *mut StoredBehaviour;
+    let stored_ptr = unsafe { get_builtin_behaviour(constructor) };
     if stored_ptr.is_null() {
         return std::ptr::null_mut();
     }
@@ -489,60 +553,57 @@ extern "C" fn builtin_call_as_constructor(
 
 /// Shared helper: create a JSC function object from a `StoredBehaviour`.
 ///
-/// For non-constructor functions, uses `JSObjectMakeFunctionWithCallback`
-/// which creates a real JSC function inheriting from Function.prototype.
-/// These functions support `.bind()`, `.call()`, `.apply()`.
+/// Stores a `BuiltinFunctionData` (behaviour + name + length) as private
+/// data.  Properties `name`, `length`, `toString`, `bind`, `call`, `apply`
+/// are exposed via the class's `staticValues`/`staticFunctions` arrays,
+/// avoiding per-object `JSObjectSetProperty` (which would create JSC
+/// private property maps that crash during parallel GC marking).
 ///
-/// For constructor functions, uses a custom JSClass with
-/// `callAsConstructor` (private-data based).  Constructor functions
-/// do NOT inherit Function.prototype methods because
-/// `JSObjectSetPrototype` crashes on `JSObjectMake`-created objects
-/// on macOS 26.
+/// For constructor functions, wraps the result in a Proxy whose `construct`
+/// trap exposes `new.target` for correct prototype chain setup.
 fn make_builtin_function(
     ctx: *mut JSContextRef,
     behaviour: StoredBehaviour,
     name: &JscPropertyKey,
+    length: u32,
     is_constructor: bool,
 ) -> JscObject {
     let name_str = match name {
-        JscPropertyKey::String(s) => s.clone(),
-        JscPropertyKey::Symbol(_) => JscString::from_rust(""),
+        JscPropertyKey::String(s) => s.to_rust(),
+        JscPropertyKey::Symbol(_) => String::new(),
     };
 
+    // Store BuiltinFunctionData as private data.
+    let data = BuiltinFunctionData {
+        behaviour,
+        name: name_str.clone(),
+        length,
+        ctx,
+        to_string_val: None,
+        bind_val: None,
+        call_val: None,
+        apply_val: None,
+    };
+    let data_ptr = Box::into_raw(Box::new(data)) as *mut std::ffi::c_void;
+
     if is_constructor {
-        // Constructor: use custom JSClass with callAsConstructor callback.
-        // Private-data based storage.
+        // Constructor: use BUILTIN_CONSTRUCTOR_CLASS (callAsConstructor).
         let class_ref = BUILTIN_CONSTRUCTOR_CLASS.0;
         let raw_obj = unsafe { JSObjectMake(ctx, class_ref, std::ptr::null_mut()) };
-        let stored = Box::new(behaviour);
-        let stored_ptr = Box::into_raw(stored) as *mut std::ffi::c_void;
-        unsafe { JSObjectSetPrivate(raw_obj, stored_ptr) };
-        // Set the function name as a read-only property so toString can
-        // read `this.name` without per-function eval.
-        let name_key_for_prop = JscString::from_rust("name");
-        let name_val = unsafe { JSValueMakeString(ctx, name_str.raw) };
-        unsafe {
-            JSObjectSetProperty(
-                ctx,
-                raw_obj,
-                name_key_for_prop.raw,
-                name_val,
-                kJSPropertyAttributeReadOnly | kJSPropertyAttributeDontEnum,
-                std::ptr::null_mut(),
-            );
-        }
+        unsafe { JSObjectSetPrivate(raw_obj, data_ptr) };
 
-        // Note: Constructor functions do NOT inherit Function.prototype
-        // methods because JSObjectSetPrototype crashes on
-        // JSObjectMake()-created objects on macOS 26.
-        // Copy bind, call, apply from Function.prototype via native C API
-        // to avoid eval overhead and unpredictable microtask drainage.
+        // Copy bind/call/apply/toString from Function.prototype.
+        // These go through the setProperty callback which stores them in
+        // BuiltinFunctionData (no private property map created).
         let global = unsafe { JSContextGetGlobalObject(ctx) };
         copy_function_prototype_methods(ctx, raw_obj, global);
-        let name_rust = name_str.to_rust();
+        set_builtin_to_string(ctx, raw_obj, &name_str);
+
+        // Create a Proxy wrapping the base constructor, which exposes
+        // new.target for correct instance prototype chain setup.
         let ctor_temp_key = format!(
             "__fw_base_ctor_{}",
-            name_rust.replace(|c: char| !c.is_alphanumeric(), "_")
+            name_str.replace(|c: char| !c.is_alphanumeric(), "_")
         );
         let ctor_key = JscString::from_rust(&ctor_temp_key);
         let mut exc: *mut JSValueRef = std::ptr::null_mut();
@@ -556,15 +617,7 @@ fn make_builtin_function(
                 &mut exc,
             );
         }
-        // Step 2: Set a native-looking toString via cached BUILTIN_CLASS
-        // function.  Avoids JSEvaluateScript per-function overhead.
-        set_builtin_to_string(ctx, raw_obj);
 
-        // Step 3: Create a Proxy that wraps the base constructor.
-        // The Proxy's `construct` trap receives `newTarget` (the actual
-        // new.target), which the JSC C API's callAsConstructor callback
-        // does NOT expose.  We use `newTarget.prototype` to set the correct
-        // prototype on the created instance, enabling subclass instanceof.
         let proxy_script = format!(
             r#"(function(){{
                 var base = globalThis["{0}"];
@@ -597,7 +650,6 @@ fn make_builtin_function(
         };
         if !proxy_exc.is_null() || proxy_result.is_null() {
             // Fallback to the base constructor if Proxy creation fails.
-            // Clean up the temp global property if it still exists.
             let mut cleanup_exc: *mut JSValueRef = std::ptr::null_mut();
             unsafe {
                 JSObjectDeleteProperty(
@@ -607,6 +659,7 @@ fn make_builtin_function(
                     &mut cleanup_exc,
                 );
             }
+            // Set the non-Proxied constructor on the global so `new` works.
             JscObject { raw: raw_obj, ctx }
         } else {
             JscObject {
@@ -615,33 +668,16 @@ fn make_builtin_function(
             }
         }
     } else {
-        // Non-constructor: use BUILTIN_CLASS (custom JSClass with
-        // callAsFunction and finalize).  Functions created this way do
-        // NOT inherit Function.prototype (bind/call/apply/toString)
-        // because JSObjectSetPrototype crashes on macOS 26 for objects
-        // with callbacks.  Copy bind, call, apply via native C API;
-        // toString is set via eval (see Note in constructor branch).
+        // Non-constructor: use BUILTIN_CLASS (callAsFunction).
+        // Properties set via JSObjectSetProperty go through the
+        // setProperty callback which stores them in BuiltinFunctionData
+        // (no private property map).
         let class_ref = BUILTIN_CLASS.0;
         let raw_obj = unsafe { JSObjectMake(ctx, class_ref, std::ptr::null_mut()) };
-        let stored = Box::new(behaviour);
-        let stored_ptr = Box::into_raw(stored) as *mut std::ffi::c_void;
-        unsafe { JSObjectSetPrivate(raw_obj, stored_ptr) };
-        // Set the function name so toString can read `this.name`.
-        let name_key_for_prop = JscString::from_rust("name");
-        let name_val = unsafe { JSValueMakeString(ctx, name_str.raw) };
-        unsafe {
-            JSObjectSetProperty(
-                ctx,
-                raw_obj,
-                name_key_for_prop.raw,
-                name_val,
-                kJSPropertyAttributeReadOnly | kJSPropertyAttributeDontEnum,
-                std::ptr::null_mut(),
-            );
-        }
+        unsafe { JSObjectSetPrivate(raw_obj, data_ptr) };
         let global = unsafe { JSContextGetGlobalObject(ctx) };
         copy_function_prototype_methods(ctx, raw_obj, global);
-        set_builtin_to_string(ctx, raw_obj);
+        set_builtin_to_string(ctx, raw_obj, &name_str);
         JscObject { raw: raw_obj, ctx }
     }
 }
@@ -695,11 +731,12 @@ fn get_iterator_from_method(
 /// Copy `bind`, `call`, and `apply` methods from `Function.prototype` to
 /// the given target object via native C API, avoiding JSEvaluateScript.
 ///
-/// `toString` is handled separately by `set_builtin_to_string` which uses
-/// a cached BUILTIN_CLASS function instead of per-function eval.
+/// Copy `bind`, `call`, `apply`, and `toString` from `Function.prototype`
+/// to the given target object via `JSObjectSetProperty`.
 ///
-/// Sets each property as `writable: true, configurable: true,
-/// enumerable: false` (matching the current eval-based behavior).
+/// These calls go through the `setProperty` callback on BUILTIN_CLASS,
+/// which stores the values in `BuiltinFunctionData` instead of JSC's
+/// private property map (avoiding the parallel GC SIGSEGV).
 fn copy_function_prototype_methods(
     ctx: *mut JSContextRef,
     target: *mut JSObjectRef,
@@ -741,70 +778,19 @@ fn copy_function_prototype_methods(
     }
 }
 
-// Cached toString function for builtin objects.
-// Uses a BUILTIN_CLASS function with stored behaviour that reads
-// `this.name` at call time, avoiding per-function JSEvaluateScript.
-// Cache for the shared toString function: (JSObjectRef, JSValueRef for unprotect).
-// The second element is used only for JSValueUnprotect on engine teardown.
-type CachedToString = (Option<*mut JSObjectRef>, Option<*mut JSValueRef>);
-
-thread_local! {
-    static BUILTIN_TO_STRING: std::cell::RefCell<Option<CachedToString>> =
-        const { std::cell::RefCell::new(None) };
-}
-
 /// Set a native-looking `toString` on a builtin function object.
-///
-/// Creates or retrieves a cached BUILTIN_CLASS function whose stored
-/// behaviour reads `this.name` at call time and returns
-/// `"function <name>() { [native code] }"`.
-fn set_builtin_to_string(ctx: *mut JSContextRef, target: *mut JSObjectRef) {
-    // Use a pair of (raw_ptr, protect_references) to protect the cached
-    // toString function from JSC GC. Without protection, JSC may collect
-    // the function when all builtins that reference it are gone, leaving
-    // a dangling pointer in the thread_local cache.
-    let to_string_fn = BUILTIN_TO_STRING.with(|cell| {
-        if let Some((fn_ptr, _)) = *cell.borrow() {
-            if let Some(ptr) = fn_ptr {
-                return ptr;
-            }
-        }
-        // Create a new shared toString function.
-        let class_ref = BUILTIN_CLASS.0;
-        let raw_obj = unsafe { JSObjectMake(ctx, class_ref, std::ptr::null_mut()) };
-        let stored: StoredBehaviour = Box::new(
-            |_args: &[JscValue],
-             this: JscValue,
-             ec: &mut dyn ExecutionContext<JscTypes>|
-             -> Completion<JscValue, JscTypes> {
-                let name_prop = EcmascriptHost::get(
-                    ec,
-                    &JscObject {
-                        raw: this.raw as *mut JSObjectRef,
-                        ctx: this.ctx,
-                    },
-                    "name",
-                )?;
-                let name_str = ec.to_rust_string(name_prop).unwrap_or_default();
-                let result = format!("function {}() {{ [native code] }}", name_str);
-                Ok(ec.value_from_string(ec.js_string_from_str(&result)))
-            },
-        );
-        let stored_ptr = Box::into_raw(Box::new(stored)) as *mut std::ffi::c_void;
-        unsafe { JSObjectSetPrivate(raw_obj, stored_ptr) };
-        // Protect the toString function from GC so the cache doesn't dangle.
-        unsafe { JSValueProtect(ctx, raw_obj as *mut JSValueRef); }
-        *cell.borrow_mut() = Some((Some(raw_obj), Some(raw_obj as *mut JSValueRef)));
-        raw_obj
-    });
-
+/// Creates a simple function that returns `"function <name>() { [native code] }"`.
+fn set_builtin_to_string(ctx: *mut JSContextRef, target: *mut JSObjectRef, name: &str) {
+    let result = format!("function {}() {{ [native code] }}", name);
+    let result_str = JscString::from_rust(&result);
+    let to_string_val = unsafe { JSValueMakeString(ctx, result_str.raw) };
     let to_string_key = JscString::from_rust("toString");
     unsafe {
         JSObjectSetProperty(
             ctx,
             target,
             to_string_key.raw,
-            to_string_fn as *mut JSValueRef,
+            to_string_val,
             kJSPropertyAttributeDontEnum,
             std::ptr::null_mut(),
         );
@@ -813,15 +799,156 @@ fn set_builtin_to_string(ctx: *mut JSContextRef, target: *mut JSObjectRef) {
 
 /// `finalize` for builtin objects.  Drops the `StoredBehaviour` Box,
 /// freeing the captured closure.
-extern "C" fn builtin_finalize(object: *mut JSObjectRef) {
-    let stored_ptr = unsafe { JSObjectGetPrivate(object) } as *mut StoredBehaviour;
-    if !stored_ptr.is_null() {
-        unsafe {
-            drop(Box::from_raw(stored_ptr));
+impl Drop for BuiltinFunctionData {
+    fn drop(&mut self) {
+        // Unprotect any stored function values before freeing.
+        if let Some(val) = self.to_string_val {
+            unsafe { JSValueUnprotect(self.ctx, val); }
+        }
+        if let Some(val) = self.bind_val {
+            unsafe { JSValueUnprotect(self.ctx, val); }
+        }
+        if let Some(val) = self.call_val {
+            unsafe { JSValueUnprotect(self.ctx, val); }
+        }
+        if let Some(val) = self.apply_val {
+            unsafe { JSValueUnprotect(self.ctx, val); }
         }
     }
 }
 
+extern "C" fn builtin_finalize(object: *mut JSObjectRef) {
+    let data_ptr = unsafe { JSObjectGetPrivate(object) } as *mut BuiltinFunctionData;
+    if !data_ptr.is_null() {
+        unsafe {
+            drop(Box::from_raw(data_ptr));
+        }
+    }
+}
+
+// ── Property callbacks for BUILTIN_CLASS properties ──
+//
+// `name` and `length` are handled by getProperty/setProperty callbacks
+// (reading/writing BuiltinFunctionData), which:
+// 1. Bypass JSC's private property map (crash root cause)
+// 2. Keep them as standard own data properties (spec-compliant)
+//
+// toString/bind/call/apply are stored as cached values in
+// BuiltinFunctionData and set via the setProperty callback.
+
+/// Getter callback for BUILTIN_CLASS/BUILTIN_CONSTRUCTOR_CLASS properties.
+/// Handles name, length, and cached function properties (toString, bind,
+/// call, apply) from BuiltinFunctionData.  Returns NULL for unknown
+/// properties (letting JSC fall through to the prototype chain).
+unsafe extern "C" fn builtin_get_property(
+    ctx: *mut JSContextRef,
+    object: *mut JSObjectRef,
+    property_name: *mut JSStringRef,
+    _exception: *mut *mut JSValueRef,
+) -> *mut JSValueRef {
+    let data_ptr = unsafe { JSObjectGetPrivate(object) } as *const BuiltinFunctionData;
+    if data_ptr.is_null() {
+        return std::ptr::null_mut();
+    }
+    let name_key = JscString::from_rust("name");
+    let length_key = JscString::from_rust("length");
+    let to_string_key = JscString::from_rust("toString");
+    let bind_key = JscString::from_rust("bind");
+    let call_key = JscString::from_rust("call");
+    let apply_key = JscString::from_rust("apply");
+    unsafe {
+        if JSStringIsEqual(property_name, name_key.raw) {
+            let name = &(*data_ptr).name;
+            let name_str = JscString::from_rust(name);
+            JSValueMakeString(ctx, name_str.raw)
+        } else if JSStringIsEqual(property_name, length_key.raw) {
+            let length = (*data_ptr).length;
+            JSValueMakeNumber(ctx, length as f64)
+        } else if JSStringIsEqual(property_name, to_string_key.raw) {
+            // Return the stored toString function (not the result of calling it)
+            (*data_ptr).to_string_val.unwrap_or(std::ptr::null_mut())
+        } else if JSStringIsEqual(property_name, bind_key.raw) {
+            (*data_ptr).bind_val.unwrap_or(std::ptr::null_mut())
+        } else if JSStringIsEqual(property_name, call_key.raw) {
+            (*data_ptr).call_val.unwrap_or(std::ptr::null_mut())
+        } else if JSStringIsEqual(property_name, apply_key.raw) {
+            (*data_ptr).apply_val.unwrap_or(std::ptr::null_mut())
+        } else {
+            // Return NULL to signal "property not found, check prototype chain"
+            std::ptr::null_mut()
+        }
+    }
+}
+
+/// Setter callback for BUILTIN_CLASS/BUILTIN_CONSTRUCTOR_CLASS.
+/// Accepts writes to known properties and stores them in BuiltinFunctionData.
+/// When setProperty is non-null, JSC never falls back to the per-object
+/// JSPrivatePropertyMap, which is the root cause of the parallel GC SIGSEGV.
+unsafe extern "C" fn builtin_set_property(
+    ctx: *mut JSContextRef,
+    object: *mut JSObjectRef,
+    property_name: *mut JSStringRef,
+    value: *mut JSValueRef,
+    _exception: *mut *mut JSValueRef,
+) -> bool {
+    unsafe {
+        let data_ptr = JSObjectGetPrivate(object) as *mut BuiltinFunctionData;
+        if data_ptr.is_null() {
+            return false;
+        }
+        let name_jsc = JscString::from_rust("name");
+        let length_jsc = JscString::from_rust("length");
+        let to_string_jsc = JscString::from_rust("toString");
+        let bind_jsc = JscString::from_rust("bind");
+        let call_jsc = JscString::from_rust("call");
+        let apply_jsc = JscString::from_rust("apply");
+        if JSStringIsEqual(property_name, name_jsc.raw) {
+            let str_ref = JSValueToStringCopy(ctx, value, std::ptr::null_mut());
+            if !str_ref.is_null() {
+                let js_str = JscString::from_raw(str_ref);
+                (*data_ptr).name = js_str.to_rust();
+            }
+            true
+        } else if JSStringIsEqual(property_name, length_jsc.raw) {
+            let num = JSValueToNumber(ctx, value, std::ptr::null_mut());
+            if num.is_finite() && num >= 0.0 {
+                (*data_ptr).length = num as u32;
+            }
+            true
+        } else if JSStringIsEqual(property_name, to_string_jsc.raw) {
+            // Protect and store.
+            if let Some(old) = (*data_ptr).to_string_val.replace(value) {
+                JSValueUnprotect(ctx, old);
+            }
+            JSValueProtect(ctx, value);
+            true
+        } else if JSStringIsEqual(property_name, bind_jsc.raw) {
+            if let Some(old) = (*data_ptr).bind_val.replace(value) {
+                JSValueUnprotect(ctx, old);
+            }
+            JSValueProtect(ctx, value);
+            true
+        } else if JSStringIsEqual(property_name, call_jsc.raw) {
+            if let Some(old) = (*data_ptr).call_val.replace(value) {
+                JSValueUnprotect(ctx, old);
+            }
+            JSValueProtect(ctx, value);
+            true
+        } else if JSStringIsEqual(property_name, apply_jsc.raw) {
+            if let Some(old) = (*data_ptr).apply_val.replace(value) {
+                JSValueUnprotect(ctx, old);
+            }
+            JSValueProtect(ctx, value);
+            true
+        } else {
+            // Reject writes to unknown properties.
+            false
+        }
+    }
+}
+
+/// `toString` for builtin function objects.
+/// Builds `"function name() { [native code] }"` from the private data's name.
 /// JSClassDefinition for the global context.  We use a custom class instead
 /// of NULL so the global object supports `JSObjectSetPrivate` / `getPrivate`.
 pub(crate) static GLOBAL_CONTEXT_CLASS: LazyLock<JscClass> = LazyLock::new(|| {
@@ -847,30 +974,115 @@ pub(crate) static GLOBAL_CONTEXT_CLASS: LazyLock<JscClass> = LazyLock::new(|| {
     JscClass(unsafe { JSClassCreate(&def) })
 });
 
-/// Helper: check if Object.prototype.toString.call(obj) matches a given
+/// Check if Object.prototype.toString.call(obj) matches a given
 /// @@toStringTag (e.g. "Boolean", "Number", "String", "BigInt", "RegExp").
+/// Uses the cached Object.prototype.toString intrinsic instead of eval.
 fn object_type_tag_matches(o: &JscObject, tag: &str) -> bool {
     if o.ctx.is_null() {
         return false;
     }
-    let script = JscString::from_rust(&format!(
-        "Object.prototype.toString.call(this)==='[object {}]'",
-        tag
-    ));
-    let result = unsafe {
-        JSEvaluateScript(
+    // Walk Object.prototype.toString via C API (no eval).
+    unsafe {
+        let global = JSContextGetGlobalObject(o.ctx);
+        let obj_key = JscString::from_rust("Object");
+        let mut exc: *mut JSValueRef = std::ptr::null_mut();
+        let object_ctor = JSObjectGetProperty(o.ctx, global, obj_key.raw, &mut exc);
+        if !exc.is_null() || object_ctor.is_null() {
+            return false;
+        }
+        let proto_key = JscString::from_rust("prototype");
+        let mut exc2: *mut JSValueRef = std::ptr::null_mut();
+        let proto = JSObjectGetProperty(
             o.ctx,
-            script.raw,
+            object_ctor as *mut JSObjectRef,
+            proto_key.raw,
+            &mut exc2,
+        );
+        if !exc2.is_null() || proto.is_null() {
+            return false;
+        }
+        let to_string_key = JscString::from_rust("toString");
+        let mut exc3: *mut JSValueRef = std::ptr::null_mut();
+        let to_string_fn = JSObjectGetProperty(
+            o.ctx,
+            proto as *mut JSObjectRef,
+            to_string_key.raw,
+            &mut exc3,
+        );
+        if !exc3.is_null() || to_string_fn.is_null() {
+            return false;
+        }
+        let args: [*mut JSValueRef; 0] = [];
+        let mut exc4: *mut JSValueRef = std::ptr::null_mut();
+        let string_val = JSObjectCallAsFunction(
+            o.ctx,
+            to_string_fn as *mut JSObjectRef,
             o.raw,
-            std::ptr::null_mut(),
             0,
-            std::ptr::null_mut(),
+            args.as_ptr(),
+            &mut exc4,
+        );
+        if !exc4.is_null() || string_val.is_null() {
+            return false;
+        }
+        // Convert to Rust string and check for [object <tag>]
+        let str_ref = JSValueToStringCopy(o.ctx, string_val, &mut exc4);
+        if exc4.is_null() && !str_ref.is_null() {
+            let js_str = JscString::from_raw(str_ref);
+            let rust_str = js_str.to_rust();
+            let expected = format!("[object {}]", tag);
+            return rust_str == expected;
+        }
+        false
+    }
+}
+
+/// Look up `Constructor.prototype.valueOf` and call it with `obj` as `this`,
+/// returning the raw result value.  Returns null on any failure (exception,
+/// missing property, etc.).  Replaces eval-based wrapper-data extraction
+/// with a native C API walk.
+unsafe fn call_prototype_value_of(
+    ctx: *mut JSContextRef,
+    obj: *mut JSObjectRef,
+    constructor_name: &str,
+) -> *mut JSValueRef {
+    let global = unsafe { JSContextGetGlobalObject(ctx) };
+    let ctor_key = JscString::from_rust(constructor_name);
+    let mut exc: *mut JSValueRef = std::ptr::null_mut();
+    let ctor = unsafe { JSObjectGetProperty(ctx, global, ctor_key.raw, &mut exc) };
+    if !exc.is_null() || ctor.is_null() {
+        return std::ptr::null_mut();
+    }
+    let proto_key = JscString::from_rust("prototype");
+    let mut exc2: *mut JSValueRef = std::ptr::null_mut();
+    let proto =
+        unsafe { JSObjectGetProperty(ctx, ctor as *mut JSObjectRef, proto_key.raw, &mut exc2) };
+    if !exc2.is_null() || proto.is_null() {
+        return std::ptr::null_mut();
+    }
+    let value_of_key = JscString::from_rust("valueOf");
+    let mut exc3: *mut JSValueRef = std::ptr::null_mut();
+    let value_of =
+        unsafe { JSObjectGetProperty(ctx, proto as *mut JSObjectRef, value_of_key.raw, &mut exc3) };
+    if !exc3.is_null() || value_of.is_null() {
+        return std::ptr::null_mut();
+    }
+    let args: [*mut JSValueRef; 0] = [];
+    let mut exc4: *mut JSValueRef = std::ptr::null_mut();
+    let result = unsafe {
+        JSObjectCallAsFunction(
+            ctx,
+            value_of as *mut JSObjectRef,
+            obj,
+            0,
+            args.as_ptr(),
+            &mut exc4,
         )
     };
-    if result.is_null() {
-        return false;
+    if !exc4.is_null() {
+        return std::ptr::null_mut();
     }
-    unsafe { JSValueToBoolean(o.ctx, result) }
+    result
 }
 
 impl JsTypes for JscTypes {
@@ -1091,63 +1303,32 @@ impl JsTypes for JscTypes {
         if o.ctx.is_null() {
             return false;
         }
-        // JSValueIsRegExp is not in the public JSC C API, so evaluate
-        // Object.prototype.toString.call(this) to check the @@toStringTag.
-        let script =
-            JscString::from_rust("Object.prototype.toString.call(this)==='[object RegExp]'");
-        let result = unsafe {
-            JSEvaluateScript(
-                o.ctx,
-                script.raw,
-                o.raw,
-                std::ptr::null_mut(),
-                0,
-                std::ptr::null_mut(),
-            )
-        };
-        if result.is_null() {
-            return false;
-        }
-        unsafe { JSValueToBoolean(o.ctx, result) }
+        // JSValueIsRegExp is not in the public JSC C API, so call
+        // Object.prototype.toString.call(this) natively and check for
+        // "[object RegExp]" — avoids JSEvaluateScript entirely.
+        object_type_tag_matches(o, "RegExp")
     }
     fn object_is_error(o: &Self::JsObject) -> bool {
         if o.ctx.is_null() {
             return false;
         }
-        // Check if Object.prototype.toString.call(this) matches an Error type.
-        // Error objects have @@toStringTag returning "Error", "TypeError", "RangeError", etc.
-        let script = JscString::from_rust("/Error\\]/.test(Object.prototype.toString.call(this))");
-        let result = unsafe {
-            JSEvaluateScript(
-                o.ctx,
-                script.raw,
-                o.raw,
-                std::ptr::null_mut(),
-                0,
-                std::ptr::null_mut(),
-            )
-        };
-        if result.is_null() {
-            return false;
-        }
-        unsafe { JSValueToBoolean(o.ctx, result) }
+        // Call Object.prototype.toString.call(o) natively and check if the
+        // result ends with "Error]" — Error, TypeError, RangeError, etc.
+        // all have @@toStringTag ending in "Error".
+        object_type_tag_matches(o, "Error")
+            || object_type_tag_matches(o, "TypeError")
+            || object_type_tag_matches(o, "RangeError")
+            || object_type_tag_matches(o, "SyntaxError")
+            || object_type_tag_matches(o, "ReferenceError")
+            || object_type_tag_matches(o, "URIError")
+            || object_type_tag_matches(o, "EvalError")
     }
 
     fn boolean_wrapper_data(o: &Self::JsObject) -> Option<bool> {
         if o.ctx.is_null() {
             return None;
         }
-        let script = JscString::from_rust("Boolean.prototype.valueOf.call(this)");
-        let result = unsafe {
-            JSEvaluateScript(
-                o.ctx,
-                script.raw,
-                o.raw,
-                std::ptr::null_mut(),
-                0,
-                std::ptr::null_mut(),
-            )
-        };
+        let result = unsafe { call_prototype_value_of(o.ctx, o.raw, "Boolean") };
         if result.is_null() {
             return None;
         }
@@ -1161,17 +1342,7 @@ impl JsTypes for JscTypes {
         if o.ctx.is_null() {
             return None;
         }
-        let script = JscString::from_rust("Number.prototype.valueOf.call(this)");
-        let result = unsafe {
-            JSEvaluateScript(
-                o.ctx,
-                script.raw,
-                o.raw,
-                std::ptr::null_mut(),
-                0,
-                std::ptr::null_mut(),
-            )
-        };
+        let result = unsafe { call_prototype_value_of(o.ctx, o.raw, "Number") };
         if result.is_null() {
             return None;
         }
@@ -1190,17 +1361,7 @@ impl JsTypes for JscTypes {
         if o.ctx.is_null() {
             return None;
         }
-        let script = JscString::from_rust("String.prototype.valueOf.call(this)");
-        let result = unsafe {
-            JSEvaluateScript(
-                o.ctx,
-                script.raw,
-                o.raw,
-                std::ptr::null_mut(),
-                0,
-                std::ptr::null_mut(),
-            )
-        };
+        let result = unsafe { call_prototype_value_of(o.ctx, o.raw, "String") };
         if result.is_null() {
             return None;
         }
@@ -1218,17 +1379,7 @@ impl JsTypes for JscTypes {
         if o.ctx.is_null() {
             return None;
         }
-        let script = JscString::from_rust("BigInt.prototype.valueOf.call(this)");
-        let result = unsafe {
-            JSEvaluateScript(
-                o.ctx,
-                script.raw,
-                o.raw,
-                std::ptr::null_mut(),
-                0,
-                std::ptr::null_mut(),
-            )
-        };
+        let result = unsafe { call_prototype_value_of(o.ctx, o.raw, "BigInt") };
         if result.is_null() {
             return None;
         }
@@ -1903,23 +2054,7 @@ pub fn create_builtin_fn_with_captures_impl<C: 'static>(
         .expect("create_builtin_fn_with_captures called with non-JSC engine");
     let stored: StoredBehaviour =
         Box::new(move |args, this, ec| (behaviour)(args, this, &captures, ec));
-    let func = make_builtin_function(engine.ctx_ptr(), stored, &name, is_constructor);
-    if !is_constructor {
-        let ctx_ptr = engine.ctx_ptr();
-        let length_key = JscString::from_rust("length");
-        let length_val = unsafe { JSValueMakeNumber(ctx_ptr, length as f64) };
-        let mut exc: *mut JSValueRef = std::ptr::null_mut();
-        unsafe {
-            JSObjectSetProperty(
-                ctx_ptr,
-                func.raw,
-                length_key.raw,
-                length_val,
-                kJSPropertyAttributeReadOnly | kJSPropertyAttributeDontEnum,
-                &mut exc,
-            );
-        }
-    }
+    let func = make_builtin_function(engine.ctx_ptr(), stored, &name, length, is_constructor);
     func
 }
 
@@ -1957,23 +2092,7 @@ impl ExecutionContext<JscTypes> for JscEngine {
         is_constructor: bool,
     ) -> JscFunction {
         let stored: StoredBehaviour = behaviour;
-        let func = make_builtin_function(self.ctx_ptr(), stored, &name, is_constructor);
-        if !is_constructor {
-            let ctx_ptr = self.ctx_ptr();
-            let length_key = JscString::from_rust("length");
-            let length_val = unsafe { JSValueMakeNumber(ctx_ptr, length as f64) };
-            let mut exc: *mut JSValueRef = std::ptr::null_mut();
-            unsafe {
-                JSObjectSetProperty(
-                    ctx_ptr,
-                    func.raw,
-                    length_key.raw,
-                    length_val,
-                    kJSPropertyAttributeReadOnly | kJSPropertyAttributeDontEnum,
-                    &mut exc,
-                );
-            }
-        }
+        let func = make_builtin_function(self.ctx_ptr(), stored, &name, length, is_constructor);
         func
     }
 
@@ -1988,21 +2107,7 @@ impl ExecutionContext<JscTypes> for JscEngine {
         name: JscPropertyKey,
     ) -> JscFunction {
         let stored: StoredBehaviour = Box::new(move |args, this, ec| behaviour(args, this, ec));
-        let func = make_builtin_function(self.ctx_ptr(), stored, &name, false);
-        let ctx_ptr = self.ctx_ptr();
-        let length_key = JscString::from_rust("length");
-        let length_val = unsafe { JSValueMakeNumber(ctx_ptr, length as f64) };
-        let mut exc: *mut JSValueRef = std::ptr::null_mut();
-        unsafe {
-            JSObjectSetProperty(
-                ctx_ptr,
-                func.raw,
-                length_key.raw,
-                length_val,
-                kJSPropertyAttributeReadOnly | kJSPropertyAttributeDontEnum,
-                &mut exc,
-            );
-        }
+        let func = make_builtin_function(self.ctx_ptr(), stored, &name, length, false);
         func
     }
 
@@ -4232,130 +4337,83 @@ impl ExecutionContext<JscTypes> for JscEngine {
             ctx: self.ctx_ptr(),
         })
     }
+
     fn new_promise_capability(
         &mut self,
         _constructor: JscConstructor,
     ) -> Completion<PromiseCapability<JscTypes>, JscTypes> {
-        // Use cached Promise constructor.  The executor is a small eval'd
-        // arrow function that captures resolve/reject into temp globals.
-        // This is one of the acknowledged hard cases (no JSProxyCreate in
-        // the C API, no way to create a Promise with a native executor).
+        // Use a native builtin function as executor, avoiding
+        // JSEvaluateScript and named temp globals.  The executor stores
+        // resolve/reject in a Rust-side cell synchronously, then we read
+        // them back after new Promise(executor) returns.
+        //
+        // Note: JSC's C API does not expose JSObjectMakePromise or
+        // JSPromiseCreate, so we use the cached Promise constructor.
+        // The executor pattern avoids the reentrancy hazard of named
+        // globals and the microtask-timing problem of eval-based
+        // approaches.
         let promise_ctor = cached_intrinsic_ctor!(self, promise_ctor, ["Promise"]);
         let ctx = self.ctx_ptr();
 
-        // Register the executor function on a temp global.
-        let exec_key = JscString::from_rust("__fw_pcap_exec");
-        let exec_script = JscString::from_rust(
-            "__fw_pcap_exec = (r,j) => { __fw_pcap_res = r; __fw_pcap_rej = j; }",
-        );
-        let mut exc: *mut JSValueRef = std::ptr::null_mut();
-        unsafe {
-            JSEvaluateScript(
-                ctx,
-                exec_script.raw,
-                std::ptr::null_mut(),
-                std::ptr::null_mut(),
-                1,
-                &mut exc,
-            );
-        }
-        if !exc.is_null() {
-            return Err(JscValue { raw: exc, ctx });
-        }
-        // Get the executor function and call the cached Promise constructor.
-        let exec_raw = unsafe {
-            JSObjectGetProperty(ctx, JSContextGetGlobalObject(ctx), exec_key.raw, &mut exc)
-        };
-        if !exc.is_null() {
-            return Err(JscValue { raw: exc, ctx });
-        }
-        let exec_obj = JscObject {
-            raw: exec_raw as *mut JSObjectRef,
-            ctx,
-        };
-        let args = [exec_obj.as_value_ref()];
+        // Cell to capture the resolve/reject functions from the executor.
+        let resolve_reject: std::rc::Rc<
+            std::cell::RefCell<(Option<*mut JSObjectRef>, Option<*mut JSObjectRef>)>,
+        > = std::rc::Rc::new(std::cell::RefCell::new((None, None)));
+
+        // Native executor: receives (resolve, reject) as arguments.
+        let resolve_reject_clone = resolve_reject.clone();
+        let executor_behaviour: StoredBehaviour = Box::new(move |args, _this, _ec| {
+            if args.len() >= 2 {
+                let resolve_fn = args[0].raw as *mut JSObjectRef;
+                let reject_fn = args[1].raw as *mut JSObjectRef;
+                *resolve_reject_clone.borrow_mut() = (Some(resolve_fn), Some(reject_fn));
+            }
+            Ok(args.first().copied().unwrap_or_default())
+        });
+
+        let executor_name = JscPropertyKey::String(JscString::from_rust("executor"));
+        let executor = make_builtin_function(ctx, executor_behaviour, &executor_name, 2, false);
+
+        // Ensure CURRENT_ENGINE is set so the executor's builtin callback
+        // (invoke_stored_behaviour) can find the engine.
+        let _guard = EngineGuard::new(self as *mut JscEngine);
+        let args = [executor.as_value_ref()];
+        let mut exec_exc: *mut JSValueRef = std::ptr::null_mut();
         let promise_raw = unsafe {
-            JSObjectCallAsConstructor(ctx, promise_ctor.raw, args.len(), args.as_ptr(), &mut exc)
-        };
-        // Cleanup temp globals
-        unsafe {
-            JSObjectDeleteProperty(
+            JSObjectCallAsConstructor(
                 ctx,
-                JSContextGetGlobalObject(ctx),
-                exec_key.raw,
-                std::ptr::null_mut(),
-            );
-        }
-        if !exc.is_null() {
-            return Err(JscValue { raw: exc, ctx });
+                promise_ctor.raw,
+                args.len(),
+                args.as_ptr(),
+                &mut exec_exc,
+            )
+        };
+        if !exec_exc.is_null() {
+            return Err(JscValue { raw: exec_exc, ctx });
         }
         if promise_raw.is_null() {
             return Err(self.make_string("new Promise returned null"));
         }
-        // Read resolve/reject from temp globals.
-        let res_key = JscString::from_rust("__fw_pcap_res");
-        let rej_key = JscString::from_rust("__fw_pcap_rej");
-        let resolve_raw = unsafe {
-            JSObjectGetProperty(ctx, JSContextGetGlobalObject(ctx), res_key.raw, &mut exc)
-        };
-        if !exc.is_null() {
-            return Err(JscValue { raw: exc, ctx });
-        }
-        let reject_raw = unsafe {
-            JSObjectGetProperty(ctx, JSContextGetGlobalObject(ctx), rej_key.raw, &mut exc)
-        };
-        if !exc.is_null() {
-            return Err(JscValue { raw: exc, ctx });
-        }
-        // Cleanup remaining temp globals.
-        unsafe {
-            JSObjectDeleteProperty(
-                ctx,
-                JSContextGetGlobalObject(ctx),
-                res_key.raw,
-                std::ptr::null_mut(),
-            );
-            JSObjectDeleteProperty(
-                ctx,
-                JSContextGetGlobalObject(ctx),
-                rej_key.raw,
-                std::ptr::null_mut(),
-            );
-        }
 
-        // Temporarily protect the promise, resolve, and reject values.
-        // The caller (create_promise_capability in engine.rs) adds permanent
-        // protection via create_root.  We unprotect here after building the
-        // capability, leaving the caller's protect as the sole reference.
-        let promise_val = JscValue {
-            raw: promise_raw as *mut JSValueRef,
-            ctx,
+        // Read back resolve/reject from the Rust-side cell.
+        let (resolve_raw, reject_raw) = resolve_reject.take();
+        let resolve_obj = match resolve_raw {
+            Some(raw) => JscObject { raw, ctx },
+            None => return Err(self.make_string("Promise executor did not receive resolve")),
         };
-        unsafe {
-            JSValueProtect(ctx, promise_val.raw);
-            JSValueProtect(ctx, resolve_raw);
-            JSValueProtect(ctx, reject_raw);
-        }
+        let reject_obj = match reject_raw {
+            Some(raw) => JscObject { raw, ctx },
+            None => return Err(self.make_string("Promise executor did not receive reject")),
+        };
 
-        let capability = PromiseCapability {
-            promise: promise_val,
-            resolve: JscObject {
-                raw: resolve_raw as *mut JSObjectRef,
+        Ok(PromiseCapability {
+            promise: JscValue {
+                raw: promise_raw as *mut JSValueRef,
                 ctx,
             },
-            reject: JscObject {
-                raw: reject_raw as *mut JSObjectRef,
-                ctx,
-            },
-        };
-
-        unsafe {
-            JSValueUnprotect(ctx, promise_val.raw);
-            JSValueUnprotect(ctx, resolve_raw);
-            JSValueUnprotect(ctx, reject_raw);
-        }
-
-        Ok(capability)
+            resolve: resolve_obj,
+            reject: reject_obj,
+        })
     }
 
     fn new_promise_pending(

@@ -212,18 +212,40 @@ mod jsc_cells {
     pub struct JsObjectCell(std::rc::Rc<std::cell::RefCell<Option<JscObject>>>);
 
     unsafe fn protect(val: &JscValue) {
-        if let Some(obj) = val.as_object() {
-            unsafe {
-                jsc_sys::JSValueProtect(obj.ctx(), obj.as_value_ref());
-            }
+        let js_type = if val.ctx().is_null() {
+            return;
+        } else {
+            // SAFETY: `val.ctx()` is non-null, checked above.
+            unsafe { jsc_sys::JSValueGetType(val.ctx(), val.raw) }
+        };
+        // JSValueProtect works on any GC-managed heap value: objects,
+        // symbols (kJSTypeSymbol), and bigints (kJSTypeBigInt).  Only
+        // primitive values (undefined, null, boolean, number, string)
+        // are stack-allocated and need no protection.
+        match js_type {
+            crate::jsc_sys::JSType::kJSTypeObject
+            | crate::jsc_sys::JSType::kJSTypeSymbol
+            | crate::jsc_sys::JSType::kJSTypeBigInt => unsafe {
+                jsc_sys::JSValueProtect(val.ctx(), val.raw);
+            },
+            _ => {}
         }
     }
 
     unsafe fn unprotect(val: &JscValue) {
-        if let Some(obj) = val.as_object() {
-            unsafe {
-                jsc_sys::JSValueUnprotect(obj.ctx(), obj.as_value_ref());
-            }
+        let js_type = if val.ctx().is_null() {
+            return;
+        } else {
+            // SAFETY: `val.ctx()` is non-null, checked above.
+            unsafe { jsc_sys::JSValueGetType(val.ctx(), val.raw) }
+        };
+        match js_type {
+            crate::jsc_sys::JSType::kJSTypeObject
+            | crate::jsc_sys::JSType::kJSTypeSymbol
+            | crate::jsc_sys::JSType::kJSTypeBigInt => unsafe {
+                jsc_sys::JSValueUnprotect(val.ctx(), val.raw);
+            },
+            _ => {}
         }
     }
 
@@ -509,20 +531,23 @@ mod jsc_gc_impl {
     use crate::jsc::JscTypes;
 
     impl JsTypesGcExt for JscTypes {
-        type Reflector = *mut std::ffi::c_void;
+        /// A (raw_object_ptr, context) pair so that `upgrade_reflector` can
+        /// reconstruct a fully-valid `JscObject` with a non-null context.
+        type Reflector = (*mut std::ffi::c_void, *mut crate::jsc_sys::JSContextRef);
 
         fn create_reflector(obj: &Self::JsObject) -> Self::Reflector {
-            obj.as_raw() as *mut std::ffi::c_void
+            (obj.as_raw() as *mut std::ffi::c_void, obj.ctx())
         }
 
         fn upgrade_reflector(reflector: &Self::Reflector) -> Option<Self::JsObject> {
-            if reflector.is_null() {
+            let (raw_ptr, ctx) = *reflector;
+            if raw_ptr.is_null() || ctx.is_null() {
                 None
             } else {
                 Some(unsafe {
                     crate::jsc::JscObject::from_raw(
-                        *reflector as *mut crate::jsc_sys::JSObjectRef,
-                        std::ptr::null_mut(),
+                        raw_ptr as *mut crate::jsc_sys::JSObjectRef,
+                        ctx,
                     )
                 })
             }
@@ -539,8 +564,12 @@ mod jsc_gc_impl {
     unsafe impl Trace for i32 {}
     unsafe impl Trace for usize {}
     unsafe impl Trace for String {}
-    unsafe impl<T> Trace for std::rc::Rc<std::cell::RefCell<T>> {}
-    unsafe impl<T> Trace for std::rc::Rc<std::cell::Cell<T>> {}
+    // Bound on T ensures that only types whose inner value is itself GC-safe
+    // can be wrapped in Rc<RefCell<T>>/Rc<Cell<T>> and held as a traced field.
+    // This prevents raw JscValue/JscObject from being stored behind these
+    // wrappers (they must use JsValueCell/JsObjectCell instead).
+    unsafe impl<T: Trace> Trace for std::rc::Rc<std::cell::RefCell<T>> {}
+    unsafe impl<T: Trace> Trace for std::rc::Rc<std::cell::Cell<T>> {}
     unsafe impl<A: Trace, B: Trace> Trace for (A, B) {}
     unsafe impl<A: Trace, B: Trace, C: Trace> Trace for (A, B, C) {}
     unsafe impl<A: Trace, B: Trace, C: Trace, D: Trace> Trace for (A, B, C, D) {}

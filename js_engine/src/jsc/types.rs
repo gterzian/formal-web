@@ -14,7 +14,6 @@
 use std::ffi::CString;
 use std::os::raw::c_char;
 
-use crate::gc::Trace;
 use crate::jsc_sys::*;
 
 // ── JscContext (owned) ────────────────────────────────────────────────────
@@ -197,11 +196,11 @@ impl PartialEq for JscValue {
 }
 impl Eq for JscValue {}
 
-// SAFETY: JSC garbage collection handles JS values natively — no Rust
-// tracing is needed.  The marker impl is required for trait bounds on
-// capture types passed to `builtin_with_captures`.
-#[cfg(not(feature = "boa"))]
-unsafe impl Trace for JscValue {}
+// Note: JscValue intentionally does NOT implement `Trace`.
+// JSC's GC handles JS values natively.  If a Rust struct needs to hold
+// a JscValue across GC boundaries, use `JsValueCell` (which wraps the
+// value with JSValueProtect/JSValueUnprotect) instead of storing a raw
+// JscValue.  See `js_engine/src/gc.rs` for details.
 
 impl Default for JscValue {
     fn default() -> Self {

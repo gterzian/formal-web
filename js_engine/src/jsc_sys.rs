@@ -24,6 +24,7 @@ pub enum JSValueRef {}
 pub enum JSObjectRef {}
 pub enum JSStringRef {}
 pub enum JSClassRef {}
+pub enum JSPropertyNameAccumulatorRef {}
 
 // ── Enums ─────────────────────────────────────────────────────────────────
 
@@ -262,6 +263,7 @@ pub const kJSClassAttributeNone: JSClassAttributes = 0;
 pub const kJSClassAttributeNoAutomaticPrototype: JSClassAttributes = 1 << 1;
 
 #[repr(C)]
+#[repr(C)]
 #[derive(Debug, Clone, Copy)]
 pub struct JSStaticValue {
     pub name: *const c_char,
@@ -282,12 +284,28 @@ pub struct JSStaticValue {
     pub attributes: JSPropertyAttributes,
 }
 
+// SAFETY: Used only in single-threaded content process.
+unsafe impl Send for JSStaticValue {}
+unsafe impl Sync for JSStaticValue {}
+
 #[repr(C)]
 #[derive(Debug, Clone, Copy)]
 pub struct JSStaticFunction {
     pub name: *const c_char,
     pub callAsFunction: Option<JSObjectCallAsFunctionCallback>,
     pub attributes: JSPropertyAttributes,
+}
+
+// SAFETY: Used only in single-threaded content process.
+unsafe impl Send for JSStaticFunction {}
+unsafe impl Sync for JSStaticFunction {}
+
+impl Default for JSClassDefinition {
+    fn default() -> Self {
+        // SAFETY: All fields are integers, raw pointers, or Options of
+        // function pointers, all of which are valid when zeroed.
+        unsafe { std::mem::zeroed() }
+    }
 }
 
 #[repr(C)]
@@ -337,7 +355,7 @@ pub struct JSClassDefinition {
         unsafe extern "C" fn(
             ctx: *mut JSContextRef,
             object: *mut JSObjectRef,
-            propertyNameArray: *mut JSObjectRef, // JSPropertyNameAccumulatorRef in C API
+            propertyNameArray: *mut JSPropertyNameAccumulatorRef,
         ),
     >,
     pub callAsFunction: Option<JSObjectCallAsFunctionCallback>,
