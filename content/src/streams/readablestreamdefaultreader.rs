@@ -354,6 +354,27 @@ impl ReadableStreamGenericReader for ReadableStreamDefaultReader {
     }
 
     fn set_closed_promise_slot_value(&self, promise: Option<JsObject>) {
+        // JSC: protect new value from GC, unprotect old value
+        #[cfg(not(feature = "boa"))]
+        {
+            let old = self.closed_promise.borrow().clone();
+            if let Some(ref old_obj) = old {
+                unsafe {
+                    js_engine::jsc_sys::JSValueUnprotect(
+                        old_obj.ctx(),
+                        old_obj.as_value_ref(),
+                    );
+                }
+            }
+            if let Some(ref new_obj) = promise {
+                unsafe {
+                    js_engine::jsc_sys::JSValueProtect(
+                        new_obj.ctx(),
+                        new_obj.as_value_ref(),
+                    );
+                }
+            }
+        }
         *self.closed_promise.borrow_mut() = promise;
     }
 

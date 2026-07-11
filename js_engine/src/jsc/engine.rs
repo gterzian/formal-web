@@ -4356,12 +4356,10 @@ impl ExecutionContext<JscTypes> for JscEngine {
             ctx: std::ptr::null_mut(),
         };
         let pcap = self.new_promise_capability(dummy_ctor)?;
+        let ec: &mut dyn ExecutionContext<JscTypes> = self;
         Ok((
             pcap.promise,
-            PromiseResolvers {
-                resolve: pcap.resolve,
-                reject: pcap.reject,
-            },
+            PromiseResolvers::new(pcap.resolve, pcap.reject, ec),
         ))
     }
 

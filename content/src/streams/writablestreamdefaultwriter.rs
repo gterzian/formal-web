@@ -51,6 +51,27 @@ impl WritableStreamDefaultWriter {
         self.ready_promise.borrow().clone()
     }
     pub(crate) fn set_ready_promise_value(&self, promise: Option<JsObject>) {
+        // JSC: protect new value from GC, unprotect old value
+        #[cfg(not(feature = "boa"))]
+        {
+            let old = self.ready_promise.borrow().clone();
+            if let Some(ref old_obj) = old {
+                unsafe {
+                    js_engine::jsc_sys::JSValueUnprotect(
+                        old_obj.ctx(),
+                        old_obj.as_value_ref(),
+                    );
+                }
+            }
+            if let Some(ref new_obj) = promise {
+                unsafe {
+                    js_engine::jsc_sys::JSValueProtect(
+                        new_obj.ctx(),
+                        new_obj.as_value_ref(),
+                    );
+                }
+            }
+        }
         *self.ready_promise.borrow_mut() = promise;
     }
     pub(crate) fn ready_resolvers_value(&self) -> Option<PromiseResolvers<Types>> {
@@ -63,6 +84,27 @@ impl WritableStreamDefaultWriter {
         self.closed_promise.borrow().clone()
     }
     pub(crate) fn set_closed_promise_value(&self, promise: Option<JsObject>) {
+        // JSC: protect new value from GC, unprotect old value
+        #[cfg(not(feature = "boa"))]
+        {
+            let old = self.closed_promise.borrow().clone();
+            if let Some(ref old_obj) = old {
+                unsafe {
+                    js_engine::jsc_sys::JSValueUnprotect(
+                        old_obj.ctx(),
+                        old_obj.as_value_ref(),
+                    );
+                }
+            }
+            if let Some(ref new_obj) = promise {
+                unsafe {
+                    js_engine::jsc_sys::JSValueProtect(
+                        new_obj.ctx(),
+                        new_obj.as_value_ref(),
+                    );
+                }
+            }
+        }
         *self.closed_promise.borrow_mut() = promise;
     }
     pub(crate) fn closed_resolvers_value(&self) -> Option<PromiseResolvers<Types>> {

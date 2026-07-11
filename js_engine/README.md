@@ -91,11 +91,14 @@ Fixed by passing `constructor.raw` as the `thisObject` parameter to
 
 **ERROR (SIGSEGV/SIGBUS crash — content process dies) (28):**
 - Most piping tests, readable-streams with complex async, transform-streams
-- Root cause: likely GC protection of JS objects held by Rust across async
-  boundaries (callbacks, promise reactions).  The `Callback` struct in
-  `content/src/webidl/callback.rs` lacks `JSValueProtect`/`JSValueUnprotect`
-  on JSC, so callbacks can be GC'd while Rust still holds references.
-  See "Remaining work" in Phase 3 below.
+- Root cause: JsObject/JsValue references stored in Rust-side GcCell fields
+  are invisible to JSC's GC.  On JSC, every JS-valued field in a Rust struct
+  must be independently protected via `JSValueProtect`.  The `Callback`,
+  `PromiseResolvers`, and reader/writer promise fields are now protected,
+  but PipeToStateInner, ReadableStream, WritableStream, TeeState, and many
+  other stream internals still have unprotected JsObject/JsValue fields,
+  causing SIGSEGV when the GC collects them while Rust still holds pointers.
+  See "Remaining work" below.
 
 **FAIL (no crash, spec-compliance issues) (6):**
 - readable-byte-streams: enqueue-with-detached-buffer, patched-global
@@ -279,9 +282,76 @@ to track JSValueProtect'd objects for cleanup on engine teardown.
 | `create_builtin_fn_with_captures` `.length` | `jsc/engine.rs` | Direct `JSObjectSetProperty(func, "length", value, ReadOnly \| DontEnum)` on the standalone function path.  The trait impl methods (`create_builtin_function`, `create_builtin_fn_static`) only gained `.length` support in the 2026-07-11 critical-fixes pass. |
 | `get_fn_call()` | `jsc/engine.rs` | Traverses `Function → prototype → call` via C API instead of `eval("Function.prototype.call")`. |
 
+## Promises and Microtasks in JavaScriptCore's C API
+
+A practical reference for embedders writing against the public JSC C API.
+
+### ECMA-262 guarantees
+
+`.then()` handlers are NEVER invoked synchronously as part of the call that
+registered or triggered them.  `PerformPromiseThen` and the resolve/reject
+algorithms only ever enqueue a `PromiseReactionJob` — they never call the
+handler function directly, inline, as part of their own execution.  This is
+engine-internals, separate from anything about the C API's lock behavior,
+and JSC gets this right (it passes Test262).
+
+Beyond that, ECMA-262 says almost nothing about when queued Jobs actually
+run.  The relevant abstract operation just says a Job runs "at some future
+point in time, when there is no running execution context and the execution
+context stack is empty" — and explicitly leaves the scheduling of that to
+the host.  ECMA-262 doesn't define an event loop at all; that's
+intentionally punted to the embedder.
+
+So: JSC draining the queue exactly when the JS-lock's recursive count hits
+zero — i.e., when the execution context stack has genuinely gone empty from
+JSC's point of view — is a completely valid reading of "no running execution
+context."  It's not synchronous invocation of a handler within the call that
+resolved the promise; it's the queued Job running in a fresh entry once that
+call has fully returned.  That satisfies A+ and ECMA-262.
+
+### HTML's microtask checkpoint
+
+HTML is prescriptive about where microtask checkpoints happen: after each
+task, after invoking a callback, at specific points in the "clean up after
+running script" steps, etc.  That's a much finer-grained, spec-defined
+notion of "turn boundary" than "whenever the native embedder's outermost
+lock scope happens to unwind."
+
+JSC's drain-on-unlock is a proxy for that, and the two usually coincide —
+but they're not the same thing, and the gap is the batching trick: if a
+native embedder nests several logically-distinct HTML-spec "tasks" or
+callback invocations inside one bigger native lock scope (to avoid multiple
+drains), JSC won't insert a checkpoint between them, even though HTML's
+algorithm would require one.  That's not an ECMA-262 violation, but it is
+a place where the engine could silently diverge from the HTML spec's
+ordering guarantees — e.g., a `queueMicrotask` call made between two
+"should-be-separate" callback invocations might not run when HTML says it
+should, because from JSC's perspective those two invocations were never
+actually separate turns.
+
+### Practical implications for formal-web
+
+For formal-web's explicit event-loop model, the embedding layer must ensure
+that every place HTML says "perform a microtask checkpoint" corresponds to
+an actual native-call boundary that lets the lock count hit zero —
+otherwise you get technically-ECMA-262-legal-but-HTML-nonconformant timing,
+which is the kind of gap that shows up as WPT failures rather than crashes.
+
+The `ReadableStreamPipeTo` chunk_steps code uses `enqueue_job_with_realm`
+to advance the pipe state machine.  On Boa, this queues a Rust-side job
+that gets drained by `run_jobs`.  On JSC, this queue is separate from
+the microtask queue, and jobs never drain unless `run_jobs` is called
+explicitly.  Calling `run_jobs` from inside a builtin function callback
+(the `.then()` handler) creates a second `&mut` borrow of the JscEngine
+through the trait object, which is undefined behavior.
+
+**Fix needed:** Instead of `enqueue_job_with_realm` for pipeTo read
+results, use `perform_promise_then` to chain reactions through JSC's
+microtask queue, which drains automatically.
+
 ### Session investigation log
 
-#### 2026-07-11 — Callback GC protection for JSC backend
+#### 2026-07-11 — Callback GC protection + PromiseResolvers + reader/writer lifecycle
 
 **Files changed:**
 - `content/src/webidl/callback.rs` — Added `root: Option<Rc<GcRootHandle<Types>>>` field
@@ -294,41 +364,45 @@ to track JSValueProtect'd objects for cleanup on engine teardown.
 - `content/src/html/window_or_worker_global_scope.rs` — Pass `ec`.
 - `content/src/js/bindings/html/html_iframe_element.rs` — Fixed `iframe_object`
   mutability compilation errors (`mut iframe` bindings).
-- `js_engine/README.md` — Updated status.
-- `tests/formal/include.ini` — Added `callback-gc-protection.html`.
+- `js_engine/src/records.rs` — Added `root` field to `PromiseResolvers` (JSC-only)
+  protecting both resolve/reject function objects via `Rc<GcRootHandle>`.
+- `content/src/streams/readablestreamdefaultreader.rs` — Protected `closed_promise`
+  on JSC via direct `JSValueProtect`/`JSValueUnprotect` in the setter.
+- `content/src/streams/readablestreambyobreader.rs` — Same protection.
+- `content/src/streams/writablestreamdefaultwriter.rs` — Protected `ready_promise`
+  and `closed_promise` JsObject fields.
+- `content/src/streams/readablestream.rs` — Protected `shutdown_error` JsValue in
+  `PipeToStateInner.set_shutdown_error()`. Added `pipe_to_on_promise_settled` handling
+  to skip `wait_for_writer_ready` when `write_chunk` returns false.
 - `tests/formal/tests/callback-gc-protection.html` — New test (10 sub-tests).
+- `tests/formal/include.ini` — Added the new test.
 
-**Instrumentation added:** `Rc<GcRootHandle<Types>>` field in `Callback` struct.
-On JSC, `create_root()` calls `JSValueProtect` on construction; the `Rc`
-refcount keeps the protection alive across all `Clone`/`Drop` cycles. Only
-the final `Drop` (when all references are released) calls `JSValueUnprotect`.
-On Boa, `create_root()` is a no-op and the `root` field doesn't exist.
+**JSC microtask drain findings:**
+- `.then()` handlers NEVER fire synchronously inside `perform_promise_then` —
+  ECMA-262 guarantee enforced by all engines including JSC.
+- JSC drains microtasks when the JS lock's recursive count hits zero (outermost
+  C API call returns). This is a valid "no running execution context" boundary.
+- The key gap: HTML's microtask checkpoint timing vs JSC's lock-release drain.
+  See `docs/jsc-microtasks.md` for the full analysis.
 
-**What was confirmed:**
-- `Callback` is used in `SourceMethod` (stream pull/write/close/abort/transform/flush
-  algorithms), `TimerHandler` (setTimeout/setInterval), and event listeners.
-- All call sites have `ec` available for the new `from_object` signature.
-- Full WPT suite passes: `executed=84 unexpected=0` (previously 83 — new
-  `callback-gc-protection.html` test added).
-- New callback GC protection test has 10 sub-tests that all pass:
-  - ReadableStream pull callback survives GC
-  - ReadableStream cancel callback survives GC
-  - WritableStream write/close/abort callbacks survive GC
-  - TransformStream transform/flush callbacks survive GC
-  - Multiple GC cycles with repeated callback invocation
-  - Strategy size callback survives GC
-
-**What was ruled out:**
-- Using `GcRootHandle` directly (without `Rc`) would not handle clones
-  correctly — on JSC, `GcRootHandle::clone()` creates a new handle without
-  an unroot action, so dropping the clone would lose the protection.
-- Using `from_object` without `ec` would not allow protection on JSC.
+**PipeTo SIGSEGV analysis (unfixed):**
+- All piping tests except `general-addition` and `throwing-options` crash with
+  SIGSEGV on JSC. The content process dies when accessing a collected JsObject.
+- GC protection for Callback, PromiseResolvers, reader/writer promise fields
+  is necessary but not sufficient — many more JsObject/JsValue fields in
+  PipeToStateInner, ReadableStream, WritableStream, TeeState, etc. are
+  unprotected.
+- The fundamental problem: on JSC, EVERY JsObject/JsValue stored in a Rust-side
+  struct or GcCell must be individually protected via JSValueProtect. There is
+  no tracing hook for data stored behind JSObjectSetPrivate or in HashMap entries.
+- The `enqueue_job_with_realm` queue is separate from JSC's microtask queue.
+  Calling `run_jobs()` from inside a microtask handler creates a double-&mut
+  borrow of the JscEngine, which is undefined behavior.
 
 **Not investigated:**
 - `WindowTimer.arguments` (`Vec<JsValue>`) elements are not individually
-  protected on JSC. These are JS values stored alongside timers and could
-  be GC'd while a timer is pending. Same pattern affects any `Vec<JsValue>`
-  or `Vec<JsObject>` stored in Rust-owned structs.
+  protected on JSC.
+- Full systematic protection of ALL JsObject/JsValue fields in stream structs.
 
 ### Critical fixes (2026-07-11)
 

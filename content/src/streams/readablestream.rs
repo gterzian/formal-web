@@ -3238,13 +3238,20 @@ impl PipeToState {
             let state = self.0.borrow();
             (state.reader.clone(), state.writer.clone())
         };
+        // Note: trigger the read FIRST so the pull algorithm runs and
+        // may queue a Rust job (via enqueue_job_with_realm in chunk_steps).
+        // Then set up the reaction on writer_closed_promise.  When that
+        // reaction fires (JSC drains microtasks at the end of
+        // perform_promise_then), pipe_to_append_reaction_fn calls
+        // run_jobs() to drain any pending Rust jobs, including the read
+        // result job.
         let read_request = ReadRequest::ReadableStreamPipeTo {
             state: self.clone(),
         };
         reader.read_with_request(read_request, ec)?;
         let writer_closed_promise = writer.closed(ec)?;
-
-        self.append_reaction(writer_closed_promise, ec)
+        self.append_reaction(writer_closed_promise, ec)?;
+        Ok(())
     }
 
     /// <https://streams.spec.whatwg.org/#readable-stream-pipe-to>
@@ -3633,6 +3640,30 @@ impl PipeToState {
     }
 
     fn set_shutdown_error(&self, error: Option<JsValue>) {
+        #[cfg(not(feature = "boa"))]
+        {
+            let old = self.0.borrow().shutdown_error.clone();
+            if let Some(ref old_val) = old {
+                if let Some(ref old_obj) = <Types as JsTypes>::value_as_object(old_val) {
+                    unsafe {
+                        js_engine::jsc_sys::JSValueUnprotect(
+                            old_obj.ctx(),
+                            old_obj.as_value_ref(),
+                        );
+                    }
+                }
+            }
+            if let Some(ref new_val) = error {
+                if let Some(ref new_obj) = <Types as JsTypes>::value_as_object(new_val) {
+                    unsafe {
+                        js_engine::jsc_sys::JSValueProtect(
+                            new_obj.ctx(),
+                            new_obj.as_value_ref(),
+                        );
+                    }
+                }
+            }
+        }
         self.0.borrow_mut().shutdown_error = error;
     }
 
@@ -3786,8 +3817,8 @@ fn pipe_to_append_reaction_fn(
         .first()
         .cloned()
         .unwrap_or_else(|| ec.value_undefined());
-    pipe_to_on_promise_settled(state.clone(), value, ec)?;
-    Ok(ec.value_undefined())
+    pipe_to_on_promise_settled(state.clone(), value, ec)
+        .map(|_| ec.value_undefined())
 }
 
 /// <https://streams.spec.whatwg.org/#readable-stream-pipe-to>
@@ -3849,12 +3880,14 @@ fn pipe_to_on_promise_settled(
             state.read_chunk(ec)?;
         }
         PipePumpState::PendingRead => {
-            let _ = state.write_chunk(result, ec)?;
+            let had_chunk = state.write_chunk(result, ec)?;
             if state.is_shutting_down() {
                 return Ok(());
             }
 
-            state.wait_for_writer_ready(ec)?;
+            if had_chunk {
+                state.wait_for_writer_ready(ec)?;
+            }
         }
         PipePumpState::ShuttingDownWithPendingWrites(action) => {
             let action = state.update_pending_shutdown_action(action, ec)?;

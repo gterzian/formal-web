@@ -107,7 +107,7 @@ pub struct ModuleRequest<T: JsTypes> {
 /// Created by [`ExecutionContext::new_promise_pending`] as a replacement
 /// for engine-specific resolver types (e.g. Boa's `ResolvingFunctions`).
 /// Stored in GC-traced domain structs to hold pending promise resolvers.
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 #[cfg_attr(
     feature = "boa",
     derive(boa_gc::Finalize, boa_gc::Trace, boa_engine::JsData)
@@ -115,17 +115,64 @@ pub struct ModuleRequest<T: JsTypes> {
 pub struct PromiseResolvers<T: JsTypes> {
     pub resolve: T::JsObject,
     pub reject: T::JsObject,
+    // On JSC, protect both resolve and reject JS function objects from GC
+    // while Rust code holds references.  Rc refcounting keeps protections
+    // alive across Clone/Drop cycles.
+    #[cfg(not(feature = "boa"))]
+    root: Option<(
+        std::rc::Rc<crate::gc::GcRootHandle<T>>,
+        std::rc::Rc<crate::gc::GcRootHandle<T>>,
+    )>,
+}
+
+impl<T: JsTypes> std::fmt::Debug for PromiseResolvers<T> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("PromiseResolvers")
+            .field(
+                "resolve",
+                &std::format!("{:p}", &self.resolve as *const _),
+            )
+            .field(
+                "reject",
+                &std::format!("{:p}", &self.reject as *const _),
+            )
+            .finish()
+    }
 }
 
 #[cfg(not(feature = "boa"))]
-// SAFETY: PromiseResolvers wraps JsObject values; on non-Boa backends
-// there is no GC tracing needed (the container types handle it).
 unsafe impl<T: JsTypes> crate::gc::Trace for PromiseResolvers<T> {}
 
 #[cfg(not(feature = "boa"))]
 impl<T: JsTypes> crate::gc::Finalize for PromiseResolvers<T> {}
 
 impl<T: JsTypes> PromiseResolvers<T> {
+    /// Create promise resolvers with GC protection.
+    /// On JSC, protects both resolve and reject via JSValueProtect.
+    /// On Boa, this is a no-op (GC traces via Trace derive).
+    pub fn new(
+        resolve: T::JsObject,
+        reject: T::JsObject,
+        ec: &mut dyn ExecutionContext<T>,
+    ) -> Self
+    where
+        T: crate::JsTypesWithRealm,
+    {
+        let resolve_value = T::value_from_object(resolve.clone());
+        let reject_value = T::value_from_object(reject.clone());
+        #[cfg(not(feature = "boa"))]
+        let root = Some((
+            std::rc::Rc::new(ec.create_root(&resolve_value)),
+            std::rc::Rc::new(ec.create_root(&reject_value)),
+        ));
+        Self {
+            resolve,
+            reject,
+            #[cfg(not(feature = "boa"))]
+            root,
+        }
+    }
+
     /// Resolves the associated promise with the given value.
     pub fn resolve(
         &self,

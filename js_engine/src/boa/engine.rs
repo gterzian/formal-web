@@ -1790,12 +1790,10 @@ impl ExecutionContext<BoaTypes> for BoaContext {
         &mut self,
     ) -> Completion<(JsValue, PromiseResolvers<BoaTypes>), BoaTypes> {
         let (promise, resolvers) = JsPromise::new_pending(&mut self.context);
+        let ec: &mut dyn ExecutionContext<BoaTypes> = self;
         Ok((
             JsValue::from(promise),
-            PromiseResolvers {
-                resolve: resolvers.resolve.into(),
-                reject: resolvers.reject.into(),
-            },
+            PromiseResolvers::new(resolvers.resolve.into(), resolvers.reject.into(), ec),
         ))
     }
 
