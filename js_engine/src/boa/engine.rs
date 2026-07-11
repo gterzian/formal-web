@@ -57,7 +57,8 @@ use boa_engine::{
 
 use crate::{
     Completion, EcmascriptHost, ExecutionContext, HostHooks, IntegrityLevel, IteratorKind,
-    JsEngine, JsTypes, JsTypesWithRealm, Numeric, PreferredType, SharedMemoryOrder, TypedArrayElementType,
+    JsEngine, JsTypes, JsTypesWithRealm, Numeric, PreferredType, SharedMemoryOrder,
+    TypedArrayElementType,
     records::{
         IteratorRecord, PromiseCapability, PromiseResolvers, PropertyDescriptor, RealmIntrinsics,
     },
@@ -117,18 +118,14 @@ where
     // SAFETY: On the Boa backend, T is always BoaTypes.
     // &mut dyn ExecutionContext<T> and &mut dyn ExecutionContext<BoaTypes>
     // have identical fat-pointer layout (2 * usize).
-    let boa_ec: &mut dyn ExecutionContext<BoaTypes> = unsafe {
-        std::mem::transmute(ec)
-    };
+    let boa_ec: &mut dyn ExecutionContext<BoaTypes> = unsafe { std::mem::transmute(ec) };
     // SAFETY: fn pointers are all usize-sized regardless of signature.
     let boa_behaviour: fn(
         &[JsValue],
         JsValue,
         &C,
         &mut dyn ExecutionContext<BoaTypes>,
-    ) -> Completion<JsValue, BoaTypes> = unsafe {
-        std::mem::transmute(behaviour)
-    };
+    ) -> Completion<JsValue, BoaTypes> = unsafe { std::mem::transmute(behaviour) };
     // SAFETY: T::PropertyKey and PropertyKey have same size at runtime.
     let boa_name: boa_engine::property::PropertyKey = unsafe {
         let mut dst = std::mem::MaybeUninit::uninit();
@@ -2541,7 +2538,6 @@ fn has_property_then_get_boolean(
 /// The `C` type must implement `boa_gc::Trace + 'static`.  For `#[gc_struct]`
 /// types this is automatically derived.
 
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2558,7 +2554,10 @@ mod tests {
         let double_fn: JsFunction = create_builtin_fn_with_captures_impl(
             &mut engine,
             NoCaptures,
-            |args: &[JsValue], _this: JsValue, _captures: &NoCaptures, host: &mut dyn ExecutionContext<BoaTypes>| {
+            |args: &[JsValue],
+             _this: JsValue,
+             _captures: &NoCaptures,
+             host: &mut dyn ExecutionContext<BoaTypes>| {
                 let n = host.to_number(args.first().cloned().unwrap_or(JsValue::undefined()))?;
                 Ok(host.value_from_number(n * 2.0))
             },

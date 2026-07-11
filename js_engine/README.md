@@ -190,8 +190,24 @@ to track JSValueProtect'd objects for cleanup on engine teardown.
 |---|---|---|
 | `make_builtin_function` bind/call/apply copy | `jsc/engine.rs` | New `copy_function_prototype_methods()` helper uses `JSObjectGetProperty(Function.prototype, name) + JSObjectSetProperty(...)`. |
 | `make_builtin_function` toString | `jsc/engine.rs` | New `set_builtin_to_string()` creates one shared BUILTIN_CLASS function (reads `this.name` at call time) cached in a thread-local, avoiding per-function JSEvaluateScript.  `.name` set as `ReadOnly|DontEnum` on every builtin. |
-| `create_builtin_fn` `.length` | `jsc/engine.rs` | Direct `JSObjectSetProperty(func, "length", value, ReadOnly \| DontEnum)` replaces eval with `Object.defineProperty(__fw_fn_len, ...)` + temp global property. |
+| `create_builtin_fn_with_captures` `.length` | `jsc/engine.rs` | Direct `JSObjectSetProperty(func, "length", value, ReadOnly \| DontEnum)` on the standalone function path.  The trait impl methods (`create_builtin_function`, `create_builtin_fn_static`) only gained `.length` support in the 2026-07-11 critical-fixes pass. |
 | `get_fn_call()` | `jsc/engine.rs` | Traverses `Function → prototype → call` via C API instead of `eval("Function.prototype.call")`. |
+
+### Critical fixes (2026-07-11)
+
+Fixed spec-correctness bugs in the JSC backend (`js_engine/src/jsc/engine.rs`):
+
+| Finding | Function(s) | Fix |
+|---|---|---|
+| ArrayBuffer memory leak | `allocate_array_buffer`, `clone_array_buffer` | Added real `free_array_buffer_data` deallocator callback with `Box<Vec<u8>>` context.  Added missing `deallocatorContext` parameter to `JSObjectMakeArrayBufferWithBytesNoCopy` sys binding. |
+| `GetV` broken for primitives | `get_v` | Now calls `to_object(value)?` then `get(object, key)` per spec, matching Boa backend. |
+| `ToIndex` never throws RangeError | `to_index` | Now throws `RangeError` for values outside `0..2^53-1` (including `+Infinity`). |
+| `ToLength` wrong clamp | `to_length` | Now clamps to `2^53 - 1` instead of `u32::MAX`. |
+| `SameValue`/`SameValueZero` NaN wrong | `same_value`, `same_value_zero` | Both now return `true` for `NaN` vs `NaN`. |
+| Error constructor quote escaping | `new_type_error`, `new_range_error`, `new_syntax_error` | Escape single quotes (matching the JS string delimiter) instead of double quotes. |
+| Raw values thrown instead of Errors | `require_object_coercible`, `to_object`, `get_iterator`, `evaluate_module` | Now throw proper `TypeError` objects via `new_type_error()`. |
+| `iterator_close` missing Object check | `iterator_close` | Now validates that `return()` result is an Object per spec step. |
+| `.length` not set on builtin functions | `create_builtin_function`, `create_builtin_fn_static` | Both now set `Function.length` via `JSObjectSetProperty` with `ReadOnly\|DontEnum`. |
 
 ### Remaining work
 

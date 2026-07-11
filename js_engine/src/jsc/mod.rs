@@ -40,5 +40,7 @@
 mod engine;
 mod types;
 
-pub use engine::{JscEngine, JscTypes, clear_current_engine, set_current_engine};
+pub use engine::{
+    JscEngine, JscTypes, clear_current_engine, create_builtin_fn_with_captures, set_current_engine,
+};
 pub use types::*;

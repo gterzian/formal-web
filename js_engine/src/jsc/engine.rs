@@ -49,6 +49,13 @@ pub(crate) fn current_engine_context() -> *mut JSContextRef {
 ///
 /// Must be called before any code that might invoke JS callbacks
 /// (script evaluation, event dispatching, timer callbacks).
+///
+/// Note: unlike `EngineGuard`, this pair does NOT nest.  If a callback
+/// using these functions fires reentrantly (e.g. a timer callback
+/// during another engine operation on the same thread), the inner
+/// `clear_current_engine` will wipe the slot to `None` instead of
+/// restoring the outer engine.  For nested use, prefer `EngineGuard`
+/// or `with_current_engine`.
 pub fn set_current_engine(engine: &mut JscEngine) {
     let ptr = engine as *mut JscEngine;
     CURRENT_ENGINE.with(|current| {
@@ -57,6 +64,9 @@ pub fn set_current_engine(engine: &mut JscEngine) {
 }
 
 /// Clear the current engine.  Call after the scope completes.
+///
+/// Note: unconditionally clears to `None` rather than restoring any
+/// previously-set engine.  Prefer `EngineGuard` for nested use.
 pub fn clear_current_engine() {
     CURRENT_ENGINE.with(|current| {
         *current.borrow_mut() = None;
@@ -194,6 +204,21 @@ static BUILTIN_CLASS: LazyLock<JscClass> =
 /// JSClass for builtin constructor function objects.
 static BUILTIN_CONSTRUCTOR_CLASS: LazyLock<JscClass> =
     LazyLock::new(|| JscClass(unsafe { JSClassCreate(&builtin_class_def(true)) }));
+
+/// Deallocator callback for `JSObjectMakeArrayBufferWithBytesNoCopy`.
+/// The `deallocator_context` points to a leaked `Box<Vec<u8>>` whose
+/// heap allocation backs the ArrayBuffer's bytes.  Reconstructs the
+/// Box and drops it, freeing the underlying Vec.
+extern "C" fn free_array_buffer_data(
+    _bytes: *mut std::ffi::c_void,
+    deallocator_context: *mut std::ffi::c_void,
+) {
+    if !deallocator_context.is_null() {
+        unsafe {
+            drop(Box::from_raw(deallocator_context as *mut Vec<u8>));
+        }
+    }
+}
 
 /// JSClass for plain objects (no callbacks).  Uses JSObjectMake to
 /// avoid eval_script_raw (which causes nested JSEvaluateScript crashes).
@@ -1597,8 +1622,7 @@ impl JsEngine<JscTypes> for JscEngine {
         JscTypes: JsTypesWithRealm,
     {
         // Module evaluation is not available through the public C API.
-        // Return a placeholder error.
-        Err(self.make_string("JSC module evaluation not available via C API"))
+        Err(self.new_type_error("JSC module evaluation not available via C API"))
     }
 
     // ── §25 ArrayBuffer — creation ─────────────────────────────────────
@@ -1609,20 +1633,31 @@ impl JsEngine<JscTypes> for JscEngine {
         _max_byte_length: Option<u64>,
     ) -> Completion<JscArrayBuffer, JscTypes> {
         let len = byte_length as usize;
-        let mut buf = vec![0u8; len].into_boxed_slice();
-        let ptr = buf.as_mut_ptr() as *mut std::ffi::c_void;
-        std::mem::forget(buf);
+        // Use Box<Vec<u8>> so the deallocator can reconstruct and drop via
+        // the deallocator context pointer.  The Vec owns the heap allocation;
+        // the Box is leaked via Box::into_raw and stored in the deallocator
+        // context.  When JSC calls free_array_buffer_data, it gets the
+        // context pointer back, reconstructs the Box<Vec<u8>>, and drops it
+        // (which frees the underlying Vec).
+        let v = Box::new(vec![0u8; len]);
+        let ptr = v.as_ptr() as *mut std::ffi::c_void;
+        let v_ptr = Box::into_raw(v);
         let mut exception: *mut JSValueRef = std::ptr::null_mut();
         let raw = unsafe {
             JSObjectMakeArrayBufferWithBytesNoCopy(
                 self.context.as_context_ref(),
                 ptr,
                 len,
-                std::ptr::null_mut(),
+                free_array_buffer_data as *const () as *mut std::ffi::c_void,
+                v_ptr as *mut std::ffi::c_void,
                 &mut exception,
             )
         };
         if !exception.is_null() {
+            // Deallocator was not invoked — free immediately to avoid leak.
+            unsafe {
+                drop(Box::from_raw(v_ptr));
+            }
             return Err(JscValue {
                 raw: exception,
                 ctx: self.ctx_ptr(),
@@ -1647,64 +1682,49 @@ impl JsEngine<JscTypes> for JscEngine {
         src_length: u64,
         _clone_constructor: JscConstructor,
     ) -> Completion<JscArrayBuffer, JscTypes> {
-        let global = self.context.global_object();
-        let src_key = JscString::from_rust("__formal_web_clone_src");
-        let mut exc: *mut JSValueRef = std::ptr::null_mut();
-        unsafe {
-            JSObjectSetProperty(
+        // Read source bytes natively via array_buffer_data, then construct
+        // the destination buffer directly with a real deallocator.
+        let src_bytes = self
+            .array_buffer_data(&src)
+            .ok_or_else(|| self.make_string("source ArrayBuffer has no data"))?;
+        let start = src_byte_offset as usize;
+        let end = start + src_length as usize;
+        let mut slice: Vec<u8> = src_bytes[start..end].to_vec();
+        let ptr = slice.as_mut_ptr() as *mut std::ffi::c_void;
+        let len = slice.len();
+        // Box the Vec so the deallocator can reconstruct and drop it.
+        let v = Box::new(slice);
+        let v_ptr = Box::into_raw(v);
+        let mut exception: *mut JSValueRef = std::ptr::null_mut();
+        let raw = unsafe {
+            JSObjectMakeArrayBufferWithBytesNoCopy(
                 self.context.as_context_ref(),
-                global.raw,
-                src_key.raw,
-                src.as_value_ref(),
-                kJSPropertyAttributeNone,
-                &mut exc,
+                ptr,
+                len,
+                free_array_buffer_data as *const () as *mut std::ffi::c_void,
+                v_ptr as *mut std::ffi::c_void,
+                &mut exception,
             )
         };
-        if !exc.is_null() {
+        if !exception.is_null() {
+            unsafe {
+                drop(Box::from_raw(v_ptr));
+            }
             return Err(JscValue {
-                raw: exc,
+                raw: exception,
                 ctx: self.ctx_ptr(),
             });
         }
-        let script_str = format!(
-            "new Uint8Array(__formal_web_clone_src).slice({}, {}).buffer",
-            src_byte_offset, src_length
-        );
-        let script = JscString::from_rust(&script_str);
-        let mut exc: *mut JSValueRef = std::ptr::null_mut();
-        let result = unsafe {
-            JSEvaluateScript(
-                self.context.as_context_ref(),
-                script.raw,
-                std::ptr::null_mut(),
-                std::ptr::null_mut(),
-                1,
-                &mut exc,
-            )
-        };
-        let mut exc2: *mut JSValueRef = std::ptr::null_mut();
-        unsafe {
-            JSObjectDeleteProperty(
-                self.context.as_context_ref(),
-                global.raw,
-                src_key.raw,
-                &mut exc2,
-            )
-        };
-        if !exc.is_null() {
-            return Err(JscValue {
-                raw: exc,
-                ctx: self.ctx_ptr(),
-            });
+        if raw.is_null() {
+            unsafe {
+                drop(Box::from_raw(v_ptr));
+            }
+            return Err(self.make_string("clone_array_buffer returned null"));
         }
-        if result.is_null() {
-            Err(JscUndefined::get(&self.context))
-        } else {
-            Ok(JscObject {
-                raw: result as *mut JSObjectRef,
-                ctx: self.ctx_ptr(),
-            })
-        }
+        Ok(JscObject {
+            raw,
+            ctx: self.ctx_ptr(),
+        })
     }
     fn allocate_shared_array_buffer(
         &mut self,
@@ -1764,11 +1784,12 @@ pub fn create_builtin_fn_with_captures<C: 'static>(
     name: JscPropertyKey,
     is_constructor: bool,
 ) -> JscFunction {
-    let engine = ec.as_any_mut().downcast_mut::<JscEngine>()
+    let engine = ec
+        .as_any_mut()
+        .downcast_mut::<JscEngine>()
         .expect("create_builtin_fn_with_captures called with non-JSC engine");
-    let stored: StoredBehaviour = Box::new(move |args, this, ec| {
-        (behaviour)(args, this, &captures, ec)
-    });
+    let stored: StoredBehaviour =
+        Box::new(move |args, this, ec| (behaviour)(args, this, &captures, ec));
     let func = make_builtin_function(engine.ctx_ptr(), stored, &name, is_constructor);
     if !is_constructor {
         let ctx_ptr = engine.ctx_ptr();
@@ -1818,12 +1839,29 @@ impl ExecutionContext<JscTypes> for JscEngine {
                 &mut dyn ExecutionContext<JscTypes>,
             ) -> Completion<JscValue, JscTypes>,
         >,
-        _length: u32,
+        length: u32,
         name: JscPropertyKey,
         is_constructor: bool,
     ) -> JscFunction {
         let stored: StoredBehaviour = behaviour;
-        make_builtin_function(self.ctx_ptr(), stored, &name, is_constructor)
+        let func = make_builtin_function(self.ctx_ptr(), stored, &name, is_constructor);
+        if !is_constructor {
+            let ctx_ptr = self.ctx_ptr();
+            let length_key = JscString::from_rust("length");
+            let length_val = unsafe { JSValueMakeNumber(ctx_ptr, length as f64) };
+            let mut exc: *mut JSValueRef = std::ptr::null_mut();
+            unsafe {
+                JSObjectSetProperty(
+                    ctx_ptr,
+                    func.raw,
+                    length_key.raw,
+                    length_val,
+                    kJSPropertyAttributeReadOnly | kJSPropertyAttributeDontEnum,
+                    &mut exc,
+                );
+            }
+        }
+        func
     }
 
     fn create_builtin_fn_static(
@@ -1833,11 +1871,26 @@ impl ExecutionContext<JscTypes> for JscEngine {
             JscValue,
             &mut dyn ExecutionContext<JscTypes>,
         ) -> Completion<JscValue, JscTypes>,
-        _length: u32,
+        length: u32,
         name: JscPropertyKey,
     ) -> JscFunction {
         let stored: StoredBehaviour = Box::new(move |args, this, ec| behaviour(args, this, ec));
-        make_builtin_function(self.ctx_ptr(), stored, &name, false)
+        let func = make_builtin_function(self.ctx_ptr(), stored, &name, false);
+        let ctx_ptr = self.ctx_ptr();
+        let length_key = JscString::from_rust("length");
+        let length_val = unsafe { JSValueMakeNumber(ctx_ptr, length as f64) };
+        let mut exc: *mut JSValueRef = std::ptr::null_mut();
+        unsafe {
+            JSObjectSetProperty(
+                ctx_ptr,
+                func.raw,
+                length_key.raw,
+                length_val,
+                kJSPropertyAttributeReadOnly | kJSPropertyAttributeDontEnum,
+                &mut exc,
+            );
+        }
+        func
     }
 
     // ── §7.1 Type Conversion ──────────────────────────────────────────────
@@ -1996,11 +2049,8 @@ impl ExecutionContext<JscTypes> for JscEngine {
                 ctx: self.ctx_ptr(),
             }),
             JSType::kJSTypeUndefined | JSType::kJSTypeNull => {
-                let message = JscString::from_rust("Cannot convert undefined or null to object");
-                Err(JscValue {
-                    raw: unsafe { JSValueMakeString(self.context.as_context_ref(), message.raw) },
-                    ctx: self.ctx_ptr(),
-                })
+                // <https://tc39.es/ecma262/#sec-toobject>
+                Err(self.new_type_error("Cannot convert undefined or null to object"))
             }
             _ => Ok(JscObject {
                 raw: value.raw as *mut JSObjectRef,
@@ -2028,13 +2078,15 @@ impl ExecutionContext<JscTypes> for JscEngine {
         Ok(JscPropertyKey::String(unsafe { JscString::from_raw(raw) }))
     }
     fn to_length(&mut self, value: JscValue) -> Completion<u64, JscTypes> {
-        self.to_number(value).map(|n| {
-            if n <= 0.0 {
-                0
-            } else {
-                n.min(f64::from(u32::MAX)) as u64
-            }
-        })
+        // <https://tc39.es/ecma262/#sec-tolength>
+        // Step 1: Let length be ? ToIntegerOrInfinity(arg).
+        // Step 2: If length ≤ 0, return +0𝔽.
+        let number = self.to_number(value)?;
+        if number.is_nan() || number <= 0.0 {
+            return Ok(0);
+        }
+        // Step 3: Return 𝔽(min(length, 2^53 - 1)).
+        Ok((number.min(9007199254740991.0)) as u64)
     }
     fn canonical_numeric_index_string(&self, argument: &JscString) -> Option<f64> {
         let s = argument.to_rust();
@@ -2047,17 +2099,33 @@ impl ExecutionContext<JscTypes> for JscEngine {
         None
     }
     fn to_index(&mut self, value: JscValue) -> Completion<u64, JscTypes> {
-        let n = self.to_number(value)?;
-        if n.is_nan() || n.is_infinite() || n < 0.0 {
-            return Ok(0);
+        // <https://tc39.es/ecma262/#sec-toindex>
+        // Step 1: Let int be ? ToIntegerOrInfinity(arg).
+        let number = self.to_number(value)?;
+        // ToIntegerOrInfinity: NaN → 0, +∞ → +∞, -∞ → -∞, otherwise truncate.
+        let integer = if number.is_nan() || number == 0.0 {
+            0.0
+        } else if !number.is_finite() {
+            number
+        } else {
+            number.trunc()
+        };
+        // Step 2: If int is not in the inclusive interval from 0 to 2^53 - 1,
+        // throw a RangeError exception.
+        if integer < 0.0 || integer > 9007199254740991.0 {
+            return Err(self.new_range_error("Invalid index"));
         }
-        Ok(n.trunc() as u64)
+        // Step 3: Return int.
+        Ok(integer as u64)
     }
 
     // ── §7.2 Testing and Comparison ───────────────────────────────────────
     fn require_object_coercible(&mut self, value: JscValue) -> Completion<JscValue, JscTypes> {
+        // <https://tc39.es/ecma262/#sec-requireobjectcoercible>
         match unsafe { JSValueGetType(self.context.as_context_ref(), value.raw) } {
-            JSType::kJSTypeUndefined | JSType::kJSTypeNull => Err(value),
+            JSType::kJSTypeUndefined | JSType::kJSTypeNull => {
+                Err(self.new_type_error("Cannot convert undefined or null to object"))
+            }
             _ => Ok(value),
         }
     }
@@ -2135,7 +2203,7 @@ impl ExecutionContext<JscTypes> for JscEngine {
     }
     fn same_value(&self, x: &JscValue, y: &JscValue) -> bool {
         // JSValueIsStrictEqual implements SameValueZero (+0 and -0 are equal).
-        // SameValue requires +0 ≠ -0.
+        // SameValue requires: +0 ≠ -0, NaN === NaN.
         if unsafe { JSValueGetType(self.context.as_context_ref(), x.raw) == JSType::kJSTypeNumber }
             && unsafe {
                 JSValueGetType(self.context.as_context_ref(), y.raw) == JSType::kJSTypeNumber
@@ -2147,6 +2215,11 @@ impl ExecutionContext<JscTypes> for JscEngine {
             let ny = unsafe {
                 JSValueToNumber(self.context.as_context_ref(), y.raw, std::ptr::null_mut())
             };
+            // NaN === NaN is false, but SameValue(NaN, NaN) must be true.
+            if nx.is_nan() && ny.is_nan() {
+                return true;
+            }
+            // +0 and -0 are === but SameValue requires them to be distinct.
             if nx == 0.0 && ny == 0.0 && nx.to_bits() != ny.to_bits() {
                 return false;
             }
@@ -2154,6 +2227,22 @@ impl ExecutionContext<JscTypes> for JscEngine {
         unsafe { JSValueIsStrictEqual(self.context.as_context_ref(), x.raw, y.raw) }
     }
     fn same_value_zero(&self, x: &JscValue, y: &JscValue) -> bool {
+        // SameValueZero: NaN === NaN must be true (+0 and -0 are equal via ===).
+        if unsafe { JSValueGetType(self.context.as_context_ref(), x.raw) == JSType::kJSTypeNumber }
+            && unsafe {
+                JSValueGetType(self.context.as_context_ref(), y.raw) == JSType::kJSTypeNumber
+            }
+        {
+            let nx = unsafe {
+                JSValueToNumber(self.context.as_context_ref(), x.raw, std::ptr::null_mut())
+            };
+            let ny = unsafe {
+                JSValueToNumber(self.context.as_context_ref(), y.raw, std::ptr::null_mut())
+            };
+            if nx.is_nan() && ny.is_nan() {
+                return true;
+            }
+        }
         unsafe { JSValueIsStrictEqual(self.context.as_context_ref(), x.raw, y.raw) }
     }
     fn is_loosely_equal(&mut self, x: JscValue, y: JscValue) -> Completion<bool, JscTypes> {
@@ -2262,19 +2351,11 @@ impl ExecutionContext<JscTypes> for JscEngine {
         value: JscValue,
         property_key: JscPropertyKey,
     ) -> Completion<JscValue, JscTypes> {
-        let t = unsafe { JSValueGetType(self.context.as_context_ref(), value.raw) };
-        if t == JSType::kJSTypeObject {
-            ExecutionContext::get(
-                self,
-                JscObject {
-                    raw: value.raw as *mut JSObjectRef,
-                    ctx: self.ctx_ptr(),
-                },
-                property_key,
-            )
-        } else {
-            Err(JscUndefined::get(&self.context))
-        }
+        // <https://tc39.es/ecma262/#sec-getv>
+        // Step 1: Let O be ? ToObject(V).
+        let object = self.to_object(value)?;
+        // Step 2: Return ? O.[[Get]](P, V).
+        ExecutionContext::get(self, object, property_key)
     }
     fn set(
         &mut self,
@@ -2902,7 +2983,7 @@ impl ExecutionContext<JscTypes> for JscEngine {
                 })
             }),
         )?;
-        let method = method.ok_or_else(|| JscUndefined::get(&self.context))?;
+        let method = method.ok_or_else(|| self.new_type_error("object is not iterable"))?;
         // ECMA-262 GetIterator: "Let iterator be ? Call(method, obj)."
         // The method (e.g. Array.prototype[Symbol.iterator]) must be called
         // with the original iterable as `this`.
@@ -2996,6 +3077,7 @@ impl ExecutionContext<JscTypes> for JscEngine {
         iterator: IteratorRecord<JscTypes>,
         completion: Completion<JscValue, JscTypes>,
     ) -> Completion<JscValue, JscTypes> {
+        // <https://tc39.es/ecma262/#sec-iteratorclose>
         let return_str = JscString::from_rust("return");
         let return_key = JscPropertyKey::String(return_str);
         let inner_result = self.get_method(
@@ -3012,7 +3094,23 @@ impl ExecutionContext<JscTypes> for JscEngine {
                     ctx: self.ctx_ptr(),
                 };
                 match EcmascriptHost::call(self, &return_fn, &iter_val, &[]) {
-                    Ok(_) => completion,
+                    Ok(inner_result) => {
+                        // Step: If innerResult.[[Type]] is normal, then
+                        // If Type(innerResult.[[Value]]) is not Object,
+                        // throw a TypeError exception.
+                        if unsafe {
+                            JSValueGetType(self.context.as_context_ref(), inner_result.raw)
+                        } != JSType::kJSTypeObject
+                        {
+                            let type_error =
+                                self.new_type_error("Iterator return result is not an object");
+                            if completion.is_err() {
+                                return completion;
+                            }
+                            return Err(type_error);
+                        }
+                        completion
+                    }
                     Err(e) => {
                         if completion.is_err() {
                             return completion;
@@ -4565,7 +4663,8 @@ impl ExecutionContext<JscTypes> for JscEngine {
     }
 
     fn new_type_error(&mut self, msg: &str) -> JscValue {
-        let escaped = msg.replace('\\', "\\\\").replace('"', "\\\"");
+        // Escape backslashes and single quotes (the delimiter used below).
+        let escaped = msg.replace('\\', "\\\\").replace('\'', "\\'");
         let script = format!("new TypeError('{}')", escaped);
         let (result, exception) = self.eval_script_raw(&script);
         if !exception.is_null() {
@@ -4581,7 +4680,7 @@ impl ExecutionContext<JscTypes> for JscEngine {
     }
 
     fn new_range_error(&mut self, msg: &str) -> JscValue {
-        let escaped = msg.replace('\\', "\\\\").replace('"', "\\\"");
+        let escaped = msg.replace('\\', "\\\\").replace('\'', "\\'");
         let script = format!("new RangeError('{}')", escaped);
         let (result, exception) = self.eval_script_raw(&script);
         if !exception.is_null() {
@@ -4597,7 +4696,7 @@ impl ExecutionContext<JscTypes> for JscEngine {
     }
 
     fn new_syntax_error(&mut self, msg: &str) -> JscValue {
-        let escaped = msg.replace('\\', "\\\\").replace('"', "\\\"");
+        let escaped = msg.replace('\\', "\\\\").replace('\'', "\\'");
         let script = format!("new SyntaxError('{}')", escaped);
         let (result, exception) = self.eval_script_raw(&script);
         if !exception.is_null() {

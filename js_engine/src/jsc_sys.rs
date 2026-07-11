@@ -195,6 +195,7 @@ unsafe extern "C" {
         bytes: *mut c_void,
         byteLength: usize,
         bytesDeallocator: *mut c_void,
+        deallocatorContext: *mut c_void,
         exception: *mut *mut JSValueRef,
     ) -> *mut JSObjectRef;
 
