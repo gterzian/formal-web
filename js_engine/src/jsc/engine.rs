@@ -1749,23 +1749,49 @@ impl JsEngine<JscTypes> for JscEngine {
 // §9.6 jobs, §25 queries, §27 promises, value construction)
 // ═══════════════════════════════════════════════════════════════════════════
 
+/// Safe standalone function: create a built-in function with captures.
+/// On JSC this wraps captures in a Box<dyn Fn> (no GC tracing concern).
+pub fn create_builtin_fn_with_captures<C: 'static>(
+    ec: &mut dyn ExecutionContext<JscTypes>,
+    captures: C,
+    behaviour: fn(
+        &[JscValue],
+        JscValue,
+        &C,
+        &mut dyn ExecutionContext<JscTypes>,
+    ) -> Completion<JscValue, JscTypes>,
+    length: u32,
+    name: JscPropertyKey,
+    is_constructor: bool,
+) -> JscFunction {
+    let engine = ec.as_any_mut().downcast_mut::<JscEngine>()
+        .expect("create_builtin_fn_with_captures called with non-JSC engine");
+    let stored: StoredBehaviour = Box::new(move |args, this, ec| {
+        (behaviour)(args, this, &captures, ec)
+    });
+    let func = make_builtin_function(engine.ctx_ptr(), stored, &name, is_constructor);
+    if !is_constructor {
+        let ctx_ptr = engine.ctx_ptr();
+        let length_key = JscString::from_rust("length");
+        let length_val = unsafe { JSValueMakeNumber(ctx_ptr, length as f64) };
+        let mut exc: *mut JSValueRef = std::ptr::null_mut();
+        unsafe {
+            JSObjectSetProperty(
+                ctx_ptr,
+                func.raw,
+                length_key.raw,
+                length_val,
+                kJSPropertyAttributeReadOnly | kJSPropertyAttributeDontEnum,
+                &mut exc,
+            );
+        }
+    }
+    func
+}
+
 impl ExecutionContext<JscTypes> for JscEngine {
     fn as_any_mut(&mut self) -> &mut dyn core::any::Any {
         self
-    }
-
-    fn create_builtin_fn_static(
-        &mut self,
-        behaviour: fn(
-            &[JscValue],
-            JscValue,
-            &mut dyn ExecutionContext<JscTypes>,
-        ) -> Completion<JscValue, JscTypes>,
-        _length: u32,
-        name: JscPropertyKey,
-    ) -> JscFunction {
-        let stored: StoredBehaviour = Box::new(move |args, this, ec| behaviour(args, this, ec));
-        make_builtin_function(self.ctx_ptr(), stored, &name, false)
     }
 
     fn create_builtin_fn(
@@ -1780,25 +1806,7 @@ impl ExecutionContext<JscTypes> for JscEngine {
         length: u32,
         name: JscPropertyKey,
     ) -> JscFunction {
-        let stored: StoredBehaviour = behaviour;
-        let func = make_builtin_function(self.ctx_ptr(), stored, &name, false);
-        // Set the .length property using the native C API to avoid eval.
-        // The .length must be read-only and non-enumerable per spec.
-        let ctx_ptr = self.ctx_ptr();
-        let length_key = JscString::from_rust("length");
-        let length_val = unsafe { JSValueMakeNumber(ctx_ptr, length as f64) };
-        let mut exc: *mut JSValueRef = std::ptr::null_mut();
-        unsafe {
-            JSObjectSetProperty(
-                ctx_ptr,
-                func.raw,
-                length_key.raw,
-                length_val,
-                kJSPropertyAttributeReadOnly | kJSPropertyAttributeDontEnum,
-                &mut exc,
-            );
-        }
-        func
+        self.create_builtin_function(behaviour, length, name, false)
     }
 
     fn create_builtin_function(
@@ -1816,6 +1824,20 @@ impl ExecutionContext<JscTypes> for JscEngine {
     ) -> JscFunction {
         let stored: StoredBehaviour = behaviour;
         make_builtin_function(self.ctx_ptr(), stored, &name, is_constructor)
+    }
+
+    fn create_builtin_fn_static(
+        &mut self,
+        behaviour: fn(
+            &[JscValue],
+            JscValue,
+            &mut dyn ExecutionContext<JscTypes>,
+        ) -> Completion<JscValue, JscTypes>,
+        _length: u32,
+        name: JscPropertyKey,
+    ) -> JscFunction {
+        let stored: StoredBehaviour = Box::new(move |args, this, ec| behaviour(args, this, ec));
+        make_builtin_function(self.ctx_ptr(), stored, &name, false)
     }
 
     // ── §7.1 Type Conversion ──────────────────────────────────────────────

@@ -191,16 +191,16 @@ fn build_boa_context(document: Rc<RefCell<BaseDocument>>) -> Result<Context, Str
     if let Some(rs_proto) = get_registry_prototype::<crate::js::Types, ReadableStream>(&engine) {
         // Create builtin functions via generic EC operations (no Boa context needed)
         let values_fn: JsObject = engine
-            .create_builtin_fn(
-                Box::new(|args, this, ec| values_method(&this, args, ec)),
+            .create_builtin_fn_static(
+                |args, this, ec| values_method(&this, args, ec),
                 0,
                 engine.property_key_from_str("values"),
             )
             .into();
 
         let pipe_to_native_fn: JsObject = engine
-            .create_builtin_fn(
-                Box::new(|args, this, ec| pipe_to_native_method(&this, args, ec)),
+            .create_builtin_fn_static(
+                |args, this, ec| pipe_to_native_method(&this, args, ec),
                 2,
                 engine.property_key_from_str("pipeTo"),
             )

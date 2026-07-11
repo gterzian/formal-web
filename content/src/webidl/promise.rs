@@ -236,33 +236,52 @@ where
     //   3.2: Set rejected to true.
     //   3.3: Perform failureSteps given arg.
     // Step 4: Let rejectionHandler be CreateBuiltinFunction(rejectionHandlerSteps, 1, "", « »).
-    let rejection_handler = ec.create_builtin_fn(
-        Box::new(
-            move |args: &[JsValue],
-                  _this: JsValue,
-                  handler_ec: &mut dyn ExecutionContext<Types>|
-                  -> Completion<JsValue, Types> {
-                let arg = args
-                    .first()
-                    .cloned()
-                    .unwrap_or_else(|| handler_ec.value_undefined());
-                let mut state_ref = state_clone.borrow_mut();
-                // Step 3.1: If rejected is true, abort these steps.
-                if state_ref.rejected {
-                    return Ok(handler_ec.value_undefined());
-                }
-                // Step 3.2: Set rejected to true.
-                state_ref.rejected = true;
-                // Step 3.3: Perform failureSteps given arg.
-                drop(state_ref);
-                if let Some(failure_steps) = failure_cell.borrow_mut().take() {
-                    let _ = failure_steps(arg, handler_ec);
-                }
-                Ok(handler_ec.value_undefined())
-            },
-        ),
+    #[gc_struct]
+    struct RejectionCapture<TFailure> {
+        state_clone: js_engine::gc::GcCell<WaitAllState>,
+        #[ignore_trace]
+        failure_cell: std::rc::Rc<std::cell::RefCell<Option<TFailure>>>,
+    }
+
+    fn rejection_behaviour<TFailure>(
+        args: &[JsValue],
+        _this: JsValue,
+        captures: &RejectionCapture<TFailure>,
+        handler_ec: &mut dyn ExecutionContext<Types>,
+    ) -> Completion<JsValue, Types>
+    where
+        TFailure: FnOnce(JsValue, &mut dyn ExecutionContext<Types>) -> Completion<(), Types> + 'static,
+    {
+        let arg = args
+            .first()
+            .cloned()
+            .unwrap_or_else(|| handler_ec.value_undefined());
+        let mut state_ref = captures.state_clone.borrow_mut();
+        // Step 3.1: If rejected is true, abort these steps.
+        if state_ref.rejected {
+            return Ok(handler_ec.value_undefined());
+        }
+        // Step 3.2: Set rejected to true.
+        state_ref.rejected = true;
+        // Step 3.3: Perform failureSteps given arg.
+        drop(state_ref);
+        if let Some(failure_steps) = captures.failure_cell.borrow_mut().take() {
+            let _ = failure_steps(arg, handler_ec);
+        }
+        Ok(handler_ec.value_undefined())
+    }
+
+    let name_key = ec.property_key_from_str("");
+    let rejection_handler = crate::js::create_builtin_fn_with_traced_captures(
+        ec,
+        RejectionCapture {
+            state_clone,
+            failure_cell,
+        },
+        rejection_behaviour::<TFailure>,
         1,
-        ec.property_key_from_str(""),
+        name_key.clone(),
+        false,
     );
 
     // Step 5: Let total be promises's size.
@@ -302,44 +321,65 @@ where
         //   9.2.2: Set fulfilledCount to fulfilledCount + 1.
         //   9.2.3: If fulfilledCount equals total, then perform successSteps given result.
         // Step 9.3: Let fulfillmentHandler be CreateBuiltinFunction(fulfillmentHandler, 1, "", « »).
+        #[gc_struct]
+        struct FulfillmentCapture<TSuccess> {
+            state_for_fulfillment: js_engine::gc::GcCell<WaitAllState>,
+            #[ignore_trace]
+            success_cell_for_fulfillment: std::rc::Rc<std::cell::RefCell<Option<TSuccess>>>,
+            #[ignore_trace]
+            promise_index: usize,
+        }
+
+        fn fulfillment_behaviour<TSuccess>(
+            args: &[JsValue],
+            _this: JsValue,
+            captures: &FulfillmentCapture<TSuccess>,
+            handler_ec: &mut dyn ExecutionContext<Types>,
+        ) -> Completion<JsValue, Types>
+        where
+            TSuccess: FnOnce(Vec<JsValue>, &mut dyn ExecutionContext<Types>) -> Completion<(), Types> + 'static,
+        {
+            let arg = args
+                .first()
+                .cloned()
+                .unwrap_or_else(|| handler_ec.value_undefined());
+            let mut state_ref = captures.state_for_fulfillment.borrow_mut();
+            // Step 9.2.1: Set result[promiseIndex] to arg.
+            if captures.promise_index < state_ref.result.len() {
+                state_ref.result[captures.promise_index] = Some(arg);
+            }
+            // Step 9.2.2: Set fulfilledCount to fulfilledCount + 1.
+            state_ref.fulfilled_count += 1;
+            // Step 9.2.3: If fulfilledCount equals total, then perform successSteps given result.
+            if state_ref.fulfilled_count == state_ref.total {
+                let results: Vec<JsValue> = state_ref
+                    .result
+                    .iter()
+                    .map(|opt| opt.clone().unwrap_or_else(|| handler_ec.value_undefined()))
+                    .collect();
+                drop(state_ref);
+                if let Some(success_steps) =
+                    captures.success_cell_for_fulfillment.borrow_mut().take()
+                {
+                    let _ = success_steps(results, handler_ec);
+                }
+            }
+            Ok(handler_ec.value_undefined())
+        }
+
         let state_for_fulfillment = state.clone();
         let success_cell_for_fulfillment: Rc<RefCell<Option<TSuccess>>> = success_cell.clone();
-        let fulfillment_handler = ec.create_builtin_fn(
-            Box::new(
-                move |args: &[JsValue],
-                      _this: JsValue,
-                      handler_ec: &mut dyn ExecutionContext<Types>|
-                      -> Completion<JsValue, Types> {
-                    let arg = args
-                        .first()
-                        .cloned()
-                        .unwrap_or_else(|| handler_ec.value_undefined());
-                    let mut state_ref = state_for_fulfillment.borrow_mut();
-                    // Step 9.2.1: Set result[promiseIndex] to arg.
-                    if promise_index < state_ref.result.len() {
-                        state_ref.result[promise_index] = Some(arg);
-                    }
-                    // Step 9.2.2: Set fulfilledCount to fulfilledCount + 1.
-                    state_ref.fulfilled_count += 1;
-                    // Step 9.2.3: If fulfilledCount equals total, then perform successSteps given result.
-                    if state_ref.fulfilled_count == state_ref.total {
-                        let results: Vec<JsValue> = state_ref
-                            .result
-                            .iter()
-                            .map(|opt| opt.clone().unwrap_or_else(|| handler_ec.value_undefined()))
-                            .collect();
-                        drop(state_ref);
-                        if let Some(success_steps) =
-                            success_cell_for_fulfillment.borrow_mut().take()
-                        {
-                            let _ = success_steps(results, handler_ec);
-                        }
-                    }
-                    Ok(handler_ec.value_undefined())
-                },
-            ),
+        let fulfillment_handler = crate::js::create_builtin_fn_with_traced_captures(
+            ec,
+            FulfillmentCapture {
+                state_for_fulfillment,
+                success_cell_for_fulfillment,
+                promise_index,
+            },
+            fulfillment_behaviour::<TSuccess>,
             1,
-            ec.property_key_from_str(""),
+            name_key.clone(),
+            false,
         );
 
         // Step 9.4: Perform PerformPromiseThen(promise, fulfillmentHandler, rejectionHandler).

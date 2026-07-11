@@ -3,6 +3,7 @@
 use crate::html::Window;
 use crate::webidl::is_array_index_key;
 
+use js_engine::gc_struct;
 use js_engine::{Completion, ExecutionContext, JsTypes};
 
 use crate::js::Types;
@@ -271,11 +272,34 @@ pub(crate) fn create_window_proxy(
         (trap_has, 2, "has"),
         (trap_own_keys, 1, "ownKeys"),
     ];
+    #[gc_struct]
+    struct TrapCapture {
+        #[ignore_trace]
+        func: fn(
+            &[JsValue],
+            JsValue,
+            &mut dyn ExecutionContext<crate::js::Types>,
+        ) -> Completion<JsValue, crate::js::Types>,
+    }
+
+    fn trap_behaviour(
+        args: &[JsValue],
+        this: JsValue,
+        captures: &TrapCapture,
+        ec: &mut dyn ExecutionContext<crate::js::Types>,
+    ) -> Completion<JsValue, crate::js::Types> {
+        (captures.func)(args, this, ec)
+    }
+
     for &(trap_fn, length, name) in traps.iter() {
-        let builtin_fn = ec.create_builtin_fn(
-            Box::new(move |args, this, ec| trap_fn(args, this, ec)),
+        let name_key = ec.property_key_from_str(name);
+        let builtin_fn = crate::js::create_builtin_fn_with_traced_captures(
+            ec,
+            TrapCapture { func: trap_fn },
+            trap_behaviour,
             length,
-            ec.property_key_from_str(name),
+            name_key,
+            false,
         );
         let builtin_fn_jsobj = <crate::js::Types as JsTypes>::object_from_function(builtin_fn);
         ec.set(

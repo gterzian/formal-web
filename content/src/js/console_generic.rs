@@ -1,4 +1,5 @@
 use js_engine::{Completion, ExecutionContext};
+use js_engine::gc_struct;
 
 use crate::js::Types;
 
@@ -29,6 +30,51 @@ pub(crate) fn install_console_namespace(
     )
 }
 
+#[gc_struct]
+struct ConsoleCapture {
+    #[ignore_trace]
+    sink: fn(&str),
+}
+
+fn console_fn(
+    args: &[<Types as js_engine::JsTypes>::JsValue],
+    _this: <Types as js_engine::JsTypes>::JsValue,
+    captures: &ConsoleCapture,
+    ec: &mut dyn ExecutionContext<Types>,
+) -> Completion<<Types as js_engine::JsTypes>::JsValue, Types> {
+    // <https://console.spec.whatwg.org/#logger>
+    //
+    // Step 1: "If args is empty, return."
+    if args.is_empty() {
+        return Ok(ec.value_undefined());
+    }
+
+    // Step 2-3: "Let first be args[0]. Let rest be all elements
+    // following first in args."
+    let rest = &args[1..];
+
+    // Step 4: "If rest is empty, perform Printer(logLevel, « first »)
+    // and return."
+    if rest.is_empty() {
+        let rendered = ec.to_rust_string(args[0].clone())?;
+        (captures.sink)(&rendered);
+        return Ok(ec.value_undefined());
+    }
+
+    // Step 5: "Otherwise, perform Printer(logLevel, Formatter(args))."
+    let mut rendered = String::new();
+    for (index, arg) in args.iter().enumerate() {
+        if index > 0 {
+            rendered.push(' ');
+        }
+        rendered.push_str(&ec.to_rust_string(arg.clone())?);
+    }
+    (captures.sink)(&rendered);
+
+    // Step 6: "Return undefined."
+    Ok(ec.value_undefined())
+}
+
 /// Install a single console method (log/info/debug/warn/error) on the console object.
 fn install_console_method(
     ec: &mut dyn ExecutionContext<Types>,
@@ -36,54 +82,23 @@ fn install_console_method(
     method_name: &str,
     sink: fn(&str),
 ) -> Completion<(), Types> {
-    let name_owned = method_name.to_owned();
-
-    let fn_obj = ec.create_builtin_fn(
-        Box::new(
-            move |args: &[<Types as js_engine::JsTypes>::JsValue],
-                  _this: <Types as js_engine::JsTypes>::JsValue,
-                  ec: &mut dyn ExecutionContext<Types>|
-                  -> Completion<<Types as js_engine::JsTypes>::JsValue, Types> {
-                // <https://console.spec.whatwg.org/#logger>
-                //
-                // Step 1: "If args is empty, return."
-                if args.is_empty() {
-                    return Ok(ec.value_undefined());
-                }
-
-                // Step 2-3: "Let first be args[0]. Let rest be all elements
-                // following first in args."
-                let rest = &args[1..];
-
-                // Step 4: "If rest is empty, perform Printer(logLevel, « first »)
-                // and return."
-                if rest.is_empty() {
-                    let rendered = ec.to_rust_string(args[0].clone())?;
-                    sink(&rendered);
-                    return Ok(ec.value_undefined());
-                }
-
-                // Step 5: "Otherwise, perform Printer(logLevel, Formatter(args))."
-                let mut rendered = String::new();
-                for (index, arg) in args.iter().enumerate() {
-                    if index > 0 {
-                        rendered.push(' ');
-                    }
-                    rendered.push_str(&ec.to_rust_string(arg.clone())?);
-                }
-                sink(&rendered);
-
-                // Step 6: "Return undefined."
-                Ok(ec.value_undefined())
-            },
-        ),
-        0,
-        ec.property_key_from_str(&name_owned),
-    );
+    let set_key = ec.property_key_from_str(method_name);
+    let name_key = set_key.clone();
+    let fn_obj = {
+        let capture = ConsoleCapture { sink };
+        crate::js::create_builtin_fn_with_traced_captures(
+            ec,
+            capture,
+            console_fn,
+            0,
+            name_key,
+            false,
+        )
+    };
 
     ec.set(
         console_obj.clone(),
-        ec.property_key_from_str(&name_owned),
+        set_key.clone(),
         <Types as js_engine::JsTypes>::value_from_object(
             <Types as js_engine::JsTypes>::object_from_function(fn_obj),
         ),

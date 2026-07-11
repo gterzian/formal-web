@@ -1,6 +1,7 @@
 use js_engine::{
     Completion, ExecutionContext, JsEngine, JsTypes, JsTypesWithRealm, PropertyDescriptor,
 };
+use js_engine::gc_struct;
 
 /// Describes a single attribute on an interface.
 /// https://webidl.spec.whatwg.org/#dfn-attribute
@@ -93,13 +94,29 @@ where
                 continue;
             }
         }
-        let getter_fn = engine.create_builtin_fn(
-            Box::new({
-                let getter = attr.getter;
-                move |args, this, ec| getter(&this, args, ec)
-            }),
+        #[gc_struct]
+        struct AttrCapture<T: JsTypes> {
+            #[ignore_trace]
+            func: fn(&T::JsValue, &[T::JsValue], &mut dyn ExecutionContext<T>) -> Completion<T::JsValue, T>,
+        }
+
+        fn attr_fn<T: JsTypes>(
+            args: &[T::JsValue],
+            this: T::JsValue,
+            captures: &AttrCapture<T>,
+            ec: &mut dyn ExecutionContext<T>,
+        ) -> Completion<T::JsValue, T> {
+            (captures.func)(&this, args, ec)
+        }
+
+        let name_key = engine.property_key_from_str(attr.id);
+        let getter_fn = crate::js::create_builtin_fn_with_traced_captures(
+            engine,
+            AttrCapture { func: attr.getter },
+            attr_fn::<Ty>,
             0,
-            engine.property_key_from_str(attr.id),
+            name_key.clone(),
+            false,
         );
         let mut desc = PropertyDescriptor {
             value: None,
@@ -110,10 +127,13 @@ where
             configurable: Some(!attr.unforgeable),
         };
         if let Some(setter) = attr.setter {
-            let setter_fn = engine.create_builtin_fn(
-                Box::new(move |args, this, ec| setter(&this, args, ec)),
+            let setter_fn = crate::js::create_builtin_fn_with_traced_captures(
+                engine,
+                AttrCapture { func: setter },
+                attr_fn::<Ty>,
                 1,
-                engine.property_key_from_str(attr.id),
+                name_key,
+                false,
             );
             desc.set = Some(setter_fn);
         }

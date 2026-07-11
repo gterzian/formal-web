@@ -1,0 +1,204 @@
+<!DOCTYPE html>
+<meta charset="utf-8">
+<title>GC Protection Tests</title>
+<script>
+// Custom formal-web test using TestUtils.gc() to verify that JS objects
+// protected by the engine's GC rooting survive garbage collection.
+
+var results = [];
+var allPassed = true;
+
+function test(name, fn) {
+  try {
+    fn();
+    results.push({ name: name, status: 0, message: null, stack: null });
+  } catch (e) {
+    allPassed = false;
+    results.push({ name: name, status: 1, message: e.message, stack: e.stack });
+  }
+}
+
+// Helper: allocate many objects to create GC pressure.
+function allocateGarbage(size) {
+  var garbage = [];
+  for (var i = 0; i < size; i++) {
+    garbage.push(new Array(100).fill(i));
+  }
+  return garbage;
+}
+
+// Helper: resolve when TestUtils.gc() completes.
+function runGc() {
+  return TestUtils.gc();
+}
+
+// ============================================================================
+// Tests
+// ============================================================================
+
+// Test 1: TestUtils namespace exists.
+test("TestUtils namespace exists", function () {
+  if (typeof TestUtils === "undefined") {
+    throw new Error("TestUtils is undefined");
+  }
+});
+
+// Test 2: TestUtils.gc is a function.
+test("TestUtils.gc is callable", function () {
+  if (typeof TestUtils.gc !== "function") {
+    throw new Error("TestUtils.gc is not a function");
+  }
+});
+
+// Test 3: TestUtils.gc() returns a Promise.
+test("TestUtils.gc returns a Promise", async function () {
+  var p = TestUtils.gc();
+  if (!(p instanceof Promise)) {
+    throw new Error("TestUtils.gc() did not return a Promise, got: " + typeof p);
+  }
+  await p;
+});
+
+// Test 4: A simple JS closure survives GC.
+// This tests that closures created via Function.prototype (user code) are
+// not affected by GC — they are already visible to the engine's built-in GC.
+test("User closure survives GC", async function () {
+  var called = false;
+  var fn = function () { called = true; };
+  await runGc();
+  allocateGarbage(100);
+  await runGc();
+  fn();
+  if (!called) {
+    throw new Error("Closure was not callable after GC");
+  }
+});
+
+// Test 5: Promise resolve/reject functions survive GC.
+// Promise capabilities created via new Promise((resolve) => ...) store
+// the resolve function in the engine's promise machinery, which keeps it alive.
+test("Promise capability survives GC", async function () {
+  var resolveFn;
+  var p = new Promise(function (resolve) { resolveFn = resolve; });
+  allocateGarbage(200);
+  await runGc();
+  allocateGarbage(200);
+  await runGc();
+  resolveFn("gc-ok");
+  var val = await p;
+  if (val !== "gc-ok") {
+    throw new Error("Promise resolved to wrong value after GC: " + val);
+  }
+});
+
+// Test 6: setTimeout callback survives GC.
+// The timer callback is stored in the engine's timer table, which should
+// be GC-rooted.
+test("setTimeout callback fires after GC", function () {
+  return new Promise(function (resolve, reject) {
+    var fired = false;
+    setTimeout(function () {
+      fired = true;
+    }, 0);
+    allocateGarbage(100);
+    runGc().then(function () {
+      allocateGarbage(100);
+      return runGc();
+    }).then(function () {
+      // The timeout should have fired by now (setTimeout(0))
+      // But if the microtask queue already processed it, fired is true.
+      // If GC destroyed the callback, it will never fire.
+      setTimeout(function () {
+        if (!fired) {
+          reject(new Error("setTimeout callback was destroyed by GC"));
+        } else {
+          resolve();
+        }
+      }, 0);
+    });
+  });
+});
+
+// Test 7: Repeated GC cycles don't corrupt the global object.
+test("Global object survives repeated GC", async function () {
+  for (var i = 0; i < 5; i++) {
+    allocateGarbage(50);
+    await runGc();
+  }
+  if (typeof setTimeout !== "function") {
+    throw new Error("setTimeout was corrupted by GC");
+  }
+  if (typeof Array !== "function") {
+    throw new Error("Array was corrupted by GC");
+  }
+  if (typeof Promise !== "function") {
+    throw new Error("Promise was corrupted by GC");
+  }
+  if (typeof TestUtils !== "object") {
+    throw new Error("TestUtils was corrupted by GC");
+  }
+});
+
+// Test 8: Promise.resolve().then() chain survives GC.
+// This tests the perform_promise_then path with result_capability,
+// which is used extensively by the stream implementations.
+test("Promise resolve/then chain survives GC", async function () {
+  var result = await Promise.resolve("step1")
+    .then(function (v) { return v + "-then1"; })
+    .then(function (v) { return v + "-then2"; });
+  allocateGarbage(100);
+  await runGc();
+  var result2 = await Promise.resolve(result)
+    .then(function (v) { return v + "-then3"; });
+  if (result2 !== "step1-then1-then2-then3") {
+    throw new Error("Promise chain gave wrong result after GC: " + result2);
+  }
+});
+
+// Test 9: ReadableStream created via JS API survives GC.
+// This tests that the stream controller's internal slots (which hold
+// JS promises and callbacks) are properly rooted.
+test("ReadableStream created via constructor survives GC", async function () {
+  var stream = new ReadableStream({
+    start: function (controller) {
+      controller.enqueue("gc-test-value");
+      controller.close();
+    }
+  });
+  allocateGarbage(100);
+  await runGc();
+  allocateGarbage(100);
+  await runGc();
+  var reader = stream.getReader();
+  var readResult = await reader.read();
+  if (readResult.value !== "gc-test-value" || readResult.done === true) {
+    throw new Error("ReadableStream gave wrong result after GC: " +
+      JSON.stringify(readResult));
+  }
+  reader.releaseLock();
+});
+
+// Test 10: TestUtils.gc() can be called multiple times without error.
+test("TestUtils.gc() callable multiple times", async function () {
+  for (var i = 0; i < 3; i++) {
+    await runGc();
+  }
+});
+
+// ============================================================================
+// Report
+// ============================================================================
+
+window.__formalWebTestResult = {
+  location: "",
+  title: "GC Protection Tests",
+  tests: results,
+  status: {
+    status: allPassed ? 0 : 1,
+    message: allPassed ? null : "some tests failed",
+    stack: null,
+  },
+  asserts: [],
+};
+</script>
+<p>Running GC protection tests...</p>

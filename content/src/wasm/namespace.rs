@@ -9,7 +9,8 @@ use crate::html::{PendingRequest, PendingState, Window};
 use crate::wasm::conversions::{default_val_for_type, js_val_to_wasm_val, wasm_val_to_js_value};
 use crate::wasm::types::{WasmInstance, WasmModule};
 use crate::webidl::bindings::create_interface_instance;
-use js_engine::{Completion, ExecutionContext, records::PromiseResolvers};
+use js_engine::{Completion, ExecutionContext, JsTypes, records::PromiseResolvers};
+use js_engine::gc_struct;
 
 /// Convert Boa-native `ResolvingFunctions` to generic `PromiseResolvers<crate::js::Types>`.
 fn resolvers_to_generic(
@@ -471,35 +472,57 @@ fn create_exported_function_wrapper_boa(
     store: Arc<Mutex<Store<()>>>,
     context: &mut Context,
 ) -> Completion<JsValue, crate::js::Types> {
-    // Bridge once to get the generic EC — the closure below uses
-    // ec directly, eliminating per-invocation context_as_ec bridges.
+    #[gc_struct]
+    struct WasmExportCapture {
+        #[ignore_trace]
+        func: wasmtime::Func,
+        #[ignore_trace]
+        store: std::sync::Arc<std::sync::Mutex<wasmtime::Store<()>>>,
+    }
+
+    fn wasm_export_fn(
+        args: &[<crate::js::Types as JsTypes>::JsValue],
+        _this: <crate::js::Types as JsTypes>::JsValue,
+        captures: &WasmExportCapture,
+        ec: &mut dyn ExecutionContext<crate::js::Types>,
+    ) -> Completion<<crate::js::Types as JsTypes>::JsValue, crate::js::Types> {
+        let mut store_guard = captures.store.lock().unwrap();
+        let func_type = captures.func.ty(&*store_guard);
+        let params: Vec<wasmtime::Val> = func_type
+            .params()
+            .enumerate()
+            .map(|(i, param_type)| {
+                let js_arg = args.get(i).cloned().unwrap_or_else(|| ec.value_undefined());
+                js_val_to_wasm_val(&js_arg, &param_type, ec).map_err(|err_val| err_val)
+            })
+            .collect::<Result<_, _>>()?;
+        let mut results: Vec<wasmtime::Val> = func_type
+            .results()
+            .map(|val_type| default_val_for_type(&val_type))
+            .collect();
+        captures.func.call(&mut *store_guard, &params, &mut results)
+            .map_err(|error| ec.new_type_error(&format!("WebAssembly trap: {}", error)))?;
+        if results.len() == 1 {
+            wasm_val_to_js_value(&results[0], ec).map_err(|err_val| err_val)
+        } else {
+            Err(ec.new_type_error("multiple wasm results not yet supported"))
+        }
+    }
+
+    // Bridge once to get the generic EC — eliminating per-invocation
+    // context_as_ec bridges.
     let engine = js_engine::boa::context_as_engine(context);
-    let js_func = engine.create_builtin_fn(
-        Box::new(move |args, _this, ec| {
-            let mut store_guard = store.lock().unwrap();
-            let func_type = func.ty(&*store_guard);
-            let params: Vec<wasmtime::Val> = func_type
-                .params()
-                .enumerate()
-                .map(|(i, param_type)| {
-                    let js_arg = args.get(i).cloned().unwrap_or_else(|| ec.value_undefined());
-                    js_val_to_wasm_val(&js_arg, &param_type, ec).map_err(|err_val| err_val)
-                })
-                .collect::<Result<_, _>>()?;
-            let mut results: Vec<wasmtime::Val> = func_type
-                .results()
-                .map(|val_type| default_val_for_type(&val_type))
-                .collect();
-            func.call(&mut *store_guard, &params, &mut results)
-                .map_err(|error| ec.new_type_error(&format!("WebAssembly trap: {}", error)))?;
-            if results.len() == 1 {
-                wasm_val_to_js_value(&results[0], ec).map_err(|err_val| err_val)
-            } else {
-                Err(ec.new_type_error("multiple wasm results not yet supported"))
-            }
-        }),
+    let name_key = engine.property_key_from_str("");
+    let js_func = crate::js::create_builtin_fn_with_traced_captures(
+        engine,
+        WasmExportCapture {
+            func,
+            store,
+        },
+        wasm_export_fn,
         0,
-        boa_engine::property::PropertyKey::from(boa_engine::js_string!("")),
+        name_key,
+        false,
     );
     Ok(js_func.into())
 }

@@ -2,6 +2,7 @@ use std::collections::BTreeMap;
 
 type JsValue = <crate::js::Types as JsTypes>::JsValue;
 type JsObject = <crate::js::Types as JsTypes>::JsObject;
+type Types = crate::js::Types;
 
 use crate::dom::Element;
 use crate::html::{
@@ -227,29 +228,33 @@ fn get_style(
     }
 
     // getPropertyValue method
-    let get_property_value_fn = ec.create_builtin_fn(
-        Box::new(move |args, this_ec_val, inner_ec| {
-            let property_name = if let Some(arg) = args.first() {
-                inner_ec
-                    .to_rust_string(arg.clone())?
-                    .trim()
-                    .to_ascii_lowercase()
-            } else {
-                String::new()
-            };
-            let Some(object) = Types::value_as_object(&this_ec_val) else {
-                return Ok(inner_ec.value_from_string(inner_ec.js_string_from_str("")));
-            };
-            let key = inner_ec.property_key_from_str(&property_name);
-            let value = ExecutionContext::get(inner_ec, object, key)?;
-            if Types::value_is_undefined(&value) {
-                return Ok(inner_ec.value_from_string(inner_ec.js_string_from_str("")));
-            }
-            Ok(value)
-        }),
-        1,
-        ec.property_key_from_str("getPropertyValue"),
-    );
+    fn get_property_value_fn(
+        args: &[JsValue],
+        this_ec_val: JsValue,
+        inner_ec: &mut dyn ExecutionContext<Types>,
+    ) -> Completion<JsValue, Types> {
+        let property_name = if let Some(arg) = args.first() {
+            inner_ec
+                .to_rust_string(arg.clone())?
+                .trim()
+                .to_ascii_lowercase()
+        } else {
+            String::new()
+        };
+        let Some(object) = Types::value_as_object(&this_ec_val) else {
+            return Ok(inner_ec.value_from_string(inner_ec.js_string_from_str("")));
+        };
+        let key = inner_ec.property_key_from_str(&property_name);
+        let value = ExecutionContext::get(inner_ec, object, key)?;
+        if Types::value_is_undefined(&value) {
+            return Ok(inner_ec.value_from_string(inner_ec.js_string_from_str("")));
+        }
+        Ok(value)
+    }
+    let get_property_value_fn = {
+        let name_key = ec.property_key_from_str("getPropertyValue");
+        crate::js::create_builtin_fn_static(ec, get_property_value_fn, 1, name_key)
+    };
     let method_val = Types::value_from_object(Types::object_from_function(get_property_value_fn));
     ec.set(
         style_obj.clone(),
@@ -267,48 +272,56 @@ fn get_style(
     )?;
 
     // Implement cssText as a live getter/setter backed by the element's style attribute.
-    let css_text_getter = ec.create_builtin_fn(
-        Box::new(move |_args, this_ec_val, inner_ec| {
-            let element_val = {
-                let this_obj = Types::value_as_object(&this_ec_val).ok_or_else(|| {
-                    inner_ec.new_type_error("cssText getter: receiver is not an object")
-                })?;
-                ExecutionContext::get(
-                    inner_ec,
-                    this_obj,
-                    inner_ec.property_key_from_str("__element"),
-                )?
-            };
-            let style = element_style_attribute(&element_val, inner_ec).unwrap_or_default();
-            Ok(inner_ec.value_from_string(inner_ec.js_string_from_str(&style)))
-        }),
-        0,
-        ec.property_key_from_str("get cssText"),
-    );
+    fn css_text_getter_fn(
+        _args: &[JsValue],
+        this_ec_val: JsValue,
+        inner_ec: &mut dyn ExecutionContext<Types>,
+    ) -> Completion<JsValue, Types> {
+        let element_val = {
+            let this_obj = Types::value_as_object(&this_ec_val).ok_or_else(|| {
+                inner_ec.new_type_error("cssText getter: receiver is not an object")
+            })?;
+            ExecutionContext::get(
+                inner_ec,
+                this_obj,
+                inner_ec.property_key_from_str("__element"),
+            )?
+        };
+        let style = element_style_attribute(&element_val, inner_ec).unwrap_or_default();
+        Ok(inner_ec.value_from_string(inner_ec.js_string_from_str(&style)))
+    }
+    let css_text_getter = {
+        let name_key = ec.property_key_from_str("get cssText");
+        crate::js::create_builtin_fn_static(ec, css_text_getter_fn, 0, name_key)
+    };
 
-    let css_text_setter = ec.create_builtin_fn(
-        Box::new(move |args, this_ec_val, inner_ec| {
-            let value = if let Some(arg) = args.first() {
-                inner_ec.to_rust_string(arg.clone())?
-            } else {
-                String::new()
-            };
-            let element_val = {
-                let this_obj = Types::value_as_object(&this_ec_val).ok_or_else(|| {
-                    inner_ec.new_type_error("cssText setter: receiver is not an object")
-                })?;
-                ExecutionContext::get(
-                    inner_ec,
-                    this_obj,
-                    inner_ec.property_key_from_str("__element"),
-                )?
-            };
-            set_element_style_attribute(&element_val, &value, inner_ec);
-            Ok(inner_ec.value_undefined())
-        }),
-        1,
-        ec.property_key_from_str("set cssText"),
-    );
+    fn css_text_setter_fn(
+        args: &[JsValue],
+        this_ec_val: JsValue,
+        inner_ec: &mut dyn ExecutionContext<Types>,
+    ) -> Completion<JsValue, Types> {
+        let value = if let Some(arg) = args.first() {
+            inner_ec.to_rust_string(arg.clone())?
+        } else {
+            String::new()
+        };
+        let element_val = {
+            let this_obj = Types::value_as_object(&this_ec_val).ok_or_else(|| {
+                inner_ec.new_type_error("cssText setter: receiver is not an object")
+            })?;
+            ExecutionContext::get(
+                inner_ec,
+                this_obj,
+                inner_ec.property_key_from_str("__element"),
+            )?
+        };
+        set_element_style_attribute(&element_val, &value, inner_ec);
+        Ok(inner_ec.value_undefined())
+    }
+    let css_text_setter = {
+        let name_key = ec.property_key_from_str("set cssText");
+        crate::js::create_builtin_fn_static(ec, css_text_setter_fn, 1, name_key)
+    };
 
     let css_text_key = ec.property_key_from_str("cssText");
     let accessor_desc = js_engine::PropertyDescriptor {
@@ -479,32 +492,36 @@ pub(crate) fn style_declaration_object(
     }
 
     // Add getPropertyValue method.
-    let getter_fn = ec.create_builtin_fn(
-        Box::new(|args, this, ec| {
-            // Step 1.1: convert to ASCII lowercase.
-            let undef = ec.value_undefined();
-            let property_name = ec
-                .to_rust_string(args.first().cloned().unwrap_or(undef))?
-                .trim()
-                .to_ascii_lowercase();
+    fn getter_fn_impl(
+        args: &[JsValue],
+        this: JsValue,
+        ec: &mut dyn ExecutionContext<Types>,
+    ) -> Completion<JsValue, Types> {
+        // Step 1.1: convert to ASCII lowercase.
+        let undef = ec.value_undefined();
+        let property_name = ec
+            .to_rust_string(args.first().cloned().unwrap_or(undef))?
+            .trim()
+            .to_ascii_lowercase();
 
-            // Step 2: Look up property in the declaration object.
-            let object = match <crate::js::Types as JsTypes>::value_as_object(&this) {
-                Some(obj) => obj,
-                None => return Ok(ec.value_from_string(ec.js_string_from_str(""))),
-            };
-            let key = ec.property_key_from_str(property_name.as_str());
-            let value = js_engine::ExecutionContext::get(ec, object, key)?;
+        // Step 2: Look up property in the declaration object.
+        let object = match <crate::js::Types as JsTypes>::value_as_object(&this) {
+            Some(obj) => obj,
+            None => return Ok(ec.value_from_string(ec.js_string_from_str(""))),
+        };
+        let key = ec.property_key_from_str(property_name.as_str());
+        let value = js_engine::ExecutionContext::get(ec, object, key)?;
 
-            // Step 3: Return empty string for undefined values.
-            if value.is_undefined() {
-                return Ok(ec.value_from_string(ec.js_string_from_str("")));
-            }
-            Ok(value)
-        }),
-        1,
-        ec.property_key_from_str("getPropertyValue"),
-    );
+        // Step 3: Return empty string for undefined values.
+        if value.is_undefined() {
+            return Ok(ec.value_from_string(ec.js_string_from_str("")));
+        }
+        Ok(value)
+    }
+    let getter_fn = {
+        let name_key = ec.property_key_from_str("getPropertyValue");
+        crate::js::create_builtin_fn_static(ec, getter_fn_impl, 1, name_key)
+    };
     let getter_value = <crate::js::Types as JsTypes>::value_from_object(
         <crate::js::Types as JsTypes>::object_from_function(getter_fn),
     );

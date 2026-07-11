@@ -208,22 +208,22 @@ fn setup_realm(engine: &mut Engine, document: Rc<RefCell<BaseDocument>>) -> Resu
     // These are registered in host_hooks.rs for Boa; here for JSC.
     if let Some(rs_proto) = get_registry_prototype::<crate::js::Types, ReadableStream>(engine) {
         let values_fn: <crate::js::Types as js_engine::JsTypes>::JsObject = engine
-            .create_builtin_fn(
-                Box::new(|args, this, ec| {
+            .create_builtin_fn_static(
+                |args, this, ec| {
                     crate::js::bindings::streams::readablestream::values_method(&this, args, ec)
-                }),
+                },
                 0,
                 engine.property_key_from_str("values"),
             )
             .into();
 
         let pipe_to_native_fn: <crate::js::Types as js_engine::JsTypes>::JsObject = engine
-            .create_builtin_fn(
-                Box::new(|args, this, ec| {
+            .create_builtin_fn_static(
+                |args, this, ec| {
                     crate::js::bindings::streams::readablestream::pipe_to_native_method(
                         &this, args, ec,
                     )
-                }),
+                },
                 2,
                 engine.property_key_from_str("pipeTo"),
             )

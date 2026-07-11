@@ -139,24 +139,38 @@ fn get_count_high_water_mark(
     Err(ec.new_type_error("receiver is not a CountQueuingStrategy"))
 }
 
+fn byte_length_size_fn(
+    args: &[JsValue],
+    _this: JsValue,
+    inner_ec: &mut dyn ExecutionContext<Types>,
+) -> Completion<JsValue, Types> {
+    byte_length_size(
+        &args.first().cloned().unwrap_or(inner_ec.value_undefined()),
+        inner_ec,
+    )
+}
+
 fn get_byte_length_size(
     _: &JsValue,
     _: &[JsValue],
     ec: &mut dyn ExecutionContext<Types>,
 ) -> Completion<JsValue, Types> {
-    let function = ec.create_builtin_fn(
-        Box::new(move |args, _this, inner_ec| {
-            byte_length_size(
-                &args.first().cloned().unwrap_or(inner_ec.value_undefined()),
-                inner_ec,
-            )
-        }),
-        1,
-        ec.property_key_from_str("size"),
-    );
+    let function =
+        ec.create_builtin_fn_static(byte_length_size_fn, 1, ec.property_key_from_str("size"));
     Ok(Types::value_from_object(Types::object_from_function(
         function,
     )))
+}
+
+fn count_size_fn(
+    args: &[JsValue],
+    _this: JsValue,
+    inner_ec: &mut dyn ExecutionContext<Types>,
+) -> Completion<JsValue, Types> {
+    count_size(
+        &args.first().cloned().unwrap_or(inner_ec.value_undefined()),
+        inner_ec,
+    )
 }
 
 fn get_count_size(
@@ -164,16 +178,7 @@ fn get_count_size(
     _: &[JsValue],
     ec: &mut dyn ExecutionContext<Types>,
 ) -> Completion<JsValue, Types> {
-    let function = ec.create_builtin_fn(
-        Box::new(move |args, _this, inner_ec| {
-            count_size(
-                &args.first().cloned().unwrap_or(inner_ec.value_undefined()),
-                inner_ec,
-            )
-        }),
-        1,
-        ec.property_key_from_str("size"),
-    );
+    let function = ec.create_builtin_fn_static(count_size_fn, 1, ec.property_key_from_str("size"));
     Ok(Types::value_from_object(Types::object_from_function(
         function,
     )))

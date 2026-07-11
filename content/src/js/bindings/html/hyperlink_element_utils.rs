@@ -9,6 +9,7 @@ use crate::{
     html::{HTMLAnchorElement, HyperlinkElementUtils},
 };
 
+use js_engine::gc_struct;
 use js_engine::{Completion, ExecutionContext, JsTypes};
 
 pub(crate) fn document_creation_url(
@@ -60,34 +61,72 @@ pub(crate) fn register_hyperlink_element_utils_on_prototype(
     Ok(())
 }
 
+type HyperlinkGetter = fn(
+    &JsValue,
+    &[JsValue],
+    &mut dyn ExecutionContext<crate::js::Types>,
+) -> Completion<JsValue, crate::js::Types>;
+
+#[gc_struct]
+struct LinkGetterCapture {
+    #[ignore_trace]
+    getter: HyperlinkGetter,
+}
+
+fn link_getter_fn(
+    args: &[JsValue],
+    this: JsValue,
+    captures: &LinkGetterCapture,
+    ec: &mut dyn ExecutionContext<crate::js::Types>,
+) -> Completion<JsValue, crate::js::Types> {
+    (captures.getter)(&this, args, ec)
+}
+
+#[gc_struct]
+struct LinkSetterCapture {
+    #[ignore_trace]
+    setter: HyperlinkGetter,
+}
+
+fn link_setter_fn(
+    args: &[JsValue],
+    this: JsValue,
+    captures: &LinkSetterCapture,
+    ec: &mut dyn ExecutionContext<crate::js::Types>,
+) -> Completion<JsValue, crate::js::Types> {
+    (captures.setter)(&this, args, ec)
+}
+
 fn link_property(
     proto: &JsObject,
     ec: &mut dyn ExecutionContext<crate::js::Types>,
     name: &str,
-    getter: fn(
-        &JsValue,
-        &[JsValue],
-        &mut dyn ExecutionContext<crate::js::Types>,
-    ) -> Completion<JsValue, crate::js::Types>,
-    setter: Option<
-        fn(
-            &JsValue,
-            &[JsValue],
-            &mut dyn ExecutionContext<crate::js::Types>,
-        ) -> Completion<JsValue, crate::js::Types>,
-    >,
+    getter: HyperlinkGetter,
+    setter: Option<HyperlinkGetter>,
 ) -> Completion<(), crate::js::Types> {
     let name_key = ec.property_key_from_str(name);
-    let get_fn = ec.create_builtin_fn(
-        Box::new(move |args, this_val, inner_ec| getter(&this_val, args, inner_ec)),
-        0,
-        ec.property_key_from_str(name),
-    );
-    let set_fn = setter.map(|set_fn_ptr| {
-        ec.create_builtin_fn(
-            Box::new(move |args, this_val, inner_ec| set_fn_ptr(&this_val, args, inner_ec)),
+    let get_fn = {
+        let getter_capture = LinkGetterCapture { getter };
+        crate::js::create_builtin_fn_with_traced_captures(
+            ec,
+            getter_capture,
+            link_getter_fn,
+            0,
+            name_key.clone(),
+            false,
+        )
+    };
+    let set_fn = setter.map(|setter_fn_ptr| {
+        let setter_capture = LinkSetterCapture {
+            setter: setter_fn_ptr,
+        };
+        crate::js::create_builtin_fn_with_traced_captures(
+            ec,
+            setter_capture,
+            link_setter_fn,
             1,
-            ec.property_key_from_str(name),
+            name_key.clone(),
+            false,
         )
     });
     let desc = js_engine::PropertyDescriptor {

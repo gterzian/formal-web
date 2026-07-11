@@ -509,12 +509,10 @@ where
 
     // Create the `next` method — a built-in function that delegates to
     // async_iterator_next_inner.
-    let next_fn = ec.create_builtin_fn(
-        Box::new(
-            |args: &[JsValue], this: JsValue, ec: &mut dyn ExecutionContext<Types>| {
-                async_iterator_next_inner::<T>(this, args, ec)
-            },
-        ),
+    let next_fn: <Types as JsTypes>::Function = ec.create_builtin_fn_static(
+        |args: &[JsValue], this: JsValue, ec: &mut dyn ExecutionContext<Types>| {
+            async_iterator_next_inner::<T>(this, args, ec)
+        },
         0,
         ec.property_key_from_str("next"),
     );
@@ -523,12 +521,10 @@ where
 
     // Create the `return` method if the interface has a return algorithm
     if T::has_async_iterator_return() {
-        let return_fn = ec.create_builtin_fn(
-            Box::new(
-                |args: &[JsValue], this: JsValue, ec: &mut dyn ExecutionContext<Types>| {
-                    async_iterator_return_inner::<T>(this, args, ec)
-                },
-            ),
+        let return_fn: <Types as JsTypes>::Function = ec.create_builtin_fn_static(
+            |args: &[JsValue], this: JsValue, ec: &mut dyn ExecutionContext<Types>| {
+                async_iterator_return_inner::<T>(this, args, ec)
+            },
             1,
             ec.property_key_from_str("return"),
         );

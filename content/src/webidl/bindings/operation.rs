@@ -1,6 +1,7 @@
 use js_engine::{
     Completion, ExecutionContext, JsEngine, JsTypes, JsTypesWithRealm, PropertyDescriptor,
 };
+use js_engine::gc_struct;
 
 /// Describes a single operation (method) on an interface.
 ///
@@ -91,13 +92,29 @@ where
                 continue;
             }
         }
-        let method = engine.create_builtin_fn(
-            Box::new({
-                let op_method = op.method;
-                move |args, this, ec| op_method(&this, args, ec)
-            }),
+        #[gc_struct]
+        struct OpCapture<T: JsTypes> {
+            #[ignore_trace]
+            func: fn(&T::JsValue, &[T::JsValue], &mut dyn ExecutionContext<T>) -> Completion<T::JsValue, T>,
+        }
+
+        fn op_fn<T: JsTypes>(
+            args: &[T::JsValue],
+            this: T::JsValue,
+            captures: &OpCapture<T>,
+            ec: &mut dyn ExecutionContext<T>,
+        ) -> Completion<T::JsValue, T> {
+            (captures.func)(&this, args, ec)
+        }
+
+        let name_key = engine.property_key_from_str(op.id);
+        let method = crate::js::create_builtin_fn_with_traced_captures(
+            engine,
+            OpCapture { func: op.method },
+            op_fn::<Ty>,
             op.length as u32,
-            engine.property_key_from_str(op.id),
+            name_key,
+            false,
         );
         let modifiable = !op.unforgeable;
         let desc = PropertyDescriptor {

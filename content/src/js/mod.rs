@@ -1,4 +1,6 @@
+use js_engine::gc_struct;
 use js_engine::{Completion, ExecutionContext, JsTypes};
+use js_engine::JsTypesWithRealm;
 
 pub(crate) mod bindings;
 /// Generic platform-object downcast helpers:
@@ -28,60 +30,48 @@ pub(crate) use downcast::{
 };
 
 /// Create a builtin function with GC-traceable captures.
-///
-/// Use this instead of the old `create_builtin_function`/`create_builtin_fn`
-/// trait methods (removed) when the behaviour needs to capture GC-traced
-/// domain types (stream controllers, readers, promises, JsObject, etc.).
-///
-/// For stateless behaviour that captures nothing, pass `()` as the captures.
+/// Generic over `T` so Web IDL infrastructure (operation.rs, attribute.rs)
+/// can call it with their own type parameter.
 #[cfg(not(jsc_backend))]
-pub(crate) fn create_builtin_fn_with_traced_captures<C: boa_gc::Trace + 'static>(
-    ec: &mut dyn ExecutionContext<Types>,
+pub(crate) fn create_builtin_fn_with_traced_captures<T, C>(
+    ec: &mut dyn ExecutionContext<T>,
     captures: C,
     behaviour: fn(
-        &[<Types as JsTypes>::JsValue],
-        <Types as JsTypes>::JsValue,
+        &[T::JsValue],
+        T::JsValue,
         &C,
-        &mut dyn ExecutionContext<Types>,
-    ) -> Completion<<Types as JsTypes>::JsValue, Types>,
+        &mut dyn ExecutionContext<T>,
+    ) -> Completion<T::JsValue, T>,
     length: u32,
-    name: <Types as JsTypes>::PropertyKey,
+    name: T::PropertyKey,
     is_constructor: bool,
-) -> <Types as JsTypes>::Function {
-    js_engine::boa::create_builtin_fn_with_captures(
-        ec,
-        captures,
-        behaviour,
-        length,
-        name,
-        is_constructor,
-    )
+) -> T::Function
+where
+    T: JsTypes + JsTypesWithRealm,
+    C: js_engine::gc::Trace + 'static,
+{
+    js_engine::boa::create_builtin_fn_with_captures(ec, captures, behaviour, length, name, is_constructor)
 }
 
-/// JSC fallback: wrap captures and function pointer into a Box<dyn Fn>.
 #[cfg(jsc_backend)]
-pub(crate) fn create_builtin_fn_with_traced_captures<C: 'static>(
-    ec: &mut dyn ExecutionContext<Types>,
+pub(crate) fn create_builtin_fn_with_traced_captures<T, C>(
+    ec: &mut dyn ExecutionContext<T>,
     captures: C,
     behaviour: fn(
-        &[<Types as JsTypes>::JsValue],
-        <Types as JsTypes>::JsValue,
+        &[T::JsValue],
+        T::JsValue,
         &C,
-        &mut dyn ExecutionContext<Types>,
-    ) -> Completion<<Types as JsTypes>::JsValue, Types>,
+        &mut dyn ExecutionContext<T>,
+    ) -> Completion<T::JsValue, T>,
     length: u32,
-    name: <Types as JsTypes>::PropertyKey,
+    name: T::PropertyKey,
     is_constructor: bool,
-) -> <Types as JsTypes>::Function {
-    let closure = Box::new(
-        move |args: &[<Types as JsTypes>::JsValue],
-              this: <Types as JsTypes>::JsValue,
-              ec2: &mut dyn ExecutionContext<Types>|
-              -> Completion<<Types as JsTypes>::JsValue, Types> {
-            (behaviour)(args, this, &captures, ec2)
-        },
-    );
-    ec.create_builtin_function(closure, length, name, is_constructor)
+) -> T::Function
+where
+    T: JsTypes + JsTypesWithRealm,
+    C: 'static,
+{
+    js_engine::jsc::create_builtin_fn_with_captures(ec, captures, behaviour, length, name, is_constructor)
 }
 
 /// Convert a stateless raw function pointer into a builtin function.
@@ -98,6 +88,31 @@ pub(crate) fn create_builtin_fn_static(
 ) -> <Types as JsTypes>::Function {
     // Use the ExecutionContext trait method.
     ec.create_builtin_fn_static(behaviour, length, name)
+}
+
+/// Capture for a function pointer following the getter/setter signature.
+/// The fn pointer carries no GC references, so its trace is a no-op.
+#[gc_struct]
+pub(crate) struct FnCapture {
+    #[ignore_trace]
+    pub(crate) func: FnCaptureFn,
+}
+
+/// Signature for the function pointers used in getter/setter/operation captures.
+pub(crate) type FnCaptureFn = fn(
+    &<Types as JsTypes>::JsValue,
+    &[<Types as JsTypes>::JsValue],
+    &mut dyn ExecutionContext<Types>,
+) -> Completion<<Types as JsTypes>::JsValue, Types>;
+
+/// Behaviour: delegates to the captured fn pointer (reverse arg order).
+pub(crate) fn fn_capture_behaviour(
+    args: &[<Types as JsTypes>::JsValue],
+    this: <Types as JsTypes>::JsValue,
+    captures: &FnCapture,
+    ec: &mut dyn ExecutionContext<Types>,
+) -> Completion<<Types as JsTypes>::JsValue, Types> {
+    (captures.func)(&this, args, ec)
 }
 
 /// Content-level type alias for the concrete JS types in use.
