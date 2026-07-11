@@ -119,6 +119,7 @@ pub struct PromiseResolvers<T: JsTypes> {
     // while Rust code holds references.  Rc refcounting keeps protections
     // alive across Clone/Drop cycles.
     #[cfg(not(feature = "boa"))]
+    #[allow(dead_code)]
     root: Option<(
         std::rc::Rc<crate::gc::GcRootHandle<T>>,
         std::rc::Rc<crate::gc::GcRootHandle<T>>,
@@ -128,14 +129,8 @@ pub struct PromiseResolvers<T: JsTypes> {
 impl<T: JsTypes> std::fmt::Debug for PromiseResolvers<T> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("PromiseResolvers")
-            .field(
-                "resolve",
-                &std::format!("{:p}", &self.resolve as *const _),
-            )
-            .field(
-                "reject",
-                &std::format!("{:p}", &self.reject as *const _),
-            )
+            .field("resolve", &std::format!("{:p}", &self.resolve as *const _))
+            .field("reject", &std::format!("{:p}", &self.reject as *const _))
             .finish()
     }
 }
@@ -150,15 +145,14 @@ impl<T: JsTypes> PromiseResolvers<T> {
     /// Create promise resolvers with GC protection.
     /// On JSC, protects both resolve and reject via JSValueProtect.
     /// On Boa, this is a no-op (GC traces via Trace derive).
-    pub fn new(
-        resolve: T::JsObject,
-        reject: T::JsObject,
-        ec: &mut dyn ExecutionContext<T>,
-    ) -> Self
+    #[cfg_attr(feature = "boa", allow(unused_variables))]
+    pub fn new(resolve: T::JsObject, reject: T::JsObject, ec: &mut dyn ExecutionContext<T>) -> Self
     where
         T: crate::JsTypesWithRealm,
     {
+        #[cfg(not(feature = "boa"))]
         let resolve_value = T::value_from_object(resolve.clone());
+        #[cfg(not(feature = "boa"))]
         let reject_value = T::value_from_object(reject.clone());
         #[cfg(not(feature = "boa"))]
         let root = Some((

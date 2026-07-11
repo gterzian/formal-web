@@ -62,54 +62,263 @@ pub trait JsTypesGcExt: JsTypes + Sized + 'static {
     fn upgrade_reflector(reflector: &Self::Reflector) -> Option<Self::JsObject>;
 }
 
-/// An RAII guard that unroots a protected JS value when dropped.
-pub struct GcRootHandle<T: JsTypes> {
-    /// The rooted JS value.  Callers can read this to pass the value
-    /// to trait methods like `EcmascriptHost::call`.
-    pub value: T::JsValue,
-    pub(crate) unroot_action: Option<Box<dyn FnOnce(&T::JsValue)>>,
+/// Internal guard that executes the unroot action when dropped.
+/// Shared across all clones of a GcRootHandle via Rc.
+pub(crate) struct SharedUnroot<T: JsTypes> {
+    value: T::JsValue,
+    action: Option<Box<dyn FnOnce(&T::JsValue)>>,
 }
 
-impl<T: JsTypes> Drop for GcRootHandle<T> {
+impl<T: JsTypes> Drop for SharedUnroot<T> {
     fn drop(&mut self) {
-        if let Some(action) = self.unroot_action.take() {
+        if let Some(action) = self.action.take() {
             action(&self.value);
         }
     }
 }
 
+/// An RAII guard that unroots a protected JS value when the last clone is dropped.
+pub struct GcRootHandle<T: JsTypes> {
+    /// The rooted JS value. Callers can read this to pass the value
+    /// to trait methods like `EcmascriptHost::call`.
+    pub value: T::JsValue,
+    /// Shared reference to the unrooting logic.
+    /// On Boa this is always None. On JSC it holds the unprotect action.
+    guard: Option<std::rc::Rc<SharedUnroot<T>>>,
+}
+
+impl<T: JsTypes> GcRootHandle<T> {
+    /// Creates a new root handle.
+    pub fn new(value: T::JsValue, unroot_action: Option<Box<dyn FnOnce(&T::JsValue)>>) -> Self {
+        let guard = unroot_action.map(|action| {
+            std::rc::Rc::new(SharedUnroot {
+                value: value.clone(),
+                action: Some(action),
+            })
+        });
+        Self { value, guard }
+    }
+}
+
 impl<T: JsTypes> Clone for GcRootHandle<T> {
     fn clone(&self) -> Self {
-        // Cloning a GcRootHandle creates a new root for the value.
-        // On Boa this is a no-op (GC traces through Trace); on JSC
-        // this adds a new global-object property via the unroot action.
-        // Since unroot_action is a FnOnce (not Fn), we can't clone it —
-        // we store None and rely on the engine's GC to keep the value
-        // alive until the clone is dropped.
-        #[cfg(feature = "boa")]
-        {
-            Self {
-                value: self.value.clone(),
-                unroot_action: None,
-            }
-        }
-        #[cfg(not(feature = "boa"))]
-        {
-            // JSC: we can't clone the unroot action.  The clone will
-            // be kept alive by the original handle's root as long as
-            // it outlives the clone.  This matches the common pattern
-            // where a clone is stored temporarily for a callback.
-            Self {
-                value: self.value.clone(),
-                unroot_action: None,
-            }
+        Self {
+            value: self.value.clone(),
+            // Bumping the Rc count safely shares the unroot action across clones.
+            guard: self.guard.clone(),
         }
     }
 }
 
+// No custom Drop needed — standard drop glue drops the Option<Rc>,
+// which decrements the count and triggers SharedUnroot::drop at zero.
+
 // ============================================================================
 // SECTION III: BACKEND-ABSTRACTED GC CELL
 // ============================================================================
+
+// ── ProtectedCell: auto-protect/unprotect JsValue/JsObject on set ─────────
+//
+// On Boa: GcCell<JsValue> already traces through `#[derive(Trace)]` — no
+// explicit protection needed.  JsValueCell is just GcCell<JsValue>.
+//
+// On JSC: JsValue/JsObject references stored behind GcCell (Rc<RefCell>)
+// are invisible to JSC's GC.  JsValueCell wraps the inner value with
+// JSValueProtect on set and JSValueUnprotect on replacement.
+//
+// Content code uses these as drop-in replacements for GcCell<JsValue> and
+// GcCell<Option<JsObject>>, calling set() instead of *borrow_mut() =.
+
+// Boa: type aliases are sufficient — the Boa GC traces through GcCell.
+#[cfg(feature = "boa")]
+pub use boa_cells::*;
+
+#[cfg(feature = "boa")]
+mod boa_cells {
+    /// Auto-protecting cell for a single JsValue.
+    /// On Boa, set() delegates to GcCell mutation (GC traces automatically).
+    pub struct JsValueCell(boa_gc::Gc<boa_gc::GcRefCell<boa_engine::JsValue>>);
+
+    /// Auto-protecting cell for an optional JsObject.
+    pub struct JsObjectCell(boa_gc::Gc<boa_gc::GcRefCell<Option<boa_engine::JsObject>>>);
+
+    impl JsValueCell {
+        pub fn new(val: boa_engine::JsValue) -> Self {
+            JsValueCell(boa_gc::Gc::new(boa_gc::GcRefCell::new(val)))
+        }
+
+        pub fn set(&self, val: boa_engine::JsValue) {
+            *self.0.borrow_mut() = val;
+        }
+
+        pub fn borrow(&self) -> boa_gc::GcRef<'_, boa_engine::JsValue> {
+            self.0.borrow()
+        }
+
+        pub fn borrow_mut(&self) -> boa_gc::GcRefMut<'_, boa_engine::JsValue> {
+            self.0.borrow_mut()
+        }
+    }
+
+    impl Clone for JsValueCell {
+        fn clone(&self) -> Self {
+            JsValueCell(self.0.clone())
+        }
+    }
+
+    impl JsObjectCell {
+        pub fn new(val: Option<boa_engine::JsObject>) -> Self {
+            JsObjectCell(boa_gc::Gc::new(boa_gc::GcRefCell::new(val)))
+        }
+
+        pub fn set(&self, val: Option<boa_engine::JsObject>) {
+            *self.0.borrow_mut() = val;
+        }
+
+        pub fn borrow(&self) -> boa_gc::GcRef<'_, Option<boa_engine::JsObject>> {
+            self.0.borrow()
+        }
+
+        pub fn borrow_mut(&self) -> boa_gc::GcRefMut<'_, Option<boa_engine::JsObject>> {
+            self.0.borrow_mut()
+        }
+    }
+
+    impl Clone for JsObjectCell {
+        fn clone(&self) -> Self {
+            JsObjectCell(self.0.clone())
+        }
+    }
+}
+
+// JSC: actual struct with auto-protect/unprotect
+#[cfg(not(feature = "boa"))]
+pub use jsc_cells::*;
+
+#[cfg(not(feature = "boa"))]
+mod jsc_cells {
+    use crate::jsc::{JscObject, JscValue};
+    use crate::jsc_sys;
+
+    /// Auto-protecting cell for a single JsValue.
+    /// Use `set(val)` to assign (handles protect/unprotect).
+    /// Use `borrow()` / `borrow_mut()` for read access or in-place mutation.
+    pub struct JsValueCell(std::rc::Rc<std::cell::RefCell<JscValue>>);
+
+    /// Auto-protecting cell for an optional JsObject.
+    /// Use `set(val)` to assign (handles protect/unprotect).
+    pub struct JsObjectCell(std::rc::Rc<std::cell::RefCell<Option<JscObject>>>);
+
+    unsafe fn protect(val: &JscValue) {
+        if let Some(obj) = val.as_object() {
+            unsafe {
+                jsc_sys::JSValueProtect(obj.ctx(), obj.as_value_ref());
+            }
+        }
+    }
+
+    unsafe fn unprotect(val: &JscValue) {
+        if let Some(obj) = val.as_object() {
+            unsafe {
+                jsc_sys::JSValueUnprotect(obj.ctx(), obj.as_value_ref());
+            }
+        }
+    }
+
+    impl JsValueCell {
+        pub fn new(val: JscValue) -> Self {
+            unsafe { protect(&val); }
+            JsValueCell(std::rc::Rc::new(std::cell::RefCell::new(val)))
+        }
+
+        pub fn set(&self, val: JscValue) {
+            let mut slot = self.0.borrow_mut();
+            unsafe { unprotect(&slot); }
+            unsafe { protect(&val); }
+            *slot = val;
+        }
+
+        pub fn borrow(&self) -> std::cell::Ref<'_, JscValue> {
+            self.0.borrow()
+        }
+
+        pub fn borrow_mut(&self) -> std::cell::RefMut<'_, JscValue> {
+            self.0.borrow_mut()
+        }
+    }
+
+    impl Drop for JsValueCell {
+        fn drop(&mut self) {
+            // Unprotect the inner value when the last reference is dropped.
+            // Use try_borrow to avoid panicking if the cell is already borrowed
+            // (e.g. during cycle teardown or panic recovery).
+            if std::rc::Rc::strong_count(&self.0) == 1 {
+                if let Ok(val) = self.0.try_borrow() {
+                    unsafe { unprotect(&*val); }
+                }
+            }
+        }
+    }
+
+    impl Clone for JsValueCell {
+        fn clone(&self) -> Self {
+            // Share the Rc reference — interior mutability must be preserved.
+            Self(self.0.clone())
+        }
+    }
+
+    impl JsObjectCell {
+        pub fn new(val: Option<JscObject>) -> Self {
+            if let Some(ref obj) = val {
+                let v = JscValue::from(obj.clone());
+                unsafe { protect(&v); }
+            }
+            JsObjectCell(std::rc::Rc::new(std::cell::RefCell::new(val)))
+        }
+
+        pub fn set(&self, val: Option<JscObject>) {
+            let mut slot = self.0.borrow_mut();
+            if let Some(ref old) = *slot {
+                let ov = JscValue::from(old.clone());
+                unsafe { unprotect(&ov); }
+            }
+            if let Some(ref new) = val {
+                let nv = JscValue::from(new.clone());
+                unsafe { protect(&nv); }
+            }
+            *slot = val;
+        }
+
+        pub fn borrow(&self) -> std::cell::Ref<'_, Option<JscObject>> {
+            self.0.borrow()
+        }
+
+        pub fn borrow_mut(&self) -> std::cell::RefMut<'_, Option<JscObject>> {
+            self.0.borrow_mut()
+        }
+    }
+
+    impl Drop for JsObjectCell {
+        fn drop(&mut self) {
+            // Unprotect the inner value when the last reference is dropped.
+            if std::rc::Rc::strong_count(&self.0) == 1 {
+                if let Ok(val) = self.0.try_borrow() {
+                    if let Some(obj) = &*val {
+                        let v = JscValue::from(obj.clone());
+                        unsafe { unprotect(&v); }
+                    }
+                }
+            }
+        }
+    }
+
+    impl Clone for JsObjectCell {
+        fn clone(&self) -> Self {
+            // Share the Rc reference — interior mutability must be preserved.
+            Self(self.0.clone())
+        }
+    }
+}
 
 /// A backend-abstracted GC-managed cell providing interior mutability.
 ///
@@ -294,10 +503,7 @@ mod jsc_gc_impl {
             } else {
                 Some(unsafe {
                     crate::jsc::JscObject::from_raw(
-                        std::mem::transmute::<
-                            *mut std::ffi::c_void,
-                            *mut crate::jsc_sys::JSObjectRef,
-                        >(*reflector),
+                        *reflector as *mut crate::jsc_sys::JSObjectRef,
                         std::ptr::null_mut(),
                     )
                 })

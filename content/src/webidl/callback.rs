@@ -18,6 +18,7 @@ pub(crate) struct Callback {
     // the final drop calls JSValueUnprotect.
     #[cfg(not(feature = "boa"))]
     #[ignore_trace]
+    #[allow(dead_code)]
     root: Option<std::rc::Rc<js_engine::gc::GcRootHandle<Types>>>,
 }
 

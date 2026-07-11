@@ -73,7 +73,7 @@ pub fn clear_current_engine() {
     });
 }
 
-/// Get the current engine pointer.  Panics if none is set.
+#[allow(dead_code)]
 fn with_current_engine<R>(f: impl FnOnce(&mut JscEngine) -> R) -> R {
     CURRENT_ENGINE.with(|current| {
         let ptr = current
@@ -741,9 +741,9 @@ fn copy_function_prototype_methods(
     }
 }
 
-/// Cached toString function for builtin objects.
-/// Uses a BUILTIN_CLASS function with stored behaviour that reads
-/// `this.name` at call time, avoiding per-function JSEvaluateScript.
+// Cached toString function for builtin objects.
+// Uses a BUILTIN_CLASS function with stored behaviour that reads
+// `this.name` at call time, avoiding per-function JSEvaluateScript.
 thread_local! {
     static BUILTIN_TO_STRING: std::cell::RefCell<Option<*mut JSObjectRef>> =
         const { std::cell::RefCell::new(None) };
@@ -1247,7 +1247,7 @@ pub struct JscEngine {
     /// heap) but each has its own global object for Web IDL operations.
     realm_global: JscObject,
     host_data: HashMap<std::any::TypeId, Box<dyn std::any::Any>>,
-    /// Monotonically-increasing counter for GC-root property names.
+    #[allow(dead_code)]
     next_root_id: u64,
     /// Tracks objects protected via `JSValueProtect` so they can be
     /// unprotected when the engine is dropped.
@@ -1507,6 +1507,7 @@ impl JscEngine {
     /// queues JSC microtasks (promise resolution, etc.) does so through
     /// the JSC C API (JSObjectCallAsFunction, etc.), the drain happens
     /// automatically on that call's return. No explicit drain is needed.
+    #[allow(dead_code)]
     fn drain_microtasks(&mut self) {
         // No-op: JSC handles microtask draining automatically.
     }
@@ -1865,7 +1866,7 @@ where
             dst.as_mut_ptr() as *mut u8,
             std::mem::size_of::<JscObject>(),
         );
-        std::mem::forget(result);
+        let _ = result;
         dst.assume_init()
     }
 }
@@ -4921,12 +4922,12 @@ impl ExecutionContext<JscTypes> for JscEngine {
         unsafe {
             JSValueProtect(ctx_ptr, value_raw);
         }
-        crate::gc::GcRootHandle {
-            value: *value,
-            unroot_action: Some(Box::new(move |_val| unsafe {
+        crate::gc::GcRootHandle::new(
+            *value,
+            Some(Box::new(move |_val| unsafe {
                 JSValueUnprotect(ctx_ptr, value_raw);
             })),
-        }
+        )
     }
 
     fn evaluate_script(&mut self, source: &str) -> Completion<JscValue, JscTypes> {

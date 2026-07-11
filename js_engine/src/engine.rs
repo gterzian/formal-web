@@ -869,10 +869,7 @@ pub trait ExecutionContext<T: JsTypes + JsTypesWithRealm>: EcmascriptHost<T> {
     /// Boa: no-op (the GC traces through `#[derive(Trace)]` automatically).
     /// JSC: calls `JSValueProtect` / `JSValueUnprotect`.
     fn create_root(&mut self, value: &T::JsValue) -> crate::gc::GcRootHandle<T> {
-        crate::gc::GcRootHandle {
-            value: value.clone(),
-            unroot_action: None,
-        }
+        crate::gc::GcRootHandle::new(value.clone(), None)
     }
 
     /// <https://tc39.es/ecma262/#sec-createbuiltinfunction>

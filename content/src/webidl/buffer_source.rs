@@ -4,9 +4,11 @@ use js_engine::{Completion, ExecutionContext, JsTypes};
 
 use crate::js::Types;
 
+#[allow(dead_code)]
 type JsValue = <Types as JsTypes>::JsValue;
 
 /// <https://webidl.spec.whatwg.org/#dfn-get-buffer-source-copy>
+#[allow(dead_code)]
 pub(crate) fn get_a_copy_of_the_buffer_source(
     value: &JsValue,
     ec: &mut dyn ExecutionContext<Types>,
@@ -51,6 +53,7 @@ pub(crate) fn get_a_copy_of_the_buffer_source(
 }
 
 /// <https://webidl.spec.whatwg.org/#dfn-buffer-source-type>
+#[allow(dead_code)]
 pub(crate) fn is_buffer_source(value: &JsValue, _ec: &mut dyn ExecutionContext<Types>) -> bool {
     let Some(object) = <Types as JsTypes>::value_as_object(value) else {
         return false;
