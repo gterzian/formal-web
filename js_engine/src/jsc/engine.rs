@@ -4517,14 +4517,23 @@ impl ExecutionContext<JscTypes> for JscEngine {
         &mut self,
         promise: &JscObject,
     ) -> Completion<crate::enums::PromiseState<JscTypes>, JscTypes> {
-        // Use script evaluation to check the promise's internal state.
-        // Register global flags via .then() handlers, then drain microtasks
-        // with void 0 to let the handlers fire, then check the flags.
+        // Note: There is no way to observe a promise's state synchronously
+        // through JSC's C API when inside a nested JS call (microtasks don't
+        // drain).  This function uses eval-based .then() handlers + void 0
+        // to attempt draining, which only works at the outermost C API level.
+        // Inside nested calls, this always returns Pending.
+        //
+        // Attempted fix (2026-07-12): tracked promise states via
+        // Rust-side RefCell updated by wrapped resolve/reject functions.
+        // Failed because .then() chaining creates NEW JSC-internal promises
+        // (via Promise.prototype.then) that are not tracked.  Only promises
+        // created directly by new_promise_capability were tracked, which
+        // didn't help for the chained promises that the stream algorithm
+        // actually polls.
         let _guard = EngineGuard::new(self as *mut JscEngine);
         let global = self.context.global_object();
         let mut exc: *mut JSValueRef = std::ptr::null_mut();
 
-        // Store promise and create flags.
         let p_key = JscString::from_rust("__fw_ps_promise");
         unsafe {
             JSObjectSetProperty(
@@ -4543,7 +4552,6 @@ impl ExecutionContext<JscTypes> for JscEngine {
             });
         }
 
-        // Evaluate: attach .then() that sets global flags, then drain.
         let setup_script = r#"
             __fw_ps_state = "pending";
             __fw_ps_value = undefined;
@@ -4553,10 +4561,8 @@ impl ExecutionContext<JscTypes> for JscEngine {
             );
         "#;
         self.eval_script_raw(setup_script);
-        // Drain microtasks so the .then() handlers fire.
         self.eval_script_raw("void 0");
 
-        // Read the state flag.
         let state_key = JscString::from_rust("__fw_ps_state");
         let state_val = unsafe {
             JSObjectGetProperty(
@@ -4566,7 +4572,6 @@ impl ExecutionContext<JscTypes> for JscEngine {
                 &mut exc,
             )
         };
-        // Read the value flag.
         let value_key = JscString::from_rust("__fw_ps_value");
         let value_val = unsafe {
             JSObjectGetProperty(
@@ -4577,7 +4582,6 @@ impl ExecutionContext<JscTypes> for JscEngine {
             )
         };
 
-        // Cleanup.
         unsafe {
             let cleanup_keys = [
                 JscString::from_rust("__fw_ps_promise"),

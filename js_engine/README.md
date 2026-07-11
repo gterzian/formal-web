@@ -133,16 +133,27 @@ drainage. The `.then()` handlers never fire, so the state always reads as
   would either hang or not help (the issue is that reactions aren't queued,
   not that they're queued but unprocessed).
 
-**What's needed:** A way to observe promise state without relying on `.then()`
-microtasks. The `new_promise_capability()` has already been refactored to use
-a native `StoredBehaviour` executor (stores resolve/reject in a Rust-side
-`Rc<RefCell<>>`). A similar approach for `promise_state()` — replacing the
-`.then()`-and-poll pattern with direct state observation — would fix this.
+**Failed fix attempt: tracked promise states (2026-07-12):**
+Wrapped the resolve/reject functions returned by `new_promise_capability()`
+with native BUILTIN_CLASS callbacks that record the promise state in a
+Rust-side `Rc<RefCell<PromiseState>>` HashMap keyed by promise object
+pointer. `promise_state()` checked this HashMap first, avoiding the need
+for microtask drainage.
 
-One approach that was discussed but not implemented: wrap the resolve/reject
-functions returned by `new_promise_capability` with native callbacks that
-record the promise state in a Rust-side cell, so `promise_state()` can read it
-without needing microtasks at all.
+**Why it failed:** The stream algorithm doesn't poll the ORIGINAL tracked
+promise — it polls CHAINED promises created by `.then()` (via
+`perform_promise_then` with `None` result_capability, which calls JSC's
+`Promise.prototype.then` internally). JSC's `.then()` creates a NEW
+untracked promise. The tracked state exists only on the inner promise, but
+the algorithm checks the outer chained promise. Only 4 of 9 piping tests
+happened to check the inner promise directly (those passed); the other 5
+checked chained promises and either timed out or produced wrong results.
+
+This failure reveals a fundamental constraint: any `promise_state()`
+implementation that works through JSC's public C API can only observe
+promises whose resolve/reject we control. Promises created by JSC's
+internal `.then()` are opaque — their state is only observable through
+microtask-driven callbacks, which don't run inside nested C API calls.
 
 ### 2. WASM compile/instantiate timeout
 
