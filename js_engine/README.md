@@ -441,55 +441,101 @@ double `&mut` borrow of `JscEngine` through the trait object (UB).
 - `WindowTimer.arguments` (`Vec<JsValue>`) elements are not individually
   protected on JSC.
 
-#### 2026-07-12 — Systematic GC protection for stream internals
+#### 2026-07-12 — `GcRootHandle` memory safety + `JsValueCell`/`JsObjectCell` infrastructure
 
-**Problem:** All pipe-to tests (except `general-addition` and `throwing-options`)
-crash with SIGSEGV on JSC because JsObject/JsValue references stored in Rust
-struct fields behind `GcCell` (`Rc<RefCell>` on JSC) are invisible to JSC's
-GC.  When GC runs, these objects are collected, and subsequent access via
-the Rust-side handle causes SIGSEGV.
+**`GcRootHandle` — dangling-pointer bug on Clone:**
+The old `Clone` for `GcRootHandle` on JSC stored `unroot_action: None` on the
+clone, relying on the original to keep the value alive.  If the original was
+dropped before the clone, the clone held a dangling pointer and caused
+use-after-free when JSC's GC collected the now-unprotected value.
 
-**Approach:** Added reusable JSC protection helper functions in
-`content/src/streams/readablestreamsupport.rs` that wrap the raw
-`JSValueProtect`/`JSValueUnprotect` C API calls.  These are no-ops on Boa
-(where `#[derive(Trace)]` handles GC tracing automatically).  The helpers
-cover:
+**Fix:** Rewrote `GcRootHandle` with an `Rc<SharedUnroot<T>>` architecture.
+The unroot action (JSValueUnprotect) and a copy of the value live in
+`SharedUnroot`, shared across all clones via `Rc`.  `Clone` just bumps the
+reference count.  `SharedUnroot::drop` fires the action exactly once, when
+the last clone is dropped.  No more dangling pointers.
 
-- `protect_object` / `unprotect_object` — individual `JsObject` values
-- `protect_jsvalue` / `unprotect_jsvalue` — `JsValue` values (checks if object)
-- `protect_object_vecdeque` / `unprotect_object_vecdeque` — bulk for `VecDeque<JsObject>`
-- `set_protected_jsvalue` — replace a bare `JsValue` field with protection
-- `replace_protected_object` — replace an `Option<JsObject>` field with protection
+**`JsValueCell`/`JsObjectCell` — backend-abstracted auto-protect cells:**
+Added to `js_engine/src/gc.rs`.  These cells auto-protect JS values on JSC
+and are equivalent to `GcCell<T>` on Boa.  Uniform API on both backends:
+`new(val)`, `set(val)`, `borrow()`, `borrow_mut()`, `Clone`.
 
-**Fields now protected:**
-
-| Struct | Field(s) | Location |
+| Backend | JsValueCell | JsObjectCell |
 |---|---|---|
-| `PipeToStateInner` | `promise`, `shutdown_action_promise`, `pending_writes` (all elements), `shutdown_error` (enhanced) | `readablestream.rs` |
-| `TeeState` | `cancel_promise`, `reason1`, `reason2` | `readablestream.rs` |
-| `ByteTeeState` | `cancel_promise`, `reason1`, `reason2` | `readablestream.rs` |
-| `ReadableStream` | `stored_error`, `controller_object` | `readablestream.rs` |
-| `WritableStream` | `stored_error`, `controller_object` | `writablestream.rs` |
-| `PendingAbortRequest` | `promise`, `reason` | `writablestreamsupport.rs` |
-| `SourceMethod` | `this_value` | `readablestreamsupport.rs` |
+| Boa | Wraps `Gc<GcRefCell<JsValue>>` (GC traces automatically) | Wraps `Gc<GcRefCell<Option<JsObject>>>` |
+| JSC | Wraps `Rc<RefCell<JscValue>>` — `set()` calls `JSValueProtect`/`JSValueUnprotect`. `Clone` shares the `Rc`. `Drop` uses `try_borrow()` to avoid panic, only unprotects at last reference. | Same pattern for optional JsObject |
 
-**Outcome:** The content crate now compiles on JSC without errors.  The
-systematic protection eliminates the root cause of JSC SIGSEGV crashes for
-all stream operations (pipe-to, tee, cancel, close, abort).
+**JSC reflector FFI fix:**
+`upgrade_reflector` transmuted `*mut c_void` to `*mut JSObjectRef` (pointer-
+to-pointer since `JSObjectRef` is already a pointer).  Changed to direct cast:
+`*reflector as *mut JSObjectRef`.
 
-**Remaining crashes (not GC-related):**
-- Pipe-to tests using `delay()` (`setTimeout`-based async) time out because
-  JSC's C API direct-call path does not pump the event loop for timer
-  delivery.  This is a different class of issue from GC protection.
-- WASM compile/instantiate timeouts also require event loop pumping.
+**Warning cleanup:**
+- `jsc_sys.rs`: added `#![allow(non_snake_case)]` (FFI field names must match C API).
+- `records.rs`: cfg-gated `resolve_value`/`reject_value` on JSC only;
+  `#[allow(unused_variables)]` on `ec` parameter for Boa.
+- `jsc/engine.rs`: changed `///` doc comment on `thread_local!` to `//`;
+  added `#[allow(dead_code)]` to `with_current_engine`, `next_root_id`,
+  `drain_microtasks`.
+- `content/src/webidl/`: added `#[allow(dead_code)]` / `#[allow(unused_imports)]`
+  on pre-existing unused imports in `bindings/mod.rs`, `buffer_source.rs`,
+  `callback.rs`, `mod.rs`.
+
+**Result:** `js_engine` has 0 warnings on both backends.  Content crate has
+11 pre-existing warnings (media feature gates, dead WASM code, DOM liveness).
+
+**Failed: pipe-to tests still SIGSEGV on JSC.**
+The content crate's stream internals (`PipeToStateInner.pending_writes`,
+`TeeState.cancel_promise`, `ReadableStream.stored_error`, etc.) still use
+bare `GcCell<JsValue>` / `VecDeque<JsObject>` fields without protection.
+The `JsValueCell`/`JsObjectCell` infrastructure is available but not yet
+applied to the content crate.  This is the next step.
+
+**Files changed (this session):**
+- `js_engine/src/gc.rs` — `GcRootHandle` rewrite, `JsValueCell`/`JsObjectCell`
+- `js_engine/src/engine.rs` — Updated `create_root` to use `GcRootHandle::new()`
+- `js_engine/src/jsc/engine.rs` — Updated `create_root` for new API
+- `js_engine/src/records.rs` — cfg-gated unused variables
+- `js_engine/src/jsc_sys.rs` — `#![allow(non_snake_case)]`
+- `content/src/webidl/bindings/mod.rs`, `buffer_source.rs`, `callback.rs`,
+  `mod.rs` — warning suppression on pre-existing dead code
+- `js_engine/README.md` — this update
+
+#### 2026-07-12 — Complete JsValueCell/JsObjectCell migration of content crate stream internals
 
 **Files changed:**
-- `content/src/streams/readablestreamsupport.rs` — Added `jsc_protect` module
-  with reusable protection helpers and `boa_noop` stubs.
-- `content/src/streams/readablestream.rs` — Protected `PipeToStateInner`,
-  `TeeState`, `ByteTeeState`, `ReadableStream` fields.
-- `content/src/streams/writablestream.rs` — Protected `WritableStream` fields.
-- `content/src/streams/writablestreamsupport.rs` — Protected `PendingAbortRequest` fields.
+- `js_engine/src/gc.rs` — Added `#[derive(boa_gc::Trace, boa_gc::Finalize)]` to Boa-side JsValueCell/JsObjectCell
+- `content/src/streams/readablestream.rs` — ReadableStream (stored_error, controller_object),
+  PipeToStateInner (promise, pending_writes, shutdown_error, shutdown_action_promise),
+  TeeState (cancel_promise, reason1, reason2),
+  ByteTeeState (cancel_promise, reason1, reason2),
+  ReadableStreamFromIteratorRecord (iterator, next_method),
+  AbortThenCancelState (error, abort_rejection)
+- `content/src/streams/writablestream.rs` — WritableStream (stored_error, controller_object)
+- `content/src/streams/writablestreamsupport.rs` — PendingAbortRequest (promise, reason)
+- `content/src/streams/readablestreamsupport.rs` — SourceMethod (this_value)
+- `content/src/streams/readablestreamdefaultcontroller.rs` — QueueEntry (chunk)
+
+**What was done:**
+- Migrated 22 struct fields from bare JsObject/JsValue (or GcCell<JsValue>) to
+  JsValueCell/JsObjectCell, which auto-call JSValueProtect/JSValueUnprotect on JSC
+- Removed manual JSValueProtect/JSValueUnprotect from PipeToState::set_shutdown_error
+- Added Trace/Finalize derives to Boa-side JsValueCell/JsObjectCell for gc_struct compatibility
+
+**What was confirmed:**
+- Boa WPT: executed=84 unexpected=0 (no regressions)
+- JSC unit tests: 18/18 pass
+- JSC content crate: compiles with 0 new warnings (11 pre-existing only)
+- Boa content crate: compiles with 0 new warnings
+
+**What was ruled out (not retested after migration):**
+- Actual JSC WPT run (requires the content process binary to work on JSC — still blocked)
+
+**Not investigated:**
+- `WindowTimer.arguments` (`Vec<JsValue>` elements) remains unprotected
+- `promise_state()` eval-based implementation still broken in nested scopes
+- WASM compile/instantiate timeout still unfixed
+- Piping test timeouts with `delay()` still unfixed
 
 ### Critical fixes (2026-07-11)
 
@@ -538,11 +584,14 @@ Added `Intrinsics` struct and `resolve_global_path` helper on `JscEngine`, repla
 | `WindowTimer.arguments` | `Vec<JsValue>` elements need protection. Same pattern applies to any `Vec<JsValue>` in Rust-owned structs. | Unfixed |
 | Event listeners | Uses `Callback` which is now protected. Covered. | Fixed (inherits Callback fix) |
 | Stream callbacks | `SourceMethod` wraps `Callback`. Covered. | Fixed (inherits Callback fix) |
-| **PipeToStateInner** | `promise`, `shutdown_action_promise`, `pending_writes` | Fixed (2026-07-12) |
-| **TeeState / ByteTeeState** | `cancel_promise`, `reason1`, `reason2` | Fixed (2026-07-12) |
-| **ReadableStream / WritableStream** | `stored_error`, `controller_object` | Fixed (2026-07-12) |
-| **PendingAbortRequest** | `promise`, `reason` | Fixed (2026-07-12) |
-| **SourceMethod** | `this_value` | Fixed (2026-07-12) |
+| **PipeToStateInner** | `promise`, `shutdown_action_promise`, `pending_writes` | Unfixed — blocked on content crate migration to `JsValueCell`/`JsObjectCell` |
+| **TeeState / ByteTeeState** | `cancel_promise`, `reason1`, `reason2` | Unfixed — same |
+| **ReadableStream / WritableStream** | `stored_error`, `controller_object` | Unfixed — same |
+| **PendingAbortRequest** | `promise`, `reason` | Unfixed — same |
+| **SourceMethod** | `this_value` | Unfixed — same |
+| **ReadableStreamDefaultReader** | `closed_promise` | Has manual `#[cfg(not(feature = "boa"))]` JSValueProtect in setter (pre-existing) |
+| **ReadableStreamBYOBReader** | `closed_promise` | Same pattern |
+| **WritableStreamDefaultWriter** | `ready_promise`, `closed_promise` | Same pattern |
 | Constructor Proxy eval | Cannot be eliminated (JSC C API has no `JSProxyCreate`). | Acknowledged |
 | `promise_state()` eval | `JSPromiseGetStatus` not in public C API. | Acknowledged |
 | `promise_state()` nested scope | `promise_state` always returns `Pending` inside nested JS calls because JSC doesn't drain microtasks until the outermost C API call returns. | Unfixed — see Remaining issues
@@ -568,29 +617,49 @@ compilation needed.
 `#[cfg(not(feature = "boa"))]` protection blocks in reader/writer setters
 become unnecessary once the fields use these types.
 
-### Remaining work (content crate migration)
+### Phase 4 migration: complete (2026-07-12)
 
-| Struct | Current field type | New type | Migration status |
+All struct fields in the content crate's stream internals have been migrated
+from bare `GcCell<JsValue>`/`GcCell<Option<JsObject>>`/inline `JsObject`/`JsValue`
+to `JsValueCell`/`JsObjectCell`.  The following table documents every field that
+was migrated:
+
+| Struct | Field | Old type | New type |
 |---|---|---|---|
-| `ReadableStream.stored_error` | `GcCell<JsValue>` | `JsValueCell` | Pending |
-| `WritableStream.stored_error` | `GcCell<JsValue>` | `JsValueCell` | Pending |
-| `ReadableStream.controller_object` | `GcCell<Option<JsObject>>` | `JsObjectCell` | Pending |
-| `WritableStream.controller_object` | `GcCell<Option<JsObject>>` | `JsObjectCell` | Pending |
-| `PendingAbortRequest.promise` | `JsObject` (in struct) | `JsObjectCell` or manual | Pending |
-| `PendingAbortRequest.reason` | `JsValue` (in struct) | `JsValueCell` or manual | Pending |
-| `PipeToStateInner.promise` | `JsObject` (in struct) | Requires `JsValueCell` like approach | Pending |
-| `PipeToStateInner.pending_writes` | `VecDeque<JsObject>` (in struct) | Requires protected wrapper | Pending |
-| `PipeToStateInner.shutdown_error` | `Option<JsValue>` (in struct) | Requires `Option<JsValueCell>` pattern | Pending |
-| `PipeToStateInner.shutdown_action_promise` | `Option<JsObject>` (in struct) | Requires `Option<JsObjectCell>` pattern | Pending |
-| `TeeState.cancel_promise` / `reason1` / `reason2` | `JsObject` / `JsValue` | Requires cell types | Pending |
-| `ByteTeeState` same fields | Same | Same | Pending |
-| `SourceMethod.this_value` | `JsObject` (in struct) | `JsObjectCell` or manual | Pending |
+| `ReadableStream` | `stored_error` | `GcCell<JsValue>` | `JsValueCell` |
+| `ReadableStream` | `controller_object` | `GcCell<Option<JsObject>>` | `JsObjectCell` |
+| `WritableStream` | `stored_error` | `GcCell<JsValue>` | `JsValueCell` |
+| `WritableStream` | `controller_object` | `GcCell<Option<JsObject>>` | `JsObjectCell` |
+| `PipeToStateInner` | `promise` | `JsObject` | `JsObjectCell` |
+| `PipeToStateInner` | `pending_writes` | `VecDeque<JsObject>` | `VecDeque<JsObjectCell>` |
+| `PipeToStateInner` | `shutdown_error` | `Option<JsValue>` | `Option<JsValueCell>` |
+| `PipeToStateInner` | `shutdown_action_promise` | `Option<JsObject>` | `Option<JsObjectCell>` |
+| `TeeState` | `cancel_promise` | `JsObject` | `JsObjectCell` |
+| `TeeState` | `reason1` | `JsValue` | `JsValueCell` |
+| `TeeState` | `reason2` | `JsValue` | `JsValueCell` |
+| `ByteTeeState` | `cancel_promise` | `JsObject` | `JsObjectCell` |
+| `ByteTeeState` | `reason1` | `JsValue` | `JsValueCell` |
+| `ByteTeeState` | `reason2` | `JsValue` | `JsValueCell` |
+| `PendingAbortRequest` | `promise` | `JsObject` | `JsObjectCell` |
+| `PendingAbortRequest` | `reason` | `JsValue` | `JsValueCell` |
+| `SourceMethod` | `this_value` | `JsObject` | `JsObjectCell` |
+| `AbortThenCancelState` | `error` | `JsValue` | `JsValueCell` |
+| `AbortThenCancelState` | `abort_rejection` | `Option<JsValue>` | `Option<JsValueCell>` |
+| `ReadableStreamFromIteratorRecord` | `iterator` | `JsObject` | `JsObjectCell` |
+| `ReadableStreamFromIteratorRecord` | `next_method` | `JsObject` | `JsObjectCell` |
+| `QueueEntry` | `chunk` | `JsValue` | `JsValueCell` |
 
-**Key insight:** The struct fields that are inline (not behind GcCell) like
-`PipeToStateInner.promise`, `TeeState.cancel_promise`, etc. need the outer
-struct's Drop to unprotect on teardown.  This can be achieved by making the
-`gc_struct_jsc` proc-macro generate Drop impls, or by using cell wrappers for
-every field.
+**Removed manual protection:** `PipeToState::set_shutdown_error` had manual
+`#[cfg(not(feature = "boa"))]` `JSValueProtect`/`JSValueUnprotect` which was
+replaced by `Option<JsValueCell>`.
+
+**Infrastructure:** Added `#[derive(boa_gc::Trace, boa_gc::Finalize)]` to the
+Boa-side `JsValueCell` and `JsObjectCell` so `#[gc_struct]` structs containing
+them correctly implement `boa_gc::Trace` for GC tracing.
+
+**Only remaining unprotected field:** `WindowTimer.arguments` (`Vec<JsValue>`
+elements) in the HTML timer code.  Same pattern applies to any `Vec<JsValue>`
+in Rust-owned structs.
 
 ### Phase 5: Verify pass-rate parity
 
@@ -614,6 +683,15 @@ a JSC bug fix (preferred) or shared metadata (last resort).
 | Constructor Proxy eval | Cannot be eliminated (JSC C API has no `JSProxyCreate`). | Acknowledged |
 | `promise_state()` eval | `JSPromiseGetStatus` not in public C API. | Acknowledged |
 
+- **JSC WPT status (2026-07-12):** The `JsValueCell`/`JsObjectCell` infrastructure
+  has been fully applied to the content crate's stream internals.  All stream
+  struct fields (ReadableStream, WritableStream, PipeToStateInner, TeeState,
+  ByteTeeState, PendingAbortRequest, SourceMethod, AbortThenCancelState,
+  ReadableStreamFromIteratorRecord, QueueEntry) are now protected.  The manual
+  `JSValueProtect`/`JSValueUnprotect` in `PipeToState::set_shutdown_error` has
+  been replaced by `Option<JsValueCell>`.  Boa WPT: `executed=84 unexpected=0`.
+  JSC unit tests: 18/18 pass.  The SIGSEGV crashes in pipe-to and tee tests
+  should be resolved.
 - **Piping test timeouts on JSC** — Tests using `delay()` (via
   `step_timeout`/`setTimeout`) time out on JSC but pass on Boa.  Root cause:
   JSC's C API direct-call path does not pump the event loop for timer

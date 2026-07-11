@@ -10,8 +10,7 @@ use crate::js::{Types, create_builtin_fn_with_traced_captures};
 use crate::streams::{SizeAlgorithm, extract_high_water_mark, extract_size_algorithm};
 use crate::webidl::bindings::create_interface_instance;
 use crate::webidl::{resolved_promise, upon_settlement};
-use js_engine::gc::GcCell;
-use js_engine::gc::gc_cell_new;
+use js_engine::gc::{GcCell, JsObjectCell, JsValueCell, gc_cell_new};
 use js_engine::gc_struct;
 
 use super::{
@@ -32,7 +31,7 @@ type JsObject = <Types as JsTypes>::JsObject;
 pub struct WritableStream {
     /// <https://streams.spec.whatwg.org/#writablestream-controller>
     controller: GcCell<Option<WritableStreamController>>,
-    controller_object: GcCell<Option<JsObject>>,
+    controller_object: JsObjectCell,
 
     /// <https://streams.spec.whatwg.org/#writablestream-writer>
     writer: GcCell<Option<WritableStreamWriter>>,
@@ -42,7 +41,7 @@ pub struct WritableStream {
     state: Rc<RefCell<WritableStreamState>>,
 
     /// <https://streams.spec.whatwg.org/#writablestream-storederror>
-    stored_error: GcCell<JsValue>,
+    stored_error: JsValueCell,
 
     /// <https://streams.spec.whatwg.org/#writablestream-writerequests>
     write_requests: GcCell<Vec<WriteRequest>>,
@@ -69,10 +68,10 @@ impl WritableStream {
         let undefined = ec.value_undefined();
         Self {
             controller: gc_cell_new(None),
-            controller_object: gc_cell_new(None),
+            controller_object: JsObjectCell::new(None),
             writer: gc_cell_new(None),
             state: Rc::new(RefCell::new(WritableStreamState::Writable)),
-            stored_error: gc_cell_new(undefined),
+            stored_error: JsValueCell::new(undefined),
             write_requests: gc_cell_new(Vec::new()),
             in_flight_write_request: gc_cell_new(None),
             close_request: gc_cell_new(None),
@@ -91,7 +90,7 @@ impl WritableStream {
         self.controller_object.borrow().clone()
     }
     pub(crate) fn set_controller_object_slot(&self, controller_object: Option<JsObject>) {
-        *self.controller_object.borrow_mut() = controller_object;
+        self.controller_object.set(controller_object);
     }
     pub(crate) fn writer_slot(&self) -> Option<WritableStreamWriter> {
         self.writer.borrow().clone()
@@ -109,7 +108,7 @@ impl WritableStream {
         self.stored_error.borrow().clone()
     }
     pub(crate) fn set_stored_error(&self, error: JsValue) {
-        *self.stored_error.borrow_mut() = error;
+        self.stored_error.set(error);
     }
     pub(crate) fn backpressure(&self) -> bool {
         self.backpressure.get()
@@ -175,10 +174,10 @@ impl WritableStream {
     /// <https://streams.spec.whatwg.org/#initialize-writable-stream>
     fn initialize_writable_stream(&mut self, ec: &mut dyn ExecutionContext<Types>) {
         *self.state.borrow_mut() = WritableStreamState::Writable;
-        *self.stored_error.borrow_mut() = ec.value_undefined();
+        self.stored_error.set(ec.value_undefined());
         *self.writer.borrow_mut() = None;
         *self.controller.borrow_mut() = None;
-        *self.controller_object.borrow_mut() = None;
+        self.controller_object.set(None);
         *self.in_flight_write_request.borrow_mut() = None;
         *self.close_request.borrow_mut() = None;
         *self.in_flight_close_request.borrow_mut() = None;

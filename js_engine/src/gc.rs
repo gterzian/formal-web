@@ -137,9 +137,11 @@ pub use boa_cells::*;
 mod boa_cells {
     /// Auto-protecting cell for a single JsValue.
     /// On Boa, set() delegates to GcCell mutation (GC traces automatically).
+    #[derive(boa_gc::Trace, boa_gc::Finalize)]
     pub struct JsValueCell(boa_gc::Gc<boa_gc::GcRefCell<boa_engine::JsValue>>);
 
     /// Auto-protecting cell for an optional JsObject.
+    #[derive(boa_gc::Trace, boa_gc::Finalize)]
     pub struct JsObjectCell(boa_gc::Gc<boa_gc::GcRefCell<Option<boa_engine::JsObject>>>);
 
     impl JsValueCell {
@@ -227,14 +229,20 @@ mod jsc_cells {
 
     impl JsValueCell {
         pub fn new(val: JscValue) -> Self {
-            unsafe { protect(&val); }
+            unsafe {
+                protect(&val);
+            }
             JsValueCell(std::rc::Rc::new(std::cell::RefCell::new(val)))
         }
 
         pub fn set(&self, val: JscValue) {
             let mut slot = self.0.borrow_mut();
-            unsafe { unprotect(&slot); }
-            unsafe { protect(&val); }
+            unsafe {
+                unprotect(&slot);
+            }
+            unsafe {
+                protect(&val);
+            }
             *slot = val;
         }
 
@@ -254,7 +262,9 @@ mod jsc_cells {
             // (e.g. during cycle teardown or panic recovery).
             if std::rc::Rc::strong_count(&self.0) == 1 {
                 if let Ok(val) = self.0.try_borrow() {
-                    unsafe { unprotect(&*val); }
+                    unsafe {
+                        unprotect(&*val);
+                    }
                 }
             }
         }
@@ -271,7 +281,9 @@ mod jsc_cells {
         pub fn new(val: Option<JscObject>) -> Self {
             if let Some(ref obj) = val {
                 let v = JscValue::from(obj.clone());
-                unsafe { protect(&v); }
+                unsafe {
+                    protect(&v);
+                }
             }
             JsObjectCell(std::rc::Rc::new(std::cell::RefCell::new(val)))
         }
@@ -280,11 +292,15 @@ mod jsc_cells {
             let mut slot = self.0.borrow_mut();
             if let Some(ref old) = *slot {
                 let ov = JscValue::from(old.clone());
-                unsafe { unprotect(&ov); }
+                unsafe {
+                    unprotect(&ov);
+                }
             }
             if let Some(ref new) = val {
                 let nv = JscValue::from(new.clone());
-                unsafe { protect(&nv); }
+                unsafe {
+                    protect(&nv);
+                }
             }
             *slot = val;
         }
@@ -305,7 +321,9 @@ mod jsc_cells {
                 if let Ok(val) = self.0.try_borrow() {
                     if let Some(obj) = &*val {
                         let v = JscValue::from(obj.clone());
-                        unsafe { unprotect(&v); }
+                        unsafe {
+                            unprotect(&v);
+                        }
                     }
                 }
             }

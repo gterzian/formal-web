@@ -1,3 +1,4 @@
+use js_engine::gc::{JsObjectCell, JsValueCell};
 use js_engine::gc_struct;
 use js_engine::{Completion, ExecutionContext, JsTypes, PromiseResolvers};
 
@@ -50,11 +51,11 @@ impl WriteRequest {
 }
 #[gc_struct]
 pub(crate) struct PendingAbortRequest {
-    promise: JsObject,
+    promise: JsObjectCell,
     resolvers: PromiseResolvers<Types>,
 
     /// <https://streams.spec.whatwg.org/#pending-abort-request-reason>
-    reason: JsValue,
+    reason: JsValueCell,
 
     /// <https://streams.spec.whatwg.org/#pending-abort-request-was-already-erroring>
     was_already_erroring: bool,
@@ -71,17 +72,17 @@ impl PendingAbortRequest {
             .as_object()
             .ok_or_else(|| ec.new_type_error("new_promise_pending did not return an object"))?;
         Ok(Self {
-            promise: promise_obj,
+            promise: JsObjectCell::new(Some(promise_obj)),
             resolvers,
-            reason,
+            reason: JsValueCell::new(reason),
             was_already_erroring,
         })
     }
     pub(crate) fn promise(&self) -> JsObject {
-        self.promise.clone()
+        self.promise.borrow().clone().unwrap()
     }
     pub(crate) fn reason(&self) -> JsValue {
-        self.reason.clone()
+        self.reason.borrow().clone()
     }
     pub(crate) fn was_already_erroring(&self) -> bool {
         self.was_already_erroring

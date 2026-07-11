@@ -7,8 +7,7 @@ use crate::js::{Types, create_builtin_fn_with_traced_captures};
 use crate::streams::SizeAlgorithm;
 use crate::webidl::bindings::create_interface_instance;
 use crate::webidl::{mark_promise_as_handled, rejected_promise, resolved_promise};
-use js_engine::gc::GcCell;
-use js_engine::gc::gc_cell_new;
+use js_engine::gc::{GcCell, JsValueCell, gc_cell_new};
 use js_engine::gc_struct;
 
 use super::readablestream::{
@@ -167,7 +166,7 @@ impl StartAlgorithm {
 /// `EnqueueValueWithSize` computes for it.
 #[gc_struct]
 struct QueueEntry {
-    chunk: JsValue,
+    chunk: JsValueCell,
     #[ignore_trace]
     size: f64,
 }
@@ -358,7 +357,7 @@ impl ReadableStreamDefaultController {
 
                 // Step 2.2: "If this.[[closeRequested]] is true and this.[[queue]] is empty,"
                 let should_close_stream = self.close_requested.get() && queue.is_empty();
-                (entry.chunk.clone(), should_close_stream)
+                (entry.chunk.borrow().clone(), should_close_stream)
             };
 
             if should_close_stream {
@@ -679,7 +678,7 @@ impl ReadableStreamDefaultController {
     /// <https://streams.spec.whatwg.org/#enqueue-value-with-size>
     fn enqueue_value_with_size(&self, chunk: JsValue, chunk_size: f64) {
         self.queue.borrow_mut().push_back(QueueEntry {
-            chunk,
+            chunk: JsValueCell::new(chunk),
             size: chunk_size,
         });
         self.queue_total_size

@@ -360,18 +360,12 @@ impl ReadableStreamGenericReader for ReadableStreamDefaultReader {
             let old = self.closed_promise.borrow().clone();
             if let Some(ref old_obj) = old {
                 unsafe {
-                    js_engine::jsc_sys::JSValueUnprotect(
-                        old_obj.ctx(),
-                        old_obj.as_value_ref(),
-                    );
+                    js_engine::jsc_sys::JSValueUnprotect(old_obj.ctx(), old_obj.as_value_ref());
                 }
             }
             if let Some(ref new_obj) = promise {
                 unsafe {
-                    js_engine::jsc_sys::JSValueProtect(
-                        new_obj.ctx(),
-                        new_obj.as_value_ref(),
-                    );
+                    js_engine::jsc_sys::JSValueProtect(new_obj.ctx(), new_obj.as_value_ref());
                 }
             }
         }

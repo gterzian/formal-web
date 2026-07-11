@@ -1,3 +1,5 @@
+#![allow(non_snake_case)]
+
 //! Raw FFI bindings to Apple's JavaScriptCore framework.
 //!
 //! These are direct `unsafe extern "C"` function declarations for the C API defined in

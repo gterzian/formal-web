@@ -19,7 +19,7 @@ use super::readablestream::{
 use super::readablestreambyobreader::ReadableStreamBYOBReader;
 use super::readablestreamdefaultcontroller::ReadableStreamDefaultController;
 use super::readablestreamdefaultreader::ReadableStreamDefaultReader;
-use js_engine::gc::GcCell;
+use js_engine::gc::{GcCell, JsObjectCell};
 use js_engine::gc_struct;
 
 type JsValue = <Types as JsTypes>::JsValue;
@@ -36,7 +36,7 @@ pub(crate) enum ReadableStreamState {
 // Note: This struct stores an underlying source method together with its callback `this` value so the surrounding Streams algorithms can later invoke it through Web IDL callback invocation.
 #[gc_struct]
 pub(crate) struct SourceMethod {
-    this_value: JsObject,
+    this_value: JsObjectCell,
 
     /// <https://webidl.spec.whatwg.org/#idl-callback-function>
     callback: Callback,
@@ -45,7 +45,7 @@ pub(crate) struct SourceMethod {
 impl SourceMethod {
     pub(crate) fn new(this_value: JsObject, callback: Callback) -> Self {
         Self {
-            this_value,
+            this_value: JsObjectCell::new(Some(this_value)),
             callback,
         }
     }
@@ -56,7 +56,7 @@ impl SourceMethod {
         args: &[JsValue],
         ec: &mut dyn ExecutionContext<Types>,
     ) -> Completion<JsValue, Types> {
-        let this_value = JsValue::from(self.this_value.clone());
+        let this_value = JsValue::from(self.this_value.borrow().clone().unwrap());
         invoke_callback_function(
             ec,
             &self.callback,
