@@ -209,6 +209,28 @@ Fixed spec-correctness bugs in the JSC backend (`js_engine/src/jsc/engine.rs`):
 | `iterator_close` missing Object check | `iterator_close` | Now validates that `return()` result is an Object per spec step. |
 | `.length` not set on builtin functions | `create_builtin_function`, `create_builtin_fn_static` | Both now set `Function.length` via `JSObjectSetProperty` with `ReadOnly\|DontEnum`. |
 
+### Phase 3: IntrinsicsCache — replace `eval_script_raw` with cached native function references
+
+Added `Intrinsics` struct and `resolve_global_path` helper on `JscEngine`, replacing per-call
+`JSEvaluateScript` with one-time native property walks + `JSObjectCallAsFunction`.
+
+| Eval site | Replacement |
+|---|---|
+| `is_array` | Cached `Array.isArray` function ref |
+| `json_stringify` | Cached `JSON.stringify` function ref |
+| `promise_resolve` | Cached `Promise.resolve` function ref |
+| `array_push` | Cached `Array.prototype.push` function ref |
+| `map_set_entry` | Cached `Map.prototype.set` function ref |
+| `set_add_entry` | Cached `Set.prototype.add` function ref |
+| `to_bigint`, `string_to_bigint`, `value_from_bigint` | Cached `BigInt` function ref (args passed as real `JSValueRef`, no source text) |
+| `own_property_keys` | Cached `Reflect.ownKeys` function ref |
+| `get_own_property` | Cached `Object.getOwnPropertyDescriptor` function ref |
+| `allocate_shared_array_buffer` | Cached `SharedArrayBuffer` constructor |
+| `create_proxy` | Cached `Proxy` constructor |
+| `construct_data_view_from_buffer` | Cached `DataView` constructor |
+| `map_get_entries` | Cached `Map.prototype.entries` + native iteration via `iterator_step_value` |
+| `set_get_values` | Cached `Set.prototype.values` + native iteration via `iterator_step_value` |
+
 ### Remaining work
 
 | Area | What needs doing |

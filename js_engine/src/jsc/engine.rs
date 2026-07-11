@@ -220,6 +220,78 @@ extern "C" fn free_array_buffer_data(
     }
 }
 
+// ── Cached intrinsic references ───────────────────────────────────────────
+//
+// Many operations (Array.isArray, Object.defineProperty, Promise.resolve,
+// etc.) that are not in the public JSC C API are implemented via
+// JSEvaluateScript with temp globals.  This cache replaces those eval calls
+// with one-time native property walks + direct JSObjectCallAsFunction.
+
+/// Walk `global[path[0]][path[1]]...` via native property gets.  No eval.
+fn resolve_global_path(ctx: *mut JSContextRef, path: &[&str]) -> *mut JSObjectRef {
+    let mut current = unsafe { JSContextGetGlobalObject(ctx) };
+    for segment in path {
+        let key = JscString::from_rust(segment);
+        let next = unsafe { JSObjectGetProperty(ctx, current, key.raw, std::ptr::null_mut()) };
+        current = next as *mut JSObjectRef;
+    }
+    current
+}
+
+/// Lazily-resolved references to global intrinsics, cached for the engine's
+/// lifetime.  Replaces per-call `eval_script_raw` with a one-time native
+/// property walk.
+#[derive(Default)]
+struct Intrinsics {
+    object_get_own_property_descriptor: Option<JscObject>,
+    object_define_property: Option<JscObject>,
+    reflect_own_keys: Option<JscObject>,
+    array_prototype_push: Option<JscObject>,
+    array_is_array: Option<JscObject>,
+    map_prototype_set: Option<JscObject>,
+    set_prototype_add: Option<JscObject>,
+    bigint_fn: Option<JscObject>,
+    promise_resolve_fn: Option<JscObject>,
+    promise_ctor: Option<JscObject>,
+    dataview_ctor: Option<JscObject>,
+    proxy_ctor: Option<JscObject>,
+    shared_array_buffer_ctor: Option<JscObject>,
+    json_stringify_fn: Option<JscObject>,
+    // Iteration helpers
+    map_prototype_entries: Option<JscObject>,
+    set_prototype_values: Option<JscObject>,
+}
+
+/// Resolve a cached intrinsic, initializing it on first access.
+macro_rules! cached_intrinsic {
+    ($self:ident, $field:ident, [$($seg:literal),+]) => {{
+        if let Some(ref obj) = $self.intrinsics.$field {
+            *obj
+        } else {
+            let ctx = $self.ctx_ptr();
+            let raw = resolve_global_path(ctx, &[$($seg),+]);
+            let obj = JscObject { raw, ctx };
+            $self.intrinsics.$field = Some(obj);
+            obj
+        }
+    }};
+}
+
+/// Resolve a cached intrinsic (constructor variant), returning a JscConstructor.
+macro_rules! cached_intrinsic_ctor {
+    ($self:ident, $field:ident, [$($seg:literal),+]) => {{
+        if let Some(ref obj) = $self.intrinsics.$field {
+            *obj
+        } else {
+            let ctx = $self.ctx_ptr();
+            let raw = resolve_global_path(ctx, &[$($seg),+]);
+            let obj = JscObject { raw, ctx };
+            $self.intrinsics.$field = Some(obj);
+            obj
+        }
+    }};
+}
+
 /// JSClass for plain objects (no callbacks).  Uses JSObjectMake to
 /// avoid eval_script_raw (which causes nested JSEvaluateScript crashes).
 static PLAIN_OBJECT_CLASS: LazyLock<JscClass> = LazyLock::new(|| {
@@ -831,10 +903,10 @@ impl JsTypes for JscTypes {
         o.as_value()
     }
     fn value_from_symbol(sym: Self::JsSymbol) -> Self::JsValue {
-        sym.as_value().clone()
+        *sym.as_value()
     }
     fn value_from_bigint(n: Self::JsBigInt) -> Self::JsValue {
-        n.as_value().clone()
+        *n.as_value()
     }
 
     // ── Downcasts ────────────────────────────────────────────────────
@@ -1173,6 +1245,9 @@ pub struct JscEngine {
     /// Cached `Function.prototype.call` for correct this-binding when
     /// calling JS functions with non-object `this` values.
     fn_call: Option<JscObject>,
+    /// Cached global intrinsic function/constructor references, replacing
+    /// per-call JSEvaluateScript with one-time native property walks.
+    intrinsics: Intrinsics,
 }
 
 /// Drop `host_data` (which contains `GcRootHandle` unroot closures) and
@@ -1232,6 +1307,7 @@ impl JscEngine {
             queued_jobs: Vec::new(),
             drain_noop: std::ptr::null_mut(),
             fn_call: None,
+            intrinsics: Intrinsics::default(),
         }
     }
 
@@ -1264,6 +1340,7 @@ impl JscEngine {
             queued_jobs: Vec::new(),
             drain_noop: std::ptr::null_mut(),
             fn_call: None,
+            intrinsics: Intrinsics::default(),
         }
     }
 
@@ -1288,6 +1365,7 @@ impl JscEngine {
             queued_jobs: Vec::new(),
             drain_noop: std::ptr::null_mut(),
             fn_call: None,
+            intrinsics: Intrinsics::default(),
         }
     }
     pub fn context(&self) -> &JscContext {
@@ -1731,29 +1809,20 @@ impl JsEngine<JscTypes> for JscEngine {
         _constructor: JscConstructor,
         byte_length: u64,
     ) -> Completion<JscSharedArrayBuffer, JscTypes> {
-        let script_str = format!("new SharedArrayBuffer({})", byte_length);
-        let script = JscString::from_rust(&script_str);
+        // Use cached SharedArrayBuffer constructor to avoid per-call eval.
+        let sab_ctor =
+            cached_intrinsic_ctor!(self, shared_array_buffer_ctor, ["SharedArrayBuffer"]);
+        let ctx = self.ctx_ptr();
+        let len_arg = unsafe { JSValueMakeNumber(ctx, byte_length as f64) };
+        let args = [len_arg];
         let mut exc: *mut JSValueRef = std::ptr::null_mut();
         let result = unsafe {
-            JSEvaluateScript(
-                self.context.as_context_ref(),
-                script.raw,
-                std::ptr::null_mut(),
-                std::ptr::null_mut(),
-                1,
-                &mut exc,
-            )
+            JSObjectCallAsConstructor(ctx, sab_ctor.raw, args.len(), args.as_ptr(), &mut exc)
         };
         if !exc.is_null() {
-            return Err(JscValue {
-                raw: exc,
-                ctx: self.ctx_ptr(),
-            });
+            return Err(JscValue { raw: exc, ctx });
         }
-        Ok(JscObject {
-            raw: result as *mut JSObjectRef,
-            ctx: self.ctx_ptr(),
-        })
+        Ok(JscObject { raw: result, ctx })
     }
 
     // ── Host Hooks ────────────────────────────────────────────────────────
@@ -1959,70 +2028,57 @@ impl ExecutionContext<JscTypes> for JscEngine {
         {
             return Ok(JscBigInt { value });
         }
-        // Use evaluate_script to convert: BigInt(value).toString() then re-parse.
-        // Store value on global temp, eval BigInt(...), retrieve.
-        let global = self.context.global_object();
-        let val_key = JscString::from_rust("__formal_web_tobigint_val");
+        // Use cached BigInt function to avoid per-call eval.
+        let bigint_fn = cached_intrinsic!(self, bigint_fn, ["BigInt"]);
+        let ctx = self.ctx_ptr();
+        let args = [value.raw];
+        let undef = unsafe { JSValueMakeUndefined(ctx) };
         let mut exc: *mut JSValueRef = std::ptr::null_mut();
-        unsafe {
-            JSObjectSetProperty(
-                self.context.as_context_ref(),
-                global.raw,
-                val_key.raw,
-                value.raw,
-                kJSPropertyAttributeNone,
+        let result = unsafe {
+            JSObjectCallAsFunction(
+                ctx,
+                bigint_fn.raw,
+                undef as *mut JSObjectRef,
+                args.len(),
+                args.as_ptr(),
                 &mut exc,
-            );
+            )
+        };
+        if !exc.is_null() || result.is_null() {
+            return Err(JscValue { raw: exc, ctx });
         }
-        if !exc.is_null() {
-            return Err(JscValue {
-                raw: exc,
-                ctx: self.ctx_ptr(),
-            });
-        }
-        let (result, exception) = self.eval_script_raw("BigInt(__formal_web_tobigint_val)");
-        unsafe {
-            JSObjectDeleteProperty(
-                self.context.as_context_ref(),
-                global.raw,
-                val_key.raw,
-                std::ptr::null_mut(),
-            );
-        }
-        if !exception.is_null() {
-            return Err(JscValue {
-                raw: exception,
-                ctx: self.ctx_ptr(),
-            });
-        }
-        if result.is_null() {
-            return Err(self.make_string("BigInt conversion returned null"));
+        if unsafe { JSValueGetType(ctx, result) } != JSType::kJSTypeBigInt {
+            return Err(self.make_string("BigInt conversion did not return BigInt"));
         }
         Ok(JscBigInt {
-            value: JscValue {
-                raw: result,
-                ctx: self.ctx_ptr(),
-            },
+            value: JscValue { raw: result, ctx },
         })
     }
     fn string_to_bigint(&mut self, string: JscString) -> Option<JscBigInt> {
-        let s = string.to_rust();
-        // Use evaluate_script: BigInt("...")
-        let json_escaped = s.replace('\\', "\\\\").replace('"', "\\\"");
-        let script = format!("BigInt(\"{}\")", json_escaped);
-        let (result, exception) = self.eval_script_raw(&script);
-        if !exception.is_null() {
+        // Use cached BigInt function: pass the string as a real JSValueRef,
+        // not as source text — no escaping to get wrong.
+        let bigint_fn = cached_intrinsic!(self, bigint_fn, ["BigInt"]);
+        let ctx = self.ctx_ptr();
+        let str_val = unsafe { JSValueMakeString(ctx, string.raw) };
+        let args = [str_val];
+        let undef = unsafe { JSValueMakeUndefined(ctx) };
+        let mut exc: *mut JSValueRef = std::ptr::null_mut();
+        let result = unsafe {
+            JSObjectCallAsFunction(
+                ctx,
+                bigint_fn.raw,
+                undef as *mut JSObjectRef,
+                args.len(),
+                args.as_ptr(),
+                &mut exc,
+            )
+        };
+        if !exc.is_null() || result.is_null() {
             return None;
         }
-        if !result.is_null()
-            && unsafe { JSValueGetType(self.context.as_context_ref(), result) }
-                == JSType::kJSTypeBigInt
-        {
+        if unsafe { JSValueGetType(ctx, result) } == JSType::kJSTypeBigInt {
             Some(JscBigInt {
-                value: JscValue {
-                    raw: result,
-                    ctx: self.ctx_ptr(),
-                },
+                value: JscValue { raw: result, ctx },
             })
         } else {
             None
@@ -2090,11 +2146,11 @@ impl ExecutionContext<JscTypes> for JscEngine {
     }
     fn canonical_numeric_index_string(&self, argument: &JscString) -> Option<f64> {
         let s = argument.to_rust();
-        if let Ok(n) = s.parse::<f64>() {
-            if n.to_string() == s || (n.is_infinite() && (s.starts_with('-') || s.starts_with('+')))
-            {
-                return Some(n);
-            }
+        if let Ok(n) = s.parse::<f64>()
+            && (n.to_string() == s
+                || (n.is_infinite() && (s.starts_with('-') || s.starts_with('+'))))
+        {
+            return Some(n);
         }
         None
     }
@@ -2112,7 +2168,7 @@ impl ExecutionContext<JscTypes> for JscEngine {
         };
         // Step 2: If int is not in the inclusive interval from 0 to 2^53 - 1,
         // throw a RangeError exception.
-        if integer < 0.0 || integer > 9007199254740991.0 {
+        if !(0.0..=9007199254740991.0).contains(&integer) {
             return Err(self.new_range_error("Invalid index"));
         }
         // Step 3: Return int.
@@ -2135,34 +2191,24 @@ impl ExecutionContext<JscTypes> for JscEngine {
         {
             return Ok(false);
         }
-        // Use evaluate_script to call Array.isArray.
-        // Store the value on a temporary global property, call Array.isArray, cleanup.
-        let global = self.context.global_object();
-        let tmp_key = JscString::from_rust("__formal_web_isarray_val");
+        // <https://tc39.es/ecma262/#sec-isarray>
+        // Use cached Array.isArray reference to avoid per-call eval.
+        let is_array_fn = cached_intrinsic!(self, array_is_array, ["Array", "isArray"]);
+        let ctx = self.ctx_ptr();
+        let args = [value.raw];
+        let undef = unsafe { JSValueMakeUndefined(ctx) };
         let mut exc: *mut JSValueRef = std::ptr::null_mut();
-        unsafe {
-            JSObjectSetProperty(
-                self.context.as_context_ref(),
-                global.raw,
-                tmp_key.raw,
-                value.raw,
-                kJSPropertyAttributeNone,
+        let result = unsafe {
+            JSObjectCallAsFunction(
+                ctx,
+                is_array_fn.raw,
+                undef as *mut JSObjectRef,
+                args.len(),
+                args.as_ptr(),
                 &mut exc,
             )
         };
-        if !exc.is_null() {
-            return Ok(false);
-        }
-        let (result, exception) = self.eval_script_raw("Array.isArray(__formal_web_isarray_val)");
-        unsafe {
-            JSObjectDeleteProperty(
-                self.context.as_context_ref(),
-                global.raw,
-                tmp_key.raw,
-                std::ptr::null_mut(),
-            );
-        }
-        if !exception.is_null() || result.is_null() {
+        if !exc.is_null() || result.is_null() {
             return Ok(false);
         }
         Ok(unsafe { JSValueToBoolean(self.context.as_context_ref(), result) })
@@ -2662,40 +2708,26 @@ impl ExecutionContext<JscTypes> for JscEngine {
         &mut self,
         object: JscObject,
     ) -> Completion<Vec<JscPropertyKey>, JscTypes> {
-        let global = self.context.global_object();
-        let object_key = JscString::from_rust("__formal_web_own_keys_target");
+        // Use cached Reflect.ownKeys to avoid per-call eval.
+        let own_keys_fn = cached_intrinsic!(self, reflect_own_keys, ["Reflect", "ownKeys"]);
+        let ctx = self.ctx_ptr();
+        let args = [object.as_value_ref()];
+        let undef = unsafe { JSValueMakeUndefined(ctx) };
         let mut exception: *mut JSValueRef = std::ptr::null_mut();
-        unsafe {
-            JSObjectSetProperty(
-                self.context.as_context_ref(),
-                global.raw,
-                object_key.raw,
-                object.as_value_ref(),
-                kJSPropertyAttributeNone,
+        let result = unsafe {
+            JSObjectCallAsFunction(
+                ctx,
+                own_keys_fn.raw,
+                undef as *mut JSObjectRef,
+                args.len(),
+                args.as_ptr(),
                 &mut exception,
             )
         };
-        if !exception.is_null() {
+        if !exception.is_null() || result.is_null() {
             return Err(JscValue {
                 raw: exception,
-                ctx: self.ctx_ptr(),
-            });
-        }
-
-        let (result, exception) =
-            self.eval_script_raw("Reflect.ownKeys(__formal_web_own_keys_target)");
-        unsafe {
-            JSObjectDeleteProperty(
-                self.context.as_context_ref(),
-                global.raw,
-                object_key.raw,
-                std::ptr::null_mut(),
-            );
-        }
-        if !exception.is_null() {
-            return Err(JscValue {
-                raw: exception,
-                ctx: self.ctx_ptr(),
+                ctx,
             });
         }
 
@@ -2755,60 +2787,31 @@ impl ExecutionContext<JscTypes> for JscEngine {
         object: JscObject,
         property_key: JscPropertyKey,
     ) -> Completion<Option<PropertyDescriptor<JscTypes>>, JscTypes> {
-        let global = self.context.global_object();
-        let object_key = JscString::from_rust("__formal_web_desc_target");
-        let property_key_name = JscString::from_rust("__formal_web_desc_key");
-        let property_value = self.property_key_to_value(&property_key);
-
-        let mut exception: *mut JSValueRef = std::ptr::null_mut();
-        unsafe {
-            JSObjectSetProperty(
-                self.context.as_context_ref(),
-                global.raw,
-                object_key.raw,
-                object.as_value_ref(),
-                kJSPropertyAttributeNone,
-                &mut exception,
-            );
-            JSObjectSetProperty(
-                self.context.as_context_ref(),
-                global.raw,
-                property_key_name.raw,
-                property_value.raw,
-                kJSPropertyAttributeNone,
-                &mut exception,
-            );
-        }
-        if !exception.is_null() {
-            return Err(JscValue {
-                raw: exception,
-                ctx: self.ctx_ptr(),
-            });
-        }
-
-        let (result, exception) = self.eval_script_raw(
-            "Object.getOwnPropertyDescriptor(__formal_web_desc_target, __formal_web_desc_key)",
+        // Use cached Object.getOwnPropertyDescriptor to avoid per-call eval.
+        let get_desc_fn = cached_intrinsic!(
+            self,
+            object_get_own_property_descriptor,
+            ["Object", "getOwnPropertyDescriptor"]
         );
-
-        unsafe {
-            JSObjectDeleteProperty(
-                self.context.as_context_ref(),
-                global.raw,
-                object_key.raw,
-                std::ptr::null_mut(),
-            );
-            JSObjectDeleteProperty(
-                self.context.as_context_ref(),
-                global.raw,
-                property_key_name.raw,
-                std::ptr::null_mut(),
-            );
-        }
-
+        let ctx = self.ctx_ptr();
+        let key_val = self.property_key_to_value(&property_key);
+        let args = [object.as_value_ref(), key_val.raw];
+        let undef = unsafe { JSValueMakeUndefined(ctx) };
+        let mut exception: *mut JSValueRef = std::ptr::null_mut();
+        let result = unsafe {
+            JSObjectCallAsFunction(
+                ctx,
+                get_desc_fn.raw,
+                undef as *mut JSObjectRef,
+                args.len(),
+                args.as_ptr(),
+                &mut exception,
+            )
+        };
         if !exception.is_null() {
             return Err(JscValue {
                 raw: exception,
-                ctx: self.ctx_ptr(),
+                ctx,
             });
         }
 
@@ -2816,10 +2819,7 @@ impl ExecutionContext<JscTypes> for JscEngine {
             return Ok(None);
         }
 
-        let result_value = JscValue {
-            raw: result,
-            ctx: self.ctx_ptr(),
-        };
+        let result_value = JscValue { raw: result, ctx };
         if JscTypes::value_is_undefined(&result_value) {
             return Ok(None);
         }
@@ -3104,26 +3104,20 @@ impl ExecutionContext<JscTypes> for JscEngine {
                         {
                             let type_error =
                                 self.new_type_error("Iterator return result is not an object");
-                            if completion.is_err() {
-                                return completion;
-                            }
+                            completion?;
                             return Err(type_error);
                         }
                         completion
                     }
                     Err(e) => {
-                        if completion.is_err() {
-                            return completion;
-                        }
+                        completion?;
                         Err(e)
                     }
                 }
             }
             Ok(None) => completion,
             Err(e) => {
-                if completion.is_err() {
-                    return completion;
-                }
+                completion?;
                 Err(e)
             }
         }
@@ -3835,57 +3829,20 @@ impl ExecutionContext<JscTypes> for JscEngine {
         byte_offset: u64,
         byte_length: u64,
     ) -> Completion<JscDataView, JscTypes> {
-        // JSC C API has no JSObjectMakeDataView function, so use
-        // script evaluation to construct the DataView.
-        let global = self.context.global_object();
-        let buf_key = JscString::from_rust("__fw_dv_buffer");
+        // Use cached DataView constructor to avoid per-call eval.
+        let dv_ctor = cached_intrinsic_ctor!(self, dataview_ctor, ["DataView"]);
+        let ctx = self.ctx_ptr();
+        let offset_arg = unsafe { JSValueMakeNumber(ctx, byte_offset as f64) };
+        let length_arg = unsafe { JSValueMakeNumber(ctx, byte_length as f64) };
+        let args = [buffer.as_value_ref(), offset_arg, length_arg];
         let mut exc: *mut JSValueRef = std::ptr::null_mut();
-        unsafe {
-            JSObjectSetProperty(
-                self.context.as_context_ref(),
-                global.raw,
-                buf_key.raw,
-                buffer.as_value_ref(),
-                kJSPropertyAttributeDontEnum,
-                &mut exc,
-            )
-        };
-        if !exc.is_null() {
-            return Err(JscValue {
-                raw: exc,
-                ctx: self.ctx_ptr(),
-            });
-        }
-        let script = format!(
-            "new DataView(__fw_dv_buffer, {}, {})",
-            byte_offset, byte_length
-        );
-        let script_str = JscString::from_rust(&script);
         let result = unsafe {
-            JSEvaluateScript(
-                self.context.as_context_ref(),
-                script_str.raw,
-                std::ptr::null_mut(),
-                std::ptr::null_mut(),
-                1,
-                &mut exc,
-            )
+            JSObjectCallAsConstructor(ctx, dv_ctor.raw, args.len(), args.as_ptr(), &mut exc)
         };
-        // Clean up temporary property.
-        unsafe {
-            JSObjectDeleteProperty(
-                self.context.as_context_ref(),
-                global.raw,
-                buf_key.raw,
-                std::ptr::null_mut(),
-            );
-        }
         if !exc.is_null() {
-            return Err(JscValue {
-                raw: exc,
-                ctx: self.ctx_ptr(),
-            });
+            return Err(JscValue { raw: exc, ctx });
         }
+
         if result.is_null() {
             return Err(self.make_string("Failed to construct DataView"));
         }
@@ -3981,56 +3938,60 @@ impl ExecutionContext<JscTypes> for JscEngine {
     // ── §24.1 Map ────────────────────────────────────────────────────────
 
     fn map_get_entries(&mut self, map: &JscMap) -> Completion<Vec<(JscValue, JscValue)>, JscTypes> {
-        let global = self.context.global_object();
-        let ctx = self.context.as_context_ref();
-        let map_key = JscString::from_rust("__fw_map");
+        // Call Map.prototype.entries with this=map to get an iterator,
+        // then iterate natively via iterator_step_value.
+        let entries_fn =
+            cached_intrinsic!(self, map_prototype_entries, ["Map", "prototype", "entries"]);
+        let ctx = self.ctx_ptr();
+        let _undef = unsafe { JSValueMakeUndefined(ctx) };
         let mut exc: *mut JSValueRef = std::ptr::null_mut();
-        unsafe {
-            JSObjectSetProperty(
-                ctx,
-                global.raw,
-                map_key.raw,
-                map.as_value_ref(),
-                kJSPropertyAttributeNone,
-                &mut exc,
-            );
-        }
-        if !exc.is_null() {
-            return Err(JscValue {
-                raw: exc,
-                ctx: self.ctx_ptr(),
-            });
-        }
-
-        // Eval: Array.from(__fw_map.entries())
-        let (result, exception) =
-            self.eval_script_raw("Array.from(__fw_map.entries()).map(e=>({key:e[0],value:e[1]}))");
-        unsafe {
-            JSObjectDeleteProperty(ctx, global.raw, map_key.raw, std::ptr::null_mut());
-        }
-        if !exception.is_null() {
-            return Err(JscValue {
-                raw: exception,
-                ctx: self.ctx_ptr(),
-            });
-        }
-
-        // Parse the result array: iterate indices, extract key/value from each entry object
-        let result_obj = JscObject {
-            raw: result as *mut JSObjectRef,
-            ctx: self.ctx_ptr(),
+        let iter_result = unsafe {
+            JSObjectCallAsFunction(ctx, entries_fn.raw, map.raw, 0, std::ptr::null(), &mut exc)
         };
-        let len_val = EcmascriptHost::get(self, &result_obj, "length")?;
-        let len = self.to_length(len_val)? as usize;
-        let mut entries = Vec::with_capacity(len);
-        for i in 0..len {
-            let idx_key = JscPropertyKey::String(JscString::from_rust(&i.to_string()));
-            let entry = ExecutionContext::get(self, result_obj.clone(), idx_key)?;
-            let entry_obj = JscTypes::value_as_object(&entry)
-                .ok_or_else(|| self.new_type_error("map entry is not an object"))?;
-            let key = EcmascriptHost::get(self, &entry_obj, "key")?;
-            let value = EcmascriptHost::get(self, &entry_obj, "value")?;
-            entries.push((key, value));
+        if !exc.is_null() || iter_result.is_null() {
+            return Err(JscValue { raw: exc, ctx });
+        }
+
+        // Build an IteratorRecord for the Map iterator and iterate natively.
+        let next_str = JscString::from_rust("next");
+        let next_val = unsafe {
+            JSObjectGetProperty(ctx, iter_result as *mut JSObjectRef, next_str.raw, &mut exc)
+        };
+        if !exc.is_null() {
+            return Err(JscValue { raw: exc, ctx });
+        }
+        let mut iterator = IteratorRecord {
+            iterator: JscObject {
+                raw: iter_result as *mut JSObjectRef,
+                ctx,
+            },
+            next_method: JscObject {
+                raw: next_val as *mut JSObjectRef,
+                ctx,
+            },
+            done: false,
+        };
+
+        let mut entries = Vec::new();
+        loop {
+            match self.iterator_step_value(&mut iterator)? {
+                Some(entry_val) => {
+                    // Each entry is a [key, value] 2-element array.
+                    let entry_obj = entry_val.raw as *mut JSObjectRef;
+                    let idx0 = JscString::from_rust("0");
+                    let idx1 = JscString::from_rust("1");
+                    let key = unsafe { JSObjectGetProperty(ctx, entry_obj, idx0.raw, &mut exc) };
+                    if !exc.is_null() {
+                        return Err(JscValue { raw: exc, ctx });
+                    }
+                    let value = unsafe { JSObjectGetProperty(ctx, entry_obj, idx1.raw, &mut exc) };
+                    if !exc.is_null() {
+                        return Err(JscValue { raw: exc, ctx });
+                    }
+                    entries.push((JscValue { raw: key, ctx }, JscValue { raw: value, ctx }));
+                }
+                None => break,
+            }
         }
         Ok(entries)
     }
@@ -4041,62 +4002,22 @@ impl ExecutionContext<JscTypes> for JscEngine {
         key: JscValue,
         value: JscValue,
     ) -> Completion<(), JscTypes> {
-        let global = self.context.global_object();
-        let ctx = self.context.as_context_ref();
-        let map_key = JscString::from_rust("__fw_map");
-        let key_key = JscString::from_rust("__fw_map_key");
-        let val_key = JscString::from_rust("__fw_map_val");
+        let set_fn = cached_intrinsic!(self, map_prototype_set, ["Map", "prototype", "set"]);
+        let ctx = self.ctx_ptr();
+        let args = [key.raw, value.raw];
         let mut exc: *mut JSValueRef = std::ptr::null_mut();
         unsafe {
-            JSObjectSetProperty(
+            JSObjectCallAsFunction(
                 ctx,
-                global.raw,
-                map_key.raw,
-                map.as_value_ref(),
-                kJSPropertyAttributeNone,
+                set_fn.raw,
+                map.raw,
+                args.len(),
+                args.as_ptr(),
                 &mut exc,
             );
-            if exc.is_null() {
-                JSObjectSetProperty(
-                    ctx,
-                    global.raw,
-                    key_key.raw,
-                    key.raw,
-                    kJSPropertyAttributeNone,
-                    &mut exc,
-                );
-            }
-            if exc.is_null() {
-                JSObjectSetProperty(
-                    ctx,
-                    global.raw,
-                    val_key.raw,
-                    value.raw,
-                    kJSPropertyAttributeNone,
-                    &mut exc,
-                );
-            }
         }
         if !exc.is_null() {
-            unsafe {
-                JSObjectDeleteProperty(ctx, global.raw, map_key.raw, std::ptr::null_mut());
-            }
-            return Err(JscValue {
-                raw: exc,
-                ctx: self.ctx_ptr(),
-            });
-        }
-        let (_result, exception) = self.eval_script_raw("__fw_map.set(__fw_map_key, __fw_map_val)");
-        unsafe {
-            JSObjectDeleteProperty(ctx, global.raw, map_key.raw, std::ptr::null_mut());
-            JSObjectDeleteProperty(ctx, global.raw, key_key.raw, std::ptr::null_mut());
-            JSObjectDeleteProperty(ctx, global.raw, val_key.raw, std::ptr::null_mut());
-        }
-        if !exception.is_null() {
-            return Err(JscValue {
-                raw: exception,
-                ctx: self.ctx_ptr(),
-            });
+            return Err(JscValue { raw: exc, ctx });
         }
         Ok(())
     }
@@ -4104,97 +4025,67 @@ impl ExecutionContext<JscTypes> for JscEngine {
     // ── §24.2 Set ────────────────────────────────────────────────────────
 
     fn set_get_values(&mut self, set: &JscSet) -> Completion<Vec<JscValue>, JscTypes> {
-        let global = self.context.global_object();
-        let ctx = self.context.as_context_ref();
-        let set_key = JscString::from_rust("__fw_set");
+        // Call Set.prototype.values with this=set to get an iterator,
+        // then iterate natively via iterator_step_value.
+        let values_fn =
+            cached_intrinsic!(self, set_prototype_values, ["Set", "prototype", "values"]);
+        let ctx = self.ctx_ptr();
+        let _undef = unsafe { JSValueMakeUndefined(ctx) };
         let mut exc: *mut JSValueRef = std::ptr::null_mut();
-        unsafe {
-            JSObjectSetProperty(
-                ctx,
-                global.raw,
-                set_key.raw,
-                set.as_value_ref(),
-                kJSPropertyAttributeNone,
-                &mut exc,
-            );
-        }
-        if !exc.is_null() {
-            return Err(JscValue {
-                raw: exc,
-                ctx: self.ctx_ptr(),
-            });
-        }
-        // Eval: Array.from(__fw_set.values())
-        let (result, exception) = self.eval_script_raw("Array.from(__fw_set.values())");
-        unsafe {
-            JSObjectDeleteProperty(ctx, global.raw, set_key.raw, std::ptr::null_mut());
-        }
-        if !exception.is_null() {
-            return Err(JscValue {
-                raw: exception,
-                ctx: self.ctx_ptr(),
-            });
-        }
-        let result_obj = JscObject {
-            raw: result as *mut JSObjectRef,
-            ctx: self.ctx_ptr(),
+        let iter_result = unsafe {
+            JSObjectCallAsFunction(ctx, values_fn.raw, set.raw, 0, std::ptr::null(), &mut exc)
         };
-        let len_val = EcmascriptHost::get(self, &result_obj, "length")?;
-        let len = self.to_length(len_val)? as usize;
-        let mut values = Vec::with_capacity(len);
-        for i in 0..len {
-            let idx_key = JscPropertyKey::String(JscString::from_rust(&i.to_string()));
-            let val = ExecutionContext::get(self, result_obj.clone(), idx_key)?;
-            values.push(val);
+        if !exc.is_null() || iter_result.is_null() {
+            return Err(JscValue { raw: exc, ctx });
+        }
+
+        // Build an IteratorRecord for the Set iterator and iterate natively.
+        let next_str = JscString::from_rust("next");
+        let next_val = unsafe {
+            JSObjectGetProperty(ctx, iter_result as *mut JSObjectRef, next_str.raw, &mut exc)
+        };
+        if !exc.is_null() {
+            return Err(JscValue { raw: exc, ctx });
+        }
+        let mut iterator = IteratorRecord {
+            iterator: JscObject {
+                raw: iter_result as *mut JSObjectRef,
+                ctx,
+            },
+            next_method: JscObject {
+                raw: next_val as *mut JSObjectRef,
+                ctx,
+            },
+            done: false,
+        };
+
+        let mut values = Vec::new();
+        loop {
+            match self.iterator_step_value(&mut iterator)? {
+                Some(val) => values.push(val),
+                None => break,
+            }
         }
         Ok(values)
     }
 
     fn set_add_entry(&mut self, set: &JscSet, value: JscValue) -> Completion<(), JscTypes> {
-        let global = self.context.global_object();
-        let ctx = self.context.as_context_ref();
-        let set_key = JscString::from_rust("__fw_set");
-        let val_key = JscString::from_rust("__fw_set_val");
+        let add_fn = cached_intrinsic!(self, set_prototype_add, ["Set", "prototype", "add"]);
+        let ctx = self.ctx_ptr();
+        let args = [value.raw];
         let mut exc: *mut JSValueRef = std::ptr::null_mut();
         unsafe {
-            JSObjectSetProperty(
+            JSObjectCallAsFunction(
                 ctx,
-                global.raw,
-                set_key.raw,
-                set.as_value_ref(),
-                kJSPropertyAttributeNone,
+                add_fn.raw,
+                set.raw,
+                args.len(),
+                args.as_ptr(),
                 &mut exc,
             );
-            if exc.is_null() {
-                JSObjectSetProperty(
-                    ctx,
-                    global.raw,
-                    val_key.raw,
-                    value.raw,
-                    kJSPropertyAttributeNone,
-                    &mut exc,
-                );
-            }
         }
         if !exc.is_null() {
-            unsafe {
-                JSObjectDeleteProperty(ctx, global.raw, set_key.raw, std::ptr::null_mut());
-            }
-            return Err(JscValue {
-                raw: exc,
-                ctx: self.ctx_ptr(),
-            });
-        }
-        let (_result, exception) = self.eval_script_raw("__fw_set.add(__fw_set_val)");
-        unsafe {
-            JSObjectDeleteProperty(ctx, global.raw, set_key.raw, std::ptr::null_mut());
-            JSObjectDeleteProperty(ctx, global.raw, val_key.raw, std::ptr::null_mut());
-        }
-        if !exception.is_null() {
-            return Err(JscValue {
-                raw: exception,
-                ctx: self.ctx_ptr(),
-            });
+            return Err(JscValue { raw: exc, ctx });
         }
         Ok(())
     }
@@ -4205,43 +4096,24 @@ impl ExecutionContext<JscTypes> for JscEngine {
         _constructor: JscConstructor,
         x: JscValue,
     ) -> Completion<JscPromise, JscTypes> {
-        // Use evaluate_script: Promise.resolve(x)
-        // First store the value on a temporary global so we can reference it.
-        let global = self.context.global_object();
-        let tmp_key = JscString::from_rust("__formal_web_resolve_val");
+        // Use cached Promise.resolve reference to avoid per-call eval.
+        let resolve_fn = cached_intrinsic!(self, promise_resolve_fn, ["Promise", "resolve"]);
+        let ctx = self.ctx_ptr();
+        let args = [x.raw];
+        let undef = unsafe { JSValueMakeUndefined(ctx) };
         let mut exc: *mut JSValueRef = std::ptr::null_mut();
-        unsafe {
-            JSObjectSetProperty(
-                self.context.as_context_ref(),
-                global.raw,
-                tmp_key.raw,
-                x.raw,
-                kJSPropertyAttributeNone,
+        let result = unsafe {
+            JSObjectCallAsFunction(
+                ctx,
+                resolve_fn.raw,
+                undef as *mut JSObjectRef,
+                args.len(),
+                args.as_ptr(),
                 &mut exc,
             )
         };
-        if !exc.is_null() {
-            return Err(JscValue {
-                raw: exc,
-                ctx: self.ctx_ptr(),
-            });
-        }
-        let script = "Promise.resolve(__formal_web_resolve_val)";
-        let (result, exception) = self.eval_script_raw(script);
-        let mut exc2: *mut JSValueRef = std::ptr::null_mut();
-        unsafe {
-            JSObjectDeleteProperty(
-                self.context.as_context_ref(),
-                global.raw,
-                tmp_key.raw,
-                &mut exc2,
-            )
-        };
-        if !exception.is_null() {
-            return Err(JscValue {
-                raw: exception,
-                ctx: self.ctx_ptr(),
-            });
+        if !exc.is_null() || result.is_null() {
+            return Err(JscValue { raw: exc, ctx });
         }
         Ok(JscObject {
             raw: result as *mut JSObjectRef,
@@ -4428,7 +4300,7 @@ impl ExecutionContext<JscTypes> for JscEngine {
             self.drain_microtasks();
 
             // Return resultCapability.[[Promise]] per spec.
-            return Ok(cap.promise.clone());
+            return Ok(cap.promise);
         }
 
         // Drain JSC microtasks so that .then() handlers fire.
@@ -4722,7 +4594,7 @@ impl ExecutionContext<JscTypes> for JscEngine {
     }
 
     fn property_key_from_symbol(&self, sym: &JscSymbol) -> JscPropertyKey {
-        JscPropertyKey::Symbol(sym.clone())
+        JscPropertyKey::Symbol(*sym)
     }
 
     fn property_key_from_well_known_symbol(&mut self, name: &str) -> JscPropertyKey {
@@ -4762,68 +4634,19 @@ impl ExecutionContext<JscTypes> for JscEngine {
         target: JscObject,
         handler: JscObject,
     ) -> Completion<JscObject, JscTypes> {
-        let global = self.context.global_object();
-        let ctx_ptr = self.ctx_ptr();
-
-        // Store target and handler on temp globals, then eval `new Proxy(...)`.
-        let target_key = JscString::from_rust("__fw_proxy_target");
-        let handler_key = JscString::from_rust("__fw_proxy_handler");
+        // Use cached Proxy constructor to avoid per-call eval.
+        let proxy_ctor = cached_intrinsic_ctor!(self, proxy_ctor, ["Proxy"]);
+        let ctx = self.ctx_ptr();
+        let args = [target.as_value_ref(), handler.as_value_ref()];
         let mut exc: *mut JSValueRef = std::ptr::null_mut();
-
-        unsafe {
-            JSObjectSetProperty(
-                ctx_ptr,
-                global.raw,
-                target_key.raw,
-                target.as_value_ref(),
-                kJSPropertyAttributeNone,
-                &mut exc,
-            );
-        }
+        let result = unsafe {
+            JSObjectCallAsConstructor(ctx, proxy_ctor.raw, args.len(), args.as_ptr(), &mut exc)
+        };
         if !exc.is_null() {
-            return Err(JscValue {
-                raw: exc,
-                ctx: ctx_ptr,
-            });
+            return Err(JscValue { raw: exc, ctx });
         }
 
-        unsafe {
-            JSObjectSetProperty(
-                ctx_ptr,
-                global.raw,
-                handler_key.raw,
-                handler.as_value_ref(),
-                kJSPropertyAttributeNone,
-                &mut exc,
-            );
-        }
-        if !exc.is_null() {
-            return Err(JscValue {
-                raw: exc,
-                ctx: ctx_ptr,
-            });
-        }
-
-        let (result, exception) =
-            self.eval_script_raw("new Proxy(__fw_proxy_target, __fw_proxy_handler)");
-
-        // Cleanup
-        unsafe {
-            JSObjectDeleteProperty(ctx_ptr, global.raw, target_key.raw, std::ptr::null_mut());
-            JSObjectDeleteProperty(ctx_ptr, global.raw, handler_key.raw, std::ptr::null_mut());
-        }
-
-        if !exception.is_null() {
-            return Err(JscValue {
-                raw: exception,
-                ctx: ctx_ptr,
-            });
-        }
-
-        Ok(JscObject {
-            raw: result as *mut JSObjectRef,
-            ctx: ctx_ptr,
-        })
+        Ok(JscObject { raw: result, ctx })
     }
 
     // ── Error Reporting ──────────────────────────────────────────────────
@@ -4852,65 +4675,24 @@ impl ExecutionContext<JscTypes> for JscEngine {
     }
 
     fn array_push(&mut self, array: &JscObject, value: JscValue) -> Completion<(), JscTypes> {
-        // Store array and value on global, then call Array.prototype.push
-        let global = self.context.global_object();
-        let arr_key = JscString::from_rust("__formal_web_push_arr");
-        let val_key = JscString::from_rust("__formal_web_push_val");
+        // Use cached Array.prototype.push to avoid per-call eval.
+        let push_fn = cached_intrinsic!(self, array_prototype_push, ["Array", "prototype", "push"]);
+        let ctx = self.ctx_ptr();
+        let args = [value.raw];
         let mut exc: *mut JSValueRef = std::ptr::null_mut();
         unsafe {
-            JSObjectSetProperty(
-                self.context.as_context_ref(),
-                global.raw,
-                arr_key.raw,
-                array.as_value_ref(),
-                kJSPropertyAttributeNone,
+            JSObjectCallAsFunction(
+                ctx,
+                push_fn.raw,
+                array.raw,
+                args.len(),
+                args.as_ptr(),
                 &mut exc,
             );
-            if !exc.is_null() {
-                return Err(JscValue {
-                    raw: exc,
-                    ctx: self.ctx_ptr(),
-                });
-            }
-            JSObjectSetProperty(
-                self.context.as_context_ref(),
-                global.raw,
-                val_key.raw,
-                value.raw,
-                kJSPropertyAttributeNone,
-                &mut exc,
-            );
-            if !exc.is_null() {
-                return Err(JscValue {
-                    raw: exc,
-                    ctx: self.ctx_ptr(),
-                });
-            }
         }
-        let (result, exception) =
-            self.eval_script_raw("__formal_web_push_arr.push(__formal_web_push_val)");
-        // Cleanup
-        unsafe {
-            JSObjectDeleteProperty(
-                self.context.as_context_ref(),
-                global.raw,
-                arr_key.raw,
-                std::ptr::null_mut(),
-            );
-            JSObjectDeleteProperty(
-                self.context.as_context_ref(),
-                global.raw,
-                val_key.raw,
-                std::ptr::null_mut(),
-            );
+        if !exc.is_null() {
+            return Err(JscValue { raw: exc, ctx });
         }
-        if !exception.is_null() {
-            return Err(JscValue {
-                raw: exception,
-                ctx: self.ctx_ptr(),
-            });
-        }
-        let _ = result;
         Ok(())
     }
 
@@ -4928,50 +4710,34 @@ impl ExecutionContext<JscTypes> for JscEngine {
     }
 
     fn json_stringify(&mut self, value: JscValue) -> Completion<String, JscTypes> {
-        let global = self.context.global_object();
-        let val_key = JscString::from_rust("__formal_web_json_val");
+        // Use cached JSON.stringify reference to avoid per-call eval.
+        let stringify_fn = cached_intrinsic!(self, json_stringify_fn, ["JSON", "stringify"]);
+        let ctx = self.ctx_ptr();
+        let args = [value.raw];
+        let undef = unsafe { JSValueMakeUndefined(ctx) };
         let mut exc: *mut JSValueRef = std::ptr::null_mut();
-        unsafe {
-            JSObjectSetProperty(
-                self.context.as_context_ref(),
-                global.raw,
-                val_key.raw,
-                value.raw,
-                kJSPropertyAttributeNone,
+        let result = unsafe {
+            JSObjectCallAsFunction(
+                ctx,
+                stringify_fn.raw,
+                undef as *mut JSObjectRef,
+                args.len(),
+                args.as_ptr(),
                 &mut exc,
-            );
-        }
+            )
+        };
         if !exc.is_null() {
-            return Err(JscValue {
-                raw: exc,
-                ctx: self.ctx_ptr(),
-            });
-        }
-        let (result, exception) = self.eval_script_raw("JSON.stringify(__formal_web_json_val)");
-        unsafe {
-            JSObjectDeleteProperty(
-                self.context.as_context_ref(),
-                global.raw,
-                val_key.raw,
-                std::ptr::null_mut(),
-            );
-        }
-        if !exception.is_null() {
-            return Err(JscValue {
-                raw: exception,
-                ctx: self.ctx_ptr(),
-            });
+            return Err(JscValue { raw: exc, ctx });
         }
         if result.is_null() {
             return Ok(String::from("null"));
         }
-        let js_type = unsafe { JSValueGetType(self.context.as_context_ref(), result) };
+        let js_type = unsafe { JSValueGetType(ctx, result) };
         if js_type == JSType::kJSTypeUndefined || js_type == JSType::kJSTypeNull {
             return Ok(String::from("null"));
         }
         let mut exc2: *mut JSValueRef = std::ptr::null_mut();
-        let str_raw =
-            unsafe { JSValueToStringCopy(self.context.as_context_ref(), result, &mut exc2) };
+        let str_raw = unsafe { JSValueToStringCopy(ctx, result, &mut exc2) };
         if !exc2.is_null() || str_raw.is_null() {
             return Ok(String::from("null"));
         }
@@ -4980,15 +4746,26 @@ impl ExecutionContext<JscTypes> for JscEngine {
     }
 
     fn value_from_bigint(&mut self, n: i64) -> JscValue {
-        let script = format!("BigInt({})", n);
-        let (result, exception) = self.eval_script_raw(&script);
-        if !exception.is_null() || result.is_null() {
+        let bigint_fn = cached_intrinsic!(self, bigint_fn, ["BigInt"]);
+        let ctx = self.ctx_ptr();
+        let num_arg = unsafe { JSValueMakeNumber(ctx, n as f64) };
+        let args = [num_arg];
+        let undef = unsafe { JSValueMakeUndefined(ctx) };
+        let mut exc: *mut JSValueRef = std::ptr::null_mut();
+        let result = unsafe {
+            JSObjectCallAsFunction(
+                ctx,
+                bigint_fn.raw,
+                undef as *mut JSObjectRef,
+                args.len(),
+                args.as_ptr(),
+                &mut exc,
+            )
+        };
+        if !exc.is_null() || result.is_null() {
             return self.make_number(n as f64);
         }
-        JscValue {
-            raw: result,
-            ctx: self.ctx_ptr(),
-        }
+        JscValue { raw: result, ctx }
     }
 
     fn create_root(&mut self, value: &JscValue) -> crate::gc::GcRootHandle<JscTypes> {
