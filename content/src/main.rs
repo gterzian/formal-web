@@ -2214,7 +2214,19 @@ fn content_token_from_args() -> Result<Option<String>, String> {
 
 /// Run the content extension.
 pub fn run_content_process(token: String) -> Result<(), String> {
-    let (wasm_signal_sender, wasm_rx) = crossbeam_channel::unbounded::<()>();
+    // On JSC, WASM is not supported, so the WASM signal never fires.
+    // Use `never()` to avoid the two-receiver select overhead.
+    #[cfg(jsc_backend)]
+    let (wasm_rx, _dummy_wasm_sender) = {
+        let rx = crossbeam_channel::never::<()>();
+        let (tx, _) = crossbeam_channel::bounded::<()>(1);
+        (rx, tx)
+    };
+    #[cfg(not(jsc_backend))]
+    let (wasm_rx, wasm_signal_sender) = {
+        let (tx, rx) = crossbeam_channel::unbounded::<()>();
+        (rx, tx)
+    };
 
     ipc::run_extension::<Command, ContentEvent>(&token, move |server| {
         let event_sender = server.connection.sender.clone();
@@ -2250,6 +2262,9 @@ pub fn run_content_process(token: String) -> Result<(), String> {
             let event_loop_id = EventLoopId::from_u128(0);
             ContentProcess::new(
                 event_sender.clone(),
+                #[cfg(jsc_backend)]
+                _dummy_wasm_sender,
+                #[cfg(not(jsc_backend))]
                 wasm_signal_sender,
                 event_loop_id,
                 network_extension_sender,

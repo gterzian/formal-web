@@ -1032,11 +1032,10 @@ fn run_with_shared_runner(
         return observed;
     }
 
-    if let Some(runner) = shared_runner.take() {
-        if let Err(error) = runner.shutdown() {
-            error!("[wpt-runner] failed to shutdown runner on retry: {error}");
-        }
-    }
+    // On crash, drop the runner immediately (Drop kills the child process)
+    // instead of calling shutdown() which waits up to 10 seconds for the
+    // browser to exit on its own.
+    *shared_runner = None;
     *shared_runner_error = None;
 
     run_once_with_shared_runner(
@@ -2030,6 +2029,12 @@ fn browser_executable_path(build_profile: RunnerBuildProfile) -> PathBuf {
 fn ensure_browser_executable(build_profile: RunnerBuildProfile) -> Result<PathBuf, String> {
     let executable = browser_executable_path(build_profile);
 
+    if executable.is_file() {
+        // Binary already exists from a previous build.  Skip the rebuild
+        // so crash restarts don't pay the cargo build overhead.
+        return Ok(executable);
+    }
+
     build_runner_executable(build_profile)?;
     if executable.exists() {
         Ok(executable)
@@ -2055,19 +2060,45 @@ fn build_runner_executable(build_profile: RunnerBuildProfile) -> Result<(), Stri
     })?;
 
     // The runner binary must always be freshly built via the isolated target dir,
-    // since the wpt-runner crate may not have been compiled for this profile yet.
+    // The runner binary — only rebuild if missing from the output directory.
+    // On the first run, cargo builds it in the isolated target dir and copies
+    // to target/release/. Subsequent runs skip the rebuild.
     let runner_builds = [(
         repo_root.join("tests/wpt_runner/Cargo.toml"),
         RUNNER_BINARY_NAME,
     )];
 
-    // The embedder binary must always be freshly built because build.rs only
-    // prebuilds content and net (not the embedder).  A stale embedder from a
-    // previous run causes the content process to fail at IPC bootstrap (the
-    // content binary itself is prebuilt by build.rs and checked below).
+    for (manifest_path, binary_name) in &runner_builds {
+        let target_path = target_profile_dir.join(format!(
+            "{}{}",
+            binary_name,
+            std::env::consts::EXE_SUFFIX
+        ));
+        if target_path.is_file() {
+            continue;
+        }
+        let isolated_target_dir = prebuild_target_root.join(binary_name);
+        build_single_binary(
+            manifest_path,
+            binary_name,
+            &isolated_target_dir,
+            &target_profile_dir,
+            build_profile,
+        )?;
+    }
+
+    // The embedder binary — only rebuild if missing from the output directory.
     let embedder_builds = [(repo_root.join("embedder/Cargo.toml"), BROWSER_BINARY_NAME)];
 
-    for (manifest_path, binary_name) in &runner_builds {
+    for (manifest_path, binary_name) in &embedder_builds {
+        let target_path = target_profile_dir.join(format!(
+            "{}{}",
+            binary_name,
+            std::env::consts::EXE_SUFFIX
+        ));
+        if target_path.is_file() {
+            continue;
+        }
         let isolated_target_dir = prebuild_target_root.join(binary_name);
         build_single_binary(
             manifest_path,
@@ -2079,6 +2110,16 @@ fn build_runner_executable(build_profile: RunnerBuildProfile) -> Result<(), Stri
     }
 
     for (manifest_path, binary_name) in &embedder_builds {
+        let target_path = target_profile_dir.join(format!(
+            "{}{}",
+            binary_name,
+            std::env::consts::EXE_SUFFIX
+        ));
+        if target_path.is_file() {
+            // Already built by a previous run — skip the rebuild so crash
+            // restarts and subsequent WPT sessions start instantly.
+            continue;
+        }
         let isolated_target_dir = prebuild_target_root.join(binary_name);
         build_single_binary(
             manifest_path,

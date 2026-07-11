@@ -71,7 +71,48 @@ where
     T: JsTypes + JsTypesWithRealm,
     C: 'static,
 {
-    js_engine::jsc::create_builtin_fn_with_captures(ec, captures, behaviour, length, name, is_constructor)
+    use js_engine::jsc::{JscFunction, JscPropertyKey, JscTypes, JscValue};
+
+    // SAFETY: On the JSC backend, T is always JscTypes.
+    // &mut dyn ExecutionContext<T> and &mut dyn ExecutionContext<JscTypes>
+    // have identical fat-pointer layout (2 * usize).
+    let jsc_ec: &mut dyn ExecutionContext<JscTypes> = unsafe { std::mem::transmute(ec) };
+
+    // SAFETY: fn pointers are all usize-sized regardless of signature.
+    let jsc_behaviour: fn(
+        &[JscValue],
+        JscValue,
+        &C,
+        &mut dyn ExecutionContext<JscTypes>,
+    ) -> Completion<JscValue, JscTypes> = unsafe { std::mem::transmute(behaviour) };
+
+    // SAFETY: T::PropertyKey and JscPropertyKey have same size at runtime.
+    let jsc_name: JscPropertyKey = unsafe {
+        let mut dst = std::mem::MaybeUninit::uninit();
+        std::ptr::copy_nonoverlapping(
+            &name as *const T::PropertyKey as *const u8,
+            dst.as_mut_ptr() as *mut u8,
+            std::mem::size_of::<JscPropertyKey>(),
+        );
+        std::mem::forget(name);
+        dst.assume_init()
+    };
+
+    let result = js_engine::jsc::create_builtin_fn_with_captures(
+        jsc_ec, captures, jsc_behaviour, length, jsc_name, is_constructor,
+    );
+
+    // SAFETY: T::Function and JscFunction have same size at runtime.
+    unsafe {
+        let mut dst = std::mem::MaybeUninit::uninit();
+        std::ptr::copy_nonoverlapping(
+            &result as *const JscFunction as *const u8,
+            dst.as_mut_ptr() as *mut u8,
+            std::mem::size_of::<JscFunction>(),
+        );
+        let _ = result;
+        dst.assume_init()
+    }
 }
 
 /// Convert a stateless raw function pointer into a builtin function.

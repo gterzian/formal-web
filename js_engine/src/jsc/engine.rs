@@ -1253,8 +1253,6 @@ pub struct JscEngine {
     /// unprotected when the engine is dropped.
     protected_objects: Vec<*mut JSValueRef>,
     queued_jobs: Vec<Box<dyn FnOnce(&mut JscEngine)>>,
-    /// Cached no-op function for microtask draining.
-    drain_noop: *mut JSObjectRef,
     /// Cached `Function.prototype.call` for correct this-binding when
     /// calling JS functions with non-object `this` values.
     fn_call: Option<JscObject>,
@@ -1273,13 +1271,7 @@ impl Drop for JscEngine {
         // ensure unroot actions run while the JSGlobalContextRef is still valid.
         self.host_data.clear();
         self.queued_jobs.clear();
-        // Unprotect the drain_noop function before the context is released.
         let ctx_ptr = self.context.as_context_ref();
-        if !self.drain_noop.is_null() {
-            unsafe {
-                JSValueUnprotect(ctx_ptr, self.drain_noop as *mut JSValueRef);
-            }
-        }
         // Unprotect any objects protected via create_object_with_any.
         for protected in self.protected_objects.drain(..) {
             if !protected.is_null() {
@@ -1302,7 +1294,6 @@ impl JscEngine {
             next_root_id: 0,
             protected_objects: Vec::new(),
             queued_jobs: Vec::new(),
-            drain_noop: std::ptr::null_mut(),
             fn_call: None,
             intrinsics: Intrinsics::default(),
         }
@@ -1335,7 +1326,6 @@ impl JscEngine {
             next_root_id: 0,
             protected_objects: Vec::new(),
             queued_jobs: Vec::new(),
-            drain_noop: std::ptr::null_mut(),
             fn_call: None,
             intrinsics: Intrinsics::default(),
         }
@@ -1360,7 +1350,6 @@ impl JscEngine {
             next_root_id: 0,
             protected_objects: Vec::new(),
             queued_jobs: Vec::new(),
-            drain_noop: std::ptr::null_mut(),
             fn_call: None,
             intrinsics: Intrinsics::default(),
         }
@@ -1512,36 +1501,14 @@ impl JscEngine {
         self.store_host_any(map_type_id, Box::new(map));
     }
 
-    /// Drain JSC's internal microtask queue.
-    /// Uses a cached no-op function call (not JSEvaluateScript) to avoid
-    /// the compilation overhead of `void 0` eval.
+    /// JSC drains its microtask queue automatically every time control
+    /// returns from the outermost JS call on the stack (i.e., when the
+    /// call stack unwinds to zero JS frames). Since any Rust code that
+    /// queues JSC microtasks (promise resolution, etc.) does so through
+    /// the JSC C API (JSObjectCallAsFunction, etc.), the drain happens
+    /// automatically on that call's return. No explicit drain is needed.
     fn drain_microtasks(&mut self) {
-        let ctx_ptr = self.context.as_context_ref();
-        if self.drain_noop.is_null() {
-            let script = "(function(){})";
-            let (result, exception) = self.eval_script_raw(script);
-            if exception.is_null() {
-                self.drain_noop = result as *mut JSObjectRef;
-                // Protect the no-op function from GC while the engine lives.
-                unsafe {
-                    JSValueProtect(ctx_ptr, result);
-                }
-            }
-        }
-        if !self.drain_noop.is_null() {
-            unsafe {
-                JSObjectCallAsFunction(
-                    ctx_ptr,
-                    self.drain_noop,
-                    std::ptr::null_mut(),
-                    0,
-                    std::ptr::null(),
-                    std::ptr::null_mut(),
-                );
-            }
-        } else {
-            self.eval_script_raw("void 0");
-        }
+        // No-op: JSC handles microtask draining automatically.
     }
 
     /// Get or lazily create a cached `Function.prototype.call` reference.
@@ -1837,7 +1804,69 @@ impl JsEngine<JscTypes> for JscEngine {
 
 /// Safe standalone function: create a built-in function with captures.
 /// On JSC this wraps captures in a Box<dyn Fn> (no GC tracing concern).
-pub fn create_builtin_fn_with_captures<C: 'static>(
+/// Create a built-in function with captured state.
+///
+/// Generic wrapper matching `content/src/js/mod.rs`'s call site.
+/// At runtime `T` is always `JscTypes` when the `jsc` feature is active.
+/// Uses `transmute` to erase the generic parameter, matching the Boa backend
+/// pattern (see `js_engine/src/boa/engine.rs`).
+pub fn create_builtin_fn_with_captures<T, C>(
+    ec: &mut dyn ExecutionContext<T>,
+    captures: C,
+    behaviour: fn(
+        &[T::JsValue],
+        T::JsValue,
+        &C,
+        &mut dyn ExecutionContext<T>,
+    ) -> Completion<T::JsValue, T>,
+    length: u32,
+    name: T::PropertyKey,
+    is_constructor: bool,
+) -> T::Function
+where
+    T: JsTypes,
+    C: 'static,
+{
+    // SAFETY: On the JSC backend, T is always JscTypes.
+    // &mut dyn ExecutionContext<T> and &mut dyn ExecutionContext<JscTypes>
+    // have identical fat-pointer layout (2 * usize).
+    let jsc_ec: &mut dyn ExecutionContext<JscTypes> = unsafe { std::mem::transmute(ec) };
+    // SAFETY: fn pointers are all usize-sized regardless of signature.
+    let jsc_behaviour: fn(
+        &[JscValue],
+        JscValue,
+        &C,
+        &mut dyn ExecutionContext<JscTypes>,
+    ) -> Completion<JscValue, JscTypes> = unsafe { std::mem::transmute(behaviour) };
+    // SAFETY: T::PropertyKey and JscPropertyKey have identical layout at runtime.
+    let jsc_name: JscPropertyKey = unsafe {
+        let mut dst = std::mem::MaybeUninit::uninit();
+        std::ptr::copy_nonoverlapping(
+            &name as *const T::PropertyKey as *const u8,
+            dst.as_mut_ptr() as *mut u8,
+            std::mem::size_of::<JscPropertyKey>(),
+        );
+        std::mem::forget(name);
+        dst.assume_init()
+    };
+    let result = create_builtin_fn_with_captures_impl(
+        jsc_ec, captures, jsc_behaviour, length, jsc_name, is_constructor,
+    );
+    // SAFETY: T::Function and JscObject have identical layout at runtime.
+    unsafe {
+        let mut dst = std::mem::MaybeUninit::uninit();
+        std::ptr::copy_nonoverlapping(
+            &result as *const JscObject as *const u8,
+            dst.as_mut_ptr() as *mut u8,
+            std::mem::size_of::<JscObject>(),
+        );
+        std::mem::forget(result);
+        dst.assume_init()
+    }
+}
+
+/// Core implementation — non-generic, operates on `JscTypes` concretely.
+pub fn create_builtin_fn_with_captures_impl<C: 'static>(
     ec: &mut dyn ExecutionContext<JscTypes>,
     captures: C,
     behaviour: fn(
@@ -3400,23 +3429,18 @@ impl ExecutionContext<JscTypes> for JscEngine {
             }));
     }
     fn run_jobs(&mut self) {
-        // Note: JSC's C API does not expose the microtask queue.
-        // Microtask draining is triggered by calling a no-op function
-        // which causes JSC to drain pending microtasks after each call.
-        // We also drain the Rust-side job queue with CURRENT_ENGINE set.
+        // JSC drains its microtask queue automatically every time control
+        // returns from the outermost JS call on the stack.  Since any Rust
+        // code that queues JSC microtasks does so through the JSC C API,
+        // the drain happens on that call's return — no explicit drain needed.
+        if self.queued_jobs.is_empty() {
+            return;
+        }
         let _guard = EngineGuard::new(self as *mut JscEngine);
-
-        // Drain JSC microtasks.
-        self.drain_microtasks();
-
-        // Drain Rust-side job queue.
         let jobs = std::mem::take(&mut self.queued_jobs);
         for job in jobs {
             job(self);
         }
-
-        // Drain any microtasks that the Rust jobs may have triggered.
-        self.drain_microtasks();
     }
 
     // ── §25 ArrayBuffer — runtime queries ─────────────────────────────────
@@ -4160,20 +4184,23 @@ impl ExecutionContext<JscTypes> for JscEngine {
     // ── §27 Promise ───────────────────────────────────────────────────────
     fn promise_resolve(
         &mut self,
-        _constructor: JscConstructor,
+        constructor: JscConstructor,
         x: JscValue,
     ) -> Completion<JscPromise, JscTypes> {
         // Use cached Promise.resolve reference to avoid per-call eval.
         let resolve_fn = cached_intrinsic!(self, promise_resolve_fn, ["Promise", "resolve"]);
+        // Promise.resolve needs `this` to be the Promise constructor;
+        // passing undefined/null causes JSC to substitute the global
+        // object, which is not a constructor and throws
+        // "|this| is not an object".
         let ctx = self.ctx_ptr();
         let args = [x.raw];
-        let undef = unsafe { JSValueMakeUndefined(ctx) };
         let mut exc: *mut JSValueRef = std::ptr::null_mut();
         let result = unsafe {
             JSObjectCallAsFunction(
                 ctx,
                 resolve_fn.raw,
-                undef as *mut JSObjectRef,
+                constructor.raw as *mut JSObjectRef,
                 args.len(),
                 args.as_ptr(),
                 &mut exc,
@@ -4401,16 +4428,14 @@ impl ExecutionContext<JscTypes> for JscEngine {
                 return Err(JscValue { raw: exc, ctx });
             }
 
-            // Drain JSC microtasks so that .then() handlers fire.
-            self.drain_microtasks();
-
+            // JSC drains microtasks automatically on C API call return,
+            // so any .then() handlers queued above already fired.
             // Return resultCapability.[[Promise]] per spec.
             return Ok(cap.promise);
         }
 
-        // Drain JSC microtasks so that .then() handlers fire.
-        self.drain_microtasks();
-
+        // JSC drains microtasks automatically on C API call return,
+        // so any .then() handlers queued above already fired.
         Ok(JscValue { raw: result, ctx })
     }
 

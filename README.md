@@ -27,22 +27,78 @@ rustup run 1.94.0 cargo run --release
 
 ### JS engine backend
 
-Two JS engine backends are available:
+Two JS engine backends are available.  Feature flags propagate from the
+root `Cargo.toml` through the workspace to control which engine the
+`content` crate links against.
 
-- **Boa** (default) — Rust-native JS engine with Wasmtime for WebAssembly.
-  Production-ready for everyday development.
-- **JSC** (macOS opt-in) — Uses JavaScriptCore via the system framework.
-  Currently experimental.
+| Backend | Default | Platform | Description |
+|---|---|---|---|
+| **Boa** | ✅ yes | All platforms | Rust-native JS engine with Wasmtime for WebAssembly. Production-ready for everyday development. |
+| **JSC** | — | macOS only | Uses JavaScriptCore via the system framework. Experimental — content crate compiles on both backends but runtime is less stable. |
 
-Switch with feature flags:
+#### Feature flag mechanics
+
+The root `Cargo.toml` defines two mutually-exclusive feature sets:
+
+- **`default = ["media", "boa"]`** — Enables the Boa backend and media support.
+- **`jsc`** — Switches to the JSC backend (`--no-default-features --features jsc,media`).
+
+The `--no-default-features` flag disables `boa` (and thus the
+`boa_engine`/`wasmtime` dependencies).  `--features jsc,media` enables
+JSC and media support.
+
+#### Build
 
 ```bash
 # Boa (default) — no special flags needed
+rustup run 1.94.0 cargo build --release
+
+# JSC (macOS only) — disable default Boa, enable JSC
+rustup run 1.94.0 cargo build --release --no-default-features --features jsc,media
+
+# Without any JS engine (no content process, useful for embedder-only work)
+rustup run 1.94.0 cargo build --release --no-default-features
+```
+
+#### Run
+
+```bash
+# Boa (default)
 rustup run 1.94.0 cargo run --release
 
-# JSC (experimental, macOS only)
+# JSC (macOS only)
 rustup run 1.94.0 cargo run --release --no-default-features --features jsc,media
 ```
+
+#### Unit tests
+
+```bash
+# Boa
+rustup run 1.94.0 cargo test -p content generic_js_test
+
+# JSC
+rustup run 1.94.0 cargo test --no-default-features --features jsc -p content generic_js_test
+```
+
+#### WPT (Web Platform Tests)
+
+The WPT runner (`cargo run --release -- wpt`) builds the `formal-web`
+entrypoint binary with the active feature set.  The runner itself does
+not depend on the JS engine — it drives the embedder via WebDriver —
+but the embedder needs the content crate with the correct engine.
+
+```bash
+# Boa (default)
+rustup run 1.94.0 cargo run --release -- wpt
+
+# JSC (macOS only)
+rustup run 1.94.0 cargo run --release --no-default-features --features jsc,media -- wpt
+```
+
+**Current JSC status:** The content crate compiles on JSC but
+`run_content_process` returns an error at runtime, so the JSC backend
+path is not yet functional for full WPT runs.  Boa remains the
+production development backend.
 
 ### macOS (GStreamer — opt-in)
 
@@ -65,7 +121,7 @@ rustup run 1.94.0 cargo build --release --no-default-features
 rustup run 1.94.0 cargo run --release
 ```
 
-### Verify which backend is active
+### Verify which engine backend is active
 
 ```bash
 RUST_LOG=info cargo run --release 2>&1 | grep "creating pipeline"
