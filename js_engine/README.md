@@ -249,6 +249,22 @@ After all remaining items, run the full WPT suite on both backends and confirm
 `executed=N unexpected=0` on both.  Any remaining discrepancy needs either
 a JSC bug fix (preferred) or shared metadata (last resort).
 
+### Known JSC gaps (remaining after 2026-07-11 fixes)
+
+| Gap | Reason | Status |
+|---|---|---|
+| `Object.freeze`/`seal`/`isFrozen`/`isSealed` via cached intrinsics | Implemented via cached `Object.freeze`/`Object.seal` etc. ✓ Works correctly. | Fixed |
+| `to_property_descriptor` | Implemented using native property gets. ✓ | Fixed |
+| `get_iterator` async kind + method parameter | Async path returns sync iterator (no `AsyncFromSyncIterator` wrapper). Method parameter supported. | Partial |
+| `new_promise_capability` | Still uses eval for the executor arrow function (JSC C API has no native Promise construction). Constructor call goes through cached `Promise` constructor. | Partial (acknowledged hard problem) |
+| `define_property_or_throw` | Now uses cached `Object.defineProperty` + native descriptor object. | Fixed |
+| `FUNCTION_REGISTRY` dead code | Removed. | Cleaned |
+| `registry_call_as_function` dead code | Removed. | Cleaned |
+| `get_iterator` `CreateAsyncFromSyncIterator` | Requires creating an `AsyncFromSyncIterator` wrapper with async next/return/throw methods. Not implemented. | Unfixed |
+| `set_current_engine`/`clear_current_engine` nesting | Public API does not nest (unlike `EngineGuard`). No callers yet outside the module. | Documented |
+| Constructor Proxy eval | Cannot be eliminated (JSC C API has no `JSProxyCreate`). | Acknowledged |
+| `promise_state()` eval | `JSPromiseGetStatus` not in public C API. | Acknowledged |
+
 - **Piping test timeouts on JSC** — Tests using `delay()` (via
   `step_timeout`/`setTimeout`) time out on JSC but pass on Boa.  Root cause
   not identified.
