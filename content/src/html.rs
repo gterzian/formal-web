@@ -1,8 +1,7 @@
-use js_engine::{Completion, ExecutionContext, JsTypes};
+use js_engine::{ExecutionContext, JsTypes};
 
 use crate::js::Types;
 
-type JsValue = <Types as JsTypes>::JsValue;
 type JsObject = <Types as JsTypes>::JsObject;
 use log::error;
 mod environment_settings_object;
@@ -17,6 +16,7 @@ mod html_parser;
 pub(crate) mod html_video_element;
 mod hyperlink_element_utils;
 mod location;
+pub(crate) mod microtask;
 pub(crate) mod safe_passing_of_structured_data;
 mod window;
 mod window_or_worker_global_scope;
@@ -50,6 +50,7 @@ pub use html_video_element::HTMLVideoElement;
 pub(crate) use hyperlink_element_utils::HyperlinkElementUtils;
 pub use location::Location;
 pub(crate) use location::LocationError;
+pub(crate) use microtask::Microtask;
 pub use window::Window;
 pub(crate) use window::window_computed_style_properties_for_element;
 pub(crate) use window_or_worker_global_scope::WindowOrWorkerGlobalScope;
@@ -57,51 +58,6 @@ pub(crate) use window_or_worker_global_scope::WindowOrWorkerGlobalScope;
 use blitz_dom::{BaseDocument, DocumentConfig};
 use std::{cell::RefCell, rc::Rc};
 use url::Url;
-
-/// <https://html.spec.whatwg.org/#queue-a-microtask>
-pub fn queue_a_microtask<F>(ec: &mut dyn ExecutionContext<crate::js::Types>, callback: F)
-where
-    F: FnOnce(&mut dyn ExecutionContext<crate::js::Types>) -> Completion<JsValue, crate::js::Types>
-        + 'static,
-{
-    // Note: Steps 1-7 (asserting a surrounding agent, setting eventLoop,
-    // creating a new task, setting its steps/source/document/settings-object
-    // set) are handled by the engine's job queue.  The realm carries
-    // the agent/event-loop association.
-    //
-    // Step 1: Assert: there is a surrounding agent. I.e., this algorithm is
-    //         not called while in parallel.
-    let realm = ec.current_realm();
-    // Step 9: Enqueue microtask on eventLoop's microtask queue.
-    ec.enqueue_job_with_realm(
-        realm,
-        Box::new(move |job_ec| {
-            let _ = callback(job_ec);
-        }),
-    );
-}
-
-/// <https://html.spec.whatwg.org/#await-a-stable-state>
-pub fn await_a_stable_state<F>(
-    ec: &mut dyn ExecutionContext<crate::js::Types>,
-    synchronous_section: F,
-) where
-    F: FnOnce(&mut dyn ExecutionContext<crate::js::Types>) -> Completion<JsValue, crate::js::Types>
-        + 'static,
-{
-    // Note: The preamble ("queue a microtask that runs the following steps, and
-    // must then stop executing") is implemented by delegating to
-    // queue_a_microtask.  The "stop executing" semantics are inherent: queuing
-    // a microtask returns immediately and the synchronous section runs later.
-    //
-    // Step 1: Run the algorithm's synchronous section.
-    //
-    // Step 2: Resume execution of the algorithm in parallel, if appropriate, as
-    //         described in the algorithm's steps.
-    //         (Implicit — after the synchronous section returns, control
-    //         resumes in the calling algorithm's in-parallel context.)
-    queue_a_microtask(ec, synchronous_section);
-}
 
 /// <https://html.spec.whatwg.org/#creating-a-new-browsing-context>
 pub(crate) fn create_a_new_browsing_context_and_document(

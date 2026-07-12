@@ -20,10 +20,11 @@ pub(crate) use readablebytestreamcontroller::{
 pub use readablebytestreamcontroller::{ReadableByteStreamController, ReadableStreamBYOBRequest};
 pub use readablestream::ReadableStream;
 pub(crate) use readablestream::{
-    PipeToState, construct_readable_stream, readable_stream_add_read_request,
-    readable_stream_close, readable_stream_error, readable_stream_from_iterable,
-    readable_stream_fulfill_read_request, readable_stream_get_num_read_requests,
-    with_readable_stream_ref,
+    ByteTeeState, PipeToState, TeeState, construct_readable_stream,
+    readable_byte_stream_tee_default_reader_chunk_steps, readable_stream_add_read_request,
+    readable_stream_close, readable_stream_default_tee_read_request_chunk_steps,
+    readable_stream_error, readable_stream_from_iterable, readable_stream_fulfill_read_request,
+    readable_stream_get_num_read_requests, with_readable_stream_ref,
 };
 pub use readablestreambyobreader::ReadableStreamBYOBReader;
 pub(crate) use readablestreambyobreader::{
@@ -44,8 +45,8 @@ pub(crate) use readablestreamdefaultreader::{
 };
 pub(crate) use readablestreamsupport::{
     ReadIntoRequest, ReadRequest, ReadableStreamController, ReadableStreamReader,
-    ReadableStreamState, SourceMethod, queue_internal_stream_microtask, range_error_value,
-    rejected_type_error_promise, type_error_value,
+    ReadableStreamState, SourceMethod, range_error_value, rejected_type_error_promise,
+    type_error_value,
 };
 pub(crate) use strategy::SizeAlgorithm;
 pub use strategy::{ByteLengthQueuingStrategy, CountQueuingStrategy};

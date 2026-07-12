@@ -28,9 +28,9 @@ use super::{
     ReadableByteStreamController, ReadableStreamController, ReadableStreamDefaultReader,
     ReadableStreamGenericReader, ReadableStreamReader, ReadableStreamState, StartAlgorithm,
     acquire_readable_stream_byob_reader, acquire_readable_stream_default_reader,
-    queue_internal_stream_microtask, readable_stream_byob_reader_release,
-    readable_stream_default_reader_error_read_requests, readable_stream_default_reader_release,
-    rejected_type_error_promise, set_up_readable_byte_stream_controller_from_underlying_source,
+    readable_stream_byob_reader_release, readable_stream_default_reader_error_read_requests,
+    readable_stream_default_reader_release, rejected_type_error_promise,
+    set_up_readable_byte_stream_controller_from_underlying_source,
     set_up_readable_stream_default_controller,
     set_up_readable_stream_default_controller_from_underlying_source, type_error_value,
     with_readable_stream_byob_reader_ref, with_readable_stream_default_reader_ref,
@@ -657,124 +657,113 @@ pub(crate) fn readable_stream_default_tee_pull_algorithm(
 }
 
 /// <https://streams.spec.whatwg.org/#abstract-opdef-readablestreamdefaulttee>
+///
+/// Runs the chunk steps of the default tee read request.  This is the
+/// microtask body — called directly by `Microtask::DefaultTeeChunkSteps`.
 pub(crate) fn readable_stream_default_tee_read_request_chunk_steps(
     tee_state: GcCell<TeeState>,
     clone_for_branch2: bool,
     chunk: JsValue,
     ec: &mut dyn ExecutionContext<crate::js::Types>,
 ) -> Completion<(), crate::js::Types> {
-    let realm = ec.current_realm();
-    ec.enqueue_job_with_realm(
-        realm,
-        Box::new(move |job_ec: &mut dyn ExecutionContext<crate::js::Types>| {
-            // Step 13.3 chunk steps 1.1: "Set readAgain to false."
-            tee_state.borrow_mut().read_again = false;
+    // Step 13.3 chunk steps 1.1: "Set readAgain to false."
+    tee_state.borrow_mut().read_again = false;
 
-            // Step 13.3 chunk steps 1.2: "Let chunk1 and chunk2 be chunk."
-            let chunk1 = chunk.clone();
-            let mut chunk2 = chunk;
-            let (source_stream, branch1, branch2, canceled1, canceled2, cancel_resolvers) = {
-                let tee_state = tee_state.borrow();
-                (
-                    tee_state.source_stream.clone(),
-                    tee_state.branch1.clone(),
-                    tee_state.branch2.clone(),
-                    tee_state.canceled1,
-                    tee_state.canceled2,
-                    tee_state.cancel_resolvers.clone(),
-                )
-            };
+    // Step 13.3 chunk steps 1.2: "Let chunk1 and chunk2 be chunk."
+    let chunk1 = chunk.clone();
+    let mut chunk2 = chunk;
+    let (source_stream, branch1, branch2, canceled1, canceled2, cancel_resolvers) = {
+        let tee_state = tee_state.borrow();
+        (
+            tee_state.source_stream.clone(),
+            tee_state.branch1.clone(),
+            tee_state.branch2.clone(),
+            tee_state.canceled1,
+            tee_state.canceled2,
+            tee_state.cancel_resolvers.clone(),
+        )
+    };
 
-            // Step 13.3 chunk steps 1.3: "If canceled2 is false and cloneForBranch2 is true,"
-            if !canceled2 && clone_for_branch2 {
-                // Step 13.3 chunk steps 1.3.1: "Let cloneResult be StructuredClone(chunk2)."
-                match structured_clone_value(chunk2.clone(), job_ec) {
-                    Ok(cloned_chunk) => {
-                        // Step 13.3 chunk steps 1.3.3: "Otherwise, set chunk2 to cloneResult.[[Value]]."
-                        chunk2 = cloned_chunk;
-                    }
-                    Err(clone_error) => {
-                        // Step 13.3 chunk steps 1.3.2.1: "Perform ! ReadableStreamDefaultControllerError(branch1.[[controller]], cloneResult.[[Value]])."
-                        if let Some(branch1) = branch1.as_ref() {
-                            if let Err(error) =
-                                default_tee_error_branch(branch1, clone_error.clone(), job_ec)
-                            {
-                                error!(
-                                    "[readable-stream] default tee error branch1 (chunk) failed: {error:?}"
-                                );
-                            }
-                        }
-
-                        // Step 13.3 chunk steps 1.3.2.2: "Perform ! ReadableStreamDefaultControllerError(branch2.[[controller]], cloneResult.[[Value]])."
-                        if let Some(branch2) = branch2.as_ref() {
-                            if let Err(error) =
-                                default_tee_error_branch(branch2, clone_error.clone(), job_ec)
-                            {
-                                error!(
-                                    "[readable-stream] default tee error branch2 (chunk) failed: {error:?}"
-                                );
-                            }
-                        }
-
-                        // Step 13.3 chunk steps 1.3.2.3: "Resolve cancelPromise with ! ReadableStreamCancel(stream, cloneResult.[[Value]])."
-                        if let Ok(cancel_result) =
-                            readable_stream_cancel(source_stream, clone_error, job_ec)
-                        {
-                            let cancel_val = <crate::js::Types as JsTypes>::value_from_object(cancel_result);
-                            let _ = cancel_resolvers.resolve(cancel_val, job_ec);
-                        }
-
-                        // Step 13.3 chunk steps 1.3.2.4: "Return."
-                        return;
-                    }
-                }
+    // Step 13.3 chunk steps 1.3: "If canceled2 is false and cloneForBranch2 is true,"
+    if !canceled2 && clone_for_branch2 {
+        // Step 13.3 chunk steps 1.3.1: "Let cloneResult be StructuredClone(chunk2)."
+        match structured_clone_value(chunk2.clone(), ec) {
+            Ok(cloned_chunk) => {
+                // Step 13.3 chunk steps 1.3.3: "Otherwise, set chunk2 to cloneResult.[[Value]]."
+                chunk2 = cloned_chunk;
             }
-
-            // Step 13.3 chunk steps 1.4: "If canceled1 is false, perform ! ReadableStreamDefaultControllerEnqueue(branch1.[[controller]], chunk1)."
-            if !canceled1 {
+            Err(clone_error) => {
+                // Step 13.3 chunk steps 1.3.2.1: "Perform ! ReadableStreamDefaultControllerError(branch1.[[controller]], cloneResult.[[Value]])."
                 if let Some(branch1) = branch1.as_ref() {
-                    let _ = default_tee_enqueue_to_branch(branch1, chunk1, job_ec);
+                    if let Err(error) = default_tee_error_branch(branch1, clone_error.clone(), ec) {
+                        error!(
+                            "[readable-stream] default tee error branch1 (chunk) failed: {error:?}"
+                        );
+                    }
                 }
-            }
 
-            // Step 13.3 chunk steps 1.5: "If canceled2 is false, perform ! ReadableStreamDefaultControllerEnqueue(branch2.[[controller]], chunk2)."
-            if !canceled2 {
+                // Step 13.3 chunk steps 1.3.2.2: "Perform ! ReadableStreamDefaultControllerError(branch2.[[controller]], cloneResult.[[Value]])."
                 if let Some(branch2) = branch2.as_ref() {
-                    let _ = default_tee_enqueue_to_branch(branch2, chunk2, job_ec);
-                }
-            }
-
-            // Step 13.3 chunk steps 1.6: "Set reading to false."
-            // Step 13.3 chunk steps 1.7: "If readAgain is true, perform pullAlgorithm."
-            let should_read_again = {
-                let mut tee_state_ref = tee_state.borrow_mut();
-                tee_state_ref.reading = false;
-                let should_read_again = tee_state_ref.read_again;
-                tee_state_ref.read_again = false;
-                should_read_again
-            };
-
-            if should_read_again {
-                match readable_stream_default_tee_pull_algorithm(
-                    tee_state.clone(),
-                    clone_for_branch2,
-                    job_ec,
-                ) {
-                    Ok(value) => {
-                        if let Ok(pull_promise) = resolved_promise(value, job_ec) {
-                            let _ = mark_promise_as_handled(&pull_promise, job_ec);
-                        }
-                    }
-                    Err(error) => {
-                        error!("[readable-stream] default tee pull algorithm failed");
-                        let rejected = rejected_promise(error, job_ec)
-                            .unwrap_or_else(|_| job_ec.realm_global_object());
-                        let _ = mark_promise_as_handled(&rejected, job_ec);
+                    if let Err(error) = default_tee_error_branch(branch2, clone_error.clone(), ec) {
+                        error!(
+                            "[readable-stream] default tee error branch2 (chunk) failed: {error:?}"
+                        );
                     }
                 }
+
+                // Step 13.3 chunk steps 1.3.2.3: "Resolve cancelPromise with ! ReadableStreamCancel(stream, cloneResult.[[Value]])."
+                if let Ok(cancel_result) = readable_stream_cancel(source_stream, clone_error, ec) {
+                    let cancel_val =
+                        <crate::js::Types as JsTypes>::value_from_object(cancel_result);
+                    let _ = cancel_resolvers.resolve(cancel_val, ec);
+                }
+
+                // Step 13.3 chunk steps 1.3.2.4: "Return."
+                return Ok(());
             }
-        }),
-    );
+        }
+    }
+
+    // Step 13.3 chunk steps 1.4: "If canceled1 is false, perform ! ReadableStreamDefaultControllerEnqueue(branch1.[[controller]], chunk1)."
+    if !canceled1 {
+        if let Some(branch1) = branch1.as_ref() {
+            let _ = default_tee_enqueue_to_branch(branch1, chunk1, ec);
+        }
+    }
+
+    // Step 13.3 chunk steps 1.5: "If canceled2 is false, perform ! ReadableStreamDefaultControllerEnqueue(branch2.[[controller]], chunk2)."
+    if !canceled2 {
+        if let Some(branch2) = branch2.as_ref() {
+            let _ = default_tee_enqueue_to_branch(branch2, chunk2, ec);
+        }
+    }
+
+    // Step 13.3 chunk steps 1.6: "Set reading to false."
+    // Step 13.3 chunk steps 1.7: "If readAgain is true, perform pullAlgorithm."
+    let should_read_again = {
+        let mut tee_state_ref = tee_state.borrow_mut();
+        tee_state_ref.reading = false;
+        let should_read_again = tee_state_ref.read_again;
+        tee_state_ref.read_again = false;
+        should_read_again
+    };
+
+    if should_read_again {
+        match readable_stream_default_tee_pull_algorithm(tee_state.clone(), clone_for_branch2, ec) {
+            Ok(value) => {
+                if let Ok(pull_promise) = resolved_promise(value, ec) {
+                    let _ = mark_promise_as_handled(&pull_promise, ec);
+                }
+            }
+            Err(error) => {
+                error!("[readable-stream] default tee pull algorithm failed");
+                let rejected =
+                    rejected_promise(error, ec).unwrap_or_else(|_| ec.realm_global_object());
+                let _ = mark_promise_as_handled(&rejected, ec);
+            }
+        }
+    }
+
     Ok(())
 }
 
@@ -2038,120 +2027,302 @@ fn byte_tee_switch_to_byob_reader(
 }
 
 /// <https://streams.spec.whatwg.org/#abstract-opdef-readablebytestreamtee>
+///
+/// Runs the chunk steps of the byte tee default reader.  This is the
+/// microtask body — called directly by `Microtask::ByteTeeChunkSteps`.
 pub(crate) fn readable_byte_stream_tee_default_reader_chunk_steps(
     tee_state: GcCell<ByteTeeState>,
     chunk: JsValue,
     ec: &mut dyn ExecutionContext<crate::js::Types>,
 ) -> Completion<(), crate::js::Types> {
-    queue_internal_stream_microtask(
-        move |job_ec| {
-            // Step 18.2 chunk steps 1.1: "Set readAgainForBranch1 to false."
-            // Step 18.2 chunk steps 1.2: "Set readAgainForBranch2 to false."
-            {
-                let mut tee = tee_state.borrow_mut();
-                tee.read_again_for_branch1 = false;
-                tee.read_again_for_branch2 = false;
+    // Step 18.2 chunk steps 1.1: "Set readAgainForBranch1 to false."
+    // Step 18.2 chunk steps 1.2: "Set readAgainForBranch2 to false."
+    {
+        let mut tee = tee_state.borrow_mut();
+        tee.read_again_for_branch1 = false;
+        tee.read_again_for_branch2 = false;
+    }
+
+    // Step 18.2 chunk steps 1.3: "Let chunk1 and chunk2 be chunk."
+    let chunk1 = chunk.clone();
+    let mut chunk2 = chunk;
+    let (branch1, branch2, canceled1, canceled2) = {
+        let tee = tee_state.borrow();
+        (
+            tee.branch1.clone(),
+            tee.branch2.clone(),
+            tee.canceled1,
+            tee.canceled2,
+        )
+    };
+
+    // Step 18.2 chunk steps 1.4: "If canceled1 is false and canceled2 is false,"
+    if !canceled1 && !canceled2 {
+        // Step 18.2 chunk steps 1.4.1: "Let cloneResult be CloneAsUint8Array(chunk)."
+        match clone_as_uint8_array(chunk1.clone(), ec) {
+            Ok(cloned_chunk) => {
+                // Step 18.2 chunk steps 1.4.3: "Otherwise, set chunk2 to cloneResult.[[Value]]."
+                chunk2 = cloned_chunk;
             }
-
-            // Step 18.2 chunk steps 1.3: "Let chunk1 and chunk2 be chunk."
-            let chunk1 = chunk.clone();
-            let mut chunk2 = chunk;
-            let (branch1, branch2, canceled1, canceled2) = {
-                let tee = tee_state.borrow();
-                (
-                    tee.branch1.clone(),
-                    tee.branch2.clone(),
-                    tee.canceled1,
-                    tee.canceled2,
-                )
-            };
-
-            // Step 18.2 chunk steps 1.4: "If canceled1 is false and canceled2 is false,"
-            if !canceled1 && !canceled2 {
-                // Step 18.2 chunk steps 1.4.1: "Let cloneResult be CloneAsUint8Array(chunk)."
-                match clone_as_uint8_array(chunk1.clone(), job_ec) {
-                    Ok(cloned_chunk) => {
-                        // Step 18.2 chunk steps 1.4.3: "Otherwise, set chunk2 to cloneResult.[[Value]]."
-                        chunk2 = cloned_chunk;
-                    }
-                    Err(error) => {
-                        // Step 18.2 chunk steps 1.4.2.1: "Perform ! ReadableByteStreamControllerError(branch1.[[controller]], cloneResult.[[Value]])."
-                        if let Some(branch1) = branch1.as_ref() {
-                            if let Err(inner_error) =
-                                byte_tee_error_branch(branch1, error.clone(), job_ec)
-                            {
-                                error!(
-                                    "[readable-stream] byte tee error branch1 (chunk) failed: {inner_error:?}"
-                                );
-                            }
-                        }
-
-                        // Step 18.2 chunk steps 1.4.2.2: "Perform ! ReadableByteStreamControllerError(branch2.[[controller]], cloneResult.[[Value]])."
-                        if let Some(branch2) = branch2.as_ref() {
-                            if let Err(error) =
-                                byte_tee_error_branch(branch2, error.clone(), job_ec)
-                            {
-                                error!(
-                                    "[readable-stream] byte tee error branch2 (chunk) failed: {error:?}"
-                                );
-                            }
-                        }
-
-                        // Step 18.2 chunk steps 1.4.2.3: "Resolve cancelPromise with ! ReadableStreamCancel(stream, cloneResult.[[Value]])."
-                        let source_stream = tee_state.borrow().source_stream.clone();
-                        let cancel_resolvers = tee_state.borrow().cancel_resolvers.clone();
-                        let cancel_result = readable_stream_cancel(source_stream, error, job_ec)?;
-                        let undefined = job_ec.value_undefined();
-                        job_ec.call(
-                            &cancel_resolvers.resolve,
-                            &undefined,
-                            &[cancel_result.into()],
-                        )?;
-
-                        // Step 18.2 chunk steps 1.4.2.4: "Return."
-                        return Ok(());
-                    }
-                }
-            }
-
-            // Step 18.2 chunk steps 1.5: "If canceled1 is false, perform ! ReadableByteStreamControllerEnqueue(branch1.[[controller]], chunk1)."
-            if !canceled1 {
+            Err(error) => {
+                // Step 18.2 chunk steps 1.4.2.1: "Perform ! ReadableByteStreamControllerError(branch1.[[controller]], cloneResult.[[Value]])."
                 if let Some(branch1) = branch1.as_ref() {
-                    byte_tee_enqueue_to_branch(branch1, chunk1, job_ec)?;
+                    if let Err(inner_error) = byte_tee_error_branch(branch1, error.clone(), ec) {
+                        error!(
+                            "[readable-stream] byte tee error branch1 (chunk) failed: {inner_error:?}"
+                        );
+                    }
                 }
-            }
 
-            // Step 18.2 chunk steps 1.6: "If canceled2 is false, perform ! ReadableByteStreamControllerEnqueue(branch2.[[controller]], chunk2)."
-            if !canceled2 {
+                // Step 18.2 chunk steps 1.4.2.2: "Perform ! ReadableByteStreamControllerError(branch2.[[controller]], cloneResult.[[Value]])."
                 if let Some(branch2) = branch2.as_ref() {
-                    byte_tee_enqueue_to_branch(branch2, chunk2, job_ec)?;
+                    if let Err(error) = byte_tee_error_branch(branch2, error.clone(), ec) {
+                        error!(
+                            "[readable-stream] byte tee error branch2 (chunk) failed: {error:?}"
+                        );
+                    }
+                }
+
+                // Step 18.2 chunk steps 1.4.2.3: "Resolve cancelPromise with ! ReadableStreamCancel(stream, cloneResult.[[Value]])."
+                let source_stream = tee_state.borrow().source_stream.clone();
+                let cancel_resolvers = tee_state.borrow().cancel_resolvers.clone();
+                let cancel_result = readable_stream_cancel(source_stream, error, ec)?;
+                let undefined = ec.value_undefined();
+                ec.call(
+                    &cancel_resolvers.resolve,
+                    &undefined,
+                    &[cancel_result.into()],
+                )?;
+
+                // Step 18.2 chunk steps 1.4.2.4: "Return."
+                return Ok(());
+            }
+        }
+    }
+
+    // Step 18.2 chunk steps 1.5: "If canceled1 is false, perform ! ReadableByteStreamControllerEnqueue(branch1.[[controller]], chunk1)."
+    if !canceled1 {
+        if let Some(branch1) = branch1.as_ref() {
+            byte_tee_enqueue_to_branch(branch1, chunk1, ec)?;
+        }
+    }
+
+    // Step 18.2 chunk steps 1.6: "If canceled2 is false, perform ! ReadableByteStreamControllerEnqueue(branch2.[[controller]], chunk2)."
+    if !canceled2 {
+        if let Some(branch2) = branch2.as_ref() {
+            byte_tee_enqueue_to_branch(branch2, chunk2, ec)?;
+        }
+    }
+
+    // Step 18.2 chunk steps 1.7: "Set reading to false."
+    // Step 18.2 chunk steps 1.8: "If readAgainForBranch1 is true, perform pull1Algorithm."
+    // Step 18.2 chunk steps 1.9: "Otherwise, if readAgainForBranch2 is true, perform pull2Algorithm."
+    let (read_again1, read_again2) = {
+        let mut tee = tee_state.borrow_mut();
+        tee.reading = false;
+        (tee.read_again_for_branch1, tee.read_again_for_branch2)
+    };
+    if read_again1 {
+        byte_tee_ignore_pull_completion(
+            readable_byte_stream_tee_pull1_algorithm(tee_state.clone(), ec),
+            ec,
+        )?;
+    } else if read_again2 {
+        byte_tee_ignore_pull_completion(
+            readable_byte_stream_tee_pull2_algorithm(tee_state.clone(), ec),
+            ec,
+        )?;
+    }
+
+    Ok(())
+}
+
+/// <https://streams.spec.whatwg.org/#abstract-opdef-readablebytestreamtee>
+///
+/// Runs the chunk steps after a BYOB read completes.  This is the
+/// microtask body — called directly by `Microtask::ByteTeeBYOBChunkSteps`.
+pub(crate) fn readable_byte_stream_tee_byob_read_done_chunk_steps(
+    tee_state: GcCell<ByteTeeState>,
+    chunk: JsValue,
+    done: bool,
+    byob_branch: Option<ReadableStream>,
+    other_branch: Option<ReadableStream>,
+    byob_canceled: bool,
+    other_canceled: bool,
+    ec: &mut dyn ExecutionContext<crate::js::Types>,
+) -> Completion<(), crate::js::Types> {
+    // Step 19.4 chunk steps 1.1: "Set readAgainForBranch1 to false."
+    // Step 19.4 chunk steps 1.2: "Set readAgainForBranch2 to false."
+    {
+        let mut tee = tee_state.borrow_mut();
+        tee.read_again_for_branch1 = false;
+        tee.read_again_for_branch2 = false;
+    }
+
+    if done {
+        // Step 19.4 close steps 1: "Set reading to false."
+        tee_state.borrow_mut().reading = false;
+
+        // Step 19.4 close steps 4: "If byobCanceled is false, perform ! ReadableByteStreamControllerClose(byobBranch.[[controller]])."
+        if !byob_canceled {
+            if let Some(branch) = byob_branch.as_ref() {
+                byte_tee_close_branch(branch, ec)?;
+            }
+        }
+
+        // Step 19.4 close steps 5: "If otherCanceled is false, perform ! ReadableByteStreamControllerClose(otherBranch.[[controller]])."
+        if !other_canceled {
+            if let Some(branch) = other_branch.as_ref() {
+                byte_tee_close_branch(branch, ec)?;
+            }
+        }
+
+        // Step 19.4 close steps 6: "If chunk is not undefined,"
+        let undefined = ec.value_undefined();
+        if !ec.same_value(&chunk, &undefined) {
+            // Step 19.4 close steps 6.2: "If byobCanceled is false, perform ! ReadableByteStreamControllerRespondWithNewView(byobBranch.[[controller]], chunk)."
+            if !byob_canceled {
+                if let Some(branch) = byob_branch.as_ref() {
+                    if let Ok(view) = ArrayBufferViewDescriptor::from_value(chunk.clone(), ec) {
+                        if let Some(view_object) =
+                            <crate::js::Types as JsTypes>::value_as_object(&chunk)
+                        {
+                            if let Some(controller) = branch
+                                .controller_slot()
+                                .and_then(|c| c.as_byte_controller())
+                            {
+                                let _ = controller.respond_with_new_view(view, view_object, ec);
+                            }
+                        }
+                    }
                 }
             }
 
-            // Step 18.2 chunk steps 1.7: "Set reading to false."
-            // Step 18.2 chunk steps 1.8: "If readAgainForBranch1 is true, perform pull1Algorithm."
-            // Step 18.2 chunk steps 1.9: "Otherwise, if readAgainForBranch2 is true, perform pull2Algorithm."
-            let (read_again1, read_again2) = {
-                let mut tee = tee_state.borrow_mut();
-                tee.reading = false;
-                (tee.read_again_for_branch1, tee.read_again_for_branch2)
-            };
-            if read_again1 {
-                byte_tee_ignore_pull_completion(
-                    readable_byte_stream_tee_pull1_algorithm(tee_state.clone(), job_ec),
-                    job_ec,
-                )?;
-            } else if read_again2 {
-                byte_tee_ignore_pull_completion(
-                    readable_byte_stream_tee_pull2_algorithm(tee_state.clone(), job_ec),
-                    job_ec,
-                )?;
+            // Step 19.4 close steps 6.3: "If otherCanceled is false and otherBranch.[[controller]].[[pendingPullIntos]] is not empty, perform ! ReadableByteStreamControllerRespond(otherBranch.[[controller]], 0)."
+            if !other_canceled {
+                if let Some(branch) = other_branch.as_ref() {
+                    if let Some(controller) = byte_tee_pending_pull_into_controller(branch) {
+                        let _ = controller.respond(0, ec);
+                    }
+                }
             }
+        }
 
-            Ok(())
-        },
-        ec,
-    )
+        // Step 19.4 close steps 7: "If byobCanceled is false or otherCanceled is false, resolve cancelPromise with undefined."
+        if !byob_canceled || !other_canceled {
+            let cancel_resolvers = tee_state.borrow().cancel_resolvers.clone();
+            ec.call(&cancel_resolvers.resolve, &undefined, &[undefined.clone()])?;
+        }
+
+        return Ok(());
+    }
+
+    // Step 19.4 chunk steps 1.3: "Let byobCanceled be canceled2 if forBranch2 is true, and canceled1 otherwise."
+    // Step 19.4 chunk steps 1.4: "Let otherCanceled be canceled2 if forBranch2 is false, and canceled1 otherwise."
+    if !other_canceled {
+        // Step 19.4 chunk steps 1.5.1: "Let cloneResult be CloneAsUint8Array(chunk)."
+        match clone_as_uint8_array(chunk.clone(), ec) {
+            Ok(cloned_chunk) => {
+                // Step 19.4 chunk steps 1.5.3: "Otherwise, let clonedChunk be cloneResult.[[Value]]."
+                // Step 19.4 chunk steps 1.5.4: "If byobCanceled is false, perform ! ReadableByteStreamControllerRespondWithNewView(byobBranch.[[controller]], chunk)."
+                if !byob_canceled {
+                    if let Some(branch) = byob_branch.as_ref() {
+                        if let Ok(view) = ArrayBufferViewDescriptor::from_value(chunk.clone(), ec) {
+                            if let Some(view_object) =
+                                <crate::js::Types as JsTypes>::value_as_object(&chunk)
+                            {
+                                if let Some(controller) = branch
+                                    .controller_slot()
+                                    .and_then(|c| c.as_byte_controller())
+                                {
+                                    let _ = controller.respond_with_new_view(view, view_object, ec);
+                                }
+                            }
+                        }
+                    }
+                }
+
+                // Step 19.4 chunk steps 1.5.5: "Perform ! ReadableByteStreamControllerEnqueue(otherBranch.[[controller]], clonedChunk)."
+                if let Some(branch) = other_branch.as_ref() {
+                    byte_tee_enqueue_to_branch(branch, cloned_chunk, ec)?;
+                }
+            }
+            Err(error) => {
+                // Step 19.4 chunk steps 1.5.2.1: "Perform ! ReadableByteStreamControllerError(byobBranch.[[controller]], cloneResult.[[Value]])."
+                if let Some(branch) = byob_branch.as_ref() {
+                    if let Err(error) = byte_tee_error_branch(branch, error.clone(), ec) {
+                        error!(
+                            "[readable-stream] byte tee error byob-branch (chunk) failed: {error:?}"
+                        );
+                    }
+                }
+
+                // Step 19.4 chunk steps 1.5.2.2: "Perform ! ReadableByteStreamControllerError(otherBranch.[[controller]], cloneResult.[[Value]])."
+                if let Some(branch) = other_branch.as_ref() {
+                    if let Err(error) = byte_tee_error_branch(branch, error.clone(), ec) {
+                        error!(
+                            "[readable-stream] byte tee error other-branch (chunk) failed: {error:?}"
+                        );
+                    }
+                }
+
+                // Step 19.4 chunk steps 1.5.2.3: "Resolve cancelPromise with ! ReadableStreamCancel(stream, cloneResult.[[Value]])."
+                let source_stream = tee_state.borrow().source_stream.clone();
+                let cancel_resolvers = tee_state.borrow().cancel_resolvers.clone();
+                let cancel_result = readable_stream_cancel(source_stream, error, ec)?;
+                let undefined = ec.value_undefined();
+                ec.call(
+                    &cancel_resolvers.resolve,
+                    &undefined,
+                    &[cancel_result.into()],
+                )?;
+
+                // Step 19.4 chunk steps 1.5.2.4: "Return."
+                tee_state.borrow_mut().reading = false;
+                return Ok(());
+            }
+        }
+    } else if !byob_canceled {
+        // Step 19.4 chunk steps 1.6: "Otherwise, if byobCanceled is false, perform ! ReadableByteStreamControllerRespondWithNewView(byobBranch.[[controller]], chunk)."
+        if let Some(branch) = byob_branch.as_ref() {
+            if let Ok(view) = ArrayBufferViewDescriptor::from_value(chunk.clone(), ec) {
+                if let Some(view_object) = <crate::js::Types as JsTypes>::value_as_object(&chunk) {
+                    if let Some(controller) = branch
+                        .controller_slot()
+                        .and_then(|c| c.as_byte_controller())
+                    {
+                        let _ = controller.respond_with_new_view(view, view_object, ec);
+                    }
+                }
+            }
+        }
+    }
+
+    // Step 19.4 chunk steps 1.7: "Set reading to false."
+    let (read_again1, read_again2) = {
+        let mut tee = tee_state.borrow_mut();
+        tee.reading = false;
+        (tee.read_again_for_branch1, tee.read_again_for_branch2)
+    };
+
+    // Step 19.4 chunk steps 1.8: "If readAgainForBranch1 is true, perform pull1Algorithm."
+    // Step 19.4 chunk steps 1.9: "Otherwise, if readAgainForBranch2 is true, perform pull2Algorithm."
+    if read_again1 {
+        byte_tee_ignore_pull_completion(
+            readable_byte_stream_tee_pull1_algorithm(tee_state.clone(), ec),
+            ec,
+        )?;
+    } else if read_again2 {
+        byte_tee_ignore_pull_completion(
+            readable_byte_stream_tee_pull2_algorithm(tee_state.clone(), ec),
+            ec,
+        )?;
+    } else if matches!(tee_state.borrow().reader, ReadableStreamReader::BYOB(_)) {
+        // Note: Switch back to the default reader when no branch has an outstanding BYOB pull.
+        byte_tee_switch_to_default_reader(&tee_state, ec)?;
+    }
+
+    Ok(())
 }
 
 /// <https://streams.spec.whatwg.org/#abstract-opdef-readablebytestreamtee>
@@ -2312,208 +2483,14 @@ fn byte_tee_pull_byob_on_fulfilled_fn(
         }
     };
 
-    queue_internal_stream_microtask(
-        {
-            let tee_state = tee_state.clone();
-            move |job_ec| {
-                // Step 19.4 chunk steps 1.1: "Set readAgainForBranch1 to false."
-                // Step 19.4 chunk steps 1.2: "Set readAgainForBranch2 to false."
-                {
-                    let mut tee = tee_state.borrow_mut();
-                    tee.read_again_for_branch1 = false;
-                    tee.read_again_for_branch2 = false;
-                }
-
-                if done {
-                    // Step 19.4 close steps 1: "Set reading to false."
-                    tee_state.borrow_mut().reading = false;
-
-                    // Step 19.4 close steps 4: "If byobCanceled is false, perform ! ReadableByteStreamControllerClose(byobBranch.[[controller]])."
-                    if !byob_canceled {
-                        if let Some(branch) = byob_branch.as_ref() {
-                            byte_tee_close_branch(branch, job_ec)?;
-                        }
-                    }
-
-                    // Step 19.4 close steps 5: "If otherCanceled is false, perform ! ReadableByteStreamControllerClose(otherBranch.[[controller]])."
-                    if !other_canceled {
-                        if let Some(branch) = other_branch.as_ref() {
-                            byte_tee_close_branch(branch, job_ec)?;
-                        }
-                    }
-
-                    // Step 19.4 close steps 6: "If chunk is not undefined,"
-                    let undefined = job_ec.value_undefined();
-                    if !job_ec.same_value(&chunk, &undefined) {
-                        // Step 19.4 close steps 6.2: "If byobCanceled is false, perform ! ReadableByteStreamControllerRespondWithNewView(byobBranch.[[controller]], chunk)."
-                        if !byob_canceled {
-                            if let Some(branch) = byob_branch.as_ref() {
-                                if let Ok(view) =
-                                    ArrayBufferViewDescriptor::from_value(chunk.clone(), job_ec)
-                                {
-                                    if let Some(view_object) =
-                                        <crate::js::Types as JsTypes>::value_as_object(&chunk)
-                                    {
-                                        if let Some(controller) = branch
-                                            .controller_slot()
-                                            .and_then(|c| c.as_byte_controller())
-                                        {
-                                            let _ = controller.respond_with_new_view(
-                                                view,
-                                                view_object,
-                                                job_ec,
-                                            );
-                                        }
-                                    }
-                                }
-                            }
-                        }
-
-                        // Step 19.4 close steps 6.3: "If otherCanceled is false and otherBranch.[[controller]].[[pendingPullIntos]] is not empty, perform ! ReadableByteStreamControllerRespond(otherBranch.[[controller]], 0)."
-                        if !other_canceled {
-                            if let Some(branch) = other_branch.as_ref() {
-                                if let Some(controller) =
-                                    byte_tee_pending_pull_into_controller(branch)
-                                {
-                                    let _ = controller.respond(0, job_ec);
-                                }
-                            }
-                        }
-                    }
-
-                    // Step 19.4 close steps 7: "If byobCanceled is false or otherCanceled is false, resolve cancelPromise with undefined."
-                    if !byob_canceled || !other_canceled {
-                        let cancel_resolvers = tee_state.borrow().cancel_resolvers.clone();
-                        job_ec.call(&cancel_resolvers.resolve, &undefined, &[undefined.clone()])?;
-                    }
-
-                    return Ok(());
-                }
-
-                // Step 19.4 chunk steps 1.3: "Let byobCanceled be canceled2 if forBranch2 is true, and canceled1 otherwise."
-                // Step 19.4 chunk steps 1.4: "Let otherCanceled be canceled2 if forBranch2 is false, and canceled1 otherwise."
-                if !other_canceled {
-                    // Step 19.4 chunk steps 1.5.1: "Let cloneResult be CloneAsUint8Array(chunk)."
-                    match clone_as_uint8_array(chunk.clone(), job_ec) {
-                        Ok(cloned_chunk) => {
-                            // Step 19.4 chunk steps 1.5.3: "Otherwise, let clonedChunk be cloneResult.[[Value]]."
-                            // Step 19.4 chunk steps 1.5.4: "If byobCanceled is false, perform ! ReadableByteStreamControllerRespondWithNewView(byobBranch.[[controller]], chunk)."
-                            if !byob_canceled {
-                                if let Some(branch) = byob_branch.as_ref() {
-                                    if let Ok(view) =
-                                        ArrayBufferViewDescriptor::from_value(chunk.clone(), job_ec)
-                                    {
-                                        if let Some(view_object) =
-                                            <crate::js::Types as JsTypes>::value_as_object(&chunk)
-                                        {
-                                            if let Some(controller) = branch
-                                                .controller_slot()
-                                                .and_then(|c| c.as_byte_controller())
-                                            {
-                                                let _ = controller.respond_with_new_view(
-                                                    view,
-                                                    view_object,
-                                                    job_ec,
-                                                );
-                                            }
-                                        }
-                                    }
-                                }
-                            }
-
-                            // Step 19.4 chunk steps 1.5.5: "Perform ! ReadableByteStreamControllerEnqueue(otherBranch.[[controller]], clonedChunk)."
-                            if let Some(branch) = other_branch.as_ref() {
-                                byte_tee_enqueue_to_branch(branch, cloned_chunk, job_ec)?;
-                            }
-                        }
-                        Err(error) => {
-                            // Step 19.4 chunk steps 1.5.2.1: "Perform ! ReadableByteStreamControllerError(byobBranch.[[controller]], cloneResult.[[Value]])."
-                            if let Some(branch) = byob_branch.as_ref() {
-                                if let Err(error) =
-                                    byte_tee_error_branch(branch, error.clone(), job_ec)
-                                {
-                                    error!(
-                                        "[readable-stream] byte tee error byob-branch (chunk) failed: {error:?}"
-                                    );
-                                }
-                            }
-
-                            // Step 19.4 chunk steps 1.5.2.2: "Perform ! ReadableByteStreamControllerError(otherBranch.[[controller]], cloneResult.[[Value]])."
-                            if let Some(branch) = other_branch.as_ref() {
-                                if let Err(error) =
-                                    byte_tee_error_branch(branch, error.clone(), job_ec)
-                                {
-                                    error!(
-                                        "[readable-stream] byte tee error other-branch (chunk) failed: {error:?}"
-                                    );
-                                }
-                            }
-
-                            // Step 19.4 chunk steps 1.5.2.3: "Resolve cancelPromise with ! ReadableStreamCancel(stream, cloneResult.[[Value]])."
-                            let source_stream = tee_state.borrow().source_stream.clone();
-                            let cancel_resolvers = tee_state.borrow().cancel_resolvers.clone();
-                            let cancel_result =
-                                readable_stream_cancel(source_stream, error, job_ec)?;
-                            let undefined = job_ec.value_undefined();
-                            job_ec.call(
-                                &cancel_resolvers.resolve,
-                                &undefined,
-                                &[cancel_result.into()],
-                            )?;
-
-                            // Step 19.4 chunk steps 1.5.2.4: "Return."
-                            tee_state.borrow_mut().reading = false;
-                            return Ok(());
-                        }
-                    }
-                } else if !byob_canceled {
-                    // Step 19.4 chunk steps 1.6: "Otherwise, if byobCanceled is false, perform ! ReadableByteStreamControllerRespondWithNewView(byobBranch.[[controller]], chunk)."
-                    if let Some(branch) = byob_branch.as_ref() {
-                        if let Ok(view) =
-                            ArrayBufferViewDescriptor::from_value(chunk.clone(), job_ec)
-                        {
-                            if let Some(view_object) =
-                                <crate::js::Types as JsTypes>::value_as_object(&chunk)
-                            {
-                                if let Some(controller) = branch
-                                    .controller_slot()
-                                    .and_then(|c| c.as_byte_controller())
-                                {
-                                    let _ =
-                                        controller.respond_with_new_view(view, view_object, job_ec);
-                                }
-                            }
-                        }
-                    }
-                }
-
-                // Step 19.4 chunk steps 1.7: "Set reading to false."
-                let (read_again1, read_again2) = {
-                    let mut tee = tee_state.borrow_mut();
-                    tee.reading = false;
-                    (tee.read_again_for_branch1, tee.read_again_for_branch2)
-                };
-
-                // Step 19.4 chunk steps 1.8: "If readAgainForBranch1 is true, perform pull1Algorithm."
-                // Step 19.4 chunk steps 1.9: "Otherwise, if readAgainForBranch2 is true, perform pull2Algorithm."
-                if read_again1 {
-                    byte_tee_ignore_pull_completion(
-                        readable_byte_stream_tee_pull1_algorithm(tee_state.clone(), job_ec),
-                        job_ec,
-                    )?;
-                } else if read_again2 {
-                    byte_tee_ignore_pull_completion(
-                        readable_byte_stream_tee_pull2_algorithm(tee_state.clone(), job_ec),
-                        job_ec,
-                    )?;
-                } else if matches!(tee_state.borrow().reader, ReadableStreamReader::BYOB(_)) {
-                    // Note: Switch back to the default reader when no branch has an outstanding BYOB pull.
-                    byte_tee_switch_to_default_reader(&tee_state, job_ec)?;
-                }
-
-                Ok(())
-            }
-        },
+    readable_byte_stream_tee_byob_read_done_chunk_steps(
+        tee_state.clone(),
+        chunk,
+        done,
+        byob_branch,
+        other_branch,
+        byob_canceled,
+        other_canceled,
         ec,
     )?;
 
@@ -3157,12 +3134,13 @@ impl PipeToState {
         self.0.borrow().promise.borrow().clone().unwrap()
     }
 
-    pub(crate) fn on_read_request_settled(
-        &self,
+    /// Used by `Microtask::PipeToReadSettled` to dispatch when the microtask runs.
+    pub(crate) fn call_on_read_request_settled(
+        self,
         result: JsValue,
         ec: &mut dyn ExecutionContext<crate::js::Types>,
     ) -> Completion<(), crate::js::Types> {
-        pipe_to_on_promise_settled(self.clone(), result, ec)
+        pipe_to_on_promise_settled(self, result, ec)
     }
 
     fn reject_and_finalize_with_error(
@@ -3247,12 +3225,9 @@ impl PipeToState {
             (state.reader.clone(), state.writer.clone())
         };
         // Note: trigger the read FIRST so the pull algorithm runs and
-        // may queue a Rust job (via enqueue_job_with_realm in chunk_steps).
-        // Then set up the reaction on writer_closed_promise.  When that
-        // reaction fires (JSC drains microtasks at the end of
-        // perform_promise_then), pipe_to_append_reaction_fn calls
-        // run_jobs() to drain any pending Rust jobs, including the read
-        // result job.
+        // may queue a domain microtask (via queue_microtask in chunk_steps).
+        // Then set up the reaction on writer_closed_promise.  The domain
+        // microtasks are drained in perform_microtask_checkpoint.
         let read_request = ReadRequest::ReadableStreamPipeTo {
             state: self.clone(),
         };

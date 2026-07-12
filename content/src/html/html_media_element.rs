@@ -6,10 +6,13 @@ use log::{debug, error};
 
 use crate::js::Types;
 
-use crate::html::{HTMLElement, await_a_stable_state};
+use crate::html::{HTMLElement, Microtask};
 use crate::js::platform_objects::with_global_scope;
 use crate::webidl::resolved_promise;
-use ipc_messages::content::{Event as ContentEvent, RegisterMediaPipeline};
+use ipc::IpcSender;
+use ipc_messages::content::{
+    DocumentId, Event as ContentEvent, NavigableId, RegisterMediaPipeline,
+};
 use ipc_messages::media::VideoPaintId;
 use js_engine::gc_struct;
 
@@ -369,87 +372,19 @@ impl HTMLMediaElement {
             });
         }
 
-        await_a_stable_state(ec, move |job_ec| {
-            // Step 5: ⌛ If blocked-on-parser flag is false, populate list of pending text tracks.
-            // Note: No-op — text track support not yet implemented.
-
-            // Step 6: ⌛ Determine the mode.
-            if let Some(resolved_url) = resolved_src {
-                // mode = attribute
-                // Step 7: ⌛ Set networkState to NETWORK_LOADING.
-                // Note: networkState was already mutated before await_a_stable_state
-                // (step 1). This step would set it to NETWORK_LOADING but the closure
-                // cannot access &mut self.  State mutations that happen in the
-                // synchronous section are tracked as a gap until the media element
-                // state is stored behind interior mutability or moved to the microtask.
-
-                // Step 8: ⌛ Queue a media element task to fire loadstart at the media element.
-                // Note: Deferred to event dispatch — media element event task source not wired.
-
-                // Step 9 (mode = attribute): Fetch the media resource via the user agent.
-                // Send CreatePipeline directly to the media extension, then notify the
-                // user agent of the pipeline→webview mapping for video frame routing.
-                if let (Some(event_sender), Some(traversable_id), Some(document_id)) =
-                    (event_sender, traversable_id, document_id)
-                {
-                    // Allocate pipeline ID and send CreatePipeline+Play directly to media.
-                    let pipeline_id = with_global_scope(job_ec, |global_scope| {
-                        Ok(global_scope.allocate_media_pipeline_id())
-                    })
-                    .ok();
-
-                    if let Some(pipeline_id) = pipeline_id {
-                        // Send CreatePipeline + Play directly to the media extension.
-                        let media_sender = with_global_scope(job_ec, |global_scope| {
-                            Ok(global_scope.media_extension_sender())
-                        })
-                        .ok()
-                        .flatten();
-
-                        if let Some(ref media_sender) = media_sender {
-                            if let Err(error) = media_sender.send(
-                                ipc_messages::media::MediaCommand::CreatePipeline {
-                                    pipeline_id,
-                                    url: resolved_url.clone(),
-                                },
-                            ) {
-                                error!("[media] failed to send CreatePipeline: {error}");
-                            }
-                            if let Err(error) = media_sender
-                                .send(ipc_messages::media::MediaCommand::Play { pipeline_id })
-                            {
-                                error!("[media] failed to send Play: {error}");
-                            }
-                        }
-
-                        // Notify the UA of the pipeline→webview mapping.
-                        let request = RegisterMediaPipeline {
-                            url: resolved_url.clone(),
-                            document_id,
-                            traversable_id,
-                            pipeline_id,
-                            video_paint_id,
-                        };
-                        debug!(
-                            "[media] registering pipeline with UA url={} traversable={}",
-                            resolved_url, traversable_id
-                        );
-                        if let Err(error) =
-                            event_sender.send(ContentEvent::RegisterMediaPipeline(request))
-                        {
-                            error!("[media] failed to send RegisterMediaPipeline: {error}");
-                        }
-                    }
-                }
-            } else {
-                // No src attribute and no source children — mode = none.
-                // Note: networkState and delaying-the-load-event flag were already set by
-                // steps 1–3 above.  Steps 6.1–6.2 (set to NETWORK_EMPTY, clear flag)
-                // require access to the media element and are tracked as a gap.
-            }
-
-            Ok(job_ec.value_undefined())
-        })
+        // Step 4: Queue a microtask for the synchronous section.
+        if let Err(error) = with_global_scope(ec, |global_scope| {
+            global_scope.queue_microtask(Microtask::MediaElementAwaitStableState {
+                event_sender,
+                traversable_id,
+                document_id,
+                resolved_src: resolved_src.map(|s| s.to_string()),
+                video_paint_id,
+            });
+            Ok(())
+        }) {
+            error!("[media] failed to queue microtask: {error:?}");
+        }
     }
 
     /// <https://html.spec.whatwg.org/#dom-media-autoplay>
@@ -648,4 +583,91 @@ impl HTMLMediaElement {
         // Step 3: Run the media element load algorithm.
         self.media_element_load_algorithm(ec);
     }
+}
+
+/// <https://html.spec.whatwg.org/#resource-selection-algorithm>
+///
+/// Synchronous section of the resource selection algorithm, running as a
+/// microtask.  Dispatched by `Microtask::MediaElementAwaitStableState`.
+pub(crate) fn media_element_await_stable_state_microtask(
+    event_sender: Option<IpcSender<ContentEvent>>,
+    traversable_id: Option<NavigableId>,
+    document_id: Option<DocumentId>,
+    resolved_src: Option<String>,
+    video_paint_id: VideoPaintId,
+    ec: &mut dyn ExecutionContext<crate::js::Types>,
+) -> Completion<(), crate::js::Types> {
+    // Step 5: ⌛ If blocked-on-parser flag is false, populate list of pending text tracks.
+    // Note: No-op — text track support not yet implemented.
+
+    // Step 6: ⌛ Determine the mode.
+    if let Some(resolved_url) = resolved_src {
+        // mode = attribute
+        // Step 7: ⌛ Set networkState to NETWORK_LOADING.
+        // Note: networkState was already mutated before the microtask.
+
+        // Step 8: ⌛ Queue a media element task to fire loadstart at the media element.
+        // Note: Deferred to event dispatch — media element event task source not wired.
+
+        // Step 9 (mode = attribute): Fetch the media resource via the user agent.
+        // Send CreatePipeline directly to the media extension, then notify the
+        // user agent of the pipeline→webview mapping for video frame routing.
+        if let (Some(event_sender), Some(traversable_id), Some(document_id)) =
+            (event_sender, traversable_id, document_id)
+        {
+            // Allocate pipeline ID and send CreatePipeline+Play directly to media.
+            let pipeline_id = with_global_scope(ec, |global_scope| {
+                Ok(global_scope.allocate_media_pipeline_id())
+            })
+            .ok();
+
+            if let Some(pipeline_id) = pipeline_id {
+                // Send CreatePipeline + Play directly to the media extension.
+                let media_sender =
+                    with_global_scope(ec, |global_scope| Ok(global_scope.media_extension_sender()))
+                        .ok()
+                        .flatten();
+
+                if let Some(ref media_sender) = media_sender {
+                    if let Err(error) =
+                        media_sender.send(ipc_messages::media::MediaCommand::CreatePipeline {
+                            pipeline_id,
+                            url: resolved_url.clone(),
+                        })
+                    {
+                        error!("[media] failed to send CreatePipeline: {error}");
+                    }
+                    if let Err(error) =
+                        media_sender.send(ipc_messages::media::MediaCommand::Play { pipeline_id })
+                    {
+                        error!("[media] failed to send Play: {error}");
+                    }
+                }
+
+                // Notify the UA of the pipeline→webview mapping.
+                let request = RegisterMediaPipeline {
+                    url: resolved_url.clone(),
+                    document_id,
+                    traversable_id,
+                    pipeline_id,
+                    video_paint_id,
+                };
+                debug!(
+                    "[media] registering pipeline with UA url={} traversable={}",
+                    resolved_url, traversable_id
+                );
+                if let Err(error) = event_sender.send(ContentEvent::RegisterMediaPipeline(request))
+                {
+                    error!("[media] failed to send RegisterMediaPipeline: {error}");
+                }
+            }
+        }
+    } else {
+        // No src attribute and no source children — mode = none.
+        // Note: networkState and delaying-the-load-event flag were already set by
+        // steps 1–3 above.  Steps 6.1–6.2 (set to NETWORK_EMPTY, clear flag)
+        // require access to the media element and are tracked as a gap.
+    }
+
+    Ok(())
 }

@@ -2,24 +2,21 @@ use js_engine::{Completion, ExecutionContext, JsTypes, PromiseResolvers};
 
 use crate::js::Types;
 
-use crate::webidl::{
-    Callback, ExceptionBehavior, invoke_callback_function, mark_promise_as_handled,
-    rejected_promise,
-};
+use crate::webidl::{Callback, ExceptionBehavior, invoke_callback_function};
 
 use super::readablebytestreamcontroller::ReadableByteStreamController;
 use super::readablestream::{
-    ByteTeeState, PipeToState, TeeState, readable_byte_stream_tee_default_reader_chunk_steps,
-    readable_byte_stream_tee_default_reader_close_steps,
+    ByteTeeState, PipeToState, TeeState, readable_byte_stream_tee_default_reader_close_steps,
     readable_byte_stream_tee_default_reader_error_steps,
-    readable_stream_default_tee_read_request_chunk_steps,
     readable_stream_default_tee_read_request_close_steps,
     readable_stream_default_tee_read_request_error_steps,
 };
 use super::readablestreambyobreader::ReadableStreamBYOBReader;
 use super::readablestreamdefaultcontroller::ReadableStreamDefaultController;
 use super::readablestreamdefaultreader::ReadableStreamDefaultReader;
-use js_engine::gc::{GcCell, JsObjectCell};
+use crate::html::Microtask;
+use crate::js::platform_objects::with_global_scope;
+use js_engine::gc::{GcCell, JsObjectCell, JsValueCell};
 use js_engine::gc_struct;
 
 type JsValue = <Types as JsTypes>::JsValue;
@@ -147,27 +144,36 @@ impl ReadRequest {
             Self::ReadableStreamDefaultTee {
                 tee_state,
                 clone_for_branch2,
-            } => readable_stream_default_tee_read_request_chunk_steps(
-                tee_state.clone(),
-                *clone_for_branch2,
-                chunk,
-                ec,
-            ),
+            } => {
+                with_global_scope(ec, |global_scope| {
+                    global_scope.queue_microtask(Microtask::DefaultTeeChunkSteps {
+                        tee_state: tee_state.clone(),
+                        clone_for_branch2: *clone_for_branch2,
+                        chunk: JsValueCell::new(chunk),
+                    });
+                    Ok(())
+                })?;
+                Ok(())
+            }
             Self::ReadableByteStreamTee { tee_state } => {
-                readable_byte_stream_tee_default_reader_chunk_steps(tee_state.clone(), chunk, ec)
+                with_global_scope(ec, |global_scope| {
+                    global_scope.queue_microtask(Microtask::ByteTeeChunkSteps {
+                        tee_state: tee_state.clone(),
+                        chunk: JsValueCell::new(chunk),
+                    });
+                    Ok(())
+                })?;
+                Ok(())
             }
             Self::ReadableStreamPipeTo { state } => {
                 let result = create_read_result(chunk, false, ec)?;
-                let _root = ec.protect_value(&result);
-                let state = state.clone();
-                let realm = ec.current_realm();
-                ec.enqueue_job_with_realm(
-                    realm,
-                    Box::new(move |job_ec: &mut dyn ExecutionContext<Types>| {
-                        let _ = state.on_read_request_settled(result, job_ec);
-                        drop(_root);
-                    }),
-                );
+                with_global_scope(ec, |global_scope| {
+                    global_scope.queue_microtask(Microtask::PipeToReadSettled {
+                        state: state.clone(),
+                        result: JsValueCell::new(result),
+                    });
+                    Ok(())
+                })?;
                 Ok(())
             }
         }
@@ -189,16 +195,13 @@ impl ReadRequest {
             }
             Self::ReadableStreamPipeTo { state } => {
                 let result = create_read_result(ec.value_undefined(), true, ec)?;
-                let _root = ec.protect_value(&result);
-                let state = state.clone();
-                let realm = ec.current_realm();
-                ec.enqueue_job_with_realm(
-                    realm,
-                    Box::new(move |job_ec: &mut dyn ExecutionContext<Types>| {
-                        let _ = state.on_read_request_settled(result, job_ec);
-                        drop(_root);
-                    }),
-                );
+                with_global_scope(ec, |global_scope| {
+                    global_scope.queue_microtask(Microtask::PipeToReadSettled {
+                        state: state.clone(),
+                        result: JsValueCell::new(result),
+                    });
+                    Ok(())
+                })?;
                 Ok(())
             }
         }
@@ -223,47 +226,19 @@ impl ReadRequest {
                 Ok(())
             }
             Self::ReadableStreamPipeTo { state } => {
-                let _root = ec.protect_value(&error);
-                let state = state.clone();
-                let realm = ec.current_realm();
-                ec.enqueue_job_with_realm(
-                    realm,
-                    Box::new(move |job_ec: &mut dyn ExecutionContext<Types>| {
-                        let _ = state.on_read_request_settled(error, job_ec);
-                        drop(_root);
-                    }),
-                );
+                with_global_scope(ec, |global_scope| {
+                    global_scope.queue_microtask(Microtask::PipeToReadSettled {
+                        state: state.clone(),
+                        result: JsValueCell::new(error),
+                    });
+                    Ok(())
+                })?;
                 Ok(())
             }
         }
     }
 }
 
-pub(crate) fn queue_internal_stream_microtask<F>(
-    task: F,
-    ec: &mut dyn ExecutionContext<Types>,
-) -> Completion<(), Types>
-where
-    F: FnOnce(&mut dyn ExecutionContext<Types>) -> Completion<(), Types> + 'static,
-{
-    let realm = ec.current_realm();
-    ec.enqueue_job_with_realm(
-        realm,
-        Box::new(move |job_ec| {
-            if let Err(error) = task(job_ec) {
-                if let Ok(rejected) = rejected_promise(error, job_ec) {
-                    if let Err(error) = mark_promise_as_handled(&rejected, job_ec) {
-                        log::warn!(
-                            "[readable-stream] failed to mark promise as handled: {:?}",
-                            error
-                        );
-                    }
-                }
-            }
-        }),
-    );
-    Ok(())
-}
 #[gc_struct]
 pub(crate) enum ReadableStreamController {
     Default(ReadableStreamDefaultController),

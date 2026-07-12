@@ -102,11 +102,46 @@ rustup run 1.94.0 cargo run --release -- wpt
 RUST_LOG=error target/release/formal-web wpt <test-path>
 ```
 
-Latest Boa WPT result (2026-07-11): `executed=84 unexpected=0`
+Latest Boa WPT result (2026-07-12): `executed=83 unexpected=0`
+
+## Trait changes
+
+### Job/microtask architecture
+
+`enqueue_job` and `enqueue_job_with_realm` were **removed** from the
+`ExecutionContext` trait.  Instead, the engine backend implements Boa's
+`JobExecutor` trait directly:
+
+- **`BoaJobExecutor`** (`js_engine/src/boa/job_executor.rs`) replaces
+  `SimpleJobExecutor`.  When Boa internally calls `enqueue_job`, our
+  executor wraps the native `PromiseJob`/`GenericJob` into a generic
+  `Job<T>` and forwards it via a callback into the content process's
+  domain `Microtask` queue (as `Microtask::BoaJob`).
+- **`Job<T>`** (`js_engine/src/engine.rs`) is a new generic type
+  wrapping an engine-agnostic `FnOnce` closure.  The trait has a new
+  method `run_job(&mut self, job: Job<T>)` so the content crate can
+  execute engine-specific jobs through the generic `ExecutionContext`.
+- **`BoaContext::run_jobs()`** is a no-op — jobs are not stored in
+  Boa's internal queue.  The content process's `perform_microtask_checkpoint`
+  drains both the domain `Microtask` queue (including `BoaJob` variants)
+  and the Boa executor's buffer.
+
+Domain microtask queuing (HTML spec's microtask queue) remains owned by
+the content process (`ContentProcess::microtask_queue`, shared via `Rc`
+with `GlobalScope`).  Jobs enqueued during initialization (before the
+shared queue callback is set) are buffered and replayed when the callback
+is installed.
+
+### Generic `Job<T>`
+
+`Job<T>` wraps a `Box<dyn FnOnce(&mut dyn ExecutionContext<T>) -> Completion<(), T>>`
+behind an `Rc<RefCell<Option<...>>>` for `Clone` compatibility (needed by
+`#[gc_struct]`-derived `Clone` on `Microtask`).  The first call consumes the
+inner closure; subsequent calls (on cloned `Job`s) are no-ops returning `Ok(())`.
 
 ## Remaining work
 
-### 1. Piping test TIMEOUTs — promise_state microtask drain
+### 1. JSC piping test TIMEOUTs — promise_state microtask drain (unaffected by Boa microtask queue changes)
 
 **Symptom:** Most piping tests (abort, close-propagation, error-propagation,
 general, multiple-propagation) time out instead of crashing.
@@ -214,55 +249,7 @@ implemented.
    controller code that uses `.bind()` on builtin methods like `c.enqueue`.
    These properties must be present as own properties.
 
-## Session investigation log
 
-### 2026-07-12 — JSC backend unsafe-code hardening and engine-guard unification
-
-**Files changed:** `js_engine/src/jsc/engine.rs`
-
-**Changes made:**
-1. **Unified `CURRENT_ENGINE` idiom on `EngineGuard`** — Replaced all 4 remaining
-   manual `CURRENT_ENGINE` set/restore patterns (in `JsEngine::evaluate_script`,
-   `ExecutionContext::evaluate_script`, `construct`, and `EcmascriptHost::call`)
-   with `EngineGuard::new()`. The manual patterns were panic-unsafe and duplicated
-   6 lines of code 4 times. `EngineGuard` nests correctly, is panic-safe, and is
-   the canonical idiom for all engine-entry code paths.
-2. **Added `TypeId` assertion to `create_builtin_fn_with_captures`** — A
-   `debug_assert_eq!` that the generic parameter `T` is `JscTypes` at runtime,
-   converting a silent-UB-on-misuse invariant into a loud debug panic. This
-   guards the three `transmute` calls that assume `T = JscTypes`.
-3. **Hardened `resolve_global_path`** — Added a real `exception` slot and a
-   `JSValueGetType == kJSTypeObject` check at each hop, instead of blind-casting
-   every intermediate value as `*mut JSObjectRef`. Returns null (instead of a
-   non-object disguised as an object) if any hop fails or triggers an exception.
-4. **Added nesting-depth counter** — `ENGINE_NESTING_DEPTH` thread-local
-   incremented/decremented in `EngineGuard::new`/`EngineGuard::drop`. Exported
-   as `nesting_depth()` for use by `promise_state()` and similar functions that
-   need to know whether microtask draining is actually possible (depth == 0
-   means outermost C API boundary).
-5. **Updated `JscClass` doc** — Clarified that test binaries share `JSClassRef`
-   across threads and `--test-threads=1` should be used.
-
-**What was confirmed:**
-- All 18 JSC unit tests still pass.
-- Boa `executed=84 unexpected=0`.
-- Passing JSC WPT tests (DOM, basic streams) still pass.
-- Known-timing-out piping tests still time out as expected (no regression).
-- `JscContext::Clone` calls `JSGlobalContextRetain`, so `Reflector`'s `ctx`
-  pointer is refcounted and safe (review item 1.4 confirmed not a live bug).
-
-**What was ruled out:**
-- The manual CURRENT_ENGINE patterns had no *currently reachable* bugs (all
-  restored before early-return, no panics in between), but were fragile and
-  duplicated.
-- The `resolve_global_path` blind cast had not caused observable failures in
-  practice (all intrinsic lookups succeed), but was a latent UB source if a
-  global property was missing or returned a non-object.
-
-**Not investigated:**
-- The piping-test TIMEOUT root cause (microtask drain from nested C API calls)
-  remains unfixed. The nesting-depth counter added here provides the
-  instrumentation needed to verify any future fix.
 
 ## JSC Architecture & Debugging Notes (learned 2026-07-12)
 

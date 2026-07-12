@@ -82,6 +82,62 @@ use crate::{Numeric, PreferredType, PropertyDescriptor, RootedPromiseCapability}
 /// Rust's `?` corresponds to the spec's `?` (ReturnIfAbrupt).
 pub type Completion<T, Ty> = Result<T, <Ty as JsTypes>::JsValue>;
 
+/// <https://tc39.es/ecma262/#sec-jobs>
+///
+/// A generic ECMAScript job — a closure that runs a single JS computation
+/// when there is no other computation running.  Wraps engine-specific job
+/// types (e.g. Boa's `PromiseJob`, `GenericJob`) behind a generic callable.
+///
+/// The inner closure receives a `&mut dyn ExecutionContext<T>` and returns
+/// a `Completion<(), T>`.  Created by the engine backend (e.g. `BoaJobExecutor`)
+/// when Boa enqueues a native job, and stored in the domain `Microtask` queue.
+/// When the microtask is drained, the content crate calls `run_job` to execute it.
+///
+/// # Cloning
+///
+/// `Clone` uses `std::rc::Rc` so that `Job<T>` can live in types that derive
+/// `Clone` (e.g. `Microtask` via `#[gc_struct]`).  The first call consumes
+/// the captured closure; subsequent clones are no-ops.
+pub struct Job<T: JsTypes> {
+    inner: std::rc::Rc<
+        std::cell::RefCell<
+            Option<Box<dyn FnOnce(&mut dyn ExecutionContext<T>) -> Completion<(), T>>>,
+        >,
+    >, // public for access in job_pool
+}
+
+impl<T: JsTypes> Clone for Job<T> {
+    fn clone(&self) -> Self {
+        Self {
+            inner: std::rc::Rc::clone(&self.inner),
+        }
+    }
+}
+
+impl<T: JsTypes> Job<T> {
+    /// Wrap a callable into a generic `Job<T>`.
+    pub fn new(
+        f: impl FnOnce(&mut dyn ExecutionContext<T>) -> Completion<(), T> + 'static,
+    ) -> Self {
+        Self {
+            inner: std::rc::Rc::new(std::cell::RefCell::new(Some(Box::new(f)))),
+        }
+    }
+
+    /// Run the job with the given execution context.
+    ///
+    /// Only the first call executes the closure.  Subsequent calls (on
+    /// clones) are no-ops returning `Ok(())`.
+    pub fn call(self, ec: &mut dyn ExecutionContext<T>) -> Completion<(), T> {
+        let mut borrow = self.inner.borrow_mut();
+        if let Some(f) = borrow.take() {
+            f(ec)
+        } else {
+            Ok(())
+        }
+    }
+}
+
 // ────────────────────────────────────────────────────────────────────────────
 // <https://webidl.spec.whatwg.org/#call-a-user-objects-operation>
 // <https://webidl.spec.whatwg.org/#invoke-a-callback-function>
@@ -434,20 +490,18 @@ pub trait ExecutionContext<T: JsTypes + JsTypesWithRealm>: EcmascriptHost<T> {
     // §9.6 / §9.7 Jobs (microtask queue)
     // ────────────────────────────────────────────────────────────────────────
 
-    /// <https://tc39.es/ecma262/#sec-enqueuejob>
-    fn enqueue_job(&mut self, job: Box<dyn FnOnce()>);
-
-    /// Like `enqueue_job` but the job receives access to the execution context.
-    /// The closure runs with the given realm restored as the current realm.
-    /// <https://tc39.es/ecma262/#sec-enqueuejob>
-    fn enqueue_job_with_realm(
-        &mut self,
-        realm: T::Realm,
-        job: Box<dyn FnOnce(&mut dyn ExecutionContext<T>)>,
-    );
-
     /// <https://tc39.es/ecma262/#sec-runjobs>
     fn run_jobs(&mut self);
+
+    /// <https://tc39.es/ecma262/#sec-jobs>
+    ///
+    /// Execute a single job (queued by the engine's job executor) through
+    /// the generic `ExecutionContext`.
+    ///
+    /// On Boa this unwraps the inner `PromiseJob`/`GenericJob` and calls
+    /// `.call(context)` with the raw `&mut Context`.  On JSC it calls the
+    /// equivalent engine-specific dispatch.
+    fn run_job(&mut self, job: Job<T>) -> Completion<(), T>;
 
     // ────────────────────────────────────────────────────────────────────────
     // §25.1 ArrayBuffer Abstract Operations — runtime queries

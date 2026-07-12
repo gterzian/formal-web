@@ -3571,34 +3571,13 @@ impl ExecutionContext<JscTypes> for JscEngine {
     }
 
     // ── §9.6 Jobs ─────────────────────────────────────────────────────────
-    fn enqueue_job(&mut self, job: Box<dyn FnOnce()>) {
-        self.queued_jobs.push(Box::new(move |_: &mut JscEngine| {
-            job();
-        }));
-    }
-    fn enqueue_job_with_realm(
-        &mut self,
-        _realm: JscRealm,
-        job: Box<dyn FnOnce(&mut dyn ExecutionContext<JscTypes>)>,
-    ) {
-        self.queued_jobs
-            .push(Box::new(move |engine: &mut JscEngine| {
-                job(engine);
-            }));
-    }
     fn run_jobs(&mut self) {
         // JSC drains its microtask queue automatically every time control
         // returns from the outermost JS call on the stack.  Since any Rust
         // code that queues JSC microtasks does so through the JSC C API,
         // the drain happens on that call's return — no explicit drain needed.
-        if self.queued_jobs.is_empty() {
-            return;
-        }
-        let _guard = EngineGuard::new(self as *mut JscEngine);
-        let jobs = std::mem::take(&mut self.queued_jobs);
-        for job in jobs {
-            job(self);
-        }
+        // The queued_jobs field is no longer needed — domain microtasks are
+        // handled by the ContentProcess's shared queue.
     }
 
     // ── §25 ArrayBuffer — runtime queries ─────────────────────────────────

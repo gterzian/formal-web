@@ -430,6 +430,10 @@ pub(crate) struct ContentProcess {
     media_extension_sender: Option<ipc::IpcSender<ipc_messages::media::MediaCommand>>,
     /// This content process's own command sender, used by net for direct response routing.
     content_command_sender: ipc::IpcSender<Command>,
+
+    /// <https://html.spec.whatwg.org/#microtask-queue>
+    /// Shared Rc with all GlobalScopes; drained directly in perform_microtask_checkpoint.
+    microtask_queue: std::rc::Rc<std::cell::RefCell<Vec<crate::html::Microtask>>>,
 }
 
 impl ContentProcess {
@@ -468,6 +472,7 @@ impl ContentProcess {
             network_extension_sender,
             media_extension_sender,
             content_command_sender,
+            microtask_queue: std::rc::Rc::new(std::cell::RefCell::new(Vec::new())),
         }
     }
 
@@ -925,6 +930,32 @@ impl ContentProcess {
             Some(document_id),
         )?;
 
+        let shared_queue = self.microtask_queue.clone();
+
+        // Share the microtask queue with ContentProcess for direct draining.
+        if let Err(error) = with_global_scope(settings.ec(), |global_scope| {
+            global_scope.set_shared_microtask_queue(shared_queue.clone());
+            Ok(())
+        }) {
+            error!(
+                "[content] failed to set shared microtask queue: {}",
+                error.display()
+            );
+        }
+
+        // Wire the BoaJobExecutor to push ECMAScript jobs into the
+        // shared domain microtask queue as Microtask::BoaJob variants.
+        crate::js::bindings::html::set_boa_job_callback(
+            settings.ec(),
+            Box::new(move |job| {
+                shared_queue
+                    .borrow_mut()
+                    .push(crate::html::Microtask::BoaJob {
+                        job: std::cell::RefCell::new(Some(job)),
+                    });
+            }),
+        );
+
         // Set the video-paint registry on GlobalScope so that
         // resource_selection_algorithm can register paint IDs.
         if let Err(error) = with_global_scope(settings.ec(), |global_scope| {
@@ -1029,6 +1060,32 @@ impl ContentProcess {
             Some(traversable_id),
             Some(document_id),
         )?;
+
+        let shared_queue = self.microtask_queue.clone();
+
+        // Share the microtask queue with ContentProcess for direct draining.
+        if let Err(error) = with_global_scope(settings.ec(), |global_scope| {
+            global_scope.set_shared_microtask_queue(shared_queue.clone());
+            Ok(())
+        }) {
+            error!(
+                "[content] failed to set shared microtask queue: {}",
+                error.display()
+            );
+        }
+
+        // Wire the BoaJobExecutor to push ECMAScript jobs into the
+        // shared domain microtask queue as Microtask::BoaJob variants.
+        crate::js::bindings::html::set_boa_job_callback(
+            settings.ec(),
+            Box::new(move |job| {
+                shared_queue
+                    .borrow_mut()
+                    .push(crate::html::Microtask::BoaJob {
+                        job: std::cell::RefCell::new(Some(job)),
+                    });
+            }),
+        );
 
         // Set the video-paint registry on GlobalScope so that
         // resource_selection_algorithm can register paint IDs.
@@ -1205,6 +1262,9 @@ impl ContentProcess {
             if let Err(error) = content_document.settings.clear_all_window_timers() {
                 error!("failed to clear window timers during document teardown: {error}");
             }
+            // Clear the shared microtask queue to avoid leaking domain
+            // microtasks from the destroyed document into the next test.
+            self.microtask_queue.borrow_mut().clear();
         }
         #[cfg(boa_backend)]
         {
@@ -2044,11 +2104,44 @@ impl ContentProcess {
 
     /// <https://html.spec.whatwg.org/#perform-a-microtask-checkpoint>
     fn perform_microtask_checkpoint(&mut self) -> Result<(), String> {
-        for document in self.documents.values_mut() {
-            document
-                .settings
-                .perform_a_microtask_checkpoint()
-                .map_err(|error| format!("microtask checkpoint failed: {error}"))?;
+        // <https://html.spec.whatwg.org/#perform-a-microtask-checkpoint>
+        // Step 1: Drain JS engine jobs.
+        // Step 2: Drain domain microtasks (our Rust-implemented algorithms).
+        // Step 3: Drain JS engine again for reactions created by domain
+        // microtasks (e.g. promise reactions from perform_promise_then).
+        loop {
+            // Drain every document's JS engine.
+            for document in self.documents.values_mut() {
+                document
+                    .settings
+                    .perform_a_microtask_checkpoint()
+                    .map_err(|error| format!("microtask checkpoint failed: {error}"))?;
+            }
+
+            // Check for domain microtasks.
+            let task = {
+                let mut queue = self.microtask_queue.borrow_mut();
+                if queue.is_empty() {
+                    break;
+                }
+                queue.remove(0)
+            };
+
+            // Run one domain microtask against the first available engine.
+            let doc_ids: Vec<DocumentId> = self.documents.keys().copied().collect();
+            if let Some(first_id) = doc_ids.first() {
+                if let Some(doc) = self.documents.get_mut(first_id) {
+                    let engine = doc.settings.ec();
+                    if let Err(error) = task.call(engine) {
+                        let msg = engine
+                            .to_js_string(error)
+                            .ok()
+                            .map(|s| engine.js_string_to_rust_string(&s))
+                            .unwrap_or_else(|| "<unknown>".to_string());
+                        log::error!("domain microtask failed: {msg}");
+                    }
+                }
+            }
         }
         Ok(())
     }

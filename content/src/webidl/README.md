@@ -50,8 +50,6 @@ its spec algorithm with `// Step N:` comments and uses only the
 
 **Removed functions:** `a_new_promise()` was removed during the generic JS
 migration — callers now use `ec.new_promise_pending()` directly.
-`wait_for_all()` and `wait_for_all_get_promise()` are spec-complete but
-not yet wired to any domain call site (kept with `#[allow(dead_code)]`).
 
 ### Callback invocation
 

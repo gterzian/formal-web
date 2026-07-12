@@ -12,4 +12,6 @@ mod window;
 
 #[cfg(boa_backend)]
 pub(crate) use host_hooks::build_context;
+#[cfg(boa_backend)]
+pub(crate) use host_hooks::set_boa_job_callback;
 pub(crate) use html_element::style_declaration_object;

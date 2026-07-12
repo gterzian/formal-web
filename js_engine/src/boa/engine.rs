@@ -41,7 +41,6 @@
 use boa_engine::{
     Context, JsBigInt, JsError, JsNativeError, JsResult, JsSymbol, JsValue,
     builtins::array_buffer::AlignedVec,
-    job::{GenericJob, Job},
     native_function::NativeFunction,
     object::{
         FunctionObjectBuilder, JsObject,
@@ -56,7 +55,7 @@ use boa_engine::{
 };
 
 use crate::{
-    Completion, EcmascriptHost, ExecutionContext, HostHooks, IntegrityLevel, IteratorKind,
+    Completion, EcmascriptHost, ExecutionContext, HostHooks, IntegrityLevel, IteratorKind, Job,
     JsEngine, JsTypes, JsTypesWithRealm, Numeric, PreferredType, SharedMemoryOrder,
     TypedArrayElementType,
     records::{
@@ -1420,41 +1419,13 @@ impl ExecutionContext<BoaTypes> for BoaContext {
 
     // ── §9.6 Jobs ─────────────────────────────────────────────────────────
 
-    fn enqueue_job(&mut self, _job: Box<dyn FnOnce()>) {
-        let realm = self.context.realm().clone();
-        let mut deferred_job = Some(_job);
-        let job = GenericJob::new(
-            move |_context| {
-                if let Some(job) = deferred_job.take() {
-                    job();
-                }
-                Ok(JsValue::undefined())
-            },
-            realm,
-        );
-        self.context.enqueue_job(Job::from(job));
-    }
-
-    fn enqueue_job_with_realm(
-        &mut self,
-        realm: boa_engine::realm::Realm,
-        job: Box<dyn FnOnce(&mut dyn ExecutionContext<BoaTypes>)>,
-    ) {
-        let mut deferred_job = Some(job);
-        let generic_job = GenericJob::new(
-            move |context| {
-                if let Some(job) = deferred_job.take() {
-                    job(context_as_ec(context));
-                }
-                Ok(JsValue::undefined())
-            },
-            realm,
-        );
-        self.context.enqueue_job(Job::from(generic_job));
-    }
-
     fn run_jobs(&mut self) {
-        let _ = self.context.run_jobs();
+        // No-op: jobs are forwarded to the domain microtask queue via
+        // BoaJobExecutor.  See js_engine/src/boa/job_executor.rs.
+    }
+
+    fn run_job(&mut self, job: Job<BoaTypes>) -> Completion<(), BoaTypes> {
+        job.call(self)
     }
 
     // ── §25 ArrayBuffer — runtime queries ─────────────────────────────────

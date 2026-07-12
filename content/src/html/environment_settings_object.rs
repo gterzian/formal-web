@@ -378,9 +378,28 @@ impl EnvironmentSettingsObject {
 
     /// <https://html.spec.whatwg.org/#perform-a-microtask-checkpoint>
     pub fn perform_a_microtask_checkpoint(&mut self) -> Result<(), String> {
+        // Step 1: Drain the JS engine's microtask queue (promise reactions, etc.).
         self.engine
             .perform_a_microtask_checkpoint()
-            .map_err(|error| self.error_to_string(error))
+            .map_err(|error| self.error_to_string(error))?;
+
+        // Step 2: Drain the domain microtask queue (Rust-implemented algorithms).
+        let queue_ref = {
+            let global = self.engine.realm_global_object();
+            self.engine
+                .with_object_any(&global)
+                .and_then(|data| data.downcast_ref::<Window>())
+                .map(|window| window.global_scope.microtask_queue_ref())
+        };
+        let Some(queue_ref) = queue_ref else {
+            return Ok(());
+        };
+        let tasks = std::mem::take(&mut *queue_ref.borrow_mut());
+        for task in &tasks {
+            task.call(&mut self.engine)
+                .map_err(|error| self.error_to_string(error))?;
+        }
+        Ok(())
     }
 
     /// Take all pending wasm batches (bytes + request_id) from the GlobalScope.

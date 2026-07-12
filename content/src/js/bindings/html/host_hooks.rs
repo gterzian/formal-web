@@ -5,14 +5,15 @@ use blitz_dom::BaseDocument;
 use boa_engine::{
     Context, Source,
     context::{ContextBuilder, HostHooks, intrinsics::Intrinsics},
-    job::SimpleJobExecutor,
     js_string,
     object::JsObject,
     property::PropertyDescriptor,
     symbol::JsSymbol,
 };
-use js_engine::ExecutionContext;
-use js_engine::boa::BoaContext;
+use js_engine::boa::{BoaContext, BoaJobExecutor};
+use js_engine::{ExecutionContext, Job};
+
+use crate::js::Types;
 
 use super::hyperlink_element_utils;
 use crate::dom::{
@@ -73,13 +74,22 @@ pub(crate) fn build_context(document: Rc<RefCell<BaseDocument>>) -> Result<BoaCo
 }
 
 fn build_boa_context(document: Rc<RefCell<BaseDocument>>) -> Result<Context, String> {
+    let executor = Rc::new(BoaJobExecutor::new());
+    let executor_ref = executor.clone();
     let context = ContextBuilder::new()
         .host_hooks(Rc::new(WindowHostHooks::new(document)))
-        .job_executor(Rc::new(SimpleJobExecutor::new()))
+        .job_executor(executor)
         .build()
         .map_err(|error| error.to_string())?;
 
     let mut engine = js_engine::boa::BoaContext::from_context(context);
+
+    // Store the executor reference so the content crate can set the
+    // enqueue callback when the shared microtask queue becomes available.
+    engine.store_host_any(
+        std::any::TypeId::of::<Rc<BoaJobExecutor>>(),
+        Box::new(executor_ref),
+    );
 
     initialize_registry::<crate::js::Types>(&mut engine);
 
@@ -276,4 +286,29 @@ fn build_boa_context(document: Rc<RefCell<BaseDocument>>) -> Result<Context, Str
     }
 
     Ok(engine.into_context())
+}
+
+/// Set the enqueue callback on the `BoaJobExecutor` stored in the given
+/// execution context.  The callback pushes a `Microtask::BoaJob` variant
+/// into the shared domain microtask queue.
+///
+/// Called by `ContentProcess` after the shared microtask queue is set up
+/// (via `GlobalScope::set_shared_microtask_queue`).
+pub(crate) fn set_boa_job_callback(
+    ec: &mut dyn ExecutionContext<Types>,
+    callback: Box<dyn Fn(Job<Types>)>,
+) {
+    let type_id = std::any::TypeId::of::<Rc<BoaJobExecutor>>();
+    let stored = ec.remove_host_any(&type_id);
+    if let Some(stored) = stored {
+        // The stored Box contains Rc<BoaJobExecutor>.  We downcast to
+        // get &Rc<BoaJobExecutor>, then call set_enqueue_callback which
+        // uses interior mutability (RefCell) so &self suffices.
+        if let Some(rr) = stored.downcast_ref::<Rc<BoaJobExecutor>>() {
+            rr.set_enqueue_callback(callback);
+        }
+        // No need to put it back — the executor inside Context's
+        // job_executor() slot shares the same Rc, so the callback
+        // is visible through both paths.
+    }
 }

@@ -18,8 +18,11 @@ use js_engine::gc::{GcCell, gc_cell_new};
 use js_engine::{JsTypes, gc_struct};
 use log::{debug, error};
 
+use crate::html::Microtask;
 use crate::js::Types;
 use crate::webidl::Callback;
+use js_engine::Completion;
+use js_engine::ExecutionContext;
 
 type JsValue = <Types as JsTypes>::JsValue;
 type JsObject = <Types as JsTypes>::JsObject;
@@ -291,6 +294,12 @@ pub struct GlobalScope {
     /// push pending requests without importing `boa_engine`.
     pending_wasm_resolvers:
         GcCell<Vec<(u64, JsObject, js_engine::records::PromiseResolvers<Types>)>>,
+
+    /// <https://html.spec.whatwg.org/#microtask-queue>
+    /// Shared Rc with ContentProcess, which drains directly.
+    /// The outer RefCell allows replacing the Rc without &mut self.
+    #[ignore_trace]
+    microtask_queue: RefCell<Rc<RefCell<Vec<Microtask>>>>,
 }
 
 impl GlobalScope {
@@ -321,6 +330,7 @@ impl GlobalScope {
             pending_requests: gc_cell_new(Vec::new()),
             pending_wasm_request_id_counter: std::cell::Cell::new(0),
             pending_wasm_resolvers: gc_cell_new(Vec::new()),
+            microtask_queue: RefCell::new(Rc::new(RefCell::new(Vec::new()))),
         }
     }
 
@@ -913,6 +923,52 @@ impl GlobalScope {
         self.pending_wasm_resolvers
             .borrow_mut()
             .push((request_id, promise, resolvers));
+    }
+
+    /// <https://html.spec.whatwg.org/#queue-a-microtask>
+    /// <https://html.spec.whatwg.org/#queue-a-microtask>
+    /// Pushes to the shared domain queue, which is drained by
+    /// ContentProcess::perform_microtask_checkpoint.
+    pub(crate) fn queue_microtask(&self, microtask: Microtask) {
+        let rc = self.microtask_queue.borrow().clone();
+        rc.borrow_mut().push(microtask);
+    }
+
+    /// <https://html.spec.whatwg.org/#perform-a-microtask-checkpoint>
+    #[allow(dead_code)]
+    pub(crate) fn drain_microtasks(
+        &self,
+        ec: &mut dyn ExecutionContext<Types>,
+    ) -> Completion<(), Types> {
+        let rc = self.microtask_queue.borrow().clone();
+        let tasks = std::mem::take(&mut *rc.borrow_mut());
+        for task in &tasks {
+            task.call(ec)?;
+        }
+        Ok(())
+    }
+
+    /// Share the ContentProcess's microtask queue.  After this call,
+    /// `queue_microtask` pushes directly to the shared queue.
+    pub(crate) fn set_shared_microtask_queue(&self, shared: Rc<RefCell<Vec<Microtask>>>) {
+        // Transfer any tasks queued before the shared queue was set.
+        let old_rc = self.microtask_queue.borrow();
+        let pending = std::mem::take(&mut *old_rc.clone().borrow_mut());
+        drop(old_rc);
+        if !pending.is_empty() {
+            shared.borrow_mut().extend(pending);
+        }
+        *self.microtask_queue.borrow_mut() = shared;
+    }
+
+    pub(crate) fn microtask_queue_ref(&self) -> Rc<RefCell<Vec<Microtask>>> {
+        self.microtask_queue.borrow().clone()
+    }
+
+    /// Check if the microtask queue is empty, for debugging/assertions.
+    #[allow(dead_code)]
+    pub(crate) fn microtask_queue_is_empty(&self) -> bool {
+        self.microtask_queue.borrow().borrow().is_empty()
     }
 
     /// Remove and return the promise + resolvers for a completed request.
