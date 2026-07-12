@@ -130,7 +130,7 @@ impl Drop for EngineGuard {
 
 use crate::jsc_sys::*;
 use crate::{
-    Completion, EcmascriptHost, ExecutionContext, HostHooks, IntegrityLevel, IteratorKind,
+    Completion, EcmascriptHost, ExecutionContext, HostHooks, IntegrityLevel, IteratorKind, Job,
     JsEngine, JsTypes, JsTypesWithRealm, Numeric, PreferredType, SharedMemoryOrder,
     TypedArrayElementType,
     records::{
@@ -3572,12 +3572,34 @@ impl ExecutionContext<JscTypes> for JscEngine {
 
     // ── §9.6 Jobs ─────────────────────────────────────────────────────────
     fn run_jobs(&mut self) {
-        // JSC drains its microtask queue automatically every time control
-        // returns from the outermost JS call on the stack.  Since any Rust
-        // code that queues JSC microtasks does so through the JSC C API,
-        // the drain happens on that call's return — no explicit drain needed.
-        // The queued_jobs field is no longer needed — domain microtasks are
-        // handled by the ContentProcess's shared queue.
+        // <https://tc39.es/ecma262/#sec-runjobs>
+        //
+        // JSC drains its internal microtask queue at the JSLock boundary
+        // when `JSEvaluateScript` returns.  Evaluate a no-op to force this
+        // drain.  This only works from the outermost C API call level;
+        // from nested calls (inside a builtin callback) the JSLock is
+        // already held and the eval won't trigger drainage.  `run_jobs`
+        // is called from `perform_a_microtask_checkpoint`, which runs at
+        // the event loop level (between commands), so it IS at the
+        // outermost level.
+        //
+        // Note: the ordering between JSC's internal microtask queue and
+        // the domain Microtask queue (content process) may not match the
+        // spec exactly, since this drain happens once per iteration of
+        // the perform_microtask_checkpoint loop rather than at precise
+        // spec-defined microtask checkpoints.
+        let guard = EngineGuard::new(self as *mut JscEngine);
+        let _ = self.eval_script_raw("void 0");
+        drop(guard);
+    }
+
+    // ── §9.6 Jobs — run_job ──────────────────────────────────────────────
+    fn run_job(&mut self, job: Job<JscTypes>) -> Completion<(), JscTypes> {
+        // For JSC, `JsJob` variants are never pushed to the domain
+        // microtask queue — JSC handles its own jobs internally.
+        // This implementation exists for trait completeness; any
+        // `Job` received here was constructed by the Boa backend.
+        job.call(self)
     }
 
     // ── §25 ArrayBuffer — runtime queries ─────────────────────────────────

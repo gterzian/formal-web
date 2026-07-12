@@ -116,15 +116,22 @@ Latest Boa WPT result (2026-07-12): `executed=83 unexpected=0`
   `SimpleJobExecutor`.  When Boa internally calls `enqueue_job`, our
   executor wraps the native `PromiseJob`/`GenericJob` into a generic
   `Job<T>` and forwards it via a callback into the content process's
-  domain `Microtask` queue (as `Microtask::BoaJob`).
+  domain `Microtask` queue (as `Microtask::JsJob`).
 - **`Job<T>`** (`js_engine/src/engine.rs`) is a new generic type
   wrapping an engine-agnostic `FnOnce` closure.  The trait has a new
   method `run_job(&mut self, job: Job<T>)` so the content crate can
   execute engine-specific jobs through the generic `ExecutionContext`.
-- **`BoaContext::run_jobs()`** is a no-op — jobs are not stored in
+- **Boa backend: `run_jobs()`** is a no-op — jobs are not stored in
   Boa's internal queue.  The content process's `perform_microtask_checkpoint`
-  drains both the domain `Microtask` queue (including `BoaJob` variants)
+  drains both the domain `Microtask` queue (including `JsJob` variants)
   and the Boa executor's buffer.
+- **JSC backend: `run_jobs()`** evaluates `eval_script_raw("void 0")` to
+  force JSC's internal microtask queue to drain at the JSLock boundary.
+  JSC automatically drains its microtask queue when the outermost C API
+  call returns, so this eval at the event loop level triggers that drain.
+  The `Microtask::JsJob` variant is never constructed on JSC — JSC handles
+  its own jobs internally.
+  See `js_engine/src/jsc/engine.rs` for details.
 
 Domain microtask queuing (HTML spec's microtask queue) remains owned by
 the content process (`ContentProcess::microtask_queue`, shared via `Rc`

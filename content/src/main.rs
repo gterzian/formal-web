@@ -943,14 +943,15 @@ impl ContentProcess {
             );
         }
 
+        #[cfg(boa_backend)]
         // Wire the BoaJobExecutor to push ECMAScript jobs into the
-        // shared domain microtask queue as Microtask::BoaJob variants.
+        // shared domain microtask queue as Microtask::JsJob variants.
         crate::js::bindings::html::set_boa_job_callback(
             settings.ec(),
             Box::new(move |job| {
                 shared_queue
                     .borrow_mut()
-                    .push(crate::html::Microtask::BoaJob {
+                    .push(crate::html::Microtask::JsJob {
                         job: std::cell::RefCell::new(Some(job)),
                     });
             }),
@@ -1074,14 +1075,15 @@ impl ContentProcess {
             );
         }
 
+        #[cfg(boa_backend)]
         // Wire the BoaJobExecutor to push ECMAScript jobs into the
-        // shared domain microtask queue as Microtask::BoaJob variants.
+        // shared domain microtask queue as Microtask::JsJob variants.
         crate::js::bindings::html::set_boa_job_callback(
             settings.ec(),
             Box::new(move |job| {
                 shared_queue
                     .borrow_mut()
-                    .push(crate::html::Microtask::BoaJob {
+                    .push(crate::html::Microtask::JsJob {
                         job: std::cell::RefCell::new(Some(job)),
                     });
             }),

@@ -51,12 +51,16 @@ pub(crate) enum Microtask {
     /// <https://tc39.es/ecma262/#sec-jobs>
     ///
     /// An ECMAScript job (promise reaction, resolve-thenable, or generic)
-    /// queued by Boa's `JobExecutor` and forwarded to the domain microtask
-    /// queue.  Executed by calling `ec.run_job(job)`.
+    /// queued by the engine's job executor and forwarded to the domain
+    /// microtask queue.  Executed by calling `ec.run_job(job)`.
+    ///
+    /// For Boa, this wraps Boa's native `PromiseJob`/`GenericJob` types.
+    /// For JSC, this variant is never constructed — JSC handles its own
+    /// internal microtask queue.
     ///
     /// `RefCell` is needed because `Job` is `FnOnce` (can only be called
     /// once) but `Microtask::call` receives `&self`.
-    BoaJob {
+    JsJob {
         #[ignore_trace]
         job: std::cell::RefCell<Option<Job<Types>>>,
     },
@@ -101,7 +105,7 @@ impl Microtask {
                 *video_paint_id,
                 ec,
             ),
-            Self::BoaJob { job } => {
+            Self::JsJob { job } => {
                 if let Some(job) = job.borrow_mut().take() {
                     job.call(ec)
                 } else {
@@ -121,7 +125,7 @@ impl std::fmt::Debug for Microtask {
             Self::MediaElementAwaitStableState { .. } => {
                 f.debug_struct("MediaElementAwaitStableState").finish()
             }
-            Self::BoaJob { .. } => f.debug_struct("BoaJob").finish(),
+            Self::JsJob { .. } => f.debug_struct("JsJob").finish(),
         }
     }
 }
