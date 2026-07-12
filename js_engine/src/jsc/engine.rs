@@ -30,6 +30,21 @@ use super::types::*;
 // this thread-local to find the engine.
 thread_local! {
     static CURRENT_ENGINE: RefCell<Option<*mut JscEngine>> = const { RefCell::new(None) };
+    /// Nesting depth of `EngineGuard` guards.  0 means we are at the
+    /// outermost C API boundary (no JS calls active on the stack).
+    /// Incremented in `EngineGuard::new`, decremented in `EngineGuard::drop`.
+    /// Used by `promise_state()` and other functions that need to know
+    /// whether microtask draining will actually have an effect.
+    static ENGINE_NESTING_DEPTH: std::cell::Cell<u32> = const { std::cell::Cell::new(0) };
+}
+
+/// Returns the current engine nesting depth.  0 means we are at the
+/// outermost call boundary where `eval_script_raw("void 0")` can actually
+/// drain JSC's microtask queue.  Higher values mean we are inside a
+/// nested JS→Rust→JS callback where microtask draining is unreliable.
+#[allow(dead_code)]
+pub(crate) fn nesting_depth() -> u32 {
+    ENGINE_NESTING_DEPTH.with(|depth| depth.get())
 }
 
 /// Accessor for the current engine pointer from sibling modules.
@@ -95,6 +110,9 @@ pub(crate) struct EngineGuard {
 impl EngineGuard {
     pub fn new(engine: *mut JscEngine) -> Self {
         let previous = CURRENT_ENGINE.with(|current| current.borrow_mut().replace(engine));
+        ENGINE_NESTING_DEPTH.with(|depth| {
+            depth.set(depth.get() + 1);
+        });
         EngineGuard { previous }
     }
 }
@@ -103,6 +121,9 @@ impl Drop for EngineGuard {
     fn drop(&mut self) {
         CURRENT_ENGINE.with(|current| {
             *current.borrow_mut() = self.previous;
+        });
+        ENGINE_NESTING_DEPTH.with(|depth| {
+            depth.set(depth.get().saturating_sub(1));
         });
     }
 }
@@ -172,7 +193,10 @@ struct BuiltinFunctionData {
 
 /// Wrapper around `*mut JSClassRef` that implements `Sync` + `Send` so it
 /// can be stored in a `LazyLock` static.  The content process is
-/// single-threaded; `Send`/`Sync` impls are a formality.
+/// single-threaded, so sharing the same `JSClassRef` across contexts on the
+/// same thread is safe.  Unit tests (`cargo test -p js_engine --features jsc`)
+/// must use `--test-threads=1` because `JSClassRef` cross-thread sharing
+/// is not documented as safe by JSC's public C API.
 pub(crate) struct JscClass(pub(crate) *mut JSClassRef);
 unsafe impl Send for JscClass {}
 unsafe impl Sync for JscClass {}
@@ -250,11 +274,26 @@ extern "C" fn free_array_buffer_data(
 // with one-time native property walks + direct JSObjectCallAsFunction.
 
 /// Walk `global[path[0]][path[1]]...` via native property gets.  No eval.
+///
+/// Returns null (without panicking) if any hop returns a non-object value
+/// or triggers an exception, rather than silently treating a non-object
+/// value as an object pointer (which would be UB).  The caller should
+/// check for null before using the result.
 fn resolve_global_path(ctx: *mut JSContextRef, path: &[&str]) -> *mut JSObjectRef {
     let mut current = unsafe { JSContextGetGlobalObject(ctx) };
     for segment in path {
         let key = JscString::from_rust(segment);
-        let next = unsafe { JSObjectGetProperty(ctx, current, key.raw, std::ptr::null_mut()) };
+        let mut exception: *mut JSValueRef = std::ptr::null_mut();
+        let next = unsafe { JSObjectGetProperty(ctx, current, key.raw, &mut exception) };
+        if !exception.is_null() || next.is_null() {
+            return std::ptr::null_mut();
+        }
+        // Check that the intermediate value is an object before
+        // casting to JSObjectRef.  A non-object result (string,
+        // undefined, etc.) would produce a dangling cast.
+        if unsafe { JSValueGetType(ctx, next) } != JSType::kJSTypeObject {
+            return std::ptr::null_mut();
+        }
         current = next as *mut JSObjectRef;
     }
     current
@@ -370,9 +409,7 @@ static PLAIN_OBJECT_CLASS: LazyLock<JscClass> = LazyLock::new(|| {
 /// closure can be called with the full trait-method signature.
 /// Retrieve the behaviour closure from a BUILTIN_CLASS object's private data.
 /// The private data is a `Box<BuiltinFunctionData>`.
-unsafe fn get_builtin_behaviour(
-    object: *mut JSObjectRef,
-) -> *mut StoredBehaviour {
+unsafe fn get_builtin_behaviour(object: *mut JSObjectRef) -> *mut StoredBehaviour {
     unsafe {
         let data_ptr = JSObjectGetPrivate(object) as *mut BuiltinFunctionData;
         if data_ptr.is_null() {
@@ -803,16 +840,24 @@ impl Drop for BuiltinFunctionData {
     fn drop(&mut self) {
         // Unprotect any stored function values before freeing.
         if let Some(val) = self.to_string_val {
-            unsafe { JSValueUnprotect(self.ctx, val); }
+            unsafe {
+                JSValueUnprotect(self.ctx, val);
+            }
         }
         if let Some(val) = self.bind_val {
-            unsafe { JSValueUnprotect(self.ctx, val); }
+            unsafe {
+                JSValueUnprotect(self.ctx, val);
+            }
         }
         if let Some(val) = self.call_val {
-            unsafe { JSValueUnprotect(self.ctx, val); }
+            unsafe {
+                JSValueUnprotect(self.ctx, val);
+            }
         }
         if let Some(val) = self.apply_val {
-            unsafe { JSValueUnprotect(self.ctx, val); }
+            unsafe {
+                JSValueUnprotect(self.ctx, val);
+            }
         }
     }
 }
@@ -1785,11 +1830,7 @@ impl JsEngine<JscTypes> for JscEngine {
     where
         JscTypes: JsTypesWithRealm,
     {
-        let previous = CURRENT_ENGINE.with(|current| current.borrow_mut().take());
-        let ptr = self as *mut JscEngine;
-        CURRENT_ENGINE.with(|current| {
-            *current.borrow_mut() = Some(ptr);
-        });
+        let _guard = EngineGuard::new(self as *mut JscEngine);
 
         let script = JscString::from_rust(source);
         let mut exception: *mut JSValueRef = std::ptr::null_mut();
@@ -1803,10 +1844,6 @@ impl JsEngine<JscTypes> for JscEngine {
                 &mut exception,
             )
         };
-
-        CURRENT_ENGINE.with(|current| {
-            *current.borrow_mut() = previous;
-        });
 
         if !exception.is_null() {
             return Err(JscValue {
@@ -1991,6 +2028,15 @@ where
     T: JsTypes,
     C: 'static,
 {
+    // Runtime assertion: this generic function is only called with T = JscTypes.
+    // The transmutes below are only sound because T is JscTypes.
+    debug_assert_eq!(
+        std::any::TypeId::of::<T>(),
+        std::any::TypeId::of::<JscTypes>(),
+        "create_builtin_fn_with_captures called with T={:?}, expected JscTypes",
+        std::any::TypeId::of::<T>(),
+    );
+
     // SAFETY: On the JSC backend, T is always JscTypes.
     // &mut dyn ExecutionContext<T> and &mut dyn ExecutionContext<JscTypes>
     // have identical fat-pointer layout (2 * usize).
@@ -3060,11 +3106,7 @@ impl ExecutionContext<JscTypes> for JscEngine {
         args: &[JscValue],
         _new_target: Option<JscConstructor>,
     ) -> Completion<JscObject, JscTypes> {
-        let previous = CURRENT_ENGINE.with(|current| current.borrow_mut().take());
-        let ptr = self as *mut JscEngine;
-        CURRENT_ENGINE.with(|current| {
-            *current.borrow_mut() = Some(ptr);
-        });
+        let _guard = EngineGuard::new(self as *mut JscEngine);
 
         let args_raw: Vec<*mut JSValueRef> = args.iter().map(|v| v.raw).collect();
         let mut exception: *mut JSValueRef = std::ptr::null_mut();
@@ -3079,9 +3121,6 @@ impl ExecutionContext<JscTypes> for JscEngine {
         };
 
         if !exception.is_null() {
-            CURRENT_ENGINE.with(|current| {
-                *current.borrow_mut() = previous;
-            });
             return Err(JscValue {
                 raw: exception,
                 ctx: self.ctx_ptr(),
@@ -3090,10 +3129,6 @@ impl ExecutionContext<JscTypes> for JscEngine {
 
         // Drain JSC's internal microtask queue (same rationale as call()).
         let _ = self.eval_script_raw("void 0");
-
-        CURRENT_ENGINE.with(|current| {
-            *current.borrow_mut() = previous;
-        });
 
         Ok(JscObject {
             raw: result,
@@ -5020,11 +5055,7 @@ impl ExecutionContext<JscTypes> for JscEngine {
     }
 
     fn evaluate_script(&mut self, source: &str) -> Completion<JscValue, JscTypes> {
-        let previous = CURRENT_ENGINE.with(|current| current.borrow_mut().take());
-        let ptr = self as *mut JscEngine;
-        CURRENT_ENGINE.with(|current| {
-            *current.borrow_mut() = Some(ptr);
-        });
+        let _guard = EngineGuard::new(self as *mut JscEngine);
 
         let script = JscString::from_rust(source);
         let ctx_ref = self.context.as_context_ref();
@@ -5039,10 +5070,6 @@ impl ExecutionContext<JscTypes> for JscEngine {
                 &mut exception,
             )
         };
-
-        CURRENT_ENGINE.with(|current| {
-            *current.borrow_mut() = previous;
-        });
 
         if !exception.is_null() {
             return Err(JscValue {
@@ -5100,13 +5127,10 @@ impl EcmascriptHost<JscTypes> for JscEngine {
     ) -> Completion<JscValue, JscTypes> {
         // Ensure CURRENT_ENGINE is set before the JS call so that any
         // builtin function callback (callAsFunction / callAsConstructor)
-        // can find the engine via with_current_engine.
-        // Save and restore so nested calls don't corrupt the state.
-        let previous = CURRENT_ENGINE.with(|current| current.borrow_mut().take());
-        let ptr = self as *mut JscEngine;
-        CURRENT_ENGINE.with(|current| {
-            *current.borrow_mut() = Some(ptr);
-        });
+        // can find the engine.  EngineGuard restores the previous engine
+        // on drop (nested calls nest correctly, and early returns are
+        // panic-safe).
+        let _guard = EngineGuard::new(self as *mut JscEngine);
 
         let this_type = unsafe { JSValueGetType(self.context.as_context_ref(), this_arg.raw) };
         let mut exception: *mut JSValueRef = std::ptr::null_mut();
@@ -5150,9 +5174,6 @@ impl EcmascriptHost<JscTypes> for JscEngine {
         };
 
         if !exception.is_null() {
-            CURRENT_ENGINE.with(|current| {
-                *current.borrow_mut() = previous;
-            });
             return Err(JscValue {
                 raw: exception,
                 ctx: self.ctx_ptr(),
@@ -5161,15 +5182,10 @@ impl EcmascriptHost<JscTypes> for JscEngine {
 
         // Drain JSC's internal microtask queue by evaluating a no-op.
         // JSEvaluateScript drains microtasks at the end of script evaluation.
-        // CURRENT_ENGINE is still set here so that any builtin function
-        // callbacks triggered by microtasks (e.g. promise reaction handlers)
-        // can find the engine.
+        // CURRENT_ENGINE is still set here (via _guard) so that any builtin
+        // function callbacks triggered by microtasks (e.g. promise reaction
+        // handlers) can find the engine.
         let _ = self.eval_script_raw("void 0");
-
-        // Restore previous CURRENT_ENGINE value.
-        CURRENT_ENGINE.with(|current| {
-            *current.borrow_mut() = previous;
-        });
 
         Ok(JscValue {
             raw: result,
