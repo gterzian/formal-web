@@ -281,17 +281,16 @@ where
 
                 // Step 1.10: "Let O be object, converted to a JavaScript value."
                 //
-                // Note: GC tracing for the stored platform data is handled
-                // by wrapping in `TraceableBox` before type-erasing through
+                // GC tracing for the stored platform data is handled by
+                // wrapping in `TraceableBox` before type-erasing through
                 // `create_object_with_any`. The Boa backend detects the
-                // `TraceableBox` wrapper and uses its trace/finalize function
-                // pointers instead of no-op tracing.
+                // `TraceableBox` wrapper and uses its trace/finalize fn pointers.
                 let traceable = js_engine::boa::TraceableBox::new(obj);
                 let instance = ec.create_object_with_any(resolved_prototype, Box::new(traceable));
 
                 // Step 11: "For every interface ancestor interface in interfaces:"
-                // Note: only copies from own interface's [[Unforgeables]]; ancestor
-                // iteration deferred until [[PrimaryInterface]] tracking is added.
+                // Only copies own interface's [[Unforgeables]]; ancestor iteration
+                // deferred until [[PrimaryInterface]] tracking is added.
                 //   Step 11.1: "Let unforgeables be the value of the [[Unforgeables]] slot…"
                 //   Step 11.2: "Let keys be ! unforgeables.[[OwnPropertyKeys]]()."
                 //   Step 11.3: "For each element key of keys:"
@@ -527,8 +526,8 @@ where
                 let instance = ec.create_object_with_any(resolved_prototype, Box::new(obj));
 
                 // Step 11: "For every interface ancestor interface in interfaces:"
-                // Note: only copies from own interface's [[Unforgeables]]; ancestor
-                // iteration deferred until [[PrimaryInterface]] tracking is added.
+                // Only copies own interface's [[Unforgeables]]; ancestor iteration
+                // deferred until [[PrimaryInterface]] tracking is added.
                 if let Some(entry) =
                     super::registry::get_unforgeables_from_host_defined::<Ty, I>(ec)
                 {

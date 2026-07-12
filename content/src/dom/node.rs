@@ -40,7 +40,7 @@ impl Node {
     /// <https://dom.spec.whatwg.org/#dom-node-childnodes>
     pub(crate) fn child_node_ids(&self) -> Vec<usize> {
         // Step 1: "Return a NodeList rooted at this matching only children."
-        // Note: The binding layer currently materializes the returned children as an array-backed list object.
+        // The binding layer materializes the returned children as an array-backed list.
         let document = self.document.borrow();
         document
             .get_node(self.node_id)
@@ -283,7 +283,8 @@ impl Node {
 
         if let Some(text) = node.text_data() {
             // Step 3: "node’s data."
-            // Note: The implementation currently materializes Text nodes as CharacterData. Comment and processing-instruction data are not retained separately.
+            // Text nodes are materialized as CharacterData.
+            // Note: Comment and processing-instruction data are not retained separately.
             return Some(text.content.clone());
         }
 
@@ -323,7 +324,7 @@ impl Node {
 
         if matches!(node_data, NodeData::Text(_)) {
             // Step 3: "Replace data of node with 0, node’s length, and value."
-            // Note: DocumentMutator applies the full replacement in one operation rather than exposing a character-range API.
+            // DocumentMutator applies the full replacement in one operation.
             let mut document = self.document.borrow_mut();
             let mut mutator = document.mutate();
             mutator.set_node_text(self.node_id, value);
@@ -427,7 +428,7 @@ impl Node {
     }
 
     /// <https://dom.spec.whatwg.org/#concept-node-insert>
-    /// Note: This helper continues the single-node, same-document tree rewrite path of the insert algorithm.
+    // This helper continues the single-node, same-document tree rewrite path.
     fn insert(
         node: &Node,
         parent: &Node,
@@ -449,7 +450,7 @@ impl Node {
         // Note: The implementation does not yet model live ranges.
 
         // Step 6: "Let previousSibling be child's previous sibling or parent's last child if child is null."
-        // Note: Blitz's mutator derives the insertion position from `reference_child_node_id`, so this helper does not materialize `previousSibling`.
+        // Blitz's mutator derives insertion position from `reference_child_node_id`.
 
         // Step 7: "For each node in nodes, in tree order:"
         if !Rc::ptr_eq(&node.document, &parent.document) {
@@ -481,16 +482,16 @@ impl Node {
         // Note: The current DOM implementation does not yet model shadow trees or slot assignment.
 
         // Step 7.7: "For each shadow-including inclusive descendant inclusiveDescendant of node, in shadow-including tree order:"
-        // Note: HTML insertion steps, connected callbacks, and other post-connection work continue in higher-level code paths rather than this low-level tree mutator adapter.
+        // HTML insertion steps and connected callbacks continue in higher-level code paths.
 
         // Step 8: "If suppressObservers is unset, then queue a tree mutation record for parent with nodes, « », previousSibling, and child."
         // Note: The current DOM implementation does not yet model mutation observers.
 
         // Step 9: "Run the children changed steps for parent."
-        // Note: The implementation resumes higher-level children-changed consequences outside this low-level tree mutator adapter.
+        // Children-changed consequences resume outside this mutator adapter.
 
         // Step 10: "If isConnected is true, then:"
-        // Note: The implementation continues post-connection work outside this low-level tree mutator adapter.
+        // Post-connection work continues outside this mutator adapter.
 
         Ok(())
     }
@@ -584,7 +585,7 @@ fn string_replace_all(document: &Rc<RefCell<BaseDocument>>, parent_node_id: usiz
     }
 
     // Step 3: "Replace all with node within parent."
-    // Note: DocumentMutator exposes this as clearing the current children and then appending the replacement node when present.
+    // DocumentMutator: clear current children, then append replacement if present.
     mutator.remove_and_drop_all_children(parent_node_id);
     if let Some(replacement_node_id) = replacement_node_id {
         mutator.append_children(parent_node_id, &[replacement_node_id]);

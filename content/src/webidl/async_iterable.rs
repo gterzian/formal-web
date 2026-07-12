@@ -473,7 +473,7 @@ where
         )?;
 
         // Step 15: "Return returnPromiseCapability.[[Promise]]."
-        // Note: use the .then() return value as the result promise.
+        // Use the .then() return value as the result promise.
         let result_promise = Types::value_as_object(&then_result)
             .ok_or_else(|| ec.new_type_error("PerformPromiseThen did not return an object"))?;
         Ok(result_promise)
@@ -495,8 +495,8 @@ fn create_iterator_result_object(
     obj
 }
 
-// Note: Workaround for the move-after-move pattern above —
-// we need to avoid cloning JsObject on every call.
+// Workaround for the move-after-move pattern above —
+// avoids cloning JsObject on every call.
 
 fn create_async_iterator_prototype<T>(ec: &mut dyn ExecutionContext<Types>) -> JsObject
 where

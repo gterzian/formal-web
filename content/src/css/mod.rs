@@ -29,7 +29,7 @@ impl CSS {
         //          successfully parses according to that property's grammar, return true.
         // Step 2: Otherwise, return false.
         //
-        // Note: Stylo's Declaration::eval() implements both steps in one call.  It parses the
+        // Stylo's Declaration::eval() implements both steps in one call.  It parses the
         // declaration string "property: value" by first resolving the property name through
         // PropertyId::parse (checking ASCII case-insensitive matching against the property
         // database) and then parsing the value through PropertyDeclaration::parse_into (checking
@@ -70,7 +70,7 @@ impl CSS {
         // Step 2: Otherwise, If conditionText, wrapped in parentheses and then parsed and
         //          evaluated as a <supports-condition>, would return true, return true.
         //
-        // Note: The spec says to parse the wrapped text as a <supports-condition>, but the
+        // The spec says to parse the wrapped text as a <supports-condition>, but the
         // outermost parentheses make the content parseable as either a <supports-condition> or
         // a <declaration> (e.g. "(color: red)" is a parenthesized declaration).  Stylo's
         // parse_condition_or_declaration entry point handles both, matching the spec's intent.

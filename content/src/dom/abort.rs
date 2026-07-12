@@ -16,6 +16,7 @@ type JsValue = <Types as JsTypes>::JsValue;
 /// <https://dom.spec.whatwg.org/#abortsignal-add>
 #[gc_struct]
 pub(crate) enum AbortAlgorithm {
+    // Note: Not yet wired to any JS binding; kept for spec completeness.
     #[allow(dead_code)]
     Native {
         #[ignore_trace]
@@ -199,6 +200,7 @@ impl AbortSignal {
             .retain(|candidate| !candidate.matches_entry(algorithm));
     }
 
+    // Note: Not yet wired to any JS binding; kept for spec completeness.
     #[allow(dead_code)]
     pub(crate) fn add_native_abort_algorithm(&self, callback: fn() -> Completion<(), Types>) {
         self.add_abort_algorithm(AbortAlgorithm::Native { callback });

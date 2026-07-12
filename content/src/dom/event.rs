@@ -40,6 +40,7 @@ pub(crate) struct EventListener {
     pub once: bool,
 
     /// <https://dom.spec.whatwg.org/#event-listener-signal>
+    // Note: Spec-defined slot, not yet wired to AbortSignal-backed removal.
     #[allow(dead_code)]
     pub signal: Option<AbortSignal>,
 

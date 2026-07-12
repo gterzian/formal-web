@@ -1,5 +1,5 @@
-#[allow(dead_code)]
 #[path = "../../embedder/src/ui_event.rs"]
+#[allow(dead_code)]
 pub(crate) mod ui_event;
 
 pub mod css;
@@ -804,12 +804,6 @@ impl ContentProcess {
     /// context group.
 
     /// <https://html.spec.whatwg.org/multipage/#navigate-html>
-    /// Note: This function implements the content-process portion of the `#navigate-html`
-    /// algorithm: it waits until all critical subresources and deferred scripts are ready, then
-    /// executes those scripts, fires the `load` event, and sends `ContentEvent::FinalizeNavigation`
-    /// to the user agent to trigger `finalize_cross_document_navigation` (step 14 of the
-    /// algorithm). It may be invoked multiple times per document — each call re-checks readiness
-    /// and returns early until all blocking work is complete.
     fn continue_document_load(&mut self, document_id: DocumentId) -> Result<(), String> {
         let (ready_to_finish, traversable_id, resources_ready, scripts_ready) = {
             let content_document = self
@@ -901,7 +895,6 @@ impl ContentProcess {
     }
 
     /// <https://html.spec.whatwg.org/#creating-a-new-browsing-context>
-    /// Note: This resumes the Rust-owned suffix of browsing-context creation after `FormalWeb.UserAgent.queueCreateEmptyDocument` reaches `FormalWeb.EventLoop.runEventLoopMessage` and the user-agent/content command path emits `CreateEmptyDocument`.
     fn create_empty_document(
         &mut self,
         traversable_id: NavigableId,
@@ -940,7 +933,7 @@ impl ContentProcess {
             );
         }
 
-        // Note: This block continues <https://html.spec.whatwg.org/#creating-a-new-browsing-context>.
+        // This block continues <https://html.spec.whatwg.org/#creating-a-new-browsing-context>.
         // Step 7: "Mark document as ready for post-load tasks."
         // TODO: Persist the document's post-load readiness state in the DOM model.
 
@@ -948,15 +941,15 @@ impl ContentProcess {
             let mut document_guard = document.borrow_mut();
 
             // Step 8: "Populate with html/head/body given document."
-            // Note: The content process drives the shared HTML parser with a fixed `about:blank` skeleton instead of constructing the three elements manually.
+            // The content process drives the shared HTML parser with a fixed `about:blank` skeleton.
             parse_html_into_document(&mut document_guard, EMPTY_HTML_DOCUMENT)
         };
 
         // Step 10: "Completely finish loading document."
-        // Note: The content process executes parser-discovered classic scripts immediately after the initial tree build.
+        // Execute parser-discovered classic scripts after the initial tree build.
         // TODO: Model the rest of the `completely finish loading` bookkeeping explicitly instead of relying on parser-discovered script execution alone.
         // Step 9: "Make active document."
-        // Note: The implementation records the document as addressable for future commands by storing it under `document_id` after initialization completes.
+        // Records the document as addressable under `document_id` after init completes.
         self.documents.insert(
             document_id,
             ContentDocument {
@@ -996,7 +989,6 @@ impl ContentProcess {
     }
 
     /// <https://html.spec.whatwg.org/#navigate-html>
-    /// Note: This continues the HTML document loading algorithm through the end-of-document load steps and into `completely finish loading`.
     fn create_loaded_document(
         &mut self,
         traversable_id: NavigableId,
@@ -1014,9 +1006,9 @@ impl ContentProcess {
         } = response;
         let viewport_state = self.document_viewport_state(traversable_id);
         let frame_id = frame_id.unwrap_or_else(FrameId::new);
-        // Note: This block continues <https://html.spec.whatwg.org/#navigate-html>.
+        // This block continues <https://html.spec.whatwg.org/#navigate-html>.
         // Step 1: "Let document be the result of creating and initializing a `Document` object given `html`, `text/html`, and navigationParams."
-        // Note: `BaseDocument::new` and `EnvironmentSettingsObject::new` split document creation between the [Document](https://dom.spec.whatwg.org/#interface-document) [platform object](https://webidl.spec.whatwg.org/#dfn-platform-object) and the JavaScript environment settings object.
+        // BaseDocument::new and EnvironmentSettingsObject::new split document creation.
         let document = Rc::new(RefCell::new(BaseDocument::new(self.document_config(
             traversable_id,
             document_id,
@@ -1049,7 +1041,7 @@ impl ContentProcess {
             let mut document_guard = document.borrow_mut();
 
             // Step 3: "Otherwise, create an HTML parser and associate it with the document."
-            // Note: The embedder has already buffered the response body, so the content process feeds it into the parser immediately instead of waiting on separate networking tasks.
+            // The embedder has buffered the response body; feed into parser immediately.
             parse_html_into_document(&mut document_guard, &body)
         };
 
@@ -1272,7 +1264,8 @@ impl ContentProcess {
                 maybe_log_input_layout_debug(document_id, &document_guard);
             }
 
-            // Note: This continues <https://dom.spec.whatwg.org/#concept-event-fire> after `FormalWeb.UserAgent.queueDispatchedEvent` writes the serialized UI event batch to the content process.
+            // Continues <https://dom.spec.whatwg.org/#concept-event-fire> after the
+            // user agent writes the serialized UI event batch to the content process.
             let event = deserialize_ui_event(&event)?;
             dispatch_ui_event(
                 document_id,
@@ -1360,7 +1353,6 @@ impl ContentProcess {
     }
 
     /// <https://html.spec.whatwg.org/#update-the-rendering>
-    /// Note: The Rust user-agent and event-loop workers queue this rendering task, and the content process continues the noted rendering opportunity once critical fetches finish.
     fn continue_updating_the_rendering(
         &mut self,
         traversable_id: NavigableId,
@@ -1410,7 +1402,7 @@ impl ContentProcess {
                 let mut document_guard = document.document.borrow_mut();
 
                 // Step 16.2.1: "Recalculate styles and update layout for `doc`."
-                // Note: `resolve` advances style, layout, and resource-driven document updates for the current frame.
+                // `resolve` advances style, layout, and resource-driven document updates.
                 document_guard.resolve(animation_time);
             }
 
@@ -2027,7 +2019,6 @@ impl ContentProcess {
     }
 
     /// <https://html.spec.whatwg.org/#event-loop-processing-model>
-    /// Note: The Rust event-loop worker emits these process effects, and each branch below resumes the corresponding Rust-owned continuation.
     fn handle_command(&mut self, command: Command) -> Result<bool, String> {
         let result = self.handle_command_inner(command);
 

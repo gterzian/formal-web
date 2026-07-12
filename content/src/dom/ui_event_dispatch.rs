@@ -250,7 +250,6 @@ fn localize_ui_event_for_document(
 }
 
 /// <https://dom.spec.whatwg.org/#concept-event-dispatch>
-/// Note: This bridges Blitz input events into the DOM dispatch algorithm by first letting Blitz compute the native event path and then dispatching the corresponding JavaScript `UIEvent`.
 pub(crate) fn dispatch_ui_event(
     document_id: DocumentId,
     source_navigable_id: NavigableId,

@@ -119,7 +119,7 @@ pub(crate) fn fire_event(
     legacy_target_override: bool,
 ) -> Completion<bool, Types> {
     // Step 1: "If eventConstructor is not given, then let eventConstructor be Event."
-    // Note: This helper currently models only the default `Event` constructor path.
+    // This helper only handles the default `Event` constructor path; custom event constructors not yet wired.
 
     // Step 2: "Let event be the result of creating an event given eventConstructor, in the relevant realm of target."
     let event = host.create_event_object(Event::new(
@@ -133,7 +133,7 @@ pub(crate) fn fire_event(
 
     // Step 3: "Initialize event's type attribute to e."
     // Step 4: "Initialize any other IDL attributes of event as described in the invocation of this algorithm."
-    // Note: The implementation constructs the [platform object](https://webidl.spec.whatwg.org/#dfn-platform-object) implementing the [Event](https://dom.spec.whatwg.org/#interface-event) interface with the final attribute values before dispatch.
+    // The platform object is constructed with final attribute values before dispatch.
 
     // Step 5: "Return the result of dispatching event at target, with legacy target override flag set if set."
     dispatch(host, target, &event, legacy_target_override)
@@ -325,7 +325,6 @@ fn path_for_node(
 }
 
 /// <https://dom.spec.whatwg.org/#concept-event-dispatch>
-/// Note: This helper continues the dispatch algorithm after the event path has already been constructed.
 fn dispatch_on_path(
     host: &mut impl EventDispatchHost,
     path: &[EventPathEntry],
@@ -340,7 +339,7 @@ fn dispatch_on_path(
     })?;
 
     // Step 2: "Let targetOverride be target, if legacy target override flag is not given, and target's associated Document otherwise."
-    // Note: `path_for_target` resolves the shadow-adjusted target chosen for this dispatch ahead of time.
+    // path_for_target resolves the shadow-adjusted target ahead of time.
 
     // Step 3: "Let activationTarget be null."
     let activation_target = activation_target(host, path, event)?;
@@ -434,7 +433,7 @@ fn activation_target(
     path: &[EventPathEntry],
     event: &JsObject,
 ) -> Completion<Option<JsObject>, Types> {
-    // Note: This helper models the `activationTarget` selection performed while DOM dispatch
+    // Models activationTarget selection from the dispatch algorithm
     // appends the initial target and then walks up through its parents. The implementation does
     // not model shadow trees, so the spec's two `activationTarget` assignment sites collapse to a
     // target-first check plus a bubbling-only ancestor scan.
