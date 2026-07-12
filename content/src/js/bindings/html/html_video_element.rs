@@ -1,3 +1,8 @@
+// Allow dead code and unused imports when media feature is disabled.
+// The getter/setter functions are only used from define_media_members
+// which is behind #[cfg(feature = "media")].
+#![cfg_attr(not(feature = "media"), allow(dead_code, unused_imports))]
+
 type JsValue = <crate::js::Types as JsTypes>::JsValue;
 
 use crate::html::HTMLVideoElement;
@@ -25,96 +30,102 @@ impl WebIdlInterface<crate::js::Types> for HTMLVideoElement {
                 "NotSupportedError: Media not available (media feature disabled)",
             ));
         }
+        #[cfg(feature = "media")]
         Err(ec.new_type_error("Illegal constructor"))
     }
 
     fn define_members(def: &mut InterfaceDefinition<crate::js::Types>) {
+        #[cfg(feature = "media")]
+        {
+            define_media_members(def);
+        }
         #[cfg(not(feature = "media"))]
         {
-            // No members when media is disabled — the interface exists but is empty.
             let _ = def;
-            return;
         }
-
-        def.add_attribute(AttributeDef {
-            id: "videoWidth",
-            getter: get_video_width,
-            setter: None,
-            static_: false,
-            unforgeable: false,
-            promise_type: false,
-            legacy_lenient_this: false,
-            replaceable: false,
-            put_forwards: None,
-            legacy_lenient_setter: false,
-            exposed: None,
-        });
-        def.add_attribute(AttributeDef {
-            id: "videoHeight",
-            getter: get_video_height,
-            setter: None,
-            static_: false,
-            unforgeable: false,
-            promise_type: false,
-            legacy_lenient_this: false,
-            replaceable: false,
-            put_forwards: None,
-            legacy_lenient_setter: false,
-            exposed: None,
-        });
-        def.add_attribute(AttributeDef {
-            id: "poster",
-            getter: get_poster,
-            setter: Some(set_poster),
-            static_: false,
-            unforgeable: false,
-            promise_type: false,
-            legacy_lenient_this: false,
-            replaceable: false,
-            put_forwards: None,
-            legacy_lenient_setter: false,
-            exposed: None,
-        });
-        def.add_attribute(AttributeDef {
-            id: "playsInline",
-            getter: get_plays_inline,
-            setter: Some(set_plays_inline),
-            static_: false,
-            unforgeable: false,
-            promise_type: false,
-            legacy_lenient_this: false,
-            replaceable: false,
-            put_forwards: None,
-            legacy_lenient_setter: false,
-            exposed: None,
-        });
-        def.add_attribute(AttributeDef {
-            id: "width",
-            getter: get_width,
-            setter: Some(set_width),
-            static_: false,
-            unforgeable: false,
-            promise_type: false,
-            legacy_lenient_this: false,
-            replaceable: false,
-            put_forwards: None,
-            legacy_lenient_setter: false,
-            exposed: None,
-        });
-        def.add_attribute(AttributeDef {
-            id: "height",
-            getter: get_height,
-            setter: Some(set_height),
-            static_: false,
-            unforgeable: false,
-            promise_type: false,
-            legacy_lenient_this: false,
-            replaceable: false,
-            put_forwards: None,
-            legacy_lenient_setter: false,
-            exposed: None,
-        });
     }
+}
+
+#[cfg(feature = "media")]
+fn define_media_members(def: &mut InterfaceDefinition<crate::js::Types>) {
+    def.add_attribute(AttributeDef {
+        id: "videoWidth",
+        getter: get_video_width,
+        setter: None,
+        static_: false,
+        unforgeable: false,
+        promise_type: false,
+        legacy_lenient_this: false,
+        replaceable: false,
+        put_forwards: None,
+        legacy_lenient_setter: false,
+        exposed: None,
+    });
+    def.add_attribute(AttributeDef {
+        id: "videoHeight",
+        getter: get_video_height,
+        setter: None,
+        static_: false,
+        unforgeable: false,
+        promise_type: false,
+        legacy_lenient_this: false,
+        replaceable: false,
+        put_forwards: None,
+        legacy_lenient_setter: false,
+        exposed: None,
+    });
+    def.add_attribute(AttributeDef {
+        id: "poster",
+        getter: get_poster,
+        setter: Some(set_poster),
+        static_: false,
+        unforgeable: false,
+        promise_type: false,
+        legacy_lenient_this: false,
+        replaceable: false,
+        put_forwards: None,
+        legacy_lenient_setter: false,
+        exposed: None,
+    });
+    def.add_attribute(AttributeDef {
+        id: "playsInline",
+        getter: get_plays_inline,
+        setter: Some(set_plays_inline),
+        static_: false,
+        unforgeable: false,
+        promise_type: false,
+        legacy_lenient_this: false,
+        replaceable: false,
+        put_forwards: None,
+        legacy_lenient_setter: false,
+        exposed: None,
+    });
+    def.add_attribute(AttributeDef {
+        id: "width",
+        getter: get_width,
+        setter: Some(set_width),
+        static_: false,
+        unforgeable: false,
+        promise_type: false,
+        legacy_lenient_this: false,
+        replaceable: false,
+        put_forwards: None,
+        legacy_lenient_setter: false,
+        exposed: None,
+    });
+    def.add_attribute(AttributeDef {
+        id: "height",
+        getter: get_height,
+        setter: Some(set_height),
+        static_: false,
+        unforgeable: false,
+        promise_type: false,
+        legacy_lenient_this: false,
+        replaceable: false,
+        put_forwards: None,
+        legacy_lenient_setter: false,
+        exposed: None,
+    });
 }
 
 fn try_with_video_ref<R>(

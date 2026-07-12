@@ -156,21 +156,6 @@
 
       .btn-row { display: flex; flex-wrap: wrap; gap: 0.6rem; }
 
-      .code-block {
-        background: #1a1a2e;
-        color: #e4e2ec;
-        padding: 0.8rem 1rem;
-        border-radius: 0.7rem;
-        font-family: "SF Mono", "Cascadia Code", "JetBrains Mono", monospace;
-        font-size: 0.82rem;
-        line-height: 1.5;
-        overflow-x: auto;
-        white-space: pre-wrap;
-        word-break: break-all;
-      }
-
-      .code-block .dim { color: #7a7a92; }
-
       .output-box {
         min-height: 1.8rem;
         padding: 0.5rem 0.75rem;
@@ -192,25 +177,6 @@
         border-color: #dc3545;
         background: #f8d7da;
         color: #721c24;
-      }
-
-      .wasm-arg-row {
-        display: flex;
-        gap: 0.5rem;
-        align-items: center;
-        flex-wrap: wrap;
-      }
-
-      .wasm-arg-row input {
-        flex: 1;
-        min-width: 5rem;
-        max-width: 8rem;
-        padding: 0.45rem 0.7rem;
-        border: 1px solid #d4d2de;
-        border-radius: 0.5rem;
-        font: inherit;
-        font-size: 0.9rem;
-        background: #faf9f7;
       }
 
       .cross-origin-frame {
@@ -261,7 +227,7 @@
           <span class="badge working">Working</span>
         </div>
         <p class="section-desc">
-          DOM event handling backed by the Boa JavaScript engine.
+          DOM event handling via native bindings.
         </p>
 
         <div class="stat-card" style="margin-bottom:0.8rem;">
@@ -275,49 +241,7 @@
         </div>
       </section>
 
-      <!-- ──── 2. WebAssembly ──── -->
-      <section class="section-card">
-        <div class="section-title">
-          <span>WebAssembly</span>
-          <span class="badge working">Working</span>
-        </div>
-        <p class="section-desc">
-          Wasm module compiled on page load, then instantiated on demand.
-          Uses <code>WebAssembly.compile()</code> and <code>instantiate()</code>
-          via the wasmtime engine with background compilation.
-        </p>
-
-        <div class="stat-card">
-          <span class="stat-label">Compile &amp; Instantiate</span>
-          <p style="font-size:0.82rem;color:#7a7a92;margin:0.3rem 0;">
-            Calls <code>add(a, b)</code> on a pre-compiled wasm module.
-            Type two numbers and click "=".
-          </p>
-          <div class="wasm-arg-row" style="margin-top:0.4rem;">
-            <input type="text" id="wasm-a" value="42" />
-            <span style="color:#7a7a92;">+</span>
-            <input type="text" id="wasm-b" value="58" />
-            <button class="btn btn-success" id="wasm-add-btn" type="button">= ?</button>
-          </div>
-          <div class="output-box" id="wasm-add-output" style="margin-top:0.3rem;">
-            Not compiled yet
-          </div>
-        </div>
-
-        <details style="margin-top:0.8rem;">
-          <summary style="cursor:pointer;font-size:0.82rem;color:#7a7a92;">Show wasm binary</summary>
-          <div class="code-block" style="margin-top:0.5rem;font-size:0.7rem;">
-<span class="dim">;; (module</span>
-<span class="dim">;;   (func (export "add") (param i32 i32) (result i32)</span>
-<span class="dim">;;     local.get 0</span>
-<span class="dim">;;     local.get 1</span>
-<span class="dim">;;     i32.add))</span>
-<span id="wasm-b64-display">AGFzbQEAAAABBwFgAn9/AX8DAgEABwcBA2FkZAAACgkBBwAgACABags=</span>
-          </div>
-        </details>
-      </section>
-
-      <!-- ──── 3. Streams API ──── -->
+      <!-- ──── 2. Streams API ──── -->
       <section class="section-card">
         <div class="section-title">
           <span>Streams API</span>
@@ -346,7 +270,7 @@
         </div>
       </section>
 
-      <!-- ──── 3b. window.open ──── -->
+      <!-- ──── 3. window.open ──── -->
       <section class="section-card">
         <div class="section-title">
           <span>window.open</span>
@@ -450,65 +374,7 @@
         clickCountEl.textContent = "0";
       });
 
-      // ──── 2. WebAssembly ────
-      var WASM_ADD_BINARY = (function() {
-        var bytes = new Uint8Array([
-          0x00, 0x61, 0x73, 0x6d, 0x01, 0x00, 0x00, 0x00,
-          0x01, 0x07, 0x01, 0x60, 0x02, 0x7f, 0x7f, 0x01, 0x7f,
-          0x03, 0x02, 0x01, 0x00,
-          0x07, 0x07, 0x01, 0x03, 0x61, 0x64, 0x64, 0x00, 0x00,
-          0x0a, 0x09, 0x01, 0x07, 0x00, 0x20, 0x00, 0x20, 0x01, 0x6a, 0x0b
-        ]);
-        return bytes.buffer;
-      })();
-
-      var wasmAddBtn    = document.getElementById("wasm-add-btn");
-      var wasmAddOutput = document.getElementById("wasm-add-output");
-      var wasmAInput    = document.getElementById("wasm-a");
-      var wasmBInput    = document.getElementById("wasm-b");
-
-      // Cache for the exported wasm function — instantiate once, call many times.
-      var wasmAdd = null;
-
-      function compileWasmModule() {
-        WebAssembly.compile(WASM_ADD_BINARY).then(function(module) {
-          // Instantiate once and cache the exported function so subsequent
-          // clicks call add() directly without going through the worker.
-          return WebAssembly.instantiate(module);
-        }).then(function(result) {
-          wasmAdd = result.exports.add;
-          wasmAddOutput.textContent = "Module compiled \u2713 ready to add";
-          wasmAddOutput.className = "output-box success";
-        }).catch(function(err) {
-          wasmAddOutput.textContent = "Compile failed: " + err.message;
-          wasmAddOutput.className = "output-box error";
-        });
-      }
-
-      wasmAddBtn.addEventListener("click", function() {
-        if (!wasmAdd) {
-          wasmAddOutput.textContent = "Module not yet compiled, waiting\u2026";
-          wasmAddOutput.className = "output-box";
-          return;
-        }
-        var a = parseInt(wasmAInput.value, 10);
-        var b = parseInt(wasmBInput.value, 10);
-        if (isNaN(a) || isNaN(b)) {
-          wasmAddOutput.textContent = "Enter two numbers";
-          wasmAddOutput.className = "output-box error";
-          return;
-        }
-        try {
-          var sum = wasmAdd(a, b);
-          wasmAddOutput.textContent = a + " + " + b + " = " + sum;
-          wasmAddOutput.className = "output-box success";
-        } catch(err) {
-          wasmAddOutput.textContent = "Call failed: " + err.message;
-          wasmAddOutput.className = "output-box error";
-        }
-      });
-
-      // ──── 3. Streams API ────
+      // ──── 2. Streams API ────
       var streamReadBtn     = document.getElementById("stream-read-btn");
       var streamReadOutput  = document.getElementById("stream-read-output");
       var streamTransformBtn = document.getElementById("stream-transform-btn");
@@ -516,7 +382,12 @@
 
       streamReadBtn.addEventListener("click", function() {
         try {
-          var stream = ReadableStream.from([10, 20, 30, 40, 50]);
+          var stream = new ReadableStream({
+            start: function(controller) {
+              [10, 20, 30, 40, 50].forEach(function(v) { controller.enqueue(v); });
+              controller.close();
+            }
+          });
           var reader = stream.getReader();
           var results = [];
           function pump() {
@@ -575,7 +446,7 @@
         }
       });
 
-      // ──── 3b. window.open ────
+      // ──── 3. window.open ────
       var winopenBlankBtn = document.getElementById("winopen-blank-btn");
       var winopenOutput   = document.getElementById("winopen-output");
 
@@ -616,11 +487,6 @@
 
       domClearBtn.addEventListener("click", function() {
         domContainer.innerHTML = "";
-      });
-
-      // ──── Init ────
-      window.addEventListener("load", function() {
-        compileWasmModule();
       });
     </script>
   </body>

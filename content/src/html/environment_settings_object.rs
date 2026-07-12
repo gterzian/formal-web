@@ -385,6 +385,7 @@ impl EnvironmentSettingsObject {
 
     /// Take all pending wasm batches (bytes + request_id) from the GlobalScope.
     /// Marks them as Processing.
+    #[cfg(all(boa_backend, feature = "wasm"))]
     pub(crate) fn take_pending_wasm_batches(&self) -> Vec<(u64, Vec<u8>)> {
         let global = self.engine.realm_global_object();
         if let Some(window) = self
@@ -400,7 +401,7 @@ impl EnvironmentSettingsObject {
 
     /// Take all pending wasm instantiate requests (module + request_id)
     /// from the GlobalScope.  Marks them as Processing.
-    #[cfg(boa_backend)]
+    #[cfg(all(boa_backend, feature = "wasm"))]
     pub(crate) fn take_pending_wasm_instantiates(&self) -> Vec<(u64, wasmtime::Module)> {
         let global = self.engine.realm_global_object();
         if let Some(window) = self
@@ -415,6 +416,7 @@ impl EnvironmentSettingsObject {
     }
 
     /// Remove and return the promise + resolvers for a completed wasm request.
+    #[cfg(all(boa_backend, feature = "wasm"))]
     pub(crate) fn consume_wasm_request(
         &self,
         request_id: u64,

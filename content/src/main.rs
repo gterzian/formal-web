@@ -13,7 +13,7 @@ pub mod dom;
 mod generic_js_test;
 pub mod html;
 pub mod streams;
-#[cfg(boa_backend)]
+#[cfg(all(boa_backend, feature = "wasm"))]
 pub mod wasm;
 pub mod webidl;
 
@@ -28,7 +28,7 @@ use crate::html::{
 };
 use crate::js::platform_objects::with_global_scope;
 use crate::ui_event::deserialize_ui_event;
-#[cfg(boa_backend)]
+#[cfg(all(boa_backend, feature = "wasm"))]
 use crate::wasm::{
     WasmResult, WasmWorker, compile_continuation, compile_rejection, instantiate_continuation,
 };
@@ -412,15 +412,15 @@ pub(crate) struct ContentProcess {
         Rc<RefCell<HashMap<DocumentId, (EnvironmentSettingsObject, Rc<RefCell<BaseDocument>>)>>>,
 
     /// Background wasm compilation thread.
-    #[cfg(boa_backend)]
+    #[cfg(all(boa_backend, feature = "wasm"))]
     wasm_worker: WasmWorker,
 
     /// Pending wasm requests waiting for background results.
     /// Maps request_id → document_id.
-    #[cfg(boa_backend)]
+    #[cfg(all(boa_backend, feature = "wasm"))]
     pending_wasm_requests: HashMap<u64, DocumentId>,
     /// Modules from instantiate requests, needed for exports creation.
-    #[cfg(boa_backend)]
+    #[cfg(all(boa_backend, feature = "wasm"))]
     pending_wasm_modules: HashMap<u64, wasmtime::Module>,
 
     video_paint_registry: Rc<RefCell<HashMap<(DocumentId, usize), VideoPaintId>>>,
@@ -459,11 +459,11 @@ impl ContentProcess {
             clipboard_cache: clipboard_cache.clone(),
             new_document_registry: Rc::new(RefCell::new(HashMap::new())),
             video_paint_registry: Rc::new(RefCell::new(HashMap::new())),
-            #[cfg(boa_backend)]
+            #[cfg(all(boa_backend, feature = "wasm"))]
             wasm_worker: WasmWorker::new(wasmtime::Engine::default(), _wasm_signal_sender),
-            #[cfg(boa_backend)]
+            #[cfg(all(boa_backend, feature = "wasm"))]
             pending_wasm_requests: HashMap::new(),
-            #[cfg(boa_backend)]
+            #[cfg(all(boa_backend, feature = "wasm"))]
             pending_wasm_modules: HashMap::new(),
             network_extension_sender,
             media_extension_sender,
@@ -1206,7 +1206,7 @@ impl ContentProcess {
                 error!("failed to clear window timers during document teardown: {error}");
             }
         }
-        #[cfg(boa_backend)]
+        #[cfg(all(boa_backend, feature = "wasm"))]
         {
             // Clean up any pending wasm requests for this document so that
             // worker results arriving after destruction are not misattributed,
@@ -1868,7 +1868,7 @@ impl ContentProcess {
     /// Drain pending WebAssembly requests from all documents and submit
     /// them to the background worker.
     fn drain_all_pending_wasm_requests(&mut self) {
-        #[cfg(boa_backend)]
+        #[cfg(all(boa_backend, feature = "wasm"))]
         {
             let document_ids: Vec<DocumentId> = self.documents.keys().copied().collect();
 
@@ -1899,7 +1899,7 @@ impl ContentProcess {
     /// Called both at the end of `handle_command` and when the dedicated
     /// IPC signal fires.
     fn drain_wasm_results(&mut self) {
-        #[cfg(boa_backend)]
+        #[cfg(all(boa_backend, feature = "wasm"))]
         {
             let completed: Vec<(u64, WasmResult)> = {
                 let results = self.wasm_worker.drain_results();
@@ -2031,7 +2031,7 @@ impl ContentProcess {
     fn handle_command(&mut self, command: Command) -> Result<bool, String> {
         let result = self.handle_command_inner(command);
 
-        #[cfg(boa_backend)]
+        #[cfg(all(boa_backend, feature = "wasm"))]
         {
             // After every command, drain any pending WebAssembly requests and
             // process completed results from the shared queue.

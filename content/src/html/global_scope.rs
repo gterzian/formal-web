@@ -35,6 +35,7 @@ fn log_timer_debug(message: impl AsRef<str>) {
 }
 
 /// The lifecycle state of a pending request.
+#[cfg(all(boa_backend, feature = "wasm"))]
 #[gc_struct]
 #[derive(Debug, PartialEq, Eq)]
 pub enum PendingState {
@@ -55,6 +56,7 @@ pub enum PendingState {
 /// in `GlobalScope.pending_wasm_resolvers` keyed by `request_id`.  This lets
 /// domain code in `content/src/wasm/` construct and push `PendingRequest`
 /// without importing `boa_engine`.
+#[cfg(all(boa_backend, feature = "wasm"))]
 #[gc_struct]
 pub enum PendingRequest {
     /// A WebAssembly module compilation or instantiate-byte request.
@@ -78,7 +80,6 @@ pub enum PendingRequest {
     ///
     /// An instantiate(moduleObject, importObject) request.
     /// The module is already compiled — this only needs instantiation.
-    #[cfg(boa_backend)]
     WasmInstantiate {
         /// The previously compiled wasm module.
         #[ignore_trace]
@@ -279,9 +280,11 @@ pub struct GlobalScope {
     /// Generic queue of pending async requests created during JS execution.
     /// Populated by native JS functions (e.g. WebAssembly.compile) and drained
     /// by the content process after JS execution completes.
+    #[cfg(all(boa_backend, feature = "wasm"))]
     pending_requests: GcCell<Vec<PendingRequest>>,
 
     /// A counter for generating unique request IDs for async wasm operations.
+    #[cfg(all(boa_backend, feature = "wasm"))]
     #[ignore_trace]
     pending_wasm_request_id_counter: std::cell::Cell<u64>,
 
@@ -289,6 +292,7 @@ pub struct GlobalScope {
     /// The promise and resolvers are stored here rather than in
     /// `PendingRequest` so that domain code in `content/src/wasm/` can
     /// push pending requests without importing `boa_engine`.
+    #[cfg(all(boa_backend, feature = "wasm"))]
     pending_wasm_resolvers:
         GcCell<Vec<(u64, JsObject, js_engine::records::PromiseResolvers<Types>)>>,
 }
@@ -318,8 +322,11 @@ impl GlobalScope {
             media_extension_sender: RefCell::new(None),
             engine_context: None,
             creation_url: RefCell::new(None),
+            #[cfg(all(boa_backend, feature = "wasm"))]
             pending_requests: gc_cell_new(Vec::new()),
+            #[cfg(all(boa_backend, feature = "wasm"))]
             pending_wasm_request_id_counter: std::cell::Cell::new(0),
+            #[cfg(all(boa_backend, feature = "wasm"))]
             pending_wasm_resolvers: gc_cell_new(Vec::new()),
         }
     }
@@ -847,11 +854,13 @@ impl GlobalScope {
     ///
     /// Called by native JS functions (e.g. `WebAssembly.compile()`) during JS
     /// execution.  The content process drains these requests after each command.
+    #[cfg(all(boa_backend, feature = "wasm"))]
     pub(crate) fn push_pending_request(&self, request: PendingRequest) {
         self.pending_requests.borrow_mut().push(request);
     }
 
     /// Allocate a unique request ID for a pending wasm operation.
+    #[cfg(all(boa_backend, feature = "wasm"))]
     pub(crate) fn next_wasm_request_id(&self) -> u64 {
         let id = self.pending_wasm_request_id_counter.get();
         self.pending_wasm_request_id_counter.set(id.wrapping_add(1));
@@ -860,6 +869,7 @@ impl GlobalScope {
 
     /// Mark all compile-type pending wasm requests as Processing and return
     /// their bytes + request_ids.  Called by the content process.
+    #[cfg(all(boa_backend, feature = "wasm"))]
     pub(crate) fn take_pending_wasm_batches(&self) -> Vec<(u64, Vec<u8>)> {
         let mut requests = self.pending_requests.borrow_mut();
         let mut batches = Vec::new();
@@ -882,7 +892,7 @@ impl GlobalScope {
 
     /// Mark all instantiate-type pending wasm requests as Processing and
     /// return their module + request_id.  Called by the content process.
-    #[cfg(boa_backend)]
+    #[cfg(all(boa_backend, feature = "wasm"))]
     pub(crate) fn take_pending_wasm_instantiates(&self) -> Vec<(u64, wasmtime::Module)> {
         let mut requests = self.pending_requests.borrow_mut();
         let mut instantiates = Vec::new();
@@ -904,6 +914,7 @@ impl GlobalScope {
 
     /// Store the promise and resolving functions for a pending wasm request.
     /// Called by the bindings layer after creating the promise.
+    #[cfg(all(boa_backend, feature = "wasm"))]
     pub(crate) fn store_wasm_resolver(
         &self,
         request_id: u64,
@@ -916,6 +927,7 @@ impl GlobalScope {
     }
 
     /// Remove and return the promise + resolvers for a completed request.
+    #[cfg(all(boa_backend, feature = "wasm"))]
     pub(crate) fn consume_wasm_request(
         &self,
         request_id: u64,
@@ -927,7 +939,6 @@ impl GlobalScope {
                 PendingRequest::WasmCompile {
                     request_id: rid, ..
                 } => *rid == request_id,
-                #[cfg(boa_backend)]
                 PendingRequest::WasmInstantiate {
                     request_id: rid, ..
                 } => *rid == request_id,

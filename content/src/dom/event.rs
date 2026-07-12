@@ -40,6 +40,7 @@ pub(crate) struct EventListener {
     pub once: bool,
 
     /// <https://dom.spec.whatwg.org/#event-listener-signal>
+    #[allow(dead_code)]
     pub signal: Option<AbortSignal>,
 
     /// <https://dom.spec.whatwg.org/#concept-event-listener-removed>

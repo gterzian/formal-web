@@ -1,3 +1,7 @@
+// On JSC, `downcast_mut` returns a mutable reference that does not need the
+// outer `mut` binding qualifier.  Suppress the warning since Boa does need it.
+#![cfg_attr(jsc_backend, allow(unused_mut))]
+
 use crate::html::HTMLIFrameElement;
 use crate::js::try_with_event_target_mut;
 use crate::webidl::bindings::{AttributeDef, InterfaceDefinition, WebIdlInterface};

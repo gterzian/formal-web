@@ -134,10 +134,27 @@ shared dependency resolution and incremental compilation.
 - **Root binary** (`formal-web`): runs the embedder directly in-process, creating the window and event loop.
 - **Embedder crate** (`embedder`): a library used by the root binary that owns the winit event loop, window, chrome, and automation plumbing. A standalone `formal-web-embedder` binary is also produced for direct use.
 - **Helper processes** (`formal-web-content`, `formal-web-net`, `formal-web-media`): spawned by the embedder.
-- **`js_engine` crate**: a generic JS engine trait and ECMA-262 abstract operations. Two backends: Boa+Wasmtime (default) and JSC (macOS opt-in). See `js_engine/README.md`.
+- **`js_engine` crate**: a generic JS engine trait and ECMA-262 abstract operations. Two backends: Boa (default, most operational) and JSC (macOS opt-in). WebAssembly is a separate feature (`wasm`). See `js_engine/README.md`.
 - **`js_engine_macros` crate**: proc-macro companion providing `#[gc_struct]` for GC-traced platform objects.
 
+### Feature flags
+
+| Flag | Effect | Default |
+|---|---|---|
+| `boa` | Boa JS engine backend (most operational, runs WPT) | yes |
+| `jsc` | JavaScriptCore backend (macOS only, experimental) | no |
+| `wasm` | WebAssembly support via wasmtime (opt-in, Boa only) | no |
+| `media` | Video/audio playback support | yes |
+
+Boa is the primary backend for running WPT tests.  Wasm is a separate feature
+to avoid pulling in wasmtime when not needed.  JSC is macOS-only and
+experimental (see `js_engine/README.md` for known issues).
+
 ### Three verbs
+
+## Build commands
+
+### Default build (Boa, no WebAssembly)
 
 ```bash
 # Check all — type-check every package
@@ -148,17 +165,31 @@ rustup run 1.94.0 cargo build --release
 
 # Run all — launch the embedder
 rustup run 1.94.0 cargo run --release
+
+# Run WPT tests (primary verification)
+rustup run 1.94.0 cargo run --release -- wpt
 ```
 
-On macOS, `cargo build --release` uses AVFoundation by default (no GStreamer
-required).  GStreamer is still available as an opt-in (see `media/README.md`).
-On Linux, GStreamer is the only available backend.
+### With WebAssembly (opt-in)
 
-Without media (no video playback):
+```bash
+rustup run 1.94.0 cargo build --release --features wasm
+```
+
+### JSC backend (macOS only)
+
+```bash
+# Build content binary with JSC
+rustup run 1.94.0 cargo build --release --no-default-features --features jsc -p content --bin formal-web-content
+
+# Run WPT via JSC content process
+RUST_LOG=error target/release/formal-web wpt <test-path>
+```
+
+### Without media (no video playback)
 
 ```bash
 rustup run 1.94.0 cargo build --release --no-default-features
-rustup run 1.94.0 cargo run --release -- --no-default-features
 ```
 
 ### Individual packages
@@ -169,8 +200,7 @@ cargo build --release -p net     --bin formal-web-net
 cargo build --release -p embedder --bin formal-web-embedder
 ```
 
-Media binary (built implicitly by `cargo build --release` with the default
-platform backend; override explicitly when switching backends):
+### Media binary
 
 ```bash
 # macOS: AVFoundation (default) — no special flags needed

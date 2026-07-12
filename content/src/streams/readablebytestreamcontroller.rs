@@ -1,3 +1,7 @@
+// On JSC, `data_mut()` returns a mutable reference that does not need the
+// outer `mut` binding qualifier.  Suppress the warning since Boa does need it.
+#![cfg_attr(jsc_backend, allow(unused_mut))]
+
 use std::{cell::Cell, collections::VecDeque, rc::Rc};
 
 use crate::js::{Types, create_builtin_fn_with_traced_captures};

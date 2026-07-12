@@ -29,8 +29,11 @@ use ipc_messages::content::{
 };
 
 pub use environment_settings_object::EnvironmentSettingsObject;
+pub use global_scope::GlobalScope;
+pub use global_scope::GlobalScopeKind;
 pub(crate) use global_scope::TimerHandler;
-pub use global_scope::{GlobalScope, GlobalScopeKind, PendingRequest, PendingState};
+#[cfg(all(boa_backend, feature = "wasm"))]
+pub use global_scope::{PendingRequest, PendingState};
 pub use html_anchor_element::HTMLAnchorElement;
 pub(crate) use html_dom_tree::{
     run_dom_post_connection_steps_for_document, run_dom_removing_steps_for_document,

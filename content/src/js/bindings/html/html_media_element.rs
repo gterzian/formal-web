@@ -4,6 +4,8 @@
 //
 // Only a subset of the full IDL is exposed for the initial video cut.
 
+#![cfg_attr(not(feature = "media"), allow(dead_code, unused_imports))]
+
 type JsValue = <crate::js::Types as JsTypes>::JsValue;
 
 use crate::html::HTMLMediaElement;
@@ -32,6 +34,7 @@ impl WebIdlInterface<crate::js::Types> for HTMLMediaElement {
                 "NotSupportedError: Media not available (media feature disabled)",
             ));
         }
+        #[cfg(feature = "media")]
         Err(ec.new_type_error("Illegal constructor"))
     }
 

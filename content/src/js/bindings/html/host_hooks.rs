@@ -90,6 +90,7 @@ fn build_boa_context(document: Rc<RefCell<BaseDocument>>) -> Result<Context, Str
         crate::js::platform_objects::init_global_object_slot(&mut engine, global_obj);
     }
 
+    #[cfg(feature = "wasm")]
     if let Err(error) = crate::js::bindings::install_wasm_namespace(&mut engine) {
         error!("[content] failed to install WebAssembly namespace: {error}");
     }

@@ -17,6 +17,7 @@ media = ["dep:media"]
 # These propagate to the content crate via workspace dependency resolution.
 jsc = ["dep:content", "content/jsc"]
 boa = ["dep:content", "content/boa", "content/media"]
+wasm = ["content/wasm"]
 
 [dependencies]
 automation = { path = "automation" }
