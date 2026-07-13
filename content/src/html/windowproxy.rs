@@ -7,6 +7,7 @@ use js_engine::gc_struct;
 use js_engine::{Completion, ExecutionContext, JsTypes};
 
 use crate::js::Types;
+use crate::js::create_builtin_fn_with_traced_captures;
 
 type JsValue = <Types as JsTypes>::JsValue;
 type JsObject = <Types as JsTypes>::JsObject;
@@ -123,8 +124,34 @@ fn trap_get(
     // Step 3: "If IsPlatformObjectSameOrigin(W) is true, then return ?
     //           OrdinaryGet(this, P, Receiver)."
     let prop_key = ec.to_property_key(key)?;
-    let win_val = <crate::js::Types as JsTypes>::value_from_object(win);
-    ec.get_v(win_val, prop_key)
+    let win_val = <crate::js::Types as JsTypes>::value_from_object(win.clone());
+    let result = ec.get_v(win_val, prop_key)?;
+
+    // Note: Wrap callable results so they are invoked with `this` = the
+    // Window target, not the WindowProxy.  The Proxy [[Get]] returns
+    // trapResult, but the subsequent Call expression uses the base object
+    // (the Proxy) as `this`, and resolve_window cannot extract the Window
+    // from a Proxy.
+    if let Some(func_obj) = <Types as JsTypes>::value_as_object(&result) {
+        if ec.is_callable(&result) {
+            let name_key = ec.property_key_from_str("wrapped");
+            let wrapper_fn = create_builtin_fn_with_traced_captures(
+                ec,
+                WindowProxyGetCapture {
+                    window: win.clone(),
+                    original_fn: func_obj,
+                },
+                window_proxy_get_wrapper_behaviour,
+                0,
+                name_key,
+                false,
+            );
+            let wrapper_obj = <Types as JsTypes>::object_from_function(wrapper_fn);
+            return Ok(<Types as JsTypes>::value_from_object(wrapper_obj));
+        }
+    }
+
+    Ok(result)
 }
 
 /// <https://html.spec.whatwg.org/#windowproxy-set>
@@ -232,20 +259,37 @@ fn trap_own_keys(
 /// ECMAScript Proxy internal methods (10.5).
 fn target_window(args: &[JsValue]) -> Result<JsObject, JsValue> {
     args.first()
-        .and_then(|value| value.as_object())
+        .and_then(|value| <Types as JsTypes>::value_as_object(value))
         .ok_or_else(|| JsValue::default())
 }
 
-/// <https://html.spec.whatwg.org/#the-windowproxy-exotic-object>
+/// Captures for the wrapper function created by `trap_get`.
 ///
-/// Creates a WindowProxy exotic object by following the same recipe as
-/// <https://webidl.spec.whatwg.org/#js-observable-arrays>:
-/// 1. Create a handler object via OrdinaryObjectCreate(null)
-/// 2. For each trap, CreateBuiltinFunction → CreateDataPropertyOrThrow(handler, name, fn)
-/// 3. ProxyCreate(window, handler) — see `ec.create_proxy()`
+/// Stores the Window target (to use as `this` in the wrapped call) and
+/// the original callable value (to invoke with the corrected `this`).
+#[gc_struct]
+struct WindowProxyGetCapture {
+    /// The Window to use as `this` when calling the wrapped function.
+    window: JsObject,
+    /// The original callable function object to invoke.
+    original_fn: JsObject,
+}
+
+/// Behaviour function for the wrapper created by `trap_get`.
 ///
-/// The 10 trap functions implement the WindowProxy override algorithms from
-/// <https://html.spec.whatwg.org/#the-windowproxy-exotic-object>.
+/// Ignores `this` (which is the WindowProxy) and calls the original
+/// function with `this` set to the captured Window.
+fn window_proxy_get_wrapper_behaviour(
+    args: &[JsValue],
+    _this: JsValue,
+    captures: &WindowProxyGetCapture,
+    ec: &mut dyn ExecutionContext<crate::js::Types>,
+) -> Completion<JsValue, crate::js::Types> {
+    let this_value = <Types as JsTypes>::value_from_object(captures.window.clone());
+    ec.call(&captures.original_fn, &this_value, args)
+}
+
+/// <https://webidl.spec.whatwg.org/#js-observable-arrays>
 pub(crate) fn create_window_proxy(
     window: &JsObject,
     ec: &mut dyn ExecutionContext<crate::js::Types>,
@@ -293,7 +337,7 @@ pub(crate) fn create_window_proxy(
 
     for &(trap_fn, length, name) in traps.iter() {
         let name_key = ec.property_key_from_str(name);
-        let builtin_fn = crate::js::create_builtin_fn_with_traced_captures(
+        let builtin_fn = create_builtin_fn_with_traced_captures(
             ec,
             TrapCapture { func: trap_fn },
             trap_behaviour,
@@ -314,11 +358,8 @@ pub(crate) fn create_window_proxy(
     Ok(<crate::js::Types as JsTypes>::value_from_object(proxy))
 }
 
-/// <https://html.spec.whatwg.org/#the-windowproxy-exotic-object>
-///
-/// Resolve the Window from a value that may be a WindowProxy (Proxy) or a
-/// direct Window object.  For same-origin WindowProxies, the target Window
-/// is the realm\'s global object.
+/// Resolve the Window from a value that may be a WindowProxy or a
+/// direct Window object.
 pub(crate) fn resolve_window(
     value: &JsValue,
     ec: &mut dyn ExecutionContext<crate::js::Types>,

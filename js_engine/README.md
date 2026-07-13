@@ -111,24 +111,4 @@ at context creation time. `JSObjectSetPrototype` crashes on macOS 26 for
 - **WASM compile/instantiate timeout on JSC** — Background compilation
   requires the creating thread's run loop to be pumped.
 
-### Failed WindowProxy fix attempts (2026-07-12)
 
-**Goal:** Make `w.open(url, '_self')` work when called through a WindowProxy
-(returned by `window.open()`), so that method calls on the proxy correctly
-operate on the underlying Window rather than falling through to the caller's
-global object.
-
-**Approach 1 — `__proxy_window__` magic key in `trap_get`:** Added an
-internal property key interception so `resolve_window` could extract the
-Window from a Proxy via its `[[Get]]` trap. Rejected because it's a
-non-standard extension to the proxy protocol.
-
-**Approach 2 — Callable wrapping in `trap_get`:** Following the observable-
-array proxy pattern from <https://webidl.spec.whatwg.org/#js-observable-arrays>,
-wrap callable values returned by `trap_get` so they're invoked with the Window
-as `this` rather than the Proxy as `this`.  Blocked because `is_callable` and
-`call` are on the `EcmascriptHost` trait, but `trap_get` only receives
-`&mut dyn ExecutionContext`.  Getting access to `EcmascriptHost` requires
-downcasting through `as_any_mut()`, which is backend-specific.  The proper
-fix would add an `as_ecmascript_host()` method to the `ExecutionContext` trait
-or thread `&mut dyn EcmascriptHost` directly through the proxy trap callbacks.

@@ -451,7 +451,13 @@ At the end of each task, run the following steps **in order**:
    were started during the session. Leftover processes can block ports and
    interfere with subsequent tasks.
 
-2. **Run `cargo clippy`** — Lint the workspace (excluding vendor) and fix any
+2. **Remove session artifacts** — Delete any temporary test files,
+   screenshots, test pages, or other debug artifacts created during the
+   session under the repo root.  These are not part of the project and
+   should not be committed.  Exception: artifacts placed under
+   `scratchpad/` are intentional and may be kept.
+
+3. **Run `cargo clippy`** — Lint the workspace (excluding vendor) and fix any
    warnings before committing. Run from the project root:
 
    ```bash
@@ -462,13 +468,13 @@ At the end of each task, run the following steps **in order**:
    focus on code-level warnings). The `vendor/` directory is excluded from
    this repository's scope and should not be linted or modified.
 
-3. **Run `cargo fmt`** — Format the project's code before committing. Run
+4. **Run `cargo fmt`** — Format the project's code before committing. Run
    from the project root: `cargo fmt`. This only formats the root package
    (there is no workspace defined, so `vendor/` sub-crates are not affected).
    Never run `cargo fmt` with `--all` or from inside a `vendor/` directory,
    as vendored formatting changes must not be committed.
 
-4. **Spec-mapping review** — First, **re-read the documentation chain**
+5. **Spec-mapping review** — First, **re-read the documentation chain**
    (`content/src/js/bindings/README.md`, `AGENTS.md` Algorithm Implementation
    section, `content/README.md`, and any domain-specific READMEs) to
    re-familiarize yourself with the exact rules for anchor URLs, step
@@ -504,14 +510,14 @@ At the end of each task, run the following steps **in order**:
      `// TODO:` explaining the gap?
    Fix any issues found.
 
-5. Think very hard about any general lessons learned in the session, and what parts of the documentation chain should be updated to reflect such general lessons, and then also update it. 
+6. Think very hard about any general lessons learned in the session, and what parts of the documentation chain should be updated to reflect such general lessons, and then also update it. 
 
-6. **Prune READMEs** — Strip completed fixes and historical session logs from
+7. **Prune READMEs** — Strip completed fixes and historical session logs from
    the documentation chain. The README should track only remaining work and
    dead-end investigations for currently-unfixed issues (see "README pruning"
    above).
 
-7. **Run all verification steps** — Every end-of-task run executes ALL verification steps unconditionally. Do not skip any step based on a subjective assessment of "relevance" — changes to seemingly unrelated files (test pages, configuration, documentation) routinely break downstream steps in this multi-process system. Running everything catches regressions the agent cannot predict.
+8. **Run all verification steps** — Every end-of-task run executes ALL verification steps unconditionally. Do not skip any step based on a subjective assessment of "relevance" — changes to seemingly unrelated files (test pages, configuration, documentation) routinely break downstream steps in this multi-process system. Running everything catches regressions the agent cannot predict.
 
    **Migration override:** Phase E is complete — content crate compiles on
    both JSC and Boa. Standard verification steps (WPT, navigation
@@ -533,9 +539,9 @@ At the end of each task, run the following steps **in order**:
      ./verification/verify-navigation.sh
      ```
 
-7. **Suggest a commit message** — Whenever asked for a commit message (whether at end-of-task or any other time), propose a message for the current `git diff HEAD` (the uncommitted changes), not for the entire session's work.  Run `git diff --stat HEAD` to see what changed, and `git diff HEAD` to read the diff before writing the message.
+9. **Suggest a commit message** — Whenever asked for a commit message (whether at end-of-task or any other time), propose a message for the current `git diff HEAD` (the uncommitted changes), not for the entire session's work.  Run `git diff --stat HEAD` to see what changed, and `git diff HEAD` to read the diff before writing the message.
 
-8. Review the entire session (your entire context window) and make sure that Rule Number One was respected (see top of file), and if not alert the user.
+10. Review the entire session (your entire context window) and make sure that Rule Number One was respected (see top of file), and if not alert the user.
 
 
 # Forbidden commands
