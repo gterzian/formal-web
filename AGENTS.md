@@ -519,11 +519,10 @@ At the end of each task, run the following steps **in order**:
 
 8. **Run all verification steps** — Every end-of-task run executes ALL verification steps unconditionally. Do not skip any step based on a subjective assessment of "relevance" — changes to seemingly unrelated files (test pages, configuration, documentation) routinely break downstream steps in this multi-process system. Running everything catches regressions the agent cannot predict.
 
-   **Migration override:** Phase E is complete — content crate compiles on
-   both JSC and Boa. Standard verification steps (WPT, navigation
-   verification, clippy, fmt) should now be run. However, the content crate
-   is still not functional on JSC (`run_content_process` returns an error),
-   so only the Boa backend path is verified.
+   Two engines are supported: Boa (primary, runs WPT) and JSC (experimental,
+   content crate compiles but `run_content_process` returns an error at
+   runtime).  All verification runs use the Boa backend unless stated
+   otherwise.
 
    - **Default WPT run** —
 

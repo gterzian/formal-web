@@ -3,31 +3,70 @@
 <https://tc39.es/ecma262/>
 
 Bridges between ECMAScript engines (Boa, JSC) and formal-web's
-HTML/DOM/WebIDL layers.
+HTML/DOM/WebIDL layers.  Migration to a fully generic `JsEngine<T>` /
+`ExecutionContext<T>` trait architecture is complete — content code
+never depends on backend-specific APIs.
+
+## Architecture
+
+Two categories of abstraction:
+
+1. **Standard** — `JsEngine<T>` and `ExecutionContext<T>` mirror ECMA-262
+   abstract operations (§7–§27).  `ExecutionContext<T>` is the runtime
+   handle threaded through every binding function and domain method — it
+   IS the HTML spec's realm execution context.
+2. **Engine-specific** — `gc.rs` abstracts GC (`Trace`, `Finalize`,
+   `GcRootHandle`, `GcCell`) which has no ECMA-262 equivalent.
+
+### Key traits
+
+| Trait | Role |
+|---|---|
+| `JsTypes` | Associated types for a backend's value/object/string/realm/etc. |
+| `JsEngine<T>` | Factory operations: realm creation, script evaluation, builtin functions |
+| `ExecutionContext<T>` | Runtime handle for all ECMA-262 operations that reference the surrounding agent's running execution context |
+| `JsTypesGcExt` | Cycle-safe reflector link between Rust domain objects and their JS wrappers |
+
+### Module layout
+
+| Module | Contents |
+|---|---|
+| `types` | `JsTypes`, `JsTypesWithRealm` |
+| `engine` | `JsEngine`, `ExecutionContext`, `Completion`, `HostHooks` |
+| `enums` | `Numeric`, `PreferredType`, `IntegrityLevel`, `PromiseState`, etc. |
+| `records` | `IteratorRecord`, `PromiseCapability`, `PromiseResolvers`, `PropertyDescriptor`, `RealmIntrinsics` |
+| `gc` | `Trace`, `Finalize`, `GcRootHandle`, `GcCell` (backend-abstracted) |
+| `boa/` | Boa backend implementation |
+| `jsc/` | JSC backend implementation (macOS only) |
 
 ## Feature flags
 
-| Flag | Effect |
-|---|---|
-| `boa` (default) | Boa + Wasmtime JS engine backend |
-| `jsc` | JavaScriptCore backend (macOS only) |
+| Flag | Engine | Default |
+|---|---|---|
+| `boa` | Boa (git dep) | **default** |
+| `jsc` | JavaScriptCore (macOS, experimental) | opt-in |
+
+At most one engine feature can be active.
 
 ## Build commands
 
-**Boa (default, runs WPT):**
+### Boa (default, runs WPT)
 
 ```bash
+# Build everything
 rustup run 1.94.0 cargo build --release
+
+# Run WPT suite
 rustup run 1.94.0 cargo run --release -- wpt
 ```
 
-**Boa + WebAssembly:**
+### Boa + WebAssembly
 
 ```bash
 rustup run 1.94.0 cargo build --release --features wasm
 ```
 
-**JSC (macOS only):**
+### JSC (macOS only, experimental)
 
 ```bash
 # Build js_engine crate
@@ -44,10 +83,9 @@ target/release/formal-web wpt dom/nodes/Element-hasAttribute.html
 
 ### Boa backend (primary — run full suite)
 
-Latest result (2026-07-12): `executed=79 unexpected=0`
+Latest: `executed=79 unexpected=0`
 
-Wasm tests are excluded from the default WPT run (separate `wasm` feature).
-Run with `--features wasm` to enable wasm tests.
+Wasm tests are excluded from the default WPT run (opt-in `--features wasm`).
 
 ### JSC backend (experimental)
 
@@ -55,60 +93,33 @@ Run with `--features wasm` to enable wasm tests.
 document-dir, iframe, anchor, basic streams (constructor, default-reader,
 strategies, transform, writable), formal gc-protection.
 
-**TIMEOUT:** Most piping tests, cancel, read-task-handling (promise_state
-microtask drain issue — see below).
+**TIMEOUT:**  Most piping tests, cancel, read-task-handling.
 
 **FAIL:** structured-clone (Blob not implemented), wasm compile (timeout).
 
-## Safe builtin function creation
-
-Use `create_builtin_fn_static(behaviour, length, name)` for stateless `fn`
-pointers.  Use `create_builtin_fn_with_captures(ec, captures, ...)` for
-stateful functions where `captures: C` is `boa_gc::Trace + 'static`.
-
 ## Remaining work
 
-### 1. Piping test TIMEOUTs — promise_state microtask drain
+### JSC microtask drain during nested C API calls
 
-`promise_state()` in `js_engine/src/jsc/engine.rs` uses `eval_script_raw("void 0")`
-to drain microtasks. JSC only drains its microtask queue when control returns
-from the outermost C API call. Inside a nested C API call (common — stream
-algorithm code runs inside a JS call), the eval does NOT trigger microtask
-drainage. The `.then()` handlers never fire, so the state always reads as
-`Pending`.
+`promise_state()` uses `eval_script_raw("void 0")` to drain microtasks, but
+JSC only drains its microtask queue when control returns from the outermost
+C API call.  Inside nested calls (common — stream algorithm code runs inside
+a JS call), the eval does not trigger drainage and `.then()` handlers never
+fire.
 
-**Dead ends:** There is no public C API to force JSC microtask drainage.
-The `eval_script_raw("void 0")` works at the outermost C API level only.
-Tracked promise states failed because the stream algorithm polls CHAINED
-promises (via `.then()`), not the original tracked promise.
+**Dead end:** No public C API forces JSC microtask drainage.  Tracked
+promise states fail because stream algorithms poll CHAINED promises (via
+`.then()`), not the original tracked promise.
 
-**Instrumentation:** `ENGINE_NESTING_DEPTH` thread-local in `EngineGuard`
-exports `nesting_depth()` — depth == 0 means outermost C API boundary where
-drainage might work.
+### Other unfixed issues
 
-### 2. setTimeout not pumped during piping tests
-
-Piping tests that use `delay()` time out because the timer/task queue is not
-serviced while the C API path is blocking.
-
-### 3. `instanceof Window` returns false
-
-The global object's `[[Prototype]]` is immutable through the public C API —
-`JSContextGetGlobalObject()` returns a `JSGlobalObject` whose prototype is set
-at context creation time. `JSObjectSetPrototype` crashes on macOS 26 for
-`JSObjectMake`-created callback objects.
-
-### 4. Other unfixed issues
-
-- **`WindowTimer.arguments`** — `Vec<JsValue>` elements in HTML timer code
-  unprotected from GC. Needs `GcRootHandle` wrapping.
-- **`detach_array_buffer`** — No-op (`Ok(())`). `is_detached_buffer`
-  approximates as `byteLength == 0`.
-- **`species_constructor`** — Always returns `default_constructor` (skips
-  `Symbol.species` lookup).
-- **Cross-realm `new.target`** — `get_function_realm` always returns the
-  current realm.
-- **WASM compile/instantiate timeout on JSC** — Background compilation
-  requires the creating thread's run loop to be pumped.
-
-
+- **`setTimeout` not pumped during piping tests** — `delay()` timeouts.
+- **`instanceof Window` returns false (JSC)** — Global object's `[[Prototype]]`
+  is immutable through the public C API.
+- **`WindowTimer.arguments`** — `Vec<JsValue>` elements unprotected from GC.
+  Needs `GcRootHandle` wrapping.
+- **`detach_array_buffer` (JSC)** — No-op (`Ok(())`).
+- **`species_constructor`** — Always returns `default_constructor`.
+- **Cross-realm `new.target`** — `get_function_realm` always returns current realm.
+- **WASM compile/instantiate timeout (JSC)** — Background compilation requires
+  the creating thread's run loop to be pumped.
