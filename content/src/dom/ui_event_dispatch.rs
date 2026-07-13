@@ -463,11 +463,11 @@ impl js_engine::EcmascriptHost<crate::js::Types> for BlitzJSEventHandler<'_> {
         object: &JsObject,
         property: &str,
     ) -> js_engine::Completion<JsValue, crate::js::Types> {
-        js_engine::EcmascriptHost::get(&mut self.settings.engine, object, property)
+        js_engine::EcmascriptHost::get(&mut self.settings.realm_execution_context, object, property)
     }
 
     fn is_callable(&self, value: &JsValue) -> bool {
-        self.settings.engine.is_callable(value)
+        self.settings.realm_execution_context.is_callable(value)
     }
 
     fn call(
@@ -476,38 +476,44 @@ impl js_engine::EcmascriptHost<crate::js::Types> for BlitzJSEventHandler<'_> {
         this_arg: &JsValue,
         args: &[JsValue],
     ) -> js_engine::Completion<JsValue, crate::js::Types> {
-        self.settings.engine.call(callable, this_arg, args)
+        self.settings
+            .realm_execution_context
+            .call(callable, this_arg, args)
     }
 
     fn perform_a_microtask_checkpoint(&mut self) -> js_engine::Completion<(), crate::js::Types> {
-        self.settings.engine.perform_a_microtask_checkpoint()
+        self.settings
+            .realm_execution_context
+            .perform_a_microtask_checkpoint()
     }
 
     fn report_exception(&mut self, error: JsValue) {
-        self.settings.engine.report_exception(error)
+        self.settings
+            .realm_execution_context
+            .report_exception(error)
     }
 
     fn gc(&mut self) {
-        self.settings.engine.gc()
+        self.settings.realm_execution_context.gc()
     }
 
     fn value_undefined(&mut self) -> JsValue {
-        self.settings.engine.value_undefined()
+        self.settings.realm_execution_context.value_undefined()
     }
     fn value_null(&mut self) -> JsValue {
-        self.settings.engine.value_null()
+        self.settings.realm_execution_context.value_null()
     }
     fn value_from_bool(&mut self, b: bool) -> JsValue {
-        self.settings.engine.value_from_bool(b)
+        self.settings.realm_execution_context.value_from_bool(b)
     }
     fn value_from_number(&mut self, n: f64) -> JsValue {
-        self.settings.engine.value_from_number(n)
+        self.settings.realm_execution_context.value_from_number(n)
     }
     fn value_from_string(&mut self, s: <Types as JsTypes>::JsString) -> JsValue {
-        self.settings.engine.value_from_string(s)
+        self.settings.realm_execution_context.value_from_string(s)
     }
     fn js_string_from_str(&self, s: &str) -> <Types as JsTypes>::JsString {
-        self.settings.engine.js_string_from_str(s)
+        self.settings.realm_execution_context.js_string_from_str(s)
     }
 }
 
@@ -541,11 +547,11 @@ impl EventHandler for BlitzJSEventHandler<'_> {
         }
 
         let time_stamp = self.settings.current_time_millis();
-        let view = Some(self.settings.engine.realm_global_object());
+        let view = Some(self.settings.realm_execution_context.realm_global_object());
         let ui_event = JsUiEvent::from_dom_event(event, view, time_stamp);
         let event_object = create_interface_instance::<crate::js::Types, JsUiEvent>(
             ui_event,
-            &mut self.settings.engine,
+            &mut self.settings.realm_execution_context,
         )
         .expect("UIEvent construction must succeed");
         if let Err(error) = dispatch_with_chain(self, chain, &event_object) {

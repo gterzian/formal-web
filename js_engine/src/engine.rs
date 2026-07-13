@@ -1,66 +1,6 @@
-//! # Core traits: `JsEngine<T>`, `ExecutionContext<T>`, `EcmascriptHost<T>`, `HostHooks<T>`
+//! Core traits: `JsEngine<T>`, `ExecutionContext<T>`, `EcmascriptHost<T>`, `HostHooks<T>`
 //!
-//! ## `JsEngine<T>` — ECMA-262 engine factory
-//!
-//! Factory operations: creates realms, built-in functions, evaluates scripts.
-//! Used at initialization time only.  Every method maps to a spec-defined
-//! abstract operation (§9.3, §10.3, §16).
-//!
-//! ## `ExecutionContext<T>` — running execution context (§9.4)
-//!
-//! The runtime handle for ECMA-262 abstract operations that implicitly
-//! reference the surrounding agent's running execution context.  This is the
-//! type that flows through every binding function, domain method, and dispatch
-//! call — it IS the HTML spec's "realm execution context".
-//!
-//! Operations: §7.1 Type Conversion, §7.2 Testing and Comparison,
-//! §7.3 Operations on Objects, §7.4 Iteration, §9.3 currentRealm,
-//! §9.6 Jobs, §27.2 Promise operations, value construction.
-//!
-//! ## `EcmascriptHost<T>` — Web IDL callback operations
-//!
-//! A narrower interface covering only the ECMA-262 operations that Web IDL
-//! callback algorithms need: `Get`, `IsCallable`, `Call`, microtask
-//! checkpoint, and exception reporting.  `ExecutionContext<T>` extends this
-//! trait.
-//!
-//! ## `Completion<T, Ty>`
-//!
-//! `type Completion<T, Ty> = Result<T, <Ty as JsTypes>::JsValue>` —
-//! isomorphic to the spec's Completion Record (§6.2.4).
-//!
-//! ## `HostHooks<T>`
-//!
-//! Configuration for HTML-specific engine hooks.  Rather than a custom
-//! abstraction, the intended design is to implement each backend's native
-//! host-hook mechanism:
-//!
-//! - **Boa:** implement `boa_engine::context::HostHooks` (which provides
-//!   `make_job_callback`, `call_job_callback`, `promise_rejection_tracker`,
-//!   etc.).  Register via `ContextBuilder::host_hooks()`.
-//!   See <https://tc39.es/ecma262/#sec-hostmakejobcallback>.
-//! - **JSC:** JSC's C API has no equivalent; simulate by wrapping function
-//!   creation in our own `HostMakeJobCallback` / `HostCallJobCallback` layer.
-//!
-//! The `HostHooks<T>` struct below is a placeholder.  The end state is a
-//! content-owned implementation of the backend's native hook trait, carrying
-//! `[[HostDefined]]` data (incumbent settings object, active script) per
-//! <https://tc39.es/ecma262/#sec-jobcallback-records>.
-//!
-//! ## Open problems
-//!
-//! - **P2: HostMakeJobCallback not implemented.**  Content should implement
-//!   Boa's `HostHooks` trait (and a JSC equivalent) so `[[HostDefined]]`
-//!   data (ESO, active script) is captured at callback-creation time and
-//!   restored at callback-call time.  Today every closure manually threads
-//!   `&mut dyn ExecutionContext<T>` instead.
-//! - **P4: `set_host_hooks` is a no-op for Boa.**  Boa host hooks are set
-//!   during `ContextBuilder::host_hooks()`, not at runtime.
-//! - **P7: `Callback` is Boa-concrete.**  Derives `boa_gc::Trace`/`Finalize`.
-//!   Fix requires abstracting GC trait derives.
-//!
-//! See `js_engine/README.md` for the full philosophy, design notes, and
-//! migration plan.
+//! See `js_engine/README.md` for design notes and remaining work.
 
 use log::error;
 
@@ -72,23 +12,8 @@ use crate::records::{IteratorRecord, PromiseCapability, PromiseResolvers, RealmI
 use crate::types::{JsTypes, JsTypesWithRealm};
 use crate::{Numeric, PreferredType, PropertyDescriptor, RootedPromiseCapability};
 
-/// The type of a Completion — an ECMAScript abstract operation's result.
-///
 /// <https://tc39.es/ecma262/#sec-completion-record-specification-type>
-///
-/// Isomorphic to `Result<T, JsValue>`:
-/// - `Ok(v)` corresponds to a normal completion `~v~`.
-/// - `Err(e)` corresponds to a throw completion `*e*`.
-/// Rust's `?` corresponds to the spec's `?` (ReturnIfAbrupt).
 pub type Completion<T, Ty> = Result<T, <Ty as JsTypes>::JsValue>;
-
-// ────────────────────────────────────────────────────────────────────────────
-// <https://webidl.spec.whatwg.org/#call-a-user-objects-operation>
-// <https://webidl.spec.whatwg.org/#invoke-a-callback-function>
-//
-// Narrow interface covering only the ECMA-262 operations that Web IDL callback
-// algorithms need.
-// ────────────────────────────────────────────────────────────────────────────
 
 /// <https://webidl.spec.whatwg.org/#call-a-user-objects-operation>
 /// <https://webidl.spec.whatwg.org/#invoke-a-callback-function>

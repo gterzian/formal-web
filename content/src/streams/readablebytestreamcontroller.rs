@@ -1,6 +1,4 @@
-// On JSC, `data_mut()` returns a mutable reference that does not need the
-// outer `mut` binding qualifier.  Suppress the warning since Boa does need it.
-#![cfg_attr(jsc_backend, allow(unused_mut))]
+
 
 use std::{cell::Cell, collections::VecDeque, rc::Rc};
 
@@ -167,18 +165,6 @@ impl ArrayBufferViewDescriptor {
 
     pub(crate) fn is_data_view(&self) -> bool {
         matches!(self.kind, ArrayBufferViewKind::DataView)
-    }
-
-    /// Note: Spec-complete but not yet wired to any domain call site.
-    #[allow(dead_code)]
-    pub(crate) fn bytes(
-        &self,
-        ec: &mut dyn ExecutionContext<crate::js::Types>,
-    ) -> Completion<Vec<u8>, crate::js::Types> {
-        let data = ec
-            .array_buffer_data(&self.buffer)
-            .ok_or_else(|| ec.new_type_error("ArrayBufferView buffer is detached"))?;
-        Ok(data[self.byte_offset..self.byte_offset + self.byte_length].to_vec())
     }
 
     pub(crate) fn create_result_view(
@@ -1257,6 +1243,7 @@ impl ReadableByteStreamController {
 
         self.queue_total_size
             .set(self.queue_total_size.get().saturating_sub(copied.len()));
+        #[cfg_attr(jsc_backend, allow(unused_mut))]
         let mut data = descriptor
             .view
             .buffer

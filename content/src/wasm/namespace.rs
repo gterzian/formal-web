@@ -5,7 +5,8 @@ use std::sync::{Arc, Mutex};
 use boa_engine::{Context, JsNativeError, JsValue, js_string, object::JsObject};
 use wasmtime::{Func, Instance as WasmtimeInstance, Module, Store};
 
-use crate::html::{PendingRequest, PendingState, Window};
+use crate::html::Window;
+use crate::wasm::{PendingRequest, PendingState};
 use crate::wasm::conversions::{default_val_for_type, js_val_to_wasm_val, wasm_val_to_js_value};
 use crate::wasm::types::{WasmInstance, WasmModule};
 use crate::webidl::bindings::create_interface_instance;

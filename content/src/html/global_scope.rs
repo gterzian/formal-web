@@ -34,64 +34,7 @@ fn log_timer_debug(message: impl AsRef<str>) {
     }
 }
 
-/// The lifecycle state of a pending request.
-#[cfg(all(boa_backend, feature = "wasm"))]
-#[gc_struct]
-#[derive(Debug, PartialEq, Eq)]
-pub enum PendingState {
-    /// Just created, waiting for the content process to submit it.
-    Pending,
-    /// Sent to the background thread, waiting for completion.
-    Processing,
-}
 
-/// <https://www.w3.org/TR/wasm-js-api/#asynchronously-compile-a-webassembly-module>
-///
-/// A pending WebAssembly request stored on the GlobalScope during JS execution.
-/// The request stays in this Vec throughout its lifecycle — the state field
-/// tracks progress.  The content process mutates the state when submitting to
-/// the background thread and when resolving/rejecting the promise.
-///
-/// Note: JS-typed fields (promise, resolvers) are NOT stored here — they live
-/// in `GlobalScope.pending_wasm_resolvers` keyed by `request_id`.  This lets
-/// domain code in `content/src/wasm/` construct and push `PendingRequest`
-/// without importing `boa_engine`.
-#[cfg(all(boa_backend, feature = "wasm"))]
-#[gc_struct]
-pub enum PendingRequest {
-    /// A WebAssembly module compilation or instantiate-byte request.
-    WasmCompile {
-        /// Stable copy of the buffer bytes.
-        #[ignore_trace]
-        bytes: Vec<u8>,
-        /// The request id, correlating with the background thread's result.
-        #[ignore_trace]
-        request_id: u64,
-        /// True if this came from `instantiate(bytes, ...)`, false for `compile(bytes, ...)`.
-        is_instantiate: bool,
-        /// Current lifecycle state.
-        ///
-        /// PendingState is a simple Copy enum, safe to ignore trace on.
-        #[ignore_trace]
-        state: PendingState,
-    },
-
-    /// <https://www.w3.org/TR/wasm-js-api/#asynchronously-instantiate-a-webassembly-module>
-    ///
-    /// An instantiate(moduleObject, importObject) request.
-    /// The module is already compiled — this only needs instantiation.
-    WasmInstantiate {
-        /// The previously compiled wasm module.
-        #[ignore_trace]
-        module: wasmtime::Module,
-        /// The request id, correlating with the content-process's processing.
-        #[ignore_trace]
-        request_id: u64,
-        /// Current lifecycle state.
-        #[ignore_trace]
-        state: PendingState,
-    },
-}
 
 /// <https://html.spec.whatwg.org/#global-object>
 #[derive(Debug, Clone, Copy)]
@@ -260,41 +203,16 @@ pub struct GlobalScope {
     #[ignore_trace]
     media_extension_sender: RefCell<Option<IpcSender<MediaCommand>>>,
 
-    /// JSC engine context (cloned `JscContext`) for creating shared realms.
-    /// On Boa this is `None` (creates a fresh context for each realm).
-    /// Stored as `Rc<dyn Any>` to keep the backend-agnostic abstraction.
-    /// Uses `Rc` instead of `Box` because the JSC `#[gc_struct]` derive
-    /// adds `#[derive(Clone)]`.
-    ///
-    /// Note: This field is only read on JSC (`#[cfg(not(boa_backend))]`), so
-    /// `#[allow(dead_code)]` suppresses the Boa-backend warning.
-    #[allow(dead_code)]
-    #[ignore_trace]
-    engine_context: Option<Rc<dyn core::any::Any + Send>>,
+
 
     /// <https://html.spec.whatwg.org/#concept-document-creation-url>
     /// The creation URL of this window's Document.
     #[ignore_trace]
     creation_url: RefCell<Option<url::Url>>,
 
-    /// Generic queue of pending async requests created during JS execution.
-    /// Populated by native JS functions (e.g. WebAssembly.compile) and drained
-    /// by the content process after JS execution completes.
+    /// Consolidated wasm state (pending requests, resolvers, counter).
     #[cfg(all(boa_backend, feature = "wasm"))]
-    pending_requests: GcCell<Vec<PendingRequest>>,
-
-    /// A counter for generating unique request IDs for async wasm operations.
-    #[cfg(all(boa_backend, feature = "wasm"))]
-    #[ignore_trace]
-    pending_wasm_request_id_counter: std::cell::Cell<u64>,
-
-    /// Map of request_id → (promise, resolvers) for pending wasm operations.
-    /// The promise and resolvers are stored here rather than in
-    /// `PendingRequest` so that domain code in `content/src/wasm/` can
-    /// push pending requests without importing `boa_engine`.
-    #[cfg(all(boa_backend, feature = "wasm"))]
-    pending_wasm_resolvers:
-        GcCell<Vec<(u64, JsObject, js_engine::records::PromiseResolvers<Types>)>>,
+    wasm_state: GcCell<Option<crate::wasm::WasmState>>,
 }
 
 impl GlobalScope {
@@ -320,14 +238,10 @@ impl GlobalScope {
             new_document_registry: RefCell::new(None),
             video_paint_registry: RefCell::new(None),
             media_extension_sender: RefCell::new(None),
-            engine_context: None,
+
             creation_url: RefCell::new(None),
             #[cfg(all(boa_backend, feature = "wasm"))]
-            pending_requests: gc_cell_new(Vec::new()),
-            #[cfg(all(boa_backend, feature = "wasm"))]
-            pending_wasm_request_id_counter: std::cell::Cell::new(0),
-            #[cfg(all(boa_backend, feature = "wasm"))]
-            pending_wasm_resolvers: gc_cell_new(Vec::new()),
+            wasm_state: gc_cell_new(Some(crate::wasm::WasmState::new())),
         }
     }
 
@@ -682,9 +596,6 @@ impl GlobalScope {
         }
     }
 
-    /// Like `create_document`, but passes the stored engine context so the
-    /// new realm shares the same JS context / GC heap on JSC.
-    /// Used for `window.open` with opener (auxiliary BC).
     pub(crate) fn create_document_in_realm(
         &self,
         new_traversable_id: NavigableId,
@@ -701,12 +612,7 @@ impl GlobalScope {
         let event_sender = event_sender
             .as_ref()
             .ok_or_else(|| String::from("GlobalScope has no event sender"))?;
-        // Build a temporary parent engine from the stored engine context.
-        // `create_a_new_realm` will use this to create a shared realm,
-        // ensuring the new window's objects live in the same GC heap on JSC.
-        let mut temp_engine = self.build_temp_parent_engine()?;
-        let parent: Option<&mut crate::js::Engine> = temp_engine.as_mut();
-        crate::html::create_a_new_realm(parent, event_sender, new_traversable_id, new_document_id)
+        crate::html::create_a_new_realm(None, event_sender, new_traversable_id, new_document_id)
     }
 
     /// Set the shared new-document registry that both GlobalScope and
@@ -766,31 +672,7 @@ impl GlobalScope {
     /// execution that might trigger `window.open`.
     /// Note: Only used on JSC backend (Boa creates fresh contexts).
     #[allow(dead_code)]
-    pub(crate) fn set_engine_context(&mut self, context: Box<dyn core::any::Any + Send>) {
-        self.engine_context = Some(Rc::from(context));
-    }
 
-    /// Build a temporary parent engine from the stored engine context.
-    /// On JSC, creates an engine sharing the same JSC context (same GC heap).
-    /// On Boa, returns `None` (the caller's `build_realm` creates a fresh context).
-    fn build_temp_parent_engine(&self) -> Result<Option<crate::js::Engine>, String> {
-        #[cfg(not(boa_backend))]
-        {
-            use js_engine::jsc::{JscContext, JscEngine};
-            let ctx = self
-                .engine_context
-                .as_ref()
-                .and_then(|c| c.downcast_ref::<JscContext>())
-                .ok_or_else(|| "no engine context available for shared realm".to_string())?;
-            Ok(Some(JscEngine::new_from_context(ctx.clone())))
-        }
-        #[cfg(boa_backend)]
-        {
-            // Boa: `build_realm` ignores the parent engine, so returning None
-            // creates a fresh context (which is the expected behavior).
-            Ok(None)
-        }
-    }
 
     pub(crate) fn set_video_paint_registry(
         &self,
@@ -850,70 +732,23 @@ impl GlobalScope {
         taken
     }
 
-    /// Push a pending async request onto this document's queue.
-    ///
-    /// Called by native JS functions (e.g. `WebAssembly.compile()`) during JS
-    /// execution.  The content process drains these requests after each command.
+    /// Access the consolidated wasm state (read-only, interior mutability).
     #[cfg(all(boa_backend, feature = "wasm"))]
-    pub(crate) fn push_pending_request(&self, request: PendingRequest) {
-        self.pending_requests.borrow_mut().push(request);
+    fn with_wasm_state<R>(&self, f: impl FnOnce(&crate::wasm::WasmState) -> R) -> Option<R> {
+        self.wasm_state.borrow().as_ref().map(|state| f(state))
     }
 
-    /// Allocate a unique request ID for a pending wasm operation.
+    /// Delegation methods to WasmState for backward compatibility.
     #[cfg(all(boa_backend, feature = "wasm"))]
     pub(crate) fn next_wasm_request_id(&self) -> u64 {
-        let id = self.pending_wasm_request_id_counter.get();
-        self.pending_wasm_request_id_counter.set(id.wrapping_add(1));
-        id
+        self.with_wasm_state(|s| s.next_request_id()).unwrap_or(0)
     }
 
-    /// Mark all compile-type pending wasm requests as Processing and return
-    /// their bytes + request_ids.  Called by the content process.
     #[cfg(all(boa_backend, feature = "wasm"))]
-    pub(crate) fn take_pending_wasm_batches(&self) -> Vec<(u64, Vec<u8>)> {
-        let mut requests = self.pending_requests.borrow_mut();
-        let mut batches = Vec::new();
-        for request in requests.iter_mut() {
-            if let PendingRequest::WasmCompile {
-                bytes,
-                request_id,
-                state,
-                ..
-            } = request
-            {
-                if *state == PendingState::Pending {
-                    *state = PendingState::Processing;
-                    batches.push((*request_id, bytes.clone()));
-                }
-            }
-        }
-        batches
+    pub(crate) fn push_pending_request(&self, request: crate::wasm::PendingRequest) {
+        self.with_wasm_state(|s| s.push_pending_request(request));
     }
 
-    /// Mark all instantiate-type pending wasm requests as Processing and
-    /// return their module + request_id.  Called by the content process.
-    #[cfg(all(boa_backend, feature = "wasm"))]
-    pub(crate) fn take_pending_wasm_instantiates(&self) -> Vec<(u64, wasmtime::Module)> {
-        let mut requests = self.pending_requests.borrow_mut();
-        let mut instantiates = Vec::new();
-        for request in requests.iter_mut() {
-            if let PendingRequest::WasmInstantiate {
-                module,
-                request_id,
-                state,
-            } = request
-            {
-                if *state == PendingState::Pending {
-                    *state = PendingState::Processing;
-                    instantiates.push((*request_id, module.clone()));
-                }
-            }
-        }
-        instantiates
-    }
-
-    /// Store the promise and resolving functions for a pending wasm request.
-    /// Called by the bindings layer after creating the promise.
     #[cfg(all(boa_backend, feature = "wasm"))]
     pub(crate) fn store_wasm_resolver(
         &self,
@@ -921,38 +756,24 @@ impl GlobalScope {
         promise: JsObject,
         resolvers: js_engine::records::PromiseResolvers<Types>,
     ) {
-        self.pending_wasm_resolvers
-            .borrow_mut()
-            .push((request_id, promise, resolvers));
+        self.with_wasm_state(|s| s.store_wasm_resolver(request_id, promise, resolvers));
     }
 
-    /// Remove and return the promise + resolvers for a completed request.
+    #[cfg(all(boa_backend, feature = "wasm"))]
+    pub(crate) fn take_pending_wasm_batches(&self) -> Vec<(u64, Vec<u8>)> {
+        self.with_wasm_state(|s| s.take_pending_wasm_batches()).unwrap_or_default()
+    }
+
+    #[cfg(all(boa_backend, feature = "wasm"))]
+    pub(crate) fn take_pending_wasm_instantiates(&self) -> Vec<(u64, wasmtime::Module)> {
+        self.with_wasm_state(|s| s.take_pending_wasm_instantiates()).unwrap_or_default()
+    }
+
     #[cfg(all(boa_backend, feature = "wasm"))]
     pub(crate) fn consume_wasm_request(
         &self,
         request_id: u64,
     ) -> Option<(JsObject, js_engine::records::PromiseResolvers<Types>)> {
-        // Remove the PendingRequest from the request queue.
-        {
-            let mut requests = self.pending_requests.borrow_mut();
-            let idx = requests.iter().position(|r| match r {
-                PendingRequest::WasmCompile {
-                    request_id: rid, ..
-                } => *rid == request_id,
-                PendingRequest::WasmInstantiate {
-                    request_id: rid, ..
-                } => *rid == request_id,
-            });
-            if let Some(idx) = idx {
-                requests.swap_remove(idx);
-            }
-        }
-        // Look up the promise/resolvers in the separate store.
-        let mut resolvers = self.pending_wasm_resolvers.borrow_mut();
-        let idx = resolvers
-            .iter()
-            .position(|(rid, _, _)| *rid == request_id)?;
-        let (_rid, promise, res) = resolvers.swap_remove(idx);
-        Some((promise, res))
+        self.with_wasm_state(|s| s.consume_wasm_request(request_id)).flatten()
     }
 }

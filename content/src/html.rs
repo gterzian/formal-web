@@ -32,8 +32,7 @@ pub use environment_settings_object::EnvironmentSettingsObject;
 pub use global_scope::GlobalScope;
 pub use global_scope::GlobalScopeKind;
 pub(crate) use global_scope::TimerHandler;
-#[cfg(all(boa_backend, feature = "wasm"))]
-pub use global_scope::{PendingRequest, PendingState};
+
 pub use html_anchor_element::HTMLAnchorElement;
 pub(crate) use html_dom_tree::{
     run_dom_post_connection_steps_for_document, run_dom_removing_steps_for_document,
@@ -164,7 +163,7 @@ pub(crate) fn create_a_new_realm(
     // Step 22: Populate with html/head/body given document.
     parse_html_into_document(&mut document.borrow_mut(), crate::EMPTY_HTML_DOCUMENT);
     // Step 10 (continued): global object is the Window.
-    let global_object = settings.engine.realm_global_object();
+    let global_object = settings.realm_execution_context.realm_global_object();
     Ok((global_object, settings, document))
 }
 

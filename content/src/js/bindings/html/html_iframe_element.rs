@@ -1,7 +1,3 @@
-// On JSC, `downcast_mut` returns a mutable reference that does not need the
-// outer `mut` binding qualifier.  Suppress the warning since Boa does need it.
-#![cfg_attr(jsc_backend, allow(unused_mut))]
-
 use crate::html::HTMLIFrameElement;
 use crate::js::try_with_event_target_mut;
 use crate::webidl::bindings::{AttributeDef, InterfaceDefinition, WebIdlInterface};
@@ -191,6 +187,7 @@ fn set_onload(
     )?;
 
     // Note: uses JsObject::downcast_mut — with_object_any_mut borrows ec.
+    #[cfg_attr(jsc_backend, allow(unused_mut))]
     let previous = if let Some(mut iframe) = iframe_object.downcast_mut::<HTMLIFrameElement>() {
         iframe.replace_onload(callback.clone())
     } else {
@@ -236,7 +233,7 @@ fn set_onerror(
     args: &[JsValue],
     ec: &mut dyn ExecutionContext<Types>,
 ) -> Completion<JsValue, Types> {
-    #[allow(unused_mut)]
+    #[cfg_attr(boa_backend, allow(unused_mut))]
     let mut iframe_object = <Types as JsTypes>::value_as_object(this)
         .ok_or_else(|| ec.new_type_error("HTMLIFrameElement receiver is not an object"))?;
     let callback = nullable_value(
@@ -246,6 +243,7 @@ fn set_onerror(
     )?;
 
     // Note: uses JsObject::downcast_mut — with_object_any_mut borrows ec.
+    #[cfg_attr(jsc_backend, allow(unused_mut))]
     let previous = if let Some(mut iframe) = iframe_object.downcast_mut::<HTMLIFrameElement>() {
         iframe.replace_onerror(callback.clone())
     } else {

@@ -30,7 +30,7 @@ use crate::js::platform_objects::with_global_scope;
 use crate::ui_event::deserialize_ui_event;
 #[cfg(all(boa_backend, feature = "wasm"))]
 use crate::wasm::{
-    WasmResult, WasmWorker, compile_continuation, compile_rejection, instantiate_continuation,
+    WasmResult, compile_continuation, compile_rejection, instantiate_continuation,
 };
 use anyrender::Scene as RenderScene;
 use blitz_dom::{BaseDocument, DocumentConfig};
@@ -411,17 +411,9 @@ pub(crate) struct ContentProcess {
     new_document_registry:
         Rc<RefCell<HashMap<DocumentId, (EnvironmentSettingsObject, Rc<RefCell<BaseDocument>>)>>>,
 
-    /// Background wasm compilation thread.
+    /// Consolidated wasm content-process state (worker + pending tracking).
     #[cfg(all(boa_backend, feature = "wasm"))]
-    wasm_worker: WasmWorker,
-
-    /// Pending wasm requests waiting for background results.
-    /// Maps request_id → document_id.
-    #[cfg(all(boa_backend, feature = "wasm"))]
-    pending_wasm_requests: HashMap<u64, DocumentId>,
-    /// Modules from instantiate requests, needed for exports creation.
-    #[cfg(all(boa_backend, feature = "wasm"))]
-    pending_wasm_modules: HashMap<u64, wasmtime::Module>,
+    wasm: crate::wasm::ContentWasmState,
 
     video_paint_registry: Rc<RefCell<HashMap<(DocumentId, usize), VideoPaintId>>>,
     /// Direct sender to the net extension. Set during DirectChannelsSetup.
@@ -460,11 +452,7 @@ impl ContentProcess {
             new_document_registry: Rc::new(RefCell::new(HashMap::new())),
             video_paint_registry: Rc::new(RefCell::new(HashMap::new())),
             #[cfg(all(boa_backend, feature = "wasm"))]
-            wasm_worker: WasmWorker::new(wasmtime::Engine::default(), _wasm_signal_sender),
-            #[cfg(all(boa_backend, feature = "wasm"))]
-            pending_wasm_requests: HashMap::new(),
-            #[cfg(all(boa_backend, feature = "wasm"))]
-            pending_wasm_modules: HashMap::new(),
+            wasm: crate::wasm::ContentWasmState::new(_wasm_signal_sender),
             network_extension_sender,
             media_extension_sender,
             content_command_sender,
@@ -869,7 +857,10 @@ impl ContentProcess {
             }
         }
 
-        let window = content_document.settings.engine.realm_global_object();
+        let window = content_document
+            .settings
+            .realm_execution_context
+            .realm_global_object();
         fire_event(&mut content_document.settings, &window, "load", true)
             .map_err(|error| format!("fire_event failed: {error:?}"))?;
 
@@ -1204,11 +1195,11 @@ impl ContentProcess {
             // worker results arriving after destruction are not misattributed,
             // and to avoid orphaned promise entries.
             // https://webassembly.github.io/spec/js-api/#asynchronously-compile-a-webassembly-module
-            self.pending_wasm_requests
+            self.wasm.pending_requests
                 .retain(|_request_id, doc_id| *doc_id != document_id);
-            self.pending_wasm_modules.retain(|request_id, _module| {
-                !self.pending_wasm_requests.contains_key(request_id)
-                    || self.pending_wasm_requests.get(request_id) != Some(&document_id)
+            self.wasm.pending_modules.retain(|request_id, _module| {
+                !self.wasm.pending_requests.contains_key(request_id)
+                    || self.wasm.pending_requests.get(request_id) != Some(&document_id)
             });
         }
         let mut local_state = self
@@ -1872,16 +1863,16 @@ impl ContentProcess {
                 // Submit compile batches.
                 let batches = content_document.settings.take_pending_wasm_batches();
                 for (request_id, bytes) in batches {
-                    self.pending_wasm_requests.insert(request_id, document_id);
-                    self.wasm_worker.submit_compile(bytes, request_id);
+                    self.wasm.pending_requests.insert(request_id, document_id);
+                    self.wasm.worker.submit_compile(bytes, request_id);
                 }
 
                 // Submit instantiate requests.
                 let instantiates = content_document.settings.take_pending_wasm_instantiates();
                 for (request_id, module) in instantiates {
-                    self.pending_wasm_requests.insert(request_id, document_id);
-                    self.pending_wasm_modules.insert(request_id, module.clone());
-                    self.wasm_worker.submit_instantiate(module, request_id);
+                    self.wasm.pending_requests.insert(request_id, document_id);
+                    self.wasm.pending_modules.insert(request_id, module.clone());
+                    self.wasm.worker.submit_instantiate(module, request_id);
                 }
             }
         }
@@ -1894,7 +1885,7 @@ impl ContentProcess {
         #[cfg(all(boa_backend, feature = "wasm"))]
         {
             let completed: Vec<(u64, WasmResult)> = {
-                let results = self.wasm_worker.drain_results();
+                let results = self.wasm.worker.drain_results();
                 results
                     .into_iter()
                     .map(|result| {
@@ -1910,7 +1901,7 @@ impl ContentProcess {
             };
 
             for (request_id, result) in completed {
-                let Some(&document_id) = self.pending_wasm_requests.get(&request_id) else {
+                let Some(&document_id) = self.wasm.pending_requests.get(&request_id) else {
                     // This is expected when a document is destroyed before the
                     // worker finishes — the destroy_document cleanup removes the
                     // entry, and the worker's result arrives safely discarded.
@@ -1919,7 +1910,7 @@ impl ContentProcess {
 
                 let Some(content_document) = self.documents.get_mut(&document_id) else {
                     error!("WebAssembly: document {} not found", document_id);
-                    self.pending_wasm_requests.remove(&request_id);
+                    self.wasm.pending_requests.remove(&request_id);
                     continue;
                 };
 
@@ -1930,7 +1921,7 @@ impl ContentProcess {
                         "WebAssembly: request {} not found on document {}",
                         request_id, document_id
                     );
-                    self.pending_wasm_requests.remove(&request_id);
+                    self.wasm.pending_requests.remove(&request_id);
                     continue;
                 };
 
@@ -1969,13 +1960,13 @@ impl ContentProcess {
                         store,
                         instance,
                     } => {
-                        let module = self.pending_wasm_modules.remove(&request_id);
+                        let module = self.wasm.pending_modules.remove(&request_id);
                         let Some(module) = module else {
                             error!(
                                 "WebAssembly: no module found for instantiate request {}",
                                 request_id
                             );
-                            self.pending_wasm_requests.remove(&request_id);
+                            self.wasm.pending_requests.remove(&request_id);
                             continue;
                         };
                         if let Err(error) = instantiate_continuation(
@@ -2006,7 +1997,7 @@ impl ContentProcess {
                     }
                 }
 
-                self.pending_wasm_requests.remove(&request_id);
+                self.wasm.pending_requests.remove(&request_id);
             }
 
             // Flush microtasks (promise .then() handlers) after resolving/rejecting.
@@ -2205,17 +2196,15 @@ fn content_token_from_args() -> Result<Option<String>, String> {
 
 /// Run the content extension.
 pub fn run_content_process(token: String) -> Result<(), String> {
-    // On JSC, WASM is not supported, so the WASM signal never fires.
-    // Use `never()` to avoid the two-receiver select overhead.
-    #[cfg(jsc_backend)]
-    let (wasm_rx, _dummy_wasm_sender) = {
+    // When WASM is not enabled, use `never()` so the select never fires.
+    // When WASM IS enabled, create a real channel that the wasm worker
+    // signals when compilation completes.
+    let (wasm_rx, wasm_signal_sender) = if cfg!(all(boa_backend, feature = "wasm")) {
+        let (tx, rx) = crossbeam_channel::unbounded::<()>();
+        (rx, tx)
+    } else {
         let rx = crossbeam_channel::never::<()>();
         let (tx, _) = crossbeam_channel::bounded::<()>(1);
-        (rx, tx)
-    };
-    #[cfg(not(jsc_backend))]
-    let (wasm_rx, wasm_signal_sender) = {
-        let (tx, rx) = crossbeam_channel::unbounded::<()>();
         (rx, tx)
     };
 
@@ -2253,9 +2242,6 @@ pub fn run_content_process(token: String) -> Result<(), String> {
             let event_loop_id = EventLoopId::from_u128(0);
             ContentProcess::new(
                 event_sender.clone(),
-                #[cfg(jsc_backend)]
-                _dummy_wasm_sender,
-                #[cfg(not(jsc_backend))]
                 wasm_signal_sender,
                 event_loop_id,
                 network_extension_sender,
@@ -2280,6 +2266,7 @@ fn run_content_message_loop(
                 match cmd {
                     Ok(incoming) => {
                         let command = incoming.payload;
+                        println!("Got: {:?}", command);
                         let notify = matches!(
                             &command,
                             CreateEmptyDocument { .. }
@@ -2308,11 +2295,6 @@ fn run_content_message_loop(
                                 error!("content error: {error}");
                                 if notify {
                                     let _ = process.note_command_completed();
-                                    // <https://html.spec.whatwg.org/#event-loop-processing-model>
-                                    // Step 2.8: Perform a microtask checkpoint.
-                                    if let Err(error) = process.perform_microtask_checkpoint() {
-                                        error!("microtask checkpoint after task failed: {error}");
-                                    }
                                 }
                             }
                         }
@@ -2321,6 +2303,7 @@ fn run_content_message_loop(
                 }
             }
             recv(wasm_rx) -> _ => {
+                println!("Got: WASM signal");
                 process.drain_all_pending_wasm_requests();
                 process.drain_wasm_results();
 

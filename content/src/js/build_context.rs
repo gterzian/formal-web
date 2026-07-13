@@ -80,12 +80,8 @@ fn setup_realm(engine: &mut Engine, document: Rc<RefCell<BaseDocument>>) -> Resu
     // Step 1: Create the Window with GlobalScope and associate it with the
     // realm's global object so `global_scope_or_error` works.
     let global_scope = GlobalScope::new(crate::html::GlobalScopeKind::Window, Rc::clone(&document));
+    #[cfg_attr(jsc_backend, allow(unused_mut))]
     let mut window = Window::new(global_scope);
-    // Store the engine context so `create_document_in_realm` can create shared
-    // realms for `window.open` (same GC heap on JSC).
-    window
-        .global_scope
-        .set_engine_context(Box::new(engine.context().clone()));
     let global_obj = engine.realm_global_object();
     engine.associate_existing_object(&global_obj, Box::new(window));
 

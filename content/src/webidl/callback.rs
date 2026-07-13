@@ -12,28 +12,12 @@ type JsObject = <Types as JsTypes>::JsObject;
 #[gc_struct]
 pub(crate) struct Callback {
     object: JsObject,
-    // On JSC, protect the JsObject so it survives garbage collection while
-    // Rust code holds a reference.  The Rc refcount keeps the protection
-    // alive across Clone/Drop cycles: every clone increments the Rc, only
-    // the final drop calls JSValueUnprotect.
-    #[cfg(not(feature = "boa"))]
-    #[ignore_trace]
-    #[allow(dead_code)]
-    root: Option<std::rc::Rc<js_engine::gc::GcRootHandle<Types>>>,
 }
 
 impl Callback {
-    /// Create a Callback from a JS object, protecting it from GC for the
-    /// duration of the Callback's lifetime (JSC) or tracing it automatically
-    /// (Boa).
-    #[allow(unused_variables)]
-    pub(crate) fn from_object(object: JsObject, ec: &mut dyn ExecutionContext<Types>) -> Self {
-        #[cfg(not(feature = "boa"))]
-        let root = ec.create_root(&Types::value_from_object(object.clone()));
+    pub(crate) fn from_object(object: JsObject, _ec: &mut dyn ExecutionContext<Types>) -> Self {
         Self {
             object,
-            #[cfg(not(feature = "boa"))]
-            root: Some(std::rc::Rc::new(root)),
         }
     }
 

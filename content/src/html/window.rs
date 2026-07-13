@@ -236,11 +236,6 @@ pub(crate) fn window_open_steps(
         .top_level_traversable_id()
         .unwrap_or(source_navigable_id);
 
-    // Note: The parent engine context is obtained from GlobalScope's stored
-    // engine_context (set during engine setup).  `create_document_in_realm`
-    // reads it to create a shared realm, so cross-window references
-    // (WindowProxy) work on JSC without threading `&mut Engine` through.
-
     let result = the_rules_for_choosing_a_navigable(
         source_navigable_id,
         parent_traversable_id,

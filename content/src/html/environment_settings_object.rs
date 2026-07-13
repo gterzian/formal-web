@@ -46,8 +46,8 @@ pub enum ReferrerPolicy {
 
 /// <https://html.spec.whatwg.org/#environment-settings-object>
 pub struct EnvironmentSettingsObject {
-    /// <https://html.spec.whatwg.org/#realms-settings-objects-global-objects>
-    pub engine: Engine,
+    /// <https://html.spec.whatwg.org/#realm-execution-context>
+    pub realm_execution_context: Engine,
 
     /// <https://dom.spec.whatwg.org/#concept-document>
     pub document: Rc<RefCell<BaseDocument>>,
@@ -191,7 +191,7 @@ impl EnvironmentSettingsObject {
             })?;
 
         Ok(Self {
-            engine,
+            realm_execution_context: engine,
             document,
             origin: Origin {
                 serialized: creation_url.origin().unicode_serialization(),
@@ -204,12 +204,12 @@ impl EnvironmentSettingsObject {
 
     /// Access the execution context for generic ECMA-262 operations.
     pub fn ec(&mut self) -> &mut dyn ExecutionContext<crate::js::Types> {
-        &mut self.engine
+        &mut self.realm_execution_context
     }
 
     /// Convert a JsValue error (Completion error) to a displayable String.
     fn error_to_string(&mut self, error: <Types as JsTypes>::JsValue) -> String {
-        self.engine
+        self.realm_execution_context
             .to_rust_string(error)
             .unwrap_or_else(|_| "unknown error".to_string())
     }
@@ -219,7 +219,7 @@ impl EnvironmentSettingsObject {
     }
 
     pub fn clear_all_window_timers(&mut self) -> Result<(), String> {
-        with_global_scope(&mut self.engine, |global_scope| {
+        with_global_scope(&mut self.realm_execution_context, |global_scope| {
             global_scope.clear_all_timers();
             Ok(())
         })
@@ -234,7 +234,7 @@ impl EnvironmentSettingsObject {
 
     fn evaluate_script_without_microtask_checkpoint(&mut self, source: &str) -> Result<(), String> {
         let result = self
-            .engine
+            .realm_execution_context
             .evaluate_script(source)
             .map(|_| ())
             .map_err(|error| self.error_to_string(error));
@@ -243,14 +243,14 @@ impl EnvironmentSettingsObject {
 
     pub fn evaluate_script_to_json(&mut self, source: &str) -> Result<serde_json::Value, String> {
         let value = self
-            .engine
+            .realm_execution_context
             .evaluate_script(source)
             .map_err(|error| self.error_to_string(error))?;
 
         self.perform_a_microtask_checkpoint()?;
 
         let json_string = self
-            .engine
+            .realm_execution_context
             .json_stringify(value)
             .map_err(|error| self.error_to_string(error))?;
         serde_json::from_str(&json_string).map_err(|error| format!("failed to parse JSON: {error}"))
@@ -258,15 +258,16 @@ impl EnvironmentSettingsObject {
 
     /// <https://html.spec.whatwg.org/#run-the-animation-frame-callbacks>
     pub(crate) fn run_animation_frame_callbacks(&mut self, now: f64) -> Result<(), String> {
-        let callbacks =
-            crate::js::platform_objects::take_animation_frame_callbacks(&mut self.engine)
-                .map_err(|error| self.error_to_string(error))?;
+        let callbacks = crate::js::platform_objects::take_animation_frame_callbacks(
+            &mut self.realm_execution_context,
+        )
+        .map_err(|error| self.error_to_string(error))?;
 
         for callback in callbacks {
             // Step 3.3: "Invoke callback with « now » and \"report\"."
-            let now_value = self.engine.value_from_number(now);
+            let now_value = self.realm_execution_context.value_from_number(now);
             if let Err(error) = crate::webidl::invoke_callback_function(
-                &mut self.engine as &mut dyn EcmascriptHost<crate::js::Types>,
+                &mut self.realm_execution_context as &mut dyn EcmascriptHost<crate::js::Types>,
                 &callback,
                 &[now_value],
                 crate::webidl::ExceptionBehavior::Report,
@@ -291,12 +292,13 @@ impl EnvironmentSettingsObject {
             timer_id, timer_key, nesting_level
         ));
 
-        let previous_nesting_level = with_global_scope(&mut self.engine, |global_scope| {
-            Ok(global_scope.set_current_timer_nesting_level(Some(nesting_level)))
-        })
-        .map_err(|error| self.error_to_string(error))?;
+        let previous_nesting_level =
+            with_global_scope(&mut self.realm_execution_context, |global_scope| {
+                Ok(global_scope.set_current_timer_nesting_level(Some(nesting_level)))
+            })
+            .map_err(|error| self.error_to_string(error))?;
 
-        let timer = with_global_scope(&mut self.engine, |global_scope| {
+        let timer = with_global_scope(&mut self.realm_execution_context, |global_scope| {
             Ok(global_scope.window_timer(timer_id, timer_key))
         })
         .map_err(|error| self.error_to_string(error))?;
@@ -306,10 +308,12 @@ impl EnvironmentSettingsObject {
                 "run timer id={} key={} missing_registration",
                 timer_id, timer_key
             ));
-            if let Err(error) = with_global_scope(&mut self.engine, |global_scope| {
-                global_scope.set_current_timer_nesting_level(previous_nesting_level);
-                Ok(())
-            }) {
+            if let Err(error) =
+                with_global_scope(&mut self.realm_execution_context, |global_scope| {
+                    global_scope.set_current_timer_nesting_level(previous_nesting_level);
+                    Ok(())
+                })
+            {
                 error!(
                     "[timers] failed to reset timer nesting level: {}",
                     self.error_to_string(error)
@@ -324,10 +328,11 @@ impl EnvironmentSettingsObject {
                     "invoke timer callback id={} key={} function",
                     timer_id, timer_key
                 ));
-                let global =
-                    <Types as JsTypes>::value_from_object(self.engine.realm_global_object());
+                let global = <Types as JsTypes>::value_from_object(
+                    self.realm_execution_context.realm_global_object(),
+                );
                 if let Err(error) = crate::webidl::invoke_callback_function(
-                    &mut self.engine as &mut dyn EcmascriptHost<crate::js::Types>,
+                    &mut self.realm_execution_context as &mut dyn EcmascriptHost<crate::js::Types>,
                     callback,
                     &timer.arguments,
                     crate::webidl::ExceptionBehavior::Report,
@@ -343,13 +348,17 @@ impl EnvironmentSettingsObject {
                     timer_key,
                     source.len()
                 ));
-                if let Err(error) = self.engine.evaluate_script(source.as_str()).map(|_| ()) {
+                if let Err(error) = self
+                    .realm_execution_context
+                    .evaluate_script(source.as_str())
+                    .map(|_| ())
+                {
                     error!("content error: {error:?}");
                 }
             }
         }
 
-        if let Err(error) = with_global_scope(&mut self.engine, |global_scope| {
+        if let Err(error) = with_global_scope(&mut self.realm_execution_context, |global_scope| {
             if let Err(error) = global_scope.complete_window_timer(timer_id, timer_key) {
                 error!("failed to complete window timer (id={timer_id} key={timer_key}): {error}");
             }
@@ -360,7 +369,7 @@ impl EnvironmentSettingsObject {
                 self.error_to_string(error)
             );
         }
-        if let Err(error) = with_global_scope(&mut self.engine, |global_scope| {
+        if let Err(error) = with_global_scope(&mut self.realm_execution_context, |global_scope| {
             global_scope.set_current_timer_nesting_level(previous_nesting_level);
             Ok(())
         }) {
@@ -377,19 +386,12 @@ impl EnvironmentSettingsObject {
     }
 
     /// <https://html.spec.whatwg.org/#perform-a-microtask-checkpoint>
-    pub fn perform_a_microtask_checkpoint(&mut self) -> Result<(), String> {
-        self.engine
-            .perform_a_microtask_checkpoint()
-            .map_err(|error| self.error_to_string(error))
-    }
-
-    /// Take all pending wasm batches (bytes + request_id) from the GlobalScope.
-    /// Marks them as Processing.
+    /// Bridge methods to GlobalScope wasm state (delegates to WasmState).
     #[cfg(all(boa_backend, feature = "wasm"))]
     pub(crate) fn take_pending_wasm_batches(&self) -> Vec<(u64, Vec<u8>)> {
-        let global = self.engine.realm_global_object();
+        let global = self.realm_execution_context.realm_global_object();
         if let Some(window) = self
-            .engine
+            .realm_execution_context
             .with_object_any(&global)
             .and_then(|data| data.downcast_ref::<Window>())
         {
@@ -399,13 +401,11 @@ impl EnvironmentSettingsObject {
         }
     }
 
-    /// Take all pending wasm instantiate requests (module + request_id)
-    /// from the GlobalScope.  Marks them as Processing.
     #[cfg(all(boa_backend, feature = "wasm"))]
     pub(crate) fn take_pending_wasm_instantiates(&self) -> Vec<(u64, wasmtime::Module)> {
-        let global = self.engine.realm_global_object();
+        let global = self.realm_execution_context.realm_global_object();
         if let Some(window) = self
-            .engine
+            .realm_execution_context
             .with_object_any(&global)
             .and_then(|data| data.downcast_ref::<Window>())
         {
@@ -415,19 +415,26 @@ impl EnvironmentSettingsObject {
         }
     }
 
-    /// Remove and return the promise + resolvers for a completed wasm request.
     #[cfg(all(boa_backend, feature = "wasm"))]
     pub(crate) fn consume_wasm_request(
         &self,
         request_id: u64,
     ) -> Option<(JsObject, js_engine::records::PromiseResolvers<Types>)> {
-        let global = self.engine.realm_global_object();
+        let global = self.realm_execution_context.realm_global_object();
         let window = self
-            .engine
+            .realm_execution_context
             .with_object_any(&global)
             .and_then(|data| data.downcast_ref::<Window>())?;
         window.global_scope.consume_wasm_request(request_id)
     }
+
+    pub fn perform_a_microtask_checkpoint(&mut self) -> Result<(), String> {
+        self.realm_execution_context
+            .perform_a_microtask_checkpoint()
+            .map_err(|error| self.error_to_string(error))
+    }
+
+
 }
 
 impl js_engine::EcmascriptHost<crate::js::Types> for EnvironmentSettingsObject {
@@ -436,11 +443,11 @@ impl js_engine::EcmascriptHost<crate::js::Types> for EnvironmentSettingsObject {
         object: &JsObject,
         property: &str,
     ) -> js_engine::Completion<JsValue, crate::js::Types> {
-        js_engine::EcmascriptHost::get(&mut self.engine, object, property)
+        js_engine::EcmascriptHost::get(&mut self.realm_execution_context, object, property)
     }
 
     fn is_callable(&self, value: &JsValue) -> bool {
-        self.engine.is_callable(value)
+        self.realm_execution_context.is_callable(value)
     }
 
     fn call(
@@ -449,63 +456,70 @@ impl js_engine::EcmascriptHost<crate::js::Types> for EnvironmentSettingsObject {
         this_arg: &JsValue,
         args: &[JsValue],
     ) -> js_engine::Completion<JsValue, crate::js::Types> {
-        self.engine.call(callable, this_arg, args)
+        self.realm_execution_context.call(callable, this_arg, args)
     }
 
     fn perform_a_microtask_checkpoint(&mut self) -> js_engine::Completion<(), crate::js::Types> {
-        self.engine.perform_a_microtask_checkpoint()
+        self.realm_execution_context
+            .perform_a_microtask_checkpoint()
     }
 
     fn report_exception(&mut self, error: JsValue) {
-        self.engine.report_exception(error)
+        self.realm_execution_context.report_exception(error)
     }
 
     fn gc(&mut self) {
-        self.engine.gc()
+        self.realm_execution_context.gc()
     }
 
     fn value_undefined(&mut self) -> JsValue {
-        self.engine.value_undefined()
+        self.realm_execution_context.value_undefined()
     }
     fn value_null(&mut self) -> JsValue {
-        self.engine.value_null()
+        self.realm_execution_context.value_null()
     }
     fn value_from_bool(&mut self, b: bool) -> JsValue {
-        self.engine.value_from_bool(b)
+        self.realm_execution_context.value_from_bool(b)
     }
     fn value_from_number(&mut self, n: f64) -> JsValue {
-        self.engine.value_from_number(n)
+        self.realm_execution_context.value_from_number(n)
     }
     fn value_from_string(&mut self, s: JsString) -> JsValue {
-        self.engine.value_from_string(s)
+        self.realm_execution_context.value_from_string(s)
     }
     fn js_string_from_str(&self, s: &str) -> JsString {
-        self.engine.js_string_from_str(s)
+        self.realm_execution_context.js_string_from_str(s)
     }
 }
 
 impl EventDispatchHost for EnvironmentSettingsObject {
     fn ec(&mut self) -> &mut dyn ExecutionContext<crate::js::Types> {
-        &mut self.engine
+        &mut self.realm_execution_context
     }
 
     fn create_event_object(
         &mut self,
         event: crate::dom::Event,
     ) -> Completion<JsObject, crate::js::Types> {
-        create_interface_instance::<crate::js::Types, Event>(event, &mut self.engine)
+        create_interface_instance::<crate::js::Types, Event>(
+            event,
+            &mut self.realm_execution_context,
+        )
     }
 
     fn document_object(&mut self) -> Completion<JsObject, crate::js::Types> {
-        crate::js::platform_objects::document_object(&mut self.engine)
+        crate::js::platform_objects::document_object(&mut self.realm_execution_context)
     }
 
     fn global_object(&mut self) -> JsObject {
-        self.engine.realm_global_object()
+        self.realm_execution_context.realm_global_object()
     }
 
     fn resolve_element_object(&mut self, node_id: usize) -> Completion<JsObject, crate::js::Types> {
-        crate::js::platform_objects::resolve_element_object(node_id, &mut self.engine)
+        crate::js::platform_objects::resolve_element_object(
+            node_id,
+            &mut self.realm_execution_context,
+        )
     }
 
     fn resolve_existing_node_object(
@@ -513,7 +527,11 @@ impl EventDispatchHost for EnvironmentSettingsObject {
         document: Rc<RefCell<BaseDocument>>,
         node_id: usize,
     ) -> Completion<JsObject, crate::js::Types> {
-        crate::js::platform_objects::object_for_existing_node(document, node_id, &mut self.engine)
+        crate::js::platform_objects::object_for_existing_node(
+            document,
+            node_id,
+            &mut self.realm_execution_context,
+        )
     }
 
     fn current_time_millis(&self) -> f64 {

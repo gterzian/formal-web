@@ -603,7 +603,7 @@ fn run_iframe_load_event_steps(
 
     let iframe_object = crate::js::platform_objects::resolve_element_object(
         iframe_node_id,
-        &mut content_document.settings.engine,
+        &mut content_document.settings.realm_execution_context,
     )
     .map_err(|error| error.display().to_string())?;
 

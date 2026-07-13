@@ -1,131 +1,26 @@
-use js_engine::JsTypesWithRealm;
 use js_engine::gc_struct;
 use js_engine::{Completion, ExecutionContext, JsTypes};
 
 pub(crate) mod bindings;
-/// Generic platform-object downcast helpers:
-/// `try_with_*` functions using [`ExecutionContext::with_object_any`] / `with_object_any_mut`.
-pub(crate) mod downcast;
-/// Generic platform-object resolution helpers.
-/// Uses only [`ExecutionContext`] trait methods.
-pub(crate) mod platform_objects;
-
-/// Generic engine builder — the single entry point for creating a JS engine
-/// context.  Uses `#[cfg]` internally to switch between Boa and JSC backends.
 pub(crate) mod build_context;
-
-/// Generic bootstrap modules — use only [`ExecutionContext<T>`] trait methods.
-/// Not engine-specific; compiled on all backends.
+pub(crate) mod builtin_fn;
 pub(crate) mod console_generic;
 pub(crate) mod css_generic;
+/// Generic platform-object downcast helpers.
+pub(crate) mod downcast;
+/// Generic platform-object resolution helpers.
+pub(crate) mod platform_objects;
 
 pub(crate) use console_generic::install_console_namespace;
 pub(crate) use css_generic::install_css_namespace;
 
 pub(crate) use bindings::install_document_property;
+pub(crate) use builtin_fn::create_builtin_fn_with_traced_captures;
 pub(crate) use downcast::{
     try_with_abort_controller_ref, try_with_abort_signal_mut, try_with_abort_signal_ref,
     try_with_event_mut, try_with_event_target_mut, try_with_event_target_ref,
     with_abort_signal_ref,
 };
-
-/// Create a builtin function with GC-traceable captures.
-/// Generic over `T` so Web IDL infrastructure (operation.rs, attribute.rs)
-/// can call it with their own type parameter.
-#[cfg(not(jsc_backend))]
-pub(crate) fn create_builtin_fn_with_traced_captures<T, C>(
-    ec: &mut dyn ExecutionContext<T>,
-    captures: C,
-    behaviour: fn(
-        &[T::JsValue],
-        T::JsValue,
-        &C,
-        &mut dyn ExecutionContext<T>,
-    ) -> Completion<T::JsValue, T>,
-    length: u32,
-    name: T::PropertyKey,
-    is_constructor: bool,
-) -> T::Function
-where
-    T: JsTypes + JsTypesWithRealm,
-    C: js_engine::gc::Trace + 'static,
-{
-    js_engine::boa::create_builtin_fn_with_captures(
-        ec,
-        captures,
-        behaviour,
-        length,
-        name,
-        is_constructor,
-    )
-}
-
-#[cfg(jsc_backend)]
-pub(crate) fn create_builtin_fn_with_traced_captures<T, C>(
-    ec: &mut dyn ExecutionContext<T>,
-    captures: C,
-    behaviour: fn(
-        &[T::JsValue],
-        T::JsValue,
-        &C,
-        &mut dyn ExecutionContext<T>,
-    ) -> Completion<T::JsValue, T>,
-    length: u32,
-    name: T::PropertyKey,
-    is_constructor: bool,
-) -> T::Function
-where
-    T: JsTypes + JsTypesWithRealm,
-    C: 'static,
-{
-    use js_engine::jsc::{JscFunction, JscPropertyKey, JscTypes, JscValue};
-
-    // SAFETY: On the JSC backend, T is always JscTypes.
-    // &mut dyn ExecutionContext<T> and &mut dyn ExecutionContext<JscTypes>
-    // have identical fat-pointer layout (2 * usize).
-    let jsc_ec: &mut dyn ExecutionContext<JscTypes> = unsafe { std::mem::transmute(ec) };
-
-    // SAFETY: fn pointers are all usize-sized regardless of signature.
-    let jsc_behaviour: fn(
-        &[JscValue],
-        JscValue,
-        &C,
-        &mut dyn ExecutionContext<JscTypes>,
-    ) -> Completion<JscValue, JscTypes> = unsafe { std::mem::transmute(behaviour) };
-
-    // SAFETY: T::PropertyKey and JscPropertyKey have same size at runtime.
-    let jsc_name: JscPropertyKey = unsafe {
-        let mut dst = std::mem::MaybeUninit::uninit();
-        std::ptr::copy_nonoverlapping(
-            &name as *const T::PropertyKey as *const u8,
-            dst.as_mut_ptr() as *mut u8,
-            std::mem::size_of::<JscPropertyKey>(),
-        );
-        std::mem::forget(name);
-        dst.assume_init()
-    };
-
-    let result = js_engine::jsc::create_builtin_fn_with_captures(
-        jsc_ec,
-        captures,
-        jsc_behaviour,
-        length,
-        jsc_name,
-        is_constructor,
-    );
-
-    // SAFETY: T::Function and JscFunction have same size at runtime.
-    unsafe {
-        let mut dst = std::mem::MaybeUninit::uninit();
-        std::ptr::copy_nonoverlapping(
-            &result as *const JscFunction as *const u8,
-            dst.as_mut_ptr() as *mut u8,
-            std::mem::size_of::<JscFunction>(),
-        );
-        let _ = result;
-        dst.assume_init()
-    }
-}
 
 /// Convert a stateless raw function pointer into a builtin function.
 /// This is the safe replacement for the removed `create_builtin_fn` trait method.
