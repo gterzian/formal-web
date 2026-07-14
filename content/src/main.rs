@@ -2095,20 +2095,29 @@ impl ContentProcess {
             } => {
                 let (value_json, error) = match self.evaluate_script(traversable_id, source) {
                     Ok(value) => {
-                        let value_json = serde_json::to_string(&value).map_err(|error| {
-                            format!("failed to encode script evaluation result: {error}")
-                        })?;
+                        let value_json = match serde_json::to_string(&value) {
+                            Ok(json) => json,
+                            Err(error) => {
+                                error!(
+                                    "failed to encode script evaluation result: {error}"
+                                );
+                                return Ok(true);
+                            }
+                        };
                         (value_json, None)
                     }
                     Err(error) => (String::from("null"), Some(error)),
                 };
-                self.event_sender
+                if let Err(error) = self
+                    .event_sender
                     .send(ContentEvent::ScriptEvaluated(ScriptEvaluationResult {
                         request_id,
                         value_json,
                         error,
                     }))
-                    .map_err(|error| format!("failed to send script evaluation result: {error}"))?;
+                {
+                    error!("failed to send script evaluation result: {error}");
+                }
                 Ok(true)
             }
             ClickElement {
