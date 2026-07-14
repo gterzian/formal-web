@@ -384,6 +384,12 @@ impl CdpConnectionState {
                     )]);
                 };
 
+                // Abort any stale pending navigation before starting a new one.
+                // Without this, a previous navigation that timed out or was
+                // interrupted would leave `pending_navigation` set, causing
+                // subsequent navigation attempts to fail immediately.
+                let _ = state.runtime.reset_navigation();
+
                 state
                     .runtime
                     .navigate(url, AUTOMATION_TIMEOUT)
@@ -1611,6 +1617,7 @@ mod tests {
     use base64::Engine as _;
     use ipc_messages::content::{NavigableId, WebviewId};
     use serde_json::{Value, json};
+    use log::error;
     use std::io::{ErrorKind, Read, Write};
     use std::net::{TcpListener, TcpStream};
     use std::sync::{Arc, Mutex, mpsc};
@@ -2064,6 +2071,9 @@ mod tests {
                             &source,
                             &state.evaluation_result,
                         )));
+                    }
+                    AutomationCommand::AbortNavigation { reply } => {
+                        let _ = reply.send(Ok(()));
                     }
                     AutomationCommand::SetCdpEventSink { sink, reply } => {
                         state.event_sink = sink;

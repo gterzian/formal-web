@@ -83,6 +83,10 @@ pub enum AutomationCommand {
         sink: Option<mpsc::Sender<CdpEvent>>,
         reply: mpsc::Sender<Result<(), String>>,
     },
+    /// Abort any currently pending navigation.  No-op if none is pending.
+    AbortNavigation {
+        reply: mpsc::Sender<Result<(), String>>,
+    },
 }
 
 pub trait AutomationHost {
@@ -168,6 +172,10 @@ impl AutomationController {
                 reply,
             } => {
                 let _ = reply.send(host.automation_evaluate_script(source, timeout));
+            }
+            AutomationCommand::AbortNavigation { reply } => {
+                self.abort_pending_navigation(String::from("aborted by CDP client"));
+                let _ = reply.send(Ok(()));
             }
             AutomationCommand::SetCdpEventSink { sink, reply } => {
                 self.cdp_event_sink = sink;
@@ -369,6 +377,15 @@ impl AutomationRuntime {
                 "timed out after {} ms waiting for automation scroll delivery: {error}",
                 timeout.as_millis()
             )
+        })?
+    }
+
+    /// Abort any stale pending navigation.  No-op if none is pending.
+    pub fn reset_navigation(&self) -> Result<(), String> {
+        let (reply, receiver) = mpsc::channel();
+        (self.send_command)(AutomationCommand::AbortNavigation { reply })?;
+        receiver.recv().map_err(|error| {
+            format!("failed to reset navigation state: {error}")
         })?
     }
 
