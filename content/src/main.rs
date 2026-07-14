@@ -1,14 +1,19 @@
-#[allow(dead_code)]
 #[path = "../../embedder/src/ui_event.rs"]
+#[allow(dead_code)]
 pub(crate) mod ui_event;
 
 pub mod css;
-pub mod dom;
 pub(crate) mod fetch;
-pub mod html;
 pub mod infra;
 pub mod js;
+pub mod testutils;
+
+pub mod dom;
+#[cfg(test)]
+mod generic_js_test;
+pub mod html;
 pub mod streams;
+#[cfg(all(boa_backend, feature = "wasm"))]
 pub mod wasm;
 pub mod webidl;
 
@@ -23,8 +28,9 @@ use crate::html::{
 };
 use crate::js::platform_objects::with_global_scope;
 use crate::ui_event::deserialize_ui_event;
+#[cfg(all(boa_backend, feature = "wasm"))]
 use crate::wasm::{
-    WasmResult, WasmWorker, compile_continuation, compile_rejection, instantiate_continuation,
+    WasmResult, compile_continuation, compile_rejection, instantiate_continuation,
 };
 use anyrender::Scene as RenderScene;
 use blitz_dom::{BaseDocument, DocumentConfig};
@@ -33,6 +39,7 @@ use blitz_traits::net::{Body, Bytes, NetHandler, NetProvider, Request};
 use blitz_traits::shell::{ClipboardError, ColorScheme, ShellProvider, Viewport};
 use data_url::DataUrl;
 use html5ever::local_name;
+use js_engine::ExecutionContext;
 
 use ipc_messages::content::Command::{
     ClickElement, CompleteDocumentFetch, ContentBootstrap, CreateEmptyDocument,
@@ -404,14 +411,9 @@ pub(crate) struct ContentProcess {
     new_document_registry:
         Rc<RefCell<HashMap<DocumentId, (EnvironmentSettingsObject, Rc<RefCell<BaseDocument>>)>>>,
 
-    /// Background wasm compilation thread.
-    wasm_worker: WasmWorker,
-
-    /// Pending wasm requests waiting for background results.
-    /// Maps request_id → document_id.
-    pending_wasm_requests: HashMap<u64, DocumentId>,
-    /// Modules from instantiate requests, needed for exports creation.
-    pending_wasm_modules: HashMap<u64, wasmtime::Module>,
+    /// Consolidated wasm content-process state (worker + pending tracking).
+    #[cfg(all(boa_backend, feature = "wasm"))]
+    wasm: crate::wasm::ContentWasmState,
 
     video_paint_registry: Rc<RefCell<HashMap<(DocumentId, usize), VideoPaintId>>>,
     /// Direct sender to the net extension. Set during DirectChannelsSetup.
@@ -425,7 +427,7 @@ pub(crate) struct ContentProcess {
 impl ContentProcess {
     fn new(
         event_sender: ipc::IpcSender<ContentEvent>,
-        wasm_signal_sender: crossbeam_channel::Sender<()>,
+        _wasm_signal_sender: crossbeam_channel::Sender<()>,
         event_loop_id: EventLoopId,
         network_extension_sender: ipc::IpcSender<ipc_messages::network::Request>,
         media_extension_sender: Option<ipc::IpcSender<ipc_messages::media::MediaCommand>>,
@@ -449,9 +451,8 @@ impl ContentProcess {
             clipboard_cache: clipboard_cache.clone(),
             new_document_registry: Rc::new(RefCell::new(HashMap::new())),
             video_paint_registry: Rc::new(RefCell::new(HashMap::new())),
-            wasm_worker: WasmWorker::new(wasmtime::Engine::default(), wasm_signal_sender),
-            pending_wasm_requests: HashMap::new(),
-            pending_wasm_modules: HashMap::new(),
+            #[cfg(all(boa_backend, feature = "wasm"))]
+            wasm: crate::wasm::ContentWasmState::new(_wasm_signal_sender),
             network_extension_sender,
             media_extension_sender,
             content_command_sender,
@@ -699,39 +700,42 @@ impl ContentProcess {
     /// Set the shared new-document registry on the source document's GlobalScope
     /// so that `the_rules_for_choosing_a_navigable` can register documents created
     /// during JS execution (window.open).
-    fn set_up_new_document_registry(&self, traversable_id: NavigableId) -> Result<(), String> {
-        let document_id = self
+    fn set_up_new_document_registry(&mut self, traversable_id: NavigableId) -> Result<(), String> {
+        let document_id = *self
             .active_documents_by_traversable
             .get(&traversable_id)
             .ok_or_else(|| format!("unknown traversable {traversable_id}"))?;
+        let registry = Rc::clone(&self.new_document_registry);
         let content_document = self
             .documents
-            .get(document_id)
+            .get_mut(&document_id)
             .ok_or_else(|| format!("unknown document {document_id}"))?;
-        let registry = Rc::clone(&self.new_document_registry);
-        with_global_scope(&content_document.settings.context, |global_scope| {
+        with_global_scope(content_document.settings.ec(), |global_scope| {
             global_scope.set_new_document_registry(registry);
             Ok(())
         })
-        .map_err(|error| format!("failed to set new document registry: {error}"))
+        .map_err(|error| format!("failed to set new document registry: {}", error.display()))
     }
 
     /// Clear the shared new-document registry from the source document's
     /// GlobalScope after JS execution completes.
-    fn tear_down_new_document_registry(&self, traversable_id: NavigableId) -> Result<(), String> {
-        let document_id = self
+    fn tear_down_new_document_registry(
+        &mut self,
+        traversable_id: NavigableId,
+    ) -> Result<(), String> {
+        let document_id = *self
             .active_documents_by_traversable
             .get(&traversable_id)
             .ok_or_else(|| format!("unknown traversable {traversable_id}"))?;
         let content_document = self
             .documents
-            .get(document_id)
+            .get_mut(&document_id)
             .ok_or_else(|| format!("unknown document {document_id}"))?;
-        with_global_scope(&content_document.settings.context, |global_scope| {
+        with_global_scope(content_document.settings.ec(), |global_scope| {
             global_scope.clear_new_document_registry();
             Ok(())
         })
-        .map_err(|error| format!("failed to clear new document registry: {error}"))
+        .map_err(|error| format!("failed to clear new document registry: {}", error.display()))
     }
 
     /// Drain any newly-created traversable documents from the shared registry
@@ -748,15 +752,15 @@ impl ContentProcess {
         let parent_traversable_id = None;
         let top_level_traversable_id = NavigableId::new();
 
-        for (document_id, (settings, document)) in pending {
+        for (document_id, (mut settings, document)) in pending {
             if self.documents.contains_key(&document_id) {
                 continue;
             }
             // Read the traversable_id from the new document's own GlobalScope.
-            let new_traversable_id = with_global_scope(&settings.context, |global_scope| {
+            let new_traversable_id = with_global_scope(settings.ec(), |global_scope| {
                 Ok(global_scope.source_navigable_id())
             })
-            .map_err(|error| format!("failed to read new traversable id: {error}"))?
+            .map_err(|error| format!("failed to read new traversable id: {}", error.display()))?
             .unwrap_or_else(NavigableId::new);
 
             self.documents.insert(
@@ -788,12 +792,6 @@ impl ContentProcess {
     /// context group.
 
     /// <https://html.spec.whatwg.org/multipage/#navigate-html>
-    /// Note: This function implements the content-process portion of the `#navigate-html`
-    /// algorithm: it waits until all critical subresources and deferred scripts are ready, then
-    /// executes those scripts, fires the `load` event, and sends `ContentEvent::FinalizeNavigation`
-    /// to the user agent to trigger `finalize_cross_document_navigation` (step 14 of the
-    /// algorithm). It may be invoked multiple times per document — each call re-checks readiness
-    /// and returns early until all blocking work is complete.
     fn continue_document_load(&mut self, document_id: DocumentId) -> Result<(), String> {
         let (ready_to_finish, traversable_id, resources_ready, scripts_ready) = {
             let content_document = self
@@ -846,12 +844,12 @@ impl ContentProcess {
             .get_mut(&document_id)
             .ok_or_else(|| format!("unknown document id: {document_id}"))?;
 
-        for script in pending_document_load.scripts {
+        for (script_idx, script) in pending_document_load.scripts.iter().enumerate() {
             match script {
                 DeferredScriptState::Inline { source }
                 | DeferredScriptState::ExternalReady { source } => {
-                    if let Err(error) = content_document.settings.evaluate_script(&source) {
-                        error!("content error: {error}");
+                    if let Err(error) = content_document.settings.evaluate_script(source) {
+                        error!("[deferred eval #{script_idx}] content error: {error}");
                     }
                 }
                 DeferredScriptState::ExternalPending { .. }
@@ -859,9 +857,12 @@ impl ContentProcess {
             }
         }
 
-        let window = content_document.settings.context.global_object();
+        let window = content_document
+            .settings
+            .realm_execution_context
+            .realm_global_object();
         fire_event(&mut content_document.settings, &window, "load", true)
-            .map_err(|error| error.to_string())?;
+            .map_err(|error| format!("fire_event failed: {error:?}"))?;
 
         let traversable_id = content_document.traversable_id;
         self.active_documents_by_traversable
@@ -885,7 +886,6 @@ impl ContentProcess {
     }
 
     /// <https://html.spec.whatwg.org/#creating-a-new-browsing-context>
-    /// Note: This resumes the Rust-owned suffix of browsing-context creation after `FormalWeb.UserAgent.queueCreateEmptyDocument` reaches `FormalWeb.EventLoop.runEventLoopMessage` and the user-agent/content command path emits `CreateEmptyDocument`.
     fn create_empty_document(
         &mut self,
         traversable_id: NavigableId,
@@ -901,7 +901,7 @@ impl ContentProcess {
             document_id,
             None,
         ))));
-        let settings = EnvironmentSettingsObject::new(
+        let mut settings = EnvironmentSettingsObject::new(
             Rc::clone(&document),
             Url::parse("about:blank").map_err(|error| error.to_string())?,
             Some(self.event_sender.clone()),
@@ -911,17 +911,20 @@ impl ContentProcess {
 
         // Set the video-paint registry on GlobalScope so that
         // resource_selection_algorithm can register paint IDs.
-        if let Err(error) = with_global_scope(&settings.context, |global_scope| {
+        if let Err(error) = with_global_scope(settings.ec(), |global_scope| {
             global_scope.set_video_paint_registry(Rc::clone(&self.video_paint_registry));
             if let Some(ref sender) = self.media_extension_sender {
                 global_scope.set_media_extension_sender(sender.clone());
             }
             Ok(())
         }) {
-            error!("[media] failed to set video paint registry on GlobalScope: {error}");
+            error!(
+                "[media] failed to set video paint registry on GlobalScope: {}",
+                error.display()
+            );
         }
 
-        // Note: This block continues <https://html.spec.whatwg.org/#creating-a-new-browsing-context>.
+        // This block continues <https://html.spec.whatwg.org/#creating-a-new-browsing-context>.
         // Step 7: "Mark document as ready for post-load tasks."
         // TODO: Persist the document's post-load readiness state in the DOM model.
 
@@ -929,15 +932,15 @@ impl ContentProcess {
             let mut document_guard = document.borrow_mut();
 
             // Step 8: "Populate with html/head/body given document."
-            // Note: The content process drives the shared HTML parser with a fixed `about:blank` skeleton instead of constructing the three elements manually.
+            // The content process drives the shared HTML parser with a fixed `about:blank` skeleton.
             parse_html_into_document(&mut document_guard, EMPTY_HTML_DOCUMENT)
         };
 
         // Step 10: "Completely finish loading document."
-        // Note: The content process executes parser-discovered classic scripts immediately after the initial tree build.
+        // Execute parser-discovered classic scripts after the initial tree build.
         // TODO: Model the rest of the `completely finish loading` bookkeeping explicitly instead of relying on parser-discovered script execution alone.
         // Step 9: "Make active document."
-        // Note: The implementation records the document as addressable for future commands by storing it under `document_id` after initialization completes.
+        // Records the document as addressable under `document_id` after init completes.
         self.documents.insert(
             document_id,
             ContentDocument {
@@ -977,7 +980,6 @@ impl ContentProcess {
     }
 
     /// <https://html.spec.whatwg.org/#navigate-html>
-    /// Note: This continues the HTML document loading algorithm through the end-of-document load steps and into `completely finish loading`.
     fn create_loaded_document(
         &mut self,
         traversable_id: NavigableId,
@@ -995,15 +997,15 @@ impl ContentProcess {
         } = response;
         let viewport_state = self.document_viewport_state(traversable_id);
         let frame_id = frame_id.unwrap_or_else(FrameId::new);
-        // Note: This block continues <https://html.spec.whatwg.org/#navigate-html>.
+        // This block continues <https://html.spec.whatwg.org/#navigate-html>.
         // Step 1: "Let document be the result of creating and initializing a `Document` object given `html`, `text/html`, and navigationParams."
-        // Note: `BaseDocument::new` and `EnvironmentSettingsObject::new` split document creation between the [Document](https://dom.spec.whatwg.org/#interface-document) [platform object](https://webidl.spec.whatwg.org/#dfn-platform-object) and the JavaScript environment settings object.
+        // BaseDocument::new and EnvironmentSettingsObject::new split document creation.
         let document = Rc::new(RefCell::new(BaseDocument::new(self.document_config(
             traversable_id,
             document_id,
             Some(final_url.clone()),
         ))));
-        let settings = EnvironmentSettingsObject::new(
+        let mut settings = EnvironmentSettingsObject::new(
             Rc::clone(&document),
             Url::parse(&final_url).map_err(|error| error.to_string())?,
             Some(self.event_sender.clone()),
@@ -1013,21 +1015,24 @@ impl ContentProcess {
 
         // Set the video-paint registry on GlobalScope so that
         // resource_selection_algorithm can register paint IDs.
-        if let Err(error) = with_global_scope(&settings.context, |global_scope| {
+        if let Err(error) = with_global_scope(settings.ec(), |global_scope| {
             global_scope.set_video_paint_registry(Rc::clone(&self.video_paint_registry));
             if let Some(ref sender) = self.media_extension_sender {
                 global_scope.set_media_extension_sender(sender.clone());
             }
             Ok(())
         }) {
-            error!("[media] failed to set video paint registry on GlobalScope: {error}");
+            error!(
+                "[media] failed to set video paint registry on GlobalScope: {}",
+                error.display()
+            );
         }
 
         let parser_scripts = {
             let mut document_guard = document.borrow_mut();
 
             // Step 3: "Otherwise, create an HTML parser and associate it with the document."
-            // Note: The embedder has already buffered the response body, so the content process feeds it into the parser immediately instead of waiting on separate networking tasks.
+            // The embedder has buffered the response body; feed into parser immediately.
             parse_html_into_document(&mut document_guard, &body)
         };
 
@@ -1092,7 +1097,7 @@ impl ContentProcess {
 
         for (script_index, src) in deferred_fetches {
             if let Err(error) = self.start_deferred_script_fetch(document_id, script_index, &src) {
-                error!("content error: {error}");
+                error!("[deferred fetch] content error: {error}");
                 self.mark_deferred_script_failed(document_id, script_index);
             }
         }
@@ -1171,7 +1176,7 @@ impl ContentProcess {
 
     fn destroy_document(&mut self, document_id: DocumentId) -> Result<(), String> {
         run_dom_removing_steps_for_document(self, document_id)?;
-        if let Some(content_document) = self.documents.remove(&document_id) {
+        if let Some(mut content_document) = self.documents.remove(&document_id) {
             if self
                 .active_documents_by_traversable
                 .get(&content_document.traversable_id)
@@ -1184,16 +1189,19 @@ impl ContentProcess {
                 error!("failed to clear window timers during document teardown: {error}");
             }
         }
-        // Clean up any pending wasm requests for this document so that
-        // worker results arriving after destruction are not misattributed,
-        // and to avoid orphaned promise entries.
-        // https://webassembly.github.io/spec/js-api/#asynchronously-compile-a-webassembly-module
-        self.pending_wasm_requests
-            .retain(|_request_id, doc_id| *doc_id != document_id);
-        self.pending_wasm_modules.retain(|request_id, _module| {
-            !self.pending_wasm_requests.contains_key(request_id)
-                || self.pending_wasm_requests.get(request_id) != Some(&document_id)
-        });
+        #[cfg(all(boa_backend, feature = "wasm"))]
+        {
+            // Clean up any pending wasm requests for this document so that
+            // worker results arriving after destruction are not misattributed,
+            // and to avoid orphaned promise entries.
+            // https://webassembly.github.io/spec/js-api/#asynchronously-compile-a-webassembly-module
+            self.wasm.pending_requests
+                .retain(|_request_id, doc_id| *doc_id != document_id);
+            self.wasm.pending_modules.retain(|request_id, _module| {
+                !self.wasm.pending_requests.contains_key(request_id)
+                    || self.wasm.pending_requests.get(request_id) != Some(&document_id)
+            });
+        }
         let mut local_state = self
             .local_state
             .lock()
@@ -1225,6 +1233,19 @@ impl ContentProcess {
             // without a blocking IPC round-trip.
             self.set_clipboard_cache(prefetched_clipboard_text);
 
+            // Extract traversable_id before borrowing self.documents.
+            let traversable_id = self
+                .documents
+                .get(&document_id)
+                .map(|doc| doc.traversable_id)
+                .unwrap_or(NavigableId::new());
+
+            // Set up shared registry so window.open can register new documents
+            // (same as click_element does).
+            if let Err(error) = self.set_up_new_document_registry(traversable_id) {
+                warn!("failed to set up new document registry for UI event: {error}");
+            }
+
             let Some(document) = self.documents.get_mut(&document_id) else {
                 continue;
             };
@@ -1234,11 +1255,12 @@ impl ContentProcess {
                 maybe_log_input_layout_debug(document_id, &document_guard);
             }
 
-            // Note: This continues <https://dom.spec.whatwg.org/#concept-event-fire> after `FormalWeb.UserAgent.queueDispatchedEvent` writes the serialized UI event batch to the content process.
+            // Continues <https://dom.spec.whatwg.org/#concept-event-fire> after the
+            // user agent writes the serialized UI event batch to the content process.
             let event = deserialize_ui_event(&event)?;
             dispatch_ui_event(
                 document_id,
-                document.traversable_id,
+                traversable_id,
                 document.parent_traversable_id,
                 document.top_level_traversable_id,
                 Rc::clone(&document.document),
@@ -1248,6 +1270,13 @@ impl ContentProcess {
                 document.viewport_offset_y,
                 event,
             )?;
+
+            if let Err(error) = self.tear_down_new_document_registry(traversable_id) {
+                warn!("failed to tear down new document registry: {error}");
+            }
+            if let Err(error) = self.drain_new_traversable_documents() {
+                warn!("failed to drain new traversable documents: {error}");
+            }
         }
 
         Ok(())
@@ -1263,7 +1292,7 @@ impl ContentProcess {
         {
             let navigable_id = document.traversable_id;
             let canceled = !dispatch_window_event(&mut document.settings, "beforeunload", true)
-                .map_err(|error| error.to_string())?;
+                .map_err(|error| format!("dispatch_window_event failed: {error:?}"))?;
             (Some(navigable_id), canceled)
         } else {
             (None, false)
@@ -1315,7 +1344,6 @@ impl ContentProcess {
     }
 
     /// <https://html.spec.whatwg.org/#update-the-rendering>
-    /// Note: The Rust user-agent and event-loop workers queue this rendering task, and the content process continues the noted rendering opportunity once critical fetches finish.
     fn continue_updating_the_rendering(
         &mut self,
         traversable_id: NavigableId,
@@ -1365,7 +1393,7 @@ impl ContentProcess {
                 let mut document_guard = document.document.borrow_mut();
 
                 // Step 16.2.1: "Recalculate styles and update layout for `doc`."
-                // Note: `resolve` advances style, layout, and resource-driven document updates for the current frame.
+                // `resolve` advances style, layout, and resource-driven document updates.
                 document_guard.resolve(animation_time);
             }
 
@@ -1805,44 +1833,47 @@ impl ContentProcess {
     /// can resolve `_parent`/`_top` targets in
     /// `the_rules_for_choosing_a_navigable`.
     fn set_navigable_hierarchy_on_global_scope(
-        &self,
+        &mut self,
         document_id: DocumentId,
     ) -> Result<(), String> {
-        let Some(content_document) = self.documents.get(&document_id) else {
+        let Some(content_document) = self.documents.get_mut(&document_id) else {
             return Err(format!("unknown document id: {document_id}"));
         };
         let parent_traversable_id = content_document.parent_traversable_id;
         let top_level_traversable_id = content_document.top_level_traversable_id;
-        with_global_scope(&content_document.settings.context, |global_scope| {
+        with_global_scope(content_document.settings.ec(), |global_scope| {
             global_scope.set_navigable_hierarchy(parent_traversable_id, top_level_traversable_id);
             Ok(())
         })
-        .map_err(|error| error.to_string())
+        .map_err(|error| error.display().to_string())
     }
 
     /// Drain pending WebAssembly requests from all documents and submit
     /// them to the background worker.
     fn drain_all_pending_wasm_requests(&mut self) {
-        let document_ids: Vec<DocumentId> = self.documents.keys().copied().collect();
+        #[cfg(all(boa_backend, feature = "wasm"))]
+        {
+            let document_ids: Vec<DocumentId> = self.documents.keys().copied().collect();
 
-        for document_id in document_ids {
-            let Some(content_document) = self.documents.get_mut(&document_id) else {
-                continue;
-            };
+            for document_id in document_ids {
+                let Some(content_document) = self.documents.get_mut(&document_id) else {
+                    continue;
+                };
 
-            // Submit compile batches.
-            let batches = content_document.settings.take_pending_wasm_batches();
-            for (request_id, bytes) in batches {
-                self.pending_wasm_requests.insert(request_id, document_id);
-                self.wasm_worker.submit_compile(bytes, request_id);
-            }
+                // Submit compile batches.
+                let batches = content_document.settings.take_pending_wasm_batches();
+                for (request_id, bytes) in batches {
+                    self.wasm.pending_requests.insert(request_id, document_id);
+                    self.wasm.worker.submit_compile(bytes, request_id);
+                }
 
-            // Submit instantiate requests.
-            let instantiates = content_document.settings.take_pending_wasm_instantiates();
-            for (request_id, module) in instantiates {
-                self.pending_wasm_requests.insert(request_id, document_id);
-                self.pending_wasm_modules.insert(request_id, module.clone());
-                self.wasm_worker.submit_instantiate(module, request_id);
+                // Submit instantiate requests.
+                let instantiates = content_document.settings.take_pending_wasm_instantiates();
+                for (request_id, module) in instantiates {
+                    self.wasm.pending_requests.insert(request_id, document_id);
+                    self.wasm.pending_modules.insert(request_id, module.clone());
+                    self.wasm.worker.submit_instantiate(module, request_id);
+                }
             }
         }
     }
@@ -1851,133 +1882,157 @@ impl ContentProcess {
     /// Called both at the end of `handle_command` and when the dedicated
     /// IPC signal fires.
     fn drain_wasm_results(&mut self) {
-        let completed: Vec<(u64, WasmResult)> = {
-            let results = self.wasm_worker.drain_results();
-            results
-                .into_iter()
-                .map(|result| {
-                    let request_id = match &result {
-                        WasmResult::Compiled { request_id, .. }
-                        | WasmResult::CompileError { request_id, .. }
-                        | WasmResult::Instantiated { request_id, .. }
-                        | WasmResult::InstantiateError { request_id, .. } => *request_id,
-                    };
-                    (request_id, result)
-                })
-                .collect()
-        };
-
-        for (request_id, result) in completed {
-            let Some(&document_id) = self.pending_wasm_requests.get(&request_id) else {
-                // This is expected when a document is destroyed before the
-                // worker finishes — the destroy_document cleanup removes the
-                // entry, and the worker's result arrives safely discarded.
-                continue;
+        #[cfg(all(boa_backend, feature = "wasm"))]
+        {
+            let completed: Vec<(u64, WasmResult)> = {
+                let results = self.wasm.worker.drain_results();
+                results
+                    .into_iter()
+                    .map(|result| {
+                        let request_id = match &result {
+                            WasmResult::Compiled { request_id, .. }
+                            | WasmResult::CompileError { request_id, .. }
+                            | WasmResult::Instantiated { request_id, .. }
+                            | WasmResult::InstantiateError { request_id, .. } => *request_id,
+                        };
+                        (request_id, result)
+                    })
+                    .collect()
             };
 
-            let Some(content_document) = self.documents.get_mut(&document_id) else {
-                error!("WebAssembly: document {} not found", document_id);
-                self.pending_wasm_requests.remove(&request_id);
-                continue;
-            };
+            for (request_id, result) in completed {
+                let Some(&document_id) = self.wasm.pending_requests.get(&request_id) else {
+                    // This is expected when a document is destroyed before the
+                    // worker finishes — the destroy_document cleanup removes the
+                    // entry, and the worker's result arrives safely discarded.
+                    continue;
+                };
 
-            let Some((_promise, resolvers)) =
-                content_document.settings.consume_wasm_request(request_id)
-            else {
-                error!(
-                    "WebAssembly: request {} not found on document {}",
-                    request_id, document_id
-                );
-                self.pending_wasm_requests.remove(&request_id);
-                continue;
-            };
+                let Some(content_document) = self.documents.get_mut(&document_id) else {
+                    error!("WebAssembly: document {} not found", document_id);
+                    self.wasm.pending_requests.remove(&request_id);
+                    continue;
+                };
 
-            match result {
-                WasmResult::Compiled {
-                    request_id: _,
-                    module,
-                } => {
-                    if let Err(error) = compile_continuation(
-                        &resolvers,
+                let Some((_promise, resolvers)) =
+                    content_document.settings.consume_wasm_request(request_id)
+                else {
+                    error!(
+                        "WebAssembly: request {} not found on document {}",
+                        request_id, document_id
+                    );
+                    self.wasm.pending_requests.remove(&request_id);
+                    continue;
+                };
+
+                match result {
+                    WasmResult::Compiled {
+                        request_id: _,
                         module,
-                        Vec::new(),
-                        &mut content_document.settings.context,
-                    ) {
-                        error!("WebAssembly: failed to resolve compile promise: {error}");
+                    } => {
+                        if let Err(error) = compile_continuation(
+                            &resolvers,
+                            module,
+                            Vec::new(),
+                            content_document.settings.ec(),
+                        ) {
+                            error!(
+                                "WebAssembly: failed to resolve compile promise: {}",
+                                error.display()
+                            );
+                        }
                     }
-                }
-                WasmResult::CompileError {
-                    request_id: _,
-                    message,
-                } => {
-                    if let Err(error) = compile_rejection(
-                        &resolvers,
+                    WasmResult::CompileError {
+                        request_id: _,
                         message,
-                        &mut content_document.settings.context,
-                    ) {
-                        error!("WebAssembly: failed to reject compile promise: {error}");
+                    } => {
+                        if let Err(error) =
+                            compile_rejection(&resolvers, message, content_document.settings.ec())
+                        {
+                            error!(
+                                "WebAssembly: failed to reject compile promise: {}",
+                                error.display()
+                            );
+                        }
                     }
-                }
-                WasmResult::Instantiated {
-                    request_id: _,
-                    store,
-                    instance,
-                } => {
-                    let module = self.pending_wasm_modules.remove(&request_id);
-                    let Some(module) = module else {
-                        error!(
-                            "WebAssembly: no module found for instantiate request {}",
-                            request_id
-                        );
-                        self.pending_wasm_requests.remove(&request_id);
-                        continue;
-                    };
-                    if let Err(error) = instantiate_continuation(
-                        &module,
-                        &instance,
-                        &store,
-                        &resolvers,
-                        &mut content_document.settings.context,
-                    ) {
-                        error!("WebAssembly: failed to resolve instantiate promise: {error}");
+                    WasmResult::Instantiated {
+                        request_id: _,
+                        store,
+                        instance,
+                    } => {
+                        let module = self.wasm.pending_modules.remove(&request_id);
+                        let Some(module) = module else {
+                            error!(
+                                "WebAssembly: no module found for instantiate request {}",
+                                request_id
+                            );
+                            self.wasm.pending_requests.remove(&request_id);
+                            continue;
+                        };
+                        if let Err(error) = instantiate_continuation(
+                            &module,
+                            &instance,
+                            &store,
+                            &resolvers,
+                            content_document.settings.ec(),
+                        ) {
+                            error!(
+                                "WebAssembly: failed to resolve instantiate promise: {}",
+                                error.display()
+                            );
+                        }
                     }
-                }
-                WasmResult::InstantiateError {
-                    request_id: _,
-                    message,
-                } => {
-                    if let Err(error) = compile_rejection(
-                        &resolvers,
+                    WasmResult::InstantiateError {
+                        request_id: _,
                         message,
-                        &mut content_document.settings.context,
-                    ) {
-                        error!("WebAssembly: failed to reject instantiate promise: {error}");
+                    } => {
+                        if let Err(error) =
+                            compile_rejection(&resolvers, message, content_document.settings.ec())
+                        {
+                            error!(
+                                "WebAssembly: failed to reject instantiate promise: {}",
+                                error.display()
+                            );
+                        }
                     }
                 }
+
+                self.wasm.pending_requests.remove(&request_id);
             }
 
-            self.pending_wasm_requests.remove(&request_id);
-        }
-
-        // Flush microtasks (promise .then() handlers) after resolving/rejecting.
-        for document in self.documents.values_mut() {
-            if let Err(error) = document.settings.perform_a_microtask_checkpoint() {
-                error!("WebAssembly: microtask checkpoint failed: {error}");
+            // Flush microtasks (promise .then() handlers) after resolving/rejecting.
+            for document in self.documents.values_mut() {
+                if let Err(error) = document.settings.perform_a_microtask_checkpoint() {
+                    error!("WebAssembly: microtask checkpoint failed: {error}");
+                }
             }
         }
     }
 
     /// <https://html.spec.whatwg.org/#event-loop-processing-model>
-    /// Note: The Rust event-loop worker emits these process effects, and each branch below resumes the corresponding Rust-owned continuation.
     fn handle_command(&mut self, command: Command) -> Result<bool, String> {
         let result = self.handle_command_inner(command);
 
-        // After every command, drain any pending WebAssembly requests and
-        // process completed results from the shared queue.
-        self.drain_all_pending_wasm_requests();
-        self.drain_wasm_results();
+        #[cfg(all(boa_backend, feature = "wasm"))]
+        {
+            // After every command, drain any pending WebAssembly requests and
+            // process completed results from the shared queue.
+            self.drain_all_pending_wasm_requests();
+            self.drain_wasm_results();
+        }
 
         result
+    }
+
+    /// <https://html.spec.whatwg.org/#perform-a-microtask-checkpoint>
+    fn perform_microtask_checkpoint(&mut self) -> Result<(), String> {
+        for document in self.documents.values_mut() {
+            document
+                .settings
+                .perform_a_microtask_checkpoint()
+                .map_err(|error| format!("microtask checkpoint failed: {error}"))?;
+        }
+        Ok(())
     }
 
     fn handle_command_inner(&mut self, command: Command) -> Result<bool, String> {
@@ -2141,98 +2196,126 @@ fn content_token_from_args() -> Result<Option<String>, String> {
 
 /// Run the content extension.
 pub fn run_content_process(token: String) -> Result<(), String> {
-    let (wasm_signal_sender, wasm_rx) = crossbeam_channel::unbounded::<()>();
+    // When WASM is not enabled, use `never()` so the select never fires.
+    // When WASM IS enabled, create a real channel that the wasm worker
+    // signals when compilation completes.
+    let (wasm_rx, wasm_signal_sender) = if cfg!(all(boa_backend, feature = "wasm")) {
+        let (tx, rx) = crossbeam_channel::unbounded::<()>();
+        (rx, tx)
+    } else {
+        let rx = crossbeam_channel::never::<()>();
+        let (tx, _) = crossbeam_channel::bounded::<()>(1);
+        (rx, tx)
+    };
 
     ipc::run_extension::<Command, ContentEvent>(&token, move |server| {
         let event_sender = server.connection.sender.clone();
+
         let cmd_rx = ipc::crossbeam_proxy(server.connection.receiver);
 
-        // First message must be ContentBootstrap.
-        let (network_extension_sender, media_sender, content_command_sender, trace_sender) =
+        let (network_extension_sender, media_sender, content_command_sender, trace_sender) = {
             match cmd_rx.recv() {
-                Ok(incoming) => {
-                    match incoming.payload {
-                        ContentBootstrap {
-                            net_sender,
-                            media_sender,
-                            content_command_sender,
-                            trace_sender,
-                        } => (
-                            net_sender,
-                            media_sender,
-                            content_command_sender,
-                            trace_sender,
-                        ),
-                        other => {
-                            error!("first message must be ContentBootstrap, got: {other:?}");
-                            debug_assert!(false, "wrong first message: {other:?}");
-                            return Err("wrong first message, expected ContentBootstrap".into());
-                        }
-                    } // closes match incoming.payload
-                } // closes Ok arm
+                Ok(incoming) => match incoming.payload {
+                    ContentBootstrap {
+                        net_sender,
+                        media_sender,
+                        content_command_sender,
+                        trace_sender,
+                    } => (
+                        net_sender,
+                        media_sender,
+                        content_command_sender,
+                        trace_sender,
+                    ),
+                    other => {
+                        error!("first message must be ContentBootstrap, got: {other:?}");
+                        return Err("wrong first message, expected ContentBootstrap".into());
+                    }
+                },
                 Err(_) => return Err("command channel closed before ContentBootstrap".into()),
-            };
+            }
+        };
 
-        // Notify the user agent that the bootstrap command was handled.
         let _ = event_sender.send(ContentEvent::CommandCompleted);
 
-        let event_loop_id = EventLoopId::from_u128(0);
-        let mut process = ContentProcess::new(
-            event_sender,
-            wasm_signal_sender,
-            event_loop_id,
-            network_extension_sender,
-            media_sender,
-            content_command_sender,
-            trace_sender,
-        );
+        let mut process = {
+            let event_loop_id = EventLoopId::from_u128(0);
+            ContentProcess::new(
+                event_sender.clone(),
+                wasm_signal_sender,
+                event_loop_id,
+                network_extension_sender,
+                media_sender,
+                content_command_sender,
+                trace_sender,
+            )
+        };
 
-        loop {
-            crossbeam_channel::select! {
-                recv(cmd_rx) -> cmd => {
-                    match cmd {
-                        Ok(incoming) => {
-                            let command = incoming.payload;
-                            let notify = matches!(
-                                &command,
-                                CreateEmptyDocument { .. }
-                                    | CreateLoadedDocument { .. }
-                                    | DestroyDocument { .. }
-                                    | DispatchEvent { .. }
-                                    | Command::RunBeforeUnload { .. }
-                                    | UpdateTheRendering { .. }
-                                    | RunWindowTimer { .. }
-                                    | CompleteDocumentFetch { .. }
-                                    | FailDocumentFetch { .. }
-                            );
-                            match process.handle_command(command) {
-                                Ok(true) => {
-                                    if notify {
-                                        let _ = process.note_command_completed();
-                                    }
-                                }
-                                Ok(false) => break,
-                                Err(error) => {
-                                    error!("content error: {error}");
-                                    if notify {
-                                        let _ = process.note_command_completed();
+        run_content_message_loop(&cmd_rx, &wasm_rx, &mut process)
+    })
+}
+
+fn run_content_message_loop(
+    cmd_rx: &crossbeam_channel::Receiver<ipc::IpcIncoming<Command>>,
+    wasm_rx: &crossbeam_channel::Receiver<()>,
+    process: &mut ContentProcess,
+) -> Result<(), String> {
+    loop {
+        crossbeam_channel::select! {
+            recv(cmd_rx) -> cmd => {
+                match cmd {
+                    Ok(incoming) => {
+                        let command = incoming.payload;
+                        println!("Got: {:?}", command);
+                        let notify = matches!(
+                            &command,
+                            CreateEmptyDocument { .. }
+                                | CreateLoadedDocument { .. }
+                                | DestroyDocument { .. }
+                                | DispatchEvent { .. }
+                                | Command::RunBeforeUnload { .. }
+                                | UpdateTheRendering { .. }
+                                | RunWindowTimer { .. }
+                                | CompleteDocumentFetch { .. }
+                                | FailDocumentFetch { .. }
+                        );
+                        match process.handle_command(command) {
+                            Ok(true) => {
+                                if notify {
+                                    let _ = process.note_command_completed();
+                                    // <https://html.spec.whatwg.org/#event-loop-processing-model>
+                                    // Step 2.8: Perform a microtask checkpoint.
+                                    if let Err(error) = process.perform_microtask_checkpoint() {
+                                        error!("microtask checkpoint after task failed: {error}");
                                     }
                                 }
                             }
+                            Ok(false) => return Ok(()),
+                            Err(error) => {
+                                error!("content error: {error}");
+                                if notify {
+                                    let _ = process.note_command_completed();
+                                }
+                            }
                         }
-                        Err(_) => break,
                     }
+                    Err(_) => return Ok(()),
                 }
-                recv(wasm_rx) -> _ => {
-                    process.drain_all_pending_wasm_requests();
-                    process.drain_wasm_results();
+            }
+            recv(wasm_rx) -> _ => {
+                println!("Got: WASM signal");
+                process.drain_all_pending_wasm_requests();
+                process.drain_wasm_results();
+
+                // <https://html.spec.whatwg.org/#perform-a-microtask-checkpoint>
+                // Wasm compilation results resolve promises, so run a microtask
+                // checkpoint after they are processed.
+                if let Err(error) = process.perform_microtask_checkpoint() {
+                    error!("microtask checkpoint after wasm failed: {error}");
                 }
             }
         }
-
-        process.drain_wasm_results();
-        Ok(())
-    })
+    }
 }
 
 pub fn run_content_process_from_args() -> Result<(), String> {

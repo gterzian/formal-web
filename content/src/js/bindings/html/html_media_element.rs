@@ -1,19 +1,20 @@
-// ── HTMLMediaElement JS bindings ──
 //
 // Note: These bindings define *which members* HTMLMediaElement exposes.
 // Domain methods on HTMLMediaElement implement *what those members do*.
 //
 // Only a subset of the full IDL is exposed for the initial video cut.
 
-use boa_engine::{Context, JsNativeError, JsResult, JsString, JsValue};
+#![cfg_attr(not(feature = "media"), allow(dead_code, unused_imports))]
+
+type JsValue = <crate::js::Types as JsTypes>::JsValue;
 
 use crate::html::HTMLMediaElement;
 use crate::html::HTMLVideoElement;
-use crate::webidl::bindings::{
-    AttributeDef, ConstantDef, InterfaceDefinition, OperationDef, WebIdlInterface,
-};
+use crate::webidl::bindings::{AttributeDef, InterfaceDefinition, OperationDef, WebIdlInterface};
 
-impl WebIdlInterface for HTMLMediaElement {
+use js_engine::{Completion, ExecutionContext, JsTypes};
+
+impl WebIdlInterface<crate::js::Types> for HTMLMediaElement {
     const NAME: &'static str = "HTMLMediaElement";
 
     fn parent_name() -> Option<&'static str> {
@@ -25,64 +26,22 @@ impl WebIdlInterface for HTMLMediaElement {
     fn create_platform_object(
         _new_target: &JsValue,
         _args: &[JsValue],
-        _context: &mut Context,
-    ) -> JsResult<Self> {
+        ec: &mut dyn ExecutionContext<crate::js::Types>,
+    ) -> Completion<Self, crate::js::Types> {
         #[cfg(not(feature = "media"))]
         {
-            return Err(JsNativeError::typ()
-                .with_message("NotSupportedError: Media not available (media feature disabled)")
-                .into());
+            return Err(ec.new_type_error(
+                "NotSupportedError: Media not available (media feature disabled)",
+            ));
         }
-        Err(JsNativeError::typ()
-            .with_message("Illegal constructor")
-            .into())
+        #[cfg(feature = "media")]
+        Err(ec.new_type_error("Illegal constructor"))
     }
 
-    fn define_members(def: &mut InterfaceDefinition) {
-        #[cfg(not(feature = "media"))]
-        {
-            // No members when media is disabled — the interface exists but is empty.
-            let _ = def;
-            return;
-        }
-
-        // Constants
-        def.add_constant(ConstantDef {
-            id: "NETWORK_EMPTY",
-            value: JsValue::from(HTMLMediaElement::NETWORK_EMPTY as i32),
-        });
-        def.add_constant(ConstantDef {
-            id: "NETWORK_IDLE",
-            value: JsValue::from(HTMLMediaElement::NETWORK_IDLE as i32),
-        });
-        def.add_constant(ConstantDef {
-            id: "NETWORK_LOADING",
-            value: JsValue::from(HTMLMediaElement::NETWORK_LOADING as i32),
-        });
-        def.add_constant(ConstantDef {
-            id: "NETWORK_NO_SOURCE",
-            value: JsValue::from(HTMLMediaElement::NETWORK_NO_SOURCE as i32),
-        });
-        def.add_constant(ConstantDef {
-            id: "HAVE_NOTHING",
-            value: JsValue::from(HTMLMediaElement::HAVE_NOTHING as i32),
-        });
-        def.add_constant(ConstantDef {
-            id: "HAVE_METADATA",
-            value: JsValue::from(HTMLMediaElement::HAVE_METADATA as i32),
-        });
-        def.add_constant(ConstantDef {
-            id: "HAVE_CURRENT_DATA",
-            value: JsValue::from(HTMLMediaElement::HAVE_CURRENT_DATA as i32),
-        });
-        def.add_constant(ConstantDef {
-            id: "HAVE_FUTURE_DATA",
-            value: JsValue::from(HTMLMediaElement::HAVE_FUTURE_DATA as i32),
-        });
-        def.add_constant(ConstantDef {
-            id: "HAVE_ENOUGH_DATA",
-            value: JsValue::from(HTMLMediaElement::HAVE_ENOUGH_DATA as i32),
-        });
+    fn define_members(def: &mut InterfaceDefinition<crate::js::Types>) {
+        // Note: Members are always defined (even without the `media` feature)
+        // so that the prototype has entries for e.g. `play`, `src`. When media
+        // is disabled the method bodies are no-ops returning sensible defaults.
 
         // network state
         def.add_attribute(AttributeDef {
@@ -96,6 +55,7 @@ impl WebIdlInterface for HTMLMediaElement {
             replaceable: false,
             put_forwards: None,
             legacy_lenient_setter: false,
+            exposed: None,
         });
         def.add_attribute(AttributeDef {
             id: "readyState",
@@ -108,6 +68,7 @@ impl WebIdlInterface for HTMLMediaElement {
             replaceable: false,
             put_forwards: None,
             legacy_lenient_setter: false,
+            exposed: None,
         });
         def.add_attribute(AttributeDef {
             id: "src",
@@ -120,6 +81,7 @@ impl WebIdlInterface for HTMLMediaElement {
             replaceable: false,
             put_forwards: None,
             legacy_lenient_setter: false,
+            exposed: None,
         });
         def.add_attribute(AttributeDef {
             id: "currentSrc",
@@ -132,6 +94,7 @@ impl WebIdlInterface for HTMLMediaElement {
             replaceable: false,
             put_forwards: None,
             legacy_lenient_setter: false,
+            exposed: None,
         });
         def.add_attribute(AttributeDef {
             id: "duration",
@@ -144,6 +107,7 @@ impl WebIdlInterface for HTMLMediaElement {
             replaceable: false,
             put_forwards: None,
             legacy_lenient_setter: false,
+            exposed: None,
         });
         def.add_attribute(AttributeDef {
             id: "paused",
@@ -156,6 +120,7 @@ impl WebIdlInterface for HTMLMediaElement {
             replaceable: false,
             put_forwards: None,
             legacy_lenient_setter: false,
+            exposed: None,
         });
         def.add_attribute(AttributeDef {
             id: "seeking",
@@ -168,6 +133,7 @@ impl WebIdlInterface for HTMLMediaElement {
             replaceable: false,
             put_forwards: None,
             legacy_lenient_setter: false,
+            exposed: None,
         });
         def.add_attribute(AttributeDef {
             id: "currentTime",
@@ -180,6 +146,7 @@ impl WebIdlInterface for HTMLMediaElement {
             replaceable: false,
             put_forwards: None,
             legacy_lenient_setter: false,
+            exposed: None,
         });
         def.add_attribute(AttributeDef {
             id: "error",
@@ -192,6 +159,7 @@ impl WebIdlInterface for HTMLMediaElement {
             replaceable: false,
             put_forwards: None,
             legacy_lenient_setter: false,
+            exposed: None,
         });
         def.add_attribute(AttributeDef {
             id: "autoplay",
@@ -204,6 +172,7 @@ impl WebIdlInterface for HTMLMediaElement {
             replaceable: false,
             put_forwards: None,
             legacy_lenient_setter: false,
+            exposed: None,
         });
         def.add_attribute(AttributeDef {
             id: "loop",
@@ -216,6 +185,7 @@ impl WebIdlInterface for HTMLMediaElement {
             replaceable: false,
             put_forwards: None,
             legacy_lenient_setter: false,
+            exposed: None,
         });
         def.add_attribute(AttributeDef {
             id: "controls",
@@ -228,6 +198,7 @@ impl WebIdlInterface for HTMLMediaElement {
             replaceable: false,
             put_forwards: None,
             legacy_lenient_setter: false,
+            exposed: None,
         });
         def.add_attribute(AttributeDef {
             id: "muted",
@@ -240,6 +211,7 @@ impl WebIdlInterface for HTMLMediaElement {
             replaceable: false,
             put_forwards: None,
             legacy_lenient_setter: false,
+            exposed: None,
         });
         def.add_attribute(AttributeDef {
             id: "volume",
@@ -252,6 +224,7 @@ impl WebIdlInterface for HTMLMediaElement {
             replaceable: false,
             put_forwards: None,
             legacy_lenient_setter: false,
+            exposed: None,
         });
         // Operations
         def.add_operation(OperationDef {
@@ -261,6 +234,7 @@ impl WebIdlInterface for HTMLMediaElement {
             static_: false,
             unforgeable: false,
             promise_type: false,
+            exposed: None,
         });
         def.add_operation(OperationDef {
             id: "play",
@@ -269,6 +243,7 @@ impl WebIdlInterface for HTMLMediaElement {
             static_: false,
             unforgeable: false,
             promise_type: true,
+            exposed: None,
         });
         def.add_operation(OperationDef {
             id: "pause",
@@ -277,6 +252,7 @@ impl WebIdlInterface for HTMLMediaElement {
             static_: false,
             unforgeable: false,
             promise_type: false,
+            exposed: None,
         });
         def.add_operation(OperationDef {
             id: "canPlayType",
@@ -285,6 +261,7 @@ impl WebIdlInterface for HTMLMediaElement {
             static_: false,
             unforgeable: false,
             promise_type: false,
+            exposed: None,
         });
 
         def.add_attribute(AttributeDef {
@@ -298,441 +275,352 @@ impl WebIdlInterface for HTMLMediaElement {
             replaceable: false,
             put_forwards: None,
             legacy_lenient_setter: false,
+            exposed: None,
         });
     }
 }
 
-// ── Attribute getters/setters ──
+// Tries HTMLMediaElement first, then HTMLVideoElement → .media_element.
+
+fn try_with_media_ref<R>(
+    this: &JsValue,
+    ec: &mut dyn ExecutionContext<crate::js::Types>,
+    f: impl FnOnce(&HTMLMediaElement) -> R,
+) -> Completion<R, crate::js::Types> {
+    let obj = crate::js::Types::value_as_object(this)
+        .ok_or_else(|| ec.new_type_error("expected object"))?;
+    if let Some(data) = ec.with_object_any(&obj) {
+        if let Some(media) = data.downcast_ref::<HTMLMediaElement>() {
+            return Ok(f(media));
+        }
+        if let Some(video) = data.downcast_ref::<HTMLVideoElement>() {
+            return Ok(f(&video.media_element));
+        }
+    }
+    Err(ec.new_type_error("expected HTMLMediaElement"))
+}
 
 fn get_network_state(
     this: &JsValue,
     _args: &[JsValue],
-    _context: &mut Context,
-) -> JsResult<JsValue> {
-    let obj = this
-        .as_object()
-        .ok_or_else(|| JsNativeError::typ().with_message("expected object"))?;
-    if let Some(media) = obj.downcast_ref::<HTMLMediaElement>() {
-        Ok(JsValue::new(media.network_state()))
-    } else if let Some(video) = obj.downcast_ref::<HTMLVideoElement>() {
-        Ok(JsValue::new(video.media_element.network_state()))
-    } else {
-        Err(JsNativeError::typ()
-            .with_message("expected HTMLMediaElement")
-            .into())
-    }
+    ec: &mut dyn ExecutionContext<crate::js::Types>,
+) -> Completion<JsValue, crate::js::Types> {
+    let state = try_with_media_ref(this, ec, |media| media.network_state())?;
+    Ok(ec.value_from_number(state as f64))
 }
 
-fn get_ready_state(this: &JsValue, _args: &[JsValue], _context: &mut Context) -> JsResult<JsValue> {
-    let obj = this
-        .as_object()
-        .ok_or_else(|| JsNativeError::typ().with_message("expected object"))?;
-    if let Some(media) = obj.downcast_ref::<HTMLMediaElement>() {
-        Ok(JsValue::new(media.ready_state()))
-    } else if let Some(video) = obj.downcast_ref::<HTMLVideoElement>() {
-        Ok(JsValue::new(video.media_element.ready_state()))
-    } else {
-        Err(JsNativeError::typ()
-            .with_message("expected HTMLMediaElement")
-            .into())
-    }
+fn get_ready_state(
+    this: &JsValue,
+    _args: &[JsValue],
+    ec: &mut dyn ExecutionContext<crate::js::Types>,
+) -> Completion<JsValue, crate::js::Types> {
+    let state = try_with_media_ref(this, ec, |media| media.ready_state())?;
+    Ok(ec.value_from_number(state as f64))
 }
 
-fn get_src(this: &JsValue, _args: &[JsValue], _context: &mut Context) -> JsResult<JsValue> {
-    let obj = this
-        .as_object()
-        .ok_or_else(|| JsNativeError::typ().with_message("expected object"))?;
-    if let Some(media) = obj.downcast_ref::<HTMLMediaElement>() {
-        Ok(JsValue::from(JsString::from(media.src())))
-    } else if let Some(video) = obj.downcast_ref::<HTMLVideoElement>() {
-        Ok(JsValue::from(JsString::from(video.media_element.src())))
-    } else {
-        Err(JsNativeError::typ()
-            .with_message("expected HTMLMediaElement")
-            .into())
-    }
+fn get_src(
+    this: &JsValue,
+    _args: &[JsValue],
+    ec: &mut dyn ExecutionContext<crate::js::Types>,
+) -> Completion<JsValue, crate::js::Types> {
+    let src = try_with_media_ref(this, ec, |media| media.src())?;
+    Ok(ec.value_from_string(ec.js_string_from_str(&src)))
 }
 
-fn set_src(this: &JsValue, args: &[JsValue], context: &mut Context) -> JsResult<JsValue> {
-    let obj = this
-        .as_object()
-        .ok_or_else(|| JsNativeError::typ().with_message("expected object"))?;
-    let src = args
-        .first()
-        .and_then(|v| v.as_string())
-        .map(|s| s.to_std_string_escaped())
-        .unwrap_or_default();
-    if let Some(mut media) = obj.downcast_mut::<HTMLMediaElement>() {
-        media.set_src(&src, context);
-    } else if let Some(mut video) = obj.downcast_mut::<HTMLVideoElement>() {
-        video.media_element.set_src(&src, context);
-    } else {
-        return Err(JsNativeError::typ()
-            .with_message("expected HTMLMediaElement")
-            .into());
-    }
-    Ok(JsValue::undefined())
+fn set_src(
+    this: &JsValue,
+    args: &[JsValue],
+    ec: &mut dyn ExecutionContext<crate::js::Types>,
+) -> Completion<JsValue, crate::js::Types> {
+    let undefined = ec.value_undefined();
+    let src = ec.to_rust_string(args.first().cloned().unwrap_or_else(|| undefined))?;
+    let obj = crate::js::Types::value_as_object(this)
+        .ok_or_else(|| ec.new_type_error("expected object"))?;
+    ec.with_object_any_mut_with(
+        &obj,
+        Box::new(|data, ec2| {
+            if let Some(media) = data.downcast_mut::<HTMLMediaElement>() {
+                media.set_src(&src, ec2);
+            } else if let Some(video) = data.downcast_mut::<HTMLVideoElement>() {
+                video.media_element.set_src(&src, ec2);
+            }
+        }),
+    );
+    Ok(ec.value_undefined())
 }
 
-fn get_current_src(this: &JsValue, _args: &[JsValue], _context: &mut Context) -> JsResult<JsValue> {
-    let obj = this
-        .as_object()
-        .ok_or_else(|| JsNativeError::typ().with_message("expected object"))?;
-    if let Some(media) = obj.downcast_ref::<HTMLMediaElement>() {
-        Ok(JsValue::from(JsString::from(media.current_src())))
-    } else if let Some(video) = obj.downcast_ref::<HTMLVideoElement>() {
-        Ok(JsValue::from(JsString::from(
-            video.media_element.current_src(),
-        )))
-    } else {
-        Err(JsNativeError::typ()
-            .with_message("expected HTMLMediaElement")
-            .into())
-    }
+fn get_current_src(
+    this: &JsValue,
+    _args: &[JsValue],
+    ec: &mut dyn ExecutionContext<crate::js::Types>,
+) -> Completion<JsValue, crate::js::Types> {
+    let src = try_with_media_ref(this, ec, |media| media.current_src())?;
+    Ok(ec.value_from_string(ec.js_string_from_str(&src)))
 }
 
-fn get_duration(this: &JsValue, _args: &[JsValue], _context: &mut Context) -> JsResult<JsValue> {
-    let obj = this
-        .as_object()
-        .ok_or_else(|| JsNativeError::typ().with_message("expected object"))?;
-    if let Some(media) = obj.downcast_ref::<HTMLMediaElement>() {
-        Ok(JsValue::new(media.duration()))
-    } else if let Some(video) = obj.downcast_ref::<HTMLVideoElement>() {
-        Ok(JsValue::new(video.media_element.duration()))
-    } else {
-        Err(JsNativeError::typ()
-            .with_message("expected HTMLMediaElement")
-            .into())
-    }
+fn get_duration(
+    this: &JsValue,
+    _args: &[JsValue],
+    ec: &mut dyn ExecutionContext<crate::js::Types>,
+) -> Completion<JsValue, crate::js::Types> {
+    let duration = try_with_media_ref(this, ec, |media| media.duration())?;
+    Ok(ec.value_from_number(duration))
 }
 
-fn get_paused(this: &JsValue, _args: &[JsValue], _context: &mut Context) -> JsResult<JsValue> {
-    let obj = this
-        .as_object()
-        .ok_or_else(|| JsNativeError::typ().with_message("expected object"))?;
-    if let Some(media) = obj.downcast_ref::<HTMLMediaElement>() {
-        Ok(JsValue::new(media.paused()))
-    } else if let Some(video) = obj.downcast_ref::<HTMLVideoElement>() {
-        Ok(JsValue::new(video.media_element.paused()))
-    } else {
-        Err(JsNativeError::typ()
-            .with_message("expected HTMLMediaElement")
-            .into())
-    }
+fn get_paused(
+    this: &JsValue,
+    _args: &[JsValue],
+    ec: &mut dyn ExecutionContext<crate::js::Types>,
+) -> Completion<JsValue, crate::js::Types> {
+    let paused = try_with_media_ref(this, ec, |media| media.paused())?;
+    Ok(ec.value_from_bool(paused))
 }
 
-fn get_seeking(this: &JsValue, _args: &[JsValue], _context: &mut Context) -> JsResult<JsValue> {
-    let obj = this
-        .as_object()
-        .ok_or_else(|| JsNativeError::typ().with_message("expected object"))?;
-    if let Some(media) = obj.downcast_ref::<HTMLMediaElement>() {
-        Ok(JsValue::new(media.seeking()))
-    } else if let Some(video) = obj.downcast_ref::<HTMLVideoElement>() {
-        Ok(JsValue::new(video.media_element.seeking()))
-    } else {
-        Err(JsNativeError::typ()
-            .with_message("expected HTMLMediaElement")
-            .into())
-    }
+fn get_seeking(
+    this: &JsValue,
+    _args: &[JsValue],
+    ec: &mut dyn ExecutionContext<crate::js::Types>,
+) -> Completion<JsValue, crate::js::Types> {
+    let seeking = try_with_media_ref(this, ec, |media| media.seeking())?;
+    Ok(ec.value_from_bool(seeking))
 }
 
 fn get_current_time(
     this: &JsValue,
     _args: &[JsValue],
-    _context: &mut Context,
-) -> JsResult<JsValue> {
-    let obj = this
-        .as_object()
-        .ok_or_else(|| JsNativeError::typ().with_message("expected object"))?;
-    if let Some(media) = obj.downcast_ref::<HTMLMediaElement>() {
-        Ok(JsValue::new(media.current_time()))
-    } else if let Some(video) = obj.downcast_ref::<HTMLVideoElement>() {
-        Ok(JsValue::new(video.media_element.current_time()))
-    } else {
-        Err(JsNativeError::typ()
-            .with_message("expected HTMLMediaElement")
-            .into())
-    }
+    ec: &mut dyn ExecutionContext<crate::js::Types>,
+) -> Completion<JsValue, crate::js::Types> {
+    let time = try_with_media_ref(this, ec, |media| media.current_time())?;
+    Ok(ec.value_from_number(time))
 }
 
 fn set_current_time(
     this: &JsValue,
     _args: &[JsValue],
-    _context: &mut Context,
-) -> JsResult<JsValue> {
-    let _obj = this
-        .as_object()
-        .ok_or_else(|| JsNativeError::typ().with_message("expected object"))?;
+    ec: &mut dyn ExecutionContext<crate::js::Types>,
+) -> Completion<JsValue, crate::js::Types> {
+    let _ = try_with_media_ref(this, ec, |_media| ())?;
     // TODO: Implement using interior mutability.
-    Ok(JsValue::undefined())
+    Ok(ec.value_undefined())
 }
 
-fn get_error(this: &JsValue, _args: &[JsValue], _context: &mut Context) -> JsResult<JsValue> {
-    let obj = this
-        .as_object()
-        .ok_or_else(|| JsNativeError::typ().with_message("expected object"))?;
-    if let Some(media) = obj.downcast_ref::<HTMLMediaElement>() {
-        match media.error() {
-            Some(_) => Ok(JsValue::null()),
-            None => Ok(JsValue::null()),
+fn get_error(
+    this: &JsValue,
+    _args: &[JsValue],
+    ec: &mut dyn ExecutionContext<crate::js::Types>,
+) -> Completion<JsValue, crate::js::Types> {
+    use crate::js::Types;
+    let media_error = try_with_media_ref(this, ec, |media| media.error())?;
+    match media_error {
+        Some(err) => {
+            // Note: Returns a plain JS object rather than a MediaError platform
+            // object.  MediaError needs its own WebIdlInterface impl for full
+            // spec compliance.
+            let obj = ec.create_plain_object(None);
+            let code_key = ec.property_key_from_str("code");
+            let code_desc = js_engine::PropertyDescriptor {
+                value: Some(ec.value_from_number(err.code as f64)),
+                writable: Some(false),
+                enumerable: Some(true),
+                configurable: Some(true),
+                get: None,
+                set: None,
+            };
+            ec.define_property_or_throw(obj.clone(), code_key, code_desc)?;
+            let message_key = ec.property_key_from_str("message");
+            let message_desc = js_engine::PropertyDescriptor {
+                value: Some(ec.value_from_string(ec.js_string_from_str(&err.message))),
+                writable: Some(false),
+                enumerable: Some(true),
+                configurable: Some(true),
+                get: None,
+                set: None,
+            };
+            ec.define_property_or_throw(obj.clone(), message_key, message_desc)?;
+            Ok(Types::value_from_object(obj))
         }
-    } else if let Some(video) = obj.downcast_ref::<HTMLVideoElement>() {
-        match video.media_element.error() {
-            Some(_) => Ok(JsValue::null()),
-            None => Ok(JsValue::null()),
-        }
-    } else {
-        Err(JsNativeError::typ()
-            .with_message("expected HTMLMediaElement")
-            .into())
+        None => Ok(ec.value_null()),
     }
 }
 
-fn get_autoplay(this: &JsValue, _args: &[JsValue], _context: &mut Context) -> JsResult<JsValue> {
-    let obj = this
-        .as_object()
-        .ok_or_else(|| JsNativeError::typ().with_message("expected object"))?;
-    if let Some(media) = obj.downcast_ref::<HTMLMediaElement>() {
-        Ok(JsValue::new(media.autoplay()))
-    } else if let Some(video) = obj.downcast_ref::<HTMLVideoElement>() {
-        Ok(JsValue::new(video.media_element.autoplay()))
-    } else {
-        Err(JsNativeError::typ()
-            .with_message("expected HTMLMediaElement")
-            .into())
-    }
+fn get_autoplay(
+    this: &JsValue,
+    _args: &[JsValue],
+    ec: &mut dyn ExecutionContext<crate::js::Types>,
+) -> Completion<JsValue, crate::js::Types> {
+    let val = try_with_media_ref(this, ec, |media| media.autoplay())?;
+    Ok(ec.value_from_bool(val))
 }
 
-fn set_autoplay(this: &JsValue, args: &[JsValue], _context: &mut Context) -> JsResult<JsValue> {
-    let obj = this
-        .as_object()
-        .ok_or_else(|| JsNativeError::typ().with_message("expected object"))?;
-    let value = args.first().map(|v| v.to_boolean()).unwrap_or(false);
-    if let Some(media) = obj.downcast_ref::<HTMLMediaElement>() {
-        media.set_autoplay(value);
-    } else if let Some(video) = obj.downcast_ref::<HTMLVideoElement>() {
-        video.media_element.set_autoplay(value);
-    } else {
-        return Err(JsNativeError::typ()
-            .with_message("expected HTMLMediaElement")
-            .into());
-    }
-    Ok(JsValue::undefined())
+fn set_autoplay(
+    this: &JsValue,
+    args: &[JsValue],
+    ec: &mut dyn ExecutionContext<crate::js::Types>,
+) -> Completion<JsValue, crate::js::Types> {
+    let value = args.first().map_or(false, |v| ec.to_boolean(v));
+    try_with_media_ref(this, ec, |media| media.set_autoplay(value))?;
+    Ok(ec.value_undefined())
 }
 
-fn get_loop(this: &JsValue, _args: &[JsValue], _context: &mut Context) -> JsResult<JsValue> {
-    let obj = this
-        .as_object()
-        .ok_or_else(|| JsNativeError::typ().with_message("expected object"))?;
-    if let Some(media) = obj.downcast_ref::<HTMLMediaElement>() {
-        Ok(JsValue::new(media.loop_()))
-    } else if let Some(video) = obj.downcast_ref::<HTMLVideoElement>() {
-        Ok(JsValue::new(video.media_element.loop_()))
-    } else {
-        Err(JsNativeError::typ()
-            .with_message("expected HTMLMediaElement")
-            .into())
-    }
+fn get_loop(
+    this: &JsValue,
+    _args: &[JsValue],
+    ec: &mut dyn ExecutionContext<crate::js::Types>,
+) -> Completion<JsValue, crate::js::Types> {
+    let val = try_with_media_ref(this, ec, |media| media.loop_())?;
+    Ok(ec.value_from_bool(val))
 }
 
-fn set_loop(this: &JsValue, args: &[JsValue], _context: &mut Context) -> JsResult<JsValue> {
-    let obj = this
-        .as_object()
-        .ok_or_else(|| JsNativeError::typ().with_message("expected object"))?;
-    let value = args.first().map(|v| v.to_boolean()).unwrap_or(false);
-    if let Some(media) = obj.downcast_ref::<HTMLMediaElement>() {
-        media.set_loop(value);
-    } else if let Some(video) = obj.downcast_ref::<HTMLVideoElement>() {
-        video.media_element.set_loop(value);
-    } else {
-        return Err(JsNativeError::typ()
-            .with_message("expected HTMLMediaElement")
-            .into());
-    }
-    Ok(JsValue::undefined())
+fn set_loop(
+    this: &JsValue,
+    args: &[JsValue],
+    ec: &mut dyn ExecutionContext<crate::js::Types>,
+) -> Completion<JsValue, crate::js::Types> {
+    let value = args.first().map_or(false, |v| ec.to_boolean(v));
+    try_with_media_ref(this, ec, |media| media.set_loop(value))?;
+    Ok(ec.value_undefined())
 }
 
-fn get_controls(this: &JsValue, _args: &[JsValue], _context: &mut Context) -> JsResult<JsValue> {
-    let obj = this
-        .as_object()
-        .ok_or_else(|| JsNativeError::typ().with_message("expected object"))?;
-    if let Some(media) = obj.downcast_ref::<HTMLMediaElement>() {
-        Ok(JsValue::new(media.controls()))
-    } else if let Some(video) = obj.downcast_ref::<HTMLVideoElement>() {
-        Ok(JsValue::new(video.media_element.controls()))
-    } else {
-        Err(JsNativeError::typ()
-            .with_message("expected HTMLMediaElement")
-            .into())
-    }
+fn get_controls(
+    this: &JsValue,
+    _args: &[JsValue],
+    ec: &mut dyn ExecutionContext<crate::js::Types>,
+) -> Completion<JsValue, crate::js::Types> {
+    let val = try_with_media_ref(this, ec, |media| media.controls())?;
+    Ok(ec.value_from_bool(val))
 }
 
-fn set_controls(this: &JsValue, args: &[JsValue], _context: &mut Context) -> JsResult<JsValue> {
-    let obj = this
-        .as_object()
-        .ok_or_else(|| JsNativeError::typ().with_message("expected object"))?;
-    let value = args.first().map(|v| v.to_boolean()).unwrap_or(false);
-    if let Some(media) = obj.downcast_ref::<HTMLMediaElement>() {
-        media.set_controls(value);
-    } else if let Some(video) = obj.downcast_ref::<HTMLVideoElement>() {
-        video.media_element.set_controls(value);
-    } else {
-        return Err(JsNativeError::typ()
-            .with_message("expected HTMLMediaElement")
-            .into());
-    }
-    Ok(JsValue::undefined())
+fn set_controls(
+    this: &JsValue,
+    args: &[JsValue],
+    ec: &mut dyn ExecutionContext<crate::js::Types>,
+) -> Completion<JsValue, crate::js::Types> {
+    let value = args.first().map_or(false, |v| ec.to_boolean(v));
+    try_with_media_ref(this, ec, |media| media.set_controls(value))?;
+    Ok(ec.value_undefined())
 }
 
-fn get_muted(this: &JsValue, _args: &[JsValue], _context: &mut Context) -> JsResult<JsValue> {
-    let obj = this
-        .as_object()
-        .ok_or_else(|| JsNativeError::typ().with_message("expected object"))?;
-    if let Some(media) = obj.downcast_ref::<HTMLMediaElement>() {
-        Ok(JsValue::new(media.muted()))
-    } else if let Some(video) = obj.downcast_ref::<HTMLVideoElement>() {
-        Ok(JsValue::new(video.media_element.muted()))
-    } else {
-        Err(JsNativeError::typ()
-            .with_message("expected HTMLMediaElement")
-            .into())
-    }
+fn get_muted(
+    this: &JsValue,
+    _args: &[JsValue],
+    ec: &mut dyn ExecutionContext<crate::js::Types>,
+) -> Completion<JsValue, crate::js::Types> {
+    let val = try_with_media_ref(this, ec, |media| media.muted())?;
+    Ok(ec.value_from_bool(val))
 }
 
-fn set_muted(this: &JsValue, args: &[JsValue], _context: &mut Context) -> JsResult<JsValue> {
-    let obj = this
-        .as_object()
-        .ok_or_else(|| JsNativeError::typ().with_message("expected object"))?;
-    let value = args.first().map(|v| v.to_boolean()).unwrap_or(false);
-    if let Some(media) = obj.downcast_ref::<HTMLMediaElement>() {
-        media.set_muted(value);
-    } else if let Some(video) = obj.downcast_ref::<HTMLVideoElement>() {
-        video.media_element.set_muted(value);
-    } else {
-        return Err(JsNativeError::typ()
-            .with_message("expected HTMLMediaElement")
-            .into());
-    }
-    Ok(JsValue::undefined())
+fn set_muted(
+    this: &JsValue,
+    args: &[JsValue],
+    ec: &mut dyn ExecutionContext<crate::js::Types>,
+) -> Completion<JsValue, crate::js::Types> {
+    let value = args.first().map_or(false, |v| ec.to_boolean(v));
+    try_with_media_ref(this, ec, |media| media.set_muted(value))?;
+    Ok(ec.value_undefined())
 }
 
-fn get_volume(this: &JsValue, _args: &[JsValue], _context: &mut Context) -> JsResult<JsValue> {
-    let obj = this
-        .as_object()
-        .ok_or_else(|| JsNativeError::typ().with_message("expected object"))?;
-    if let Some(media) = obj.downcast_ref::<HTMLMediaElement>() {
-        Ok(JsValue::new(media.volume()))
-    } else if let Some(video) = obj.downcast_ref::<HTMLVideoElement>() {
-        Ok(JsValue::new(video.media_element.volume()))
-    } else {
-        Err(JsNativeError::typ()
-            .with_message("expected HTMLMediaElement")
-            .into())
-    }
+fn get_volume(
+    this: &JsValue,
+    _args: &[JsValue],
+    ec: &mut dyn ExecutionContext<crate::js::Types>,
+) -> Completion<JsValue, crate::js::Types> {
+    let vol = try_with_media_ref(this, ec, |media| media.volume())?;
+    Ok(ec.value_from_number(vol))
 }
 
-fn set_volume(this: &JsValue, args: &[JsValue], _context: &mut Context) -> JsResult<JsValue> {
-    let obj = this
-        .as_object()
-        .ok_or_else(|| JsNativeError::typ().with_message("expected object"))?;
-    let volume = args.first().and_then(|v| v.as_number()).unwrap_or(1.0);
-    if let Some(media) = obj.downcast_ref::<HTMLMediaElement>() {
-        media.set_volume(volume);
-    } else if let Some(video) = obj.downcast_ref::<HTMLVideoElement>() {
-        video.media_element.set_volume(volume);
-    } else {
-        return Err(JsNativeError::typ()
-            .with_message("expected HTMLMediaElement")
-            .into());
-    }
-    Ok(JsValue::undefined())
-}
-
-fn get_preload(this: &JsValue, _args: &[JsValue], _context: &mut Context) -> JsResult<JsValue> {
-    let obj = this
-        .as_object()
-        .ok_or_else(|| JsNativeError::typ().with_message("expected object"))?;
-    if let Some(media) = obj.downcast_ref::<HTMLMediaElement>() {
-        Ok(JsValue::from(JsString::from(media.preload())))
-    } else if let Some(video) = obj.downcast_ref::<HTMLVideoElement>() {
-        Ok(JsValue::from(JsString::from(video.media_element.preload())))
-    } else {
-        Err(JsNativeError::typ()
-            .with_message("expected HTMLMediaElement")
-            .into())
-    }
-}
-
-fn set_preload(this: &JsValue, args: &[JsValue], _context: &mut Context) -> JsResult<JsValue> {
-    let obj = this
-        .as_object()
-        .ok_or_else(|| JsNativeError::typ().with_message("expected object"))?;
-    let value = args
+fn set_volume(
+    this: &JsValue,
+    args: &[JsValue],
+    ec: &mut dyn ExecutionContext<crate::js::Types>,
+) -> Completion<JsValue, crate::js::Types> {
+    let vol = args
         .first()
-        .and_then(|v| v.as_string())
-        .map(|s| s.to_std_string_escaped())
-        .unwrap_or_default();
-    if let Some(media) = obj.downcast_ref::<HTMLMediaElement>() {
-        media.set_preload(&value);
-    } else if let Some(video) = obj.downcast_ref::<HTMLVideoElement>() {
-        video.media_element.set_preload(&value);
-    } else {
-        return Err(JsNativeError::typ()
-            .with_message("expected HTMLMediaElement")
-            .into());
-    }
-    Ok(JsValue::undefined())
+        .and_then(|v| crate::js::Types::value_as_number(v))
+        .unwrap_or(1.0);
+    try_with_media_ref(this, ec, |media| media.set_volume(vol))?;
+    Ok(ec.value_undefined())
 }
 
-// ── Operations ──
+fn get_preload(
+    this: &JsValue,
+    _args: &[JsValue],
+    ec: &mut dyn ExecutionContext<crate::js::Types>,
+) -> Completion<JsValue, crate::js::Types> {
+    let preload = try_with_media_ref(this, ec, |media| media.preload())?;
+    Ok(ec.value_from_string(ec.js_string_from_str(&preload)))
+}
 
-fn load_method(this: &JsValue, _args: &[JsValue], _context: &mut Context) -> JsResult<JsValue> {
-    let _obj = this
-        .as_object()
-        .ok_or_else(|| JsNativeError::typ().with_message("expected object"))?;
+fn set_preload(
+    this: &JsValue,
+    args: &[JsValue],
+    ec: &mut dyn ExecutionContext<crate::js::Types>,
+) -> Completion<JsValue, crate::js::Types> {
+    let undefined = ec.value_undefined();
+    let value = ec.to_rust_string(args.first().cloned().unwrap_or_else(|| undefined))?;
+    try_with_media_ref(this, ec, |media| media.set_preload(&value))?;
+    Ok(ec.value_undefined())
+}
+
+fn load_method(
+    this: &JsValue,
+    _args: &[JsValue],
+    ec: &mut dyn ExecutionContext<crate::js::Types>,
+) -> Completion<JsValue, crate::js::Types> {
+    let _ = try_with_media_ref(this, ec, |_media| ())?;
     // Note: load() takes &mut self and requires interior mutability. The HTMLMediaElement
     // is behind a plain &ref in the binding layer. Adding RefCell support is tracked
     // as a separate gap — this binding currently returns undefined.
-    Ok(JsValue::undefined())
+    Ok(ec.value_undefined())
 }
 
-fn play_method(this: &JsValue, _args: &[JsValue], context: &mut Context) -> JsResult<JsValue> {
-    let obj = this
-        .as_object()
-        .ok_or_else(|| JsNativeError::typ().with_message("expected object"))?;
-    if let Some(mut media) = obj.downcast_mut::<HTMLMediaElement>() {
-        media.play(context)
-    } else if let Some(mut video) = obj.downcast_mut::<HTMLVideoElement>() {
-        video.media_element.play(context)
-    } else {
-        Err(JsNativeError::typ()
-            .with_message("expected HTMLMediaElement")
-            .into())
-    }
+fn play_method(
+    this: &JsValue,
+    _args: &[JsValue],
+    ec: &mut dyn ExecutionContext<crate::js::Types>,
+) -> Completion<JsValue, crate::js::Types> {
+    let obj = crate::js::Types::value_as_object(this)
+        .ok_or_else(|| ec.new_type_error("expected object"))?;
+    let mut result = Err(ec.new_type_error("expected HTMLMediaElement"));
+    ec.with_object_any_mut_with(
+        &obj,
+        Box::new(|data, ec2| {
+            if let Some(media) = data.downcast_mut::<HTMLMediaElement>() {
+                result = media.play(ec2);
+            } else if let Some(video) = data.downcast_mut::<HTMLVideoElement>() {
+                result = video.media_element.play(ec2);
+            }
+        }),
+    );
+    result
 }
 
-fn pause_method(this: &JsValue, _args: &[JsValue], context: &mut Context) -> JsResult<JsValue> {
-    let obj = this
-        .as_object()
-        .ok_or_else(|| JsNativeError::typ().with_message("expected object"))?;
-    if let Some(mut media) = obj.downcast_mut::<HTMLMediaElement>() {
-        media.pause(context);
-        Ok(JsValue::undefined())
-    } else if let Some(mut video) = obj.downcast_mut::<HTMLVideoElement>() {
-        video.media_element.pause(context);
-        Ok(JsValue::undefined())
-    } else {
-        Err(JsNativeError::typ()
-            .with_message("expected HTMLMediaElement")
-            .into())
-    }
+fn pause_method(
+    this: &JsValue,
+    _args: &[JsValue],
+    ec: &mut dyn ExecutionContext<crate::js::Types>,
+) -> Completion<JsValue, crate::js::Types> {
+    let obj = crate::js::Types::value_as_object(this)
+        .ok_or_else(|| ec.new_type_error("expected object"))?;
+    ec.with_object_any_mut_with(
+        &obj,
+        Box::new(|data, ec2| {
+            if let Some(media) = data.downcast_mut::<HTMLMediaElement>() {
+                media.pause(ec2);
+            } else if let Some(video) = data.downcast_mut::<HTMLVideoElement>() {
+                video.media_element.pause(ec2);
+            }
+        }),
+    );
+    Ok(ec.value_undefined())
 }
 
-fn can_play_type(this: &JsValue, _args: &[JsValue], _context: &mut Context) -> JsResult<JsValue> {
-    let _obj = this
-        .as_object()
-        .ok_or_else(|| JsNativeError::typ().with_message("expected object"))?;
+fn can_play_type(
+    this: &JsValue,
+    _args: &[JsValue],
+    ec: &mut dyn ExecutionContext<crate::js::Types>,
+) -> Completion<JsValue, crate::js::Types> {
+    let _ = try_with_media_ref(this, ec, |_media| ())?;
     // Step 1: Return "probably" if the type is a media type that can be rendered.
     // Initial cut: return empty string (no types supported).
-    Ok(JsValue::from(JsString::from("")))
+    Ok(ec.value_from_string(ec.js_string_from_str("")))
 }

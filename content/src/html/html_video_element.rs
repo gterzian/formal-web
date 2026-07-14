@@ -2,13 +2,12 @@ use std::cell::RefCell;
 use std::rc::Rc;
 
 use blitz_dom::BaseDocument;
-use boa_engine::JsData;
-use boa_gc::{Finalize, Trace};
 
 use crate::html::html_media_element::HTMLMediaElement;
+use js_engine::gc_struct;
 
 /// <https://html.spec.whatwg.org/#the-video-element>
-#[derive(Trace, Finalize, JsData)]
+#[gc_struct]
 pub struct HTMLVideoElement {
     /// <https://html.spec.whatwg.org/#media-elements>
     pub media_element: HTMLMediaElement,

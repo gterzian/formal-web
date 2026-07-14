@@ -71,8 +71,26 @@ fn prebuild_binaries(prebuild_list: &[(&str, &str)]) -> Result<(), String> {
     if profile == "release" {
         command.arg("--release");
     }
-    if !cfg!(feature = "media") {
-        command.arg("--no-default-features");
+    // Determine the features to pass to prebuild packages.
+    // The content crate has its own backend features (boa/jsc) and media feature.
+    let has_media = cfg!(feature = "media");
+    let has_boa = cfg!(feature = "boa");
+    if has_boa {
+        // Boa backend: override content defaults (which use jsc)
+        if has_media {
+            command.args(["--no-default-features", "--features", "boa,media"]);
+        } else {
+            command.args(["--no-default-features", "--features", "boa"]);
+        }
+    } else {
+        // JSC backend
+        if has_media {
+            // Content defaults are ["media", "boa"] — must override to jsc+media.
+            command.args(["--no-default-features", "--features", "jsc,media"]);
+        } else {
+            // JSC without media
+            command.args(["--no-default-features", "--features", "jsc"]);
+        }
     }
     command.arg("--target-dir").arg(&prebuild_target_root);
     for (package_name, binary_name) in prebuild_list {

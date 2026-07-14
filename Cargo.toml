@@ -10,13 +10,22 @@ name = "formal-web"
 path = "src/main.rs"
 
 [features]
-default = ["media"]
-media = []
+default = ["media", "boa"]
+media = ["dep:media"]
+
+# Backend selection.
+# These propagate to the content crate via workspace dependency resolution.
+jsc = ["dep:content", "content/jsc"]
+boa = ["dep:content", "content/boa", "content/media"]
+wasm = ["content/wasm"]
 
 [dependencies]
 automation = { path = "automation" }
 clap = { version = "4.5", features = ["derive"] }
+content = { path = "content", optional = true, default-features = false }
 embedder = { path = "embedder" }
+media = { path = "media", optional = true }
+net = { path = "net" }
 wpt_runner = { path = "tests/wpt_runner" }
 verification = { path = "verification" }
 log = "0.4"
@@ -32,6 +41,8 @@ members = [
     "ipc/xpc-sys",
     "embedder",
     "ipc_messages",
+    "js_engine",
+    "js_engine_macros",
     "media",
     "net",
     "user_agent",
@@ -40,17 +51,10 @@ members = [
 ]
 default-members = [
     ".",
-    "automation",
-    "content",
-    "ipc",
-    "ipc/xpc-sys",
     "embedder",
-    "ipc_messages",
-    "media",
+    "content",
     "net",
-    "user_agent",
-    "verification",
-    "webview",
+    "media",
 ]
 
 [workspace.dependencies]

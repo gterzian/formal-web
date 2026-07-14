@@ -3,55 +3,45 @@
 //! Value conversion between WebAssembly values and JavaScript values,
 //! as defined in the WebAssembly Core Embedding specification.
 
-use boa_engine::{Context, JsNativeError, JsResult, JsValue};
+use boa_engine::JsValue;
+
+use js_engine::{Completion, ExecutionContext};
 
 /// <https://webassembly.github.io/spec/core/appendix/embedding.html#embed-func-type>
 pub(crate) fn js_val_to_wasm_val(
     value: &JsValue,
     wasm_type: &wasmtime::ValType,
-    context: &mut Context,
-) -> Result<wasmtime::Val, JsNativeError> {
+    ec: &mut dyn ExecutionContext<crate::js::Types>,
+) -> Completion<wasmtime::Val, crate::js::Types> {
     match wasm_type {
         wasmtime::ValType::I32 => {
-            let n = value
-                .to_number(context)
-                .map_err(|_| JsNativeError::typ().with_message("expected number for i32"))?;
+            let n = ec.to_number(value.clone())?;
             Ok(wasmtime::Val::I32(n as i32))
         }
-        wasmtime::ValType::I64 => {
-            Err(JsNativeError::typ().with_message("i64 wasm values not yet supported"))
-        }
+        wasmtime::ValType::I64 => Err(ec.new_type_error("i64 wasm values not yet supported")),
         wasmtime::ValType::F32 => {
-            let n = value
-                .to_number(context)
-                .map_err(|_| JsNativeError::typ().with_message("expected number for f32"))?;
+            let n = ec.to_number(value.clone())?;
             Ok(wasmtime::Val::F32(n as u32))
         }
         wasmtime::ValType::F64 => {
-            let n = value
-                .to_number(context)
-                .map_err(|_| JsNativeError::typ().with_message("expected number for f64"))?;
+            let n = ec.to_number(value.clone())?;
             Ok(wasmtime::Val::F64(n.to_bits()))
         }
-        _ => Err(JsNativeError::typ().with_message("unsupported wasm value type")),
+        _ => Err(ec.new_type_error("unsupported wasm value type")),
     }
 }
 
 /// <https://webassembly.github.io/spec/core/appendix/embedding.html#embed-func-type>
 pub(crate) fn wasm_val_to_js_value(
     val: &wasmtime::Val,
-    _context: &mut Context,
-) -> JsResult<JsValue> {
+    ec: &mut dyn ExecutionContext<crate::js::Types>,
+) -> Completion<JsValue, crate::js::Types> {
     match val {
         wasmtime::Val::I32(n) => Ok(JsValue::from(*n)),
-        wasmtime::Val::I64(_) => Err(JsNativeError::typ()
-            .with_message("i64 wasm values not yet supported")
-            .into()),
+        wasmtime::Val::I64(_) => Err(ec.new_type_error("i64 wasm values not yet supported")),
         wasmtime::Val::F32(n) => Ok(JsValue::from(f32::from_bits(*n) as f64)),
         wasmtime::Val::F64(n) => Ok(JsValue::from(f64::from_bits(*n))),
-        _ => Err(JsNativeError::typ()
-            .with_message("unsupported wasm result type")
-            .into()),
+        _ => Err(ec.new_type_error("unsupported wasm result type")),
     }
 }
 

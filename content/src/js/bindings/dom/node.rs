@@ -1,9 +1,10 @@
 use std::rc::Rc;
 
 use blitz_dom::NodeData;
-use boa_engine::{
-    Context, JsArgs, JsError, JsNativeError, JsResult, JsString, JsValue, object::builtins::JsArray,
-};
+
+type JsValue = <crate::js::Types as JsTypes>::JsValue;
+
+use js_engine::{Completion, ExecutionContext, JsTypes};
 
 use crate::dom::{DOMException, Document, Element, Node};
 use crate::html::{HTMLAnchorElement, HTMLElement, HTMLIFrameElement};
@@ -16,88 +17,36 @@ use crate::webidl::bindings::{
     create_interface_instance,
 };
 
-impl WebIdlInterface for Node {
+impl WebIdlInterface<crate::js::Types> for Node {
     const NAME: &'static str = "Node";
     fn parent_name() -> Option<&'static str> {
         Some("EventTarget")
     }
 
-    fn define_members(def: &mut InterfaceDefinition) {
-        use boa_engine::JsValue;
-        // §3.7.5: Constants
-        def.add_constant(ConstantDef {
-            id: "ELEMENT_NODE",
-            value: JsValue::from(1),
-        });
-        def.add_constant(ConstantDef {
-            id: "ATTRIBUTE_NODE",
-            value: JsValue::from(2),
-        });
-        def.add_constant(ConstantDef {
-            id: "TEXT_NODE",
-            value: JsValue::from(3),
-        });
-        def.add_constant(ConstantDef {
-            id: "CDATA_SECTION_NODE",
-            value: JsValue::from(4),
-        });
-        def.add_constant(ConstantDef {
-            id: "ENTITY_REFERENCE_NODE",
-            value: JsValue::from(5),
-        });
-        def.add_constant(ConstantDef {
-            id: "ENTITY_NODE",
-            value: JsValue::from(6),
-        });
-        def.add_constant(ConstantDef {
-            id: "PROCESSING_INSTRUCTION_NODE",
-            value: JsValue::from(7),
-        });
-        def.add_constant(ConstantDef {
-            id: "COMMENT_NODE",
-            value: JsValue::from(8),
-        });
-        def.add_constant(ConstantDef {
-            id: "DOCUMENT_NODE",
-            value: JsValue::from(9),
-        });
-        def.add_constant(ConstantDef {
-            id: "DOCUMENT_TYPE_NODE",
-            value: JsValue::from(10),
-        });
-        def.add_constant(ConstantDef {
-            id: "DOCUMENT_FRAGMENT_NODE",
-            value: JsValue::from(11),
-        });
-        def.add_constant(ConstantDef {
-            id: "NOTATION_NODE",
-            value: JsValue::from(12),
-        });
-        def.add_constant(ConstantDef {
-            id: "DOCUMENT_POSITION_DISCONNECTED",
-            value: JsValue::from(0x01),
-        });
-        def.add_constant(ConstantDef {
-            id: "DOCUMENT_POSITION_PRECEDING",
-            value: JsValue::from(0x02),
-        });
-        def.add_constant(ConstantDef {
-            id: "DOCUMENT_POSITION_FOLLOWING",
-            value: JsValue::from(0x04),
-        });
-        def.add_constant(ConstantDef {
-            id: "DOCUMENT_POSITION_CONTAINS",
-            value: JsValue::from(0x08),
-        });
-        def.add_constant(ConstantDef {
-            id: "DOCUMENT_POSITION_CONTAINED_BY",
-            value: JsValue::from(0x10),
-        });
-        def.add_constant(ConstantDef {
-            id: "DOCUMENT_POSITION_IMPLEMENTATION_SPECIFIC",
-            value: JsValue::from(0x20),
-        });
-
+    fn define_members(def: &mut InterfaceDefinition<crate::js::Types>) {
+        // https://dom.spec.whatwg.org/#interface-node
+        // Node constants per §4.4
+        def.add_constant(ConstantDef::number("ELEMENT_NODE", 1.0));
+        def.add_constant(ConstantDef::number("ATTRIBUTE_NODE", 2.0));
+        def.add_constant(ConstantDef::number("TEXT_NODE", 3.0));
+        def.add_constant(ConstantDef::number("CDATA_SECTION_NODE", 4.0));
+        def.add_constant(ConstantDef::number("ENTITY_REFERENCE_NODE", 5.0));
+        def.add_constant(ConstantDef::number("ENTITY_NODE", 6.0));
+        def.add_constant(ConstantDef::number("PROCESSING_INSTRUCTION_NODE", 7.0));
+        def.add_constant(ConstantDef::number("COMMENT_NODE", 8.0));
+        def.add_constant(ConstantDef::number("DOCUMENT_NODE", 9.0));
+        def.add_constant(ConstantDef::number("DOCUMENT_TYPE_NODE", 10.0));
+        def.add_constant(ConstantDef::number("DOCUMENT_FRAGMENT_NODE", 11.0));
+        def.add_constant(ConstantDef::number("NOTATION_NODE", 12.0));
+        def.add_constant(ConstantDef::number("DOCUMENT_POSITION_DISCONNECTED", 1.0));
+        def.add_constant(ConstantDef::number("DOCUMENT_POSITION_PRECEDING", 2.0));
+        def.add_constant(ConstantDef::number("DOCUMENT_POSITION_FOLLOWING", 4.0));
+        def.add_constant(ConstantDef::number("DOCUMENT_POSITION_CONTAINS", 8.0));
+        def.add_constant(ConstantDef::number("DOCUMENT_POSITION_CONTAINED_BY", 16.0));
+        def.add_constant(ConstantDef::number(
+            "DOCUMENT_POSITION_IMPLEMENTATION_SPECIFIC",
+            32.0,
+        ));
         // §3.7.6: Regular attributes
         def.add_attribute(AttributeDef {
             id: "nodeType",
@@ -110,6 +59,7 @@ impl WebIdlInterface for Node {
             replaceable: false,
             put_forwards: None,
             legacy_lenient_setter: false,
+            exposed: None,
         });
         def.add_attribute(AttributeDef {
             id: "ownerDocument",
@@ -122,6 +72,7 @@ impl WebIdlInterface for Node {
             replaceable: false,
             put_forwards: None,
             legacy_lenient_setter: false,
+            exposed: None,
         });
         def.add_attribute(AttributeDef {
             id: "parentNode",
@@ -134,6 +85,7 @@ impl WebIdlInterface for Node {
             replaceable: false,
             put_forwards: None,
             legacy_lenient_setter: false,
+            exposed: None,
         });
         def.add_attribute(AttributeDef {
             id: "childNodes",
@@ -146,6 +98,7 @@ impl WebIdlInterface for Node {
             replaceable: false,
             put_forwards: None,
             legacy_lenient_setter: false,
+            exposed: None,
         });
         def.add_attribute(AttributeDef {
             id: "firstChild",
@@ -158,6 +111,7 @@ impl WebIdlInterface for Node {
             replaceable: false,
             put_forwards: None,
             legacy_lenient_setter: false,
+            exposed: None,
         });
         def.add_attribute(AttributeDef {
             id: "lastChild",
@@ -170,6 +124,7 @@ impl WebIdlInterface for Node {
             replaceable: false,
             put_forwards: None,
             legacy_lenient_setter: false,
+            exposed: None,
         });
         def.add_attribute(AttributeDef {
             id: "previousSibling",
@@ -182,6 +137,7 @@ impl WebIdlInterface for Node {
             replaceable: false,
             put_forwards: None,
             legacy_lenient_setter: false,
+            exposed: None,
         });
         def.add_attribute(AttributeDef {
             id: "nextSibling",
@@ -194,6 +150,7 @@ impl WebIdlInterface for Node {
             replaceable: false,
             put_forwards: None,
             legacy_lenient_setter: false,
+            exposed: None,
         });
         def.add_attribute(AttributeDef {
             id: "nodeName",
@@ -206,6 +163,7 @@ impl WebIdlInterface for Node {
             replaceable: false,
             put_forwards: None,
             legacy_lenient_setter: false,
+            exposed: None,
         });
         def.add_attribute(AttributeDef {
             id: "nodeValue",
@@ -218,6 +176,7 @@ impl WebIdlInterface for Node {
             replaceable: false,
             put_forwards: None,
             legacy_lenient_setter: false,
+            exposed: None,
         });
         def.add_attribute(AttributeDef {
             id: "textContent",
@@ -230,6 +189,7 @@ impl WebIdlInterface for Node {
             replaceable: false,
             put_forwards: None,
             legacy_lenient_setter: false,
+            exposed: None,
         });
 
         // §3.7.7: Regular operations
@@ -240,6 +200,7 @@ impl WebIdlInterface for Node {
             static_: false,
             unforgeable: false,
             promise_type: false,
+            exposed: None,
         });
         def.add_operation(OperationDef {
             id: "appendChild",
@@ -248,6 +209,7 @@ impl WebIdlInterface for Node {
             static_: false,
             unforgeable: false,
             promise_type: false,
+            exposed: None,
         });
         def.add_operation(OperationDef {
             id: "insertBefore",
@@ -256,6 +218,7 @@ impl WebIdlInterface for Node {
             static_: false,
             unforgeable: false,
             promise_type: false,
+            exposed: None,
         });
         def.add_operation(OperationDef {
             id: "removeChild",
@@ -264,6 +227,7 @@ impl WebIdlInterface for Node {
             static_: false,
             unforgeable: false,
             promise_type: false,
+            exposed: None,
         });
         def.add_operation(OperationDef {
             id: "remove",
@@ -272,252 +236,363 @@ impl WebIdlInterface for Node {
             static_: false,
             unforgeable: false,
             promise_type: false,
+            exposed: None,
         });
     }
 }
 
-// ── Member getters/setters/methods ──
-
-pub(crate) fn with_node_ref<R>(this: &JsValue, f: impl FnOnce(&Node) -> R) -> JsResult<R> {
-    let object = this
-        .as_object()
-        .ok_or_else(|| JsNativeError::typ().with_message("node receiver is not an object"))?;
-    if let Some(node) = object.downcast_ref::<Node>() {
-        return Ok(f(&node));
+fn try_with_node_ref<R>(
+    this: &JsValue,
+    ec: &mut dyn ExecutionContext<crate::js::Types>,
+    f: impl FnOnce(&Node) -> R,
+) -> Completion<R, crate::js::Types> {
+    let object = crate::js::Types::value_as_object(this)
+        .ok_or_else(|| ec.new_type_error("node receiver is not an object"))?;
+    if let Some(data) = ec.with_object_any(&object) {
+        if let Some(node) = data.downcast_ref::<Node>() {
+            return Ok(f(node));
+        }
+        if let Some(document) = data.downcast_ref::<Document>() {
+            return Ok(f(&document.node));
+        }
+        if let Some(element) = data.downcast_ref::<Element>() {
+            return Ok(f(&element.node));
+        }
+        if let Some(html_element) = data.downcast_ref::<HTMLElement>() {
+            return Ok(f(&html_element.element.node));
+        }
+        if let Some(html_anchor_element) = data.downcast_ref::<HTMLAnchorElement>() {
+            return Ok(f(&html_anchor_element.html_element.element.node));
+        }
+        if let Some(html_iframe_element) = data.downcast_ref::<HTMLIFrameElement>() {
+            return Ok(f(&html_iframe_element.html_element.element.node));
+        }
     }
-    if let Some(document) = object.downcast_ref::<Document>() {
-        return Ok(f(&document.node));
-    }
-    if let Some(element) = object.downcast_ref::<Element>() {
-        return Ok(f(&element.node));
-    }
-    if let Some(html_element) = object.downcast_ref::<HTMLElement>() {
-        return Ok(f(&html_element.element.node));
-    }
-    if let Some(html_anchor_element) = object.downcast_ref::<HTMLAnchorElement>() {
-        return Ok(f(&html_anchor_element.html_element.element.node));
-    }
-    if let Some(html_iframe_element) = object.downcast_ref::<HTMLIFrameElement>() {
-        return Ok(f(&html_iframe_element.html_element.element.node));
-    }
-    Err(JsNativeError::typ()
-        .with_message("receiver is not a Node")
-        .into())
+    Err(ec.new_type_error("receiver is not a Node"))
 }
 
-fn get_text_content(this: &JsValue, _: &[JsValue], _: &mut Context) -> JsResult<JsValue> {
-    with_node_ref(this, |node| match node.text_content() {
-        Some(content) => JsValue::from(JsString::from(content.as_str())),
-        None => JsValue::null(),
-    })
+fn get_text_content(
+    this: &JsValue,
+    _: &[JsValue],
+    ec: &mut dyn ExecutionContext<crate::js::Types>,
+) -> Completion<JsValue, crate::js::Types> {
+    match try_with_node_ref(this, ec, |node| node.text_content())? {
+        Some(content) => Ok(ec.value_from_string(ec.js_string_from_str(content.as_str()))),
+        None => Ok(ec.value_null()),
+    }
 }
 
-fn get_first_child(this: &JsValue, _: &[JsValue], context: &mut Context) -> JsResult<JsValue> {
-    let (document, node_id) =
-        with_node_ref(this, |node| (Rc::clone(&node.document), node.first_child()))?;
+fn get_first_child(
+    this: &JsValue,
+    _: &[JsValue],
+    ec: &mut dyn ExecutionContext<crate::js::Types>,
+) -> Completion<JsValue, crate::js::Types> {
+    let (document, node_id) = try_with_node_ref(this, ec, |node| {
+        (Rc::clone(&node.document), node.first_child())
+    })?;
     match node_id {
-        Some(node_id) => Ok(object_for_existing_node(document, node_id, context)?.into()),
-        None => Ok(JsValue::null()),
+        Some(node_id) => {
+            let obj = object_for_existing_node(document, node_id, ec)?;
+            Ok(crate::js::Types::value_from_object(obj))
+        }
+        None => Ok(ec.value_null()),
     }
 }
 
-fn get_last_child(this: &JsValue, _: &[JsValue], context: &mut Context) -> JsResult<JsValue> {
-    let (document, node_id) =
-        with_node_ref(this, |node| (Rc::clone(&node.document), node.last_child()))?;
+fn get_last_child(
+    this: &JsValue,
+    _: &[JsValue],
+    ec: &mut dyn ExecutionContext<crate::js::Types>,
+) -> Completion<JsValue, crate::js::Types> {
+    let (document, node_id) = try_with_node_ref(this, ec, |node| {
+        (Rc::clone(&node.document), node.last_child())
+    })?;
     match node_id {
-        Some(node_id) => Ok(object_for_existing_node(document, node_id, context)?.into()),
-        None => Ok(JsValue::null()),
+        Some(node_id) => {
+            let obj = object_for_existing_node(document, node_id, ec)?;
+            Ok(crate::js::Types::value_from_object(obj))
+        }
+        None => Ok(ec.value_null()),
     }
 }
 
-fn get_parent_node(this: &JsValue, _: &[JsValue], context: &mut Context) -> JsResult<JsValue> {
-    let (document, node_id) =
-        with_node_ref(this, |node| (Rc::clone(&node.document), node.parent_node()))?;
+fn get_parent_node(
+    this: &JsValue,
+    _: &[JsValue],
+    ec: &mut dyn ExecutionContext<crate::js::Types>,
+) -> Completion<JsValue, crate::js::Types> {
+    let (document, node_id) = try_with_node_ref(this, ec, |node| {
+        (Rc::clone(&node.document), node.parent_node())
+    })?;
     match node_id {
-        Some(0) => Ok(document_object(context)?.into()),
-        Some(node_id) => Ok(object_for_existing_node(document, node_id, context)?.into()),
-        None => Ok(JsValue::null()),
+        Some(0) => {
+            let obj = document_object(ec)?;
+            Ok(crate::js::Types::value_from_object(obj))
+        }
+        Some(node_id) => {
+            let obj = object_for_existing_node(document, node_id, ec)?;
+            Ok(crate::js::Types::value_from_object(obj))
+        }
+        None => Ok(ec.value_null()),
     }
 }
 
-fn get_previous_sibling(this: &JsValue, _: &[JsValue], context: &mut Context) -> JsResult<JsValue> {
-    let (document, node_id) = with_node_ref(this, |node| {
+fn get_previous_sibling(
+    this: &JsValue,
+    _: &[JsValue],
+    ec: &mut dyn ExecutionContext<crate::js::Types>,
+) -> Completion<JsValue, crate::js::Types> {
+    let (document, node_id) = try_with_node_ref(this, ec, |node| {
         (Rc::clone(&node.document), node.previous_sibling())
     })?;
     match node_id {
-        Some(node_id) => Ok(object_for_existing_node(document, node_id, context)?.into()),
-        None => Ok(JsValue::null()),
+        Some(node_id) => {
+            let obj = object_for_existing_node(document, node_id, ec)?;
+            Ok(crate::js::Types::value_from_object(obj))
+        }
+        None => Ok(ec.value_null()),
     }
 }
 
-fn get_next_sibling(this: &JsValue, _: &[JsValue], context: &mut Context) -> JsResult<JsValue> {
-    let (document, node_id) = with_node_ref(this, |node| {
+fn get_next_sibling(
+    this: &JsValue,
+    _: &[JsValue],
+    ec: &mut dyn ExecutionContext<crate::js::Types>,
+) -> Completion<JsValue, crate::js::Types> {
+    let (document, node_id) = try_with_node_ref(this, ec, |node| {
         (Rc::clone(&node.document), node.next_sibling())
     })?;
     match node_id {
-        Some(node_id) => Ok(object_for_existing_node(document, node_id, context)?.into()),
-        None => Ok(JsValue::null()),
+        Some(node_id) => {
+            let obj = object_for_existing_node(document, node_id, ec)?;
+            Ok(crate::js::Types::value_from_object(obj))
+        }
+        None => Ok(ec.value_null()),
     }
 }
 
-fn get_child_nodes(this: &JsValue, _: &[JsValue], context: &mut Context) -> JsResult<JsValue> {
-    let (document, node_ids) = with_node_ref(this, |node| {
+fn get_child_nodes(
+    this: &JsValue,
+    _: &[JsValue],
+    ec: &mut dyn ExecutionContext<crate::js::Types>,
+) -> Completion<JsValue, crate::js::Types> {
+    let (document, node_ids) = try_with_node_ref(this, ec, |node| {
         (Rc::clone(&node.document), node.child_node_ids())
     })?;
-    let values = node_ids
-        .into_iter()
-        .map(|node_id| {
-            object_for_existing_node(Rc::clone(&document), node_id, context).map(JsValue::from)
-        })
-        .collect::<JsResult<Vec<_>>>()?;
-    Ok(JsArray::from_iter(values, context).into())
+    let array = ec.create_empty_array();
+    for node_id in node_ids {
+        let obj = object_for_existing_node(Rc::clone(&document), node_id, ec)?;
+        ec.array_push(&array, crate::js::Types::value_from_object(obj))?;
+    }
+    Ok(crate::js::Types::value_from_object(array))
 }
 
-fn get_node_type(this: &JsValue, _: &[JsValue], _: &mut Context) -> JsResult<JsValue> {
-    with_node_ref(this, |node| JsValue::from(node.node_type()))
+fn get_node_type(
+    this: &JsValue,
+    _: &[JsValue],
+    ec: &mut dyn ExecutionContext<crate::js::Types>,
+) -> Completion<JsValue, crate::js::Types> {
+    let node_type = try_with_node_ref(this, ec, |node| node.node_type())?;
+    Ok(ec.value_from_number(node_type as f64))
 }
 
-fn get_node_name(this: &JsValue, _: &[JsValue], _: &mut Context) -> JsResult<JsValue> {
-    with_node_ref(this, |node| {
-        JsValue::from(JsString::from(node.node_name().as_str()))
-    })
+fn get_node_name(
+    this: &JsValue,
+    _: &[JsValue],
+    ec: &mut dyn ExecutionContext<crate::js::Types>,
+) -> Completion<JsValue, crate::js::Types> {
+    let name = try_with_node_ref(this, ec, |node| node.node_name())?;
+    Ok(ec.value_from_string(ec.js_string_from_str(name.as_str())))
 }
 
-fn get_owner_document(this: &JsValue, _: &[JsValue], context: &mut Context) -> JsResult<JsValue> {
-    let owner_document = with_node_ref(this, Node::owner_document_node_id)?;
+fn get_owner_document(
+    this: &JsValue,
+    _: &[JsValue],
+    ec: &mut dyn ExecutionContext<crate::js::Types>,
+) -> Completion<JsValue, crate::js::Types> {
+    let owner_document = try_with_node_ref(this, ec, Node::owner_document_node_id)?;
     match owner_document {
-        Some(0) => Ok(document_object(context)?.into()),
-        Some(node_id) => {
-            let document = with_node_ref(this, |node| Rc::clone(&node.document))?;
-            Ok(object_for_existing_node(document, node_id, context)?.into())
+        Some(0) => {
+            let obj = document_object(ec)?;
+            Ok(crate::js::Types::value_from_object(obj))
         }
-        None => Ok(JsValue::null()),
+        Some(node_id) => {
+            let document = try_with_node_ref(this, ec, |node| Rc::clone(&node.document))?;
+            let obj = object_for_existing_node(document, node_id, ec)?;
+            Ok(crate::js::Types::value_from_object(obj))
+        }
+        None => Ok(ec.value_null()),
     }
 }
 
-fn get_node_value(this: &JsValue, _: &[JsValue], _: &mut Context) -> JsResult<JsValue> {
-    with_node_ref(this, |node| match node.node_value() {
-        Some(value) => JsValue::from(JsString::from(value.as_str())),
-        None => JsValue::null(),
-    })
+fn get_node_value(
+    this: &JsValue,
+    _: &[JsValue],
+    ec: &mut dyn ExecutionContext<crate::js::Types>,
+) -> Completion<JsValue, crate::js::Types> {
+    match try_with_node_ref(this, ec, |node| node.node_value())? {
+        Some(value) => Ok(ec.value_from_string(ec.js_string_from_str(value.as_str()))),
+        None => Ok(ec.value_null()),
+    }
 }
 
-fn set_node_value(this: &JsValue, args: &[JsValue], context: &mut Context) -> JsResult<JsValue> {
-    let value = args.get_or_undefined(0);
-    let value = if value.is_null() {
+fn set_node_value(
+    this: &JsValue,
+    args: &[JsValue],
+    ec: &mut dyn ExecutionContext<crate::js::Types>,
+) -> Completion<JsValue, crate::js::Types> {
+    let first = args.first();
+    let value = if first.map_or(true, |v| crate::js::Types::value_is_null(v)) {
         None
     } else {
-        Some(value.to_string(context)?.to_std_string_escaped())
+        Some(ec.to_rust_string(first.unwrap().clone())?)
     };
-    with_node_ref(this, |node| node.set_node_value(value.as_deref()))?;
-    Ok(JsValue::undefined())
+    try_with_node_ref(this, ec, |node| node.set_node_value(value.as_deref()))?;
+    Ok(ec.value_undefined())
 }
 
-fn set_text_content(this: &JsValue, args: &[JsValue], context: &mut Context) -> JsResult<JsValue> {
-    let value = args.get_or_undefined(0);
-    let text = if value.is_null() {
+fn set_text_content(
+    this: &JsValue,
+    args: &[JsValue],
+    ec: &mut dyn ExecutionContext<crate::js::Types>,
+) -> Completion<JsValue, crate::js::Types> {
+    let first = args.first();
+    let text = if first.map_or(true, |v| crate::js::Types::value_is_null(v)) {
         None
     } else {
-        Some(value.to_string(context)?.to_std_string_escaped())
+        Some(ec.to_rust_string(first.unwrap().clone())?)
     };
-    let dropped_node_ids = with_node_ref(this, |node| {
+    let dropped_node_ids = try_with_node_ref(this, ec, |node| {
         let should_invalidate = {
             let document = node.document.borrow();
             document
                 .get_node(node.node_id)
                 .is_some_and(|current| matches!(current.data, NodeData::Element(_)))
         };
-
         if should_invalidate {
             collect_child_subtree_node_ids(&node.document, node.node_id)
         } else {
             Vec::new()
         }
     })?;
-    invalidate_cached_node_ids(context, &dropped_node_ids)?;
-    with_node_ref(this, |node| {
-        node.set_text_content(text.as_deref());
-    })?;
-    Ok(JsValue::undefined())
+    invalidate_cached_node_ids(ec, &dropped_node_ids)?;
+    try_with_node_ref(this, ec, |node| node.set_text_content(text.as_deref()))?;
+    Ok(ec.value_undefined())
 }
 
-fn append_child(this: &JsValue, args: &[JsValue], context: &mut Context) -> JsResult<JsValue> {
-    let child = appendable_node(args.get_or_undefined(0))?;
-    with_node_ref(this, |node| node.append_child(&child))?
-        .map_err(|error| dom_exception_error(error, context))?;
-    Ok(args.get_or_undefined(0).clone())
+fn append_child(
+    this: &JsValue,
+    args: &[JsValue],
+    ec: &mut dyn ExecutionContext<crate::js::Types>,
+) -> Completion<JsValue, crate::js::Types> {
+    let child_val = args
+        .first()
+        .cloned()
+        .unwrap_or_else(|| ec.value_undefined());
+    let child = appendable_node(&child_val, ec)?;
+    match try_with_node_ref(this, ec, |node| node.append_child(&child))? {
+        Ok(_) => Ok(child_val),
+        Err(dom_exception) => Err(dom_exception_error(dom_exception, ec)),
+    }
 }
 
-fn insert_before(this: &JsValue, args: &[JsValue], context: &mut Context) -> JsResult<JsValue> {
-    let child = appendable_node(args.get_or_undefined(0))?;
-    let reference_child = match args.get_or_undefined(1) {
-        value if value.is_null() || value.is_undefined() => None,
-        value => Some(appendable_node(value)?),
+fn insert_before(
+    this: &JsValue,
+    args: &[JsValue],
+    ec: &mut dyn ExecutionContext<crate::js::Types>,
+) -> Completion<JsValue, crate::js::Types> {
+    let child_val = args
+        .first()
+        .cloned()
+        .unwrap_or_else(|| ec.value_undefined());
+    let child = appendable_node(&child_val, ec)?;
+    let reference_val = args.get(1).cloned().unwrap_or_else(|| ec.value_undefined());
+    let reference_child = if crate::js::Types::value_is_null(&reference_val)
+        || crate::js::Types::value_is_undefined(&reference_val)
+    {
+        None
+    } else {
+        Some(appendable_node(&reference_val, ec)?)
     };
-    with_node_ref(this, |node| {
+    match try_with_node_ref(this, ec, |node| {
         node.insert_before(&child, reference_child.as_ref())
-    })?
-    .map_err(|error| dom_exception_error(error, context))?;
-    Ok(args.get_or_undefined(0).clone())
+    })? {
+        Ok(_) => Ok(child_val),
+        Err(dom_exception) => Err(dom_exception_error(dom_exception, ec)),
+    }
 }
 
-fn remove_child(this: &JsValue, args: &[JsValue], _: &mut Context) -> JsResult<JsValue> {
-    let child = appendable_node(args.get_or_undefined(0))?;
-    with_node_ref(this, |node| node.remove_child(&child))?
-        .map_err(|error| JsNativeError::typ().with_message(error))?;
-    Ok(args.get_or_undefined(0).clone())
+fn remove_child(
+    this: &JsValue,
+    args: &[JsValue],
+    ec: &mut dyn ExecutionContext<crate::js::Types>,
+) -> Completion<JsValue, crate::js::Types> {
+    let child_val = args
+        .first()
+        .cloned()
+        .unwrap_or_else(|| ec.value_undefined());
+    let child = appendable_node(&child_val, ec)?;
+    match try_with_node_ref(this, ec, |node| node.remove_child(&child))? {
+        Ok(()) => Ok(child_val),
+        Err(error_msg) => Err(ec.new_type_error(&error_msg)),
+    }
 }
 
-fn remove(this: &JsValue, _: &[JsValue], _: &mut Context) -> JsResult<JsValue> {
-    with_node_ref(this, Node::remove)?;
-    Ok(JsValue::undefined())
+fn appendable_node(
+    value: &JsValue,
+    ec: &mut dyn ExecutionContext<crate::js::Types>,
+) -> Completion<Node, crate::js::Types> {
+    let object = crate::js::Types::value_as_object(value)
+        .ok_or_else(|| ec.new_type_error("appendChild requires a Node"))?;
+    if let Some(data) = ec.with_object_any(&object) {
+        if let Some(node) = data.downcast_ref::<Node>() {
+            return Ok(Node::new(Rc::clone(&node.document), node.node_id));
+        }
+        if let Some(element) = data.downcast_ref::<Element>() {
+            return Ok(Node::new(
+                Rc::clone(&element.node.document),
+                element.node.node_id,
+            ));
+        }
+        if let Some(html_element) = data.downcast_ref::<HTMLElement>() {
+            return Ok(Node::new(
+                Rc::clone(&html_element.element.node.document),
+                html_element.element.node.node_id,
+            ));
+        }
+        if let Some(html_iframe_element) = data.downcast_ref::<HTMLIFrameElement>() {
+            return Ok(Node::new(
+                Rc::clone(&html_iframe_element.html_element.element.node.document),
+                html_iframe_element.html_element.element.node.node_id,
+            ));
+        }
+    }
+    Err(ec.new_type_error("appendChild requires a Node"))
 }
 
-fn has_child_nodes(this: &JsValue, _: &[JsValue], _: &mut Context) -> JsResult<JsValue> {
-    with_node_ref(this, |node| JsValue::from(node.has_child_nodes()))
+fn remove(
+    this: &JsValue,
+    _: &[JsValue],
+    ec: &mut dyn ExecutionContext<crate::js::Types>,
+) -> Completion<JsValue, crate::js::Types> {
+    try_with_node_ref(this, ec, Node::remove)?;
+    Ok(ec.value_undefined())
 }
 
-fn appendable_node(value: &JsValue) -> JsResult<Node> {
-    let Some(object) = value.as_object() else {
-        return Err(JsNativeError::typ()
-            .with_message("appendChild requires a Node")
-            .into());
-    };
-    if let Some(node) = object.downcast_ref::<Node>() {
-        return Ok(Node::new(Rc::clone(&node.document), node.node_id));
-    }
-    if let Some(element) = object.downcast_ref::<Element>() {
-        return Ok(Node::new(
-            Rc::clone(&element.node.document),
-            element.node.node_id,
-        ));
-    }
-    if let Some(html_element) = object.downcast_ref::<HTMLElement>() {
-        return Ok(Node::new(
-            Rc::clone(&html_element.element.node.document),
-            html_element.element.node.node_id,
-        ));
-    }
-    if let Some(html_anchor_element) = object.downcast_ref::<HTMLAnchorElement>() {
-        return Ok(Node::new(
-            Rc::clone(&html_anchor_element.html_element.element.node.document),
-            html_anchor_element.html_element.element.node.node_id,
-        ));
-    }
-    if let Some(html_iframe_element) = object.downcast_ref::<HTMLIFrameElement>() {
-        return Ok(Node::new(
-            Rc::clone(&html_iframe_element.html_element.element.node.document),
-            html_iframe_element.html_element.element.node.node_id,
-        ));
-    }
-    Err(JsNativeError::typ()
-        .with_message("appendChild requires a Node")
-        .into())
+fn has_child_nodes(
+    this: &JsValue,
+    _: &[JsValue],
+    ec: &mut dyn ExecutionContext<crate::js::Types>,
+) -> Completion<JsValue, crate::js::Types> {
+    let has = try_with_node_ref(this, ec, |node| node.has_child_nodes())?;
+    Ok(ec.value_from_bool(has))
 }
 
-fn dom_exception_error(exception: DOMException, context: &mut Context) -> JsError {
-    JsError::from_opaque(JsValue::from(
-        create_interface_instance::<DOMException>(exception, context)
-            .expect("DOMException construction should not fail"),
-    ))
+fn dom_exception_error(
+    exception: DOMException,
+    ec: &mut dyn ExecutionContext<crate::js::Types>,
+) -> JsValue {
+    create_interface_instance::<crate::js::Types, DOMException>(exception, ec)
+        .map(|obj| crate::js::Types::value_from_object(obj))
+        .unwrap_or_else(|err| err)
 }

@@ -1,11 +1,10 @@
-use boa_engine::{
-    Context, JsArgs, JsData, JsNativeError, JsResult, JsValue,
-    builtins::promise::ResolvingFunctions, object::JsObject,
-};
-use boa_gc::{Finalize, Gc, GcRefCell, Trace};
+use js_engine::{Completion, ExecutionContext, JsTypes, PromiseResolvers};
 
+use crate::js::Types;
 use crate::webidl::bindings::create_interface_instance;
-use crate::webidl::rejected_promise;
+use js_engine::gc::GcCell;
+use js_engine::gc::gc_cell_new;
+use js_engine::gc_struct;
 
 use super::{
     ArrayBufferViewDescriptor, ReadIntoRequest, ReadableStream, ReadableStreamGenericReader,
@@ -13,80 +12,81 @@ use super::{
     with_readable_stream_ref,
 };
 
+type JsValue = <Types as JsTypes>::JsValue;
+type JsObject = <Types as JsTypes>::JsObject;
+
 /// <https://streams.spec.whatwg.org/#byob-reader-class>
-#[derive(Clone, Trace, Finalize, JsData)]
+#[gc_struct]
 pub struct ReadableStreamBYOBReader {
-    stream: Gc<GcRefCell<Option<ReadableStream>>>,
-    closed_promise: Gc<GcRefCell<Option<JsObject>>>,
-    closed_resolvers: Gc<GcRefCell<Option<ResolvingFunctions>>>,
+    stream: GcCell<Option<ReadableStream>>,
+    closed_promise: GcCell<Option<JsObject>>,
+    closed_resolvers: GcCell<Option<PromiseResolvers<Types>>>,
 }
 
 impl ReadableStreamBYOBReader {
     pub(crate) fn new() -> Self {
         Self {
-            stream: Gc::new(GcRefCell::new(None)),
-            closed_promise: Gc::new(GcRefCell::new(None)),
-            closed_resolvers: Gc::new(GcRefCell::new(None)),
+            stream: gc_cell_new(None),
+            closed_promise: gc_cell_new(None),
+            closed_resolvers: gc_cell_new(None),
         }
     }
 
     pub(crate) fn set_up_readable_stream_byob_reader(
         &self,
         stream: ReadableStream,
-        context: &mut Context,
-    ) -> JsResult<()> {
+        ec: &mut dyn ExecutionContext<Types>,
+    ) -> Completion<(), Types> {
         if stream.is_readable_stream_locked() {
-            return Err(JsNativeError::typ()
-                .with_message("Cannot create a BYOB reader for a locked stream")
-                .into());
+            return Err(ec.new_type_error("Cannot create a BYOB reader for a locked stream"));
         }
 
         let Some(controller) = stream.controller_slot() else {
-            return Err(JsNativeError::typ()
-                .with_message("ReadableStream is missing its controller")
-                .into());
+            return Err(ec.new_type_error("ReadableStream is missing its controller"));
         };
         if controller.as_byte_controller().is_none() {
-            return Err(JsNativeError::typ()
-                .with_message("ReadableStreamBYOBReader requires a byte stream")
-                .into());
+            return Err(ec.new_type_error("ReadableStreamBYOBReader requires a byte stream"));
         }
 
-        self.readable_stream_reader_generic_initialize(stream, context)
+        self.readable_stream_reader_generic_initialize(stream, ec)
     }
 
-    pub(crate) fn closed(&self) -> JsResult<JsObject> {
-        <Self as ReadableStreamGenericReader>::closed(self)
+    pub(crate) fn closed(
+        &self,
+        ec: &mut dyn ExecutionContext<Types>,
+    ) -> Completion<JsObject, Types> {
+        <Self as ReadableStreamGenericReader>::closed(self, ec)
     }
 
-    pub(crate) fn cancel(&self, reason: JsValue, context: &mut Context) -> JsResult<JsObject> {
-        <Self as ReadableStreamGenericReader>::cancel(self, reason, context)
+    pub(crate) fn cancel(
+        &self,
+        reason: JsValue,
+        ec: &mut dyn ExecutionContext<Types>,
+    ) -> Completion<JsObject, Types> {
+        <Self as ReadableStreamGenericReader>::cancel(self, reason, ec)
     }
 
     pub(crate) fn read(
         &self,
         view: &JsValue,
         options: &JsValue,
-        context: &mut Context,
-    ) -> JsResult<JsObject> {
+        ec: &mut dyn ExecutionContext<Types>,
+    ) -> Completion<JsObject, Types> {
         if self.stream_slot_value().is_none() {
-            return rejected_type_error_promise("Cannot read from a released reader", context);
+            return rejected_type_error_promise("Cannot read from a released reader", ec);
         }
 
-        let view = ArrayBufferViewDescriptor::from_value(view.clone(), context)?;
+        let view = ArrayBufferViewDescriptor::from_value(view.clone(), ec)?;
         if view.byte_length() == 0 {
             return rejected_type_error_promise(
                 "ReadableStreamBYOBReader.read() requires a non-empty view",
-                context,
+                ec,
             );
         }
 
-        let min = match normalize_min(options, &view, context) {
-            Ok(min) => min,
-            Err(error) => return rejected_promise(error.into_opaque(context)?, context),
-        };
-        let (read_into_request, promise) = ReadIntoRequest::new(context);
-        self.read_steps(view, min, read_into_request, context)?;
+        let (read_into_request, promise) = ReadIntoRequest::new(ec)?;
+        let min = normalize_min(options, &view, ec)?;
+        self.read_steps(view, min, read_into_request, ec)?;
         Ok(promise)
     }
 
@@ -95,39 +95,37 @@ impl ReadableStreamBYOBReader {
         view: ArrayBufferViewDescriptor,
         min: usize,
         read_into_request: ReadIntoRequest,
-        context: &mut Context,
-    ) -> JsResult<()> {
-        let stream = self.stream_slot_value().ok_or_else(|| {
-            JsNativeError::typ().with_message("reader is not attached to a stream")
-        })?;
+        ec: &mut dyn ExecutionContext<Types>,
+    ) -> Completion<(), Types> {
+        let not_attached = ec.new_type_error("reader is not attached to a stream");
+        let stream = self.stream_slot_value().ok_or_else(|| not_attached)?;
 
         stream.set_disturbed(true);
 
         if stream.state() == ReadableStreamState::Closed {
-            return read_into_request.close_steps(
-                Some(JsValue::from(view.create_result_view(0, context)?)),
-                context,
-            );
+            let result_view = view.create_result_view(0, ec)?;
+            return read_into_request.close_steps(Some(JsValue::from(result_view)), ec);
         }
 
         if stream.state() == ReadableStreamState::Errored {
-            return read_into_request.error_steps(stream.stored_error(), context);
+            return read_into_request.error_steps(stream.stored_error(), ec);
         }
 
-        let controller = stream.controller_slot().ok_or_else(|| {
-            JsNativeError::typ().with_message("ReadableStream is missing its controller")
-        })?;
-        let controller = controller.as_byte_controller().ok_or_else(|| {
-            JsNativeError::typ().with_message("ReadableStreamBYOBReader requires a byte stream")
-        })?;
-        controller.pull_into(view, min, read_into_request, context)
+        let no_ctrl = ec.new_type_error("ReadableStream is missing its controller");
+        let controller = stream.controller_slot().ok_or_else(|| no_ctrl.clone())?;
+        let not_byte = ec.new_type_error("ReadableStreamBYOBReader requires a byte stream");
+        let controller = controller.as_byte_controller().ok_or_else(|| not_byte)?;
+        controller.pull_into(view, min, read_into_request, ec)
     }
 
-    pub(crate) fn release_lock(&self, context: &mut Context) -> JsResult<()> {
+    pub(crate) fn release_lock(
+        &self,
+        ec: &mut dyn ExecutionContext<Types>,
+    ) -> Completion<(), Types> {
         if self.stream_slot_value().is_none() {
             return Ok(());
         }
-        self.readable_stream_reader_generic_release(context)
+        self.readable_stream_reader_generic_release(ec)
     }
 }
 
@@ -145,14 +143,29 @@ impl ReadableStreamGenericReader for ReadableStreamBYOBReader {
     }
 
     fn set_closed_promise_slot_value(&self, promise: Option<JsObject>) {
+        // JSC: protect new value from GC, unprotect old value
+        #[cfg(not(feature = "boa"))]
+        {
+            let old = self.closed_promise.borrow().clone();
+            if let Some(ref old_obj) = old {
+                unsafe {
+                    js_engine::jsc_sys::JSValueUnprotect(old_obj.ctx(), old_obj.as_value_ref());
+                }
+            }
+            if let Some(ref new_obj) = promise {
+                unsafe {
+                    js_engine::jsc_sys::JSValueProtect(new_obj.ctx(), new_obj.as_value_ref());
+                }
+            }
+        }
         *self.closed_promise.borrow_mut() = promise;
     }
 
-    fn closed_resolvers_slot_value(&self) -> Option<ResolvingFunctions> {
+    fn closed_resolvers_slot_value(&self) -> Option<PromiseResolvers<Types>> {
         self.closed_resolvers.borrow().clone()
     }
 
-    fn set_closed_resolvers_slot_value(&self, resolvers: Option<ResolvingFunctions>) {
+    fn set_closed_resolvers_slot_value(&self, resolvers: Option<PromiseResolvers<Types>>) {
         *self.closed_resolvers.borrow_mut() = resolvers;
     }
 
@@ -161,44 +174,52 @@ impl ReadableStreamGenericReader for ReadableStreamBYOBReader {
     }
 }
 
+/// <https://streams.spec.whatwg.org/#byob-reader-constructor>
 pub(crate) fn construct_readable_stream_byob_reader(
     _this: &JsValue,
     args: &[JsValue],
-    context: &mut Context,
-) -> JsResult<ReadableStreamBYOBReader> {
-    let stream_object = args.get_or_undefined(0).as_object().ok_or_else(|| {
-        JsNativeError::typ().with_message("ReadableStreamBYOBReader requires a ReadableStream")
-    })?;
-    let stream = with_readable_stream_ref(&stream_object, |stream| stream.clone())?;
+    ec: &mut dyn ExecutionContext<Types>,
+) -> Completion<ReadableStreamBYOBReader, Types> {
+    let stream_object = args
+        .first()
+        .cloned()
+        .unwrap_or_else(|| ec.value_undefined())
+        .as_object()
+        .ok_or_else(|| ec.new_type_error("ReadableStreamBYOBReader requires a ReadableStream"))?;
+    let stream =
+        with_readable_stream_ref(&stream_object, ec, |stream: &ReadableStream| stream.clone())?;
     let reader = ReadableStreamBYOBReader::new();
-    reader.set_up_readable_stream_byob_reader(stream, context)?;
+    reader.set_up_readable_stream_byob_reader(stream, ec)?;
     Ok(reader)
 }
 
+/// <https://streams.spec.whatwg.org/#acquire-readable-stream-byob-reader>
 pub(crate) fn acquire_readable_stream_byob_reader(
     stream: ReadableStream,
-    context: &mut Context,
-) -> JsResult<JsObject> {
-    let reader_object = create_readable_stream_byob_reader(context)?;
-    let reader = with_readable_stream_byob_reader_ref(&reader_object, |reader| reader.clone())?;
-    reader.set_up_readable_stream_byob_reader(stream, context)?;
+    ec: &mut dyn ExecutionContext<Types>,
+) -> Completion<JsObject, Types> {
+    let reader_object = create_readable_stream_byob_reader(ec)?;
+    let reader = with_readable_stream_byob_reader_ref(&reader_object, ec, |reader| reader.clone())?;
+    reader.set_up_readable_stream_byob_reader(stream, ec)?;
     Ok(reader_object)
 }
 
-fn create_readable_stream_byob_reader(context: &mut Context) -> JsResult<JsObject> {
+fn create_readable_stream_byob_reader(
+    ec: &mut dyn ExecutionContext<Types>,
+) -> Completion<JsObject, Types> {
     let reader = ReadableStreamBYOBReader::new();
     let reader_object: JsObject =
-        create_interface_instance::<ReadableStreamBYOBReader>(reader, context)?.into();
+        create_interface_instance::<Types, ReadableStreamBYOBReader>(reader, ec)?.into();
     Ok(reader_object)
 }
 
 /// <https://streams.spec.whatwg.org/#abstract-opdef-readablestreambyobreaderrelease>
 pub(crate) fn readable_stream_byob_reader_release(
     reader: ReadableStreamBYOBReader,
-    context: &mut Context,
-) -> JsResult<()> {
+    ec: &mut dyn ExecutionContext<Types>,
+) -> Completion<(), Types> {
     // Step 1: "Perform ! ReadableStreamReaderGenericRelease(reader)."
-    reader.readable_stream_reader_generic_release(context)?;
+    reader.readable_stream_reader_generic_release(ec)?;
 
     // Step 2–3: Error any remaining [[readIntoRequests]].
     // Note: In tee() usage the spec asserts [[readIntoRequests]] is empty before
@@ -211,36 +232,39 @@ pub(crate) fn readable_stream_byob_reader_release(
 
 pub(crate) fn with_readable_stream_byob_reader_ref<R>(
     object: &JsObject,
+    ec: &mut dyn ExecutionContext<Types>,
     f: impl FnOnce(&ReadableStreamBYOBReader) -> R,
-) -> JsResult<R> {
-    let reader = object
-        .downcast_ref::<ReadableStreamBYOBReader>()
-        .ok_or_else(|| {
-            JsNativeError::typ().with_message("object is not a ReadableStreamBYOBReader")
-        })?;
-    Ok(f(&reader))
+) -> Completion<R, Types> {
+    let reader_ref = ec
+        .with_object_any(object)
+        .and_then(|a| a.downcast_ref::<ReadableStreamBYOBReader>());
+    let reader = match reader_ref {
+        Some(r) => r,
+        None => return Err(ec.new_type_error("object is not a ReadableStreamBYOBReader")),
+    };
+    Ok(f(reader))
 }
 
 fn normalize_min(
     options: &JsValue,
     view: &ArrayBufferViewDescriptor,
-    context: &mut Context,
-) -> JsResult<usize> {
+    ec: &mut dyn ExecutionContext<Types>,
+) -> Completion<usize, Types> {
+    use js_engine::EcmascriptHost;
     let options_object = if options.is_undefined() || options.is_null() {
         None
     } else {
-        Some(options.to_object(context)?)
+        Some(ec.to_object(options.clone())?)
     };
     let min = if let Some(options_object) = options_object {
-        let min_value = options_object.get(boa_engine::js_string!("min"), context)?;
-        if min_value.is_undefined() {
+        let min_value = EcmascriptHost::get(ec, &options_object, "min")?;
+        let undefined_value = ec.value_undefined();
+        if ec.same_value(&min_value, &undefined_value) {
             1
         } else {
-            let min_number = min_value.to_number(context)?;
+            let min_number = ec.to_number(min_value)?;
             if !min_number.is_finite() || min_number <= 0.0 || min_number.fract() != 0.0 {
-                return Err(JsNativeError::typ()
-                    .with_message("min must be a positive integer")
-                    .into());
+                return Err(ec.new_type_error("min must be a positive integer"));
             }
             min_number as usize
         }
@@ -254,9 +278,7 @@ fn normalize_min(
         view.element_length()
     };
     if min > max_min {
-        return Err(JsNativeError::range()
-            .with_message("min exceeds the supplied view length")
-            .into());
+        return Err(ec.new_range_error("min exceeds the supplied view length"));
     }
     Ok(min)
 }

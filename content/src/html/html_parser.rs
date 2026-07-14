@@ -298,7 +298,7 @@ pub fn execute_parser_scripts(
             }
             PendingParserScript::Inline { source } => {
                 if let Err(error) = settings.evaluate_script(&source) {
-                    error!("content error: {error}");
+                    error!("[parser script] content error: {error}");
                 }
             }
         }

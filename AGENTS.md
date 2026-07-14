@@ -1,3 +1,13 @@
+# Rule Number One
+
+Only ever perform an action if it directly relates to a coding task in the current repository.
+
+# Rule Number Two: External Network
+
+Never navigate to external domains or make network requests to external
+hosts without explicit prior approval from the user.  Use only local
+resources (localhost, file://, in-repository artifacts).
+
 # File System Boundaries
 
 Agents may read and write files freely within:
@@ -124,8 +134,27 @@ shared dependency resolution and incremental compilation.
 - **Root binary** (`formal-web`): runs the embedder directly in-process, creating the window and event loop.
 - **Embedder crate** (`embedder`): a library used by the root binary that owns the winit event loop, window, chrome, and automation plumbing. A standalone `formal-web-embedder` binary is also produced for direct use.
 - **Helper processes** (`formal-web-content`, `formal-web-net`, `formal-web-media`): spawned by the embedder.
+- **`js_engine` crate**: a generic JS engine trait and ECMA-262 abstract operations. Two backends: Boa (default, most operational) and JSC (macOS opt-in). WebAssembly is a separate feature (`wasm`). See `js_engine/README.md`.
+- **`js_engine_macros` crate**: proc-macro companion providing `#[gc_struct]` for GC-traced platform objects.
+
+### Feature flags
+
+| Flag | Effect | Default |
+|---|---|---|
+| `boa` | Boa JS engine backend (most operational, runs WPT) | yes |
+| `jsc` | JavaScriptCore backend (macOS only, experimental) | no |
+| `wasm` | WebAssembly support via wasmtime (opt-in, Boa only) | no |
+| `media` | Video/audio playback support | yes |
+
+Boa is the primary backend for running WPT tests.  Wasm is a separate feature
+to avoid pulling in wasmtime when not needed.  JSC is macOS-only and
+experimental (see `js_engine/README.md` for known issues).
 
 ### Three verbs
+
+## Build commands
+
+### Default build (Boa, no WebAssembly)
 
 ```bash
 # Check all — type-check every package
@@ -136,17 +165,31 @@ rustup run 1.94.0 cargo build --release
 
 # Run all — launch the embedder
 rustup run 1.94.0 cargo run --release
+
+# Run WPT tests (primary verification)
+rustup run 1.94.0 cargo run --release -- wpt
 ```
 
-On macOS, `cargo build --release` uses AVFoundation by default (no GStreamer
-required).  GStreamer is still available as an opt-in (see `media/README.md`).
-On Linux, GStreamer is the only available backend.
+### With WebAssembly (opt-in)
 
-Without media (no video playback):
+```bash
+rustup run 1.94.0 cargo build --release --features wasm
+```
+
+### JSC backend (macOS only)
+
+```bash
+# Build content binary with JSC
+rustup run 1.94.0 cargo build --release --no-default-features --features jsc -p content --bin formal-web-content
+
+# Run WPT via JSC content process
+RUST_LOG=error target/release/formal-web wpt <test-path>
+```
+
+### Without media (no video playback)
 
 ```bash
 rustup run 1.94.0 cargo build --release --no-default-features
-rustup run 1.94.0 cargo run --release -- --no-default-features
 ```
 
 ### Individual packages
@@ -157,8 +200,7 @@ cargo build --release -p net     --bin formal-web-net
 cargo build --release -p embedder --bin formal-web-embedder
 ```
 
-Media binary (built implicitly by `cargo build --release` with the default
-platform backend; override explicitly when switching backends):
+### Media binary
 
 ```bash
 # macOS: AVFoundation (default) — no special flags needed
@@ -217,6 +259,22 @@ cargo build --release   # rebuilds EVERY workspace binary
 cargo run --release     # all processes are in sync
 ```
 
+### README pruning
+
+The `js_engine/README.md` (and any other `README.md`) tracks only:
+- Things that **still need to be fixed** (unfixed bugs, pre-existing issues)
+- **Dead-end investigations** for currently-unfixed issues (so future sessions
+  know what was already tried and ruled out)
+
+Do NOT document:
+- Completed fixes (they're in the code and git history)
+- Architecture design notes or historical session logs for fixed issues
+- Infrastructure descriptions for things that already work
+
+The goal is concise, actionable documentation: a future session should be able
+to read the README and know exactly what remains to be done, and what approaches
+have already failed for each remaining issue.
+
 ### Process binary search paths
 
 When the embedder spawns a helper process, it searches the directory
@@ -225,14 +283,6 @@ all binaries land in the shared `target/{profile}/` directory, so the
 embedder finds them by default.
 
 # Local Extensions
-
-## pi-share-hf — Session Collection
-
-The `.pi/extensions/pi-share-hf/` extension archives pi sessions to `.pi/collected-sessions/`.
-
-- **Auto-collection on shutdown:** When pi exits, the session is automatically saved to a unique file in `.pi/collected-sessions/`. No manual action is needed.
-- **`/collect-session` command** — Interactive command to archive the current session at any point.
-- **`upload_session` tool** — Stub only; not yet implemented. Will eventually upload collected sessions to a remote destination (e.g. Hugging Face dataset).
 
 ## pi-browser — CDP Browser Tools
 
@@ -297,6 +347,22 @@ mutable state (e.g. a counter accessed from multiple OS threads).  Do not
 reach for them as a convenience — a plain local is simpler, testable, and
 ever correct.
 
+# Never Assume Test Failures Are Pre-Existing
+
+Every test failure is a regression until proven otherwise.  A failure
+is NOT "pre-existing to the current session" — it might pre-exist on
+the current branch, but that still means the branch has a bug that
+needs fixing.  Never dismiss a failure as "pre-existing" without first
+verifying the test baseline (e.g., reverting changes and running the
+same test).  If you do not know the baseline, say so — do not
+fabricate one.
+
+When investigating a failing test, ask: did this test ever pass on
+this branch?  If you changed code that a test exercises, that test is
+your responsibility until it passes.  Dismissing failures as "not yet
+implemented" is a form of speculation: you are guessing that the
+feature never worked, instead of checking whether it did.
+
 # Spec Fidelity
 
 - Describe current architecture and behavior; keep task history out of repository docs.
@@ -307,6 +373,13 @@ ever correct.
 - Treat `vendor/` and vendored WPT resources as read-only unless the task explicitly requires vendor changes.
 - The words "runtime", "sidecar", and "carrier" are forbidden in this repo.
 - **Method doc comments:** A method that implements a spec algorithm should have only the spec link as its doc comment. All explanation, step references, and context belong in `//` comments inside the method body. A `// Note:` below the link is acceptable only for brief continuations of the algorithm that cannot be expressed as body comments. Why? Because the entire thing is a runtime, one that implements the Web, and so neither concept should ever be used to model or document some component of what is basically one big integrated system. No component is more or less of a "sidecar" than any other — each plays a specific role. Instead of reaching for these forbidden words, think about what the thing you want to name does, what its role in the system is, and come up with something descriptive.
+- **Document only verified facts.** Never speculate about root causes, fixes, or
+  explanations for observed behavior unless you have confirmed them through
+  instrumentation, debugging, or testing.  When documenting an issue, state
+  only what was observed, what was tried, and what was ruled out.  A statement
+  like "this might be caused by X" is speculation unless X was verified.
+  Prefer phrasing like "symptom: X works then crashes; Y was tried and failed;
+  Z was not investigated" over "the issue is likely due to X".
 
 # Error Logging
 
@@ -336,6 +409,39 @@ The project uses the standard `log` crate with `env_logger` for structured loggi
 - Use `.ok()` only when the `None`/`Err` case carries no diagnostic value (e.g. parsing an optional value from a fallible source where `None` is a valid "not present" signal).
 - The `ConsoleSink::Stderr` variant in `content/src/js/bindings/console.rs` is exempt — it implements the browser Console API output destination, not error logging.
 
+# Session Investigation Documentation
+
+Every session that investigates an open bug or unexpected behavior must
+log its findings in the relevant `README.md` file under a
+"Session investigation log" section. The log must follow these rules:
+
+1. **Factual only** — Document what was done, what was instrumented, and
+   what tests were run. No speculation about what the fix might be.
+2. **Document dead ends** — Explicitly state what was ruled out and why.
+   The next session needs to know what NOT to retry.
+3. **No speculative solutions** — If you found a fix, implement it and
+   update the issue status. If you did not find a fix, do not suggest what
+   the fix might be. That is for the next session to discover.
+4. **Include investigation scope** — Which files were changed (even for
+   instrumentation), which single test was used to verify, and what the
+   instrumentation confirmed.
+
+Example structure:
+
+```
+### <date> — <issue description>
+
+**Files changed:** <list>
+**Instrumentation added:** <what and where>
+**What was confirmed:** <facts>
+**What was ruled out:** <dead ends>
+**Not investigated:** <what remains to check>
+```
+
+Location: Add the log to the lowest-level README.md in the directory
+hierarchy that owns the feature being investigated (e.g., `content/src/streams/README.md`
+for stream issues, `js_engine/README.md` for JS engine issues).
+
 # End-of-Task Flow
 
 At the end of each task, run the following steps **in order**:
@@ -345,7 +451,13 @@ At the end of each task, run the following steps **in order**:
    were started during the session. Leftover processes can block ports and
    interfere with subsequent tasks.
 
-2. **Run `cargo clippy`** — Lint the workspace (excluding vendor) and fix any
+2. **Remove session artifacts** — Delete any temporary test files,
+   screenshots, test pages, or other debug artifacts created during the
+   session under the repo root.  These are not part of the project and
+   should not be committed.  Exception: artifacts placed under
+   `scratchpad/` are intentional and may be kept.
+
+3. **Run `cargo clippy`** — Lint the workspace (excluding vendor) and fix any
    warnings before committing. Run from the project root:
 
    ```bash
@@ -356,13 +468,13 @@ At the end of each task, run the following steps **in order**:
    focus on code-level warnings). The `vendor/` directory is excluded from
    this repository's scope and should not be linted or modified.
 
-3. **Run `cargo fmt`** — Format the project's code before committing. Run
+4. **Run `cargo fmt`** — Format the project's code before committing. Run
    from the project root: `cargo fmt`. This only formats the root package
    (there is no workspace defined, so `vendor/` sub-crates are not affected).
    Never run `cargo fmt` with `--all` or from inside a `vendor/` directory,
    as vendored formatting changes must not be committed.
 
-4. **Spec-mapping review** — First, **re-read the documentation chain**
+5. **Spec-mapping review** — First, **re-read the documentation chain**
    (`content/src/js/bindings/README.md`, `AGENTS.md` Algorithm Implementation
    section, `content/README.md`, and any domain-specific READMEs) to
    re-familiarize yourself with the exact rules for anchor URLs, step
@@ -398,9 +510,19 @@ At the end of each task, run the following steps **in order**:
      `// TODO:` explaining the gap?
    Fix any issues found.
 
-5. Think very hard about any general lessons learned in the session, and what parts of the documentation chain should be updated to reflect such general lessons, and then also update it. 
+6. Think very hard about any general lessons learned in the session, and what parts of the documentation chain should be updated to reflect such general lessons, and then also update it. 
 
-6. **Run all verification steps** — Every end-of-task run executes ALL verification steps unconditionally. Do not skip any step based on a subjective assessment of "relevance" — changes to seemingly unrelated files (test pages, configuration, documentation) routinely break downstream steps in this multi-process system. Running everything catches regressions the agent cannot predict.
+7. **Prune READMEs** — Strip completed fixes and historical session logs from
+   the documentation chain. The README should track only remaining work and
+   dead-end investigations for currently-unfixed issues (see "README pruning"
+   above).
+
+8. **Run all verification steps** — Every end-of-task run executes ALL verification steps unconditionally. Do not skip any step based on a subjective assessment of "relevance" — changes to seemingly unrelated files (test pages, configuration, documentation) routinely break downstream steps in this multi-process system. Running everything catches regressions the agent cannot predict.
+
+   Two engines are supported: Boa (primary, runs WPT) and JSC (experimental,
+   content crate compiles but `run_content_process` returns an error at
+   runtime).  All verification runs use the Boa backend unless stated
+   otherwise.
 
    - **Default WPT run** —
 
@@ -416,9 +538,9 @@ At the end of each task, run the following steps **in order**:
      ./verification/verify-navigation.sh
      ```
 
-7. **Suggest a commit message** — Whenever asked for a commit message (whether at end-of-task or any other time), propose a message for the current `git diff HEAD` (the uncommitted changes), not for the entire session's work.  Run `git diff --stat HEAD` to see what changed, and `git diff HEAD` to read the diff before writing the message.
+9. **Suggest a commit message** — Whenever asked for a commit message (whether at end-of-task or any other time), propose a message for the current `git diff HEAD` (the uncommitted changes), not for the entire session's work.  Run `git diff --stat HEAD` to see what changed, and `git diff HEAD` to read the diff before writing the message.
 
-8. Do NOT use `collect_session` — that tool has been removed. Sessions are collected automatically on shutdown.
+10. Review the entire session (your entire context window) and make sure that Rule Number One was respected (see top of file), and if not alert the user.
 
 
 # Forbidden commands

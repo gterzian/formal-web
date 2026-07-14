@@ -11,6 +11,9 @@ underlying WebAssembly engine.
 - `mod.rs` — crate-level re-exports.
 - `types.rs` — Rust data types for JS-visible wasm objects (`WasmModule`,
   `WasmInstance`, etc.) with `JsData` implementations.
+- `wasm_state.rs` — `WasmState` (GlobalScope-level wasm state),
+  `ContentWasmState` (ContentProcess-level wasm state), `PendingRequest`,
+  `PendingState`.
 - `worker.rs` — `WasmWorker` (background compilation worker management),
   `WasmRequest`, `WasmResult`.
 - `conversions.rs` — JS↔wasm value conversion (`js_val_to_wasm_val`,
@@ -112,12 +115,12 @@ promises, and implements `WebIdlInterface`.
   request.  Uses `crossbeam_channel::unbounded()` for request/result
   message passing between the content-process main thread and the
   compiler worker.
-- **PendingRequest infrastructure** — `PendingRequest::WasmCompile` and
-  `PendingRequest::WasmInstantiate` on `GlobalScope`, with a `PendingState`
-  lifecycle (`Pending → Processing → removed on completion`).  JS-typed
-  data (promise, resolvers) is stored separately in
-  `GlobalScope.pending_wasm_resolvers` so that domain code can construct
-  `PendingRequest` without importing `boa_engine`.
+- **WasmState infrastructure** — `WasmState` struct (in `wasm_state.rs`)
+  consolidates all wasm state for `GlobalScope` (pending requests, request
+  ID counter, pending resolvers).  `ContentWasmState` (same file) holds
+  the content-process-level state (background worker + pending request
+  maps).  `PendingState` lifecycle: `Pending → Processing → removed on
+  completion`.
 - **WPT test**: `wasm/jsapi/constructor/compile.any.js` enabled in
   `tests/wpt/include.ini`.
 

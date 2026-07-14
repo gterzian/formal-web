@@ -2,20 +2,26 @@ use log::error;
 use std::collections::{BTreeMap, HashMap};
 use std::mem;
 
-use boa_engine::{Context, JsData, JsNativeError, JsResult, JsValue};
-use boa_gc::{Finalize, Trace};
 use ipc::IpcSender;
 use ipc_messages::content::{Event as ContentEvent, UserNavigationInvolvement};
+
+use js_engine::{Completion, ExecutionContext, JsTypes};
+
+use crate::js::Types;
+
+type JsValue = <Types as JsTypes>::JsValue;
 
 use crate::dom::Element;
 use crate::dom::event::EventTarget;
 use crate::webidl::Callback;
 
 use super::resolved_style_properties_for_element;
+use super::windowproxy::create_window_proxy;
 use super::{GlobalScope, the_rules_for_choosing_a_navigable};
+use js_engine::gc_struct;
 
 /// <https://html.spec.whatwg.org/#window>
-#[derive(Trace, Finalize, JsData)]
+#[gc_struct]
 pub struct Window {
     /// <https://dom.spec.whatwg.org/#interface-eventtarget>
     pub event_target: EventTarget,
@@ -52,19 +58,12 @@ impl Window {
         url: &str,
         target: &str,
         features: &str,
-        context: &mut Context,
-    ) -> JsResult<JsValue> {
+        ec: &mut dyn ExecutionContext<crate::js::Types>,
+    ) -> Completion<JsValue, crate::js::Types> {
         let Some(event_sender) = self.global_scope.event_sender() else {
-            return Ok(JsValue::null());
+            return Ok(ec.value_null());
         };
-        window_open_steps(
-            context,
-            url,
-            target,
-            features,
-            &self.global_scope,
-            &event_sender,
-        )
+        window_open_steps(ec, url, target, features, &self.global_scope, &event_sender)
     }
 }
 
@@ -112,27 +111,28 @@ pub(crate) fn window_computed_style_properties_for_element(
     decls
 }
 
-// ──────────────────────────────────────────────────────────────────────────────
 // Window open steps
 // https://html.spec.whatwg.org/#window-open-steps
-// ──────────────────────────────────────────────────────────────────────────────
 
 /// <https://html.spec.whatwg.org/#window-open-steps>
 pub(crate) fn window_open_steps(
-    context: &mut Context,
+    ec: &mut dyn ExecutionContext<crate::js::Types>,
     url: &str,
     target: &str,
     features: &str,
     global_scope: &GlobalScope,
     event_sender: &IpcSender<ContentEvent>,
-) -> JsResult<JsValue> {
+) -> Completion<JsValue, crate::js::Types> {
     // Step 1: "If the event loop's termination nesting level is nonzero, then return null."
     // TODO: Content process does not yet track termination nesting.
 
     // Step 2: "Let sourceDocument be the entry global object's associated Document."
-    let source_navigable_id = global_scope
-        .source_navigable_id()
-        .ok_or_else(|| JsNativeError::typ().with_message("window.open: no source navigable"))?;
+    let source_navigable_id = match global_scope.source_navigable_id() {
+        Some(id) => id,
+        None => {
+            return Err(ec.new_type_error("window.open: no source navigable"));
+        }
+    };
 
     // Step 3: "Let urlRecord be null."
     // Step 4: "If url is not the empty string:"
@@ -152,15 +152,15 @@ pub(crate) fn window_open_steps(
                     Some(base_url) => match base_url.join(url) {
                         Ok(resolved) => resolved,
                         Err(_) => {
-                            return Err(JsNativeError::typ()
-                                .with_message("SyntaxError: failed to parse URL in window.open")
-                                .into());
+                            return Err(ec.new_type_error(
+                                "SyntaxError: failed to parse URL in window.open",
+                            ));
                         }
                     },
                     None => {
-                        return Err(JsNativeError::typ()
-                            .with_message("SyntaxError: failed to parse URL in window.open")
-                            .into());
+                        return Err(
+                            ec.new_type_error("SyntaxError: failed to parse URL in window.open")
+                        );
                     }
                 }
             }
@@ -183,12 +183,11 @@ pub(crate) fn window_open_steps(
         if resolved.scheme() != "about" && resolved.scheme() != "file" {
             if let Some(creation_url) = global_scope.creation_url() {
                 if creation_url.origin() != resolved.origin() {
-                    return Err(JsNativeError::typ()
-                        .with_message(format!(
-                            "SecurityError: cross-origin navigation to {} is blocked",
-                            resolved
-                        ))
-                        .into());
+                    let msg = format!(
+                        "SecurityError: cross-origin navigation to {} is blocked",
+                        resolved,
+                    );
+                    return Err(ec.new_type_error(&msg));
                 }
             }
         }
@@ -244,7 +243,7 @@ pub(crate) fn window_open_steps(
         target,
         noopener,
         Some(global_scope),
-        Some(context),
+        Some(ec.global_object()),
     );
 
     let navigate_url = url_record.unwrap_or_else(|| String::from("about:blank"));
@@ -277,7 +276,7 @@ pub(crate) fn window_open_steps(
     // Step 17: "If noopener is true or windowType is 'new with no opener',
     //           then return null."
     if noopener {
-        return Ok(JsValue::null());
+        return Ok(ec.value_null());
     }
 
     // Step 18: Return targetNavigable's active WindowProxy.
@@ -285,7 +284,7 @@ pub(crate) fn window_open_steps(
     let window = result
         .return_window
         .expect("window_open_steps: all navigable branches set a return window");
-    crate::html::create_window_proxy(&window, context)
+    create_window_proxy(&window, ec)
 }
 
 /// <https://html.spec.whatwg.org/#get-noopener-for-window-open>

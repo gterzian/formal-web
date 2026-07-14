@@ -1,10 +1,13 @@
 use blitz_traits::events::{DomEvent, EventState};
-use boa_engine::{JsData, JsResult, object::JsObject};
-use boa_gc::{Finalize, Trace};
 
+use crate::js::Types;
 use crate::webidl::Callback;
+use js_engine::JsTypes;
+use js_engine::gc_struct;
 
 use super::{AbortAlgorithm, AbortSignal};
+
+type JsObject = <Types as JsTypes>::JsObject;
 
 pub const NONE: u16 = 0;
 pub const CAPTURING_PHASE: u16 = 1;
@@ -12,45 +15,48 @@ pub const AT_TARGET: u16 = 2;
 pub const BUBBLING_PHASE: u16 = 3;
 
 /// <https://dom.spec.whatwg.org/#concept-event-listener>
-#[derive(Clone, Trace, Finalize, JsData)]
+#[gc_struct]
 pub(crate) struct EventListener {
-    #[unsafe_ignore_trace]
+    #[ignore_trace]
     pub id: u64,
 
     /// <https://dom.spec.whatwg.org/#concept-event-listener-type>
-    #[unsafe_ignore_trace]
+    #[ignore_trace]
     pub type_: String,
 
     /// <https://dom.spec.whatwg.org/#concept-event-listener-callback>
     pub callback: Option<Callback>,
 
     /// <https://dom.spec.whatwg.org/#concept-event-listener-capture>
-    #[unsafe_ignore_trace]
+    #[ignore_trace]
     pub capture: bool,
 
     /// <https://dom.spec.whatwg.org/#concept-event-listener-passive>
-    #[unsafe_ignore_trace]
+    #[ignore_trace]
     pub passive: Option<bool>,
 
     /// <https://dom.spec.whatwg.org/#concept-event-listener-once>
-    #[unsafe_ignore_trace]
+    #[ignore_trace]
     pub once: bool,
 
     /// <https://dom.spec.whatwg.org/#event-listener-signal>
+    // Note: Spec-defined slot, not yet wired to AbortSignal-backed removal.
+    #[allow(dead_code)]
     pub signal: Option<AbortSignal>,
 
     /// <https://dom.spec.whatwg.org/#concept-event-listener-removed>
-    #[unsafe_ignore_trace]
+    #[ignore_trace]
     pub removed: bool,
 }
 
 /// <https://dom.spec.whatwg.org/#interface-eventtarget>
-#[derive(Default, Trace, Finalize, JsData)]
+#[gc_struct]
+#[derive(Default)]
 pub struct EventTarget {
     /// <https://dom.spec.whatwg.org/#eventtarget-event-listener-list>
     pub(crate) event_listener_list: Vec<EventListener>,
 
-    #[unsafe_ignore_trace]
+    #[ignore_trace]
     next_listener_id: u64,
 }
 
@@ -65,15 +71,15 @@ impl EventTarget {
         once: bool,
         passive: Option<bool>,
         signal: Option<AbortSignal>,
-    ) -> JsResult<()> {
+    ) {
         if let Some(signal) = signal.as_ref() {
             if signal.aborted_value() {
-                return Ok(());
+                return;
             }
         }
 
         let Some(callback) = callback else {
-            return Ok(());
+            return;
         };
 
         let passive = passive.or(Some(false));
@@ -107,8 +113,6 @@ impl EventTarget {
                 });
             }
         }
-
-        Ok(())
     }
 
     /// <https://dom.spec.whatwg.org/#remove-an-event-listener>
@@ -153,10 +157,10 @@ impl EventTarget {
 }
 
 /// <https://dom.spec.whatwg.org/#event>
-#[derive(Clone, Trace, Finalize, JsData)]
+#[gc_struct]
 pub struct Event {
     /// <https://dom.spec.whatwg.org/#dom-event-type>
-    #[unsafe_ignore_trace]
+    #[ignore_trace]
     pub type_: String,
 
     /// <https://dom.spec.whatwg.org/#dom-event-target>
@@ -166,51 +170,51 @@ pub struct Event {
     pub current_target: Option<JsObject>,
 
     /// <https://dom.spec.whatwg.org/#dom-event-eventphase>
-    #[unsafe_ignore_trace]
+    #[ignore_trace]
     pub event_phase: u16,
 
     /// <https://dom.spec.whatwg.org/#dom-event-bubbles>
-    #[unsafe_ignore_trace]
+    #[ignore_trace]
     pub bubbles: bool,
 
     /// <https://dom.spec.whatwg.org/#dom-event-cancelable>
-    #[unsafe_ignore_trace]
+    #[ignore_trace]
     pub cancelable: bool,
 
     /// <https://dom.spec.whatwg.org/#dom-event-composed>
-    #[unsafe_ignore_trace]
+    #[ignore_trace]
     pub composed: bool,
 
     /// <https://dom.spec.whatwg.org/#dom-event-istrusted>
-    #[unsafe_ignore_trace]
+    #[ignore_trace]
     pub is_trusted: bool,
 
     /// <https://dom.spec.whatwg.org/#dom-event-timestamp>
-    #[unsafe_ignore_trace]
+    #[ignore_trace]
     pub time_stamp: f64,
 
     /// <https://dom.spec.whatwg.org/#event>
-    #[unsafe_ignore_trace]
+    #[ignore_trace]
     pub stop_propagation_flag: bool,
 
     /// <https://dom.spec.whatwg.org/#event>
-    #[unsafe_ignore_trace]
+    #[ignore_trace]
     pub stop_immediate_propagation_flag: bool,
 
     /// <https://dom.spec.whatwg.org/#dom-event-defaultprevented>
-    #[unsafe_ignore_trace]
+    #[ignore_trace]
     pub canceled_flag: bool,
 
     /// <https://dom.spec.whatwg.org/#event>
-    #[unsafe_ignore_trace]
+    #[ignore_trace]
     pub in_passive_listener_flag: bool,
 
     /// <https://dom.spec.whatwg.org/#event>
-    #[unsafe_ignore_trace]
+    #[ignore_trace]
     pub dispatch_flag: bool,
 
     /// <https://dom.spec.whatwg.org/#event>
-    #[unsafe_ignore_trace]
+    #[ignore_trace]
     pub initialized_flag: bool,
 }
 
@@ -319,7 +323,7 @@ impl Event {
 }
 
 /// <https://w3c.github.io/uievents/#interface-uievent>
-#[derive(Clone, Trace, Finalize, JsData)]
+#[gc_struct]
 pub struct UIEvent {
     /// <https://dom.spec.whatwg.org/#event>
     pub event: Event,
@@ -328,7 +332,7 @@ pub struct UIEvent {
     pub view: Option<JsObject>,
 
     /// <https://w3c.github.io/uievents/#dom-uievent-detail>
-    #[unsafe_ignore_trace]
+    #[ignore_trace]
     pub detail: i32,
 }
 

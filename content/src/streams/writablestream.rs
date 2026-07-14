@@ -3,16 +3,15 @@ use std::{
     rc::Rc,
 };
 
-use boa_engine::{
-    Context, JsArgs, JsData, JsNativeError, JsResult, JsValue, js_string,
-    native_function::NativeFunction,
-    object::{JsObject, builtins::JsPromise},
-};
-use boa_gc::{Finalize, Gc, GcRefCell, Trace};
+use js_engine::{Completion, ExecutionContext, JsTypes};
+
+use crate::js::{Types, create_builtin_fn_with_traced_captures};
 
 use crate::streams::{SizeAlgorithm, extract_high_water_mark, extract_size_algorithm};
 use crate::webidl::bindings::create_interface_instance;
-use crate::webidl::resolved_promise;
+use crate::webidl::{resolved_promise, upon_settlement};
+use js_engine::gc::{GcCell, JsObjectCell, JsValueCell, gc_cell_new};
+use js_engine::gc_struct;
 
 use super::{
     AbortAlgorithm, CloseAlgorithm, PendingAbortRequest, WritableStartAlgorithm,
@@ -24,56 +23,60 @@ use super::{
     writable_stream_default_controller_close,
 };
 
+type JsValue = <Types as JsTypes>::JsValue;
+type JsObject = <Types as JsTypes>::JsObject;
+
 /// <https://streams.spec.whatwg.org/#ws-class>
-#[derive(Clone, Trace, Finalize, JsData)]
+#[gc_struct]
 pub struct WritableStream {
     /// <https://streams.spec.whatwg.org/#writablestream-controller>
-    controller: Gc<GcRefCell<Option<WritableStreamController>>>,
-    controller_object: Gc<GcRefCell<Option<JsObject>>>,
+    controller: GcCell<Option<WritableStreamController>>,
+    controller_object: JsObjectCell,
 
     /// <https://streams.spec.whatwg.org/#writablestream-writer>
-    writer: Gc<GcRefCell<Option<WritableStreamWriter>>>,
+    writer: GcCell<Option<WritableStreamWriter>>,
 
     /// <https://streams.spec.whatwg.org/#writablestream-state>
-    #[unsafe_ignore_trace]
+    #[ignore_trace]
     state: Rc<RefCell<WritableStreamState>>,
 
     /// <https://streams.spec.whatwg.org/#writablestream-storederror>
-    stored_error: Gc<GcRefCell<JsValue>>,
+    stored_error: JsValueCell,
 
     /// <https://streams.spec.whatwg.org/#writablestream-writerequests>
-    write_requests: Gc<GcRefCell<Vec<WriteRequest>>>,
+    write_requests: GcCell<Vec<WriteRequest>>,
 
     /// <https://streams.spec.whatwg.org/#writablestream-inflightwriterequest>
-    in_flight_write_request: Gc<GcRefCell<Option<WriteRequest>>>,
+    in_flight_write_request: GcCell<Option<WriteRequest>>,
 
     /// <https://streams.spec.whatwg.org/#writablestream-closerequest>
-    close_request: Gc<GcRefCell<Option<WriteRequest>>>,
+    close_request: GcCell<Option<WriteRequest>>,
 
     /// <https://streams.spec.whatwg.org/#writablestream-inflightcloserequest>
-    in_flight_close_request: Gc<GcRefCell<Option<WriteRequest>>>,
+    in_flight_close_request: GcCell<Option<WriteRequest>>,
 
     /// <https://streams.spec.whatwg.org/#writablestream-pendingabortrequest>
-    pending_abort_request: Gc<GcRefCell<Option<PendingAbortRequest>>>,
+    pending_abort_request: GcCell<Option<PendingAbortRequest>>,
 
     /// <https://streams.spec.whatwg.org/#writablestream-backpressure>
-    #[unsafe_ignore_trace]
+    #[ignore_trace]
     backpressure: Rc<Cell<bool>>,
 }
 
 impl WritableStream {
-    pub(crate) fn new() -> Self {
+    pub(crate) fn new(ec: &mut dyn ExecutionContext<Types>) -> Self {
+        let undefined = ec.value_undefined();
         Self {
-            controller: Gc::new(GcRefCell::new(None)),
-            controller_object: Gc::new(GcRefCell::new(None)),
-            writer: Gc::new(GcRefCell::new(None)),
+            controller: gc_cell_new(None),
+            controller_object: JsObjectCell::new(None),
+            writer: gc_cell_new(None),
             state: Rc::new(RefCell::new(WritableStreamState::Writable)),
-            stored_error: Gc::new(GcRefCell::new(JsValue::undefined())),
-            write_requests: Gc::new(GcRefCell::new(Vec::new())),
-            in_flight_write_request: Gc::new(GcRefCell::new(None)),
-            close_request: Gc::new(GcRefCell::new(None)),
-            in_flight_close_request: Gc::new(GcRefCell::new(None)),
-            pending_abort_request: Gc::new(GcRefCell::new(None)),
+            stored_error: JsValueCell::new(undefined),
+            write_requests: gc_cell_new(Vec::new()),
+            in_flight_write_request: gc_cell_new(None),
+            close_request: gc_cell_new(None),
+            in_flight_close_request: gc_cell_new(None),
+            pending_abort_request: gc_cell_new(None),
             backpressure: Rc::new(Cell::new(false)),
         }
     }
@@ -87,7 +90,7 @@ impl WritableStream {
         self.controller_object.borrow().clone()
     }
     pub(crate) fn set_controller_object_slot(&self, controller_object: Option<JsObject>) {
-        *self.controller_object.borrow_mut() = controller_object;
+        self.controller_object.set(controller_object);
     }
     pub(crate) fn writer_slot(&self) -> Option<WritableStreamWriter> {
         self.writer.borrow().clone()
@@ -105,7 +108,7 @@ impl WritableStream {
         self.stored_error.borrow().clone()
     }
     pub(crate) fn set_stored_error(&self, error: JsValue) {
-        *self.stored_error.borrow_mut() = error;
+        self.stored_error.set(error);
     }
     pub(crate) fn backpressure(&self) -> bool {
         self.backpressure.get()
@@ -169,12 +172,12 @@ impl WritableStream {
     }
 
     /// <https://streams.spec.whatwg.org/#initialize-writable-stream>
-    fn initialize_writable_stream(&mut self) {
+    fn initialize_writable_stream(&mut self, ec: &mut dyn ExecutionContext<Types>) {
         *self.state.borrow_mut() = WritableStreamState::Writable;
-        *self.stored_error.borrow_mut() = JsValue::undefined();
+        self.stored_error.set(ec.value_undefined());
         *self.writer.borrow_mut() = None;
         *self.controller.borrow_mut() = None;
-        *self.controller_object.borrow_mut() = None;
+        self.controller_object.set(None);
         *self.in_flight_write_request.borrow_mut() = None;
         *self.close_request.borrow_mut() = None;
         *self.in_flight_close_request.borrow_mut() = None;
@@ -194,64 +197,74 @@ impl WritableStream {
     }
 
     /// <https://streams.spec.whatwg.org/#ws-abort>
-    pub(crate) fn abort(&self, reason: JsValue, context: &mut Context) -> JsResult<JsObject> {
+    pub(crate) fn abort(
+        &self,
+        reason: JsValue,
+        ec: &mut dyn ExecutionContext<Types>,
+    ) -> Completion<JsObject, Types> {
         if self.is_writable_stream_locked() {
             return rejected_type_error_promise(
                 "Cannot abort a WritableStream that already has a writer",
-                context,
+                ec,
             );
         }
 
-        self.abort_stream(reason, context)
+        self.abort_stream(reason, ec)
     }
 
     /// <https://streams.spec.whatwg.org/#ws-close>
-    pub(crate) fn close(&self, context: &mut Context) -> JsResult<JsObject> {
+    pub(crate) fn close(
+        &self,
+        ec: &mut dyn ExecutionContext<Types>,
+    ) -> Completion<JsObject, Types> {
         if self.is_writable_stream_locked() {
             return rejected_type_error_promise(
                 "Cannot close a WritableStream that already has a writer",
-                context,
+                ec,
             );
         }
 
         if self.close_queued_or_in_flight() {
             return rejected_type_error_promise(
                 "Cannot close a WritableStream that is already closing",
-                context,
+                ec,
             );
         }
 
-        self.close_stream(context)
+        self.close_stream(ec)
     }
 
     /// <https://streams.spec.whatwg.org/#ws-get-writer>
-    pub(crate) fn get_writer(&self, context: &mut Context) -> JsResult<JsObject> {
-        acquire_writable_stream_default_writer(self.clone(), context)
+    pub(crate) fn get_writer(
+        &self,
+        ec: &mut dyn ExecutionContext<Types>,
+    ) -> Completion<JsObject, Types> {
+        acquire_writable_stream_default_writer(self.clone(), ec)
     }
 
     /// <https://streams.spec.whatwg.org/#writable-stream-abort>
     pub(crate) fn abort_stream(
         &self,
         reason: JsValue,
-        context: &mut Context,
-    ) -> JsResult<JsObject> {
+        ec: &mut dyn ExecutionContext<Types>,
+    ) -> Completion<JsObject, Types> {
         if matches!(
             self.state(),
             WritableStreamState::Closed | WritableStreamState::Errored
         ) {
-            return resolved_promise(JsValue::undefined(), context);
+            return resolved_promise(ec.value_undefined(), ec);
         }
 
-        let controller = self.controller_slot().ok_or_else(|| {
-            JsNativeError::typ().with_message("WritableStream is missing its controller")
-        })?;
-        controller.signal_abort(reason.clone(), context)?;
+        let controller = self
+            .controller_slot()
+            .ok_or_else(|| ec.new_type_error("WritableStream is missing its controller"))?;
+        controller.signal_abort(reason.clone(), ec)?;
 
         if matches!(
             self.state(),
             WritableStreamState::Closed | WritableStreamState::Errored
         ) {
-            return resolved_promise(JsValue::undefined(), context);
+            return resolved_promise(ec.value_undefined(), ec);
         }
 
         if let Some(abort_request) = self.pending_abort_request_slot() {
@@ -262,28 +275,31 @@ impl WritableStream {
         let mut abort_reason = reason;
         if self.state() == WritableStreamState::Erroring {
             was_already_erroring = true;
-            abort_reason = JsValue::undefined();
+            abort_reason = ec.value_undefined();
         }
 
         let abort_request =
-            PendingAbortRequest::new(abort_reason.clone(), was_already_erroring, context);
+            PendingAbortRequest::new(abort_reason.clone(), was_already_erroring, ec)?;
         let promise = abort_request.promise();
         self.set_pending_abort_request_slot(Some(abort_request));
 
         if !was_already_erroring {
-            self.start_erroring(abort_reason, context)?;
+            self.start_erroring(abort_reason, ec)?;
         }
 
         Ok(promise)
     }
 
     /// <https://streams.spec.whatwg.org/#writable-stream-close>
-    pub(crate) fn close_stream(&self, context: &mut Context) -> JsResult<JsObject> {
+    pub(crate) fn close_stream(
+        &self,
+        ec: &mut dyn ExecutionContext<Types>,
+    ) -> Completion<JsObject, Types> {
         match self.state() {
             WritableStreamState::Closed | WritableStreamState::Errored => {
                 return rejected_type_error_promise(
                     "Cannot close a WritableStream that is already closed or errored",
-                    context,
+                    ec,
                 );
             }
             _ => {}
@@ -291,30 +307,33 @@ impl WritableStream {
 
         debug_assert!(!self.close_queued_or_in_flight());
 
-        let (close_request, promise) = WriteRequest::new(context);
+        let (close_request, promise) = WriteRequest::new(ec)?;
         self.set_close_request_slot(Some(close_request));
 
         if let Some(writer_slot) = self.writer_slot() {
             if let Some(writer) = writer_slot.as_default_writer() {
                 if self.backpressure() && self.state() == WritableStreamState::Writable {
-                    writer.resolve_ready_promise(context)?;
+                    writer.resolve_ready_promise(ec)?;
                 }
             }
         }
 
-        let controller = self.controller_slot().ok_or_else(|| {
-            JsNativeError::typ().with_message("WritableStream is missing its controller")
-        })?;
-        writable_stream_default_controller_close(controller.as_default_controller(), context)?;
+        let controller = self
+            .controller_slot()
+            .ok_or_else(|| ec.new_type_error("WritableStream is missing its controller"))?;
+        writable_stream_default_controller_close(controller.as_default_controller(), ec)?;
         Ok(promise)
     }
 
     /// <https://streams.spec.whatwg.org/#writable-stream-add-write-request>
-    pub(crate) fn add_write_request(&self, context: &mut Context) -> JsResult<JsObject> {
+    pub(crate) fn add_write_request(
+        &self,
+        ec: &mut dyn ExecutionContext<Types>,
+    ) -> Completion<JsObject, Types> {
         debug_assert!(self.is_writable_stream_locked());
         debug_assert_eq!(self.state(), WritableStreamState::Writable);
 
-        let (write_request, promise) = WriteRequest::new(context);
+        let (write_request, promise) = WriteRequest::new(ec)?;
         self.push_write_request(write_request);
         Ok(promise)
     }
@@ -328,98 +347,132 @@ impl WritableStream {
     pub(crate) fn deal_with_rejection(
         &self,
         error: JsValue,
-        context: &mut Context,
-    ) -> JsResult<()> {
+        ec: &mut dyn ExecutionContext<Types>,
+    ) -> Completion<(), Types> {
         if self.state() == WritableStreamState::Writable {
-            self.start_erroring(error, context)?;
+            self.start_erroring(error, ec)?;
             return Ok(());
         }
 
         debug_assert_eq!(self.state(), WritableStreamState::Erroring);
-        self.finish_erroring(context)
+        self.finish_erroring(ec)
     }
 
     /// <https://streams.spec.whatwg.org/#writable-stream-finish-erroring>
-    pub(crate) fn finish_erroring(&self, context: &mut Context) -> JsResult<()> {
+    pub(crate) fn finish_erroring(
+        &self,
+        ec: &mut dyn ExecutionContext<Types>,
+    ) -> Completion<(), Types> {
         debug_assert_eq!(self.state(), WritableStreamState::Erroring);
         debug_assert!(!self.has_operation_marked_in_flight());
 
         self.set_state(WritableStreamState::Errored);
-        let controller = self.controller_slot().ok_or_else(|| {
-            JsNativeError::typ().with_message("WritableStream is missing its controller")
-        })?;
+        let controller = self
+            .controller_slot()
+            .ok_or_else(|| ec.new_type_error("WritableStream is missing its controller"))?;
         controller.error_steps();
 
         let stored_error = self.stored_error();
         for write_request in self.take_write_requests().into_iter() {
-            write_request.reject(stored_error.clone(), context)?;
+            write_request.reject(stored_error.clone(), ec)?;
         }
 
         let Some(abort_request) = self.take_pending_abort_request_slot() else {
-            self.reject_close_and_closed_promise_if_needed(context)?;
+            self.reject_close_and_closed_promise_if_needed(ec)?;
             return Ok(());
         };
 
         if abort_request.was_already_erroring() {
-            abort_request.reject(stored_error.clone(), context)?;
-            self.reject_close_and_closed_promise_if_needed(context)?;
+            abort_request.reject(stored_error.clone(), ec)?;
+            self.reject_close_and_closed_promise_if_needed(ec)?;
             return Ok(());
         }
 
-        let promise = controller.abort_steps(abort_request.reason(), context)?;
+        let promise = controller.abort_steps(abort_request.reason(), ec)?;
         let abort_request_for_fulfilled = abort_request.clone();
         let stream_for_fulfilled = self.clone();
-        let on_fulfilled = NativeFunction::from_copy_closure_with_captures(
-            |_, _, captures: &(PendingAbortRequest, WritableStream), context| {
-                let (abort_request, stream) = captures;
-                abort_request.resolve(context)?;
-                stream.reject_close_and_closed_promise_if_needed(context)?;
-                Ok(JsValue::undefined())
-            },
+        let stream_for_rejected = self.clone();
+
+        let name_key = ec.property_key_from_str("");
+        let on_fulfilled = create_builtin_fn_with_traced_captures(
+            ec,
             (abort_request_for_fulfilled, stream_for_fulfilled),
-        )
-        .to_js_function(context.realm());
-        let on_rejected = NativeFunction::from_copy_closure_with_captures(
-            |_, args: &[JsValue], captures: &(PendingAbortRequest, WritableStream), context| {
-                let (abort_request, stream) = captures;
-                abort_request.reject(args.get_or_undefined(0).clone(), context)?;
-                stream.reject_close_and_closed_promise_if_needed(context)?;
-                Ok(JsValue::undefined())
-            },
-            (abort_request, self.clone()),
-        )
-        .to_js_function(context.realm());
-        let _ = JsPromise::from_object(promise)?.then(
-            Some(on_fulfilled),
-            Some(on_rejected),
-            context,
-        )?;
+            writable_stream_finish_erroring_on_fulfilled_fn,
+            1,
+            name_key.clone(),
+            false,
+        );
+        let on_rejected = create_builtin_fn_with_traced_captures(
+            ec,
+            (abort_request, stream_for_rejected),
+            writable_stream_finish_erroring_on_rejected_fn,
+            1,
+            name_key,
+            false,
+        );
+        let _ = upon_settlement(promise, Some(on_fulfilled), Some(on_rejected), ec)?;
         Ok(())
     }
+}
 
+/// Handler for `finish_erroring` on_fulfilled closure.
+/// Resolves the abort request and rejects close/closed promise if needed.
+fn writable_stream_finish_erroring_on_fulfilled_fn(
+    _args: &[JsValue],
+    _this: JsValue,
+    captures: &(PendingAbortRequest, WritableStream),
+    ec: &mut dyn ExecutionContext<Types>,
+) -> Completion<JsValue, Types> {
+    let (abort_request, stream) = captures;
+    abort_request.clone().resolve(ec)?;
+    stream.reject_close_and_closed_promise_if_needed(ec)?;
+    Ok(ec.value_undefined())
+}
+
+/// Handler for `finish_erroring` on_rejected closure.
+/// Rejects the abort request with the reason and rejects close/closed promise if needed.
+fn writable_stream_finish_erroring_on_rejected_fn(
+    args: &[JsValue],
+    _this: JsValue,
+    captures: &(PendingAbortRequest, WritableStream),
+    ec: &mut dyn ExecutionContext<Types>,
+) -> Completion<JsValue, Types> {
+    let (abort_request, stream) = captures;
+    let reason = args
+        .first()
+        .cloned()
+        .unwrap_or_else(|| ec.value_undefined());
+    abort_request.clone().reject(reason, ec)?;
+    stream.reject_close_and_closed_promise_if_needed(ec)?;
+    Ok(ec.value_undefined())
+}
+
+impl WritableStream {
     /// <https://streams.spec.whatwg.org/#writable-stream-finish-in-flight-close>
-    pub(crate) fn finish_in_flight_close(&self, context: &mut Context) -> JsResult<()> {
+    pub(crate) fn finish_in_flight_close(
+        &self,
+        ec: &mut dyn ExecutionContext<Types>,
+    ) -> Completion<(), Types> {
         let close_request = self.take_in_flight_close_request_slot().ok_or_else(|| {
-            JsNativeError::typ()
-                .with_message("WritableStream is missing its in-flight close request")
+            ec.new_type_error("WritableStream is missing its in-flight close request")
         })?;
-        close_request.resolve(context)?;
+        close_request.resolve(ec)?;
 
         let state = self.state();
         debug_assert!(
             state == WritableStreamState::Writable || state == WritableStreamState::Erroring
         );
         if state == WritableStreamState::Erroring {
-            self.set_stored_error(JsValue::undefined());
+            self.set_stored_error(ec.value_undefined());
             if let Some(abort_request) = self.take_pending_abort_request_slot() {
-                abort_request.resolve(context)?;
+                abort_request.resolve(ec)?;
             }
         }
 
         self.set_state(WritableStreamState::Closed);
         if let Some(writer_slot) = self.writer_slot() {
             if let Some(writer) = writer_slot.as_default_writer() {
-                writer.resolve_closed_promise(context)?;
+                writer.resolve_closed_promise(ec)?;
             }
         }
 
@@ -432,42 +485,43 @@ impl WritableStream {
     pub(crate) fn finish_in_flight_close_with_error(
         &self,
         error: JsValue,
-        context: &mut Context,
-    ) -> JsResult<()> {
+        ec: &mut dyn ExecutionContext<Types>,
+    ) -> Completion<(), Types> {
         let close_request = self.take_in_flight_close_request_slot().ok_or_else(|| {
-            JsNativeError::typ()
-                .with_message("WritableStream is missing its in-flight close request")
+            ec.new_type_error("WritableStream is missing its in-flight close request")
         })?;
-        close_request.reject(error.clone(), context)?;
+        close_request.reject(error.clone(), ec)?;
 
         if let Some(abort_request) = self.take_pending_abort_request_slot() {
-            abort_request.reject(error.clone(), context)?;
+            abort_request.reject(error.clone(), ec)?;
         }
 
-        self.deal_with_rejection(error, context)
+        self.deal_with_rejection(error, ec)
     }
 
     /// <https://streams.spec.whatwg.org/#writable-stream-finish-in-flight-write>
-    pub(crate) fn finish_in_flight_write(&self, context: &mut Context) -> JsResult<()> {
+    pub(crate) fn finish_in_flight_write(
+        &self,
+        ec: &mut dyn ExecutionContext<Types>,
+    ) -> Completion<(), Types> {
         let write_request = self.take_in_flight_write_request_slot().ok_or_else(|| {
-            JsNativeError::typ()
-                .with_message("WritableStream is missing its in-flight write request")
+            ec.new_type_error("WritableStream is missing its in-flight write request")
         })?;
-        write_request.resolve(context)
+        write_request.resolve(ec)?;
+        Ok(())
     }
 
     /// <https://streams.spec.whatwg.org/#writable-stream-finish-in-flight-write-with-error>
     pub(crate) fn finish_in_flight_write_with_error(
         &self,
         error: JsValue,
-        context: &mut Context,
-    ) -> JsResult<()> {
+        ec: &mut dyn ExecutionContext<Types>,
+    ) -> Completion<(), Types> {
         let write_request = self.take_in_flight_write_request_slot().ok_or_else(|| {
-            JsNativeError::typ()
-                .with_message("WritableStream is missing its in-flight write request")
+            ec.new_type_error("WritableStream is missing its in-flight write request")
         })?;
-        write_request.reject(error.clone(), context)?;
-        self.deal_with_rejection(error, context)
+        write_request.reject(error.clone(), ec)?;
+        self.deal_with_rejection(error, ec)
     }
 
     /// <https://streams.spec.whatwg.org/#writable-stream-has-operation-marked-in-flight>
@@ -477,21 +531,27 @@ impl WritableStream {
     }
 
     /// <https://streams.spec.whatwg.org/#writable-stream-mark-close-request-in-flight>
-    pub(crate) fn mark_close_request_in_flight(&self) -> JsResult<()> {
+    pub(crate) fn mark_close_request_in_flight(
+        &self,
+        ec: &mut dyn ExecutionContext<Types>,
+    ) -> Completion<(), Types> {
         debug_assert!(self.in_flight_close_request_slot().is_none());
-        let close_request = self.take_close_request_slot().ok_or_else(|| {
-            JsNativeError::typ().with_message("WritableStream is missing its close request")
-        })?;
+        let close_request = self
+            .take_close_request_slot()
+            .ok_or_else(|| ec.new_type_error("WritableStream is missing its close request"))?;
         self.set_in_flight_close_request_slot(Some(close_request));
         Ok(())
     }
 
     /// <https://streams.spec.whatwg.org/#writable-stream-mark-first-write-request-in-flight>
-    pub(crate) fn mark_first_write_request_in_flight(&self) -> JsResult<()> {
+    pub(crate) fn mark_first_write_request_in_flight(
+        &self,
+        ec: &mut dyn ExecutionContext<Types>,
+    ) -> Completion<(), Types> {
         debug_assert!(self.in_flight_write_request_slot().is_none());
-        let write_request = self.shift_write_request().ok_or_else(|| {
-            JsNativeError::typ().with_message("WritableStream has no pending write request")
-        })?;
+        let write_request = self
+            .shift_write_request()
+            .ok_or_else(|| ec.new_type_error("WritableStream has no pending write request"))?;
         self.set_in_flight_write_request_slot(Some(write_request));
         Ok(())
     }
@@ -499,18 +559,18 @@ impl WritableStream {
     /// <https://streams.spec.whatwg.org/#writable-stream-reject-close-and-closed-promise-if-needed>
     pub(crate) fn reject_close_and_closed_promise_if_needed(
         &self,
-        context: &mut Context,
-    ) -> JsResult<()> {
+        ec: &mut dyn ExecutionContext<Types>,
+    ) -> Completion<(), Types> {
         debug_assert_eq!(self.state(), WritableStreamState::Errored);
 
         if let Some(close_request) = self.take_close_request_slot() {
             debug_assert!(self.in_flight_close_request_slot().is_none());
-            close_request.reject(self.stored_error(), context)?;
+            close_request.reject(self.stored_error(), ec)?;
         }
 
         if let Some(writer_slot) = self.writer_slot() {
             if let Some(writer) = writer_slot.as_default_writer() {
-                writer.ensure_closed_promise_rejected(self.stored_error(), context)?;
+                writer.ensure_closed_promise_rejected(self.stored_error(), ec)?;
             }
         }
 
@@ -518,24 +578,28 @@ impl WritableStream {
     }
 
     /// <https://streams.spec.whatwg.org/#writable-stream-start-erroring>
-    pub(crate) fn start_erroring(&self, reason: JsValue, context: &mut Context) -> JsResult<()> {
+    pub(crate) fn start_erroring(
+        &self,
+        reason: JsValue,
+        ec: &mut dyn ExecutionContext<Types>,
+    ) -> Completion<(), Types> {
         debug_assert!(self.stored_error().is_undefined());
         debug_assert_eq!(self.state(), WritableStreamState::Writable);
 
-        let controller = self.controller_slot().ok_or_else(|| {
-            JsNativeError::typ().with_message("WritableStream is missing its controller")
-        })?;
+        let controller = self
+            .controller_slot()
+            .ok_or_else(|| ec.new_type_error("WritableStream is missing its controller"))?;
         self.set_state(WritableStreamState::Erroring);
         self.set_stored_error(reason.clone());
 
         if let Some(writer_slot) = self.writer_slot() {
             if let Some(writer) = writer_slot.as_default_writer() {
-                writer.ensure_ready_promise_rejected(reason, context)?;
+                writer.ensure_ready_promise_rejected(reason, ec)?;
             }
         }
 
         if !self.has_operation_marked_in_flight() && controller.as_default_controller().started() {
-            self.finish_erroring(context)?;
+            self.finish_erroring(ec)?;
         }
 
         Ok(())
@@ -545,8 +609,8 @@ impl WritableStream {
     pub(crate) fn update_backpressure(
         &self,
         backpressure: bool,
-        context: &mut Context,
-    ) -> JsResult<()> {
+        ec: &mut dyn ExecutionContext<Types>,
+    ) -> Completion<(), Types> {
         debug_assert_eq!(self.state(), WritableStreamState::Writable);
         debug_assert!(!self.close_queued_or_in_flight());
 
@@ -554,9 +618,9 @@ impl WritableStream {
             if let Some(writer) = writer_slot.as_default_writer() {
                 if backpressure != self.backpressure() {
                     if backpressure {
-                        writer.reset_ready_promise(context)?;
+                        writer.reset_ready_promise(ec)?;
                     } else {
-                        writer.resolve_ready_promise(context)?;
+                        writer.resolve_ready_promise(ec)?;
                     }
                 }
             }
@@ -570,40 +634,39 @@ impl WritableStream {
 pub(crate) fn construct_writable_stream(
     _new_target: &JsValue,
     args: &[JsValue],
-    context: &mut Context,
-) -> JsResult<WritableStream> {
-    let mut stream = WritableStream::new();
+    ec: &mut dyn ExecutionContext<Types>,
+) -> Completion<WritableStream, Types> {
+    let mut stream = WritableStream::new(ec);
 
     let underlying_sink = if args.is_empty() {
-        JsValue::null()
+        ec.value_null()
     } else {
         args[0].clone()
     };
-    let strategy = args.get_or_undefined(1).clone();
+    let strategy = args.get(1).cloned().unwrap_or_else(|| ec.value_undefined());
 
-    let size_algorithm = extract_size_algorithm(&strategy, context)?;
-    let high_water_mark = extract_high_water_mark(&strategy, 1.0, context)?;
+    let size_algorithm = extract_size_algorithm(&strategy, ec)?;
+    let high_water_mark = extract_high_water_mark(&strategy, 1.0, ec)?;
 
-    let underlying_sink_object = if underlying_sink.is_null() || underlying_sink.is_undefined() {
-        None
-    } else {
-        Some(underlying_sink.as_object().ok_or_else(|| {
-            JsNativeError::typ().with_message("WritableStream underlyingSink must be an object")
-        })?)
-    };
+    let underlying_sink_object =
+        if underlying_sink.is_null() || underlying_sink.is_undefined() {
+            None
+        } else {
+            Some(underlying_sink.as_object().ok_or_else(|| {
+                ec.new_type_error("WritableStream underlyingSink must be an object")
+            })?)
+        };
 
-    if let Some(sink_type) = underlying_sink_type(underlying_sink_object.as_ref(), context)? {
-        return Err(JsNativeError::range()
-            .with_message(format!(
-                "WritableStream underlyingSink.type must be undefined, got {sink_type}"
-            ))
-            .into());
+    if let Some(sink_type) = underlying_sink_type(underlying_sink_object.as_ref(), ec)? {
+        return Err(ec.new_range_error(&format!(
+            "WritableStream underlyingSink.type must be undefined, got {sink_type}"
+        )));
     }
 
     // Step 5: "Perform ! InitializeWritableStream(this)."
     // Note: The backing struct is returned from the data constructor, after which Boa wraps it
     // in the newly created JsObject.
-    stream.initialize_writable_stream();
+    stream.initialize_writable_stream(ec);
 
     // Step 6: "Perform ? SetUpWritableStreamDefaultControllerFromUnderlyingSink(this, underlyingSink, underlyingSinkDict, highWaterMark, sizeAlgorithm)."
     set_up_writable_stream_default_controller_from_underlying_sink(
@@ -611,7 +674,7 @@ pub(crate) fn construct_writable_stream(
         underlying_sink_object,
         high_water_mark,
         size_algorithm,
-        context,
+        ec,
     )?;
     Ok(stream)
 }
@@ -624,15 +687,15 @@ pub(crate) fn create_writable_stream(
     abort_algorithm: AbortAlgorithm,
     high_water_mark: Option<f64>,
     size_algorithm: Option<SizeAlgorithm>,
-    context: &mut Context,
-) -> JsResult<(WritableStream, JsObject)> {
+    ec: &mut dyn ExecutionContext<Types>,
+) -> Completion<(WritableStream, JsObject), Types> {
     let high_water_mark = high_water_mark.unwrap_or(1.0);
     let size_algorithm = size_algorithm.unwrap_or(SizeAlgorithm::ReturnOne);
     debug_assert!(high_water_mark >= 0.0 && !high_water_mark.is_nan());
 
-    let (mut stream, stream_object) = create_writable_stream_object(context)?;
-    stream.initialize_writable_stream();
-    let (controller, controller_object) = create_writable_stream_default_controller(context)?;
+    let (mut stream, stream_object) = create_writable_stream_object(ec)?;
+    stream.initialize_writable_stream(ec);
+    let (controller, controller_object) = create_writable_stream_default_controller(ec)?;
     set_up_writable_stream_default_controller(
         stream.clone(),
         controller,
@@ -643,43 +706,54 @@ pub(crate) fn create_writable_stream(
         abort_algorithm,
         high_water_mark,
         size_algorithm,
-        context,
+        ec,
     )?;
     Ok((stream, stream_object))
 }
-fn create_writable_stream_object(context: &mut Context) -> JsResult<(WritableStream, JsObject)> {
-    let stream = WritableStream::new();
+fn create_writable_stream_object(
+    ec: &mut dyn ExecutionContext<Types>,
+) -> Completion<(WritableStream, JsObject), Types> {
+    let mut stream = WritableStream::new(ec);
+    stream.initialize_writable_stream(ec);
     let stream_object: JsObject =
-        create_interface_instance::<WritableStream>(stream.clone(), context)?.into();
+        create_interface_instance::<Types, WritableStream>(stream.clone(), ec)?.into();
     Ok((stream, stream_object))
 }
 
 pub(crate) fn with_writable_stream_ref<R>(
     object: &JsObject,
+    ec: &mut dyn ExecutionContext<Types>,
     f: impl FnOnce(&WritableStream) -> R,
-) -> JsResult<R> {
-    let stream = object
-        .downcast_ref::<WritableStream>()
-        .ok_or_else(|| JsNativeError::typ().with_message("object is not a WritableStream"))?;
-    Ok(f(&stream))
+) -> Completion<R, Types> {
+    let stream_ref = ec
+        .with_object_any(object)
+        .and_then(|a| a.downcast_ref::<WritableStream>());
+    let stream = match stream_ref {
+        Some(s) => s,
+        None => return Err(ec.new_type_error("object is not a WritableStream")),
+    };
+    Ok(f(stream))
 }
 
 fn underlying_sink_type(
     underlying_sink: Option<&JsObject>,
-    context: &mut Context,
-) -> JsResult<Option<String>> {
+    ec: &mut dyn ExecutionContext<Types>,
+) -> Completion<Option<String>, Types> {
     let Some(underlying_sink) = underlying_sink else {
         return Ok(None);
     };
 
-    if !underlying_sink.has_property(js_string!("type"), context)? {
+    use js_engine::EcmascriptHost;
+    let type_key = ec.property_key_from_str("type");
+    if !ec.has_property(underlying_sink.clone(), type_key)? {
         return Ok(None);
     }
 
-    let sink_type = underlying_sink.get(js_string!("type"), context)?;
-    if sink_type.is_undefined() {
+    let sink_type = EcmascriptHost::get(ec, underlying_sink, "type")?;
+    let undefined_value = ec.value_undefined();
+    if ec.same_value(&sink_type, &undefined_value) {
         return Ok(None);
     }
 
-    Ok(Some(sink_type.to_string(context)?.to_std_string_escaped()))
+    Ok(Some(ec.to_rust_string(sink_type)?))
 }

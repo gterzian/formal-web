@@ -1,101 +1,208 @@
 use std::any::TypeId;
 use std::collections::HashMap;
 
-use boa_engine::{Context, JsData, JsObject};
-use boa_gc::{Finalize, Trace};
+use js_engine::{ExecutionContext, JsTypes, JsTypesWithRealm};
 
 use super::interface::WebIdlInterface;
 
 /// An entry in the interface registry.
-pub(crate) struct InterfaceEntry {
-    pub(crate) prototype: JsObject,
-    pub(crate) constructor: JsObject,
+pub(crate) struct InterfaceEntry<T: JsTypes> {
+    pub(crate) prototype: T::JsObject,
+    pub(crate) constructor: T::JsObject,
+    /// <https://webidl.spec.whatwg.org/#internally-create-a-new-object-implementing-the-interface>
+    pub(crate) unforgeables: Option<T::JsObject>,
 }
 
-/// Registry of Web IDL interfaces stored in the context's HostDefined data.
-#[derive(Trace, Finalize)]
-pub(crate) struct InterfaceRegistry {
-    #[unsafe_ignore_trace]
-    map: HashMap<TypeId, InterfaceEntry>,
+/// Registry of Web IDL interfaces.
+///
+/// Generic over `T: JsTypes` so it can store engine-native object types.
+/// Stored in the EC's host-defined data store via `store_host_any`/
+/// `get_host_any`.
+pub(crate) struct InterfaceRegistry<T: JsTypes> {
+    map: HashMap<TypeId, InterfaceEntry<T>>,
 }
 
-impl JsData for InterfaceRegistry {}
-
-impl InterfaceRegistry {
+impl<T: JsTypes> InterfaceRegistry<T> {
     pub(crate) fn new() -> Self {
         Self {
             map: HashMap::new(),
         }
     }
 
-    pub(crate) fn register<T: WebIdlInterface + 'static>(
+    pub(crate) fn register<U: 'static>(
         &mut self,
-        prototype: JsObject,
-        constructor: JsObject,
+        prototype: T::JsObject,
+        constructor: T::JsObject,
     ) {
         self.map.insert(
-            TypeId::of::<T>(),
+            TypeId::of::<U>(),
             InterfaceEntry {
                 prototype,
                 constructor,
+                unforgeables: None,
             },
         );
     }
 
-    pub(crate) fn get_prototype<T: 'static>(&self) -> Option<&JsObject> {
-        self.map.get(&TypeId::of::<T>()).map(|e| &e.prototype)
+    pub(crate) fn get_prototype<U: 'static>(&self) -> Option<&T::JsObject> {
+        self.map.get(&TypeId::of::<U>()).map(|e| &e.prototype)
     }
 
-    pub(crate) fn get_constructor<T: 'static>(&self) -> Option<&JsObject> {
-        self.map.get(&TypeId::of::<T>()).map(|e| &e.constructor)
+    pub(crate) fn get_constructor<U: 'static>(&self) -> Option<&T::JsObject> {
+        self.map.get(&TypeId::of::<U>()).map(|e| &e.constructor)
+    }
+
+    pub(crate) fn get_unforgeables<U: 'static>(&self) -> Option<&T::JsObject> {
+        self.map
+            .get(&TypeId::of::<U>())
+            .and_then(|e| e.unforgeables.as_ref())
+    }
+
+    pub(crate) fn set_unforgeables<U: 'static>(&mut self, unforgeables: T::JsObject) {
+        if let Some(entry) = self.map.get_mut(&TypeId::of::<U>()) {
+            entry.unforgeables = Some(unforgeables);
+        }
     }
 }
 
-// ── Context-based helpers (used by all current callers) ──
+fn registry_type_id<Ty: 'static + JsTypes>() -> TypeId {
+    TypeId::of::<InterfaceRegistry<Ty>>()
+}
 
-/// Get a constructor from the HostDefined registry.
-pub(crate) fn get_constructor_from_host_defined<T: 'static>(context: &Context) -> Option<JsObject> {
-    context
-        .get_data::<InterfaceRegistry>()
-        .and_then(|r| r.get_constructor::<T>())
-        .cloned()
+fn with_registry_mut<Ty: JsTypes + JsTypesWithRealm, R>(
+    ec: &mut dyn ExecutionContext<Ty>,
+    f: impl FnOnce(&mut InterfaceRegistry<Ty>) -> R,
+) -> R {
+    let type_id = registry_type_id::<Ty>();
+    let mut registry = ec
+        .remove_host_any(&type_id)
+        .map(|any| {
+            *any.downcast::<InterfaceRegistry<Ty>>()
+                .expect("InterfaceRegistry type mismatch")
+        })
+        .unwrap_or_else(|| InterfaceRegistry::<Ty>::new());
+    let result = f(&mut registry);
+    ec.store_host_any(type_id, Box::new(registry));
+    result
+}
+
+fn with_registry_ref<Ty: JsTypes + JsTypesWithRealm, R>(
+    ec: &dyn ExecutionContext<Ty>,
+    f: impl FnOnce(&InterfaceRegistry<Ty>) -> R,
+) -> R {
+    let type_id = registry_type_id::<Ty>();
+    let host = ec
+        .get_host_any(&type_id)
+        .unwrap_or_else(|| panic!("InterfaceRegistry not initialized"));
+    let registry = host
+        .downcast_ref::<InterfaceRegistry<Ty>>()
+        .expect("InterfaceRegistry type mismatch");
+    f(registry)
 }
 
 /// Ensure the interface registry exists on the context.
-pub(crate) fn initialize(context: &mut Context) {
-    if context.get_data::<InterfaceRegistry>().is_none() {
-        context.insert_data(InterfaceRegistry::new());
-    }
+pub(crate) fn initialize<Ty: JsTypes + JsTypesWithRealm>(ec: &mut dyn ExecutionContext<Ty>) {
+    with_registry_mut::<Ty, _>(ec, |_| {});
 }
 
-/// Register an interface in the HostDefined registry.
-pub(crate) fn register_in_host_defined<T: WebIdlInterface + 'static>(
-    context: &mut Context,
-    prototype: JsObject,
-    constructor: JsObject,
-) {
-    if let Some(mut registry) = context.remove_data::<InterfaceRegistry>() {
-        registry.register::<T>(prototype, constructor);
-        context.insert_data(*registry);
-    }
+/// Register an interface in the registry.
+pub(crate) fn register_in_host_defined<Ty, I>(
+    ec: &mut dyn ExecutionContext<Ty>,
+    prototype: Ty::JsObject,
+    constructor: Ty::JsObject,
+) where
+    Ty: JsTypes + JsTypesWithRealm,
+    I: WebIdlInterface<Ty> + 'static,
+{
+    with_registry_mut::<Ty, _>(ec, |registry| {
+        registry.register::<I>(prototype, constructor);
+    });
 }
 
-/// Get a prototype from the HostDefined registry.
-pub(crate) fn get_prototype_from_host_defined<T: 'static>(context: &Context) -> Option<JsObject> {
-    context
-        .get_data::<InterfaceRegistry>()
-        .and_then(|r| r.get_prototype::<T>())
-        .cloned()
+/// Set the [[Unforgeables]] slot for an interface in the registry.
+pub(crate) fn set_unforgeables_for_interface<Ty, I>(
+    ec: &mut dyn ExecutionContext<Ty>,
+    unforgeables: Ty::JsObject,
+) where
+    Ty: JsTypes + JsTypesWithRealm,
+    I: 'static,
+{
+    with_registry_mut::<Ty, _>(ec, |registry| {
+        registry.set_unforgeables::<I>(unforgeables);
+    });
+}
+
+/// Get the [[Unforgeables]] from the registry.
+pub(crate) fn get_unforgeables_from_host_defined<Ty, I>(
+    ec: &dyn ExecutionContext<Ty>,
+) -> Option<Ty::JsObject>
+where
+    Ty: JsTypes + JsTypesWithRealm,
+    I: 'static,
+{
+    with_registry_ref::<Ty, _>(ec, |registry| registry.get_unforgeables::<I>().cloned())
+}
+
+/// Get a prototype from the registry.
+pub(crate) fn get_prototype_from_host_defined<Ty, I>(
+    ec: &dyn ExecutionContext<Ty>,
+) -> Option<Ty::JsObject>
+where
+    Ty: JsTypes + JsTypesWithRealm,
+    I: 'static,
+{
+    with_registry_ref::<Ty, _>(ec, |registry| registry.get_prototype::<I>().cloned())
 }
 
 /// Wire the prototype chain for an interface that inherits from another.
-pub(crate) fn wire_prototype<TChild: 'static, TParent: 'static>(context: &mut Context) {
-    if let Some(registry) = context.remove_data::<InterfaceRegistry>() {
-        let child_proto = registry.get_prototype::<TChild>().cloned();
-        let parent_proto = registry.get_prototype::<TParent>().cloned();
-        if let (Some(child), Some(parent)) = (child_proto, parent_proto) {
-            child.set_prototype(Some(parent));
-        }
-        context.insert_data(*registry);
+pub(crate) fn wire_prototype<Ty, TChild, TParent>(ec: &mut dyn ExecutionContext<Ty>)
+where
+    Ty: JsTypes + JsTypesWithRealm,
+    TChild: 'static,
+    TParent: 'static,
+{
+    let (child_proto, parent_proto) = {
+        let reg = with_registry_ref::<Ty, _>(ec, |registry| {
+            (
+                registry.get_prototype::<TChild>().cloned(),
+                registry.get_prototype::<TParent>().cloned(),
+            )
+        });
+        reg
+    };
+    if let (Some(child), Some(parent)) = (child_proto, parent_proto) {
+        let _ = ec.set_prototype(child, Some(parent));
     }
+}
+
+/// Wire the constructor prototype chain so subclass constructors inherit
+/// from their parent interface object (spec Step 3 of
+/// <https://webidl.spec.whatwg.org/#create-an-interface-object>).
+pub(crate) fn wire_constructor_prototype<Ty, TChild, TParent>(ec: &mut dyn ExecutionContext<Ty>)
+where
+    Ty: JsTypes + JsTypesWithRealm,
+    TChild: 'static,
+    TParent: 'static,
+{
+    let (child_ctor, parent_ctor) = {
+        let reg = with_registry_ref::<Ty, _>(ec, |registry| {
+            (
+                registry.get_constructor::<TChild>().cloned(),
+                registry.get_constructor::<TParent>().cloned(),
+            )
+        });
+        reg
+    };
+    if let (Some(child), Some(parent)) = (child_ctor, parent_ctor) {
+        let _ = ec.set_prototype(child, Some(parent));
+    }
+}
+
+/// Get a prototype from the registry (generic, takes ExecutionContext).
+pub(crate) fn get_registry_prototype<Ty, I>(ec: &dyn ExecutionContext<Ty>) -> Option<Ty::JsObject>
+where
+    Ty: JsTypes + JsTypesWithRealm,
+    I: 'static,
+{
+    get_prototype_from_host_defined::<Ty, I>(ec)
 }

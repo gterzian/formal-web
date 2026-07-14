@@ -1,29 +1,33 @@
 use std::{mem, ptr};
 
-use boa_engine::{Context, JsData, JsNativeError, JsResult, JsValue, object::JsObject};
-use boa_gc::{Finalize, Gc, GcRefCell, Trace};
-
-use crate::js::with_event_target_mut;
+use crate::js::Types;
 use crate::streams::PipeToState;
+use crate::webidl::Callback;
 use crate::webidl::bindings::create_interface_instance;
-use crate::webidl::{Callback, EcmascriptHost};
+use js_engine::gc::{GcCell, gc_cell_new, gc_cell_ptr_eq};
+use js_engine::gc_struct;
+use js_engine::{Completion, ExecutionContext, JsTypes};
 
 use super::{DOMException, EventDispatchHost, EventTarget, fire_event};
 
+type JsObject = <Types as JsTypes>::JsObject;
+type JsValue = <Types as JsTypes>::JsValue;
+
 /// <https://dom.spec.whatwg.org/#abortsignal-add>
-#[derive(Clone, Trace, Finalize)]
+#[gc_struct]
 pub(crate) enum AbortAlgorithm {
+    // Note: Not yet wired to any JS binding; kept for spec completeness.
     #[allow(dead_code)]
     Native {
-        #[unsafe_ignore_trace]
-        callback: fn() -> JsResult<()>,
+        #[ignore_trace]
+        callback: fn() -> Completion<(), Types>,
     },
 
     RemoveEventListener {
         /// <https://dom.spec.whatwg.org/#eventtarget>
         event_target: JsObject,
 
-        #[unsafe_ignore_trace]
+        #[ignore_trace]
         listener_id: u64,
     },
 
@@ -34,19 +38,30 @@ pub(crate) enum AbortAlgorithm {
 
 impl AbortAlgorithm {
     /// <https://dom.spec.whatwg.org/#abortsignal-add>
-    pub(crate) fn run(&self, host: &mut impl EcmascriptHost) -> JsResult<()> {
+    pub(crate) fn run(&self, host: &mut impl EventDispatchHost) -> Completion<(), Types> {
         match self {
-            Self::Native { callback } => callback()?,
+            Self::Native { callback } => {
+                if callback().is_err() {
+                    let err = host
+                        .ec()
+                        .new_type_error("abort algorithm native callback failed");
+                    return Err(err);
+                }
+            }
             Self::RemoveEventListener {
                 event_target,
                 listener_id,
             } => {
-                with_event_target_mut(&JsValue::from(event_target.clone()), |target| {
-                    target.remove_event_listener_by_id(*listener_id);
-                })?;
+                let ec = host.ec();
+                let target = ec.with_object_any_mut(event_target);
+                if let Some(data) = target {
+                    if let Some(event_target) = data.downcast_mut::<EventTarget>() {
+                        event_target.remove_event_listener_by_id(*listener_id);
+                    }
+                }
             }
             Self::ReadableStreamPipeTo { state } => {
-                state.run_abort_algorithm(host.context())?;
+                state.run_abort_algorithm(host.ec())?;
             }
         }
 
@@ -67,7 +82,7 @@ impl AbortAlgorithm {
                     event_target: right_target,
                     listener_id: right_id,
                 },
-            ) => left_id == right_id && JsObject::equals(left_target, right_target),
+            ) => left_id == right_id && left_target == right_target,
             (
                 Self::ReadableStreamPipeTo { state: left_state },
                 Self::ReadableStreamPipeTo { state: right_state },
@@ -77,18 +92,18 @@ impl AbortAlgorithm {
     }
 }
 
-#[derive(Trace, Finalize)]
+#[gc_struct]
 struct AbortSignalState {
     reflector: Option<JsObject>,
     event_target: EventTarget,
 
-    #[unsafe_ignore_trace]
+    #[ignore_trace]
     aborted: bool,
 
     abort_reason: JsValue,
     abort_algorithms: Vec<AbortAlgorithm>,
 
-    #[unsafe_ignore_trace]
+    #[ignore_trace]
     dependent: bool,
 
     source_signals: Vec<AbortSignal>,
@@ -115,24 +130,21 @@ impl AbortSignalState {
 }
 
 /// <https://dom.spec.whatwg.org/#abortsignal>
-#[derive(Clone, Trace, Finalize, JsData)]
+#[gc_struct]
 pub struct AbortSignal {
-    shared: Gc<GcRefCell<AbortSignalState>>,
+    shared: GcCell<AbortSignalState>,
 }
 
 impl AbortSignal {
-    pub(crate) fn new() -> Self {
+    pub(crate) fn new(ec: &mut dyn ExecutionContext<Types>) -> Self {
         Self {
-            shared: Gc::new(GcRefCell::new(AbortSignalState::new(
-                false,
-                JsValue::undefined(),
-            ))),
+            shared: gc_cell_new(AbortSignalState::new(false, ec.value_undefined())),
         }
     }
 
     pub(crate) fn aborted_with_reason(reason: JsValue) -> Self {
         Self {
-            shared: Gc::new(GcRefCell::new(AbortSignalState::new(true, reason))),
+            shared: gc_cell_new(AbortSignalState::new(true, reason)),
         }
     }
 
@@ -140,12 +152,8 @@ impl AbortSignal {
         self.shared.borrow_mut().reflector = Some(reflector);
     }
 
-    pub(crate) fn object(&self) -> JsResult<JsObject> {
-        self.shared.borrow().reflector.clone().ok_or_else(|| {
-            JsNativeError::typ()
-                .with_message("AbortSignal is missing its JavaScript object")
-                .into()
-        })
+    pub(crate) fn object(&self) -> Option<JsObject> {
+        self.shared.borrow().reflector.clone()
     }
 
     pub(crate) fn with_event_target_mut<R>(&self, f: impl FnOnce(&mut EventTarget) -> R) -> R {
@@ -192,8 +200,9 @@ impl AbortSignal {
             .retain(|candidate| !candidate.matches_entry(algorithm));
     }
 
+    // Note: Not yet wired to any JS binding; kept for spec completeness.
     #[allow(dead_code)]
-    pub(crate) fn add_native_abort_algorithm(&self, callback: fn() -> JsResult<()>) {
+    pub(crate) fn add_native_abort_algorithm(&self, callback: fn() -> Completion<(), Types>) {
         self.add_abort_algorithm(AbortAlgorithm::Native { callback });
     }
 
@@ -282,7 +291,7 @@ impl AbortSignal {
 }
 
 /// <https://dom.spec.whatwg.org/#abortcontroller>
-#[derive(Trace, Finalize, JsData)]
+#[gc_struct]
 pub struct AbortController {
     /// <https://dom.spec.whatwg.org/#abortcontroller-signal>
     signal: AbortSignal,
@@ -299,16 +308,17 @@ impl AbortController {
     }
 
     /// <https://dom.spec.whatwg.org/#dom-abortcontroller-signal>
-    pub(crate) fn signal_object(&self) -> JsResult<JsObject> {
+    pub(crate) fn signal_object(&self) -> Option<JsObject> {
         self.signal.object()
     }
 }
 
+/// <https://dom.spec.whatwg.org/#abortsignal>
 pub(crate) fn create_abort_signal(
     signal: AbortSignal,
-    context: &mut Context,
-) -> JsResult<AbortSignal> {
-    let signal_object = create_interface_instance::<AbortSignal>(signal.clone(), context)?;
+    ec: &mut dyn ExecutionContext<Types>,
+) -> Completion<AbortSignal, Types> {
+    let signal_object = create_interface_instance::<Types, AbortSignal>(signal.clone(), ec)?;
     signal.set_reflector(signal_object);
     Ok(signal)
 }
@@ -318,11 +328,11 @@ pub(crate) fn signal_abort(
     host: &mut impl EventDispatchHost,
     signal: &AbortSignal,
     reason: JsValue,
-) -> JsResult<()> {
-    let reason = if reason.is_undefined() {
-        JsValue::from(create_interface_instance::<DOMException>(
+) -> Completion<(), Types> {
+    let reason = if <Types as JsTypes>::value_is_undefined(&reason) {
+        <Types as JsTypes>::value_from_object(create_interface_instance::<Types, DOMException>(
             DOMException::abort_error(),
-            host.context(),
+            host.ec(),
         )?)
     } else {
         reason
@@ -347,7 +357,10 @@ pub(crate) fn signal_abort(
 }
 
 /// <https://dom.spec.whatwg.org/#run-the-abort-steps>
-fn run_abort_steps(host: &mut impl EventDispatchHost, signal: &AbortSignal) -> JsResult<()> {
+fn run_abort_steps(
+    host: &mut impl EventDispatchHost,
+    signal: &AbortSignal,
+) -> Completion<(), Types> {
     // Step 1: "For each algorithm of signal's abort algorithms: run algorithm."
     let algorithms = signal.take_abort_algorithms();
     for algorithm in algorithms {
@@ -358,7 +371,10 @@ fn run_abort_steps(host: &mut impl EventDispatchHost, signal: &AbortSignal) -> J
     // Note: `take_abort_algorithms()` empties the list before the loop above runs.
 
     // Step 3: "Fire an event named abort at signal."
-    let signal_object = signal.object()?;
+    let signal_object = signal.object().ok_or_else(|| {
+        let ec = host.ec();
+        ec.new_type_error("AbortSignal is missing its JavaScript object")
+    })?;
     let _ = fire_event(host, &signal_object, "abort", false)?;
     Ok(())
 }
@@ -367,12 +383,12 @@ fn run_abort_steps(host: &mut impl EventDispatchHost, signal: &AbortSignal) -> J
 pub(crate) fn initialize_dependent_abort_signal(
     result_signal: &AbortSignal,
     signals: &[AbortSignal],
-) -> JsResult<()> {
+) {
     // Step 2: "For each signal of signals: if signal is aborted, then set resultSignal's abort reason to signal's abort reason and return resultSignal."
     for signal in signals {
         if signal.aborted_value() {
             result_signal.set_aborted_reason(signal.reason_value());
-            return Ok(());
+            return;
         }
     }
 
@@ -400,14 +416,12 @@ pub(crate) fn initialize_dependent_abort_signal(
             source_signal.append_dependent_signal(result_signal);
         }
     }
-
-    Ok(())
 }
 
 fn append_unique_signal(signals: &mut Vec<AbortSignal>, signal: &AbortSignal) {
     if signals
         .iter()
-        .any(|existing| Gc::ptr_eq(&existing.shared, &signal.shared))
+        .any(|existing| gc_cell_ptr_eq(&existing.shared, &signal.shared))
     {
         return;
     }

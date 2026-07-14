@@ -1,13 +1,12 @@
 use std::{cell::RefCell, rc::Rc};
 
 use blitz_dom::BaseDocument;
-use boa_engine::JsData;
-use boa_gc::{Finalize, Trace};
 use html5ever::{LocalName, QualName, ns};
 use url::Url;
 
 use super::{Element, Node};
 use crate::infra::strip_and_collapse_ascii_whitespace;
+use js_engine::gc_struct;
 
 fn collect_subtree_node_ids(document: &BaseDocument, node_id: usize, node_ids: &mut Vec<usize>) {
     let Some(node) = document.get_node(node_id) else {
@@ -32,13 +31,13 @@ fn canonical_document_dir(value: &str) -> &str {
 }
 
 /// <https://dom.spec.whatwg.org/#interface-document>
-#[derive(Trace, Finalize, JsData)]
+#[gc_struct]
 pub struct Document {
     /// <https://dom.spec.whatwg.org/#interface-node>
     pub node: Node,
 
     /// Model-local mirror of <https://html.spec.whatwg.org/#concept-environment-creation-url>.
-    #[unsafe_ignore_trace]
+    #[ignore_trace]
     pub creation_url: Url,
 }
 
@@ -161,7 +160,7 @@ impl Document {
     /// <https://html.spec.whatwg.org/#document.title>
     pub(crate) fn title(&self) -> String {
         // Step 1: "If the document element is an SVG svg element, then let value be the child text content of the first SVG title element that is a child of the document element."
-        // Note: The current WPT coverage here exercises HTML documents, so this getter currently follows the HTML branch below.
+        // Current WPT coverage exercises HTML documents; follows HTML branch.
 
         // Step 2: "Otherwise, let value be the child text content of the title element, or the empty string if the title element is null."
         let value = self

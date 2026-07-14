@@ -1,5 +1,9 @@
-use boa_engine::job::{GenericJob, Job};
-use boa_engine::{Context, JsResult, JsValue};
+use js_engine::{Completion, ExecutionContext, JsTypes};
+
+use crate::js::Types;
+
+type JsValue = <Types as JsTypes>::JsValue;
+type JsObject = <Types as JsTypes>::JsObject;
 use log::error;
 mod environment_settings_object;
 mod global_scope;
@@ -18,7 +22,6 @@ mod window;
 mod window_or_worker_global_scope;
 pub(crate) mod windowproxy;
 
-use boa_engine::object::JsObject;
 use ipc::IpcSender;
 use ipc_messages::content::{
     DocumentId, Event as ContentEvent, NavigableId, NavigateRequest, NavigationId,
@@ -26,8 +29,10 @@ use ipc_messages::content::{
 };
 
 pub use environment_settings_object::EnvironmentSettingsObject;
+pub use global_scope::GlobalScope;
+pub use global_scope::GlobalScopeKind;
 pub(crate) use global_scope::TimerHandler;
-pub use global_scope::{GlobalScope, GlobalScopeKind, PendingRequest, PendingState};
+
 pub use html_anchor_element::HTMLAnchorElement;
 pub(crate) use html_dom_tree::{
     run_dom_post_connection_steps_for_document, run_dom_removing_steps_for_document,
@@ -50,35 +55,41 @@ pub(crate) use location::LocationError;
 pub use window::Window;
 pub(crate) use window::window_computed_style_properties_for_element;
 pub(crate) use window_or_worker_global_scope::WindowOrWorkerGlobalScope;
-pub(crate) use windowproxy::create_window_proxy;
-pub(crate) use windowproxy::resolve_window;
 
 use blitz_dom::{BaseDocument, DocumentConfig};
 use std::{cell::RefCell, rc::Rc};
 use url::Url;
 
 /// <https://html.spec.whatwg.org/#queue-a-microtask>
-pub fn queue_a_microtask<F>(context: &mut Context, callback: F)
+pub fn queue_a_microtask<F>(ec: &mut dyn ExecutionContext<crate::js::Types>, callback: F)
 where
-    F: FnOnce(&mut Context) -> JsResult<JsValue> + 'static,
+    F: FnOnce(&mut dyn ExecutionContext<crate::js::Types>) -> Completion<JsValue, crate::js::Types>
+        + 'static,
 {
-    // Note: Steps 1-8 (asserting a surrounding agent, setting eventLoop,
+    // Note: Steps 1-7 (asserting a surrounding agent, setting eventLoop,
     // creating a new task, setting its steps/source/document/settings-object
-    // set) are handled by Boa's GenericJob + enqueue_job.  The realm carries
+    // set) are handled by the engine's job queue.  The realm carries
     // the agent/event-loop association.
     //
     // Step 1: Assert: there is a surrounding agent. I.e., this algorithm is
     //         not called while in parallel.
-    let realm = context.realm().clone();
-    let job = GenericJob::new(callback, realm);
+    let realm = ec.current_realm();
     // Step 9: Enqueue microtask on eventLoop's microtask queue.
-    context.enqueue_job(Job::from(job));
+    ec.enqueue_job_with_realm(
+        realm,
+        Box::new(move |job_ec| {
+            let _ = callback(job_ec);
+        }),
+    );
 }
 
 /// <https://html.spec.whatwg.org/#await-a-stable-state>
-pub fn await_a_stable_state<F>(context: &mut Context, synchronous_section: F)
-where
-    F: FnOnce(&mut Context) -> JsResult<JsValue> + 'static,
+pub fn await_a_stable_state<F>(
+    ec: &mut dyn ExecutionContext<crate::js::Types>,
+    synchronous_section: F,
+) where
+    F: FnOnce(&mut dyn ExecutionContext<crate::js::Types>) -> Completion<JsValue, crate::js::Types>
+        + 'static,
 {
     // Note: The preamble ("queue a microtask that runs the following steps, and
     // must then stop executing") is implemented by delegating to
@@ -91,11 +102,28 @@ where
     //         described in the algorithm's steps.
     //         (Implicit — after the synchronous section returns, control
     //         resumes in the calling algorithm's in-parallel context.)
-    queue_a_microtask(context, synchronous_section);
+    queue_a_microtask(ec, synchronous_section);
 }
 
 /// <https://html.spec.whatwg.org/#creating-a-new-browsing-context>
 pub(crate) fn create_a_new_browsing_context_and_document(
+    event_sender: &IpcSender<ContentEvent>,
+    traversable_id: NavigableId,
+    document_id: DocumentId,
+) -> Result<
+    (
+        JsObject,
+        EnvironmentSettingsObject,
+        Rc<RefCell<BaseDocument>>,
+    ),
+    String,
+> {
+    create_a_new_realm(None, event_sender, traversable_id, document_id)
+}
+
+/// <https://html.spec.whatwg.org/#creating-a-new-browsing-context>
+pub(crate) fn create_a_new_realm(
+    parent: Option<&mut crate::js::Engine>,
     event_sender: &IpcSender<ContentEvent>,
     traversable_id: NavigableId,
     document_id: DocumentId,
@@ -122,8 +150,9 @@ pub(crate) fn create_a_new_browsing_context_and_document(
         ..DocumentConfig::default()
     })));
     // Steps 9-10, 13: Obtain agent, create realm, set up window environment
-    // settings object (handled inside EnvironmentSettingsObject::new).
-    let settings = EnvironmentSettingsObject::new(
+    // settings object.
+    let settings = EnvironmentSettingsObject::new_in_realm(
+        parent,
         Rc::clone(&document),
         Url::parse("about:blank").map_err(|error| error.to_string())?,
         Some(event_sender.clone()),
@@ -133,7 +162,7 @@ pub(crate) fn create_a_new_browsing_context_and_document(
     // Step 22: Populate with html/head/body given document.
     parse_html_into_document(&mut document.borrow_mut(), crate::EMPTY_HTML_DOCUMENT);
     // Step 10 (continued): global object is the Window.
-    let global_object = settings.context.global_object();
+    let global_object = settings.realm_execution_context.realm_global_object();
     Ok((global_object, settings, document))
 }
 
@@ -184,7 +213,7 @@ pub(crate) fn the_rules_for_choosing_a_navigable(
     target_name: &str,
     noopener: bool,
     global_scope: Option<&GlobalScope>,
-    context: Option<&mut Context>,
+    window_global: Option<<crate::js::Types as js_engine::JsTypes>::JsObject>,
 ) -> ChosenNavigableResult {
     // Step 1: Let chosen be null.
     let mut chosen: Option<NavigableId> = None;
@@ -248,50 +277,60 @@ pub(crate) fn the_rules_for_choosing_a_navigable(
 
         // ---- Opener branch (auxiliary BC) ----
         // <https://html.spec.whatwg.org/#creating-a-new-auxiliary-browsing-context>
-        if let (Some(global_scope), Some(_context)) = (global_scope, context) {
-            // window.open path with opener: create the about:blank document
-            // locally since the new auxiliary BC reuses the opener's BCG.
-            // The UA continues via `new_traversable_info` in NavigateRequest.
-            let new_traversable_id = NavigableId::new();
-            let new_document_id = DocumentId::new();
+        if let Some(global_scope) = global_scope {
+            if window_global.is_some() {
+                // window.open path with opener: create the about:blank document
+                // locally since the new auxiliary BC reuses the opener's BCG.
+                // The UA continues via `new_traversable_info` in NavigateRequest.
+                let new_traversable_id = NavigableId::new();
+                let new_document_id = DocumentId::new();
 
-            let (global_object, settings, document) = match global_scope.create_document(
-                new_traversable_id,
-                new_document_id,
-                None,
-                new_traversable_id,
-            ) {
-                Ok(result) => result,
-                Err(error) => {
+                let (global_object, settings, document) = match global_scope
+                    .create_auxiliary_context_document(new_traversable_id, new_document_id)
+                {
+                    Ok(result) => result,
+                    Err(error) => {
+                        error!(
+                            "the_rules_for_choosing_a_navigable: failed to create document: {error}"
+                        );
+                        return ChosenNavigableResult {
+                            chosen_navigable_id: None,
+                            new_traversable_info: None,
+                            return_window: None,
+                        };
+                    }
+                };
+                if let Err(error) = global_scope.register_new_traversable_document(
+                    new_document_id,
+                    settings,
+                    document,
+                ) {
                     error!(
-                        "the_rules_for_choosing_a_navigable: failed to create document: {error}"
+                        "the_rules_for_choosing_a_navigable: failed to register document: {error}"
                     );
-                    return ChosenNavigableResult {
-                        chosen_navigable_id: None,
-                        new_traversable_info: None,
-                        return_window: None,
-                    };
                 }
-            };
-            if let Err(error) =
-                global_scope.register_new_traversable_document(new_document_id, settings, document)
-            {
-                error!("the_rules_for_choosing_a_navigable: failed to register document: {error}");
+
+                let new_info = NewTraversableInfo {
+                    document_id: new_document_id,
+                    target_name: target_name.to_owned(),
+                };
+
+                return ChosenNavigableResult {
+                    chosen_navigable_id: Some(new_traversable_id),
+                    new_traversable_info: Some(new_info),
+                    return_window: Some(global_object),
+                };
             }
 
-            let new_info = NewTraversableInfo {
-                document_id: new_document_id,
-                target_name: target_name.to_owned(),
-            };
-
+            // Anchor-navigation path (or missing window context): delegate to UA.
             return ChosenNavigableResult {
-                chosen_navigable_id: Some(new_traversable_id),
-                new_traversable_info: Some(new_info),
-                return_window: Some(global_object),
+                chosen_navigable_id: None,
+                new_traversable_info: None,
+                return_window: None,
             };
         }
 
-        // Anchor-navigation path (or missing GlobalScope): delegate to UA.
+        // No GlobalScope: delegate to UA.
         return ChosenNavigableResult {
             chosen_navigable_id: None,
             new_traversable_info: None,
@@ -304,7 +343,7 @@ pub(crate) fn the_rules_for_choosing_a_navigable(
     // The return_window for _self / _parent / _top is the source document's
     // global object (correct for _self; _parent and _top that target a
     // different process are a known gap — see content/src/html/README.md).
-    let return_window = context.map(|ctx| ctx.global_object());
+    let return_window = window_global;
     ChosenNavigableResult {
         chosen_navigable_id: Some(chosen),
         new_traversable_info: None,

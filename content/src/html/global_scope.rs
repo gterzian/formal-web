@@ -8,17 +8,21 @@ use std::{
 use super::environment_settings_object::EnvironmentSettingsObject;
 
 use blitz_dom::BaseDocument;
-use boa_engine::{JsValue, object::JsObject};
-use boa_gc::{Finalize, GcRefCell, Trace};
 use ipc::IpcSender;
 use ipc_messages::content::DocumentId;
 use ipc_messages::content::{
     Event as ContentEvent, NavigableId, WindowTimerClearRequest, WindowTimerKey, WindowTimerRequest,
 };
 use ipc_messages::media::{MediaCommand, VideoPaintId};
+use js_engine::gc::{GcCell, gc_cell_new};
+use js_engine::{JsTypes, gc_struct};
 use log::{debug, error};
 
+use crate::js::Types;
 use crate::webidl::Callback;
+
+type JsValue = <Types as JsTypes>::JsValue;
+type JsObject = <Types as JsTypes>::JsObject;
 
 fn timer_debug_enabled() -> bool {
     std::env::var_os("FORMAL_WEB_DEBUG_TIMERS").is_some()
@@ -30,61 +34,7 @@ fn log_timer_debug(message: impl AsRef<str>) {
     }
 }
 
-/// The lifecycle state of a pending request.
-#[derive(Debug, Clone, PartialEq, Eq, Trace, Finalize)]
-pub enum PendingState {
-    /// Just created, waiting for the content process to submit it.
-    Pending,
-    /// Sent to the background thread, waiting for completion.
-    Processing,
-}
 
-/// <https://www.w3.org/TR/wasm-js-api/#asynchronously-compile-a-webassembly-module>
-///
-/// A pending WebAssembly request stored on the GlobalScope during JS execution.
-/// The request stays in this Vec throughout its lifecycle — the state field
-/// tracks progress.  The content process mutates the state when submitting to
-/// the background thread and when resolving/rejecting the promise.
-///
-/// Note: JS-typed fields (promise, resolvers) are NOT stored here — they live
-/// in `GlobalScope.pending_wasm_resolvers` keyed by `request_id`.  This lets
-/// domain code in `content/src/wasm/` construct and push `PendingRequest`
-/// without importing `boa_engine`.
-#[derive(Trace, Finalize)]
-pub enum PendingRequest {
-    /// A WebAssembly module compilation or instantiate-byte request.
-    WasmCompile {
-        /// Stable copy of the buffer bytes.
-        #[unsafe_ignore_trace]
-        bytes: Vec<u8>,
-        /// The request id, correlating with the background thread's result.
-        #[unsafe_ignore_trace]
-        request_id: u64,
-        /// True if this came from `instantiate(bytes, ...)`, false for `compile(bytes, ...)`.
-        is_instantiate: bool,
-        /// Current lifecycle state.
-        ///
-        /// PendingState is a simple Copy enum, safe to ignore trace on.
-        #[unsafe_ignore_trace]
-        state: PendingState,
-    },
-
-    /// <https://www.w3.org/TR/wasm-js-api/#asynchronously-instantiate-a-webassembly-module>
-    ///
-    /// An instantiate(moduleObject, importObject) request.
-    /// The module is already compiled — this only needs instantiation.
-    WasmInstantiate {
-        /// The previously compiled wasm module.
-        #[unsafe_ignore_trace]
-        module: wasmtime::Module,
-        /// The request id, correlating with the content-process's processing.
-        #[unsafe_ignore_trace]
-        request_id: u64,
-        /// Current lifecycle state.
-        #[unsafe_ignore_trace]
-        state: PendingState,
-    },
-}
 
 /// <https://html.spec.whatwg.org/#global-object>
 #[derive(Debug, Clone, Copy)]
@@ -93,10 +43,10 @@ pub enum GlobalScopeKind {
 }
 
 /// <https://html.spec.whatwg.org/#global-object>
-#[derive(Trace, Finalize)]
+#[gc_struct]
 pub struct CachedNodeObject {
     /// <https://dom.spec.whatwg.org/#interface-node>
-    #[unsafe_ignore_trace]
+    #[ignore_trace]
     pub node_id: usize,
 
     /// <https://webidl.spec.whatwg.org/#dfn-platform-object>
@@ -104,10 +54,10 @@ pub struct CachedNodeObject {
 }
 
 /// <https://html.spec.whatwg.org/#list-of-animation-frame-callbacks>
-#[derive(Trace, Finalize)]
+#[gc_struct]
 pub struct AnimationFrameCallback {
     /// <https://html.spec.whatwg.org/#animation-frame-callback-identifier>
-    #[unsafe_ignore_trace]
+    #[ignore_trace]
     pub handle: u32,
 
     /// <https://webidl.spec.whatwg.org/#idl-callback-function>
@@ -115,7 +65,7 @@ pub struct AnimationFrameCallback {
 }
 
 /// <https://html.spec.whatwg.org/#timers>
-#[derive(Trace, Finalize, Clone)]
+#[gc_struct]
 pub enum TimerHandler {
     Function {
         /// <https://webidl.spec.whatwg.org/#idl-callback-function>
@@ -123,20 +73,20 @@ pub enum TimerHandler {
     },
     String {
         /// <https://html.spec.whatwg.org/#timerhandler>
-        #[unsafe_ignore_trace]
+        #[ignore_trace]
         source: String,
     },
 }
 
 /// <https://html.spec.whatwg.org/#timers>
-#[derive(Trace, Finalize, Clone)]
+#[gc_struct]
 pub struct WindowTimer {
     /// <https://html.spec.whatwg.org/#map-of-settimeout-and-setinterval-ids>
-    #[unsafe_ignore_trace]
+    #[ignore_trace]
     pub id: u32,
 
     /// <https://html.spec.whatwg.org/#run-steps-after-a-timeout>
-    #[unsafe_ignore_trace]
+    #[ignore_trace]
     pub timer_key: WindowTimerKey,
 
     /// <https://html.spec.whatwg.org/#timerhandler>
@@ -146,11 +96,11 @@ pub struct WindowTimer {
     pub arguments: Vec<JsValue>,
 
     /// <https://html.spec.whatwg.org/#timers>
-    #[unsafe_ignore_trace]
+    #[ignore_trace]
     pub repeat: bool,
 
     /// <https://html.spec.whatwg.org/#timers>
-    #[unsafe_ignore_trace]
+    #[ignore_trace]
     pub timeout_ms: u32,
 }
 
@@ -161,68 +111,68 @@ struct TimerHost {
 }
 
 /// <https://html.spec.whatwg.org/#global-object>
-#[derive(Trace, Finalize)]
+#[gc_struct]
 pub struct GlobalScope {
     /// <https://html.spec.whatwg.org/#global-object>
-    #[unsafe_ignore_trace]
+    #[ignore_trace]
     pub kind: GlobalScopeKind,
 
     /// <https://html.spec.whatwg.org/#concept-document-window>
-    #[unsafe_ignore_trace]
+    #[ignore_trace]
     document: Rc<RefCell<BaseDocument>>,
 
     /// <https://dom.spec.whatwg.org/#interface-document>
-    document_object: GcRefCell<Option<JsObject>>,
+    document_object: GcCell<Option<JsObject>>,
 
     /// <https://html.spec.whatwg.org/#dom-location>
-    location_object: GcRefCell<Option<JsObject>>,
+    location_object: GcCell<Option<JsObject>>,
 
     /// <https://webidl.spec.whatwg.org/#dfn-platform-object>
-    node_objects: GcRefCell<Vec<CachedNodeObject>>,
+    node_objects: GcCell<Vec<CachedNodeObject>>,
 
     /// <https://html.spec.whatwg.org/#animation-frame-callback-identifier>
-    #[unsafe_ignore_trace]
+    #[ignore_trace]
     animation_frame_callback_identifier: Cell<u32>,
 
     /// <https://html.spec.whatwg.org/#list-of-animation-frame-callbacks>
-    animation_frame_callbacks: GcRefCell<Vec<AnimationFrameCallback>>,
+    animation_frame_callbacks: GcCell<Vec<AnimationFrameCallback>>,
 
     /// <https://html.spec.whatwg.org/#timers>
-    #[unsafe_ignore_trace]
+    #[ignore_trace]
     timer_callback_identifier: Cell<u32>,
 
     /// <https://html.spec.whatwg.org/#map-of-settimeout-and-setinterval-ids>
-    window_timers: GcRefCell<Vec<WindowTimer>>,
+    window_timers: GcCell<Vec<WindowTimer>>,
 
     /// <https://html.spec.whatwg.org/#timer-nesting-level>
-    #[unsafe_ignore_trace]
+    #[ignore_trace]
     current_timer_nesting_level: Cell<Option<u32>>,
 
-    #[unsafe_ignore_trace]
+    #[ignore_trace]
     timer_host: RefCell<Option<TimerHost>>,
 
     /// <https://html.spec.whatwg.org/#concept-navigable>
-    #[unsafe_ignore_trace]
+    #[ignore_trace]
     source_navigable_id: Cell<Option<NavigableId>>,
 
     /// <https://html.spec.whatwg.org/#parent-navigable>
     /// The parent of this document's navigable in the navigable tree.
     /// None indicates a top-level traversable.
-    #[unsafe_ignore_trace]
+    #[ignore_trace]
     parent_traversable_id: Cell<Option<NavigableId>>,
 
     /// <https://html.spec.whatwg.org/#traversable-navigable>
     /// The top-level traversable for this navigable tree.
-    #[unsafe_ignore_trace]
+    #[ignore_trace]
     top_level_traversable_id: Cell<Option<NavigableId>>,
 
     /// <https://html.spec.whatwg.org/#concept-document>
     /// The document id for the document associated with this global scope.
-    #[unsafe_ignore_trace]
+    #[ignore_trace]
     document_id: RefCell<Option<DocumentId>>,
 
     /// Sender for content-to-user-agent IPC events (e.g. navigation requests).
-    #[unsafe_ignore_trace]
+    #[ignore_trace]
     event_sender: RefCell<Option<IpcSender<ContentEvent>>>,
 
     /// Shared registry for newly-created traversable documents (window.open).
@@ -230,7 +180,7 @@ pub struct GlobalScope {
     /// `the_rules_for_choosing_a_navigable`. Both GlobalScope (to insert)
     /// and ContentProcess (to retrieve) share the same `Rc`, so no separate
     /// flush step is needed.
-    #[unsafe_ignore_trace]
+    #[ignore_trace]
     new_document_registry: RefCell<
         Option<
             Rc<
@@ -246,38 +196,23 @@ pub struct GlobalScope {
     /// `resource_selection_algorithm` (to insert) and
     /// `ContentProcess::build_frame_composition_metadata` (to read) share
     /// the same `Rc`.
-    #[unsafe_ignore_trace]
+    #[ignore_trace]
     video_paint_registry: RefCell<Option<Rc<RefCell<HashMap<(DocumentId, usize), VideoPaintId>>>>>,
 
     /// Direct sender to the media extension.
-    #[unsafe_ignore_trace]
+    #[ignore_trace]
     media_extension_sender: RefCell<Option<IpcSender<MediaCommand>>>,
+
+
 
     /// <https://html.spec.whatwg.org/#concept-document-creation-url>
     /// The creation URL of this window's Document.
-    #[unsafe_ignore_trace]
+    #[ignore_trace]
     creation_url: RefCell<Option<url::Url>>,
 
-    /// Generic queue of pending async requests created during JS execution.
-    /// Populated by native JS functions (e.g. WebAssembly.compile) and drained
-    /// by the content process after JS execution completes.
-    pending_requests: GcRefCell<Vec<PendingRequest>>,
-
-    /// A counter for generating unique request IDs for async wasm operations.
-    #[unsafe_ignore_trace]
-    pending_wasm_request_id_counter: std::cell::Cell<u64>,
-
-    /// Map of request_id → (promise, resolvers) for pending wasm operations.
-    /// The promise and resolvers are stored here rather than in
-    /// `PendingRequest` so that domain code in `content/src/wasm/` can
-    /// push pending requests without importing `boa_engine`.
-    pending_wasm_resolvers: GcRefCell<
-        Vec<(
-            u64,
-            boa_engine::object::JsObject,
-            boa_engine::builtins::promise::ResolvingFunctions,
-        )>,
-    >,
+    /// Consolidated wasm state (pending requests, resolvers, counter).
+    #[cfg(all(boa_backend, feature = "wasm"))]
+    wasm_state: GcCell<Option<crate::wasm::WasmState>>,
 }
 
 impl GlobalScope {
@@ -285,13 +220,13 @@ impl GlobalScope {
         Self {
             kind,
             document,
-            document_object: GcRefCell::new(None),
-            location_object: GcRefCell::new(None),
-            node_objects: GcRefCell::new(Vec::new()),
+            document_object: gc_cell_new(None),
+            location_object: gc_cell_new(None),
+            node_objects: gc_cell_new(Vec::new()),
             animation_frame_callback_identifier: Cell::new(0),
-            animation_frame_callbacks: GcRefCell::new(Vec::new()),
+            animation_frame_callbacks: gc_cell_new(Vec::new()),
             timer_callback_identifier: Cell::new(0),
-            window_timers: GcRefCell::new(Vec::new()),
+            window_timers: gc_cell_new(Vec::new()),
             current_timer_nesting_level: Cell::new(None),
             timer_host: RefCell::new(None),
             source_navigable_id: Cell::new(None),
@@ -303,10 +238,10 @@ impl GlobalScope {
             new_document_registry: RefCell::new(None),
             video_paint_registry: RefCell::new(None),
             media_extension_sender: RefCell::new(None),
+
             creation_url: RefCell::new(None),
-            pending_requests: GcRefCell::new(Vec::new()),
-            pending_wasm_request_id_counter: std::cell::Cell::new(0),
-            pending_wasm_resolvers: GcRefCell::new(Vec::new()),
+            #[cfg(all(boa_backend, feature = "wasm"))]
+            wasm_state: gc_cell_new(Some(crate::wasm::WasmState::new())),
         }
     }
 
@@ -661,17 +596,11 @@ impl GlobalScope {
         }
     }
 
-    /// <https://html.spec.whatwg.org/#creating-a-new-browsing-context>
-    /// Content-process portion of "create a new browsing context and document".
-    /// The caller must store the returned `EnvironmentSettingsObject` in a
-    /// Rust container — if it is dropped the embedded `Context` is dropped
-    /// and the `JsObject` becomes a dangling pointer.
-    pub(crate) fn create_document(
+    /// <https://html.spec.whatwg.org/#creating-a-new-auxiliary-browsing-context>
+    pub(crate) fn create_auxiliary_context_document(
         &self,
         new_traversable_id: NavigableId,
         new_document_id: DocumentId,
-        _parent_traversable_id: Option<NavigableId>,
-        _top_level_traversable_id: NavigableId,
     ) -> Result<
         (
             JsObject,
@@ -684,11 +613,7 @@ impl GlobalScope {
         let event_sender = event_sender
             .as_ref()
             .ok_or_else(|| String::from("GlobalScope has no event sender"))?;
-        crate::html::create_a_new_browsing_context_and_document(
-            event_sender,
-            new_traversable_id,
-            new_document_id,
-        )
+        crate::html::create_a_new_realm(None, event_sender, new_traversable_id, new_document_id)
     }
 
     /// Set the shared new-document registry that both GlobalScope and
@@ -742,6 +667,13 @@ impl GlobalScope {
     pub(crate) fn allocate_media_pipeline_id(&self) -> ipc_messages::media::MediaPipelineId {
         ipc_messages::media::MediaPipelineId(uuid::Uuid::new_v4())
     }
+
+    /// Store the engine context so new realms can share the same JS engine
+    /// (same GC heap on JSC).  Called during engine setup, before any JS
+    /// execution that might trigger `window.open`.
+    /// Note: Only used on JSC backend (Boa creates fresh contexts).
+    #[allow(dead_code)]
+
 
     pub(crate) fn set_video_paint_registry(
         &self,
@@ -801,106 +733,48 @@ impl GlobalScope {
         taken
     }
 
-    /// Push a pending async request onto this document's queue.
-    ///
-    /// Called by native JS functions (e.g. `WebAssembly.compile()`) during JS
-    /// execution.  The content process drains these requests after each command.
-    pub(crate) fn push_pending_request(&self, request: PendingRequest) {
-        self.pending_requests.borrow_mut().push(request);
+    /// Access the consolidated wasm state (read-only, interior mutability).
+    #[cfg(all(boa_backend, feature = "wasm"))]
+    fn with_wasm_state<R>(&self, f: impl FnOnce(&crate::wasm::WasmState) -> R) -> Option<R> {
+        self.wasm_state.borrow().as_ref().map(|state| f(state))
     }
 
-    /// Allocate a unique request ID for a pending wasm operation.
+    /// Delegation methods to WasmState for backward compatibility.
+    #[cfg(all(boa_backend, feature = "wasm"))]
     pub(crate) fn next_wasm_request_id(&self) -> u64 {
-        let id = self.pending_wasm_request_id_counter.get();
-        self.pending_wasm_request_id_counter.set(id.wrapping_add(1));
-        id
+        self.with_wasm_state(|s| s.next_request_id()).unwrap_or(0)
     }
 
-    /// Mark all compile-type pending wasm requests as Processing and return
-    /// their bytes + request_ids.  Called by the content process.
-    pub(crate) fn take_pending_wasm_batches(&self) -> Vec<(u64, Vec<u8>)> {
-        let mut requests = self.pending_requests.borrow_mut();
-        let mut batches = Vec::new();
-        for request in requests.iter_mut() {
-            if let PendingRequest::WasmCompile {
-                bytes,
-                request_id,
-                state,
-                ..
-            } = request
-            {
-                if *state == PendingState::Pending {
-                    *state = PendingState::Processing;
-                    batches.push((*request_id, bytes.clone()));
-                }
-            }
-        }
-        batches
+    #[cfg(all(boa_backend, feature = "wasm"))]
+    pub(crate) fn push_pending_request(&self, request: crate::wasm::PendingRequest) {
+        self.with_wasm_state(|s| s.push_pending_request(request));
     }
 
-    /// Mark all instantiate-type pending wasm requests as Processing and
-    /// return their module + request_id.  Called by the content process.
-    pub(crate) fn take_pending_wasm_instantiates(&self) -> Vec<(u64, wasmtime::Module)> {
-        let mut requests = self.pending_requests.borrow_mut();
-        let mut instantiates = Vec::new();
-        for request in requests.iter_mut() {
-            if let PendingRequest::WasmInstantiate {
-                module,
-                request_id,
-                state,
-            } = request
-            {
-                if *state == PendingState::Pending {
-                    *state = PendingState::Processing;
-                    instantiates.push((*request_id, module.clone()));
-                }
-            }
-        }
-        instantiates
-    }
-
-    /// Store the promise and resolving functions for a pending wasm request.
-    /// Called by the bindings layer after creating the promise.
+    #[cfg(all(boa_backend, feature = "wasm"))]
     pub(crate) fn store_wasm_resolver(
         &self,
         request_id: u64,
-        promise: boa_engine::object::JsObject,
-        resolvers: boa_engine::builtins::promise::ResolvingFunctions,
+        promise: JsObject,
+        resolvers: js_engine::records::PromiseResolvers<Types>,
     ) {
-        self.pending_wasm_resolvers
-            .borrow_mut()
-            .push((request_id, promise, resolvers));
+        self.with_wasm_state(|s| s.store_wasm_resolver(request_id, promise, resolvers));
     }
 
-    /// Remove and return the promise + resolvers for a completed request.
+    #[cfg(all(boa_backend, feature = "wasm"))]
+    pub(crate) fn take_pending_wasm_batches(&self) -> Vec<(u64, Vec<u8>)> {
+        self.with_wasm_state(|s| s.take_pending_wasm_batches()).unwrap_or_default()
+    }
+
+    #[cfg(all(boa_backend, feature = "wasm"))]
+    pub(crate) fn take_pending_wasm_instantiates(&self) -> Vec<(u64, wasmtime::Module)> {
+        self.with_wasm_state(|s| s.take_pending_wasm_instantiates()).unwrap_or_default()
+    }
+
+    #[cfg(all(boa_backend, feature = "wasm"))]
     pub(crate) fn consume_wasm_request(
         &self,
         request_id: u64,
-    ) -> Option<(
-        boa_engine::object::JsObject,
-        boa_engine::builtins::promise::ResolvingFunctions,
-    )> {
-        // Remove the PendingRequest from the request queue.
-        {
-            let mut requests = self.pending_requests.borrow_mut();
-            let idx = requests.iter().position(|r| match r {
-                PendingRequest::WasmCompile {
-                    request_id: rid, ..
-                } => *rid == request_id,
-                PendingRequest::WasmInstantiate {
-                    request_id: rid, ..
-                } => *rid == request_id,
-            });
-            if let Some(idx) = idx {
-                requests.swap_remove(idx);
-            }
-        }
-        // Look up the promise/resolvers in the separate store.
-        let mut resolvers = self.pending_wasm_resolvers.borrow_mut();
-        let idx = resolvers
-            .iter()
-            .position(|(rid, _, _)| *rid == request_id)?;
-        let (_rid, promise, res) = resolvers.swap_remove(idx);
-        Some((promise, res))
+    ) -> Option<(JsObject, js_engine::records::PromiseResolvers<Types>)> {
+        self.with_wasm_state(|s| s.consume_wasm_request(request_id)).flatten()
     }
 }

@@ -1,26 +1,32 @@
+use js_engine::gc::GcCell;
+use js_engine::gc::gc_cell_new;
+use js_engine::gc_struct;
 use std::{cell::Cell, rc::Rc};
-
-use boa_engine::{Context, JsArgs, JsNativeError, JsResult, JsValue, js_string, object::JsObject};
-use boa_gc::{Finalize, Gc, GcRefCell, Trace};
 
 use crate::webidl::{AsyncValueIterable, rejected_promise, resolved_promise};
 
+use js_engine::{Completion, ExecutionContext, JsTypes};
+
+use crate::js::Types;
+
 use super::{ReadableStream, ReadableStreamDefaultReader, ReadableStreamGenericReader};
 
-#[derive(Clone, Trace, Finalize)]
+type JsValue = <Types as JsTypes>::JsValue;
+
+#[gc_struct]
 pub(crate) struct ReadableStreamAsyncIteratorState {
     /// <https://streams.spec.whatwg.org/#readablestream-async-iterator-reader>
-    reader: Gc<GcRefCell<Option<ReadableStreamDefaultReader>>>,
+    reader: GcCell<Option<ReadableStreamDefaultReader>>,
 
     /// <https://streams.spec.whatwg.org/#readablestream-async-iterator-prevent-cancel>
-    #[unsafe_ignore_trace]
+    #[ignore_trace]
     prevent_cancel: Rc<Cell<bool>>,
 }
 
 impl ReadableStreamAsyncIteratorState {
     fn new(reader: ReadableStreamDefaultReader, prevent_cancel: bool) -> Self {
         Self {
-            reader: Gc::new(GcRefCell::new(Some(reader))),
+            reader: gc_cell_new(Some(reader)),
             prevent_cancel: Rc::new(Cell::new(prevent_cancel)),
         }
     }
@@ -29,13 +35,13 @@ impl ReadableStreamAsyncIteratorState {
         self.reader.borrow().clone()
     }
 
-    fn finish(&self, context: &mut Context) -> JsResult<()> {
+    fn finish(&self, ec: &mut dyn ExecutionContext<Types>) -> Completion<(), Types> {
         let Some(reader) = self.reader.borrow().clone() else {
             return Ok(());
         };
 
         if reader.stream_slot_value().is_some() {
-            reader.release_lock(context)?;
+            reader.release_lock(ec)?;
         }
 
         *self.reader.borrow_mut() = None;
@@ -50,23 +56,32 @@ impl AsyncValueIterable for ReadableStream {
     fn create_async_iterator_state(
         &self,
         args: &[JsValue],
-        context: &mut Context,
-    ) -> JsResult<Self::State> {
+        ec: &mut dyn ExecutionContext<Types>,
+    ) -> Completion<Self::State, Types> {
         let mut stream = self.clone();
 
         // Step 1: "Let reader be ? AcquireReadableStreamDefaultReader(stream)."
-        let reader_object = stream.get_reader(&JsValue::undefined(), context)?;
+        let reader_object = stream.get_reader(&ec.value_undefined(), ec)?;
 
-        let reader = reader_object
-            .downcast_ref::<ReadableStreamDefaultReader>()
-            .ok_or_else(|| {
-                JsNativeError::typ()
-                    .with_message("ReadableStream async iterator requires a default reader")
-            })?
-            .clone();
+        // Step 2: Store the reader for iteration.
+        // Retrieve the domain data from the platform object.
+        let reader_any = ec.with_object_any(&reader_object);
+        let some_reader = reader_any.and_then(|d| d.downcast_ref::<ReadableStreamDefaultReader>());
+        let reader = match some_reader {
+            Some(reader) => reader.clone(),
+            None => {
+                return Err(
+                    ec.new_type_error("ReadableStream async iterator requires a default reader")
+                );
+            }
+        };
 
         // Step 3: "Let preventCancel be args[0][\"preventCancel\"]."
-        let prevent_cancel = iterator_prevent_cancel(args.get_or_undefined(0), context)?;
+        let value = args
+            .first()
+            .cloned()
+            .unwrap_or_else(|| ec.value_undefined());
+        let prevent_cancel = iterator_prevent_cancel(&value, ec)?;
 
         // Step 4: "Set iterator's prevent cancel to preventCancel."
         Ok(ReadableStreamAsyncIteratorState::new(
@@ -79,17 +94,21 @@ impl AsyncValueIterable for ReadableStream {
     fn get_next_iteration_result(
         &self,
         state: &Self::State,
-        context: &mut Context,
-    ) -> JsResult<JsObject> {
+        ec: &mut dyn ExecutionContext<Types>,
+    ) -> Completion<<Types as js_engine::JsTypes>::JsObject, Types> {
         let reader = state.reader().ok_or_else(|| {
-            JsNativeError::typ().with_message("ReadableStream async iterator is missing its reader")
+            ec.new_type_error("ReadableStream async iterator is missing its reader")
         })?;
 
-        reader.read(context)
+        reader.read(ec)
     }
 
-    fn finish_async_iterator(&self, state: &Self::State, context: &mut Context) -> JsResult<()> {
-        state.finish(context)
+    fn finish_async_iterator(
+        &self,
+        state: &Self::State,
+        ec: &mut dyn ExecutionContext<Types>,
+    ) -> Completion<(), Types> {
+        state.finish(ec)
     }
 
     fn has_async_iterator_return() -> bool {
@@ -101,33 +120,35 @@ impl AsyncValueIterable for ReadableStream {
         &self,
         state: &Self::State,
         value: JsValue,
-        context: &mut Context,
-    ) -> JsResult<JsObject> {
+        ec: &mut dyn ExecutionContext<Types>,
+    ) -> Completion<<Types as js_engine::JsTypes>::JsObject, Types> {
         let Some(reader) = state.reader() else {
-            return resolved_promise(JsValue::undefined(), context);
+            return resolved_promise(ec.value_undefined(), ec);
         };
 
         if state.prevent_cancel.get() {
-            state.finish(context)?;
-            return resolved_promise(JsValue::undefined(), context);
+            state.finish(ec)?;
+            return resolved_promise(ec.value_undefined(), ec);
         }
 
         let cancel_promise = reader
-            .cancel(value, context)
-            .or_else(|error| rejected_promise(error.into_opaque(context)?, context))?;
+            .cancel(value, ec)
+            .or_else(|error_value| rejected_promise(error_value, ec))?;
 
-        state.finish(context)?;
+        state.finish(ec)?;
         Ok(cancel_promise)
     }
 }
 
-fn iterator_prevent_cancel(options: &JsValue, context: &mut Context) -> JsResult<bool> {
-    if options.is_undefined() || options.is_null() {
+fn iterator_prevent_cancel(
+    options: &JsValue,
+    ec: &mut dyn ExecutionContext<Types>,
+) -> Completion<bool, Types> {
+    if JsValue::is_undefined(options) || options.is_null() {
         return Ok(false);
     }
 
-    let options_object = options.to_object(context)?;
-    Ok(options_object
-        .get(js_string!("preventCancel"), context)?
-        .to_boolean())
+    let options_obj = ec.to_object(options.clone())?;
+    let prevent_val = js_engine::EcmascriptHost::get(ec, &options_obj, "preventCancel")?;
+    Ok(ec.to_boolean(&prevent_val))
 }

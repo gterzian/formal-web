@@ -2,19 +2,21 @@ use std::cell::RefCell;
 use std::rc::Rc;
 
 use blitz_dom::BaseDocument;
-use boa_engine::JsData;
-use boa_engine::{Context, JsResult, JsValue};
-use boa_gc::{Finalize, Trace};
 use log::{debug, error};
+
+use crate::js::Types;
 
 use crate::html::{HTMLElement, await_a_stable_state};
 use crate::js::platform_objects::with_global_scope;
 use crate::webidl::resolved_promise;
 use ipc_messages::content::{Event as ContentEvent, RegisterMediaPipeline};
 use ipc_messages::media::VideoPaintId;
+use js_engine::gc_struct;
+
+use js_engine::{Completion, ExecutionContext, JsTypes};
 
 /// <https://html.spec.whatwg.org/#media-elements>
-#[derive(Trace, Finalize, JsData)]
+#[gc_struct]
 pub struct HTMLMediaElement {
     /// <https://html.spec.whatwg.org/#htmlelement>
     pub html_element: HTMLElement,
@@ -63,12 +65,12 @@ pub struct HTMLMediaElement {
 
     /// Globally-unique paint-layer identifier for this video element (UUID v4).
     /// Not traced — this is an internal identifier, not a JS value or GC-managed object.
-    #[unsafe_ignore_trace]
+    #[ignore_trace]
     video_paint_id: VideoPaintId,
 }
 
 /// <https://html.spec.whatwg.org/#mediaerror>
-#[derive(Trace, Finalize, JsData, Clone, Debug)]
+#[gc_struct]
 pub struct MediaError {
     /// <https://html.spec.whatwg.org/#dom-mediaerror-code>
     pub code: u16,
@@ -158,12 +160,12 @@ impl HTMLMediaElement {
     }
 
     /// <https://html.spec.whatwg.org/#dom-media-src>
-    pub(crate) fn set_src(&mut self, src: &str, context: &mut Context) {
+    pub(crate) fn set_src(&mut self, src: &str, ec: &mut dyn ExecutionContext<crate::js::Types>) {
         // Step 1: Set this's src content attribute to the given value.
         self.html_element.element.set_attribute("src", src);
 
         // Step 2: Invoke the element's media element load algorithm.
-        self.media_element_load_algorithm(context);
+        self.media_element_load_algorithm(ec);
     }
 
     /// <https://html.spec.whatwg.org/#dom-media-currentsrc>
@@ -218,15 +220,16 @@ impl HTMLMediaElement {
         self.error.clone()
     }
 
-    // ── Media element load algorithm ──
-
     /// <https://html.spec.whatwg.org/#media-element-load-algorithm>
     ///
     /// Note: Steps 2–5 (pending task management, abort event) and step 8 (playbackRate)
     /// are no-ops until promise-based play() and the media element event task source
     /// are implemented.  Step 6 (abort event for NETWORK_LOADING/IDLE) is deferred
     /// to event dispatch.
-    pub(crate) fn media_element_load_algorithm(&mut self, context: &mut Context) {
+    pub(crate) fn media_element_load_algorithm(
+        &mut self,
+        ec: &mut dyn ExecutionContext<crate::js::Types>,
+    ) {
         // Step 1: Set this element's is currently stalled to false.
         self.is_currently_stalled = false;
 
@@ -300,14 +303,17 @@ impl HTMLMediaElement {
         self.can_autoplay = true;
 
         // Step 10: Invoke the resource selection algorithm.
-        self.resource_selection_algorithm(context);
+        self.resource_selection_algorithm(ec);
 
         // Step 11: Playback of any previously playing media resource stops.
         // Note: No-op — no active playback in the initial cut.
     }
 
     /// <https://html.spec.whatwg.org/#resource-selection-algorithm>
-    pub(crate) fn resource_selection_algorithm(&mut self, context: &mut Context) {
+    pub(crate) fn resource_selection_algorithm(
+        &mut self,
+        ec: &mut dyn ExecutionContext<crate::js::Types>,
+    ) {
         // Step 1: Set networkState to NETWORK_NO_SOURCE.
         self.network_state = Self::NETWORK_NO_SOURCE;
 
@@ -327,7 +333,7 @@ impl HTMLMediaElement {
         // Resolve the src attribute value to an absolute URL against the document's
         // base URL (creation URL), as required by the spec's current_src definition.
         let resolved_src = src.as_ref().and_then(|s| {
-            with_global_scope(context, |global_scope| Ok(global_scope.creation_url()))
+            with_global_scope(ec, |global_scope| Ok(global_scope.creation_url()))
                 .ok()
                 .flatten()
                 .and_then(|base_url| base_url.join(s).ok().map(|url| url.to_string()))
@@ -339,7 +345,7 @@ impl HTMLMediaElement {
         let video_paint_id = self.video_paint_id;
 
         // Extract document_id and navigable_id from the GlobalScope.
-        let global_scope_data = with_global_scope(context, |global_scope| {
+        let global_scope_data = with_global_scope(ec, |global_scope| {
             Ok((
                 global_scope.document_id(),
                 global_scope.source_navigable_id(),
@@ -349,7 +355,7 @@ impl HTMLMediaElement {
         let (document_id, traversable_id, event_sender) = match global_scope_data {
             Ok(values) => values,
             Err(error) => {
-                error!("[media] failed to read GlobalScope state: {error}");
+                error!("[media] failed to read GlobalScope state: {error:?}");
                 (None, None, None)
             }
         };
@@ -357,15 +363,13 @@ impl HTMLMediaElement {
         // Register the paint_id via GlobalScope so the composition
         // metadata builder can find the same UUID for this video element.
         if let Some(document_id) = document_id {
-            let _ = with_global_scope(context, |global_scope| {
+            let _ = with_global_scope(ec, |global_scope| {
                 global_scope.register_video_paint_id(document_id, node_id, video_paint_id);
                 Ok(())
             });
         }
 
-        await_a_stable_state(context, move |_ctx| {
-            // ── Synchronous section starts here ──
-
+        await_a_stable_state(ec, move |job_ec| {
             // Step 5: ⌛ If blocked-on-parser flag is false, populate list of pending text tracks.
             // Note: No-op — text track support not yet implemented.
 
@@ -389,14 +393,14 @@ impl HTMLMediaElement {
                     (event_sender, traversable_id, document_id)
                 {
                     // Allocate pipeline ID and send CreatePipeline+Play directly to media.
-                    let pipeline_id = with_global_scope(_ctx, |global_scope| {
+                    let pipeline_id = with_global_scope(job_ec, |global_scope| {
                         Ok(global_scope.allocate_media_pipeline_id())
                     })
                     .ok();
 
                     if let Some(pipeline_id) = pipeline_id {
                         // Send CreatePipeline + Play directly to the media extension.
-                        let media_sender = with_global_scope(_ctx, |global_scope| {
+                        let media_sender = with_global_scope(job_ec, |global_scope| {
                             Ok(global_scope.media_extension_sender())
                         })
                         .ok()
@@ -444,8 +448,7 @@ impl HTMLMediaElement {
                 // require access to the media element and are tracked as a gap.
             }
 
-            // ── Synchronous section ends here ──
-            Ok(JsValue::undefined())
+            Ok(job_ec.value_undefined())
         })
     }
 
@@ -527,7 +530,10 @@ impl HTMLMediaElement {
     }
 
     /// <https://html.spec.whatwg.org/#dom-media-play>
-    pub(crate) fn play(&mut self, context: &mut Context) -> JsResult<JsValue> {
+    pub(crate) fn play(
+        &mut self,
+        ec: &mut dyn ExecutionContext<crate::js::Types>,
+    ) -> Completion<<Types as JsTypes>::JsValue, crate::js::Types> {
         // Step 1: If the media element is not allowed to play, then return
         // a promise rejected with a "NotAllowedError" DOMException.
         // Note: Simplified — always allowed to play for now.
@@ -543,23 +549,23 @@ impl HTMLMediaElement {
 
         // Step 5: Let promise be a new promise and append promise to the
         // list of pending play promises.
-        let promise = resolved_promise(JsValue::undefined(), context)?;
+        let promise = resolved_promise(ec.value_undefined(), ec)?.into();
         // Note: The list of pending play promises is not yet tracked.
 
         // Step 6: Run the internal play steps for the media element.
-        self.internal_play_steps(context);
+        self.internal_play_steps(ec);
 
         // Step 7: Return promise.
-        Ok(JsValue::from(promise))
+        Ok(promise)
     }
 
     /// <https://html.spec.whatwg.org/#internal-play-steps>
-    pub(crate) fn internal_play_steps(&mut self, context: &mut Context) {
+    pub(crate) fn internal_play_steps(&mut self, ec: &mut dyn ExecutionContext<crate::js::Types>) {
         // Step 1: If the media element's networkState attribute has the
         // value NETWORK_EMPTY, invoke the media element's resource
         // selection algorithm.
         if self.network_state == Self::NETWORK_EMPTY {
-            self.resource_selection_algorithm(context);
+            self.resource_selection_algorithm(ec);
         }
 
         // Step 2: If the playback has ended and the direction of playback
@@ -597,12 +603,12 @@ impl HTMLMediaElement {
     }
 
     /// <https://html.spec.whatwg.org/#dom-media-pause>
-    pub(crate) fn pause(&mut self, context: &mut Context) {
+    pub(crate) fn pause(&mut self, ec: &mut dyn ExecutionContext<crate::js::Types>) {
         // Step 1: If the media element's networkState attribute has the
         // value NETWORK_EMPTY, invoke the media element's resource
         // selection algorithm.
         if self.network_state == Self::NETWORK_EMPTY {
-            self.resource_selection_algorithm(context);
+            self.resource_selection_algorithm(ec);
         }
 
         // Step 2: Run the internal pause steps for the media element.
@@ -634,12 +640,12 @@ impl HTMLMediaElement {
 
     /// <https://html.spec.whatwg.org/#dom-media-load>
     #[allow(dead_code)]
-    pub(crate) fn load(&mut self, context: &mut Context) {
+    pub(crate) fn load(&mut self, ec: &mut dyn ExecutionContext<crate::js::Types>) {
         // Step 1: Let resumptionSteps be the media element's lazy load resumption steps.
         // Step 2: If resumptionSteps is not null, set to null and invoke resumptionSteps.
         // Note: Lazy load resumption steps are not yet implemented — always null.
 
         // Step 3: Run the media element load algorithm.
-        self.media_element_load_algorithm(context);
+        self.media_element_load_algorithm(ec);
     }
 }

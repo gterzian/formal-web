@@ -1,20 +1,22 @@
-use boa_engine::{Context, JsArgs, JsNativeError, JsResult, JsString, JsValue};
-
 use crate::html::HTMLIFrameElement;
-use crate::js::with_event_target_mut;
+use crate::js::try_with_event_target_mut;
 use crate::webidl::bindings::{AttributeDef, InterfaceDefinition, WebIdlInterface};
 use crate::webidl::{callback_function_value, nullable_value};
 
-// ── WebIDL interface definition (§3) ──
+use js_engine::{Completion, ExecutionContext, JsTypes};
 
-impl WebIdlInterface for HTMLIFrameElement {
+use crate::js::Types;
+
+type JsValue = <Types as JsTypes>::JsValue;
+
+impl WebIdlInterface<Types> for HTMLIFrameElement {
     const NAME: &'static str = "HTMLIFrameElement";
 
     fn parent_name() -> Option<&'static str> {
         Some("HTMLElement")
     }
 
-    fn define_members(def: &mut InterfaceDefinition) {
+    fn define_members(def: &mut InterfaceDefinition<Types>) {
         def.add_attribute(AttributeDef {
             id: "src",
             getter: get_src,
@@ -26,6 +28,7 @@ impl WebIdlInterface for HTMLIFrameElement {
             replaceable: false,
             put_forwards: None,
             legacy_lenient_setter: false,
+            exposed: None,
         });
         def.add_attribute(AttributeDef {
             id: "srcdoc",
@@ -38,6 +41,7 @@ impl WebIdlInterface for HTMLIFrameElement {
             replaceable: false,
             put_forwards: None,
             legacy_lenient_setter: false,
+            exposed: None,
         });
         def.add_attribute(AttributeDef {
             id: "name",
@@ -50,6 +54,7 @@ impl WebIdlInterface for HTMLIFrameElement {
             replaceable: false,
             put_forwards: None,
             legacy_lenient_setter: false,
+            exposed: None,
         });
         def.add_attribute(AttributeDef {
             id: "width",
@@ -62,6 +67,7 @@ impl WebIdlInterface for HTMLIFrameElement {
             replaceable: false,
             put_forwards: None,
             legacy_lenient_setter: false,
+            exposed: None,
         });
         def.add_attribute(AttributeDef {
             id: "height",
@@ -74,6 +80,7 @@ impl WebIdlInterface for HTMLIFrameElement {
             replaceable: false,
             put_forwards: None,
             legacy_lenient_setter: false,
+            exposed: None,
         });
         def.add_attribute(AttributeDef {
             id: "contentDocument",
@@ -86,6 +93,7 @@ impl WebIdlInterface for HTMLIFrameElement {
             replaceable: false,
             put_forwards: None,
             legacy_lenient_setter: false,
+            exposed: None,
         });
         def.add_attribute(AttributeDef {
             id: "contentWindow",
@@ -98,6 +106,7 @@ impl WebIdlInterface for HTMLIFrameElement {
             replaceable: false,
             put_forwards: None,
             legacy_lenient_setter: false,
+            exposed: None,
         });
         def.add_attribute(AttributeDef {
             id: "onload",
@@ -110,6 +119,7 @@ impl WebIdlInterface for HTMLIFrameElement {
             replaceable: false,
             put_forwards: None,
             legacy_lenient_setter: false,
+            exposed: None,
         });
         def.add_attribute(AttributeDef {
             id: "onerror",
@@ -122,64 +132,76 @@ impl WebIdlInterface for HTMLIFrameElement {
             replaceable: false,
             put_forwards: None,
             legacy_lenient_setter: false,
+            exposed: None,
         });
     }
 }
 
-fn with_html_iframe_element_ref<R>(
+fn try_with_html_iframe_element_ref<R>(
     this: &JsValue,
+    ec: &mut dyn ExecutionContext<Types>,
     f: impl FnOnce(&HTMLIFrameElement) -> R,
-) -> JsResult<R> {
-    let object = this.as_object().ok_or_else(|| {
-        JsNativeError::typ().with_message("HTMLIFrameElement receiver is not an object")
-    })?;
-    let html_iframe_element = object
-        .downcast_ref::<HTMLIFrameElement>()
-        .ok_or_else(|| JsNativeError::typ().with_message("receiver is not an HTMLIFrameElement"))?;
-    Ok(f(&html_iframe_element))
+) -> Completion<R, Types> {
+    let obj = <Types as JsTypes>::value_as_object(this)
+        .ok_or_else(|| ec.new_type_error("HTMLIFrameElement receiver is not an object"))?;
+    if let Some(data) = ec.with_object_any(&obj) {
+        if let Some(iframe) = data.downcast_ref::<HTMLIFrameElement>() {
+            return Ok(f(iframe));
+        }
+    }
+    Err(ec.new_type_error("receiver is not an HTMLIFrameElement"))
 }
 
-fn with_html_iframe_element_mut<R>(
+fn get_src(
     this: &JsValue,
-    f: impl FnOnce(&mut HTMLIFrameElement) -> R,
-) -> JsResult<R> {
-    let object = this.as_object().ok_or_else(|| {
-        JsNativeError::typ().with_message("HTMLIFrameElement receiver is not an object")
-    })?;
-    let mut html_iframe_element = object
-        .downcast_mut::<HTMLIFrameElement>()
-        .ok_or_else(|| JsNativeError::typ().with_message("receiver is not an HTMLIFrameElement"))?;
-    Ok(f(&mut html_iframe_element))
-}
-fn get_src(this: &JsValue, _: &[JsValue], _: &mut Context) -> JsResult<JsValue> {
-    with_html_iframe_element_ref(this, |iframe| JsValue::from(JsString::from(iframe.src())))
+    _: &[JsValue],
+    ec: &mut dyn ExecutionContext<Types>,
+) -> Completion<JsValue, Types> {
+    let src = try_with_html_iframe_element_ref(this, ec, |iframe| iframe.src())?;
+    Ok(ec.value_from_string(ec.js_string_from_str(&src)))
 }
 
-fn get_onload(this: &JsValue, _: &[JsValue], _: &mut Context) -> JsResult<JsValue> {
-    with_html_iframe_element_ref(this, |iframe| {
-        iframe
-            .onload_value()
-            .map(|callback| callback.to_js_value())
-            .unwrap_or_else(JsValue::null)
-    })
+fn get_onload(
+    this: &JsValue,
+    _: &[JsValue],
+    ec: &mut dyn ExecutionContext<Types>,
+) -> Completion<JsValue, Types> {
+    let onload = try_with_html_iframe_element_ref(this, ec, |iframe| iframe.onload_value())?;
+    Ok(onload
+        .map(|callback| callback.to_js_value())
+        .unwrap_or_else(|| ec.value_null()))
 }
 
-fn set_onload(this: &JsValue, args: &[JsValue], _: &mut Context) -> JsResult<JsValue> {
-    let iframe_object = this.as_object().ok_or_else(|| {
-        JsNativeError::typ().with_message("HTMLIFrameElement receiver is not an object")
-    })?;
-    let callback = nullable_value(args.get_or_undefined(0), callback_function_value)?;
-    let previous =
-        with_html_iframe_element_mut(this, |iframe| iframe.replace_onload(callback.clone()))?;
+fn set_onload(
+    this: &JsValue,
+    args: &[JsValue],
+    ec: &mut dyn ExecutionContext<Types>,
+) -> Completion<JsValue, Types> {
+    #[allow(unused_mut)]
+    let mut iframe_object = <Types as JsTypes>::value_as_object(this)
+        .ok_or_else(|| ec.new_type_error("HTMLIFrameElement receiver is not an object"))?;
+    let callback = nullable_value(
+        args.get(0).unwrap_or(&ec.value_undefined()),
+        ec,
+        callback_function_value,
+    )?;
+
+    // Note: uses JsObject::downcast_mut — with_object_any_mut borrows ec.
+    #[cfg_attr(jsc_backend, allow(unused_mut))]
+    let previous = if let Some(mut iframe) = iframe_object.downcast_mut::<HTMLIFrameElement>() {
+        iframe.replace_onload(callback.clone())
+    } else {
+        return Err(ec.new_type_error("receiver is not an HTMLIFrameElement"));
+    };
 
     if let Some(previous) = previous {
-        with_event_target_mut(this, |target| {
+        try_with_event_target_mut(this, ec, |target| {
             target.remove_event_listener_entry("load", &previous, false);
         })?;
     }
 
     if let Some(callback) = callback {
-        with_event_target_mut(this, |target| {
+        try_with_event_target_mut(this, ec, |target| {
             target.add_event_listener(
                 &iframe_object,
                 String::from("load"),
@@ -188,38 +210,54 @@ fn set_onload(this: &JsValue, args: &[JsValue], _: &mut Context) -> JsResult<JsV
                 false,
                 Some(false),
                 None,
-            )
-        })??;
+            );
+        })?;
     }
 
-    Ok(JsValue::undefined())
+    Ok(ec.value_undefined())
 }
 
-fn get_onerror(this: &JsValue, _: &[JsValue], _: &mut Context) -> JsResult<JsValue> {
-    with_html_iframe_element_ref(this, |iframe| {
-        iframe
-            .onerror_value()
-            .map(|callback| callback.to_js_value())
-            .unwrap_or_else(JsValue::null)
-    })
+fn get_onerror(
+    this: &JsValue,
+    _: &[JsValue],
+    ec: &mut dyn ExecutionContext<Types>,
+) -> Completion<JsValue, Types> {
+    let onerror = try_with_html_iframe_element_ref(this, ec, |iframe| iframe.onerror_value())?;
+    Ok(onerror
+        .map(|callback| callback.to_js_value())
+        .unwrap_or_else(|| ec.value_null()))
 }
 
-fn set_onerror(this: &JsValue, args: &[JsValue], _: &mut Context) -> JsResult<JsValue> {
-    let iframe_object = this.as_object().ok_or_else(|| {
-        JsNativeError::typ().with_message("HTMLIFrameElement receiver is not an object")
-    })?;
-    let callback = nullable_value(args.get_or_undefined(0), callback_function_value)?;
-    let previous =
-        with_html_iframe_element_mut(this, |iframe| iframe.replace_onerror(callback.clone()))?;
+fn set_onerror(
+    this: &JsValue,
+    args: &[JsValue],
+    ec: &mut dyn ExecutionContext<Types>,
+) -> Completion<JsValue, Types> {
+    #[cfg_attr(boa_backend, allow(unused_mut))]
+    let mut iframe_object = <Types as JsTypes>::value_as_object(this)
+        .ok_or_else(|| ec.new_type_error("HTMLIFrameElement receiver is not an object"))?;
+    let callback = nullable_value(
+        args.get(0).unwrap_or(&ec.value_undefined()),
+        ec,
+        callback_function_value,
+    )?;
+
+    // Note: uses JsObject::downcast_mut — with_object_any_mut borrows ec.
+    #[cfg_attr(jsc_backend, allow(unused_mut))]
+    let previous = if let Some(mut iframe) = iframe_object.downcast_mut::<HTMLIFrameElement>() {
+        iframe.replace_onerror(callback.clone())
+    } else {
+        return Err(ec.new_type_error("receiver is not an HTMLIFrameElement"));
+    };
 
     if let Some(previous) = previous {
-        with_event_target_mut(this, |target| {
+        try_with_event_target_mut(this, ec, |target| {
             target.remove_event_listener_entry("error", &previous, false);
         })?;
     }
 
     if let Some(callback) = callback {
-        with_event_target_mut(this, |target| {
+        try_with_event_target_mut(this, ec, |target| {
             target.add_event_listener(
                 &iframe_object,
                 String::from("error"),
@@ -228,82 +266,118 @@ fn set_onerror(this: &JsValue, args: &[JsValue], _: &mut Context) -> JsResult<Js
                 false,
                 Some(false),
                 None,
-            )
-        })??;
+            );
+        })?;
     }
 
-    Ok(JsValue::undefined())
+    Ok(ec.value_undefined())
 }
 
-fn set_src(this: &JsValue, args: &[JsValue], context: &mut Context) -> JsResult<JsValue> {
-    let src = args
-        .get_or_undefined(0)
-        .to_string(context)?
-        .to_std_string_escaped();
-    with_html_iframe_element_ref(this, |iframe| iframe.set_src(&src))?;
-    Ok(JsValue::undefined())
+fn set_src(
+    this: &JsValue,
+    args: &[JsValue],
+    ec: &mut dyn ExecutionContext<Types>,
+) -> Completion<JsValue, Types> {
+    let undefined = ec.value_undefined();
+    let src = ec.to_rust_string(args.get(0).cloned().unwrap_or(undefined))?;
+    try_with_html_iframe_element_ref(this, ec, |iframe| iframe.set_src(&src))?;
+    Ok(ec.value_undefined())
 }
 
-fn get_srcdoc(this: &JsValue, _: &[JsValue], _: &mut Context) -> JsResult<JsValue> {
-    with_html_iframe_element_ref(this, |iframe| {
-        JsValue::from(JsString::from(iframe.srcdoc()))
-    })
+fn get_srcdoc(
+    this: &JsValue,
+    _: &[JsValue],
+    ec: &mut dyn ExecutionContext<Types>,
+) -> Completion<JsValue, Types> {
+    let srcdoc = try_with_html_iframe_element_ref(this, ec, |iframe| iframe.srcdoc())?;
+    Ok(ec.value_from_string(ec.js_string_from_str(&srcdoc)))
 }
 
-fn set_srcdoc(this: &JsValue, args: &[JsValue], context: &mut Context) -> JsResult<JsValue> {
-    let srcdoc = args
-        .get_or_undefined(0)
-        .to_string(context)?
-        .to_std_string_escaped();
-    with_html_iframe_element_ref(this, |iframe| iframe.set_srcdoc(&srcdoc))?;
-    Ok(JsValue::undefined())
+fn set_srcdoc(
+    this: &JsValue,
+    args: &[JsValue],
+    ec: &mut dyn ExecutionContext<Types>,
+) -> Completion<JsValue, Types> {
+    let undefined = ec.value_undefined();
+    let srcdoc = ec.to_rust_string(args.get(0).cloned().unwrap_or(undefined))?;
+    try_with_html_iframe_element_ref(this, ec, |iframe| iframe.set_srcdoc(&srcdoc))?;
+    Ok(ec.value_undefined())
 }
 
-fn get_name(this: &JsValue, _: &[JsValue], _: &mut Context) -> JsResult<JsValue> {
-    with_html_iframe_element_ref(this, |iframe| JsValue::from(JsString::from(iframe.name())))
+fn get_name(
+    this: &JsValue,
+    _: &[JsValue],
+    ec: &mut dyn ExecutionContext<Types>,
+) -> Completion<JsValue, Types> {
+    let name = try_with_html_iframe_element_ref(this, ec, |iframe| iframe.name())?;
+    Ok(ec.value_from_string(ec.js_string_from_str(&name)))
 }
 
-fn set_name(this: &JsValue, args: &[JsValue], context: &mut Context) -> JsResult<JsValue> {
-    let name = args
-        .get_or_undefined(0)
-        .to_string(context)?
-        .to_std_string_escaped();
-    with_html_iframe_element_ref(this, |iframe| iframe.set_name(&name))?;
-    Ok(JsValue::undefined())
+fn set_name(
+    this: &JsValue,
+    args: &[JsValue],
+    ec: &mut dyn ExecutionContext<Types>,
+) -> Completion<JsValue, Types> {
+    let undefined = ec.value_undefined();
+    let name = ec.to_rust_string(args.get(0).cloned().unwrap_or(undefined))?;
+    try_with_html_iframe_element_ref(this, ec, |iframe| iframe.set_name(&name))?;
+    Ok(ec.value_undefined())
 }
 
-fn get_width(this: &JsValue, _: &[JsValue], _: &mut Context) -> JsResult<JsValue> {
-    with_html_iframe_element_ref(this, |iframe| JsValue::from(JsString::from(iframe.width())))
+fn get_width(
+    this: &JsValue,
+    _: &[JsValue],
+    ec: &mut dyn ExecutionContext<Types>,
+) -> Completion<JsValue, Types> {
+    let width = try_with_html_iframe_element_ref(this, ec, |iframe| iframe.width())?;
+    Ok(ec.value_from_string(ec.js_string_from_str(&width)))
 }
 
-fn set_width(this: &JsValue, args: &[JsValue], context: &mut Context) -> JsResult<JsValue> {
-    let width = args
-        .get_or_undefined(0)
-        .to_string(context)?
-        .to_std_string_escaped();
-    with_html_iframe_element_ref(this, |iframe| iframe.set_width(&width))?;
-    Ok(JsValue::undefined())
+fn set_width(
+    this: &JsValue,
+    args: &[JsValue],
+    ec: &mut dyn ExecutionContext<Types>,
+) -> Completion<JsValue, Types> {
+    let undefined = ec.value_undefined();
+    let width = ec.to_rust_string(args.get(0).cloned().unwrap_or(undefined))?;
+    try_with_html_iframe_element_ref(this, ec, |iframe| iframe.set_width(&width))?;
+    Ok(ec.value_undefined())
 }
 
-fn get_height(this: &JsValue, _: &[JsValue], _: &mut Context) -> JsResult<JsValue> {
-    with_html_iframe_element_ref(this, |iframe| {
-        JsValue::from(JsString::from(iframe.height()))
-    })
+fn get_height(
+    this: &JsValue,
+    _: &[JsValue],
+    ec: &mut dyn ExecutionContext<Types>,
+) -> Completion<JsValue, Types> {
+    let height = try_with_html_iframe_element_ref(this, ec, |iframe| iframe.height())?;
+    Ok(ec.value_from_string(ec.js_string_from_str(&height)))
 }
 
-fn set_height(this: &JsValue, args: &[JsValue], context: &mut Context) -> JsResult<JsValue> {
-    let height = args
-        .get_or_undefined(0)
-        .to_string(context)?
-        .to_std_string_escaped();
-    with_html_iframe_element_ref(this, |iframe| iframe.set_height(&height))?;
-    Ok(JsValue::undefined())
+fn set_height(
+    this: &JsValue,
+    args: &[JsValue],
+    ec: &mut dyn ExecutionContext<Types>,
+) -> Completion<JsValue, Types> {
+    let undefined = ec.value_undefined();
+    let height = ec.to_rust_string(args.get(0).cloned().unwrap_or(undefined))?;
+    try_with_html_iframe_element_ref(this, ec, |iframe| iframe.set_height(&height))?;
+    Ok(ec.value_undefined())
 }
 
-fn get_content_document(this: &JsValue, _: &[JsValue], _: &mut Context) -> JsResult<JsValue> {
-    with_html_iframe_element_ref(this, |_iframe| JsValue::null())
+fn get_content_document(
+    this: &JsValue,
+    _: &[JsValue],
+    ec: &mut dyn ExecutionContext<Types>,
+) -> Completion<JsValue, Types> {
+    let _ = try_with_html_iframe_element_ref(this, ec, |_iframe| ())?;
+    Ok(ec.value_null())
 }
 
-fn get_content_window(this: &JsValue, _: &[JsValue], _: &mut Context) -> JsResult<JsValue> {
-    with_html_iframe_element_ref(this, |_iframe| JsValue::null())
+fn get_content_window(
+    this: &JsValue,
+    _: &[JsValue],
+    ec: &mut dyn ExecutionContext<Types>,
+) -> Completion<JsValue, Types> {
+    let _ = try_with_html_iframe_element_ref(this, ec, |_iframe| ())?;
+    Ok(ec.value_null())
 }

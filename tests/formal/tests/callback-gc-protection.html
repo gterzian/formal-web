@@ -1,0 +1,373 @@
+<!DOCTYPE html>
+<meta charset="utf-8">
+<title>Callback GC Protection Tests</title>
+<script>
+// Tests that JS callbacks stored in Rust-side structs (Callback, SourceMethod,
+// stream algorithms) survive garbage collection cycles.
+// On JSC, these callbacks are stored via JSObjectSetPrivate and must be
+// independently protected with JSValueProtect; otherwise the GC can collect
+// them while Rust still holds a reference.
+
+var results = [];
+var allPassed = true;
+
+function test(name, fn) {
+  try {
+    fn();
+    results.push({ name: name, status: 0, message: null, stack: null });
+  } catch (e) {
+    allPassed = false;
+    results.push({ name: name, status: 1, message: e.message, stack: e.stack });
+  }
+}
+
+// Helper: create GC pressure with many large objects.
+function allocateGarbage(size) {
+  var garbage = [];
+  for (var i = 0; i < size; i++) {
+    garbage.push(new Array(500).fill(String(i)));
+  }
+  return garbage;
+}
+
+// Helper: resolve when TestUtils.gc() completes.
+function runGc() {
+  return TestUtils.gc();
+}
+
+// ============================================================================
+// Callback-specialized tests
+// ============================================================================
+
+// Test 1: ReadableStream pull callback survives GC.
+// The pull algorithm is stored as a Callback inside a SourceMethod inside
+// the ReadableStreamDefaultController.  On JSC, this must be JSValueProtect'd.
+test("ReadableStream pull callback survives GC", async function () {
+  var pullCalled = false;
+  var pullValue = null;
+  var stream = new ReadableStream({
+    pull: function (controller) {
+      pullCalled = true;
+      pullValue = "pulled-after-gc";
+      controller.enqueue(pullValue);
+      controller.close();
+    }
+  });
+  // Force GC cycles before reading to trigger potential collection
+  // of the pull callback stored in the Rust controller state.
+  allocateGarbage(200);
+  await runGc();
+  allocateGarbage(200);
+  await runGc();
+  // Actually exercise the callback by reading from the stream.
+  var reader = stream.getReader();
+  var result = await reader.read();
+  if (!pullCalled) {
+    throw new Error("pull callback was NOT called after GC");
+  }
+  if (result.value !== "pulled-after-gc") {
+    throw new Error("pull callback returned wrong value after GC: " +
+      JSON.stringify(result.value));
+  }
+  reader.releaseLock();
+});
+
+// Test 2: ReadableStream cancel callback survives GC.
+test("ReadableStream cancel callback survives GC", async function () {
+  var cancelCalled = false;
+  var cancelReason = null;
+  var stream = new ReadableStream({
+    cancel: function (reason) {
+      cancelCalled = true;
+      cancelReason = reason;
+    }
+  });
+  allocateGarbage(200);
+  await runGc();
+  allocateGarbage(200);
+  await runGc();
+  // Cancel the stream, which triggers the cancel callback.
+  await stream.cancel("test-cancel-reason");
+  if (!cancelCalled) {
+    throw new Error("cancel callback was NOT called after GC");
+  }
+  if (cancelReason !== "test-cancel-reason") {
+    throw new Error("cancel callback received wrong reason after GC: " +
+      cancelReason);
+  }
+});
+
+// Test 3: WritableStream write callback survives GC.
+test("WritableStream write callback survives GC", async function () {
+  var writeCalled = false;
+  var writtenChunk = null;
+  var stream = new WritableStream({
+    write: function (chunk) {
+      writeCalled = true;
+      writtenChunk = chunk;
+    }
+  });
+  allocateGarbage(200);
+  await runGc();
+  allocateGarbage(200);
+  await runGc();
+  // Write to the stream, which triggers the write callback.
+  var writer = stream.getWriter();
+  await writer.write("test-chunk");
+  if (!writeCalled) {
+    throw new Error("write callback was NOT called after GC");
+  }
+  if (writtenChunk !== "test-chunk") {
+    throw new Error("write callback received wrong chunk after GC: " +
+      writtenChunk);
+  }
+  writer.releaseLock();
+});
+
+// Test 4: WritableStream close callback survives GC.
+test("WritableStream close callback survives GC", async function () {
+  var closeCalled = false;
+  var stream = new WritableStream({
+    write: function (chunk) {},
+    close: function () {
+      closeCalled = true;
+    }
+  });
+  allocateGarbage(200);
+  await runGc();
+  allocateGarbage(200);
+  await runGc();
+  // Close the stream, which triggers the close callback.
+  var writer = stream.getWriter();
+  await writer.close();
+  if (!closeCalled) {
+    throw new Error("close callback was NOT called after GC");
+  }
+  writer.releaseLock();
+});
+
+// Test 5: WritableStream abort callback survives GC.
+test("WritableStream abort callback survives GC", async function () {
+  var abortCalled = false;
+  var abortReason = null;
+  var stream = new WritableStream({
+    write: function (chunk) {},
+    abort: function (reason) {
+      abortCalled = true;
+      abortReason = reason;
+    }
+  });
+  allocateGarbage(200);
+  await runGc();
+  allocateGarbage(200);
+  await runGc();
+  // Abort the stream, which triggers the abort callback.
+  await stream.abort("test-abort-reason");
+  if (!abortCalled) {
+    throw new Error("abort callback was NOT called after GC");
+  }
+  if (abortReason !== "test-abort-reason") {
+    throw new Error("abort callback received wrong reason after GC: " +
+      abortReason);
+  }
+});
+
+// Test 6: TransformStream transform callback survives GC.
+test("TransformStream transform callback survives GC", async function () {
+  var transformCalled = false;
+  var transformedChunk = null;
+  var stream = new TransformStream({
+    transform: function (chunk, controller) {
+      transformCalled = true;
+      transformedChunk = chunk;
+      controller.enqueue(chunk);
+    }
+  });
+  allocateGarbage(200);
+  await runGc();
+  allocateGarbage(200);
+  await runGc();
+  // Write a chunk, which triggers the transform callback.
+  var writer = stream.writable.getWriter();
+  await writer.write("transform-test");
+  writer.releaseLock();
+  var reader = stream.readable.getReader();
+  var result = await reader.read();
+  if (!transformCalled) {
+    throw new Error("transform callback was NOT called after GC");
+  }
+  if (transformedChunk !== "transform-test") {
+    throw new Error("transform callback received wrong chunk after GC: " +
+      transformedChunk);
+  }
+  if (result.value !== "transform-test") {
+    throw new Error("transform output wrong after GC: " +
+      JSON.stringify(result.value));
+  }
+  reader.releaseLock();
+});
+
+// Test 7: TransformStream flush callback survives GC.
+test("TransformStream flush callback survives GC", async function () {
+  var flushCalled = false;
+  var stream = new TransformStream({
+    transform: function (chunk, controller) {
+      controller.enqueue(chunk);
+    },
+    flush: function (controller) {
+      flushCalled = true;
+    }
+  });
+  allocateGarbage(200);
+  await runGc();
+  allocateGarbage(200);
+  await runGc();
+  // Write then close, which triggers the flush callback.
+  var writer = stream.writable.getWriter();
+  await writer.write("test");
+  await writer.close();
+  writer.releaseLock();
+  if (!flushCalled) {
+    throw new Error("flush callback was NOT called after GC");
+  }
+});
+
+// Test 8: Multiple GC cycles and callback invocations.
+// Simulates the pattern used in piping and complex async scenarios.
+test("Multiple GC cycles with repeated callback invocation", async function () {
+  var callCount = 0;
+  var stream = new ReadableStream({
+    pull: function (controller) {
+      callCount++;
+      if (callCount <= 3) {
+        controller.enqueue("chunk-" + callCount);
+      } else {
+        controller.close();
+      }
+    }
+  });
+  var reader = stream.getReader();
+  // Alternate GC cycles with read operations.
+  for (var i = 0; i < 3; i++) {
+    allocateGarbage(200);
+    await runGc();
+    var result = await reader.read();
+    if (result.done) {
+      throw new Error("Stream ended too early after GC (iteration " + i + ")");
+    }
+    if (result.value !== "chunk-" + (i + 1)) {
+      throw new Error("Wrong chunk value after GC at iteration " + i + ": " +
+        JSON.stringify(result.value));
+    }
+  }
+  // Last read should close.
+  allocateGarbage(200);
+  await runGc();
+  var finalResult = await reader.read();
+  if (!finalResult.done) {
+    throw new Error("Stream should be done after 3 reads");
+  }
+  if (callCount !== 4) {
+    throw new Error("pull was called " + callCount + " times, expected 4");
+  }
+  reader.releaseLock();
+});
+
+// Test 9: QueuingStrategy size callback survives GC.
+// The size function is stored as a Callback in the SizeAlgorithm.
+test("Strategy size callback survives GC", async function () {
+  var sizeCalled = false;
+  var stream = new ReadableStream({
+    pull: function (controller) {
+      controller.enqueue("data");
+      controller.close();
+    }
+  }, {
+    highWaterMark: 10,
+    size: function (chunk) {
+      sizeCalled = true;
+      return chunk.length;
+    }
+  });
+  allocateGarbage(200);
+  await runGc();
+  allocateGarbage(200);
+  await runGc();
+  var reader = stream.getReader();
+  var result = await reader.read();
+  if (!sizeCalled) {
+    throw new Error("size callback was NOT called after GC");
+  }
+  if (result.value !== "data") {
+    throw new Error("read value wrong after GC: " + JSON.stringify(result.value));
+  }
+  reader.releaseLock();
+});
+
+// Test 10: Multiple streams with independent callbacks survive GC.
+test("Multiple streams with independent callbacks survive GC", async function () {
+  var pullCount1 = 0;
+  var pullCount2 = 0;
+  var stream1 = new ReadableStream({
+    pull: function (controller) {
+      pullCount1++;
+      controller.enqueue("s1-" + pullCount1);
+      if (pullCount1 >= 2) {
+        controller.close();
+      }
+    }
+  });
+  var stream2 = new ReadableStream({
+    pull: function (controller) {
+      pullCount2++;
+      controller.enqueue("s2-" + pullCount2);
+      if (pullCount2 >= 2) {
+        controller.close();
+      }
+    }
+  });
+  // Interleave GC and reads across both streams.
+  allocateGarbage(200);
+  await runGc();
+  var reader1 = stream1.getReader();
+  var reader2 = stream2.getReader();
+  
+  var r1_1 = await reader1.read();
+  if (r1_1.value !== "s1-1") throw new Error("stream1[0]: " + JSON.stringify(r1_1.value));
+  
+  allocateGarbage(200);
+  await runGc();
+  
+  var r2_1 = await reader2.read();
+  if (r2_1.value !== "s2-1") throw new Error("stream2[0]: " + JSON.stringify(r2_1.value));
+  
+  allocateGarbage(200);
+  await runGc();
+  
+  var r2_2 = await reader2.read();
+  if (r2_2.value !== "s2-2") throw new Error("stream2[1]: " + JSON.stringify(r2_2.value));
+  
+  var r1_2 = await reader1.read();
+  if (r1_2.value !== "s1-2") throw new Error("stream1[1]: " + JSON.stringify(r1_2.value));
+  
+  reader1.releaseLock();
+  reader2.releaseLock();
+});
+
+// ============================================================================
+// Report
+// ============================================================================
+
+window.__formalWebTestResult = {
+  location: "",
+  title: "Callback GC Protection Tests",
+  tests: results,
+  status: {
+    status: allPassed ? 0 : 1,
+    message: allPassed ? null : "some tests failed",
+    stack: null,
+  },
+  asserts: [],
+};
+</script>
+<p>Running callback GC protection tests...</p>

@@ -5,31 +5,23 @@ use std::{
     rc::Rc,
 };
 
-use boa_engine::{
-    Context, JsArgs, JsData, JsError, JsNativeError, JsResult, JsValue,
-    builtins::{
-        iterable::create_iter_result_object,
-        promise::{PromiseState, ResolvingFunctions},
-    },
-    js_string,
-    native_function::NativeFunction,
-    object::{
-        JsObject,
-        builtins::{JsArray, JsFunction, JsPromise},
-    },
-    symbol::JsSymbol,
-};
-use boa_gc::{Finalize, Gc, GcRef, GcRefCell, GcRefMut, Trace};
+use crate::js::{Types, create_builtin_fn_with_traced_captures};
+type JsValue = <Types as JsTypes>::JsValue;
+type JsObject = <Types as JsTypes>::JsObject;
 
 use crate::dom::{AbortAlgorithm as SignalAbortAlgorithm, AbortSignal};
 use crate::js::with_abort_signal_ref;
 use crate::streams::{SizeAlgorithm, extract_high_water_mark, extract_size_algorithm};
 use crate::webidl::bindings::create_interface_instance;
 use crate::webidl::{
-    error_to_rejection_reason, mark_promise_as_handled, promise_from_completion,
-    promise_from_value, rejected_promise, rejected_promise_from_error, resolved_promise,
+    mark_promise_as_handled, promise_from_value, rejected_promise, resolved_promise,
     transform_promise_to_undefined,
 };
+use js_engine::EcmascriptHost;
+use js_engine::gc::{GcCell, JsObjectCell, JsValueCell, gc_cell_new};
+use js_engine::gc_struct;
+use js_engine::records::PromiseResolvers;
+use js_engine::types::JsTypes;
 
 use super::{
     ArrayBufferViewDescriptor, CancelAlgorithm, PullAlgorithm, ReadIntoRequest, ReadRequest,
@@ -43,39 +35,41 @@ use super::{
     set_up_readable_stream_default_controller_from_underlying_source, type_error_value,
     with_readable_stream_byob_reader_ref, with_readable_stream_default_reader_ref,
 };
+use js_engine::gc::gc_cell_ptr_eq;
+use js_engine::{Completion, ExecutionContext};
 
 /// <https://streams.spec.whatwg.org/#rs-class>
-#[derive(Clone, Trace, Finalize, JsData)]
+#[gc_struct]
 pub struct ReadableStream {
     /// <https://streams.spec.whatwg.org/#readablestream-controller>
-    controller: Gc<GcRefCell<Option<ReadableStreamController>>>,
+    controller: GcCell<Option<ReadableStreamController>>,
 
-    controller_object: Gc<GcRefCell<Option<JsObject>>>,
+    controller_object: JsObjectCell,
 
     /// <https://streams.spec.whatwg.org/#readablestream-reader>
-    reader: Gc<GcRefCell<Option<ReadableStreamReader>>>,
+    reader: GcCell<Option<ReadableStreamReader>>,
 
     /// <https://streams.spec.whatwg.org/#readablestream-disturbed>
-    #[unsafe_ignore_trace]
+    #[ignore_trace]
     disturbed: Rc<Cell<bool>>,
 
     /// <https://streams.spec.whatwg.org/#readablestream-state>
-    #[unsafe_ignore_trace]
+    #[ignore_trace]
     state: Rc<RefCell<ReadableStreamState>>,
 
     /// <https://streams.spec.whatwg.org/#readablestream-storederror>
-    stored_error: Gc<GcRefCell<JsValue>>,
+    stored_error: JsValueCell,
 }
 
 impl ReadableStream {
-    pub(crate) fn new() -> Self {
+    pub(crate) fn new(ec: &mut dyn ExecutionContext<Types>) -> Self {
         Self {
-            controller: Gc::new(GcRefCell::new(None)),
-            controller_object: Gc::new(GcRefCell::new(None)),
-            reader: Gc::new(GcRefCell::new(None)),
+            controller: gc_cell_new(None),
+            controller_object: JsObjectCell::new(None),
+            reader: gc_cell_new(None),
             disturbed: Rc::new(Cell::new(false)),
             state: Rc::new(RefCell::new(ReadableStreamState::Readable)),
-            stored_error: Gc::new(GcRefCell::new(JsValue::undefined())),
+            stored_error: JsValueCell::new(ec.value_undefined()),
         }
     }
 
@@ -92,7 +86,7 @@ impl ReadableStream {
     }
 
     pub(crate) fn set_controller_object_slot(&self, controller_object: Option<JsObject>) {
-        *self.controller_object.borrow_mut() = controller_object;
+        self.controller_object.set(controller_object);
     }
 
     pub(crate) fn reader_slot(&self) -> Option<ReadableStreamReader> {
@@ -116,7 +110,7 @@ impl ReadableStream {
     }
 
     pub(crate) fn set_stored_error(&self, error: JsValue) {
-        *self.stored_error.borrow_mut() = error;
+        self.stored_error.set(error);
     }
 
     pub(crate) fn set_disturbed(&self, disturbed: bool) {
@@ -124,13 +118,13 @@ impl ReadableStream {
     }
 
     /// <https://streams.spec.whatwg.org/#initialize-readable-stream>
-    fn initialize_readable_stream(&mut self) {
+    fn initialize_readable_stream(&mut self, ec: &mut dyn ExecutionContext<Types>) {
         // Step 1: "Set stream.[[state]] to \"readable\"."
         *self.state.borrow_mut() = ReadableStreamState::Readable;
 
         // Step 2: "Set stream.[[reader]] and stream.[[storedError]] to undefined."
         *self.reader.borrow_mut() = None;
-        *self.stored_error.borrow_mut() = JsValue::undefined();
+        self.stored_error.set(ec.value_undefined());
 
         // Step 3: "Set stream.[[disturbed]] to false."
         self.disturbed.set(false);
@@ -154,106 +148,98 @@ impl ReadableStream {
     }
 
     /// <https://streams.spec.whatwg.org/#rs-cancel>
-    pub(crate) fn cancel(&mut self, reason: JsValue, context: &mut Context) -> JsResult<JsObject> {
+    pub(crate) fn cancel(
+        &mut self,
+        reason: JsValue,
+        ec: &mut dyn ExecutionContext<crate::js::Types>,
+    ) -> Completion<JsObject, crate::js::Types> {
         // Step 1: "If ! IsReadableStreamLocked(this) is true, return a promise rejected with a TypeError exception."
         if self.is_readable_stream_locked() {
             return rejected_type_error_promise(
                 "Cannot cancel a stream that already has a reader",
-                context,
+                ec,
             );
         }
 
         // Step 2: "Return ! ReadableStreamCancel(this, reason)."
-        readable_stream_cancel(self.clone(), reason, context).map_err(|e| {
-            JsNativeError::typ()
-                .with_message(format!("Failed to cancel stream: {}", e))
-                .into()
-        })
+        readable_stream_cancel(self.clone(), reason, ec)
     }
 
     /// <https://streams.spec.whatwg.org/#rs-get-reader>
     pub(crate) fn get_reader(
         &mut self,
         options: &JsValue,
-        context: &mut Context,
-    ) -> JsResult<JsObject> {
+        ec: &mut dyn ExecutionContext<crate::js::Types>,
+    ) -> Completion<JsObject, crate::js::Types> {
         let options_object: Option<JsObject> = if options.is_undefined() || options.is_null() {
             None
         } else {
             Some(options.as_object().ok_or_else(|| {
-                JsNativeError::typ()
-                    .with_message("ReadableStream.getReader() options must be an object")
+                ec.new_type_error("ReadableStream.getReader() options must be an object")
             })?)
         };
 
         // Step 1: "If options[\"mode\"] does not exist, return ? AcquireReadableStreamDefaultReader(this)."
         let Some(options_object) = options_object else {
-            return acquire_readable_stream_default_reader(self.clone(), context);
+            return acquire_readable_stream_default_reader(self.clone(), ec);
         };
 
-        if !options_object.has_property(js_string!("mode"), context)? {
-            return acquire_readable_stream_default_reader(self.clone(), context);
+        let mode_key = ec.property_key_from_str("mode");
+        if !ec.has_property(options_object.clone(), mode_key.clone())? {
+            return acquire_readable_stream_default_reader(self.clone(), ec);
         }
 
-        let mode = options_object.get(js_string!("mode"), context)?;
+        let mode = ExecutionContext::get(ec, options_object.clone(), mode_key)?;
         if mode.is_undefined() {
-            return acquire_readable_stream_default_reader(self.clone(), context);
+            return acquire_readable_stream_default_reader(self.clone(), ec);
         }
 
         // Step 2: "Assert: options[\"mode\"] is \"byob\"."
-        let mode = mode.to_string(context)?.to_std_string_escaped();
+        let mode = ec.to_rust_string(mode)?;
         if mode != "byob" {
-            return Err(JsNativeError::typ()
-                .with_message("ReadableStream.getReader() only supports the default reader mode")
-                .into());
+            return Err(ec.new_type_error(
+                "ReadableStream.getReader() only supports the default reader mode",
+            ));
         }
 
         // Step 3: "Return ? AcquireReadableStreamBYOBReader(this)."
         let Some(controller) = self.controller_slot() else {
-            return Err(JsNativeError::typ()
-                .with_message("ReadableStream is missing its controller")
-                .into());
+            return Err(ec.new_type_error("ReadableStream is missing its controller"));
         };
         if controller.as_byte_controller().is_none() {
-            return Err(JsNativeError::typ()
-                .with_message("Cannot acquire a BYOB reader for a non-byte stream")
-                .into());
+            return Err(ec.new_type_error("Cannot acquire a BYOB reader for a non-byte stream"));
         }
 
-        acquire_readable_stream_byob_reader(self.clone(), context)
+        acquire_readable_stream_byob_reader(self.clone(), ec)
     }
 
+    /// <https://streams.spec.whatwg.org/#rs-pipe-through>
     /// <https://streams.spec.whatwg.org/#rs-pipe-through>
     pub(crate) fn pipe_through(
         &mut self,
         transform: &JsValue,
         options: &JsValue,
-        context: &mut Context,
-    ) -> JsResult<JsValue> {
+        ec: &mut dyn ExecutionContext<crate::js::Types>,
+    ) -> Completion<JsValue, crate::js::Types> {
         // Step 1: "If ! IsReadableStreamLocked(this) is true, throw a TypeError exception."
         if self.locked() {
-            return Err(JsNativeError::typ()
-                .with_message("ReadableStream.pipeThrough() called on a locked stream")
-                .into());
+            return Err(ec.new_type_error("ReadableStream.pipeThrough() called on a locked stream"));
         }
 
         // Step 2: "If ! IsWritableStreamLocked(transform[\"writable\"]) is true, throw a TypeError exception."
         // Note: This implementation performs the lock check below, after reading options members.
         let transform_obj = transform.as_object().ok_or_else(|| {
-            JsNativeError::typ()
-                .with_message("ReadableStream.pipeThrough() requires a ReadableWritablePair")
+            ec.new_type_error("ReadableStream.pipeThrough() requires a ReadableWritablePair")
         })?;
-        let readable_value = transform_obj.get(js_string!("readable"), context)?;
+        let readable_value = EcmascriptHost::get(&mut *ec, &transform_obj, "readable")?;
         let readable_obj = readable_value.as_object().ok_or_else(|| {
-            JsNativeError::typ()
-                .with_message("ReadableWritablePair is missing its readable property")
+            ec.new_type_error("ReadableWritablePair is missing its readable property")
         })?;
-        let _ = with_readable_stream_ref(&readable_obj, |stream| stream.clone())?;
+        let _ = with_readable_stream_ref(&readable_obj, ec, |stream| stream.clone())?;
 
-        let writable_value = transform_obj.get(js_string!("writable"), context)?;
+        let writable_value = EcmascriptHost::get(&mut *ec, &transform_obj, "writable")?;
         let writable_obj = writable_value.as_object().ok_or_else(|| {
-            JsNativeError::typ()
-                .with_message("ReadableWritablePair is missing its writable property")
+            ec.new_type_error("ReadableWritablePair is missing its writable property")
         })?;
 
         // Step 3: "Let signal be options[\"signal\"] if it exists, or undefined otherwise."
@@ -263,19 +249,19 @@ impl ReadableStream {
         // This implementation normalizes options first so option getters run before the lock check.
         // This ordering is currently required to match WPT behavior for
         // pipeThrough() should throw if an option getter grabs a writer.
-        let options = normalize_pipe_options(options, context)?;
+        let options = normalize_pipe_options(options, ec)?;
 
         // Step 2: "If ! IsWritableStreamLocked(transform[\"writable\"]) is true, throw a TypeError exception."
-        let writable_locked = super::with_writable_stream_ref(&writable_obj, |ws| ws.locked())?;
+        let writable_locked = super::with_writable_stream_ref(&writable_obj, ec, |ws| ws.locked())?;
         if writable_locked {
-            return Err(JsNativeError::typ()
-                .with_message("ReadableStream.pipeThrough(): destination writable stream is locked")
-                .into());
+            return Err(ec.new_type_error(
+                "ReadableStream.pipeThrough(): destination writable stream is locked",
+            ));
         }
 
         // Step 4: "Let promise be ! ReadableStreamPipeTo(this, transform[\"writable\"], options[\"preventClose\"], options[\"preventAbort\"], options[\"preventCancel\"], signal)."
         // Note: The Rust helper takes the normalized option members as separate arguments.
-        let destination = super::with_writable_stream_ref(&writable_obj, |ws| ws.clone())?;
+        let destination = super::with_writable_stream_ref(&writable_obj, ec, |ws| ws.clone())?;
         let promise = readable_stream_pipe_to(
             self.clone(),
             destination,
@@ -283,11 +269,11 @@ impl ReadableStream {
             options.prevent_abort,
             options.prevent_cancel,
             options.signal,
-            context,
-        );
+            ec,
+        )?;
 
         // Step 5: "Set promise.[[PromiseIsHandled]] to true."
-        crate::webidl::mark_promise_as_handled(&promise, context)?;
+        crate::webidl::mark_promise_as_handled(&promise, ec)?;
 
         // Step 6: "Return transform[\"readable\"]."
         Ok(readable_value)
@@ -298,13 +284,13 @@ impl ReadableStream {
         &mut self,
         destination: &JsValue,
         options: &JsValue,
-        context: &mut Context,
-    ) -> JsObject {
+        ec: &mut dyn ExecutionContext<crate::js::Types>,
+    ) -> Completion<JsObject, crate::js::Types> {
         // Step 1: "If ! IsReadableStreamLocked(this) is true, return a promise rejected with a TypeError exception."
         if self.locked() {
             return promise_rejected_with_type_error(
                 "ReadableStream.pipeTo() called on a locked stream",
-                context,
+                ec,
             );
         }
 
@@ -314,30 +300,21 @@ impl ReadableStream {
             None => {
                 return promise_rejected_with_type_error(
                     "ReadableStream.pipeTo() requires a WritableStream destination",
-                    context,
+                    ec,
                 );
             }
         };
-        let dest_locked = match super::with_writable_stream_ref(&dest_obj, |ws| ws.locked()) {
-            Ok(locked) => locked,
-            Err(error) => return promise_rejected_with_error(error, context),
-        };
+        let dest_locked = super::with_writable_stream_ref(&dest_obj, ec, |ws| ws.locked())?;
         if dest_locked {
             return promise_rejected_with_type_error(
                 "ReadableStream.pipeTo(): destination is locked",
-                context,
+                ec,
             );
         }
 
-        let options = match normalize_pipe_options(options, context) {
-            Ok(options) => options,
-            Err(error) => return promise_rejected_with_error(error, context),
-        };
+        let options = normalize_pipe_options(options, ec)?;
 
-        let dest = match super::with_writable_stream_ref(&dest_obj, |ws| ws.clone()) {
-            Ok(dest) => dest,
-            Err(error) => return promise_rejected_with_error(error, context),
-        };
+        let dest = super::with_writable_stream_ref(&dest_obj, ec, |ws| ws.clone())?;
 
         // Step 4: "Return ! ReadableStreamPipeTo(this, destination, options[\"preventClose\"], options[\"preventAbort\"], options[\"preventCancel\"], signal)."
         // Note: The Rust helper takes the normalized option members as separate arguments.
@@ -348,14 +325,18 @@ impl ReadableStream {
             options.prevent_abort,
             options.prevent_cancel,
             options.signal,
-            context,
+            ec,
         )
     }
 
     /// <https://streams.spec.whatwg.org/#rs-tee>
-    pub(crate) fn tee(&mut self, context: &mut Context) -> JsResult<JsValue> {
+    pub(crate) fn tee(
+        &mut self,
+        ec: &mut dyn ExecutionContext<crate::js::Types>,
+    ) -> Completion<JsValue, crate::js::Types> {
         // Step 1: "Return ? ReadableStreamTee(this, false)."
-        Ok(readable_stream_tee(self.clone(), false, context)?.into_js_value(context))
+        let branches = readable_stream_tee(self.clone(), false, ec)?;
+        branches.into_js_value(ec)
     }
 }
 
@@ -367,44 +348,96 @@ struct ReadableStreamTeeBranches {
 }
 
 impl ReadableStreamTeeBranches {
-    fn into_js_value(self, context: &mut Context) -> JsValue {
-        JsArray::from_iter(
-            [self.branch1_object, self.branch2_object]
-                .into_iter()
-                .map(JsValue::from),
-            context,
-        )
-        .into()
+    fn into_js_value(
+        self,
+        ec: &mut dyn ExecutionContext<crate::js::Types>,
+    ) -> Completion<JsValue, crate::js::Types> {
+        let array = ec.create_empty_array();
+        ec.array_push(
+            &array,
+            <crate::js::Types as JsTypes>::value_from_object(self.branch1_object),
+        )?;
+        ec.array_push(
+            &array,
+            <crate::js::Types as JsTypes>::value_from_object(self.branch2_object),
+        )?;
+        Ok(<crate::js::Types as JsTypes>::value_from_object(array))
     }
 }
 
 /// pull and cancel algorithms.
-#[derive(Trace, Finalize)]
+#[gc_struct]
 pub(crate) struct TeeState {
     source_stream: ReadableStream,
     reader: ReadableStreamDefaultReader,
     branch1: Option<ReadableStream>,
     branch2: Option<ReadableStream>,
-    cancel_promise: JsObject,
-    cancel_resolvers: boa_engine::builtins::promise::ResolvingFunctions,
-    #[unsafe_ignore_trace]
+    cancel_promise: JsObjectCell,
+    cancel_resolvers: PromiseResolvers<crate::js::Types>,
+    #[ignore_trace]
     reading: bool,
-    #[unsafe_ignore_trace]
+    #[ignore_trace]
     read_again: bool,
-    #[unsafe_ignore_trace]
+    #[ignore_trace]
     canceled1: bool,
-    #[unsafe_ignore_trace]
+    #[ignore_trace]
     canceled2: bool,
-    reason1: JsValue,
-    reason2: JsValue,
+    reason1: JsValueCell,
+    reason2: JsValueCell,
+}
+
+fn default_tee_on_rejected_fn(
+    args: &[JsValue],
+    _this: JsValue,
+    tee_state: &GcCell<TeeState>,
+    ec: &mut dyn ExecutionContext<crate::js::Types>,
+) -> Completion<JsValue, crate::js::Types> {
+    let error = args
+        .first()
+        .cloned()
+        .unwrap_or_else(|| ec.value_undefined());
+    let (branch1, branch2, canceled1, canceled2, cancel_resolvers) = {
+        let tee_state = tee_state.borrow();
+        (
+            tee_state.branch1.clone(),
+            tee_state.branch2.clone(),
+            tee_state.canceled1,
+            tee_state.canceled2,
+            tee_state.cancel_resolvers.clone(),
+        )
+    };
+
+    // Step 19.1: "Perform ! ReadableStreamDefaultControllerError(branch1.[[controller]], r)."
+    if let Some(branch1) = branch1.as_ref() {
+        if let Err(error) = default_tee_error_branch(branch1, error.clone(), ec) {
+            error!("[readable-stream] default tee error branch1 failed: {error:?}");
+        }
+    }
+
+    // Step 19.2: "Perform ! ReadableStreamDefaultControllerError(branch2.[[controller]], r)."
+    if let Some(branch2) = branch2.as_ref() {
+        if let Err(error) = default_tee_error_branch(branch2, error, ec) {
+            error!("[readable-stream] default tee error branch2 failed: {error:?}");
+        }
+    }
+
+    // Step 19.3: "If canceled1 is false or canceled2 is false, resolve cancelPromise with undefined."
+    if !canceled1 || !canceled2 {
+        let undefined = ec.value_undefined();
+        if let Err(error) = cancel_resolvers.resolve(undefined.clone(), ec) {
+            error!("[readable-stream] failed to resolve cancel promise: {error:?}");
+        }
+    }
+
+    Ok(ec.value_undefined())
 }
 
 /// <https://streams.spec.whatwg.org/#readable-stream-tee>
 fn readable_stream_tee(
     stream: ReadableStream,
     clone_for_branch2: bool,
-    context: &mut Context,
-) -> JsResult<ReadableStreamTeeBranches> {
+    ec: &mut dyn ExecutionContext<crate::js::Types>,
+) -> Completion<ReadableStreamTeeBranches, crate::js::Types> {
     // Step 1: "Assert: stream implements ReadableStream."
     // Step 2: "Assert: cloneForBranch2 is a boolean."
 
@@ -414,35 +447,38 @@ fn readable_stream_tee(
         .and_then(|c| c.as_byte_controller())
         .is_some()
     {
-        return readable_byte_stream_tee(stream, context);
+        return readable_byte_stream_tee(stream, ec);
     }
 
     // Step 4: "Return ? ReadableStreamDefaultTee(stream, cloneForBranch2)."
-    readable_stream_default_tee(stream, clone_for_branch2, context)
+    readable_stream_default_tee(stream, clone_for_branch2, ec)
 }
 
 /// <https://streams.spec.whatwg.org/#abstract-opdef-readablestreamdefaulttee>
 fn readable_stream_default_tee(
     stream: ReadableStream,
     clone_for_branch2: bool,
-    context: &mut Context,
-) -> JsResult<ReadableStreamTeeBranches> {
+    ec: &mut dyn ExecutionContext<crate::js::Types>,
+) -> Completion<ReadableStreamTeeBranches, crate::js::Types> {
     // Step 1: "Assert: stream implements ReadableStream."
     // Step 2: "Assert: cloneForBranch2 is a boolean."
 
     // Step 3: "Let reader be ? AcquireReadableStreamDefaultReader(stream)."
-    let reader_object = acquire_readable_stream_default_reader(stream.clone(), context)?;
-    let reader = with_readable_stream_default_reader_ref(&reader_object, |reader| reader.clone())?;
+    let reader_object = acquire_readable_stream_default_reader(stream.clone(), ec)?;
+    let reader =
+        with_readable_stream_default_reader_ref(&reader_object, ec, |reader| reader.clone())?;
 
     // Step 12: "Let cancelPromise be a new promise."
-    let reader_closed_promise = reader.closed()?;
+    let reader_closed_promise = reader.closed(ec)?;
 
     // Step 19: "Upon rejection of reader.[[closedPromise]] with reason r,"
     // Note: mark the source reader's closed promise as handled before attaching the forwarding
     // reaction so engine-level unhandled-rejection reporting does not race this internal hook.
-    mark_promise_as_handled(&reader_closed_promise, context)?;
+    mark_promise_as_handled(&reader_closed_promise, ec)?;
 
-    let (cancel_promise, cancel_resolvers) = JsPromise::new_pending(context);
+    let (cancel_promise_value, cancel_resolvers) = ec.new_promise_pending()?;
+    let cancel_promise = <crate::js::Types as JsTypes>::value_as_object(&cancel_promise_value)
+        .unwrap_or_else(|| ec.realm_global_object());
 
     // Step 4: "Let reading be false."
     // Step 5: "Let readAgain be false."
@@ -452,20 +488,21 @@ fn readable_stream_default_tee(
     // Step 9: "Let reason2 be undefined."
     // Step 10: "Let branch1 be undefined."
     // Step 11: "Let branch2 be undefined."
-    let tee_state = Gc::new(GcRefCell::new(TeeState {
+    let undefined = ec.value_undefined();
+    let tee_state = gc_cell_new(TeeState {
         source_stream: stream,
         reader,
         branch1: None,
         branch2: None,
-        cancel_promise: cancel_promise.into(),
+        cancel_promise: JsObjectCell::new(Some(cancel_promise)),
         cancel_resolvers,
         reading: false,
         read_again: false,
         canceled1: false,
         canceled2: false,
-        reason1: JsValue::undefined(),
-        reason2: JsValue::undefined(),
-    }));
+        reason1: JsValueCell::new(undefined.clone()),
+        reason2: JsValueCell::new(undefined.clone()),
+    });
 
     // Step 16: "Let startAlgorithm be an algorithm that returns undefined."
     // Step 17: "Set branch1 to ! CreateReadableStream(startAlgorithm, pullAlgorithm, cancel1Algorithm)."
@@ -478,7 +515,7 @@ fn readable_stream_default_tee(
         CancelAlgorithm::ReadableStreamDefaultTeeBranch1(tee_state.clone()),
         Some(1.0),
         Some(SizeAlgorithm::ReturnOne),
-        context,
+        ec,
     )?;
 
     // Step 18: "Set branch2 to ! CreateReadableStream(startAlgorithm, pullAlgorithm, cancel2Algorithm)."
@@ -491,7 +528,7 @@ fn readable_stream_default_tee(
         CancelAlgorithm::ReadableStreamDefaultTeeBranch2(tee_state.clone()),
         Some(1.0),
         Some(SizeAlgorithm::ReturnOne),
-        context,
+        ec,
     )?;
 
     {
@@ -501,54 +538,23 @@ fn readable_stream_default_tee(
     }
 
     // Step 19: "Upon rejection of reader.[[closedPromise]] with reason r,"
-    let on_rejected = NativeFunction::from_copy_closure_with_captures(
-        |_, args: &[JsValue], tee_state: &Gc<GcRefCell<TeeState>>, context| {
-            let error = args.get_or_undefined(0).clone();
-            let (branch1, branch2, canceled1, canceled2, cancel_resolvers) = {
-                let tee_state = tee_state.borrow();
-                (
-                    tee_state.branch1.clone(),
-                    tee_state.branch2.clone(),
-                    tee_state.canceled1,
-                    tee_state.canceled2,
-                    tee_state.cancel_resolvers.clone(),
-                )
-            };
-
-            // Step 19.1: "Perform ! ReadableStreamDefaultControllerError(branch1.[[controller]], r)."
-            if let Some(branch1) = branch1.as_ref() {
-                if let Err(error) = default_tee_error_branch(branch1, error.clone(), context) {
-                    error!("[readable-stream] default tee error branch1 failed: {error}");
-                }
-            }
-
-            // Step 19.2: "Perform ! ReadableStreamDefaultControllerError(branch2.[[controller]], r)."
-            if let Some(branch2) = branch2.as_ref() {
-                if let Err(error) = default_tee_error_branch(branch2, error, context) {
-                    error!("[readable-stream] default tee error branch2 failed: {error}");
-                }
-            }
-
-            // Step 19.3: "If canceled1 is false or canceled2 is false, resolve cancelPromise with undefined."
-            if !canceled1 || !canceled2 {
-                if let Err(error) = cancel_resolvers.resolve.call(
-                    &JsValue::undefined(),
-                    &[JsValue::undefined()],
-                    context,
-                ) {
-                    error!("[readable-stream] failed to resolve cancel promise: {error}");
-                }
-            }
-
-            Ok(JsValue::undefined())
-        },
+    let name_key = ec.property_key_from_str("");
+    let on_rejected = create_builtin_fn_with_traced_captures(
+        ec,
         tee_state,
-    )
-    .to_js_function(context.realm());
-    let forward_error: JsObject = JsPromise::from_object(reader_closed_promise)?
-        .catch(on_rejected, context)?
-        .into();
-    mark_promise_as_handled(&forward_error, context)?;
+        default_tee_on_rejected_fn,
+        1,
+        name_key,
+        false,
+    );
+    let forward_error_promise =
+        <crate::js::Types as JsTypes>::object_as_promise(&reader_closed_promise)
+            .ok_or_else(|| ec.new_type_error("reader_closed_promise is not a Promise"))?;
+    let forward_error =
+        ec.perform_promise_then(forward_error_promise, None, Some(on_rejected), None)?;
+    let forward_error_obj = <crate::js::Types as JsTypes>::value_as_object(&forward_error)
+        .unwrap_or_else(|| ec.realm_global_object());
+    mark_promise_as_handled(&forward_error_obj, ec)?;
 
     // Step 20: "Return « branch1, branch2 »."
     Ok(ReadableStreamTeeBranches {
@@ -559,74 +565,76 @@ fn readable_stream_default_tee(
     })
 }
 
-fn structured_clone_value(value: JsValue, context: &mut Context) -> JsResult<JsValue> {
-    let structured_clone = context
-        .global_object()
-        .get(js_string!("structuredClone"), context)?
-        .as_object()
-        .and_then(JsFunction::from_object)
-        .ok_or_else(|| {
-            JsNativeError::typ()
-                .with_message("structuredClone is not available on the global object")
-        })?;
-    structured_clone.call(&JsValue::undefined(), &[value], context)
+fn structured_clone_value(
+    value: JsValue,
+    ec: &mut dyn ExecutionContext<crate::js::Types>,
+) -> Completion<JsValue, crate::js::Types> {
+    let global = ec.realm_global_object();
+    let pk = ec.property_key_from_str("structuredClone");
+    let sc_value = ExecutionContext::get(ec, global.clone(), pk)?;
+    let sc_fn = <crate::js::Types as JsTypes>::value_as_object(&sc_value).ok_or_else(|| {
+        ec.new_type_error("structuredClone is not available on the global object")
+    })?;
+    let undefined = ec.value_undefined();
+    ec.call(&sc_fn, &undefined, &[value])
 }
 
 fn default_tee_enqueue_to_branch(
     branch: &ReadableStream,
     chunk: JsValue,
-    context: &mut Context,
-) -> JsResult<()> {
+    ec: &mut dyn ExecutionContext<crate::js::Types>,
+) -> Completion<(), crate::js::Types> {
     let Some(controller) = branch
         .controller_slot()
         .map(|controller| controller.as_default_controller())
     else {
         return Ok(());
     };
-    controller.enqueue(chunk, context)
+    controller.enqueue(chunk, ec)
 }
 
-fn default_tee_close_branch(branch: &ReadableStream, context: &mut Context) -> JsResult<()> {
+fn default_tee_close_branch(
+    branch: &ReadableStream,
+    ec: &mut dyn ExecutionContext<crate::js::Types>,
+) -> Completion<(), crate::js::Types> {
     let Some(controller) = branch
         .controller_slot()
         .map(|controller| controller.as_default_controller())
     else {
         return Ok(());
     };
-    controller.close(context)
+    controller.close(ec)
 }
 
 fn default_tee_error_branch(
     branch: &ReadableStream,
     error: JsValue,
-    context: &mut Context,
-) -> JsResult<()> {
+    ec: &mut dyn ExecutionContext<crate::js::Types>,
+) -> Completion<(), crate::js::Types> {
     let Some(controller) = branch
         .controller_slot()
         .map(|controller| controller.as_default_controller())
     else {
         return Ok(());
     };
-    controller.error(error, context)
+    controller.error(error, ec)
 }
 
 /// <https://streams.spec.whatwg.org/#abstract-opdef-readablestreamdefaulttee>
 pub(crate) fn readable_stream_default_tee_pull_algorithm(
-    tee_state: Gc<GcRefCell<TeeState>>,
+    tee_state: GcCell<TeeState>,
     clone_for_branch2: bool,
-    context: &mut Context,
-) -> JsResult<JsValue> {
+    ec: &mut dyn ExecutionContext<crate::js::Types>,
+) -> Completion<JsValue, crate::js::Types> {
     // Step 13.1: "If reading is true,"
     {
         let mut tee_state = tee_state.borrow_mut();
         if tee_state.reading {
             // Step 13.1.1: "Set readAgain to true."
             tee_state.read_again = true;
-
             // Step 13.1.2: "Return a promise resolved with undefined."
-            return Ok(JsValue::undefined());
+            return Ok(ec.value_undefined());
         }
-
         // Step 13.2: "Set reading to true."
         tee_state.reading = true;
     }
@@ -639,24 +647,26 @@ pub(crate) fn readable_stream_default_tee_pull_algorithm(
     let reader = tee_state.borrow().reader.clone();
 
     // Step 13.4: "Perform ! ReadableStreamDefaultReaderRead(reader, readRequest)."
-    if let Err(error) = reader.read_with_request(read_request, context) {
+    if let Err(error) = reader.read_with_request(read_request, ec) {
         tee_state.borrow_mut().reading = false;
         return Err(error);
     }
 
     // Step 13.5: "Return a promise resolved with undefined."
-    Ok(JsValue::undefined())
+    Ok(ec.value_undefined())
 }
 
 /// <https://streams.spec.whatwg.org/#abstract-opdef-readablestreamdefaulttee>
 pub(crate) fn readable_stream_default_tee_read_request_chunk_steps(
-    tee_state: Gc<GcRefCell<TeeState>>,
+    tee_state: GcCell<TeeState>,
     clone_for_branch2: bool,
     chunk: JsValue,
-    context: &mut Context,
-) -> JsResult<()> {
-    queue_internal_stream_microtask(
-        move |context| {
+    ec: &mut dyn ExecutionContext<crate::js::Types>,
+) -> Completion<(), crate::js::Types> {
+    let realm = ec.current_realm();
+    ec.enqueue_job_with_realm(
+        realm,
+        Box::new(move |job_ec: &mut dyn ExecutionContext<crate::js::Types>| {
             // Step 13.3 chunk steps 1.1: "Set readAgain to false."
             tee_state.borrow_mut().read_again = false;
 
@@ -678,21 +688,19 @@ pub(crate) fn readable_stream_default_tee_read_request_chunk_steps(
             // Step 13.3 chunk steps 1.3: "If canceled2 is false and cloneForBranch2 is true,"
             if !canceled2 && clone_for_branch2 {
                 // Step 13.3 chunk steps 1.3.1: "Let cloneResult be StructuredClone(chunk2)."
-                match structured_clone_value(chunk2.clone(), context) {
+                match structured_clone_value(chunk2.clone(), job_ec) {
                     Ok(cloned_chunk) => {
                         // Step 13.3 chunk steps 1.3.3: "Otherwise, set chunk2 to cloneResult.[[Value]]."
                         chunk2 = cloned_chunk;
                     }
-                    Err(error) => {
-                        let error = error.into_opaque(context)?;
-
+                    Err(clone_error) => {
                         // Step 13.3 chunk steps 1.3.2.1: "Perform ! ReadableStreamDefaultControllerError(branch1.[[controller]], cloneResult.[[Value]])."
                         if let Some(branch1) = branch1.as_ref() {
                             if let Err(error) =
-                                default_tee_error_branch(branch1, error.clone(), context)
+                                default_tee_error_branch(branch1, clone_error.clone(), job_ec)
                             {
                                 error!(
-                                    "[readable-stream] default tee error branch1 (chunk) failed: {error}"
+                                    "[readable-stream] default tee error branch1 (chunk) failed: {error:?}"
                                 );
                             }
                         }
@@ -700,24 +708,24 @@ pub(crate) fn readable_stream_default_tee_read_request_chunk_steps(
                         // Step 13.3 chunk steps 1.3.2.2: "Perform ! ReadableStreamDefaultControllerError(branch2.[[controller]], cloneResult.[[Value]])."
                         if let Some(branch2) = branch2.as_ref() {
                             if let Err(error) =
-                                default_tee_error_branch(branch2, error.clone(), context)
+                                default_tee_error_branch(branch2, clone_error.clone(), job_ec)
                             {
                                 error!(
-                                    "[readable-stream] default tee error branch2 (chunk) failed: {error}"
+                                    "[readable-stream] default tee error branch2 (chunk) failed: {error:?}"
                                 );
                             }
                         }
 
                         // Step 13.3 chunk steps 1.3.2.3: "Resolve cancelPromise with ! ReadableStreamCancel(stream, cloneResult.[[Value]])."
-                        let cancel_result = readable_stream_cancel(source_stream, error, context)?;
-                        cancel_resolvers.resolve.call(
-                            &JsValue::undefined(),
-                            &[JsValue::from(cancel_result)],
-                            context,
-                        )?;
+                        if let Ok(cancel_result) =
+                            readable_stream_cancel(source_stream, clone_error, job_ec)
+                        {
+                            let cancel_val = <crate::js::Types as JsTypes>::value_from_object(cancel_result);
+                            let _ = cancel_resolvers.resolve(cancel_val, job_ec);
+                        }
 
                         // Step 13.3 chunk steps 1.3.2.4: "Return."
-                        return Ok(());
+                        return;
                     }
                 }
             }
@@ -725,50 +733,56 @@ pub(crate) fn readable_stream_default_tee_read_request_chunk_steps(
             // Step 13.3 chunk steps 1.4: "If canceled1 is false, perform ! ReadableStreamDefaultControllerEnqueue(branch1.[[controller]], chunk1)."
             if !canceled1 {
                 if let Some(branch1) = branch1.as_ref() {
-                    default_tee_enqueue_to_branch(branch1, chunk1, context)?;
+                    let _ = default_tee_enqueue_to_branch(branch1, chunk1, job_ec);
                 }
             }
 
             // Step 13.3 chunk steps 1.5: "If canceled2 is false, perform ! ReadableStreamDefaultControllerEnqueue(branch2.[[controller]], chunk2)."
             if !canceled2 {
                 if let Some(branch2) = branch2.as_ref() {
-                    default_tee_enqueue_to_branch(branch2, chunk2, context)?;
+                    let _ = default_tee_enqueue_to_branch(branch2, chunk2, job_ec);
                 }
             }
 
             // Step 13.3 chunk steps 1.6: "Set reading to false."
             // Step 13.3 chunk steps 1.7: "If readAgain is true, perform pullAlgorithm."
             let should_read_again = {
-                let mut tee_state = tee_state.borrow_mut();
-                tee_state.reading = false;
-                let should_read_again = tee_state.read_again;
-                tee_state.read_again = false;
+                let mut tee_state_ref = tee_state.borrow_mut();
+                tee_state_ref.reading = false;
+                let should_read_again = tee_state_ref.read_again;
+                tee_state_ref.read_again = false;
                 should_read_again
             };
 
             if should_read_again {
-                let pull_promise = promise_from_completion(
-                    readable_stream_default_tee_pull_algorithm(
-                        tee_state.clone(),
-                        clone_for_branch2,
-                        context,
-                    ),
-                    context,
-                );
-                mark_promise_as_handled(&JsObject::from(pull_promise), context)?;
+                match readable_stream_default_tee_pull_algorithm(
+                    tee_state.clone(),
+                    clone_for_branch2,
+                    job_ec,
+                ) {
+                    Ok(value) => {
+                        if let Ok(pull_promise) = resolved_promise(value, job_ec) {
+                            let _ = mark_promise_as_handled(&pull_promise, job_ec);
+                        }
+                    }
+                    Err(error) => {
+                        error!("[readable-stream] default tee pull algorithm failed");
+                        let rejected = rejected_promise(error, job_ec)
+                            .unwrap_or_else(|_| job_ec.realm_global_object());
+                        let _ = mark_promise_as_handled(&rejected, job_ec);
+                    }
+                }
             }
-
-            Ok(())
-        },
-        context,
-    )
+        }),
+    );
+    Ok(())
 }
 
 /// <https://streams.spec.whatwg.org/#abstract-opdef-readablestreamdefaulttee>
 pub(crate) fn readable_stream_default_tee_read_request_close_steps(
-    tee_state: Gc<GcRefCell<TeeState>>,
-    context: &mut Context,
-) -> JsResult<()> {
+    tee_state: GcCell<TeeState>,
+    ec: &mut dyn ExecutionContext<crate::js::Types>,
+) -> Completion<(), crate::js::Types> {
     let (branch1, branch2, canceled1, canceled2, cancel_resolvers) = {
         let mut tee_state = tee_state.borrow_mut();
 
@@ -786,43 +800,38 @@ pub(crate) fn readable_stream_default_tee_read_request_close_steps(
     // Step 13.3 close steps 2: "If canceled1 is false, perform ! ReadableStreamDefaultControllerClose(branch1.[[controller]])."
     if !canceled1 {
         if let Some(branch1) = branch1.as_ref() {
-            default_tee_close_branch(branch1, context)?;
+            default_tee_close_branch(branch1, ec)?;
         }
     }
 
     // Step 13.3 close steps 3: "If canceled2 is false, perform ! ReadableStreamDefaultControllerClose(branch2.[[controller]])."
     if !canceled2 {
         if let Some(branch2) = branch2.as_ref() {
-            default_tee_close_branch(branch2, context)?;
+            default_tee_close_branch(branch2, ec)?;
         }
     }
 
     // Step 13.3 close steps 4: "If canceled1 is false or canceled2 is false, resolve cancelPromise with undefined."
     if !canceled1 || !canceled2 {
-        cancel_resolvers
-            .resolve
-            .call(&JsValue::undefined(), &[JsValue::undefined()], context)?;
+        let undefined = ec.value_undefined();
+        ec.call(&cancel_resolvers.resolve, &undefined, &[undefined.clone()])?;
     }
 
     Ok(())
 }
 
 /// <https://streams.spec.whatwg.org/#abstract-opdef-readablestreamdefaulttee>
-pub(crate) fn readable_stream_default_tee_read_request_error_steps(
-    tee_state: Gc<GcRefCell<TeeState>>,
-    _context: &mut Context,
-) -> JsResult<()> {
+pub(crate) fn readable_stream_default_tee_read_request_error_steps(tee_state: GcCell<TeeState>) {
     // Step 13.3 error steps 1: "Set reading to false."
     tee_state.borrow_mut().reading = false;
-    Ok(())
 }
 
 /// <https://streams.spec.whatwg.org/#abstract-opdef-readablestreamdefaulttee>
 pub(crate) fn readable_stream_default_tee_cancel1_algorithm(
-    tee_state: Gc<GcRefCell<TeeState>>,
+    tee_state: GcCell<TeeState>,
     reason: JsValue,
-    context: &mut Context,
-) -> JsResult<JsValue> {
+    ec: &mut dyn ExecutionContext<crate::js::Types>,
+) -> Completion<JsObject, crate::js::Types> {
     let (source_stream, cancel_promise, canceled2, reason1, reason2, cancel_resolvers) = {
         let mut tee_state = tee_state.borrow_mut();
 
@@ -830,13 +839,13 @@ pub(crate) fn readable_stream_default_tee_cancel1_algorithm(
         tee_state.canceled1 = true;
 
         // Step 14.2: "Set reason1 to reason."
-        tee_state.reason1 = reason;
+        tee_state.reason1.set(reason.clone());
         (
             tee_state.source_stream.clone(),
-            tee_state.cancel_promise.clone(),
+            tee_state.cancel_promise.borrow().clone().unwrap(),
             tee_state.canceled2,
-            tee_state.reason1.clone(),
-            tee_state.reason2.clone(),
+            tee_state.reason1.borrow().clone(),
+            tee_state.reason2.borrow().clone(),
             tee_state.cancel_resolvers.clone(),
         )
     };
@@ -844,31 +853,31 @@ pub(crate) fn readable_stream_default_tee_cancel1_algorithm(
     // Step 14.3: "If canceled2 is true,"
     if canceled2 {
         // Step 14.3.1: "Let compositeReason be ! CreateArrayFromList(« reason1, reason2 »)."
-        let composite_reason =
-            JsArray::from_iter([reason1, reason2].into_iter().map(JsValue::from), context);
+        let composite_reason = {
+            let array = ec.create_empty_array();
+            ec.array_push(&array, reason1)?;
+            ec.array_push(&array, reason2)?;
+            <crate::js::Types as JsTypes>::value_from_object(array)
+        };
 
         // Step 14.3.2: "Let cancelResult be ! ReadableStreamCancel(stream, compositeReason)."
-        let cancel_result =
-            readable_stream_cancel(source_stream, JsValue::from(composite_reason), context)?;
+        let cancel_result = readable_stream_cancel(source_stream, composite_reason, ec)?;
 
         // Step 14.3.3: "Resolve cancelPromise with cancelResult."
-        cancel_resolvers.resolve.call(
-            &JsValue::undefined(),
-            &[JsValue::from(cancel_result)],
-            context,
-        )?;
+        let resolve_val = <crate::js::Types as JsTypes>::value_from_object(cancel_result);
+        cancel_resolvers.resolve(resolve_val, ec)?;
     }
 
     // Step 14.4: "Return cancelPromise."
-    Ok(JsValue::from(cancel_promise))
+    Ok(cancel_promise)
 }
 
 /// <https://streams.spec.whatwg.org/#abstract-opdef-readablestreamdefaulttee>
 pub(crate) fn readable_stream_default_tee_cancel2_algorithm(
-    tee_state: Gc<GcRefCell<TeeState>>,
+    tee_state: GcCell<TeeState>,
     reason: JsValue,
-    context: &mut Context,
-) -> JsResult<JsValue> {
+    ec: &mut dyn ExecutionContext<crate::js::Types>,
+) -> Completion<JsObject, crate::js::Types> {
     let (source_stream, cancel_promise, canceled1, reason1, reason2, cancel_resolvers) = {
         let mut tee_state = tee_state.borrow_mut();
 
@@ -876,13 +885,13 @@ pub(crate) fn readable_stream_default_tee_cancel2_algorithm(
         tee_state.canceled2 = true;
 
         // Step 15.2: "Set reason2 to reason."
-        tee_state.reason2 = reason;
+        tee_state.reason2.set(reason.clone());
         (
             tee_state.source_stream.clone(),
-            tee_state.cancel_promise.clone(),
+            tee_state.cancel_promise.borrow().clone().unwrap(),
             tee_state.canceled1,
-            tee_state.reason1.clone(),
-            tee_state.reason2.clone(),
+            tee_state.reason1.borrow().clone(),
+            tee_state.reason2.borrow().clone(),
             tee_state.cancel_resolvers.clone(),
         )
     };
@@ -890,48 +899,56 @@ pub(crate) fn readable_stream_default_tee_cancel2_algorithm(
     // Step 15.3: "If canceled1 is true,"
     if canceled1 {
         // Step 15.3.1: "Let compositeReason be ! CreateArrayFromList(« reason1, reason2 »)."
-        let composite_reason =
-            JsArray::from_iter([reason1, reason2].into_iter().map(JsValue::from), context);
+        let composite_reason = {
+            let array = ec.create_empty_array();
+            ec.array_push(&array, reason1)?;
+            ec.array_push(&array, reason2)?;
+            <crate::js::Types as JsTypes>::value_from_object(array)
+        };
 
         // Step 15.3.2: "Let cancelResult be ! ReadableStreamCancel(stream, compositeReason)."
-        let cancel_result =
-            readable_stream_cancel(source_stream, JsValue::from(composite_reason), context)?;
+        let cancel_result = readable_stream_cancel(source_stream, composite_reason, ec)?;
 
         // Step 15.3.3: "Resolve cancelPromise with cancelResult."
-        cancel_resolvers.resolve.call(
-            &JsValue::undefined(),
-            &[JsValue::from(cancel_result)],
-            context,
-        )?;
+        let resolve_val = <crate::js::Types as JsTypes>::value_from_object(cancel_result);
+        cancel_resolvers.resolve(resolve_val, ec)?;
     }
 
     // Step 15.4: "Return cancelPromise."
-    Ok(JsValue::from(cancel_promise))
+    Ok(cancel_promise)
 }
 
-#[derive(Clone, Trace, Finalize)]
+#[gc_struct]
 enum ReadableStreamFromIteratorKind {
     Async,
     Sync,
 }
 
-#[derive(Clone, Trace, Finalize)]
+#[gc_struct]
 struct ReadableStreamFromIteratorRecord {
-    iterator: JsObject,
-    next_method: JsObject,
+    iterator: JsObjectCell,
+    next_method: JsObjectCell,
     kind: ReadableStreamFromIteratorKind,
 }
 
 impl ReadableStreamFromIteratorRecord {
-    fn next_result_promise(&self, context: &mut Context) -> JsResult<JsObject> {
-        let next_result =
-            self.next_method
-                .call(&JsValue::from(self.iterator.clone()), &[], context)?;
+    fn next_result_promise(
+        &self,
+        ec: &mut dyn ExecutionContext<crate::js::Types>,
+    ) -> Completion<JsObject, crate::js::Types> {
+        let iterator_val = <crate::js::Types as JsTypes>::value_from_object(
+            self.iterator.borrow().clone().unwrap(),
+        );
+        let next_result = ec.call(
+            &self.next_method.borrow().clone().unwrap(),
+            &iterator_val,
+            &[],
+        )?;
 
         match self.kind {
-            ReadableStreamFromIteratorKind::Async => promise_from_value(next_result, context),
+            ReadableStreamFromIteratorKind::Async => promise_from_value(next_result, ec),
             ReadableStreamFromIteratorKind::Sync => {
-                promise_from_sync_iterator_result(next_result, context)
+                promise_from_sync_iterator_result(next_result, ec)
             }
         }
     }
@@ -939,39 +956,45 @@ impl ReadableStreamFromIteratorRecord {
     fn return_result_promise(
         &self,
         reason: JsValue,
-        context: &mut Context,
-    ) -> JsResult<Option<JsObject>> {
+        ec: &mut dyn ExecutionContext<crate::js::Types>,
+    ) -> Completion<Option<JsObject>, crate::js::Types> {
+        let return_key = ec.property_key_from_str("return");
+        let return_method_value =
+            ExecutionContext::get(ec, self.iterator.borrow().clone().unwrap(), return_key)?;
         let return_method = get_optional_callable_method_value(
-            self.iterator.get(js_string!("return"), context)?,
+            return_method_value,
             "ReadableStream.from() iterator.return",
+            ec,
         )?;
         let Some(return_method) = return_method else {
             return Ok(None);
         };
 
-        let return_result =
-            return_method.call(&JsValue::from(self.iterator.clone()), &[reason], context)?;
+        let iterator_val = <crate::js::Types as JsTypes>::value_from_object(
+            self.iterator.borrow().clone().unwrap(),
+        );
+        let return_result = ec.call(&return_method, &iterator_val, &[reason])?;
         let return_promise = match self.kind {
-            ReadableStreamFromIteratorKind::Async => promise_from_value(return_result, context)?,
+            ReadableStreamFromIteratorKind::Async => promise_from_value(return_result, ec)?,
             ReadableStreamFromIteratorKind::Sync => {
-                promise_from_sync_iterator_result(return_result, context)?
+                promise_from_sync_iterator_result(return_result, ec)?
             }
         };
         Ok(Some(return_promise))
     }
 }
 
-#[derive(Clone, Trace, Finalize)]
+#[gc_struct]
 pub(crate) struct ReadableStreamFromIterableState {
     iterator_record: ReadableStreamFromIteratorRecord,
-    stream: Gc<GcRefCell<Option<ReadableStream>>>,
+    stream: GcCell<Option<ReadableStream>>,
 }
 
 impl ReadableStreamFromIterableState {
     fn new(iterator_record: ReadableStreamFromIteratorRecord) -> Self {
         Self {
             iterator_record,
-            stream: Gc::new(GcRefCell::new(None)),
+            stream: gc_cell_new(None),
         }
     }
 
@@ -979,25 +1002,21 @@ impl ReadableStreamFromIterableState {
         *self.stream.borrow_mut() = Some(stream);
     }
 
-    fn stream(&self) -> JsResult<ReadableStream> {
-        self.stream.borrow().clone().ok_or_else(|| {
-            JsNativeError::typ()
-                .with_message("ReadableStream.from() is missing its stream")
-                .into()
-        })
+    fn stream(&self) -> Option<ReadableStream> {
+        self.stream.borrow().clone()
     }
 }
 /// <https://streams.spec.whatwg.org/#rs-constructor>
 pub(crate) fn construct_readable_stream(
     _new_target: &JsValue,
     args: &[JsValue],
-    context: &mut Context,
-) -> JsResult<ReadableStream> {
-    let mut stream = ReadableStream::new();
+    ec: &mut dyn ExecutionContext<crate::js::Types>,
+) -> Completion<ReadableStream, crate::js::Types> {
+    let mut stream = ReadableStream::new(ec);
 
     // Step 1: "If underlyingSource is missing, set it to undefined."
     let underlying_source = if args.is_empty() {
-        JsValue::undefined()
+        ec.value_undefined()
     } else {
         args[0].clone()
     };
@@ -1008,53 +1027,55 @@ pub(crate) fn construct_readable_stream(
         None
     } else {
         Some(underlying_source.as_object().ok_or_else(|| {
-            JsNativeError::typ().with_message("ReadableStream underlyingSource must be an object")
+            ec.new_type_error("ReadableStream underlyingSource must be an object")
         })?)
     };
 
     // Step 3: "Perform ! InitializeReadableStream(this)."
     // Note: The backing struct is returned from the data constructor, after which Boa wraps it
     // in the newly created JsObject.
-    stream.initialize_readable_stream();
+    stream.initialize_readable_stream(ec);
 
-    let strategy = args.get_or_undefined(1).clone();
-    match underlying_source_type(underlying_source_object.as_ref(), context)?.as_deref() {
+    let strategy = args.get(1).cloned().unwrap_or_else(|| ec.value_undefined());
+    let underlying_type = underlying_source_type(underlying_source_object.as_ref(), ec)?;
+    match underlying_type.as_deref() {
         Some("bytes") => {
             // Step 4.1: "If strategy[\"size\"] exists, throw a RangeError exception."
-            if strategy_has_size(&strategy, context)? {
-                return Err(JsNativeError::range()
-                    .with_message("a byte stream strategy cannot include a size function")
-                    .into());
+            if strategy_has_size(&strategy, ec)? {
+                return Err(
+                    ec.new_range_error("a byte stream strategy cannot include a size function")
+                );
             }
 
             // Step 4.2: "Let highWaterMark be ? ExtractHighWaterMark(strategy, 0)."
-            let high_water_mark = extract_high_water_mark(&strategy, 0.0, context)?;
+            let high_water_mark = extract_high_water_mark(&strategy, 0.0, ec)?;
 
             // Step 4.3: "Perform ? SetUpReadableByteStreamControllerFromUnderlyingSource(this, underlyingSource, underlyingSourceDict, highWaterMark)."
             set_up_readable_byte_stream_controller_from_underlying_source(
                 stream.clone(),
                 underlying_source_object,
                 high_water_mark,
-                context,
+                ec,
             )?;
             return Ok(stream);
         }
         Some(_) => {
-            return Err(JsNativeError::typ()
-                .with_message("ReadableStream underlyingSource.type must be \"bytes\" when present")
-                .into());
+            // Web IDL: any value that is not the enum value "bytes" fails conversion.
+            return Err(ec.new_type_error(
+                "ReadableStream underlyingSource.type must be \"bytes\" when present",
+            ));
         }
         None => {}
     }
 
     // Step 5.1: "Assert: underlyingSourceDict[\"type\"] does not exist."
-    debug_assert!(underlying_source_type(underlying_source_object.as_ref(), context)?.is_none());
+    debug_assert!(underlying_source_type(underlying_source_object.as_ref(), ec)?.is_none());
 
     // Step 5.2: "Let sizeAlgorithm be ! ExtractSizeAlgorithm(strategy)."
-    let size_algorithm = extract_size_algorithm(&strategy, context)?;
+    let size_algorithm = extract_size_algorithm(&strategy, ec)?;
 
     // Step 5.3: "Let highWaterMark be ? ExtractHighWaterMark(strategy, 1)."
-    let high_water_mark = extract_high_water_mark(&strategy, 1.0, context)?;
+    let high_water_mark = extract_high_water_mark(&strategy, 1.0, ec)?;
 
     // Step 5.4: "Perform ? SetUpReadableStreamDefaultControllerFromUnderlyingSource(this, underlyingSource, underlyingSourceDict, highWaterMark, sizeAlgorithm)."
     set_up_readable_stream_default_controller_from_underlying_source(
@@ -1062,7 +1083,7 @@ pub(crate) fn construct_readable_stream(
         underlying_source_object,
         high_water_mark,
         size_algorithm,
-        context,
+        ec,
     )?;
 
     Ok(stream)
@@ -1075,8 +1096,8 @@ pub(crate) fn create_readable_stream(
     cancel_algorithm: CancelAlgorithm,
     high_water_mark: Option<f64>,
     size_algorithm: Option<SizeAlgorithm>,
-    context: &mut Context,
-) -> JsResult<(ReadableStream, JsObject)> {
+    ec: &mut dyn ExecutionContext<crate::js::Types>,
+) -> Completion<(ReadableStream, JsObject), crate::js::Types> {
     // Step 1: "If highWaterMark was not passed, set it to 1."
     let high_water_mark = high_water_mark.unwrap_or(1.0);
 
@@ -1087,17 +1108,17 @@ pub(crate) fn create_readable_stream(
     debug_assert!(high_water_mark >= 0.0 && !high_water_mark.is_nan());
 
     // Step 4: "Let stream be a new ReadableStream."
-    let (mut stream, stream_object) = create_readable_stream_object(context)?;
+    let (mut stream, stream_object) = create_readable_stream_object(ec)?;
 
     // Step 5: "Perform ! InitializeReadableStream(stream)."
-    stream.initialize_readable_stream();
+    stream.initialize_readable_stream(ec);
 
     // Step 6: "Let controller be a new ReadableStreamDefaultController."
     let controller = super::ReadableStreamDefaultController::new();
-    let controller_object = create_interface_instance::<super::ReadableStreamDefaultController>(
-        controller.clone(),
-        context,
-    )?;
+    let controller_object: JsObject = create_interface_instance::<
+        crate::js::Types,
+        super::ReadableStreamDefaultController,
+    >(controller.clone(), ec)?;
 
     // Step 7: "Perform ? SetUpReadableStreamDefaultController(stream, controller, startAlgorithm, pullAlgorithm, cancelAlgorithm, highWaterMark, sizeAlgorithm)."
     set_up_readable_stream_default_controller(
@@ -1109,16 +1130,19 @@ pub(crate) fn create_readable_stream(
         cancel_algorithm,
         high_water_mark,
         size_algorithm,
-        context,
+        ec,
     )?;
 
     // Step 8: "Return stream."
     Ok((stream, stream_object))
 }
-fn create_readable_stream_object(context: &mut Context) -> JsResult<(ReadableStream, JsObject)> {
-    let stream = ReadableStream::new();
+
+fn create_readable_stream_object(
+    ec: &mut dyn ExecutionContext<crate::js::Types>,
+) -> Completion<(ReadableStream, JsObject), crate::js::Types> {
+    let stream = ReadableStream::new(ec);
     let stream_object: JsObject =
-        create_interface_instance::<ReadableStream>(stream.clone(), context)?.into();
+        create_interface_instance::<crate::js::Types, ReadableStream>(stream.clone(), ec)?;
     Ok((stream, stream_object))
 }
 
@@ -1127,18 +1151,20 @@ fn create_readable_byte_stream(
     start_algorithm: StartAlgorithm,
     pull_algorithm: PullAlgorithm,
     cancel_algorithm: CancelAlgorithm,
-    context: &mut Context,
-) -> JsResult<(ReadableStream, JsObject)> {
+    ec: &mut dyn ExecutionContext<crate::js::Types>,
+) -> Completion<(ReadableStream, JsObject), crate::js::Types> {
     // Step 1: "Let stream be a new ReadableStream."
-    let (mut stream, stream_object) = create_readable_stream_object(context)?;
+    let (mut stream, stream_object) = create_readable_stream_object(ec)?;
 
     // Step 2: "Perform ! InitializeReadableStream(stream)."
-    stream.initialize_readable_stream();
+    stream.initialize_readable_stream(ec);
 
     // Step 3: "Let controller be a new ReadableByteStreamController."
     let controller = ReadableByteStreamController::new();
-    let controller_object =
-        create_interface_instance::<ReadableByteStreamController>(controller.clone(), context)?;
+    let controller_object: JsObject = create_interface_instance::<
+        crate::js::Types,
+        ReadableByteStreamController,
+    >(controller.clone(), ec)?;
 
     // Step 4: "Perform ? SetUpReadableByteStreamController(stream, controller, startAlgorithm, pullAlgorithm, cancelAlgorithm, 0, undefined)."
     super::set_up_readable_byte_stream_controller(
@@ -1150,7 +1176,7 @@ fn create_readable_byte_stream(
         cancel_algorithm,
         0.0,
         None,
-        context,
+        ec,
     )?;
 
     // Step 5: "Return stream."
@@ -1160,12 +1186,12 @@ fn create_readable_byte_stream(
 /// <https://streams.spec.whatwg.org/#readable-stream-from-iterable>
 pub(crate) fn readable_stream_from_iterable(
     async_iterable: JsValue,
-    context: &mut Context,
-) -> JsResult<JsObject> {
+    ec: &mut dyn ExecutionContext<crate::js::Types>,
+) -> Completion<JsObject, crate::js::Types> {
     // Step 1: "Let stream be undefined."
     let state = ReadableStreamFromIterableState::new(get_readable_stream_from_iterator_record(
         async_iterable,
-        context,
+        ec,
     )?);
 
     // Step 2: "Let iteratorRecord be ? GetIterator(asyncIterable, async)."
@@ -1188,7 +1214,7 @@ pub(crate) fn readable_stream_from_iterable(
         cancel_algorithm,
         Some(0.0),
         None,
-        context,
+        ec,
     )?;
     state.set_stream(stream);
 
@@ -1199,229 +1225,305 @@ pub(crate) fn readable_stream_from_iterable(
 /// <https://streams.spec.whatwg.org/#readable-stream-from-iterable>
 pub(crate) fn readable_stream_from_iterable_pull_algorithm(
     state: ReadableStreamFromIterableState,
-    context: &mut Context,
-) -> JsResult<JsObject> {
+    ec: &mut dyn ExecutionContext<crate::js::Types>,
+) -> Completion<JsObject, crate::js::Types> {
     // Step 4.1: "Let nextResult be IteratorNext(iteratorRecord)."
-    let next_result = state.iterator_record.next_result_promise(context);
+    let next_result = state.iterator_record.next_result_promise(ec);
 
     // Step 4.2: "If nextResult is an abrupt completion, return a promise rejected with nextResult.[[Value]]."
     let next_promise = match next_result {
         Ok(next_promise) => next_promise,
-        Err(error) => return rejected_promise(error.into_opaque(context)?, context),
+        Err(error) => {
+            return rejected_promise(error, ec);
+        }
     };
 
     // Step 4.3: "Let nextPromise be a promise resolved with nextResult.[[Value]]."
-    // Note: `next_result_promise()` already returns the promise produced by `PromiseResolve`
-    // and applies async-from-sync iterator adaptation for sync iterables.
 
     // Step 4.4: "Return the result of reacting to nextPromise with the following fulfillment steps, given iterResult:"
-    let on_fulfilled = NativeFunction::from_copy_closure_with_captures(
-        |_, args, state: &ReadableStreamFromIterableState, context| {
-            let iter_result = args.get_or_undefined(0).clone();
-
-            // Step 4.4.1: "If iterResult is not an Object, throw a TypeError."
-            let iter_result_object = iter_result.as_object().ok_or_else(|| {
-                JsNativeError::typ().with_message(
-                    "ReadableStream.from() iterator next() must fulfill with an object",
-                )
-            })?;
-
-            // Step 4.4.2: "Let done be ? IteratorComplete(iterResult)."
-            let done = iter_result_object
-                .get(js_string!("done"), context)?
-                .to_boolean();
-
-            let stream = state.stream()?;
-            let controller = stream.controller_slot().ok_or_else(|| {
-                JsNativeError::typ().with_message("ReadableStream.from() is missing its controller")
-            })?;
-            let controller = controller.as_default_controller();
-
-            // Step 4.4.3: "If done is true:"
-            if done {
-                // Step 4.4.3.1: "Perform ! ReadableStreamDefaultControllerClose(stream.[[controller]])."
-                controller.close_steps(context)?;
-                return Ok(JsValue::undefined());
-            }
-
-            // Step 4.4.4.1: "Let value be ? IteratorValue(iterResult)."
-            let value = iter_result_object.get(js_string!("value"), context)?;
-
-            // Step 4.4.4.2: "Perform ! ReadableStreamDefaultControllerEnqueue(stream.[[controller]], value)."
-            controller.enqueue_steps(value, context)?;
-            Ok(JsValue::undefined())
-        },
+    let name_key = ec.property_key_from_str("");
+    let on_fulfilled = create_builtin_fn_with_traced_captures(
+        ec,
         state,
-    )
-    .to_js_function(context.realm());
+        readable_stream_from_iterable_pull_on_fulfilled_fn,
+        1,
+        name_key,
+        false,
+    );
 
-    Ok(JsPromise::from_object(next_promise)?
-        .then(Some(on_fulfilled), None, context)?
-        .into())
+    let js_promise = <crate::js::Types as JsTypes>::object_as_promise(&next_promise)
+        .ok_or_else(|| ec.new_type_error("not a Promise"))?;
+    let capability = ec.new_promise_capability(ec.realm_intrinsics(&ec.current_realm()).promise)?;
+    let result_promise = capability.promise.clone();
+    ec.perform_promise_then(js_promise, Some(on_fulfilled), None, Some(capability))?;
+    let result_obj = <crate::js::Types as JsTypes>::value_as_object(&result_promise)
+        .unwrap_or_else(|| ec.realm_global_object());
+    Ok(result_obj)
+}
+
+fn readable_stream_from_iterable_pull_on_fulfilled_fn(
+    args: &[JsValue],
+    _this: JsValue,
+    state: &ReadableStreamFromIterableState,
+    ec: &mut dyn ExecutionContext<crate::js::Types>,
+) -> Completion<JsValue, crate::js::Types> {
+    let iter_result = args
+        .first()
+        .cloned()
+        .unwrap_or_else(|| ec.value_undefined());
+
+    // Step 4.4.1: "If iterResult is not an Object, throw a TypeError."
+    let iter_result_object = iter_result.as_object().ok_or_else(|| {
+        ec.new_type_error("ReadableStream.from() iterator next() must fulfill with an object")
+    })?;
+
+    // Step 4.4.2: "Let done be ? IteratorComplete(iterResult)."
+    use js_engine::EcmascriptHost;
+    let done_value = EcmascriptHost::get(ec, &iter_result_object, "done")?;
+    let done = ec.to_boolean(&done_value);
+
+    let stream = state
+        .stream()
+        .ok_or_else(|| ec.new_type_error("ReadableStream.from() is missing its stream"))?;
+    let controller = stream
+        .controller_slot()
+        .ok_or_else(|| ec.new_type_error("ReadableStream.from() is missing its controller"))?;
+    let controller = controller.as_default_controller();
+
+    // Step 4.4.3: "If done is true:"
+    if done {
+        // Step 4.4.3.1: "Perform ! ReadableStreamDefaultControllerClose(stream.[[controller]])."
+        controller.close_steps(ec)?;
+        return Ok(ec.value_undefined());
+    }
+
+    // Step 4.4.4.1: "Let value be ? IteratorValue(iterResult)."
+    let value = EcmascriptHost::get(ec, &iter_result_object, "value")?;
+
+    // Step 4.4.4.2: "Perform ! ReadableStreamDefaultControllerEnqueue(stream.[[controller]], value)."
+    controller.enqueue_steps(value, ec)?;
+    Ok(ec.value_undefined())
+}
+
+fn readable_stream_from_iterable_cancel_on_fulfilled_fn(
+    args: &[JsValue],
+    _this: JsValue,
+    _captures: &(),
+    ec: &mut dyn ExecutionContext<crate::js::Types>,
+) -> Completion<JsValue, crate::js::Types> {
+    // Step 5.8.1: "If iterResult is not an Object, throw a TypeError."
+    if args
+        .first()
+        .cloned()
+        .unwrap_or_else(|| ec.value_undefined())
+        .as_object()
+        .is_none()
+    {
+        return Err(ec.new_type_error(
+            "ReadableStream.from() iterator return() must fulfill with an object",
+        ));
+    }
+
+    // Step 5.8.2: "Return undefined."
+    Ok(ec.value_undefined())
 }
 
 /// <https://streams.spec.whatwg.org/#readable-stream-from-iterable>
 pub(crate) fn readable_stream_from_iterable_cancel_algorithm(
     state: ReadableStreamFromIterableState,
     reason: JsValue,
-    context: &mut Context,
-) -> JsResult<JsObject> {
-    // Step 5.1: "Let iterator be iteratorRecord.[[Iterator]]."
-    // Step 5.2: "Let returnMethod be GetMethod(iterator, \"return\")."
-    // Step 5.3: "If returnMethod is an abrupt completion, return a promise rejected with returnMethod.[[Value]]."
-    // Step 5.4: "If returnMethod.[[Value]] is undefined, return a promise resolved with undefined."
-    // Step 5.5: "Let returnResult be Call(returnMethod.[[Value]], iterator, « reason »)."
-    // Step 5.6: "If returnResult is an abrupt completion, return a promise rejected with returnResult.[[Value]]."
-    // Step 5.7: "Let returnPromise be a promise resolved with returnResult.[[Value]]."
-    // Note: `return_result_promise()` folds those steps together and applies the async-from-sync
-    // iterator adaptation required for sync iterables.
-    let return_result = state.iterator_record.return_result_promise(reason, context);
+    ec: &mut dyn ExecutionContext<crate::js::Types>,
+) -> Completion<JsObject, crate::js::Types> {
+    // Steps 5.1-5.7: Folds spec steps into return_result_promise.
+    let return_result = state.iterator_record.return_result_promise(reason, ec);
     let return_promise = match return_result {
         Ok(Some(return_promise)) => return_promise,
-        Ok(None) => return resolved_promise(JsValue::undefined(), context),
-        Err(error) => return rejected_promise(error.into_opaque(context)?, context),
+        Ok(None) => {
+            return resolved_promise(ec.value_undefined(), ec);
+        }
+        Err(error) => {
+            return rejected_promise(error, ec);
+        }
     };
 
     // Step 5.8: "Return the result of reacting to returnPromise with the following fulfillment steps, given iterResult:"
-    let on_fulfilled = NativeFunction::from_fn_ptr(|_, args, _| {
-        // Step 5.8.1: "If iterResult is not an Object, throw a TypeError."
-        if args.get_or_undefined(0).as_object().is_none() {
-            return Err(JsNativeError::typ()
-                .with_message("ReadableStream.from() iterator return() must fulfill with an object")
-                .into());
-        }
+    let name_key = ec.property_key_from_str("");
+    let on_fulfilled = create_builtin_fn_with_traced_captures(
+        ec,
+        (),
+        readable_stream_from_iterable_cancel_on_fulfilled_fn,
+        1,
+        name_key,
+        false,
+    );
 
-        // Step 5.8.2: "Return undefined."
-        Ok(JsValue::undefined())
-    })
-    .to_js_function(context.realm());
-
-    Ok(JsPromise::from_object(return_promise)?
-        .then(Some(on_fulfilled), None, context)?
-        .into())
+    let js_promise = <crate::js::Types as JsTypes>::object_as_promise(&return_promise)
+        .ok_or_else(|| ec.new_type_error("not a Promise"))?;
+    let capability = ec.new_promise_capability(ec.realm_intrinsics(&ec.current_realm()).promise)?;
+    let result_promise = capability.promise.clone();
+    ec.perform_promise_then(js_promise, Some(on_fulfilled), None, Some(capability))?;
+    let result_obj = <crate::js::Types as JsTypes>::value_as_object(&result_promise)
+        .unwrap_or_else(|| ec.realm_global_object());
+    Ok(result_obj)
 }
 
 fn get_readable_stream_from_iterator_record(
     async_iterable: JsValue,
-    context: &mut Context,
-) -> JsResult<ReadableStreamFromIteratorRecord> {
-    let iterable_object = async_iterable.to_object(context)?;
+    ec: &mut dyn ExecutionContext<crate::js::Types>,
+) -> Completion<ReadableStreamFromIteratorRecord, crate::js::Types> {
+    // Step: "Let asyncIterable be ? ToObject(asyncIterable)."
+    if async_iterable.is_undefined() || async_iterable.is_null() {
+        return Err(ec.new_type_error("ReadableStream.from() argument must be an object"));
+    }
+    let iterable_object = ec.to_object(async_iterable)?;
+
+    let async_iterator_key = ec.property_key_from_well_known_symbol("asyncIterator");
+    let async_iter_method_value =
+        ExecutionContext::get(ec, iterable_object.clone(), async_iterator_key)?;
 
     if let Some(async_iterator_method) = get_optional_callable_method_value(
-        iterable_object.get(JsSymbol::async_iterator(), context)?,
+        async_iter_method_value,
         "ReadableStream.from() iterable[@@asyncIterator]",
+        ec,
     )? {
-        let iterator = async_iterator_method
-            .call(&async_iterable, &[], context)?
-            .as_object()
+        let iterator_val =
+            <crate::js::Types as JsTypes>::value_from_object(iterable_object.clone());
+        let iterator_obj = ec.call(&async_iterator_method, &iterator_val, &[])?;
+        let iterator = <crate::js::Types as JsTypes>::value_as_object(&iterator_obj)
             .ok_or_else(|| {
-                JsNativeError::typ()
-                    .with_message("ReadableStream.from() @@asyncIterator must return an object")
+                ec.new_type_error("ReadableStream.from() @@asyncIterator must return an object")
             })?
             .clone();
         let next_method = get_required_callable_method(
             &iterator,
             "next",
             "ReadableStream.from() iterator.next must be callable",
-            context,
+            ec,
         )?;
         return Ok(ReadableStreamFromIteratorRecord {
-            iterator,
-            next_method,
+            iterator: JsObjectCell::new(Some(iterator)),
+            next_method: JsObjectCell::new(Some(next_method)),
             kind: ReadableStreamFromIteratorKind::Async,
         });
     }
 
+    let iterator_key = ec.property_key_from_well_known_symbol("iterator");
+    let iter_method_value = ExecutionContext::get(ec, iterable_object.clone(), iterator_key)?;
     let iterator_method = get_optional_callable_method_value(
-        iterable_object.get(JsSymbol::iterator(), context)?,
+        iter_method_value,
         "ReadableStream.from() iterable[@@iterator]",
+        ec,
     )?
     .ok_or_else(|| {
-        JsNativeError::typ()
-            .with_message("ReadableStream.from() requires an async iterable or iterable")
+        ec.new_type_error("ReadableStream.from() requires an async iterable or iterable")
     })?;
-    let iterator = iterator_method
-        .call(&async_iterable, &[], context)?
-        .as_object()
-        .ok_or_else(|| {
-            JsNativeError::typ()
-                .with_message("ReadableStream.from() @@iterator must return an object")
-        })?
+    let iterator_val = <crate::js::Types as JsTypes>::value_from_object(iterable_object);
+    let iterator_obj = ec.call(&iterator_method, &iterator_val, &[])?;
+    let iterator = <crate::js::Types as JsTypes>::value_as_object(&iterator_obj)
+        .ok_or_else(|| ec.new_type_error("ReadableStream.from() @@iterator must return an object"))?
         .clone();
     let next_method = get_required_callable_method(
         &iterator,
         "next",
         "ReadableStream.from() iterator.next must be callable",
-        context,
+        ec,
     )?;
     Ok(ReadableStreamFromIteratorRecord {
-        iterator,
-        next_method,
+        iterator: JsObjectCell::new(Some(iterator)),
+        next_method: JsObjectCell::new(Some(next_method)),
         kind: ReadableStreamFromIteratorKind::Sync,
     })
 }
 
+fn promise_from_sync_iterator_result_on_fulfilled_fn(
+    args: &[JsValue],
+    _this: JsValue,
+    done: &bool,
+    ec: &mut dyn ExecutionContext<crate::js::Types>,
+) -> Completion<JsValue, crate::js::Types> {
+    let realm = ec.current_realm();
+    let intrinsics = ec.realm_intrinsics(&realm);
+    let value_key = ec.property_key_from_str("value");
+    let done_key = ec.property_key_from_str("done");
+    let done_value = ec.value_from_bool(*done);
+    let object = ec.create_plain_object(Some(&intrinsics.object_prototype));
+    let value = ec.value_undefined();
+    let arg0 = args.first().cloned().unwrap_or_else(|| value);
+    ec.create_data_property(object.clone(), value_key, arg0)?;
+    ec.create_data_property(object.clone(), done_key, done_value)?;
+    Ok(<crate::js::Types as JsTypes>::value_from_object(object))
+}
+
 fn promise_from_sync_iterator_result(
     iter_result: JsValue,
-    context: &mut Context,
-) -> JsResult<JsObject> {
+    ec: &mut dyn ExecutionContext<crate::js::Types>,
+) -> Completion<JsObject, crate::js::Types> {
     let iter_result_object = match iter_result.as_object() {
         Some(iter_result_object) => iter_result_object.clone(),
         None => {
             return rejected_promise(
-                JsNativeError::typ()
-                    .with_message("ReadableStream.from() iterator result must be an object")
-                    .into_opaque(context)
-                    .into(),
-                context,
+                ec.new_type_error("ReadableStream.from() iterator result must be an object"),
+                ec,
             );
         }
     };
 
-    let done = match iter_result_object.get(js_string!("done"), context) {
-        Ok(done) => done.to_boolean(),
-        Err(error) => return rejected_promise(error.into_opaque(context)?, context),
+    let done_key = ec.property_key_from_str("done");
+    let done = match ExecutionContext::get(ec, iter_result_object.clone(), done_key) {
+        Ok(done) => ec.to_boolean(&done),
+        Err(error) => {
+            return rejected_promise(error, ec);
+        }
     };
-    let value = match iter_result_object.get(js_string!("value"), context) {
+    let value_key = ec.property_key_from_str("value");
+    let value = match ExecutionContext::get(ec, iter_result_object.clone(), value_key) {
         Ok(value) => value,
-        Err(error) => return rejected_promise(error.into_opaque(context)?, context),
+        Err(error) => {
+            return rejected_promise(error, ec);
+        }
     };
-    let value_promise = match promise_from_value(value, context) {
+    let value_promise = match promise_from_value(value, ec) {
         Ok(value_promise) => value_promise,
-        Err(error) => return rejected_promise(error.into_opaque(context)?, context),
+        Err(error) => {
+            return rejected_promise(error, ec);
+        }
     };
-    let on_fulfilled = NativeFunction::from_copy_closure_with_captures(
-        |_, args, done: &bool, context| {
-            Ok(create_iter_result_object(
-                args.get_or_undefined(0).clone(),
-                *done,
-                context,
-            ))
-        },
+    let name_key = ec.property_key_from_str("");
+    let on_fulfilled = create_builtin_fn_with_traced_captures(
+        ec,
         done,
-    )
-    .to_js_function(context.realm());
+        promise_from_sync_iterator_result_on_fulfilled_fn,
+        0,
+        name_key,
+        false,
+    );
 
-    Ok(JsPromise::from_object(value_promise)?
-        .then(Some(on_fulfilled), None, context)?
-        .into())
+    let js_promise = <crate::js::Types as JsTypes>::object_as_promise(&value_promise)
+        .ok_or_else(|| ec.new_type_error("not a Promise"))?;
+    let intrinsics = ec.realm_intrinsics(&ec.current_realm());
+    let capability = ec.new_promise_capability(intrinsics.promise)?;
+    let result_promise = capability.promise.clone();
+    ec.perform_promise_then(js_promise, Some(on_fulfilled), None, Some(capability))?;
+    let result_obj = <crate::js::Types as JsTypes>::value_as_object(&result_promise)
+        .unwrap_or_else(|| ec.realm_global_object());
+    Ok(result_obj)
 }
 
 fn get_optional_callable_method_value(
     value: JsValue,
     description: &'static str,
-) -> JsResult<Option<JsObject>> {
+    ec: &mut dyn ExecutionContext<crate::js::Types>,
+) -> Completion<Option<JsObject>, crate::js::Types> {
     if value.is_undefined() || value.is_null() {
         return Ok(None);
     }
 
     let method = value.as_object().ok_or_else(|| {
-        JsNativeError::typ().with_message(format!("{description} must be callable when provided"))
+        ec.new_type_error(&format!("{description} must be callable when provided"))
     })?;
-    if !method.is_callable() {
-        return Err(JsNativeError::typ()
-            .with_message(format!("{description} must be callable when provided"))
-            .into());
+    let method_val = <crate::js::Types as JsTypes>::value_from_object(method.clone());
+    if !ec.is_callable(&method_val) {
+        return Err(ec.new_type_error(&format!("{description} must be callable when provided")));
     }
 
     Ok(Some(method.clone()))
@@ -1431,42 +1533,50 @@ fn get_required_callable_method(
     object: &JsObject,
     property: &'static str,
     message: &'static str,
-    context: &mut Context,
-) -> JsResult<JsObject> {
-    get_optional_callable_method_value(object.get(js_string!(property), context)?, message)?
-        .ok_or_else(|| JsNativeError::typ().with_message(message).into())
+    ec: &mut dyn ExecutionContext<crate::js::Types>,
+) -> Completion<JsObject, crate::js::Types> {
+    let pk = ec.property_key_from_str(property);
+    let value = ExecutionContext::get(ec, object.clone(), pk)?;
+    get_optional_callable_method_value(value, message, ec)?
+        .ok_or_else(|| ec.new_type_error(message))
 }
 pub(crate) fn with_readable_stream_ref<R>(
     object: &JsObject,
+    ec: &mut dyn ExecutionContext<crate::js::Types>,
     f: impl FnOnce(&ReadableStream) -> R,
-) -> JsResult<R> {
-    let stream = object
-        .downcast_ref::<ReadableStream>()
-        .ok_or_else(|| JsNativeError::typ().with_message("object is not a ReadableStream"))?;
-    Ok(f(&stream))
+) -> Completion<R, crate::js::Types> {
+    let stream_ref = ec
+        .with_object_any(object)
+        .and_then(|a| a.downcast_ref::<ReadableStream>());
+    let stream = match stream_ref {
+        Some(s) => s,
+        None => return Err(ec.new_type_error("object is not a ReadableStream")),
+    };
+    Ok(f(stream))
 }
 
+/// <https://streams.spec.whatwg.org/#readable-stream-cancel>
 /// <https://streams.spec.whatwg.org/#readable-stream-cancel>
 pub(crate) fn readable_stream_cancel(
     stream: ReadableStream,
     reason: JsValue,
-    context: &mut Context,
-) -> JsResult<JsObject> {
+    ec: &mut dyn ExecutionContext<crate::js::Types>,
+) -> Completion<JsObject, crate::js::Types> {
     // Step 1: "Set stream.[[disturbed]] to true."
     stream.set_disturbed(true);
 
     // Step 2: "If stream.[[state]] is \"closed\", return a promise resolved with undefined."
     if stream.state() == ReadableStreamState::Closed {
-        return resolved_promise(JsValue::undefined(), context);
+        return resolved_promise(ec.value_undefined(), ec);
     }
 
     // Step 3: "If stream.[[state]] is \"errored\", return a promise rejected with stream.[[storedError]]."
     if stream.state() == ReadableStreamState::Errored {
-        return rejected_promise(stream.stored_error(), context);
+        return rejected_promise(stream.stored_error(), ec);
     }
 
     // Step 4: "Perform ! ReadableStreamClose(stream)."
-    readable_stream_close(stream.clone(), context)?;
+    readable_stream_close(stream.clone(), ec)?;
 
     // Step 5: "Let reader be stream.[[reader]]."
     let reader = stream.reader_slot();
@@ -1476,17 +1586,22 @@ pub(crate) fn readable_stream_cancel(
     let _ = reader;
 
     // Step 7: "Let sourceCancelPromise be ! stream.[[controller]].[[CancelSteps]](reason)."
-    let controller = stream.controller_slot().ok_or_else(|| {
-        JsNativeError::typ().with_message("ReadableStream is missing its controller")
-    })?;
-    let source_cancel_promise = controller.cancel_steps(reason, context)?;
+    let controller = stream
+        .controller_slot()
+        .ok_or_else(|| ec.new_type_error("ReadableStream is missing its controller"))?;
+    let source_cancel_promise = controller.cancel_steps(reason, ec)?;
 
     // Step 8: "Return the result of reacting to sourceCancelPromise with a fulfillment step that returns undefined."
-    transform_promise_to_undefined(&source_cancel_promise, context)
+    // This implements <https://webidl.spec.whatwg.org/#dfn-perform-steps-once-promise-is-settled>
+    // by calling Web IDL's transform_promise_to_undefined which wraps PerformPromiseThen.
+    transform_promise_to_undefined(&source_cancel_promise, ec)
 }
 
 /// <https://streams.spec.whatwg.org/#readable-stream-close>
-pub(crate) fn readable_stream_close(stream: ReadableStream, context: &mut Context) -> JsResult<()> {
+pub(crate) fn readable_stream_close(
+    stream: ReadableStream,
+    ec: &mut dyn ExecutionContext<crate::js::Types>,
+) -> Completion<(), crate::js::Types> {
     // Step 1: "Assert: stream.[[state]] is \"readable\"."
     debug_assert_eq!(stream.state(), ReadableStreamState::Readable);
 
@@ -1505,9 +1620,9 @@ pub(crate) fn readable_stream_close(stream: ReadableStream, context: &mut Contex
         ReadableStreamReader::Default(reader) => {
             // Step 5: "Resolve reader.[[closedPromise]] with undefined."
             if let Some(resolvers) = reader.closed_resolvers_slot_value() {
-                resolvers
-                    .resolve
-                    .call(&JsValue::undefined(), &[JsValue::undefined()], context)?;
+                let resolve: JsObject = resolvers.resolve.clone().into();
+                let undefined = ec.value_undefined();
+                ec.call(&resolve, &undefined, &[undefined.clone()])?;
                 reader.set_closed_resolvers_slot_value(None);
             }
 
@@ -1520,14 +1635,14 @@ pub(crate) fn readable_stream_close(stream: ReadableStream, context: &mut Contex
             // Step 6.3: "For each readRequest of readRequests,"
             for read_request in read_requests {
                 // Step 6.3.1: "Perform readRequest's close steps."
-                read_request.close_steps(context)?;
+                read_request.close_steps(ec)?;
             }
         }
         ReadableStreamReader::BYOB(reader) => {
             if let Some(resolvers) = reader.closed_resolvers_slot_value() {
-                resolvers
-                    .resolve
-                    .call(&JsValue::undefined(), &[JsValue::undefined()], context)?;
+                let resolve: JsObject = resolvers.resolve.clone().into();
+                let undefined = ec.value_undefined();
+                ec.call(&resolve, &undefined, &[undefined.clone()])?;
                 reader.set_closed_resolvers_slot_value(None);
             }
         }
@@ -1540,8 +1655,8 @@ pub(crate) fn readable_stream_close(stream: ReadableStream, context: &mut Contex
 pub(crate) fn readable_stream_error(
     stream: ReadableStream,
     error: JsValue,
-    context: &mut Context,
-) -> JsResult<()> {
+    ec: &mut dyn ExecutionContext<crate::js::Types>,
+) -> Completion<(), crate::js::Types> {
     // Step 1: "Assert: stream.[[state]] is \"readable\"."
     debug_assert_eq!(stream.state(), ReadableStreamState::Readable);
 
@@ -1563,29 +1678,29 @@ pub(crate) fn readable_stream_error(
         ReadableStreamReader::Default(reader) => {
             // Step 7: "Set reader.[[closedPromise]].[[PromiseIsHandled]] to true."
             if let Some(closed_promise) = reader.closed_promise_slot_value() {
-                mark_promise_as_handled(&closed_promise, context)?;
+                mark_promise_as_handled(&closed_promise, ec)?;
             }
 
             // Step 6: "Reject reader.[[closedPromise]] with e."
             if let Some(resolvers) = reader.closed_resolvers_slot_value() {
-                resolvers
-                    .reject
-                    .call(&JsValue::undefined(), &[error.clone()], context)?;
+                let reject: JsObject = resolvers.reject.clone().into();
+                let undefined = ec.value_undefined();
+                ec.call(&reject, &undefined, &[error.clone()])?;
                 reader.set_closed_resolvers_slot_value(None);
             }
 
             // Step 8.1: "Perform ! ReadableStreamDefaultReaderErrorReadRequests(reader, e)."
-            readable_stream_default_reader_error_read_requests(reader.clone(), error, context)
+            readable_stream_default_reader_error_read_requests(reader.clone(), error, ec)
         }
         ReadableStreamReader::BYOB(reader) => {
             if let Some(closed_promise) = reader.closed_promise_slot_value() {
-                mark_promise_as_handled(&closed_promise, context)?;
+                mark_promise_as_handled(&closed_promise, ec)?;
             }
 
             if let Some(resolvers) = reader.closed_resolvers_slot_value() {
-                resolvers
-                    .reject
-                    .call(&JsValue::undefined(), &[error.clone()], context)?;
+                let reject: JsObject = resolvers.reject.clone().into();
+                let undefined = ec.value_undefined();
+                ec.call(&reject, &undefined, &[error.clone()])?;
                 reader.set_closed_resolvers_slot_value(None);
             }
 
@@ -1598,14 +1713,13 @@ pub(crate) fn readable_stream_error(
 pub(crate) fn readable_stream_add_read_request(
     stream: ReadableStream,
     read_request: ReadRequest,
-) -> JsResult<()> {
+    ec: &mut dyn ExecutionContext<crate::js::Types>,
+) -> Completion<(), crate::js::Types> {
     // Step 1: "Assert: stream.[[reader]] implements ReadableStreamDefaultReader."
     let reader = stream
         .reader_slot()
         .and_then(|reader| reader.as_default_reader())
-        .ok_or_else(|| {
-            JsNativeError::typ().with_message("ReadableStream is not locked to a default reader")
-        })?;
+        .ok_or_else(|| ec.new_type_error("ReadableStream is not locked to a default reader"))?;
 
     // Step 2: "Assert: stream.[[state]] is \"readable\"."
     debug_assert_eq!(stream.state(), ReadableStreamState::Readable);
@@ -1620,15 +1734,13 @@ pub(crate) fn readable_stream_fulfill_read_request(
     stream: ReadableStream,
     chunk: JsValue,
     done: bool,
-    context: &mut Context,
-) -> JsResult<()> {
+    ec: &mut dyn ExecutionContext<crate::js::Types>,
+) -> Completion<(), crate::js::Types> {
     // Step 1: "Assert: ! ReadableStreamHasDefaultReader(stream) is true."
     let reader = stream
         .reader_slot()
         .and_then(|reader| reader.as_default_reader())
-        .ok_or_else(|| {
-            JsNativeError::typ().with_message("ReadableStream is not locked to a default reader")
-        })?;
+        .ok_or_else(|| ec.new_type_error("ReadableStream is not locked to a default reader"))?;
 
     // Step 2: "Let reader be stream.[[reader]]."
 
@@ -1637,17 +1749,17 @@ pub(crate) fn readable_stream_fulfill_read_request(
 
     // Step 4: "Let readRequest be reader.[[readRequests]][0]."
     // Step 5: "Remove readRequest from reader.[[readRequests]]."
-    let read_request = reader.shift_read_request().ok_or_else(|| {
-        JsNativeError::typ().with_message("ReadableStream has no pending read request")
-    })?;
+    let read_request = reader
+        .shift_read_request()
+        .ok_or_else(|| ec.new_type_error("ReadableStream has no pending read request"))?;
 
     // Step 6: "If done is true, perform readRequest's close steps."
     if done {
-        return read_request.close_steps(context);
+        return read_request.close_steps(ec);
     }
 
     // Step 7: "Otherwise, perform readRequest's chunk steps, given chunk."
-    read_request.chunk_steps(chunk, context)
+    read_request.chunk_steps(chunk, ec)
 }
 
 /// <https://streams.spec.whatwg.org/#readable-stream-get-num-read-requests>
@@ -1686,7 +1798,7 @@ pub(crate) fn readable_stream_has_default_reader(stream: &ReadableStream) -> boo
 
 /// Internal state for ReadableByteStreamTee algorithm, maintained across pull and cancel operations.
 /// See `readable_byte_stream_tee` for the algorithm using this state.
-#[derive(Clone, Trace, Finalize)]
+#[gc_struct]
 pub(crate) struct ByteTeeState {
     /// <https://streams.spec.whatwg.org/#abstract-opdef-readablebytestreamtee>
     source_stream: ReadableStream,
@@ -1697,30 +1809,30 @@ pub(crate) struct ByteTeeState {
     /// <https://streams.spec.whatwg.org/#abstract-opdef-readablebytestreamtee>
     branch2: Option<ReadableStream>,
     /// <https://streams.spec.whatwg.org/#abstract-opdef-readablebytestreamtee>
-    cancel_promise: JsObject,
+    cancel_promise: JsObjectCell,
     /// <https://streams.spec.whatwg.org/#abstract-opdef-readablebytestreamtee>
-    cancel_resolvers: boa_engine::builtins::promise::ResolvingFunctions,
+    cancel_resolvers: PromiseResolvers<crate::js::Types>,
     /// <https://streams.spec.whatwg.org/#abstract-opdef-readablebytestreamtee>
-    #[unsafe_ignore_trace]
+    #[ignore_trace]
     reading: bool,
     /// <https://streams.spec.whatwg.org/#abstract-opdef-readablebytestreamtee>
-    #[unsafe_ignore_trace]
+    #[ignore_trace]
     read_again_for_branch1: bool,
     /// <https://streams.spec.whatwg.org/#abstract-opdef-readablebytestreamtee>
-    #[unsafe_ignore_trace]
+    #[ignore_trace]
     read_again_for_branch2: bool,
     /// <https://streams.spec.whatwg.org/#abstract-opdef-readablebytestreamtee>
-    #[unsafe_ignore_trace]
+    #[ignore_trace]
     canceled1: bool,
     /// <https://streams.spec.whatwg.org/#abstract-opdef-readablebytestreamtee>
-    #[unsafe_ignore_trace]
+    #[ignore_trace]
     canceled2: bool,
     /// <https://streams.spec.whatwg.org/#abstract-opdef-readablebytestreamtee>
-    reason1: JsValue,
+    reason1: JsValueCell,
     /// <https://streams.spec.whatwg.org/#abstract-opdef-readablebytestreamtee>
-    reason2: JsValue,
+    reason2: JsValueCell,
     /// <https://streams.spec.whatwg.org/#abstract-opdef-readablebytestreamtee>
-    #[unsafe_ignore_trace]
+    #[ignore_trace]
     reader_generation: u64,
 }
 
@@ -1730,8 +1842,8 @@ pub(crate) struct ByteTeeState {
 fn byte_tee_enqueue_to_branch(
     branch: &ReadableStream,
     chunk: JsValue,
-    context: &mut Context,
-) -> JsResult<()> {
+    ec: &mut dyn ExecutionContext<crate::js::Types>,
+) -> Completion<(), crate::js::Types> {
     // Step helper: "Perform ! ReadableByteStreamControllerEnqueue(branchX.[[controller]], chunkX)."
     let Some(controller) = branch
         .controller_slot()
@@ -1739,15 +1851,15 @@ fn byte_tee_enqueue_to_branch(
     else {
         return Ok(());
     };
-    controller.enqueue(chunk, context)
+    controller.enqueue(chunk, ec)
 }
 
 /// <https://streams.spec.whatwg.org/#abstract-opdef-readablebytestreamtee>
 fn byte_tee_error_branch(
     branch: &ReadableStream,
     error: JsValue,
-    context: &mut Context,
-) -> JsResult<()> {
+    ec: &mut dyn ExecutionContext<crate::js::Types>,
+) -> Completion<(), crate::js::Types> {
     // Step helper: "Perform ! ReadableByteStreamControllerError(branchX.[[controller]], r)."
     let Some(controller) = branch
         .controller_slot()
@@ -1755,11 +1867,14 @@ fn byte_tee_error_branch(
     else {
         return Ok(());
     };
-    controller.error(error, context)
+    controller.error(error, ec)
 }
 
 /// <https://streams.spec.whatwg.org/#abstract-opdef-readablebytestreamtee>
-fn byte_tee_close_branch(branch: &ReadableStream, context: &mut Context) -> JsResult<()> {
+fn byte_tee_close_branch(
+    branch: &ReadableStream,
+    ec: &mut dyn ExecutionContext<crate::js::Types>,
+) -> Completion<(), crate::js::Types> {
     // Step helper: "Perform ! ReadableByteStreamControllerClose(branchX.[[controller]])."
     let Some(controller) = branch
         .controller_slot()
@@ -1767,7 +1882,7 @@ fn byte_tee_close_branch(branch: &ReadableStream, context: &mut Context) -> JsRe
     else {
         return Ok(());
     };
-    controller.close(context)
+    controller.close(ec)
 }
 
 /// <https://streams.spec.whatwg.org/#readable-byte-stream-controller-has-pending-pull-intos>
@@ -1782,81 +1897,100 @@ fn byte_tee_pending_pull_into_controller(
     }
 }
 
+fn byte_tee_forward_error_on_rejected_fn(
+    args: &[JsValue],
+    _this: JsValue,
+    captures: &(u64, GcCell<ByteTeeState>),
+    ec: &mut dyn ExecutionContext<crate::js::Types>,
+) -> Completion<JsValue, crate::js::Types> {
+    let (captured_generation, tee_state) = captures;
+    // Step helper: "If thisReader is not reader, return."
+    if tee_state.borrow().reader_generation != *captured_generation {
+        return Ok(ec.value_undefined());
+    }
+    let error = args
+        .first()
+        .cloned()
+        .unwrap_or_else(|| ec.value_undefined());
+    let (branch1, branch2, canceled1, canceled2, cancel_resolvers) = {
+        let tee = tee_state.borrow();
+        (
+            tee.branch1.clone(),
+            tee.branch2.clone(),
+            tee.canceled1,
+            tee.canceled2,
+            tee.cancel_resolvers.clone(),
+        )
+    };
+    if let Some(ref branch1) = branch1 {
+        if let Err(error) = byte_tee_error_branch(branch1, error.clone(), ec) {
+            error!("[readable-stream] byte tee error branch1 failed: {error:?}");
+        }
+    }
+    if let Some(ref branch2) = branch2 {
+        if let Err(error) = byte_tee_error_branch(branch2, error, ec) {
+            error!("[readable-stream] byte tee error branch2 failed: {error:?}");
+        }
+    }
+    if !canceled1 || !canceled2 {
+        let undefined = ec.value_undefined();
+        if let Err(error) = cancel_resolvers.resolve(undefined.clone(), ec) {
+            error!("[readable-stream] failed to resolve cancel promise: {error:?}");
+        }
+    }
+    Ok(ec.value_undefined())
+}
+
 /// <https://streams.spec.whatwg.org/#abstract-opdef-readablebytestreamtee>
 fn byte_tee_forward_reader_error(
     reader_object: &JsObject,
-    tee_state: &Gc<GcRefCell<ByteTeeState>>,
-    context: &mut Context,
-) -> JsResult<()> {
-    let closed_promise = if let Ok(closed) = reader_object.get(js_string!("closed"), context) {
-        closed
-            .as_object()
-            .and_then(|o| JsPromise::from_object(o.clone()).ok())
-    } else {
-        None
-    };
+    tee_state: &GcCell<ByteTeeState>,
+    ec: &mut dyn ExecutionContext<crate::js::Types>,
+) -> Completion<(), crate::js::Types> {
+    let closed_value = js_engine::EcmascriptHost::get(ec, reader_object, "closed")?;
+    let closed_promise = crate::js::Types::value_as_object(&closed_value)
+        .and_then(|o| crate::js::Types::object_as_promise(&o));
     let Some(closed_promise) = closed_promise else {
         return Ok(());
     };
 
     // Step helper: "Let thisReader be reader" for the forwardReaderError closure.
     let generation_at_attach = tee_state.borrow().reader_generation;
-    let on_rejected = NativeFunction::from_copy_closure_with_captures(
-        |_, args: &[JsValue], captures: &(u64, Gc<GcRefCell<ByteTeeState>>), context| {
-            let (captured_generation, tee_state) = captures;
-            // Step helper: "If thisReader is not reader, return."
-            if tee_state.borrow().reader_generation != *captured_generation {
-                return Ok(JsValue::undefined());
-            }
-            let error = args.get_or_undefined(0).clone();
-            let (branch1, branch2, canceled1, canceled2, cancel_resolvers) = {
-                let tee = tee_state.borrow();
-                (
-                    tee.branch1.clone(),
-                    tee.branch2.clone(),
-                    tee.canceled1,
-                    tee.canceled2,
-                    tee.cancel_resolvers.clone(),
-                )
-            };
-            if let Some(ref branch1) = branch1 {
-                if let Err(error) = byte_tee_error_branch(branch1, error.clone(), context) {
-                    error!("[readable-stream] byte tee error branch1 failed: {error}");
-                }
-            }
-            if let Some(ref branch2) = branch2 {
-                if let Err(error) = byte_tee_error_branch(branch2, error, context) {
-                    error!("[readable-stream] byte tee error branch2 failed: {error}");
-                }
-            }
-            if !canceled1 || !canceled2 {
-                cancel_resolvers.resolve.call(
-                    &JsValue::undefined(),
-                    &[JsValue::undefined()],
-                    context,
-                )?;
-            }
-            Ok(JsValue::undefined())
-        },
+    let name_key = ec.property_key_from_str("");
+    let on_rejected = create_builtin_fn_with_traced_captures(
+        ec,
         (generation_at_attach, tee_state.clone()),
-    )
-    .to_js_function(context.realm());
-    let _ = closed_promise.catch(on_rejected, context)?;
+        byte_tee_forward_error_on_rejected_fn,
+        1,
+        name_key,
+        false,
+    );
+    ec.perform_promise_then(closed_promise, None, Some(on_rejected), None)?;
     Ok(())
 }
 
 fn byte_tee_ignore_pull_completion(
-    completion: JsResult<JsValue>,
-    context: &mut Context,
-) -> JsResult<()> {
-    let promise = promise_from_completion(completion, context);
-    mark_promise_as_handled(&JsObject::from(promise), context)
+    completion: Completion<JsValue, crate::js::Types>,
+    ec: &mut dyn ExecutionContext<crate::js::Types>,
+) -> Completion<(), crate::js::Types> {
+    // Resolve or reject based on the completion, then mark as handled.
+    match completion {
+        Ok(value) => {
+            let promise_obj = crate::webidl::promise_from_value(value.clone(), ec)?;
+            crate::webidl::mark_promise_as_handled(&promise_obj, ec)?;
+        }
+        Err(error) => {
+            let promise_obj = crate::webidl::rejected_promise_from_error(error, ec);
+            crate::webidl::mark_promise_as_handled(&promise_obj, ec)?;
+        }
+    }
+    Ok(())
 }
 
 fn byte_tee_switch_to_default_reader(
-    tee_state: &Gc<GcRefCell<ByteTeeState>>,
-    context: &mut Context,
-) -> JsResult<()> {
+    tee_state: &GcCell<ByteTeeState>,
+    ec: &mut dyn ExecutionContext<crate::js::Types>,
+) -> Completion<(), crate::js::Types> {
     if !matches!(tee_state.borrow().reader, ReadableStreamReader::BYOB(_)) {
         return Ok(());
     }
@@ -1869,17 +2003,21 @@ fn byte_tee_switch_to_default_reader(
         )
     };
     tee_state.borrow_mut().reader_generation += 1;
-    readable_stream_byob_reader_release(old_reader, context)?;
-    let new_reader_object = acquire_readable_stream_default_reader(source_stream, context)?;
-    let new_reader = with_readable_stream_default_reader_ref(&new_reader_object, |r| r.clone())?;
+    readable_stream_byob_reader_release(old_reader, ec)?;
+    let new_reader_object = acquire_readable_stream_default_reader(source_stream, ec)?;
+    let new_reader = with_readable_stream_default_reader_ref(
+        &new_reader_object,
+        ec,
+        |r: &ReadableStreamDefaultReader| r.clone(),
+    )?;
     tee_state.borrow_mut().reader = ReadableStreamReader::Default(new_reader);
-    byte_tee_forward_reader_error(&new_reader_object, tee_state, context)
+    byte_tee_forward_reader_error(&new_reader_object, tee_state, ec)
 }
 
 fn byte_tee_switch_to_byob_reader(
-    tee_state: &Gc<GcRefCell<ByteTeeState>>,
-    context: &mut Context,
-) -> JsResult<()> {
+    tee_state: &GcCell<ByteTeeState>,
+    ec: &mut dyn ExecutionContext<crate::js::Types>,
+) -> Completion<(), crate::js::Types> {
     if !matches!(tee_state.borrow().reader, ReadableStreamReader::Default(_)) {
         return Ok(());
     }
@@ -1892,21 +2030,21 @@ fn byte_tee_switch_to_byob_reader(
         )
     };
     tee_state.borrow_mut().reader_generation += 1;
-    readable_stream_default_reader_release(old_reader, context)?;
-    let new_reader_object = acquire_readable_stream_byob_reader(source_stream, context)?;
-    let new_reader = with_readable_stream_byob_reader_ref(&new_reader_object, |r| r.clone())?;
+    readable_stream_default_reader_release(old_reader, ec)?;
+    let new_reader_object = acquire_readable_stream_byob_reader(source_stream, ec)?;
+    let new_reader = with_readable_stream_byob_reader_ref(&new_reader_object, ec, |r| r.clone())?;
     tee_state.borrow_mut().reader = ReadableStreamReader::BYOB(new_reader);
-    byte_tee_forward_reader_error(&new_reader_object, tee_state, context)
+    byte_tee_forward_reader_error(&new_reader_object, tee_state, ec)
 }
 
 /// <https://streams.spec.whatwg.org/#abstract-opdef-readablebytestreamtee>
 pub(crate) fn readable_byte_stream_tee_default_reader_chunk_steps(
-    tee_state: Gc<GcRefCell<ByteTeeState>>,
+    tee_state: GcCell<ByteTeeState>,
     chunk: JsValue,
-    context: &mut Context,
-) -> JsResult<()> {
+    ec: &mut dyn ExecutionContext<crate::js::Types>,
+) -> Completion<(), crate::js::Types> {
     queue_internal_stream_microtask(
-        move |context| {
+        move |job_ec| {
             // Step 18.2 chunk steps 1.1: "Set readAgainForBranch1 to false."
             // Step 18.2 chunk steps 1.2: "Set readAgainForBranch2 to false."
             {
@@ -1931,21 +2069,19 @@ pub(crate) fn readable_byte_stream_tee_default_reader_chunk_steps(
             // Step 18.2 chunk steps 1.4: "If canceled1 is false and canceled2 is false,"
             if !canceled1 && !canceled2 {
                 // Step 18.2 chunk steps 1.4.1: "Let cloneResult be CloneAsUint8Array(chunk)."
-                match clone_as_uint8_array(chunk1.clone(), context) {
+                match clone_as_uint8_array(chunk1.clone(), job_ec) {
                     Ok(cloned_chunk) => {
                         // Step 18.2 chunk steps 1.4.3: "Otherwise, set chunk2 to cloneResult.[[Value]]."
                         chunk2 = cloned_chunk;
                     }
                     Err(error) => {
-                        let error = error.into_opaque(context)?;
-
                         // Step 18.2 chunk steps 1.4.2.1: "Perform ! ReadableByteStreamControllerError(branch1.[[controller]], cloneResult.[[Value]])."
                         if let Some(branch1) = branch1.as_ref() {
-                            if let Err(error) =
-                                byte_tee_error_branch(branch1, error.clone(), context)
+                            if let Err(inner_error) =
+                                byte_tee_error_branch(branch1, error.clone(), job_ec)
                             {
                                 error!(
-                                    "[readable-stream] byte tee error branch1 (chunk) failed: {error}"
+                                    "[readable-stream] byte tee error branch1 (chunk) failed: {inner_error:?}"
                                 );
                             }
                         }
@@ -1953,10 +2089,10 @@ pub(crate) fn readable_byte_stream_tee_default_reader_chunk_steps(
                         // Step 18.2 chunk steps 1.4.2.2: "Perform ! ReadableByteStreamControllerError(branch2.[[controller]], cloneResult.[[Value]])."
                         if let Some(branch2) = branch2.as_ref() {
                             if let Err(error) =
-                                byte_tee_error_branch(branch2, error.clone(), context)
+                                byte_tee_error_branch(branch2, error.clone(), job_ec)
                             {
                                 error!(
-                                    "[readable-stream] byte tee error branch2 (chunk) failed: {error}"
+                                    "[readable-stream] byte tee error branch2 (chunk) failed: {error:?}"
                                 );
                             }
                         }
@@ -1964,11 +2100,12 @@ pub(crate) fn readable_byte_stream_tee_default_reader_chunk_steps(
                         // Step 18.2 chunk steps 1.4.2.3: "Resolve cancelPromise with ! ReadableStreamCancel(stream, cloneResult.[[Value]])."
                         let source_stream = tee_state.borrow().source_stream.clone();
                         let cancel_resolvers = tee_state.borrow().cancel_resolvers.clone();
-                        let cancel_result = readable_stream_cancel(source_stream, error, context)?;
-                        cancel_resolvers.resolve.call(
-                            &JsValue::undefined(),
-                            &[JsValue::from(cancel_result)],
-                            context,
+                        let cancel_result = readable_stream_cancel(source_stream, error, job_ec)?;
+                        let undefined = job_ec.value_undefined();
+                        job_ec.call(
+                            &cancel_resolvers.resolve,
+                            &undefined,
+                            &[cancel_result.into()],
                         )?;
 
                         // Step 18.2 chunk steps 1.4.2.4: "Return."
@@ -1980,14 +2117,14 @@ pub(crate) fn readable_byte_stream_tee_default_reader_chunk_steps(
             // Step 18.2 chunk steps 1.5: "If canceled1 is false, perform ! ReadableByteStreamControllerEnqueue(branch1.[[controller]], chunk1)."
             if !canceled1 {
                 if let Some(branch1) = branch1.as_ref() {
-                    byte_tee_enqueue_to_branch(branch1, chunk1, context)?;
+                    byte_tee_enqueue_to_branch(branch1, chunk1, job_ec)?;
                 }
             }
 
             // Step 18.2 chunk steps 1.6: "If canceled2 is false, perform ! ReadableByteStreamControllerEnqueue(branch2.[[controller]], chunk2)."
             if !canceled2 {
                 if let Some(branch2) = branch2.as_ref() {
-                    byte_tee_enqueue_to_branch(branch2, chunk2, context)?;
+                    byte_tee_enqueue_to_branch(branch2, chunk2, job_ec)?;
                 }
             }
 
@@ -2001,27 +2138,27 @@ pub(crate) fn readable_byte_stream_tee_default_reader_chunk_steps(
             };
             if read_again1 {
                 byte_tee_ignore_pull_completion(
-                    readable_byte_stream_tee_pull1_algorithm(tee_state.clone(), context),
-                    context,
+                    readable_byte_stream_tee_pull1_algorithm(tee_state.clone(), job_ec),
+                    job_ec,
                 )?;
             } else if read_again2 {
                 byte_tee_ignore_pull_completion(
-                    readable_byte_stream_tee_pull2_algorithm(tee_state.clone(), context),
-                    context,
+                    readable_byte_stream_tee_pull2_algorithm(tee_state.clone(), job_ec),
+                    job_ec,
                 )?;
             }
 
             Ok(())
         },
-        context,
+        ec,
     )
 }
 
 /// <https://streams.spec.whatwg.org/#abstract-opdef-readablebytestreamtee>
 pub(crate) fn readable_byte_stream_tee_default_reader_close_steps(
-    tee_state: Gc<GcRefCell<ByteTeeState>>,
-    context: &mut Context,
-) -> JsResult<()> {
+    tee_state: GcCell<ByteTeeState>,
+    ec: &mut dyn ExecutionContext<crate::js::Types>,
+) -> Completion<(), crate::js::Types> {
     let (branch1, branch2, canceled1, canceled2, cancel_resolvers) = {
         let mut tee = tee_state.borrow_mut();
         tee.reading = false;
@@ -2036,52 +2173,47 @@ pub(crate) fn readable_byte_stream_tee_default_reader_close_steps(
 
     if !canceled1 {
         if let Some(branch1) = branch1.as_ref() {
-            byte_tee_close_branch(branch1, context)?;
+            byte_tee_close_branch(branch1, ec)?;
         }
     }
     if !canceled2 {
         if let Some(branch2) = branch2.as_ref() {
-            byte_tee_close_branch(branch2, context)?;
+            byte_tee_close_branch(branch2, ec)?;
         }
     }
     if !canceled1 {
         if let Some(branch1) = branch1.as_ref() {
             if let Some(controller) = byte_tee_pending_pull_into_controller(branch1) {
-                controller.respond(0, context)?;
+                controller.respond(0, ec)?;
             }
         }
     }
     if !canceled2 {
         if let Some(branch2) = branch2.as_ref() {
             if let Some(controller) = byte_tee_pending_pull_into_controller(branch2) {
-                controller.respond(0, context)?;
+                controller.respond(0, ec)?;
             }
         }
     }
     if !canceled1 || !canceled2 {
-        cancel_resolvers
-            .resolve
-            .call(&JsValue::undefined(), &[JsValue::undefined()], context)?;
+        let undefined = ec.value_undefined();
+        ec.call(&cancel_resolvers.resolve, &undefined, &[undefined.clone()])?;
     }
     Ok(())
 }
 
 /// <https://streams.spec.whatwg.org/#abstract-opdef-readablebytestreamtee>
-pub(crate) fn readable_byte_stream_tee_default_reader_error_steps(
-    tee_state: Gc<GcRefCell<ByteTeeState>>,
-    _context: &mut Context,
-) -> JsResult<()> {
+pub(crate) fn readable_byte_stream_tee_default_reader_error_steps(tee_state: GcCell<ByteTeeState>) {
     tee_state.borrow_mut().reading = false;
-    Ok(())
 }
 
 /// <https://streams.spec.whatwg.org/#abstract-opdef-readablebytestreamtee>
 fn readable_byte_stream_tee_pull_with_default_reader(
-    tee_state: Gc<GcRefCell<ByteTeeState>>,
-    context: &mut Context,
-) -> JsResult<()> {
+    tee_state: GcCell<ByteTeeState>,
+    ec: &mut dyn ExecutionContext<crate::js::Types>,
+) -> Completion<(), crate::js::Types> {
     // Step 18.1: "If reader implements ReadableStreamBYOBReader,"
-    byte_tee_switch_to_default_reader(&tee_state, context)?;
+    byte_tee_switch_to_default_reader(&tee_state, ec)?;
 
     // Step 18.2: "Let readRequest be a read request with the following items:"
     let default_reader = tee_state.borrow().reader.as_default_reader().unwrap();
@@ -2090,259 +2222,309 @@ fn readable_byte_stream_tee_pull_with_default_reader(
     };
 
     // Step 18.3: "Perform ! ReadableStreamDefaultReaderRead(reader, readRequest)."
-    default_reader.read_with_request(read_request, context)
+    default_reader.read_with_request(read_request, ec)
+}
+
+fn byte_tee_pull_byob_on_rejected_fn(
+    _args: &[JsValue],
+    _this: JsValue,
+    tee_state: &GcCell<ByteTeeState>,
+    _ec: &mut dyn ExecutionContext<crate::js::Types>,
+) -> Completion<JsValue, crate::js::Types> {
+    tee_state.borrow_mut().reading = false;
+    Ok(_ec.value_undefined())
 }
 
 /// <https://streams.spec.whatwg.org/#abstract-opdef-readablebytestreamtee>
 fn readable_byte_stream_tee_pull_with_byob_reader(
-    tee_state: Gc<GcRefCell<ByteTeeState>>,
+    tee_state: GcCell<ByteTeeState>,
     view_value: JsValue,
     for_branch2: bool,
-    context: &mut Context,
-) -> JsResult<()> {
-    let view = ArrayBufferViewDescriptor::from_value(view_value.clone(), context)?;
+    ec: &mut dyn ExecutionContext<crate::js::Types>,
+) -> Completion<(), crate::js::Types> {
+    let view = match ArrayBufferViewDescriptor::from_value(view_value.clone(), ec) {
+        Ok(v) => v,
+        Err(e) => return Err(e),
+    };
 
     // Step 19.1: "If reader implements ReadableStreamDefaultReader,"
-    byte_tee_switch_to_byob_reader(&tee_state, context)?;
+    byte_tee_switch_to_byob_reader(&tee_state, ec)?;
     let byob_reader = tee_state.borrow().reader.as_byob_reader().unwrap();
 
-    let on_fulfilled = NativeFunction::from_copy_closure_with_captures(
-        |_, args: &[JsValue], captures: &(Gc<GcRefCell<ByteTeeState>>, bool), context| {
-            let (tee_state, for_branch2) = captures;
-            let result = args.get_or_undefined(0).to_object(context)?;
-            let done = result.get(js_string!("done"), context)?.to_boolean();
-            let chunk = result.get(js_string!("value"), context)?;
+    let name_key = ec.property_key_from_str("");
+    let on_fulfilled = create_builtin_fn_with_traced_captures(
+        ec,
+        (tee_state.clone(), for_branch2),
+        byte_tee_pull_byob_on_fulfilled_fn,
+        1,
+        name_key.clone(),
+        false,
+    );
 
-            let (byob_branch, other_branch, byob_canceled, other_canceled) = {
-                let tee = tee_state.borrow();
-                if *for_branch2 {
-                    (
-                        tee.branch2.clone(),
-                        tee.branch1.clone(),
-                        tee.canceled2,
-                        tee.canceled1,
-                    )
-                } else {
-                    (
-                        tee.branch1.clone(),
-                        tee.branch2.clone(),
-                        tee.canceled1,
-                        tee.canceled2,
-                    )
-                }
-            };
+    let on_rejected = create_builtin_fn_with_traced_captures(
+        ec,
+        tee_state.clone(),
+        byte_tee_pull_byob_on_rejected_fn,
+        0,
+        name_key,
+        false,
+    );
 
-            queue_internal_stream_microtask(
+    let (read_into_request, promise_obj) = ReadIntoRequest::new(ec)?;
+    let js_promise = <crate::js::Types as JsTypes>::object_as_promise(&promise_obj)
+        .ok_or_else(|| ec.new_type_error("not a Promise"))?;
+
+    // Step 19.5: "Perform ! ReadableStreamBYOBReaderRead(reader, view, 1, readIntoRequest)."
+    byob_reader.read_steps(view, 1, read_into_request, ec)?;
+    ec.perform_promise_then(js_promise, Some(on_fulfilled), Some(on_rejected), None)?;
+    Ok(())
+}
+
+fn byte_tee_pull_byob_on_fulfilled_fn(
+    args: &[JsValue],
+    _this: JsValue,
+    captures: &(GcCell<ByteTeeState>, bool),
+    ec: &mut dyn ExecutionContext<crate::js::Types>,
+) -> Completion<JsValue, crate::js::Types> {
+    let (tee_state, for_branch2) = captures;
+    let arg0 = args.get(0).cloned().unwrap_or_else(|| ec.value_undefined());
+    let result = ec.to_object(arg0)?;
+    let done_val = js_engine::EcmascriptHost::get(ec, &result, "done")?;
+    let done = ec.to_boolean(&done_val);
+    let chunk = js_engine::EcmascriptHost::get(ec, &result, "value")?;
+
+    let (byob_branch, other_branch, byob_canceled, other_canceled) = {
+        let tee = tee_state.borrow();
+        if *for_branch2 {
+            (
+                tee.branch2.clone(),
+                tee.branch1.clone(),
+                tee.canceled2,
+                tee.canceled1,
+            )
+        } else {
+            (
+                tee.branch1.clone(),
+                tee.branch2.clone(),
+                tee.canceled1,
+                tee.canceled2,
+            )
+        }
+    };
+
+    queue_internal_stream_microtask(
+        {
+            let tee_state = tee_state.clone();
+            move |job_ec| {
+                // Step 19.4 chunk steps 1.1: "Set readAgainForBranch1 to false."
+                // Step 19.4 chunk steps 1.2: "Set readAgainForBranch2 to false."
                 {
-                    let tee_state = tee_state.clone();
-                    move |context| {
-                        // Step 19.4 chunk steps 1.1: "Set readAgainForBranch1 to false."
-                        // Step 19.4 chunk steps 1.2: "Set readAgainForBranch2 to false."
-                        {
-                            let mut tee = tee_state.borrow_mut();
-                            tee.read_again_for_branch1 = false;
-                            tee.read_again_for_branch2 = false;
+                    let mut tee = tee_state.borrow_mut();
+                    tee.read_again_for_branch1 = false;
+                    tee.read_again_for_branch2 = false;
+                }
+
+                if done {
+                    // Step 19.4 close steps 1: "Set reading to false."
+                    tee_state.borrow_mut().reading = false;
+
+                    // Step 19.4 close steps 4: "If byobCanceled is false, perform ! ReadableByteStreamControllerClose(byobBranch.[[controller]])."
+                    if !byob_canceled {
+                        if let Some(branch) = byob_branch.as_ref() {
+                            byte_tee_close_branch(branch, job_ec)?;
+                        }
+                    }
+
+                    // Step 19.4 close steps 5: "If otherCanceled is false, perform ! ReadableByteStreamControllerClose(otherBranch.[[controller]])."
+                    if !other_canceled {
+                        if let Some(branch) = other_branch.as_ref() {
+                            byte_tee_close_branch(branch, job_ec)?;
+                        }
+                    }
+
+                    // Step 19.4 close steps 6: "If chunk is not undefined,"
+                    let undefined = job_ec.value_undefined();
+                    if !job_ec.same_value(&chunk, &undefined) {
+                        // Step 19.4 close steps 6.2: "If byobCanceled is false, perform ! ReadableByteStreamControllerRespondWithNewView(byobBranch.[[controller]], chunk)."
+                        if !byob_canceled {
+                            if let Some(branch) = byob_branch.as_ref() {
+                                if let Ok(view) =
+                                    ArrayBufferViewDescriptor::from_value(chunk.clone(), job_ec)
+                                {
+                                    if let Some(view_object) =
+                                        <crate::js::Types as JsTypes>::value_as_object(&chunk)
+                                    {
+                                        if let Some(controller) = branch
+                                            .controller_slot()
+                                            .and_then(|c| c.as_byte_controller())
+                                        {
+                                            let _ = controller.respond_with_new_view(
+                                                view,
+                                                view_object,
+                                                job_ec,
+                                            );
+                                        }
+                                    }
+                                }
+                            }
                         }
 
-                        if done {
-                            // Step 19.4 close steps 1: "Set reading to false."
-                            tee_state.borrow_mut().reading = false;
+                        // Step 19.4 close steps 6.3: "If otherCanceled is false and otherBranch.[[controller]].[[pendingPullIntos]] is not empty, perform ! ReadableByteStreamControllerRespond(otherBranch.[[controller]], 0)."
+                        if !other_canceled {
+                            if let Some(branch) = other_branch.as_ref() {
+                                if let Some(controller) =
+                                    byte_tee_pending_pull_into_controller(branch)
+                                {
+                                    let _ = controller.respond(0, job_ec);
+                                }
+                            }
+                        }
+                    }
 
-                            // Step 19.4 close steps 4: "If byobCanceled is false, perform ! ReadableByteStreamControllerClose(byobBranch.[[controller]])."
+                    // Step 19.4 close steps 7: "If byobCanceled is false or otherCanceled is false, resolve cancelPromise with undefined."
+                    if !byob_canceled || !other_canceled {
+                        let cancel_resolvers = tee_state.borrow().cancel_resolvers.clone();
+                        job_ec.call(&cancel_resolvers.resolve, &undefined, &[undefined.clone()])?;
+                    }
+
+                    return Ok(());
+                }
+
+                // Step 19.4 chunk steps 1.3: "Let byobCanceled be canceled2 if forBranch2 is true, and canceled1 otherwise."
+                // Step 19.4 chunk steps 1.4: "Let otherCanceled be canceled2 if forBranch2 is false, and canceled1 otherwise."
+                if !other_canceled {
+                    // Step 19.4 chunk steps 1.5.1: "Let cloneResult be CloneAsUint8Array(chunk)."
+                    match clone_as_uint8_array(chunk.clone(), job_ec) {
+                        Ok(cloned_chunk) => {
+                            // Step 19.4 chunk steps 1.5.3: "Otherwise, let clonedChunk be cloneResult.[[Value]]."
+                            // Step 19.4 chunk steps 1.5.4: "If byobCanceled is false, perform ! ReadableByteStreamControllerRespondWithNewView(byobBranch.[[controller]], chunk)."
                             if !byob_canceled {
                                 if let Some(branch) = byob_branch.as_ref() {
-                                    byte_tee_close_branch(branch, context)?;
-                                }
-                            }
-
-                            // Step 19.4 close steps 5: "If otherCanceled is false, perform ! ReadableByteStreamControllerClose(otherBranch.[[controller]])."
-                            if !other_canceled {
-                                if let Some(branch) = other_branch.as_ref() {
-                                    byte_tee_close_branch(branch, context)?;
-                                }
-                            }
-
-                            // Step 19.4 close steps 6: "If chunk is not undefined,"
-                            if !chunk.is_undefined() {
-                                // Step 19.4 close steps 6.2: "If byobCanceled is false, perform ! ReadableByteStreamControllerRespondWithNewView(byobBranch.[[controller]], chunk)."
-                                if !byob_canceled {
-                                    if let Some(branch) = byob_branch.as_ref() {
-                                        if let (Ok(view), Some(view_object)) = (
-                                            ArrayBufferViewDescriptor::from_value(chunk.clone(), context),
-                                            chunk.as_object(),
-                                        ) {
+                                    if let Ok(view) =
+                                        ArrayBufferViewDescriptor::from_value(chunk.clone(), job_ec)
+                                    {
+                                        if let Some(view_object) =
+                                            <crate::js::Types as JsTypes>::value_as_object(&chunk)
+                                        {
                                             if let Some(controller) = branch
                                                 .controller_slot()
                                                 .and_then(|c| c.as_byte_controller())
                                             {
-                                                controller.respond_with_new_view(view, view_object, context)?;
+                                                let _ = controller.respond_with_new_view(
+                                                    view,
+                                                    view_object,
+                                                    job_ec,
+                                                );
                                             }
                                         }
                                     }
                                 }
+                            }
 
-                                // Step 19.4 close steps 6.3: "If otherCanceled is false and otherBranch.[[controller]].[[pendingPullIntos]] is not empty, perform ! ReadableByteStreamControllerRespond(otherBranch.[[controller]], 0)."
-                                if !other_canceled {
-                                    if let Some(branch) = other_branch.as_ref() {
-                                        if let Some(controller) = byte_tee_pending_pull_into_controller(branch) {
-                                            controller.respond(0, context)?;
-                                        }
-                                    }
+                            // Step 19.4 chunk steps 1.5.5: "Perform ! ReadableByteStreamControllerEnqueue(otherBranch.[[controller]], clonedChunk)."
+                            if let Some(branch) = other_branch.as_ref() {
+                                byte_tee_enqueue_to_branch(branch, cloned_chunk, job_ec)?;
+                            }
+                        }
+                        Err(error) => {
+                            // Step 19.4 chunk steps 1.5.2.1: "Perform ! ReadableByteStreamControllerError(byobBranch.[[controller]], cloneResult.[[Value]])."
+                            if let Some(branch) = byob_branch.as_ref() {
+                                if let Err(error) =
+                                    byte_tee_error_branch(branch, error.clone(), job_ec)
+                                {
+                                    error!(
+                                        "[readable-stream] byte tee error byob-branch (chunk) failed: {error:?}"
+                                    );
                                 }
                             }
 
-                            // Step 19.4 close steps 7: "If byobCanceled is false or otherCanceled is false, resolve cancelPromise with undefined."
-                            if !byob_canceled || !other_canceled {
-                                let cancel_resolvers = tee_state.borrow().cancel_resolvers.clone();
-                                cancel_resolvers.resolve.call(
-                                    &JsValue::undefined(),
-                                    &[JsValue::undefined()],
-                                    context,
-                                )?;
+                            // Step 19.4 chunk steps 1.5.2.2: "Perform ! ReadableByteStreamControllerError(otherBranch.[[controller]], cloneResult.[[Value]])."
+                            if let Some(branch) = other_branch.as_ref() {
+                                if let Err(error) =
+                                    byte_tee_error_branch(branch, error.clone(), job_ec)
+                                {
+                                    error!(
+                                        "[readable-stream] byte tee error other-branch (chunk) failed: {error:?}"
+                                    );
+                                }
                             }
 
+                            // Step 19.4 chunk steps 1.5.2.3: "Resolve cancelPromise with ! ReadableStreamCancel(stream, cloneResult.[[Value]])."
+                            let source_stream = tee_state.borrow().source_stream.clone();
+                            let cancel_resolvers = tee_state.borrow().cancel_resolvers.clone();
+                            let cancel_result =
+                                readable_stream_cancel(source_stream, error, job_ec)?;
+                            let undefined = job_ec.value_undefined();
+                            job_ec.call(
+                                &cancel_resolvers.resolve,
+                                &undefined,
+                                &[cancel_result.into()],
+                            )?;
+
+                            // Step 19.4 chunk steps 1.5.2.4: "Return."
+                            tee_state.borrow_mut().reading = false;
                             return Ok(());
                         }
-
-                        // Step 19.4 chunk steps 1.3: "Let byobCanceled be canceled2 if forBranch2 is true, and canceled1 otherwise."
-                        // Step 19.4 chunk steps 1.4: "Let otherCanceled be canceled2 if forBranch2 is false, and canceled1 otherwise."
-                        if !other_canceled {
-                            // Step 19.4 chunk steps 1.5.1: "Let cloneResult be CloneAsUint8Array(chunk)."
-                            match clone_as_uint8_array(chunk.clone(), context) {
-                                Ok(cloned_chunk) => {
-                                    // Step 19.4 chunk steps 1.5.3: "Otherwise, let clonedChunk be cloneResult.[[Value]]."
-                                    // Step 19.4 chunk steps 1.5.4: "If byobCanceled is false, perform ! ReadableByteStreamControllerRespondWithNewView(byobBranch.[[controller]], chunk)."
-                                    if !byob_canceled {
-                                        if let Some(branch) = byob_branch.as_ref() {
-                                            if let (Ok(view), Some(view_object)) = (
-                                                ArrayBufferViewDescriptor::from_value(chunk.clone(), context),
-                                                chunk.as_object(),
-                                            ) {
-                                                if let Some(controller) = branch
-                                                    .controller_slot()
-                                                    .and_then(|c| c.as_byte_controller())
-                                                {
-                                                    controller.respond_with_new_view(view, view_object, context)?;
-                                                }
-                                            }
-                                        }
-                                    }
-
-                                    // Step 19.4 chunk steps 1.5.5: "Perform ! ReadableByteStreamControllerEnqueue(otherBranch.[[controller]], clonedChunk)."
-                                    if let Some(branch) = other_branch.as_ref() {
-                                        byte_tee_enqueue_to_branch(branch, cloned_chunk, context)?;
-                                    }
-                                }
-                                Err(error) => {
-                                    let error = error.into_opaque(context)?;
-
-                                    // Step 19.4 chunk steps 1.5.2.1: "Perform ! ReadableByteStreamControllerError(byobBranch.[[controller]], cloneResult.[[Value]])."
-                                    if let Some(branch) = byob_branch.as_ref() {
-                                        if let Err(error) = byte_tee_error_branch(branch, error.clone(), context) {
-                                            error!("[readable-stream] byte tee error byob-branch (chunk) failed: {error}");
-                                        }
-                                    }
-
-                                    // Step 19.4 chunk steps 1.5.2.2: "Perform ! ReadableByteStreamControllerError(otherBranch.[[controller]], cloneResult.[[Value]])."
-                                    if let Some(branch) = other_branch.as_ref() {
-                                        if let Err(error) = byte_tee_error_branch(branch, error.clone(), context) {
-                                            error!("[readable-stream] byte tee error other-branch (chunk) failed: {error}");
-                                        }
-                                    }
-
-                                    // Step 19.4 chunk steps 1.5.2.3: "Resolve cancelPromise with ! ReadableStreamCancel(stream, cloneResult.[[Value]])."
-                                    let source_stream = tee_state.borrow().source_stream.clone();
-                                    let cancel_resolvers = tee_state.borrow().cancel_resolvers.clone();
-                                    let cancel_result = readable_stream_cancel(source_stream, error, context)?;
-                                    cancel_resolvers.resolve.call(
-                                        &JsValue::undefined(),
-                                        &[JsValue::from(cancel_result)],
-                                        context,
-                                    )?;
-
-                                    // Step 19.4 chunk steps 1.5.2.4: "Return."
-                                    tee_state.borrow_mut().reading = false;
-                                    return Ok(());
-                                }
-                            }
-                        } else if !byob_canceled {
-                            // Step 19.4 chunk steps 1.6: "Otherwise, if byobCanceled is false, perform ! ReadableByteStreamControllerRespondWithNewView(byobBranch.[[controller]], chunk)."
-                            if let Some(branch) = byob_branch.as_ref() {
-                                if let (Ok(view), Some(view_object)) = (
-                                    ArrayBufferViewDescriptor::from_value(chunk.clone(), context),
-                                    chunk.as_object(),
-                                ) {
-                                    if let Some(controller) = branch
-                                        .controller_slot()
-                                        .and_then(|c| c.as_byte_controller())
-                                    {
-                                        controller.respond_with_new_view(view, view_object, context)?;
-                                    }
-                                }
-                            }
-                        }
-
-                        // Step 19.4 chunk steps 1.7: "Set reading to false."
-                        let (read_again1, read_again2) = {
-                            let mut tee = tee_state.borrow_mut();
-                            tee.reading = false;
-                            (tee.read_again_for_branch1, tee.read_again_for_branch2)
-                        };
-
-                        // Step 19.4 chunk steps 1.8: "If readAgainForBranch1 is true, perform pull1Algorithm."
-                        // Step 19.4 chunk steps 1.9: "Otherwise, if readAgainForBranch2 is true, perform pull2Algorithm."
-                        if read_again1 {
-                            byte_tee_ignore_pull_completion(
-                                readable_byte_stream_tee_pull1_algorithm(tee_state.clone(), context),
-                                context,
-                            )?;
-                        } else if read_again2 {
-                            byte_tee_ignore_pull_completion(
-                                readable_byte_stream_tee_pull2_algorithm(tee_state.clone(), context),
-                                context,
-                            )?;
-                        } else if matches!(tee_state.borrow().reader, ReadableStreamReader::BYOB(_)) {
-                            // Note: Switch back to the default reader when no branch has an outstanding BYOB pull.
-                            byte_tee_switch_to_default_reader(&tee_state, context)?;
-                        }
-
-                        Ok(())
                     }
-                },
-                context,
-            )?;
+                } else if !byob_canceled {
+                    // Step 19.4 chunk steps 1.6: "Otherwise, if byobCanceled is false, perform ! ReadableByteStreamControllerRespondWithNewView(byobBranch.[[controller]], chunk)."
+                    if let Some(branch) = byob_branch.as_ref() {
+                        if let Ok(view) =
+                            ArrayBufferViewDescriptor::from_value(chunk.clone(), job_ec)
+                        {
+                            if let Some(view_object) =
+                                <crate::js::Types as JsTypes>::value_as_object(&chunk)
+                            {
+                                if let Some(controller) = branch
+                                    .controller_slot()
+                                    .and_then(|c| c.as_byte_controller())
+                                {
+                                    let _ =
+                                        controller.respond_with_new_view(view, view_object, job_ec);
+                                }
+                            }
+                        }
+                    }
+                }
 
-            Ok(JsValue::undefined())
+                // Step 19.4 chunk steps 1.7: "Set reading to false."
+                let (read_again1, read_again2) = {
+                    let mut tee = tee_state.borrow_mut();
+                    tee.reading = false;
+                    (tee.read_again_for_branch1, tee.read_again_for_branch2)
+                };
+
+                // Step 19.4 chunk steps 1.8: "If readAgainForBranch1 is true, perform pull1Algorithm."
+                // Step 19.4 chunk steps 1.9: "Otherwise, if readAgainForBranch2 is true, perform pull2Algorithm."
+                if read_again1 {
+                    byte_tee_ignore_pull_completion(
+                        readable_byte_stream_tee_pull1_algorithm(tee_state.clone(), job_ec),
+                        job_ec,
+                    )?;
+                } else if read_again2 {
+                    byte_tee_ignore_pull_completion(
+                        readable_byte_stream_tee_pull2_algorithm(tee_state.clone(), job_ec),
+                        job_ec,
+                    )?;
+                } else if matches!(tee_state.borrow().reader, ReadableStreamReader::BYOB(_)) {
+                    // Note: Switch back to the default reader when no branch has an outstanding BYOB pull.
+                    byte_tee_switch_to_default_reader(&tee_state, job_ec)?;
+                }
+
+                Ok(())
+            }
         },
-        (tee_state.clone(), for_branch2),
-    )
-    .to_js_function(context.realm());
+        ec,
+    )?;
 
-    let on_rejected = NativeFunction::from_copy_closure_with_captures(
-        |_, _, tee_state: &Gc<GcRefCell<ByteTeeState>>, _| {
-            tee_state.borrow_mut().reading = false;
-            Ok(JsValue::undefined())
-        },
-        tee_state.clone(),
-    )
-    .to_js_function(context.realm());
-
-    let (read_into_request, promise) = ReadIntoRequest::new(context);
-
-    // Step 19.5: "Perform ! ReadableStreamBYOBReaderRead(reader, view, 1, readIntoRequest)."
-    byob_reader.read_steps(view, 1, read_into_request, context)?;
-    let reaction: JsObject = JsPromise::from_object(promise)?
-        .then(Some(on_fulfilled), Some(on_rejected), context)?
-        .into();
-    mark_promise_as_handled(&reaction, context)?;
-    Ok(())
+    Ok(ec.value_undefined())
 }
 
 /// <https://streams.spec.whatwg.org/#abstract-opdef-readablebytestreamtee>
 pub(crate) fn readable_byte_stream_tee_pull1_algorithm(
-    tee_state: Gc<GcRefCell<ByteTeeState>>,
-    context: &mut Context,
-) -> JsResult<JsValue> {
+    tee_state: GcCell<ByteTeeState>,
+    ec: &mut dyn ExecutionContext<crate::js::Types>,
+) -> Completion<JsValue, crate::js::Types> {
     {
         let mut tee = tee_state.borrow_mut();
 
@@ -2352,7 +2534,7 @@ pub(crate) fn readable_byte_stream_tee_pull1_algorithm(
             tee.read_again_for_branch1 = true;
 
             // Step 20.1.2: "Return a promise resolved with undefined."
-            return Ok(JsValue::undefined());
+            return Ok(ec.value_undefined());
         }
 
         // Step 20.2: "Set reading to true."
@@ -2366,30 +2548,28 @@ pub(crate) fn readable_byte_stream_tee_pull1_algorithm(
             .as_ref()
             .and_then(|branch| branch.controller_slot())
             .and_then(|controller| controller.as_byte_controller())
-            .map(|controller| controller.byob_request(context))
-            .transpose()?
-            .flatten()
-            .and_then(|request| request.get(js_string!("view"), context).ok())
-            .filter(|value| !value.is_null() && !value.is_undefined())
+            .and_then(|controller| controller.byob_request(ec).ok().flatten())
+            .and_then(|request| js_engine::EcmascriptHost::get(ec, &request, "view").ok())
+            .filter(|value: &JsValue| !value.is_null() && !value.is_undefined())
     };
 
     // Step 20.4: "If byobRequest is null, perform pullWithDefaultReader."
     if let Some(view) = byob_request_view {
         // Step 20.5: "Otherwise, perform pullWithBYOBReader, given byobRequest.[[view]] and false."
-        readable_byte_stream_tee_pull_with_byob_reader(tee_state, view, false, context)?;
+        readable_byte_stream_tee_pull_with_byob_reader(tee_state, view, false, ec)?;
     } else {
-        readable_byte_stream_tee_pull_with_default_reader(tee_state, context)?;
+        readable_byte_stream_tee_pull_with_default_reader(tee_state, ec)?;
     }
 
     // Step 20.6: "Return a promise resolved with undefined."
-    Ok(JsValue::undefined())
+    Ok(ec.value_undefined())
 }
 
 /// <https://streams.spec.whatwg.org/#abstract-opdef-readablebytestreamtee>
 pub(crate) fn readable_byte_stream_tee_pull2_algorithm(
-    tee_state: Gc<GcRefCell<ByteTeeState>>,
-    context: &mut Context,
-) -> JsResult<JsValue> {
+    tee_state: GcCell<ByteTeeState>,
+    ec: &mut dyn ExecutionContext<crate::js::Types>,
+) -> Completion<JsValue, crate::js::Types> {
     {
         let mut tee = tee_state.borrow_mut();
 
@@ -2399,7 +2579,7 @@ pub(crate) fn readable_byte_stream_tee_pull2_algorithm(
             tee.read_again_for_branch2 = true;
 
             // Step 21.1.2: "Return a promise resolved with undefined."
-            return Ok(JsValue::undefined());
+            return Ok(ec.value_undefined());
         }
 
         // Step 21.2: "Set reading to true."
@@ -2413,87 +2593,85 @@ pub(crate) fn readable_byte_stream_tee_pull2_algorithm(
             .as_ref()
             .and_then(|branch| branch.controller_slot())
             .and_then(|controller| controller.as_byte_controller())
-            .map(|controller| controller.byob_request(context))
-            .transpose()?
-            .flatten()
-            .and_then(|request| request.get(js_string!("view"), context).ok())
-            .filter(|value| !value.is_null() && !value.is_undefined())
+            .and_then(|controller| controller.byob_request(ec).ok().flatten())
+            .and_then(|request| js_engine::EcmascriptHost::get(ec, &request, "view").ok())
+            .filter(|value: &JsValue| !value.is_null() && !value.is_undefined())
     };
 
     // Step 21.4: "If byobRequest is null, perform pullWithDefaultReader."
     if let Some(view) = byob_request_view {
         // Step 21.5: "Otherwise, perform pullWithBYOBReader, given byobRequest.[[view]] and true."
-        readable_byte_stream_tee_pull_with_byob_reader(tee_state, view, true, context)?;
+        readable_byte_stream_tee_pull_with_byob_reader(tee_state, view, true, ec)?;
     } else {
-        readable_byte_stream_tee_pull_with_default_reader(tee_state, context)?;
+        readable_byte_stream_tee_pull_with_default_reader(tee_state, ec)?;
     }
 
     // Step 21.6: "Return a promise resolved with undefined."
-    Ok(JsValue::undefined())
+    Ok(ec.value_undefined())
 }
 
 /// <https://streams.spec.whatwg.org/#abstract-opdef-readablebytestreamtee>
 pub(crate) fn readable_byte_stream_tee_cancel1_algorithm(
-    tee_state: Gc<GcRefCell<ByteTeeState>>,
+    tee_state: GcCell<ByteTeeState>,
     reason: JsValue,
-    context: &mut Context,
-) -> JsResult<JsObject> {
+    ec: &mut dyn ExecutionContext<crate::js::Types>,
+) -> Completion<JsObject, crate::js::Types> {
     let (source_stream, cancel_promise, canceled2, reason1, reason2, cancel_resolvers) = {
         let mut tee = tee_state.borrow_mut();
         tee.canceled1 = true;
-        tee.reason1 = reason;
+        tee.reason1.set(reason.clone());
         (
             tee.source_stream.clone(),
-            tee.cancel_promise.clone(),
+            tee.cancel_promise.borrow().clone().unwrap(),
             tee.canceled2,
-            tee.reason1.clone(),
-            tee.reason2.clone(),
+            tee.reason1.borrow().clone(),
+            tee.reason2.borrow().clone(),
             tee.cancel_resolvers.clone(),
         )
     };
     if canceled2 {
+        let composite_reason_array = ec.create_empty_array();
+        ec.array_push(&composite_reason_array, reason1.clone())?;
+        ec.array_push(&composite_reason_array, reason2)?;
         let composite_reason =
-            JsArray::from_iter([reason1, reason2].into_iter().map(JsValue::from), context);
-        let cancel_result =
-            readable_stream_cancel(source_stream, JsValue::from(composite_reason), context)?;
-        cancel_resolvers.resolve.call(
-            &JsValue::undefined(),
-            &[JsValue::from(cancel_result)],
-            context,
-        )?;
+            <crate::js::Types as JsTypes>::value_from_object(composite_reason_array);
+        let cancel_result = readable_stream_cancel(source_stream, composite_reason, ec)?;
+        let undefined = ec.value_undefined();
+        let cancel_value = <crate::js::Types as JsTypes>::value_from_object(cancel_result);
+        ec.call(&cancel_resolvers.resolve, &undefined, &[cancel_value])?;
     }
     Ok(cancel_promise)
 }
 
 /// <https://streams.spec.whatwg.org/#abstract-opdef-readablebytestreamtee>
 pub(crate) fn readable_byte_stream_tee_cancel2_algorithm(
-    tee_state: Gc<GcRefCell<ByteTeeState>>,
+    tee_state: GcCell<ByteTeeState>,
     reason: JsValue,
-    context: &mut Context,
-) -> JsResult<JsObject> {
+    ec: &mut dyn ExecutionContext<crate::js::Types>,
+) -> Completion<JsObject, crate::js::Types> {
     let (source_stream, cancel_promise, canceled1, reason1, reason2, cancel_resolvers) = {
         let mut tee = tee_state.borrow_mut();
         tee.canceled2 = true;
-        tee.reason2 = reason;
+        tee.reason2.set(reason.clone());
         (
             tee.source_stream.clone(),
-            tee.cancel_promise.clone(),
+            tee.cancel_promise.borrow().clone().unwrap(),
             tee.canceled1,
-            tee.reason1.clone(),
-            tee.reason2.clone(),
+            tee.reason1.borrow().clone(),
+            tee.reason2.borrow().clone(),
             tee.cancel_resolvers.clone(),
         )
     };
     if canceled1 {
+        let composite_reason_array = ec.create_empty_array();
+        ec.array_push(&composite_reason_array, reason1)?;
+        ec.array_push(&composite_reason_array, reason2)?;
         let composite_reason =
-            JsArray::from_iter([reason1, reason2].into_iter().map(JsValue::from), context);
-        let cancel_result =
-            readable_stream_cancel(source_stream, JsValue::from(composite_reason), context)?;
-        cancel_resolvers.resolve.call(
-            &JsValue::undefined(),
-            &[JsValue::from(cancel_result)],
-            context,
-        )?;
+            <crate::js::Types as JsTypes>::value_from_object(composite_reason_array);
+        let cancel_result = readable_stream_cancel(source_stream, composite_reason, ec)?;
+        let undefined = ec.value_undefined();
+        let cancel_value = <crate::js::Types as JsTypes>::value_from_object(cancel_result);
+        ec.call(&cancel_resolvers.resolve, &undefined, &[cancel_value])?;
     }
     Ok(cancel_promise)
 }
@@ -2501,14 +2679,14 @@ pub(crate) fn readable_byte_stream_tee_cancel2_algorithm(
 /// <https://streams.spec.whatwg.org/#abstract-opdef-readablebytestreamtee>
 fn readable_byte_stream_tee(
     stream: ReadableStream,
-    context: &mut Context,
-) -> JsResult<ReadableStreamTeeBranches> {
+    ec: &mut dyn ExecutionContext<crate::js::Types>,
+) -> Completion<ReadableStreamTeeBranches, crate::js::Types> {
     // Steps 1-2: Assert stream and stream.[[controller]] (implicit in types).
     // Step 3: Let reader be ? AcquireReadableStreamDefaultReader(stream).
-    let reader_object = acquire_readable_stream_default_reader(stream.clone(), context)?;
-    let reader = with_readable_stream_default_reader_ref(&reader_object, |r| r.clone())?;
-    let reader_closed_promise = reader.closed()?;
-    mark_promise_as_handled(&reader_closed_promise, context)?;
+    let reader_object = acquire_readable_stream_default_reader(stream.clone(), ec)?;
+    let reader = with_readable_stream_default_reader_ref(&reader_object, ec, |r| r.clone())?;
+    let reader_closed_promise = reader.closed(ec)?;
+    mark_promise_as_handled(&reader_closed_promise, ec)?;
 
     // Step 4: Let reading be false.
     // Step 5: Let readAgainForBranch1 be false.
@@ -2522,24 +2700,27 @@ fn readable_byte_stream_tee(
     // (All steps 4-12 initialized in ByteTeeState below.)
 
     // Step 13: Let cancelPromise be a new promise.
-    let (cancel_promise, cancel_resolvers) = JsPromise::new_pending(context);
+    let (cancel_promise_value, cancel_resolvers) = ec.new_promise_pending()?;
+    let cancel_promise = <crate::js::Types as JsTypes>::value_as_object(&cancel_promise_value)
+        .unwrap_or_else(|| ec.realm_global_object());
 
-    let tee_state = Gc::new(GcRefCell::new(ByteTeeState {
+    let undefined = ec.value_undefined();
+    let tee_state = gc_cell_new(ByteTeeState {
         source_stream: stream,
         reader: ReadableStreamReader::Default(reader),
         branch1: None,
         branch2: None,
-        cancel_promise: cancel_promise.into(),
+        cancel_promise: JsObjectCell::new(Some(cancel_promise)),
         cancel_resolvers,
         reading: false,
         read_again_for_branch1: false,
         read_again_for_branch2: false,
         canceled1: false,
         canceled2: false,
-        reason1: JsValue::undefined(),
-        reason2: JsValue::undefined(),
+        reason1: JsValueCell::new(undefined.clone()),
+        reason2: JsValueCell::new(undefined.clone()),
         reader_generation: 0,
-    }));
+    });
 
     // Step 22: "Let startAlgorithm be an algorithm that returns undefined."
     // Step 23: "Set branch1 to ! CreateReadableByteStream(startAlgorithm, pull1Algorithm, cancel1Algorithm)."
@@ -2547,7 +2728,7 @@ fn readable_byte_stream_tee(
         StartAlgorithm::ReturnUndefined,
         PullAlgorithm::ReadableByteStreamTeeBranch1(tee_state.clone()),
         CancelAlgorithm::ReadableByteStreamTeeBranch1(tee_state.clone()),
-        context,
+        ec,
     )?;
 
     // Step 24: "Set branch2 to ! CreateReadableByteStream(startAlgorithm, pull2Algorithm, cancel2Algorithm)."
@@ -2555,7 +2736,7 @@ fn readable_byte_stream_tee(
         StartAlgorithm::ReturnUndefined,
         PullAlgorithm::ReadableByteStreamTeeBranch2(tee_state.clone()),
         CancelAlgorithm::ReadableByteStreamTeeBranch2(tee_state.clone()),
-        context,
+        ec,
     )?;
 
     {
@@ -2565,7 +2746,7 @@ fn readable_byte_stream_tee(
     }
 
     // Step 23: Perform forwardReaderError, given reader.
-    byte_tee_forward_reader_error(&reader_object, &tee_state, context)?;
+    byte_tee_forward_reader_error(&reader_object, &tee_state, ec)?;
     // Step 24: Return « branch1, branch2 ».
 
     Ok(ReadableStreamTeeBranches {
@@ -2577,76 +2758,116 @@ fn readable_byte_stream_tee(
 }
 
 /// <https://streams.spec.whatwg.org/#abstract-opdef-cloneasuint8array>
-fn clone_as_uint8_array(chunk: JsValue, context: &mut Context) -> JsResult<JsValue> {
-    use boa_engine::object::builtins::JsUint8Array;
-    let view = ArrayBufferViewDescriptor::from_value(chunk, context)?;
-    let src_bytes = view.bytes()?;
-    let array = JsUint8Array::from_iter(src_bytes, context)?;
-    Ok(array.into())
+fn clone_as_uint8_array(
+    chunk: JsValue,
+    ec: &mut dyn ExecutionContext<crate::js::Types>,
+) -> Completion<JsValue, crate::js::Types> {
+    // Step 1: Assert: O is an Object.
+    // Step 2: Assert: O has an [[ViewedArrayBuffer]] internal slot.
+    let typed_array = <crate::js::Types as JsTypes>::value_as_object(&chunk)
+        .and_then(|obj| <crate::js::Types as JsTypes>::object_as_typed_array(&obj))
+        .ok_or_else(|| ec.new_type_error("Expected a TypedArray"))?;
+
+    // Note: Step 3 (IsDetachedBuffer) is not asserted — Boa's JsArrayBuffer
+    // does not expose is_detached publicly; is_detached_buffer always returns
+    // false on the Boa backend. CloneArrayBuffer below will fail if detached.
+
+    let buffer = ec.typed_array_buffer(&typed_array)?;
+    let byte_offset = ec.typed_array_byte_offset(&typed_array)?;
+    let byte_length = ec.typed_array_byte_length(&typed_array)?;
+    let intrinsics = ec.realm_intrinsics(&ec.current_realm());
+
+    // Step 4: Let buffer be ? CloneArrayBuffer(O.[[ViewedArrayBuffer]], O.[[ByteOffset]], O.[[ByteLength]], %ArrayBuffer%).
+    let cloned =
+        ec.clone_array_buffer(buffer, byte_offset, byte_length, intrinsics.array_buffer)?;
+
+    // Step 5: Let array be ! Construct(%Uint8Array%, « buffer »).
+    let buffer_obj = <crate::js::Types as JsTypes>::object_from_array_buffer(cloned);
+    let buffer_val = <crate::js::Types as JsTypes>::value_from_object(buffer_obj);
+    let array = ec.construct(intrinsics.uint8_array, &[buffer_val], None)?;
+
+    // Step 6: Return array.
+    Ok(<crate::js::Types as JsTypes>::value_from_object(array))
 }
 
 /// invocation.
 fn underlying_source_type(
     source_object: Option<&JsObject>,
-    context: &mut Context,
-) -> JsResult<Option<String>> {
+    ec: &mut dyn ExecutionContext<crate::js::Types>,
+) -> Completion<Option<String>, crate::js::Types> {
     let Some(source_object) = source_object else {
         return Ok(None);
     };
 
-    if !source_object.has_property(js_string!("type"), context)? {
+    let type_key = ec.property_key_from_str("type");
+    if !ec.has_property(source_object.clone(), type_key.clone())? {
         return Ok(None);
     }
 
-    let value = source_object.get(js_string!("type"), context)?;
-    if value.is_undefined() {
+    let value = ExecutionContext::get(ec, source_object.clone(), type_key)?;
+    let undefined_value = ec.value_undefined();
+    if ec.same_value(&value, &undefined_value) {
         return Ok(None);
     }
 
-    Ok(Some(value.to_string(context)?.to_std_string_escaped()))
+    // Null is not undefined — Web IDL treats it as an invalid value for an enum.
+    if value.is_null() {
+        return Ok(Some(String::new()));
+    }
+
+    // Convert via ToString to trigger any toString() side effects / errors.
+    let type_str = ec.to_rust_string(value)?;
+
+    Ok(Some(type_str))
 }
-fn strategy_has_size(strategy: &JsValue, context: &mut Context) -> JsResult<bool> {
+
+fn strategy_has_size(
+    strategy: &JsValue,
+    ec: &mut dyn ExecutionContext<crate::js::Types>,
+) -> Completion<bool, crate::js::Types> {
     if strategy.is_undefined() || strategy.is_null() {
         return Ok(false);
     }
 
-    let strategy = strategy.to_object(context)?;
-    if !strategy.has_property(js_string!("size"), context)? {
+    let strategy = ec.to_object(strategy.clone())?;
+    let size_key = ec.property_key_from_str("size");
+    if !ec.has_property(strategy.clone(), size_key.clone())? {
         return Ok(false);
     }
 
-    Ok(!strategy.get(js_string!("size"), context)?.is_undefined())
+    let value = ExecutionContext::get(ec, strategy, size_key)?;
+    let undefined_value = ec.value_undefined();
+    Ok(!ec.same_value(&value, &undefined_value))
 }
 
 fn extract_abort_signal(
-    options_object: Option<&JsObject>,
-    context: &mut Context,
-) -> JsResult<Option<AbortSignal>> {
+    options_object: Option<&<crate::js::Types as JsTypes>::JsObject>,
+    ec: &mut dyn ExecutionContext<crate::js::Types>,
+) -> Completion<Option<AbortSignal>, crate::js::Types> {
     let Some(options_object) = options_object else {
         return Ok(None);
     };
 
-    if !options_object.has_property(js_string!("signal"), context)? {
+    if !ec.has_property(options_object.clone(), ec.property_key_from_str("signal"))? {
         return Ok(None);
     }
 
-    let signal = options_object.get(js_string!("signal"), context)?;
+    let signal = EcmascriptHost::get(ec, &options_object, "signal")?;
     if signal.is_undefined() {
         return Ok(None);
     }
 
     if signal.is_null() {
-        return Err(JsNativeError::typ()
-            .with_message("ReadableStream pipe options.signal must be an AbortSignal")
-            .into());
+        return Err(ec.new_type_error("ReadableStream pipe options.signal must be an AbortSignal"));
     }
 
     let signal_object = signal.as_object().ok_or_else(|| {
-        JsNativeError::typ()
-            .with_message("ReadableStream pipe options.signal must be an AbortSignal")
+        ec.new_type_error("ReadableStream pipe options.signal must be an AbortSignal")
     })?;
 
-    with_abort_signal_ref(&signal_object, |signal| signal.clone()).map(Some)
+    with_abort_signal_ref(&signal_object, ec, |signal| signal.clone())
+        .map(Some)
+        .or_else(|_| Err(ec.new_type_error("options.signal is not an AbortSignal")))
 }
 
 struct PipeOptions {
@@ -2656,35 +2877,42 @@ struct PipeOptions {
     signal: Option<AbortSignal>,
 }
 
-fn normalize_pipe_options(options: &JsValue, context: &mut Context) -> JsResult<PipeOptions> {
+fn normalize_pipe_options(
+    options: &JsValue,
+    ec: &mut dyn ExecutionContext<crate::js::Types>,
+) -> Completion<PipeOptions, crate::js::Types> {
     let options_object = if options.is_undefined() || options.is_null() {
         None
     } else {
-        Some(options.to_object(context)?)
+        let obj = ec.to_object(options.clone())?;
+        Some(obj)
     };
 
     let prevent_abort = match options_object.as_ref() {
-        Some(options_object) => options_object
-            .get(js_string!("preventAbort"), context)?
-            .to_boolean(),
+        Some(options_object) => {
+            let val = EcmascriptHost::get(ec, options_object, "preventAbort")?;
+            ec.to_boolean(&val)
+        }
         None => false,
     };
 
     let prevent_cancel = match options_object.as_ref() {
-        Some(options_object) => options_object
-            .get(js_string!("preventCancel"), context)?
-            .to_boolean(),
+        Some(options_object) => {
+            let val = EcmascriptHost::get(ec, options_object, "preventCancel")?;
+            ec.to_boolean(&val)
+        }
         None => false,
     };
 
     let prevent_close = match options_object.as_ref() {
-        Some(options_object) => options_object
-            .get(js_string!("preventClose"), context)?
-            .to_boolean(),
+        Some(options_object) => {
+            let val = EcmascriptHost::get(ec, options_object, "preventClose")?;
+            ec.to_boolean(&val)
+        }
         None => false,
     };
 
-    let signal = extract_abort_signal(options_object.as_ref(), context)?;
+    let signal = extract_abort_signal(options_object.as_ref(), ec)?;
 
     Ok(PipeOptions {
         prevent_abort,
@@ -2694,44 +2922,29 @@ fn normalize_pipe_options(options: &JsValue, context: &mut Context) -> JsResult<
     })
 }
 
-fn promise_rejected_with_reason(reason: JsValue, context: &mut Context) -> JsObject {
-    crate::webidl::rejected_promise(reason, context).unwrap_or_else(|_| {
-        let (promise, resolvers) = JsPromise::new_pending(context);
-        let promise_object: JsObject = promise.into();
-        if let Err(error) =
-            resolvers
-                .reject
-                .call(&JsValue::undefined(), &[JsValue::undefined()], context)
-        {
-            error!("[readable-stream] failed to reject fallback promise: {error}");
-        }
-        promise_object
-    })
+fn promise_rejected_with_reason(
+    reason: JsValue,
+    ec: &mut dyn ExecutionContext<crate::js::Types>,
+) -> Completion<JsObject, crate::js::Types> {
+    crate::webidl::rejected_promise(reason, ec)
 }
 
-fn promise_rejected_with_type_error(message: &'static str, context: &mut Context) -> JsObject {
-    let reason = match type_error_value(message, context) {
-        Ok(reason) => reason,
-        Err(_) => JsValue::undefined(),
-    };
-    promise_rejected_with_reason(reason, context)
-}
-
-fn promise_rejected_with_error(error: JsError, context: &mut Context) -> JsObject {
-    rejected_promise_from_error(error, context)
+fn promise_rejected_with_type_error(
+    message: &'static str,
+    ec: &mut dyn ExecutionContext<crate::js::Types>,
+) -> Completion<JsObject, crate::js::Types> {
+    let reason = type_error_value(message, ec)?;
+    promise_rejected_with_reason(reason, ec)
 }
 
 fn reject_promise_with_error(
-    resolvers: &ResolvingFunctions,
-    error: JsError,
-    context: &mut Context,
+    resolvers: &js_engine::PromiseResolvers<crate::js::Types>,
+    error: JsValue,
+    ec: &mut dyn ExecutionContext<crate::js::Types>,
 ) {
-    let reason = error_to_rejection_reason(error, context);
-    if let Err(error) = resolvers
-        .reject
-        .call(&JsValue::undefined(), &[reason], context)
-    {
-        error!("[readable-stream] failed to reject promise with error: {error}");
+    let undefined = ec.value_undefined();
+    if let Err(error) = ec.call(&resolvers.reject, &undefined, &[error]) {
+        error!("[readable-stream] failed to reject promise with error: {error:?}");
     }
 }
 
@@ -2743,8 +2956,8 @@ fn readable_stream_pipe_to(
     prevent_abort: bool,
     prevent_cancel: bool,
     signal: Option<AbortSignal>,
-    context: &mut Context,
-) -> JsObject {
+    ec: &mut dyn ExecutionContext<crate::js::Types>,
+) -> Completion<JsObject, crate::js::Types> {
     // Step 1: "Assert: source implements ReadableStream."
 
     // Step 2: "Assert: dest implements WritableStream."
@@ -2759,52 +2972,57 @@ fn readable_stream_pipe_to(
     // Step 13: "Let promise be a new promise."
     // Note: the promise is allocated before the remaining setup so unexpected internal setup
     // failures are still reported through the same returned promise object.
-    let (pipe_promise, pipe_resolvers) = JsPromise::new_pending(context);
-    let pipe_promise_obj: JsObject = pipe_promise.into();
+    let (pipe_promise, pipe_resolvers) = ec.new_promise_pending()?;
+    let pipe_promise_obj = pipe_promise
+        .as_object()
+        .map(|o| o.clone())
+        .unwrap_or_else(|| ec.realm_global_object());
 
-    // Step 8: "If source.[[controller]] implements ReadableByteStreamController, let reader be either ! AcquireReadableStreamBYOBReader(source) or ! AcquireReadableStreamDefaultReader(source), at the user agent’s discretion."
+    // Step 8: "If source.[[controller]] implements ReadableByteStreamController, let reader be either ! AcquireReadableStreamBYOBReader(source) or ! AcquireReadableStreamDefaultReader(source), at the user agent's discretion."
     // Note: Readable byte streams are not implemented yet, so the implementation always uses the default reader path.
 
     // Step 9: "Otherwise, let reader be ! AcquireReadableStreamDefaultReader(source)."
-    let reader_object = match acquire_readable_stream_default_reader(source.clone(), context) {
+    let reader_object = match acquire_readable_stream_default_reader(source.clone(), ec) {
         Ok(reader_object) => reader_object,
         Err(error) => {
-            reject_promise_with_error(&pipe_resolvers, error, context);
-            return pipe_promise_obj;
+            reject_promise_with_error(&pipe_resolvers, error, ec);
+            return Ok(pipe_promise_obj);
         }
     };
-    let reader =
-        match with_readable_stream_default_reader_ref(&reader_object, |reader| reader.clone()) {
-            Ok(reader) => reader,
-            Err(error) => {
-                reject_promise_with_error(&pipe_resolvers, error, context);
-                return pipe_promise_obj;
-            }
-        };
+    let reader = match with_readable_stream_default_reader_ref(&reader_object, ec, |reader| {
+        reader.clone()
+    }) {
+        Ok(reader) => reader,
+        Err(error_value) => {
+            reject_promise_with_error(&pipe_resolvers, error_value, ec);
+            return Ok(pipe_promise_obj);
+        }
+    };
 
     // Step 10: "Let writer be ! AcquireWritableStreamDefaultWriter(dest)."
-    let writer_object = match super::acquire_writable_stream_default_writer(dest.clone(), context) {
+    let writer_object = match super::acquire_writable_stream_default_writer(dest.clone(), ec) {
         Ok(writer_object) => writer_object,
         Err(error) => {
-            if let Err(error) = readable_stream_default_reader_release(reader.clone(), context) {
-                error!("[readable-stream] failed to release reader on pipe setup error: {error}");
+            if let Err(error) = readable_stream_default_reader_release(reader.clone(), ec) {
+                error!("[readable-stream] failed to release reader on pipe setup error: {error:?}");
             }
-            reject_promise_with_error(&pipe_resolvers, error, context);
-            return pipe_promise_obj;
+            reject_promise_with_error(&pipe_resolvers, error, ec);
+            return Ok(pipe_promise_obj);
         }
     };
-    let writer = match super::with_writable_stream_default_writer_ref(&writer_object, |writer| {
-        writer.clone()
-    }) {
-        Ok(writer) => writer,
-        Err(error) => {
-            if let Err(error) = readable_stream_default_reader_release(reader.clone(), context) {
-                error!("[readable-stream] failed to release reader on writer error: {error}");
+    let writer =
+        match super::with_writable_stream_default_writer_ref(&writer_object, ec, |writer| {
+            writer.clone()
+        }) {
+            Ok(writer) => writer,
+            Err(reason) => {
+                if let Err(error) = readable_stream_default_reader_release(reader.clone(), ec) {
+                    error!("[readable-stream] failed to release reader on writer error: {error:?}");
+                }
+                reject_promise_with_error(&pipe_resolvers, reason, ec);
+                return Ok(pipe_promise_obj);
             }
-            reject_promise_with_error(&pipe_resolvers, error, context);
-            return pipe_promise_obj;
-        }
-    };
+        };
 
     // Step 11: "Set source.[[disturbed]] to true."
     source.set_disturbed(true);
@@ -2814,7 +3032,7 @@ fn readable_stream_pipe_to(
     // Step 15: "In parallel but not really; see #905, using reader and writer, read all chunks from source and write them to dest."
     // Note: The pipe progress below follows a single typed state machine and advances from Boa promise reactions at each microtask.
     let state = PipeToState::new(PipeToStateInner {
-        promise: pipe_promise_obj.clone(),
+        promise: JsObjectCell::new(Some(pipe_promise_obj.clone())),
         reader,
         writer,
         pending_writes: VecDeque::new(),
@@ -2838,10 +3056,10 @@ fn readable_stream_pipe_to(
 
         // Step 14.2: "If signal is aborted, perform abortAlgorithm and return promise."
         if signal.aborted_value() {
-            if let Err(error) = state.run_abort_algorithm(context) {
-                state.reject_and_finalize_with_error(error, context);
+            if let Err(error) = state.run_abort_algorithm(ec) {
+                state.reject_and_finalize_with_error(error, ec);
             }
-            return state.promise();
+            return Ok(state.promise());
         }
 
         // Step 14.3: "Add abortAlgorithm to signal."
@@ -2849,36 +3067,36 @@ fn readable_stream_pipe_to(
     }
 
     // Step 16: "Return promise."
-    if let Err(error) = state.check_and_propagate_errors_forward(context) {
-        state.reject_and_finalize_with_error(error, context);
-        return state.promise();
+    if let Err(error) = state.check_and_propagate_errors_forward(ec) {
+        state.reject_and_finalize_with_error(error, ec);
+        return Ok(state.promise());
     }
-    if let Err(error) = state.check_and_propagate_errors_backward(context) {
-        state.reject_and_finalize_with_error(error, context);
-        return state.promise();
+    if let Err(error) = state.check_and_propagate_errors_backward(ec) {
+        state.reject_and_finalize_with_error(error, ec);
+        return Ok(state.promise());
     }
-    if let Err(error) = state.check_and_propagate_closing_forward(context) {
-        state.reject_and_finalize_with_error(error, context);
-        return state.promise();
+    if let Err(error) = state.check_and_propagate_closing_forward(ec) {
+        state.reject_and_finalize_with_error(error, ec);
+        return Ok(state.promise());
     }
-    if let Err(error) = state.check_and_propagate_closing_backward(context) {
-        state.reject_and_finalize_with_error(error, context);
-        return state.promise();
+    if let Err(error) = state.check_and_propagate_closing_backward(ec) {
+        state.reject_and_finalize_with_error(error, ec);
+        return Ok(state.promise());
     }
 
     if state.is_shutting_down() {
-        return state.promise();
+        return Ok(state.promise());
     }
 
-    if let Err(error) = state.wait_for_writer_ready(context) {
-        state.reject_and_finalize_with_error(error, context);
+    if let Err(error) = state.wait_for_writer_ready(ec) {
+        state.reject_and_finalize_with_error(error, ec);
     }
 
-    state.promise()
+    Ok(state.promise())
 }
 
-#[derive(Clone, Trace, Finalize)]
-pub(crate) struct PipeToState(Gc<GcRefCell<PipeToStateInner>>);
+#[gc_struct]
+pub(crate) struct PipeToState(GcCell<PipeToStateInner>);
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum PipePumpState {
@@ -2898,173 +3116,204 @@ enum PipeShutdownAction {
     Abort,
 }
 
-#[derive(Trace, Finalize)]
+#[gc_struct]
 pub(crate) struct PipeToStateInner {
-    promise: JsObject,
+    promise: JsObjectCell,
     reader: ReadableStreamDefaultReader,
     writer: super::WritableStreamDefaultWriter,
-    pending_writes: VecDeque<JsObject>,
+    pending_writes: VecDeque<JsObjectCell>,
 
-    #[unsafe_ignore_trace]
+    #[ignore_trace]
     state: PipePumpState,
 
-    #[unsafe_ignore_trace]
+    #[ignore_trace]
     prevent_close: bool,
 
-    #[unsafe_ignore_trace]
+    #[ignore_trace]
     prevent_abort: bool,
 
-    #[unsafe_ignore_trace]
+    #[ignore_trace]
     prevent_cancel: bool,
 
     signal: Option<AbortSignal>,
-    shutdown_error: Option<JsValue>,
-    shutdown_action_promise: Option<JsObject>,
-    resolvers: Option<ResolvingFunctions>,
+    shutdown_error: Option<JsValueCell>,
+    shutdown_action_promise: Option<JsObjectCell>,
+    resolvers: Option<js_engine::PromiseResolvers<crate::js::Types>>,
 
-    #[unsafe_ignore_trace]
+    #[ignore_trace]
     shutting_down: bool,
 }
 
 impl PipeToState {
     fn new(state: PipeToStateInner) -> Self {
-        Self(Gc::new(GcRefCell::new(state)))
-    }
-
-    fn borrow(&self) -> GcRef<'_, PipeToStateInner> {
-        self.0.borrow()
-    }
-
-    fn borrow_mut(&self) -> GcRefMut<'_, PipeToStateInner> {
-        self.0.borrow_mut()
+        Self(gc_cell_new(state))
     }
 
     pub(crate) fn ptr_eq(&self, other: &Self) -> bool {
-        Gc::ptr_eq(&self.0, &other.0)
+        gc_cell_ptr_eq(&self.0, &other.0)
     }
 
     fn promise(&self) -> JsObject {
-        self.borrow().promise.clone()
+        self.0.borrow().promise.borrow().clone().unwrap()
     }
 
     pub(crate) fn on_read_request_settled(
         &self,
         result: JsValue,
-        context: &mut Context,
-    ) -> JsResult<()> {
-        pipe_to_on_promise_settled(self.clone(), result, context)
+        ec: &mut dyn ExecutionContext<crate::js::Types>,
+    ) -> Completion<(), crate::js::Types> {
+        pipe_to_on_promise_settled(self.clone(), result, ec)
     }
 
-    fn reject_and_finalize_with_error(&self, error: JsError, context: &mut Context) {
-        self.reject_and_finalize_with_reason(error_to_rejection_reason(error, context), context);
+    fn reject_and_finalize_with_error(
+        &self,
+        error: JsValue,
+        ec: &mut dyn ExecutionContext<crate::js::Types>,
+    ) {
+        self.reject_and_finalize_with_reason(error, ec)
     }
 
-    fn reject_and_finalize_with_reason(&self, reason: JsValue, context: &mut Context) {
+    fn reject_and_finalize_with_reason(
+        &self,
+        reason: JsValue,
+        ec: &mut dyn ExecutionContext<crate::js::Types>,
+    ) {
         self.set_shutdown_error(Some(reason));
-        if let Err(error) = self.finalize(context) {
-            error!("[readable-stream] failed to finalize on rejection: {error}");
+        if let Err(error) = self.finalize(ec) {
+            error!("[readable-stream] failed to finalize on rejection: {error:?}");
         }
     }
 
     /// <https://streams.spec.whatwg.org/#readable-stream-pipe-to>
-    pub(crate) fn run_abort_algorithm(&self, context: &mut Context) -> JsResult<()> {
+    pub(crate) fn run_abort_algorithm(
+        &self,
+        ec: &mut dyn ExecutionContext<crate::js::Types>,
+    ) -> Completion<(), crate::js::Types> {
         if self.is_shutting_down() {
             return Ok(());
         }
 
         let error = {
-            let state = self.borrow();
+            let state = self.0.borrow();
             state
                 .signal
                 .as_ref()
                 .map(AbortSignal::reason_value)
                 .ok_or_else(|| {
-                    JsNativeError::typ().with_message(
+                    ec.new_type_error(
                         "ReadableStreamPipeTo abort algorithm ran without an attached AbortSignal",
                     )
                 })?
         };
 
         self.set_shutdown_error(Some(error));
-        self.shutdown(Some(PipeShutdownAction::Abort), context)
+        self.shutdown(Some(PipeShutdownAction::Abort), ec)
     }
 
     /// <https://streams.spec.whatwg.org/#readable-stream-pipe-to>
-    fn wait_for_writer_ready(&self, context: &mut Context) -> JsResult<()> {
+    fn wait_for_writer_ready(
+        &self,
+        ec: &mut dyn ExecutionContext<crate::js::Types>,
+    ) -> Completion<(), crate::js::Types> {
         self.set_state(PipePumpState::PendingReady);
 
         let (writer, reader) = {
-            let state = self.borrow();
+            let state = self.0.borrow();
             (state.writer.clone(), state.reader.clone())
         };
-        let ready_promise = writer.ready()?;
-        let reader_closed_promise = reader.closed()?;
+        let ready_promise = writer.ready(ec)?;
+        let reader_closed_promise = reader.closed(ec)?;
 
         if matches!(
-            JsPromise::from_object(ready_promise.clone())?.state(),
-            PromiseState::Fulfilled(_)
+            ec.promise_state(&ready_promise)?,
+            js_engine::PromiseState::Fulfilled(_)
         ) {
-            return self.read_chunk(context);
+            return self.read_chunk(ec);
         }
 
-        self.append_reaction(ready_promise, context)?;
-        self.append_reaction(reader_closed_promise, context)
+        self.append_reaction(ready_promise, ec)?;
+        self.append_reaction(reader_closed_promise, ec)
     }
 
     /// <https://streams.spec.whatwg.org/#readable-stream-pipe-to>
-    fn read_chunk(&self, context: &mut Context) -> JsResult<()> {
+    fn read_chunk(
+        &self,
+        ec: &mut dyn ExecutionContext<crate::js::Types>,
+    ) -> Completion<(), crate::js::Types> {
         self.set_state(PipePumpState::PendingRead);
 
         let (reader, writer) = {
-            let state = self.borrow();
+            let state = self.0.borrow();
             (state.reader.clone(), state.writer.clone())
         };
+        // Note: trigger the read FIRST so the pull algorithm runs and
+        // may queue a Rust job (via enqueue_job_with_realm in chunk_steps).
+        // Then set up the reaction on writer_closed_promise.  When that
+        // reaction fires (JSC drains microtasks at the end of
+        // perform_promise_then), pipe_to_append_reaction_fn calls
+        // run_jobs() to drain any pending Rust jobs, including the read
+        // result job.
         let read_request = ReadRequest::ReadableStreamPipeTo {
             state: self.clone(),
         };
-        reader.read_with_request(read_request, context)?;
-        let writer_closed_promise = writer.closed()?;
-
-        self.append_reaction(writer_closed_promise, context)
+        reader.read_with_request(read_request, ec)?;
+        let writer_closed_promise = writer.closed(ec)?;
+        self.append_reaction(writer_closed_promise, ec)?;
+        Ok(())
     }
 
     /// <https://streams.spec.whatwg.org/#readable-stream-pipe-to>
-    fn write_chunk(&self, result: JsValue, context: &mut Context) -> JsResult<bool> {
+    fn write_chunk(
+        &self,
+        result: JsValue,
+        ec: &mut dyn ExecutionContext<crate::js::Types>,
+    ) -> Completion<bool, crate::js::Types> {
         let Some(result_object) = result.as_object() else {
             return Ok(false);
         };
 
-        if !result_object.has_property(js_string!("done"), context)? {
+        if !ec.has_property(result_object.clone(), ec.property_key_from_str("done"))? {
             return Ok(false);
         }
 
-        if result_object.get(js_string!("done"), context)?.to_boolean() {
+        let done = EcmascriptHost::get(ec, &result_object, "done")?;
+        if ec.to_boolean(&done) {
             return Ok(false);
         }
 
-        let value = result_object.get(js_string!("value"), context)?;
+        let value = EcmascriptHost::get(ec, &result_object, "value")?;
         let writer = {
-            let state = self.borrow();
+            let state = self.0.borrow();
             state.writer.clone()
         };
-        let write_promise = writer.write(value, context)?;
-        self.borrow_mut().pending_writes.push_back(write_promise);
+        let write_promise = writer.write(value, ec)?;
+        self.0
+            .borrow_mut()
+            .pending_writes
+            .push_back(JsObjectCell::new(Some(write_promise)));
         Ok(true)
     }
 
     /// <https://streams.spec.whatwg.org/#readable-stream-pipe-to>
-    fn wait_on_pending_write(&self, promise: JsObject, context: &mut Context) -> JsResult<()> {
-        self.append_reaction(promise, context)
+    fn wait_on_pending_write(
+        &self,
+        promise: JsObject,
+        ec: &mut dyn ExecutionContext<crate::js::Types>,
+    ) -> Completion<(), crate::js::Types> {
+        self.append_reaction(promise, ec)
     }
 
     /// <https://streams.spec.whatwg.org/#readable-stream-pipe-to>
-    fn check_and_propagate_errors_forward(&self, context: &mut Context) -> JsResult<()> {
+    fn check_and_propagate_errors_forward(
+        &self,
+        ec: &mut dyn ExecutionContext<crate::js::Types>,
+    ) -> Completion<(), crate::js::Types> {
         if self.is_shutting_down() {
             return Ok(());
         }
 
         let (source, dest, prevent_abort) = {
-            let state = self.borrow();
+            let state = self.0.borrow();
             (
                 state.reader.stream_slot_value(),
                 state.writer.stream_slot_value(),
@@ -3089,20 +3338,23 @@ impl PipeToState {
 
         self.set_shutdown_error(Some(source.stored_error()));
         if prevent_abort {
-            self.shutdown(None, context)
+            self.shutdown(None, ec)
         } else {
-            self.shutdown(Some(PipeShutdownAction::AbortDestination), context)
+            self.shutdown(Some(PipeShutdownAction::AbortDestination), ec)
         }
     }
 
     /// <https://streams.spec.whatwg.org/#readable-stream-pipe-to>
-    fn check_and_propagate_errors_backward(&self, context: &mut Context) -> JsResult<()> {
+    fn check_and_propagate_errors_backward(
+        &self,
+        ec: &mut dyn ExecutionContext<crate::js::Types>,
+    ) -> Completion<(), crate::js::Types> {
         if self.is_shutting_down() {
             return Ok(());
         }
 
         let (dest, source, prevent_cancel) = {
-            let state = self.borrow();
+            let state = self.0.borrow();
             (
                 state.writer.stream_slot_value(),
                 state.reader.stream_slot_value(),
@@ -3126,20 +3378,23 @@ impl PipeToState {
                 .as_ref()
                 .is_some_and(|source| source.state() == ReadableStreamState::Readable);
         if !should_cancel {
-            self.shutdown(None, context)
+            self.shutdown(None, ec)
         } else {
-            self.shutdown(Some(PipeShutdownAction::CancelSource), context)
+            self.shutdown(Some(PipeShutdownAction::CancelSource), ec)
         }
     }
 
     /// <https://streams.spec.whatwg.org/#readable-stream-pipe-to>
-    fn check_and_propagate_closing_forward(&self, context: &mut Context) -> JsResult<()> {
+    fn check_and_propagate_closing_forward(
+        &self,
+        ec: &mut dyn ExecutionContext<crate::js::Types>,
+    ) -> Completion<(), crate::js::Types> {
         if self.is_shutting_down() {
             return Ok(());
         }
 
         let (source, prevent_close) = {
-            let state = self.borrow();
+            let state = self.0.borrow();
             (state.reader.stream_slot_value(), state.prevent_close)
         };
         let Some(source) = source else {
@@ -3151,20 +3406,23 @@ impl PipeToState {
         }
 
         if prevent_close {
-            self.shutdown(None, context)
+            self.shutdown(None, ec)
         } else {
-            self.shutdown(Some(PipeShutdownAction::CloseDestination), context)
+            self.shutdown(Some(PipeShutdownAction::CloseDestination), ec)
         }
     }
 
     /// <https://streams.spec.whatwg.org/#readable-stream-pipe-to>
-    fn check_and_propagate_closing_backward(&self, context: &mut Context) -> JsResult<()> {
+    fn check_and_propagate_closing_backward(
+        &self,
+        ec: &mut dyn ExecutionContext<crate::js::Types>,
+    ) -> Completion<(), crate::js::Types> {
         if self.is_shutting_down() {
             return Ok(());
         }
 
         let (dest, source, prevent_cancel) = {
-            let state = self.borrow();
+            let state = self.0.borrow();
             (
                 state.writer.stream_slot_value(),
                 state.reader.stream_slot_value(),
@@ -3189,21 +3447,25 @@ impl PipeToState {
 
         let error = type_error_value(
             "The destination WritableStream closed before the pipe operation completed",
-            context,
+            ec,
         )?;
         self.set_shutdown_error(Some(error));
         if prevent_cancel {
-            self.shutdown(None, context)
+            self.shutdown(None, ec)
         } else {
-            self.shutdown(Some(PipeShutdownAction::CancelSource), context)
+            self.shutdown(Some(PipeShutdownAction::CancelSource), ec)
         }
     }
 
     /// <https://streams.spec.whatwg.org/#rs-pipeTo-shutdown-with-action>
     /// Note: This also covers <https://streams.spec.whatwg.org/#rs-pipeTo-shutdown> when `action` is `None`.
-    fn shutdown(&self, action: Option<PipeShutdownAction>, context: &mut Context) -> JsResult<()> {
+    fn shutdown(
+        &self,
+        action: Option<PipeShutdownAction>,
+        ec: &mut dyn ExecutionContext<crate::js::Types>,
+    ) -> Completion<(), crate::js::Types> {
         let pending_write = {
-            let mut state = self.borrow_mut();
+            let mut state = self.0.borrow_mut();
             if state.shutting_down {
                 return Ok(());
             }
@@ -3217,27 +3479,41 @@ impl PipeToState {
             });
             if should_wait {
                 state.state = PipePumpState::ShuttingDownWithPendingWrites(action);
-                state.pending_writes.front().cloned()
+                state
+                    .pending_writes
+                    .front()
+                    .and_then(|cell| cell.borrow().clone())
             } else {
                 None
             }
         };
 
         if let Some(pending_write) = pending_write {
-            return self.wait_on_pending_write(pending_write, context);
+            return self.wait_on_pending_write(pending_write, ec);
         }
 
         if let Some(action) = action {
-            return self.perform_action(action, context);
+            // If the action throws synchronously (e.g. cancel() throws),
+            // treat it as rejection of the action promise: finalize with
+            // the thrown error instead of the original shutdown_error.
+            if let Err(error) = self.perform_action(action, ec) {
+                self.set_shutdown_error(Some(error));
+                return self.finalize(ec);
+            }
+            return Ok(());
         }
 
-        self.finalize(context)
+        self.finalize(ec)
     }
 
     /// <https://streams.spec.whatwg.org/#rs-pipeTo-shutdown-with-action>
-    fn perform_action(&self, action: PipeShutdownAction, context: &mut Context) -> JsResult<()> {
+    fn perform_action(
+        &self,
+        action: PipeShutdownAction,
+        ec: &mut dyn ExecutionContext<crate::js::Types>,
+    ) -> Completion<(), crate::js::Types> {
         let (writer, source, dest, error, prevent_abort, prevent_cancel) = {
-            let mut state = self.borrow_mut();
+            let mut state = self.0.borrow_mut();
             state.state = PipePumpState::ShuttingDownPendingAction(action);
             (
                 state.writer.clone(),
@@ -3245,8 +3521,9 @@ impl PipeToState {
                 state.writer.stream_slot_value(),
                 state
                     .shutdown_error
-                    .clone()
-                    .unwrap_or_else(JsValue::undefined),
+                    .as_ref()
+                    .map(|cell| cell.borrow().clone())
+                    .unwrap_or_else(|| ec.value_undefined()),
                 state.prevent_abort,
                 state.prevent_cancel,
             )
@@ -3254,27 +3531,27 @@ impl PipeToState {
 
         let action_promise = match action {
             PipeShutdownAction::AbortDestination => match dest {
-                Some(dest) => dest.abort_stream(error, context)?,
-                None => resolved_promise(JsValue::undefined(), context)?,
+                Some(dest) => dest.abort_stream(error, ec)?,
+                None => resolved_promise(ec.value_undefined(), ec)?,
             },
             PipeShutdownAction::CancelSource => match source {
-                Some(source) => readable_stream_cancel(source, error, context)?,
-                None => resolved_promise(JsValue::undefined(), context)?,
+                Some(source) => readable_stream_cancel(source, error, ec)?,
+                None => resolved_promise(ec.value_undefined(), ec)?,
             },
             PipeShutdownAction::CloseDestination => match dest {
                 Some(dest)
                     if dest.state() == super::WritableStreamState::Closed
                         || dest.close_queued_or_in_flight() =>
                 {
-                    resolved_promise(JsValue::undefined(), context)?
+                    resolved_promise(ec.value_undefined(), ec)?
                 }
-                _ => writer.close(context)?,
+                _ => writer.close(ec)?,
             },
             PipeShutdownAction::Abort => {
                 let abort_promise = if !prevent_abort {
                     match dest {
                         Some(dest) if dest.state() == super::WritableStreamState::Writable => {
-                            Some(dest.abort_stream(error.clone(), context)?)
+                            Some(dest.abort_stream(error.clone(), ec)?)
                         }
                         _ => None,
                     }
@@ -3295,45 +3572,52 @@ impl PipeToState {
 
                 match (abort_promise, cancel_source) {
                     (Some(abort_promise), Some(source)) => {
-                        abort_destination_then_cancel_source(abort_promise, source, error, context)?
+                        abort_destination_then_cancel_source(abort_promise, source, error, ec)?
                     }
                     (Some(abort_promise), None) => abort_promise,
-                    (None, Some(source)) => readable_stream_cancel(source, error, context)?,
-                    (None, None) => resolved_promise(JsValue::undefined(), context)?,
+                    (None, Some(source)) => readable_stream_cancel(source, error, ec)?,
+                    (None, None) => resolved_promise(ec.value_undefined(), ec)?,
                 }
             }
         };
 
-        self.borrow_mut().shutdown_action_promise = Some(action_promise.clone());
-        self.append_reaction(action_promise, context)
+        self.0.borrow_mut().shutdown_action_promise =
+            Some(JsObjectCell::new(Some(action_promise.clone())));
+        self.append_reaction(action_promise, ec)
     }
 
     /// <https://streams.spec.whatwg.org/#rs-pipeTo-finalize>
-    fn finalize(&self, context: &mut Context) -> JsResult<()> {
+    fn finalize(
+        &self,
+        ec: &mut dyn ExecutionContext<crate::js::Types>,
+    ) -> Completion<(), crate::js::Types> {
         if self.current_state() == PipePumpState::Finalized {
             return Ok(());
         }
 
         let (writer, reader, signal, mut error, resolvers) = {
-            let mut state = self.borrow_mut();
+            let mut state = self.0.borrow_mut();
             state.state = PipePumpState::Finalized;
             (
                 state.writer.clone(),
                 state.reader.clone(),
                 state.signal.clone(),
-                state.shutdown_error.clone(),
+                state
+                    .shutdown_error
+                    .as_ref()
+                    .map(|cell| cell.borrow().clone()),
                 state.resolvers.take(),
             )
         };
 
-        if let Err(release_error) = super::writable_stream_default_writer_release(writer, context) {
+        if let Err(release_error) = super::writable_stream_default_writer_release(writer, ec) {
             if error.is_none() {
-                error = Some(error_to_rejection_reason(release_error, context));
+                error = Some(release_error);
             }
         }
-        if let Err(release_error) = super::readable_stream_default_reader_release(reader, context) {
+        if let Err(release_error) = super::readable_stream_default_reader_release(reader, ec) {
             if error.is_none() {
-                error = Some(error_to_rejection_reason(release_error, context));
+                error = Some(release_error);
             }
         }
 
@@ -3344,18 +3628,17 @@ impl PipeToState {
         }
 
         if let Some(resolvers) = resolvers {
+            let undefined = ec.value_undefined();
             match error {
                 Some(error) => {
-                    resolvers
-                        .reject
-                        .call(&JsValue::undefined(), &[error], context)?;
+                    let reject: <crate::js::Types as JsTypes>::JsObject =
+                        resolvers.reject.clone().into();
+                    ec.call(&reject, &undefined, &[error])?;
                 }
                 None => {
-                    resolvers.resolve.call(
-                        &JsValue::undefined(),
-                        &[JsValue::undefined()],
-                        context,
-                    )?;
+                    let resolve: <crate::js::Types as JsTypes>::JsObject =
+                        resolvers.resolve.clone().into();
+                    ec.call(&resolve, &undefined, &[undefined.clone()])?;
                 }
             }
         }
@@ -3364,32 +3647,32 @@ impl PipeToState {
     }
 
     fn current_state(&self) -> PipePumpState {
-        self.borrow().state.clone()
+        self.0.borrow().state.clone()
     }
 
     fn set_state(&self, state: PipePumpState) {
-        self.borrow_mut().state = state;
+        self.0.borrow_mut().state = state;
     }
 
     fn is_shutting_down(&self) -> bool {
-        self.borrow().shutting_down
+        self.0.borrow().shutting_down
     }
 
     fn set_shutdown_error(&self, error: Option<JsValue>) {
-        self.borrow_mut().shutdown_error = error;
+        self.0.borrow_mut().shutdown_error = error.map(JsValueCell::new);
     }
 
     fn update_pending_shutdown_action(
         &self,
         action: Option<PipeShutdownAction>,
-        context: &mut Context,
-    ) -> JsResult<Option<PipeShutdownAction>> {
+        ec: &mut dyn ExecutionContext<crate::js::Types>,
+    ) -> Completion<Option<PipeShutdownAction>, crate::js::Types> {
         if action != Some(PipeShutdownAction::CloseDestination) {
             return Ok(action);
         }
 
         let (source, dest, prevent_cancel) = {
-            let state = self.borrow();
+            let state = self.0.borrow();
             (
                 state.reader.stream_slot_value(),
                 state.writer.stream_slot_value(),
@@ -3422,7 +3705,7 @@ impl PipeToState {
 
             let error = type_error_value(
                 "The destination WritableStream closed before the pipe operation completed",
-                context,
+                ec,
             )?;
             self.set_shutdown_error(Some(error));
             return Ok(
@@ -3434,94 +3717,127 @@ impl PipeToState {
     }
 
     fn pending_write_front(&self) -> Option<JsObject> {
-        self.borrow().pending_writes.front().cloned()
+        self.0
+            .borrow()
+            .pending_writes
+            .front()
+            .and_then(|cell| cell.borrow().clone())
     }
 
-    fn shutdown_action_promise_state(&self) -> JsResult<Option<PromiseState>> {
-        self.borrow()
+    fn shutdown_action_promise_state(
+        &self,
+        ec: &mut dyn ExecutionContext<crate::js::Types>,
+    ) -> Completion<Option<js_engine::PromiseState<crate::js::Types>>, crate::js::Types> {
+        self.0
+            .borrow()
             .shutdown_action_promise
             .clone()
-            .map(|promise| Ok(JsPromise::from_object(promise)?.state()))
+            .and_then(|cell| cell.borrow().clone())
+            .map(|promise| Ok(ec.promise_state(&promise)?))
             .transpose()
     }
 
-    fn prune_settled_pending_writes(&self, context: &mut Context) -> JsResult<()> {
+    fn prune_settled_pending_writes(
+        &self,
+        ec: &mut dyn ExecutionContext<crate::js::Types>,
+    ) -> Completion<(), crate::js::Types> {
         let mut handled = Vec::new();
         {
-            let mut state = self.borrow_mut();
-            state.pending_writes.retain(|promise_object| {
-                let promise = match JsPromise::from_object(promise_object.clone()) {
-                    Ok(promise) => promise,
-                    Err(_) => {
-                        debug_assert!(false, "pipeTo tracked a non-promise write handle");
-                        return false;
-                    }
+            let mut state = self.0.borrow_mut();
+            state.pending_writes.retain(|cell| {
+                let Some(promise_object) = cell.borrow().clone() else {
+                    return false;
                 };
-                let pending = matches!(promise.state(), PromiseState::Pending);
+                let ok =
+                    <crate::js::Types as JsTypes>::object_as_promise(&promise_object).is_some();
+                if !ok {
+                    debug_assert!(false, "pipeTo tracked a non-promise write handle");
+                    return false;
+                }
+                let pending = matches!(
+                    ec.promise_state(&promise_object),
+                    Ok(js_engine::PromiseState::Pending)
+                );
                 if !pending {
-                    handled.push(promise_object.clone());
+                    handled.push(promise_object);
                 }
                 pending
             });
         }
 
         for promise in handled {
-            mark_promise_as_handled(&promise, context)?;
+            crate::webidl::mark_promise_as_handled(&promise, ec)?;
         }
 
         Ok(())
     }
 
-    fn append_reaction(&self, promise: JsObject, context: &mut Context) -> JsResult<()> {
-        let on_fulfilled = pipe_reaction_function(self.clone(), context);
-        let on_rejected = pipe_reaction_function(self.clone(), context);
-        let _ = JsPromise::from_object(promise)?.then(
-            Some(on_fulfilled),
-            Some(on_rejected),
-            context,
-        )?;
+    fn append_reaction(
+        &self,
+        promise: JsObject,
+        ec: &mut dyn ExecutionContext<crate::js::Types>,
+    ) -> Completion<(), crate::js::Types> {
+        let name_key = ec.property_key_from_str("");
+        let on_fulfilled = create_builtin_fn_with_traced_captures(
+            ec,
+            self.clone(),
+            pipe_to_append_reaction_fn,
+            0,
+            name_key.clone(),
+            false,
+        );
+        let on_rejected = create_builtin_fn_with_traced_captures(
+            ec,
+            self.clone(),
+            pipe_to_append_reaction_fn,
+            0,
+            name_key,
+            false,
+        );
+        let js_promise = <crate::js::Types as JsTypes>::object_as_promise(&promise)
+            .ok_or_else(|| ec.new_type_error("not a promise"))?;
+        ec.perform_promise_then(js_promise, Some(on_fulfilled), Some(on_rejected), None)?;
         Ok(())
     }
 }
 
-#[allow(dead_code)]
-#[derive(Trace, Finalize)]
-struct WaitForAllState {
-    #[unsafe_ignore_trace]
-    remaining: usize,
-
-    #[unsafe_ignore_trace]
-    settled: bool,
-
-    #[unsafe_ignore_trace]
-    first_rejection_index: Option<usize>,
-
-    first_rejection_reason: Option<JsValue>,
-
-    resolvers: ResolvingFunctions,
-}
-
-#[derive(Trace, Finalize)]
+#[gc_struct]
 struct AbortThenCancelState {
     source: Option<ReadableStream>,
-    error: JsValue,
-    abort_rejection: Option<JsValue>,
-    resolvers: ResolvingFunctions,
+    error: JsValueCell,
+    abort_rejection: Option<JsValueCell>,
+    resolvers: PromiseResolvers<crate::js::Types>,
+}
+
+/// Wrapper for `create_builtin_fn_with_traced_captures`:
+/// calls `pipe_to_on_promise_settled` with the captures as state.
+fn pipe_to_append_reaction_fn(
+    args: &[JsValue],
+    _this: JsValue,
+    state: &PipeToState,
+    ec: &mut dyn ExecutionContext<crate::js::Types>,
+) -> Completion<JsValue, crate::js::Types> {
+    let value = args
+        .first()
+        .cloned()
+        .unwrap_or_else(|| ec.value_undefined());
+    pipe_to_on_promise_settled(state.clone(), value, ec)?;
+    Ok(ec.value_undefined())
 }
 
 /// <https://streams.spec.whatwg.org/#readable-stream-pipe-to>
 fn pipe_to_on_promise_settled(
     state: PipeToState,
     result: JsValue,
-    context: &mut Context,
-) -> JsResult<()> {
-    state.prune_settled_pending_writes(context)?;
+    ec: &mut dyn ExecutionContext<crate::js::Types>,
+) -> Completion<(), crate::js::Types> {
+    state.prune_settled_pending_writes(ec)?;
 
     let state_before_checks = state.current_state();
 
     if state_before_checks == PipePumpState::PendingRead {
         let (source, dest) = {
-            let state_ref = state.borrow();
+            let state_ref = state.0.borrow();
             (
                 state_ref.reader.stream_slot_value(),
                 state_ref.writer.stream_slot_value(),
@@ -3534,12 +3850,12 @@ fn pipe_to_on_promise_settled(
                     if dest.state() == super::WritableStreamState::Writable
                         && !dest.close_queued_or_in_flight()
                     {
-                        let Some(done) = pipe_read_result_done(&result, context)? else {
+                        let Some(done) = pipe_read_result_done(&result, ec)? else {
                             return Ok(());
                         };
 
                         if !done {
-                            let _ = state.write_chunk(result.clone(), context)?;
+                            let _ = state.write_chunk(result.clone(), ec)?;
                         }
                     }
                 }
@@ -3547,10 +3863,10 @@ fn pipe_to_on_promise_settled(
         }
     }
 
-    state.check_and_propagate_errors_forward(context)?;
-    state.check_and_propagate_errors_backward(context)?;
-    state.check_and_propagate_closing_forward(context)?;
-    state.check_and_propagate_closing_backward(context)?;
+    state.check_and_propagate_errors_forward(ec)?;
+    state.check_and_propagate_errors_backward(ec)?;
+    state.check_and_propagate_closing_forward(ec)?;
+    state.check_and_propagate_closing_backward(ec)?;
 
     let current_state = state.current_state();
     if current_state != state_before_checks {
@@ -3565,32 +3881,37 @@ fn pipe_to_on_promise_settled(
             );
         }
         PipePumpState::PendingReady => {
-            state.read_chunk(context)?;
+            state.read_chunk(ec)?;
         }
         PipePumpState::PendingRead => {
-            let _ = state.write_chunk(result, context)?;
+            let had_chunk = state.write_chunk(result, ec)?;
             if state.is_shutting_down() {
                 return Ok(());
             }
-            state.wait_for_writer_ready(context)?;
+
+            if had_chunk {
+                state.wait_for_writer_ready(ec)?;
+            }
         }
         PipePumpState::ShuttingDownWithPendingWrites(action) => {
-            let action = state.update_pending_shutdown_action(action, context)?;
+            let action = state.update_pending_shutdown_action(action, ec)?;
             state.set_state(PipePumpState::ShuttingDownWithPendingWrites(action));
 
             if let Some(pending_write) = state.pending_write_front() {
-                state.wait_on_pending_write(pending_write, context)?;
+                state.wait_on_pending_write(pending_write, ec)?;
             } else if let Some(action) = action {
-                state.perform_action(action, context)?;
+                state.perform_action(action, ec)?;
             } else {
-                state.finalize(context)?;
+                state.finalize(ec)?;
             }
         }
         PipePumpState::ShuttingDownPendingAction(action) => {
-            match state.shutdown_action_promise_state()? {
-                Some(PromiseState::Pending) => return Ok(()),
-                Some(PromiseState::Rejected(error)) => state.set_shutdown_error(Some(error)),
-                Some(PromiseState::Fulfilled(value)) => {
+            match state.shutdown_action_promise_state(ec)? {
+                Some(js_engine::PromiseState::Pending) => return Ok(()),
+                Some(js_engine::PromiseState::Rejected(error)) => {
+                    state.set_shutdown_error(Some(error))
+                }
+                Some(js_engine::PromiseState::Fulfilled(value)) => {
                     if action != PipeShutdownAction::Abort && !value.is_undefined() {
                         state.set_shutdown_error(Some(value));
                     }
@@ -3598,7 +3919,7 @@ fn pipe_to_on_promise_settled(
                 None => {}
             }
 
-            state.finalize(context)?;
+            state.finalize(ec)?;
         }
         PipePumpState::Finalized => {}
     }
@@ -3606,271 +3927,180 @@ fn pipe_to_on_promise_settled(
     Ok(())
 }
 
-fn pipe_reaction_function(state: PipeToState, context: &mut Context) -> JsFunction {
-    NativeFunction::from_copy_closure_with_captures(
-        |_, args, state: &PipeToState, context| {
-            pipe_to_on_promise_settled(state.clone(), args.get_or_undefined(0).clone(), context)?;
-            Ok(JsValue::undefined())
-        },
-        state,
-    )
-    .to_js_function(context.realm())
-}
-
-fn pipe_read_result_done(result: &JsValue, context: &mut Context) -> JsResult<Option<bool>> {
+fn pipe_read_result_done(
+    result: &<crate::js::Types as JsTypes>::JsValue,
+    ec: &mut dyn ExecutionContext<crate::js::Types>,
+) -> Completion<Option<bool>, crate::js::Types> {
     let Some(result_object) = result.as_object() else {
         return Ok(None);
     };
 
-    if !result_object.has_property(js_string!("done"), context)? {
+    if !ec.has_property(result_object.clone(), ec.property_key_from_str("done"))? {
         return Ok(None);
     }
 
-    Ok(Some(
-        result_object.get(js_string!("done"), context)?.to_boolean(),
-    ))
+    let done = EcmascriptHost::get(ec, &result_object, "done")?;
+    Ok(Some(ec.to_boolean(&done)))
 }
 
-/// <https://streams.spec.whatwg.org/#readable-stream-pipe-to>
-#[allow(dead_code)]
-fn wait_for_all_promises(promises: Vec<JsObject>, context: &mut Context) -> JsResult<JsObject> {
-    if promises.is_empty() {
-        return resolved_promise(JsValue::undefined(), context);
-    }
+fn start_abort_cancel_on_fulfilled_fn(
+    _args: &[JsValue],
+    _this: JsValue,
+    state: &GcCell<AbortThenCancelState>,
+    ec: &mut dyn ExecutionContext<crate::js::Types>,
+) -> Completion<JsValue, crate::js::Types> {
+    finalize_abort_cancel_source(state.clone(), None, ec)
+}
 
-    if promises.len() == 1 {
-        if let Some(promise) = promises.into_iter().next() {
-            return Ok(promise);
-        }
+fn start_abort_cancel_on_rejected_fn(
+    args: &[JsValue],
+    _this: JsValue,
+    state: &GcCell<AbortThenCancelState>,
+    ec: &mut dyn ExecutionContext<crate::js::Types>,
+) -> Completion<JsValue, crate::js::Types> {
+    finalize_abort_cancel_source(
+        state.clone(),
+        Some(
+            args.first()
+                .cloned()
+                .unwrap_or_else(|| ec.value_undefined()),
+        ),
+        ec,
+    )
+}
 
-        return resolved_promise(JsValue::undefined(), context);
-    }
+fn abort_destination_then_cancel_on_fulfilled_fn(
+    _args: &[JsValue],
+    _this: JsValue,
+    state: &GcCell<AbortThenCancelState>,
+    ec: &mut dyn ExecutionContext<crate::js::Types>,
+) -> Completion<JsValue, crate::js::Types> {
+    start_abort_cancel_source(state.clone(), None, ec)
+}
 
-    let (promise, resolvers) = JsPromise::new_pending(context);
-    let aggregate = Gc::new(GcRefCell::new(WaitForAllState {
-        remaining: promises.len(),
-        settled: false,
-        first_rejection_index: None,
-        first_rejection_reason: None,
-        resolvers,
-    }));
-
-    for (index, promise) in promises.into_iter().enumerate() {
-        let on_fulfilled = NativeFunction::from_copy_closure_with_captures(
-            |_, _, aggregate: &Gc<GcRefCell<WaitForAllState>>, context| {
-                let resolution = {
-                    let mut aggregate = aggregate.borrow_mut();
-                    if aggregate.settled {
-                        return Ok(JsValue::undefined());
-                    }
-
-                    if aggregate.remaining > 0 {
-                        aggregate.remaining -= 1;
-                    }
-
-                    if aggregate.remaining == 0 {
-                        aggregate.settled = true;
-                        Some((
-                            aggregate.resolvers.clone(),
-                            aggregate.first_rejection_reason.clone(),
-                        ))
-                    } else {
-                        None
-                    }
-                };
-
-                if let Some((resolvers, rejection_reason)) = resolution {
-                    if let Some(rejection_reason) = rejection_reason {
-                        resolvers.reject.call(
-                            &JsValue::undefined(),
-                            &[rejection_reason],
-                            context,
-                        )?;
-                    } else {
-                        resolvers.resolve.call(
-                            &JsValue::undefined(),
-                            &[JsValue::undefined()],
-                            context,
-                        )?;
-                    }
-                }
-
-                Ok(JsValue::undefined())
-            },
-            aggregate.clone(),
-        )
-        .to_js_function(context.realm());
-
-        let on_rejected = NativeFunction::from_copy_closure_with_captures(
-            |_, args, capture: &(usize, Gc<GcRefCell<WaitForAllState>>), context| {
-                let reason = args.get_or_undefined(0).clone();
-                let resolution = {
-                    let (index, aggregate) = capture;
-                    let mut aggregate = aggregate.borrow_mut();
-                    if aggregate.settled {
-                        return Ok(JsValue::undefined());
-                    }
-
-                    if aggregate
-                        .first_rejection_index
-                        .is_none_or(|current_index| *index < current_index)
-                    {
-                        aggregate.first_rejection_index = Some(*index);
-                        aggregate.first_rejection_reason = Some(reason);
-                    }
-
-                    if aggregate.remaining > 0 {
-                        aggregate.remaining -= 1;
-                    }
-
-                    if aggregate.remaining == 0 {
-                        aggregate.settled = true;
-                        Some((
-                            aggregate.resolvers.clone(),
-                            aggregate.first_rejection_reason.clone(),
-                        ))
-                    } else {
-                        None
-                    }
-                };
-
-                if let Some((resolvers, rejection_reason)) = resolution {
-                    if let Some(rejection_reason) = rejection_reason {
-                        resolvers.reject.call(
-                            &JsValue::undefined(),
-                            &[rejection_reason],
-                            context,
-                        )?;
-                    } else {
-                        resolvers.resolve.call(
-                            &JsValue::undefined(),
-                            &[JsValue::undefined()],
-                            context,
-                        )?;
-                    }
-                }
-
-                Ok(JsValue::undefined())
-            },
-            (index, aggregate.clone()),
-        )
-        .to_js_function(context.realm());
-
-        let _ = JsPromise::from_object(promise)?.then(
-            Some(on_fulfilled),
-            Some(on_rejected),
-            context,
-        )?;
-    }
-
-    Ok(promise.into())
+fn abort_destination_then_cancel_on_rejected_fn(
+    args: &[JsValue],
+    _this: JsValue,
+    state: &GcCell<AbortThenCancelState>,
+    ec: &mut dyn ExecutionContext<crate::js::Types>,
+) -> Completion<JsValue, crate::js::Types> {
+    start_abort_cancel_source(
+        state.clone(),
+        Some(
+            args.first()
+                .cloned()
+                .unwrap_or_else(|| ec.value_undefined()),
+        ),
+        ec,
+    )
 }
 
 fn abort_destination_then_cancel_source(
     abort_promise: JsObject,
     source: ReadableStream,
     error: JsValue,
-    context: &mut Context,
-) -> JsResult<JsObject> {
-    let (promise, resolvers) = JsPromise::new_pending(context);
-    let state = Gc::new(GcRefCell::new(AbortThenCancelState {
+    ec: &mut dyn ExecutionContext<crate::js::Types>,
+) -> Completion<JsObject, crate::js::Types> {
+    let (promise, resolvers) = ec.new_promise_pending()?;
+    let promise_obj = promise
+        .as_object()
+        .map(|o| o.clone())
+        .unwrap_or_else(|| ec.realm_global_object());
+    let state = gc_cell_new(AbortThenCancelState {
         source: Some(source),
-        error,
+        error: JsValueCell::new(error),
         abort_rejection: None,
         resolvers,
-    }));
+    });
 
-    let on_fulfilled = NativeFunction::from_copy_closure_with_captures(
-        |_, _, state: &Gc<GcRefCell<AbortThenCancelState>>, context| {
-            start_abort_cancel_source(state.clone(), None, context)
-        },
+    let name_key = ec.property_key_from_str("");
+    let on_fulfilled = create_builtin_fn_with_traced_captures(
+        ec,
         state.clone(),
-    )
-    .to_js_function(context.realm());
-    let on_rejected = NativeFunction::from_copy_closure_with_captures(
-        |_, args, state: &Gc<GcRefCell<AbortThenCancelState>>, context| {
-            start_abort_cancel_source(
-                state.clone(),
-                Some(args.get_or_undefined(0).clone()),
-                context,
-            )
-        },
+        abort_destination_then_cancel_on_fulfilled_fn,
+        0,
+        name_key.clone(),
+        false,
+    );
+    let on_rejected = create_builtin_fn_with_traced_captures(
+        ec,
         state.clone(),
-    )
-    .to_js_function(context.realm());
-    let _ = JsPromise::from_object(abort_promise)?.then(
-        Some(on_fulfilled),
-        Some(on_rejected),
-        context,
-    )?;
+        abort_destination_then_cancel_on_rejected_fn,
+        1,
+        name_key,
+        false,
+    );
+    let js_promise = <crate::js::Types as JsTypes>::object_as_promise(&abort_promise)
+        .ok_or_else(|| ec.new_type_error("abort_promise is not a Promise"))?;
+    ec.perform_promise_then(js_promise, Some(on_fulfilled), Some(on_rejected), None)?;
 
-    Ok(promise.into())
+    Ok(promise_obj)
 }
 
 fn start_abort_cancel_source(
-    state: Gc<GcRefCell<AbortThenCancelState>>,
+    state: GcCell<AbortThenCancelState>,
     abort_rejection: Option<JsValue>,
-    context: &mut Context,
-) -> JsResult<JsValue> {
+    ec: &mut dyn ExecutionContext<crate::js::Types>,
+) -> Completion<JsValue, crate::js::Types> {
     let (source, error) = {
         let mut state_ref = state.borrow_mut();
-        state_ref.abort_rejection = abort_rejection;
-        (state_ref.source.take(), state_ref.error.clone())
+        state_ref.abort_rejection = abort_rejection.map(JsValueCell::new);
+        (state_ref.source.take(), state_ref.error.borrow().clone())
     };
 
     let cancel_promise = match source {
-        Some(source) => readable_stream_cancel(source, error, context)?,
-        None => resolved_promise(JsValue::undefined(), context)?,
+        Some(source) => readable_stream_cancel(source, error, ec)?,
+        None => resolved_promise(ec.value_undefined(), ec)?,
     };
 
-    let on_fulfilled = NativeFunction::from_copy_closure_with_captures(
-        |_, _, state: &Gc<GcRefCell<AbortThenCancelState>>, context| {
-            finalize_abort_cancel_source(state.clone(), None, context)
-        },
+    let name_key = ec.property_key_from_str("");
+    let on_fulfilled = create_builtin_fn_with_traced_captures(
+        ec,
         state.clone(),
-    )
-    .to_js_function(context.realm());
-    let on_rejected = NativeFunction::from_copy_closure_with_captures(
-        |_, args, state: &Gc<GcRefCell<AbortThenCancelState>>, context| {
-            finalize_abort_cancel_source(
-                state.clone(),
-                Some(args.get_or_undefined(0).clone()),
-                context,
-            )
-        },
+        start_abort_cancel_on_fulfilled_fn,
+        0,
+        name_key.clone(),
+        false,
+    );
+    let on_rejected = create_builtin_fn_with_traced_captures(
+        ec,
         state,
-    )
-    .to_js_function(context.realm());
-    let _ = JsPromise::from_object(cancel_promise)?.then(
-        Some(on_fulfilled),
-        Some(on_rejected),
-        context,
-    )?;
-    Ok(JsValue::undefined())
+        start_abort_cancel_on_rejected_fn,
+        1,
+        name_key,
+        false,
+    );
+
+    let promise = <crate::js::Types as JsTypes>::object_as_promise(&cancel_promise)
+        .ok_or_else(|| ec.new_type_error("cancel_promise is not a Promise"))?;
+    ec.perform_promise_then(promise, Some(on_fulfilled), Some(on_rejected), None)?;
+    Ok(ec.value_undefined())
 }
 
 fn finalize_abort_cancel_source(
-    state: Gc<GcRefCell<AbortThenCancelState>>,
+    state: GcCell<AbortThenCancelState>,
     cancel_rejection: Option<JsValue>,
-    context: &mut Context,
-) -> JsResult<JsValue> {
+    ec: &mut dyn ExecutionContext<crate::js::Types>,
+) -> Completion<JsValue, crate::js::Types> {
     let (abort_rejection, resolvers) = {
         let state_ref = state.borrow();
         (
-            state_ref.abort_rejection.clone(),
+            state_ref
+                .abort_rejection
+                .as_ref()
+                .map(|cell| cell.borrow().clone()),
             state_ref.resolvers.clone(),
         )
     };
 
+    let undefined = ec.value_undefined();
     if let Some(reason) = abort_rejection.or(cancel_rejection) {
-        resolvers
-            .reject
-            .call(&JsValue::undefined(), &[reason], context)?;
+        let reject: JsObject = resolvers.reject.clone().into();
+        ec.call(&reject, &undefined, &[reason])?;
     } else {
-        resolvers
-            .resolve
-            .call(&JsValue::undefined(), &[JsValue::undefined()], context)?;
+        let resolve: JsObject = resolvers.resolve.clone().into();
+        ec.call(&resolve, &undefined, &[undefined.clone()])?;
     }
 
-    Ok(JsValue::undefined())
+    Ok(ec.value_undefined())
 }

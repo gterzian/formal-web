@@ -1,11 +1,14 @@
 # content/src/js
 
-`content/src/js` integrates Boa (the JavaScript engine) with the content
-process and keeps JavaScript-facing wrapper identity separate from DOM and
-HTML [platform object](https://webidl.spec.whatwg.org/#dfn-platform-object)
-state.
+`content/src/js` is the content crate's JS integration layer.  It provides
+type aliases (`Types`, `Engine`) pointing to the concrete `js_engine` backend
+(selected by feature flag in the top-level `js_engine/` crate), and keeps
+JavaScript-facing wrapper identity separate from DOM and HTML
+[platform object](https://webidl.spec.whatwg.org/#dfn-platform-object)
+state.  Content code only sees the generic traits from the `js_engine` crate.
 
-- `content/src/html/environment_settings_object.rs` owns the Boa `Context`,
+- `content/src/html/environment_settings_object.rs` owns the realm execution
+  context (currently `BoaContext` implementing `ExecutionContext<T>`),
   global-object construction, and the Rust state that corresponds to an HTML
   environment settings object.
 - `content/src/html/global_scope.rs` owns per-global wrapper caches and
@@ -22,6 +25,11 @@ state.
   - Uses the Web IDL bindings infrastructure (`WebIdlInterface`,
     `WebIdlNamespace`, `register_interface_spec`, `register_namespace_spec`,
     etc.) from `content/src/webidl/bindings/` instead of calling Boa directly.
+  - **Namespaces must use `WebIdlNamespace` + `register_namespace_spec`**,
+    not manual `create_plain_object`/`create_builtin_fn`.  See
+    `content/src/js/bindings/testutils/mod.rs` for a correct example.
+    (`console_generic.rs` and `css_generic.rs` use the old manual pattern
+    and should be migrated to `WebIdlNamespace`.)
 - **Domain logic belongs in the domain directory; JS-interop code belongs
   in the bindings.**  Pure Rust/wasmtime logic goes in the owning domain
   directory (`content/src/dom/`, `content/src/html/`, `content/src/streams/`,
@@ -122,8 +130,8 @@ tag, add a domain struct in `content/src/html/`, a `WebIdlInterface` impl in
    `with_element_ref` for the new type.  Also add arms in `class_list_value`
    and `class_list_set_value` if they use the element-punning pattern.
 6. **`content/src/js/bindings/html/html_element.rs`** — add a downcast arm
-   in `with_html_element_ref`, and arms in `style_css_text_getter` and
-   `style_css_text_setter`.
+   in `try_with_html_element_ref`, and arms in `element_style_attribute_ec`
+   and `set_element_style_attribute_ec`.
 7. **`content/src/js/downcast.rs`** — add arms in both
    `with_event_target_mut` and `with_event_target_ref`.
 8. **`content/src/dom/dispatch.rs`** — add an arm in `path_for_target`.

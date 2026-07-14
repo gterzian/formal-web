@@ -9,9 +9,8 @@ use std::{
 };
 
 use blitz_dom::BaseDocument;
-use boa_engine::JsData;
-use boa_gc::{Finalize, Trace};
 use html5ever::{local_name, ns};
+use js_engine::gc_struct;
 use url::Url;
 
 use crate::{
@@ -20,7 +19,7 @@ use crate::{
 };
 
 /// <https://html.spec.whatwg.org/#htmliframeelement>
-#[derive(Trace, Finalize, JsData)]
+#[gc_struct]
 pub struct HTMLIFrameElement {
     /// <https://html.spec.whatwg.org/#htmlelement>
     pub html_element: HTMLElement,
@@ -604,9 +603,9 @@ fn run_iframe_load_event_steps(
 
     let iframe_object = crate::js::platform_objects::resolve_element_object(
         iframe_node_id,
-        &mut content_document.settings.context,
+        &mut content_document.settings.realm_execution_context,
     )
-    .map_err(|error| error.to_string())?;
+    .map_err(|error| error.display().to_string())?;
 
     // Step 4: "If element's pending resource-timing start time is not null, then:"
     // TODO: Implement iframe resource timing.
@@ -621,7 +620,7 @@ fn run_iframe_load_event_steps(
         "load",
         false,
     )
-    .map_err(|error| error.to_string())?;
+    .map_err(|error| format!("fire_event failed: {error:?}"))?;
 
     // Step 7: "Unset childDocument's iframe load in progress flag."
     // TODO: Implement clearing of iframe load in progress flag.

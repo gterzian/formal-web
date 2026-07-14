@@ -1,15 +1,14 @@
 use std::{cell::Cell, collections::VecDeque, rc::Rc};
 
-use boa_engine::{
-    Context, JsArgs, JsData, JsError, JsNativeError, JsResult, JsString, JsValue,
-    native_function::NativeFunction,
-    object::{JsObject, builtins::JsPromise},
-};
-use boa_gc::{Finalize, Gc, GcRefCell, Trace};
+use js_engine::{Completion, ExecutionContext, JsTypes};
+
+use crate::js::{Types, create_builtin_fn_with_traced_captures};
 
 use crate::streams::SizeAlgorithm;
 use crate::webidl::bindings::create_interface_instance;
-use crate::webidl::{mark_promise_as_handled, promise_from_completion, resolved_promise};
+use crate::webidl::{mark_promise_as_handled, rejected_promise, resolved_promise};
+use js_engine::gc::{GcCell, JsValueCell, gc_cell_new};
+use js_engine::gc_struct;
 
 use super::readablestream::{
     ByteTeeState, ReadableStreamFromIterableState, TeeState,
@@ -30,118 +29,117 @@ use super::{
     TransformStream, range_error_value,
 };
 
+type JsValue = <Types as JsTypes>::JsValue;
+type JsObject = <Types as JsTypes>::JsObject;
+
 /// <https://streams.spec.whatwg.org/#readablestreamdefaultcontroller-pullalgorithm>
-#[derive(Clone, Trace, Finalize)]
+#[gc_struct]
 pub(crate) enum PullAlgorithm {
     ReturnUndefined,
     JavaScript(SourceMethod),
     ReadableStreamFromIterable(ReadableStreamFromIterableState),
     ReadableStreamDefaultTee {
-        tee_state: Gc<GcRefCell<TeeState>>,
+        tee_state: GcCell<TeeState>,
         clone_for_branch2: bool,
     },
-    ReadableByteStreamTeeBranch1(Gc<GcRefCell<ByteTeeState>>),
-    ReadableByteStreamTeeBranch2(Gc<GcRefCell<ByteTeeState>>),
+    ReadableByteStreamTeeBranch1(GcCell<ByteTeeState>),
+    ReadableByteStreamTeeBranch2(GcCell<ByteTeeState>),
     TransformStreamDefaultSourcePull(TransformStream),
 }
 
 impl PullAlgorithm {
     /// <https://streams.spec.whatwg.org/#readablestreamdefaultcontroller-pullalgorithm>
-    pub(crate) fn call(&self, controller_object: &JsObject, context: &mut Context) -> JsPromise {
+    pub(crate) fn call(
+        &self,
+        controller_object: &JsObject,
+        ec: &mut dyn ExecutionContext<Types>,
+    ) -> Completion<JsObject, Types> {
         match self {
-            Self::ReturnUndefined => promise_from_completion(Ok(JsValue::undefined()), context),
+            Self::ReturnUndefined => resolved_promise(ec.value_undefined(), ec),
             Self::JavaScript(callback) => {
                 let arg = JsValue::from(controller_object.clone());
-                promise_from_completion(callback.call(&[arg], context), context)
+                let result = callback.call(&[arg], ec)?;
+                resolved_promise(result, ec)
             }
-            Self::ReadableStreamFromIterable(state) => promise_from_completion(
-                readable_stream_from_iterable_pull_algorithm(state.clone(), context)
-                    .map(JsValue::from),
-                context,
-            ),
+            Self::ReadableStreamFromIterable(state) => {
+                readable_stream_from_iterable_pull_algorithm(state.clone(), ec)
+            }
             Self::ReadableStreamDefaultTee {
                 tee_state,
                 clone_for_branch2,
-            } => promise_from_completion(
-                readable_stream_default_tee_pull_algorithm(
+            } => {
+                let value = readable_stream_default_tee_pull_algorithm(
                     tee_state.clone(),
                     *clone_for_branch2,
-                    context,
-                ),
-                context,
-            ),
-            Self::ReadableByteStreamTeeBranch1(tee_state) => promise_from_completion(
-                readable_byte_stream_tee_pull1_algorithm(tee_state.clone(), context),
-                context,
-            ),
-            Self::ReadableByteStreamTeeBranch2(tee_state) => promise_from_completion(
-                readable_byte_stream_tee_pull2_algorithm(tee_state.clone(), context),
-                context,
-            ),
-            Self::TransformStreamDefaultSourcePull(stream) => promise_from_completion(
-                transform_stream_default_source_pull_algorithm(stream.clone(), context)
-                    .map(JsValue::from),
-                context,
-            ),
+                    ec,
+                )?;
+                resolved_promise(value, ec)
+            }
+            Self::ReadableByteStreamTeeBranch1(tee_state) => {
+                let value = readable_byte_stream_tee_pull1_algorithm(tee_state.clone(), ec)?;
+                resolved_promise(value, ec)
+            }
+            Self::ReadableByteStreamTeeBranch2(tee_state) => {
+                let value = readable_byte_stream_tee_pull2_algorithm(tee_state.clone(), ec)?;
+                resolved_promise(value, ec)
+            }
+            Self::TransformStreamDefaultSourcePull(stream) => {
+                transform_stream_default_source_pull_algorithm(stream.clone(), ec)
+            }
         }
     }
 }
 
 /// <https://streams.spec.whatwg.org/#readablestreamdefaultcontroller-cancelalgorithm>
-#[derive(Clone, Trace, Finalize)]
+#[gc_struct]
 pub(crate) enum CancelAlgorithm {
     ReturnUndefined,
     JavaScript(SourceMethod),
     ReadableStreamFromIterable(ReadableStreamFromIterableState),
-    ReadableStreamDefaultTeeBranch1(Gc<GcRefCell<TeeState>>),
-    ReadableStreamDefaultTeeBranch2(Gc<GcRefCell<TeeState>>),
-    ReadableByteStreamTeeBranch1(Gc<GcRefCell<ByteTeeState>>),
-    ReadableByteStreamTeeBranch2(Gc<GcRefCell<ByteTeeState>>),
+    ReadableStreamDefaultTeeBranch1(GcCell<TeeState>),
+    ReadableStreamDefaultTeeBranch2(GcCell<TeeState>),
+    ReadableByteStreamTeeBranch1(GcCell<ByteTeeState>),
+    ReadableByteStreamTeeBranch2(GcCell<ByteTeeState>),
     TransformStreamDefaultSourceCancel(TransformStream),
 }
 
 impl CancelAlgorithm {
     /// <https://streams.spec.whatwg.org/#readablestreamdefaultcontroller-cancelalgorithm>
-    pub(crate) fn call(&self, reason: JsValue, context: &mut Context) -> JsPromise {
+    pub(crate) fn call(
+        &self,
+        reason: JsValue,
+        ec: &mut dyn ExecutionContext<Types>,
+    ) -> Completion<JsObject, Types> {
         match self {
-            Self::ReturnUndefined => promise_from_completion(Ok(JsValue::undefined()), context),
+            Self::ReturnUndefined => resolved_promise(ec.value_undefined(), ec),
             Self::JavaScript(callback) => {
-                promise_from_completion(callback.call(&[reason], context), context)
+                let result = callback.call(&[reason], ec)?;
+                resolved_promise(result, ec)
             }
-            Self::ReadableStreamFromIterable(state) => promise_from_completion(
-                readable_stream_from_iterable_cancel_algorithm(state.clone(), reason, context)
-                    .map(JsValue::from),
-                context,
-            ),
-            Self::ReadableStreamDefaultTeeBranch1(tee_state) => promise_from_completion(
-                readable_stream_default_tee_cancel1_algorithm(tee_state.clone(), reason, context),
-                context,
-            ),
-            Self::ReadableStreamDefaultTeeBranch2(tee_state) => promise_from_completion(
-                readable_stream_default_tee_cancel2_algorithm(tee_state.clone(), reason, context),
-                context,
-            ),
-            Self::ReadableByteStreamTeeBranch1(tee_state) => promise_from_completion(
-                readable_byte_stream_tee_cancel1_algorithm(tee_state.clone(), reason, context)
-                    .map(JsValue::from),
-                context,
-            ),
-            Self::ReadableByteStreamTeeBranch2(tee_state) => promise_from_completion(
-                readable_byte_stream_tee_cancel2_algorithm(tee_state.clone(), reason, context)
-                    .map(JsValue::from),
-                context,
-            ),
-            Self::TransformStreamDefaultSourceCancel(stream) => promise_from_completion(
-                transform_stream_default_source_cancel_algorithm(stream.clone(), reason, context)
-                    .map(JsValue::from),
-                context,
-            ),
+            Self::ReadableStreamFromIterable(state) => {
+                readable_stream_from_iterable_cancel_algorithm(state.clone(), reason, ec)
+            }
+            Self::ReadableStreamDefaultTeeBranch1(tee_state) => {
+                readable_stream_default_tee_cancel1_algorithm(tee_state.clone(), reason, ec)
+            }
+            Self::ReadableStreamDefaultTeeBranch2(tee_state) => {
+                readable_stream_default_tee_cancel2_algorithm(tee_state.clone(), reason, ec)
+            }
+            Self::ReadableByteStreamTeeBranch1(tee_state) => {
+                readable_byte_stream_tee_cancel1_algorithm(tee_state.clone(), reason, ec)
+            }
+            Self::ReadableByteStreamTeeBranch2(tee_state) => {
+                readable_byte_stream_tee_cancel2_algorithm(tee_state.clone(), reason, ec)
+            }
+            Self::TransformStreamDefaultSourceCancel(stream) => {
+                transform_stream_default_source_cancel_algorithm(stream.clone(), reason, ec)
+            }
         }
     }
 }
 
 /// <https://streams.spec.whatwg.org/#set-up-readable-stream-default-controller-from-underlying-source>
-#[derive(Clone, Trace, Finalize)]
+#[gc_struct]
 pub(crate) enum StartAlgorithm {
     ReturnUndefined,
     ReturnValue(JsValue),
@@ -153,100 +151,106 @@ impl StartAlgorithm {
     pub(crate) fn call(
         &self,
         controller_object: &JsObject,
-        context: &mut Context,
-    ) -> JsResult<JsValue> {
+        ec: &mut dyn ExecutionContext<Types>,
+    ) -> Completion<JsValue, Types> {
         match self {
-            Self::ReturnUndefined => Ok(JsValue::undefined()),
+            Self::ReturnUndefined => Ok(ec.value_undefined()),
             Self::ReturnValue(value) => Ok(value.clone()),
             Self::JavaScript(callback) => {
                 let arg = JsValue::from(controller_object.clone());
-                callback.call(&[arg], context)
+                callback.call(&[arg], ec)
             }
         }
     }
 }
 /// `EnqueueValueWithSize` computes for it.
-#[derive(Clone, Trace, Finalize)]
+#[gc_struct]
 struct QueueEntry {
-    chunk: JsValue,
-    #[unsafe_ignore_trace]
+    chunk: JsValueCell,
+    #[ignore_trace]
     size: f64,
 }
 
 /// <https://streams.spec.whatwg.org/#rs-default-controller-class>
-#[derive(Clone, Trace, Finalize, JsData)]
+#[gc_struct]
 pub struct ReadableStreamDefaultController {
     /// <https://streams.spec.whatwg.org/#readablestreamdefaultcontroller-stream>
-    stream: Gc<GcRefCell<Option<ReadableStream>>>,
+    stream: GcCell<Option<ReadableStream>>,
 
     /// <https://streams.spec.whatwg.org/#readablestreamdefaultcontroller-queue>
-    queue: Gc<GcRefCell<VecDeque<QueueEntry>>>,
+    queue: GcCell<VecDeque<QueueEntry>>,
 
     /// <https://streams.spec.whatwg.org/#readablestreamdefaultcontroller-queuetotalsize>
-    #[unsafe_ignore_trace]
+    #[ignore_trace]
     queue_total_size: Rc<Cell<f64>>,
 
     /// <https://streams.spec.whatwg.org/#readablestreamdefaultcontroller-started>
-    #[unsafe_ignore_trace]
+    #[ignore_trace]
     started: Rc<Cell<bool>>,
 
     /// <https://streams.spec.whatwg.org/#readablestreamdefaultcontroller-closerequested>
-    #[unsafe_ignore_trace]
+    #[ignore_trace]
     close_requested: Rc<Cell<bool>>,
 
     /// <https://streams.spec.whatwg.org/#readablestreamdefaultcontroller-pullagain>
-    #[unsafe_ignore_trace]
+    #[ignore_trace]
     pull_again: Rc<Cell<bool>>,
 
     /// <https://streams.spec.whatwg.org/#readablestreamdefaultcontroller-pulling>
-    #[unsafe_ignore_trace]
+    #[ignore_trace]
     pulling: Rc<Cell<bool>>,
 
     /// <https://streams.spec.whatwg.org/#readablestreamdefaultcontroller-strategysizealgorithm>
-    strategy_size_algorithm: Gc<GcRefCell<Option<SizeAlgorithm>>>,
+    strategy_size_algorithm: GcCell<Option<SizeAlgorithm>>,
 
     /// <https://streams.spec.whatwg.org/#readablestreamdefaultcontroller-strategyhwm>
-    #[unsafe_ignore_trace]
+    #[ignore_trace]
     strategy_high_water_mark: Rc<Cell<f64>>,
 
     /// <https://streams.spec.whatwg.org/#readablestreamdefaultcontroller-pullalgorithm>
-    pull_algorithm: Gc<GcRefCell<Option<PullAlgorithm>>>,
+    pull_algorithm: GcCell<Option<PullAlgorithm>>,
 
     /// <https://streams.spec.whatwg.org/#readablestreamdefaultcontroller-cancelalgorithm>
-    cancel_algorithm: Gc<GcRefCell<Option<CancelAlgorithm>>>,
+    cancel_algorithm: GcCell<Option<CancelAlgorithm>>,
 }
 
 impl ReadableStreamDefaultController {
     pub(crate) fn new() -> Self {
         Self {
-            stream: Gc::new(GcRefCell::new(None)),
-            queue: Gc::new(GcRefCell::new(VecDeque::new())),
+            stream: gc_cell_new(None),
+            queue: gc_cell_new(VecDeque::new()),
             queue_total_size: Rc::new(Cell::new(0.0)),
             started: Rc::new(Cell::new(false)),
             close_requested: Rc::new(Cell::new(false)),
             pull_again: Rc::new(Cell::new(false)),
             pulling: Rc::new(Cell::new(false)),
-            strategy_size_algorithm: Gc::new(GcRefCell::new(None)),
+            strategy_size_algorithm: gc_cell_new(None),
             strategy_high_water_mark: Rc::new(Cell::new(0.0)),
-            pull_algorithm: Gc::new(GcRefCell::new(None)),
-            cancel_algorithm: Gc::new(GcRefCell::new(None)),
+            pull_algorithm: gc_cell_new(None),
+            cancel_algorithm: gc_cell_new(None),
         }
     }
 
-    fn stream_slot(&self) -> JsResult<ReadableStream> {
+    fn stream_slot(
+        &self,
+        ec: &mut dyn ExecutionContext<Types>,
+    ) -> Completion<ReadableStream, Types> {
         self.stream.borrow().clone().ok_or_else(|| {
-            JsNativeError::typ()
-                .with_message("ReadableStreamDefaultController is missing its stream")
-                .into()
+            ec.new_type_error("ReadableStreamDefaultController is missing its stream")
         })
     }
 
-    fn controller_object(&self) -> JsResult<JsObject> {
-        self.stream_slot()?.controller_object_slot().ok_or_else(|| {
-            JsNativeError::typ()
-                .with_message("ReadableStreamDefaultController is missing its JavaScript object")
-                .into()
-        })
+    fn controller_object(
+        &self,
+        ec: &mut dyn ExecutionContext<Types>,
+    ) -> Completion<JsObject, Types> {
+        self.stream_slot(ec)?
+            .controller_object_slot()
+            .ok_or_else(|| {
+                ec.new_type_error(
+                    "ReadableStreamDefaultController is missing its JavaScript object",
+                )
+            })
     }
 
     fn queue_is_empty(&self) -> bool {
@@ -254,49 +258,56 @@ impl ReadableStreamDefaultController {
     }
 
     /// <https://streams.spec.whatwg.org/#rs-default-controller-desired-size>
-    pub(crate) fn desired_size(&self) -> JsResult<Option<f64>> {
+    pub(crate) fn desired_size(
+        &self,
+        ec: &mut dyn ExecutionContext<Types>,
+    ) -> Completion<Option<f64>, Types> {
         // Step 1: "Return ! ReadableStreamDefaultControllerGetDesiredSize(this)."
-        self.get_desired_size()
+        self.get_desired_size(ec)
     }
 
     /// <https://streams.spec.whatwg.org/#rs-default-controller-close>
-    pub(crate) fn close(&self, context: &mut Context) -> JsResult<()> {
+    pub(crate) fn close(&self, ec: &mut dyn ExecutionContext<Types>) -> Completion<(), Types> {
         // Step 1: "If ! ReadableStreamDefaultControllerCanCloseOrEnqueue(this) is false, throw a TypeError exception."
-        if !self.can_close_or_enqueue()? {
-            return Err(JsNativeError::typ()
-                .with_message("The stream is not in a state that permits close")
-                .into());
+        if !self.can_close_or_enqueue(ec)? {
+            return Err(ec.new_type_error("The stream is not in a state that permits close"));
         }
 
         // Step 2: "Perform ! ReadableStreamDefaultControllerClose(this)."
-        self.close_steps(context)
+        self.close_steps(ec)
     }
 
     /// <https://streams.spec.whatwg.org/#rs-default-controller-enqueue>
-    pub(crate) fn enqueue(&self, chunk: JsValue, context: &mut Context) -> JsResult<()> {
+    pub(crate) fn enqueue(
+        &self,
+        chunk: JsValue,
+        ec: &mut dyn ExecutionContext<Types>,
+    ) -> Completion<(), Types> {
         // Step 1: "If ! ReadableStreamDefaultControllerCanCloseOrEnqueue(this) is false, throw a TypeError exception."
-        if !self.can_close_or_enqueue()? {
-            return Err(JsNativeError::typ()
-                .with_message("The stream is not in a state that permits enqueue")
-                .into());
+        if !self.can_close_or_enqueue(ec)? {
+            return Err(ec.new_type_error("The stream is not in a state that permits enqueue"));
         }
 
         // Step 2: "Perform ? ReadableStreamDefaultControllerEnqueue(this, chunk)."
-        self.enqueue_steps(chunk, context)
+        self.enqueue_steps(chunk, ec)
     }
 
     /// <https://streams.spec.whatwg.org/#rs-default-controller-error>
-    pub(crate) fn error(&self, error: JsValue, context: &mut Context) -> JsResult<()> {
+    pub(crate) fn error(
+        &self,
+        error: JsValue,
+        ec: &mut dyn ExecutionContext<Types>,
+    ) -> Completion<(), Types> {
         // Step 1: "Perform ! ReadableStreamDefaultControllerError(this, e)."
-        self.error_steps(error, context)
+        self.error_steps(error, ec)
     }
 
     /// <https://streams.spec.whatwg.org/#rs-default-controller-private-cancel>
     pub(crate) fn cancel_steps(
         &self,
         reason: JsValue,
-        context: &mut Context,
-    ) -> JsResult<JsObject> {
+        ec: &mut dyn ExecutionContext<Types>,
+    ) -> Completion<JsObject, Types> {
         // Step 1: "Perform ! ResetQueue(this)."
         self.reset_queue();
 
@@ -304,8 +315,11 @@ impl ReadableStreamDefaultController {
 
         // Step 2: "Let result be the result of performing this.[[cancelAlgorithm]], passing reason."
         let result = match cancel_algorithm {
-            Some(cancel_algorithm) => JsObject::from(cancel_algorithm.call(reason, context)),
-            None => resolved_promise(JsValue::undefined(), context)?,
+            Some(cancel_algorithm) => match cancel_algorithm.call(reason, ec) {
+                Ok(promise) => promise,
+                Err(error) => rejected_promise(error, ec)?,
+            },
+            None => resolved_promise(ec.value_undefined(), ec)?,
         };
 
         // Step 3: "Perform ! ReadableStreamDefaultControllerClearAlgorithms(this)."
@@ -319,31 +333,37 @@ impl ReadableStreamDefaultController {
     pub(crate) fn pull_steps(
         &self,
         read_request: ReadRequest,
-        context: &mut Context,
-    ) -> JsResult<()> {
+        ec: &mut dyn ExecutionContext<Types>,
+    ) -> Completion<(), Types> {
         // Step 1: "Let stream be this.[[stream]]."
-        let stream = self.stream_slot()?;
+        let stream = self.stream_slot(ec)?;
 
         // Step 2: "If this.[[queue]] is not empty,"
         if !self.queue_is_empty() {
-            let (chunk, should_close_stream) = {
+            let (chunk, should_close_stream, _chunk_root) = {
                 let mut queue = self.queue.borrow_mut();
 
                 // Step 2.1: "Let chunk be ! DequeueValue(this)."
                 let entry = queue
                     .pop_front()
                     .expect("queue was checked to be non-empty");
+                let chunk_value = entry.chunk.borrow().clone();
+                // Protect the chunk immediately after extraction so it
+                // survives JSC GC even after the QueueEntry's JsValueCell
+                // is dropped (which calls JSValueUnprotect).
+                let _chunk_root = ec.protect_value(&chunk_value);
                 {
-                    let mut new_size = self.queue_total_size.get() - entry.size;
+                    let new_size = self.queue_total_size.get() - entry.size;
                     if new_size <= 0.0 {
-                        new_size = 0.0;
+                        self.queue_total_size.set(0.0);
+                    } else {
+                        self.queue_total_size.set(new_size);
                     }
-                    self.queue_total_size.set(new_size);
                 }
 
                 // Step 2.2: "If this.[[closeRequested]] is true and this.[[queue]] is empty,"
                 let should_close_stream = self.close_requested.get() && queue.is_empty();
-                (entry.chunk.clone(), should_close_stream)
+                (chunk_value, should_close_stream, _chunk_root)
             };
 
             if should_close_stream {
@@ -351,33 +371,39 @@ impl ReadableStreamDefaultController {
                 self.clear_algorithms();
 
                 // Step 2.2.2: "Perform ! ReadableStreamClose(stream)."
-                readable_stream_close(stream, context)?;
+                readable_stream_close(stream, ec)?;
             } else {
                 // Step 2.3: "Otherwise, perform ! ReadableStreamDefaultControllerCallPullIfNeeded(this)."
-                self.call_pull_if_needed(context)?;
+                self.call_pull_if_needed(ec)?;
             }
 
             // Step 2.4: "Perform readRequest's chunk steps, given chunk."
-            return read_request.chunk_steps(chunk, context);
+            return read_request.chunk_steps(chunk, ec);
         }
 
         // Step 3.1: "Perform ! ReadableStreamAddReadRequest(stream, readRequest)."
-        readable_stream_add_read_request(stream.clone(), read_request)?;
+        readable_stream_add_read_request(stream.clone(), read_request, ec)?;
 
         // Step 3.2: "Perform ! ReadableStreamDefaultControllerCallPullIfNeeded(this)."
-        self.call_pull_if_needed(context)
+        self.call_pull_if_needed(ec)
     }
 
     /// <https://streams.spec.whatwg.org/#abstract-opdef-readablestreamdefaultcontroller-releasesteps>
-    pub(crate) fn release_steps(&self, _context: &mut Context) -> JsResult<()> {
+    pub(crate) fn release_steps(
+        &self,
+        _ec: &mut dyn ExecutionContext<Types>,
+    ) -> Completion<(), Types> {
         // Step 1: "Return."
         Ok(())
     }
 
     /// <https://streams.spec.whatwg.org/#readable-stream-default-controller-call-pull-if-needed>
-    pub(crate) fn call_pull_if_needed(&self, context: &mut Context) -> JsResult<()> {
+    pub(crate) fn call_pull_if_needed(
+        &self,
+        ec: &mut dyn ExecutionContext<Types>,
+    ) -> Completion<(), Types> {
         // Step 1: "Let shouldPull be ! ReadableStreamDefaultControllerShouldCallPull(controller)."
-        let should_pull = self.should_call_pull()?;
+        let should_pull = self.should_call_pull(ec)?;
 
         // Step 2: "If shouldPull is false, return."
         if !should_pull {
@@ -400,53 +426,58 @@ impl ReadableStreamDefaultController {
         self.pulling.set(true);
 
         // Step 6: "Let pullPromise be the result of performing controller.[[pullAlgorithm]]."
-        let controller_object = self.controller_object()?;
+        let controller_object = self.controller_object(ec)?;
         let pull_algorithm = self.pull_algorithm.borrow().clone();
-        let pull_promise = match pull_algorithm {
-            Some(pull_algorithm) => pull_algorithm.call(&controller_object, context),
-            None => promise_from_completion(Ok(JsValue::undefined()), context),
+        let pull_promise: JsObject = match pull_algorithm {
+            Some(pull_algorithm) => match pull_algorithm.call(&controller_object, ec) {
+                Ok(promise) => promise,
+                Err(error) => {
+                    // Step 6 (throw -> rejection): "If pullAlgorithm throws, treat it as a
+                    // rejected promise. Error the stream immediately (synchronously) rather
+                    // than deferring to microtask, so that subsequent reads see the errored
+                    // state."
+                    self.error_steps(error.clone(), ec)?;
+                    rejected_promise(error, ec)?
+                }
+            },
+            None => resolved_promise(ec.value_undefined(), ec)?,
         };
 
-        let on_fulfilled = NativeFunction::from_copy_closure_with_captures(
-            |_, _, controller: &ReadableStreamDefaultController, context| {
-                // Step 7.1: "Set controller.[[pulling]] to false."
-                controller.pulling.set(false);
-
-                let should_pull_again = controller.pull_again.get();
-                if should_pull_again {
-                    // Step 7.2.1: "Set controller.[[pullAgain]] to false."
-                    controller.pull_again.set(false);
-
-                    // Step 7.2.2: "Perform ! ReadableStreamDefaultControllerCallPullIfNeeded(controller)."
-                    controller.call_pull_if_needed(context)?;
-                }
-
-                Ok(JsValue::undefined())
-            },
+        let pull_js_promise =
+            Types::object_as_promise(&pull_promise).ok_or_else(|| ec.value_undefined())?;
+        let name_key = ec.property_key_from_str("");
+        let on_fulfilled = create_builtin_fn_with_traced_captures(
+            ec,
             self.clone(),
-        )
-        .to_js_function(context.realm());
-        let on_rejected = NativeFunction::from_copy_closure_with_captures(
-            |_, args, controller: &ReadableStreamDefaultController, context| {
-                // Step 8.1: "Perform ! ReadableStreamDefaultControllerError(controller, e)."
-                controller.error_steps(args.get_or_undefined(0).clone(), context)?;
-                Ok(JsValue::undefined())
-            },
+            pull_steps_on_fulfilled,
+            1,
+            name_key.clone(),
+            false,
+        );
+        let on_rejected = create_builtin_fn_with_traced_captures(
+            ec,
             self.clone(),
-        )
-        .to_js_function(context.realm());
-        let pull_reaction: JsObject = pull_promise
-            .then(Some(on_fulfilled), Some(on_rejected), context)?
-            .into();
-        mark_promise_as_handled(&pull_reaction, context)?;
-        mark_promise_as_handled(&JsObject::from(pull_promise), context)?;
+            pull_steps_on_rejected,
+            1,
+            name_key,
+            false,
+        );
+        let pull_reaction_val =
+            ec.perform_promise_then(pull_js_promise, Some(on_fulfilled), Some(on_rejected), None)?;
+        let pull_reaction: JsObject = Types::value_as_object(&pull_reaction_val)
+            .ok_or_else(|| ec.new_type_error("promise.then returned non-object"))?;
+        mark_promise_as_handled(&pull_reaction, ec)?;
+        mark_promise_as_handled(&pull_promise, ec)?;
         Ok(())
     }
 
     /// <https://streams.spec.whatwg.org/#readable-stream-default-controller-can-close-or-enqueue>
-    pub(crate) fn can_close_or_enqueue(&self) -> JsResult<bool> {
+    pub(crate) fn can_close_or_enqueue(
+        &self,
+        ec: &mut dyn ExecutionContext<Types>,
+    ) -> Completion<bool, Types> {
         // Step 1: "Let state be controller.[[stream]].[[state]]."
-        let state = self.stream_slot()?.state();
+        let state = self.stream_slot(ec)?.state();
 
         // Step 2: "If controller.[[closeRequested]] is false and state is \"readable\", return true."
         if !self.close_requested.get() && state == ReadableStreamState::Readable {
@@ -458,14 +489,17 @@ impl ReadableStreamDefaultController {
     }
 
     /// <https://streams.spec.whatwg.org/#readable-stream-default-controller-close>
-    pub(crate) fn close_steps(&self, context: &mut Context) -> JsResult<()> {
+    pub(crate) fn close_steps(
+        &self,
+        ec: &mut dyn ExecutionContext<Types>,
+    ) -> Completion<(), Types> {
         // Step 1: "If ! ReadableStreamDefaultControllerCanCloseOrEnqueue(controller) is false, return."
-        if !self.can_close_or_enqueue()? {
+        if !self.can_close_or_enqueue(ec)? {
             return Ok(());
         }
 
         // Step 2: "Let stream be controller.[[stream]]."
-        let stream = self.stream_slot()?;
+        let stream = self.stream_slot(ec)?;
 
         // Step 3: "Set controller.[[closeRequested]] to true."
         self.close_requested.set(true);
@@ -476,27 +510,31 @@ impl ReadableStreamDefaultController {
             self.clear_algorithms();
 
             // Step 4.2: "Perform ! ReadableStreamClose(stream)."
-            readable_stream_close(stream, context)?;
+            readable_stream_close(stream, ec)?;
         }
 
         Ok(())
     }
 
     /// <https://streams.spec.whatwg.org/#readable-stream-default-controller-enqueue>
-    pub(crate) fn enqueue_steps(&self, chunk: JsValue, context: &mut Context) -> JsResult<()> {
+    pub(crate) fn enqueue_steps(
+        &self,
+        chunk: JsValue,
+        ec: &mut dyn ExecutionContext<Types>,
+    ) -> Completion<(), Types> {
         // Step 1: "If ! ReadableStreamDefaultControllerCanCloseOrEnqueue(controller) is false, return."
-        if !self.can_close_or_enqueue()? {
+        if !self.can_close_or_enqueue(ec)? {
             return Ok(());
         }
 
         // Step 2: "Let stream be controller.[[stream]]."
-        let stream = self.stream_slot()?;
+        let stream = self.stream_slot(ec)?;
 
         // Step 3: "If ! IsReadableStreamLocked(stream) is true and ! ReadableStreamGetNumReadRequests(stream) > 0, perform ! ReadableStreamFulfillReadRequest(stream, chunk, false)."
         if stream.is_readable_stream_locked()
             && readable_stream_get_num_read_requests(stream.clone()) > 0
         {
-            readable_stream_fulfill_read_request(stream, chunk, false, context)?;
+            readable_stream_fulfill_read_request(stream, chunk, false, ec)?;
         } else {
             // Step 4.1: "Let result be the result of performing controller.[[strategySizeAlgorithm]], passing in chunk, and interpreting the result as a completion record."
             let size_algorithm =
@@ -504,20 +542,18 @@ impl ReadableStreamDefaultController {
                     .borrow()
                     .clone()
                     .ok_or_else(|| {
-                        JsNativeError::typ().with_message(
+                        ec.new_type_error(
                             "ReadableStreamDefaultController is missing its size algorithm",
                         )
                     })?;
-            let chunk_size = match size_algorithm.size(&chunk, context) {
+            let chunk_size = match size_algorithm.size(&chunk, ec) {
                 Ok(chunk_size) => chunk_size,
                 Err(error) => {
-                    let opaque = error.into_opaque(context)?;
-
                     // Step 4.2.1: "Perform ! ReadableStreamDefaultControllerError(controller, result.[[Value]])."
-                    self.error_steps(opaque.clone(), context)?;
+                    self.error_steps(error.clone(), ec)?;
 
                     // Step 4.2.2: "Return result."
-                    return Err(JsError::from_opaque(opaque));
+                    return Err(error);
                 }
             };
 
@@ -527,27 +563,31 @@ impl ReadableStreamDefaultController {
             if !chunk_size.is_finite() || chunk_size < 0.0 {
                 let error = range_error_value(
                     "queue strategy size must be a finite, non-negative number",
-                    context,
+                    ec,
                 )?;
 
                 // Step 4.5.1: "Perform ! ReadableStreamDefaultControllerError(controller, enqueueResult.[[Value]])."
-                self.error_steps(error.clone(), context)?;
+                self.error_steps(error.clone(), ec)?;
 
                 // Step 4.5.2: "Return enqueueResult."
-                return Err(JsError::from_opaque(error));
+                return Err(error);
             }
 
             self.enqueue_value_with_size(chunk, chunk_size);
         }
 
         // Step 5: "Perform ! ReadableStreamDefaultControllerCallPullIfNeeded(controller)."
-        self.call_pull_if_needed(context)
+        self.call_pull_if_needed(ec)
     }
 
     /// <https://streams.spec.whatwg.org/#readable-stream-default-controller-error>
-    pub(crate) fn error_steps(&self, error: JsValue, context: &mut Context) -> JsResult<()> {
+    pub(crate) fn error_steps(
+        &self,
+        error: JsValue,
+        ec: &mut dyn ExecutionContext<Types>,
+    ) -> Completion<(), Types> {
         // Step 1: "Let stream be controller.[[stream]]."
-        let stream = self.stream_slot()?;
+        let stream = self.stream_slot(ec)?;
 
         // Step 2: "If stream.[[state]] is not \"readable\", return."
         if stream.state() != ReadableStreamState::Readable {
@@ -561,13 +601,17 @@ impl ReadableStreamDefaultController {
         self.clear_algorithms();
 
         // Step 5: "Perform ! ReadableStreamError(stream, e)."
-        readable_stream_error(stream, error, context)
+        readable_stream_error(stream, error, ec)?;
+        Ok(())
     }
 
     /// <https://streams.spec.whatwg.org/#readable-stream-default-controller-get-desired-size>
-    pub(crate) fn get_desired_size(&self) -> JsResult<Option<f64>> {
+    pub(crate) fn get_desired_size(
+        &self,
+        ec: &mut dyn ExecutionContext<Types>,
+    ) -> Completion<Option<f64>, Types> {
         // Step 1: "Let state be controller.[[stream]].[[state]]."
-        let state = self.stream_slot()?.state();
+        let state = self.stream_slot(ec)?.state();
 
         // Step 2: "If state is \"errored\", return null."
         if state == ReadableStreamState::Errored {
@@ -586,17 +630,20 @@ impl ReadableStreamDefaultController {
     }
 
     /// <https://streams.spec.whatwg.org/#readable-stream-default-controller-has-backpressure>
-    pub(crate) fn has_backpressure(&self) -> JsResult<bool> {
-        Ok(!self.should_call_pull()?)
+    pub(crate) fn has_backpressure(
+        &self,
+        ec: &mut dyn ExecutionContext<Types>,
+    ) -> Completion<bool, Types> {
+        Ok(!self.should_call_pull(ec)?)
     }
 
     /// <https://streams.spec.whatwg.org/#readable-stream-default-controller-should-call-pull>
-    fn should_call_pull(&self) -> JsResult<bool> {
+    fn should_call_pull(&self, ec: &mut dyn ExecutionContext<Types>) -> Completion<bool, Types> {
         // Step 1: "Let stream be controller.[[stream]]."
-        let stream = self.stream_slot()?;
+        let stream = self.stream_slot(ec)?;
 
         // Step 2: "If ! ReadableStreamDefaultControllerCanCloseOrEnqueue(controller) is false, return false."
-        if !self.can_close_or_enqueue()? {
+        if !self.can_close_or_enqueue(ec)? {
             return Ok(false);
         }
 
@@ -613,7 +660,7 @@ impl ReadableStreamDefaultController {
         }
 
         // Step 5: "Let desiredSize be ! ReadableStreamDefaultControllerGetDesiredSize(controller)."
-        let desired_size = self.get_desired_size()?;
+        let desired_size = self.get_desired_size(ec)?;
 
         // Step 6: "Assert: desiredSize is not null."
         debug_assert!(desired_size.is_some());
@@ -637,7 +684,7 @@ impl ReadableStreamDefaultController {
     /// <https://streams.spec.whatwg.org/#enqueue-value-with-size>
     fn enqueue_value_with_size(&self, chunk: JsValue, chunk_size: f64) {
         self.queue.borrow_mut().push_back(QueueEntry {
-            chunk,
+            chunk: JsValueCell::new(chunk),
             size: chunk_size,
         });
         self.queue_total_size
@@ -661,8 +708,8 @@ pub(crate) fn set_up_readable_stream_default_controller(
     cancel_algorithm: CancelAlgorithm,
     high_water_mark: f64,
     size_algorithm: SizeAlgorithm,
-    context: &mut Context,
-) -> JsResult<()> {
+    ec: &mut dyn ExecutionContext<Types>,
+) -> Completion<(), Types> {
     // Step 1: "Assert: stream.[[controller]] is undefined."
     debug_assert!(stream.controller_slot().is_none());
 
@@ -693,42 +740,39 @@ pub(crate) fn set_up_readable_stream_default_controller(
     stream.set_controller_object_slot(Some(controller_object.clone()));
 
     // Step 9: "Let startResult be the result of performing startAlgorithm. (This might throw an exception.)"
-    let start_result = start_algorithm.call(controller_object, context)?;
+    let start_result = start_algorithm.call(&controller_object, ec)?;
 
     // Step 10: "Let startPromise be a promise resolved with startResult."
-    let start_promise = JsPromise::resolve(start_result, context)?;
-    let on_fulfilled = NativeFunction::from_copy_closure_with_captures(
-        |_, _, controller: &ReadableStreamDefaultController, context| {
-            // Step 11.1: "Set controller.[[started]] to true."
-            controller.started.set(true);
-
-            // Step 11.2: "Assert: controller.[[pulling]] is false."
-            debug_assert!(!controller.pulling.get());
-
-            // Step 11.3: "Assert: controller.[[pullAgain]] is false."
-            debug_assert!(!controller.pull_again.get());
-
-            // Step 11.4: "Perform ! ReadableStreamDefaultControllerCallPullIfNeeded(controller)."
-            controller.call_pull_if_needed(context)?;
-            Ok(JsValue::undefined())
-        },
+    let realm = ec.current_realm();
+    let intrinsics = ec.realm_intrinsics(&realm);
+    let start_promise = ec.promise_resolve(intrinsics.promise.clone(), start_result)?;
+    let name_key = ec.property_key_from_str("");
+    let on_fulfilled = create_builtin_fn_with_traced_captures(
+        ec,
         controller.clone(),
-    )
-    .to_js_function(context.realm());
-    let on_rejected = NativeFunction::from_copy_closure_with_captures(
-        |_, args, controller: &ReadableStreamDefaultController, context| {
-            // Step 12.1: "Perform ! ReadableStreamDefaultControllerError(controller, r)."
-            controller.error_steps(args.get_or_undefined(0).clone(), context)?;
-            Ok(JsValue::undefined())
-        },
+        setup_on_fulfilled,
+        1,
+        name_key.clone(),
+        false,
+    );
+    let on_rejected = create_builtin_fn_with_traced_captures(
+        ec,
         controller,
-    )
-    .to_js_function(context.realm());
-    let start_reaction: JsObject = start_promise
-        .then(Some(on_fulfilled), Some(on_rejected), context)?
-        .into();
-    mark_promise_as_handled(&start_reaction, context)?;
-    mark_promise_as_handled(&JsObject::from(start_promise), context)?;
+        setup_on_rejected,
+        1,
+        name_key,
+        false,
+    );
+    let start_reaction_val = ec.perform_promise_then(
+        start_promise.clone(),
+        Some(on_fulfilled),
+        Some(on_rejected),
+        None,
+    )?;
+    let start_reaction: JsObject = Types::value_as_object(&start_reaction_val)
+        .ok_or_else(|| ec.new_type_error("promise.then returned non-object"))?;
+    mark_promise_as_handled(&start_reaction, ec)?;
+    mark_promise_as_handled(&JsObject::from(start_promise), ec)?;
     Ok(())
 }
 
@@ -738,12 +782,14 @@ pub(crate) fn set_up_readable_stream_default_controller_from_underlying_source(
     underlying_source_object: Option<JsObject>,
     high_water_mark: f64,
     size_algorithm: SizeAlgorithm,
-    context: &mut Context,
-) -> JsResult<()> {
+    ec: &mut dyn ExecutionContext<Types>,
+) -> Completion<(), Types> {
     // Step 1: "Let controller be a new ReadableStreamDefaultController."
     let controller = ReadableStreamDefaultController::new();
-    let controller_object =
-        create_interface_instance::<ReadableStreamDefaultController>(controller.clone(), context)?;
+    let controller_object = create_interface_instance::<Types, ReadableStreamDefaultController>(
+        controller.clone(),
+        ec,
+    )?;
 
     // Step 2: "Let startAlgorithm be an algorithm that returns undefined."
     let mut start_algorithm = StartAlgorithm::ReturnUndefined;
@@ -756,21 +802,20 @@ pub(crate) fn set_up_readable_stream_default_controller_from_underlying_source(
 
     // Step 5: "If underlyingSourceDict[\"start\"] exists, then set startAlgorithm to an algorithm which returns the result of invoking underlyingSourceDict[\"start\"] with argument list « controller » and callback this value underlyingSource."
     if let Some(start_method) =
-        extract_source_method(underlying_source_object.as_ref(), "start", context)?
+        extract_source_method(underlying_source_object.as_ref(), "start", ec)?
     {
         start_algorithm = StartAlgorithm::JavaScript(start_method);
     }
 
     // Step 6: "If underlyingSourceDict[\"pull\"] exists, then set pullAlgorithm to an algorithm which returns the result of invoking underlyingSourceDict[\"pull\"] with argument list « controller » and callback this value underlyingSource."
-    if let Some(pull_method) =
-        extract_source_method(underlying_source_object.as_ref(), "pull", context)?
+    if let Some(pull_method) = extract_source_method(underlying_source_object.as_ref(), "pull", ec)?
     {
         pull_algorithm = PullAlgorithm::JavaScript(pull_method);
     }
 
     // Step 7: "If underlyingSourceDict[\"cancel\"] exists, then set cancelAlgorithm to an algorithm which takes an argument reason and returns the result of invoking underlyingSourceDict[\"cancel\"] with argument list « reason » and callback this value underlyingSource."
     if let Some(cancel_method) =
-        extract_source_method(underlying_source_object.as_ref(), "cancel", context)?
+        extract_source_method(underlying_source_object.as_ref(), "cancel", ec)?
     {
         cancel_algorithm = CancelAlgorithm::JavaScript(cancel_method);
     }
@@ -785,34 +830,84 @@ pub(crate) fn set_up_readable_stream_default_controller_from_underlying_source(
         cancel_algorithm,
         high_water_mark,
         size_algorithm,
-        context,
+        ec,
     )
 }
 /// underlying source object as the callback this value required by the Streams setup algorithm.
 pub(crate) fn extract_source_method(
     source_object: Option<&JsObject>,
     name: &str,
-    context: &mut Context,
-) -> JsResult<Option<SourceMethod>> {
+    ec: &mut dyn ExecutionContext<Types>,
+) -> Completion<Option<SourceMethod>, Types> {
     let Some(source_object) = source_object else {
         return Ok(None);
     };
 
-    let property_name = JsString::from(name);
-    let value = source_object.get(property_name, context)?;
+    let pk = ec.property_key_from_str(name);
+    let value = ExecutionContext::get(ec, source_object.clone(), pk)?;
     if value.is_undefined() {
         return Ok(None);
     }
 
     let callback = value
         .as_object()
-        .filter(|object| object.is_callable())
-        .ok_or_else(|| {
-            JsNativeError::typ().with_message(format!("underlying source {name} must be callable"))
-        })?;
+        .ok_or_else(|| ec.new_type_error(&format!("underlying source {name} must be callable")))?;
+
+    let callback_val = <Types as JsTypes>::value_from_object(callback.clone());
+    if !ec.is_callable(&callback_val) {
+        return Err(ec.new_type_error(&format!("underlying source {name} must be callable")));
+    }
 
     Ok(Some(SourceMethod::new(
         source_object.clone(),
-        crate::webidl::Callback::from_object(callback),
+        crate::webidl::Callback::from_object(callback, ec),
     )))
+}
+
+fn pull_steps_on_fulfilled(
+    _args: &[JsValue],
+    _this: JsValue,
+    captures: &ReadableStreamDefaultController,
+    ec: &mut dyn ExecutionContext<Types>,
+) -> Completion<JsValue, Types> {
+    captures.pulling.set(false);
+    let should_pull_again = captures.pull_again.get();
+    if should_pull_again {
+        captures.pull_again.set(false);
+        captures.call_pull_if_needed(ec)?;
+    }
+    Ok(ec.value_undefined())
+}
+
+fn pull_steps_on_rejected(
+    args: &[JsValue],
+    _this: JsValue,
+    captures: &ReadableStreamDefaultController,
+    ec: &mut dyn ExecutionContext<Types>,
+) -> Completion<JsValue, Types> {
+    captures.error_steps(args.first().cloned().unwrap_or(ec.value_undefined()), ec)?;
+    Ok(ec.value_undefined())
+}
+
+fn setup_on_fulfilled(
+    _args: &[JsValue],
+    _this: JsValue,
+    captures: &ReadableStreamDefaultController,
+    ec: &mut dyn ExecutionContext<Types>,
+) -> Completion<JsValue, Types> {
+    captures.started.set(true);
+    debug_assert!(!captures.pulling.get());
+    debug_assert!(!captures.pull_again.get());
+    captures.call_pull_if_needed(ec)?;
+    Ok(ec.value_undefined())
+}
+
+fn setup_on_rejected(
+    args: &[JsValue],
+    _this: JsValue,
+    captures: &ReadableStreamDefaultController,
+    ec: &mut dyn ExecutionContext<Types>,
+) -> Completion<JsValue, Types> {
+    captures.error_steps(args.first().cloned().unwrap_or(ec.value_undefined()), ec)?;
+    Ok(ec.value_undefined())
 }

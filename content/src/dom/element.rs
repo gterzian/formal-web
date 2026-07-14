@@ -1,9 +1,8 @@
 use std::{cell::RefCell, rc::Rc};
 
 use blitz_dom::BaseDocument;
-use boa_engine::JsData;
-use boa_gc::{Finalize, Trace};
 use html5ever::{LocalName, Prefix, QualName, ns};
+use js_engine::gc_struct;
 use style::dom_apis::{
     MayUseInvalidation, QueryAll, QueryFirst, QuerySelectorAllResult,
     query_selector as style_query_selector,
@@ -60,7 +59,7 @@ fn collect_subtree_node_ids(document: &BaseDocument, node_id: usize, node_ids: &
 }
 
 /// <https://dom.spec.whatwg.org/#interface-element>
-#[derive(Trace, Finalize, JsData)]
+#[gc_struct]
 pub struct Element {
     /// <https://dom.spec.whatwg.org/#interface-node>
     pub node: Node,

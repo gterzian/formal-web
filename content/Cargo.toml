@@ -5,9 +5,20 @@ edition = "2024"
 publish = false
 autobins = false
 
+[lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(boa_backend)', 'cfg(jsc_backend)'] }
+
 [features]
-default = ["media"]
+default = ["media", "boa"]
 media = []
+
+# Backend selection (mutually exclusive). Boa is the default.
+# JSC available on macOS by passing --no-default-features --features jsc,media.
+boa = ["js_engine/boa", "dep:boa_engine", "dep:boa_gc"]
+jsc = ["js_engine/jsc"]
+
+# Optional WebAssembly support (only meaningful with `boa` backend).
+wasm = ["dep:wasmtime"]
 
 [lib]
 path = "src/main.rs"
@@ -19,28 +30,31 @@ path = "src/bin/content_process.rs"
 [dependencies]
 arboard = { version = "3.6.1", default-features = false }
 anyrender = { version = "0.10", features = ["serde"] }
-boa_engine = { git = "https://github.com/boa-dev/boa", rev = "7ce9cae84ac9bf54fe528bb05b997ac24af808a4", default-features = false }
-boa_gc = { git = "https://github.com/boa-dev/boa", rev = "7ce9cae84ac9bf54fe528bb05b997ac24af808a4", features = ["thin-vec", "boa_string"] }
 blitz-dom = { workspace = true, features = ["svg", "system_fonts"] }
 blitz-paint = { workspace = true, features = ["svg"] }
 blitz-traits = { workspace = true }
 cssparser = "0.37"
-ipc_messages = { path = "../ipc_messages" }
 data-url = "0.3"
 html5ever = "0.39.0"
 ipc = { path = "../ipc" }
+ipc_messages = { path = "../ipc_messages" }
 keyboard-types = "0.7"
+log = "0.4"
+env_logger = "0.11"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 style = { version = "0.17.0", package = "stylo" }
 style_traits = { version = "0.17.0", package = "stylo_traits" }
-url = "2"
-verification = { path = "../verification" }
-wasmtime = "45.0.2"
-log = "0.4"
-env_logger = "0.11"
 crossbeam-channel = "0.5"
+url = "2"
 uuid = { version = "1", features = ["serde", "v4"] }
 xml5ever = "0.39.0"
+verification = { path = "../verification" }
 
+# js_engine is always needed; backend selection is via feature flags.
+js_engine = { path = "../js_engine", default-features = false }
 
+# Boa + Wasmtime: optional, pulled in by the "boa" feature.
+boa_engine = { git = "https://github.com/boa-dev/boa", rev = "7ce9cae84ac9bf54fe528bb05b997ac24af808a4", default-features = false, optional = true }
+boa_gc = { git = "https://github.com/boa-dev/boa", rev = "7ce9cae84ac9bf54fe528bb05b997ac24af808a4", features = ["thin-vec", "boa_string"], optional = true }
+wasmtime = { version = "45.0.2", optional = true }

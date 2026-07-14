@@ -1,17 +1,10 @@
-use boa_engine::{
-    Context, JsNativeError, JsResult, JsValue,
-    builtins::promise::ResolvingFunctions,
-    job::PromiseJob,
-    js_string,
-    object::{JsObject, ObjectInitializer, builtins::JsPromise},
-    property::Attribute,
-};
-use boa_gc::{Finalize, Gc, GcRefCell, Trace};
-use log::error;
+use js_engine::{Completion, ExecutionContext, JsTypes, PromiseResolvers};
+
+use crate::js::Types;
 
 use crate::webidl::{
-    Callback, ContextCallbackHost, ExceptionBehavior, invoke_callback_function,
-    mark_promise_as_handled, rejected_promise,
+    Callback, ExceptionBehavior, invoke_callback_function, mark_promise_as_handled,
+    rejected_promise,
 };
 
 use super::readablebytestreamcontroller::ReadableByteStreamController;
@@ -26,9 +19,14 @@ use super::readablestream::{
 use super::readablestreambyobreader::ReadableStreamBYOBReader;
 use super::readablestreamdefaultcontroller::ReadableStreamDefaultController;
 use super::readablestreamdefaultreader::ReadableStreamDefaultReader;
+use js_engine::gc::{GcCell, JsObjectCell};
+use js_engine::gc_struct;
+
+type JsValue = <Types as JsTypes>::JsValue;
+type JsObject = <Types as JsTypes>::JsObject;
 
 /// <https://streams.spec.whatwg.org/#readablestream-state>
-#[derive(Clone, Debug, Eq, PartialEq, Trace, Finalize)]
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) enum ReadableStreamState {
     Readable,
     Closed,
@@ -36,9 +34,9 @@ pub(crate) enum ReadableStreamState {
 }
 /// <https://streams.spec.whatwg.org/#set-up-readable-stream-default-controller-from-underlying-source>
 // Note: This struct stores an underlying source method together with its callback `this` value so the surrounding Streams algorithms can later invoke it through Web IDL callback invocation.
-#[derive(Clone, Trace, Finalize)]
+#[gc_struct]
 pub(crate) struct SourceMethod {
-    this_value: JsObject,
+    this_value: JsObjectCell,
 
     /// <https://webidl.spec.whatwg.org/#idl-callback-function>
     callback: Callback,
@@ -47,17 +45,20 @@ pub(crate) struct SourceMethod {
 impl SourceMethod {
     pub(crate) fn new(this_value: JsObject, callback: Callback) -> Self {
         Self {
-            this_value,
+            this_value: JsObjectCell::new(Some(this_value)),
             callback,
         }
     }
 
     /// <https://webidl.spec.whatwg.org/#invoke-a-callback-function>
-    pub(crate) fn call(&self, args: &[JsValue], context: &mut Context) -> JsResult<JsValue> {
-        let mut host = ContextCallbackHost::new(context, "stream callback");
-        let this_value = JsValue::from(self.this_value.clone());
+    pub(crate) fn call(
+        &self,
+        args: &[JsValue],
+        ec: &mut dyn ExecutionContext<Types>,
+    ) -> Completion<JsValue, Types> {
+        let this_value = JsValue::from(self.this_value.borrow().clone().unwrap());
         invoke_callback_function(
-            &mut host,
+            ec,
             &self.callback,
             args,
             ExceptionBehavior::Rethrow,
@@ -66,67 +67,82 @@ impl SourceMethod {
     }
 }
 // A read request either produces a chunk, closes, or errors.
-#[derive(Clone, Trace, Finalize)]
+#[gc_struct]
 pub(crate) enum ReadRequest {
     DefaultReaderRead {
-        resolvers: ResolvingFunctions,
+        resolvers: PromiseResolvers<Types>,
     },
     ReadableStreamDefaultTee {
-        tee_state: Gc<GcRefCell<TeeState>>,
+        tee_state: GcCell<TeeState>,
         clone_for_branch2: bool,
     },
     ReadableByteStreamTee {
-        tee_state: Gc<GcRefCell<ByteTeeState>>,
+        tee_state: GcCell<ByteTeeState>,
     },
     ReadableStreamPipeTo {
         state: PipeToState,
     },
 }
 
-#[derive(Clone, Trace, Finalize)]
+#[gc_struct]
 pub(crate) struct ReadIntoRequest {
-    resolvers: ResolvingFunctions,
+    resolvers: PromiseResolvers<Types>,
 }
 
 impl ReadIntoRequest {
-    pub(crate) fn new(context: &mut Context) -> (Self, JsObject) {
-        let (promise, resolvers) = JsPromise::new_pending(context);
-        (Self { resolvers }, promise.into())
+    pub(crate) fn new(ec: &mut dyn ExecutionContext<Types>) -> Completion<(Self, JsObject), Types> {
+        let (promise, resolvers) = ec.new_promise_pending()?;
+        let promise_obj = promise
+            .as_object()
+            .ok_or_else(|| ec.new_type_error("new_promise_pending did not return an object"))?;
+        Ok((Self { resolvers }, promise_obj))
     }
 
-    pub(crate) fn chunk_steps(self, chunk: JsValue, context: &mut Context) -> JsResult<()> {
-        let result = create_read_result(chunk, false, context)?;
-        self.resolvers
-            .resolve
-            .call(&JsValue::undefined(), &[result], context)?;
-        Ok(())
+    pub(crate) fn chunk_steps(
+        self,
+        chunk: JsValue,
+        ec: &mut dyn ExecutionContext<Types>,
+    ) -> Completion<(), Types> {
+        let result = create_read_result(chunk, false, ec)?;
+        let undefined = ec.value_undefined();
+        ec.call(&self.resolvers.resolve, &undefined, &[result])
+            .map(|_| ())
     }
 
-    pub(crate) fn close_steps(self, chunk: Option<JsValue>, context: &mut Context) -> JsResult<()> {
-        let result = create_read_result(chunk.unwrap_or(JsValue::undefined()), true, context)?;
-        self.resolvers
-            .resolve
-            .call(&JsValue::undefined(), &[result], context)?;
-        Ok(())
+    pub(crate) fn close_steps(
+        self,
+        chunk: Option<JsValue>,
+        ec: &mut dyn ExecutionContext<Types>,
+    ) -> Completion<(), Types> {
+        let result = create_read_result(chunk.unwrap_or(ec.value_undefined()), true, ec)?;
+        let undefined = ec.value_undefined();
+        ec.call(&self.resolvers.resolve, &undefined, &[result])
+            .map(|_| ())
     }
 
-    pub(crate) fn error_steps(self, error: JsValue, context: &mut Context) -> JsResult<()> {
-        self.resolvers
-            .reject
-            .call(&JsValue::undefined(), &[error], context)?;
-        Ok(())
+    pub(crate) fn error_steps(
+        self,
+        error: JsValue,
+        ec: &mut dyn ExecutionContext<Types>,
+    ) -> Completion<(), Types> {
+        let undefined = ec.value_undefined();
+        ec.call(&self.resolvers.reject, &undefined, &[error])
+            .map(|_| ())
     }
 }
 
 impl ReadRequest {
-    pub(crate) fn chunk_steps(self, chunk: JsValue, context: &mut Context) -> JsResult<()> {
+    pub(crate) fn chunk_steps(
+        self,
+        chunk: JsValue,
+        ec: &mut dyn ExecutionContext<Types>,
+    ) -> Completion<(), Types> {
         match &self {
             Self::DefaultReaderRead { resolvers } => {
-                let result = create_read_result(chunk, false, context)?;
-                resolvers
-                    .resolve
-                    .call(&JsValue::undefined(), &[result], context)?;
-                Ok(())
+                let result = create_read_result(chunk, false, ec)?;
+                let undefined = ec.value_undefined();
+                ec.call(&resolvers.resolve, &undefined, &[result])
+                    .map(|_| ())
             }
             Self::ReadableStreamDefaultTee {
                 tee_state,
@@ -135,105 +151,120 @@ impl ReadRequest {
                 tee_state.clone(),
                 *clone_for_branch2,
                 chunk,
-                context,
+                ec,
             ),
             Self::ReadableByteStreamTee { tee_state } => {
-                readable_byte_stream_tee_default_reader_chunk_steps(
-                    tee_state.clone(),
-                    chunk,
-                    context,
-                )
+                readable_byte_stream_tee_default_reader_chunk_steps(tee_state.clone(), chunk, ec)
             }
             Self::ReadableStreamPipeTo { state } => {
-                let result = create_read_result(chunk, false, context)?;
+                let result = create_read_result(chunk, false, ec)?;
+                let _root = ec.protect_value(&result);
                 let state = state.clone();
-                queue_internal_stream_microtask(
-                    move |context| state.on_read_request_settled(result, context),
-                    context,
-                )
+                let realm = ec.current_realm();
+                ec.enqueue_job_with_realm(
+                    realm,
+                    Box::new(move |job_ec: &mut dyn ExecutionContext<Types>| {
+                        let _ = state.on_read_request_settled(result, job_ec);
+                        drop(_root);
+                    }),
+                );
+                Ok(())
             }
         }
     }
 
-    /// closure.
-    pub(crate) fn close_steps(self, context: &mut Context) -> JsResult<()> {
+    pub(crate) fn close_steps(self, ec: &mut dyn ExecutionContext<Types>) -> Completion<(), Types> {
         match &self {
             Self::DefaultReaderRead { resolvers } => {
-                let result = create_read_result(JsValue::undefined(), true, context)?;
-                resolvers
-                    .resolve
-                    .call(&JsValue::undefined(), &[result], context)?;
-                Ok(())
+                let result = create_read_result(ec.value_undefined(), true, ec)?;
+                let undefined = ec.value_undefined();
+                ec.call(&resolvers.resolve, &undefined, &[result])
+                    .map(|_| ())
             }
             Self::ReadableStreamDefaultTee { tee_state, .. } => {
-                readable_stream_default_tee_read_request_close_steps(tee_state.clone(), context)
+                readable_stream_default_tee_read_request_close_steps(tee_state.clone(), ec)
             }
             Self::ReadableByteStreamTee { tee_state } => {
-                readable_byte_stream_tee_default_reader_close_steps(tee_state.clone(), context)
+                readable_byte_stream_tee_default_reader_close_steps(tee_state.clone(), ec)
             }
             Self::ReadableStreamPipeTo { state } => {
-                let result = create_read_result(JsValue::undefined(), true, context)?;
+                let result = create_read_result(ec.value_undefined(), true, ec)?;
+                let _root = ec.protect_value(&result);
                 let state = state.clone();
-                queue_internal_stream_microtask(
-                    move |context| state.on_read_request_settled(result, context),
-                    context,
-                )
+                let realm = ec.current_realm();
+                ec.enqueue_job_with_realm(
+                    realm,
+                    Box::new(move |job_ec: &mut dyn ExecutionContext<Types>| {
+                        let _ = state.on_read_request_settled(result, job_ec);
+                        drop(_root);
+                    }),
+                );
+                Ok(())
             }
         }
     }
 
-    pub(crate) fn error_steps(self, error: JsValue, context: &mut Context) -> JsResult<()> {
+    pub(crate) fn error_steps(
+        self,
+        error: JsValue,
+        ec: &mut dyn ExecutionContext<Types>,
+    ) -> Completion<(), Types> {
         match &self {
             Self::DefaultReaderRead { resolvers } => {
-                resolvers
-                    .reject
-                    .call(&JsValue::undefined(), &[error], context)?;
-                Ok(())
+                let undefined = ec.value_undefined();
+                ec.call(&resolvers.reject, &undefined, &[error]).map(|_| ())
             }
             Self::ReadableStreamDefaultTee { tee_state, .. } => {
-                readable_stream_default_tee_read_request_error_steps(tee_state.clone(), context)
+                readable_stream_default_tee_read_request_error_steps(tee_state.clone());
+                Ok(())
             }
             Self::ReadableByteStreamTee { tee_state } => {
-                readable_byte_stream_tee_default_reader_error_steps(tee_state.clone(), context)
+                readable_byte_stream_tee_default_reader_error_steps(tee_state.clone());
+                Ok(())
             }
             Self::ReadableStreamPipeTo { state } => {
+                let _root = ec.protect_value(&error);
                 let state = state.clone();
-                queue_internal_stream_microtask(
-                    move |context| state.on_read_request_settled(error, context),
-                    context,
-                )
+                let realm = ec.current_realm();
+                ec.enqueue_job_with_realm(
+                    realm,
+                    Box::new(move |job_ec: &mut dyn ExecutionContext<Types>| {
+                        let _ = state.on_read_request_settled(error, job_ec);
+                        drop(_root);
+                    }),
+                );
+                Ok(())
             }
         }
     }
 }
 
-pub(crate) fn queue_internal_stream_microtask<F>(task: F, context: &mut Context) -> JsResult<()>
+pub(crate) fn queue_internal_stream_microtask<F>(
+    task: F,
+    ec: &mut dyn ExecutionContext<Types>,
+) -> Completion<(), Types>
 where
-    F: FnOnce(&mut Context) -> JsResult<()> + 'static,
+    F: FnOnce(&mut dyn ExecutionContext<Types>) -> Completion<(), Types> + 'static,
 {
-    let realm = context.realm().clone();
-    context.enqueue_job(
-        PromiseJob::with_realm(
-            move |context| {
-                if let Err(error) = task(context) {
-                    let reason = error
-                        .into_opaque(context)
-                        .unwrap_or_else(|_| JsValue::undefined());
-                    if let Ok(rejected) = rejected_promise(reason, context) {
-                        if let Err(error) = mark_promise_as_handled(&rejected, context) {
-                            error!("[readable-stream] failed to mark promise as handled: {error}");
-                        }
+    let realm = ec.current_realm();
+    ec.enqueue_job_with_realm(
+        realm,
+        Box::new(move |job_ec| {
+            if let Err(error) = task(job_ec) {
+                if let Ok(rejected) = rejected_promise(error, job_ec) {
+                    if let Err(error) = mark_promise_as_handled(&rejected, job_ec) {
+                        log::warn!(
+                            "[readable-stream] failed to mark promise as handled: {:?}",
+                            error
+                        );
                     }
                 }
-                Ok(JsValue::undefined())
-            },
-            realm,
-        )
-        .into(),
+            }
+        }),
     );
     Ok(())
 }
-#[derive(Clone, Trace, Finalize)]
+#[gc_struct]
 pub(crate) enum ReadableStreamController {
     Default(ReadableStreamDefaultController),
     Byte(ReadableByteStreamController),
@@ -243,27 +274,30 @@ impl ReadableStreamController {
     pub(crate) fn cancel_steps(
         &self,
         reason: JsValue,
-        context: &mut Context,
-    ) -> JsResult<JsObject> {
+        ec: &mut dyn ExecutionContext<Types>,
+    ) -> Completion<JsObject, Types> {
         match self {
-            Self::Default(controller) => controller.cancel_steps(reason, context),
-            Self::Byte(controller) => controller.cancel_steps(reason, context),
+            Self::Default(controller) => controller.cancel_steps(reason, ec),
+            Self::Byte(controller) => controller.cancel_steps(reason, ec),
         }
     }
     pub(crate) fn pull_steps(
         &self,
         read_request: ReadRequest,
-        context: &mut Context,
-    ) -> JsResult<()> {
+        ec: &mut dyn ExecutionContext<Types>,
+    ) -> Completion<(), Types> {
         match self {
-            Self::Default(controller) => controller.pull_steps(read_request, context),
-            Self::Byte(controller) => controller.pull_steps(read_request, context),
+            Self::Default(controller) => controller.pull_steps(read_request, ec),
+            Self::Byte(controller) => controller.pull_steps(read_request, ec),
         }
     }
-    pub(crate) fn release_steps(&self, context: &mut Context) -> JsResult<()> {
+    pub(crate) fn release_steps(
+        &self,
+        ec: &mut dyn ExecutionContext<Types>,
+    ) -> Completion<(), Types> {
         match self {
-            Self::Default(controller) => controller.release_steps(context),
-            Self::Byte(controller) => controller.release_steps(context),
+            Self::Default(controller) => controller.release_steps(ec),
+            Self::Byte(controller) => controller.release_steps(ec),
         }
     }
     /// readable-stream implementation.
@@ -281,7 +315,7 @@ impl ReadableStreamController {
         }
     }
 }
-#[derive(Clone, Trace, Finalize)]
+#[gc_struct]
 pub(crate) enum ReadableStreamReader {
     Default(ReadableStreamDefaultReader),
     BYOB(ReadableStreamBYOBReader),
@@ -306,30 +340,38 @@ impl ReadableStreamReader {
         }
     }
 }
-fn create_read_result(value: JsValue, done: bool, context: &mut Context) -> JsResult<JsValue> {
-    let mut initializer = ObjectInitializer::new(context);
-    initializer.property(js_string!("value"), value, Attribute::all());
-    initializer.property(js_string!("done"), done, Attribute::all());
-    Ok(JsValue::from(initializer.build()))
+fn create_read_result(
+    value: JsValue,
+    done: bool,
+    ec: &mut dyn ExecutionContext<Types>,
+) -> Completion<JsValue, Types> {
+    let realm = ec.current_realm();
+    let intrinsics = ec.realm_intrinsics(&realm);
+    let obj = ec.create_plain_object(Some(&intrinsics.object_prototype));
+    let done_val = ec.value_from_bool(done);
+    ec.object_set_property(obj.clone(), "value", value)?;
+    ec.object_set_property(obj.clone(), "done", done_val)?;
+    Ok(<Types as JsTypes>::value_from_object(obj))
 }
 
 pub(crate) fn rejected_type_error_promise(
     message: &'static str,
-    context: &mut Context,
-) -> JsResult<JsObject> {
-    crate::webidl::rejected_promise(type_error_value(message, context)?, context)
+    ec: &mut dyn ExecutionContext<Types>,
+) -> Completion<JsObject, Types> {
+    let reason = type_error_value(message, ec)?;
+    crate::webidl::rejected_promise(reason, ec)
 }
-pub(crate) fn type_error_value(message: &'static str, context: &mut Context) -> JsResult<JsValue> {
-    Ok(JsValue::from(
-        JsNativeError::typ()
-            .with_message(message)
-            .into_opaque(context),
-    ))
+
+pub(crate) fn type_error_value(
+    message: &'static str,
+    ec: &mut dyn ExecutionContext<Types>,
+) -> Completion<JsValue, Types> {
+    Ok(ec.new_type_error(message))
 }
-pub(crate) fn range_error_value(message: &'static str, context: &mut Context) -> JsResult<JsValue> {
-    Ok(JsValue::from(
-        JsNativeError::range()
-            .with_message(message)
-            .into_opaque(context),
-    ))
+
+pub(crate) fn range_error_value(
+    message: &'static str,
+    ec: &mut dyn ExecutionContext<Types>,
+) -> Completion<JsValue, Types> {
+    Ok(ec.new_range_error(message))
 }

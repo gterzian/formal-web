@@ -1,13 +1,12 @@
 use std::{cell::RefCell, rc::Rc};
 
 use blitz_dom::BaseDocument;
-use boa_engine::JsData;
-use boa_gc::{Finalize, Trace};
 
 use crate::html::HTMLElement;
+use js_engine::gc_struct;
 
 /// <https://html.spec.whatwg.org/#the-input-element>
-#[derive(Trace, Finalize, JsData)]
+#[gc_struct]
 pub struct HTMLInputElement {
     /// <https://html.spec.whatwg.org/#htmlelement>
     pub html_element: HTMLElement,
