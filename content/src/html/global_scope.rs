@@ -596,7 +596,8 @@ impl GlobalScope {
         }
     }
 
-    pub(crate) fn create_document_in_realm(
+    /// <https://html.spec.whatwg.org/#creating-a-new-auxiliary-browsing-context>
+    pub(crate) fn create_auxiliary_context_document(
         &self,
         new_traversable_id: NavigableId,
         new_document_id: DocumentId,

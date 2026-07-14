@@ -154,8 +154,8 @@ Content runs `the_rules_for_choosing_a_navigable` (local subset) to resolve `_se
   WindowProxy is the current global (wrong if parent/top is a different navigable —
   needs IPC resolution, tracked as a gap).
 - **NeedsUserAgentAction:** Create an about:blank document locally via
-  `GlobalScope::create_document`. This gives us a Window to back the WindowProxy
-  immediately. Send `NavigateRequest` with `new_traversable_info`.
+  `GlobalScope::create_auxiliary_context_document`. This gives us a Window to back the
+  WindowProxy immediately. Send `NavigateRequest` with `new_traversable_info`.
 
 ### Steps 15–17 (UA side)
 - UA calls `create_new_top_level_traversable_from_content` to sync navigable state
@@ -174,7 +174,7 @@ WindowProxy is transparent.
 Content (window_open_steps):             UA (handle_navigate):
   |                                        |
   |-- create about:blank document          |
-  |   (GlobalScope::create_document)        |
+  |   (GlobalScope::create_auxiliary_context_document)        |
   |-- NavigateRequest {                    |
   |     new_traversable_info: Some(...),   |
   |     chosen_navigable_id: Some(id)      |
@@ -190,9 +190,9 @@ Content (window_open_steps):             UA (handle_navigate):
   |                                        |-- handle navigation (fetch URL)
 ```
 
-`GlobalScope::create_document` creates the about:blank document, JS Context, and
-Window directly on the GlobalScope (no callback indirection). The method returns
-the Window's global object which backs the WindowProxy.
+`GlobalScope::create_auxiliary_context_document` creates the about:blank document,
+JS Context, and Window directly on the GlobalScope (no callback indirection). The
+method returns the Window's global object which backs the WindowProxy.
 
 The UA's `create_new_top_level_traversable_from_content` is the inverse of
 `create_new_top_level_traversable`: it sets up only UA-side state (navigable,
@@ -297,4 +297,4 @@ See also:
 - `ipc_messages/src/content.rs` — `NewTraversableInfo`, `CreateEmptyDocument`, `NavigateRequest`
 - `content/src/html.rs` — `the_rules_for_choosing_a_navigable` (content side), `navigate`, `ChosenNavigable`
 - `content/src/html/window.rs` — `Window::open`, `window_open_steps`
-- `content/src/html/global_scope.rs` — `create_document`, `set_navigable_hierarchy`
+- `content/src/html/global_scope.rs` — `create_auxiliary_context_document`, `set_navigable_hierarchy`

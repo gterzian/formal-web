@@ -121,8 +121,7 @@ pub(crate) fn create_a_new_browsing_context_and_document(
     create_a_new_realm(None, event_sender, traversable_id, document_id)
 }
 
-/// Create a new realm within an existing JS engine (sharing the same
-/// JS context / GC heap on JSC).  Used by `window.open`.
+/// <https://html.spec.whatwg.org/#creating-a-new-browsing-context>
 pub(crate) fn create_a_new_realm(
     parent: Option<&mut crate::js::Engine>,
     event_sender: &IpcSender<ContentEvent>,
@@ -287,7 +286,7 @@ pub(crate) fn the_rules_for_choosing_a_navigable(
                 let new_document_id = DocumentId::new();
 
                 let (global_object, settings, document) = match global_scope
-                    .create_document_in_realm(new_traversable_id, new_document_id)
+                    .create_auxiliary_context_document(new_traversable_id, new_document_id)
                 {
                     Ok(result) => result,
                     Err(error) => {

@@ -1540,9 +1540,7 @@ impl JscEngine {
     }
 
     /// Create a new engine sharing the given JSC context (same JSGlobalContextRef,
-    /// same GC heap).  Used when the original engine is not available — the
-    /// context is stored separately (e.g. in GlobalScope) for use by
-    /// `create_document_in_realm`.
+    /// same GC heap).  Used when the original engine is not available.
     pub fn new_from_context(context: JscContext) -> Self {
         let ctx_ptr = context.as_context_ref();
         let raw_obj =
