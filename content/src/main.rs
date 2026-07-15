@@ -2284,7 +2284,6 @@ fn run_content_message_loop(
                 match cmd {
                     Ok(incoming) => {
                         let command = incoming.payload;
-                        println!("Got: {:?}", command);
                         let notify = matches!(
                             &command,
                             CreateEmptyDocument { .. }
@@ -2321,7 +2320,6 @@ fn run_content_message_loop(
                 }
             }
             recv(wasm_rx) -> _ => {
-                println!("Got: WASM signal");
                 process.drain_all_pending_wasm_requests();
                 process.drain_wasm_results();
 
