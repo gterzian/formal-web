@@ -6,7 +6,7 @@ use ipc::IpcSender;
 use ipc_messages::content::{DocumentId, Event as ContentEvent, NavigableId, WindowTimerKey};
 use url::Url;
 
-use crate::dom::{Document, Event, EventDispatchHost};
+use crate::dom::Document;
 use crate::html::{TimerHandler, Window};
 use crate::js::build_context::{build_context, build_realm};
 use crate::js::platform_objects::with_global_scope;
@@ -14,7 +14,7 @@ use crate::js::{
     Engine, Types, install_console_namespace, install_css_namespace, install_document_property,
 };
 use crate::webidl::bindings::{create_interface_instance, get_registry_prototype};
-use js_engine::{Completion, EcmascriptHost, ExecutionContext, JsTypes};
+use js_engine::{EcmascriptHost, ExecutionContext, JsTypes};
 
 type JsValue = <Types as JsTypes>::JsValue;
 type JsObject = <Types as JsTypes>::JsObject;
@@ -492,49 +492,3 @@ impl js_engine::EcmascriptHost<crate::js::Types> for EnvironmentSettingsObject {
     }
 }
 
-impl EventDispatchHost for EnvironmentSettingsObject {
-    fn ec(&mut self) -> &mut dyn ExecutionContext<crate::js::Types> {
-        &mut self.realm_execution_context
-    }
-
-    fn create_event_object(
-        &mut self,
-        event: crate::dom::Event,
-    ) -> Completion<JsObject, crate::js::Types> {
-        create_interface_instance::<crate::js::Types, Event>(
-            event,
-            &mut self.realm_execution_context,
-        )
-    }
-
-    fn document_object(&mut self) -> Completion<JsObject, crate::js::Types> {
-        crate::js::platform_objects::document_object(&mut self.realm_execution_context)
-    }
-
-    fn global_object(&mut self) -> JsObject {
-        self.realm_execution_context.realm_global_object()
-    }
-
-    fn resolve_element_object(&mut self, node_id: usize) -> Completion<JsObject, crate::js::Types> {
-        crate::js::platform_objects::resolve_element_object(
-            node_id,
-            &mut self.realm_execution_context,
-        )
-    }
-
-    fn resolve_existing_node_object(
-        &mut self,
-        document: Rc<RefCell<BaseDocument>>,
-        node_id: usize,
-    ) -> Completion<JsObject, crate::js::Types> {
-        crate::js::platform_objects::object_for_existing_node(
-            document,
-            node_id,
-            &mut self.realm_execution_context,
-        )
-    }
-
-    fn current_time_millis(&self) -> f64 {
-        EnvironmentSettingsObject::current_time_millis(self)
-    }
-}

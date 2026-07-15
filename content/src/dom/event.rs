@@ -149,6 +149,9 @@ impl EventTarget {
             .retain(|listener| !listener.removed);
     }
 
+    // Note: Defined by the spec but not yet used by the current dispatch code.
+    // <https://dom.spec.whatwg.org/#concept-event-listener>
+    #[allow(dead_code)]
     pub(crate) fn listener_is_active(&self, listener_id: u64) -> bool {
         self.event_listener_list
             .iter()

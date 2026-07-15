@@ -861,8 +861,15 @@ impl ContentProcess {
             .settings
             .realm_execution_context
             .realm_global_object();
-        fire_event(&mut content_document.settings, &window, "load", true)
-            .map_err(|error| format!("fire_event failed: {error:?}"))?;
+        let time_millis = content_document.settings.current_time_millis();
+        fire_event(
+            &mut content_document.settings.realm_execution_context,
+            &window,
+            "load",
+            time_millis,
+            true,
+        )
+        .map_err(|error| format!("fire_event failed: {error:?}"))?;
 
         let traversable_id = content_document.traversable_id;
         self.active_documents_by_traversable
@@ -1291,8 +1298,14 @@ impl ContentProcess {
         let (navigable_id, canceled) = if let Some(document) = self.documents.get_mut(&document_id)
         {
             let navigable_id = document.traversable_id;
-            let canceled = !dispatch_window_event(&mut document.settings, "beforeunload", true)
-                .map_err(|error| format!("dispatch_window_event failed: {error:?}"))?;
+            let time_millis = document.settings.current_time_millis();
+            let canceled = !dispatch_window_event(
+                &mut document.settings.realm_execution_context,
+                "beforeunload",
+                true,
+                time_millis,
+            )
+            .map_err(|error| format!("dispatch_window_event failed: {error:?}"))?;
             (Some(navigable_id), canceled)
         } else {
             (None, false)

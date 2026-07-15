@@ -12,7 +12,6 @@ use crate::webidl::bindings::{
 };
 use crate::webidl::{callback_function_value, nullable_value};
 
-use super::event_target::EcDispatchHost;
 
 use js_engine::{Completion, ExecutionContext, JsTypes};
 
@@ -132,8 +131,7 @@ pub(crate) fn signal_abort(
     reason: JsValue,
     ec: &mut dyn ExecutionContext<Types>,
 ) -> Completion<(), Types> {
-    let mut host = EcDispatchHost::new(ec);
-    dom_signal_abort(&mut host, signal, reason)
+    dom_signal_abort(ec, signal, reason)
 }
 
 pub(crate) fn abort_static(

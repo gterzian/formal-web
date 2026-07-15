@@ -8,7 +8,7 @@ use crate::js::{Types, create_builtin_fn_with_traced_captures};
 
 use crate::{
     dom::{AbortSignal, create_abort_signal, signal_abort},
-    js::bindings::dom::EcDispatchHost,
+
     streams::SizeAlgorithm,
     webidl::bindings::create_interface_instance,
     webidl::{promise_from_value, rejected_promise, resolved_promise},
@@ -288,8 +288,7 @@ impl WritableStreamDefaultController {
         ec: &mut dyn ExecutionContext<Types>,
     ) -> Completion<(), Types> {
         let signal = self.signal(ec)?;
-        let mut host = EcDispatchHost::new(ec);
-        signal_abort(&mut host, &signal, reason)
+        signal_abort(ec, &signal, reason)
     }
 
     fn write_algorithm(

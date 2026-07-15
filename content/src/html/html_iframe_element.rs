@@ -614,10 +614,12 @@ fn run_iframe_load_event_steps(
     // TODO: Implement document iframe load in progress flag.
 
     // Step 6: "Fire an event named load at element."
+    let time_millis = content_document.settings.current_time_millis();
     fire_event(
-        &mut content_document.settings,
+        &mut content_document.settings.realm_execution_context,
         &iframe_object,
         "load",
+        time_millis,
         false,
     )
     .map_err(|error| format!("fire_event failed: {error:?}"))?;

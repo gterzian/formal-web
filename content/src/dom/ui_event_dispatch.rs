@@ -15,11 +15,11 @@ use ipc_messages::content::{DocumentId, Event as ContentEvent, NavigableId};
 #[cfg(target_os = "macos")]
 use keyboard_types::{Key, Modifiers as KeyboardModifiers};
 
-use crate::html::{EnvironmentSettingsObject, HTMLAnchorElement};
+use crate::html::EnvironmentSettingsObject;
 use crate::webidl::bindings::create_interface_instance;
-use js_engine::{Completion, ExecutionContext};
+use js_engine::ExecutionContext;
 
-use super::{Event, EventDispatchHost, UIEvent as JsUiEvent, dispatch, dispatch_with_chain};
+use super::{Event, UIEvent as JsUiEvent, dispatch, dispatch_with_chain};
 
 fn input_debug_enabled() -> bool {
     std::env::var_os("FORMAL_WEB_DEBUG_INPUT").is_some()
@@ -330,20 +330,24 @@ pub(crate) fn dispatch_trusted_click_event(
         event_sender,
         Rc::new(RefCell::new(DeferredAppleStandardKeybinding::default())),
     );
-    let target = handler
-        .resolve_element_object(target_node_id)
-        .map_err(|error| format!("failed to resolve click target element: {error:?}"))?;
-    let event = handler
-        .create_event_object(Event::new(
+    let time_millis = handler.settings.current_time_millis();
+    let (target, event) = {
+        let ec = handler.settings.ec();
+        let target = crate::js::platform_objects::resolve_element_object(target_node_id, ec)
+            .map_err(|error| format!("failed to resolve click target element: {error:?}"))?;
+        let event_domain = Event::new(
             String::from("click"),
             true,
             true,
             true,
             true,
-            handler.current_time_millis(),
-        ))
-        .map_err(|error| format!("failed to construct trusted click event: {error:?}"))?;
-    dispatch(&mut handler, &target, &event, false)
+            time_millis,
+        );
+        let event = create_interface_instance::<crate::js::Types, Event>(event_domain, ec)
+            .map_err(|error| format!("failed to construct trusted click event: {error:?}"))?;
+        (target, event)
+    };
+    dispatch(handler.settings.ec(), &target, &event, false)
         .map_err(|error| format!("failed to dispatch trusted click event: {error:?}"))?;
     handler
         .settings
@@ -389,73 +393,7 @@ impl<'a> BlitzJSEventHandler<'a> {
     }
 }
 
-impl EventDispatchHost for BlitzJSEventHandler<'_> {
-    fn ec(&mut self) -> &mut dyn ExecutionContext<crate::js::Types> {
-        self.settings.ec()
-    }
 
-    fn create_event_object(&mut self, event: Event) -> Completion<JsObject, crate::js::Types> {
-        self.settings.create_event_object(event)
-    }
-
-    fn document_object(&mut self) -> Completion<JsObject, crate::js::Types> {
-        self.settings.document_object()
-    }
-
-    fn global_object(&mut self) -> JsObject {
-        self.settings.global_object()
-    }
-
-    fn resolve_element_object(&mut self, node_id: usize) -> Completion<JsObject, crate::js::Types> {
-        self.settings.resolve_element_object(node_id)
-    }
-
-    fn resolve_existing_node_object(
-        &mut self,
-        document: Rc<RefCell<BaseDocument>>,
-        node_id: usize,
-    ) -> Completion<JsObject, crate::js::Types> {
-        self.settings
-            .resolve_existing_node_object(document, node_id)
-    }
-
-    fn current_time_millis(&self) -> f64 {
-        self.settings.current_time_millis()
-    }
-
-    fn has_activation_behavior(&mut self, target: &JsObject) -> bool {
-        self.ec()
-            .with_object_any(target)
-            .and_then(|data| data.downcast_ref::<HTMLAnchorElement>())
-            .is_some()
-    }
-
-    fn run_activation_behavior(
-        &mut self,
-        target: &JsObject,
-        event: &JsObject,
-    ) -> Completion<(), crate::js::Types> {
-        let anchor = self
-            .ec()
-            .with_object_any(target)
-            .and_then(|data| data.downcast_ref::<HTMLAnchorElement>())
-            .map(|a| a.clone());
-        if let Some(anchor) = anchor {
-            let result = anchor.activation_behavior(
-                self.source_navigable_id,
-                self.parent_navigable_id,
-                self.top_level_navigable_id,
-                &self.settings.creation_url,
-                event,
-                self.event_sender,
-            );
-            if let Err(error_msg) = result {
-                return Err(self.ec().new_type_error(&error_msg));
-            }
-        }
-        Ok(())
-    }
-}
 
 impl js_engine::EcmascriptHost<crate::js::Types> for BlitzJSEventHandler<'_> {
     fn get(
@@ -554,8 +492,9 @@ impl EventHandler for BlitzJSEventHandler<'_> {
             &mut self.settings.realm_execution_context,
         )
         .expect("UIEvent construction must succeed");
-        if let Err(error) = dispatch_with_chain(self, chain, &event_object) {
+        if let Err(error) = dispatch_with_chain(self.settings.ec(), chain, &event_object) {
             let error_msg = self
+                .settings
                 .ec()
                 .to_rust_string(error.clone())
                 .unwrap_or_else(|_| format!("{error:?}"));
@@ -564,6 +503,7 @@ impl EventHandler for BlitzJSEventHandler<'_> {
         }
 
         let ui_event = self
+            .settings
             .ec()
             .with_object_any(&event_object)
             .and_then(|data| data.downcast_ref::<JsUiEvent>())
