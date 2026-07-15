@@ -330,30 +330,45 @@ pub(crate) fn resolve_event_target(
     ec: &mut dyn ExecutionContext<Types>,
     object: &JsObject,
 ) -> EventTarget {
-    ec.with_object_any(object)
+    fn set_reflector(et: &mut EventTarget, obj: &JsObject) {
+        et.reflector = Some(obj.clone());
+    }
+
+    ec.with_object_any_mut(object)
         .and_then(|data| {
-            if let Some(window) = data.downcast_ref::<Window>() {
+            if let Some(window) = data.downcast_mut::<Window>() {
+                set_reflector(&mut window.event_target, object);
                 Some(window.event_target.clone())
-            } else if let Some(document) = data.downcast_ref::<crate::dom::Document>() {
+            } else if let Some(document) = data.downcast_mut::<crate::dom::Document>() {
+                set_reflector(&mut document.node.event_target, object);
                 Some(document.node.event_target.clone())
-            } else if let Some(element) = data.downcast_ref::<crate::dom::Element>() {
+            } else if let Some(element) = data.downcast_mut::<crate::dom::Element>() {
+                set_reflector(&mut element.node.event_target, object);
                 Some(element.node.event_target.clone())
-            } else if let Some(html_element) = data.downcast_ref::<HTMLElement>() {
+            } else if let Some(html_element) = data.downcast_mut::<HTMLElement>() {
+                set_reflector(&mut html_element.element.node.event_target, object);
                 Some(html_element.element.node.event_target.clone())
-            } else if let Some(anchor) = data.downcast_ref::<HTMLAnchorElement>() {
+            } else if let Some(anchor) = data.downcast_mut::<HTMLAnchorElement>() {
+                set_reflector(&mut anchor.html_element.element.node.event_target, object);
                 Some(anchor.html_element.element.node.event_target.clone())
-            } else if let Some(iframe) = data.downcast_ref::<HTMLIFrameElement>() {
+            } else if let Some(iframe) = data.downcast_mut::<HTMLIFrameElement>() {
+                set_reflector(&mut iframe.html_element.element.node.event_target, object);
                 Some(iframe.html_element.element.node.event_target.clone())
-            } else if let Some(input) = data.downcast_ref::<HTMLInputElement>() {
+            } else if let Some(input) = data.downcast_mut::<HTMLInputElement>() {
+                set_reflector(&mut input.html_element.element.node.event_target, object);
                 Some(input.html_element.element.node.event_target.clone())
-            } else if let Some(node) = data.downcast_ref::<crate::dom::Node>() {
+            } else if let Some(node) = data.downcast_mut::<crate::dom::Node>() {
+                set_reflector(&mut node.event_target, object);
                 Some(node.event_target.clone())
-            } else if let Some(target) = data.downcast_ref::<EventTarget>() {
+            } else if let Some(target) = data.downcast_mut::<EventTarget>() {
+                set_reflector(target, object);
                 Some(target.clone())
-            } else if let Some(signal) = data.downcast_ref::<super::abort::AbortSignal>() {
-                // AbortSignal stores its EventTarget inside a GcCell;
-                // clone it via the accessor method.
-                Some(signal.with_event_target_mut(|et| et.clone()))
+            } else if let Some(signal) = data.downcast_mut::<super::abort::AbortSignal>() {
+                let et = signal.with_event_target_mut(|et| {
+                    set_reflector(et, object);
+                    et.clone()
+                });
+                Some(et)
             } else {
                 None
             }
@@ -366,8 +381,17 @@ pub(crate) fn resolve_global_event_target(
     ec: &mut dyn ExecutionContext<Types>,
     object: &JsObject,
 ) -> EventTarget {
-    ec.with_object_any(object)
-        .and_then(|data| data.downcast_ref::<Window>().map(|w| w.event_target.clone()))
+    fn set_reflector(et: &mut EventTarget, obj: &JsObject) {
+        et.reflector = Some(obj.clone());
+    }
+
+    ec.with_object_any_mut(object)
+        .and_then(|data| {
+            data.downcast_mut::<Window>().map(|w| {
+                set_reflector(&mut w.event_target, object);
+                w.event_target.clone()
+            })
+        })
         .unwrap_or_default()
 }
 

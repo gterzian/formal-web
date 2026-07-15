@@ -3,10 +3,6 @@ use std::{cell::RefCell, rc::Rc};
 use blitz_dom::BaseDocument;
 use ipc::IpcSender;
 
-use crate::js::Types;
-use js_engine::JsTypes;
-
-type JsObject = <Types as JsTypes>::JsObject;
 use ipc_messages::content::{Event as ContentEvent, NavigableId, UserNavigationInvolvement};
 use js_engine::gc_struct;
 use url::Url;
@@ -22,6 +18,7 @@ pub struct HTMLAnchorElement {
     pub html_element: HTMLElement,
 }
 
+#[allow(dead_code)]
 impl HTMLAnchorElement {
     pub fn new(document: Rc<RefCell<BaseDocument>>, node_id: usize) -> Self {
         Self {
@@ -44,7 +41,7 @@ impl HTMLAnchorElement {
         parent_navigable_id: Option<NavigableId>,
         top_level_navigable_id: NavigableId,
         document_creation_url: &Url,
-        _event: &JsObject,
+        _event: &<crate::js::Types as js_engine::JsTypes>::JsObject,
         event_sender: &IpcSender<ContentEvent>,
     ) -> Result<(), String> {
         // Step 1: "If element has no href attribute, then return."
