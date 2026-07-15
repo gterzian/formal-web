@@ -862,13 +862,9 @@ impl ContentProcess {
             .realm_execution_context
             .realm_global_object();
         let time_millis = content_document.settings.current_time_millis();
-        fire_event(
-            &mut content_document.settings.realm_execution_context,
-            &window,
-            "load",
-            time_millis,
-            true,
-        )
+        let ec = &mut content_document.settings.realm_execution_context;
+        let window_target = dom::resolve_global_event_target(ec, &window);
+        fire_event(ec, &window_target, "load", time_millis, true)
         .map_err(|error| format!("fire_event failed: {error:?}"))?;
 
         let traversable_id = content_document.traversable_id;

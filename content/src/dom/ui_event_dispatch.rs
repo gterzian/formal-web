@@ -320,7 +320,7 @@ pub(crate) fn dispatch_trusted_click_event(
     event_sender: &IpcSender<ContentEvent>,
     target_node_id: usize,
 ) -> Result<(), String> {
-    let mut handler = BlitzJSEventHandler::new(
+    let handler = BlitzJSEventHandler::new(
         document_id,
         source_navigable_id,
         parent_navigable_id,
@@ -347,7 +347,9 @@ pub(crate) fn dispatch_trusted_click_event(
             .map_err(|error| format!("failed to construct trusted click event: {error:?}"))?;
         (target, event)
     };
-    dispatch(handler.settings.ec(), &target, &event, false)
+    let ec = handler.settings.ec();
+    let target_event_target = dispatch::resolve_event_target(ec, &target);
+    dispatch(ec, &target_event_target, &event, false)
         .map_err(|error| format!("failed to dispatch trusted click event: {error:?}"))?;
     handler
         .settings
@@ -361,11 +363,8 @@ pub(crate) fn dispatch_trusted_click_event(
 struct BlitzJSEventHandler<'a> {
     document_id: DocumentId,
     source_navigable_id: NavigableId,
-    parent_navigable_id: Option<NavigableId>,
-    top_level_navigable_id: NavigableId,
     _document: Rc<RefCell<BaseDocument>>,
     settings: &'a mut EnvironmentSettingsObject,
-    event_sender: &'a IpcSender<ContentEvent>,
     deferred_apple_keybinding: Rc<RefCell<DeferredAppleStandardKeybinding>>,
 }
 
@@ -373,21 +372,18 @@ impl<'a> BlitzJSEventHandler<'a> {
     fn new(
         document_id: DocumentId,
         source_navigable_id: NavigableId,
-        parent_navigable_id: Option<NavigableId>,
-        top_level_navigable_id: NavigableId,
+        _parent_navigable_id: Option<NavigableId>,
+        _top_level_navigable_id: NavigableId,
         document: Rc<RefCell<BaseDocument>>,
         settings: &'a mut EnvironmentSettingsObject,
-        event_sender: &'a IpcSender<ContentEvent>,
+        _event_sender: &'a IpcSender<ContentEvent>,
         deferred_apple_keybinding: Rc<RefCell<DeferredAppleStandardKeybinding>>,
     ) -> Self {
         Self {
             document_id,
             source_navigable_id,
-            parent_navigable_id,
-            top_level_navigable_id,
             _document: document,
             settings,
-            event_sender,
             deferred_apple_keybinding,
         }
     }

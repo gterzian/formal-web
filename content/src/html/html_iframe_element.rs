@@ -14,7 +14,7 @@ use js_engine::gc_struct;
 use url::Url;
 
 use crate::{
-    ContentProcess, EMPTY_HTML_DOCUMENT, NavigableContainerState, dom::fire_event,
+    ContentProcess, EMPTY_HTML_DOCUMENT, NavigableContainerState, dom::{fire_event, resolve_event_target},
     html::HTMLElement, html::navigate, webidl::Callback,
 };
 
@@ -615,14 +615,10 @@ fn run_iframe_load_event_steps(
 
     // Step 6: "Fire an event named load at element."
     let time_millis = content_document.settings.current_time_millis();
-    fire_event(
-        &mut content_document.settings.realm_execution_context,
-        &iframe_object,
-        "load",
-        time_millis,
-        false,
-    )
-    .map_err(|error| format!("fire_event failed: {error:?}"))?;
+    let ec = &mut content_document.settings.realm_execution_context;
+    let iframe_target = resolve_event_target(ec, &iframe_object);
+    fire_event(ec, &iframe_target, "load", time_millis, false)
+        .map_err(|error| format!("fire_event failed: {error:?}"))?;
 
     // Step 7: "Unset childDocument's iframe load in progress flag."
     // TODO: Implement clearing of iframe load in progress flag.

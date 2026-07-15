@@ -9,7 +9,7 @@ use js_engine::gc_struct;
 use js_engine::{Completion, ExecutionContext, JsTypes};
 
 use crate::js::try_with_event_target_mut;
-use super::{DOMException, EventTarget, fire_event};
+use super::{DOMException, EventTarget, fire_event, resolve_event_target};
 
 type JsObject = <Types as JsTypes>::JsObject;
 type JsValue = <Types as JsTypes>::JsValue;
@@ -90,7 +90,6 @@ impl AbortAlgorithm {
 
 #[gc_struct]
 struct AbortSignalState {
-    reflector: Option<JsObject>,
     event_target: EventTarget,
 
     #[ignore_trace]
@@ -112,7 +111,6 @@ struct AbortSignalState {
 impl AbortSignalState {
     fn new(aborted: bool, abort_reason: JsValue) -> Self {
         Self {
-            reflector: None,
             event_target: EventTarget::default(),
             aborted,
             abort_reason,
@@ -145,11 +143,11 @@ impl AbortSignal {
     }
 
     pub(crate) fn set_reflector(&self, reflector: JsObject) {
-        self.shared.borrow_mut().reflector = Some(reflector);
+        self.shared.borrow_mut().event_target.reflector = Some(reflector);
     }
 
     pub(crate) fn object(&self) -> Option<JsObject> {
-        self.shared.borrow().reflector.clone()
+        self.shared.borrow().event_target.reflector.clone()
     }
 
     pub(crate) fn with_event_target_mut<R>(&self, f: impl FnOnce(&mut EventTarget) -> R) -> R {
@@ -356,7 +354,9 @@ fn run_abort_steps(
     })?;
     // fire_event:: Step 1-2: Create event with default constructor (Event).
     // fire_event:: Step 5: Return the result of dispatching event at target.
-    let _ = fire_event(ec, &signal_object, "abort", 0.0, false)?;
+    // Clone the EventTarget from the AbortSignal's internal state.
+    let event_target = resolve_event_target(ec, &signal_object);
+    let _ = fire_event(ec, &event_target, "abort", 0.0, false)?;
     Ok(())
 }
 
