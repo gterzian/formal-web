@@ -10,11 +10,11 @@ use std::{
 
 use blitz_dom::BaseDocument;
 use html5ever::{local_name, ns};
-use js_engine::gc_struct;
+use js_engine::{gc_struct, ExecutionContext};
 use url::Url;
 
 use crate::{
-    ContentProcess, EMPTY_HTML_DOCUMENT, NavigableContainerState, dom::{fire_event, resolve_event_target},
+    ContentProcess, EMPTY_HTML_DOCUMENT, NavigableContainerState, dom::fire_event,
     html::HTMLElement, html::navigate, webidl::Callback,
 };
 
@@ -616,8 +616,18 @@ fn run_iframe_load_event_steps(
     // Step 6: "Fire an event named load at element."
     let time_millis = content_document.settings.current_time_millis();
     let ec = &mut content_document.settings.realm_execution_context;
-    let iframe_target = resolve_event_target(ec, &iframe_object);
-    fire_event(ec, &iframe_target, "load", time_millis, false)
+
+    let iframe_target = ec
+        .with_object_any(&iframe_object)
+        .and_then(|data| data.downcast_ref::<crate::html::HTMLIFrameElement>())
+        .map(|iframe| iframe.html_element.element.node.event_target.clone())
+        .ok_or_else(|| {
+            let msg = "failed to extract EventTarget from iframe_object".to_string();
+            log::error!("{msg}");
+            msg
+        })?;
+
+    fire_event(ec, &iframe_target, &iframe_object, "load", time_millis, false)
         .map_err(|error| format!("fire_event failed: {error:?}"))?;
 
     // Step 7: "Unset childDocument's iframe load in progress flag."

@@ -863,8 +863,18 @@ impl ContentProcess {
             .realm_global_object();
         let time_millis = content_document.settings.current_time_millis();
         let ec = &mut content_document.settings.realm_execution_context;
-        let window_target = dom::resolve_global_event_target(ec, &window);
-        fire_event(ec, &window_target, "load", time_millis, true)
+
+        let window_target = ec
+            .with_object_any(&window)
+            .and_then(|data| data.downcast_ref::<crate::html::Window>())
+            .map(|w| w.event_target.clone())
+            .ok_or_else(|| {
+                let msg = "failed to extract EventTarget from Window".to_string();
+                log::error!("{msg}");
+                msg
+            })?;
+
+        fire_event(ec, &window_target, &window, "load", time_millis, true)
         .map_err(|error| format!("fire_event failed: {error:?}"))?;
 
         let traversable_id = content_document.traversable_id;

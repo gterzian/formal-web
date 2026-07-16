@@ -348,8 +348,14 @@ pub(crate) fn dispatch_trusted_click_event(
         (target, event)
     };
     let ec = handler.settings.ec();
-    let target_event_target = dispatch::resolve_event_target(ec, &target);
-    dispatch(ec, &target_event_target, &event, false)
+    let target_value = <Types as JsTypes>::value_from_object(target.clone());
+    let target_event_target = crate::js::try_with_event_target_mut(&target_value, ec, |et| et.clone())
+        .map_err(|error| {
+            log::error!("dispatch_trusted_click_event: failed to extract EventTarget: {error:?}");
+            format!("failed to extract EventTarget: {error:?}")
+        })?;
+
+    dispatch(ec, &target_event_target, &target, &event, false)
         .map_err(|error| format!("failed to dispatch trusted click event: {error:?}"))?;
     handler
         .settings

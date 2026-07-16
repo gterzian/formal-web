@@ -1,7 +1,7 @@
 type JsValue = <crate::js::Types as JsTypes>::JsValue;
 type JsObject = <crate::js::Types as JsTypes>::JsObject;
 
-use crate::dom::{AbortSignal, EventTarget, dispatch, resolve_event_target};
+use crate::dom::{AbortSignal, EventTarget, dispatch};
 use crate::js::try_with_event_target_mut;
 use crate::webidl::{callback_interface_type_value, nullable_value};
 
@@ -131,8 +131,14 @@ fn dispatch_event(
         None => return Err(ec.new_type_error("dispatchEvent requires an Event")),
     };
     let target_object = current_event_target_object(this, ec);
-    let target = resolve_event_target(ec, &target_object);
-    let canceled = dispatch(ec, &target, &event_obj, false)?;
+    let target_value = <crate::js::Types as JsTypes>::value_from_object(target_object.clone());
+    let target = crate::js::try_with_event_target_mut(&target_value, ec, |et| et.clone())
+        .map_err(|error| {
+            log::error!("dispatchEvent: failed to extract EventTarget: {error:?}");
+            error
+        })?;
+
+    let canceled = dispatch(ec, &target, &target_object, &event_obj, false)?;
     Ok(ec.value_from_bool(!canceled))
 }
 

@@ -53,18 +53,22 @@ pub(crate) struct EventListener {
 #[gc_struct]
 #[derive(Default)]
 pub struct EventTarget {
-    /// The JsObject GC handle for the platform object that embeds this
-    /// EventTarget (Node, Window, AbortSignal, etc.).  Set by
-    /// `set_reflector` when the platform object is created.
-    /// Used by the dispatch algorithm to obtain the JsObject for
-    /// Web IDL callback invocation.
-    pub(crate) reflector: Option<JsObject>,
-
     /// <https://dom.spec.whatwg.org/#eventtarget-event-listener-list>
     pub(crate) event_listener_list: Vec<EventListener>,
 
     #[ignore_trace]
     next_listener_id: u64,
+}
+
+/// Trait for types that embed an EventTarget (Node, Window, etc.).
+pub(crate) trait EventTargetAccess {
+    fn get_event_target(&self) -> &EventTarget;
+}
+
+impl EventTargetAccess for EventTarget {
+    fn get_event_target(&self) -> &EventTarget {
+        self
+    }
 }
 
 impl EventTarget {

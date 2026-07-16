@@ -9,7 +9,7 @@ use js_engine::gc_struct;
 use js_engine::{Completion, ExecutionContext, JsTypes};
 
 use crate::js::try_with_event_target_mut;
-use super::{DOMException, EventTarget, fire_event, resolve_event_target};
+use super::{DOMException, EventTarget, fire_event};
 
 type JsObject = <Types as JsTypes>::JsObject;
 type JsValue = <Types as JsTypes>::JsValue;
@@ -52,9 +52,14 @@ impl AbortAlgorithm {
                 listener_id,
             } => {
                 let value = <Types as JsTypes>::value_from_object(event_target.clone());
-                let _ = try_with_event_target_mut(&value, ec, |target| {
+                if let Err(error) = try_with_event_target_mut(&value, ec, |target| {
                     target.remove_event_listener_by_id(*listener_id);
-                });
+                }) {
+                    log::error!(
+                        "AbortAlgorithm::RemoveEventListener: failed to remove listener {}: {error:?}",
+                        listener_id,
+                    );
+                }
             }
             Self::ReadableStreamPipeTo { state } => {
                 state.run_abort_algorithm(ec)?;
@@ -90,6 +95,7 @@ impl AbortAlgorithm {
 
 #[gc_struct]
 struct AbortSignalState {
+    reflector: Option<JsObject>,
     event_target: EventTarget,
 
     #[ignore_trace]
@@ -111,6 +117,7 @@ struct AbortSignalState {
 impl AbortSignalState {
     fn new(aborted: bool, abort_reason: JsValue) -> Self {
         Self {
+            reflector: None,
             event_target: EventTarget::default(),
             aborted,
             abort_reason,
@@ -143,11 +150,11 @@ impl AbortSignal {
     }
 
     pub(crate) fn set_reflector(&self, reflector: JsObject) {
-        self.shared.borrow_mut().event_target.reflector = Some(reflector);
+        self.shared.borrow_mut().reflector = Some(reflector);
     }
 
     pub(crate) fn object(&self) -> Option<JsObject> {
-        self.shared.borrow().event_target.reflector.clone()
+        self.shared.borrow().reflector.clone()
     }
 
     pub(crate) fn with_event_target_mut<R>(&self, f: impl FnOnce(&mut EventTarget) -> R) -> R {
@@ -352,11 +359,14 @@ fn run_abort_steps(
     let signal_object = signal.object().ok_or_else(|| {
         ec.new_type_error("AbortSignal is missing its JavaScript object")
     })?;
-    // fire_event:: Step 1-2: Create event with default constructor (Event).
-    // fire_event:: Step 5: Return the result of dispatching event at target.
-    // Clone the EventTarget from the AbortSignal's internal state.
-    let event_target = resolve_event_target(ec, &signal_object);
-    let _ = fire_event(ec, &event_target, "abort", 0.0, false)?;
+    let signal_value = <Types as JsTypes>::value_from_object(signal_object.clone());
+    let event_target = try_with_event_target_mut(&signal_value, ec, |et| et.clone())
+        .map_err(|error| {
+            log::error!("run_abort_steps: failed to extract EventTarget from AbortSignal: {error:?}");
+            error
+        })?;
+
+    let _ = fire_event(ec, &event_target, &signal_object, "abort", 0.0, false)?;
     Ok(())
 }
 

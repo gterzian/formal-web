@@ -3,7 +3,7 @@ use std::{cell::RefCell, rc::Rc};
 
 use blitz_dom::{BaseDocument, NodeData};
 
-use super::{DOMException, event::EventTarget};
+use super::{DOMException, event::{EventTarget, EventTargetAccess}};
 
 #[derive(Clone, Copy, Eq, PartialEq)]
 enum NodeKind {
@@ -27,6 +27,12 @@ pub struct Node {
     /// <https://dom.spec.whatwg.org/#interface-node>
     #[ignore_trace]
     pub node_id: usize,
+}
+
+impl EventTargetAccess for Node {
+    fn get_event_target(&self) -> &EventTarget {
+        &self.event_target
+    }
 }
 
 impl Node {

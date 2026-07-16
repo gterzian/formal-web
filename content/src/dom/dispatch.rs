@@ -85,7 +85,7 @@ pub(crate) fn dispatch_window_event(
     time_millis: f64,
 ) -> Completion<bool, Types> {
     let target_object = ec.global_object();
-    let event_target = resolve_global_event_target(ec, &target_object);
+    let event_target = event_target_from_window(ec, &target_object);
     let event_domain = Event::new(
         event_type.to_owned(),
         false,
@@ -95,13 +95,14 @@ pub(crate) fn dispatch_window_event(
         time_millis,
     );
     let event_object = create_interface_instance::<Types, Event>(event_domain, ec)?;
-    dispatch(ec, &event_target, &event_object, false)
+    dispatch(ec, &event_target, &target_object, &event_object, false)
 }
 
 /// <https://dom.spec.whatwg.org/#concept-event-fire>
 pub(crate) fn fire_event(
     ec: &mut dyn ExecutionContext<Types>,
-    target: &EventTarget,
+    target: &dyn super::event::EventTargetAccess,
+    target_object: &JsObject,
     event_type: &str,
     time_millis: f64,
     legacy_target_override: bool,
@@ -119,20 +120,19 @@ pub(crate) fn fire_event(
     let event_object = create_interface_instance::<Types, Event>(event_domain, ec)?;
 
     // Step 5: "Return the result of dispatching event at target, with legacy target override flag set if set."
-    dispatch(ec, target, &event_object, legacy_target_override)
+    dispatch(ec, target, target_object, &event_object, legacy_target_override)
 }
 
 /// <https://dom.spec.whatwg.org/#concept-event-dispatch>
 pub(crate) fn dispatch(
     ec: &mut dyn ExecutionContext<Types>,
-    target: &EventTarget,
+    target: &dyn super::event::EventTargetAccess,
+    target_object: &JsObject,
     event_object: &JsObject,
     legacy_target_override: bool,
 ) -> Completion<bool, Types> {
-    let target_object = target.reflector.as_ref().ok_or_else(|| {
-        ec.new_type_error("EventTarget has no reflector — platform object not created")
-    })?;
-    let path = path_for_target(ec, target, target_object, legacy_target_override)?;
+    let target_event = target.get_event_target();
+    let path = path_for_target(ec, target_event, target_object, legacy_target_override)?;
     dispatch_event(ec, &path, event_object)
 }
 
@@ -144,9 +144,9 @@ pub(crate) fn dispatch_with_chain(
 ) -> Completion<bool, Types> {
     let path = if chain.is_empty() {
         let doc_object = document_object(ec)?;
-        let doc_target = resolve_event_target(ec, &doc_object);
+        let doc_target = event_target_from_object(ec, &doc_object);
         let global_obj = global_object(ec);
-        let global_target = resolve_global_event_target(ec, &global_obj);
+        let global_target = event_target_from_window(ec, &global_obj);
         vec![
             EventPathEntry {
                 invocation_target: doc_target,
@@ -163,7 +163,7 @@ pub(crate) fn dispatch_with_chain(
         let mut path = Vec::with_capacity(chain.len() + 2);
         for (index, node_id) in chain.iter().enumerate() {
             let object = resolve_element_object(*node_id, ec)?;
-            let event_target = resolve_event_target(ec, &object);
+            let event_target = event_target_from_object(ec, &object);
             path.push(EventPathEntry {
                 invocation_target: event_target,
                 invocation_target_object: object.clone(),
@@ -171,14 +171,14 @@ pub(crate) fn dispatch_with_chain(
             });
         }
         let doc_object = document_object(ec)?;
-        let doc_target = resolve_event_target(ec, &doc_object);
+        let doc_target = event_target_from_object(ec, &doc_object);
         path.push(EventPathEntry {
             invocation_target: doc_target,
             invocation_target_object: doc_object,
             shadow_adjusted_target: None,
         });
         let global_obj = global_object(ec);
-        let global_target = resolve_global_event_target(ec, &global_obj);
+        let global_target = event_target_from_window(ec, &global_obj);
         path.push(EventPathEntry {
             invocation_target: global_target,
             invocation_target_object: global_obj,
@@ -270,7 +270,7 @@ fn get_the_parent(
         .is_some()
     {
         let global_obj = global_object(ec);
-        let global_target = resolve_global_event_target(ec, &global_obj);
+        let global_target = event_target_from_window(ec, &global_obj);
         return Some((global_obj, global_target));
     }
 
@@ -279,7 +279,7 @@ fn get_the_parent(
     let chain = document.borrow().node_chain(node_id);
     let parent_id = chain.into_iter().nth(1)?;
     let parent_object = resolve_existing_node_object(document, parent_id, ec).ok()?;
-    let parent_target = resolve_event_target(ec, &parent_object);
+    let parent_target = event_target_from_object(ec, &parent_object);
     Some((parent_object, parent_target))
 }
 
@@ -326,49 +326,30 @@ fn extract_node_info(
 /// Walks all known platform-object types (Window, Document, Element,
 /// HTMLElement, HTMLAnchorElement, etc.) to find the embedded EventTarget
 /// field and returns a clone.
-pub(crate) fn resolve_event_target(
+fn event_target_from_object(
     ec: &mut dyn ExecutionContext<Types>,
     object: &JsObject,
 ) -> EventTarget {
-    fn set_reflector(et: &mut EventTarget, obj: &JsObject) {
-        et.reflector = Some(obj.clone());
-    }
-
-    ec.with_object_any_mut(object)
+    ec.with_object_any(object)
         .and_then(|data| {
-            if let Some(window) = data.downcast_mut::<Window>() {
-                set_reflector(&mut window.event_target, object);
+            if let Some(window) = data.downcast_ref::<Window>() {
                 Some(window.event_target.clone())
-            } else if let Some(document) = data.downcast_mut::<crate::dom::Document>() {
-                set_reflector(&mut document.node.event_target, object);
+            } else if let Some(document) = data.downcast_ref::<crate::dom::Document>() {
                 Some(document.node.event_target.clone())
-            } else if let Some(element) = data.downcast_mut::<crate::dom::Element>() {
-                set_reflector(&mut element.node.event_target, object);
+            } else if let Some(element) = data.downcast_ref::<crate::dom::Element>() {
                 Some(element.node.event_target.clone())
-            } else if let Some(html_element) = data.downcast_mut::<HTMLElement>() {
-                set_reflector(&mut html_element.element.node.event_target, object);
+            } else if let Some(html_element) = data.downcast_ref::<HTMLElement>() {
                 Some(html_element.element.node.event_target.clone())
-            } else if let Some(anchor) = data.downcast_mut::<HTMLAnchorElement>() {
-                set_reflector(&mut anchor.html_element.element.node.event_target, object);
+            } else if let Some(anchor) = data.downcast_ref::<HTMLAnchorElement>() {
                 Some(anchor.html_element.element.node.event_target.clone())
-            } else if let Some(iframe) = data.downcast_mut::<HTMLIFrameElement>() {
-                set_reflector(&mut iframe.html_element.element.node.event_target, object);
+            } else if let Some(iframe) = data.downcast_ref::<HTMLIFrameElement>() {
                 Some(iframe.html_element.element.node.event_target.clone())
-            } else if let Some(input) = data.downcast_mut::<HTMLInputElement>() {
-                set_reflector(&mut input.html_element.element.node.event_target, object);
+            } else if let Some(input) = data.downcast_ref::<HTMLInputElement>() {
                 Some(input.html_element.element.node.event_target.clone())
-            } else if let Some(node) = data.downcast_mut::<crate::dom::Node>() {
-                set_reflector(&mut node.event_target, object);
+            } else if let Some(node) = data.downcast_ref::<crate::dom::Node>() {
                 Some(node.event_target.clone())
-            } else if let Some(target) = data.downcast_mut::<EventTarget>() {
-                set_reflector(target, object);
+            } else if let Some(target) = data.downcast_ref::<EventTarget>() {
                 Some(target.clone())
-            } else if let Some(signal) = data.downcast_mut::<super::abort::AbortSignal>() {
-                let et = signal.with_event_target_mut(|et| {
-                    set_reflector(et, object);
-                    et.clone()
-                });
-                Some(et)
             } else {
                 None
             }
@@ -376,22 +357,12 @@ pub(crate) fn resolve_event_target(
         .unwrap_or_default()
 }
 
-/// Resolve the EventTarget from the global (Window) JsObject.
-pub(crate) fn resolve_global_event_target(
+fn event_target_from_window(
     ec: &mut dyn ExecutionContext<Types>,
     object: &JsObject,
 ) -> EventTarget {
-    fn set_reflector(et: &mut EventTarget, obj: &JsObject) {
-        et.reflector = Some(obj.clone());
-    }
-
-    ec.with_object_any_mut(object)
-        .and_then(|data| {
-            data.downcast_mut::<Window>().map(|w| {
-                set_reflector(&mut w.event_target, object);
-                w.event_target.clone()
-            })
-        })
+    ec.with_object_any(object)
+        .and_then(|data| data.downcast_ref::<Window>().map(|w| w.event_target.clone()))
         .unwrap_or_default()
 }
 
