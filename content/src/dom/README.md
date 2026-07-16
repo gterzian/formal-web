@@ -11,7 +11,7 @@
 
 ## Event dispatch architecture
 
-The dispatch algorithm operates on two domain types: `Event` and `EventTarget` — both `#[gc_struct]` platform objects.  The JsObject GC handle is only used at the Web IDL boundary (`call_user_objects_operation`).
+The dispatch algorithm (implemented in `dispatch.rs`) operates on two domain types: `Event` and `EventTarget` — both `#[gc_struct]` platform objects. No JsObject appears in the dispatch algorithm itself. The JsObject GC handle is only accessed at the Web IDL boundary (`call_user_objects_operation` in `inner_invoke`), via the `reflector` field on `EventTarget` and `Event`.
 
 ### EventTargetAccess trait
 
@@ -19,13 +19,14 @@ Types that embed an `EventTarget` (Node, Window, AbortSignal, Element, etc.) imp
 
 ```rust
 pub(crate) trait EventTargetAccess {
-    fn get_event_target(&self) -> EventTarget;            // clone of embedded EventTarget
-    fn get_target_object(&self) -> Option<JsObject>;      // JsObject GC handle (None for standalone clones)
-    fn get_the_parent(&self) -> Option<(JsObject, EventTarget)>;  // parent for path building
+    fn get_event_target(&self) -> EventTarget;                   // clone of embedded EventTarget
+    fn has_activation_behavior(&self) -> bool;                    // activation behavior check
+    fn run_activation_behavior(&self, _event: &Event) -> Completion<(), Types>;
+    fn get_the_parent(&self) -> Option<EventTarget>;             // parent EventTarget for path building
 }
 ```
 
-Dispatch functions (`fire_event`, `dispatch`, `dispatch_with_chain`, `dispatch_window_event`) take `target: &dyn EventTargetAccess` and `target_object: &JsObject`.  The JsObject is passed by the caller (who has it from the JS bindings layer) and stored in path entries for Web IDL callback invocation.
+Dispatch functions (`fire_event`, `dispatch`) take `target: &dyn EventTargetAccess` and build the event path from domain EventTargets only — no JsObject is involved in path building.
 
 ### Interior mutability via GcCell
 
@@ -40,25 +41,41 @@ pub struct EventTarget {
 
 Methods take `&self` and use `borrow()`/`borrow_mut()`.  Since `GcCell` shares its underlying data through a `Gc` pointer, cloning an EventTarget and mutating the clone affects the original — no sync-back needed.
 
-### Path entries separate domain + GC
+### Event stores domain EventTarget, not JsObject
 
-`EventPathEntry` stores both the domain `EventTarget` (for algorithm operations) and the `JsObject` GC handle (for Web IDL callback invocation).  The `shadow_adjusted_target` (also `JsObject`) is the spec's shadow-adjusted target for setting `event.target`.
+`Event.target` and `Event.currentTarget` store `GcCell<Option<EventTarget>>` — domain types, not JsObject handles. The JsObject is only resolved at the binding layer via the EventTarget's `reflector` field.
+
+### Path entries use domain types only
+
+`EventPathItem` stores:
+- `invocation_target: EventTarget` — the current target in the propagation path
+- `shadow_adjusted_target: Option<EventTarget>` — the shadow-adjusted target for `event.target`
+
+No JsObject appears in path items.
 
 ### Entry points
 
 | Function | Takes | Creates path? | Used by |
 |---|---|---|---|
-| `fire_event` | `&dyn EventTargetAccess`, `&JsObject`, event_type, time, flags | Yes | Domain callers (main.rs, html_iframe_element, abort) |
-| `dispatch` | `&dyn EventTargetAccess`, `&JsObject`, event_object, flags | Yes | JS bindings (dispatchEvent) |
-| `dispatch_with_chain` | `ec`, `&[usize]`, event_object | Yes (from node chain) | BlitzEventDriver (UI events) |
-| `dispatch_window_event` | `ec`, event_type, cancelable, time | No (simple_path) | beforeunload |
+| `fire_event` | `ec`, `&dyn EventTargetAccess`, event_type, time, flags | Yes (via path_for_target) | Domain callers (main.rs, html_iframe_element, abort) |
+| `dispatch` | `ec`, `&dyn EventTargetAccess`, event_object, flags | Yes (via path_for_target) | JS bindings (dispatchEvent) |
+| `dispatch_with_path` | `ec`, `&[EventPathItem]`, event_object | No (pre-built path) | BlitzEventDriver (UI events) |
+| `simple_path` | `&dyn EventTargetAccess` | Yes (single entry) | html/dispatch.rs (fire_global_event) |
+
+### Path building for UI events (ui_event_dispatch.rs)
+
+`ui_event_dispatch.rs` owns `build_event_path()` which resolves blitz node chains into `Vec<EventPathItem>` by extracting `EventTarget` from each node's platform object. It uses `EnvironmentSettingsObject.document.node.event_target` for the document path entry and extracts the Window's EventTarget from the realm global object. This is the only module that resolves JsObject → EventTarget for path building.
+
+### EnvironmentSettingsObject owns a Document platform object
+
+`EnvironmentSettingsObject.document` is now `crate::dom::Document` (the platform object), not `Rc<RefCell<BaseDocument>>`. The blitz BaseDocument is accessible via `document.node.document`. This provides direct access to the Document's `EventTarget` for dispatch path building without going through a JsObject.
 
 ### What NOT to do
 
-- Do not add `target_object` as a parameter — it's part of the EventTargetAccess trait.
+- Do not add JsObject parameters to dispatch functions — domain dispatch operates on EventTarget only.
 - Do not use `&mut self` on EventTarget methods — use `GcCell` fields with `&self`.
 - Do not clone Event or EventTarget and sync back — `GcCell` shares data across clones.
-- Do not put JsObject-only helpers (like `resolve_event_target`) in dispatch.rs — keep domain dispatch pure.
+- Do not put JsObject-only helpers (like `event_target_from_object`) in dispatch.rs — keep domain dispatch pure. Such helpers belong in `ui_event_dispatch.rs` or `platform_objects.rs`.
 
 ## GcCell interior mutability pattern elsewhere
 

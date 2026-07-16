@@ -19,7 +19,10 @@ use crate::html::EnvironmentSettingsObject;
 use crate::webidl::bindings::create_interface_instance;
 use js_engine::ExecutionContext;
 
-use super::{Event, EventTargetAccess, UIEvent as JsUiEvent, dispatch, dispatch_with_chain};
+use super::{EventPathItem, UIEvent as JsUiEvent, dispatch, dispatch_with_path};
+use crate::dom::event::{Event, EventTarget, EventTargetAccess};
+use crate::dom::{Document, Element, Node};
+use crate::html::{HTMLElement, Window};
 
 fn input_debug_enabled() -> bool {
     std::env::var_os("FORMAL_WEB_DEBUG_INPUT").is_some()
@@ -335,14 +338,7 @@ pub(crate) fn dispatch_trusted_click_event(
         let ec = handler.settings.ec();
         let target = crate::js::platform_objects::resolve_element_object(target_node_id, ec)
             .map_err(|error| format!("failed to resolve click target element: {error:?}"))?;
-        let event_domain = Event::new(
-            String::from("click"),
-            true,
-            true,
-            true,
-            true,
-            time_millis,
-        );
+        let event_domain = Event::new(String::from("click"), true, true, true, true, time_millis);
         let event = create_interface_instance::<crate::js::Types, Event>(event_domain, ec)
             .map_err(|error| format!("failed to construct trusted click event: {error:?}"))?;
         (target, event)
@@ -361,7 +357,7 @@ pub(crate) fn dispatch_trusted_click_event(
         .with_object_any(&event)
         .and_then(|data| data.downcast_ref::<crate::dom::Event>())
         .cloned()
-        .ok_or_else(|| format!("dispatch_trusted_click_event: event is not an Event"))?;
+        .ok_or_else(|| "dispatch_trusted_click_event: event is not an Event".to_string())?;
     event_clone.reflector = Some(event.clone());
     dispatch(ec, &event_target, &event_clone, false)
         .map_err(|error| format!("failed to dispatch trusted click event: {error:?}"))?;
@@ -403,7 +399,86 @@ impl<'a> BlitzJSEventHandler<'a> {
     }
 }
 
+/// Build an event path from a blitz node chain by resolving each node's
+/// EventTarget from its platform object, then appending the document and
+/// global (Window) targets.
+///
+/// <https://dom.spec.whatwg.org/#concept-event-path-append>
+fn build_event_path(
+    chain: &[usize],
+    settings: &mut EnvironmentSettingsObject,
+) -> Vec<EventPathItem> {
+    // Extract values from settings before borrowing the EC.
+    let document_event_target = settings.document.node.event_target.clone();
+    let global_event_target = {
+        let ec = settings.ec();
+        let global_obj = ec.realm_global_object();
+        ec.with_object_any(&global_obj)
+            .and_then(|data| data.downcast_ref::<Window>())
+            .map(|window| window.event_target.clone())
+    };
 
+    let ec = settings.ec();
+    let mut path = Vec::with_capacity(chain.len() + 2);
+
+    for (index, node_id) in chain.iter().enumerate() {
+        // Resolve the element JsObject through the platform objects cache.
+        let object = match crate::js::platform_objects::resolve_element_object(*node_id, ec) {
+            Ok(obj) => obj,
+            Err(_) => continue,
+        };
+        // Extract the EventTarget from the platform object.
+        let event_target = event_target_from_js_object(ec, &object);
+        let Some(event_target) = event_target else {
+            continue;
+        };
+
+        path.push(EventPathItem {
+            invocation_target: event_target.clone(),
+            shadow_adjusted_target: (index == 0).then_some(event_target),
+        });
+    }
+
+    // Append document EventTarget.
+    path.push(EventPathItem {
+        invocation_target: document_event_target,
+        shadow_adjusted_target: None,
+    });
+
+    // Append global (Window) EventTarget.
+    if let Some(global_event_target) = global_event_target {
+        path.push(EventPathItem {
+            invocation_target: global_event_target,
+            shadow_adjusted_target: None,
+        });
+    }
+
+    path
+}
+
+/// Extract an EventTarget clone from any JsObject that embeds one.
+fn event_target_from_js_object(
+    ec: &mut dyn ExecutionContext<crate::js::Types>,
+    object: &<crate::js::Types as js_engine::JsTypes>::JsObject,
+) -> Option<EventTarget> {
+    ec.with_object_any(object).and_then(|data| {
+        if let Some(window) = data.downcast_ref::<Window>() {
+            Some(window.event_target.clone())
+        } else if let Some(document) = data.downcast_ref::<Document>() {
+            Some(document.node.event_target.clone())
+        } else if let Some(element) = data.downcast_ref::<Element>() {
+            Some(element.node.event_target.clone())
+        } else if let Some(html_element) = data.downcast_ref::<HTMLElement>() {
+            Some(html_element.element.node.event_target.clone())
+        } else if let Some(node) = data.downcast_ref::<Node>() {
+            Some(node.event_target.clone())
+        } else if let Some(event_target) = data.downcast_ref::<EventTarget>() {
+            Some(event_target.clone())
+        } else {
+            None
+        }
+    })
+}
 
 impl js_engine::EcmascriptHost<crate::js::Types> for BlitzJSEventHandler<'_> {
     fn get(
@@ -511,9 +586,11 @@ impl EventHandler for BlitzJSEventHandler<'_> {
             .map(|uie| uie.event.clone())
             .expect("event_object must wrap a UIEvent");
         domain_event.reflector = Some(event_object.clone());
-        if let Err(error) = dispatch_with_chain(
+        // Build the event path from the blitz node chain before dispatching.
+        let path = build_event_path(chain, self.settings);
+        if let Err(error) = dispatch_with_path(
             &mut self.settings.realm_execution_context,
-            chain,
+            &path,
             &domain_event,
         ) {
             let error_msg = self

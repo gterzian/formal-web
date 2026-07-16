@@ -384,9 +384,9 @@ impl AutomationRuntime {
     pub fn reset_navigation(&self) -> Result<(), String> {
         let (reply, receiver) = mpsc::channel();
         (self.send_command)(AutomationCommand::AbortNavigation { reply })?;
-        receiver.recv().map_err(|error| {
-            format!("failed to reset navigation state: {error}")
-        })?
+        receiver
+            .recv()
+            .map_err(|error| format!("failed to reset navigation state: {error}"))?
     }
 
     pub fn evaluate_script(&self, source: String, timeout: Duration) -> Result<Value, String> {

@@ -8,7 +8,6 @@ use crate::js::{Types, create_builtin_fn_with_traced_captures};
 
 use crate::{
     dom::{AbortSignal, create_abort_signal, signal_abort},
-
     streams::SizeAlgorithm,
     webidl::bindings::create_interface_instance,
     webidl::{promise_from_value, rejected_promise, resolved_promise},

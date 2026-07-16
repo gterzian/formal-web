@@ -9,26 +9,8 @@ use crate::html::{
     GlobalScope, HTMLAnchorElement, HTMLElement, HTMLIFrameElement, HTMLInputElement,
     HTMLVideoElement, Window,
 };
-use crate::dom::event::{Event, EventTarget};
 use crate::webidl::bindings::create_interface_instance;
 use js_engine::{Completion, ExecutionContext, JsTypes};
-
-/// Trait for platform objects that have a JsObject GC handle (reflector).
-pub(crate) trait HasJsObject {
-    fn get_js_object(&self) -> Option<<crate::js::Types as JsTypes>::JsObject>;
-}
-
-impl HasJsObject for Event {
-    fn get_js_object(&self) -> Option<<crate::js::Types as JsTypes>::JsObject> {
-        self.reflector.clone()
-    }
-}
-
-impl HasJsObject for EventTarget {
-    fn get_js_object(&self) -> Option<<crate::js::Types as JsTypes>::JsObject> {
-        self.reflector.clone()
-    }
-}
 
 /// <https://html.spec.whatwg.org/#global-object>
 ///

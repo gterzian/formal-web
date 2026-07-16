@@ -17,10 +17,7 @@ pub mod streams;
 pub mod wasm;
 pub mod webidl;
 
-use crate::dom::{
-    dispatch_trusted_click_event, dispatch_ui_event, fire_event,
-    EventTargetAccess,
-};
+use crate::dom::{EventTargetAccess, dispatch_trusted_click_event, dispatch_ui_event, fire_event};
 use crate::html::{
     EnvironmentSettingsObject, JsHtmlParserProvider, PendingParserScript,
     attach_same_origin_child_document_for_traversable, execute_parser_scripts,
@@ -30,9 +27,7 @@ use crate::html::{
 use crate::js::platform_objects::with_global_scope;
 use crate::ui_event::deserialize_ui_event;
 #[cfg(all(boa_backend, feature = "wasm"))]
-use crate::wasm::{
-    WasmResult, compile_continuation, compile_rejection, instantiate_continuation,
-};
+use crate::wasm::{WasmResult, compile_continuation, compile_rejection, instantiate_continuation};
 use anyrender::Scene as RenderScene;
 use blitz_dom::{BaseDocument, DocumentConfig};
 use blitz_paint::paint_scene;
@@ -876,7 +871,7 @@ impl ContentProcess {
             })?;
 
         fire_event(ec, &window_target, "load", time_millis, true)
-        .map_err(|error| format!("fire_event failed: {error:?}"))?;
+            .map_err(|error| format!("fire_event failed: {error:?}"))?;
 
         let traversable_id = content_document.traversable_id;
         self.active_documents_by_traversable
@@ -1209,7 +1204,8 @@ impl ContentProcess {
             // worker results arriving after destruction are not misattributed,
             // and to avoid orphaned promise entries.
             // https://webassembly.github.io/spec/js-api/#asynchronously-compile-a-webassembly-module
-            self.wasm.pending_requests
+            self.wasm
+                .pending_requests
                 .retain(|_request_id, doc_id| *doc_id != document_id);
             self.wasm.pending_modules.retain(|request_id, _module| {
                 !self.wasm.pending_requests.contains_key(request_id)
@@ -2118,9 +2114,7 @@ impl ContentProcess {
                         let value_json = match serde_json::to_string(&value) {
                             Ok(json) => json,
                             Err(error) => {
-                                error!(
-                                    "failed to encode script evaluation result: {error}"
-                                );
+                                error!("failed to encode script evaluation result: {error}");
                                 return Ok(true);
                             }
                         };
@@ -2128,13 +2122,13 @@ impl ContentProcess {
                     }
                     Err(error) => (String::from("null"), Some(error)),
                 };
-                if let Err(error) = self
-                    .event_sender
-                    .send(ContentEvent::ScriptEvaluated(ScriptEvaluationResult {
-                        request_id,
-                        value_json,
-                        error,
-                    }))
+                if let Err(error) =
+                    self.event_sender
+                        .send(ContentEvent::ScriptEvaluated(ScriptEvaluationResult {
+                            request_id,
+                            value_json,
+                            error,
+                        }))
                 {
                     error!("failed to send script evaluation result: {error}");
                 }

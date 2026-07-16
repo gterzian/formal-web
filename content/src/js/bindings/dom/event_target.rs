@@ -15,9 +15,7 @@ pub(crate) struct AddEventListenerOptions {
     pub signal: Option<AbortSignal>,
 }
 
-use crate::webidl::bindings::{
-    InterfaceDefinition, OperationDef, WebIdlInterface,
-};
+use crate::webidl::bindings::{InterfaceDefinition, OperationDef, WebIdlInterface};
 
 impl WebIdlInterface<crate::js::Types> for EventTarget {
     const NAME: &'static str = "EventTarget";
@@ -132,11 +130,12 @@ fn dispatch_event(
     };
     let target_object = current_event_target_object(this, ec);
     let target_value = <crate::js::Types as JsTypes>::value_from_object(target_object.clone());
-    let target = crate::js::try_with_event_target_mut(&target_value, ec, |et| et.clone())
-        .map_err(|error| {
+    let target = crate::js::try_with_event_target_mut(&target_value, ec, |et| et.clone()).map_err(
+        |error| {
             log::error!("dispatchEvent: failed to extract EventTarget: {error:?}");
             error
-        })?;
+        },
+    )?;
     // Extract the Event domain object and set its reflector.
     let mut event: crate::dom::Event = ec
         .with_object_any(&event_obj)

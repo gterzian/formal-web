@@ -34,8 +34,6 @@ fn log_timer_debug(message: impl AsRef<str>) {
     }
 }
 
-
-
 /// <https://html.spec.whatwg.org/#global-object>
 #[derive(Debug, Clone, Copy)]
 pub enum GlobalScopeKind {
@@ -202,8 +200,6 @@ pub struct GlobalScope {
     /// Direct sender to the media extension.
     #[ignore_trace]
     media_extension_sender: RefCell<Option<IpcSender<MediaCommand>>>,
-
-
 
     /// <https://html.spec.whatwg.org/#concept-document-creation-url>
     /// The creation URL of this window's Document.
@@ -674,7 +670,6 @@ impl GlobalScope {
     /// Note: Only used on JSC backend (Boa creates fresh contexts).
     #[allow(dead_code)]
 
-
     pub(crate) fn set_video_paint_registry(
         &self,
         registry: Rc<RefCell<HashMap<(DocumentId, usize), VideoPaintId>>>,
@@ -762,12 +757,14 @@ impl GlobalScope {
 
     #[cfg(all(boa_backend, feature = "wasm"))]
     pub(crate) fn take_pending_wasm_batches(&self) -> Vec<(u64, Vec<u8>)> {
-        self.with_wasm_state(|s| s.take_pending_wasm_batches()).unwrap_or_default()
+        self.with_wasm_state(|s| s.take_pending_wasm_batches())
+            .unwrap_or_default()
     }
 
     #[cfg(all(boa_backend, feature = "wasm"))]
     pub(crate) fn take_pending_wasm_instantiates(&self) -> Vec<(u64, wasmtime::Module)> {
-        self.with_wasm_state(|s| s.take_pending_wasm_instantiates()).unwrap_or_default()
+        self.with_wasm_state(|s| s.take_pending_wasm_instantiates())
+            .unwrap_or_default()
     }
 
     #[cfg(all(boa_backend, feature = "wasm"))]
@@ -775,6 +772,7 @@ impl GlobalScope {
         &self,
         request_id: u64,
     ) -> Option<(JsObject, js_engine::records::PromiseResolvers<Types>)> {
-        self.with_wasm_state(|s| s.consume_wasm_request(request_id)).flatten()
+        self.with_wasm_state(|s| s.consume_wasm_request(request_id))
+            .flatten()
     }
 }

@@ -3,7 +3,10 @@ use std::{cell::RefCell, rc::Rc};
 
 use blitz_dom::{BaseDocument, NodeData};
 
-use super::{DOMException, event::{EventTarget, EventTargetAccess}};
+use super::{
+    DOMException,
+    event::{EventTarget, EventTargetAccess},
+};
 
 #[derive(Clone, Copy, Eq, PartialEq)]
 enum NodeKind {

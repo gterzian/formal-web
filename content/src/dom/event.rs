@@ -2,10 +2,10 @@ use blitz_traits::events::{DomEvent, EventState};
 
 use crate::js::Types;
 use crate::webidl::Callback;
-use std::cell::Cell;
-use js_engine::{Completion, JsTypes};
-use js_engine::gc_struct;
 use js_engine::gc::{GcCell, gc_cell_new};
+use js_engine::gc_struct;
+use js_engine::{Completion, JsTypes};
+use std::cell::Cell;
 
 use super::{AbortAlgorithm, AbortSignal};
 
@@ -84,11 +84,9 @@ pub(crate) trait EventTargetAccess {
         Ok(())
     }
 
-
-
-    /// Returns (parent_JsObject, parent_EventTarget) or None.
+    /// Returns the parent EventTarget or None.
     /// <https://dom.spec.whatwg.org/#dom-eventtarget-gettheparent>
-    fn get_the_parent(&self) -> Option<(JsObject, EventTarget)> {
+    fn get_the_parent(&self) -> Option<EventTarget> {
         None
     }
 }
@@ -216,10 +214,14 @@ pub struct Event {
     pub type_: String,
 
     /// <https://dom.spec.whatwg.org/#dom-event-target>
-    pub target: GcCell<Option<JsObject>>,
+    /// Stores the domain EventTarget. The JsObject is accessed via the
+    /// EventTarget's reflector at the binding layer.
+    pub target: GcCell<Option<EventTarget>>,
 
     /// <https://dom.spec.whatwg.org/#dom-event-currenttarget>
-    pub current_target: GcCell<Option<JsObject>>,
+    /// Stores the domain EventTarget. The JsObject is accessed via the
+    /// EventTarget's reflector at the binding layer.
+    pub current_target: GcCell<Option<EventTarget>>,
 
     /// <https://dom.spec.whatwg.org/#dom-event-eventphase>
     pub event_phase: GcCell<u16>,
@@ -270,7 +272,7 @@ impl Event {
         Self {
             reflector: None,
             type_,
-            target: gc_cell_new(None),
+            target: gc_cell_new(None::<EventTarget>),
             current_target: gc_cell_new(None),
             event_phase: gc_cell_new(NONE),
             bubbles: gc_cell_new(bubbles),
@@ -293,12 +295,12 @@ impl Event {
     }
 
     /// <https://dom.spec.whatwg.org/#dom-event-target>
-    pub(crate) fn target_value(&self) -> Option<JsObject> {
+    pub(crate) fn target_value(&self) -> Option<EventTarget> {
         self.target.borrow().clone()
     }
 
     /// <https://dom.spec.whatwg.org/#dom-event-currenttarget>
-    pub(crate) fn current_target_value(&self) -> Option<JsObject> {
+    pub(crate) fn current_target_value(&self) -> Option<EventTarget> {
         self.current_target.borrow().clone()
     }
 

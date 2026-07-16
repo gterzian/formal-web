@@ -239,7 +239,10 @@ fn get_target(
     ec: &mut dyn ExecutionContext<crate::js::Types>,
 ) -> Completion<JsValue, crate::js::Types> {
     let target = with_event_ref(this, ec, |event| event.target_value())?;
+    // Extract the JsObject from the EventTarget's reflector.
+    // <https://dom.spec.whatwg.org/#dom-event-target>
     Ok(target
+        .and_then(|et| et.reflector.clone())
         .map(crate::js::Types::value_from_object)
         .unwrap_or_else(|| ec.value_null()))
 }
@@ -250,7 +253,10 @@ fn get_current_target(
     ec: &mut dyn ExecutionContext<crate::js::Types>,
 ) -> Completion<JsValue, crate::js::Types> {
     let target = with_event_ref(this, ec, |event| event.current_target_value())?;
+    // Extract the JsObject from the EventTarget's reflector.
+    // <https://dom.spec.whatwg.org/#dom-event-currenttarget>
     Ok(target
+        .and_then(|et| et.reflector.clone())
         .map(crate::js::Types::value_from_object)
         .unwrap_or_else(|| ec.value_null()))
 }

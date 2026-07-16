@@ -9,7 +9,7 @@ use url::Url;
 use crate::dom::Document;
 use crate::html::{TimerHandler, Window};
 use crate::js::build_context::{build_context, build_realm};
-use crate::js::platform_objects::with_global_scope;
+use crate::js::platform_objects::{set_event_target_reflector, with_global_scope};
 use crate::js::{
     Engine, Types, install_console_namespace, install_css_namespace, install_document_property,
 };
@@ -49,8 +49,12 @@ pub struct EnvironmentSettingsObject {
     /// <https://html.spec.whatwg.org/#realm-execution-context>
     pub realm_execution_context: Engine,
 
-    /// <https://dom.spec.whatwg.org/#concept-document>
-    pub document: Rc<RefCell<BaseDocument>>,
+    /// <https://dom.spec.whatwg.org/#interface-document>
+    pub document: crate::dom::Document,
+
+    /// The blitz BaseDocument wrapped by the Document platform object.
+    /// Access through blitz_document() or Document::node::document.
+    document_blitz: Rc<RefCell<BaseDocument>>,
 
     /// <https://html.spec.whatwg.org/#concept-settings-object-origin>
     pub origin: Origin,
@@ -127,8 +131,12 @@ impl EnvironmentSettingsObject {
             }
         }
 
+        // Create the domain Document platform object.
+        let mut domain_document = crate::dom::Document::new(document.clone(), creation_url.clone());
+
+        // Create the JsObject wrapping a clone of the Document.
         let document_object = create_interface_instance::<crate::js::Types, Document>(
-            Document::new(document.clone(), creation_url.clone()),
+            domain_document.clone(),
             &mut engine,
         )
         .map_err(|error| {
@@ -136,6 +144,13 @@ impl EnvironmentSettingsObject {
                 .to_rust_string(error)
                 .unwrap_or_else(|_| "unknown error".to_string())
         })?;
+
+        // Set the EventTarget reflector on the clone inside the JsObject.
+        set_event_target_reflector(&document_object, &mut engine);
+
+        // Also set the reflector on the ESO's domain Document so its
+        // EventTarget has a valid JsObject handle.
+        domain_document.node.event_target.reflector = Some(document_object.clone());
 
         with_global_scope(&mut engine, |global_scope| {
             global_scope.store_document_object(document_object);
@@ -192,7 +207,8 @@ impl EnvironmentSettingsObject {
 
         Ok(Self {
             realm_execution_context: engine,
-            document,
+            document: domain_document,
+            document_blitz: document,
             origin: Origin {
                 serialized: creation_url.origin().unicode_serialization(),
             },
@@ -200,6 +216,11 @@ impl EnvironmentSettingsObject {
             referrer_policy: ReferrerPolicy::NoReferrerWhenDowngrade,
             time_origin: Instant::now(),
         })
+    }
+
+    /// Access the underlying blitz BaseDocument from the Document platform object.
+    pub fn blitz_document(&self) -> Rc<RefCell<BaseDocument>> {
+        Rc::clone(&self.document_blitz)
     }
 
     /// Access the execution context for generic ECMA-262 operations.
@@ -433,8 +454,6 @@ impl EnvironmentSettingsObject {
             .perform_a_microtask_checkpoint()
             .map_err(|error| self.error_to_string(error))
     }
-
-
 }
 
 impl js_engine::EcmascriptHost<crate::js::Types> for EnvironmentSettingsObject {
@@ -491,4 +510,3 @@ impl js_engine::EcmascriptHost<crate::js::Types> for EnvironmentSettingsObject {
         self.realm_execution_context.js_string_from_str(s)
     }
 }
-

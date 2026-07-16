@@ -10,13 +10,12 @@ use std::{
 
 use blitz_dom::BaseDocument;
 use html5ever::{local_name, ns};
-use js_engine::{gc_struct, ExecutionContext};
+use js_engine::{ExecutionContext, gc_struct};
 use url::Url;
 
 use crate::{
-    ContentProcess, EMPTY_HTML_DOCUMENT, NavigableContainerState, dom::fire_event,
-    dom::event::EventTargetAccess,
-    html::HTMLElement, html::navigate, webidl::Callback,
+    ContentProcess, EMPTY_HTML_DOCUMENT, NavigableContainerState, dom::event::EventTargetAccess,
+    dom::fire_event, html::HTMLElement, html::navigate, webidl::Callback,
 };
 
 /// <https://html.spec.whatwg.org/#htmliframeelement>

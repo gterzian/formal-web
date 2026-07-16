@@ -16,9 +16,7 @@ pub(crate) struct Callback {
 
 impl Callback {
     pub(crate) fn from_object(object: JsObject, _ec: &mut dyn ExecutionContext<Types>) -> Self {
-        Self {
-            object,
-        }
+        Self { object }
     }
 
     pub(crate) fn equals(&self, other: &Self) -> bool {

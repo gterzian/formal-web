@@ -6,9 +6,9 @@ use boa_engine::{Context, JsNativeError, JsValue, js_string, object::JsObject};
 use wasmtime::{Func, Instance as WasmtimeInstance, Module, Store};
 
 use crate::html::Window;
-use crate::wasm::{PendingRequest, PendingState};
 use crate::wasm::conversions::{default_val_for_type, js_val_to_wasm_val, wasm_val_to_js_value};
 use crate::wasm::types::{WasmInstance, WasmModule};
+use crate::wasm::{PendingRequest, PendingState};
 use crate::webidl::bindings::create_interface_instance;
 use js_engine::gc_struct;
 use js_engine::{Completion, ExecutionContext, JsTypes, records::PromiseResolvers};

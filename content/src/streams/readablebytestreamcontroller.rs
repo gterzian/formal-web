@@ -1,5 +1,3 @@
-
-
 use std::{cell::Cell, collections::VecDeque, rc::Rc};
 
 use crate::js::{Types, create_builtin_fn_with_traced_captures};

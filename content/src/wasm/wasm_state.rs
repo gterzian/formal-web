@@ -59,8 +59,7 @@ pub struct WasmState {
     /// Map of request_id → (promise, resolvers) for pending operations.
     /// Separate from PendingRequest so domain code can push requests
     /// without importing boa_engine.
-    pending_resolvers:
-        GcCell<Vec<(u64, JsObject, PromiseResolvers<Types>)>>,
+    pending_resolvers: GcCell<Vec<(u64, JsObject, PromiseResolvers<Types>)>>,
 }
 
 #[cfg(all(boa_backend, feature = "wasm"))]
@@ -173,10 +172,7 @@ pub struct ContentWasmState {
 impl ContentWasmState {
     pub fn new(wasm_signal_sender: crossbeam_channel::Sender<()>) -> Self {
         Self {
-            worker: crate::wasm::WasmWorker::new(
-                wasmtime::Engine::default(),
-                wasm_signal_sender,
-            ),
+            worker: crate::wasm::WasmWorker::new(wasmtime::Engine::default(), wasm_signal_sender),
             pending_requests: std::collections::HashMap::new(),
             pending_modules: std::collections::HashMap::new(),
         }

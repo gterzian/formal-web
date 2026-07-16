@@ -8,8 +8,8 @@ use style::dom_apis::{
     query_selector as style_query_selector,
 };
 
-use super::{DOMException, Node};
 use super::event::{EventTarget, EventTargetAccess};
+use super::{DOMException, Node};
 
 #[derive(Clone, Copy, Debug, Default)]
 pub(crate) struct DomRect {
