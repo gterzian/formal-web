@@ -12,7 +12,8 @@ pub(crate) use abort::{
 };
 pub use abort::{AbortController, AbortSignal};
 pub(crate) use dispatch::{
-    dispatch, dispatch_window_event, dispatch_with_chain, fire_event,
+    dispatch, dispatch_with_chain, fire_event, dispatch_event,
+    event_target_from_window, simple_path,
 };
 pub use document::Document;
 pub use dom_exception::DOMException;

@@ -137,8 +137,14 @@ fn dispatch_event(
             log::error!("dispatchEvent: failed to extract EventTarget: {error:?}");
             error
         })?;
+    // Extract the Event domain object and set its reflector.
+    let mut event: crate::dom::Event = ec
+        .with_object_any(&event_obj)
+        .and_then(|data| data.downcast_ref::<crate::dom::Event>().cloned())
+        .ok_or_else(|| ec.new_type_error("dispatchEvent: event_obj is not an Event"))?;
+    event.reflector = Some(event_obj.clone());
 
-    let canceled = dispatch(ec, &target, &target_object, &event_obj, false)?;
+    let canceled = dispatch(ec, &target, &event, false)?;
     Ok(ec.value_from_bool(!canceled))
 }
 

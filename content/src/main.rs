@@ -18,7 +18,7 @@ pub mod wasm;
 pub mod webidl;
 
 use crate::dom::{
-    dispatch_trusted_click_event, dispatch_ui_event, dispatch_window_event, fire_event,
+    dispatch_trusted_click_event, dispatch_ui_event, fire_event,
     EventTargetAccess,
 };
 use crate::html::{
@@ -875,7 +875,7 @@ impl ContentProcess {
                 msg
             })?;
 
-        fire_event(ec, &window_target, &window, "load", time_millis, true)
+        fire_event(ec, &window_target, "load", time_millis, true)
         .map_err(|error| format!("fire_event failed: {error:?}"))?;
 
         let traversable_id = content_document.traversable_id;
@@ -1306,13 +1306,13 @@ impl ContentProcess {
         {
             let navigable_id = document.traversable_id;
             let time_millis = document.settings.current_time_millis();
-            let canceled = !dispatch_window_event(
+            let canceled = !crate::html::dispatch::fire_global_event(
                 &mut document.settings.realm_execution_context,
                 "beforeunload",
                 true,
                 time_millis,
             )
-            .map_err(|error| format!("dispatch_window_event failed: {error:?}"))?;
+            .map_err(|error| format!("fire_global_event failed: {error:?}"))?;
             (Some(navigable_id), canceled)
         } else {
             (None, false)

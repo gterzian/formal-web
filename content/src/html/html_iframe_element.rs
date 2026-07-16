@@ -635,7 +635,7 @@ fn run_iframe_load_event_steps(
             msg
         })?;
 
-    fire_event(ec, &event_target, &iframe_object, "load", time_millis, false)
+    fire_event(ec, &event_target, "load", time_millis, false)
         .map_err(|error| format!("fire_event failed: {error:?}"))?;
 
     // Step 7: "Unset childDocument's iframe load in progress flag."

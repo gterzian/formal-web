@@ -84,6 +84,8 @@ fn setup_realm(engine: &mut Engine, document: Rc<RefCell<BaseDocument>>) -> Resu
     let mut window = Window::new(global_scope);
     let global_obj = engine.realm_global_object();
     engine.associate_existing_object(&global_obj, Box::new(window));
+    // Set the EventTarget reflector for the Window.
+    crate::js::platform_objects::set_event_target_reflector(&global_obj, engine);
 
     // Step 2: Store the global object in host_any.
     crate::js::platform_objects::init_global_object_slot(engine, global_obj);

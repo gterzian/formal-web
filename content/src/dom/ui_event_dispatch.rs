@@ -357,8 +357,13 @@ pub(crate) fn dispatch_trusted_click_event(
             log::error!("{msg}");
             msg
         })?;
-
-    dispatch(ec, &event_target, &target, &event, false)
+    let mut event_clone = ec
+        .with_object_any(&event)
+        .and_then(|data| data.downcast_ref::<crate::dom::Event>())
+        .cloned()
+        .ok_or_else(|| format!("dispatch_trusted_click_event: event is not an Event"))?;
+    event_clone.reflector = Some(event.clone());
+    dispatch(ec, &event_target, &event_clone, false)
         .map_err(|error| format!("failed to dispatch trusted click event: {error:?}"))?;
     handler
         .settings
@@ -497,7 +502,20 @@ impl EventHandler for BlitzJSEventHandler<'_> {
             &mut self.settings.realm_execution_context,
         )
         .expect("UIEvent construction must succeed");
-        if let Err(error) = dispatch_with_chain(self.settings.ec(), chain, &event_object) {
+        // Clone the Event — GcCell fields share data with the JsObject.
+        let mut domain_event: crate::dom::Event = self
+            .settings
+            .realm_execution_context
+            .with_object_any(&event_object)
+            .and_then(|data| data.downcast_ref::<crate::dom::UIEvent>())
+            .map(|uie| uie.event.clone())
+            .expect("event_object must wrap a UIEvent");
+        domain_event.reflector = Some(event_object.clone());
+        if let Err(error) = dispatch_with_chain(
+            &mut self.settings.realm_execution_context,
+            chain,
+            &domain_event,
+        ) {
             let error_msg = self
                 .settings
                 .ec()

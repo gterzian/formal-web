@@ -3,7 +3,7 @@ use blitz_traits::events::{DomEvent, EventState};
 use crate::js::Types;
 use crate::webidl::Callback;
 use std::cell::Cell;
-use js_engine::JsTypes;
+use js_engine::{Completion, JsTypes};
 use js_engine::gc_struct;
 use js_engine::gc::{GcCell, gc_cell_new};
 
@@ -72,11 +72,19 @@ pub struct EventTarget {
 pub(crate) trait EventTargetAccess {
     fn get_event_target(&self) -> EventTarget;
 
-    /// The JsObject GC handle for this EventTarget's platform object.
-    /// Default implementation uses the EventTarget's reflector field.
-    fn get_target_object(&self) -> Option<JsObject> {
-        self.get_event_target().reflector.clone()
+    /// Returns true if this target has activation behavior.
+    /// <https://dom.spec.whatwg.org/#concept-event-dispatch>
+    fn has_activation_behavior(&self) -> bool {
+        false
     }
+
+    /// Run this target's activation behavior with the given event.
+    /// <https://dom.spec.whatwg.org/#concept-event-dispatch>
+    fn run_activation_behavior(&self, _event: &Event) -> Completion<(), Types> {
+        Ok(())
+    }
+
+
 
     /// Returns (parent_JsObject, parent_EventTarget) or None.
     /// <https://dom.spec.whatwg.org/#dom-eventtarget-gettheparent>
@@ -89,20 +97,9 @@ impl EventTargetAccess for EventTarget {
     fn get_event_target(&self) -> EventTarget {
         self.clone()
     }
-
-    fn get_target_object(&self) -> Option<JsObject> {
-        self.reflector.clone()
-    }
 }
 
 impl EventTarget {
-    /// Set the JsObject reflector for this EventTarget.
-    /// Called when the platform object that embeds this EventTarget
-    /// is created (e.g. after `create_interface_instance`).
-    pub(crate) fn set_reflector(&mut self, reflector: JsObject) {
-        self.reflector = Some(reflector);
-    }
-
     /// <https://dom.spec.whatwg.org/#dom-eventtarget-addeventlistener>
     pub(crate) fn add_event_listener(
         &self,
@@ -208,6 +205,12 @@ impl EventTarget {
 /// <https://dom.spec.whatwg.org/#event>
 #[gc_struct]
 pub struct Event {
+    /// <https://dom.spec.whatwg.org/#event>
+    // Reflector for the Event platform object. Event is the root of its
+    // IDL inheritance chain (interface Event { }), so it owns its own
+    // reflector.
+    pub(crate) reflector: Option<JsObject>,
+
     /// <https://dom.spec.whatwg.org/#dom-event-type>
     #[ignore_trace]
     pub type_: String,
@@ -265,6 +268,7 @@ impl Event {
         time_stamp: f64,
     ) -> Self {
         Self {
+            reflector: None,
             type_,
             target: gc_cell_new(None),
             current_target: gc_cell_new(None),

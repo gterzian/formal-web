@@ -130,10 +130,6 @@ impl EventTargetAccess for AbortSignal {
     fn get_event_target(&self) -> EventTarget {
         self.shared.borrow().event_target.clone()
     }
-
-    fn get_target_object(&self) -> Option<JsObject> {
-        self.object()
-    }
 }
 
 impl AbortSignal {
@@ -356,12 +352,7 @@ fn run_abort_steps(
         algorithm.run(ec)?;
     }
 
-    let event_target_clone = signal.get_event_target();
-    let signal_object = signal.object().ok_or_else(|| {
-        ec.new_type_error("AbortSignal is missing its JavaScript object")
-    })?;
-
-    fire_event(ec, &event_target_clone, &signal_object, "abort", 0.0, false)?;
+    fire_event(ec, signal, "abort", 0.0, false)?;
     Ok(())
 }
 

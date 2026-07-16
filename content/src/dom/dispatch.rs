@@ -1,10 +1,9 @@
 use log::trace;
-use std::{cell::RefCell, rc::Rc};
-
-use blitz_dom::BaseDocument;
 
 use crate::html::{HTMLAnchorElement, HTMLElement, HTMLIFrameElement, HTMLInputElement, Window};
 use crate::js::Types;
+use super::event::EventTargetAccess;
+use crate::js::platform_objects::HasJsObject;
 use crate::webidl::bindings::create_interface_instance;
 use crate::webidl::call_user_objects_operation;
 use js_engine::{Completion, ExecutionContext, JsTypes};
@@ -58,12 +57,12 @@ fn debug_target_label(object: &JsObject, ec: &mut dyn ExecutionContext<Types>) -
 
 /// <https://dom.spec.whatwg.org/#concept-event-path-append>
 #[derive(Clone)]
-struct EventPathItem {
+pub(crate) struct EventPathItem {
     /// <https://dom.spec.whatwg.org/#concept-event-path-append>
     invocation_target: EventTarget,
 
     /// <https://dom.spec.whatwg.org/#concept-event-path-append>
-    shadow_adjusted_target: Option<JsObject>,
+    shadow_adjusted_target: Option<EventTarget>,
 }
 
 #[derive(Clone, Copy, Eq, PartialEq)]
@@ -72,48 +71,24 @@ enum ListenerPhase {
     Bubbling,
 }
 
-/// Convenience to fire a simple event at the global object.
-///
-/// Used by HTML-level algorithms such as
-/// <https://html.spec.whatwg.org/multipage/#steps-to-fire-beforeunload>.
-pub(crate) fn dispatch_window_event(
-    ec: &mut dyn ExecutionContext<Types>,
-    event_type: &str,
-    cancelable: bool,
-    time_millis: f64,
-) -> Completion<bool, Types> {
-    let target_object = ec.global_object();
-    let event_target = event_target_from_window(ec, &target_object);
-    let mut event = Event::new(
-        event_type.to_owned(),
-        false,
-        cancelable,
-        false,
-        true,
-        time_millis,
-    );
-    let event_object = create_interface_instance::<Types, Event>(event.clone(), ec)?;
-    let path = simple_path(&event_target, &target_object);
-    dispatch_event(ec, &path, &mut event, &event_object)
-}
-
-fn simple_path(target: &EventTarget, target_object: &JsObject) -> Vec<EventPathItem> {
+/// Build a single-entry event path (for targets with no parent walking).
+pub(crate) fn simple_path(target_access: &dyn super::event::EventTargetAccess) -> Vec<EventPathItem> {
     vec![EventPathItem {
-        invocation_target: target.clone(),
-        shadow_adjusted_target: Some(target_object.clone()),
+        invocation_target: target_access.get_event_target(),
+        shadow_adjusted_target: Some(target_access.get_event_target()),
     }]
 }
 
 /// <https://dom.spec.whatwg.org/#concept-event-fire>
+/// <https://dom.spec.whatwg.org/#concept-event-fire>
 pub(crate) fn fire_event(
     ec: &mut dyn ExecutionContext<Types>,
     target: &dyn super::event::EventTargetAccess,
-    target_object: &JsObject,
     event_type: &str,
     time_millis: f64,
     legacy_target_override: bool,
 ) -> Completion<bool, Types> {
-    let mut event = Event::new(
+    let event = Event::new(
         event_type.to_owned(),
         false,
         false,
@@ -121,40 +96,40 @@ pub(crate) fn fire_event(
         true,
         time_millis,
     );
+    let event_object = create_interface_instance::<Types, Event>(event, ec)?;
+    // Set reflector on the Event inside the JsObject.
+    if let Some(data) = ec.with_object_any_mut(&event_object) {
+        if let Some(e) = data.downcast_mut::<Event>() {
+            e.reflector = Some(event_object.clone());
+        }
+    }
+    // Clone — GcCell shares data, reflector carried by clone.
+    let event: Event = ec
+        .with_object_any(&event_object)
+        .and_then(|data| data.downcast_ref::<Event>())
+        .cloned()
+        .ok_or_else(|| ec.new_type_error("event_object is not an Event"))?;
 
-    let target_event = target.get_event_target();
-    let path = path_for_target(target, &target_event, target_object, legacy_target_override)?;
-    let event_object = create_interface_instance::<Types, Event>(event.clone(), ec)?;
-    dispatch_event(ec, &path, &mut event, &event_object)
+    let path = path_for_target(target, legacy_target_override)?;
+    dispatch_event(ec, &path, &event)
 }
 
 /// <https://dom.spec.whatwg.org/#concept-event-dispatch>
 pub(crate) fn dispatch(
     ec: &mut dyn ExecutionContext<Types>,
     target: &dyn super::event::EventTargetAccess,
-    target_object: &JsObject,
-    event_object: &JsObject,
+    event: &Event,
     legacy_target_override: bool,
 ) -> Completion<bool, Types> {
-    let mut event: Event = ec
-        .with_object_any(event_object)
-        .and_then(|data| {
-            data.downcast_ref::<Event>()
-                .or_else(|| data.downcast_ref::<crate::dom::UIEvent>().map(|u| &u.event))
-                .cloned()
-        })
-        .ok_or_else(|| ec.new_type_error("event_object is not an Event"))?;
-
-    let target_event = target.get_event_target();
-    let path = path_for_target(target, &target_event, target_object, legacy_target_override)?;
-    dispatch_event(ec, &path, &mut event, event_object)
+    let path = path_for_target(target, legacy_target_override)?;
+    dispatch_event(ec, &path, event)
 }
 
 /// <https://dom.spec.whatwg.org/#concept-event-dispatch>
 pub(crate) fn dispatch_with_chain(
     ec: &mut dyn ExecutionContext<Types>,
     chain: &[usize],
-    event_object: &JsObject,
+    event: &Event,
 ) -> Completion<bool, Types> {
     let path = if chain.is_empty() {
         let doc_object = document_object(ec)?;
@@ -177,8 +152,8 @@ pub(crate) fn dispatch_with_chain(
             let object = resolve_element_object(*node_id, ec)?;
             let event_target = event_target_from_object(ec, &object);
             path.push(EventPathItem {
-                invocation_target: event_target,
-                shadow_adjusted_target: (index == 0).then_some(object),
+                invocation_target: event_target.clone(),
+                shadow_adjusted_target: (index == 0).then_some(event_target),
             });
         }
         let doc_object = document_object(ec)?;
@@ -196,15 +171,7 @@ pub(crate) fn dispatch_with_chain(
         path
     };
 
-    let mut event: Event = ec
-        .with_object_any(event_object)
-        .and_then(|data| {
-            data.downcast_ref::<Event>()
-                .or_else(|| data.downcast_ref::<crate::dom::UIEvent>().map(|u| &u.event))
-                .cloned()
-        })
-        .ok_or_else(|| ec.new_type_error("dispatch_with_chain: event_object is not an Event"))?;
-    dispatch_event(ec, &path, &mut event, event_object)
+    dispatch_event(ec, &path, event)
 
 }
 
@@ -218,21 +185,19 @@ pub(crate) fn dispatch_with_chain(
 /// <https://dom.spec.whatwg.org/#concept-event-path-append>
 fn path_for_target(
     target_access: &dyn super::event::EventTargetAccess,
-    target: &EventTarget,
-    target_object: &JsObject,
     _legacy_target_override: bool,
 ) -> Completion<Vec<EventPathItem>, Types> {
     let mut path: Vec<EventPathItem> = Vec::new();
-    let shadow_adjusted = Some(target_object.clone());
+    let et = target_access.get_event_target();
 
     path.push(EventPathItem {
-        invocation_target: target.clone(),
-        shadow_adjusted_target: shadow_adjusted,
+        invocation_target: et.clone(),
+        shadow_adjusted_target: Some(et),
     });
 
     loop {
         match target_access.get_the_parent() {
-            Some((parent_object, parent_event_target)) => {
+            Some((_parent_object, parent_event_target)) => {
                 path.push(EventPathItem {
                     invocation_target: parent_event_target,
                     shadow_adjusted_target: None,
@@ -246,48 +211,7 @@ fn path_for_target(
 }
 
 /// Extract (document, node_id) from a Node-platform-object JsObject.
-fn extract_node_info(
-    ec: &mut dyn ExecutionContext<Types>,
-    object: &JsObject,
-) -> Option<(Rc<RefCell<BaseDocument>>, usize)> {
-    use crate::dom::{Element, Node};
-
-    ec.with_object_any(object).and_then(|data| {
-        if let Some(element) = data.downcast_ref::<Element>() {
-            Some((Rc::clone(&element.node.document), element.node.node_id))
-        } else if let Some(html_element) = data.downcast_ref::<HTMLElement>() {
-            Some((
-                Rc::clone(&html_element.element.node.document),
-                html_element.element.node.node_id,
-            ))
-        } else if let Some(input) = data.downcast_ref::<HTMLInputElement>() {
-            Some((
-                Rc::clone(&input.html_element.element.node.document),
-                input.html_element.element.node.node_id,
-            ))
-        } else if let Some(anchor) = data.downcast_ref::<HTMLAnchorElement>() {
-            Some((
-                Rc::clone(&anchor.html_element.element.node.document),
-                anchor.html_element.element.node.node_id,
-            ))
-        } else if let Some(iframe) = data.downcast_ref::<HTMLIFrameElement>() {
-            Some((
-                Rc::clone(&iframe.html_element.element.node.document),
-                iframe.html_element.element.node.node_id,
-            ))
-        } else if let Some(node) = data.downcast_ref::<Node>() {
-            Some((Rc::clone(&node.document), node.node_id))
-        } else {
-            None
-        }
-    })
-}
-
 /// Extract the cloneable EventTarget from any JsObject that embeds one.
-///
-/// Walks all known platform-object types (Window, Document, Element,
-/// HTMLElement, HTMLAnchorElement, etc.) to find the embedded EventTarget
-/// field and returns a clone.
 fn event_target_from_object(
     ec: &mut dyn ExecutionContext<Types>,
     object: &JsObject,
@@ -319,7 +243,7 @@ fn event_target_from_object(
         .unwrap_or_default()
 }
 
-fn event_target_from_window(
+pub(crate) fn event_target_from_window(
     ec: &mut dyn ExecutionContext<Types>,
     object: &JsObject,
 ) -> EventTarget {
@@ -329,55 +253,28 @@ fn event_target_from_window(
 }
 
 // ---------------------------------------------------------------------------
-// Activation behavior — standalone functions
-// ---------------------------------------------------------------------------
-
-fn target_has_activation_behavior(
-    ec: &mut dyn ExecutionContext<Types>,
-    target: &JsObject,
-) -> bool {
-    ec.with_object_any(target)
-        .and_then(|data| data.downcast_ref::<HTMLAnchorElement>())
-        .is_some()
-}
-
-fn target_run_activation_behavior(
-    ec: &mut dyn ExecutionContext<Types>,
-    target: &JsObject,
-    _event: &JsObject,
-) -> Completion<(), Types> {
-    let anchor = ec
-        .with_object_any(target)
-        .and_then(|data| data.downcast_ref::<HTMLAnchorElement>())
-        .cloned();
-    if anchor.is_some() {
-        return Err(ec.new_type_error(
-            "anchor activation behavior requires content-process context",
-        ));
-    }
-    Ok(())
-}
-
 // ---------------------------------------------------------------------------
 // Core event dispatch loop
 // ---------------------------------------------------------------------------
 
 /// <https://dom.spec.whatwg.org/#concept-event-dispatch>
-fn dispatch_event(
+pub(crate) fn dispatch_event(
     ec: &mut dyn ExecutionContext<Types>,
     path: &[EventPathItem],
-    event: &mut Event,
-    event_object: &JsObject,
+    event: &Event,
 ) -> Completion<bool, Types> {
     *event.dispatch_flag.borrow_mut() = true;
-    *event.stop_propagation_flag.borrow_mut() = false;
-    *event.stop_immediate_propagation_flag.borrow_mut() = false;
 
-    let activation_target = compute_activation_target(ec, path, event)?;
-
-    if let Some(ref activation_target) = activation_target {
-        run_legacy_pre_activation_behavior(ec, activation_target, event_object)?;
-    }
+    // Step 6.5: "If isActivationEvent is true and target has activation
+    //            behavior, then set activationTarget to target."
+    // Step 9.6.1/9.8.2: Walk parents for activation behavior during bubbling.
+    let activation_target_idx = if event.type_ == "click" {
+        path.iter().position(|entry|
+            entry.invocation_target.has_activation_behavior()
+        )
+    } else {
+        None
+    };
 
     for (index, entry) in path.iter().enumerate().rev() {
         let phase = if entry.shadow_adjusted_target.is_some() {
@@ -390,7 +287,7 @@ fn dispatch_event(
         *event.current_target.borrow_mut() = entry.invocation_target.reflector.clone();
         *event.event_phase.borrow_mut() = phase;
 
-        invoke(ec, path, index, event, event_object, ListenerPhase::Capturing)?;
+        invoke(ec, path, index, event, ListenerPhase::Capturing)?;
     }
 
     for (index, entry) in path.iter().enumerate() {
@@ -406,7 +303,7 @@ fn dispatch_event(
         *event.current_target.borrow_mut() = entry.invocation_target.reflector.clone();
         *event.event_phase.borrow_mut() = phase;
 
-        invoke(ec, path, index, event, event_object, ListenerPhase::Bubbling)?;
+        invoke(ec, path, index, event, ListenerPhase::Bubbling)?;
     }
 
     let canceled = *event.canceled_flag.borrow();
@@ -417,76 +314,16 @@ fn dispatch_event(
     *event.stop_propagation_flag.borrow_mut() = false;
     *event.stop_immediate_propagation_flag.borrow_mut() = false;
 
-    if let Some(ref activation_target) = activation_target {
+    // Step 12: "If activationTarget is non-null:"
+    if let Some(idx) = activation_target_idx {
+        // Step 12.1: "If event's canceled flag is unset, then run
+        //            activationTarget's activation behavior with event."
         if !canceled {
-            run_activation_behavior(ec, activation_target, event_object)?;
-        } else {
-            run_legacy_canceled_activation_behavior(ec, activation_target, event_object)?;
+            path[idx].invocation_target.run_activation_behavior(event)?;
         }
     }
 
     Ok(!canceled)
-}
-
-fn compute_activation_target(
-    ec: &mut dyn ExecutionContext<Types>,
-    path: &[EventPathItem],
-    event: &Event,
-) -> Completion<Option<JsObject>, Types> {
-    if event.type_ != "click" {
-        return Ok(None);
-    }
-
-    let Some(target_entry) = path.first() else {
-        return Ok(None);
-    };
-
-    let target = target_entry
-        .shadow_adjusted_target
-        .clone()
-        .or_else(|| target_entry.invocation_target.reflector.clone())
-        .unwrap();
-    if target_has_activation_behavior(ec, &target) {
-        return Ok(Some(target));
-    }
-
-    if !*event.bubbles.borrow() {
-        return Ok(None);
-    }
-
-    for entry in path.iter().skip(1) {
-        if let Some(candidate) = entry.invocation_target.reflector.clone() {
-            if target_has_activation_behavior(ec, &candidate) {
-                return Ok(Some(candidate));
-            }
-        }
-    }
-
-    Ok(None)
-}
-
-fn run_legacy_pre_activation_behavior(
-    _ec: &mut dyn ExecutionContext<Types>,
-    _target: &JsObject,
-    _event: &JsObject,
-) -> Completion<(), Types> {
-    Ok(())
-}
-
-fn run_activation_behavior(
-    ec: &mut dyn ExecutionContext<Types>,
-    target: &JsObject,
-    event: &JsObject,
-) -> Completion<(), Types> {
-    target_run_activation_behavior(ec, target, event)
-}
-
-fn run_legacy_canceled_activation_behavior(
-    _ec: &mut dyn ExecutionContext<Types>,
-    _target: &JsObject,
-    _event: &JsObject,
-) -> Completion<(), Types> {
-    Ok(())
 }
 
 // ---------------------------------------------------------------------------
@@ -498,8 +335,7 @@ fn invoke(
     ec: &mut dyn ExecutionContext<Types>,
     path: &[EventPathItem],
     index: usize,
-    event: &mut Event,
-    event_object: &JsObject,
+    event: &Event,
     phase: ListenerPhase,
 ) -> Completion<(), Types> {
     let entry = &path[index];
@@ -536,7 +372,7 @@ fn invoke(
         }
     }
 
-    let _found = inner_invoke(ec, &entry.invocation_target, event, event_object, &listeners, phase)?;
+    let _found = inner_invoke(ec, &entry.invocation_target, event, &listeners, phase)?;
 
     Ok(())
 }
@@ -545,8 +381,7 @@ fn invoke(
 fn inner_invoke(
     ec: &mut dyn ExecutionContext<Types>,
     current_target: &EventTarget,
-    event: &mut Event,
-    event_object: &JsObject,
+    event: &Event,
     listeners: &[EventListener],
     phase: ListenerPhase,
 ) -> Completion<bool, Types> {
@@ -575,15 +410,19 @@ fn inner_invoke(
         }
 
         if let Some(callback) = listener.callback.as_ref() {
-            if let Some(target_object) = current_target.reflector.as_ref() {
+            let event_value = event.get_js_object().map(|o| {
+                <Types as JsTypes>::value_from_object(o)
+            });
+            let this_value = current_target.get_js_object().map(|o| {
+                <Types as JsTypes>::value_from_object(o)
+            });
+            if let (Some(event_value), Some(this_value)) = (event_value, this_value) {
                 if let Err(error) = call_user_objects_operation(
                     ec,
                     callback,
                     "handleEvent",
-                    &[<Types as JsTypes>::value_from_object(event_object.clone())],
-                    Some(&<Types as JsTypes>::value_from_object(
-                        target_object.clone(),
-                    )),
+                    &[event_value],
+                    Some(&this_value),
                 ) {
                     ec.report_exception(error);
                 }
@@ -608,7 +447,7 @@ fn shadow_adjusted_target(path: &[EventPathItem], index: usize) -> Option<JsObje
     path[..=index]
         .iter()
         .rev()
-        .find_map(|entry| entry.shadow_adjusted_target.clone())
+        .find_map(|entry| entry.shadow_adjusted_target.as_ref()?.reflector.clone())
 }
 
 // ---------------------------------------------------------------------------
@@ -630,10 +469,3 @@ fn resolve_element_object(
     crate::js::platform_objects::resolve_element_object(node_id, ec)
 }
 
-fn resolve_existing_node_object(
-    document: Rc<RefCell<BaseDocument>>,
-    node_id: usize,
-    ec: &mut dyn ExecutionContext<Types>,
-) -> Completion<JsObject, Types> {
-    crate::js::platform_objects::object_for_existing_node(document, node_id, ec)
-}

@@ -5,6 +5,7 @@ use crate::js::Types;
 type JsValue = <Types as JsTypes>::JsValue;
 type JsObject = <Types as JsTypes>::JsObject;
 use log::error;
+pub(crate) mod dispatch;
 mod environment_settings_object;
 mod global_scope;
 mod html_anchor_element;
