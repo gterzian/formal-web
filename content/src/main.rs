@@ -875,7 +875,7 @@ impl ContentProcess {
                 msg
             })?;
 
-        fire_event(ec, &window_target, &window, "load", time_millis, true)
+        fire_event(ec, &window_target, "load", time_millis, true)
         .map_err(|error| format!("fire_event failed: {error:?}"))?;
 
         let traversable_id = content_document.traversable_id;

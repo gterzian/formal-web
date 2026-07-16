@@ -362,14 +362,11 @@ fn run_abort_steps(
     let signal_object = signal.object().ok_or_else(|| {
         ec.new_type_error("AbortSignal is missing its JavaScript object")
     })?;
-    let (event_target, target_object) = ec
+    let event_target = ec
         .with_object_any(&signal_object)
         .and_then(|data| {
             let signal = data.downcast_ref::<AbortSignal>()?;
-            Some((
-                signal.get_event_target(),
-                signal.get_target_object()?,
-            ))
+            Some(signal.get_event_target())
         })
         .ok_or_else(|| {
             let error = ec.new_type_error("signal_object is not an AbortSignal");
@@ -377,7 +374,7 @@ fn run_abort_steps(
             error
         })?;
 
-    let _ = fire_event(ec, &event_target, &target_object, "abort", 0.0, false)?;
+    let _ = fire_event(ec, &event_target, "abort", 0.0, false)?;
     Ok(())
 }
 

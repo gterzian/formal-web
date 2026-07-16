@@ -86,7 +86,7 @@ pub(crate) fn dispatch_window_event(
 ) -> Completion<bool, Types> {
     let target_object = ec.global_object();
     let event_target = event_target_from_window(ec, &target_object);
-    let event_domain = Event::new(
+    let mut event = Event::new(
         event_type.to_owned(),
         false,
         cancelable,
@@ -94,22 +94,29 @@ pub(crate) fn dispatch_window_event(
         true,
         time_millis,
     );
-    let event_object = create_interface_instance::<Types, Event>(event_domain, ec)?;
-    dispatch(ec, &event_target, &target_object, &event_object, false)
+    let event_object = create_interface_instance::<Types, Event>(event.clone(), ec)?;
+    let path = simple_path(&event_target, &target_object);
+    dispatch_event(ec, &path, &mut event, &event_object)
+}
+
+fn simple_path(target: &EventTarget, target_object: &JsObject) -> Vec<EventPathEntry> {
+    vec![EventPathEntry {
+        invocation_target: target.clone(),
+        invocation_target_object: target_object.clone(),
+        shadow_adjusted_target: Some(target_object.clone()),
+    }]
 }
 
 /// <https://dom.spec.whatwg.org/#concept-event-fire>
 pub(crate) fn fire_event(
     ec: &mut dyn ExecutionContext<Types>,
     target: &dyn super::event::EventTargetAccess,
-    target_object: &JsObject,
     event_type: &str,
     time_millis: f64,
     legacy_target_override: bool,
 ) -> Completion<bool, Types> {
-    // Step 1: "If eventConstructor is not given, then let eventConstructor be Event."
     // Step 2: "Let event be the result of creating an event given eventConstructor, in the relevant realm of target."
-    let event_domain = Event::new(
+    let mut event = Event::new(
         event_type.to_owned(),
         false,
         false,
@@ -117,25 +124,52 @@ pub(crate) fn fire_event(
         true,
         time_millis,
     );
-    let event_object = create_interface_instance::<Types, Event>(event_domain, ec)?;
 
     // Step 5: "Return the result of dispatching event at target, with legacy target override flag set if set."
     let target_event = target.get_event_target();
-    let path = path_for_target(ec, &target_event, target_object, legacy_target_override)?;
-    dispatch_event(ec, &path, &event_object)
+    let target_object = target.get_target_object()
+        .ok_or_else(|| ec.new_type_error("target has no JsObject"))?;
+    let path = path_for_target(ec, &target_event, &target_object, legacy_target_override)?;
+    // Wrap the Event in a JsObject for Web IDL callback invocation.
+    let event_object = create_interface_instance::<Types, Event>(event.clone(), ec)?;
+    dispatch_event(ec, &path, &mut event, &event_object)
 }
 
 /// <https://dom.spec.whatwg.org/#concept-event-dispatch>
 pub(crate) fn dispatch(
     ec: &mut dyn ExecutionContext<Types>,
     target: &dyn super::event::EventTargetAccess,
-    target_object: &JsObject,
     event_object: &JsObject,
     legacy_target_override: bool,
 ) -> Completion<bool, Types> {
+    // Extract the domain Event from the JsObject so dispatch_event can
+    // mutate it directly (the JsObject is a GC wrapper around the Event).
+    let mut event: Event = ec
+        .with_object_any(event_object)
+        .and_then(|data| data.downcast_ref::<Event>())
+        .cloned()
+        .ok_or_else(|| ec.new_type_error("event_object is not an Event"))?;
+
     let target_event = target.get_event_target();
-    let path = path_for_target(ec, &target_event, target_object, legacy_target_override)?;
-    dispatch_event(ec, &path, event_object)
+    let target_object = target.get_target_object()
+        .ok_or_else(|| ec.new_type_error("target has no JsObject"))?;
+    let path = path_for_target(ec, &target_event, &target_object, legacy_target_override)?;
+    let result = dispatch_event(ec, &path, &mut event, event_object)?;
+
+    // Sync mutated Event fields back to the GC.
+    sync_event(ec, event_object, event);
+
+    Ok(result)
+}
+
+fn sync_event(ec: &mut dyn ExecutionContext<Types>, event_object: &JsObject, event: Event) {
+    if let Some(data) = ec.with_object_any_mut(event_object) {
+        if let Some(target) = data.downcast_mut::<Event>() {
+            *target = event;
+        } else if let Some(ui_event) = data.downcast_mut::<crate::dom::UIEvent>() {
+            ui_event.event = event;
+        }
+    }
 }
 
 /// <https://dom.spec.whatwg.org/#concept-event-dispatch>
@@ -189,7 +223,14 @@ pub(crate) fn dispatch_with_chain(
         path
     };
 
-    dispatch_event(ec, &path, event_object)
+    let mut event: Event = ec
+        .with_object_any(event_object)
+        .and_then(|data| data.downcast_ref::<Event>())
+        .cloned()
+        .ok_or_else(|| ec.new_type_error("dispatch_with_chain: event_object is not an Event"))?;
+    let result = dispatch_event(ec, &path, &mut event, event_object)?;
+    sync_event(ec, event_object, event);
+    Ok(result)
 }
 
 // ---------------------------------------------------------------------------
@@ -406,24 +447,19 @@ fn target_run_activation_behavior(
 fn dispatch_event(
     ec: &mut dyn ExecutionContext<Types>,
     path: &[EventPathEntry],
+    event: &mut Event,
     event_object: &JsObject,
 ) -> Completion<bool, Types> {
-    // Step 1: "Set event's dispatch flag."
-    mutate_event(ec, event_object, |event| {
-        event.dispatch_flag = true;
-        event.stop_propagation_flag = false;
-        event.stop_immediate_propagation_flag = false;
-    });
+    event.dispatch_flag = true;
+    event.stop_propagation_flag = false;
+    event.stop_immediate_propagation_flag = false;
 
-    // Step 3: "Let activationTarget be null."
-    let activation_target = compute_activation_target(ec, path, event_object)?;
+    let activation_target = compute_activation_target(ec, path, event)?;
 
-    // Step 12: Run legacy-pre-activation behavior.
     if let Some(ref activation_target) = activation_target {
         run_legacy_pre_activation_behavior(ec, activation_target, event_object)?;
     }
 
-    // Step 13: Capture phase (reverse order).
     for (index, entry) in path.iter().enumerate().rev() {
         let phase = if entry.shadow_adjusted_target.is_some() {
             super::AT_TARGET
@@ -431,46 +467,37 @@ fn dispatch_event(
             CAPTURING_PHASE
         };
 
-        mutate_event(ec, event_object, |event| {
-            event.target = shadow_adjusted_target(path, index);
-            event.current_target = Some(entry.invocation_target_object.clone());
-            event.event_phase = phase;
-        });
+        event.target = shadow_adjusted_target(path, index);
+        event.current_target = Some(entry.invocation_target_object.clone());
+        event.event_phase = phase;
 
-        invoke(ec, path, index, event_object, ListenerPhase::Capturing)?;
+        invoke(ec, path, index, event, event_object, ListenerPhase::Capturing)?;
     }
 
-    // Step 14: Bubble phase.
     for (index, entry) in path.iter().enumerate() {
         let phase = if entry.shadow_adjusted_target.is_some() {
             super::AT_TARGET
-        } else if access_event(ec, event_object, |event| event.bubbles) {
+        } else if event.bubbles {
             BUBBLING_PHASE
         } else {
             continue;
         };
 
-        mutate_event(ec, event_object, |event| {
-            event.target = shadow_adjusted_target(path, index);
-            event.current_target = Some(entry.invocation_target_object.clone());
-            event.event_phase = phase;
-        });
+        event.target = shadow_adjusted_target(path, index);
+        event.current_target = Some(entry.invocation_target_object.clone());
+        event.event_phase = phase;
 
-        invoke(ec, path, index, event_object, ListenerPhase::Bubbling)?;
+        invoke(ec, path, index, event, event_object, ListenerPhase::Bubbling)?;
     }
 
-    // Step 15-18: Cleanup.
-    let canceled = access_event(ec, event_object, |event| event.canceled_flag);
-    mutate_event(ec, event_object, |event| {
-        event.target = None;
-        event.current_target = None;
-        event.event_phase = NONE;
-        event.dispatch_flag = false;
-        event.stop_propagation_flag = false;
-        event.stop_immediate_propagation_flag = false;
-    });
+    let canceled = event.canceled_flag;
+    event.target = None;
+    event.current_target = None;
+    event.event_phase = NONE;
+    event.dispatch_flag = false;
+    event.stop_propagation_flag = false;
+    event.stop_immediate_propagation_flag = false;
 
-    // Step 20: Activation behavior.
     if let Some(ref activation_target) = activation_target {
         if !canceled {
             run_activation_behavior(ec, activation_target, event_object)?;
@@ -479,16 +506,15 @@ fn dispatch_event(
         }
     }
 
-    // Step 21: "Return false if event's canceled flag is set; otherwise true."
     Ok(!canceled)
 }
 
 fn compute_activation_target(
     ec: &mut dyn ExecutionContext<Types>,
     path: &[EventPathEntry],
-    event_object: &JsObject,
+    event: &Event,
 ) -> Completion<Option<JsObject>, Types> {
-    if !(access_event(ec, event_object, |event| event.type_.clone()) == "click") {
+    if event.type_ != "click" {
         return Ok(None);
     }
 
@@ -504,7 +530,7 @@ fn compute_activation_target(
         return Ok(Some(target));
     }
 
-    if !(access_event(ec, event_object, |event| event.bubbles)) {
+    if !event.bubbles {
         return Ok(None);
     }
 
@@ -551,28 +577,25 @@ fn invoke(
     ec: &mut dyn ExecutionContext<Types>,
     path: &[EventPathEntry],
     index: usize,
+    event: &mut Event,
     event_object: &JsObject,
     phase: ListenerPhase,
 ) -> Completion<(), Types> {
     let entry = &path[index];
     let target = shadow_adjusted_target(path, index);
 
-    if access_event(ec, event_object, |event| event.stop_propagation_flag) {
+    if event.stop_propagation_flag {
         return Ok(());
     }
 
-    let phase_value = access_event(ec, event_object, |event| event.event_phase);
-    mutate_event(ec, event_object, |event| {
-        event.target = target;
-        event.current_target = Some(entry.invocation_target_object.clone());
-        event.event_phase = phase_value;
-    });
+    let phase_value = event.event_phase;
+    event.target = target;
+    event.current_target = Some(entry.invocation_target_object.clone());
+    event.event_phase = phase_value;
 
-    // Read listener list from the domain EventTarget (no JsObject needed).
     let listeners = entry.invocation_target.event_listener_list.clone();
 
-    if dispatch_debug_enabled() && access_event(ec, event_object, |event| event.type_.clone()) == "click"
-    {
+    if dispatch_debug_enabled() && event.type_ == "click" {
         let matching_listeners = listeners
             .iter()
             .filter(|listener| !listener.removed && listener.type_ == "click")
@@ -590,7 +613,7 @@ fn invoke(
         );
     }
 
-    let _found = inner_invoke(ec, &entry.invocation_target_object, &entry.invocation_target, event_object, &listeners, phase)?;
+    let _found = inner_invoke(ec, &entry.invocation_target_object, &entry.invocation_target, event, event_object, &listeners, phase)?;
 
     Ok(())
 }
@@ -600,6 +623,7 @@ fn inner_invoke(
     ec: &mut dyn ExecutionContext<Types>,
     current_target_object: &JsObject,
     current_target: &EventTarget,
+    event: &mut Event,
     event_object: &JsObject,
     listeners: &[EventListener],
     phase: ListenerPhase,
@@ -607,7 +631,7 @@ fn inner_invoke(
     let mut found = false;
 
     for listener in listeners.iter().filter(|listener| !listener.removed) {
-        if access_event(ec, event_object, |event| event.type_.clone()) != listener.type_ {
+        if event.type_ != listener.type_ {
             continue;
         }
 
@@ -620,46 +644,17 @@ fn inner_invoke(
             continue;
         }
 
-        // Step 2.5: Once listener → remove from domain EventTarget.
         if listener.once {
-            // Remove from the cloned EventTarget domain struct.
             let mut ct = current_target.clone();
             ct.remove_event_listener_by_id(listener.id);
-            // Also sync back to the GC — the simplest approach is to write
-            // through the JsObject.
-            if let Some(data) = ec.with_object_any_mut(current_target_object) {
-                if let Some(window) = data.downcast_mut::<Window>() {
-                    window.event_target = ct;
-                } else if let Some(document) = data.downcast_mut::<crate::dom::Document>() {
-                    document.node.event_target = ct;
-                } else if let Some(element) = data.downcast_mut::<crate::dom::Element>() {
-                    element.node.event_target = ct;
-                } else if let Some(html_element) = data.downcast_mut::<HTMLElement>() {
-                    html_element.element.node.event_target = ct;
-                } else if let Some(anchor) = data.downcast_mut::<HTMLAnchorElement>() {
-                    anchor.html_element.element.node.event_target = ct;
-                } else if let Some(iframe) = data.downcast_mut::<HTMLIFrameElement>() {
-                    iframe.html_element.element.node.event_target = ct;
-                } else if let Some(input) = data.downcast_mut::<HTMLInputElement>() {
-                    input.html_element.element.node.event_target = ct;
-                } else if let Some(node) = data.downcast_mut::<crate::dom::Node>() {
-                    node.event_target = ct;
-                } else if let Some(et) = data.downcast_mut::<EventTarget>() {
-                    *et = ct;
-                }
-            }
+            sync_event_target(ec, current_target_object, ct);
         }
 
         if listener.passive == Some(true) {
-            mutate_event(ec, event_object, |event| {
-                event.in_passive_listener_flag = true;
-            });
+            event.in_passive_listener_flag = true;
         }
 
-        // Step 2.11: "Call a user object's operation with listener's callback, `handleEvent`, « event »."
         if let Some(callback) = listener.callback.as_ref() {
-            // The Web IDL layer receives JsValues — these are the GC handles
-            // for the platform objects, obtained from the caller.
             if let Err(error) = call_user_objects_operation(
                 ec,
                 callback,
@@ -673,16 +668,42 @@ fn inner_invoke(
             }
         }
 
-        mutate_event(ec, event_object, |event| {
-            event.in_passive_listener_flag = false;
-        });
+        event.in_passive_listener_flag = false;
 
-        if access_event(ec, event_object, |event| event.stop_immediate_propagation_flag) {
+        if event.stop_immediate_propagation_flag {
             break;
         }
     }
 
     Ok(found)
+}
+
+fn sync_event_target(
+    ec: &mut dyn ExecutionContext<Types>,
+    target_object: &JsObject,
+    event_target: EventTarget,
+) {
+    if let Some(data) = ec.with_object_any_mut(target_object) {
+        if let Some(window) = data.downcast_mut::<Window>() {
+            window.event_target = event_target;
+        } else if let Some(document) = data.downcast_mut::<crate::dom::Document>() {
+            document.node.event_target = event_target;
+        } else if let Some(element) = data.downcast_mut::<crate::dom::Element>() {
+            element.node.event_target = event_target;
+        } else if let Some(html_element) = data.downcast_mut::<HTMLElement>() {
+            html_element.element.node.event_target = event_target;
+        } else if let Some(anchor) = data.downcast_mut::<HTMLAnchorElement>() {
+            anchor.html_element.element.node.event_target = event_target;
+        } else if let Some(iframe) = data.downcast_mut::<HTMLIFrameElement>() {
+            iframe.html_element.element.node.event_target = event_target;
+        } else if let Some(input) = data.downcast_mut::<HTMLInputElement>() {
+            input.html_element.element.node.event_target = event_target;
+        } else if let Some(node) = data.downcast_mut::<crate::dom::Node>() {
+            node.event_target = event_target;
+        } else if let Some(et) = data.downcast_mut::<EventTarget>() {
+            *et = event_target;
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -694,40 +715,6 @@ fn shadow_adjusted_target(path: &[EventPathEntry], index: usize) -> Option<JsObj
         .iter()
         .rev()
         .find_map(|entry| entry.shadow_adjusted_target.clone())
-}
-
-fn mutate_event(
-    ec: &mut dyn ExecutionContext<Types>,
-    event_object: &JsObject,
-    f: impl FnOnce(&mut Event),
-) {
-    if let Some(data) = ec.with_object_any_mut(event_object) {
-        if let Some(event) = data.downcast_mut::<Event>() {
-            f(event);
-            return;
-        }
-        // UIEvent wraps Event; apply the mutation to the inner event.
-        if let Some(ui_event) = data.downcast_mut::<crate::dom::UIEvent>() {
-            f(&mut ui_event.event);
-        }
-    }
-}
-
-fn access_event<R>(
-    ec: &mut dyn ExecutionContext<Types>,
-    event_object: &JsObject,
-    f: impl FnOnce(&Event) -> R,
-) -> R {
-    // Try Event first, then UIEvent (which wraps Event).
-    if let Some(data) = ec.with_object_any(event_object) {
-        if let Some(event) = data.downcast_ref::<Event>() {
-            return f(event);
-        }
-        if let Some(ui_event) = data.downcast_ref::<crate::dom::UIEvent>() {
-            return f(&ui_event.event);
-        }
-    }
-    panic!("event_object must wrap an Event or UIEvent");
 }
 
 // ---------------------------------------------------------------------------

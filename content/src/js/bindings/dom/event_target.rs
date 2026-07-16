@@ -138,7 +138,7 @@ fn dispatch_event(
             error
         })?;
 
-    let canceled = dispatch(ec, &target, &target_object, &event_obj, false)?;
+    let canceled = dispatch(ec, &target, &event_obj, false)?;
     Ok(ec.value_from_bool(!canceled))
 }
 
