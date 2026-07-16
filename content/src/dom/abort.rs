@@ -369,7 +369,7 @@ fn run_abort_steps(
             error
         })?;
 
-    let _ = fire_event(ec, &event_target_clone, &signal_object, "abort", 0.0, false)?;
+    fire_event(ec, &event_target_clone, &signal_object, "abort", 0.0, false)?;
     Ok(())
 }
 
