@@ -55,6 +55,12 @@ pub(crate) struct EventListener {
 #[gc_struct]
 #[derive(Default)]
 pub struct EventTarget {
+    /// The JsObject GC handle for the platform object that owns this
+    /// EventTarget (Window, Node, AbortSignal, etc.).
+    /// Set during path building so the Web IDL layer can retrieve the
+    /// JsObject for callback invocation without storing it separately.
+    pub(crate) reflector: Option<JsObject>,
+
     /// <https://dom.spec.whatwg.org/#eventtarget-event-listener-list>
     pub(crate) event_listener_list: GcCell<Vec<EventListener>>,
 
@@ -67,8 +73,9 @@ pub(crate) trait EventTargetAccess {
     fn get_event_target(&self) -> EventTarget;
 
     /// The JsObject GC handle for this EventTarget's platform object.
+    /// Default implementation uses the EventTarget's reflector field.
     fn get_target_object(&self) -> Option<JsObject> {
-        None
+        self.get_event_target().reflector.clone()
     }
 
     /// Returns (parent_JsObject, parent_EventTarget) or None.
@@ -82,9 +89,20 @@ impl EventTargetAccess for EventTarget {
     fn get_event_target(&self) -> EventTarget {
         self.clone()
     }
+
+    fn get_target_object(&self) -> Option<JsObject> {
+        self.reflector.clone()
+    }
 }
 
 impl EventTarget {
+    /// Set the JsObject reflector for this EventTarget.
+    /// Called when the platform object that embeds this EventTarget
+    /// is created (e.g. after `create_interface_instance`).
+    pub(crate) fn set_reflector(&mut self, reflector: JsObject) {
+        self.reflector = Some(reflector);
+    }
+
     /// <https://dom.spec.whatwg.org/#dom-eventtarget-addeventlistener>
     pub(crate) fn add_event_listener(
         &self,

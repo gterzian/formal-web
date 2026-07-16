@@ -56,15 +56,13 @@ fn debug_target_label(object: &JsObject, ec: &mut dyn ExecutionContext<Types>) -
     String::from("UnknownTarget")
 }
 
+/// <https://dom.spec.whatwg.org/#concept-event-path-append>
 #[derive(Clone)]
-struct EventPathEntry {
-    /// The JsObject GC handle for the invocation target — needed by Web IDL
-    /// callback invocation (`call_user_objects_operation`).
-    invocation_target_object: JsObject,
-    /// The domain EventTarget — used by all spec algorithm operations
-    /// (reading listener list, activation checks, etc.).
+struct EventPathItem {
+    /// <https://dom.spec.whatwg.org/#concept-event-path-append>
     invocation_target: EventTarget,
-    /// Shadow-adjusted target JsObject for setting event.target during dispatch.
+
+    /// <https://dom.spec.whatwg.org/#concept-event-path-append>
     shadow_adjusted_target: Option<JsObject>,
 }
 
@@ -99,10 +97,9 @@ pub(crate) fn dispatch_window_event(
     dispatch_event(ec, &path, &mut event, &event_object)
 }
 
-fn simple_path(target: &EventTarget, target_object: &JsObject) -> Vec<EventPathEntry> {
-    vec![EventPathEntry {
+fn simple_path(target: &EventTarget, target_object: &JsObject) -> Vec<EventPathItem> {
+    vec![EventPathItem {
         invocation_target: target.clone(),
-        invocation_target_object: target_object.clone(),
         shadow_adjusted_target: Some(target_object.clone()),
     }]
 }
@@ -165,14 +162,12 @@ pub(crate) fn dispatch_with_chain(
         let global_obj = global_object(ec);
         let global_target = event_target_from_window(ec, &global_obj);
         vec![
-            EventPathEntry {
+            EventPathItem {
                 invocation_target: doc_target,
-                invocation_target_object: doc_object,
                 shadow_adjusted_target: None,
             },
-            EventPathEntry {
+            EventPathItem {
                 invocation_target: global_target,
-                invocation_target_object: global_obj,
                 shadow_adjusted_target: None,
             },
         ]
@@ -181,24 +176,21 @@ pub(crate) fn dispatch_with_chain(
         for (index, node_id) in chain.iter().enumerate() {
             let object = resolve_element_object(*node_id, ec)?;
             let event_target = event_target_from_object(ec, &object);
-            path.push(EventPathEntry {
+            path.push(EventPathItem {
                 invocation_target: event_target,
-                invocation_target_object: object.clone(),
                 shadow_adjusted_target: (index == 0).then_some(object),
             });
         }
         let doc_object = document_object(ec)?;
         let doc_target = event_target_from_object(ec, &doc_object);
-        path.push(EventPathEntry {
+        path.push(EventPathItem {
             invocation_target: doc_target,
-            invocation_target_object: doc_object,
             shadow_adjusted_target: None,
         });
         let global_obj = global_object(ec);
         let global_target = event_target_from_window(ec, &global_obj);
-        path.push(EventPathEntry {
+        path.push(EventPathItem {
             invocation_target: global_target,
-            invocation_target_object: global_obj,
             shadow_adjusted_target: None,
         });
         path
@@ -228,24 +220,21 @@ fn path_for_target(
     target_access: &dyn super::event::EventTargetAccess,
     target: &EventTarget,
     target_object: &JsObject,
-    legacy_target_override: bool,
-) -> Completion<Vec<EventPathEntry>, Types> {
-    let mut path: Vec<EventPathEntry> = Vec::new();
+    _legacy_target_override: bool,
+) -> Completion<Vec<EventPathItem>, Types> {
+    let mut path: Vec<EventPathItem> = Vec::new();
     let shadow_adjusted = Some(target_object.clone());
 
-    path.push(EventPathEntry {
+    path.push(EventPathItem {
         invocation_target: target.clone(),
-        invocation_target_object: target_object.clone(),
         shadow_adjusted_target: shadow_adjusted,
     });
 
-    // Walk up via the trait's get_the_parent.
     loop {
         match target_access.get_the_parent() {
             Some((parent_object, parent_event_target)) => {
-                path.push(EventPathEntry {
+                path.push(EventPathItem {
                     invocation_target: parent_event_target,
-                    invocation_target_object: parent_object,
                     shadow_adjusted_target: None,
                 });
             }
@@ -376,7 +365,7 @@ fn target_run_activation_behavior(
 /// <https://dom.spec.whatwg.org/#concept-event-dispatch>
 fn dispatch_event(
     ec: &mut dyn ExecutionContext<Types>,
-    path: &[EventPathEntry],
+    path: &[EventPathItem],
     event: &mut Event,
     event_object: &JsObject,
 ) -> Completion<bool, Types> {
@@ -398,7 +387,7 @@ fn dispatch_event(
         };
 
         *event.target.borrow_mut() = shadow_adjusted_target(path, index);
-        *event.current_target.borrow_mut() = Some(entry.invocation_target_object.clone());
+        *event.current_target.borrow_mut() = entry.invocation_target.reflector.clone();
         *event.event_phase.borrow_mut() = phase;
 
         invoke(ec, path, index, event, event_object, ListenerPhase::Capturing)?;
@@ -414,7 +403,7 @@ fn dispatch_event(
         };
 
         *event.target.borrow_mut() = shadow_adjusted_target(path, index);
-        *event.current_target.borrow_mut() = Some(entry.invocation_target_object.clone());
+        *event.current_target.borrow_mut() = entry.invocation_target.reflector.clone();
         *event.event_phase.borrow_mut() = phase;
 
         invoke(ec, path, index, event, event_object, ListenerPhase::Bubbling)?;
@@ -441,7 +430,7 @@ fn dispatch_event(
 
 fn compute_activation_target(
     ec: &mut dyn ExecutionContext<Types>,
-    path: &[EventPathEntry],
+    path: &[EventPathItem],
     event: &Event,
 ) -> Completion<Option<JsObject>, Types> {
     if event.type_ != "click" {
@@ -455,7 +444,8 @@ fn compute_activation_target(
     let target = target_entry
         .shadow_adjusted_target
         .clone()
-        .unwrap_or_else(|| target_entry.invocation_target_object.clone());
+        .or_else(|| target_entry.invocation_target.reflector.clone())
+        .unwrap();
     if target_has_activation_behavior(ec, &target) {
         return Ok(Some(target));
     }
@@ -465,9 +455,10 @@ fn compute_activation_target(
     }
 
     for entry in path.iter().skip(1) {
-        let candidate = entry.invocation_target_object.clone();
-        if target_has_activation_behavior(ec, &candidate) {
-            return Ok(Some(candidate));
+        if let Some(candidate) = entry.invocation_target.reflector.clone() {
+            if target_has_activation_behavior(ec, &candidate) {
+                return Ok(Some(candidate));
+            }
         }
     }
 
@@ -505,7 +496,7 @@ fn run_legacy_canceled_activation_behavior(
 /// <https://dom.spec.whatwg.org/#concept-event-listener-invoke>
 fn invoke(
     ec: &mut dyn ExecutionContext<Types>,
-    path: &[EventPathEntry],
+    path: &[EventPathItem],
     index: usize,
     event: &mut Event,
     event_object: &JsObject,
@@ -520,7 +511,7 @@ fn invoke(
 
     let phase_value = *event.event_phase.borrow();
     *event.target.borrow_mut() = target;
-    *event.current_target.borrow_mut() = Some(entry.invocation_target_object.clone());
+    *event.current_target.borrow_mut() = entry.invocation_target.reflector.clone();
     *event.event_phase.borrow_mut() = phase_value;
 
     let listeners = entry.invocation_target.event_listener_list.borrow().clone();
@@ -534,16 +525,18 @@ fn invoke(
             ListenerPhase::Capturing => "capturing",
             ListenerPhase::Bubbling => "bubbling",
         };
-        trace!(
-            "[input-debug][dispatch] phase={} current_target={} listeners={} matching_click_listeners={}",
-            phase_name,
-            debug_target_label(&entry.invocation_target_object, ec),
-            listeners.len(),
-            matching_listeners,
-        );
+        if let Some(reflector) = &entry.invocation_target.reflector {
+            trace!(
+                "[input-debug][dispatch] phase={} current_target={} listeners={} matching_click_listeners={}",
+                phase_name,
+                debug_target_label(reflector, ec),
+                listeners.len(),
+                matching_listeners,
+            );
+        }
     }
 
-    let _found = inner_invoke(ec, &entry.invocation_target_object, &entry.invocation_target, event, event_object, &listeners, phase)?;
+    let _found = inner_invoke(ec, &entry.invocation_target, event, event_object, &listeners, phase)?;
 
     Ok(())
 }
@@ -551,7 +544,6 @@ fn invoke(
 /// <https://dom.spec.whatwg.org/#concept-event-listener-inner-invoke>
 fn inner_invoke(
     ec: &mut dyn ExecutionContext<Types>,
-    current_target_object: &JsObject,
     current_target: &EventTarget,
     event: &mut Event,
     event_object: &JsObject,
@@ -575,8 +567,6 @@ fn inner_invoke(
         }
 
         if listener.once {
-            // GcCell shares data across clones — the mutation is visible
-            // on the original EventTarget immediately.
             current_target.remove_event_listener_by_id(listener.id);
         }
 
@@ -585,16 +575,18 @@ fn inner_invoke(
         }
 
         if let Some(callback) = listener.callback.as_ref() {
-            if let Err(error) = call_user_objects_operation(
-                ec,
-                callback,
-                "handleEvent",
-                &[<Types as JsTypes>::value_from_object(event_object.clone())],
-                Some(&<Types as JsTypes>::value_from_object(
-                    current_target_object.clone(),
-                )),
-            ) {
-                ec.report_exception(error);
+            if let Some(target_object) = current_target.reflector.as_ref() {
+                if let Err(error) = call_user_objects_operation(
+                    ec,
+                    callback,
+                    "handleEvent",
+                    &[<Types as JsTypes>::value_from_object(event_object.clone())],
+                    Some(&<Types as JsTypes>::value_from_object(
+                        target_object.clone(),
+                    )),
+                ) {
+                    ec.report_exception(error);
+                }
             }
         }
 
@@ -612,7 +604,7 @@ fn inner_invoke(
 // Helper functions
 // ---------------------------------------------------------------------------
 
-fn shadow_adjusted_target(path: &[EventPathEntry], index: usize) -> Option<JsObject> {
+fn shadow_adjusted_target(path: &[EventPathItem], index: usize) -> Option<JsObject> {
     path[..=index]
         .iter()
         .rev()
