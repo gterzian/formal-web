@@ -57,13 +57,8 @@ pub(crate) fn fire_event(
     );
     let event_object =
         crate::webidl::bindings::create_interface_instance::<Types, Event>(event, ec)?;
-    // Set reflector on the Event inside the JsObject.
-    if let Some(data) = ec.with_object_any_mut(&event_object) {
-        if let Some(e) = data.downcast_mut::<Event>() {
-            e.reflector = Some(event_object.clone());
-        }
-    }
-    // Clone the Event domain object — GcCell fields share data, reflector carried by clone.
+    // Clone the Event domain object from the JsObject — GcCell fields share
+    // data, and the reflector was set automatically by create_interface_instance.
     let event: Event = ec
         .with_object_any(&event_object)
         .and_then(|data| data.downcast_ref::<Event>())
@@ -72,17 +67,6 @@ pub(crate) fn fire_event(
 
     let path = path_for_target(target, legacy_target_override)?;
     dispatch_event(ec, &path, &event)
-}
-
-/// <https://dom.spec.whatwg.org/#concept-event-dispatch>
-pub(crate) fn dispatch(
-    ec: &mut dyn ExecutionContext<Types>,
-    target: &dyn super::event::EventTargetAccess,
-    event: &Event,
-    legacy_target_override: bool,
-) -> Completion<bool, Types> {
-    let path = path_for_target(target, legacy_target_override)?;
-    dispatch_event(ec, &path, event)
 }
 
 /// <https://dom.spec.whatwg.org/#concept-event-dispatch>
@@ -318,18 +302,22 @@ fn inner_invoke(
         // Step 2.11: Call a user object's operation with listener's callback,
         //            "handleEvent", « event », and event's currentTarget attribute value.
         if let Some(callback) = listener.callback.as_ref() {
-            // Get the Event JsObject and currentTarget JsObject from their reflectors.
-            let event_js = event.reflector.as_ref().cloned();
-            let this_js = current_target.reflector.as_ref().cloned();
-            if let (Some(event_js), Some(this_js)) = (event_js, this_js) {
+            // Get the Event JsObject from its reflector.
+            if let Some(event_js) = event.reflector.as_ref().cloned() {
                 let event_value = <Types as JsTypes>::value_from_object(event_js);
-                let this_value = <Types as JsTypes>::value_from_object(this_js);
+                // Get the currentTarget JsObject from its reflector, or use undefined.
+                // <https://webidl.spec.whatwg.org/#call-a-user-objects-operation>
+                // Step 2: "If thisArg was not given, let thisArg be undefined."
+                let this_value = current_target
+                    .reflector
+                    .as_ref()
+                    .map(|obj| <Types as JsTypes>::value_from_object(obj.clone()));
                 if let Err(error) = call_user_objects_operation(
                     ec,
                     callback,
                     "handleEvent",
                     &[event_value],
-                    Some(&this_value),
+                    this_value.as_ref(),
                 ) {
                     ec.report_exception(error);
                 }

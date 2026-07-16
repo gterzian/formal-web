@@ -32,11 +32,8 @@ pub(crate) fn fire_global_event(
         time_millis,
     );
     let event_object = create_interface_instance::<Types, Event>(event, ec)?;
-    if let Some(data) = ec.with_object_any_mut(&event_object) {
-        if let Some(e) = data.downcast_mut::<Event>() {
-            e.reflector = Some(event_object.clone());
-        }
-    }
+    // Clone the Event domain object from the JsObject — reflector was set
+    // automatically by create_interface_instance.
     let event: Event = ec
         .with_object_any(&event_object)
         .and_then(|data| data.downcast_ref::<Event>())

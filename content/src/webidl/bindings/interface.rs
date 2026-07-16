@@ -3,6 +3,12 @@ use js_engine::{
     PropertyDescriptor as JsPropertyDescriptor,
 };
 
+/// Trait for setting platform-object reflectors after creation.
+/// Implemented in the content crate for ::js::Types.
+pub(crate) trait PostCreateReflector<Ty: JsTypes> {
+    fn set_reflector(obj: &Ty::JsObject, ec: &mut dyn ExecutionContext<Ty>);
+}
+
 use super::attribute::AttributeDef;
 use super::constant::ConstantDef;
 use super::operation::OperationDef;
@@ -81,7 +87,7 @@ pub(crate) fn create_interface_instance<Ty, T>(
     ec: &mut dyn ExecutionContext<Ty>,
 ) -> Completion<Ty::JsObject, Ty>
 where
-    Ty: JsTypes + JsTypesWithRealm,
+    Ty: JsTypes + JsTypesWithRealm + PostCreateReflector<Ty>,
     T: std::any::Any + boa_gc::Trace + boa_gc::Finalize + boa_engine::JsData + 'static,
 {
     // <https://webidl.spec.whatwg.org/#internally-create-a-new-object-implementing-the-interface>
@@ -117,6 +123,12 @@ where
     //   Not yet implemented.
 
     // Step 14: "Return instance."
+
+    // Set the EventTarget's reflector automatically through the
+    // PostCreateReflector trait. The Web IDL layer handles this
+    // transparently for all types containing EventTarget.
+    <Ty as PostCreateReflector<Ty>>::set_reflector(&instance, ec);
+
     Ok(instance)
 }
 
@@ -166,7 +178,7 @@ where
 #[cfg(feature = "boa")]
 pub(crate) fn register_interface_spec<Ty, I, E>(engine: &mut E) -> Completion<(), Ty>
 where
-    Ty: JsTypes + JsTypesWithRealm,
+    Ty: JsTypes + JsTypesWithRealm + PostCreateReflector<Ty>,
     I: WebIdlInterface<Ty> + boa_gc::Trace + boa_gc::Finalize + boa_engine::JsData + 'static,
     E: JsEngine<Ty> + ExecutionContext<Ty>,
 {
@@ -287,6 +299,10 @@ where
                 // `TraceableBox` wrapper and uses its trace/finalize fn pointers.
                 let traceable = js_engine::boa::TraceableBox::new(obj);
                 let instance = ec.create_object_with_any(resolved_prototype, Box::new(traceable));
+
+                // Set the EventTarget's reflector automatically for the newly
+                // constructed platform object.
+                <Ty as PostCreateReflector<Ty>>::set_reflector(&instance, ec);
 
                 // Step 11: "For every interface ancestor interface in interfaces:"
                 // Only copies own interface's [[Unforgeables]]; ancestor iteration
@@ -681,4 +697,16 @@ where
         desc,
     )?;
     Ok(())
+}
+
+// ── PostCreateReflector implementation for crate::js::Types ────────────
+
+impl PostCreateReflector<crate::js::Types> for crate::js::Types {
+    fn set_reflector(
+        obj: &<crate::js::Types as JsTypes>::JsObject,
+        ec: &mut dyn ExecutionContext<crate::js::Types>,
+    ) {
+        let value = <crate::js::Types as JsTypes>::value_from_object(obj.clone());
+        crate::js::try_set_event_target_reflector(&value, ec);
+    }
 }

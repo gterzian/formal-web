@@ -12,7 +12,7 @@ pub(crate) use abort::{
 };
 pub use abort::{AbortController, AbortSignal};
 pub(crate) use dispatch::{
-    EventPathItem, dispatch, dispatch_event, dispatch_with_path, fire_event, simple_path,
+    EventPathItem, dispatch_event, dispatch_with_path, fire_event, simple_path,
 };
 pub use document::Document;
 pub use dom_exception::DOMException;
@@ -20,4 +20,6 @@ pub use element::Element;
 pub(crate) use event::EventTargetAccess;
 pub use event::{AT_TARGET, BUBBLING_PHASE, CAPTURING_PHASE, Event, EventTarget, UIEvent};
 pub use node::Node;
-pub(crate) use ui_event_dispatch::{dispatch_trusted_click_event, dispatch_ui_event};
+pub(crate) use ui_event_dispatch::{
+    build_path_from_target_js_object, dispatch_trusted_click_event, dispatch_ui_event,
+};

@@ -1,7 +1,7 @@
 type JsValue = <crate::js::Types as JsTypes>::JsValue;
 type JsObject = <crate::js::Types as JsTypes>::JsObject;
 
-use crate::dom::{AbortSignal, EventTarget, dispatch};
+use crate::dom::{AbortSignal, EventTarget, dispatch_with_path};
 use crate::js::try_with_event_target_mut;
 use crate::webidl::{callback_interface_type_value, nullable_value};
 
@@ -129,13 +129,7 @@ fn dispatch_event(
         None => return Err(ec.new_type_error("dispatchEvent requires an Event")),
     };
     let target_object = current_event_target_object(this, ec);
-    let target_value = <crate::js::Types as JsTypes>::value_from_object(target_object.clone());
-    let target = crate::js::try_with_event_target_mut(&target_value, ec, |et| et.clone()).map_err(
-        |error| {
-            log::error!("dispatchEvent: failed to extract EventTarget: {error:?}");
-            error
-        },
-    )?;
+
     // Extract the Event domain object and set its reflector.
     let mut event: crate::dom::Event = ec
         .with_object_any(&event_obj)
@@ -143,7 +137,10 @@ fn dispatch_event(
         .ok_or_else(|| ec.new_type_error("dispatchEvent: event_obj is not an Event"))?;
     event.reflector = Some(event_obj.clone());
 
-    let canceled = dispatch(ec, &target, &event, false)?;
+    // Build the full event path from the target JsObject (includes parent walking
+    // through the DOM tree). Then dispatch with the pre-built path.
+    let path = crate::dom::build_path_from_target_js_object(&target_object, ec);
+    let canceled = dispatch_with_path(ec, &path, &event)?;
     Ok(ec.value_from_bool(!canceled))
 }
 

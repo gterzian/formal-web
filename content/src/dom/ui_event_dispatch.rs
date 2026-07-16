@@ -19,8 +19,8 @@ use crate::html::EnvironmentSettingsObject;
 use crate::webidl::bindings::create_interface_instance;
 use js_engine::ExecutionContext;
 
-use super::{EventPathItem, UIEvent as JsUiEvent, dispatch, dispatch_with_path};
-use crate::dom::event::{Event, EventTarget, EventTargetAccess};
+use super::{EventPathItem, UIEvent as JsUiEvent, dispatch_with_path};
+use crate::dom::event::{Event, EventTarget};
 use crate::dom::{Document, Element, Node};
 use crate::html::{HTMLElement, Window};
 
@@ -344,22 +344,17 @@ pub(crate) fn dispatch_trusted_click_event(
         (target, event)
     };
     let ec = handler.settings.ec();
-    let event_target = ec
-        .with_object_any(&target)
-        .and_then(|data| data.downcast_ref::<crate::dom::Element>())
-        .map(|element| element.get_event_target())
-        .ok_or_else(|| {
-            let msg = "dispatch_trusted_click_event: target is not an Element".to_string();
-            log::error!("{msg}");
-            msg
-        })?;
-    let mut event_clone = ec
+    let event_clone: crate::dom::Event = ec
         .with_object_any(&event)
         .and_then(|data| data.downcast_ref::<crate::dom::Event>())
         .cloned()
         .ok_or_else(|| "dispatch_trusted_click_event: event is not an Event".to_string())?;
-    event_clone.reflector = Some(event.clone());
-    dispatch(ec, &event_target, &event_clone, false)
+    // Reflector was set automatically by create_interface_instance.
+
+    // Build the full event path from the target JsObject (includes parent
+    // walking through the DOM tree), then dispatch with the pre-built path.
+    let path = crate::dom::build_path_from_target_js_object(&target, ec);
+    dispatch_with_path(ec, &path, &event_clone)
         .map_err(|error| format!("failed to dispatch trusted click event: {error:?}"))?;
     handler
         .settings
@@ -480,6 +475,100 @@ fn event_target_from_js_object(
     })
 }
 
+/// Build an event path from a target JsObject by extracting the target's
+/// EventTarget and walking the parent chain through the blitz DOM tree.
+///
+/// The caller must have already extracted the Event from its JsObject
+/// and set its reflector before calling this function.
+///
+/// <https://dom.spec.whatwg.org/#concept-event-path-append>
+pub(crate) fn build_path_from_target_js_object(
+    target_object: &<crate::js::Types as js_engine::JsTypes>::JsObject,
+    ec: &mut dyn ExecutionContext<crate::js::Types>,
+) -> Vec<EventPathItem> {
+    let mut path: Vec<EventPathItem> = Vec::new();
+
+    // Extract the (node_id, document) from the target JsObject if it is a tree node.
+    let node_info = ec.with_object_any(target_object).and_then(|data| {
+        if let Some(element) = data.downcast_ref::<Element>() {
+            Some((element.node.node_id, element.node.document.clone()))
+        } else if let Some(html_element) = data.downcast_ref::<HTMLElement>() {
+            Some((
+                html_element.element.node.node_id,
+                html_element.element.node.document.clone(),
+            ))
+        } else if let Some(node) = data.downcast_ref::<Node>() {
+            Some((node.node_id, node.document.clone()))
+        } else if let Some(document) = data.downcast_ref::<Document>() {
+            Some((document.node.node_id, document.node.document.clone()))
+        } else {
+            None
+        }
+    });
+
+    if let Some((node_id, document)) = node_info {
+        // Target is a tree node — walk up the parent chain.
+        let mut current_node_id = node_id;
+
+        // Push the target entry.
+        if let Some(event_target) = event_target_from_js_object(ec, target_object) {
+            path.push(EventPathItem {
+                invocation_target: event_target.clone(),
+                shadow_adjusted_target: Some(event_target),
+            });
+        }
+
+        // Walk parent chain (excluding document node 0).
+        let mut visited = std::collections::HashSet::new();
+        visited.insert(node_id);
+
+        loop {
+            // Find the parent node ID from the blitz document.
+            let parent_id = {
+                let doc = document.borrow();
+                doc.get_node(current_node_id)
+                    .and_then(|n| n.parent)
+            };
+            match parent_id {
+                Some(parent_id) if !visited.contains(&parent_id) => {
+                    visited.insert(parent_id);
+                    // Resolve the parent to its JsObject and extract EventTarget.
+                    let parent_object =
+                        match crate::js::platform_objects::resolve_element_object(
+                            parent_id, ec,
+                        ) {
+                            Ok(obj) => obj,
+                            Err(_) => {
+                                current_node_id = parent_id;
+                                continue;
+                            }
+                        };
+                    if let Some(parent_et) =
+                        event_target_from_js_object(ec, &parent_object)
+                    {
+                        path.push(EventPathItem {
+                            invocation_target: parent_et,
+                            shadow_adjusted_target: None,
+                        });
+                    }
+                    current_node_id = parent_id;
+                }
+                _ => break,
+            }
+        }
+    } else {
+        // Target is not a tree node (Window, bare EventTarget) — single entry path.
+        if let Some(event_target) = event_target_from_js_object(ec, target_object) {
+            path.push(EventPathItem {
+                invocation_target: event_target.clone(),
+                shadow_adjusted_target: Some(event_target),
+            });
+        }
+    }
+
+    path
+}
+
 impl js_engine::EcmascriptHost<crate::js::Types> for BlitzJSEventHandler<'_> {
     fn get(
         &mut self,
@@ -577,15 +666,15 @@ impl EventHandler for BlitzJSEventHandler<'_> {
             &mut self.settings.realm_execution_context,
         )
         .expect("UIEvent construction must succeed");
-        // Clone the Event — GcCell fields share data with the JsObject.
-        let mut domain_event: crate::dom::Event = self
+        // Clone the Event from the JsObject — reflector was set automatically
+        // by create_interface_instance.
+        let domain_event: crate::dom::Event = self
             .settings
             .realm_execution_context
             .with_object_any(&event_object)
             .and_then(|data| data.downcast_ref::<crate::dom::UIEvent>())
             .map(|uie| uie.event.clone())
             .expect("event_object must wrap a UIEvent");
-        domain_event.reflector = Some(event_object.clone());
         // Build the event path from the blitz node chain before dispatching.
         let path = build_event_path(chain, self.settings);
         if let Err(error) = dispatch_with_path(

@@ -191,7 +191,6 @@ pub(crate) fn resolve_or_create_text_node_object(
 
     let object =
         create_interface_instance::<crate::js::Types, Node>(Node::new(document, node_id), ec)?;
-    set_event_target_reflector(&object, ec);
 
     if let Some(gs) = global_scope_or_error(ec) {
         gs.cache_node_object(node_id, object.clone());
@@ -202,16 +201,6 @@ pub(crate) fn resolve_or_create_text_node_object(
 
 /// Use `try_with_event_target_mut` to set the reflector on the EventTarget
 /// embedded in a platform object JsObject.
-pub(crate) fn set_event_target_reflector(
-    object: &<crate::js::Types as JsTypes>::JsObject,
-    ec: &mut dyn ExecutionContext<crate::js::Types>,
-) {
-    let value = <crate::js::Types as JsTypes>::value_from_object(object.clone());
-    let _ = crate::js::try_with_event_target_mut(&value, ec, |et| {
-        et.reflector = Some(object.clone());
-    });
-}
-
 fn element_object_from_document(
     document: Rc<RefCell<BaseDocument>>,
     node_id: usize,
@@ -266,6 +255,5 @@ fn element_object_from_document(
             ec,
         ),
     }?;
-    set_event_target_reflector(&object, ec);
     Ok(object)
 }

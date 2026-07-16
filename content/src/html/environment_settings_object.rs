@@ -9,7 +9,7 @@ use url::Url;
 use crate::dom::Document;
 use crate::html::{TimerHandler, Window};
 use crate::js::build_context::{build_context, build_realm};
-use crate::js::platform_objects::{set_event_target_reflector, with_global_scope};
+use crate::js::platform_objects::with_global_scope;
 use crate::js::{
     Engine, Types, install_console_namespace, install_css_namespace, install_document_property,
 };
@@ -145,11 +145,9 @@ impl EnvironmentSettingsObject {
                 .unwrap_or_else(|_| "unknown error".to_string())
         })?;
 
-        // Set the EventTarget reflector on the clone inside the JsObject.
-        set_event_target_reflector(&document_object, &mut engine);
-
-        // Also set the reflector on the ESO's domain Document so its
-        // EventTarget has a valid JsObject handle.
+        // Set the reflector on the ESO's domain Document so its EventTarget
+        // has a valid JsObject handle. (The reflector on the clone inside the
+        // JsObject was set automatically by create_interface_instance.)
         domain_document.node.event_target.reflector = Some(document_object.clone());
 
         with_global_scope(&mut engine, |global_scope| {
