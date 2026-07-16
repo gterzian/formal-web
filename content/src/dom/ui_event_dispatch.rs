@@ -19,7 +19,7 @@ use crate::html::EnvironmentSettingsObject;
 use crate::webidl::bindings::create_interface_instance;
 use js_engine::ExecutionContext;
 
-use super::{Event, UIEvent as JsUiEvent, dispatch, dispatch_with_chain};
+use super::{Event, EventTargetAccess, UIEvent as JsUiEvent, dispatch, dispatch_with_chain};
 
 fn input_debug_enabled() -> bool {
     std::env::var_os("FORMAL_WEB_DEBUG_INPUT").is_some()
@@ -348,14 +348,17 @@ pub(crate) fn dispatch_trusted_click_event(
         (target, event)
     };
     let ec = handler.settings.ec();
-    let target_value = <Types as JsTypes>::value_from_object(target.clone());
-    let target_event_target = crate::js::try_with_event_target_mut(&target_value, ec, |et| et.clone())
-        .map_err(|error| {
-            log::error!("dispatch_trusted_click_event: failed to extract EventTarget: {error:?}");
-            format!("failed to extract EventTarget: {error:?}")
+    let event_target = ec
+        .with_object_any(&target)
+        .and_then(|data| data.downcast_ref::<crate::dom::Element>())
+        .map(|element| element.get_event_target())
+        .ok_or_else(|| {
+            let msg = "dispatch_trusted_click_event: target is not an Element".to_string();
+            log::error!("{msg}");
+            msg
         })?;
 
-    dispatch(ec, &target_event_target, &target, &event, false)
+    dispatch(ec, &event_target, &target, &event, false)
         .map_err(|error| format!("failed to dispatch trusted click event: {error:?}"))?;
     handler
         .settings

@@ -34,8 +34,8 @@ pub struct Window {
 }
 
 impl EventTargetAccess for Window {
-    fn get_event_target(&self) -> &EventTarget {
-        &self.event_target
+    fn get_event_target(&self) -> EventTarget {
+        self.event_target.clone()
     }
 }
 

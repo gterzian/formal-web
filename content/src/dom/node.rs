@@ -30,8 +30,8 @@ pub struct Node {
 }
 
 impl EventTargetAccess for Node {
-    fn get_event_target(&self) -> &EventTarget {
-        &self.event_target
+    fn get_event_target(&self) -> EventTarget {
+        self.event_target.clone()
     }
 }
 

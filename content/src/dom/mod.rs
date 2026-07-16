@@ -18,5 +18,6 @@ pub use document::Document;
 pub use dom_exception::DOMException;
 pub use element::Element;
 pub use event::{AT_TARGET, BUBBLING_PHASE, CAPTURING_PHASE, Event, EventTarget, UIEvent};
+pub(crate) use event::EventTargetAccess;
 pub use node::Node;
 pub(crate) use ui_event_dispatch::{dispatch_trusted_click_event, dispatch_ui_event};

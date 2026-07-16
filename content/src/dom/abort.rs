@@ -9,7 +9,7 @@ use js_engine::gc_struct;
 use js_engine::{Completion, ExecutionContext, JsTypes};
 
 use crate::js::try_with_event_target_mut;
-use super::{DOMException, EventTarget, fire_event};
+use super::{DOMException, EventTarget, EventTargetAccess, fire_event};
 
 type JsObject = <Types as JsTypes>::JsObject;
 type JsValue = <Types as JsTypes>::JsValue;
@@ -134,6 +134,16 @@ impl AbortSignalState {
 #[gc_struct]
 pub struct AbortSignal {
     shared: GcCell<AbortSignalState>,
+}
+
+impl EventTargetAccess for AbortSignal {
+    fn get_event_target(&self) -> EventTarget {
+        self.shared.borrow().event_target.clone()
+    }
+
+    fn get_target_object(&self) -> Option<JsObject> {
+        self.object()
+    }
 }
 
 impl AbortSignal {
@@ -359,14 +369,22 @@ fn run_abort_steps(
     let signal_object = signal.object().ok_or_else(|| {
         ec.new_type_error("AbortSignal is missing its JavaScript object")
     })?;
-    let signal_value = <Types as JsTypes>::value_from_object(signal_object.clone());
-    let event_target = try_with_event_target_mut(&signal_value, ec, |et| et.clone())
-        .map_err(|error| {
-            log::error!("run_abort_steps: failed to extract EventTarget from AbortSignal: {error:?}");
+    let (event_target, target_object) = ec
+        .with_object_any(&signal_object)
+        .and_then(|data| {
+            let signal = data.downcast_ref::<AbortSignal>()?;
+            Some((
+                signal.get_event_target(),
+                signal.get_target_object()?,
+            ))
+        })
+        .ok_or_else(|| {
+            let error = ec.new_type_error("signal_object is not an AbortSignal");
+            log::error!("run_abort_steps: signal_object is not an AbortSignal");
             error
         })?;
 
-    let _ = fire_event(ec, &event_target, &signal_object, "abort", 0.0, false)?;
+    let _ = fire_event(ec, &event_target, &target_object, "abort", 0.0, false)?;
     Ok(())
 }
 

@@ -60,14 +60,21 @@ pub struct EventTarget {
     next_listener_id: u64,
 }
 
-/// Trait for types that embed an EventTarget (Node, Window, etc.).
+/// Trait for types that embed or are associated with an EventTarget.
 pub(crate) trait EventTargetAccess {
-    fn get_event_target(&self) -> &EventTarget;
+    fn get_event_target(&self) -> EventTarget;
+
+    /// The JsObject GC handle for this EventTarget's platform object.
+    /// Used by the dispatch algorithm for Web IDL callback invocation.
+    /// Returns None if the JsObject is not available (e.g. standalone EventTarget).
+    fn get_target_object(&self) -> Option<JsObject> {
+        None
+    }
 }
 
 impl EventTargetAccess for EventTarget {
-    fn get_event_target(&self) -> &EventTarget {
-        self
+    fn get_event_target(&self) -> EventTarget {
+        self.clone()
     }
 }
 

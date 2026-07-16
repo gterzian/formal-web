@@ -19,6 +19,7 @@ pub mod webidl;
 
 use crate::dom::{
     dispatch_trusted_click_event, dispatch_ui_event, dispatch_window_event, fire_event,
+    EventTargetAccess,
 };
 use crate::html::{
     EnvironmentSettingsObject, JsHtmlParserProvider, PendingParserScript,
@@ -867,7 +868,7 @@ impl ContentProcess {
         let window_target = ec
             .with_object_any(&window)
             .and_then(|data| data.downcast_ref::<crate::html::Window>())
-            .map(|w| w.event_target.clone())
+            .map(|w| w.get_event_target())
             .ok_or_else(|| {
                 let msg = "failed to extract EventTarget from Window".to_string();
                 log::error!("{msg}");

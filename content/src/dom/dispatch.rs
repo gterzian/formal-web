@@ -120,7 +120,9 @@ pub(crate) fn fire_event(
     let event_object = create_interface_instance::<Types, Event>(event_domain, ec)?;
 
     // Step 5: "Return the result of dispatching event at target, with legacy target override flag set if set."
-    dispatch(ec, target, target_object, &event_object, legacy_target_override)
+    let target_event = target.get_event_target();
+    let path = path_for_target(ec, &target_event, target_object, legacy_target_override)?;
+    dispatch_event(ec, &path, &event_object)
 }
 
 /// <https://dom.spec.whatwg.org/#concept-event-dispatch>
@@ -132,7 +134,7 @@ pub(crate) fn dispatch(
     legacy_target_override: bool,
 ) -> Completion<bool, Types> {
     let target_event = target.get_event_target();
-    let path = path_for_target(ec, target_event, target_object, legacy_target_override)?;
+    let path = path_for_target(ec, &target_event, target_object, legacy_target_override)?;
     dispatch_event(ec, &path, event_object)
 }
 
