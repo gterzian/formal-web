@@ -24,8 +24,6 @@ pub(crate) enum AbortAlgorithm {
     },
 
     RemoveEventListener {
-        /// Clone of the EventTarget that was current when the listener
-        /// was added. Used in `run()` to remove the listener.
         event_target: EventTarget,
 
         #[ignore_trace]
@@ -51,8 +49,7 @@ impl AbortAlgorithm {
                 event_target,
                 listener_id,
             } => {
-                let mut et = event_target.clone();
-                et.remove_event_listener_by_id(*listener_id);
+                event_target.remove_event_listener_by_id(*listener_id);
             }
             Self::ReadableStreamPipeTo { state } => {
                 state.run_abort_algorithm(ec)?;
@@ -362,19 +359,17 @@ fn run_abort_steps(
     let signal_object = signal.object().ok_or_else(|| {
         ec.new_type_error("AbortSignal is missing its JavaScript object")
     })?;
-    let event_target = ec
+    let event_target_clone = ec
         .with_object_any(&signal_object)
-        .and_then(|data| {
-            let signal = data.downcast_ref::<AbortSignal>()?;
-            Some(signal.get_event_target())
-        })
+        .and_then(|data| data.downcast_ref::<AbortSignal>())
+        .map(|signal| signal.get_event_target())
         .ok_or_else(|| {
             let error = ec.new_type_error("signal_object is not an AbortSignal");
             log::error!("run_abort_steps: signal_object is not an AbortSignal");
             error
         })?;
 
-    let _ = fire_event(ec, &event_target, "abort", 0.0, false)?;
+    let _ = fire_event(ec, &event_target_clone, &signal_object, "abort", 0.0, false)?;
     Ok(())
 }
 

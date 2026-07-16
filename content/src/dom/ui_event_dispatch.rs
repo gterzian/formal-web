@@ -358,7 +358,7 @@ pub(crate) fn dispatch_trusted_click_event(
             msg
         })?;
 
-    dispatch(ec, &event_target, &event, false)
+    dispatch(ec, &event_target, &target, &event, false)
         .map_err(|error| format!("failed to dispatch trusted click event: {error:?}"))?;
     handler
         .settings

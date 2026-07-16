@@ -2,8 +2,10 @@ use blitz_traits::events::{DomEvent, EventState};
 
 use crate::js::Types;
 use crate::webidl::Callback;
+use std::cell::Cell;
 use js_engine::JsTypes;
 use js_engine::gc_struct;
+use js_engine::gc::{GcCell, gc_cell_new};
 
 use super::{AbortAlgorithm, AbortSignal};
 
@@ -54,10 +56,10 @@ pub(crate) struct EventListener {
 #[derive(Default)]
 pub struct EventTarget {
     /// <https://dom.spec.whatwg.org/#eventtarget-event-listener-list>
-    pub(crate) event_listener_list: Vec<EventListener>,
+    pub(crate) event_listener_list: GcCell<Vec<EventListener>>,
 
     #[ignore_trace]
-    next_listener_id: u64,
+    next_listener_id: Cell<u64>,
 }
 
 /// Trait for types that embed or are associated with an EventTarget.
@@ -65,9 +67,13 @@ pub(crate) trait EventTargetAccess {
     fn get_event_target(&self) -> EventTarget;
 
     /// The JsObject GC handle for this EventTarget's platform object.
-    /// Used by the dispatch algorithm for Web IDL callback invocation.
-    /// Returns None if the JsObject is not available (e.g. standalone EventTarget).
     fn get_target_object(&self) -> Option<JsObject> {
+        None
+    }
+
+    /// Returns (parent_JsObject, parent_EventTarget) or None.
+    /// <https://dom.spec.whatwg.org/#dom-eventtarget-gettheparent>
+    fn get_the_parent(&self) -> Option<(JsObject, EventTarget)> {
         None
     }
 }
@@ -81,7 +87,7 @@ impl EventTargetAccess for EventTarget {
 impl EventTarget {
     /// <https://dom.spec.whatwg.org/#dom-eventtarget-addeventlistener>
     pub(crate) fn add_event_listener(
-        &mut self,
+        &self,
         event_target: EventTarget,
         type_: String,
         callback: Option<Callback>,
@@ -101,8 +107,9 @@ impl EventTarget {
         };
 
         let passive = passive.or(Some(false));
-        let listener_id = self.next_listener_id.wrapping_add(1);
-        let duplicate = self.event_listener_list.iter().any(|listener| {
+        let listener_id = self.next_listener_id.get().wrapping_add(1);
+        let mut listeners = self.event_listener_list.borrow_mut();
+        let duplicate = listeners.iter().any(|listener| {
             listener.type_ == type_
                 && listener.capture == capture
                 && listener
@@ -112,8 +119,8 @@ impl EventTarget {
         });
 
         if !duplicate {
-            self.next_listener_id = listener_id;
-            self.event_listener_list.push(EventListener {
+            self.next_listener_id.set(listener_id);
+            listeners.push(EventListener {
                 id: listener_id,
                 type_,
                 callback: Some(callback),
@@ -123,6 +130,8 @@ impl EventTarget {
                 signal: signal.clone(),
                 removed: false,
             });
+            // Drop the borrow before signal.add_abort_algorithm (which may borrow ec).
+            std::mem::drop(listeners);
 
             if let Some(signal) = signal {
                 signal.add_abort_algorithm(AbortAlgorithm::RemoveEventListener {
@@ -135,12 +144,13 @@ impl EventTarget {
 
     /// <https://dom.spec.whatwg.org/#remove-an-event-listener>
     pub(crate) fn remove_event_listener_entry(
-        &mut self,
+        &self,
         type_: &str,
         callback: &Callback,
         capture: bool,
     ) {
-        for listener in &mut self.event_listener_list {
+        let mut listeners = self.event_listener_list.borrow_mut();
+        for listener in listeners.iter_mut() {
             if listener.type_ == type_
                 && listener.capture == capture
                 && listener
@@ -152,19 +162,18 @@ impl EventTarget {
             }
         }
 
-        self.event_listener_list
-            .retain(|listener| !listener.removed);
+        listeners.retain(|listener| !listener.removed);
     }
 
-    pub(crate) fn remove_event_listener_by_id(&mut self, listener_id: u64) {
-        for listener in &mut self.event_listener_list {
+    pub(crate) fn remove_event_listener_by_id(&self, listener_id: u64) {
+        let mut listeners = self.event_listener_list.borrow_mut();
+        for listener in listeners.iter_mut() {
             if listener.id == listener_id {
                 listener.removed = true;
             }
         }
 
-        self.event_listener_list
-            .retain(|listener| !listener.removed);
+        listeners.retain(|listener| !listener.removed);
     }
 
     // Note: Defined by the spec but not yet used by the current dispatch code.
@@ -172,6 +181,7 @@ impl EventTarget {
     #[allow(dead_code)]
     pub(crate) fn listener_is_active(&self, listener_id: u64) -> bool {
         self.event_listener_list
+            .borrow()
             .iter()
             .any(|listener| listener.id == listener_id && !listener.removed)
     }
@@ -185,58 +195,46 @@ pub struct Event {
     pub type_: String,
 
     /// <https://dom.spec.whatwg.org/#dom-event-target>
-    pub target: Option<JsObject>,
+    pub target: GcCell<Option<JsObject>>,
 
     /// <https://dom.spec.whatwg.org/#dom-event-currenttarget>
-    pub current_target: Option<JsObject>,
+    pub current_target: GcCell<Option<JsObject>>,
 
     /// <https://dom.spec.whatwg.org/#dom-event-eventphase>
-    #[ignore_trace]
-    pub event_phase: u16,
+    pub event_phase: GcCell<u16>,
 
     /// <https://dom.spec.whatwg.org/#dom-event-bubbles>
-    #[ignore_trace]
-    pub bubbles: bool,
+    pub bubbles: GcCell<bool>,
 
     /// <https://dom.spec.whatwg.org/#dom-event-cancelable>
-    #[ignore_trace]
-    pub cancelable: bool,
+    pub cancelable: GcCell<bool>,
 
     /// <https://dom.spec.whatwg.org/#dom-event-composed>
-    #[ignore_trace]
-    pub composed: bool,
+    pub composed: GcCell<bool>,
 
     /// <https://dom.spec.whatwg.org/#dom-event-istrusted>
-    #[ignore_trace]
-    pub is_trusted: bool,
+    pub is_trusted: GcCell<bool>,
 
     /// <https://dom.spec.whatwg.org/#dom-event-timestamp>
-    #[ignore_trace]
-    pub time_stamp: f64,
+    pub time_stamp: GcCell<f64>,
 
     /// <https://dom.spec.whatwg.org/#event>
-    #[ignore_trace]
-    pub stop_propagation_flag: bool,
+    pub stop_propagation_flag: GcCell<bool>,
 
     /// <https://dom.spec.whatwg.org/#event>
-    #[ignore_trace]
-    pub stop_immediate_propagation_flag: bool,
+    pub stop_immediate_propagation_flag: GcCell<bool>,
 
     /// <https://dom.spec.whatwg.org/#dom-event-defaultprevented>
-    #[ignore_trace]
-    pub canceled_flag: bool,
+    pub canceled_flag: GcCell<bool>,
 
     /// <https://dom.spec.whatwg.org/#event>
-    #[ignore_trace]
-    pub in_passive_listener_flag: bool,
+    pub in_passive_listener_flag: GcCell<bool>,
 
     /// <https://dom.spec.whatwg.org/#event>
-    #[ignore_trace]
-    pub dispatch_flag: bool,
+    pub dispatch_flag: GcCell<bool>,
 
     /// <https://dom.spec.whatwg.org/#event>
-    #[ignore_trace]
-    pub initialized_flag: bool,
+    pub initialized_flag: GcCell<bool>,
 }
 
 impl Event {
@@ -250,20 +248,20 @@ impl Event {
     ) -> Self {
         Self {
             type_,
-            target: None,
-            current_target: None,
-            event_phase: NONE,
-            bubbles,
-            cancelable,
-            composed,
-            is_trusted,
-            time_stamp,
-            stop_propagation_flag: false,
-            stop_immediate_propagation_flag: false,
-            canceled_flag: false,
-            in_passive_listener_flag: false,
-            dispatch_flag: false,
-            initialized_flag: true,
+            target: gc_cell_new(None),
+            current_target: gc_cell_new(None),
+            event_phase: gc_cell_new(NONE),
+            bubbles: gc_cell_new(bubbles),
+            cancelable: gc_cell_new(cancelable),
+            composed: gc_cell_new(composed),
+            is_trusted: gc_cell_new(is_trusted),
+            time_stamp: gc_cell_new(time_stamp),
+            stop_propagation_flag: gc_cell_new(false),
+            stop_immediate_propagation_flag: gc_cell_new(false),
+            canceled_flag: gc_cell_new(false),
+            in_passive_listener_flag: gc_cell_new(false),
+            dispatch_flag: gc_cell_new(false),
+            initialized_flag: gc_cell_new(true),
         }
     }
 
@@ -274,71 +272,71 @@ impl Event {
 
     /// <https://dom.spec.whatwg.org/#dom-event-target>
     pub(crate) fn target_value(&self) -> Option<JsObject> {
-        self.target.clone()
+        self.target.borrow().clone()
     }
 
     /// <https://dom.spec.whatwg.org/#dom-event-currenttarget>
     pub(crate) fn current_target_value(&self) -> Option<JsObject> {
-        self.current_target.clone()
+        self.current_target.borrow().clone()
     }
 
     /// <https://dom.spec.whatwg.org/#dom-event-eventphase>
     pub(crate) fn event_phase_value(&self) -> u16 {
-        self.event_phase
+        *self.event_phase.borrow()
     }
 
     /// <https://dom.spec.whatwg.org/#dom-event-bubbles>
     pub(crate) fn bubbles_value(&self) -> bool {
-        self.bubbles
+        *self.bubbles.borrow()
     }
 
     /// <https://dom.spec.whatwg.org/#dom-event-cancelable>
     pub(crate) fn cancelable_value(&self) -> bool {
-        self.cancelable
+        *self.cancelable.borrow()
     }
 
     /// <https://dom.spec.whatwg.org/#dom-event-defaultprevented>
     pub(crate) fn default_prevented(&self) -> bool {
-        self.canceled_flag
+        *self.canceled_flag.borrow()
     }
 
     /// <https://dom.spec.whatwg.org/#dom-event-cancelbubble>
     pub(crate) fn cancel_bubble(&self) -> bool {
-        self.stop_propagation_flag
+        *self.stop_propagation_flag.borrow()
     }
 
     /// <https://dom.spec.whatwg.org/#dom-event-cancelbubble>
-    pub(crate) fn set_cancel_bubble(&mut self, value: bool) {
+    pub(crate) fn set_cancel_bubble(&self, value: bool) {
         if value {
-            self.stop_propagation_flag = true;
+            *self.stop_propagation_flag.borrow_mut() = true;
         }
     }
 
     /// <https://dom.spec.whatwg.org/#dom-event-istrusted>
     pub(crate) fn is_trusted(&self) -> bool {
-        self.is_trusted
+        *self.is_trusted.borrow()
     }
 
     /// <https://dom.spec.whatwg.org/#dom-event-timestamp>
     pub(crate) fn time_stamp_value(&self) -> f64 {
-        self.time_stamp
+        *self.time_stamp.borrow()
     }
 
     /// <https://dom.spec.whatwg.org/#dom-event-stoppropagation>
-    pub(crate) fn stop_propagation(&mut self) {
-        self.stop_propagation_flag = true;
+    pub(crate) fn stop_propagation(&self) {
+        *self.stop_propagation_flag.borrow_mut() = true;
     }
 
     /// <https://dom.spec.whatwg.org/#dom-event-stopimmediatepropagation>
-    pub(crate) fn stop_immediate_propagation(&mut self) {
-        self.stop_propagation_flag = true;
-        self.stop_immediate_propagation_flag = true;
+    pub(crate) fn stop_immediate_propagation(&self) {
+        *self.stop_propagation_flag.borrow_mut() = true;
+        *self.stop_immediate_propagation_flag.borrow_mut() = true;
     }
 
     /// <https://dom.spec.whatwg.org/#dom-event-preventdefault>
-    pub(crate) fn prevent_default(&mut self) {
-        if self.cancelable && !self.in_passive_listener_flag {
-            self.canceled_flag = true;
+    pub(crate) fn prevent_default(&self) {
+        if *self.cancelable.borrow() && !*self.in_passive_listener_flag.borrow() {
+            *self.canceled_flag.borrow_mut() = true;
         }
     }
 }
@@ -384,7 +382,7 @@ impl UIEvent {
     }
 
     pub fn apply_to_event_state(&self, event_state: &mut EventState) {
-        if self.event.canceled_flag {
+        if *self.event.canceled_flag.borrow() {
             event_state.prevent_default();
         }
     }
