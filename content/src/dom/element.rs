@@ -9,6 +9,7 @@ use style::dom_apis::{
 };
 
 use super::{DOMException, Node};
+use super::event::{EventTarget, EventTargetAccess};
 
 #[derive(Clone, Copy, Debug, Default)]
 pub(crate) struct DomRect {
@@ -63,6 +64,12 @@ fn collect_subtree_node_ids(document: &BaseDocument, node_id: usize, node_ids: &
 pub struct Element {
     /// <https://dom.spec.whatwg.org/#interface-node>
     pub node: Node,
+}
+
+impl EventTargetAccess for Element {
+    fn get_event_target(&self) -> EventTarget {
+        self.node.get_event_target()
+    }
 }
 
 impl Element {

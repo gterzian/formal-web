@@ -8,7 +8,7 @@ use js_engine::gc::{GcCell, gc_cell_new, gc_cell_ptr_eq};
 use js_engine::gc_struct;
 use js_engine::{Completion, ExecutionContext, JsTypes};
 
-use super::{DOMException, EventDispatchHost, EventTarget, fire_event};
+use super::{DOMException, EventTarget, EventTargetAccess, fire_event};
 
 type JsObject = <Types as JsTypes>::JsObject;
 type JsValue = <Types as JsTypes>::JsValue;
@@ -24,8 +24,7 @@ pub(crate) enum AbortAlgorithm {
     },
 
     RemoveEventListener {
-        /// <https://dom.spec.whatwg.org/#eventtarget>
-        event_target: JsObject,
+        event_target: EventTarget,
 
         #[ignore_trace]
         listener_id: u64,
@@ -38,13 +37,11 @@ pub(crate) enum AbortAlgorithm {
 
 impl AbortAlgorithm {
     /// <https://dom.spec.whatwg.org/#abortsignal-add>
-    pub(crate) fn run(&self, host: &mut impl EventDispatchHost) -> Completion<(), Types> {
+    pub(crate) fn run(&self, ec: &mut dyn ExecutionContext<Types>) -> Completion<(), Types> {
         match self {
             Self::Native { callback } => {
                 if callback().is_err() {
-                    let err = host
-                        .ec()
-                        .new_type_error("abort algorithm native callback failed");
+                    let err = ec.new_type_error("abort algorithm native callback failed");
                     return Err(err);
                 }
             }
@@ -52,16 +49,10 @@ impl AbortAlgorithm {
                 event_target,
                 listener_id,
             } => {
-                let ec = host.ec();
-                let target = ec.with_object_any_mut(event_target);
-                if let Some(data) = target {
-                    if let Some(event_target) = data.downcast_mut::<EventTarget>() {
-                        event_target.remove_event_listener_by_id(*listener_id);
-                    }
-                }
+                event_target.remove_event_listener_by_id(*listener_id);
             }
             Self::ReadableStreamPipeTo { state } => {
-                state.run_abort_algorithm(host.ec())?;
+                state.run_abort_algorithm(ec)?;
             }
         }
 
@@ -75,14 +66,14 @@ impl AbortAlgorithm {
             }
             (
                 Self::RemoveEventListener {
-                    event_target: left_target,
+                    event_target: _,
                     listener_id: left_id,
                 },
                 Self::RemoveEventListener {
-                    event_target: right_target,
+                    event_target: _,
                     listener_id: right_id,
                 },
-            ) => left_id == right_id && left_target == right_target,
+            ) => left_id == right_id,
             (
                 Self::ReadableStreamPipeTo { state: left_state },
                 Self::ReadableStreamPipeTo { state: right_state },
@@ -135,6 +126,16 @@ pub struct AbortSignal {
     shared: GcCell<AbortSignalState>,
 }
 
+impl EventTargetAccess for AbortSignal {
+    fn get_event_target(&self) -> EventTarget {
+        self.shared.borrow().event_target.clone()
+    }
+
+    fn get_target_object(&self) -> Option<JsObject> {
+        self.object()
+    }
+}
+
 impl AbortSignal {
     pub(crate) fn new(ec: &mut dyn ExecutionContext<Types>) -> Self {
         Self {
@@ -159,11 +160,6 @@ impl AbortSignal {
     pub(crate) fn with_event_target_mut<R>(&self, f: impl FnOnce(&mut EventTarget) -> R) -> R {
         let mut state = self.shared.borrow_mut();
         f(&mut state.event_target)
-    }
-
-    pub(crate) fn with_event_target_ref<R>(&self, f: impl FnOnce(&EventTarget) -> R) -> R {
-        let state = self.shared.borrow();
-        f(&state.event_target)
     }
 
     /// <https://dom.spec.whatwg.org/#dom-abortsignal-aborted>
@@ -325,57 +321,47 @@ pub(crate) fn create_abort_signal(
 
 /// <https://dom.spec.whatwg.org/#abortsignal-signal-abort>
 pub(crate) fn signal_abort(
-    host: &mut impl EventDispatchHost,
+    ec: &mut dyn ExecutionContext<Types>,
     signal: &AbortSignal,
     reason: JsValue,
 ) -> Completion<(), Types> {
     let reason = if <Types as JsTypes>::value_is_undefined(&reason) {
         <Types as JsTypes>::value_from_object(create_interface_instance::<Types, DOMException>(
             DOMException::abort_error(),
-            host.ec(),
+            ec,
         )?)
     } else {
         reason
     };
 
-    // Step 1: "If signal is aborted, then return."
     let Some(dependent_signals_to_abort) = signal.begin_abort(reason) else {
         return Ok(());
     };
 
-    // Steps 2-4 are implemented by `AbortSignal::begin_abort`.
+    run_abort_steps(ec, signal)?;
 
-    // Step 5: "Run the abort steps for signal."
-    run_abort_steps(host, signal)?;
-
-    // Step 6: "For each dependentSignal of dependentSignalsToAbort, run the abort steps for dependentSignal."
     for dependent_signal in dependent_signals_to_abort {
-        run_abort_steps(host, &dependent_signal)?;
+        run_abort_steps(ec, &dependent_signal)?;
     }
 
     Ok(())
 }
 
-/// <https://dom.spec.whatwg.org/#run-the-abort-steps>
 fn run_abort_steps(
-    host: &mut impl EventDispatchHost,
+    ec: &mut dyn ExecutionContext<Types>,
     signal: &AbortSignal,
 ) -> Completion<(), Types> {
-    // Step 1: "For each algorithm of signal's abort algorithms: run algorithm."
     let algorithms = signal.take_abort_algorithms();
     for algorithm in algorithms {
-        algorithm.run(host)?;
+        algorithm.run(ec)?;
     }
 
-    // Step 2: "Empty signal's abort algorithms."
-    // Note: `take_abort_algorithms()` empties the list before the loop above runs.
-
-    // Step 3: "Fire an event named abort at signal."
+    let event_target_clone = signal.get_event_target();
     let signal_object = signal.object().ok_or_else(|| {
-        let ec = host.ec();
         ec.new_type_error("AbortSignal is missing its JavaScript object")
     })?;
-    let _ = fire_event(host, &signal_object, "abort", false)?;
+
+    fire_event(ec, &event_target_clone, &signal_object, "abort", 0.0, false)?;
     Ok(())
 }
 

@@ -12,7 +12,7 @@ use crate::js::Types;
 type JsValue = <Types as JsTypes>::JsValue;
 
 use crate::dom::Element;
-use crate::dom::event::EventTarget;
+use crate::dom::event::{EventTarget, EventTargetAccess};
 use crate::webidl::Callback;
 
 use super::resolved_style_properties_for_element;
@@ -31,6 +31,12 @@ pub struct Window {
 
     /// <https://html.spec.whatwg.org/#handler-onload>
     onload: Option<Callback>,
+}
+
+impl EventTargetAccess for Window {
+    fn get_event_target(&self) -> EventTarget {
+        self.event_target.clone()
+    }
 }
 
 impl Window {

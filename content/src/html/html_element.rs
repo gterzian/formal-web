@@ -2,7 +2,8 @@ use std::{cell::RefCell, collections::BTreeMap, rc::Rc};
 
 use blitz_dom::BaseDocument;
 
-use crate::dom::Element;
+use crate::dom::{Element, EventTarget};
+use crate::dom::event::EventTargetAccess;
 use js_engine::gc_struct;
 
 /// <https://html.spec.whatwg.org/#htmlelement>
@@ -10,6 +11,12 @@ use js_engine::gc_struct;
 pub struct HTMLElement {
     /// <https://dom.spec.whatwg.org/#interface-element>
     pub element: Element,
+}
+
+impl EventTargetAccess for HTMLElement {
+    fn get_event_target(&self) -> EventTarget {
+        self.element.get_event_target()
+    }
 }
 
 impl HTMLElement {

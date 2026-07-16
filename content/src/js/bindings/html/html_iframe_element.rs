@@ -203,7 +203,7 @@ fn set_onload(
     if let Some(callback) = callback {
         try_with_event_target_mut(this, ec, |target| {
             target.add_event_listener(
-                &iframe_object,
+                target.clone(),
                 String::from("load"),
                 Some(callback),
                 false,
@@ -259,7 +259,7 @@ fn set_onerror(
     if let Some(callback) = callback {
         try_with_event_target_mut(this, ec, |target| {
             target.add_event_listener(
-                &iframe_object,
+                target.clone(),
                 String::from("error"),
                 Some(callback),
                 false,

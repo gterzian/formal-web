@@ -19,6 +19,7 @@ pub mod webidl;
 
 use crate::dom::{
     dispatch_trusted_click_event, dispatch_ui_event, dispatch_window_event, fire_event,
+    EventTargetAccess,
 };
 use crate::html::{
     EnvironmentSettingsObject, JsHtmlParserProvider, PendingParserScript,
@@ -861,8 +862,21 @@ impl ContentProcess {
             .settings
             .realm_execution_context
             .realm_global_object();
-        fire_event(&mut content_document.settings, &window, "load", true)
-            .map_err(|error| format!("fire_event failed: {error:?}"))?;
+        let time_millis = content_document.settings.current_time_millis();
+        let ec = &mut content_document.settings.realm_execution_context;
+
+        let window_target = ec
+            .with_object_any(&window)
+            .and_then(|data| data.downcast_ref::<crate::html::Window>())
+            .map(|w| w.get_event_target())
+            .ok_or_else(|| {
+                let msg = "failed to extract EventTarget from Window".to_string();
+                log::error!("{msg}");
+                msg
+            })?;
+
+        fire_event(ec, &window_target, &window, "load", time_millis, true)
+        .map_err(|error| format!("fire_event failed: {error:?}"))?;
 
         let traversable_id = content_document.traversable_id;
         self.active_documents_by_traversable
@@ -1291,8 +1305,14 @@ impl ContentProcess {
         let (navigable_id, canceled) = if let Some(document) = self.documents.get_mut(&document_id)
         {
             let navigable_id = document.traversable_id;
-            let canceled = !dispatch_window_event(&mut document.settings, "beforeunload", true)
-                .map_err(|error| format!("dispatch_window_event failed: {error:?}"))?;
+            let time_millis = document.settings.current_time_millis();
+            let canceled = !dispatch_window_event(
+                &mut document.settings.realm_execution_context,
+                "beforeunload",
+                true,
+                time_millis,
+            )
+            .map_err(|error| format!("dispatch_window_event failed: {error:?}"))?;
             (Some(navigable_id), canceled)
         } else {
             (None, false)
@@ -2275,7 +2295,6 @@ fn run_content_message_loop(
                 match cmd {
                     Ok(incoming) => {
                         let command = incoming.payload;
-                        println!("Got: {:?}", command);
                         let notify = matches!(
                             &command,
                             CreateEmptyDocument { .. }
@@ -2312,7 +2331,6 @@ fn run_content_message_loop(
                 }
             }
             recv(wasm_rx) -> _ => {
-                println!("Got: WASM signal");
                 process.drain_all_pending_wasm_requests();
                 process.drain_wasm_results();
 

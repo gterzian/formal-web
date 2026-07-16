@@ -3,7 +3,7 @@ use std::{cell::RefCell, rc::Rc};
 
 use blitz_dom::{BaseDocument, NodeData};
 
-use super::{DOMException, event::EventTarget};
+use super::{DOMException, event::{EventTarget, EventTargetAccess}};
 
 #[derive(Clone, Copy, Eq, PartialEq)]
 enum NodeKind {
@@ -16,6 +16,10 @@ enum NodeKind {
 /// <https://dom.spec.whatwg.org/#interface-node>
 #[gc_struct]
 pub struct Node {
+    /// <https://dom.spec.whatwg.org/#interface-eventtarget>
+    /// First field per interface inheritance convention: Node : EventTarget.
+    pub event_target: EventTarget,
+
     /// <https://dom.spec.whatwg.org/#concept-node-document>
     #[ignore_trace]
     pub document: Rc<RefCell<BaseDocument>>,
@@ -23,9 +27,12 @@ pub struct Node {
     /// <https://dom.spec.whatwg.org/#interface-node>
     #[ignore_trace]
     pub node_id: usize,
+}
 
-    /// <https://dom.spec.whatwg.org/#interface-eventtarget>
-    pub event_target: EventTarget,
+impl EventTargetAccess for Node {
+    fn get_event_target(&self) -> EventTarget {
+        self.event_target.clone()
+    }
 }
 
 impl Node {

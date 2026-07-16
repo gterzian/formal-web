@@ -10,11 +10,12 @@ use std::{
 
 use blitz_dom::BaseDocument;
 use html5ever::{local_name, ns};
-use js_engine::gc_struct;
+use js_engine::{gc_struct, ExecutionContext};
 use url::Url;
 
 use crate::{
     ContentProcess, EMPTY_HTML_DOCUMENT, NavigableContainerState, dom::fire_event,
+    dom::event::EventTargetAccess,
     html::HTMLElement, html::navigate, webidl::Callback,
 };
 
@@ -29,6 +30,12 @@ pub struct HTMLIFrameElement {
 
     /// <https://html.spec.whatwg.org/#handler-onerror>
     onerror: Option<Callback>,
+}
+
+impl EventTargetAccess for HTMLIFrameElement {
+    fn get_event_target(&self) -> crate::dom::EventTarget {
+        self.html_element.element.node.get_event_target()
+    }
 }
 
 impl HTMLIFrameElement {
@@ -614,13 +621,22 @@ fn run_iframe_load_event_steps(
     // TODO: Implement document iframe load in progress flag.
 
     // Step 6: "Fire an event named load at element."
-    fire_event(
-        &mut content_document.settings,
-        &iframe_object,
-        "load",
-        false,
-    )
-    .map_err(|error| format!("fire_event failed: {error:?}"))?;
+    let time_millis = content_document.settings.current_time_millis();
+    let ec = &mut content_document.settings.realm_execution_context;
+
+    let event_target = ec
+        .with_object_any(&iframe_object)
+        .and_then(|data| data.downcast_ref::<crate::html::HTMLIFrameElement>())
+        .map(|iframe| iframe.get_event_target())
+        .ok_or_else(|| {
+            let msg = "run_iframe_load_event_steps: iframe_object is not an HTMLIFrameElement"
+                .to_string();
+            log::error!("{msg}");
+            msg
+        })?;
+
+    fire_event(ec, &event_target, &iframe_object, "load", time_millis, false)
+        .map_err(|error| format!("fire_event failed: {error:?}"))?;
 
     // Step 7: "Unset childDocument's iframe load in progress flag."
     // TODO: Implement clearing of iframe load in progress flag.

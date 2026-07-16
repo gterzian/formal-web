@@ -334,7 +334,7 @@ fn set_onload(
         let receiver = crate::js::Types::value_from_object(window_object.clone());
         try_with_event_target_mut(&receiver, ec, |target| {
             target.add_event_listener(
-                &window_object,
+                target.clone(),
                 String::from("load"),
                 Some(callback),
                 false,

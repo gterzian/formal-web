@@ -1,11 +1,7 @@
-use std::{cell::RefCell, rc::Rc};
-
-use blitz_dom::BaseDocument;
-
 type JsValue = <crate::js::Types as JsTypes>::JsValue;
 type JsObject = <crate::js::Types as JsTypes>::JsObject;
 
-use crate::dom::{AbortSignal, Event, EventDispatchHost, EventTarget, dispatch};
+use crate::dom::{AbortSignal, EventTarget, dispatch};
 use crate::js::try_with_event_target_mut;
 use crate::webidl::{callback_interface_type_value, nullable_value};
 
@@ -20,7 +16,7 @@ pub(crate) struct AddEventListenerOptions {
 }
 
 use crate::webidl::bindings::{
-    InterfaceDefinition, OperationDef, WebIdlInterface, create_interface_instance,
+    InterfaceDefinition, OperationDef, WebIdlInterface,
 };
 
 impl WebIdlInterface<crate::js::Types> for EventTarget {
@@ -83,7 +79,7 @@ fn add_event_listener(
 
     try_with_event_target_mut(&receiver, ec, |target| {
         target.add_event_listener(
-            &event_target,
+            target.clone(),
             type_,
             callback,
             options.capture,
@@ -134,114 +130,16 @@ fn dispatch_event(
         Some(obj) => obj,
         None => return Err(ec.new_type_error("dispatchEvent requires an Event")),
     };
-    let target = current_event_target_object(this, ec);
-    let mut host = EcDispatchHost::new(ec);
-    let canceled = dispatch(&mut host, &target, &event_obj, false)?;
+    let target_object = current_event_target_object(this, ec);
+    let target_value = <crate::js::Types as JsTypes>::value_from_object(target_object.clone());
+    let target = crate::js::try_with_event_target_mut(&target_value, ec, |et| et.clone())
+        .map_err(|error| {
+            log::error!("dispatchEvent: failed to extract EventTarget: {error:?}");
+            error
+        })?;
+
+    let canceled = dispatch(ec, &target, &target_object, &event_obj, false)?;
     Ok(ec.value_from_bool(!canceled))
-}
-
-/// <https://dom.spec.whatwg.org/#concept-event-dispatch>
-// Note: Uses `ec_to_ctx` internally for methods that need Boa `Context`, but callers
-// never see `Context`.
-pub(crate) struct EcDispatchHost<'a, T: JsTypes> {
-    ec: &'a mut dyn ExecutionContext<T>,
-}
-
-impl<'a, T: JsTypes> EcDispatchHost<'a, T> {
-    pub(crate) fn new(ec: &'a mut dyn ExecutionContext<T>) -> Self {
-        Self { ec }
-    }
-}
-
-impl<T: JsTypes + js_engine::JsTypesWithRealm> js_engine::EcmascriptHost<T>
-    for EcDispatchHost<'_, T>
-{
-    fn get(
-        &mut self,
-        object: &T::JsObject,
-        property: &str,
-    ) -> js_engine::Completion<T::JsValue, T> {
-        let key = self.ec.property_key_from_str(property);
-        ExecutionContext::get(self.ec, object.clone(), key)
-    }
-
-    fn is_callable(&self, value: &T::JsValue) -> bool {
-        self.ec.is_callable(value)
-    }
-
-    fn call(
-        &mut self,
-        callable: &T::JsObject,
-        this_arg: &T::JsValue,
-        args: &[T::JsValue],
-    ) -> js_engine::Completion<T::JsValue, T> {
-        self.ec.call(callable, this_arg, args)
-    }
-
-    fn perform_a_microtask_checkpoint(&mut self) -> js_engine::Completion<(), T> {
-        self.ec.perform_a_microtask_checkpoint()
-    }
-
-    fn report_exception(&mut self, error: T::JsValue) {
-        self.ec.report_exception(error);
-    }
-
-    fn gc(&mut self) {
-        self.ec.gc();
-    }
-
-    fn value_undefined(&mut self) -> T::JsValue {
-        self.ec.value_undefined()
-    }
-    fn value_null(&mut self) -> T::JsValue {
-        self.ec.value_null()
-    }
-    fn value_from_bool(&mut self, b: bool) -> T::JsValue {
-        self.ec.value_from_bool(b)
-    }
-    fn value_from_number(&mut self, n: f64) -> T::JsValue {
-        self.ec.value_from_number(n)
-    }
-    fn value_from_string(&mut self, s: T::JsString) -> T::JsValue {
-        self.ec.value_from_string(s)
-    }
-    fn js_string_from_str(&self, s: &str) -> T::JsString {
-        self.ec.js_string_from_str(s)
-    }
-}
-
-impl EventDispatchHost for EcDispatchHost<'_, crate::js::Types> {
-    fn ec(&mut self) -> &mut dyn ExecutionContext<crate::js::Types> {
-        self.ec
-    }
-
-    fn create_event_object(&mut self, event: Event) -> Completion<JsObject, crate::js::Types> {
-        create_interface_instance::<crate::js::Types, Event>(event, self.ec)
-    }
-
-    fn document_object(&mut self) -> Completion<JsObject, crate::js::Types> {
-        crate::js::platform_objects::document_object(self.ec)
-    }
-
-    fn global_object(&mut self) -> JsObject {
-        self.ec.global_object()
-    }
-
-    fn resolve_element_object(&mut self, node_id: usize) -> Completion<JsObject, crate::js::Types> {
-        crate::js::platform_objects::resolve_element_object(node_id, self.ec)
-    }
-
-    fn resolve_existing_node_object(
-        &mut self,
-        document: Rc<RefCell<BaseDocument>>,
-        node_id: usize,
-    ) -> Completion<JsObject, crate::js::Types> {
-        crate::js::platform_objects::object_for_existing_node(document, node_id, self.ec)
-    }
-
-    fn current_time_millis(&self) -> f64 {
-        0.0
-    }
 }
 
 fn current_event_target_object(
