@@ -8,7 +8,6 @@ use js_engine::gc::{GcCell, gc_cell_new, gc_cell_ptr_eq};
 use js_engine::gc_struct;
 use js_engine::{Completion, ExecutionContext, JsTypes};
 
-use crate::js::try_with_event_target_mut;
 use super::{DOMException, EventTarget, EventTargetAccess, fire_event};
 
 type JsObject = <Types as JsTypes>::JsObject;
@@ -25,8 +24,9 @@ pub(crate) enum AbortAlgorithm {
     },
 
     RemoveEventListener {
-        /// <https://dom.spec.whatwg.org/#eventtarget>
-        event_target: JsObject,
+        /// Clone of the EventTarget that was current when the listener
+        /// was added. Used in `run()` to remove the listener.
+        event_target: EventTarget,
 
         #[ignore_trace]
         listener_id: u64,
@@ -51,15 +51,8 @@ impl AbortAlgorithm {
                 event_target,
                 listener_id,
             } => {
-                let value = <Types as JsTypes>::value_from_object(event_target.clone());
-                if let Err(error) = try_with_event_target_mut(&value, ec, |target| {
-                    target.remove_event_listener_by_id(*listener_id);
-                }) {
-                    log::error!(
-                        "AbortAlgorithm::RemoveEventListener: failed to remove listener {}: {error:?}",
-                        listener_id,
-                    );
-                }
+                let mut et = event_target.clone();
+                et.remove_event_listener_by_id(*listener_id);
             }
             Self::ReadableStreamPipeTo { state } => {
                 state.run_abort_algorithm(ec)?;
@@ -76,14 +69,14 @@ impl AbortAlgorithm {
             }
             (
                 Self::RemoveEventListener {
-                    event_target: left_target,
+                    event_target: _,
                     listener_id: left_id,
                 },
                 Self::RemoveEventListener {
-                    event_target: right_target,
+                    event_target: _,
                     listener_id: right_id,
                 },
-            ) => left_id == right_id && left_target == right_target,
+            ) => left_id == right_id,
             (
                 Self::ReadableStreamPipeTo { state: left_state },
                 Self::ReadableStreamPipeTo { state: right_state },

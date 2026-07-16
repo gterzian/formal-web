@@ -82,7 +82,7 @@ impl EventTarget {
     /// <https://dom.spec.whatwg.org/#dom-eventtarget-addeventlistener>
     pub(crate) fn add_event_listener(
         &mut self,
-        event_target: &JsObject,
+        event_target: EventTarget,
         type_: String,
         callback: Option<Callback>,
         capture: bool,

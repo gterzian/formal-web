@@ -289,7 +289,7 @@ fn set_onabort(
     args: &[JsValue],
     ec: &mut dyn ExecutionContext<Types>,
 ) -> Completion<JsValue, Types> {
-    let signal_object = <Types as JsTypes>::value_as_object(this)
+    let _signal_object = <Types as JsTypes>::value_as_object(this)
         .ok_or_else(|| ec.new_type_error("AbortSignal receiver is not an object"))?;
     let callback = nullable_value(
         args.get(0).unwrap_or(&ec.value_undefined()),
@@ -309,7 +309,7 @@ fn set_onabort(
     if let Some(callback) = callback {
         try_with_event_target_mut(this, ec, |target| {
             target.add_event_listener(
-                &signal_object,
+                target.clone(),
                 String::from("abort"),
                 Some(callback),
                 false,

@@ -79,7 +79,7 @@ fn add_event_listener(
 
     try_with_event_target_mut(&receiver, ec, |target| {
         target.add_event_listener(
-            &event_target,
+            target.clone(),
             type_,
             callback,
             options.capture,
