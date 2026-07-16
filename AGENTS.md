@@ -108,6 +108,29 @@ for the definitive spec-annotation reference with examples and common mistakes.
    by `utils.rs`/`functions.rs`/`helpers.rs`.  Each file should correspond to
    a well-defined spec concept or algorithm group.
 
+6. **`// Note:` for spec discrepancies only** — Inside a function body, `// Note:`
+   is for discrepancies between the code and the spec (steps merged across
+   processes, browser-engine refactoring).  Design notes, architecture
+   rationales, and implementation plans belong in the README chain, not in
+   `// Note:` comments.  Count notes on two hands across the codebase.
+
+7. **Domain methods take IDL types, never `JsValue`** — The binding layer converts
+   JavaScript values to proper Web IDL types (DOMString → String, EventListener?
+   → Option<Callback>, etc.).  Domain methods receive these IDL types and
+   implement the spec algorithm.  The only exception is `&mut dyn ExecutionContext<T>`
+   when the algorithm needs ECMA-262 operations (promise creation, property access).
+
+8. **Reflectors are set by the Web IDL layer automatically** — The `reflector`
+   field on `EventTarget` and `Event` is set by `create_interface_instance`
+   via `PostCreateReflector::set_reflector`.  Domain code must never touch
+   reflectors.  The binding layer must never set reflectors manually.
+
+9. **Event path building is the caller's responsibility** — `dispatch_with_path`
+   takes a pre-built `&[EventPathItem]`.  The caller (binding, HTML event handler)
+   resolves JsObjects to EventTargets and builds the path.  The dispatch algorithm
+   in `dispatch.rs` operates on domain types only — no JsObject appears in the
+   path or the dispatch loop.
+
 See the "Spec-mapping review" step under "End-of-Task Flow" for the full
 review checklist.
 

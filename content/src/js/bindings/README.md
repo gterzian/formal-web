@@ -14,6 +14,81 @@ From inside out:
 | **Web IDL bindings infra** | `content/src/webidl/bindings/` | Generic traits (`WebIdlInterface`, `WebIdlNamespace`), registration (`register_interface_spec`), and member definitions (`OperationDef`, `AttributeDef`). NOT domain-specific. `OperationDef` and `AttributeDef` are parameterized over `T: JsTypes`. | `register_interface_spec::<T>(ec)` |
 | **JS bindings glue** | `content/src/js/bindings/<domain>/` | `WebIdlInterface` impl + thin function pointers that extract JS arguments, call domain functions, and wrap results. | `fn binding_fn(this, args, ec: &mut dyn ExecutionContext<T>) -> Completion<T::JsValue, T>` — must be thin, no algorithm logic |
 
+### Bindings layer: JS → IDL conversion, then call domain
+
+The JS bindings layer converts JavaScript values to proper Web IDL types, then
+calls a domain method. Domain methods never receive `JsValue` directly — they
+get the IDL-level types that the spec defines (e.g. `DOMString` → `String`,
+`EventListener?` → `Option<Callback>`, `boolean` → `bool`).
+
+The IDL→Rust type mapping is:
+
+| Web IDL type | Rust type | How the binding converts |
+|---|---|---|
+| `DOMString` | `String` | `ec.to_rust_string(value)?` |
+| `boolean` | `bool` | `ec.to_boolean(&value)` |
+| `EventListener?` | `Option<Callback>` | `nullable_value(value, ec, callback_interface_type_value)?` |
+| `Event` | `Event` (domain) | `ec.with_object_any(&obj).and_then(|d| d.downcast_ref::<Event>().cloned())` |
+| `AddEventListenerOptions` | `AddEventListenerOptions` | `flatten_more(value, ec)?` (spec algorithm in domain) |
+| `EventListenerOptions` | `bool` (capture) | `flatten(value, ec)?` (spec algorithm in domain) |
+
+**Spec algorithms for IDL conversion live in the domain module**, not in the
+bindings.  For example `flatten` (#concept-flatten-options) and `flatten more`
+(#event-flatten-more) are in `content/src/dom/event.rs`.  The binding just
+calls them.
+
+**A thin binding function for `addEventListener(type, callback, options)`:**
+```rust
+fn add_event_listener(this, args, ec) -> Completion<JsValue, Types> {
+    let type_ = ec.to_rust_string(args[0])?;                    // DOMString → String
+    let callback = nullable_value(args[1], ec, ...)?;           // EventListener? → Option<Callback>
+    let options = crate::dom::flatten_more(args[2], ec)?;       // spec algorithm
+    let target = extract_event_target(this, ec);
+    target.add_event_listener(target.clone(), type_, callback,  // call domain method
+        options.capture, options.once, options.passive,         // with IDL types
+        options.signal);
+}
+```
+
+### Domain methods: IDL types only, implement the spec algorithm
+
+Domain methods receive proper IDL types (never `JsValue`), implement the spec
+algorithm with verbatim `// Step N:` comments, and have **only** the spec
+anchor URL as their doc comment.  No prose, no JsValue.
+
+```rust
+/// <https://dom.spec.whatwg.org/#dom-eventtarget-addeventlistener>
+pub(crate) fn add_event_listener(
+    &self,
+    event_target: EventTarget,  // domain type, not JsValue
+    type_: String,              // DOMString
+    callback: Option<Callback>, // EventListener?
+    capture: bool,              // boolean
+    once: bool,                 // boolean
+    passive: Option<bool>,      // boolean?
+    signal: Option<AbortSignal>,
+) {
+    // Step 2: If listener's signal is non-null and is aborted, then return.
+    // Step 3: If listener's callback is null, then return.
+    // Step 4: If listener's passive is null, then set it to the...
+    // Step 5: If eventTarget's event listener list does not contain...
+    // Step 6: If listener's signal is non-null, then add the following abort steps...
+}
+```
+
+### What the binding must NOT do
+
+- **No spec logic** — the binding does not implement any part of a spec
+algorithm.  It converts JS args to IDL types, calls a domain method, and
+wraps the return value.
+- **No path building** — `dispatchEvent` does not build the event path inline.
+The binding calls `build_path_from_target_js_object` (in the HTML/events bridge)
+and then calls the domain method `EventTarget::dispatch_event()`.
+- **No reflector manipulation** — The `EventTarget.reflector` field is set
+automatically by the Web IDL layer (`create_interface_instance` →
+`PostCreateReflector::set_reflector`).  Domain code and bindings must never
+touch reflectors.
+
 ### Rules of thumb
 
 1. **Domain methods are `impl` blocks on the domain struct.**  Never a standalone
@@ -28,13 +103,11 @@ From inside out:
        ec: &mut dyn ExecutionContext<T>,
    ) -> Completion<T::JsValue, T> {
        let obj = T::value_as_object(this).ok_or_else(|| ec.new_type_error("..."))?;
-       if let Some(data) = ec.with_object_any(&obj) {
-           if let Some(domain) = data.downcast_ref::<MyDomainType>() {
-               let result: RustType = domain.my_method(arg1, arg2);
-               return Ok(ec.value_from_string(ec.js_string_from_str(&result)));
-           }
-       }
-       Err(ec.new_type_error("receiver is not a MyDomainType"))
+       let domain = ec.with_object_any(&obj)
+           .and_then(|d| d.downcast_ref::<MyDomainType>())
+           .ok_or_else(|| ec.new_type_error("..."))?;
+       let result = domain.my_method(arg1, arg2);  // call domain method
+       Ok(ec.value_from_bool(result))               // wrap return value
    }
    ```
 
