@@ -7,7 +7,7 @@ use ipc_messages::content::{Event as ContentEvent, UserNavigationInvolvement};
 
 use js_engine::{Completion, ExecutionContext, JsTypes};
 
-use crate::js::Types;
+use crate::js::{Engine, Types};
 
 type JsValue = <Types as JsTypes>::JsValue;
 
@@ -240,6 +240,8 @@ pub(crate) fn window_open_steps(
         .top_level_traversable_id()
         .unwrap_or(source_navigable_id);
 
+    let window_global = ec.global_object();
+    let parent_engine = ec.as_any_mut().downcast_mut::<Engine>();
     let result = the_rules_for_choosing_a_navigable(
         source_navigable_id,
         parent_traversable_id,
@@ -247,7 +249,8 @@ pub(crate) fn window_open_steps(
         target,
         noopener,
         Some(global_scope),
-        Some(ec.global_object()),
+        Some(window_global),
+        parent_engine,
     );
 
     let navigate_url = url_record.unwrap_or_else(|| String::from("about:blank"));

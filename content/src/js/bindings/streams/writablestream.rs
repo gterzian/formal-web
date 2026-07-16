@@ -194,7 +194,7 @@ fn get_locked(
     let stream_object = <Types as JsTypes>::value_as_object(this)
         .ok_or_else(|| ec.new_type_error("WritableStream receiver is not an object"))?;
     let locked = with_writable_stream_ref(&stream_object, ec, |stream| stream.locked())?;
-    Ok(JsValue::from(locked))
+    Ok(ec.value_from_bool(locked))
 }
 
 fn abort_method(
@@ -291,7 +291,7 @@ fn get_desired_size(
     let writer = with_writable_stream_default_writer_ref(&writer_object, ec, |w| w.clone())?;
     let size = writer.desired_size(ec)?;
     Ok(match size {
-        Some(s) => JsValue::from(s),
+        Some(size) => ec.value_from_number(size),
         None => ec.value_null(),
     })
 }

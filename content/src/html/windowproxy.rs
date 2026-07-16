@@ -31,7 +31,7 @@ fn trap_get_prototype_of(
     _this: JsValue,
     ec: &mut dyn ExecutionContext<crate::js::Types>,
 ) -> Completion<JsValue, crate::js::Types> {
-    let win = target_window(_args)?;
+    let win = target_window(_args, ec)?;
 
     // Step 2: "If IsPlatformObjectSameOrigin(W) is true, then return !
     //           OrdinaryGetPrototypeOf(W)."
@@ -50,7 +50,7 @@ fn trap_set_prototype_of(
     _this: JsValue,
     ec: &mut dyn ExecutionContext<crate::js::Types>,
 ) -> Completion<JsValue, crate::js::Types> {
-    let win = target_window(args)?;
+    let win = target_window(args, ec)?;
     let val = args.get(1).cloned().unwrap_or_else(|| ec.value_undefined());
 
     // Step 1: "Return ! SetImmutablePrototype(this, V)."
@@ -89,7 +89,7 @@ fn trap_define_property(
     _this: JsValue,
     ec: &mut dyn ExecutionContext<crate::js::Types>,
 ) -> Completion<JsValue, crate::js::Types> {
-    let win = target_window(args)?;
+    let win = target_window(args, ec)?;
     let key = args.get(1).cloned().unwrap_or_else(|| ec.value_undefined());
     let desc_obj_val = args.get(2).cloned().unwrap_or_else(|| ec.value_undefined());
 
@@ -115,7 +115,7 @@ fn trap_get(
     _this: JsValue,
     ec: &mut dyn ExecutionContext<crate::js::Types>,
 ) -> Completion<JsValue, crate::js::Types> {
-    let win = target_window(args)?;
+    let win = target_window(args, ec)?;
     let key = args.get(1).cloned().unwrap_or_else(|| ec.value_undefined());
 
     // Step 2: "Check if an access between two browsing contexts should be
@@ -161,7 +161,7 @@ fn trap_set(
     _this: JsValue,
     ec: &mut dyn ExecutionContext<crate::js::Types>,
 ) -> Completion<JsValue, crate::js::Types> {
-    let win = target_window(args)?;
+    let win = target_window(args, ec)?;
     let key = args.get(1).cloned().unwrap_or_else(|| ec.value_undefined());
 
     // Step 2: "Check if an access between two browsing contexts should be
@@ -187,7 +187,7 @@ fn trap_delete_property(
     _this: JsValue,
     ec: &mut dyn ExecutionContext<crate::js::Types>,
 ) -> Completion<JsValue, crate::js::Types> {
-    let win = target_window(args)?;
+    let win = target_window(args, ec)?;
     let key = args.get(1).cloned().unwrap_or_else(|| ec.value_undefined());
 
     // Step 2: "If IsPlatformObjectSameOrigin(W) is true:"
@@ -215,7 +215,7 @@ fn trap_has(
     _this: JsValue,
     ec: &mut dyn ExecutionContext<crate::js::Types>,
 ) -> Completion<JsValue, crate::js::Types> {
-    let win = target_window(args)?;
+    let win = target_window(args, ec)?;
     let key = args.get(1).cloned().unwrap_or_else(|| ec.value_undefined());
 
     // Note: The WindowProxy spec does not override [[HasProperty]].  This
@@ -238,7 +238,7 @@ fn trap_own_keys(
     _this: JsValue,
     ec: &mut dyn ExecutionContext<crate::js::Types>,
 ) -> Completion<JsValue, crate::js::Types> {
-    let win = target_window(_args)?;
+    let win = target_window(_args, ec)?;
 
     // Step 2: "Let maxProperties be W's associated Document's document-tree
     //          child navigables's size."
@@ -249,7 +249,7 @@ fn trap_own_keys(
     let window_keys = ec.own_property_keys(win)?;
     let key_array = ec.create_empty_array();
     for val in window_keys.into_iter() {
-        let js_val: JsValue = val.into();
+        let js_val = ec.value_from_property_key(val);
         ec.array_push(&key_array, js_val)?;
     }
     Ok(<crate::js::Types as JsTypes>::value_from_object(key_array))
@@ -259,10 +259,13 @@ fn trap_own_keys(
 ///
 /// The proxy target IS W (the Window object), passed as `args[0]` by the
 /// ECMAScript Proxy internal methods (10.5).
-fn target_window(args: &[JsValue]) -> Result<JsObject, JsValue> {
+fn target_window(
+    args: &[JsValue],
+    ec: &mut dyn ExecutionContext<crate::js::Types>,
+) -> Result<JsObject, JsValue> {
     args.first()
         .and_then(|value| <Types as JsTypes>::value_as_object(value))
-        .ok_or_else(|| JsValue::default())
+        .ok_or_else(|| ec.value_undefined())
 }
 
 /// Captures for the wrapper function created by `trap_get`.

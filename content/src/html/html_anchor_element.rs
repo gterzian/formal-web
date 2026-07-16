@@ -82,6 +82,7 @@ impl HTMLAnchorElement {
             noopener,
             None, // no GlobalScope: anchor nav delegates new traversables to UA
             None, // anchor nav uses no return window
+            None, // anchor navigation does not create a local realm
         );
 
         navigate(

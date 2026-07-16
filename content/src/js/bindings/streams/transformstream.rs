@@ -133,7 +133,7 @@ fn get_desired_size(
     let controller = with_transform_stream_default_controller_ref(&obj, ec, |c| c.clone())?;
     let size = controller.desired_size(ec)?;
     match size {
-        Some(s) => Ok(s.into()),
+        Some(size) => Ok(ec.value_from_number(size)),
         None => Ok(ec.value_null()),
     }
 }

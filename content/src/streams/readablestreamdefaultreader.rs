@@ -355,7 +355,7 @@ impl ReadableStreamGenericReader for ReadableStreamDefaultReader {
 
     fn set_closed_promise_slot_value(&self, promise: Option<JsObject>) {
         // JSC: protect new value from GC, unprotect old value
-        #[cfg(not(feature = "boa"))]
+        #[cfg(feature = "jsc")]
         {
             let old = self.closed_promise.borrow().clone();
             if let Some(ref old_obj) = old {

@@ -6,9 +6,7 @@ use crate::js::Engine;
 
 /// Build a JavaScript engine context with all native bindings installed.
 ///
-/// On the Boa backend, creates a `BoaContext` with full Web IDL bindings
-/// (DOM, HTML, Streams, WebAssembly).  On the JSC backend, creates a
-/// `JscEngine` with only the generic console namespace.
+/// Creates the selected engine with the generic Web IDL bindings installed.
 ///
 /// Returns a type implementing both [`js_engine::JsEngine<crate::js::Types>`] and
 /// [`js_engine::ExecutionContext<crate::js::Types>`].
@@ -20,8 +18,7 @@ pub(crate) fn build_context(document: Rc<RefCell<BaseDocument>>) -> Result<Engin
 /// JS context (same GC heap) but with its own global object, Window, Document,
 /// and prototype chain.
 ///
-/// On JSC, uses `JscEngine::new_shared_realm()` to create a child engine
-/// sharing the same `JSGlobalContextRef`.  On Boa, uses `create_realm()`.
+/// JSC and V8 share their engine heap. Boa currently creates a fresh engine.
 pub(crate) fn build_realm(
     engine: &mut Engine,
     document: Rc<RefCell<BaseDocument>>,
@@ -34,7 +31,7 @@ fn build_context_inner(document: Rc<RefCell<BaseDocument>>) -> Result<Engine, St
     crate::js::bindings::html::build_context(document)
 }
 
-#[cfg(not(boa_backend))]
+#[cfg(jsc_backend)]
 fn build_context_inner(document: Rc<RefCell<BaseDocument>>) -> Result<Engine, String> {
     use js_engine::jsc::JscEngine;
     let mut engine = JscEngine::new();
@@ -42,7 +39,15 @@ fn build_context_inner(document: Rc<RefCell<BaseDocument>>) -> Result<Engine, St
     Ok(engine)
 }
 
-#[cfg(not(boa_backend))]
+#[cfg(v8_backend)]
+fn build_context_inner(document: Rc<RefCell<BaseDocument>>) -> Result<Engine, String> {
+    use js_engine::v8::V8Engine;
+    let mut engine = V8Engine::new();
+    setup_realm(&mut engine, document)?;
+    Ok(engine)
+}
+
+#[cfg(jsc_backend)]
 fn build_realm_inner(
     engine: &mut Engine,
     document: Rc<RefCell<BaseDocument>>,
@@ -52,9 +57,19 @@ fn build_realm_inner(
     Ok(child)
 }
 
-/// Shared setup for both fresh engines and child realms (JSC backend).
+#[cfg(v8_backend)]
+fn build_realm_inner(
+    engine: &mut Engine,
+    document: Rc<RefCell<BaseDocument>>,
+) -> Result<Engine, String> {
+    let mut child = engine.new_child_realm();
+    setup_realm(&mut child, document)?;
+    Ok(child)
+}
+
+/// Shared setup for engines using the generic interface-registration path.
 /// Initializes the global object, Window, Document, prototypes, etc.
-#[cfg(not(boa_backend))]
+#[cfg(any(jsc_backend, v8_backend))]
 fn setup_realm(engine: &mut Engine, document: Rc<RefCell<BaseDocument>>) -> Result<(), String> {
     use crate::dom::{
         AbortController, AbortSignal, DOMException, Document, Element, Event, EventTarget, Node,
@@ -80,8 +95,7 @@ fn setup_realm(engine: &mut Engine, document: Rc<RefCell<BaseDocument>>) -> Resu
     // Step 1: Create the Window with GlobalScope and associate it with the
     // realm's global object so `global_scope_or_error` works.
     let global_scope = GlobalScope::new(crate::html::GlobalScopeKind::Window, Rc::clone(&document));
-    #[cfg_attr(jsc_backend, allow(unused_mut))]
-    let mut window = Window::new(global_scope);
+    let window = Window::new(global_scope);
     let global_obj = engine.realm_global_object();
     engine.associate_existing_object(&global_obj, Box::new(window));
     // Set the EventTarget reflector for the Window.
@@ -89,7 +103,7 @@ fn setup_realm(engine: &mut Engine, document: Rc<RefCell<BaseDocument>>) -> Resu
     crate::js::try_set_event_target_reflector(&global_value, engine);
 
     // Step 2: Store the global object in host_any.
-    crate::js::platform_objects::init_global_object_slot(engine, global_obj);
+    crate::js::platform_objects::init_global_object_slot(engine, global_obj.clone());
 
     // Step 3: Initialize the interface registry.
     initialize_registry::<crate::js::Types>(engine);
@@ -159,10 +173,20 @@ fn setup_realm(engine: &mut Engine, document: Rc<RefCell<BaseDocument>>) -> Resu
     // Step 7: Set the global object's prototype to Window.prototype so
     // `instanceof Window` etc. works.
     if let Some(window_proto) = get_registry_prototype::<crate::js::Types, Window>(engine) {
-        let _ = engine.set_prototype(global_obj, Some(window_proto));
+        #[cfg(v8_backend)]
+        engine
+            .set_prototype(global_obj.clone(), Some(window_proto.clone()))
+            .map_err(|error| format!("failed to install Window prototype: {error:?}"))?;
+
+        #[cfg(jsc_backend)]
+        if let Err(error) = engine.set_prototype(global_obj, Some(window_proto)) {
+            log::debug!("JSC global prototype remained immutable: {error:?}");
+        }
 
         // Step 7b: JSC's global object prototype is immutable.
         // Copy Window/EventTarget properties to the global object.
+        #[cfg(jsc_backend)]
+        {
         let prototypes = [
             get_registry_prototype::<crate::js::Types, EventTarget>(engine),
             Some(window_proto),
@@ -181,6 +205,7 @@ fn setup_realm(engine: &mut Engine, document: Rc<RefCell<BaseDocument>>) -> Resu
                     }
                 }
             }
+        }
         }
     }
 
@@ -232,18 +257,20 @@ fn setup_realm(engine: &mut Engine, document: Rc<RefCell<BaseDocument>>) -> Resu
         let values_value =
             <crate::js::Types as js_engine::JsTypes>::value_from_object(values_fn.clone());
         let values_desc = js_engine::records::PropertyDescriptor::<crate::js::Types> {
-            value: Some(values_value),
+            value: Some(values_value.clone()),
             writable: Some(true),
             enumerable: Some(true),
             configurable: Some(true),
             get: None,
             set: None,
         };
-        let _ = engine.define_property_or_throw(
-            rs_proto,
+        engine
+            .define_property_or_throw(
+            rs_proto.clone(),
             engine.property_key_from_str("values"),
             values_desc,
-        );
+        )
+            .map_err(|error| format!("failed to install ReadableStream.values: {error:?}"))?;
 
         // @@asyncIterator: same function as values (per spec
         // ReadableStream.prototype[@@asyncIterator] = ReadableStream.prototype.values)
@@ -256,7 +283,11 @@ fn setup_realm(engine: &mut Engine, document: Rc<RefCell<BaseDocument>>) -> Resu
             get: None,
             set: None,
         };
-        let _ = engine.define_property_or_throw(rs_proto, async_iter_key, async_iter_desc);
+        engine
+            .define_property_or_throw(rs_proto.clone(), async_iter_key, async_iter_desc)
+            .map_err(|error| {
+                format!("failed to install ReadableStream async iterator: {error:?}")
+            })?;
 
         // __formalWebReadableStreamPipeToNative (native backstop)
         let native_value =
@@ -269,11 +300,15 @@ fn setup_realm(engine: &mut Engine, document: Rc<RefCell<BaseDocument>>) -> Resu
             get: None,
             set: None,
         };
-        let _ = engine.define_property_or_throw(
-            rs_proto,
+        engine
+            .define_property_or_throw(
+            rs_proto.clone(),
             engine.property_key_from_str("__formalWebReadableStreamPipeToNative"),
             native_desc,
-        );
+        )
+            .map_err(|error| {
+                format!("failed to install ReadableStream pipeTo native function: {error:?}")
+            })?;
 
         // pipeTo: JS wrapper that calls the native backstop.
         let wrapper_source = "(function pipeTo(dest, opts) { return this.__formalWebReadableStreamPipeToNative(dest, opts); })";
@@ -291,11 +326,14 @@ fn setup_realm(engine: &mut Engine, document: Rc<RefCell<BaseDocument>>) -> Resu
                     get: None,
                     set: None,
                 };
-                let _ = engine.define_property_or_throw(
-                    rs_proto,
+                engine.define_property_or_throw(
+                    rs_proto.clone(),
                     engine.property_key_from_str("pipeTo"),
                     pipe_to_desc,
-                );
+                )
+                .map_err(|error| {
+                    format!("failed to install ReadableStream.pipeTo: {error:?}")
+                })?;
             }
         }
     }

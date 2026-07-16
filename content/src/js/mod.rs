@@ -63,18 +63,23 @@ pub(crate) fn fn_capture_behaviour(
 }
 
 /// Content-level type alias for the concrete JS types in use.
-/// Set by the build script based on the target platform:
-/// `jsc_backend` on Apple platforms, `boa_backend` on others.
+/// Set by the build script from the selected engine feature.
 #[cfg(jsc_backend)]
 pub(crate) type Types = js_engine::jsc::JscTypes;
 
-#[cfg(not(jsc_backend))]
+#[cfg(boa_backend)]
 pub(crate) type Types = js_engine::boa::BoaTypes;
 
+#[cfg(v8_backend)]
+pub(crate) type Types = js_engine::v8::V8Types;
+
 /// Content-level type alias for the concrete JS engine in use.
-/// `BoaContext` on Boa, `JscEngine` on JSC.
+/// `BoaContext` on Boa, `JscEngine` on JSC, and `V8Engine` on V8.
 #[cfg(jsc_backend)]
 pub(crate) type Engine = js_engine::jsc::JscEngine;
 
-#[cfg(not(jsc_backend))]
+#[cfg(boa_backend)]
 pub(crate) type Engine = js_engine::boa::BoaContext;
+
+#[cfg(v8_backend)]
+pub(crate) type Engine = js_engine::v8::V8Engine;

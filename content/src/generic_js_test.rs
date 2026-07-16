@@ -699,8 +699,7 @@ mod tests {
     use js_engine::TypedArrayElementType;
     use js_engine::{EcmascriptHost, ExecutionContext, JsEngine};
 
-    /// Create an initialized engine context with the TestWidget interface
-    /// registered (Boa) or available (JSC).
+    /// Create an initialized engine context with the TestWidget interface registered.
     /// Returns the concrete engine type so callers can use both
     /// `ExecutionContext` and `JsEngine` trait methods.
     #[cfg(boa_backend)]
@@ -729,6 +728,19 @@ mod tests {
         // the registry so create_test_widget can find the prototype.
         register_interface_spec::<TestTypes, TestWidget, _>(&mut engine).ok();
         register_interface_spec::<TestTypes, TestButton, _>(&mut engine).ok();
+        wire_test_interface_prototypes(&mut engine);
+        engine
+    }
+
+    #[cfg(v8_backend)]
+    fn setup() -> js_engine::v8::V8Engine {
+        use crate::webidl::bindings::{initialize_registry, register_interface_spec};
+        let mut engine = js_engine::v8::V8Engine::new();
+        initialize_registry::<TestTypes>(&mut engine);
+        register_interface_spec::<TestTypes, TestWidget, _>(&mut engine)
+            .expect("register TestWidget on V8");
+        register_interface_spec::<TestTypes, TestButton, _>(&mut engine)
+            .expect("register TestButton on V8");
         wire_test_interface_prototypes(&mut engine);
         engine
     }
@@ -3121,7 +3133,7 @@ mod tests {
     /// Verify that `instanceof` works for platform objects on JSC.
     /// The `hasInstance` callback on BUILTIN_CONSTRUCTOR_CLASS walks the
     /// prototype chain to check against constructor.prototype.
-    #[cfg(not(feature = "boa"))]
+    #[cfg(jsc_backend)]
     #[test]
     fn instanceof_works_for_platform_object_on_jsc() {
         let mut engine = setup();
@@ -3195,7 +3207,7 @@ mod tests {
     /// methods (bind, call, apply) on JSC.  These are copied during
     /// `make_builtin_function` because JSObjectSetPrototype crashes on
     /// objects with callAsConstructor callbacks on macOS 26.
-    #[cfg(not(feature = "boa"))]
+    #[cfg(jsc_backend)]
     #[test]
     fn constructor_has_function_prototype_methods_on_jsc() {
         let mut engine = setup();

@@ -532,8 +532,18 @@ fn location_object(
 
     let url = document_creation_url(ec)?;
     let window = ec.global_object();
-    let object =
-        create_interface_instance::<crate::js::Types, Location>(Location::new(url, window), ec)?;
+    let (source_navigable_id, event_sender) = ec
+        .with_object_any(&window)
+        .and_then(|data| data.downcast_ref::<Window>())
+        .map(|window| {
+            (
+                window.global_scope.source_navigable_id(),
+                window.global_scope.event_sender(),
+            )
+        })
+        .unwrap_or((None, None));
+    let location = Location::new(url, source_navigable_id, event_sender);
+    let object = create_interface_instance::<crate::js::Types, Location>(location, ec)?;
     platform_objects::store_location_object(ec, object.clone())?;
     Ok(object)
 }

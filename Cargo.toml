@@ -17,6 +17,7 @@ media = ["dep:media"]
 # These propagate to the content crate via workspace dependency resolution.
 jsc = ["dep:content", "content/jsc"]
 boa = ["dep:content", "content/boa", "content/media"]
+v8 = ["dep:content", "content/v8"]
 wasm = ["content/wasm"]
 
 [dependencies]
@@ -63,5 +64,4 @@ blitz-traits = { git = "https://github.com/gterzian/blitz", rev = "954b41f25e4fb
 blitz-dom = { git = "https://github.com/gterzian/blitz", rev = "954b41f25e4fbfae39d7c512016d8193ee53ee80", default-features = false }
 blitz-paint = { git = "https://github.com/gterzian/blitz", rev = "954b41f25e4fbfae39d7c512016d8193ee53ee80", default-features = false }
 blitz-html = { git = "https://github.com/gterzian/blitz", rev = "954b41f25e4fbfae39d7c512016d8193ee53ee80", default-features = false }
-
 

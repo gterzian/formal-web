@@ -3,7 +3,7 @@ use js_engine::{Completion, ExecutionContext, JsTypes, JsTypesWithRealm};
 /// Create a builtin function with GC-traceable captures.
 /// Generic over `T` so Web IDL infrastructure (operation.rs, attribute.rs)
 /// can call it with their own type parameter.
-#[cfg(not(jsc_backend))]
+#[cfg(boa_backend)]
 pub(crate) fn create_builtin_fn_with_traced_captures<T, C>(
     ec: &mut dyn ExecutionContext<T>,
     captures: C,
@@ -22,6 +22,34 @@ where
     C: js_engine::gc::Trace + 'static,
 {
     js_engine::boa::create_builtin_fn_with_captures(
+        ec,
+        captures,
+        behaviour,
+        length,
+        name,
+        is_constructor,
+    )
+}
+
+#[cfg(v8_backend)]
+pub(crate) fn create_builtin_fn_with_traced_captures<T, C>(
+    ec: &mut dyn ExecutionContext<T>,
+    captures: C,
+    behaviour: fn(
+        &[T::JsValue],
+        T::JsValue,
+        &C,
+        &mut dyn ExecutionContext<T>,
+    ) -> Completion<T::JsValue, T>,
+    length: u32,
+    name: T::PropertyKey,
+    is_constructor: bool,
+) -> T::Function
+where
+    T: JsTypes + JsTypesWithRealm,
+    C: js_engine::gc::Trace + 'static,
+{
+    js_engine::v8::create_builtin_fn_with_captures(
         ec,
         captures,
         behaviour,

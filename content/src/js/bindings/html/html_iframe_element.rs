@@ -177,8 +177,7 @@ fn set_onload(
     args: &[JsValue],
     ec: &mut dyn ExecutionContext<Types>,
 ) -> Completion<JsValue, Types> {
-    #[allow(unused_mut)]
-    let mut iframe_object = <Types as JsTypes>::value_as_object(this)
+    let iframe_object = <Types as JsTypes>::value_as_object(this)
         .ok_or_else(|| ec.new_type_error("HTMLIFrameElement receiver is not an object"))?;
     let callback = nullable_value(
         args.get(0).unwrap_or(&ec.value_undefined()),
@@ -186,12 +185,12 @@ fn set_onload(
         callback_function_value,
     )?;
 
-    // Note: uses JsObject::downcast_mut — with_object_any_mut borrows ec.
-    #[cfg_attr(jsc_backend, allow(unused_mut))]
-    let previous = if let Some(mut iframe) = iframe_object.downcast_mut::<HTMLIFrameElement>() {
-        iframe.replace_onload(callback.clone())
-    } else {
-        return Err(ec.new_type_error("receiver is not an HTMLIFrameElement"));
+    let previous = match ec
+        .with_object_any_mut(&iframe_object)
+        .and_then(|data| data.downcast_mut::<HTMLIFrameElement>())
+    {
+        Some(iframe) => iframe.replace_onload(callback.clone()),
+        None => return Err(ec.new_type_error("receiver is not an HTMLIFrameElement")),
     };
 
     if let Some(previous) = previous {
@@ -233,8 +232,7 @@ fn set_onerror(
     args: &[JsValue],
     ec: &mut dyn ExecutionContext<Types>,
 ) -> Completion<JsValue, Types> {
-    #[cfg_attr(boa_backend, allow(unused_mut))]
-    let mut iframe_object = <Types as JsTypes>::value_as_object(this)
+    let iframe_object = <Types as JsTypes>::value_as_object(this)
         .ok_or_else(|| ec.new_type_error("HTMLIFrameElement receiver is not an object"))?;
     let callback = nullable_value(
         args.get(0).unwrap_or(&ec.value_undefined()),
@@ -242,12 +240,12 @@ fn set_onerror(
         callback_function_value,
     )?;
 
-    // Note: uses JsObject::downcast_mut — with_object_any_mut borrows ec.
-    #[cfg_attr(jsc_backend, allow(unused_mut))]
-    let previous = if let Some(mut iframe) = iframe_object.downcast_mut::<HTMLIFrameElement>() {
-        iframe.replace_onerror(callback.clone())
-    } else {
-        return Err(ec.new_type_error("receiver is not an HTMLIFrameElement"));
+    let previous = match ec
+        .with_object_any_mut(&iframe_object)
+        .and_then(|data| data.downcast_mut::<HTMLIFrameElement>())
+    {
+        Some(iframe) => iframe.replace_onerror(callback.clone()),
+        None => return Err(ec.new_type_error("receiver is not an HTMLIFrameElement")),
     };
 
     if let Some(previous) = previous {

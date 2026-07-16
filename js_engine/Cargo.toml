@@ -6,13 +6,14 @@ publish = false
 description = "ECMA-262 abstract operation trait — pure type vocabulary and engine abstraction."
 
 [lints.rust]
-unexpected_cfgs = { level = "warn", check-cfg = ['cfg(boa_backend)', 'cfg(jsc_backend)'] }
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(boa_backend)', 'cfg(jsc_backend)', 'cfg(v8_backend)'] }
 
 [features]
 default = ["boa"]
 boa = ["dep:boa_engine", "dep:boa_gc", "dep:serde_json"]
 float16 = ["boa_engine/float16"]
 jsc = []
+v8 = ["dep:rusty_v8"]
 
 [dependencies]
 log = "0.4"
@@ -20,3 +21,4 @@ serde_json = { version = "1", optional = true }
 boa_engine = { git = "https://github.com/boa-dev/boa", rev = "7ce9cae84ac9bf54fe528bb05b997ac24af808a4", default-features = false, optional = true }
 boa_gc = { git = "https://github.com/boa-dev/boa", rev = "7ce9cae84ac9bf54fe528bb05b997ac24af808a4", features = ["thin-vec", "boa_string"], optional = true }
 js_engine_macros = { path = "../js_engine_macros" }
+rusty_v8 = { package = "v8", version = "=150.1.0", optional = true }

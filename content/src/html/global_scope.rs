@@ -5,7 +5,7 @@ use std::{
     vec::Vec,
 };
 
-use super::environment_settings_object::EnvironmentSettingsObject;
+use super::{create_a_new_realm, environment_settings_object::EnvironmentSettingsObject};
 
 use blitz_dom::BaseDocument;
 use ipc::IpcSender;
@@ -18,7 +18,7 @@ use js_engine::gc::{GcCell, gc_cell_new};
 use js_engine::{JsTypes, gc_struct};
 use log::{debug, error};
 
-use crate::js::Types;
+use crate::js::{Engine, Types};
 use crate::webidl::Callback;
 
 type JsValue = <Types as JsTypes>::JsValue;
@@ -595,6 +595,7 @@ impl GlobalScope {
     /// <https://html.spec.whatwg.org/#creating-a-new-auxiliary-browsing-context>
     pub(crate) fn create_auxiliary_context_document(
         &self,
+        parent_engine: Option<&mut Engine>,
         new_traversable_id: NavigableId,
         new_document_id: DocumentId,
     ) -> Result<
@@ -609,7 +610,12 @@ impl GlobalScope {
         let event_sender = event_sender
             .as_ref()
             .ok_or_else(|| String::from("GlobalScope has no event sender"))?;
-        crate::html::create_a_new_realm(None, event_sender, new_traversable_id, new_document_id)
+        create_a_new_realm(
+            parent_engine,
+            event_sender,
+            new_traversable_id,
+            new_document_id,
+        )
     }
 
     /// Set the shared new-document registry that both GlobalScope and

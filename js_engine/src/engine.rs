@@ -410,7 +410,7 @@ pub trait ExecutionContext<T: JsTypes + JsTypesWithRealm>: EcmascriptHost<T> {
 
     /// <https://tc39.es/ecma262/#sec-getvaluefrombuffer>
     fn get_value_from_buffer(
-        &self,
+        &mut self,
         array_buffer: &T::ArrayBuffer,
         byte_index: u64,
         element_type: TypedArrayElementType,
@@ -629,6 +629,9 @@ pub trait ExecutionContext<T: JsTypes + JsTypesWithRealm>: EcmascriptHost<T> {
     /// Used for accessing well-known symbol properties (e.g. `@@asyncIterator`,
     /// `@@iterator`) in iterable and async-iterable algorithms.
     fn property_key_from_symbol(&self, sym: &T::JsSymbol) -> T::PropertyKey;
+
+    /// Convert a property key to the corresponding ECMAScript value.
+    fn value_from_property_key(&mut self, key: T::PropertyKey) -> T::JsValue;
 
     /// Create a `PropertyKey` from a well-known Symbol name (e.g. "asyncIterator",
     /// "iterator", "hasInstance", "toPrimitive").

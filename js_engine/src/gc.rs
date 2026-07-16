@@ -17,7 +17,7 @@
 //! Each backend provides its own implementations inside `#[cfg]`-gated
 //! sub-modules below.
 
-use crate::JsTypes;
+use crate::{ExecutionContext, JsTypes, JsTypesWithRealm};
 
 // ============================================================================
 // SECTION I: SPEC-ANNOTATION TRAITS
@@ -54,12 +54,16 @@ pub trait Finalize {
 /// The `Reflector` is a structural twin link that lets a Rust domain object
 /// reference its associated JS wrapper object without creating fatal cycles.
 /// The concrete representation is engine-specific.
-pub trait JsTypesGcExt: JsTypes + Sized + 'static {
+pub trait JsTypesGcExt: JsTypes + JsTypesWithRealm + Sized + 'static {
     /// The cycle-safe structural twin link.
     type Reflector: Clone + 'static;
+    type Context: ExecutionContext<Self>;
 
-    fn create_reflector(obj: &Self::JsObject) -> Self::Reflector;
-    fn upgrade_reflector(reflector: &Self::Reflector) -> Option<Self::JsObject>;
+    fn create_reflector(context: &mut Self::Context, obj: &Self::JsObject) -> Self::Reflector;
+    fn upgrade_reflector(
+        context: &mut Self::Context,
+        reflector: &Self::Reflector,
+    ) -> Option<Self::JsObject>;
 }
 
 /// Internal guard that executes the unroot action when dropped.
@@ -194,10 +198,10 @@ mod boa_cells {
 }
 
 // JSC: actual struct with auto-protect/unprotect
-#[cfg(not(feature = "boa"))]
+#[cfg(feature = "jsc")]
 pub use jsc_cells::*;
 
-#[cfg(not(feature = "boa"))]
+#[cfg(feature = "jsc")]
 mod jsc_cells {
     use crate::jsc::{JscObject, JscValue};
     use crate::jsc_sys;
@@ -360,17 +364,80 @@ mod jsc_cells {
     }
 }
 
+#[cfg(feature = "v8")]
+pub use v8_cells::*;
+
+#[cfg(feature = "v8")]
+mod v8_cells {
+    use std::cell::{Ref, RefCell, RefMut};
+    use std::rc::Rc;
+
+    use crate::v8::{V8Object, V8Value};
+
+    pub struct JsValueCell(Rc<RefCell<V8Value>>);
+
+    pub struct JsObjectCell(Rc<RefCell<Option<V8Object>>>);
+
+    impl JsValueCell {
+        pub fn new(value: V8Value) -> Self {
+            Self(Rc::new(RefCell::new(value)))
+        }
+
+        pub fn set(&self, value: V8Value) {
+            *self.0.borrow_mut() = value;
+        }
+
+        pub fn borrow(&self) -> Ref<'_, V8Value> {
+            self.0.borrow()
+        }
+
+        pub fn borrow_mut(&self) -> RefMut<'_, V8Value> {
+            self.0.borrow_mut()
+        }
+    }
+
+    impl Clone for JsValueCell {
+        fn clone(&self) -> Self {
+            Self(self.0.clone())
+        }
+    }
+
+    impl JsObjectCell {
+        pub fn new(value: Option<V8Object>) -> Self {
+            Self(Rc::new(RefCell::new(value)))
+        }
+
+        pub fn set(&self, value: Option<V8Object>) {
+            *self.0.borrow_mut() = value;
+        }
+
+        pub fn borrow(&self) -> Ref<'_, Option<V8Object>> {
+            self.0.borrow()
+        }
+
+        pub fn borrow_mut(&self) -> RefMut<'_, Option<V8Object>> {
+            self.0.borrow_mut()
+        }
+    }
+
+    impl Clone for JsObjectCell {
+        fn clone(&self) -> Self {
+            Self(self.0.clone())
+        }
+    }
+}
+
 /// A backend-abstracted GC-managed cell providing interior mutability.
 ///
 /// On Boa this is a type alias for `boa_gc::Gc<boa_gc::GcRefCell<T>>` so
-/// the GC traces through the reference.  On JSC it is `Rc<RefCell<T>>`.
+/// the GC traces through the reference. On JSC and V8 it is `Rc<RefCell<T>>`.
 ///
 /// Use `gc_cell_new(val)` to construct, `.borrow()` / `.borrow_mut()` to
 /// access the inner value.
 #[cfg(feature = "boa")]
 pub type GcCell<T> = boa_gc::Gc<boa_gc::GcRefCell<T>>;
 
-#[cfg(not(feature = "boa"))]
+#[cfg(any(feature = "jsc", feature = "v8"))]
 pub type GcCell<T> = std::rc::Rc<std::cell::RefCell<T>>;
 
 /// Construct a [`GcCell`] with the given value.
@@ -380,7 +447,7 @@ pub fn gc_cell_new<T: boa_gc::Trace>(val: T) -> GcCell<T> {
 }
 
 /// Construct a [`GcCell`] with the given value.
-#[cfg(not(feature = "boa"))]
+#[cfg(any(feature = "jsc", feature = "v8"))]
 pub fn gc_cell_new<T>(val: T) -> GcCell<T> {
     std::rc::Rc::new(std::cell::RefCell::new(val))
 }
@@ -388,14 +455,14 @@ pub fn gc_cell_new<T>(val: T) -> GcCell<T> {
 /// Compare two [`GcCell`] references for pointer equality.
 ///
 /// Returns `true` if both references point to the same GC-managed allocation.
-/// On Boa this uses `Gc::ptr_eq`; on JSC it uses `Rc::ptr_eq`.
+/// On Boa this uses `Gc::ptr_eq`; on JSC and V8 it uses `Rc::ptr_eq`.
 #[cfg(feature = "boa")]
 pub fn gc_cell_ptr_eq<T: boa_gc::Trace + ?Sized>(a: &GcCell<T>, b: &GcCell<T>) -> bool {
     boa_gc::Gc::ptr_eq(a, b)
 }
 
 /// Compare two [`GcCell`] references for pointer equality.
-#[cfg(not(feature = "boa"))]
+#[cfg(any(feature = "jsc", feature = "v8"))]
 pub fn gc_cell_ptr_eq<T>(a: &GcCell<T>, b: &GcCell<T>) -> bool {
     std::rc::Rc::ptr_eq(a, b)
 }
@@ -493,11 +560,15 @@ mod boa_gc_impl {
 
     impl JsTypesGcExt for BoaTypes {
         type Reflector = boa_engine::object::JsObject;
+        type Context = crate::boa::BoaContext;
 
-        fn create_reflector(obj: &Self::JsObject) -> Self::Reflector {
+        fn create_reflector(_context: &mut Self::Context, obj: &Self::JsObject) -> Self::Reflector {
             obj.clone()
         }
-        fn upgrade_reflector(reflector: &Self::Reflector) -> Option<Self::JsObject> {
+        fn upgrade_reflector(
+            _context: &mut Self::Context,
+            reflector: &Self::Reflector,
+        ) -> Option<Self::JsObject> {
             Some(reflector.clone())
         }
     }
@@ -525,7 +596,7 @@ mod boa_gc_impl {
 }
 
 // ── JSC backend ───────────────────────────────────────────────────────────
-#[cfg(not(feature = "boa"))]
+#[cfg(feature = "jsc")]
 mod jsc_gc_impl {
     use super::*;
     use crate::jsc::JscTypes;
@@ -534,12 +605,16 @@ mod jsc_gc_impl {
         /// A (raw_object_ptr, context) pair so that `upgrade_reflector` can
         /// reconstruct a fully-valid `JscObject` with a non-null context.
         type Reflector = (*mut std::ffi::c_void, *mut crate::jsc_sys::JSContextRef);
+        type Context = crate::jsc::JscEngine;
 
-        fn create_reflector(obj: &Self::JsObject) -> Self::Reflector {
+        fn create_reflector(_context: &mut Self::Context, obj: &Self::JsObject) -> Self::Reflector {
             (obj.as_raw() as *mut std::ffi::c_void, obj.ctx())
         }
 
-        fn upgrade_reflector(reflector: &Self::Reflector) -> Option<Self::JsObject> {
+        fn upgrade_reflector(
+            _context: &mut Self::Context,
+            reflector: &Self::Reflector,
+        ) -> Option<Self::JsObject> {
             let (raw_ptr, ctx) = *reflector;
             if raw_ptr.is_null() || ctx.is_null() {
                 None
@@ -553,6 +628,24 @@ mod jsc_gc_impl {
             }
         }
     }
+
+    #[allow(dead_code)]
+    pub extern "C" fn jsc_generic_finalizer<V>(object: *mut std::ffi::c_void) {
+        unsafe {
+            let private_data =
+                crate::jsc_sys::JSObjectGetPrivate(object as *mut crate::jsc_sys::JSObjectRef);
+            if !private_data.is_null() {
+                drop(std::sync::Arc::from_raw(
+                    private_data as *const std::cell::RefCell<V>,
+                ));
+            }
+        }
+    }
+}
+
+#[cfg(any(feature = "jsc", feature = "v8"))]
+mod persistent_handle_trace_impls {
+    use super::Trace;
 
     // Blanket Trace impls for common types used as captures with
     // `create_builtin_function`.
@@ -574,17 +667,4 @@ mod jsc_gc_impl {
     unsafe impl<A: Trace, B: Trace, C: Trace> Trace for (A, B, C) {}
     unsafe impl<A: Trace, B: Trace, C: Trace, D: Trace> Trace for (A, B, C, D) {}
     unsafe impl<A: Trace, B: Trace, C: Trace, D: Trace, E: Trace> Trace for (A, B, C, D, E) {}
-
-    #[allow(dead_code)]
-    pub extern "C" fn jsc_generic_finalizer<V>(object: *mut std::ffi::c_void) {
-        unsafe {
-            let private_data =
-                crate::jsc_sys::JSObjectGetPrivate(object as *mut crate::jsc_sys::JSObjectRef);
-            if !private_data.is_null() {
-                drop(std::sync::Arc::from_raw(
-                    private_data as *const std::cell::RefCell<V>,
-                ));
-            }
-        }
-    }
 }

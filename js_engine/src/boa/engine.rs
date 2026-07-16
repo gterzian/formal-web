@@ -1495,7 +1495,7 @@ impl ExecutionContext<BoaTypes> for BoaContext {
     }
 
     fn get_value_from_buffer(
-        &self,
+        &mut self,
         _array_buffer: &JsArrayBuffer,
         _byte_index: u64,
         _element_type: TypedArrayElementType,
@@ -1917,6 +1917,10 @@ impl ExecutionContext<BoaTypes> for BoaContext {
 
     fn property_key_from_symbol(&self, sym: &JsSymbol) -> PropertyKey {
         PropertyKey::from(sym.clone())
+    }
+
+    fn value_from_property_key(&mut self, key: PropertyKey) -> JsValue {
+        JsValue::from(key)
     }
 
     fn property_key_from_well_known_symbol(&mut self, name: &str) -> PropertyKey {

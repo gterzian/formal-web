@@ -1,6 +1,6 @@
 use js_engine::{Completion, ExecutionContext, JsTypes};
 
-use crate::js::Types;
+use crate::js::{Engine, Types};
 
 type JsValue = <Types as JsTypes>::JsValue;
 type JsObject = <Types as JsTypes>::JsObject;
@@ -109,6 +109,7 @@ pub fn await_a_stable_state<F>(
 }
 
 /// <https://html.spec.whatwg.org/#creating-a-new-browsing-context>
+#[cfg(not(v8_backend))]
 pub(crate) fn create_a_new_browsing_context_and_document(
     event_sender: &IpcSender<ContentEvent>,
     traversable_id: NavigableId,
@@ -220,6 +221,7 @@ pub(crate) fn the_rules_for_choosing_a_navigable(
     noopener: bool,
     global_scope: Option<&GlobalScope>,
     window_global: Option<<crate::js::Types as js_engine::JsTypes>::JsObject>,
+    parent_engine: Option<&mut Engine>,
 ) -> ChosenNavigableResult {
     // Step 1: Let chosen be null.
     let mut chosen: Option<NavigableId> = None;
@@ -292,7 +294,11 @@ pub(crate) fn the_rules_for_choosing_a_navigable(
                 let new_document_id = DocumentId::new();
 
                 let (global_object, settings, document) = match global_scope
-                    .create_auxiliary_context_document(new_traversable_id, new_document_id)
+                    .create_auxiliary_context_document(
+                        parent_engine,
+                        new_traversable_id,
+                        new_document_id,
+                    )
                 {
                     Ok(result) => result,
                     Err(error) => {

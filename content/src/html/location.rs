@@ -1,13 +1,10 @@
+use ipc::IpcSender;
+use ipc_messages::content::{Event as ContentEvent, NavigableId};
 use ipc_messages::content::UserNavigationInvolvement;
 use log::error;
 use url::{Host, Url};
 
-use super::Window;
-use crate::js::Types;
-use js_engine::JsTypes;
 use js_engine::gc_struct;
-
-type JsObject = <Types as JsTypes>::JsObject;
 
 /// <https://html.spec.whatwg.org/#location>
 #[gc_struct]
@@ -23,11 +20,13 @@ pub struct Location {
     #[ignore_trace]
     relevant_document_origin: Option<String>,
 
-    /// <https://html.spec.whatwg.org/#concept-relevant-global>
-    /// The Window JS object that owns the GlobalScope with navigation state.
-    /// Location uses `downcast_ref` through this handle to access the native
-    /// Window struct — this is safe and doesn't require raw pointer manipulation.
-    window: JsObject,
+    /// <https://html.spec.whatwg.org/#concept-navigable>
+    #[ignore_trace]
+    source_navigable_id: Option<NavigableId>,
+
+    /// <https://html.spec.whatwg.org/#navigate>
+    #[ignore_trace]
+    event_sender: Option<IpcSender<ContentEvent>>,
 }
 
 pub(crate) enum LocationError {
@@ -43,11 +42,16 @@ enum NavigationHistoryBehavior {
 }
 
 impl Location {
-    pub(crate) fn new(url: Url, window: JsObject) -> Self {
+    pub(crate) fn new(
+        url: Url,
+        source_navigable_id: Option<NavigableId>,
+        event_sender: Option<IpcSender<ContentEvent>>,
+    ) -> Self {
         Self {
             relevant_document_origin: Some(url.origin().unicode_serialization()),
             url,
-            window,
+            source_navigable_id,
+            event_sender,
         }
     }
 
@@ -554,27 +558,10 @@ impl Location {
         _history_handling: NavigationHistoryBehavior,
     ) -> Result<(), LocationError> {
         // Step 1: "Let navigable be location's relevant global object's navigable."
-        // Note: Location uses `downcast_ref` through the `window` handle.
-        // This is safe — the Window JsObject is stored as a `#[gc_struct]`
-        // field, and direct `downcast_ref` works because the Location's
-        // `window` field is a raw JsObject handle (not wrapped in
-        // `TraceableBox`).  The downcast finds the Window's NativeDataWrapper
-        // and recovers the concrete type.
-        //
-        // TODO: When Location is created via `create_interface_instance`,
-        // the `window` field becomes a raw JsObject (not TraceableBox), so
-        // `downcast_ref` works.  If the storage strategy changes, switch to
-        // `ec.with_object_any(&self.window).and_then(|data| data.downcast_ref::<Window>())`
-        // and thread `ec` through the navigate call chain.
-        let window = self.window.downcast_ref::<Window>().ok_or_else(|| {
-            LocationError::NotSupported(String::from(
-                "Location window is not a valid Window object",
-            ))
-        })?;
-        let Some(navigable_id) = window.global_scope.source_navigable_id() else {
+        let Some(navigable_id) = self.source_navigable_id else {
             return Ok(());
         };
-        let Some(event_sender) = window.global_scope.event_sender() else {
+        let Some(event_sender) = &self.event_sender else {
             return Err(LocationError::NotSupported(String::from(
                 "Location navigation not available: no IPC sender",
             )));
@@ -596,7 +583,7 @@ impl Location {
         // Step 4: "Navigate navigable to url using sourceDocument, with exceptionsEnabled
         // set to true and historyHandling set to historyHandling."
         super::navigate(
-            &event_sender,
+            event_sender,
             navigable_id,
             Some(navigable_id),
             url.to_string(),
