@@ -123,10 +123,6 @@ where
     //   Not yet implemented.
 
     // Step 14: "Return instance."
-
-    // Set the EventTarget's reflector automatically through the
-    // PostCreateReflector trait. The Web IDL layer handles this
-    // transparently for all types containing EventTarget.
     <Ty as PostCreateReflector<Ty>>::set_reflector(&instance, ec);
 
     Ok(instance)
@@ -300,8 +296,6 @@ where
                 let traceable = js_engine::boa::TraceableBox::new(obj);
                 let instance = ec.create_object_with_any(resolved_prototype, Box::new(traceable));
 
-                // Set the EventTarget's reflector automatically for the newly
-                // constructed platform object.
                 <Ty as PostCreateReflector<Ty>>::set_reflector(&instance, ec);
 
                 // Step 11: "For every interface ancestor interface in interfaces:"

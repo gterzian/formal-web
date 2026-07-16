@@ -4,10 +4,12 @@ use crate::js::Types;
 use crate::webidl::Callback;
 use js_engine::gc::{GcCell, gc_cell_new};
 use js_engine::gc_struct;
-use js_engine::{Completion, JsTypes};
+use js_engine::{Completion, ExecutionContext, JsTypes};
 use std::cell::Cell;
 
 use super::{AbortAlgorithm, AbortSignal};
+
+type JsValue = <Types as JsTypes>::JsValue;
 
 type JsObject = <Types as JsTypes>::JsObject;
 
@@ -55,10 +57,6 @@ pub(crate) struct EventListener {
 #[gc_struct]
 #[derive(Default)]
 pub struct EventTarget {
-    /// The JsObject GC handle for the platform object that owns this
-    /// EventTarget (Window, Node, AbortSignal, etc.).
-    /// Set during path building so the Web IDL layer can retrieve the
-    /// JsObject for callback invocation without storing it separately.
     pub(crate) reflector: Option<JsObject>,
 
     /// <https://dom.spec.whatwg.org/#eventtarget-event-listener-list>
@@ -72,19 +70,16 @@ pub struct EventTarget {
 pub(crate) trait EventTargetAccess {
     fn get_event_target(&self) -> EventTarget;
 
-    /// Returns true if this target has activation behavior.
-    /// <https://dom.spec.whatwg.org/#concept-event-dispatch>
+    /// <https://dom.spec.whatwg.org/#eventtarget-activation-behavior>
     fn has_activation_behavior(&self) -> bool {
         false
     }
 
-    /// Run this target's activation behavior with the given event.
-    /// <https://dom.spec.whatwg.org/#concept-event-dispatch>
+    /// <https://dom.spec.whatwg.org/#eventtarget-activation-behavior>
     fn run_activation_behavior(&self, _event: &Event) -> Completion<(), Types> {
         Ok(())
     }
 
-    /// Returns the parent EventTarget or None.
     /// <https://dom.spec.whatwg.org/#dom-eventtarget-gettheparent>
     fn get_the_parent(&self) -> Option<EventTarget> {
         None
@@ -95,6 +90,72 @@ impl EventTargetAccess for EventTarget {
     fn get_event_target(&self) -> EventTarget {
         self.clone()
     }
+}
+
+/// <https://dom.spec.whatwg.org/#event-flatten-more>
+#[derive(Clone)]
+pub(crate) struct AddEventListenerOptions {
+    pub capture: bool,
+    pub once: bool,
+    pub passive: Option<bool>,
+    pub signal: Option<AbortSignal>,
+}
+
+/// <https://dom.spec.whatwg.org/#concept-flatten-options>
+pub(crate) fn flatten(
+    options: &JsValue,
+    ec: &mut dyn ExecutionContext<Types>,
+) -> Completion<bool, Types> {
+    if let Some(boolean) = Types::value_as_bool(options) {
+        return Ok(boolean);
+    }
+    let Some(object) = Types::value_as_object(options) else {
+        return Ok(false);
+    };
+    let capture_val = ExecutionContext::get(ec, object, ec.property_key_from_str("capture"))?;
+    Ok(ec.to_boolean(&capture_val))
+}
+
+/// <https://dom.spec.whatwg.org/#event-flatten-more>
+fn extract_signal_option(
+    ec: &mut dyn ExecutionContext<Types>,
+    object: <Types as JsTypes>::JsObject,
+) -> Result<Option<AbortSignal>, <Types as JsTypes>::JsValue> {
+    let sk = ec.property_key_from_str("signal");
+    if !ExecutionContext::has_property(ec, object.clone(), sk.clone())? {
+        return Ok(None);
+    }
+    let sv = ExecutionContext::get(ec, object, sk)?;
+    let signal_obj = Types::value_as_object(&sv)
+        .ok_or_else(|| ec.new_type_error("addEventListener signal must be an AbortSignal"))?;
+    let signal = ec
+        .with_object_any(&signal_obj)
+        .and_then(|d| d.downcast_ref::<AbortSignal>().cloned())
+        .ok_or_else(|| ec.new_type_error("addEventListener signal must be an AbortSignal"))?;
+    Ok(Some(signal))
+}
+
+pub(crate) fn flatten_more(
+    options: &JsValue,
+    ec: &mut dyn ExecutionContext<Types>,
+) -> Completion<AddEventListenerOptions, Types> {
+    let capture = flatten(options, ec)?;
+    let Some(object) = Types::value_as_object(options) else {
+        return Ok(AddEventListenerOptions { capture, once: false, passive: None, signal: None });
+    };
+    let once_val = ExecutionContext::get(ec, object.clone(), ec.property_key_from_str("once"))?;
+    let once = ec.to_boolean(&once_val);
+    let passive = {
+        let pk = ec.property_key_from_str("passive");
+        if ExecutionContext::has_property(ec, object.clone(), pk.clone())? {
+            let pv = ExecutionContext::get(ec, object.clone(), pk)?;
+            Some(ec.to_boolean(&pv))
+        } else {
+            None
+        }
+    };
+    let signal = extract_signal_option(ec, object)?;
+    Ok(AddEventListenerOptions { capture, once, passive, signal })
 }
 
 impl EventTarget {
@@ -109,17 +170,28 @@ impl EventTarget {
         passive: Option<bool>,
         signal: Option<AbortSignal>,
     ) {
+        // Step 2: If listener's signal is non-null and is aborted, then return.
         if let Some(signal) = signal.as_ref() {
             if signal.aborted_value() {
                 return;
             }
         }
 
+        // Step 3: If listener's callback is null, then return.
         let Some(callback) = callback else {
             return;
         };
 
+        // Step 4: If listener's passive is null, then set it to the
+        // default passive value given listener's type and eventTarget.
+        // Note: The default passive value algorithm is not yet implemented;
+        // defaults to false for all types.
         let passive = passive.or(Some(false));
+
+        // Step 5: If eventTarget's event listener list does not contain
+        // an event listener whose type is listener's type, callback is
+        // listener's callback, and capture is listener's capture, then
+        // append listener to eventTarget's event listener list.
         let listener_id = self.next_listener_id.get().wrapping_add(1);
         let mut listeners = self.event_listener_list.borrow_mut();
         let duplicate = listeners.iter().any(|listener| {
@@ -143,9 +215,11 @@ impl EventTarget {
                 signal: signal.clone(),
                 removed: false,
             });
-            // Drop the borrow before signal.add_abort_algorithm (which may borrow ec).
             std::mem::drop(listeners);
 
+            // Step 6: If listener's signal is non-null, then add the
+            // following abort steps to it: Remove an event listener with
+            // eventTarget and listener.
             if let Some(signal) = signal {
                 signal.add_abort_algorithm(AbortAlgorithm::RemoveEventListener {
                     event_target: event_target.clone(),
@@ -162,6 +236,8 @@ impl EventTarget {
         callback: &Callback,
         capture: bool,
     ) {
+        // Step 2: Set listener's removed to true and remove listener from
+        // eventTarget's event listener list.
         let mut listeners = self.event_listener_list.borrow_mut();
         for listener in listeners.iter_mut() {
             if listener.type_ == type_
@@ -178,7 +254,10 @@ impl EventTarget {
         listeners.retain(|listener| !listener.removed);
     }
 
+    /// <https://dom.spec.whatwg.org/#remove-an-event-listener>
     pub(crate) fn remove_event_listener_by_id(&self, listener_id: u64) {
+        // Step 2: Set listener's removed to true and remove listener from
+        // eventTarget's event listener list.
         let mut listeners = self.event_listener_list.borrow_mut();
         for listener in listeners.iter_mut() {
             if listener.id == listener_id {
@@ -198,15 +277,30 @@ impl EventTarget {
             .iter()
             .any(|listener| listener.id == listener_id && !listener.removed)
     }
+
+    /// <https://dom.spec.whatwg.org/#dom-eventtarget-dispatchevent>
+    pub(crate) fn dispatch_event(
+        &self,
+        event: &Event,
+        path: &[super::EventPathItem],
+        ec: &mut dyn ExecutionContext<Types>,
+    ) -> Completion<bool, Types> {
+        // Step 1: If event's dispatch flag is set, or if its initialized flag is not set,
+        // then throw an "InvalidStateError" DOMException.
+        if *event.dispatch_flag.borrow() || !*event.initialized_flag.borrow() {
+            return Err(ec.new_type_error("InvalidStateError: event is already being dispatched or not initialized"));
+        }
+        // Step 2: Initialize event's isTrusted attribute to false.
+        *event.is_trusted.borrow_mut() = false;
+        // Step 3: Return the result of dispatching event to this.
+        crate::dom::dispatch_event(ec, path, event)
+    }
 }
 
 /// <https://dom.spec.whatwg.org/#event>
 #[gc_struct]
 pub struct Event {
     /// <https://dom.spec.whatwg.org/#event>
-    // Reflector for the Event platform object. Event is the root of its
-    // IDL inheritance chain (interface Event { }), so it owns its own
-    // reflector.
     pub(crate) reflector: Option<JsObject>,
 
     /// <https://dom.spec.whatwg.org/#dom-event-type>
@@ -214,13 +308,9 @@ pub struct Event {
     pub type_: String,
 
     /// <https://dom.spec.whatwg.org/#dom-event-target>
-    /// Stores the domain EventTarget. The JsObject is accessed via the
-    /// EventTarget's reflector at the binding layer.
     pub target: GcCell<Option<EventTarget>>,
 
     /// <https://dom.spec.whatwg.org/#dom-event-currenttarget>
-    /// Stores the domain EventTarget. The JsObject is accessed via the
-    /// EventTarget's reflector at the binding layer.
     pub current_target: GcCell<Option<EventTarget>>,
 
     /// <https://dom.spec.whatwg.org/#dom-event-eventphase>

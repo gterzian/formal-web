@@ -13,13 +13,13 @@ fn dispatch_debug_enabled() -> bool {
     std::env::var_os("FORMAL_WEB_DEBUG_INPUT").is_some()
 }
 
-/// <https://dom.spec.whatwg.org/#concept-event-path-append>
+/// <https://dom.spec.whatwg.org/#event-path-item>
 #[derive(Clone)]
 pub(crate) struct EventPathItem {
-    /// <https://dom.spec.whatwg.org/#concept-event-path-item>
+    /// <https://dom.spec.whatwg.org/#event-path-invocation-target>
     pub(crate) invocation_target: EventTarget,
 
-    /// <https://dom.spec.whatwg.org/#concept-event-path-item>
+    /// <https://dom.spec.whatwg.org/#event-path-shadow-adjusted-target>
     pub(crate) shadow_adjusted_target: Option<EventTarget>,
 }
 
@@ -47,16 +47,23 @@ pub(crate) fn fire_event(
     time_millis: f64,
     legacy_target_override: bool,
 ) -> Completion<bool, Types> {
-    let event = Event::new(
+    // Step 1: If eventConstructor is not given, then let eventConstructor be Event.
+    // (Event is always used for this code path.)
+
+    // Step 2: Let event be the result of creating an event given eventConstructor,
+    // in the relevant realm of target.
+    let event_domain = Event::new(
         event_type.to_owned(),
-        false,
-        false,
-        false,
-        true,
+        // Step 3: Initialize event's type attribute to e.
+        // Step 4: Initialize any other IDL attributes of event...
+        false,  // bubbles
+        false,  // cancelable
+        false,  // composed
+        true,   // isTrusted
         time_millis,
     );
     let event_object =
-        crate::webidl::bindings::create_interface_instance::<Types, Event>(event, ec)?;
+        crate::webidl::bindings::create_interface_instance::<Types, Event>(event_domain, ec)?;
     // Clone the Event domain object from the JsObject — GcCell fields share
     // data, and the reflector was set automatically by create_interface_instance.
     let event: Event = ec
@@ -65,7 +72,9 @@ pub(crate) fn fire_event(
         .cloned()
         .ok_or_else(|| ec.new_type_error("event_object is not an Event"))?;
 
-    let path = path_for_target(target, legacy_target_override)?;
+    // Step 5: Return the result of dispatching event at target, with
+    // legacy target override flag set if set.
+    let path = build_path_for_target(target, legacy_target_override);
     dispatch_event(ec, &path, &event)
 }
 
@@ -79,38 +88,62 @@ pub(crate) fn dispatch_with_path(
 }
 
 // ---------------------------------------------------------------------------
-// Event path building
+// append to an event path
 // ---------------------------------------------------------------------------
 
-/// Build the event path for a single target following the spec's
-/// "append to an event path" algorithm.
-///
 /// <https://dom.spec.whatwg.org/#concept-event-path-append>
-fn path_for_target(
+fn append_to_event_path(
+    path: &mut Vec<EventPathItem>,
+    invocation_target: EventTarget,
+    shadow_adjusted_target: Option<EventTarget>,
+) {
+    // Step 1: Let invocationTargetInShadowTree be false.
+    // Step 3: Let rootOfClosedTree be false.
+    // (Shadow tree fields are not yet modeled; always false.)
+
+    // Step 5: Append a new event path item to event's path whose
+    // invocation target is invocationTarget,
+    // shadow-adjusted target is shadowAdjustedTarget, ...
+    path.push(EventPathItem {
+        invocation_target,
+        shadow_adjusted_target,
+    });
+}
+
+/// Build the event path for a single target.
+/// Mirrors spec Step 6.3 through Step 6.9 of the dispatch algorithm.
+///
+/// <https://dom.spec.whatwg.org/#concept-event-dispatch>
+fn build_path_for_target(
     target_access: &dyn super::event::EventTargetAccess,
     _legacy_target_override: bool,
-) -> Completion<Vec<EventPathItem>, Types> {
+) -> Vec<EventPathItem> {
     let mut path: Vec<EventPathItem> = Vec::new();
+
+    // Step 6.3: Append to an event path with event, target, targetOverride,
+    // relatedTarget, touchTargets, and false.
+    // Note: targetOverride, relatedTarget, and touchTargets are not yet modeled.
     let et = target_access.get_event_target();
+    append_to_event_path(&mut path, et.clone(), Some(et));
 
-    path.push(EventPathItem {
-        invocation_target: et.clone(),
-        shadow_adjusted_target: Some(et),
-    });
+    // Step 6.6: Let slottable be target, if target is a slottable…
+    // Step 6.7: Let slotInClosedTree be false.
+    // (Not yet modeled.)
 
-    loop {
-        match target_access.get_the_parent() {
-            Some(parent_event_target) => {
-                path.push(EventPathItem {
-                    invocation_target: parent_event_target,
-                    shadow_adjusted_target: None,
-                });
-            }
-            None => break,
-        }
+    // Step 6.8: Let parent be the result of invoking target's get the parent with event.
+    let mut parent = target_access.get_the_parent();
+
+    // Step 6.9: While parent is non-null:
+    while let Some(parent_target) = parent {
+        // Step 6.9.6-6.9.8: Append to an event path with event, parent, …
+        append_to_event_path(&mut path, parent_target.clone(), None);
+
+        // Step 6.9.9: If parent is non-null, then set parent to the result of
+        // invoking parent's get the parent with event.
+        parent = parent_target.get_the_parent();
     }
 
-    Ok(path)
+    path
 }
 
 // ---------------------------------------------------------------------------
@@ -214,7 +247,9 @@ fn invoke(
 ) -> Completion<(), Types> {
     let entry = &path[index];
 
-    // Step 1-2: Find target — walk back to first item with non-null shadow-adjusted target.
+    // Step 1: Let targetItem be pathItem.
+    // Step 2: While targetItem's shadow-adjusted target is null:
+    //   set targetItem to the event path item preceding targetItem in event's path.
     let target_item = path[..=index]
         .iter()
         .rev()
@@ -223,6 +258,12 @@ fn invoke(
 
     // Step 3: Set event's target to targetItem's shadow-adjusted target.
     *event.target.borrow_mut() = target;
+
+    // Step 4: Set event's relatedTarget to pathItem's relatedTarget.
+    // TODO: relatedTarget is not yet modeled.
+
+    // Step 5: Set event's touch target list to pathItem's touch target list.
+    // TODO: touch target list is not yet modeled.
 
     // Step 6: If event's stop propagation flag is set, then return.
     if *event.stop_propagation_flag.borrow() {
@@ -234,6 +275,13 @@ fn invoke(
 
     // Step 8: Let listeners be a clone of event's currentTarget attribute value's event listener list.
     let listeners = entry.invocation_target.event_listener_list.borrow().clone();
+
+    // Step 9: Let invocationTargetInShadowTree be pathItem's invocation-target-in-shadow-tree.
+    // TODO: Shadow tree is not yet modeled.
+
+    // Step 10: Let found be the result of running inner invoke with event,
+    // listeners, phase, invocationTargetInShadowTree, and
+    // legacyOutputDidListenersThrowFlag if given.
 
     if dispatch_debug_enabled() && event.type_ == "click" {
         let matching_listeners = listeners

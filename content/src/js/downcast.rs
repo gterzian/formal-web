@@ -55,14 +55,9 @@ pub(crate) fn try_with_abort_controller_ref<R>(
     Err(ec.new_type_error("object is not an AbortController"))
 }
 
-/// Downcast `this` to `&mut EventTarget` via `with_object_any_mut`.
-///
-/// Walks all known platform-object types that contain an `EventTarget` field.
-/// Set the EventTarget's reflector on a JsValue that wraps a platform object.
-/// This is called automatically by `create_interface_instance` — domain code
-/// should not call this directly.
-///
-/// <https://webidl.spec.whatwg.org/#internally-create-a-new-object-implementing-the-interface>
+// Infrastructure: walks known platform-object types and sets the
+// Infrastructure: sets the EventTarget reflector field on any platform
+// object that contains one. Called by create_interface_instance.
 pub(crate) fn try_set_event_target_reflector(
     value: &<Types as JsTypes>::JsValue,
     ec: &mut dyn ExecutionContext<Types>,

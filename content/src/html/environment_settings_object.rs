@@ -52,10 +52,6 @@ pub struct EnvironmentSettingsObject {
     /// <https://dom.spec.whatwg.org/#interface-document>
     pub document: crate::dom::Document,
 
-    /// The blitz BaseDocument wrapped by the Document platform object.
-    /// Access through blitz_document() or Document::node::document.
-    document_blitz: Rc<RefCell<BaseDocument>>,
-
     /// <https://html.spec.whatwg.org/#concept-settings-object-origin>
     pub origin: Origin,
 
@@ -145,9 +141,9 @@ impl EnvironmentSettingsObject {
                 .unwrap_or_else(|_| "unknown error".to_string())
         })?;
 
-        // Set the reflector on the ESO's domain Document so its EventTarget
-        // has a valid JsObject handle. (The reflector on the clone inside the
-        // JsObject was set automatically by create_interface_instance.)
+        // The EventTarget's reflector was set automatically by
+        // create_interface_instance on the clone inside the JsObject.
+        // Sync it to the ESO's domain copy.
         domain_document.node.event_target.reflector = Some(document_object.clone());
 
         with_global_scope(&mut engine, |global_scope| {
@@ -206,7 +202,6 @@ impl EnvironmentSettingsObject {
         Ok(Self {
             realm_execution_context: engine,
             document: domain_document,
-            document_blitz: document,
             origin: Origin {
                 serialized: creation_url.origin().unicode_serialization(),
             },
@@ -214,11 +209,6 @@ impl EnvironmentSettingsObject {
             referrer_policy: ReferrerPolicy::NoReferrerWhenDowngrade,
             time_origin: Instant::now(),
         })
-    }
-
-    /// Access the underlying blitz BaseDocument from the Document platform object.
-    pub fn blitz_document(&self) -> Rc<RefCell<BaseDocument>> {
-        Rc::clone(&self.document_blitz)
     }
 
     /// Access the execution context for generic ECMA-262 operations.
