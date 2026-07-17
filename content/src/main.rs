@@ -25,9 +25,8 @@ use crate::html::{
     parse_html_into_document, run_dom_post_connection_steps_for_document,
     run_dom_removing_steps_for_document, run_iframe_load_event_steps_for_traversable,
 };
-use crate::js::platform_objects::with_global_scope;
-#[cfg(v8_backend)]
 use crate::js::Engine;
+use crate::js::platform_objects::with_global_scope;
 use crate::ui_event::deserialize_ui_event;
 #[cfg(all(boa_backend, feature = "wasm"))]
 use crate::wasm::{WasmResult, compile_continuation, compile_rejection, instantiate_continuation};
@@ -421,8 +420,7 @@ pub(crate) struct ContentProcess {
     media_extension_sender: Option<ipc::IpcSender<ipc_messages::media::MediaCommand>>,
     /// This content process's own command sender, used by net for direct response routing.
     content_command_sender: ipc::IpcSender<Command>,
-    #[cfg(v8_backend)]
-    v8_realm_parent: Engine,
+    realm_parent: Engine,
 }
 
 impl ContentProcess {
@@ -457,12 +455,10 @@ impl ContentProcess {
             network_extension_sender,
             media_extension_sender,
             content_command_sender,
-            #[cfg(v8_backend)]
-            v8_realm_parent: Engine::new(),
+            realm_parent: Engine::new(),
         }
     }
 
-    #[cfg(v8_backend)]
     fn create_environment_settings_object(
         &mut self,
         document: Rc<RefCell<BaseDocument>>,
@@ -472,27 +468,10 @@ impl ContentProcess {
     ) -> Result<EnvironmentSettingsObject, String> {
         let event_sender = self.event_sender.clone();
         EnvironmentSettingsObject::new_in_realm(
-            Some(&mut self.v8_realm_parent),
+            Some(&mut self.realm_parent),
             document,
             creation_url,
             Some(event_sender),
-            Some(traversable_id),
-            Some(document_id),
-        )
-    }
-
-    #[cfg(not(v8_backend))]
-    fn create_environment_settings_object(
-        &mut self,
-        document: Rc<RefCell<BaseDocument>>,
-        creation_url: Url,
-        traversable_id: NavigableId,
-        document_id: DocumentId,
-    ) -> Result<EnvironmentSettingsObject, String> {
-        EnvironmentSettingsObject::new(
-            document,
-            creation_url,
-            Some(self.event_sender.clone()),
             Some(traversable_id),
             Some(document_id),
         )

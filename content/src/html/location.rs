@@ -1,6 +1,6 @@
 use ipc::IpcSender;
-use ipc_messages::content::{Event as ContentEvent, NavigableId};
 use ipc_messages::content::UserNavigationInvolvement;
+use ipc_messages::content::{Event as ContentEvent, NavigableId};
 use log::error;
 use url::{Host, Url};
 

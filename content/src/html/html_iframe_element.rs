@@ -14,13 +14,10 @@ use js_engine::{ExecutionContext, gc_struct};
 use url::Url;
 
 use crate::{
-    ContentProcess, EMPTY_HTML_DOCUMENT, NavigableContainerState, dom::event::EventTargetAccess,
-    dom::fire_event, html::HTMLElement, html::navigate, webidl::Callback,
+    ContentDocument, ContentProcess, EMPTY_HTML_DOCUMENT, NavigableContainerState,
+    dom::event::EventTargetAccess, dom::fire_event, html::HTMLElement,
+    html::create_a_new_browsing_context_and_document, html::navigate, webidl::Callback,
 };
-#[cfg(not(v8_backend))]
-use crate::html::create_a_new_browsing_context_and_document;
-#[cfg(v8_backend)]
-use crate::html::create_a_new_realm;
 
 /// <https://html.spec.whatwg.org/#htmliframeelement>
 #[gc_struct]
@@ -359,10 +356,6 @@ pub(crate) fn retire_iframe_traversable(
 }
 
 /// <https://html.spec.whatwg.org/#create-a-new-child-navigable>
-///
-/// Content-process side of the algorithm. Steps 1-9 are executed locally (including
-/// creating the browsing context and document). Step 10, 12-13 (session history
-/// traversal steps, WebDriver notification) are delegated to the user agent.
 fn create_a_new_child_navigable(
     process: &mut ContentProcess,
     parent_navigable_id: NavigableId,
@@ -410,33 +403,24 @@ fn create_a_new_child_navigable(
     // environment settings object.  The content-process side handles this;
     // the UA handles BC allocation, group membership, and session history.
     let content_frame_id = process.allocate_child_frame_id();
-    #[cfg(not(v8_backend))]
+    let event_sender = process.event_sender.clone();
+    let parent_engine = &mut process
+        .documents
+        .get_mut(&parent_document_id)
+        .ok_or_else(|| format!("missing parent document {parent_document_id}"))?
+        .settings
+        .realm_execution_context;
     let (_global_object, settings, new_document) = create_a_new_browsing_context_and_document(
-        &process.event_sender,
+        parent_engine,
+        &event_sender,
         content_navigable,
         new_document_id,
     )?;
-    #[cfg(v8_backend)]
-    let (_global_object, settings, new_document) = {
-        let event_sender = process.event_sender.clone();
-        let parent_engine = &mut process
-            .documents
-            .get_mut(&parent_document_id)
-            .ok_or_else(|| format!("missing parent document {parent_document_id}"))?
-            .settings
-            .realm_execution_context;
-        create_a_new_realm(
-            Some(parent_engine),
-            &event_sender,
-            content_navigable,
-            new_document_id,
-        )?
-    };
 
     // Register the document in ContentProcess immediately.
     process.documents.insert(
         new_document_id,
-        crate::ContentDocument {
+        ContentDocument {
             traversable_id: content_navigable,
             parent_traversable_id: Some(parent_navigable),
             top_level_traversable_id,

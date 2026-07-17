@@ -141,10 +141,7 @@ fn selected_javascript_backend() -> Result<JavascriptBackend, String> {
         .collect();
 
     if selected_backends.len() != 1 {
-        let selected_names: Vec<_> = selected_backends
-            .iter()
-            .map(|(_, _, name)| *name)
-            .collect();
+        let selected_names: Vec<_> = selected_backends.iter().map(|(_, _, name)| *name).collect();
         return Err(format!(
             "exactly one JavaScript backend feature must be enabled; selected: {}",
             if selected_names.is_empty() {

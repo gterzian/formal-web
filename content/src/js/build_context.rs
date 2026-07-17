@@ -16,10 +16,9 @@ pub(crate) fn build_context(document: Rc<RefCell<BaseDocument>>) -> Result<Engin
     build_context_inner(document)
 }
 
-/// Create a new realm within an existing engine, sharing the same engine heap
-/// but with its own global object, Window, Document, and prototype chain.
+/// Create a new realm associated with an existing engine.
 ///
-/// JSC and V8 share their engine heap. Boa currently creates a fresh engine.
+/// V8 shares its isolate. Boa and JSC currently create a fresh engine.
 pub(crate) fn build_realm(
     engine: &mut Engine,
     document: Rc<RefCell<BaseDocument>>,
@@ -50,12 +49,10 @@ fn build_context_inner(document: Rc<RefCell<BaseDocument>>) -> Result<Engine, St
 
 #[cfg(jsc_backend)]
 fn build_realm_inner(
-    engine: &mut Engine,
+    _engine: &mut Engine,
     document: Rc<RefCell<BaseDocument>>,
 ) -> Result<Engine, String> {
-    let mut child = engine.new_shared_realm();
-    setup_realm(&mut child, document)?;
-    Ok(child)
+    build_context_inner(document)
 }
 
 #[cfg(v8_backend)]
@@ -358,4 +355,47 @@ fn build_realm_inner(
     // Currently falls back to full build_context since Boa's
     // multi-realm support needs the host_hooks path.
     crate::js::bindings::html::build_context(_document)
+}
+
+#[cfg(test)]
+mod tests {
+    use std::{cell::RefCell, rc::Rc};
+
+    use blitz_dom::{BaseDocument, DocumentConfig};
+    use js_engine::ExecutionContext;
+    use url::Url;
+
+    use crate::html::EnvironmentSettingsObject;
+
+    fn new_document() -> Rc<RefCell<BaseDocument>> {
+        Rc::new(RefCell::new(BaseDocument::new(DocumentConfig::default())))
+    }
+
+    #[test]
+    fn realm_script_resolves_document_global() {
+        let creation_url = Url::parse("about:blank").expect("parse creation URL");
+        let mut parent_settings =
+            EnvironmentSettingsObject::new(new_document(), creation_url.clone(), None, None, None)
+                .expect("build parent settings object");
+        let mut child_settings = EnvironmentSettingsObject::new_in_realm(
+            Some(&mut parent_settings.realm_execution_context),
+            new_document(),
+            creation_url,
+            None,
+            None,
+            None,
+        )
+        .expect("build child settings object");
+
+        let document_type = child_settings
+            .realm_execution_context
+            .evaluate_script("typeof document")
+            .expect("evaluate document global");
+        let document_type = child_settings
+            .realm_execution_context
+            .to_rust_string(document_type)
+            .expect("convert document type");
+
+        assert_eq!(document_type, "object");
+    }
 }

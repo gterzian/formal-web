@@ -5,9 +5,7 @@ type JsValue = <Types as JsTypes>::JsValue;
 type JsObject = <Types as JsTypes>::JsObject;
 type ArrayBuffer = <Types as JsTypes>::ArrayBuffer;
 
-use js_engine::{
-    Completion, ExecutionContext, JsTypes, SharedMemoryOrder, TypedArrayElementType,
-};
+use js_engine::{Completion, ExecutionContext, JsTypes, SharedMemoryOrder, TypedArrayElementType};
 
 use crate::webidl::bindings::create_interface_instance;
 use crate::webidl::{rejected_promise, resolved_promise};
@@ -1532,7 +1530,9 @@ fn pull_steps_on_rejected(
     ec: &mut dyn ExecutionContext<crate::js::Types>,
 ) -> Completion<JsValue, crate::js::Types> {
     captures.error_steps(
-        args.first().cloned().unwrap_or_else(|| ec.value_undefined()),
+        args.first()
+            .cloned()
+            .unwrap_or_else(|| ec.value_undefined()),
         ec,
     )?;
     Ok(ec.value_undefined())
@@ -1556,7 +1556,9 @@ fn setup_on_rejected(
     ec: &mut dyn ExecutionContext<crate::js::Types>,
 ) -> Completion<JsValue, crate::js::Types> {
     captures.error_steps(
-        args.first().cloned().unwrap_or_else(|| ec.value_undefined()),
+        args.first()
+            .cloned()
+            .unwrap_or_else(|| ec.value_undefined()),
         ec,
     )?;
     Ok(ec.value_undefined())

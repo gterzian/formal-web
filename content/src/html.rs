@@ -109,8 +109,8 @@ pub fn await_a_stable_state<F>(
 }
 
 /// <https://html.spec.whatwg.org/#creating-a-new-browsing-context>
-#[cfg(not(v8_backend))]
 pub(crate) fn create_a_new_browsing_context_and_document(
+    parent_engine: &mut Engine,
     event_sender: &IpcSender<ContentEvent>,
     traversable_id: NavigableId,
     document_id: DocumentId,
@@ -122,12 +122,17 @@ pub(crate) fn create_a_new_browsing_context_and_document(
     ),
     String,
 > {
-    create_a_new_realm(None, event_sender, traversable_id, document_id)
+    create_a_new_realm(
+        Some(parent_engine),
+        event_sender,
+        traversable_id,
+        document_id,
+    )
 }
 
 /// <https://html.spec.whatwg.org/#creating-a-new-browsing-context>
 pub(crate) fn create_a_new_realm(
-    parent: Option<&mut crate::js::Engine>,
+    parent_engine: Option<&mut Engine>,
     event_sender: &IpcSender<ContentEvent>,
     traversable_id: NavigableId,
     document_id: DocumentId,
@@ -157,7 +162,7 @@ pub(crate) fn create_a_new_realm(
     // Steps 9-10, 13: Obtain agent, create realm, set up window environment
     // settings object.
     let settings = EnvironmentSettingsObject::new_in_realm(
-        parent,
+        parent_engine,
         Rc::clone(&document),
         Url::parse("about:blank").map_err(|error| error.to_string())?,
         Some(event_sender.clone()),
@@ -298,8 +303,7 @@ pub(crate) fn the_rules_for_choosing_a_navigable(
                         parent_engine,
                         new_traversable_id,
                         new_document_id,
-                    )
-                {
+                    ) {
                     Ok(result) => result,
                     Err(error) => {
                         error!(
