@@ -3,8 +3,7 @@ use js_engine::{
     PropertyDescriptor as JsPropertyDescriptor,
 };
 
-/// Trait for setting platform-object reflectors after creation.
-/// Implemented in the content crate for ::js::Types.
+/// <https://webidl.spec.whatwg.org/#internally-create-a-new-object-implementing-the-interface>
 pub(crate) trait PostCreateReflector<Ty: JsTypes> {
     fn set_reflector(obj: &Ty::JsObject, ec: &mut dyn ExecutionContext<Ty>);
 }
@@ -693,8 +692,7 @@ where
     Ok(())
 }
 
-// ── PostCreateReflector implementation for crate::js::Types ────────────
-
+/// <https://webidl.spec.whatwg.org/#internally-create-a-new-object-implementing-the-interface>
 impl PostCreateReflector<crate::js::Types> for crate::js::Types {
     fn set_reflector(
         obj: &<crate::js::Types as JsTypes>::JsObject,

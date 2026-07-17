@@ -18,7 +18,7 @@ pub mod wasm;
 pub mod webidl;
 
 use crate::dom::{EventTargetAccess, fire_event};
-use crate::html::events::{dispatch_trusted_click_event, dispatch_ui_event};
+use crate::html::ui_events::{dispatch_trusted_click_event, dispatch_ui_event};
 use crate::html::{
     EnvironmentSettingsObject, JsHtmlParserProvider, PendingParserScript,
     attach_same_origin_child_document_for_traversable, execute_parser_scripts,

@@ -97,6 +97,30 @@ pub(crate) fn try_set_event_target_reflector(
     }
 }
 
+/// Resolve an EventTarget from a JsObject by checking all known platform object types.
+pub(crate) fn event_target_from_js_object(
+    ec: &mut dyn ExecutionContext<Types>,
+    object: &<Types as JsTypes>::JsObject,
+) -> Option<EventTarget> {
+    ec.with_object_any(object).and_then(|data| {
+        if let Some(window) = data.downcast_ref::<Window>() {
+            Some(window.event_target.clone())
+        } else if let Some(document) = data.downcast_ref::<Document>() {
+            Some(document.node.event_target.clone())
+        } else if let Some(element) = data.downcast_ref::<Element>() {
+            Some(element.node.event_target.clone())
+        } else if let Some(html_element) = data.downcast_ref::<HTMLElement>() {
+            Some(html_element.element.node.event_target.clone())
+        } else if let Some(node) = data.downcast_ref::<Node>() {
+            Some(node.event_target.clone())
+        } else if let Some(event_target) = data.downcast_ref::<EventTarget>() {
+            Some(event_target.clone())
+        } else {
+            None
+        }
+    })
+}
+
 pub(crate) fn try_with_event_target_mut<R>(
     this: &<Types as JsTypes>::JsValue,
     ec: &mut dyn ExecutionContext<Types>,

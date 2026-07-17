@@ -92,7 +92,7 @@ impl EventTargetAccess for EventTarget {
     }
 }
 
-/// <https://dom.spec.whatwg.org/#event-flatten-more>
+/// <https://dom.spec.whatwg.org/#dictdef-addeventlisteneroptions>
 #[derive(Clone)]
 pub(crate) struct AddEventListenerOptions {
     pub capture: bool,
@@ -117,24 +117,6 @@ pub(crate) fn flatten(
 }
 
 /// <https://dom.spec.whatwg.org/#event-flatten-more>
-fn extract_signal_option(
-    ec: &mut dyn ExecutionContext<Types>,
-    object: <Types as JsTypes>::JsObject,
-) -> Result<Option<AbortSignal>, <Types as JsTypes>::JsValue> {
-    let sk = ec.property_key_from_str("signal");
-    if !ExecutionContext::has_property(ec, object.clone(), sk.clone())? {
-        return Ok(None);
-    }
-    let sv = ExecutionContext::get(ec, object, sk)?;
-    let signal_obj = Types::value_as_object(&sv)
-        .ok_or_else(|| ec.new_type_error("addEventListener signal must be an AbortSignal"))?;
-    let signal = ec
-        .with_object_any(&signal_obj)
-        .and_then(|d| d.downcast_ref::<AbortSignal>().cloned())
-        .ok_or_else(|| ec.new_type_error("addEventListener signal must be an AbortSignal"))?;
-    Ok(Some(signal))
-}
-
 pub(crate) fn flatten_more(
     options: &JsValue,
     ec: &mut dyn ExecutionContext<Types>,
@@ -154,7 +136,22 @@ pub(crate) fn flatten_more(
             None
         }
     };
-    let signal = extract_signal_option(ec, object)?;
+    let signal = {
+        let sk = ec.property_key_from_str("signal");
+        if !ExecutionContext::has_property(ec, object.clone(), sk.clone())? {
+            None
+        } else {
+            let sv = ExecutionContext::get(ec, object.clone(), sk)?;
+            let signal_obj = Types::value_as_object(&sv)
+                .ok_or_else(|| ec.new_type_error("addEventListener signal must be an AbortSignal"))?;
+            Some(
+                ec
+                    .with_object_any(&signal_obj)
+                    .and_then(|d| d.downcast_ref::<AbortSignal>().cloned())
+                    .ok_or_else(|| ec.new_type_error("addEventListener signal must be an AbortSignal"))?
+            )
+        }
+    };
     Ok(AddEventListenerOptions { capture, once, passive, signal })
 }
 
@@ -300,7 +297,6 @@ impl EventTarget {
 /// <https://dom.spec.whatwg.org/#event>
 #[gc_struct]
 pub struct Event {
-    /// <https://dom.spec.whatwg.org/#event>
     pub(crate) reflector: Option<JsObject>,
 
     /// <https://dom.spec.whatwg.org/#dom-event-type>

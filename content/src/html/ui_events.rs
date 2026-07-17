@@ -1,13 +1,4 @@
-//! Blitz-to-DOM event bridge.
-//!
-//! This module connects blitz's compositor event system (pointer moves,
-//! key events, wheel, etc.) to the DOM event dispatch algorithm. The code
-//! here is content-process infrastructure — it is not specified by any
-//! Web standard. The standard algorithms live in:
-//!   - `content/src/dom/dispatch.rs` (DOM event dispatch)
-//!   - `content/src/html/dispatch.rs`  (HTML beforeunload steps)
-
-use std::{cell::RefCell, collections::HashSet, rc::Rc};
+use std::{cell::RefCell, rc::Rc};
 
 use blitz_dom::{BaseDocument, Document as BlitzDocument, EventDriver, EventHandler};
 use blitz_traits::SmolStr;
@@ -17,17 +8,15 @@ use ipc_messages::content::{DocumentId, Event as ContentEvent, NavigableId};
 #[cfg(target_os = "macos")]
 use keyboard_types::{Key, Modifiers as KeyboardModifiers};
 use log::{error, trace};
-use js_engine::{ExecutionContext, JsTypes};
+use js_engine::ExecutionContext;
 
 use crate::dom::event::{Event, EventTarget};
 use crate::dom::{
-    Document, Element, EventPathItem, Node, UIEvent as JsUiEvent, dispatch_with_path,
+    EventPathItem, UIEvent as JsUiEvent, dispatch_with_path,
 };
-use crate::html::{EnvironmentSettingsObject, HTMLElement, Window};
+use crate::html::{EnvironmentSettingsObject, Window};
 use crate::js::Types;
 use crate::webidl::bindings::create_interface_instance;
-
-type JsObject = <Types as JsTypes>::JsObject;
 
 fn input_debug_enabled() -> bool {
     std::env::var_os("FORMAL_WEB_DEBUG_INPUT").is_some()
@@ -190,82 +179,6 @@ fn localize_ui_event_for_document(
     }
 }
 
-// ---------------------------------------------------------------------------
-// Event path building from JsObjects
-// ---------------------------------------------------------------------------
-
-fn event_target_from_js_object(ec: &mut dyn ExecutionContext<Types>, object: &JsObject) -> Option<EventTarget> {
-    ec.with_object_any(object).and_then(|data| {
-        if let Some(window) = data.downcast_ref::<Window>() {
-            Some(window.event_target.clone())
-        } else if let Some(document) = data.downcast_ref::<Document>() {
-            Some(document.node.event_target.clone())
-        } else if let Some(element) = data.downcast_ref::<Element>() {
-            Some(element.node.event_target.clone())
-        } else if let Some(html_element) = data.downcast_ref::<HTMLElement>() {
-            Some(html_element.element.node.event_target.clone())
-        } else if let Some(node) = data.downcast_ref::<Node>() {
-            Some(node.event_target.clone())
-        } else if let Some(et) = data.downcast_ref::<EventTarget>() {
-            Some(et.clone())
-        } else {
-            None
-        }
-    })
-}
-
-/// Build an event path from a target JsObject by walking the DOM parent chain.
-pub(crate) fn build_path_from_target_js_object(
-    target_object: &JsObject,
-    ec: &mut dyn ExecutionContext<Types>,
-) -> Vec<EventPathItem> {
-    let mut path: Vec<EventPathItem> = Vec::new();
-    let node_info = ec.with_object_any(target_object).and_then(|data| {
-        if let Some(element) = data.downcast_ref::<Element>() {
-            Some((element.node.node_id, element.node.document.clone()))
-        } else if let Some(html_element) = data.downcast_ref::<HTMLElement>() {
-            Some((html_element.element.node.node_id, html_element.element.node.document.clone()))
-        } else if let Some(node) = data.downcast_ref::<Node>() {
-            Some((node.node_id, node.document.clone()))
-        } else if let Some(document) = data.downcast_ref::<Document>() {
-            Some((document.node.node_id, document.node.document.clone()))
-        } else {
-            None
-        }
-    });
-
-    if let Some((node_id, document)) = node_info {
-        if let Some(event_target) = event_target_from_js_object(ec, target_object) {
-            path.push(EventPathItem { invocation_target: event_target.clone(), shadow_adjusted_target: Some(event_target) });
-        }
-        let mut current_node_id = node_id;
-        let mut visited = HashSet::new();
-        visited.insert(node_id);
-        loop {
-            let parent_id = { let doc = document.borrow(); doc.get_node(current_node_id).and_then(|n| n.parent) };
-            match parent_id {
-                Some(pid) if !visited.contains(&pid) => {
-                    visited.insert(pid);
-                    if let Ok(parent_object) = crate::js::platform_objects::resolve_element_object(pid, ec) {
-                        if let Some(parent_et) = event_target_from_js_object(ec, &parent_object) {
-                            path.push(EventPathItem { invocation_target: parent_et, shadow_adjusted_target: None });
-                        }
-                        current_node_id = pid;
-                    } else {
-                        current_node_id = pid;
-                    }
-                }
-                _ => break,
-            }
-        }
-    } else {
-        if let Some(event_target) = event_target_from_js_object(ec, target_object) {
-            path.push(EventPathItem { invocation_target: event_target.clone(), shadow_adjusted_target: Some(event_target) });
-        }
-    }
-    path
-}
-
 fn build_event_path(
     chain: &[usize],
     document_event_target: EventTarget,
@@ -275,21 +188,17 @@ fn build_event_path(
     let mut path = Vec::with_capacity(chain.len() + 2);
     for (index, node_id) in chain.iter().enumerate() {
         if let Ok(object) = crate::js::platform_objects::resolve_element_object(*node_id, ec) {
-            if let Some(et) = event_target_from_js_object(ec, &object) {
-                path.push(EventPathItem { invocation_target: et.clone(), shadow_adjusted_target: (index == 0).then_some(et) });
+            if let Some(event_target) = crate::js::downcast::event_target_from_js_object(ec, &object) {
+                path.push(EventPathItem { invocation_target: event_target.clone(), shadow_adjusted_target: (index == 0).then_some(event_target) });
             }
         }
     }
     path.push(EventPathItem { invocation_target: document_event_target, shadow_adjusted_target: None });
-    if let Some(get) = global_event_target {
-        path.push(EventPathItem { invocation_target: get, shadow_adjusted_target: None });
+    if let Some(global_event_target) = global_event_target {
+        path.push(EventPathItem { invocation_target: global_event_target, shadow_adjusted_target: None });
     }
     path
 }
-
-// ---------------------------------------------------------------------------
-// Blitz event handler
-// ---------------------------------------------------------------------------
 
 struct BlitzJSEventHandler<'a> {
     document_id: DocumentId,
@@ -366,11 +275,6 @@ impl EventHandler for BlitzJSEventHandler<'_> {
     }
 }
 
-// ---------------------------------------------------------------------------
-// Public API
-// ---------------------------------------------------------------------------
-
-/// Dispatch a blitz UI event (pointer, key, wheel) through the DOM event system.
 pub(crate) fn dispatch_ui_event(
     document_id: DocumentId,
     source_navigable_id: NavigableId,
@@ -407,7 +311,6 @@ pub(crate) fn dispatch_ui_event(
     Ok(())
 }
 
-/// Dispatch a trusted click event on a specific node.
 pub(crate) fn dispatch_trusted_click_event(
     document_id: DocumentId,
     source_navigable_id: NavigableId,
@@ -437,7 +340,7 @@ pub(crate) fn dispatch_trusted_click_event(
     let event_clone: Event = ec.with_object_any(&event)
         .and_then(|d| d.downcast_ref::<Event>().cloned())
         .ok_or_else(|| "dispatch_trusted_click_event: event is not an Event".to_string())?;
-    let path = build_path_from_target_js_object(&target, ec);
+    let path = crate::js::platform_objects::build_path_from_target_js_object(&target, ec);
     dispatch_with_path(ec, &path, &event_clone).map_err(|e| format!("failed to dispatch click event: {e:?}"))?;
     handler.settings.perform_a_microtask_checkpoint().map_err(|e| format!("microtask checkpoint after click: {e:?}"))
 }

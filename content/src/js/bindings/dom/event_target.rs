@@ -126,7 +126,7 @@ fn dispatch_event(
         .ok_or_else(|| ec.new_type_error("dispatchEvent: event_obj is not an Event"))?;
 
     let target_object = current_event_target_object(this, ec);
-    let path = crate::html::events::build_path_from_target_js_object(&target_object, ec);
+    let path = crate::js::platform_objects::build_path_from_target_js_object(&target_object, ec);
 
     let target_value = <crate::js::Types as JsTypes>::value_from_object(target_object);
     let target = crate::js::try_with_event_target_mut(&target_value, ec, |target| target.clone())?;
