@@ -25,6 +25,8 @@
 //! new_promise_capability → perform_promise_then — as a miniature
 //! version of the full `content/` crate.
 
+use std::slice::from_ref;
+
 use crate::webidl::bindings::{AttributeDef, InterfaceDefinition, OperationDef, WebIdlInterface};
 use js_engine::gc::GcRootHandle;
 use js_engine::gc_struct;
@@ -72,7 +74,7 @@ impl TestWidget {
         } else {
             String::from("Untitled")
         };
-        let visible = args.get(1).map_or(true, |v| ec.to_boolean(v));
+        let visible = args.get(1).is_none_or(|value| ec.to_boolean(value));
         let count = args.get(2).map_or(0u32, |_v| 0u32);
         Ok(Self {
             title,
@@ -372,7 +374,7 @@ fn with_callback(
     let title = widget_or_button_with_ref(this, ec, |w| w.title.clone())?;
     let callback_obj = args
         .first()
-        .and_then(|v| TestTypes::value_as_object(v))
+        .and_then(TestTypes::value_as_object)
         .ok_or_else(|| ec.new_type_error("expected a callback function"))?;
     let callback_val = TestTypes::value_from_object(callback_obj.clone());
     if !ec.is_callable(&callback_val) {
@@ -424,7 +426,7 @@ fn create_static(
     } else {
         String::from("Untitled")
     };
-    let visible = args.get(1).map_or(true, |v| ec.to_boolean(v));
+    let visible = args.get(1).is_none_or(|value| ec.to_boolean(value));
     let widget = TestWidget {
         title,
         visible,
@@ -443,7 +445,7 @@ fn store_callback(
 ) -> Completion<JsValue, TestTypes> {
     let callback_obj = args
         .first()
-        .and_then(|v| TestTypes::value_as_object(v))
+        .and_then(TestTypes::value_as_object)
         .ok_or_else(|| ec.new_type_error("expected a callback function"))?;
     let callback_val = TestTypes::value_from_object(callback_obj.clone());
     if !ec.is_callable(&callback_val) {
@@ -461,7 +463,7 @@ fn flush_microtasks_test(
     _args: &[JsValue],
     ec: &mut dyn ExecutionContext<TestTypes>,
 ) -> Completion<JsValue, TestTypes> {
-    let _ = widget_or_button_with_ref(this, ec, |_| ())?;
+    widget_or_button_with_ref(this, ec, |_| ())?;
     ec.perform_a_microtask_checkpoint()?;
     ec.run_jobs();
     Ok(ec.value_undefined())
@@ -474,7 +476,7 @@ fn reject_with_message_test(
     args: &[JsValue],
     ec: &mut dyn ExecutionContext<TestTypes>,
 ) -> Completion<JsValue, TestTypes> {
-    let _ = widget_or_button_with_ref(this, ec, |_| ())?;
+    widget_or_button_with_ref(this, ec, |_| ())?;
     let msg = if let Some(arg) = args.first() {
         ec.to_rust_string(arg.clone())?
     } else {
@@ -762,6 +764,13 @@ mod tests {
         let mut button = TestButton::new("ClickMe");
         button.widget.title = "BtnWidget".into();
         let obj = create_button(button, &mut engine);
+        let button = engine
+            .with_object_any_mut(&obj)
+            .and_then(|data| data.downcast_mut::<TestButton>())
+            .expect("the platform object must contain a TestButton");
+        assert_eq!(button.label_value(), "ClickMe");
+        button.set_label("Pressed");
+        assert_eq!(button.label_value(), "Pressed");
         let js_obj = TestTypes::value_from_object(obj);
 
         // Through the multi-type helper, we should see the widget fields.
@@ -780,11 +789,10 @@ mod tests {
         let mut widget = TestWidget::new();
         widget.title = "PureWidget".into();
         let obj = create_widget(widget, &mut engine);
-        let js_obj = TestTypes::value_from_object(obj);
 
-        // A pure TestWidget (not a TestButton) should still be found
-        // by the multi-type helper (it falls back to TestWidget).
-        let title = widget_or_button_with_ref(&js_obj, &mut engine, |w| w.title.clone()).unwrap();
+        // A pure TestWidget is available through the direct data helper.
+        let title =
+            widget_data::with_ref(&obj, &mut engine, |widget| widget.title.clone()).unwrap();
         assert_eq!(title, "PureWidget");
     }
 
@@ -1456,7 +1464,7 @@ mod tests {
         let js_obj = TestTypes::value_from_object(obj);
         let realm = engine.current_realm();
         let fn_val = JsEngine::evaluate_script(&mut engine, "(function() {})", &realm).unwrap();
-        store_callback(&js_obj, &[fn_val.clone()], &mut engine).unwrap();
+        store_callback(&js_obj, from_ref(&fn_val), &mut engine).unwrap();
         flush_microtasks_test(&js_obj, &[], &mut engine).unwrap();
 
         let obj_ref = TestTypes::value_as_object(&js_obj).unwrap();
@@ -2062,7 +2070,7 @@ mod tests {
             .unwrap();
         let val = engine.value_from_number(42.0);
         let undef = engine.value_undefined();
-        engine.call(&cap.resolve, &undef, &[val.clone()]).unwrap();
+        engine.call(&cap.resolve, &undef, from_ref(&val)).unwrap();
 
         // Attach a handler via perform_promise_then.
         let called = std::rc::Rc::new(std::cell::RefCell::new(false));
@@ -2875,7 +2883,6 @@ mod tests {
     fn bigint_primitive_detection() {
         let mut engine = setup();
         let realm = engine.current_realm();
-        let intrinsics = engine.realm_intrinsics(&realm);
         let bi_val = JsEngine::evaluate_script(&mut engine, "123n", &realm).unwrap();
         let bi = <TestTypes as JsTypes>::value_as_bigint(&bi_val);
         assert!(
@@ -3026,7 +3033,7 @@ mod tests {
 
     #[test]
     fn realm_intrinsics_constructors_and_prototypes() {
-        let mut engine = setup();
+        let engine = setup();
         let realm = engine.current_realm();
         let intrinsics = engine.realm_intrinsics(&realm);
 

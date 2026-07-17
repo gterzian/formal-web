@@ -8,8 +8,8 @@ use std::sync::Arc;
 
 use rusty_v8 as v8;
 
-use crate::{JsTypes, JsTypesWithRealm};
 use crate::TypedArrayElementType;
+use crate::{JsTypes, JsTypesWithRealm};
 
 #[derive(Clone, Debug)]
 pub(crate) enum CachedPrimitive {
@@ -71,7 +71,7 @@ pub struct V8Value {
     pub(crate) isolate_id: u64,
     pub(crate) handle: v8::Global<v8::Value>,
     pub(crate) primitive: CachedPrimitive,
-    pub(crate) object_profile: Option<ObjectProfile>,
+    pub(crate) object_profile: Option<Box<ObjectProfile>>,
     pub(crate) host_data: Option<NonNull<c_void>>,
 }
 
@@ -202,11 +202,14 @@ pub struct V8Realm {
 pub struct V8Types;
 
 impl V8Types {
-    fn object_if(value: &V8Value, predicate: impl FnOnce(&ObjectProfile) -> bool) -> Option<V8Object> {
+    fn object_if(
+        value: &V8Value,
+        predicate: impl FnOnce(&ObjectProfile) -> bool,
+    ) -> Option<V8Object> {
         value
             .object_profile
             .as_ref()
-            .is_some_and(predicate)
+            .is_some_and(|profile| predicate(profile))
             .then(|| V8Object(value.clone()))
     }
 
@@ -399,42 +402,82 @@ impl JsTypes for V8Types {
     }
 
     fn object_is_boolean_wrapper(object: &Self::JsObject) -> bool {
-        object.0.object_profile.as_ref().is_some_and(|profile| profile.is_boolean_wrapper)
+        object
+            .0
+            .object_profile
+            .as_ref()
+            .is_some_and(|profile| profile.is_boolean_wrapper)
     }
 
     fn object_is_number_wrapper(object: &Self::JsObject) -> bool {
-        object.0.object_profile.as_ref().is_some_and(|profile| profile.is_number_wrapper)
+        object
+            .0
+            .object_profile
+            .as_ref()
+            .is_some_and(|profile| profile.is_number_wrapper)
     }
 
     fn object_is_string_wrapper(object: &Self::JsObject) -> bool {
-        object.0.object_profile.as_ref().is_some_and(|profile| profile.is_string_wrapper)
+        object
+            .0
+            .object_profile
+            .as_ref()
+            .is_some_and(|profile| profile.is_string_wrapper)
     }
 
     fn object_is_bigint_wrapper(object: &Self::JsObject) -> bool {
-        object.0.object_profile.as_ref().is_some_and(|profile| profile.is_bigint_wrapper)
+        object
+            .0
+            .object_profile
+            .as_ref()
+            .is_some_and(|profile| profile.is_bigint_wrapper)
     }
 
     fn object_is_date(object: &Self::JsObject) -> bool {
-        object.0.object_profile.as_ref().is_some_and(|profile| profile.is_date)
+        object
+            .0
+            .object_profile
+            .as_ref()
+            .is_some_and(|profile| profile.is_date)
     }
 
     fn object_is_regexp(object: &Self::JsObject) -> bool {
-        object.0.object_profile.as_ref().is_some_and(|profile| profile.is_regexp)
+        object
+            .0
+            .object_profile
+            .as_ref()
+            .is_some_and(|profile| profile.is_regexp)
     }
 
     fn object_is_error(object: &Self::JsObject) -> bool {
-        object.0.object_profile.as_ref().is_some_and(|profile| profile.is_error)
+        object
+            .0
+            .object_profile
+            .as_ref()
+            .is_some_and(|profile| profile.is_error)
     }
 
     fn boolean_wrapper_data(object: &Self::JsObject) -> Option<bool> {
-        match object.0.object_profile.as_ref()?.wrapper_primitive.as_ref()? {
+        match object
+            .0
+            .object_profile
+            .as_ref()?
+            .wrapper_primitive
+            .as_ref()?
+        {
             CachedPrimitive::Boolean(boolean) => Some(*boolean),
             _ => None,
         }
     }
 
     fn number_wrapper_data(object: &Self::JsObject) -> Option<f64> {
-        match object.0.object_profile.as_ref()?.wrapper_primitive.as_ref()? {
+        match object
+            .0
+            .object_profile
+            .as_ref()?
+            .wrapper_primitive
+            .as_ref()?
+        {
             CachedPrimitive::Number(number) => Some(*number),
             _ => None,
         }

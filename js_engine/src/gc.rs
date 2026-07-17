@@ -19,6 +19,8 @@
 
 use crate::{ExecutionContext, JsTypes, JsTypesWithRealm};
 
+pub type UnrootAction<T> = Box<dyn FnOnce(&<T as JsTypes>::JsValue)>;
+
 // ============================================================================
 // SECTION I: SPEC-ANNOTATION TRAITS
 // ============================================================================
@@ -70,7 +72,7 @@ pub trait JsTypesGcExt: JsTypes + JsTypesWithRealm + Sized + 'static {
 /// Shared across all clones of a GcRootHandle via Rc.
 pub(crate) struct SharedUnroot<T: JsTypes> {
     value: T::JsValue,
-    action: Option<Box<dyn FnOnce(&T::JsValue)>>,
+    action: Option<UnrootAction<T>>,
 }
 
 impl<T: JsTypes> Drop for SharedUnroot<T> {
@@ -93,7 +95,7 @@ pub struct GcRootHandle<T: JsTypes> {
 
 impl<T: JsTypes> GcRootHandle<T> {
     /// Creates a new root handle.
-    pub fn new(value: T::JsValue, unroot_action: Option<Box<dyn FnOnce(&T::JsValue)>>) -> Self {
+    pub fn new(value: T::JsValue, unroot_action: Option<UnrootAction<T>>) -> Self {
         let guard = unroot_action.map(|action| {
             std::rc::Rc::new(SharedUnroot {
                 value: value.clone(),

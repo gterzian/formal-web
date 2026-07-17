@@ -84,7 +84,7 @@ impl EnvironmentSettingsObject {
     }
 
     /// Like `new`, but creates the realm within an existing engine (sharing
-    /// the same JS context / GC heap).  Used by `window.open`.
+    /// the same engine heap). Used by `window.open`.
     pub fn new_in_realm(
         parent: Option<&mut Engine>,
         document: Rc<RefCell<BaseDocument>>,

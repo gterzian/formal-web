@@ -1,6 +1,8 @@
 use std::{cell::RefCell, rc::Rc};
 
 use blitz_dom::BaseDocument;
+#[cfg(jsc_backend)]
+use log::error;
 
 use crate::js::Engine;
 
@@ -14,9 +16,8 @@ pub(crate) fn build_context(document: Rc<RefCell<BaseDocument>>) -> Result<Engin
     build_context_inner(document)
 }
 
-/// Create a new realm within an existing engine, sharing the same underlying
-/// JS context (same GC heap) but with its own global object, Window, Document,
-/// and prototype chain.
+/// Create a new realm within an existing engine, sharing the same engine heap
+/// but with its own global object, Window, Document, and prototype chain.
 ///
 /// JSC and V8 share their engine heap. Boa currently creates a fresh engine.
 pub(crate) fn build_realm(
@@ -187,25 +188,31 @@ fn setup_realm(engine: &mut Engine, document: Rc<RefCell<BaseDocument>>) -> Resu
         // Copy Window/EventTarget properties to the global object.
         #[cfg(jsc_backend)]
         {
-        let prototypes = [
-            get_registry_prototype::<crate::js::Types, EventTarget>(engine),
-            Some(window_proto),
-        ];
-        for proto in prototypes.iter().flatten() {
-            if let Ok(keys) = engine.own_property_keys(*proto) {
-                for key in keys {
-                    let key_str = engine.property_key_to_rust_string(&key);
-                    if key_str == "constructor" || key_str == "__proto__" {
-                        continue;
-                    }
-                    if let Ok(Some(descriptor)) = engine.get_own_property(*proto, key.clone()) {
-                        if descriptor.value.is_some() || descriptor.get.is_some() {
-                            let _ = engine.define_property_or_throw(global_obj, key, descriptor);
+            let prototypes = [
+                get_registry_prototype::<crate::js::Types, EventTarget>(engine),
+                Some(window_proto),
+            ];
+            for proto in prototypes.iter().flatten() {
+                if let Ok(keys) = engine.own_property_keys(*proto) {
+                    for key in keys {
+                        let key_str = engine.property_key_to_rust_string(&key);
+                        if key_str == "constructor" || key_str == "__proto__" {
+                            continue;
+                        }
+                        if let Ok(Some(descriptor)) = engine.get_own_property(*proto, key.clone()) {
+                            if descriptor.value.is_some() || descriptor.get.is_some() {
+                                if let Err(error) =
+                                    engine.define_property_or_throw(global_obj, key, descriptor)
+                                {
+                                    error!(
+                                        "failed to copy a JSC Window prototype property to the global object: {error:?}"
+                                    );
+                                }
+                            }
                         }
                     }
                 }
             }
-        }
         }
     }
 
@@ -266,10 +273,10 @@ fn setup_realm(engine: &mut Engine, document: Rc<RefCell<BaseDocument>>) -> Resu
         };
         engine
             .define_property_or_throw(
-            rs_proto.clone(),
-            engine.property_key_from_str("values"),
-            values_desc,
-        )
+                rs_proto.clone(),
+                engine.property_key_from_str("values"),
+                values_desc,
+            )
             .map_err(|error| format!("failed to install ReadableStream.values: {error:?}"))?;
 
         // @@asyncIterator: same function as values (per spec
@@ -302,10 +309,10 @@ fn setup_realm(engine: &mut Engine, document: Rc<RefCell<BaseDocument>>) -> Resu
         };
         engine
             .define_property_or_throw(
-            rs_proto.clone(),
-            engine.property_key_from_str("__formalWebReadableStreamPipeToNative"),
-            native_desc,
-        )
+                rs_proto.clone(),
+                engine.property_key_from_str("__formalWebReadableStreamPipeToNative"),
+                native_desc,
+            )
             .map_err(|error| {
                 format!("failed to install ReadableStream pipeTo native function: {error:?}")
             })?;
@@ -326,14 +333,15 @@ fn setup_realm(engine: &mut Engine, document: Rc<RefCell<BaseDocument>>) -> Resu
                     get: None,
                     set: None,
                 };
-                engine.define_property_or_throw(
-                    rs_proto.clone(),
-                    engine.property_key_from_str("pipeTo"),
-                    pipe_to_desc,
-                )
-                .map_err(|error| {
-                    format!("failed to install ReadableStream.pipeTo: {error:?}")
-                })?;
+                engine
+                    .define_property_or_throw(
+                        rs_proto.clone(),
+                        engine.property_key_from_str("pipeTo"),
+                        pipe_to_desc,
+                    )
+                    .map_err(|error| {
+                        format!("failed to install ReadableStream.pipeTo: {error:?}")
+                    })?;
             }
         }
     }
