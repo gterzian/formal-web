@@ -11,7 +11,6 @@ use crate::html::{
 use crate::js::Types;
 use js_engine::{Completion, ExecutionContext, JsTypes};
 
-/// Downcast `this` to `&mut AbortSignal` via `with_object_any_mut`.
 pub(crate) fn try_with_abort_signal_mut<R>(
     this: &<Types as JsTypes>::JsValue,
     ec: &mut dyn ExecutionContext<Types>,
@@ -27,7 +26,6 @@ pub(crate) fn try_with_abort_signal_mut<R>(
     Err(ec.new_type_error("receiver is not an AbortSignal"))
 }
 
-/// Downcast `object` to `&AbortSignal` via `with_object_any`.
 pub(crate) fn try_with_abort_signal_ref<R>(
     object: &<Types as JsTypes>::JsObject,
     ec: &mut dyn ExecutionContext<Types>,
@@ -41,7 +39,6 @@ pub(crate) fn try_with_abort_signal_ref<R>(
     Err(ec.new_type_error("object is not an AbortSignal"))
 }
 
-/// Downcast `object` to `&AbortController` via `with_object_any`.
 pub(crate) fn try_with_abort_controller_ref<R>(
     object: &<Types as JsTypes>::JsObject,
     ec: &mut dyn ExecutionContext<Types>,
@@ -55,9 +52,6 @@ pub(crate) fn try_with_abort_controller_ref<R>(
     Err(ec.new_type_error("object is not an AbortController"))
 }
 
-// Infrastructure: walks known platform-object types and sets the
-// Infrastructure: sets the EventTarget reflector field on any platform
-// object that contains one. Called by create_interface_instance.
 pub(crate) fn try_set_event_target_reflector(
     value: &<Types as JsTypes>::JsValue,
     ec: &mut dyn ExecutionContext<Types>,
@@ -97,7 +91,6 @@ pub(crate) fn try_set_event_target_reflector(
     }
 }
 
-/// Resolve an EventTarget from a JsObject by checking all known platform object types.
 pub(crate) fn event_target_from_js_object(
     ec: &mut dyn ExecutionContext<Types>,
     object: &<Types as JsTypes>::JsObject,
@@ -178,7 +171,6 @@ pub(crate) fn try_with_event_target_mut<R>(
     Err(ec.new_type_error("receiver is not an EventTarget"))
 }
 
-/// Generic: downcast via `ec.with_object_any`.
 pub(crate) fn with_abort_signal_ref<R>(
     object: &<Types as JsTypes>::JsObject,
     ec: &mut dyn ExecutionContext<Types>,

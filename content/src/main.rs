@@ -1302,13 +1302,13 @@ impl ContentProcess {
         {
             let navigable_id = document.traversable_id;
             let time_millis = document.settings.current_time_millis();
-            let canceled = !crate::html::dispatch::fire_global_event(
+            let canceled = !crate::html::dispatch::steps_to_fire_beforeunload(
                 &mut document.settings.realm_execution_context,
                 "beforeunload",
                 true,
                 time_millis,
             )
-            .map_err(|error| format!("fire_global_event failed: {error:?}"))?;
+            .map_err(|error| format!("steps_to_fire_beforeunload failed: {error:?}"))?;
             (Some(navigable_id), canceled)
         } else {
             (None, false)

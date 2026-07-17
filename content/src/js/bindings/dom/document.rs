@@ -407,32 +407,24 @@ pub(crate) fn install_document_property(
 }
 
 /// <https://webidl.spec.whatwg.org/#internally-create-a-new-object-implementing-the-interface>
+// Note: This function does not implement the algorithm itself — it delegates
+// to `create_interface_instance` which does. This is a Document-specific
+// wrapper that also extracts a cloned Document reference for the ESO, which
+// is an artifact of Rust's ownership model (the spec has no such concept).
 pub(crate) fn create_document_platform_object(
     blitz_document: Rc<RefCell<blitz_dom::BaseDocument>>,
     creation_url: url::Url,
     ec: &mut dyn ExecutionContext<crate::js::Types>,
 ) -> Completion<(<crate::js::Types as JsTypes>::JsObject, crate::dom::Document), crate::js::Types> {
-    // Step 1: Assert: interface is exposed in realm.
-    // (Checked inside create_interface_instance via prototype resolution.)
-    // Step 9: Set instance.[[Prototype]] to prototype.
-    // Step 11: Return instance.
-    //
-    // Internally create a new object implementing the Document interface.
-    // The native data is moved into the JsObject; the returned JsObject
-    // holds the canonical copy.
     let document = crate::dom::Document::new(blitz_document, creation_url);
     let document_object = create_interface_instance::<crate::js::Types, crate::dom::Document>(
         document,
         ec,
     )?;
 
-    // The ESO needs a domain Document reference for access to shared
-    // GcCell-backed state. Clone from the JsObject: GcCell fields share
-    // their inner state, and the reflector was set automatically by
+    // The ESO needs a Document reference for access to shared GcCell-backed
+    // state. The reflector was set automatically by
     // PostCreateReflector::set_reflector during create_interface_instance.
-    // Note: This clone step is not part of the Web IDL spec — it is an
-    // artifact of Rust's ownership model where the ESO needs both a
-    // JsObject handle and a typed Rust reference to the same data.
     let extracted: crate::dom::Document = ec
         .with_object_any(&document_object)
         .and_then(|data| data.downcast_ref::<crate::dom::Document>().cloned())

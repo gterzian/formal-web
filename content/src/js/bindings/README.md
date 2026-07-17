@@ -108,6 +108,20 @@ automatically by the Web IDL layer (`create_interface_instance` →
 `PostCreateReflector::set_reflector`).  Domain code and bindings must never
 touch reflectors.
 
+### Where code lives is dictated by which spec it implements
+
+- **Web IDL conversion algorithms** (union conversion, dictionary conversion,
+  type mapping) live in `content/src/webidl/`. They follow the Web IDL spec
+  (`#js-union`, `#js-dictionary`, etc.).
+- **DOM spec algorithms** live in `content/src/dom/`.
+- **HTML spec algorithms** live in `content/src/html/`.
+- **JS bindings glue** (thin arg extraction → call domain → wrap) lives in
+  `content/src/js/bindings/<domain>/`.
+
+If a function mixes spec concerns (e.g. converting a JS value to a DOM type
+via Web IDL rules), the Web IDL part goes in `content/src/webidl/` and the
+DOM-specific part stays in the domain.
+
 ### Rules of thumb
 
 1. **Domain methods are `impl` blocks on the domain struct.**  Never a standalone
@@ -207,6 +221,7 @@ fn module_exports_binding<T: JsTypes>(
 | `JsObject` in a domain file (`content/src/dom/`, `content/src/html/`) | JsObject types belong in `content/src/js/` (the JS integration layer). Domain code operates on domain types like `EventTarget`, `Node`, `Event` |
 | ASCII art or section-header comments (`// ---- ...`) in source files | No separator comments — let function/item ordering speak for itself |
 | Prose explaining what a function does before its spec anchor | Anchor-only: `/// <url>`. If the mapping to the spec is unclear, add a `// Note:` on the next line, not prose in the doc comment |
+| Function name doesn't match the spec algorithm name (e.g. `fire_global_event` for "steps to fire beforeunload") | Rust function name MUST match the spec algorithm name with `_` separators (e.g. `steps_to_fire_beforeunload`). The spec→code mapping must be discoverable by name alone. |
 | Splitting a spec algorithm into multiple functions with non-spec names (e.g. `open_dictionary` + `get_dictionary_member` instead of a single `convert_js_to_dictionary`) | Name functions after the spec algorithm they implement. If you must split a spec algorithm into helpers, name them as internal private items and provide a single public function with the spec's name. Any deviation from the spec's algorithmic structure must be explained in a `// Note:`. |
 | Blank line between `// Step N:` comment and its code, or no blank line between code and the next `// Step` comment | NO blank line between comment and its code. Blank line AFTER the code, before the next step's comment. Also NO blank line between `{` (block opening) and the first step comment. See `dispatch.rs` for the correct pattern. |
 | Vague Note on a partial algorithm implementation (e.g. "this is a helper for X") | When a function partially implements a spec algorithm, annotate with `// Step N:` for ALL steps of the algorithm. Mark missing steps with `// TODO: Not yet implemented.` and sub-algorithm references with the spec anchor. The note should only describe discrepancies between the code and the spec text, not hand-wave about "this is a helper". See `html/dispatch.rs::fire_global_event` for the correct pattern. |

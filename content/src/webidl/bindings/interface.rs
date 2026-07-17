@@ -4,12 +4,11 @@ use js_engine::{
 };
 
 /// <https://webidl.spec.whatwg.org/#internally-create-a-new-object-implementing-the-interface>
-///
-/// Note: The spec algorithm does not define a reflector-setting step. This hook
-/// is an implementation-specific finalization: after the JsObject is created, the
-/// native struct needs a back-link to its wrapper so domain code can find the
-/// JsObject from the EventTarget/Event. This is called as the last operation
-/// before returning the instance.
+// Note: The spec algorithm does not define a reflector-setting step. This hook
+// is an implementation-specific finalization: after the JsObject is created, the
+// native struct needs a back-link to its wrapper so domain code can find the
+// JsObject from the EventTarget/Event. This is called as the last operation
+// before returning the instance.
 pub(crate) trait PostCreateReflector<Ty: JsTypes> {
     fn set_reflector(obj: &Ty::JsObject, ec: &mut dyn ExecutionContext<Ty>);
 }
@@ -687,8 +686,7 @@ where
 }
 
 /// <https://webidl.spec.whatwg.org/#internally-create-a-new-object-implementing-the-interface>
-///
-/// Note: see trait-level Note for why this does not map one-to-one to the spec.
+// Note: see trait-level Note for why this does not map one-to-one to the spec.
 impl PostCreateReflector<crate::js::Types> for crate::js::Types {
     fn set_reflector(
         obj: &<crate::js::Types as JsTypes>::JsObject,

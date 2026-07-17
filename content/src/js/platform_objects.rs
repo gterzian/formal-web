@@ -19,16 +19,9 @@ use crate::js::Types;
 type JsObject = <Types as JsTypes>::JsObject;
 
 /// <https://html.spec.whatwg.org/#global-object>
-///
-/// Type-key for storing the realm's global object `JsObject` in `host_any`.
-/// Initialised during realm creation; validated in
-/// `host_any_stored_object_downcast_via_with_object_any`.
 pub(crate) struct GlobalObjectSlot;
 
 /// <https://html.spec.whatwg.org/#global-object>
-///
-/// Store the realm's global object in `host_any`.  Call once during realm
-/// initialisation, after the global object has been created.
 pub(crate) fn init_global_object_slot(
     ec: &mut dyn ExecutionContext<crate::js::Types>,
     global_object: <crate::js::Types as JsTypes>::JsObject,
@@ -37,10 +30,6 @@ pub(crate) fn init_global_object_slot(
 }
 
 /// <https://html.spec.whatwg.org/#global-object>
-///
-/// Downcast the realm's global object to `&GlobalScope` through
-/// `realm_global_object()` + `with_object_any`.  Returns `None` if the
-/// global object is not a `Window` or has no native data.
 fn global_scope_or_error<'ec>(
     ec: &'ec dyn ExecutionContext<crate::js::Types>,
 ) -> Option<&'ec GlobalScope> {
@@ -51,9 +40,6 @@ fn global_scope_or_error<'ec>(
 }
 
 /// <https://html.spec.whatwg.org/#global-object>
-///
-/// Like `global_scope_or_error` but constructs a `Completion` error when
-/// the global object can't be reached.
 pub(crate) fn with_global_scope<R>(
     ec: &mut dyn ExecutionContext<crate::js::Types>,
     f: impl FnOnce(&GlobalScope) -> Completion<R, crate::js::Types>,

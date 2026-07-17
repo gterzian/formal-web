@@ -1,35 +1,16 @@
-/// <https://webidl.spec.whatwg.org/#js-dictionary>
-///
-/// Infrastructure for converting JavaScript values to Web IDL dictionary types.
-/// Each dictionary type implements its own member-by-member extraction by
-/// calling `convert_js_to_dictionary` then `DictionaryAccess::get_member` for
-/// each member.
-
 use js_engine::{Completion, ExecutionContext, JsTypes, JsTypesWithRealm};
 
-/// The result of opening a JS value for dictionary conversion.
+use crate::dom::AbortSignal;
+
+/// <https://webidl.spec.whatwg.org/#js-dictionary>
 pub(crate) enum DictionaryAccess<T: JsTypes> {
-    /// The value was a JS object — members can be extracted from it.
     Object(T::JsObject),
-    /// The value was null or undefined — the dictionary is empty (all defaults).
     Empty,
 }
 
 /// <https://webidl.spec.whatwg.org/#js-dictionary>
-///
-/// Converts a JavaScript value to an IDL dictionary type.
-///
-/// Step 1: If jsDict is not an Object and jsDict is neither undefined nor
-///         null, then throw a TypeError.
-/// Step 2: Let idlDict be an empty ordered map.
-/// Step 3: Let dictionaries be a list consisting of D and all of D's inherited
-///         dictionaries, in order from least to most derived.
-///
-/// Returns a `DictionaryAccess` that the caller uses to extract each member
-/// via `get_member`, which implements Steps 4.1.2-4.1.4 for individual members.
-/// The caller is responsible for applying defaults (Step 4.1.5), checking
-/// required members (Step 4.1.6), and converting member values to their
-/// declared IDL types (Step 4.1.4.1).
+// Note: Steps 2-3 (creating the empty dict and iterating inherited dictionaries)
+// are implicit — the caller creates the dictionary struct and iterates members.
 pub(crate) fn convert_js_to_dictionary<T: JsTypes + JsTypesWithRealm>(
     js_value: &T::JsValue,
     ec: &mut dyn ExecutionContext<T>,
@@ -43,16 +24,10 @@ pub(crate) fn convert_js_to_dictionary<T: JsTypes + JsTypesWithRealm>(
         return Ok(DictionaryAccess::Object(object.clone()));
     }
     Err(ec.new_type_error("value is not an object, undefined, or null"))
-    // Steps 2-3 are implicit: the caller creates the dictionary struct and
-    // iterates over members.
 }
 
 impl<T: JsTypes + JsTypesWithRealm> DictionaryAccess<T> {
     /// <https://webidl.spec.whatwg.org/#js-dictionary>
-    ///
-    /// Steps 4.1.2-4.1.4: Get a dictionary member's JS value by key.
-    /// Returns `None` if the property is absent (Get returned undefined).
-    /// The caller applies the member's default or skips it.
     pub(crate) fn get_member(
         &self,
         key: &str,
@@ -71,7 +46,54 @@ impl<T: JsTypes + JsTypesWithRealm> DictionaryAccess<T> {
             return Ok(None);
         }
         Ok(Some(js_member_value))
-        // Step 4.1.4.1-4.1.6: handled by the caller (conversion, defaults,
-        // required-member check).
     }
+}
+
+/// <https://webidl.spec.whatwg.org/#js-union>
+///
+/// Convert a JS value to the union type `(boolean or AddEventListenerOptions)`,
+/// used by the DOM's addEventListener options parameter.
+pub(crate) fn convert_boolean_or_add_event_listener_options<T: JsTypes + JsTypesWithRealm>(
+    value: &T::JsValue,
+    ec: &mut dyn ExecutionContext<T>,
+) -> Completion<crate::dom::BooleanOrAddEventListenerOptions, T> {
+    // Step 12: If V is a Boolean, then: if types includes boolean, convert.
+    if let Some(b) = T::value_as_bool(value) {
+        return Ok(crate::dom::BooleanOrAddEventListenerOptions::Boolean(b));
+    }
+
+    // Step 4.1: If V is null or undefined and types includes dictionary, convert.
+    // Step 11.4: If V is an Object and types includes dictionary, convert.
+    let access = convert_js_to_dictionary::<T>(value, ec)?;
+
+    let mut dict = crate::dom::AddEventListenerOptions::default();
+
+    // Member: capture (boolean, default false) — inherited from EventListenerOptions
+    if let Some(val) = access.get_member("capture", ec)? {
+        dict.capture = ec.to_boolean(&val);
+    }
+
+    // Member: once (boolean, default false)
+    if let Some(val) = access.get_member("once", ec)? {
+        dict.once = ec.to_boolean(&val);
+    }
+
+    // Member: passive (boolean, no default — stays None if absent)
+    if let Some(val) = access.get_member("passive", ec)? {
+        dict.passive = Some(ec.to_boolean(&val));
+    }
+
+    // Member: signal (AbortSignal, no default — stays None if absent)
+    if let Some(val) = access.get_member("signal", ec)? {
+        let signal_obj = T::value_as_object(&val)
+            .ok_or_else(|| ec.new_type_error("addEventListener signal must be an AbortSignal"))?;
+        dict.signal = Some(
+            ec
+                .with_object_any(&signal_obj)
+                .and_then(|d| d.downcast_ref::<AbortSignal>().cloned())
+                .ok_or_else(|| ec.new_type_error("addEventListener signal must be an AbortSignal"))?
+        );
+    }
+
+    Ok(crate::dom::BooleanOrAddEventListenerOptions::Dict(dict))
 }

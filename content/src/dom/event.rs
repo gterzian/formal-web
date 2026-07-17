@@ -64,7 +64,6 @@ pub struct EventTarget {
     next_listener_id: Cell<u64>,
 }
 
-/// Trait for types that embed or are associated with an EventTarget.
 pub(crate) trait EventTargetAccess {
     fn get_event_target(&self) -> EventTarget;
 
@@ -99,7 +98,6 @@ pub(crate) struct AddEventListenerOptions {
     pub signal: Option<AbortSignal>,
 }
 
-/// Represents the Web IDL union type `(boolean or AddEventListenerOptions)`.
 pub(crate) enum BooleanOrAddEventListenerOptions {
     Boolean(bool),
     Dict(AddEventListenerOptions),

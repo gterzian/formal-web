@@ -327,20 +327,14 @@ pub(crate) fn dispatch_trusted_click_event(
         document, settings, event_sender, deferred,
     );
     let time_millis = handler.settings.current_time_millis();
-    let (target, event) = {
+    let event_domain = Event::new("click".into(), true, true, true, true, time_millis);
+    let path = {
         let ec = handler.settings.ec();
         let target = crate::js::platform_objects::resolve_element_object(target_node_id, ec)
             .map_err(|e| format!("failed to resolve click target: {e:?}"))?;
-        let event_domain = Event::new("click".into(), true, true, true, true, time_millis);
-        let event = create_interface_instance::<Types, Event>(event_domain, ec)
-            .map_err(|e| format!("failed to construct click event: {e:?}"))?;
-        (target, event)
+        crate::js::platform_objects::build_path_from_target_js_object(&target, ec)
     };
     let ec = handler.settings.ec();
-    let event_clone: Event = ec.with_object_any(&event)
-        .and_then(|d| d.downcast_ref::<Event>().cloned())
-        .ok_or_else(|| "dispatch_trusted_click_event: event is not an Event".to_string())?;
-    let path = crate::js::platform_objects::build_path_from_target_js_object(&target, ec);
-    dispatch_with_path(ec, &path, &event_clone).map_err(|e| format!("failed to dispatch click event: {e:?}"))?;
+    dispatch_with_path(ec, &path, &event_domain).map_err(|e| format!("failed to dispatch click event: {e:?}"))?;
     handler.settings.perform_a_microtask_checkpoint().map_err(|e| format!("microtask checkpoint after click: {e:?}"))
 }

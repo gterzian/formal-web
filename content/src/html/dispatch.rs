@@ -7,7 +7,7 @@ use crate::js::Types;
 use crate::webidl::bindings::create_interface_instance;
 
 /// <https://html.spec.whatwg.org/#steps-to-fire-beforeunload>
-pub(crate) fn fire_global_event(
+pub(crate) fn steps_to_fire_beforeunload(
     ec: &mut dyn ExecutionContext<Types>,
     event_type: &str,
     cancelable: bool,

@@ -10,7 +10,9 @@ pub(crate) use array_index::is_array_index_key;
 pub(crate) use async_iterable::{AsyncValueIterable, create_value_async_iterator};
 #[allow(unused_imports)]
 pub(crate) use buffer_source::{get_a_copy_of_the_buffer_source, is_buffer_source};
-pub(crate) use dictionary::{convert_js_to_dictionary, DictionaryAccess};
+pub(crate) use dictionary::{
+    convert_boolean_or_add_event_listener_options, convert_js_to_dictionary, DictionaryAccess,
+};
 
 pub(crate) use callback::{
     Callback, ExceptionBehavior, call_user_objects_operation, callback_function_value,
