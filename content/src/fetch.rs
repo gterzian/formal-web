@@ -108,28 +108,28 @@ impl FetchController {
     // TODO: Wire this to AbortSignal/controller integration once content can initiate aborts and
     // formal-web can carry structured abort reasons across content, user-agent, net.
     pub(crate) fn abort(&mut self, error: Option<String>) {
+
         // Step 1. Set controller's state to "aborted".
-
         self.state = FetchControllerState::Aborted;
+
         // Step 2. Let fallbackError be an "AbortError" DOMException.
-
         let fallback_error = String::from("AbortError");
-        // Step 3. Set error to fallbackError if it is not given.
 
+        // Step 3. Set error to fallbackError if it is not given.
         let error = error.unwrap_or_else(|| fallback_error.clone());
+
         // Step 4. Let serializedError be StructuredSerialize(error).
         // TODO: Replace this placeholder with StructuredSerialize(error).
         // formal-web does not yet expose DOMException or structured clone values across
         // this worker boundary, so the serialized reason is stored as a string placeholder.
         // Step 5. Set controller's serialized abort reason to serializedError.
-
         self.serialized_abort_reason = Some(error);
     }
 
     /// <https://fetch.spec.whatwg.org/#fetch-controller-terminate>
     pub(crate) fn terminate(&mut self) {
-        // Step 1. Set controller's state to "terminated".
 
+        // Step 1. Set controller's state to "terminated".
         self.state = FetchControllerState::Terminated;
     }
 }
@@ -196,10 +196,10 @@ impl FetchGroup {
 
     /// <https://fetch.spec.whatwg.org/#concept-fetch-group-terminate>
     pub(crate) fn terminate(&mut self) {
+
         // Step 1. For each fetch record record of fetchGroup's fetch records, if record's
         // controller is non-null and record's request's done flag is unset and keepalive is
         // false, terminate record's controller.
-
         for record in &mut self.fetch_records {
             if !record.request.done && !record.request.keepalive {
                 record.controller.terminate();

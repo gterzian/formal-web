@@ -98,7 +98,6 @@ where
     // <https://webidl.spec.whatwg.org/#internally-create-a-new-object-implementing-the-interface>
 
     // Step 1: "Assert: interface is exposed in realm."
-
     let prototype =
         super::registry::get_prototype_from_host_defined::<Ty, T>(ec).ok_or_else(|| {
             ec.new_type_error(&format!(
@@ -110,27 +109,22 @@ where
     // Step 2: "If newTarget is undefined, then:"
     //   Domain callers (not constructors) always use the standard prototype.
     // Steps 3-8: newTarget handling, MakeBasicObject — handled below.
-
     // Step 9: "Set instance.[[Prototype]] to prototype."
     //   Wrap data in TraceableBox for GC root tracing, then type-erase
     //   through create_object_with_any. The Boa backend recovers the
     //   trace/finalize function pointers from the TraceableBox.
-
     let boxed = js_engine::boa::TraceableBox::new(data);
     let instance = ec.create_object_with_any(prototype, Box::new(boxed));
 
     // Steps 10-11: "Let interfaces be the inclusive inherited interfaces..."
     //   TODO: Unforgeable property copying from ancestor interface objects.
-
     // Step 12: "If interface is declared with the [Global] extended attribute..."
     //   [Global] handling is done during registration (see register_interface_spec).
 
     // Step 13: "Otherwise, if interfaces contains an interface which supports
     //   indexed properties, named properties, or both:"
     //   Not yet implemented.
-
     // Step 14: "Return instance."
-
     <Ty as PostCreateReflector<Ty>>::set_reflector(&instance, ec);
 
     Ok(instance)
@@ -149,7 +143,6 @@ where
     // <https://webidl.spec.whatwg.org/#internally-create-a-new-object-implementing-the-interface>
 
     // Step 1: "Assert: interface is exposed in realm."
-
     let prototype =
         super::registry::get_prototype_from_host_defined::<Ty, T>(ec).ok_or_else(|| {
             ec.new_type_error(&format!(
@@ -161,23 +154,18 @@ where
     // Step 2: "If newTarget is undefined, then:"
     //   Domain callers (not constructors) always use the standard prototype.
     // Steps 3-8: newTarget handling, MakeBasicObject — handled below.
-
     // Step 9: "Set instance.[[Prototype]] to prototype."
-
     let instance = ec.create_object_with_any(prototype, Box::new(data));
 
     // Steps 10-11: "Let interfaces be the inclusive inherited interfaces..."
     //   TODO: Unforgeable property copying from ancestor interface objects.
-
     // Step 12: "If interface is declared with the [Global] extended attribute..."
     //   [Global] handling is done during registration (see register_interface_spec).
 
     // Step 13: "Otherwise, if interfaces contains an interface which supports
     //   indexed properties, named properties, or both:"
     //   Not yet implemented.
-
     // Step 14: "Return instance."
-
     Ok(instance)
 }
 
@@ -201,10 +189,8 @@ where
     //   `wire_registry_prototype`. The constructorProto is not yet wired — the
     //   default %Function.prototype% is used, and subclass constructors inherit
     //   from their parent interface object via a separate call.
-
     // Step 11: "Let proto be the result of creating an interface prototype
     //   object of interface I in realm."
-
     let proto = engine.create_object_with_any(intrinsics.object_prototype.clone(), Box::new(()));
 
     let mut def = InterfaceDefinition::<Ty>::new();
@@ -221,7 +207,6 @@ where
     // Step 4: "Let unforgeables be OrdinaryObjectCreate(null)."
     // Step 5: "Define the unforgeable regular operations of I on unforgeables, given realm."
     // Step 6: "Define the unforgeable regular attributes of I on unforgeables, given realm."
-
     let unforgeables_obj = engine.create_plain_object(None);
     let unforgeables_val = Ty::value_from_object(unforgeables_obj.clone());
     super::operation::define_unforgeable_regular_operations::<Ty, E>(
@@ -257,7 +242,6 @@ where
                 // Step 1.2: "If NewTarget is undefined, then throw a TypeError."
                 //   Note: Boa's [[Call]] passes `undefined` as `this` for
                 //   constructable functions; [[Construct]] passes `new.target`.
-
                 if Ty::value_is_undefined(&new_target_or_this) {
                     return Err(ec.new_type_error(&format!("{} is not a constructor", I::NAME)));
                 }
@@ -266,7 +250,6 @@ where
                 // Step 1.4: "Let n be the size of args."
                 // Step 1.5: "Let id be the identifier of interface I."
                 // Steps 1.6-1.7: Overload resolution (not yet implemented).
-
                 // Step 1.8: "Let object be the result of internally creating a new
                 //   object implementing I, with realm and NewTarget."
                 //
@@ -274,7 +257,6 @@ where
                 //
                 // Step 4: "If newTarget is not undefined — already checked above.
                 //   Step 4.2: "Let prototype be ? Get(newTarget, "prototype")."
-
                 let new_target_obj = Ty::value_as_object(&new_target_or_this).ok_or_else(|| {
                     ec.new_type_error(&format!(
                         "{} constructor called without a valid new.target",
@@ -287,7 +269,6 @@ where
                 //   interface prototype object for interface in targetRealm."
                 //   Note: cross-realm fallback not yet implemented; always falls
                 //   back to the current realm's prototype object.
-
                 let resolved_prototype = if Ty::value_as_object(&prototype_val).is_some() {
                     Ty::value_as_object(&prototype_val).ok_or_else(|| {
                         ec.new_type_error("TypeError: new.target.prototype is not an object")
@@ -297,20 +278,17 @@ where
                 };
 
                 // Step 1.8 (cont): call I::create_platform_object.
-
                 let obj = I::create_platform_object(&new_target_or_this, args, ec)?;
 
                 // Step 1.9: "Perform the constructor steps of constructor with
                 //   object as this and values as the argument values."
                 //   Note: handled inside create_platform_object.
-
                 // Step 1.10: "Let O be object, converted to a JavaScript value."
                 //
                 // GC tracing for the stored platform data is handled by
                 // wrapping in `TraceableBox` before type-erasing through
                 // `create_object_with_any`. The Boa backend detects the
                 // `TraceableBox` wrapper and uses its trace/finalize fn pointers.
-
                 let traceable = js_engine::boa::TraceableBox::new(obj);
                 let instance = ec.create_object_with_any(resolved_prototype, Box::new(traceable));
 
@@ -324,7 +302,6 @@ where
                 //   Step 11.3: "For each element key of keys:"
                 //   Step 11.3.1: "Let descriptor be ! unforgeables.[[GetOwnProperty]](key)."
                 //   Step 11.3.2: "Perform ! DefinePropertyOrThrow(instance, key, descriptor)."
-
                 if let Some(entry) =
                     super::registry::get_unforgeables_from_host_defined::<Ty, I>(ec)
                 {
@@ -337,7 +314,6 @@ where
                 }
 
                 // Steps 1.11-1.13: Assert and return O.
-
                 Ok(Ty::value_from_object(instance))
             }
         }),
@@ -347,19 +323,16 @@ where
     );
 
     // Step 7: "Set F.[[Unforgeables]] to unforgeables."
-
     super::registry::set_unforgeables_for_interface::<Ty, I>(engine, unforgeables_obj.clone());
 
     // Step 10: "Let F be CreateBuiltinFunction(steps, length, id, « [[Unforgeables]] »,
     //   realm, constructorProto)."
     //   Note: is_constructor=true makes a constructable built-in function.
-
     let f_obj = Ty::object_from_function(constructor_fn);
 
     // Step 12: "Perform ! DefinePropertyOrThrow(F, "prototype",
     //   PropertyDescriptor{[[Value]]: proto, [[Writable]]: false,
     //   [[Enumerable]]: false, [[Configurable]]: false})."
-
     let proto_desc = JsPropertyDescriptor {
         value: Some(Ty::value_from_object(proto.clone())),
         writable: Some(false),
@@ -392,20 +365,16 @@ where
     let f_val = Ty::value_from_object(f_obj.clone());
 
     // Step 13: "Define the constants of interface I on F given realm."
-
     super::constant::define_constants::<Ty>(f_obj.clone(), engine, &def.constants)?;
 
     // Step 14: "Define the static attributes of interface I on F given realm."
-
     super::attribute::define_static_attributes::<Ty, E>(engine, &f_val, &def.attributes)?;
 
     // Step 15: "Define the static operations of interface I on F given realm."
-
     super::operation::define_static_operations::<Ty, E>(engine, &f_val, &def.operations)?;
 
     // Step 16: "Return F."
     //   Note: store in registry so create_interface_instance can find F's prototype.
-
     super::registry::register_in_host_defined::<Ty, I>(engine, proto.clone(), f_obj.clone());
 
     let install_desc = JsPropertyDescriptor {
@@ -462,10 +431,8 @@ where
     //   `wire_registry_prototype`. The constructorProto is not yet wired — the
     //   default %Function.prototype% is used, and subclass constructors inherit
     //   from their parent interface object via a separate call.
-
     // Step 11: "Let proto be the result of creating an interface prototype
     //   object of interface I in realm."
-
     let proto = engine.create_object_with_any(intrinsics.object_prototype.clone(), Box::new(()));
 
     let mut def = InterfaceDefinition::<Ty>::new();
@@ -482,7 +449,6 @@ where
     // Step 4: "Let unforgeables be OrdinaryObjectCreate(null)."
     // Step 5: "Define the unforgeable regular operations of I on unforgeables, given realm."
     // Step 6: "Define the unforgeable regular attributes of I on unforgeables, given realm."
-
     let unforgeables_obj = engine.create_plain_object(None);
     let unforgeables_val = Ty::value_from_object(unforgeables_obj.clone());
     super::operation::define_unforgeable_regular_operations::<Ty, E>(
@@ -518,7 +484,6 @@ where
                 // Step 1.2: "If NewTarget is undefined, then throw a TypeError."
                 //   Note: Boa's [[Call]] passes `undefined` as `this` for
                 //   constructable functions; [[Construct]] passes `new.target`.
-
                 if Ty::value_is_undefined(&new_target_or_this) {
                     return Err(ec.new_type_error(&format!("{} is not a constructor", I::NAME)));
                 }
@@ -527,7 +492,6 @@ where
                 // Step 1.4: "Let n be the size of args."
                 // Step 1.5: "Let id be the identifier of interface I."
                 // Steps 1.6-1.7: Overload resolution (not yet implemented).
-
                 // Step 1.8: "Let object be the result of internally creating a new
                 //   object implementing I, with realm and NewTarget."
                 //
@@ -535,7 +499,6 @@ where
                 //
                 // Step 4: "If newTarget is not undefined — already checked above.
                 //   Step 4.2: "Let prototype be ? Get(newTarget, "prototype")."
-
                 let new_target_obj = Ty::value_as_object(&new_target_or_this).ok_or_else(|| {
                     ec.new_type_error(&format!(
                         "{} constructor called without a valid new.target",
@@ -548,7 +511,6 @@ where
                 //   interface prototype object for interface in targetRealm."
                 //   Note: cross-realm fallback not yet implemented; always falls
                 //   back to the current realm's prototype object.
-
                 let resolved_prototype = if Ty::value_as_object(&prototype_val).is_some() {
                     Ty::value_as_object(&prototype_val).ok_or_else(|| {
                         ec.new_type_error("TypeError: new.target.prototype is not an object")
@@ -558,21 +520,17 @@ where
                 };
 
                 // Step 1.8 (cont): call I::create_platform_object.
-
                 let obj = I::create_platform_object(&new_target_or_this, args, ec)?;
 
                 // Step 1.9: "Perform the constructor steps of constructor with
                 //   object as this and values as the argument values."
                 //   Note: handled inside create_platform_object.
-
                 // Step 1.10: "Let O be object, converted to a JavaScript value."
-
                 let instance = ec.create_object_with_any(resolved_prototype, Box::new(obj));
 
                 // Step 11: "For every interface ancestor interface in interfaces:"
                 // Only copies own interface's [[Unforgeables]]; ancestor iteration
                 // deferred until [[PrimaryInterface]] tracking is added.
-
                 if let Some(entry) =
                     super::registry::get_unforgeables_from_host_defined::<Ty, I>(ec)
                 {
@@ -586,7 +544,6 @@ where
                 }
 
                 // Steps 1.11-1.13: Assert and return O.
-
                 Ok(Ty::value_from_object(instance))
             }
         }),
@@ -596,19 +553,16 @@ where
     );
 
     // Step 7: "Set F.[[Unforgeables]] to unforgeables."
-
     super::registry::set_unforgeables_for_interface::<Ty, I>(engine, unforgeables_obj.clone());
 
     // Step 10: "Let F be CreateBuiltinFunction(steps, length, id, « [[Unforgeables]] »,
     //   realm, constructorProto)."
     //   Note: is_constructor=true makes a constructable built-in function.
-
     let f_obj = Ty::object_from_function(constructor_fn);
 
     // Step 12: "Perform ! DefinePropertyOrThrow(F, "prototype",
     //   PropertyDescriptor{[[Value]]: proto, [[Writable]]: false,
     //   [[Enumerable]]: false, [[Configurable]]: false})."
-
     let proto_desc = JsPropertyDescriptor {
         value: Some(Ty::value_from_object(proto.clone())),
         writable: Some(false),
@@ -641,20 +595,16 @@ where
     let f_val = Ty::value_from_object(f_obj.clone());
 
     // Step 13: "Define the constants of interface I on F given realm."
-
     super::constant::define_constants::<Ty>(f_obj.clone(), engine, &def.constants)?;
 
     // Step 14: "Define the static attributes of interface I on F given realm."
-
     super::attribute::define_static_attributes::<Ty, E>(engine, &f_val, &def.attributes)?;
 
     // Step 15: "Define the static operations of interface I on F given realm."
-
     super::operation::define_static_operations::<Ty, E>(engine, &f_val, &def.operations)?;
 
     // Step 16: "Return F."
     //   Note: store in registry so create_interface_instance can find F's prototype.
-
     super::registry::register_in_host_defined::<Ty, I>(engine, proto.clone(), f_obj.clone());
 
     let install_desc = JsPropertyDescriptor {

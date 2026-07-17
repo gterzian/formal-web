@@ -439,19 +439,15 @@ impl WritableStreamDefaultController {
         let stream = self.stream_slot(ec)?;
 
         // Step 1: "Perform ! WritableStreamMarkCloseRequestInFlight(stream)."
-
         stream.mark_close_request_in_flight(ec)?;
 
         // Step 2: "Perform ! DequeueValue(controller)."
-
         let _ = self.dequeue_value(ec)?;
 
         // Step 3: "Assert: controller.[[queue]] is empty."
-
         debug_assert!(self.queue.borrow().is_empty());
 
         // Step 4: "Let sinkClosePromise be the result of performing controller.[[closeAlgorithm]]."
-
         let algorithm = self.close_algorithm(ec)?;
         let sink_close_promise = match algorithm.call(ec) {
             Ok(promise) => promise,
@@ -464,7 +460,6 @@ impl WritableStreamDefaultController {
         };
 
         // Step 5: "Perform ! WritableStreamDefaultControllerClearAlgorithms(controller)."
-
         self.clear_algorithms();
         let name_key = ec.property_key_from_str("");
         let on_fulfilled = create_builtin_fn_with_traced_captures(
@@ -494,16 +489,14 @@ impl WritableStreamDefaultController {
         chunk: JsValue,
         ec: &mut dyn ExecutionContext<Types>,
     ) -> Completion<(), Types> {
-        // Step 1: "Let stream be controller.[[stream]]."
 
+        // Step 1: "Let stream be controller.[[stream]]."
         let stream = self.stream_slot(ec)?;
 
         // Step 2: "Perform ! WritableStreamMarkFirstWriteRequestInFlight(stream)."
-
         stream.mark_first_write_request_in_flight(ec)?;
 
         // Step 3: "Let sinkWritePromise be the result of performing controller.[[writeAlgorithm]], passing in chunk."
-
         let controller_object = self.controller_object(ec)?;
         let write_algo = self.write_algorithm(ec)?;
         let sink_write_promise = match write_algo.call(&controller_object, chunk, ec) {
@@ -633,73 +626,58 @@ pub(crate) fn set_up_writable_stream_default_controller(
     size_algorithm: SizeAlgorithm,
     ec: &mut dyn ExecutionContext<Types>,
 ) -> Completion<(), Types> {
+
     // Step 1: "Assert: stream implements WritableStream."
     // Step 2: "Assert: stream.[[controller]] is undefined."
-
     // Step 3: "Set controller.[[stream]] to stream."
-
     controller.set_stream_slot(Some(stream.clone()));
 
     // Step 4: "Set stream.[[controller]] to controller."
-
     stream.set_controller_slot(Some(WritableStreamController::Default(controller.clone())));
     stream.set_controller_object_slot(Some(controller_object.clone()));
 
     // Step 5: "Perform ! ResetQueue(controller)."
-
     reset_controller_queue(&controller);
 
     // Step 6: "Set controller.[[abortController]] to a new AbortController."
     // The content process stores the exposed [AbortSignal](https://dom.spec.whatwg.org/#interface-AbortSignal) [platform object](https://webidl.spec.whatwg.org/#dfn-platform-object) directly because the controller getter
     // only needs the signal object.
-
     let signal = create_abort_signal(AbortSignal::new(ec), ec)?;
     controller.set_abort_signal_slot(signal);
 
     // Step 7: "Set controller.[[started]] to false."
-
     controller.set_started(false);
 
     // Step 8: "Set controller.[[strategySizeAlgorithm]] to sizeAlgorithm."
-
     *controller.strategy_size_algorithm.borrow_mut() = Some(size_algorithm);
 
     // Step 9: "Set controller.[[strategyHWM]] to highWaterMark."
-
     controller.strategy_high_water_mark.set(high_water_mark);
 
     // Step 10: "Set controller.[[writeAlgorithm]] to writeAlgorithm."
-
     *controller.write_algorithm.borrow_mut() = Some(write_algorithm);
 
     // Step 11: "Set controller.[[closeAlgorithm]] to closeAlgorithm."
-
     *controller.close_algorithm.borrow_mut() = Some(close_algorithm);
 
     // Step 12: "Set controller.[[abortAlgorithm]] to abortAlgorithm."
-
     *controller.abort_algorithm.borrow_mut() = Some(abort_algorithm);
 
     // Step 13: "Let backpressure be ! WritableStreamDefaultControllerGetBackpressure(controller)."
-
     let backpressure = controller.get_backpressure(ec)?;
 
     // Step 14: "Perform ! WritableStreamUpdateBackpressure(stream, backpressure)."
-
     stream.update_backpressure(backpressure, ec)?;
 
     // Step 15: "Let startResult be the result of performing startAlgorithm."
-
     let start_result = start_algorithm.call(controller_object, ec)?;
 
     // Step 16: "Let startPromise be a promise resolved with startResult."
-
     let realm = ec.current_realm();
     let intrinsics = ec.realm_intrinsics(&realm);
     let start_promise = ec.promise_resolve(intrinsics.promise.clone(), start_result)?;
 
     // Step 17: "Upon fulfillment of startPromise..."
-
     let name_key = ec.property_key_from_str("");
     let on_fulfilled = create_builtin_fn_with_traced_captures(
         ec,
@@ -711,7 +689,6 @@ pub(crate) fn set_up_writable_stream_default_controller(
     );
 
     // Step 18: "Upon rejection of startPromise with reason r..."
-
     let on_rejected = create_builtin_fn_with_traced_captures(
         ec,
         controller,
@@ -732,12 +709,11 @@ pub(crate) fn set_up_writable_stream_default_controller_from_underlying_sink(
     size_algorithm: SizeAlgorithm,
     ec: &mut dyn ExecutionContext<Types>,
 ) -> Completion<(), Types> {
-    // Step 1: "Let controller be a new WritableStreamDefaultController."
 
+    // Step 1: "Let controller be a new WritableStreamDefaultController."
     let (controller, controller_object) = create_writable_stream_default_controller(ec)?;
 
     // Step 2-9: Extract optional methods.
-
     let sink_methods: Option<(
         Option<JsObject>,
         Option<JsObject>,
@@ -754,26 +730,22 @@ pub(crate) fn set_up_writable_stream_default_controller_from_underlying_sink(
     };
 
     // Step 2: "Let startAlgorithm be an algorithm that returns undefined."
-
     let mut start_algorithm = StartAlgorithm::ReturnUndefined;
 
     // Step 3: "Let writeAlgorithm be an algorithm that returns a promise resolved with undefined."
-
     let mut write_algorithm = WriteAlgorithm::ReturnUndefined;
 
     // Step 4: "Let closeAlgorithm be an algorithm that returns a promise resolved with undefined."
-
     let mut close_algorithm = CloseAlgorithm::ReturnUndefined;
 
     // Step 5: "Let abortAlgorithm be an algorithm that returns a promise resolved with undefined."
-
     let mut abort_algorithm = AbortAlgorithm::ReturnUndefined;
 
     if let (Some((start, write, close, abort)), Some(underlying_sink)) =
         (sink_methods, underlying_sink_object)
     {
-        // Step 6: "If underlyingSinkDict['start'] exists, then set startAlgorithm ..."
 
+        // Step 6: "If underlyingSinkDict['start'] exists, then set startAlgorithm ..."
         if let Some(start) = start {
             start_algorithm = StartAlgorithm::JavaScript(SourceMethod::new(
                 underlying_sink.clone(),
@@ -782,7 +754,6 @@ pub(crate) fn set_up_writable_stream_default_controller_from_underlying_sink(
         }
 
         // Step 7: "If underlyingSinkDict['write'] exists, then set writeAlgorithm ..."
-
         if let Some(write) = write {
             write_algorithm = WriteAlgorithm::JavaScript(SourceMethod::new(
                 underlying_sink.clone(),
@@ -791,7 +762,6 @@ pub(crate) fn set_up_writable_stream_default_controller_from_underlying_sink(
         }
 
         // Step 8: "If underlyingSinkDict['close'] exists, then set closeAlgorithm ..."
-
         if let Some(close) = close {
             close_algorithm = CloseAlgorithm::JavaScript(SourceMethod::new(
                 underlying_sink.clone(),
@@ -800,7 +770,6 @@ pub(crate) fn set_up_writable_stream_default_controller_from_underlying_sink(
         }
 
         // Step 9: "If underlyingSinkDict['abort'] exists, then set abortAlgorithm ..."
-
         if let Some(abort) = abort {
             abort_algorithm = AbortAlgorithm::JavaScript(SourceMethod::new(
                 underlying_sink,
@@ -810,7 +779,6 @@ pub(crate) fn set_up_writable_stream_default_controller_from_underlying_sink(
     }
 
     // Step 10: "Perform ? SetUpWritableStreamDefaultController(...)."
-
     set_up_writable_stream_default_controller(
         stream,
         controller,

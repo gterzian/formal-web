@@ -57,19 +57,17 @@ fn convert_options_union(
     value: &JsValue,
     ec: &mut dyn ExecutionContext<crate::js::Types>,
 ) -> Completion<BooleanOrAddEventListenerOptions, crate::js::Types> {
-    // Step 12: If V is a Boolean, then: if types includes boolean, convert.
 
+    // Step 12: If V is a Boolean, then: if types includes boolean, convert.
     if let Some(b) = <crate::js::Types as JsTypes>::value_as_bool(value) {
         return Ok(BooleanOrAddEventListenerOptions::Boolean(b));
     }
 
     // Step 4.1: If V is null or undefined and types includes dictionary, convert.
     // Step 11.4: If V is an Object and types includes dictionary, convert.
-
     let access = dictionary::convert_js_to_dictionary::<crate::js::Types>(value, ec)?;
 
     // Step 4: For each dictionary member in AddEventListenerOptions
-
     let mut dict = crate::dom::AddEventListenerOptions::default();
 
     // Member: capture (boolean, default false) — inherited from EventListenerOptions
@@ -197,5 +195,3 @@ fn current_event_target_object(
 
     ec.global_object()
 }
-
-

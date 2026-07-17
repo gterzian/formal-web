@@ -387,10 +387,10 @@ pub(crate) fn install_document_property(
     let global = ec.realm_global_object();
     let key = ec.property_key_from_str("document");
     let value = <crate::js::Types as js_engine::JsTypes>::value_from_object(document);
+
     // Step 1: Define the "document" property on the global object.
     // Note: This replaces register_global_property which is Boa-specific.
     // The property is writable, enumerable, configurable (same as Attribute::all()).
-
     ec.define_property_or_throw(
         global,
         key,
@@ -412,9 +412,9 @@ pub(crate) fn create_document_platform_object(
     creation_url: url::Url,
     ec: &mut dyn ExecutionContext<crate::js::Types>,
 ) -> Completion<(<crate::js::Types as JsTypes>::JsObject, crate::dom::Document), crate::js::Types> {
+
     // Step 1: Assert: interface is exposed in realm.
     // (Checked inside create_interface_instance via prototype resolution.)
-
     // Step 9: Set instance.[[Prototype]] to prototype.
     // Step 11: Return instance.
     //

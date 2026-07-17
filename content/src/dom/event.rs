@@ -138,8 +138,8 @@ impl EventTarget {
         passive: Option<bool>,
         signal: Option<AbortSignal>,
     ) {
-        // Step 2: If listener's signal is non-null and is aborted, then return.
 
+        // Step 2: If listener's signal is non-null and is aborted, then return.
         if let Some(signal) = signal.as_ref() {
             if signal.aborted_value() {
                 return;
@@ -147,7 +147,6 @@ impl EventTarget {
         }
 
         // Step 3: If listener's callback is null, then return.
-
         let Some(callback) = callback else {
             return;
         };
@@ -156,14 +155,12 @@ impl EventTarget {
         // default passive value given listener's type and eventTarget.
         // Note: The default passive value algorithm is not yet implemented;
         // defaults to false for all types.
-
         let passive = passive.or(Some(false));
 
         // Step 5: If eventTarget's event listener list does not contain
         // an event listener whose type is listener's type, callback is
         // listener's callback, and capture is listener's capture, then
         // append listener to eventTarget's event listener list.
-
         let listener_id = self.next_listener_id.get().wrapping_add(1);
         let mut listeners = self.event_listener_list.borrow_mut();
         let duplicate = listeners.iter().any(|listener| {
@@ -192,7 +189,6 @@ impl EventTarget {
             // Step 6: If listener's signal is non-null, then add the
             // following abort steps to it: Remove an event listener with
             // eventTarget and listener.
-
             if let Some(signal) = signal {
                 signal.add_abort_algorithm(AbortAlgorithm::RemoveEventListener {
                     event_target: event_target.clone(),
@@ -209,9 +205,9 @@ impl EventTarget {
         callback: &Callback,
         capture: bool,
     ) {
+
         // Step 2: Set listener's removed to true and remove listener from
         // eventTarget's event listener list.
-
         let mut listeners = self.event_listener_list.borrow_mut();
         for listener in listeners.iter_mut() {
             if listener.type_ == type_
@@ -230,9 +226,9 @@ impl EventTarget {
 
     /// <https://dom.spec.whatwg.org/#remove-an-event-listener>
     pub(crate) fn remove_event_listener_by_id(&self, listener_id: u64) {
+
         // Step 2: Set listener's removed to true and remove listener from
         // eventTarget's event listener list.
-
         let mut listeners = self.event_listener_list.borrow_mut();
         for listener in listeners.iter_mut() {
             if listener.id == listener_id {
@@ -260,17 +256,17 @@ impl EventTarget {
         path: &[super::EventPathItem],
         ec: &mut dyn ExecutionContext<Types>,
     ) -> Completion<bool, Types> {
+
         // Step 1: If event's dispatch flag is set, or if its initialized flag is not set,
         // then throw an "InvalidStateError" DOMException.
-
         if *event.dispatch_flag.borrow() || !*event.initialized_flag.borrow() {
             return Err(ec.new_type_error("InvalidStateError: event is already being dispatched or not initialized"));
         }
+
         // Step 2: Initialize event's isTrusted attribute to false.
-
         *event.is_trusted.borrow_mut() = false;
-        // Step 3: Return the result of dispatching event to this.
 
+        // Step 3: Return the result of dispatching event to this.
         crate::dom::dispatch_event(ec, path, event)
     }
 }

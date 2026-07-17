@@ -22,4 +22,3 @@ pub(crate) use event::{
     AddEventListenerOptions, BooleanOrAddEventListenerOptions, flatten, flatten_more,
 };
 pub use node::Node;
-

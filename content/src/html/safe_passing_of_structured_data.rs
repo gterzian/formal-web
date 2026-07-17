@@ -272,11 +272,10 @@ fn structured_serialize_internal(
     memory: &mut MemoryMap,
     ec: &mut dyn ExecutionContext<Types>,
 ) -> Completion<SerializedRecord, Types> {
+
     // Step 1: If memory was not supplied, let memory be an empty map.
     //         (memory is always supplied here.)
-
     // Step 2: If memory[value] exists, then return memory[value].
-
     if let Some(object) = Types::value_as_object(value) {
         if let Some(record) = memory.get_serialized(&object) {
             return Ok(record.clone());
@@ -287,43 +286,36 @@ fn structured_serialize_internal(
     // (This implementation handles deep serialization inline in the helper functions
     //  rather than via a unified deep flag — see serialize_map_contents, serialize_set_contents,
     //  serialize_array, and the ordinary object path below.)
-
     // Step 4: If value is undefined, null, a Boolean, a Number, a BigInt, or a String,
     //         then return { [[Type]]: "primitive", [[Value]]: value }.
-
     if let Some(prim) = js_value_to_primitive(value, ec) {
         return Ok(SerializedRecord::Primitive(prim));
     }
 
     // Step 5: If value is a Symbol, then throw a "DataCloneError" DOMException.
-
     if Types::value_as_symbol(value).is_some() {
         return Err(data_clone_error(ec));
     }
 
     // Step 6: Let serialized be an uninitialized value.
     // (Implemented via individual return values in each branch below.)
-
     let object = Types::value_as_object(value)
         .ok_or_else(|| ec.new_type_error("unexpected non-object value in serialize"))?;
 
     // Step 7: If value has a [[BooleanData]] internal slot, then set serialized to
     //           { [[Type]]: "Boolean", [[BooleanData]]: value.[[BooleanData]] }.
-
     if let Some(b) = Types::boolean_wrapper_data(&object) {
         return Ok(SerializedRecord::Boolean(b));
     }
 
     // Step 8: Otherwise, if value has a [[NumberData]] internal slot, then set serialized to
     //           { [[Type]]: "Number", [[NumberData]]: value.[[NumberData]] }.
-
     if let Some(n) = Types::number_wrapper_data(&object) {
         return Ok(SerializedRecord::Number(n));
     }
 
     // Step 9: Otherwise, if value has a [[BigIntData]] internal slot, then set serialized to
     //           { [[Type]]: "BigInt", [[BigIntData]]: value.[[BigIntData]] }.
-
     if let Some(bi) = Types::bigint_wrapper_data(&object) {
         let bi_val = Types::value_from_bigint(bi);
         let bi_str = ec.to_rust_string(bi_val)?;
@@ -332,7 +324,6 @@ fn structured_serialize_internal(
 
     // Step 10: Otherwise, if value has a [[StringData]] internal slot, then set serialized to
     //            { [[Type]]: "String", [[StringData]]: value.[[StringData]] }.
-
     if let Some(s) = Types::string_wrapper_data(&object) {
         let rust_str = ec.js_string_to_rust_string(&s);
         return Ok(SerializedRecord::String(rust_str.encode_utf16().collect()));
@@ -340,7 +331,6 @@ fn structured_serialize_internal(
 
     // Step 11: Otherwise, if value has a [[DateValue]] internal slot, then set serialized to
     //            { [[Type]]: "Date", [[DateValue]]: value.[[DateValue]] }.
-
     if Types::object_is_date(&object) {
         let ms = ec.get_date_value(&object)?;
         return Ok(SerializedRecord::Date(ms));
@@ -350,7 +340,6 @@ fn structured_serialize_internal(
     //            { [[Type]]: "RegExp", [[RegExpMatcher]]: value.[[RegExpMatcher]],
     //              [[OriginalSource]]: value.[[OriginalSource]],
     //              [[OriginalFlags]]: value.[[OriginalFlags]] }.
-
     if Types::object_is_regexp(&object) {
         // Per spec, we must store [[OriginalSource]] and [[OriginalFlags]], not
         // the escaped source getter (EscapeRegExpPattern). Since the only escaping
@@ -364,18 +353,16 @@ fn structured_serialize_internal(
 
     // Step 13: Otherwise, if value has an [[ArrayBufferData]] internal slot.
     // Step 13.1: If IsSharedArrayBuffer(value) is true:
-
     if let Some(sab) = Types::object_as_shared_array_buffer(&object) {
         return serialize_shared_array_buffer(&sab, for_storage, ec);
     }
-    // Step 13.2: Otherwise (non-shared ArrayBuffer):
 
+    // Step 13.2: Otherwise (non-shared ArrayBuffer):
     if let Some(buffer) = Types::object_as_array_buffer(&object) {
         return serialize_array_buffer(&buffer, ec);
     }
 
     // Step 14: Otherwise, if value has a [[ViewedArrayBuffer]] internal slot.
-
     if let Some(dv) = Types::object_as_data_view(&object) {
         return serialize_dataview(&dv, for_storage, memory, ec);
     }
@@ -384,37 +371,31 @@ fn structured_serialize_internal(
     }
 
     // Step 15: Otherwise, if value has a [[MapData]] internal slot.
-
     if let Some(map) = Types::object_as_map(&object) {
         return serialize_map_contents(&map, for_storage, memory, &object, ec);
     }
 
     // Step 16: Otherwise, if value has a [[SetData]] internal slot.
-
     if let Some(set_type) = Types::object_as_set(&object) {
         return serialize_set_contents(&set_type, for_storage, memory, &object, ec);
     }
 
     // Step 17: Otherwise, if value has an [[ErrorData]] internal slot and value is not a platform object.
-
     if Types::object_is_error(&object) {
         return serialize_error(&object, ec);
     }
 
     // Step 18: Otherwise, if value is an Array exotic object.
-
     if ec.is_array(value)? {
         return serialize_array(value, for_storage, memory, ec);
     }
 
     // Step 19: Otherwise, if value is a platform object that is a serializable object.
     // TODO: Check registered [Serializable] platform objects.
-
     // Step 20: Otherwise, if value is a platform object, then throw a "DataCloneError" DOMException.
     // TODO: Add platform object detection.
 
     // Step 21: Otherwise, if IsCallable(value) is true, then throw a "DataCloneError" DOMException.
-
     if ec.is_callable(value) {
         return Err(data_clone_error(ec));
     }
@@ -422,7 +403,6 @@ fn structured_serialize_internal(
     // Step 22: Otherwise, if value has any internal slot other than [[Prototype]], [[Extensible]],
     //            or [[PrivateElements]], then throw a "DataCloneError" DOMException.
     // TODO: Add these checks.
-
     // Step 23: Otherwise, if value is an exotic object and value is not the %Object.prototype%
     //            intrinsic object associated with any realm, then throw a "DataCloneError" DOMException.
     // TODO: Add these checks.
@@ -430,7 +410,6 @@ fn structured_serialize_internal(
     // Step 24 (spec's final fallback): Otherwise, set serialized to
     //   { [[Type]]: "Object", [[Properties]]: a new empty List }.
     // Step 25: Set memory[value] to serialized.
-
     let serialized = SerializedRecord::Object(Vec::new());
     let addr = std::ptr::from_ref(&object).addr();
     memory.insert_serialized(&object, serialized);
@@ -441,7 +420,6 @@ fn structured_serialize_internal(
     //       Let inputValue be ? value.[[Get]](key, value).
     //       Let outputValue be ? StructuredSerializeInternal(inputValue, forStorage, memory).
     //       Append (key, outputValue) to serialized.[[Properties]].
-
     let keys = ec.own_property_keys(object.clone())?;
     let mut properties = Vec::new();
     for key in keys {
@@ -456,17 +434,15 @@ fn structured_serialize_internal(
         }
 
         // Step 26: "Let inputValue be ? value.[[Get]](key, value)."
-
         let input_value = get_property_key(ec, object.clone(), key.clone())?;
-        // Step 26: "Let outputValue be ? StructuredSerializeInternal(inputValue, forStorage, memory)."
 
+        // Step 26: "Let outputValue be ? StructuredSerializeInternal(inputValue, forStorage, memory)."
         let output_value = structured_serialize_internal(&input_value, for_storage, memory, ec)?;
         let key_str = property_key_to_string(&key, ec)?;
         properties.push((key_str, output_value));
     }
 
     // Step 28 (spec): Return serialized.
-
     if let Some(SerializedRecord::Object(props)) = memory.get_serialized_by_addr_mut(addr) {
         *props = properties;
     }
@@ -484,29 +460,25 @@ fn serialize_array_buffer(
     buffer: &ArrayBuffer,
     ec: &mut dyn ExecutionContext<Types>,
 ) -> Completion<SerializedRecord, Types> {
-    // Step 13.2.1: If IsDetachedBuffer(value) is true, then throw a "DataCloneError" DOMException.
 
+    // Step 13.2.1: If IsDetachedBuffer(value) is true, then throw a "DataCloneError" DOMException.
     let data = ec
         .array_buffer_data(buffer)
         .ok_or_else(|| data_clone_error(ec))?;
 
     // Step 13.2.2: Let size be value.[[ArrayBufferByteLength]].
-
     let size = data.len() as u64;
 
     // Step 13.2.3: Let dataCopy be ? CreateByteDataBlock(size).
     //            Perform CopyDataBlockBytes(dataCopy, 0, value.[[ArrayBufferData]], 0, size).
-
     let data_copy = data.to_vec();
 
     // Step 13.2.4: If value has an [[ArrayBufferMaxByteLength]] internal slot, then
     //                set serialized to { [[Type]]: "ResizableArrayBuffer", [[ArrayBufferData]]: dataCopy,
     //                                     [[ArrayBufferByteLength]]: size, [[ArrayBufferMaxByteLength]]: value.[[ArrayBufferMaxByteLength]] }.
     // TODO: Support resizable ArrayBuffers.
-
     // Step 13.2.5: Otherwise, set serialized to { [[Type]]: "ArrayBuffer", [[ArrayBufferData]]: dataCopy,
     //                                             [[ArrayBufferByteLength]]: size }.
-
     Ok(SerializedRecord::ArrayBuffer {
         data: data_copy,
         byte_length: size,
@@ -521,13 +493,12 @@ fn serialize_shared_array_buffer(
     for_storage: bool,
     ec: &mut dyn ExecutionContext<Types>,
 ) -> Completion<SerializedRecord, Types> {
+
     // Step 13.1.1: If IsSharedArrayBuffer(value) is true:
     //   Step 13.1.1.1: If the current settings object's cross-origin isolated capability is false,
     //                    then throw a "DataCloneError" DOMException.
     // TODO: Check cross-origin isolated capability.
-
     // Step 13.1.2: If forStorage is true, then throw a "DataCloneError" DOMException.
-
     if for_storage {
         return Err(data_clone_error(ec));
     }
@@ -535,14 +506,12 @@ fn serialize_shared_array_buffer(
     // Step 13.1.3: If value has an [[ArrayBufferMaxByteLength]] internal slot, then
     //                set serialized to { [[Type]]: "GrowableSharedArrayBuffer", ... }.
     // TODO: Support GrowableSharedArrayBuffer.
-
     // Step 13.1.4: Otherwise, set serialized to { [[Type]]: "SharedArrayBuffer",
     //               [[ArrayBufferData]]: value.[[ArrayBufferData]],
     //               [[ArrayBufferByteLength]]: value.[[ArrayBufferByteLength]],
     //               [[AgentCluster]]: the surrounding agent's agent cluster }.
     // Copy raw bytes for IPC portability.
     // Extract byte length from the SAB object.
-
     let sab_obj = Types::object_from_shared_array_buffer(sab.clone());
     let buffer_val = EcmascriptHost::get(ec, &sab_obj, "byteLength")?;
     let _byte_length = ec.to_number(buffer_val)? as u64;
@@ -567,12 +536,10 @@ fn serialize_dataview(
     // TODO: Check IsArrayBufferViewOutOfBounds.
 
     // Step 14.2: Let buffer be the value of value's [[ViewedArrayBuffer]] internal slot.
-
     let buffer = ec.data_view_buffer(dataview)?;
     let buffer_obj = Types::object_from_array_buffer(buffer.clone());
 
     // Step 14.3: Let bufferSerialized be ? StructuredSerializeInternal(buffer, forStorage, memory).
-
     let buffer_val = Types::value_from_object(buffer_obj);
     let buffer_serialized = structured_serialize_internal(&buffer_val, for_storage, memory, ec)?;
 
@@ -580,7 +547,6 @@ fn serialize_dataview(
     //              { [[Type]]: "ArrayBufferView", [[Constructor]]: "DataView",
     //                [[ArrayBufferSerialized]]: bufferSerialized, [[ByteLength]]: value.[[ByteLength]],
     //                [[ByteOffset]]: value.[[ByteOffset]] }.
-
     let byte_length = ec.data_view_byte_length(dataview)?;
     let byte_offset = ec.data_view_byte_offset(dataview)?;
 
@@ -604,18 +570,15 @@ fn serialize_typed_array(
     // TODO: Check IsArrayBufferViewOutOfBounds.
 
     // Step 14.2: Let buffer be the value of value's [[ViewedArrayBuffer]] internal slot.
-
     let buffer = ec.typed_array_buffer(typed_array)?;
 
     // Step 14.3: Let bufferSerialized be ? StructuredSerializeInternal(buffer, forStorage, memory).
-
     let buffer_obj = Types::object_from_array_buffer(buffer);
     let buffer_val = Types::value_from_object(buffer_obj);
     let buffer_serialized = structured_serialize_internal(&buffer_val, for_storage, memory, ec)?;
 
     // Step 14.5 (spec numbering): Otherwise (value does not have a [[DataView]] internal slot):
     //   Step 14.5.1: Assert: value has a [[TypedArrayName]] internal slot.
-
     let element_type = ec
         .typed_array_element_type(typed_array)
         .ok_or_else(|| ec.new_type_error("TypedArray has no kind"))?;
@@ -673,32 +636,29 @@ fn serialize_map_contents(
     object: &JsObject,
     ec: &mut dyn ExecutionContext<Types>,
 ) -> Completion<SerializedRecord, Types> {
-    // Step 15.1: Set serialized to { [[Type]]: "Map", [[MapData]]: a new empty List }.
 
+    // Step 15.1: Set serialized to { [[Type]]: "Map", [[MapData]]: a new empty List }.
     let serialized = SerializedRecord::Map(Vec::new());
 
     // Step 15.2: Set memory[value] to serialized.
-
     let addr = std::ptr::from_ref(object).addr();
     memory.insert_serialized(object, serialized);
 
     // Step 15.3: Let copiedList be a new empty List.
     // Step 15.4: For each Record { [[Key]], [[Value]] } entry of value.[[MapData]]:
-
     let raw_entries = ec.map_get_entries(map)?;
 
     // Step 15.5: For each Record { [[Key]], [[Value]] } entry of copiedList:
-
     let mut entries = Vec::new();
     for (key, val) in raw_entries {
+
         // Step 15.5.1: Let serializedKey be ? StructuredSerializeInternal(entry.[[Key]], forStorage, memory).
-
         let sk = structured_serialize_internal(&key, for_storage, memory, ec)?;
+
         // Step 15.5.2: Let serializedValue be ? StructuredSerializeInternal(entry.[[Value]], forStorage, memory).
-
         let sv = structured_serialize_internal(&val, for_storage, memory, ec)?;
-        // Step 15.5.3: Append { [[Key]]: serializedKey, [[Value]]: serializedValue } to serialized.[[MapData]].
 
+        // Step 15.5.3: Append { [[Key]]: serializedKey, [[Value]]: serializedValue } to serialized.[[MapData]].
         entries.push((sk, sv));
     }
 
@@ -729,29 +689,26 @@ fn serialize_set_contents(
     object: &JsObject,
     ec: &mut dyn ExecutionContext<Types>,
 ) -> Completion<SerializedRecord, Types> {
-    // Step 16.1: Set serialized to { [[Type]]: "Set", [[SetData]]: a new empty List }.
 
+    // Step 16.1: Set serialized to { [[Type]]: "Set", [[SetData]]: a new empty List }.
     let serialized = SerializedRecord::Set(Vec::new());
 
     // Step 16.2: Set memory[value] to serialized.
-
     let addr = std::ptr::from_ref(object).addr();
     memory.insert_serialized(object, serialized);
 
     // Step 16.3: Let copiedList be a new empty List.
     // Step 16.4: For each entry of value.[[SetData]]:
-
     let raw_entries = ec.set_get_values(set_type)?;
 
     // Step 16.5: For each entry of copiedList:
-
     let mut entries = Vec::new();
     for entry in raw_entries {
+
         // Step 16.5.1: Let serializedEntry be ? StructuredSerializeInternal(entry, forStorage, memory).
-
         let sv = structured_serialize_internal(&entry, for_storage, memory, ec)?;
-        // Step 16.5.2: Append serializedEntry to serialized.[[SetData]].
 
+        // Step 16.5.2: Append serializedEntry to serialized.[[SetData]].
         entries.push(sv);
     }
 
@@ -770,25 +727,24 @@ fn serialize_error(
     object: &JsObject,
     ec: &mut dyn ExecutionContext<Types>,
 ) -> Completion<SerializedRecord, Types> {
+
     // Step 17.1: Let name be ? Get(value, "name").
-
     let name_val = EcmascriptHost::get(ec, object, "name")?;
-    // Step 17.2: If name is not a String value, then set name to "Error".
 
+    // Step 17.2: If name is not a String value, then set name to "Error".
     let name = if Types::value_as_string(&name_val).is_some() {
         ec.to_rust_string(name_val)?
     } else {
         String::from("Error")
     };
+
     // Step 17.3: If name is not one of "Error", "EvalError", "RangeError", "ReferenceError",
     //              "SyntaxError", "TypeError", or "URIError", then set name to "Error".
-
     let name = normalize_error_name(&name);
 
     // Step 17.4: Let valueMessageDesc be ? value.[[GetOwnProperty]]("message").
     // Step 17.5: Let message be undefined if IsDataDescriptor(valueMessageDesc) is false,
     //              and ? ToString(valueMessageDesc.[[Value]]) otherwise.
-
     let msg_key = ec.property_key_from_str("message");
     let msg_desc = ec.get_own_property(object.clone(), msg_key)?;
     let message: Option<String> = match msg_desc {
@@ -801,7 +757,6 @@ fn serialize_error(
     };
 
     // Step 17.6: Let stack be an implementation-defined string that represents value.[[Stack]].
-
     let stack = EcmascriptHost::get(ec, object, "stack")
         .ok()
         .and_then(|v| ec.to_rust_string(v).ok())
@@ -809,7 +764,6 @@ fn serialize_error(
 
     // Step 17.7: Set serialized to { [[Type]]: "Error", [[Name]]: name, [[Message]]: message, [[Stack]]: stack }.
     // Additionally, serialize [[ErrorData]].[[Cause]] per ES2022.
-
     let cause_key = ec.property_key_from_str("cause");
     let cause_desc = ec.get_own_property(object.clone(), cause_key)?;
     let cause = cause_desc
@@ -853,7 +807,6 @@ fn serialize_array(
         .ok_or_else(|| ec.new_type_error("expected object for array serialize"))?;
 
     // Step 18.1-2: Get length via own property descriptor.
-
     let length_key = ec.property_key_from_str("length");
     let length_desc = ec
         .get_own_property(object.clone(), length_key)?
@@ -865,19 +818,16 @@ fn serialize_array(
         .ok_or_else(|| ec.new_type_error("Array length is not a number"))?;
 
     // Step 18.3: Set serialized to { [[Type]]: "Array", [[Length]]: valueLen, [[Properties]]: a new empty List }.
-
     let serialized = SerializedRecord::Array {
         length,
         properties: Vec::new(),
     };
 
     // Step 18.4: Set memory[value] to serialized.
-
     let addr = std::ptr::from_ref(&object).addr();
     memory.insert_serialized(&object, serialized);
 
     // Step 18.5: For each key of ! EnumerableOwnProperties(value, key):
-
     let keys = ec.own_property_keys(object.clone())?;
     let mut properties = Vec::new();
     for key in keys {
@@ -967,12 +917,11 @@ pub fn structured_serialize_with_transfer(
     transfer_list: Vec<JsValue>,
     ec: &mut dyn ExecutionContext<Types>,
 ) -> Completion<SerializeWithTransferResult, Types> {
-    // Step 1: Let memory be an empty map.
 
+    // Step 1: Let memory be an empty map.
     let mut memory = MemoryMap::default();
 
     // Step 2: For each transferable of transferList:
-
     for transferable in &transfer_list {
         let Some(object) = Types::value_as_object(transferable) else {
             // If transferable has neither an [[ArrayBufferData]] internal slot nor a
@@ -984,26 +933,22 @@ pub fn structured_serialize_with_transfer(
 
         // Step 2.1: If transferable has neither an [[ArrayBufferData]] internal slot nor a
         //             [[Detached]] internal slot, then throw.
-
         if !has_ab && !has_sab && !is_transferable_platform_object(&object) {
             return Err(data_clone_error(ec));
         }
 
         // Step 2.2: If transferable has an [[ArrayBufferData]] internal slot and
         //             IsSharedArrayBuffer(transferable) is true, then throw.
-
         if has_sab {
             return Err(data_clone_error(ec));
         }
 
         // Step 2.3: If memory[transferable] exists, then throw.
-
         if memory.get_serialized(&object).is_some() {
             return Err(data_clone_error(ec));
         }
 
         // Step 2.4: Set memory[transferable] to { [[Type]]: an uninitialized value }.
-
         let placeholder_addr = std::ptr::from_ref(&object).addr();
         memory.serialized.insert(
             placeholder_addr,
@@ -1012,21 +957,18 @@ pub fn structured_serialize_with_transfer(
     }
 
     // Step 3: Let serialized be ? StructuredSerializeInternal(value, false, memory).
-
     let serialized = structured_serialize_internal(value, false, &mut memory, ec)?;
 
     // Step 4: Let transferDataHolders be a new empty List.
-
     let mut transfer_data_holders = Vec::new();
 
     // Step 5: For each transferable of transferList:
-
     for transferable in &transfer_list {
         let object = Types::value_as_object(transferable).ok_or_else(|| data_clone_error(ec))?;
         if let Some(buffer) = Types::object_as_array_buffer(&object) {
+
             // Step 5.1: If transferable has an [[ArrayBufferData]] internal slot:
             //   Step 5.1.1: If IsDetachedBuffer(transferable) is true, then throw.
-
             if ec.array_buffer_data(&buffer).is_none() {
                 return Err(data_clone_error(ec));
             }
@@ -1034,7 +976,6 @@ pub fn structured_serialize_with_transfer(
             // TODO: Check for [[ArrayBufferMaxByteLength]] (ResizableArrayBuffer case).
 
             // Step 5.1.4: Perform ? DetachArrayBuffer(transferable).
-
             let data = ec
                 .array_buffer_data(&buffer)
                 .ok_or_else(|| data_clone_error(ec))?;
@@ -1043,7 +984,6 @@ pub fn structured_serialize_with_transfer(
 
             // Step 5.1.4: Perform ? DetachArrayBuffer(transferable).
             // Wrap in a closure to catch panics from Boa's GcRefCell borrow.
-
             let detach_fn = |ec: &mut dyn ExecutionContext<Types>| -> Completion<(), Types> {
                 ec.detach_array_buffer(buffer, None)
             };
@@ -1060,15 +1000,14 @@ pub fn structured_serialize_with_transfer(
                 max_byte_length: None,
             });
         } else {
+
             // Step 5.2: Otherwise (platform object with [[Detached]] internal slot).
             // TODO: platform object transfer.
-
             return Err(data_clone_error(ec));
         }
     }
 
     // Step 6: Return { [[Serialized]]: serialized, [[TransferDataHolders]]: transferDataHolders }.
-
     Ok(SerializeWithTransferResult {
         serialized,
         transfer_data_holders,
@@ -1088,21 +1027,18 @@ fn structured_deserialize(
     memory: &mut MemoryMap,
     ec: &mut dyn ExecutionContext<Types>,
 ) -> Completion<JsValue, Types> {
+
     // Step 1: If memory was not supplied, let memory be an empty map.
     //         (memory is always supplied here.)
-
     // Step 2: If memory[serialized] exists, then return memory[serialized].
-
     if let Some(object) = memory.get_deserialized(serialized) {
         return Ok(Types::value_from_object(object));
     }
 
     // Step 3: Let deep be false.
-
     let mut deep = false;
 
     // Step 4: Let value be an uninitialized value.
-
     let value: JsValue;
 
     // Get realm intrinsics for constructing objects.
@@ -1110,33 +1046,33 @@ fn structured_deserialize(
     let intrinsics = ec.realm_intrinsics(&realm);
 
     match serialized {
-        // Step 5: If serialized.[[Type]] is "primitive", then set value to serialized.[[Value]].
 
+        // Step 5: If serialized.[[Type]] is "primitive", then set value to serialized.[[Value]].
         SerializedRecord::Primitive(p) => {
             value = deserialize_primitive_value(p, ec)?;
         }
+
         // Step 6: Otherwise, if serialized.[[Type]] is "Boolean", then set value to a new Boolean
         //           object in targetRealm whose [[BooleanData]] internal slot value is
         //           serialized.[[BooleanData]].
-
         SerializedRecord::Boolean(b) => {
             let bool_val = ec.value_from_bool(*b);
             let obj = ec.construct(intrinsics.boolean.clone(), &[bool_val], None)?;
             value = Types::value_from_object(obj);
         }
+
         // Step 7: Otherwise, if serialized.[[Type]] is "Number", then set value to a new Number
         //           object in targetRealm whose [[NumberData]] internal slot value is
         //           serialized.[[NumberData]].
-
         SerializedRecord::Number(n) => {
             let num_val = ec.value_from_number(*n);
             let obj = ec.construct(intrinsics.number.clone(), &[num_val], None)?;
             value = Types::value_from_object(obj);
         }
+
         // Step 8: Otherwise, if serialized.[[Type]] is "BigInt", then set value to a new BigInt
         //           object in targetRealm whose [[BigIntData]] internal slot value is
         //           serialized.[[BigIntData]].
-
         SerializedRecord::BigInt(s) => {
             // Create a BigInt wrapper via Object(BigInt(string)).
             let bi_val = ec
@@ -1148,19 +1084,19 @@ fn structured_deserialize(
             let obj = ec.construct(intrinsics.object.clone(), &[bi_val], None)?;
             value = Types::value_from_object(obj);
         }
+
         // Step 9: Otherwise, if serialized.[[Type]] is "String", then set value to a new String
         //           object in targetRealm whose [[StringData]] internal slot value is
         //           serialized.[[StringData]].
-
         SerializedRecord::String(s) => {
             let str_val = ec.value_from_string(ec.js_string_from_str(&String::from_utf16_lossy(s)));
             let obj = ec.construct(intrinsics.string.clone(), &[str_val], None)?;
             value = Types::value_from_object(obj);
         }
+
         // Step 10: Otherwise, if serialized.[[Type]] is "Date", then set value to a new Date
         //            object in targetRealm whose [[DateValue]] internal slot value is
         //            serialized.[[DateValue]].
-
         SerializedRecord::Date(ms) => {
             let date = ec.construct(intrinsics.date.clone(), &[], None)?;
             // Call date.setTime(ms) to set the time.
@@ -1172,20 +1108,20 @@ fn structured_deserialize(
             EcmascriptHost::call(ec, &set_time_fn, &date_val, &[ms_val])?;
             value = date_val;
         }
+
         // Step 11: Otherwise, if serialized.[[Type]] is "RegExp", then set value to a new RegExp
         //            object in targetRealm whose [[RegExpMatcher]] internal slot value is
         //            serialized.[[RegExpMatcher]], whose [[OriginalSource]] internal slot value is
         //            serialized.[[OriginalSource]], and whose [[OriginalFlags]] internal slot value
         //            is serialized.[[OriginalFlags]].
-
         SerializedRecord::RegExp { source, flags } => {
             let src_val = ec.value_from_string(ec.js_string_from_str(source));
             let flags_val = ec.value_from_string(ec.js_string_from_str(flags));
             let regexp = ec.construct(intrinsics.regexp.clone(), &[src_val, flags_val], None)?;
             value = Types::value_from_object(regexp);
         }
-        // Step 13: Otherwise, if serialized.[[Type]] is "SharedArrayBuffer":
 
+        // Step 13: Otherwise, if serialized.[[Type]] is "SharedArrayBuffer":
         SerializedRecord::SharedArrayBuffer {
             data,
             agent_cluster: _,
@@ -1197,12 +1133,12 @@ fn structured_deserialize(
                 ec.construct(intrinsics.shared_array_buffer.clone(), &[sab_len_val], None)?;
             value = Types::value_from_object(sab_obj);
         }
+
         // Step 14: Otherwise, if serialized.[[Type]] is "ArrayBuffer", then set value to a new
         //            ArrayBuffer object in targetRealm whose [[ArrayBufferData]] internal slot
         //            value is serialized.[[ArrayBufferData]], and whose [[ArrayBufferByteLength]]
         //            internal slot value is serialized.[[ArrayBufferByteLength]].
         //   If this throws an exception, catch it, and then throw a "DataCloneError" DOMException.
-
         SerializedRecord::ArrayBuffer {
             data: data_copy,
             byte_length: _,
@@ -1231,8 +1167,8 @@ fn structured_deserialize(
             let buf_obj = Types::object_from_array_buffer(buf);
             value = Types::value_from_object(buf_obj);
         }
-        // Step 16: Otherwise, if serialized.[[Type]] is "ArrayBufferView":
 
+        // Step 16: Otherwise, if serialized.[[Type]] is "ArrayBufferView":
         SerializedRecord::ArrayBufferView {
             constructor,
             buffer_serialized,
@@ -1264,22 +1200,22 @@ fn structured_deserialize(
                 value = Types::value_from_object(ta_obj);
             }
         }
-        // Step 17: Otherwise, if serialized.[[Type]] is "Map":
 
+        // Step 17: Otherwise, if serialized.[[Type]] is "Map":
         SerializedRecord::Map(_) => {
             let map_obj = ec.construct(intrinsics.map.clone(), &[], None)?;
             value = Types::value_from_object(map_obj);
             deep = true;
         }
-        // Step 18: Otherwise, if serialized.[[Type]] is "Set":
 
+        // Step 18: Otherwise, if serialized.[[Type]] is "Set":
         SerializedRecord::Set(_) => {
             let set_obj = ec.construct(intrinsics.set.clone(), &[], None)?;
             value = Types::value_from_object(set_obj);
             deep = true;
         }
-        // Step 19: Otherwise, if serialized.[[Type]] is "Array":
 
+        // Step 19: Otherwise, if serialized.[[Type]] is "Array":
         SerializedRecord::Array { length, .. } => {
             let array = ec.create_empty_array();
             let len_key = ec.property_key_from_str("length");
@@ -1288,15 +1224,15 @@ fn structured_deserialize(
             value = Types::value_from_object(array);
             deep = true;
         }
-        // Step 20: Otherwise, if serialized.[[Type]] is "Object":
 
+        // Step 20: Otherwise, if serialized.[[Type]] is "Object":
         SerializedRecord::Object(_) => {
             let obj = ec.create_plain_object(None);
             value = Types::value_from_object(obj);
             deep = true;
         }
-        // Step 21: Otherwise, if serialized.[[Type]] is "Error":
 
+        // Step 21: Otherwise, if serialized.[[Type]] is "Error":
         SerializedRecord::Error {
             name,
             message,
@@ -1305,25 +1241,23 @@ fn structured_deserialize(
         } => {
             value = deserialize_error(name, message, stack, cause, ec)?;
         }
-        // Step 22: Otherwise (platform object):
 
+        // Step 22: Otherwise (platform object):
         SerializedRecord::PlatformObject { .. } => {
             return Err(data_clone_error(ec));
         }
     }
 
     // Step 23: Set memory[serialized] to value.
-
     if let Some(obj) = Types::value_as_object(&value) {
         memory.insert_deserialized(serialized, obj);
     }
 
     // Step 24: If deep is true:
-
     if deep {
         match serialized {
-            // Step 24.a: If serialized.[[Type]] is "Map":
 
+            // Step 24.a: If serialized.[[Type]] is "Map":
             SerializedRecord::Map(entries) => {
                 let map_obj = Types::value_as_object(&value)
                     .and_then(|o| Types::object_as_map(&o))
@@ -1334,8 +1268,8 @@ fn structured_deserialize(
                     ec.map_set_entry(&map_obj, dk, dv)?;
                 }
             }
-            // Step 24.b: If serialized.[[Type]] is "Set":
 
+            // Step 24.b: If serialized.[[Type]] is "Set":
             SerializedRecord::Set(entries) => {
                 let set_obj = Types::value_as_object(&value)
                     .and_then(|o| Types::object_as_set(&o))
@@ -1345,8 +1279,8 @@ fn structured_deserialize(
                     ec.set_add_entry(&set_obj, de)?;
                 }
             }
-            // Step 24.c: If serialized.[[Type]] is "Array" or "Object":
 
+            // Step 24.c: If serialized.[[Type]] is "Array" or "Object":
             SerializedRecord::Array { properties, .. } | SerializedRecord::Object(properties) => {
                 let obj = Types::value_as_object(&value)
                     .ok_or_else(|| ec.new_type_error("expected object"))?;
@@ -1357,15 +1291,14 @@ fn structured_deserialize(
                     ec.set(obj.clone(), pk, dv, true)?;
                 }
             }
-            // Step 24.d: Otherwise (platform object):
 
+            // Step 24.d: Otherwise (platform object):
             SerializedRecord::PlatformObject { .. } => {}
             _ => {}
         }
     }
 
     // Step 25: Return value.
-
     Ok(value)
 }
 
@@ -1424,7 +1357,6 @@ fn deserialize_error(
     let intrinsics = ec.realm_intrinsics(&realm);
 
     // Steps 21.1-21.7: Select constructor based on error name.
-
     let error_ctor = match name {
         "EvalError" => intrinsics.eval_error.clone(),
         "RangeError" => intrinsics.range_error.clone(),
@@ -1444,7 +1376,6 @@ fn deserialize_error(
     }?;
 
     // Step 21.12: Set value.[[Stack]] to serialized.[[Stack]].
-
     let stack_key = ec.property_key_from_str("stack");
     let stack_str = ec.js_string_from_str(stack);
     let stack_val = ec.value_from_string(stack_str);
@@ -1487,25 +1418,23 @@ pub fn structured_deserialize_with_transfer(
     target_realm: &JsValue,
     ec: &mut dyn ExecutionContext<Types>,
 ) -> Completion<DeserializeWithTransferResult, Types> {
-    // Step 1: Let memory be an empty map.
 
+    // Step 1: Let memory be an empty map.
     let mut memory = MemoryMap::default();
 
     // Step 2: Let transferredValues be a new empty List.
-
     let mut transferred_values = Vec::new();
 
     // Step 3: For each transferDataHolder of
     //          serializeWithTransferResult.[[TransferDataHolders]]:
-
     for holder in &serialize_result.transfer_data_holders {
         let value: JsValue = match holder {
+
             // Step 3.1: If transferDataHolder.[[Type]] is "ArrayBuffer", then set value to a new
             //            ArrayBuffer object in targetRealm whose [[ArrayBufferData]] internal slot
             //            value is transferDataHolder.[[ArrayBufferData]], and whose
             //            [[ArrayBufferByteLength]] internal slot value is
             //            transferDataHolder.[[ArrayBufferByteLength]].
-
             TransferDataHolder::ArrayBuffer {
                 data,
                 byte_length: _,
@@ -1531,8 +1460,8 @@ pub fn structured_deserialize_with_transfer(
                 let buf_obj = Types::object_from_array_buffer(buf);
                 Types::value_from_object(buf_obj)
             }
-            // Step 3.3: Otherwise (platform object).
 
+            // Step 3.3: Otherwise (platform object).
             TransferDataHolder::PlatformObject { .. } => {
                 // TODO: platform object transfer-receiving.
                 return Err(data_clone_error(ec));
@@ -1540,24 +1469,21 @@ pub fn structured_deserialize_with_transfer(
         };
 
         // Step 3.4: Set memory[transferDataHolder] to value.
-
         if let Some(obj) = Types::value_as_object(&value) {
             memory
                 .insert_deserialized(&SerializedRecord::Primitive(PrimitiveValue::Undefined), obj);
         }
-        // Step 3.5: Append value to transferredValues.
 
+        // Step 3.5: Append value to transferredValues.
         transferred_values.push(value);
     }
 
     // Step 4: Let deserialized be ? StructuredDeserialize(
     //           serializeWithTransferResult.[[Serialized]], targetRealm, memory).
-
     let deserialized =
         structured_deserialize(&serialize_result.serialized, target_realm, &mut memory, ec)?;
 
     // Step 5: Return { [[Deserialized]]: deserialized, [[TransferredValues]]: transferredValues }.
-
     Ok(DeserializeWithTransferResult {
         deserialized,
         transferred_values,
@@ -1572,8 +1498,8 @@ pub fn structured_clone(
     options: Option<StructuredCloneOptions>,
     ec: &mut dyn ExecutionContext<Types>,
 ) -> Completion<JsValue, Types> {
-    // Step 1: Let serialized be ? StructuredSerializeWithTransfer(value, options["transfer"]).
 
+    // Step 1: Let serialized be ? StructuredSerializeWithTransfer(value, options["transfer"]).
     let transfer = options
         .as_ref()
         .and_then(|o| o.transfer.clone())
@@ -1581,11 +1507,9 @@ pub fn structured_clone(
     let serialized = structured_serialize_with_transfer(&value, transfer, ec)?;
 
     // Step 2: Let deserializeRecord be ? StructuredDeserializeWithTransfer(...).
-
     let desc_result = structured_deserialize_with_transfer(&serialized, &ec.value_undefined(), ec)?;
 
     // Step 3: Return deserializeRecord.[[Deserialized]].
-
     Ok(desc_result.deserialized)
 }
 

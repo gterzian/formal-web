@@ -35,12 +35,11 @@ fn trap_get_prototype_of(
 
     // Step 2: "If IsPlatformObjectSameOrigin(W) is true, then return !
     //           OrdinaryGetPrototypeOf(W)."
-
     let proto = ec.get_prototype_of(win)?;
     match proto {
         Some(p) => Ok(<crate::js::Types as JsTypes>::value_from_object(p)),
-        // Step 3: "Return null."
 
+        // Step 3: "Return null."
         None => Ok(ec.value_null()),
     }
 }
@@ -55,7 +54,6 @@ fn trap_set_prototype_of(
     let val = args.get(1).cloned().unwrap_or_else(|| ec.value_undefined());
 
     // Step 1: "Return ! SetImmutablePrototype(this, V)."
-
     let current = ec.get_prototype_of(win)?;
     let same = match (&current, val.as_object()) {
         (Some(current_proto), Some(v)) => *current_proto == v,
@@ -71,8 +69,8 @@ fn trap_prevent_extensions(
     _this: JsValue,
     ec: &mut dyn ExecutionContext<crate::js::Types>,
 ) -> Completion<JsValue, crate::js::Types> {
-    // Step 1: "Return false."
 
+    // Step 1: "Return false."
     Ok(ec.value_from_bool(false))
 }
 
@@ -82,8 +80,8 @@ fn trap_is_extensible(
     _this: JsValue,
     ec: &mut dyn ExecutionContext<crate::js::Types>,
 ) -> Completion<JsValue, crate::js::Types> {
-    // Step 1: "Return true."
 
+    // Step 1: "Return true."
     Ok(ec.value_from_bool(true))
 }
 
@@ -99,13 +97,11 @@ fn trap_define_property(
 
     // Step 2: "If IsPlatformObjectSameOrigin(W) is true:"
     // Step 2.1: "If P is an array index property name, return false."
-
     if is_array_index_key(&key, ec) {
         return Ok(ec.value_from_bool(false));
     }
 
     // Step 2.2: "Return ? OrdinaryDefineOwnProperty(W, P, Desc)."
-
     let desc_obj = ec.to_object(desc_obj_val)?;
     let desc = ec.to_property_descriptor(desc_obj)?;
     let prop_key = ec.to_property_key(key)?;
@@ -130,7 +126,6 @@ fn trap_get(
     // Note: Access reporting is not yet implemented.
     // Step 3: "If IsPlatformObjectSameOrigin(W) is true, then return ?
     //           OrdinaryGet(this, P, Receiver)."
-
     let prop_key = ec.to_property_key(key)?;
     let win_val = <crate::js::Types as JsTypes>::value_from_object(win.clone());
     let result = ec.get_v(win_val, prop_key)?;
@@ -177,13 +172,11 @@ fn trap_set(
     // Note: Access reporting is not yet implemented.
     // Step 3: "If IsPlatformObjectSameOrigin(W) is true:"
     // Step 3.1: "If P is an array index property name, return false."
-
     if is_array_index_key(&key, ec) {
         return Ok(ec.value_from_bool(false));
     }
 
     // Step 3.2: "Return ? OrdinarySet(W, P, V, Receiver)."
-
     let value = args.get(2).cloned().unwrap_or_else(|| ec.value_undefined());
     let prop_key = ec.to_property_key(key)?;
     ec.set(win, prop_key, value, false)?;
@@ -201,20 +194,18 @@ fn trap_delete_property(
 
     // Step 2: "If IsPlatformObjectSameOrigin(W) is true:"
     // Step 2.1: "If P is an array index property name:"
-
     if is_array_index_key(&key, ec) {
         let prop_key = ec.to_property_key(key)?;
+
         // Step 2.1.1: "Let desc be ! this.[[GetOwnProperty]](P)."
         // Uses has_own_property as proxy for "desc is undefined".
         // Step 2.1.2: "If desc is undefined, then return true."
         // Step 2.1.3: "Return false."
-
         let has = ec.has_own_property(win, prop_key)?;
         return Ok(ec.value_from_bool(!has));
     }
 
     // Step 2.2: "Return ? OrdinaryDelete(W, P)."
-
     let prop_key = ec.to_property_key(key)?;
     ec.delete_property_or_throw(win, prop_key)?;
     Ok(ec.value_from_bool(true))
@@ -257,7 +248,6 @@ fn trap_own_keys(
     // Step 3: "Let keys be the range 0 to maxProperties, exclusive."
     // Step 4: "If IsPlatformObjectSameOrigin(W) is true, then return the
     //           concatenation of keys and OrdinaryOwnPropertyKeys(W)."
-
     let window_keys = ec.own_property_keys(win)?;
     let key_array = ec.create_empty_array();
     for val in window_keys.into_iter() {

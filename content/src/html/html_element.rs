@@ -28,58 +28,58 @@ impl HTMLElement {
 
     /// <https://html.spec.whatwg.org/#dom-title>
     pub(crate) fn title(&self) -> String {
-        // Step 1: "Return the value of the title content attribute."
 
+        // Step 1: "Return the value of the title content attribute."
         self.element.get_attribute("title").unwrap_or_default()
     }
 
     /// <https://html.spec.whatwg.org/#dom-title>
     pub(crate) fn set_title(&self, title: &str) {
-        // Step 1: "Set this's title content attribute to the given value."
 
+        // Step 1: "Set this's title content attribute to the given value."
         self.element.set_attribute("title", title);
     }
 
     /// <https://html.spec.whatwg.org/#dom-lang>
     pub(crate) fn lang(&self) -> String {
-        // Step 1: "Return the value of the lang content attribute."
 
+        // Step 1: "Return the value of the lang content attribute."
         self.element.get_attribute("lang").unwrap_or_default()
     }
 
     /// <https://html.spec.whatwg.org/#dom-lang>
     pub(crate) fn set_lang(&self, lang: &str) {
-        // Step 1: "Set this's lang content attribute to the given value."
 
+        // Step 1: "Set this's lang content attribute to the given value."
         self.element.set_attribute("lang", lang);
     }
 
     /// <https://html.spec.whatwg.org/#dom-dir>
     pub(crate) fn dir(&self) -> String {
-        // Step 1: "Return the value of the dir content attribute."
 
+        // Step 1: "Return the value of the dir content attribute."
         self.element.get_attribute("dir").unwrap_or_default()
     }
 
     /// <https://html.spec.whatwg.org/#dom-dir>
     pub(crate) fn set_dir(&self, dir: &str) {
-        // Step 1: "Set this's dir content attribute to the given value."
 
+        // Step 1: "Set this's dir content attribute to the given value."
         self.element.set_attribute("dir", dir);
     }
 
     /// <https://html.spec.whatwg.org/#dom-hidden>
     pub(crate) fn hidden(&self) -> bool {
+
         // Step 1: "Return true if the hidden attribute is in the Hidden State or Until Found State; otherwise false."
         // Note: The current DOM implementation exposes the attribute as a presence bit, so both states collapse to whether `hidden` is present.
-
         self.element.has_attribute("hidden")
     }
 
     /// <https://html.spec.whatwg.org/#dom-hidden>
     pub(crate) fn set_hidden(&self, hidden: bool) {
-        // Step 1: "Set the hidden attribute to the Hidden State if the given value is true; otherwise remove it."
 
+        // Step 1: "Set the hidden attribute to the Hidden State if the given value is true; otherwise remove it."
         if hidden {
             self.element.set_attribute("hidden", "");
         } else {
@@ -90,16 +90,15 @@ impl HTMLElement {
 
 /// <https://drafts.csswg.org/cssom/#dom-htmlelement-style>
 pub(crate) fn inline_style_properties_for_element(element: &Element) -> BTreeMap<String, String> {
+
     // Step 1 of the ElementCSSInlineStyle getter is handled at the binding layer, which creates a
     // CSSStyleProperties-shaped object whose owner node is the element.
-
     let mut properties = BTreeMap::new();
 
     // Step 1 of "When a CSS declaration block object is created": "Let owner node be the owner
     // node."
     // Step 2: "If owner node is null, or the computed flag is set, then return."
     // Note: This helper is only called for an element-backed, non-computed declaration block.
-
     let Some(style_attribute) = element.get_attribute("style") else {
         return properties;
     };
@@ -117,7 +116,6 @@ pub(crate) fn inline_style_properties_for_element(element: &Element) -> BTreeMap
     // Note: The implementation does not yet route style attributes through a full CSS Syntax
     // parser. It accepts the subset used by the targeted tests by splitting declarations on `;`
     // and the first `:` while normalizing property names to ASCII lowercase.
-
     for declaration in style_attribute.split(';') {
         let declaration = declaration.trim();
         if declaration.is_empty() {

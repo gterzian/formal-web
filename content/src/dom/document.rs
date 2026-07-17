@@ -141,9 +141,9 @@ impl Document {
 
     /// <https://dom.spec.whatwg.org/#dom-document-createcomment>
     pub(crate) fn create_comment(&self, _data: &str) -> usize {
+
         // Step 1: "Return a new Comment node whose data is data and node document is this."
         // Note: Blitz exposes comment nodes without comment-text storage, so the implementation preserves the node identity and tree behavior but not the comment payload yet.
-
         let mut document = self.node.document.borrow_mut();
         let mut mutator = document.mutate();
         mutator.create_comment_node()
@@ -160,11 +160,10 @@ impl Document {
 
     /// <https://html.spec.whatwg.org/#document.title>
     pub(crate) fn title(&self) -> String {
+
         // Step 1: "If the document element is an SVG svg element, then let value be the child text content of the first SVG title element that is a child of the document element."
         // Current WPT coverage exercises HTML documents; follows HTML branch.
-
         // Step 2: "Otherwise, let value be the child text content of the title element, or the empty string if the title element is null."
-
         let value = self
             .node
             .document
@@ -174,11 +173,9 @@ impl Document {
             .unwrap_or_default();
 
         // Step 3: "Strip and collapse ASCII whitespace in value."
-
         let value = strip_and_collapse_ascii_whitespace(&value);
 
         // Step 4: "Return value."
-
         value
     }
 

@@ -51,8 +51,8 @@ fn next_on_fulfilled_behaviour<T: AsyncValueIterable>(
         let done_result = js_engine::EcmascriptHost::get(ec, &result_object, "done");
         if let Ok(done_val) = done_result {
             if ec.to_boolean(&done_val) {
-                // Step 8.5.2: "If next is end of iteration, then:"
 
+                // Step 8.5.2: "If next is end of iteration, then:"
                 captures.iterator.finished.set(true);
                 captures
                     .iterator
@@ -69,7 +69,6 @@ fn next_on_fulfilled_behaviour<T: AsyncValueIterable>(
     }
 
     // Step 8.5.4: Return the result as-is (the value is the iteration value)
-
     Ok(result)
 }
 
@@ -87,8 +86,8 @@ fn next_on_rejected_behaviour<T: AsyncValueIterable>(
     captures: &NextOnRejectedCaptures<T>,
     ec: &mut dyn ExecutionContext<Types>,
 ) -> Completion<JsValue, Types> {
-    // Step 8.7.2: "Set object's is finished to true."
 
+    // Step 8.7.2: "Set object's is finished to true."
     captures.iterator.finished.set(true);
 
     captures
@@ -97,7 +96,6 @@ fn next_on_rejected_behaviour<T: AsyncValueIterable>(
         .finish_async_iterator(&captures.iterator.state, ec)?;
 
     // Step 8.7.3: "Throw reason."
-
     let reason = args
         .first()
         .cloned()
@@ -140,8 +138,8 @@ fn return_on_fulfilled_behaviour(
     captures: &ReturnOnFulfilledCaptures,
     ec: &mut dyn ExecutionContext<Types>,
 ) -> Completion<JsValue, Types> {
-    // Step 12.1: "Return CreateIteratorResultObject(value, true)."
 
+    // Step 12.1: "Return CreateIteratorResultObject(value, true)."
     Ok(Types::value_from_object(create_iterator_result_object(
         captures.value.clone(),
         true,
@@ -199,8 +197,8 @@ pub(crate) trait AsyncValueIterable:
         _value: JsValue,
         ec: &mut dyn ExecutionContext<Types>,
     ) -> Completion<JsObject, Types> {
-        // Step 1: "Return a promise resolved with undefined."
 
+        // Step 1: "Return a promise resolved with undefined."
         resolved_promise(ec.value_undefined(), ec)
     }
 }
@@ -247,21 +245,20 @@ where
         operation: IteratorOperation,
         ec: &mut dyn ExecutionContext<Types>,
     ) -> Completion<JsObject, Types> {
+
         // Step 9: "Let ongoingPromise be object's ongoing promise."
         // Note: Extract the clone before the if-let to avoid holding
         // the GcCell borrow guard across the entire block, which would
         // prevent a subsequent borrow_mut() (the temporary in `if let`
         // lives until the end of the block in Rust).
-
         let ongoing = self.ongoing_promise.borrow().clone();
         if let Some(previous) = ongoing {
+
             // Step 10: "If ongoingPromise is not null, then:"
             // Step 10.1: "Let afterOngoingPromiseCapability be ! NewPromiseCapability(%Promise%)."
             // Note: result_capability is not wired on the Boa backend,
             // so we use the .then() return value as the ongoing promise.
-
             // Step 10.2: "Let onSettled be CreateBuiltinFunction(nextSteps, 0, "", « »)."
-
             let name_key = ec.property_key_from_str("");
             let on_settled_fn = create_builtin_fn_with_traced_captures(
                 ec,
@@ -276,7 +273,6 @@ where
             );
 
             // Step 10.3: "Perform PerformPromiseThen(ongoingPromise, onSettled, onSettled, afterOngoingPromiseCapability)."
-
             let previous_promise = promise_from_object(previous, ec)?;
             let then_value = ec.perform_promise_then(
                 previous_promise,
@@ -290,15 +286,14 @@ where
             ec.run_jobs();
 
             // Step 10.4: "Set object's ongoing promise to afterOngoingPromiseCapability.[[Promise]]."
-
             let result_obj = Types::value_as_object(&then_value)
                 .ok_or_else(|| ec.new_type_error("PerformPromiseThen did not return an object"))?;
             *self.ongoing_promise.borrow_mut() = Some(result_obj.clone());
             Ok(result_obj)
         } else {
+
             // Step 11: "Otherwise:"
             // Step 11.1: "Set object's ongoing promise to the result of running nextSteps."
-
             let promise = self.start_operation(operation, ec)?;
             *self.ongoing_promise.borrow_mut() = Some(promise.clone());
             Ok(promise)
@@ -318,15 +313,14 @@ where
 
     /// <https://webidl.spec.whatwg.org/#js-asynchronous-iterator-prototype-object>
     fn start_next(&self, ec: &mut dyn ExecutionContext<Types>) -> Completion<JsObject, Types> {
+
         // Step 8.1: "Let nextPromiseCapability be ! NewPromiseCapability(%Promise%)."
         // Note: We create a fallback capability for the finished/error paths.
-
         let next_capability = ec
             .new_promise_capability(ec.realm_intrinsics(&ec.current_realm()).promise)
             .map_err(|e| e)?;
 
         // Step 8.2: "If object's is finished is true, then:"
-
         if self.finished.get() {
             let result = create_iterator_result_object(ec.value_undefined(), true, ec);
             let resolve_obj = Types::object_from_function(next_capability.resolve);
@@ -341,7 +335,6 @@ where
         }
 
         // Step 8.4: "Let nextPromise be the result of getting the next iteration result with object's target and object."
-
         let next_promise = match self.target.get_next_iteration_result(&self.state, ec) {
             Ok(promise_obj) => promise_obj,
             Err(error) => {
@@ -354,7 +347,6 @@ where
         };
 
         // Step 8.5–8.6: Create onFulfilled
-
         let name_key = ec.property_key_from_str("");
         let on_fulfilled = create_builtin_fn_with_traced_captures(
             ec,
@@ -368,7 +360,6 @@ where
         );
 
         // Step 8.7–8.8: Create onRejected
-
         let on_rejected = create_builtin_fn_with_traced_captures(
             ec,
             NextOnRejectedCaptures {
@@ -384,7 +375,6 @@ where
         // Note: result_capability is not wired on the Boa backend, so we
         // use the return value of perform_promise_then (the .then() result
         // promise) instead of next_capability.promise for the normal path.
-
         let next_promise_obj = promise_from_object(next_promise, ec)?;
         let then_result = ec.perform_promise_then(
             next_promise_obj,
@@ -405,7 +395,6 @@ where
             .ok_or_else(|| ec.new_type_error("PerformPromiseThen did not return an object"))?;
 
         // Step 8.10: "Return nextPromiseCapability.[[Promise]]."
-
         Ok(result_promise)
     }
 
@@ -415,16 +404,15 @@ where
         value: JsValue,
         ec: &mut dyn ExecutionContext<Types>,
     ) -> Completion<JsObject, Types> {
+
         // Step 8.1: "Let returnPromiseCapability be ! NewPromiseCapability(%Promise%)."
         // Note: used for finished/error fast-paths; normal path uses
         // the promise returned by perform_promise_then.
-
         let return_capability = ec
             .new_promise_capability(ec.realm_intrinsics(&ec.current_realm()).promise)
             .map_err(|e| e)?;
 
         // Step 8.2: "If object's is finished is true, then:"
-
         if self.finished.get() {
             let result = create_iterator_result_object(value, true, ec);
             let resolve_obj = Types::object_from_function(return_capability.resolve);
@@ -439,11 +427,9 @@ where
         }
 
         // Step 8.3: "Set object's is finished to true."
-
         self.finished.set(true);
 
         // Step 8.4: "Return the result of running the asynchronous iterator return algorithm for interface..."
-
         let return_promise = if !T::has_async_iterator_return() {
             let result = create_iterator_result_object(value.clone(), true, ec);
             resolved_promise(Types::value_from_object(result), ec)?
@@ -464,7 +450,6 @@ where
         };
 
         // Step 12–13: "Let onFulfilled be CreateBuiltinFunction(fulfillSteps, 1, "", « »)."
-
         let name_key = ec.property_key_from_str("");
         let on_fulfilled = create_builtin_fn_with_traced_captures(
             ec,
@@ -487,7 +472,6 @@ where
         );
 
         // Step 14: "Perform PerformPromiseThen(object's ongoing promise, onFulfilled, undefined, returnPromiseCapability)."
-
         let return_promise_obj = promise_from_object(return_promise, ec)?;
         let then_result = ec.perform_promise_then(
             return_promise_obj,
@@ -498,7 +482,6 @@ where
 
         // Step 15: "Return returnPromiseCapability.[[Promise]]."
         // Use the .then() return value as the result promise.
-
         let result_promise = Types::value_as_object(&then_result)
             .ok_or_else(|| ec.new_type_error("PerformPromiseThen did not return an object"))?;
         Ok(result_promise)
@@ -608,13 +591,13 @@ fn async_iterator_next_inner<T>(
 where
     T: AsyncValueIterable,
 {
-    // Steps 2-5: this validation
 
+    // Steps 2-5: this validation
     let iterator = match default_async_iterator_from_this::<T>(&this, ec) {
         Ok(iterator) => iterator,
         Err(error) => {
-            // Step 5: "IfAbruptRejectPromise(object, thisValidationPromiseCapability)."
 
+            // Step 5: "IfAbruptRejectPromise(object, thisValidationPromiseCapability)."
             let capability = ec
                 .new_promise_capability(ec.realm_intrinsics(&ec.current_realm()).promise)
                 .map_err(|e| e)?;
@@ -626,7 +609,6 @@ where
     };
 
     // Step 12: "Return object's ongoing promise."
-
     let promise = iterator.queue_operation(IteratorOperation::Next, ec)?;
     Ok(Types::value_from_object(promise))
 }
@@ -646,7 +628,6 @@ where
         .unwrap_or_else(|| ec.value_undefined());
 
     // Steps 2-5: this validation
-
     let iterator = match default_async_iterator_from_this::<T>(&this, ec) {
         Ok(iterator) => iterator,
         Err(error) => {
@@ -664,7 +645,6 @@ where
     let return_result = iterator.queue_operation(IteratorOperation::Return(value.clone()), ec)?;
 
     // Step 12–15: Wrap the return result through onFulfilled (CreateIteratorResultObject)
-
     let name_key = ec.property_key_from_str("");
     let on_fulfilled = create_builtin_fn_with_traced_captures(
         ec,
@@ -698,7 +678,6 @@ where
     )?;
 
     // Step 15: "Return returnPromiseCapability.[[Promise]]."
-
     Ok(result_promise)
 }
 
@@ -711,14 +690,13 @@ pub(crate) fn create_value_async_iterator<T>(
 where
     T: AsyncValueIterable,
 {
+
     // Step 6: "Let iterator be a newly created default asynchronous iterator object for definition with idlObject as its target, \"value\" as its kind, and is finished set to false."
     // Step 7: "Run the asynchronous iterator initialization steps for definition with idlObject, iterator, and idlArgs, if any such steps exist."
-
     let state = target.create_async_iterator_state(args, ec)?;
 
     let iterator = DefaultAsyncIterator::new(target, state);
 
     // Step 8: "Return iterator."
-
     Ok(create_default_async_iterator_object(iterator, ec))
 }

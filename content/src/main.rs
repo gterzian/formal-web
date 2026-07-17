@@ -937,13 +937,11 @@ impl ContentProcess {
         // This block continues <https://html.spec.whatwg.org/#creating-a-new-browsing-context>.
         // Step 7: "Mark document as ready for post-load tasks."
         // TODO: Persist the document's post-load readiness state in the DOM model.
-
         let parser_scripts = {
             let mut document_guard = document.borrow_mut();
 
             // Step 8: "Populate with html/head/body given document."
             // The content process drives the shared HTML parser with a fixed `about:blank` skeleton.
-
             parse_html_into_document(&mut document_guard, EMPTY_HTML_DOCUMENT)
         };
 
@@ -952,7 +950,6 @@ impl ContentProcess {
         // TODO: Model the rest of the `completely finish loading` bookkeeping explicitly instead of relying on parser-discovered script execution alone.
         // Step 9: "Make active document."
         // Records the document as addressable under `document_id` after init completes.
-
         self.documents.insert(
             document_id,
             ContentDocument {
@@ -1012,7 +1009,6 @@ impl ContentProcess {
         // This block continues <https://html.spec.whatwg.org/#navigate-html>.
         // Step 1: "Let document be the result of creating and initializing a `Document` object given `html`, `text/html`, and navigationParams."
         // BaseDocument::new and EnvironmentSettingsObject::new split document creation.
-
         let document = Rc::new(RefCell::new(BaseDocument::new(self.document_config(
             traversable_id,
             document_id,
@@ -1046,7 +1042,6 @@ impl ContentProcess {
 
             // Step 3: "Otherwise, create an HTML parser and associate it with the document."
             // The embedder has buffered the response body; feed into parser immediately.
-
             parse_html_into_document(&mut document_guard, &body)
         };
 
@@ -1402,10 +1397,8 @@ impl ContentProcess {
 
             // Step 1: "Let `frameTimestamp` be `eventLoop`'s last render opportunity time."
             // Note: The content process currently derives a monotonic frame timestamp from the document's environment settings object time origin instead of the HTML event loop's shared render-opportunity clock.
-
             // Step 14: "For each `doc` of `docs`, run the animation frame callbacks for `doc`, passing in the relative high resolution time given `frameTimestamp` and `doc`'s relevant global object as the timestamp."
             // Note: The content process collapses `docs` to the single active document for this content process and uses the same environment-relative time as both the HTML frame timestamp and the callback timestamp.
-
             document
                 .settings
                 .run_animation_frame_callbacks(frame_timestamp_ms)?;
@@ -1416,7 +1409,6 @@ impl ContentProcess {
 
                 // Step 16.2.1: "Recalculate styles and update layout for `doc`."
                 // `resolve` advances style, layout, and resource-driven document updates.
-
                 document_guard.resolve(animation_time);
             }
 
@@ -1435,7 +1427,6 @@ impl ContentProcess {
 
                 // Step 22: "For each `doc` of `docs`, update the rendering or user interface of `doc` and its node navigable to reflect the current state."
                 // Note: This implementation collapses the HTML rendering task to a single active document and records the painted scene for the embedder.
-
                 paint_scene(
                     &mut scene,
                     &document_guard,
@@ -2315,7 +2306,6 @@ fn run_content_message_loop(
                                     let _ = process.note_command_completed();
                                     // <https://html.spec.whatwg.org/#event-loop-processing-model>
                                     // Step 2.8: Perform a microtask checkpoint.
-
                                     if let Err(error) = process.perform_microtask_checkpoint() {
                                         error!("microtask checkpoint after task failed: {error}");
                                     }

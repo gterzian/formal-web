@@ -84,16 +84,16 @@ pub(crate) fn validate_and_normalize_high_water_mark(
     value: &JsValue,
     ec: &mut dyn ExecutionContext<Types>,
 ) -> Completion<f64, Types> {
+
     // Step 1 (implicit): "Let highWaterMark be ? ToNumber(highWaterMark)."
-
     let number = ec.to_number(value.clone())?;
-    // Step 2: "If highWaterMark is NaN or highWaterMark < 0, throw a RangeError exception."
 
+    // Step 2: "If highWaterMark is NaN or highWaterMark < 0, throw a RangeError exception."
     if number.is_nan() || number < 0.0 {
         return Err(ec.new_range_error("highWaterMark must be a non-negative number"));
     }
-    // Step 3: "Return highWaterMark."
 
+    // Step 3: "Return highWaterMark."
     Ok(number)
 }
 
@@ -103,8 +103,8 @@ pub(crate) fn extract_high_water_mark(
     default_high_water_mark: f64,
     ec: &mut dyn ExecutionContext<Types>,
 ) -> Completion<f64, Types> {
-    // Step 1: "If strategy[\"highWaterMark\"] does not exist, return defaultHWM."
 
+    // Step 1: "If strategy[\"highWaterMark\"] does not exist, return defaultHWM."
     if strategy.is_undefined() || strategy.is_null() {
         return Ok(default_high_water_mark);
     }
@@ -112,19 +112,16 @@ pub(crate) fn extract_high_water_mark(
     let strategy = ec.to_object(strategy.clone())?;
 
     // Step 2: "Let highWaterMark be strategy[\"highWaterMark\"]."
-
     let high_water_mark =
         ExecutionContext::get(ec, strategy, ec.property_key_from_str("highWaterMark"))?;
 
     // Step 3: "If highWaterMark is undefined, return defaultHWM."
-
     let undefined_value = ec.value_undefined();
     if ec.same_value(&high_water_mark, &undefined_value) {
         return Ok(default_high_water_mark);
     }
 
     // Step 4: "Return ? ValidateAndNormalizeHighWaterMark(highWaterMark)."
-
     validate_and_normalize_high_water_mark(&high_water_mark, ec)
 }
 
@@ -133,8 +130,8 @@ pub(crate) fn extract_size_algorithm(
     strategy: &JsValue,
     ec: &mut dyn ExecutionContext<Types>,
 ) -> Completion<SizeAlgorithm, Types> {
-    // Step 1: "If strategy[\"size\"] does not exist, return an algorithm that returns 1."
 
+    // Step 1: "If strategy[\"size\"] does not exist, return an algorithm that returns 1."
     if strategy.is_undefined() || strategy.is_null() {
         return Ok(SizeAlgorithm::ReturnOne);
     }
@@ -151,7 +148,6 @@ pub(crate) fn extract_size_algorithm(
     // Note: IsCallable is checked here rather than deferring to the Web IDL invoke
     // algorithm so that the TypeError is thrown at construction time rather than at
     // first enqueue.
-
     let size = size
         .as_object()
         .ok_or_else(|| ec.new_type_error("strategy.size must be callable"))?;

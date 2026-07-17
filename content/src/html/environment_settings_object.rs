@@ -265,8 +265,8 @@ impl EnvironmentSettingsObject {
         .map_err(|error| self.error_to_string(error))?;
 
         for callback in callbacks {
-            // Step 3.3: "Invoke callback with « now » and \"report\"."
 
+            // Step 3.3: "Invoke callback with « now » and \"report\"."
             let now_value = self.realm_execution_context.value_from_number(now);
             if let Err(error) = crate::webidl::invoke_callback_function(
                 &mut self.realm_execution_context as &mut dyn EcmascriptHost<crate::js::Types>,

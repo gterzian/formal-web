@@ -78,17 +78,16 @@ pub(crate) fn window_computed_style_properties_for_element(
     elt: &Element,
     pseudo_elt: Option<&str>,
 ) -> BTreeMap<String, String> {
+
     // Step 1: "Let doc be elt's node document."
     // Note: The style resolution helper reads elt's node document through the [Document](https://dom.spec.whatwg.org/#interface-document) [platform object](https://webidl.spec.whatwg.org/#dfn-platform-object).
-
     // Step 2: "Let obj be elt."
-
     let mut obj = Some(elt);
 
     // Step 3: "If pseudoElt is provided, is not the empty string, and starts with a colon..."
-
     if let Some(pseudo_elt) = pseudo_elt.map(str::trim).filter(|value| !value.is_empty()) {
         if pseudo_elt.starts_with(':') {
+
             // Step 3.1: Parse pseudoElt as a <pseudo-element-selector>.
             // Step 3.2 / 3.3: Map invalid, ::slotted(), ::part(), or supported pseudo-element
             // requests to the corresponding pseudo-element object.
@@ -96,13 +95,11 @@ pub(crate) fn window_computed_style_properties_for_element(
             // Note: The implementation does not yet expose pseudo-element platform objects, so any
             // pseudo-element request leaves `obj` null and therefore produces an empty declaration
             // list below.
-
             obj = None;
         }
     }
 
     // Step 4: "Let decls be an empty list of CSS declarations."
-
     let mut decls = BTreeMap::new();
 
     // Step 5: "If obj is not null, and elt is connected, part of the flat tree, and its
@@ -111,7 +108,6 @@ pub(crate) fn window_computed_style_properties_for_element(
     // Note: The implementation represents the connected predicate, but it does not yet model flat
     // tree membership, pseudo-elements, or the browsing-context-container rendering gate. The
     // populated branch therefore uses the connected element that exists today.
-
     if let Some(obj) = obj.filter(|element| element.is_connected()) {
         decls = resolved_style_properties_for_element(obj);
     }
@@ -119,7 +115,6 @@ pub(crate) fn window_computed_style_properties_for_element(
     // Step 6: "Return a live CSSStyleProperties object ... declarations decls ... owner node obj."
     // Note: The binding layer currently wraps this declaration snapshot in a plain JS object while
     // native CSSStyleProperties liveness is still pending.
-
     decls
 }
 
@@ -135,11 +130,10 @@ pub(crate) fn window_open_steps(
     global_scope: &GlobalScope,
     event_sender: &IpcSender<ContentEvent>,
 ) -> Completion<JsValue, crate::js::Types> {
+
     // Step 1: "If the event loop's termination nesting level is nonzero, then return null."
     // TODO: Content process does not yet track termination nesting.
-
     // Step 2: "Let sourceDocument be the entry global object's associated Document."
-
     let source_navigable_id = match global_scope.source_navigable_id() {
         Some(id) => id,
         None => {
@@ -151,7 +145,6 @@ pub(crate) fn window_open_steps(
     // Step 4: "If url is not the empty string:"
     // Step 3: "Let urlRecord be null."
     // Step 4: "If url is not the empty string:"
-
     let url_record = if url.is_empty() {
         None
     } else {
@@ -209,27 +202,22 @@ pub(crate) fn window_open_steps(
     };
 
     // Step 5: "If target is the empty string, then set target to '_blank'."
-
     let target = if target.is_empty() { "_blank" } else { target };
 
     // Step 6: "Let tokenizedFeatures be the result of tokenizing features."
-
     let tokenized_features = tokenize_features(features);
 
     // Step 7: "Let noreferrer be false."
     // Step 8: "If tokenizedFeatures['noreferrer'] exists..."
-
     let noreferrer = tokenized_features
         .get("noreferrer")
         .map(|value| parse_boolean_feature(value))
         .unwrap_or(false);
 
     // Step 9: "Let noopener be the result of getting noopener for window open..."
-
     let noopener = get_noopener_for_window_open(&tokenized_features, url_record.as_deref());
 
     // Step 10: "Remove tokenizedFeatures['noopener'] and tokenizedFeatures['noreferrer']."
-
     let mut remaining_features = tokenized_features;
     remaining_features.remove("noopener");
     remaining_features.remove("noreferrer");
@@ -237,7 +225,6 @@ pub(crate) fn window_open_steps(
     // Step 11: "Let referrerPolicy be the empty string."
     // Step 12: "If noreferrer is true, then set noopener to true and set
     //           referrerPolicy to 'no-referrer'."
-
     let (noopener, referrer_policy) = if noreferrer {
         (true, String::from("no-referrer"))
     } else {
@@ -251,7 +238,6 @@ pub(crate) fn window_open_steps(
     // Step 13: "Apply the rules for choosing a navigable given name, window's
     //          navigable, and noopener."
     // <https://html.spec.whatwg.org/#the-rules-for-choosing-a-navigable>
-
     let parent_traversable_id = global_scope.parent_traversable_id();
     let top_level_traversable_id = global_scope
         .top_level_traversable_id()
@@ -277,7 +263,6 @@ pub(crate) fn window_open_steps(
     // locally (step 7/8) when called with a `GlobalScope`.  The result struct
     // carries back the chosen navigable ID, any new traversable info, and
     // the Window backing the WindowProxy.
-
     if let Err(error) = super::navigate(
         event_sender,
         source_navigable_id,
@@ -296,14 +281,12 @@ pub(crate) fn window_open_steps(
 
     // Step 17: "If noopener is true or windowType is 'new with no opener',
     //           then return null."
-
     if noopener {
         return Ok(ec.value_null());
     }
 
     // Step 18: Return targetNavigable's active WindowProxy.
     // <https://html.spec.whatwg.org/#the-windowproxy-exotic-object>
-
     let window = result
         .return_window
         .expect("window_open_steps: all navigable branches set a return window");
@@ -315,16 +298,15 @@ fn get_noopener_for_window_open(
     tokenized_features: &HashMap<String, String>,
     url: Option<&str>,
 ) -> bool {
+
     // Step 1: "If url is not null and url's blob URL entry is not null:"
     // Note: Blob URL origin checks are not yet implemented.
-
     let _ = url;
 
     // Step 2: "Let noopener be false."
     // Step 3: "If tokenizedFeatures['noopener'] exists, then set noopener to the result of
     //          parsing tokenizedFeatures['noopener'] as a boolean feature."
     // Step 4: "Return noopener."
-
     tokenized_features
         .get("noopener")
         .map(|value| parse_boolean_feature(value))
@@ -333,18 +315,16 @@ fn get_noopener_for_window_open(
 
 /// <https://html.spec.whatwg.org/#tokenize-the-features-argument>
 fn tokenize_features(features: &str) -> HashMap<String, String> {
-    // Step 1: "Let tokenizedFeatures be a new ordered map."
 
+    // Step 1: "Let tokenizedFeatures be a new ordered map."
     let mut tokenized_features = HashMap::new();
 
     // Step 2: "Let position point at the first code point of features."
-
     let bytes = features.as_bytes();
     let mut position = 0;
     let len = bytes.len();
 
     // Step 3: "While position is not past the end of features:"
-
     while position < len {
         // Skip leading separators before name.
         while position < len && is_feature_separator(bytes[position]) {
@@ -404,7 +384,6 @@ fn tokenize_features(features: &str) -> HashMap<String, String> {
     }
 
     // Step 4: "Return tokenizedFeatures."
-
     tokenized_features
 }
 
@@ -426,21 +405,21 @@ fn normalize_feature_name(name: &str) -> String {
 
 /// <https://html.spec.whatwg.org/#parse-a-boolean-feature>
 fn parse_boolean_feature(value: &str) -> bool {
-    // Step 1: "If value is the empty string, then return true."
 
+    // Step 1: "If value is the empty string, then return true."
     if value.is_empty() {
         return true;
     }
+
     // Step 2: "If value is 'yes', then return true."
     // Step 3: "If value is 'true', then return true."
-
     if value == "yes" || value == "true" {
         return true;
     }
+
     // Step 4: "Let parsed be the result of parsing value as an integer."
     // Step 5: "If parsed is an error, then set it to 0."
     // Step 6: "Return false if parsed is 0, and true otherwise."
-
     let parsed: i64 = value.parse().unwrap_or(0);
     parsed != 0
 }
@@ -450,18 +429,18 @@ fn parse_boolean_feature(value: &str) -> bool {
 pub(crate) fn check_if_popup_window_is_requested(
     tokenized_features: &HashMap<String, String>,
 ) -> bool {
-    // Step 1: "If tokenizedFeatures is empty, then return false."
 
+    // Step 1: "If tokenizedFeatures is empty, then return false."
     if tokenized_features.is_empty() {
         return false;
     }
-    // Step 2: "If tokenizedFeatures['popup'] exists, then return the result of parsing..."
 
+    // Step 2: "If tokenizedFeatures['popup'] exists, then return the result of parsing..."
     if let Some(value) = tokenized_features.get("popup") {
         return parse_boolean_feature(value);
     }
-    // Steps 3–13: check individual features
 
+    // Steps 3–13: check individual features
     let location = check_if_window_feature_is_set(tokenized_features, "location", false);
     let toolbar = check_if_window_feature_is_set(tokenized_features, "toolbar", false);
     if !location && !toolbar {
@@ -483,8 +462,8 @@ pub(crate) fn check_if_popup_window_is_requested(
     if !status {
         return true;
     }
-    // Step 14: "Return false."
 
+    // Step 14: "Return false."
     false
 }
 
@@ -494,13 +473,13 @@ pub(crate) fn check_if_window_feature_is_set(
     feature_name: &str,
     default_value: bool,
 ) -> bool {
+
     // Step 1: "If tokenizedFeatures[featureName] exists, then return the result of parsing
     //          tokenizedFeatures[featureName] as a boolean feature."
-
     if let Some(value) = tokenized_features.get(feature_name) {
         return parse_boolean_feature(value);
     }
-    // Step 2: "Return defaultValue."
 
+    // Step 2: "Return defaultValue."
     default_value
 }

@@ -228,12 +228,11 @@ impl TransformStreamDefaultController {
         &self,
         ec: &mut dyn ExecutionContext<Types>,
     ) -> Completion<Option<f64>, Types> {
-        // Step 1: "Let readableController be this.[[stream]].[[readable]].[[controller]]."
 
+        // Step 1: "Let readableController be this.[[stream]].[[readable]].[[controller]]."
         let readable_controller = self.readable_controller(ec)?;
 
         // Step 2: "Return ! ReadableStreamDefaultControllerGetDesiredSize(readableController)."
-
         readable_controller.get_desired_size(ec)
     }
 
@@ -269,8 +268,8 @@ fn sink_write_algorithm_fn(
     stream: &TransformStream,
     ec: &mut dyn ExecutionContext<Types>,
 ) -> Completion<JsValue, Types> {
-    // Step 2.1: "Return ! TransformStreamDefaultSinkWriteAlgorithm(stream, chunk)."
 
+    // Step 2.1: "Return ! TransformStreamDefaultSinkWriteAlgorithm(stream, chunk)."
     let chunk = args.get(0).cloned().unwrap_or_else(|| ec.value_undefined());
     let promise = transform_stream_default_sink_write_algorithm(stream.clone(), chunk, ec)?;
     Ok(JsValue::from(promise))
@@ -282,8 +281,8 @@ fn sink_abort_algorithm_fn(
     stream: &TransformStream,
     ec: &mut dyn ExecutionContext<Types>,
 ) -> Completion<JsValue, Types> {
-    // Step 3.1: "Return ! TransformStreamDefaultSinkAbortAlgorithm(stream, reason)."
 
+    // Step 3.1: "Return ! TransformStreamDefaultSinkAbortAlgorithm(stream, reason)."
     let reason = args.get(0).cloned().unwrap_or_else(|| ec.value_undefined());
     let promise = transform_stream_default_sink_abort_algorithm(stream.clone(), reason, ec)?;
     Ok(JsValue::from(promise))
@@ -295,8 +294,8 @@ fn sink_close_algorithm_fn(
     stream: &TransformStream,
     ec: &mut dyn ExecutionContext<Types>,
 ) -> Completion<JsValue, Types> {
-    // Step 4.1: "Return ! TransformStreamDefaultSinkCloseAlgorithm(stream)."
 
+    // Step 4.1: "Return ! TransformStreamDefaultSinkCloseAlgorithm(stream)."
     let promise = transform_stream_default_sink_close_algorithm(stream.clone(), ec)?;
     Ok(JsValue::from(promise))
 }
@@ -308,11 +307,11 @@ fn perform_transform_on_rejected_fn(
     ec: &mut dyn ExecutionContext<Types>,
 ) -> Completion<JsValue, Types> {
     let error = args.get(0).cloned().unwrap_or_else(|| ec.value_undefined());
+
     // Step 2.1: "Perform ! TransformStreamError(controller.[[stream]], r)."
-
     transform_stream_error(stream, error.clone(), ec)?;
-    // Step 2.2: "Throw r."
 
+    // Step 2.2: "Throw r."
     Err(error)
 }
 
@@ -323,20 +322,20 @@ fn controller_enqueue_on_fulfilled_fn(
     ec: &mut dyn ExecutionContext<Types>,
 ) -> Completion<JsValue, Types> {
     let (stream, controller, chunk) = captures;
-    // Step 3.3.1: "Let writable be stream.[[writable]]."
 
+    // Step 3.3.1: "Let writable be stream.[[writable]]."
     let writable = stream.writable(ec)?;
+
     // Step 3.3.2: "Let state be writable.[[state]]."
     // Step 3.3.3: "If state is \"erroring\", throw writable.[[storedError]]."
-
     if writable.state() == super::WritableStreamState::Erroring {
         return Err(writable.stored_error());
     }
+
     // Step 3.3.4: "Assert: state is \"writable\"."
-
     debug_assert_eq!(writable.state(), super::WritableStreamState::Writable);
-    // Step 3.3.5: "Return ! TransformStreamDefaultControllerPerformTransform(controller, chunk)."
 
+    // Step 3.3.5: "Return ! TransformStreamDefaultControllerPerformTransform(controller, chunk)."
     let promise = transform_stream_default_controller_perform_transform(
         controller.clone(),
         chunk.clone(),
@@ -358,22 +357,22 @@ fn sink_abort_on_fulfilled_fn(
 ) -> Completion<JsValue, Types> {
     let (controller, readable, reason, reject_finish_on_fulfilled_cancel) = captures;
     if *reject_finish_on_fulfilled_cancel {
-        // Step 7.1.1: Reject finishPromise with readable.[[storedError]].
 
+        // Step 7.1.1: Reject finishPromise with readable.[[storedError]].
         if let Some(resolvers) = controller.finish_resolvers.borrow_mut().take() {
             resolvers.reject(readable.stored_error(), ec)?;
         }
     } else {
-        // Step 7.1.2.1: "Perform ! ReadableStreamDefaultControllerError(readable.[[controller]], reason)."
 
+        // Step 7.1.2.1: "Perform ! ReadableStreamDefaultControllerError(readable.[[controller]], reason)."
         let readable_controller = readable
             .controller_slot()
             .ok_or_else(|| ec.new_type_error("ReadableStream is missing its controller"))?;
         readable_controller
             .as_default_controller()
             .error_steps(reason.clone(), ec)?;
-        // Step 7.1.2.2: Resolve finishPromise.
 
+        // Step 7.1.2.2: Resolve finishPromise.
         if let Some(resolvers) = controller.finish_resolvers.borrow_mut().take() {
             resolvers.resolve(ec.value_undefined(), ec)?;
         }
@@ -389,16 +388,16 @@ fn sink_abort_on_rejected_fn(
 ) -> Completion<JsValue, Types> {
     let (controller, readable) = captures;
     let error = args.get(0).cloned().unwrap_or_else(|| ec.value_undefined());
-    // Step 7.2.1: "Perform ! ReadableStreamDefaultControllerError(readable.[[controller]], r)."
 
+    // Step 7.2.1: "Perform ! ReadableStreamDefaultControllerError(readable.[[controller]], r)."
     let readable_controller = readable
         .controller_slot()
         .ok_or_else(|| ec.new_type_error("ReadableStream is missing its controller"))?;
     readable_controller
         .as_default_controller()
         .error_steps(error.clone(), ec)?;
-    // Step 7.2.2: Reject finishPromise with r.
 
+    // Step 7.2.2: Reject finishPromise with r.
     if let Some(resolvers) = controller.finish_resolvers.borrow_mut().take() {
         resolvers.reject(error, ec)?;
     }
@@ -414,22 +413,22 @@ fn sink_close_on_fulfilled_fn(
     let (controller, readable) = captures;
     let readable_state = readable.state();
     if readable_state == super::ReadableStreamState::Errored {
-        // Step 7.1.1: Reject finishPromise with readable.[[storedError]].
 
+        // Step 7.1.1: Reject finishPromise with readable.[[storedError]].
         if let Some(resolvers) = controller.finish_resolvers.borrow_mut().take() {
             resolvers.reject(readable.stored_error(), ec)?;
         }
     } else {
-        // Step 7.1.2.1: "Perform ! ReadableStreamDefaultControllerClose(readable.[[controller]])."
 
+        // Step 7.1.2.1: "Perform ! ReadableStreamDefaultControllerClose(readable.[[controller]])."
         let readable_controller = readable
             .controller_slot()
             .ok_or_else(|| ec.new_type_error("ReadableStream is missing its controller"))?;
         readable_controller
             .as_default_controller()
             .close_steps(ec)?;
-        // Step 7.1.2.2: Resolve finishPromise.
 
+        // Step 7.1.2.2: Resolve finishPromise.
         if let Some(resolvers) = controller.finish_resolvers.borrow_mut().take() {
             resolvers.resolve(ec.value_undefined(), ec)?;
         }
@@ -445,16 +444,16 @@ fn sink_close_on_rejected_fn(
 ) -> Completion<JsValue, Types> {
     let (controller, readable) = captures;
     let error = args.get(0).cloned().unwrap_or_else(|| ec.value_undefined());
-    // Step 7.2.1: "Perform ! ReadableStreamDefaultControllerError(readable.[[controller]], r)."
 
+    // Step 7.2.1: "Perform ! ReadableStreamDefaultControllerError(readable.[[controller]], r)."
     let readable_controller = readable
         .controller_slot()
         .ok_or_else(|| ec.new_type_error("ReadableStream is missing its controller"))?;
     readable_controller
         .as_default_controller()
         .error_steps(error.clone(), ec)?;
-    // Step 7.2.2: Reject finishPromise with r.
 
+    // Step 7.2.2: Reject finishPromise with r.
     if let Some(resolvers) = controller.finish_resolvers.borrow_mut().take() {
         resolvers.reject(error, ec)?;
     }
@@ -481,15 +480,15 @@ fn source_cancel_on_fulfilled_fn(
         reject_finish_on_fulfilled_cancel,
         writable.stored_error().display()
     ));
-    // Step 7.1.1: "If writable.[[state]] is \"errored\", reject controller.[[finishPromise]] with writable.[[storedError]]."
 
+    // Step 7.1.1: "If writable.[[state]] is \"errored\", reject controller.[[finishPromise]] with writable.[[storedError]]."
     if *reject_finish_on_fulfilled_cancel {
         if let Some(resolvers) = controller.finish_resolvers.borrow_mut().take() {
             resolvers.reject(writable.stored_error(), ec)?;
         }
     } else {
-        // Step 7.1.2.1: "Perform ! WritableStreamDefaultControllerErrorIfNeeded(writable.[[controller]], reason)."
 
+        // Step 7.1.2.1: "Perform ! WritableStreamDefaultControllerErrorIfNeeded(writable.[[controller]], reason)."
         let writable_controller = writable
             .controller_slot()
             .ok_or_else(|| ec.new_type_error("WritableStream is missing its controller"))?;
@@ -498,11 +497,11 @@ fn source_cancel_on_fulfilled_fn(
             reason.clone(),
             ec,
         )?;
+
         // Step 7.1.2.2: "Perform ! TransformStreamUnblockWrite(stream)."
-
         transform_stream_unblock_write(stream, ec)?;
-        // Step 7.1.2.3: "Resolve controller.[[finishPromise]] with undefined."
 
+        // Step 7.1.2.3: "Resolve controller.[[finishPromise]] with undefined."
         if let Some(resolvers) = controller.finish_resolvers.borrow_mut().take() {
             resolvers.resolve(ec.value_undefined(), ec)?;
         }
@@ -522,8 +521,8 @@ fn source_cancel_on_rejected_fn(
 ) -> Completion<JsValue, Types> {
     let (controller, stream, writable) = captures;
     let error = args.get(0).cloned().unwrap_or_else(|| ec.value_undefined());
-    // Step 7.2.1: "Perform ! WritableStreamDefaultControllerErrorIfNeeded(writable.[[controller]], r)."
 
+    // Step 7.2.1: "Perform ! WritableStreamDefaultControllerErrorIfNeeded(writable.[[controller]], r)."
     let writable_controller = writable
         .controller_slot()
         .ok_or_else(|| ec.new_type_error("WritableStream is missing its controller"))?;
@@ -532,11 +531,11 @@ fn source_cancel_on_rejected_fn(
         error.clone(),
         ec,
     )?;
+
     // Step 7.2.2: "Perform ! TransformStreamUnblockWrite(stream)."
-
     transform_stream_unblock_write(stream, ec)?;
-    // Step 7.2.3: Reject finishPromise with r.
 
+    // Step 7.2.3: Reject finishPromise with r.
     if let Some(resolvers) = controller.finish_resolvers.borrow_mut().take() {
         resolvers.reject(error, ec)?;
     }
@@ -553,9 +552,9 @@ fn initialize_transform_stream(
     readable_size_algorithm: SizeAlgorithm,
     ec: &mut dyn ExecutionContext<Types>,
 ) -> Completion<(), Types> {
+
     // Step 1: "Let startAlgorithm be an algorithm that returns startPromise."
     // Note: The readable and writable setup helpers expose distinct Rust enum types for the same spec algorithm.
-
     let global = ec.realm_global_object();
     let writable_start_algorithm =
         WritableStartAlgorithm::ReturnValue(JsValue::from(start_promise.clone()));
@@ -563,7 +562,6 @@ fn initialize_transform_stream(
         ReadableStartAlgorithm::ReturnValue(JsValue::from(start_promise));
 
     // Step 2: "Let writeAlgorithm be the following steps, taking a chunk argument:"
-
     let name_key = ec.property_key_from_str("");
     let write_fn = create_builtin_fn_with_traced_captures(
         ec,
@@ -579,7 +577,6 @@ fn initialize_transform_stream(
         WriteAlgorithm::JavaScript(SourceMethod::new(global.clone(), write_callback));
 
     // Step 3: "Let abortAlgorithm be the following steps, taking a reason argument:"
-
     let abort_fn = create_builtin_fn_with_traced_captures(
         ec,
         stream.clone(),
@@ -594,7 +591,6 @@ fn initialize_transform_stream(
         AbortAlgorithm::JavaScript(SourceMethod::new(global.clone(), abort_callback));
 
     // Step 4: "Let closeAlgorithm be the following steps:"
-
     let close_fn = create_builtin_fn_with_traced_captures(
         ec,
         stream.clone(),
@@ -608,7 +604,6 @@ fn initialize_transform_stream(
     let close_algorithm = CloseAlgorithm::JavaScript(SourceMethod::new(global, close_callback));
 
     // Step 5: "Set stream.[[writable]] to ! CreateWritableStream(startAlgorithm, writeAlgorithm, closeAlgorithm, abortAlgorithm, writableHighWaterMark, writableSizeAlgorithm)."
-
     let (writable, writable_object) = create_writable_stream(
         writable_start_algorithm,
         write_algorithm,
@@ -622,15 +617,12 @@ fn initialize_transform_stream(
     *stream.writable_object.borrow_mut() = Some(writable_object);
 
     // Step 6: "Let pullAlgorithm be the following steps:"
-
     let pull_algorithm = PullAlgorithm::TransformStreamDefaultSourcePull(stream.clone());
 
     // Step 7: "Let cancelAlgorithm be the following steps, taking a reason argument:"
-
     let cancel_algorithm = CancelAlgorithm::TransformStreamDefaultSourceCancel(stream.clone());
 
     // Step 8: "Set stream.[[readable]] to ! CreateReadableStream(startAlgorithm, pullAlgorithm, cancelAlgorithm, readableHighWaterMark, readableSizeAlgorithm)."
-
     let (readable, readable_object) = create_readable_stream(
         readable_start_algorithm,
         pull_algorithm,
@@ -644,13 +636,10 @@ fn initialize_transform_stream(
 
     // Step 9: "Set stream.[[backpressure]] and stream.[[backpressureChangePromise]] to undefined."
     // Note: The implementation initializes [[backpressure]] with a boolean field and then immediately assigns the spec-visible initial state via TransformStreamSetBackpressure.
-
     // Step 10: "Perform ! TransformStreamSetBackpressure(stream, true)."
-
     transform_stream_set_backpressure(stream, true, ec)?;
 
     // Step 11: "Set stream.[[controller]] to undefined."
-
     *stream.controller.borrow_mut() = None;
     *stream.controller_object.borrow_mut() = None;
 
@@ -663,8 +652,8 @@ fn transform_stream_error(
     error: JsValue,
     ec: &mut dyn ExecutionContext<Types>,
 ) -> Completion<(), Types> {
-    // Step 1: "Perform ! ReadableStreamDefaultControllerError(stream.[[readable]].[[controller]], e)."
 
+    // Step 1: "Perform ! ReadableStreamDefaultControllerError(stream.[[readable]].[[controller]], e)."
     let readable = stream.readable(ec)?;
     let readable_controller = readable
         .controller_slot()
@@ -674,7 +663,6 @@ fn transform_stream_error(
         .error_steps(error.clone(), ec)?;
 
     // Step 2: "Perform ! TransformStreamErrorWritableAndUnblockWrite(stream, e)."
-
     transform_stream_error_writable_and_unblock_write(stream, error, ec)
 }
 
@@ -684,13 +672,12 @@ fn transform_stream_error_writable_and_unblock_write(
     error: JsValue,
     ec: &mut dyn ExecutionContext<Types>,
 ) -> Completion<(), Types> {
-    // Step 1: "Perform ! TransformStreamDefaultControllerClearAlgorithms(stream.[[controller]])."
 
+    // Step 1: "Perform ! TransformStreamDefaultControllerClearAlgorithms(stream.[[controller]])."
     let controller = stream.controller_slot(ec)?;
     transform_stream_default_controller_clear_algorithms(&controller);
 
     // Step 2: "Perform ! WritableStreamDefaultControllerErrorIfNeeded(stream.[[writable]].[[controller]], e)."
-
     let writable = stream.writable(ec)?;
     let writable_controller = writable
         .controller_slot()
@@ -702,7 +689,6 @@ fn transform_stream_error_writable_and_unblock_write(
     )?;
 
     // Step 3: "Perform ! TransformStreamUnblockWrite(stream)."
-
     transform_stream_unblock_write(stream, ec)
 }
 
@@ -712,17 +698,15 @@ fn transform_stream_set_backpressure(
     backpressure: bool,
     ec: &mut dyn ExecutionContext<Types>,
 ) -> Completion<(), Types> {
+
     // Step 1: "Assert: stream.[[backpressure]] is not backpressure."
     // Note: On first call during initialization, backpressure is undefined (treated as not-equal).
-
     // Step 2: "If stream.[[backpressureChangePromise]] is not undefined, resolve stream.[[backpressureChangePromise]] with undefined."
-
     if let Some(resolvers) = stream.backpressure_change_resolvers.borrow_mut().take() {
         resolvers.resolve(ec.value_undefined(), ec)?;
     }
 
     // Step 3: "Set stream.[[backpressureChangePromise]] to a new promise."
-
     let (promise, resolvers) = ec.new_promise_pending()?;
     let promise_obj = Types::value_as_object(&promise)
         .ok_or_else(|| ec.new_type_error("new_promise_pending did not return an object"))?;
@@ -730,7 +714,6 @@ fn transform_stream_set_backpressure(
     *stream.backpressure_change_resolvers.borrow_mut() = Some(resolvers);
 
     // Step 4: "Set stream.[[backpressure]] to backpressure."
-
     stream.backpressure.set(backpressure);
 
     Ok(())
@@ -741,8 +724,8 @@ fn transform_stream_unblock_write(
     stream: &TransformStream,
     ec: &mut dyn ExecutionContext<Types>,
 ) -> Completion<(), Types> {
-    // Step 1: "If stream.[[backpressure]] is true, perform ! TransformStreamSetBackpressure(stream, false)."
 
+    // Step 1: "If stream.[[backpressure]] is true, perform ! TransformStreamSetBackpressure(stream, false)."
     if stream.backpressure() {
         transform_stream_set_backpressure(stream, false, ec)?;
     }
@@ -761,31 +744,25 @@ fn set_up_transform_stream_default_controller(
     flush_algorithm: FlushAlgorithm,
     cancel_algorithm: TransformCancelAlgorithm,
 ) {
+
     // Step 1: "Assert: stream implements TransformStream."
-
     // Step 2: "Assert: stream.[[controller]] is undefined."
-
     debug_assert!(stream.controller.borrow().is_none());
 
     // Step 3: "Set controller.[[stream]] to stream."
-
     *controller.stream.borrow_mut() = Some(stream.clone());
 
     // Step 4: "Set stream.[[controller]] to controller."
-
     *stream.controller.borrow_mut() = Some(controller.clone());
     *stream.controller_object.borrow_mut() = Some(controller_object.clone());
 
     // Step 5: "Set controller.[[transformAlgorithm]] to transformAlgorithm."
-
     *controller.transform_algorithm.borrow_mut() = Some(transform_algorithm);
 
     // Step 6: "Set controller.[[flushAlgorithm]] to flushAlgorithm."
-
     *controller.flush_algorithm.borrow_mut() = Some(flush_algorithm);
 
     // Step 7: "Set controller.[[cancelAlgorithm]] to cancelAlgorithm."
-
     *controller.cancel_algorithm.borrow_mut() = Some(cancel_algorithm);
 }
 
@@ -795,25 +772,22 @@ fn set_up_transform_stream_default_controller_from_transformer(
     transformer: Option<&JsObject>,
     ec: &mut dyn ExecutionContext<Types>,
 ) -> Completion<TransformStreamDefaultController, Types> {
-    // Step 1: "Let controller be a new TransformStreamDefaultController."
 
+    // Step 1: "Let controller be a new TransformStreamDefaultController."
     let (controller, controller_object) = create_transform_stream_default_controller(ec)?;
 
     // Step 2: Default transformAlgorithm is identity (enqueue the chunk).
-
     let mut transform_algorithm = TransformAlgorithm::Identity;
 
     // Step 3: Default flushAlgorithm returns resolved promise.
-
     let mut flush_algorithm = FlushAlgorithm::ReturnUndefined;
 
     // Step 4: Default cancelAlgorithm returns resolved promise.
-
     let mut cancel_algorithm = TransformCancelAlgorithm::ReturnUndefined;
 
     if let Some(transformer_obj) = transformer {
-        // Step 5: "If transformerDict['transform'] exists..."
 
+        // Step 5: "If transformerDict['transform'] exists..."
         if let Some(transform) = get_callable_method(transformer_obj, "transform", ec)? {
             transform_algorithm = TransformAlgorithm::JavaScript(SourceMethod::new(
                 transformer_obj.clone(),
@@ -822,7 +796,6 @@ fn set_up_transform_stream_default_controller_from_transformer(
         }
 
         // Step 6: "If transformerDict['flush'] exists..."
-
         if let Some(flush) = get_callable_method(transformer_obj, "flush", ec)? {
             flush_algorithm = FlushAlgorithm::JavaScript(SourceMethod::new(
                 transformer_obj.clone(),
@@ -831,7 +804,6 @@ fn set_up_transform_stream_default_controller_from_transformer(
         }
 
         // Step 7: "If transformerDict['cancel'] exists..."
-
         if let Some(cancel) = get_callable_method(transformer_obj, "cancel", ec)? {
             cancel_algorithm = TransformCancelAlgorithm::JavaScript(SourceMethod::new(
                 transformer_obj.clone(),
@@ -841,7 +813,6 @@ fn set_up_transform_stream_default_controller_from_transformer(
     }
 
     // Step 8: "Perform ! SetUpTransformStreamDefaultController(stream, controller, transformAlgorithm, flushAlgorithm, cancelAlgorithm)."
-
     set_up_transform_stream_default_controller(
         stream,
         controller.clone(),
@@ -858,16 +829,14 @@ fn set_up_transform_stream_default_controller_from_transformer(
 fn transform_stream_default_controller_clear_algorithms(
     controller: &TransformStreamDefaultController,
 ) {
-    // Step 1: "Set controller.[[transformAlgorithm]] to undefined."
 
+    // Step 1: "Set controller.[[transformAlgorithm]] to undefined."
     *controller.transform_algorithm.borrow_mut() = None;
 
     // Step 2: "Set controller.[[flushAlgorithm]] to undefined."
-
     *controller.flush_algorithm.borrow_mut() = None;
 
     // Step 3: "Set controller.[[cancelAlgorithm]] to undefined."
-
     *controller.cancel_algorithm.borrow_mut() = None;
 }
 
@@ -877,46 +846,39 @@ fn transform_stream_default_controller_enqueue(
     chunk: JsValue,
     ec: &mut dyn ExecutionContext<Types>,
 ) -> Completion<(), Types> {
-    // Step 1: "Let stream be controller.[[stream]]."
 
+    // Step 1: "Let stream be controller.[[stream]]."
     let stream = controller.stream_slot(ec)?;
 
     // Step 2: "Let readableController be stream.[[readable]].[[controller]]."
-
     let readable_controller = controller.readable_controller(ec)?;
 
     // Step 3: "If ! ReadableStreamDefaultControllerCanCloseOrEnqueue(readableController) is false, throw a TypeError exception."
-
     if !readable_controller.can_close_or_enqueue(ec)? {
         return Err(ec.new_type_error("ReadableStream is not in a state that permits enqueue"));
     }
 
     // Step 4: "Let enqueueResult be ReadableStreamDefaultControllerEnqueue(readableController, chunk)."
     // Step 5: "If enqueueResult is an abrupt completion..."
-
     if let Err(error_value) = readable_controller.enqueue_steps(chunk, ec) {
-        // Step 5.1: "Perform ! TransformStreamErrorWritableAndUnblockWrite(stream, enqueueResult.[[Value]])."
 
+        // Step 5.1: "Perform ! TransformStreamErrorWritableAndUnblockWrite(stream, enqueueResult.[[Value]])."
         transform_stream_error_writable_and_unblock_write(&stream, error_value, ec)?;
 
         // Step 5.2: "Throw stream.[[readable]].[[storedError]]."
-
         return Err(stream.readable(ec)?.stored_error());
     }
 
     // Step 6: "Let backpressure be ! ReadableStreamDefaultControllerHasBackpressure(readableController)."
-
     let backpressure = readable_controller.has_backpressure(ec)?;
 
     // Step 7: "If backpressure is not stream.[[backpressure]],"
-
     if backpressure != stream.backpressure() {
-        // Step 7.1: "Assert: backpressure is true."
 
+        // Step 7.1: "Assert: backpressure is true."
         debug_assert!(backpressure);
 
         // Step 7.2: "Perform ! TransformStreamSetBackpressure(stream, true)."
-
         transform_stream_set_backpressure(&stream, true, ec)?;
     }
 
@@ -929,8 +891,8 @@ fn transform_stream_default_controller_error(
     reason: JsValue,
     ec: &mut dyn ExecutionContext<Types>,
 ) -> Completion<(), Types> {
-    // Step 1: "Perform ! TransformStreamError(controller.[[stream]], e)."
 
+    // Step 1: "Perform ! TransformStreamError(controller.[[stream]], e)."
     let stream = controller.stream_slot(ec)?;
     transform_stream_error(&stream, reason, ec)
 }
@@ -941,8 +903,8 @@ fn transform_stream_default_controller_perform_transform(
     chunk: JsValue,
     ec: &mut dyn ExecutionContext<Types>,
 ) -> Completion<JsObject, Types> {
-    // Step 1: "Let transformPromise be the result of performing controller.[[transformAlgorithm]], passing chunk."
 
+    // Step 1: "Let transformPromise be the result of performing controller.[[transformAlgorithm]], passing chunk."
     let transform_algorithm = controller.transform_algorithm.borrow().clone();
     let transform_promise = match transform_algorithm {
         Some(TransformAlgorithm::Identity) => {
@@ -969,7 +931,6 @@ fn transform_stream_default_controller_perform_transform(
     };
 
     // Step 2: "Return the result of reacting to transformPromise with the following rejection steps given the argument r:"
-
     let stream = controller.stream_slot(ec)?;
     let name_key = ec.property_key_from_str("");
     let on_rejected = create_builtin_fn_with_traced_captures(
@@ -992,20 +953,17 @@ fn transform_stream_default_controller_terminate(
     controller: TransformStreamDefaultController,
     ec: &mut dyn ExecutionContext<Types>,
 ) -> Completion<(), Types> {
-    // Step 1: "Let stream be controller.[[stream]]."
 
+    // Step 1: "Let stream be controller.[[stream]]."
     let stream = controller.stream_slot(ec)?;
 
     // Step 2: "Let readableController be stream.[[readable]].[[controller]]."
-
     let readable_controller = controller.readable_controller(ec)?;
 
     // Step 3: "Perform ! ReadableStreamDefaultControllerClose(readableController)."
-
     readable_controller.close_steps(ec)?;
 
     // Step 4: "Let error be a TypeError exception indicating that the stream has been terminated."
-
     let error = type_error_value("TransformStream has been terminated", ec)?;
 
     let writable = stream.writable(ec)?;
@@ -1015,7 +973,6 @@ fn transform_stream_default_controller_terminate(
     ));
 
     // Step 5: "Perform ! TransformStreamErrorWritableAndUnblockWrite(stream, error)."
-
     let result = transform_stream_error_writable_and_unblock_write(&stream, error, ec);
     log_stream_debug(format!(
         "terminate after error writable_state={:?} stored_error={}",
@@ -1033,26 +990,22 @@ fn transform_stream_default_sink_write_algorithm(
     chunk: JsValue,
     ec: &mut dyn ExecutionContext<Types>,
 ) -> Completion<JsObject, Types> {
+
     // Step 1: "Assert: stream.[[writable]].[[state]] is \"writable\"."
-
     // Step 2: "Let controller be stream.[[controller]]."
-
     let controller = stream.controller_slot(ec)?;
 
     // Step 3: "If stream.[[backpressure]] is true,"
-
     if stream.backpressure() {
-        // Step 3.1: "Let backpressureChangePromise be stream.[[backpressureChangePromise]]."
 
+        // Step 3.1: "Let backpressureChangePromise be stream.[[backpressureChangePromise]]."
         let backpressure_change_promise =
             stream.backpressure_change_promise().ok_or_else(|| {
                 ec.new_type_error("TransformStream is missing its backpressure change promise")
             })?;
 
         // Step 3.2: "Assert: backpressureChangePromise is not undefined."
-
         // Step 3.3: "Return the result of reacting to backpressureChangePromise with the following fulfillment steps:"
-
         let name_key = ec.property_key_from_str("");
         let on_fulfilled = create_builtin_fn_with_traced_captures(
             ec,
@@ -1071,7 +1024,6 @@ fn transform_stream_default_sink_write_algorithm(
     }
 
     // Step 4: "Return ! TransformStreamDefaultControllerPerformTransform(controller, chunk)."
-
     transform_stream_default_controller_perform_transform(controller, chunk, ec)
 }
 
@@ -1081,22 +1033,19 @@ fn transform_stream_default_sink_abort_algorithm(
     reason: JsValue,
     ec: &mut dyn ExecutionContext<Types>,
 ) -> Completion<JsObject, Types> {
-    // Step 1: "Let controller be stream.[[controller]]."
 
+    // Step 1: "Let controller be stream.[[controller]]."
     let controller = stream.controller_slot(ec)?;
 
     // Step 2: "If controller.[[finishPromise]] is not undefined, return controller.[[finishPromise]]."
-
     if let Some(finish_promise) = controller.finish_promise.borrow().clone() {
         return Ok(finish_promise);
     }
 
     // Step 3: "Let readable be stream.[[readable]]."
-
     let readable = stream.readable(ec)?;
 
     // Step 4: "Let controller.[[finishPromise]] be a new promise."
-
     let (finish_promise, finish_resolvers) = ec.new_promise_pending()?;
     let finish_promise_obj = Types::value_as_object(&finish_promise)
         .ok_or_else(|| ec.new_type_error("new_promise_pending did not return an object"))?;
@@ -1104,7 +1053,6 @@ fn transform_stream_default_sink_abort_algorithm(
     *controller.finish_resolvers.borrow_mut() = Some(finish_resolvers);
 
     // Step 5: "Let cancelPromise be the result of performing controller.[[cancelAlgorithm]], passing reason."
-
     let readable_state_before_cancel = readable.state();
     let cancel_algorithm = controller.cancel_algorithm.borrow().clone();
     let cancel_promise = match cancel_algorithm {
@@ -1132,11 +1080,9 @@ fn transform_stream_default_sink_abort_algorithm(
         && readable.state() == super::ReadableStreamState::Errored;
 
     // Step 6: "Perform ! TransformStreamDefaultControllerClearAlgorithms(controller)."
-
     transform_stream_default_controller_clear_algorithms(&controller);
 
     // Step 7: React to cancelPromise.
-
     let name_key = ec.property_key_from_str("");
     let on_fulfilled = create_builtin_fn_with_traced_captures(
         ec,
@@ -1171,7 +1117,6 @@ fn transform_stream_default_sink_abort_algorithm(
     )?;
 
     // Step 8: "Return controller.[[finishPromise]]."
-
     Ok(finish_promise_obj)
 }
 
@@ -1180,22 +1125,19 @@ fn transform_stream_default_sink_close_algorithm(
     stream: TransformStream,
     ec: &mut dyn ExecutionContext<Types>,
 ) -> Completion<JsObject, Types> {
-    // Step 1: "Let controller be stream.[[controller]]."
 
+    // Step 1: "Let controller be stream.[[controller]]."
     let controller = stream.controller_slot(ec)?;
 
     // Step 2: "If controller.[[finishPromise]] is not undefined, return controller.[[finishPromise]]."
-
     if let Some(finish_promise) = controller.finish_promise.borrow().clone() {
         return Ok(finish_promise);
     }
 
     // Step 3: "Let readable be stream.[[readable]]."
-
     let readable = stream.readable(ec)?;
 
     // Step 4: "Let controller.[[finishPromise]] be a new promise."
-
     let (finish_promise, finish_resolvers) = ec.new_promise_pending()?;
     let finish_promise_obj = Types::value_as_object(&finish_promise)
         .ok_or_else(|| ec.new_type_error("new_promise_pending did not return an object"))?;
@@ -1203,7 +1145,6 @@ fn transform_stream_default_sink_close_algorithm(
     *controller.finish_resolvers.borrow_mut() = Some(finish_resolvers);
 
     // Step 5: "Let flushPromise be the result of performing controller.[[flushAlgorithm]]."
-
     let flush_algorithm = controller.flush_algorithm.borrow().clone();
     let flush_promise = match flush_algorithm {
         Some(FlushAlgorithm::ReturnUndefined) => {
@@ -1230,11 +1171,9 @@ fn transform_stream_default_sink_close_algorithm(
     };
 
     // Step 6: "Perform ! TransformStreamDefaultControllerClearAlgorithms(controller)."
-
     transform_stream_default_controller_clear_algorithms(&controller);
 
     // Step 7: React to flushPromise.
-
     let name_key = ec.property_key_from_str("");
     let on_fulfilled = create_builtin_fn_with_traced_captures(
         ec,
@@ -1264,7 +1203,6 @@ fn transform_stream_default_sink_close_algorithm(
     )?;
 
     // Step 8: "Return controller.[[finishPromise]]."
-
     Ok(finish_promise_obj)
 }
 
@@ -1275,20 +1213,17 @@ pub(crate) fn transform_stream_default_source_pull_algorithm(
     stream: TransformStream,
     ec: &mut dyn ExecutionContext<Types>,
 ) -> Completion<JsObject, Types> {
-    // Step 1: "Assert: stream.[[backpressure]] is true."
 
+    // Step 1: "Assert: stream.[[backpressure]] is true."
     debug_assert!(stream.backpressure());
 
     // Step 2: "Assert: stream.[[backpressureChangePromise]] is not undefined."
-
     debug_assert!(stream.backpressure_change_promise().is_some());
 
     // Step 3: "Perform ! TransformStreamSetBackpressure(stream, false)."
-
     transform_stream_set_backpressure(&stream, false, ec)?;
 
     // Step 4: "Return stream.[[backpressureChangePromise]]."
-
     stream.backpressure_change_promise().ok_or_else(|| {
         ec.new_type_error("TransformStream is missing its backpressure change promise")
     })
@@ -1300,22 +1235,19 @@ pub(crate) fn transform_stream_default_source_cancel_algorithm(
     reason: JsValue,
     ec: &mut dyn ExecutionContext<Types>,
 ) -> Completion<JsObject, Types> {
-    // Step 1: "Let controller be stream.[[controller]]."
 
+    // Step 1: "Let controller be stream.[[controller]]."
     let controller = stream.controller_slot(ec)?;
 
     // Step 2: "If controller.[[finishPromise]] is not undefined, return controller.[[finishPromise]]."
-
     if let Some(finish_promise) = controller.finish_promise.borrow().clone() {
         return Ok(finish_promise);
     }
 
     // Step 3: "Let writable be stream.[[writable]]."
-
     let writable = stream.writable(ec)?;
 
     // Step 4: "Let controller.[[finishPromise]] be a new promise."
-
     let (finish_promise, finish_resolvers) = ec.new_promise_pending()?;
     let finish_promise_obj = Types::value_as_object(&finish_promise)
         .ok_or_else(|| ec.new_type_error("new_promise_pending did not return an object"))?;
@@ -1323,7 +1255,6 @@ pub(crate) fn transform_stream_default_source_cancel_algorithm(
     *controller.finish_resolvers.borrow_mut() = Some(finish_resolvers);
 
     // Step 5: "Let cancelPromise be the result of performing controller.[[cancelAlgorithm]], passing reason."
-
     let writable_state_before_cancel = writable.state();
     let cancel_algorithm = controller.cancel_algorithm.borrow().clone();
     let cancel_promise = match cancel_algorithm {
@@ -1353,11 +1284,9 @@ pub(crate) fn transform_stream_default_source_cancel_algorithm(
         && writable.state() != super::WritableStreamState::Writable;
 
     // Step 6: "Perform ! TransformStreamDefaultControllerClearAlgorithms(controller)."
-
     transform_stream_default_controller_clear_algorithms(&controller);
 
     // Step 7: React to cancelPromise.
-
     let name_key = ec.property_key_from_str("");
     let on_fulfilled = create_builtin_fn_with_traced_captures(
         ec,
@@ -1393,7 +1322,6 @@ pub(crate) fn transform_stream_default_source_cancel_algorithm(
     )?;
 
     // Step 8: "Return controller.[[finishPromise]]."
-
     Ok(finish_promise_obj)
 }
 
@@ -1421,7 +1349,6 @@ pub(crate) fn construct_transform_stream(
     let undefined = ec.value_undefined();
 
     // Step 1: "If transformer is missing, set it to null."
-
     let null_val = ec.value_null();
     let transformer = if args.is_empty() {
         null_val.clone()
@@ -1440,9 +1367,7 @@ pub(crate) fn construct_transform_stream(
 
     // Step 2: "Let transformerDict be transformer, converted to an IDL value of type Transformer."
     // Note: The implementation retains the original transformer object so it can invoke the transformer callbacks with the original callback this value.
-
     // Step 3: "If transformerDict[\"readableType\"] exists, throw a RangeError exception."
-
     if let Some(ref obj) = transformer_object {
         let readable_type_key = ec.property_key_from_str("readableType");
         if ec.has_property(obj.clone(), readable_type_key)? {
@@ -1452,7 +1377,6 @@ pub(crate) fn construct_transform_stream(
         }
 
         // Step 4: "If transformerDict[\"writableType\"] exists, throw a RangeError exception."
-
         let writable_type_key = ec.property_key_from_str("writableType");
         if ec.has_property(obj.clone(), writable_type_key)? {
             return Err(
@@ -1462,31 +1386,25 @@ pub(crate) fn construct_transform_stream(
     }
 
     // Step 5: "Let readableHighWaterMark be ? ExtractHighWaterMark(readableStrategy, 0)."
-
     let readable_strategy = args.get(2).cloned().unwrap_or(undefined.clone());
     let readable_high_water_mark = extract_high_water_mark(&readable_strategy, 0.0, ec)?;
 
     // Step 6: "Let readableSizeAlgorithm be ! ExtractSizeAlgorithm(readableStrategy)."
-
     let readable_size_algorithm = extract_size_algorithm(&readable_strategy, ec)?;
 
     // Step 7: "Let writableHighWaterMark be ? ExtractHighWaterMark(writableStrategy, 1)."
-
     let writable_strategy = args.get(1).cloned().unwrap_or(undefined.clone());
     let writable_high_water_mark = extract_high_water_mark(&writable_strategy, 1.0, ec)?;
 
     // Step 8: "Let writableSizeAlgorithm be ! ExtractSizeAlgorithm(writableStrategy)."
-
     let writable_size_algorithm = extract_size_algorithm(&writable_strategy, ec)?;
 
     // Step 9: "Let startPromise be a new promise."
-
     let (start_promise, start_resolvers) = ec.new_promise_pending()?;
     let start_promise_obj = Types::value_as_object(&start_promise)
         .ok_or_else(|| ec.new_type_error("startPromise is not an object"))?;
 
     // Step 10: "Perform ! InitializeTransformStream(this, startPromise, ...)."
-
     initialize_transform_stream(
         &stream,
         start_promise_obj,
@@ -1498,7 +1416,6 @@ pub(crate) fn construct_transform_stream(
     )?;
 
     // Step 11: "Perform ? SetUpTransformStreamDefaultControllerFromTransformer(this, transformer, transformerDict)."
-
     let controller = set_up_transform_stream_default_controller_from_transformer(
         &stream,
         transformer_object.as_ref(),
@@ -1506,7 +1423,6 @@ pub(crate) fn construct_transform_stream(
     )?;
 
     // Step 12: "If transformerDict[\"start\"] exists, then resolve startPromise with the result of invoking transformerDict[\"start\"] with argument list « this.[[controller]] » and callback this value transformer."
-
     if let Some(ref transformer_obj) = transformer_object {
         if let Some(start) = get_callable_method(transformer_obj, "start", ec)? {
             let controller_value = JsValue::from(controller.controller_object(ec)?);
@@ -1517,13 +1433,13 @@ pub(crate) fn construct_transform_stream(
             let result = source_method.call(&[controller_value], ec)?;
             ec.call(&start_resolvers.resolve, &undefined, &[result])?;
         } else {
-            // Step 13: "Otherwise, resolve startPromise with undefined."
 
+            // Step 13: "Otherwise, resolve startPromise with undefined."
             ec.call(&start_resolvers.resolve, &undefined, &[undefined.clone()])?;
         }
     } else {
-        // Step 13: "Otherwise, resolve startPromise with undefined."
 
+        // Step 13: "Otherwise, resolve startPromise with undefined."
         ec.call(&start_resolvers.resolve, &undefined, &[undefined.clone()])?;
     }
 

@@ -620,8 +620,8 @@ fn can_play_type(
     ec: &mut dyn ExecutionContext<crate::js::Types>,
 ) -> Completion<JsValue, crate::js::Types> {
     let _ = try_with_media_ref(this, ec, |_media| ())?;
+
     // Step 1: Return "probably" if the type is a media type that can be rendered.
     // Initial cut: return empty string (no types supported).
-
     Ok(ec.value_from_string(ec.js_string_from_str("")))
 }

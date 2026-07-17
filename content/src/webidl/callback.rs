@@ -83,14 +83,12 @@ pub(crate) fn call_user_objects_operation(
     args: &[JsValue],
     this_arg: Option<&JsValue>,
 ) -> Completion<JsValue, Types> {
+
     // Step 1: "Let completion be an uninitialized variable."
-
     // Step 2: "If thisArg was not given, let thisArg be undefined."
-
     let mut effective_this_arg = this_arg.cloned().unwrap_or_else(|| ec.value_undefined());
 
     // Step 3: "Let O be the JavaScript object corresponding to value."
-
     let object = value.object.clone();
 
     // Step 4: "Let realm be O's associated realm."
@@ -99,26 +97,21 @@ pub(crate) fn call_user_objects_operation(
     // Step 7: "Prepare to run script with relevant settings."
     // Step 8: "Prepare to run a callback with stored settings."
     // Note: The content process does not yet model callback realms or HTML callback/script preparation stacks explicitly.
-
     // Step 9: "Let X be O."
-
     let object_value = Types::value_from_object(object.clone());
     let mut callable = object.clone();
 
     // Step 10: "If IsCallable(O) is false, then:"
-
     if !ec.is_callable(&object_value) {
-        // Step 10.1: "Let getResult be Completion(Get(O, opName))."
 
+        // Step 10.1: "Let getResult be Completion(Get(O, opName))."
         let key = ec.property_key_from_str(op_name);
         let operation = ExecutionContext::get(ec, object.clone(), key)?;
 
         // Step 10.2: "If getResult is an abrupt completion, set completion to getResult and jump to the step labeled return."
         // Note: `?` returns the abrupt completion directly in this Rust implementation.
-
         // Step 10.3: "Set X to getResult.[[Value]]."
         // Step 10.4: "If IsCallable(X) is false, then set completion to a TypeError and jump to the step labeled return."
-
         if !ec.is_callable(&operation) {
             let msg = format!("callback operation `{op_name}` is not callable");
             return Err(ec.new_type_error(&msg));
@@ -136,20 +129,16 @@ pub(crate) fn call_user_objects_operation(
         callable = operation_obj;
 
         // Step 10.5: "Set thisArg to O (overriding the provided value)."
-
         effective_this_arg = object_value;
     }
 
     // Step 11: "Let jsArgs be the result of converting args to a JavaScript arguments list."
     // Note: DOM event dispatch already provides ECMAScript values, so there is no additional conversion layer here yet.
-
     // Step 12: "Let callResult be Completion(Call(X, thisArg, jsArgs))."
-
     let result = ec.call(&callable, &effective_this_arg, args)?;
 
     // Step 13: "If callResult is an abrupt completion, set completion to callResult and jump to the step labeled return."
     // Note: `?` returns the abrupt completion directly in this Rust implementation.
-
     // Step 14: "Set completion to the result of converting callResult.[[Value]] to an IDL value of the same type as the operation's return type."
     // Note: This helper currently returns the raw ECMAScript completion value; the current DOM listener caller ignores that value, which matches `handleEvent`'s `undefined` return type.
 
@@ -169,23 +158,20 @@ pub(crate) fn invoke_callback_function(
     exception_behavior: ExceptionBehavior,
     this_arg: Option<&JsValue>,
 ) -> Completion<JsValue, Types> {
+
     // Step 1: "Let completion be an uninitialized variable."
-
     // Step 2: "If thisArg was not given, let thisArg be undefined."
-
     let effective_this_arg = this_arg.cloned().unwrap_or_else(|| host.value_undefined());
 
     // Step 3: "Let F be the JavaScript object corresponding to callable."
-
     let function = callable.object.clone();
     let function_value = Types::value_from_object(function.clone());
 
     // Step 4: "If IsCallable(F) is false:"
-
     if !host.is_callable(&function_value) {
+
         // Step 4.1: "Return the result of converting undefined to the callback function's return type."
         // Note: The current content process returns the raw ECMAScript `undefined` value here; current callers either expect `undefined`/`any` directly or immediately perform the surrounding algorithm's return-value conversion.
-
         return Ok(host.value_undefined());
     }
 
@@ -195,18 +181,15 @@ pub(crate) fn invoke_callback_function(
     // Step 8: "Prepare to run script with relevant settings."
     // Step 9: "Prepare to run a callback with stored settings."
     // Note: The content process does not yet model callback realms or HTML callback/script preparation stacks explicitly.
-
     // Step 10: "Let jsArgs be the result of converting args to a JavaScript arguments list."
     // Note: Callers already provide ECMAScript values, so there is no additional conversion layer here yet.
 
     // Step 11: "Let callResult be Completion(Call(F, thisArg, jsArgs))."
-
     let call_result = host.call(&function, &effective_this_arg, args);
 
     // Step 12: "If callResult is an abrupt completion, set completion to callResult and jump to the step labeled return."
     // Step 13: "Set completion to the result of converting callResult.[[Value]] to an IDL value of the same type as callable's return type."
     // Note: This helper currently returns the raw ECMAScript completion value; surrounding DOM, HTML, and Streams algorithms perform any required promise wrapping or numeric conversion immediately after this call.
-
     match call_result {
         Ok(value) => Ok(value),
         Err(error) => {

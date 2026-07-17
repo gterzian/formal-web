@@ -497,8 +497,8 @@ pub(crate) fn style_declaration_object(
         this: JsValue,
         ec: &mut dyn ExecutionContext<Types>,
     ) -> Completion<JsValue, Types> {
-        // Step 1.1: convert to ASCII lowercase.
 
+        // Step 1.1: convert to ASCII lowercase.
         let undef = ec.value_undefined();
         let property_name = ec
             .to_rust_string(args.first().cloned().unwrap_or(undef))?
@@ -506,7 +506,6 @@ pub(crate) fn style_declaration_object(
             .to_ascii_lowercase();
 
         // Step 2: Look up property in the declaration object.
-
         let object = match <crate::js::Types as JsTypes>::value_as_object(&this) {
             Some(obj) => obj,
             None => return Ok(ec.value_from_string(ec.js_string_from_str(""))),
@@ -515,7 +514,6 @@ pub(crate) fn style_declaration_object(
         let value = js_engine::ExecutionContext::get(ec, object, key)?;
 
         // Step 3: Return empty string for undefined values.
-
         if value.is_undefined() {
             return Ok(ec.value_from_string(ec.js_string_from_str("")));
         }
