@@ -6,7 +6,7 @@ use ipc::IpcSender;
 use ipc_messages::content::{DocumentId, Event as ContentEvent, NavigableId, WindowTimerKey};
 use url::Url;
 
-use crate::dom::Document;
+
 use crate::html::{TimerHandler, Window};
 use crate::js::build_context::{build_context, build_realm};
 use crate::js::platform_objects::with_global_scope;

@@ -1,7 +1,7 @@
 type JsValue = <crate::js::Types as JsTypes>::JsValue;
 type JsObject = <crate::js::Types as JsTypes>::JsObject;
 
-use crate::dom::{BooleanOrAddEventListenerOptions, EventTarget};
+use crate::dom::EventTarget;
 use crate::js::try_with_event_target_mut;
 use crate::webidl::{
     callback_interface_type_value, convert_boolean_or_add_event_listener_options, nullable_value,
