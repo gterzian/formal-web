@@ -219,6 +219,7 @@ pub(crate) fn readable_stream_byob_reader_release(
     ec: &mut dyn ExecutionContext<Types>,
 ) -> Completion<(), Types> {
     // Step 1: "Perform ! ReadableStreamReaderGenericRelease(reader)."
+
     reader.readable_stream_reader_generic_release(ec)?;
 
     // Step 2–3: Error any remaining [[readIntoRequests]].
@@ -227,6 +228,7 @@ pub(crate) fn readable_stream_byob_reader_release(
     // non-tee path this is conservative but safe because pull-into descriptors are
     // owned by the byte controller and will be cleaned up when the controller is
     // released from the stream.
+
     Ok(())
 }
 

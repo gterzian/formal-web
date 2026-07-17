@@ -1,6 +1,6 @@
 mod abort_controller;
 pub(crate) mod abort_signal;
-mod document;
+pub(crate) mod document;
 mod dom_exception;
 mod element;
 mod event;

@@ -32,6 +32,7 @@ pub(crate) trait WindowOrWorkerGlobalScope {
         ec: &mut dyn ExecutionContext<crate::js::Types>,
     ) -> Completion<u32, crate::js::Types> {
         // Step 1: "Return the result of running the timer initialization steps given this, handler, timeout, arguments, and false."
+
         let handler = timer_handler(handler, ec)?;
         self.timer_initialization_steps(handler, timeout, arguments, false, None, ec)
     }
@@ -45,6 +46,7 @@ pub(crate) trait WindowOrWorkerGlobalScope {
         ec: &mut dyn ExecutionContext<crate::js::Types>,
     ) -> Completion<u32, crate::js::Types> {
         // Step 1: "Return the result of running the timer initialization steps given this, handler, timeout, arguments, and true."
+
         let handler = timer_handler(handler, ec)?;
         self.timer_initialization_steps(handler, timeout, arguments, true, None, ec)
     }
@@ -52,12 +54,14 @@ pub(crate) trait WindowOrWorkerGlobalScope {
     /// <https://html.spec.whatwg.org/#dom-cleartimeout>
     fn clear_timeout(&self, timer_id: u32) {
         // Step 1: "Remove handle from this's map of setTimeout and setInterval IDs."
+
         self.global_scope().clear_timer(timer_id);
     }
 
     /// <https://html.spec.whatwg.org/#dom-clearinterval>
     fn clear_interval(&self, timer_id: u32) {
         // Step 1: "Remove handle from this's map of setTimeout and setInterval IDs."
+
         self.global_scope().clear_timer(timer_id);
     }
 
@@ -72,15 +76,18 @@ pub(crate) trait WindowOrWorkerGlobalScope {
         ec: &mut dyn ExecutionContext<crate::js::Types>,
     ) -> Completion<u32, crate::js::Types> {
         // Step 1-3: thisArg, id allocation, nesting level.
+
         let nesting_level = self
             .global_scope()
             .current_timer_nesting_level()
             .unwrap_or(0);
 
         // Step 4: "Set timeout to the result of converting timeout to an IDL long."
+
         let mut timeout_ms = timeout_ms(timeout, ec)?;
 
         // Step 5-6: clamp and nesting-level adjustments.
+
         if nesting_level > 5 && timeout_ms < 4 {
             timeout_ms = 4;
         }
@@ -88,9 +95,11 @@ pub(crate) trait WindowOrWorkerGlobalScope {
         // Step 7-9: realm, uniqueHandle, task (handled by global_scope).
 
         // Step 10: "Set task's timer nesting level to nesting level + 1."
+
         let task_nesting_level = nesting_level.saturating_add(1);
 
         // Step 11: scheduling.
+
         self.global_scope()
             .timer_initialization_steps(
                 previous_id,

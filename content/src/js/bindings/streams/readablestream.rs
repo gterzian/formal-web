@@ -428,6 +428,7 @@ pub(crate) fn pipe_to_native_method(
     // Step 1: "Let promise be a new promise."
     // Brand-check errors (this/destination not a stream) and option-getter
     // exceptions must reject the promise, not throw synchronously.
+
     match pipe_to_operation(this, args, ec) {
         Ok(promise) => Ok(JsValue::from(promise)),
         Err(error) => {

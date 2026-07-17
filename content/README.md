@@ -34,18 +34,67 @@ description with examples and common mistakes.
 
 ## Spec Documentation
 
-- **Anchor-only doc comments.** Every function, struct, associated constant,
-  and constant definition has **only** the spec anchor URL in its doc comment.
-  Zero prose — not a single explanatory sentence.  Examples:
-  - `/// <https://dom.spec.whatwg.org/#concept-event-dispatch>`
-  - `/// <https://html.spec.whatwg.org/#global-object>`
-  - `/// <https://webidl.spec.whatwg.org/#call-a-user-objects-operation>`
-  - `/// <https://streams.spec.whatwg.org/#writablestream-state>`
-  - Any prose following the anchor is a violation.  The spec is the documentation; if the function name is not enough context, the algorithm lives in the spec.
-  - The only exception is a `// Note:` on a separate line below the anchor,
-    and only for genuine spec discrepancies (split-process, browser-engine
-    refactoring).  Such notes must be fewer than ten across the codebase.
-- Inside function bodies, map relevant code with verbatim `Step N:` comments.
-- Use `Note:` comments inside the function body for representation or mapping details that are not obvious from the spec text.  Design notes and architecture rationales belong in the README chain.
-- Put unimplemented work in `TODO:` directly below the related `Step N:` comment.
-- `WebIdlInterface` implementations live in `content/src/js/bindings/` — these define *which members* an interface exposes.  Domain methods on the corresponding Rust struct (in `content/src/<domain>/`) implement *what those members do*.
+### Anchor-only doc comments
+
+Every function, struct, associated constant, and constant definition has
+**only** the spec anchor URL in its doc comment. Zero prose — not a single
+explanatory sentence.
+
+```rust
+/// <https://dom.spec.whatwg.org/#concept-event-dispatch>
+pub(crate) fn dispatch_event(ec, path, event) { … }
+```
+
+- Any prose following the anchor is a violation.  The spec IS the documentation.
+- The only exception is a `// Note:` on a separate line below the anchor,
+  and only for genuine spec discrepancies (split-process, browser-engine
+  refactoring).  Such notes must be fewer than ten across the codebase.
+
+### Step comments inside function bodies
+
+Every spec algorithm step has a `// Step N:` comment quoting the **exact spec
+step text verbatim** — not an abbreviation or summary.  Step numbering must
+match the spec exactly.
+
+```rust
+// Step 1: If event's dispatch flag is set, or if its initialized flag is not set,
+//         then throw an "InvalidStateError" DOMException.
+if *event.dispatch_flag.borrow() || !*event.initialized_flag.borrow() {
+    return Err(ec.new_type_error("…"));
+}
+
+// Step 3: Return the result of dispatching event to this.
+
+crate::dom::dispatch_event(ec, path, event)
+```
+
+- Always insert a blank line between the last `// Step N:` comment and the
+  following Rust code.
+- Use `// TODO: Not yet implemented.` for spec steps that are not yet
+  implemented — every step must be accounted for.
+- For sub-algorithms called by the spec, cross-reference with the anchor URL
+  in a comment (e.g. `// <https://dom.spec.whatwg.org/#concept-event-dispatch>`).
+
+### Function naming and algorithm structure
+
+- Name functions after the spec algorithm they implement (e.g. `flatten_more`
+  for "flatten more options", `convert_js_to_dictionary` for "convert a JavaScript
+  value to dictionary").
+- If you must split a spec algorithm into multiple internal helpers, provide
+  a single public function with the spec's name and explain the split with a
+  `// Note:`.
+- When a function partially implements a spec algorithm, annotate with `// Step N:`
+  for ALL steps of the algorithm. Mark missing steps with `// TODO: Not yet
+  implemented.` See `html/dispatch.rs::fire_global_event` for the correct pattern.
+
+### `// Note:` for discrepancies only
+
+`// Note:` is for discrepancies between the code and the spec text (e.g. steps
+merged across processes, browser-engine refactoring). Design notes, architecture
+rationales, and implementation plans belong in the README chain, not in Notes.
+
+### Full reference
+
+See `content/src/js/bindings/README.md` for the complete Common Mistakes table
+covering all annotation patterns, three-layer architecture rules, and the
+correct treatment of infrastructure code vs spec algorithms.

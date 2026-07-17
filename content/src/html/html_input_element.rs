@@ -27,6 +27,7 @@ impl HTMLInputElement {
         // node.  Read from there first so that JS sees what the user
         // actually typed.  Fall back to the value content attribute when
         // there is no text-input state (e.g. before the first keystroke).
+
         let document = self.html_element.element.node.document.borrow();
         let node_id = self.html_element.element.node.node_id;
         document
@@ -41,6 +42,7 @@ impl HTMLInputElement {
     /// <https://html.spec.whatwg.org/#dom-input-value>
     pub(crate) fn set_value(&self, value: &str) {
         // Step 1: Set the element's current value to the given value.
+
         let sanitized = value_to_string(value);
 
         // Update the content attribute.  Blitz's attribute mutation

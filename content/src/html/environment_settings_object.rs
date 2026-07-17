@@ -13,7 +13,7 @@ use crate::js::platform_objects::with_global_scope;
 use crate::js::{
     Engine, Types, install_console_namespace, install_css_namespace, install_document_property,
 };
-use crate::webidl::bindings::{create_interface_instance, get_registry_prototype};
+use crate::webidl::bindings::get_registry_prototype;
 use js_engine::{EcmascriptHost, ExecutionContext, JsTypes};
 
 type JsValue = <Types as JsTypes>::JsValue;
@@ -127,12 +127,9 @@ impl EnvironmentSettingsObject {
             }
         }
 
-        // Create the domain Document platform object.
-        let mut domain_document = crate::dom::Document::new(document.clone(), creation_url.clone());
-
-        // Create the JsObject wrapping a clone of the Document.
-        let document_object = create_interface_instance::<crate::js::Types, Document>(
-            domain_document.clone(),
+        let (document_object, document) = crate::js::bindings::dom::document::create_document_platform_object(
+            document.clone(),
+            creation_url.clone(),
             &mut engine,
         )
         .map_err(|error| {
@@ -140,11 +137,6 @@ impl EnvironmentSettingsObject {
                 .to_rust_string(error)
                 .unwrap_or_else(|_| "unknown error".to_string())
         })?;
-
-        // The EventTarget's reflector was set automatically by
-        // create_interface_instance on the clone inside the JsObject.
-        // Sync it to the ESO's domain copy.
-        domain_document.node.event_target.reflector = Some(document_object.clone());
 
         with_global_scope(&mut engine, |global_scope| {
             global_scope.store_document_object(document_object);
@@ -201,7 +193,7 @@ impl EnvironmentSettingsObject {
 
         Ok(Self {
             realm_execution_context: engine,
-            document: domain_document,
+            document: document,
             origin: Origin {
                 serialized: creation_url.origin().unicode_serialization(),
             },
@@ -274,6 +266,7 @@ impl EnvironmentSettingsObject {
 
         for callback in callbacks {
             // Step 3.3: "Invoke callback with « now » and \"report\"."
+
             let now_value = self.realm_execution_context.value_from_number(now);
             if let Err(error) = crate::webidl::invoke_callback_function(
                 &mut self.realm_execution_context as &mut dyn EcmascriptHost<crate::js::Types>,

@@ -61,10 +61,12 @@ impl AsyncValueIterable for ReadableStream {
         let mut stream = self.clone();
 
         // Step 1: "Let reader be ? AcquireReadableStreamDefaultReader(stream)."
+
         let reader_object = stream.get_reader(&ec.value_undefined(), ec)?;
 
         // Step 2: Store the reader for iteration.
         // Retrieve the domain data from the platform object.
+
         let reader_any = ec.with_object_any(&reader_object);
         let some_reader = reader_any.and_then(|d| d.downcast_ref::<ReadableStreamDefaultReader>());
         let reader = match some_reader {
@@ -77,6 +79,7 @@ impl AsyncValueIterable for ReadableStream {
         };
 
         // Step 3: "Let preventCancel be args[0][\"preventCancel\"]."
+
         let value = args
             .first()
             .cloned()
@@ -84,6 +87,7 @@ impl AsyncValueIterable for ReadableStream {
         let prevent_cancel = iterator_prevent_cancel(&value, ec)?;
 
         // Step 4: "Set iterator's prevent cancel to preventCancel."
+
         Ok(ReadableStreamAsyncIteratorState::new(
             reader,
             prevent_cancel,

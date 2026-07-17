@@ -805,6 +805,7 @@ impl ReadableByteStreamController {
         ec: &mut dyn ExecutionContext<crate::js::Types>,
     ) -> Completion<(), crate::js::Types> {
         // Step 3-5: Extract buffer info from chunk
+
         let view = ArrayBufferViewDescriptor::from_value(chunk, ec)?;
         if view.byte_length() == 0 {
             return Err(ec.new_type_error(
@@ -815,6 +816,7 @@ impl ReadableByteStreamController {
         // Step 6: IsDetachedBuffer check — already done by from_value above.
 
         // Step 7: Let transferredBuffer be ? TransferArrayBuffer(buffer).
+
         let realm = ec.current_realm();
         let intrinsics = ec.realm_intrinsics(&realm);
         let array_buffer_ctor = intrinsics.array_buffer.clone();
@@ -835,11 +837,13 @@ impl ReadableByteStreamController {
             ArrayBufferViewDescriptor::new_uint8(transferred_buffer, 0, byte_length);
 
         // Step 8: If controller.[[pendingPullIntos]] is not empty:
+
         let has_pending_pull_into = {
             let pending = self.pending_pull_intos.borrow();
             if let Some(first_pending) = pending.front() {
                 // Step 8.2: If ! IsDetachedBuffer(firstPendingPullInto's buffer) is true,
                 //           throw a TypeError exception.
+
                 if ec.array_buffer_data(&first_pending.view.buffer).is_none() {
                     return Err(
                         ec.new_type_error("Cannot enqueue with a detached BYOB request buffer")
@@ -852,6 +856,7 @@ impl ReadableByteStreamController {
         };
 
         // Step 8.3-8.4: Invalidate BYOB request and transfer first pending pull-into's buffer.
+
         if has_pending_pull_into {
             self.invalidate_byob_request(ec)?;
             {
@@ -870,11 +875,13 @@ impl ReadableByteStreamController {
         }
 
         // Step 9-11: Route based on reader type — reuse existing helpers.
+
         self.enqueue_chunk(transferred_view);
         self.process_pending_pull_intos_using_queue(ec)?;
         self.process_read_requests_using_queue(ec)?;
 
         // Step 12: Perform ! ReadableByteStreamControllerCallPullIfNeeded(controller).
+
         self.call_pull_if_needed(ec)
     }
 
@@ -1391,9 +1398,11 @@ pub(crate) fn set_up_readable_byte_stream_controller(
     ec: &mut dyn ExecutionContext<crate::js::Types>,
 ) -> Completion<(), crate::js::Types> {
     // Step 2 (implicit): Set controller.[[stream]] to stream.
+
     *controller.stream.borrow_mut() = Some(stream.clone());
 
     // Step 3 (implicit): Set stream.[[controller]] to controller.
+
     stream.set_controller_slot(Some(ReadableStreamController::Byte(controller.clone())));
     stream.set_controller_object_slot(Some(controller_object.clone()));
 

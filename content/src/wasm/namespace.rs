@@ -78,6 +78,7 @@ pub(crate) fn validate_wasm_module(stable_bytes: &[u8]) -> bool {
     // Step 2: "Compile stableBytes as a WebAssembly module and store the results as module."
     // Step 3: "If module is error, return false."
     // Note: Steps 4-6 (validating builtins and imported strings) are not yet implemented.
+
     let engine = wasmtime::Engine::default();
     matches!(Module::new(&engine, stable_bytes), Ok(_))
 }
@@ -145,6 +146,7 @@ fn asynchronously_compile_a_webassembly_module_boa(
         );
     }
     // Step 3: "Return promise."
+
     Ok(JsValue::from(promise))
 }
 
@@ -165,6 +167,7 @@ fn asynchronously_instantiate_a_webassembly_module_boa(
 ) -> Completion<JsValue, crate::js::Types> {
     // Step 1: "Let promise be a new promise."
     // Step 2: "Let module be moduleObject.[[Module]]."
+
     let module = wasm_module.module.clone();
     //
     // Steps 3-5 (builtin sets, imported strings, reading imports) are not
@@ -172,6 +175,7 @@ fn asynchronously_instantiate_a_webassembly_module_boa(
     //
     // Step 6: "Run the following steps in parallel:"
     // Phase 1 — Push pending request before creating the promise.
+
     let request_id = {
         let window = match window_from_context(context) {
             Some(w) => w,
@@ -212,6 +216,7 @@ fn asynchronously_instantiate_a_webassembly_module_boa(
         );
     }
     // Step 7: "Return promise."
+
     Ok(JsValue::from(promise))
 }
 
@@ -240,6 +245,7 @@ fn instantiate_bytes_boa(
     // is_instantiate: true, because the compile and instantiate phases run
     // sequentially in the worker and the content process resolves the promise
     // after both complete.
+
     let request_id = {
         let window = match window_from_context(context) {
             Some(w) => w,
@@ -306,6 +312,7 @@ fn compile_continuation_boa(
     // Note: builtinSetNames and importedStringModule are not yet supported.
     // Use create_interface_instance to wrap data in NativeDataWrapper so
     // ec.with_object_any can find it later during instantiate.
+
     let ec = js_engine::boa::context_as_ec(context);
     let module_object: JsObject = create_interface_instance::<crate::js::Types, WasmModule>(
         WasmModule::new(module, bytes),
@@ -313,6 +320,7 @@ fn compile_continuation_boa(
     )?
     .into();
     // Step 2.2.5.2: "Resolve promise with moduleObject."
+
     let resolve: JsObject = resolvers.resolve.clone();
     resolve
         .call(&JsValue::undefined(), &[module_object.into()], context)
@@ -339,6 +347,7 @@ fn compile_rejection_boa(
 ) -> Completion<(), crate::js::Types> {
     // Step 2.2.1: "If module is error, reject promise with a CompileError exception
     //              and return."
+
     let error = create_compile_error_boa(&message, context);
     let reject: JsObject = resolvers.reject.clone();
     reject
@@ -372,8 +381,10 @@ fn instantiate_continuation_boa(
     //
     // Step 6.1.2: "Let instanceObject be a new Instance."
     // Step 6.1.3: "Initialize instanceObject from module and instance."
+
     let instance_object = initialize_an_instance_object_boa(module, instance, store, context)?;
     // Step 6.1.4: "Resolve promise with instanceObject."
+
     let resolve: JsObject = resolvers.resolve.clone();
     resolve
         .call(&JsValue::undefined(), &[instance_object.into()], context)
@@ -389,6 +400,7 @@ fn initialize_an_instance_object_boa(
     context: &mut Context,
 ) -> Completion<JsObject, crate::js::Types> {
     // Step 1: "Create an exports object from module and instance and let exportsObject be the result."
+
     let mut store_guard = store.lock().unwrap();
     let exports_object =
         create_an_exports_object_boa(module, instance, &mut *store_guard, store, context)?;
@@ -399,6 +411,7 @@ fn initialize_an_instance_object_boa(
     // These are both done by constructing the WasmInstance with those fields.
     // Use create_interface_instance to wrap data in NativeDataWrapper so
     // ec.with_object_any can find it during exports getter access.
+
     let ec = js_engine::boa::context_as_ec(context);
     let instance_object: JsObject = create_interface_instance::<crate::js::Types, WasmInstance>(
         WasmInstance::new(exports_object, Arc::clone(store), *instance),
@@ -417,11 +430,13 @@ fn create_an_exports_object_boa(
     context: &mut Context,
 ) -> Completion<JsObject, crate::js::Types> {
     // Step 1: "Let exportsObject be ! OrdinaryObjectCreate(null)."
+
     let exports_object = JsObject::from_proto_and_data(None, ());
 
     // Step 2: "For each (name, externtype) of module_exports(module),"
     // Note: instance_export_list wraps module.exports() (Step 2 iterable)
     // and instance.get_export() (Step 2.1 externval lookup).
+
     let export_list = instance_export_list(module, instance, store);
 
     // Note: Only exported functions are implemented.  For memory, table,
@@ -430,15 +445,18 @@ fn create_an_exports_object_boa(
     // into a single match because Func is the only implemented extern kind.
     for (name, extern_val) in &export_list {
         // Step 2.3-2.7: "If externtype is of the form ..."
+
         let value = match extern_val {
             wasmtime::Extern::Func(func) => {
                 // Steps 2.3.x:  "Let func be the result of creating a new
                 //                Exported Function from funcaddr."
+
                 create_exported_function_wrapper_boa(*func, Arc::clone(store_arc), context)?
             }
             _ => JsValue::undefined(),
         };
         // Step 2.8: "Let status be ! CreateDataProperty(exportsObject, name, value)."
+
         exports_object
             .set(js_string!(name.as_str()), value, false, context)
             .map_err(|_| JsNativeError::typ().with_message("failed to set export property"))
@@ -448,6 +466,7 @@ fn create_an_exports_object_boa(
     // Note: Boa does not expose SetIntegrityLevel directly; skip for now.
     //
     // Step 4: "Return exportsObject."
+
     js_result_to_completion(Ok(exports_object), context)
 }
 

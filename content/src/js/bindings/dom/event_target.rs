@@ -58,34 +58,37 @@ fn convert_options_union(
     ec: &mut dyn ExecutionContext<crate::js::Types>,
 ) -> Completion<BooleanOrAddEventListenerOptions, crate::js::Types> {
     // Step 12: If V is a Boolean, then: if types includes boolean, convert.
+
     if let Some(b) = <crate::js::Types as JsTypes>::value_as_bool(value) {
         return Ok(BooleanOrAddEventListenerOptions::Boolean(b));
     }
 
     // Step 4.1: If V is null or undefined and types includes dictionary, convert.
     // Step 11.4: If V is an Object and types includes dictionary, convert.
-    let source = dictionary::open_dictionary::<crate::js::Types>(value, ec)?;
+
+    let access = dictionary::convert_js_to_dictionary::<crate::js::Types>(value, ec)?;
 
     // Step 4: For each dictionary member in AddEventListenerOptions
+
     let mut dict = crate::dom::AddEventListenerOptions::default();
 
     // Member: capture (boolean, default false) — inherited from EventListenerOptions
-    if let Some(val) = dictionary::get_dictionary_member::<crate::js::Types>(&source, "capture", ec)? {
+    if let Some(val) = access.get_member("capture", ec)? {
         dict.capture = ec.to_boolean(&val);
     }
 
     // Member: once (boolean, default false)
-    if let Some(val) = dictionary::get_dictionary_member::<crate::js::Types>(&source, "once", ec)? {
+    if let Some(val) = access.get_member("once", ec)? {
         dict.once = ec.to_boolean(&val);
     }
 
     // Member: passive (boolean, no default — stays None if absent)
-    if let Some(val) = dictionary::get_dictionary_member::<crate::js::Types>(&source, "passive", ec)? {
+    if let Some(val) = access.get_member("passive", ec)? {
         dict.passive = Some(ec.to_boolean(&val));
     }
 
     // Member: signal (AbortSignal, no default — stays None if absent)
-    if let Some(val) = dictionary::get_dictionary_member::<crate::js::Types>(&source, "signal", ec)? {
+    if let Some(val) = access.get_member("signal", ec)? {
         let signal_obj = <crate::js::Types as JsTypes>::value_as_object(&val)
             .ok_or_else(|| ec.new_type_error("addEventListener signal must be an AbortSignal"))?;
         dict.signal = Some(

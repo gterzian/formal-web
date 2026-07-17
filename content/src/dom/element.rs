@@ -204,11 +204,13 @@ impl Element {
         };
 
         // Step 1: "Let text be a new Text node whose data is data and node document is this's node document."
+
         let mut document = self.node.document.borrow_mut();
         let mut mutator = document.mutate();
         let text_node_id = mutator.create_text_node(data);
 
         // Step 2: "Run insert adjacent, given this, where, and text."
+
         match where_ {
             "beforebegin" => {
                 if parent_id == Some(0) {
@@ -263,10 +265,12 @@ impl Element {
     /// <https://dom.spec.whatwg.org/#dom-element-hasattribute>
     pub(crate) fn has_attribute(&self, qualified_name: &str) -> bool {
         // Step 1: "If this is in the HTML namespace and its node document is an HTML document, then set qualifiedName to qualifiedName in ASCII lowercase."
+
         let normalized_name = self.normalized_attribute_qualified_name(qualified_name);
 
         let document = self.node.document.borrow();
         // Step 2: "Return true if this has an attribute whose qualified name is qualifiedName; otherwise false."
+
         document
             .get_node(self.node.node_id)
             .and_then(|node| node.element_data())
@@ -298,16 +302,19 @@ impl Element {
     pub(crate) fn bounding_client_rect(&self) -> Option<DomRect> {
         // Step 1 of getBoundingClientRect(): "Let list be the result of invoking
         // getClientRects() on element."
+
         let list = self.client_rects_for_layout_box();
 
         // Step 2: "If the list is empty, return a DOMRect object whose x, y, width and height
         // members are zero."
+
         if list.is_empty() {
             return Some(DomRect::default());
         }
 
         // Step 3: "If all rectangles in list have zero width or height, return the first
         // rectangle in list."
+
         if list
             .iter()
             .all(|rect| rect.width == 0.0 || rect.height == 0.0)
@@ -317,6 +324,7 @@ impl Element {
 
         // Step 4: "Otherwise, return a DOMRect object describing the smallest rectangle that
         // includes all of the rectangles in list of which the height or width is not zero."
+
         let mut non_zero_rects = list
             .into_iter()
             .filter(|rect| rect.width != 0.0 && rect.height != 0.0);
@@ -408,11 +416,13 @@ impl Element {
     ) {
         // Step 1: "Let (namespace, prefix, localName) be the result of validating and extracting namespace and qualifiedName given \"attribute\"."
         // Note: The implementation accepts the already-stringified qualified name shape used by the targeted WPTs and does not yet implement the full validation-and-extraction error surface.
+
         let (prefix, local_name) = split_qualified_name(qualified_name);
 
         let mut document = self.node.document.borrow_mut();
         let mut mutator = document.mutate();
         // Step 3: "Set an attribute value for this using localName, verifiedValue, prefix, and namespace."
+
         mutator.set_attribute(
             self.node.node_id,
             QualName {

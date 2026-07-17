@@ -39,6 +39,7 @@ impl CSS {
         // The spec notes that no escape or whitespace processing is performed on the property
         // name: Declaration::eval() reads the raw ident before the colon, so " width" (with a
         // leading space) won't match any property.
+
         let declaration_text = format!("{property}: {value}");
         let declaration = Declaration(declaration_text);
         let url_data = UrlExtraData(ServoArc::new(
@@ -57,6 +58,7 @@ impl CSS {
 
         // Step 1: If conditionText, parsed and evaluated as a <supports-condition>,
         //          would return true, return true.
+
         {
             let mut input = cssparser::ParserInput::new(condition_text);
             let mut parser: Parser = cssparser::Parser::new(&mut input);
@@ -74,6 +76,7 @@ impl CSS {
         // outermost parentheses make the content parseable as either a <supports-condition> or
         // a <declaration> (e.g. "(color: red)" is a parenthesized declaration).  Stylo's
         // parse_condition_or_declaration entry point handles both, matching the spec's intent.
+
         let wrapped = format!("({condition_text})");
         {
             let mut input = cssparser::ParserInput::new(&wrapped);
@@ -88,6 +91,7 @@ impl CSS {
         }
 
         // Step 3: Otherwise, return false.
+
         false
     }
 }

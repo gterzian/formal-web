@@ -208,14 +208,17 @@ impl AbortSignal {
 
             // Step 2: "Set signal's abort reason to reason if it is given; otherwise to a new
             // \"AbortError\" DOMException."
+
             state.aborted = true;
             state.abort_reason = reason.clone();
 
             // Step 3: "Let dependentSignalsToAbort be a new list."
+
             state.dependent_signals.clone()
         };
 
         // Step 4: "For each dependentSignal of signal's dependent signals:"
+
         let dependent_signals_to_abort = dependent_signals
             .into_iter()
             .filter_map(|dependent_signal| {
@@ -362,6 +365,7 @@ pub(crate) fn initialize_dependent_abort_signal(
     signals: &[AbortSignal],
 ) {
     // Step 2: "For each signal of signals: if signal is aborted, then set resultSignal's abort reason to signal's abort reason and return resultSignal."
+
     for signal in signals {
         if signal.aborted_value() {
             result_signal.set_aborted_reason(signal.reason_value());
@@ -370,26 +374,34 @@ pub(crate) fn initialize_dependent_abort_signal(
     }
 
     // Step 3: "Set resultSignal's dependent to true."
+
     result_signal.set_dependent(true);
 
     // Step 4: "For each signal of signals:"
+
     for signal in signals {
         // Step 4.1: "If signal's dependent is false:"
+
         if !signal.dependent_value() {
             // Step 4.1.1: "Append signal to resultSignal's source signals."
+
             result_signal.append_source_signal(signal);
 
             // Step 4.1.2: "Append resultSignal to signal's dependent signals."
+
             signal.append_dependent_signal(result_signal);
             continue;
         }
 
         // Step 4.2: "Otherwise, for each sourceSignal of signal's source signals:"
+
         for source_signal in signal.source_signals_value() {
             // Step 4.2.2: "Append sourceSignal to resultSignal's source signals."
+
             result_signal.append_source_signal(&source_signal);
 
             // Step 4.2.3: "Append resultSignal to sourceSignal's dependent signals."
+
             source_signal.append_dependent_signal(result_signal);
         }
     }

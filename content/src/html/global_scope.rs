@@ -418,10 +418,12 @@ impl GlobalScope {
         // Note: This helper continues the `timer initialization steps` algorithm at the `GlobalScope`-owned pieces. The mixin implementation already handled the preliminary timeout conversion, clamping, and task setup.
 
         // Step 2: "If previousId was given, let id be previousId; otherwise, let id be an implementation-defined integer that is greater than zero and does not already exist in global's map of setTimeout and setInterval IDs."
+
         let timer_id = previous_id.unwrap_or_else(|| self.next_timer_id());
 
         // Step 11: "Set uniqueHandle to the result of running steps after a timeout given global, \"setTimeout/setInterval\", timeout, and completionStep."
         // Note: The content/embedder boundary forwards this request into the dedicated timer worker, which models `run steps after a timeout`.
+
         let timer_key = self.next_timer_key()?;
         log_timer_debug(format!(
             "schedule timer id={} key={} timeout_ms={} nesting={} repeat={} previous_id={:?}",
@@ -441,6 +443,7 @@ impl GlobalScope {
             })?;
 
         // Step 12: "Set global's map of setTimeout and setInterval IDs[id] to uniqueHandle."
+
         let mut timers = self.window_timers.borrow_mut();
         if let Some(index) = timers.iter().position(|entry| entry.id == timer_id) {
             timers.remove(index);
@@ -455,6 +458,7 @@ impl GlobalScope {
         });
 
         // Step 13: "Return id."
+
         Ok(timer_id)
     }
 
@@ -463,6 +467,7 @@ impl GlobalScope {
         // Note: This is the shared storage helper used by both `clearTimeout()` and `clearInterval()`.
 
         // Step 1: "Remove this's map of setTimeout and setInterval IDs[id]."
+
         let removed_timer = {
             let mut timers = self.window_timers.borrow_mut();
             timers
@@ -529,6 +534,7 @@ impl GlobalScope {
         ));
 
         // Step 12: "Otherwise, remove global's map of setTimeout and setInterval IDs[id]."
+
         if !timer.repeat {
             self.window_timers
                 .borrow_mut()
@@ -537,6 +543,7 @@ impl GlobalScope {
         }
 
         // Step 11: "If repeat is true, then perform the timer initialization steps again, given global, handler, timeout, arguments, true, and id."
+
         let next_nesting_level = self
             .current_timer_nesting_level()
             .unwrap_or(0)

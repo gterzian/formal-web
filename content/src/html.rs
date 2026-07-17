@@ -75,8 +75,10 @@ where
     //
     // Step 1: Assert: there is a surrounding agent. I.e., this algorithm is
     //         not called while in parallel.
+
     let realm = ec.current_realm();
     // Step 9: Enqueue microtask on eventLoop's microtask queue.
+
     ec.enqueue_job_with_realm(
         realm,
         Box::new(move |job_ec| {
@@ -104,6 +106,7 @@ pub fn await_a_stable_state<F>(
     //         described in the algorithm's steps.
     //         (Implicit — after the synchronous section returns, control
     //         resumes in the calling algorithm's in-parallel context.)
+
     queue_a_microtask(ec, synchronous_section);
 }
 
@@ -143,6 +146,7 @@ pub(crate) fn create_a_new_realm(
     // calling algorithm.  The caller must keep the returned ESO alive
     // — dropping it drops the Context and invalidates JsObject handles.
     // Step 15: Create a new Document with type "html", content type "text/html"
+
     let document = Rc::new(RefCell::new(BaseDocument::new(DocumentConfig {
         viewport: None,
         base_url: None,
@@ -153,6 +157,7 @@ pub(crate) fn create_a_new_realm(
     })));
     // Steps 9-10, 13: Obtain agent, create realm, set up window environment
     // settings object.
+
     let settings = EnvironmentSettingsObject::new_in_realm(
         parent,
         Rc::clone(&document),
@@ -162,8 +167,10 @@ pub(crate) fn create_a_new_realm(
         Some(document_id),
     )?;
     // Step 22: Populate with html/head/body given document.
+
     parse_html_into_document(&mut document.borrow_mut(), crate::EMPTY_HTML_DOCUMENT);
     // Step 10 (continued): global object is the Window.
+
     let global_object = settings.realm_execution_context.realm_global_object();
     Ok((global_object, settings, document))
 }
@@ -218,6 +225,7 @@ pub(crate) fn the_rules_for_choosing_a_navigable(
     window_global: Option<<crate::js::Types as js_engine::JsTypes>::JsObject>,
 ) -> ChosenNavigableResult {
     // Step 1: Let chosen be null.
+
     let mut chosen: Option<NavigableId> = None;
 
     // Note: Step 2 (Let windowType be "existing or none") and Step 3
@@ -228,6 +236,7 @@ pub(crate) fn the_rules_for_choosing_a_navigable(
 
     // Step 4: If name is the empty string or an ASCII case-insensitive match for
     //         "_self", then set chosen to currentNavigable.
+
     if target_name.is_empty() || target_name.eq_ignore_ascii_case("_self") {
         chosen = Some(source_navigable_id);
     }
@@ -235,12 +244,14 @@ pub(crate) fn the_rules_for_choosing_a_navigable(
     // Step 5: Otherwise, if name is an ASCII case-insensitive match for "_parent",
     //         set chosen to currentNavigable's parent, if any, and currentNavigable
     //         otherwise.
+
     if chosen.is_none() && target_name.eq_ignore_ascii_case("_parent") {
         chosen = Some(parent_navigable_id.unwrap_or(source_navigable_id));
     }
 
     // Step 6: Otherwise, if name is an ASCII case-insensitive match for "_top", set
     //         chosen to currentNavigable's traversable navigable.
+
     if chosen.is_none() && target_name.eq_ignore_ascii_case("_top") {
         chosen = Some(top_level_navigable_id);
     }
@@ -248,6 +259,7 @@ pub(crate) fn the_rules_for_choosing_a_navigable(
     // Step 7: Otherwise, if name is not an ASCII case-insensitive match for "_blank"
     //         and noopener is false, then set chosen to the result of finding a
     //         navigable by target name given name and currentNavigable.
+
     if chosen.is_none() && !target_name.eq_ignore_ascii_case("_blank") && !noopener {
         // Content cannot cross-process lookup; delegate to UA.
         // TODO: implement local same-process target-name lookup against
@@ -264,6 +276,7 @@ pub(crate) fn the_rules_for_choosing_a_navigable(
     //   2. Non-null opener (noopener=false): calls `create a new top-level
     //      traversable` with the opener BC, which creates an auxiliary BC
     //      in the same BCG. Document can be created in content.
+
     let Some(chosen) = chosen else {
         // ---- Null-opener branch (noopener or equivalent) ----
         // <https://html.spec.whatwg.org/#creating-a-new-top-level-browsing-context>
@@ -345,6 +358,7 @@ pub(crate) fn the_rules_for_choosing_a_navigable(
     // The return_window for _self / _parent / _top is the source document's
     // global object (correct for _self; _parent and _top that target a
     // different process are a known gap — see content/src/html/README.md).
+
     let return_window = window_global;
     ChosenNavigableResult {
         chosen_navigable_id: Some(chosen),

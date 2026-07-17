@@ -49,6 +49,7 @@ impl HTMLIFrameElement {
     /// <https://html.spec.whatwg.org/#dom-iframe-src>
     pub(crate) fn src(&self) -> String {
         // Step 1: "Return the value of the src content attribute."
+
         self.html_element
             .element
             .get_attribute("src")
@@ -58,12 +59,14 @@ impl HTMLIFrameElement {
     /// <https://html.spec.whatwg.org/#dom-iframe-src>
     pub(crate) fn set_src(&self, src: &str) {
         // Step 1: "Set this's src content attribute to the given value."
+
         self.html_element.element.set_attribute("src", src);
     }
 
     /// <https://html.spec.whatwg.org/#dom-iframe-srcdoc>
     pub(crate) fn srcdoc(&self) -> String {
         // Step 1: "Return the value of the srcdoc content attribute."
+
         self.html_element
             .element
             .get_attribute("srcdoc")
@@ -73,12 +76,14 @@ impl HTMLIFrameElement {
     /// <https://html.spec.whatwg.org/#dom-iframe-srcdoc>
     pub(crate) fn set_srcdoc(&self, srcdoc: &str) {
         // Step 1: "Set this's srcdoc content attribute to the given value."
+
         self.html_element.element.set_attribute("srcdoc", srcdoc);
     }
 
     /// <https://html.spec.whatwg.org/#dom-iframe-name>
     pub(crate) fn name(&self) -> String {
         // Step 1: "Return the value of the name content attribute."
+
         self.html_element
             .element
             .get_attribute("name")
@@ -88,12 +93,14 @@ impl HTMLIFrameElement {
     /// <https://html.spec.whatwg.org/#dom-iframe-name>
     pub(crate) fn set_name(&self, name: &str) {
         // Step 1: "Set this's name content attribute to the given value."
+
         self.html_element.element.set_attribute("name", name);
     }
 
     /// <https://html.spec.whatwg.org/#dom-dim-width>
     pub(crate) fn width(&self) -> String {
         // Step 1: "Return the value of the width content attribute."
+
         self.html_element
             .element
             .get_attribute("width")
@@ -103,12 +110,14 @@ impl HTMLIFrameElement {
     /// <https://html.spec.whatwg.org/#dom-dim-width>
     pub(crate) fn set_width(&self, width: &str) {
         // Step 1: "Set this's width content attribute to the given value."
+
         self.html_element.element.set_attribute("width", width);
     }
 
     /// <https://html.spec.whatwg.org/#dom-dim-height>
     pub(crate) fn height(&self) -> String {
         // Step 1: "Return the value of the height content attribute."
+
         self.html_element
             .element
             .get_attribute("height")
@@ -118,6 +127,7 @@ impl HTMLIFrameElement {
     /// <https://html.spec.whatwg.org/#dom-dim-height>
     pub(crate) fn set_height(&self, height: &str) {
         // Step 1: "Set this's height content attribute to the given value."
+
         self.html_element.element.set_attribute("height", height);
     }
 
@@ -278,6 +288,7 @@ fn navigate_an_iframe_or_frame(
     // Step 4: "Navigate element's content navigable to url using element's node document."
     // Note: Navigation is performed by sending a request to the user agent, which executes
     // the navigate algorithm including historyHandling and referrer policy resolution.
+
     navigate(
         &process.event_sender,
         content_navigable_id,
@@ -381,6 +392,7 @@ fn create_a_new_child_navigable(
     }
 
     // Step 1: "Let parentNavigable be element's node navigable."
+
     let parent_navigable = parent_navigable_id;
 
     // Step 2: "Let group be element's node document's browsing context's top-level
@@ -394,6 +406,7 @@ fn create_a_new_child_navigable(
     // Note: We create the document (about:blank) immediately in the content process.
     // The browsing context is represented by its ID on the UA side. The UA will set up
     // its BC state when it receives the CreateChildNavigable IPC.
+
     let content_navigable = process.allocate_navigable_id()?;
     let new_document_id = DocumentId::new();
     let top_level_traversable_id = process
@@ -406,6 +419,7 @@ fn create_a_new_child_navigable(
     // Steps 9-10, 13, 15, 22: Create a new Document, realm, Window, and
     // environment settings object.  The content-process side handles this;
     // the UA handles BC allocation, group membership, and session history.
+
     let content_frame_id = process.allocate_child_frame_id();
     let (_global_object, settings, new_document) =
         crate::html::create_a_new_browsing_context_and_document(
@@ -438,6 +452,7 @@ fn create_a_new_child_navigable(
     // Step 4: "Let targetName be null."
     // Step 5: "If element has a name content attribute, then set targetName to the value
     // of that attribute."
+
     let target_name = if let Some(content_document) = process.documents.get(&parent_document_id) {
         let document = content_document.document.borrow();
         if let Some(node) = document.get_node(iframe_node_id)
@@ -466,6 +481,7 @@ fn create_a_new_child_navigable(
     // The content side already has the document created and registered.
 
     // Step 9: "Set element's content navigable to navigable."
+
     if let Some(content_document) = process.documents.get_mut(&parent_document_id) {
         content_document.navigable_container_states.insert(
             iframe_node_id,
@@ -488,6 +504,7 @@ fn create_a_new_child_navigable(
     // state, session history entries, event loop registration, and WebDriver
     // notification. The destination URL is "about:blank" because the document
     // already exists in the content process; no actual navigation is needed.
+
     let parent_traversable_id = parent_navigable;
     let child_navigable_info = NewChildNavigableInfo {
         parent_traversable_id,
@@ -620,6 +637,7 @@ fn run_iframe_load_event_steps(
     // TODO: Implement document iframe load in progress flag.
 
     // Step 6: "Fire an event named load at element."
+
     let time_millis = content_document.settings.current_time_millis();
     let ec = &mut content_document.settings.realm_execution_context;
 
@@ -679,6 +697,7 @@ fn run_iframe_post_connection_steps(
     // Step 1: "If insertedNode has a sandbox attribute, then parse the sandboxing
     // directive given the attribute's value and insertedNode's iframe sandboxing flag set."
     // <https://html.spec.whatwg.org/#parse-a-sandboxing-directive>
+
     if let Some(content_document) = process.documents.get(&parent_document_id) {
         let document = content_document.document.borrow();
         if let Some(node) = document.get_node(iframe_node_id)
@@ -691,6 +710,7 @@ fn run_iframe_post_connection_steps(
     }
 
     // Step 2: "Create a new child navigable for insertedNode."
+
     let parent_navigable_id = process
         .documents
         .get(&parent_document_id)
@@ -706,6 +726,7 @@ fn run_iframe_post_connection_steps(
     // Step 3: "Process the iframe attributes for insertedNode, with initialInsertion
     // set to true."
     // Note: This executes synchronously in the same task as Step 2.
+
     process_iframe_attributes(process, parent_document_id, iframe_node_id, true)
 }
 
@@ -804,6 +825,7 @@ fn process_iframe_attributes(
 
         // Step 2.1: "Let url be the result of running the shared attribute processing steps
         // for iframe and frame elements given element and initialInsertion."
+
         let desired_url = shared_attribute_processing_steps_for_iframe_and_frame_elements(
             &document,
             &creation_url,
@@ -824,6 +846,7 @@ fn process_iframe_attributes(
     } else {
         let Some(url) = desired_url else {
             // Step 2.2: "If url is null, then return."
+
             return Ok(());
         };
         if matches_about_blank(&url) {
@@ -860,6 +883,7 @@ fn process_iframe_attributes(
     }
 
     // Step 2: "If element's content navigable is null, then return."
+
     let Some(content_navigable_id) = previous_iframe_state
         .as_ref()
         .and_then(|state| state.content_navigable)
@@ -888,6 +912,7 @@ fn process_iframe_attributes(
     // Note: Applies to the `AboutBlank` target (no `src`/`srcdoc`) and to `src` values
     // that parse to about:blank. The `Srcdoc` target is never about:blank, so it falls
     // through to the navigation block below.
+
     if initial_insertion {
         match &target {
             IframeNavigationTarget::AboutBlank => {
@@ -903,8 +928,10 @@ fn process_iframe_attributes(
                     );
                 }
                 // Step 2.3.1: "Run the iframe load event steps given element."
+
                 run_iframe_load_event_steps(process, parent_document_id, iframe_node_id)?;
                 // Step 2.3.2: "Return."
+
                 return Ok(());
             }
             IframeNavigationTarget::Url { url } if matches_about_blank(url) => {
@@ -920,8 +947,10 @@ fn process_iframe_attributes(
                     );
                 }
                 // Step 2.3.1: "Run the iframe load event steps given element."
+
                 run_iframe_load_event_steps(process, parent_document_id, iframe_node_id)?;
                 // Step 2.3.2: "Return."
+
                 return Ok(());
             }
             _ => {}
@@ -953,6 +982,7 @@ fn process_iframe_attributes(
     // TODO: Implement lazy loading for iframes with URL navigations.
 
     // Step 1: "If element's srcdoc attribute is specified:"
+
     if let IframeNavigationTarget::Srcdoc { html } = &target {
         // Step 1.1: "Set element's current navigation was lazy loaded boolean to false."
         // TODO: Implement current navigation was lazy loaded tracking.
@@ -961,6 +991,7 @@ fn process_iframe_attributes(
         // TODO: Implement lazy loading.
 
         // Step 1.3: "Navigate to the srcdoc resource."
+
         attach_iframe_subdocument_from_html(
             process,
             parent_document_id,
@@ -976,6 +1007,7 @@ fn process_iframe_attributes(
     // <https://html.spec.whatwg.org/#navigate-an-iframe-or-frame>
     // Note: about:blank navigations are fulfilled locally and URL-based navigations are
     // delegated to the user agent.
+
     match target {
         IframeNavigationTarget::AboutBlank => {
             attach_iframe_about_blank(process, parent_document_id, iframe_node_id)?;
@@ -1002,17 +1034,21 @@ fn process_iframe_attributes(
 /// <https://html.spec.whatwg.org/#parse-a-sandboxing-directive>
 fn parse_a_sandboxing_directive(value: &str) -> HashSet<String> {
     // Step 1: "Let output be a new empty set."
+
     let mut output = HashSet::new();
 
     // Step 2: "Let tokens be the result of splitting input on ASCII whitespace."
+
     let tokens = value.split_ascii_whitespace();
 
     // Step 3: "For each token of tokens:"
+
     for token in tokens {
         // TODO: Map each sandboxing keyword token to the corresponding sandboxing flag.
         output.insert(token.to_ascii_lowercase());
     }
 
     // Step 4: "Return output."
+
     output
 }

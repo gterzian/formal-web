@@ -121,6 +121,7 @@ impl WebIdlNamespace<crate::js::Types> for WasmNamespace {
 pub(crate) fn install_wasm_namespace(engine: &mut BoaContext) -> JsResult<()> {
     // Step 1: "Let namespaceObject be OrdinaryObjectCreate(...)."
     // Step 2-3: Define regular attributes and operations.
+
     register_namespace_spec::<crate::js::Types, WasmNamespace, BoaContext>(engine)
         .map_err(JsError::from_opaque)?;
 
