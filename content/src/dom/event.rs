@@ -2,10 +2,10 @@ use blitz_traits::events::{DomEvent, EventState};
 
 use crate::js::Types;
 use crate::webidl::Callback;
-use std::cell::Cell;
-use js_engine::JsTypes;
-use js_engine::gc_struct;
 use js_engine::gc::{GcCell, gc_cell_new};
+use js_engine::gc_struct;
+use js_engine::{Completion, ExecutionContext, JsTypes};
+use std::cell::Cell;
 
 use super::{AbortAlgorithm, AbortSignal};
 
@@ -55,6 +55,8 @@ pub(crate) struct EventListener {
 #[gc_struct]
 #[derive(Default)]
 pub struct EventTarget {
+    pub(crate) reflector: Option<JsObject>,
+
     /// <https://dom.spec.whatwg.org/#eventtarget-event-listener-list>
     pub(crate) event_listener_list: GcCell<Vec<EventListener>>,
 
@@ -62,18 +64,21 @@ pub struct EventTarget {
     next_listener_id: Cell<u64>,
 }
 
-/// Trait for types that embed or are associated with an EventTarget.
 pub(crate) trait EventTargetAccess {
     fn get_event_target(&self) -> EventTarget;
 
-    /// The JsObject GC handle for this EventTarget's platform object.
-    fn get_target_object(&self) -> Option<JsObject> {
-        None
+    /// <https://dom.spec.whatwg.org/#eventtarget-activation-behavior>
+    fn has_activation_behavior(&self) -> bool {
+        false
     }
 
-    /// Returns (parent_JsObject, parent_EventTarget) or None.
+    /// <https://dom.spec.whatwg.org/#eventtarget-activation-behavior>
+    fn run_activation_behavior(&self, _event: &Event) -> Completion<(), Types> {
+        Ok(())
+    }
+
     /// <https://dom.spec.whatwg.org/#dom-eventtarget-gettheparent>
-    fn get_the_parent(&self) -> Option<(JsObject, EventTarget)> {
+    fn get_the_parent(&self) -> Option<EventTarget> {
         None
     }
 }
@@ -81,6 +86,41 @@ pub(crate) trait EventTargetAccess {
 impl EventTargetAccess for EventTarget {
     fn get_event_target(&self) -> EventTarget {
         self.clone()
+    }
+}
+
+/// <https://dom.spec.whatwg.org/#dictdef-addeventlisteneroptions>
+#[derive(Clone, Default)]
+pub(crate) struct AddEventListenerOptions {
+    pub capture: bool,
+    pub once: bool,
+    pub passive: Option<bool>,
+    pub signal: Option<AbortSignal>,
+}
+
+pub(crate) enum BooleanOrAddEventListenerOptions {
+    Boolean(bool),
+    Dict(AddEventListenerOptions),
+}
+
+/// <https://dom.spec.whatwg.org/#concept-flatten-options>
+pub(crate) fn flatten(options: &BooleanOrAddEventListenerOptions) -> bool {
+    match options {
+        BooleanOrAddEventListenerOptions::Boolean(b) => *b,
+        BooleanOrAddEventListenerOptions::Dict(d) => d.capture,
+    }
+}
+
+/// <https://dom.spec.whatwg.org/#event-flatten-more>
+pub(crate) fn flatten_more(options: BooleanOrAddEventListenerOptions) -> AddEventListenerOptions {
+    match options {
+        BooleanOrAddEventListenerOptions::Boolean(b) => AddEventListenerOptions {
+            capture: b,
+            once: false,
+            passive: None,
+            signal: None,
+        },
+        BooleanOrAddEventListenerOptions::Dict(d) => d,
     }
 }
 
@@ -96,17 +136,28 @@ impl EventTarget {
         passive: Option<bool>,
         signal: Option<AbortSignal>,
     ) {
+        // Step 2: If listener's signal is non-null and is aborted, then return.
         if let Some(signal) = signal.as_ref() {
             if signal.aborted_value() {
                 return;
             }
         }
 
+        // Step 3: If listener's callback is null, then return.
         let Some(callback) = callback else {
             return;
         };
 
+        // Step 4: If listener's passive is null, then set it to the
+        // default passive value given listener's type and eventTarget.
+        // Note: The default passive value algorithm is not yet implemented;
+        // defaults to false for all types.
         let passive = passive.or(Some(false));
+
+        // Step 5: If eventTarget's event listener list does not contain
+        // an event listener whose type is listener's type, callback is
+        // listener's callback, and capture is listener's capture, then
+        // append listener to eventTarget's event listener list.
         let listener_id = self.next_listener_id.get().wrapping_add(1);
         let mut listeners = self.event_listener_list.borrow_mut();
         let duplicate = listeners.iter().any(|listener| {
@@ -130,9 +181,11 @@ impl EventTarget {
                 signal: signal.clone(),
                 removed: false,
             });
-            // Drop the borrow before signal.add_abort_algorithm (which may borrow ec).
             std::mem::drop(listeners);
 
+            // Step 6: If listener's signal is non-null, then add the
+            // following abort steps to it: Remove an event listener with
+            // eventTarget and listener.
             if let Some(signal) = signal {
                 signal.add_abort_algorithm(AbortAlgorithm::RemoveEventListener {
                     event_target: event_target.clone(),
@@ -149,6 +202,8 @@ impl EventTarget {
         callback: &Callback,
         capture: bool,
     ) {
+        // Step 2: Set listener's removed to true and remove listener from
+        // eventTarget's event listener list.
         let mut listeners = self.event_listener_list.borrow_mut();
         for listener in listeners.iter_mut() {
             if listener.type_ == type_
@@ -165,7 +220,10 @@ impl EventTarget {
         listeners.retain(|listener| !listener.removed);
     }
 
+    /// <https://dom.spec.whatwg.org/#remove-an-event-listener>
     pub(crate) fn remove_event_listener_by_id(&self, listener_id: u64) {
+        // Step 2: Set listener's removed to true and remove listener from
+        // eventTarget's event listener list.
         let mut listeners = self.event_listener_list.borrow_mut();
         for listener in listeners.iter_mut() {
             if listener.id == listener_id {
@@ -185,20 +243,42 @@ impl EventTarget {
             .iter()
             .any(|listener| listener.id == listener_id && !listener.removed)
     }
+
+    /// <https://dom.spec.whatwg.org/#dom-eventtarget-dispatchevent>
+    pub(crate) fn dispatch_event(
+        &self,
+        event: &Event,
+        path: &[super::EventPathItem],
+        ec: &mut dyn ExecutionContext<Types>,
+    ) -> Completion<bool, Types> {
+        // Step 1: If event's dispatch flag is set, or if its initialized flag is not set,
+        // then throw an "InvalidStateError" DOMException.
+        if *event.dispatch_flag.borrow() || !*event.initialized_flag.borrow() {
+            return Err(ec.new_type_error("InvalidStateError: event is already being dispatched or not initialized"));
+        }
+
+        // Step 2: Initialize event's isTrusted attribute to false.
+        *event.is_trusted.borrow_mut() = false;
+
+        // Step 3: Return the result of dispatching event to this.
+        crate::dom::dispatch_event(ec, path, event)
+    }
 }
 
 /// <https://dom.spec.whatwg.org/#event>
 #[gc_struct]
 pub struct Event {
+    pub(crate) reflector: Option<JsObject>,
+
     /// <https://dom.spec.whatwg.org/#dom-event-type>
     #[ignore_trace]
     pub type_: String,
 
     /// <https://dom.spec.whatwg.org/#dom-event-target>
-    pub target: GcCell<Option<JsObject>>,
+    pub target: GcCell<Option<EventTarget>>,
 
     /// <https://dom.spec.whatwg.org/#dom-event-currenttarget>
-    pub current_target: GcCell<Option<JsObject>>,
+    pub current_target: GcCell<Option<EventTarget>>,
 
     /// <https://dom.spec.whatwg.org/#dom-event-eventphase>
     pub event_phase: GcCell<u16>,
@@ -247,8 +327,9 @@ impl Event {
         time_stamp: f64,
     ) -> Self {
         Self {
+            reflector: None,
             type_,
-            target: gc_cell_new(None),
+            target: gc_cell_new(None::<EventTarget>),
             current_target: gc_cell_new(None),
             event_phase: gc_cell_new(NONE),
             bubbles: gc_cell_new(bubbles),
@@ -271,12 +352,12 @@ impl Event {
     }
 
     /// <https://dom.spec.whatwg.org/#dom-event-target>
-    pub(crate) fn target_value(&self) -> Option<JsObject> {
+    pub(crate) fn target_value(&self) -> Option<EventTarget> {
         self.target.borrow().clone()
     }
 
     /// <https://dom.spec.whatwg.org/#dom-event-currenttarget>
-    pub(crate) fn current_target_value(&self) -> Option<JsObject> {
+    pub(crate) fn current_target_value(&self) -> Option<EventTarget> {
         self.current_target.borrow().clone()
     }
 

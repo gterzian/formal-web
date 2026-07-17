@@ -211,7 +211,6 @@ impl Location {
 
         // Step 3: "If url is failure, then throw a SyntaxError DOMException."
         // Note: parse_url_relative_to_entry_settings maps parse failure to SyntaxError.
-
         // Step 4: "Location-object navigate this to url."
         self.location_object_navigate(&url, NavigationHistoryBehavior::Auto)
     }
@@ -482,7 +481,6 @@ impl Location {
 
         // Step 4: "If urlRecord is failure, then throw a SyntaxError DOMException."
         // Note: parse_url_relative_to_entry_settings maps parse failure to SyntaxError.
-
         // Step 5: "Location-object navigate this to urlRecord."
         self.location_object_navigate(&url_record, NavigationHistoryBehavior::Auto)
     }
@@ -504,7 +502,6 @@ impl Location {
 
         // Step 3: "If urlRecord is failure, then throw a SyntaxError DOMException."
         // Note: parse_url_relative_to_entry_settings maps parse failure to SyntaxError.
-
         // Step 4: "Location-object navigate this to urlRecord given 'replace'."
         self.location_object_navigate(&url_record, NavigationHistoryBehavior::Replace)
     }
@@ -516,7 +513,6 @@ impl Location {
     ) -> Result<(), LocationError> {
         // Step 1: "Let document be this's relevant Document."
         // Note: The model carries relevant document presence as `relevant_document_origin`.
-
         // Step 2: "If document is null, then return."
         if self.relevant_document_is_null() {
             return Ok(());
@@ -589,7 +585,6 @@ impl Location {
         // document for referrer policy and other navigation metadata. The content process
         // signals this implicitly by sending a NavigationRequested from the current document,
         // and the user agent derives the source document from the content process identity.
-
         // Step 3: "If location's relevant Document is not yet completely loaded and the
         // incumbent global object does not have transient activation, then set
         // historyHandling to 'replace'."

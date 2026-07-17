@@ -1,28 +1,27 @@
 use std::any::TypeId;
+use std::collections::HashSet;
 use std::{cell::RefCell, rc::Rc};
 
 use blitz_dom::{BaseDocument, Node as BlitzNode};
 use html5ever::{local_name, ns};
 
-use crate::dom::{Element, Node};
+use crate::dom::{Document, Element, EventPathItem, Node};
 use crate::html::{
     GlobalScope, HTMLAnchorElement, HTMLElement, HTMLIFrameElement, HTMLInputElement,
     HTMLVideoElement, Window,
 };
+use crate::js::downcast::event_target_from_js_object;
 use crate::webidl::bindings::create_interface_instance;
 use js_engine::{Completion, ExecutionContext, JsTypes};
 
+use crate::js::Types;
+
+type JsObject = <Types as JsTypes>::JsObject;
+
 /// <https://html.spec.whatwg.org/#global-object>
-///
-/// Type-key for storing the realm's global object `JsObject` in `host_any`.
-/// Initialised during realm creation; validated in
-/// `host_any_stored_object_downcast_via_with_object_any`.
 pub(crate) struct GlobalObjectSlot;
 
 /// <https://html.spec.whatwg.org/#global-object>
-///
-/// Store the realm's global object in `host_any`.  Call once during realm
-/// initialisation, after the global object has been created.
 pub(crate) fn init_global_object_slot(
     ec: &mut dyn ExecutionContext<crate::js::Types>,
     global_object: <crate::js::Types as JsTypes>::JsObject,
@@ -31,10 +30,6 @@ pub(crate) fn init_global_object_slot(
 }
 
 /// <https://html.spec.whatwg.org/#global-object>
-///
-/// Downcast the realm's global object to `&GlobalScope` through
-/// `realm_global_object()` + `with_object_any`.  Returns `None` if the
-/// global object is not a `Window` or has no native data.
 fn global_scope_or_error<'ec>(
     ec: &'ec dyn ExecutionContext<crate::js::Types>,
 ) -> Option<&'ec GlobalScope> {
@@ -45,9 +40,6 @@ fn global_scope_or_error<'ec>(
 }
 
 /// <https://html.spec.whatwg.org/#global-object>
-///
-/// Like `global_scope_or_error` but constructs a `Completion` error when
-/// the global object can't be reached.
 pub(crate) fn with_global_scope<R>(
     ec: &mut dyn ExecutionContext<crate::js::Types>,
     f: impl FnOnce(&GlobalScope) -> Completion<R, crate::js::Types>,
@@ -199,6 +191,8 @@ pub(crate) fn resolve_or_create_text_node_object(
     Ok(object)
 }
 
+/// Use `try_with_event_target_mut` to set the reflector on the EventTarget
+/// embedded in a platform object JsObject.
 fn element_object_from_document(
     document: Rc<RefCell<BaseDocument>>,
     node_id: usize,
@@ -227,7 +221,7 @@ fn element_object_from_document(
         })
         .unwrap_or(0);
 
-    match kind {
+    let object = match kind {
         5 => create_interface_instance::<crate::js::Types, HTMLInputElement>(
             HTMLInputElement::new(document, node_id),
             ec,
@@ -252,5 +246,61 @@ fn element_object_from_document(
             Element::new(document, node_id),
             ec,
         ),
+    }?;
+    Ok(object)
+}
+
+/// <https://dom.spec.whatwg.org/#concept-event-dispatch>
+// Note: The dispatch algorithm's Step 2 builds the event path by walking the
+// DOM parent chain. This function implements only that parent-chain traversal
+// for click events from the UI event system, without shadow-tree or slot steps.
+pub(crate) fn build_path_from_target_js_object(
+    target_object: &JsObject,
+    ec: &mut dyn ExecutionContext<Types>,
+) -> Vec<EventPathItem> {
+    let mut path: Vec<EventPathItem> = Vec::new();
+    let node_info = ec.with_object_any(target_object).and_then(|data| {
+        if let Some(element) = data.downcast_ref::<Element>() {
+            Some((element.node.node_id, element.node.document.clone()))
+        } else if let Some(html_element) = data.downcast_ref::<HTMLElement>() {
+            Some((html_element.element.node.node_id, html_element.element.node.document.clone()))
+        } else if let Some(node) = data.downcast_ref::<Node>() {
+            Some((node.node_id, node.document.clone()))
+        } else if let Some(document) = data.downcast_ref::<Document>() {
+            Some((document.node.node_id, document.node.document.clone()))
+        } else {
+            None
+        }
+    });
+
+    if let Some((node_id, document)) = node_info {
+        if let Some(event_target) = event_target_from_js_object(ec, target_object) {
+            path.push(EventPathItem { invocation_target: event_target.clone(), shadow_adjusted_target: Some(event_target) });
+        }
+        let mut current_node_id = node_id;
+        let mut visited = HashSet::new();
+        visited.insert(node_id);
+        loop {
+            let parent_id = { let doc = document.borrow(); doc.get_node(current_node_id).and_then(|n| n.parent) };
+            match parent_id {
+                Some(pid) if !visited.contains(&pid) => {
+                    visited.insert(pid);
+                    if let Ok(parent_object) = resolve_element_object(pid, ec) {
+                        if let Some(parent_event_target) = event_target_from_js_object(ec, &parent_object) {
+                            path.push(EventPathItem { invocation_target: parent_event_target, shadow_adjusted_target: None });
+                        }
+                        current_node_id = pid;
+                    } else {
+                        current_node_id = pid;
+                    }
+                }
+                _ => break,
+            }
+        }
+    } else {
+        if let Some(event_target) = event_target_from_js_object(ec, target_object) {
+            path.push(EventPathItem { invocation_target: event_target.clone(), shadow_adjusted_target: Some(event_target) });
+        }
     }
+    path
 }

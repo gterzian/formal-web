@@ -6,9 +6,9 @@ use boa_engine::{Context, JsNativeError, JsValue, js_string, object::JsObject};
 use wasmtime::{Func, Instance as WasmtimeInstance, Module, Store};
 
 use crate::html::Window;
-use crate::wasm::{PendingRequest, PendingState};
 use crate::wasm::conversions::{default_val_for_type, js_val_to_wasm_val, wasm_val_to_js_value};
 use crate::wasm::types::{WasmInstance, WasmModule};
+use crate::wasm::{PendingRequest, PendingState};
 use crate::webidl::bindings::create_interface_instance;
 use js_engine::gc_struct;
 use js_engine::{Completion, ExecutionContext, JsTypes, records::PromiseResolvers};
@@ -102,7 +102,6 @@ fn asynchronously_compile_a_webassembly_module_boa(
 
     // Step 1: "Let promise be a new promise."
     // Step 2: "Run the following steps in parallel:"
-
     // Phase 1 — Extract request_id and push pending request.
     let request_id = {
         let window = match window_from_context(context) {
@@ -144,6 +143,7 @@ fn asynchronously_compile_a_webassembly_module_boa(
             resolvers_to_generic(resolvers),
         );
     }
+
     // Step 3: "Return promise."
     Ok(JsValue::from(promise))
 }
@@ -211,6 +211,7 @@ fn asynchronously_instantiate_a_webassembly_module_boa(
             resolvers_to_generic(resolvers),
         );
     }
+
     // Step 7: "Return promise."
     Ok(JsValue::from(promise))
 }
@@ -312,6 +313,7 @@ fn compile_continuation_boa(
         ec,
     )?
     .into();
+
     // Step 2.2.5.2: "Resolve promise with moduleObject."
     let resolve: JsObject = resolvers.resolve.clone();
     resolve
@@ -373,6 +375,7 @@ fn instantiate_continuation_boa(
     // Step 6.1.2: "Let instanceObject be a new Instance."
     // Step 6.1.3: "Initialize instanceObject from module and instance."
     let instance_object = initialize_an_instance_object_boa(module, instance, store, context)?;
+
     // Step 6.1.4: "Resolve promise with instanceObject."
     let resolve: JsObject = resolvers.resolve.clone();
     resolve
@@ -438,12 +441,14 @@ fn create_an_exports_object_boa(
             }
             _ => JsValue::undefined(),
         };
+
         // Step 2.8: "Let status be ! CreateDataProperty(exportsObject, name, value)."
         exports_object
             .set(js_string!(name.as_str()), value, false, context)
             .map_err(|_| JsNativeError::typ().with_message("failed to set export property"))
             .map_err(|error| native_error_to_js_value(error, context))?;
     }
+
     // Step 3: "Perform ! SetIntegrityLevel(exportsObject, "frozen")."
     // Note: Boa does not expose SetIntegrityLevel directly; skip for now.
     //

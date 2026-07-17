@@ -80,7 +80,6 @@ pub(crate) fn window_computed_style_properties_for_element(
 ) -> BTreeMap<String, String> {
     // Step 1: "Let doc be elt's node document."
     // Note: The style resolution helper reads elt's node document through the [Document](https://dom.spec.whatwg.org/#interface-document) [platform object](https://webidl.spec.whatwg.org/#dfn-platform-object).
-
     // Step 2: "Let obj be elt."
     let mut obj = Some(elt);
 
@@ -131,7 +130,6 @@ pub(crate) fn window_open_steps(
 ) -> Completion<JsValue, crate::js::Types> {
     // Step 1: "If the event loop's termination nesting level is nonzero, then return null."
     // TODO: Content process does not yet track termination nesting.
-
     // Step 2: "Let sourceDocument be the entry global object's associated Document."
     let source_navigable_id = match global_scope.source_navigable_id() {
         Some(id) => id,
@@ -262,7 +260,6 @@ pub(crate) fn window_open_steps(
     // locally (step 7/8) when called with a `GlobalScope`.  The result struct
     // carries back the chosen navigable ID, any new traversable info, and
     // the Window backing the WindowProxy.
-
     if let Err(error) = super::navigate(
         event_sender,
         source_navigable_id,
@@ -407,11 +404,13 @@ fn parse_boolean_feature(value: &str) -> bool {
     if value.is_empty() {
         return true;
     }
+
     // Step 2: "If value is 'yes', then return true."
     // Step 3: "If value is 'true', then return true."
     if value == "yes" || value == "true" {
         return true;
     }
+
     // Step 4: "Let parsed be the result of parsing value as an integer."
     // Step 5: "If parsed is an error, then set it to 0."
     // Step 6: "Return false if parsed is 0, and true otherwise."
@@ -428,10 +427,12 @@ pub(crate) fn check_if_popup_window_is_requested(
     if tokenized_features.is_empty() {
         return false;
     }
+
     // Step 2: "If tokenizedFeatures['popup'] exists, then return the result of parsing..."
     if let Some(value) = tokenized_features.get("popup") {
         return parse_boolean_feature(value);
     }
+
     // Steps 3–13: check individual features
     let location = check_if_window_feature_is_set(tokenized_features, "location", false);
     let toolbar = check_if_window_feature_is_set(tokenized_features, "toolbar", false);
@@ -454,6 +455,7 @@ pub(crate) fn check_if_popup_window_is_requested(
     if !status {
         return true;
     }
+
     // Step 14: "Return false."
     false
 }
@@ -469,6 +471,7 @@ pub(crate) fn check_if_window_feature_is_set(
     if let Some(value) = tokenized_features.get(feature_name) {
         return parse_boolean_feature(value);
     }
+
     // Step 2: "Return defaultValue."
     default_value
 }

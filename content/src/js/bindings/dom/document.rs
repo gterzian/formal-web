@@ -1,3 +1,4 @@
+use std::cell::RefCell;
 use std::rc::Rc;
 
 type JsValue = <crate::js::Types as JsTypes>::JsValue;
@@ -7,9 +8,10 @@ use crate::js::platform_objects::{
     document_object, invalidate_cached_node_ids, resolve_element_object,
     resolve_or_create_text_node_object,
 };
-use crate::webidl::bindings::{AttributeDef, InterfaceDefinition, OperationDef, WebIdlInterface};
+use crate::webidl::bindings::{AttributeDef, InterfaceDefinition, OperationDef, WebIdlInterface, create_interface_instance};
 
 use js_engine::{Completion, ExecutionContext, JsTypes};
+use url::Url;
 
 impl WebIdlInterface<crate::js::Types> for Document {
     const NAME: &'static str = "Document";
@@ -385,6 +387,7 @@ pub(crate) fn install_document_property(
     let global = ec.realm_global_object();
     let key = ec.property_key_from_str("document");
     let value = <crate::js::Types as js_engine::JsTypes>::value_from_object(document);
+
     // Step 1: Define the "document" property on the global object.
     // Note: This replaces register_global_property which is Boa-specific.
     // The property is writable, enumerable, configurable (same as Attribute::all()).
@@ -401,4 +404,31 @@ pub(crate) fn install_document_property(
         },
     )?;
     Ok(())
+}
+
+/// <https://webidl.spec.whatwg.org/#internally-create-a-new-object-implementing-the-interface>
+// Note: This function does not implement the algorithm itself — it delegates
+// to `create_interface_instance` which does. This is a Document-specific
+// wrapper that also extracts a cloned Document reference for the ESO, which
+// is an artifact of Rust's ownership model (the spec has no such concept).
+pub(crate) fn create_document_platform_object(
+    blitz_document: Rc<RefCell<blitz_dom::BaseDocument>>,
+    creation_url: url::Url,
+    ec: &mut dyn ExecutionContext<crate::js::Types>,
+) -> Completion<(<crate::js::Types as JsTypes>::JsObject, crate::dom::Document), crate::js::Types> {
+    let document = crate::dom::Document::new(blitz_document, creation_url);
+    let document_object = create_interface_instance::<crate::js::Types, crate::dom::Document>(
+        document,
+        ec,
+    )?;
+
+    // The ESO needs a Document reference for access to shared GcCell-backed
+    // state. The reflector was set automatically by
+    // PostCreateReflector::set_reflector during create_interface_instance.
+    let extracted: crate::dom::Document = ec
+        .with_object_any(&document_object)
+        .and_then(|data| data.downcast_ref::<crate::dom::Document>().cloned())
+        .ok_or_else(|| ec.new_type_error("document_object is not a Document"))?;
+
+    Ok((document_object, extracted))
 }

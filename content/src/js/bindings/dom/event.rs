@@ -240,6 +240,7 @@ fn get_target(
 ) -> Completion<JsValue, crate::js::Types> {
     let target = with_event_ref(this, ec, |event| event.target_value())?;
     Ok(target
+        .and_then(|et| et.reflector.clone())
         .map(crate::js::Types::value_from_object)
         .unwrap_or_else(|| ec.value_null()))
 }
@@ -251,6 +252,7 @@ fn get_current_target(
 ) -> Completion<JsValue, crate::js::Types> {
     let target = with_event_ref(this, ec, |event| event.current_target_value())?;
     Ok(target
+        .and_then(|et| et.reflector.clone())
         .map(crate::js::Types::value_from_object)
         .unwrap_or_else(|| ec.value_null()))
 }

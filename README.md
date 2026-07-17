@@ -30,6 +30,15 @@ cargo build --release --no-default-features --features backend-gstreamer,boa,med
 cargo run --release -- wpt
 ```
 
+## Spec-algorithm annotations
+
+Every function, struct, or constant that implements a spec algorithm carries
+**only** the spec anchor URL in its doc comment — zero prose.  Inside the
+function body, every spec step has a `// Step N:` comment quoting the
+exact spec text verbatim, with blank lines separating code blocks (not
+comments from code).  See `AGENTS.md` §Algorithm Implementation for the
+complete rules.
+
 ## Project architecture
 
 A multiprocess approach is chosen by default, because the goal is to match [Apple's guidelines for an independent browser engine](https://developer.apple.com/documentation/BrowserEngineKit/designing-your-browser-architecture). 

@@ -8,7 +8,6 @@ use crate::js::{Types, create_builtin_fn_with_traced_captures};
 
 use crate::{
     dom::{AbortSignal, create_abort_signal, signal_abort},
-
     streams::SizeAlgorithm,
     webidl::bindings::create_interface_instance,
     webidl::{promise_from_value, rejected_promise, resolved_promise},
@@ -628,7 +627,6 @@ pub(crate) fn set_up_writable_stream_default_controller(
 ) -> Completion<(), Types> {
     // Step 1: "Assert: stream implements WritableStream."
     // Step 2: "Assert: stream.[[controller]] is undefined."
-
     // Step 3: "Set controller.[[stream]] to stream."
     controller.set_stream_slot(Some(stream.clone()));
 

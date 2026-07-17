@@ -86,10 +86,12 @@ pub(crate) fn validate_and_normalize_high_water_mark(
 ) -> Completion<f64, Types> {
     // Step 1 (implicit): "Let highWaterMark be ? ToNumber(highWaterMark)."
     let number = ec.to_number(value.clone())?;
+
     // Step 2: "If highWaterMark is NaN or highWaterMark < 0, throw a RangeError exception."
     if number.is_nan() || number < 0.0 {
         return Err(ec.new_range_error("highWaterMark must be a non-negative number"));
     }
+
     // Step 3: "Return highWaterMark."
     Ok(number)
 }

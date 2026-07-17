@@ -5,6 +5,8 @@ use crate::js::Types;
 type JsValue = <Types as JsTypes>::JsValue;
 type JsObject = <Types as JsTypes>::JsObject;
 use log::error;
+pub(crate) mod dispatch;
+pub(crate) mod ui_events;
 mod environment_settings_object;
 mod global_scope;
 mod html_anchor_element;
@@ -74,6 +76,7 @@ where
     // Step 1: Assert: there is a surrounding agent. I.e., this algorithm is
     //         not called while in parallel.
     let realm = ec.current_realm();
+
     // Step 9: Enqueue microtask on eventLoop's microtask queue.
     ec.enqueue_job_with_realm(
         realm,
@@ -149,6 +152,7 @@ pub(crate) fn create_a_new_realm(
         html_parser_provider: None,
         ..DocumentConfig::default()
     })));
+
     // Steps 9-10, 13: Obtain agent, create realm, set up window environment
     // settings object.
     let settings = EnvironmentSettingsObject::new_in_realm(
@@ -159,8 +163,10 @@ pub(crate) fn create_a_new_realm(
         Some(traversable_id),
         Some(document_id),
     )?;
+
     // Step 22: Populate with html/head/body given document.
     parse_html_into_document(&mut document.borrow_mut(), crate::EMPTY_HTML_DOCUMENT);
+
     // Step 10 (continued): global object is the Window.
     let global_object = settings.realm_execution_context.realm_global_object();
     Ok((global_object, settings, document))

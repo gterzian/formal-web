@@ -460,7 +460,6 @@ pub(crate) fn readable_stream_default_reader_error_read_requests(
 
     // Step 2: "Set reader.[[readRequests]] to a new empty list."
     // Note: `take_read_requests()` empties the list before iteration.
-
     // Step 3: "For each readRequest of readRequests,"
     for read_request in read_requests {
         // Step 3.1: "Perform readRequest's error steps, given e."

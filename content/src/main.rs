@@ -17,10 +17,8 @@ pub mod streams;
 pub mod wasm;
 pub mod webidl;
 
-use crate::dom::{
-    dispatch_trusted_click_event, dispatch_ui_event, dispatch_window_event, fire_event,
-    EventTargetAccess,
-};
+use crate::dom::{EventTargetAccess, fire_event};
+use crate::html::ui_events::{dispatch_trusted_click_event, dispatch_ui_event};
 use crate::html::{
     EnvironmentSettingsObject, JsHtmlParserProvider, PendingParserScript,
     attach_same_origin_child_document_for_traversable, execute_parser_scripts,
@@ -30,9 +28,7 @@ use crate::html::{
 use crate::js::platform_objects::with_global_scope;
 use crate::ui_event::deserialize_ui_event;
 #[cfg(all(boa_backend, feature = "wasm"))]
-use crate::wasm::{
-    WasmResult, compile_continuation, compile_rejection, instantiate_continuation,
-};
+use crate::wasm::{WasmResult, compile_continuation, compile_rejection, instantiate_continuation};
 use anyrender::Scene as RenderScene;
 use blitz_dom::{BaseDocument, DocumentConfig};
 use blitz_paint::paint_scene;
@@ -875,8 +871,8 @@ impl ContentProcess {
                 msg
             })?;
 
-        fire_event(ec, &window_target, &window, "load", time_millis, true)
-        .map_err(|error| format!("fire_event failed: {error:?}"))?;
+        fire_event(ec, &window_target, "load", time_millis, true)
+            .map_err(|error| format!("fire_event failed: {error:?}"))?;
 
         let traversable_id = content_document.traversable_id;
         self.active_documents_by_traversable
@@ -941,7 +937,6 @@ impl ContentProcess {
         // This block continues <https://html.spec.whatwg.org/#creating-a-new-browsing-context>.
         // Step 7: "Mark document as ready for post-load tasks."
         // TODO: Persist the document's post-load readiness state in the DOM model.
-
         let parser_scripts = {
             let mut document_guard = document.borrow_mut();
 
@@ -1209,7 +1204,8 @@ impl ContentProcess {
             // worker results arriving after destruction are not misattributed,
             // and to avoid orphaned promise entries.
             // https://webassembly.github.io/spec/js-api/#asynchronously-compile-a-webassembly-module
-            self.wasm.pending_requests
+            self.wasm
+                .pending_requests
                 .retain(|_request_id, doc_id| *doc_id != document_id);
             self.wasm.pending_modules.retain(|request_id, _module| {
                 !self.wasm.pending_requests.contains_key(request_id)
@@ -1306,13 +1302,13 @@ impl ContentProcess {
         {
             let navigable_id = document.traversable_id;
             let time_millis = document.settings.current_time_millis();
-            let canceled = !dispatch_window_event(
+            let canceled = !crate::html::dispatch::steps_to_fire_beforeunload(
                 &mut document.settings.realm_execution_context,
                 "beforeunload",
                 true,
                 time_millis,
             )
-            .map_err(|error| format!("dispatch_window_event failed: {error:?}"))?;
+            .map_err(|error| format!("steps_to_fire_beforeunload failed: {error:?}"))?;
             (Some(navigable_id), canceled)
         } else {
             (None, false)
@@ -1401,7 +1397,6 @@ impl ContentProcess {
 
             // Step 1: "Let `frameTimestamp` be `eventLoop`'s last render opportunity time."
             // Note: The content process currently derives a monotonic frame timestamp from the document's environment settings object time origin instead of the HTML event loop's shared render-opportunity clock.
-
             // Step 14: "For each `doc` of `docs`, run the animation frame callbacks for `doc`, passing in the relative high resolution time given `frameTimestamp` and `doc`'s relevant global object as the timestamp."
             // Note: The content process collapses `docs` to the single active document for this content process and uses the same environment-relative time as both the HTML frame timestamp and the callback timestamp.
             document
@@ -2118,9 +2113,7 @@ impl ContentProcess {
                         let value_json = match serde_json::to_string(&value) {
                             Ok(json) => json,
                             Err(error) => {
-                                error!(
-                                    "failed to encode script evaluation result: {error}"
-                                );
+                                error!("failed to encode script evaluation result: {error}");
                                 return Ok(true);
                             }
                         };
@@ -2128,13 +2121,13 @@ impl ContentProcess {
                     }
                     Err(error) => (String::from("null"), Some(error)),
                 };
-                if let Err(error) = self
-                    .event_sender
-                    .send(ContentEvent::ScriptEvaluated(ScriptEvaluationResult {
-                        request_id,
-                        value_json,
-                        error,
-                    }))
+                if let Err(error) =
+                    self.event_sender
+                        .send(ContentEvent::ScriptEvaluated(ScriptEvaluationResult {
+                            request_id,
+                            value_json,
+                            error,
+                        }))
                 {
                     error!("failed to send script evaluation result: {error}");
                 }

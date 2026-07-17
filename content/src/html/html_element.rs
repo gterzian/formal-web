@@ -2,8 +2,8 @@ use std::{cell::RefCell, collections::BTreeMap, rc::Rc};
 
 use blitz_dom::BaseDocument;
 
-use crate::dom::{Element, EventTarget};
 use crate::dom::event::EventTargetAccess;
+use crate::dom::{Element, EventTarget};
 use js_engine::gc_struct;
 
 /// <https://html.spec.whatwg.org/#htmlelement>

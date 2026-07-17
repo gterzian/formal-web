@@ -3,6 +3,16 @@ use js_engine::{
     PropertyDescriptor as JsPropertyDescriptor,
 };
 
+/// <https://webidl.spec.whatwg.org/#internally-create-a-new-object-implementing-the-interface>
+// Note: The spec algorithm does not define a reflector-setting step. This hook
+// is an implementation-specific finalization: after the JsObject is created, the
+// native struct needs a back-link to its wrapper so domain code can find the
+// JsObject from the EventTarget/Event. This is called as the last operation
+// before returning the instance.
+pub(crate) trait PostCreateReflector<Ty: JsTypes> {
+    fn set_reflector(obj: &Ty::JsObject, ec: &mut dyn ExecutionContext<Ty>);
+}
+
 use super::attribute::AttributeDef;
 use super::constant::ConstantDef;
 use super::operation::OperationDef;
@@ -81,7 +91,7 @@ pub(crate) fn create_interface_instance<Ty, T>(
     ec: &mut dyn ExecutionContext<Ty>,
 ) -> Completion<Ty::JsObject, Ty>
 where
-    Ty: JsTypes + JsTypesWithRealm,
+    Ty: JsTypes + JsTypesWithRealm + PostCreateReflector<Ty>,
     T: std::any::Any + boa_gc::Trace + boa_gc::Finalize + boa_engine::JsData + 'static,
 {
     // <https://webidl.spec.whatwg.org/#internally-create-a-new-object-implementing-the-interface>
@@ -98,7 +108,6 @@ where
     // Step 2: "If newTarget is undefined, then:"
     //   Domain callers (not constructors) always use the standard prototype.
     // Steps 3-8: newTarget handling, MakeBasicObject — handled below.
-
     // Step 9: "Set instance.[[Prototype]] to prototype."
     //   Wrap data in TraceableBox for GC root tracing, then type-erase
     //   through create_object_with_any. The Boa backend recovers the
@@ -108,15 +117,15 @@ where
 
     // Steps 10-11: "Let interfaces be the inclusive inherited interfaces..."
     //   TODO: Unforgeable property copying from ancestor interface objects.
-
     // Step 12: "If interface is declared with the [Global] extended attribute..."
     //   [Global] handling is done during registration (see register_interface_spec).
 
     // Step 13: "Otherwise, if interfaces contains an interface which supports
     //   indexed properties, named properties, or both:"
     //   Not yet implemented.
-
     // Step 14: "Return instance."
+    <Ty as PostCreateReflector<Ty>>::set_reflector(&instance, ec);
+
     Ok(instance)
 }
 
@@ -144,20 +153,17 @@ where
     // Step 2: "If newTarget is undefined, then:"
     //   Domain callers (not constructors) always use the standard prototype.
     // Steps 3-8: newTarget handling, MakeBasicObject — handled below.
-
     // Step 9: "Set instance.[[Prototype]] to prototype."
     let instance = ec.create_object_with_any(prototype, Box::new(data));
 
     // Steps 10-11: "Let interfaces be the inclusive inherited interfaces..."
     //   TODO: Unforgeable property copying from ancestor interface objects.
-
     // Step 12: "If interface is declared with the [Global] extended attribute..."
     //   [Global] handling is done during registration (see register_interface_spec).
 
     // Step 13: "Otherwise, if interfaces contains an interface which supports
     //   indexed properties, named properties, or both:"
     //   Not yet implemented.
-
     // Step 14: "Return instance."
     Ok(instance)
 }
@@ -166,7 +172,7 @@ where
 #[cfg(feature = "boa")]
 pub(crate) fn register_interface_spec<Ty, I, E>(engine: &mut E) -> Completion<(), Ty>
 where
-    Ty: JsTypes + JsTypesWithRealm,
+    Ty: JsTypes + JsTypesWithRealm + PostCreateReflector<Ty>,
     I: WebIdlInterface<Ty> + boa_gc::Trace + boa_gc::Finalize + boa_engine::JsData + 'static,
     E: JsEngine<Ty> + ExecutionContext<Ty>,
 {
@@ -182,7 +188,6 @@ where
     //   `wire_registry_prototype`. The constructorProto is not yet wired — the
     //   default %Function.prototype% is used, and subclass constructors inherit
     //   from their parent interface object via a separate call.
-
     // Step 11: "Let proto be the result of creating an interface prototype
     //   object of interface I in realm."
     let proto = engine.create_object_with_any(intrinsics.object_prototype.clone(), Box::new(()));
@@ -244,7 +249,6 @@ where
                 // Step 1.4: "Let n be the size of args."
                 // Step 1.5: "Let id be the identifier of interface I."
                 // Steps 1.6-1.7: Overload resolution (not yet implemented).
-
                 // Step 1.8: "Let object be the result of internally creating a new
                 //   object implementing I, with realm and NewTarget."
                 //
@@ -278,7 +282,6 @@ where
                 // Step 1.9: "Perform the constructor steps of constructor with
                 //   object as this and values as the argument values."
                 //   Note: handled inside create_platform_object.
-
                 // Step 1.10: "Let O be object, converted to a JavaScript value."
                 //
                 // GC tracing for the stored platform data is handled by
@@ -287,6 +290,8 @@ where
                 // `TraceableBox` wrapper and uses its trace/finalize fn pointers.
                 let traceable = js_engine::boa::TraceableBox::new(obj);
                 let instance = ec.create_object_with_any(resolved_prototype, Box::new(traceable));
+
+                <Ty as PostCreateReflector<Ty>>::set_reflector(&instance, ec);
 
                 // Step 11: "For every interface ancestor interface in interfaces:"
                 // Only copies own interface's [[Unforgeables]]; ancestor iteration
@@ -425,7 +430,6 @@ where
     //   `wire_registry_prototype`. The constructorProto is not yet wired — the
     //   default %Function.prototype% is used, and subclass constructors inherit
     //   from their parent interface object via a separate call.
-
     // Step 11: "Let proto be the result of creating an interface prototype
     //   object of interface I in realm."
     let proto = engine.create_object_with_any(intrinsics.object_prototype.clone(), Box::new(()));
@@ -487,7 +491,6 @@ where
                 // Step 1.4: "Let n be the size of args."
                 // Step 1.5: "Let id be the identifier of interface I."
                 // Steps 1.6-1.7: Overload resolution (not yet implemented).
-
                 // Step 1.8: "Let object be the result of internally creating a new
                 //   object implementing I, with realm and NewTarget."
                 //
@@ -521,7 +524,6 @@ where
                 // Step 1.9: "Perform the constructor steps of constructor with
                 //   object as this and values as the argument values."
                 //   Note: handled inside create_platform_object.
-
                 // Step 1.10: "Let O be object, converted to a JavaScript value."
                 let instance = ec.create_object_with_any(resolved_prototype, Box::new(obj));
 
@@ -681,4 +683,16 @@ where
         desc,
     )?;
     Ok(())
+}
+
+/// <https://webidl.spec.whatwg.org/#internally-create-a-new-object-implementing-the-interface>
+// Note: see trait-level Note for why this does not map one-to-one to the spec.
+impl PostCreateReflector<crate::js::Types> for crate::js::Types {
+    fn set_reflector(
+        obj: &<crate::js::Types as JsTypes>::JsObject,
+        ec: &mut dyn ExecutionContext<crate::js::Types>,
+    ) {
+        let value = <crate::js::Types as JsTypes>::value_from_object(obj.clone());
+        crate::js::try_set_event_target_reflector(&value, ec);
+    }
 }

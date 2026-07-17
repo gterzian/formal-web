@@ -558,7 +558,6 @@ impl ReadableStreamDefaultController {
             };
 
             // Step 4.3: "Let chunkSize be result.[[Value]]."
-
             // Step 4.4: "Let enqueueResult be EnqueueValueWithSize(controller, chunk, chunkSize)."
             if !chunk_size.is_finite() || chunk_size < 0.0 {
                 let error = range_error_value(

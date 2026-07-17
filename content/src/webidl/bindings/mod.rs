@@ -1,4 +1,3 @@
-
 // Several members and helpers are defined here for completeness but not yet
 // wired to call sites.  Acceptable as spec infrastructure scaffolding.
 #![allow(dead_code)]

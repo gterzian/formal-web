@@ -1616,8 +1616,8 @@ mod tests {
     };
     use base64::Engine as _;
     use ipc_messages::content::{NavigableId, WebviewId};
-    use serde_json::{Value, json};
     use log::error;
+    use serde_json::{Value, json};
     use std::io::{ErrorKind, Read, Write};
     use std::net::{TcpListener, TcpStream};
     use std::sync::{Arc, Mutex, mpsc};

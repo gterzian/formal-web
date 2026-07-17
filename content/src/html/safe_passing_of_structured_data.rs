@@ -274,7 +274,6 @@ fn structured_serialize_internal(
 ) -> Completion<SerializedRecord, Types> {
     // Step 1: If memory was not supplied, let memory be an empty map.
     //         (memory is always supplied here.)
-
     // Step 2: If memory[value] exists, then return memory[value].
     if let Some(object) = Types::value_as_object(value) {
         if let Some(record) = memory.get_serialized(&object) {
@@ -286,7 +285,6 @@ fn structured_serialize_internal(
     // (This implementation handles deep serialization inline in the helper functions
     //  rather than via a unified deep flag — see serialize_map_contents, serialize_set_contents,
     //  serialize_array, and the ordinary object path below.)
-
     // Step 4: If value is undefined, null, a Boolean, a Number, a BigInt, or a String,
     //         then return { [[Type]]: "primitive", [[Value]]: value }.
     if let Some(prim) = js_value_to_primitive(value, ec) {
@@ -357,6 +355,7 @@ fn structured_serialize_internal(
     if let Some(sab) = Types::object_as_shared_array_buffer(&object) {
         return serialize_shared_array_buffer(&sab, for_storage, ec);
     }
+
     // Step 13.2: Otherwise (non-shared ArrayBuffer):
     if let Some(buffer) = Types::object_as_array_buffer(&object) {
         return serialize_array_buffer(&buffer, ec);
@@ -392,7 +391,6 @@ fn structured_serialize_internal(
 
     // Step 19: Otherwise, if value is a platform object that is a serializable object.
     // TODO: Check registered [Serializable] platform objects.
-
     // Step 20: Otherwise, if value is a platform object, then throw a "DataCloneError" DOMException.
     // TODO: Add platform object detection.
 
@@ -404,7 +402,6 @@ fn structured_serialize_internal(
     // Step 22: Otherwise, if value has any internal slot other than [[Prototype]], [[Extensible]],
     //            or [[PrivateElements]], then throw a "DataCloneError" DOMException.
     // TODO: Add these checks.
-
     // Step 23: Otherwise, if value is an exotic object and value is not the %Object.prototype%
     //            intrinsic object associated with any realm, then throw a "DataCloneError" DOMException.
     // TODO: Add these checks.
@@ -437,6 +434,7 @@ fn structured_serialize_internal(
 
         // Step 26: "Let inputValue be ? value.[[Get]](key, value)."
         let input_value = get_property_key(ec, object.clone(), key.clone())?;
+
         // Step 26: "Let outputValue be ? StructuredSerializeInternal(inputValue, forStorage, memory)."
         let output_value = structured_serialize_internal(&input_value, for_storage, memory, ec)?;
         let key_str = property_key_to_string(&key, ec)?;
@@ -477,7 +475,6 @@ fn serialize_array_buffer(
     //                set serialized to { [[Type]]: "ResizableArrayBuffer", [[ArrayBufferData]]: dataCopy,
     //                                     [[ArrayBufferByteLength]]: size, [[ArrayBufferMaxByteLength]]: value.[[ArrayBufferMaxByteLength]] }.
     // TODO: Support resizable ArrayBuffers.
-
     // Step 13.2.5: Otherwise, set serialized to { [[Type]]: "ArrayBuffer", [[ArrayBufferData]]: dataCopy,
     //                                             [[ArrayBufferByteLength]]: size }.
     Ok(SerializedRecord::ArrayBuffer {
@@ -498,7 +495,6 @@ fn serialize_shared_array_buffer(
     //   Step 13.1.1.1: If the current settings object's cross-origin isolated capability is false,
     //                    then throw a "DataCloneError" DOMException.
     // TODO: Check cross-origin isolated capability.
-
     // Step 13.1.2: If forStorage is true, then throw a "DataCloneError" DOMException.
     if for_storage {
         return Err(data_clone_error(ec));
@@ -507,7 +503,6 @@ fn serialize_shared_array_buffer(
     // Step 13.1.3: If value has an [[ArrayBufferMaxByteLength]] internal slot, then
     //                set serialized to { [[Type]]: "GrowableSharedArrayBuffer", ... }.
     // TODO: Support GrowableSharedArrayBuffer.
-
     // Step 13.1.4: Otherwise, set serialized to { [[Type]]: "SharedArrayBuffer",
     //               [[ArrayBufferData]]: value.[[ArrayBufferData]],
     //               [[ArrayBufferByteLength]]: value.[[ArrayBufferByteLength]],
@@ -654,8 +649,10 @@ fn serialize_map_contents(
     for (key, val) in raw_entries {
         // Step 15.5.1: Let serializedKey be ? StructuredSerializeInternal(entry.[[Key]], forStorage, memory).
         let sk = structured_serialize_internal(&key, for_storage, memory, ec)?;
+
         // Step 15.5.2: Let serializedValue be ? StructuredSerializeInternal(entry.[[Value]], forStorage, memory).
         let sv = structured_serialize_internal(&val, for_storage, memory, ec)?;
+
         // Step 15.5.3: Append { [[Key]]: serializedKey, [[Value]]: serializedValue } to serialized.[[MapData]].
         entries.push((sk, sv));
     }
@@ -703,6 +700,7 @@ fn serialize_set_contents(
     for entry in raw_entries {
         // Step 16.5.1: Let serializedEntry be ? StructuredSerializeInternal(entry, forStorage, memory).
         let sv = structured_serialize_internal(&entry, for_storage, memory, ec)?;
+
         // Step 16.5.2: Append serializedEntry to serialized.[[SetData]].
         entries.push(sv);
     }
@@ -724,12 +722,14 @@ fn serialize_error(
 ) -> Completion<SerializedRecord, Types> {
     // Step 17.1: Let name be ? Get(value, "name").
     let name_val = EcmascriptHost::get(ec, object, "name")?;
+
     // Step 17.2: If name is not a String value, then set name to "Error".
     let name = if Types::value_as_string(&name_val).is_some() {
         ec.to_rust_string(name_val)?
     } else {
         String::from("Error")
     };
+
     // Step 17.3: If name is not one of "Error", "EvalError", "RangeError", "ReferenceError",
     //              "SyntaxError", "TypeError", or "URIError", then set name to "Error".
     let name = normalize_error_name(&name);
@@ -1018,7 +1018,6 @@ fn structured_deserialize(
 ) -> Completion<JsValue, Types> {
     // Step 1: If memory was not supplied, let memory be an empty map.
     //         (memory is always supplied here.)
-
     // Step 2: If memory[serialized] exists, then return memory[serialized].
     if let Some(object) = memory.get_deserialized(serialized) {
         return Ok(Types::value_from_object(object));
@@ -1039,6 +1038,7 @@ fn structured_deserialize(
         SerializedRecord::Primitive(p) => {
             value = deserialize_primitive_value(p, ec)?;
         }
+
         // Step 6: Otherwise, if serialized.[[Type]] is "Boolean", then set value to a new Boolean
         //           object in targetRealm whose [[BooleanData]] internal slot value is
         //           serialized.[[BooleanData]].
@@ -1047,6 +1047,7 @@ fn structured_deserialize(
             let obj = ec.construct(intrinsics.boolean.clone(), &[bool_val], None)?;
             value = Types::value_from_object(obj);
         }
+
         // Step 7: Otherwise, if serialized.[[Type]] is "Number", then set value to a new Number
         //           object in targetRealm whose [[NumberData]] internal slot value is
         //           serialized.[[NumberData]].
@@ -1055,6 +1056,7 @@ fn structured_deserialize(
             let obj = ec.construct(intrinsics.number.clone(), &[num_val], None)?;
             value = Types::value_from_object(obj);
         }
+
         // Step 8: Otherwise, if serialized.[[Type]] is "BigInt", then set value to a new BigInt
         //           object in targetRealm whose [[BigIntData]] internal slot value is
         //           serialized.[[BigIntData]].
@@ -1069,6 +1071,7 @@ fn structured_deserialize(
             let obj = ec.construct(intrinsics.object.clone(), &[bi_val], None)?;
             value = Types::value_from_object(obj);
         }
+
         // Step 9: Otherwise, if serialized.[[Type]] is "String", then set value to a new String
         //           object in targetRealm whose [[StringData]] internal slot value is
         //           serialized.[[StringData]].
@@ -1077,6 +1080,7 @@ fn structured_deserialize(
             let obj = ec.construct(intrinsics.string.clone(), &[str_val], None)?;
             value = Types::value_from_object(obj);
         }
+
         // Step 10: Otherwise, if serialized.[[Type]] is "Date", then set value to a new Date
         //            object in targetRealm whose [[DateValue]] internal slot value is
         //            serialized.[[DateValue]].
@@ -1091,6 +1095,7 @@ fn structured_deserialize(
             EcmascriptHost::call(ec, &set_time_fn, &date_val, &[ms_val])?;
             value = date_val;
         }
+
         // Step 11: Otherwise, if serialized.[[Type]] is "RegExp", then set value to a new RegExp
         //            object in targetRealm whose [[RegExpMatcher]] internal slot value is
         //            serialized.[[RegExpMatcher]], whose [[OriginalSource]] internal slot value is
@@ -1102,6 +1107,7 @@ fn structured_deserialize(
             let regexp = ec.construct(intrinsics.regexp.clone(), &[src_val, flags_val], None)?;
             value = Types::value_from_object(regexp);
         }
+
         // Step 13: Otherwise, if serialized.[[Type]] is "SharedArrayBuffer":
         SerializedRecord::SharedArrayBuffer {
             data,
@@ -1114,6 +1120,7 @@ fn structured_deserialize(
                 ec.construct(intrinsics.shared_array_buffer.clone(), &[sab_len_val], None)?;
             value = Types::value_from_object(sab_obj);
         }
+
         // Step 14: Otherwise, if serialized.[[Type]] is "ArrayBuffer", then set value to a new
         //            ArrayBuffer object in targetRealm whose [[ArrayBufferData]] internal slot
         //            value is serialized.[[ArrayBufferData]], and whose [[ArrayBufferByteLength]]
@@ -1147,6 +1154,7 @@ fn structured_deserialize(
             let buf_obj = Types::object_from_array_buffer(buf);
             value = Types::value_from_object(buf_obj);
         }
+
         // Step 16: Otherwise, if serialized.[[Type]] is "ArrayBufferView":
         SerializedRecord::ArrayBufferView {
             constructor,
@@ -1179,18 +1187,21 @@ fn structured_deserialize(
                 value = Types::value_from_object(ta_obj);
             }
         }
+
         // Step 17: Otherwise, if serialized.[[Type]] is "Map":
         SerializedRecord::Map(_) => {
             let map_obj = ec.construct(intrinsics.map.clone(), &[], None)?;
             value = Types::value_from_object(map_obj);
             deep = true;
         }
+
         // Step 18: Otherwise, if serialized.[[Type]] is "Set":
         SerializedRecord::Set(_) => {
             let set_obj = ec.construct(intrinsics.set.clone(), &[], None)?;
             value = Types::value_from_object(set_obj);
             deep = true;
         }
+
         // Step 19: Otherwise, if serialized.[[Type]] is "Array":
         SerializedRecord::Array { length, .. } => {
             let array = ec.create_empty_array();
@@ -1200,12 +1211,14 @@ fn structured_deserialize(
             value = Types::value_from_object(array);
             deep = true;
         }
+
         // Step 20: Otherwise, if serialized.[[Type]] is "Object":
         SerializedRecord::Object(_) => {
             let obj = ec.create_plain_object(None);
             value = Types::value_from_object(obj);
             deep = true;
         }
+
         // Step 21: Otherwise, if serialized.[[Type]] is "Error":
         SerializedRecord::Error {
             name,
@@ -1215,6 +1228,7 @@ fn structured_deserialize(
         } => {
             value = deserialize_error(name, message, stack, cause, ec)?;
         }
+
         // Step 22: Otherwise (platform object):
         SerializedRecord::PlatformObject { .. } => {
             return Err(data_clone_error(ec));
@@ -1240,6 +1254,7 @@ fn structured_deserialize(
                     ec.map_set_entry(&map_obj, dk, dv)?;
                 }
             }
+
             // Step 24.b: If serialized.[[Type]] is "Set":
             SerializedRecord::Set(entries) => {
                 let set_obj = Types::value_as_object(&value)
@@ -1250,6 +1265,7 @@ fn structured_deserialize(
                     ec.set_add_entry(&set_obj, de)?;
                 }
             }
+
             // Step 24.c: If serialized.[[Type]] is "Array" or "Object":
             SerializedRecord::Array { properties, .. } | SerializedRecord::Object(properties) => {
                 let obj = Types::value_as_object(&value)
@@ -1261,6 +1277,7 @@ fn structured_deserialize(
                     ec.set(obj.clone(), pk, dv, true)?;
                 }
             }
+
             // Step 24.d: Otherwise (platform object):
             SerializedRecord::PlatformObject { .. } => {}
             _ => {}
@@ -1427,6 +1444,7 @@ pub fn structured_deserialize_with_transfer(
                 let buf_obj = Types::object_from_array_buffer(buf);
                 Types::value_from_object(buf_obj)
             }
+
             // Step 3.3: Otherwise (platform object).
             TransferDataHolder::PlatformObject { .. } => {
                 // TODO: platform object transfer-receiving.
@@ -1439,6 +1457,7 @@ pub fn structured_deserialize_with_transfer(
             memory
                 .insert_deserialized(&SerializedRecord::Primitive(PrimitiveValue::Undefined), obj);
         }
+
         // Step 3.5: Append value to transferredValues.
         transferred_values.push(value);
     }

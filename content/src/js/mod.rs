@@ -17,8 +17,8 @@ pub(crate) use css_generic::install_css_namespace;
 pub(crate) use bindings::install_document_property;
 pub(crate) use builtin_fn::create_builtin_fn_with_traced_captures;
 pub(crate) use downcast::{
-    try_with_abort_controller_ref, try_with_abort_signal_mut, try_with_abort_signal_ref,
-    try_with_event_target_mut, with_abort_signal_ref,
+    try_set_event_target_reflector, try_with_abort_controller_ref, try_with_abort_signal_mut,
+    try_with_abort_signal_ref, try_with_event_target_mut, with_abort_signal_ref,
 };
 
 /// Convert a stateless raw function pointer into a builtin function.

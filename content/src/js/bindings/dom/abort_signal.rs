@@ -12,7 +12,6 @@ use crate::webidl::bindings::{
 };
 use crate::webidl::{callback_function_value, nullable_value};
 
-
 use js_engine::{Completion, ExecutionContext, JsTypes};
 
 use crate::js::Types;

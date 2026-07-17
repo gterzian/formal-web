@@ -8,8 +8,8 @@ use style::dom_apis::{
     query_selector as style_query_selector,
 };
 
-use super::{DOMException, Node};
 use super::event::{EventTarget, EventTargetAccess};
+use super::{DOMException, Node};
 
 #[derive(Clone, Copy, Debug, Default)]
 pub(crate) struct DomRect {
@@ -266,6 +266,7 @@ impl Element {
         let normalized_name = self.normalized_attribute_qualified_name(qualified_name);
 
         let document = self.node.document.borrow();
+
         // Step 2: "Return true if this has an attribute whose qualified name is qualifiedName; otherwise false."
         document
             .get_node(self.node.node_id)
@@ -412,6 +413,7 @@ impl Element {
 
         let mut document = self.node.document.borrow_mut();
         let mut mutator = document.mutate();
+
         // Step 3: "Set an attribute value for this using localName, verifiedValue, prefix, and namespace."
         mutator.set_attribute(
             self.node.node_id,

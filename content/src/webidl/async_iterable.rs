@@ -252,7 +252,6 @@ where
             // Step 10.1: "Let afterOngoingPromiseCapability be ! NewPromiseCapability(%Promise%)."
             // Note: result_capability is not wired on the Boa backend,
             // so we use the .then() return value as the ongoing promise.
-
             // Step 10.2: "Let onSettled be CreateBuiltinFunction(nextSteps, 0, "", « »)."
             let name_key = ec.property_key_from_str("");
             let on_settled_fn = create_builtin_fn_with_traced_captures(

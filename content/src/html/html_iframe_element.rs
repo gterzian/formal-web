@@ -10,13 +10,12 @@ use std::{
 
 use blitz_dom::BaseDocument;
 use html5ever::{local_name, ns};
-use js_engine::{gc_struct, ExecutionContext};
+use js_engine::{ExecutionContext, gc_struct};
 use url::Url;
 
 use crate::{
-    ContentProcess, EMPTY_HTML_DOCUMENT, NavigableContainerState, dom::fire_event,
-    dom::event::EventTargetAccess,
-    html::HTMLElement, html::navigate, webidl::Callback,
+    ContentProcess, EMPTY_HTML_DOCUMENT, NavigableContainerState, dom::event::EventTargetAccess,
+    dom::fire_event, html::HTMLElement, html::navigate, webidl::Callback,
 };
 
 /// <https://html.spec.whatwg.org/#htmliframeelement>
@@ -388,7 +387,6 @@ fn create_a_new_child_navigable(
     // browsing context's group."
     // Note: This is the browsing context group of the current content process. We are
     // already in this group, so we can proceed with document creation directly.
-
     // Step 3: "Let browsingContext and document be the result of creating a new browsing
     // context and document given element's node document, element, and group."
     // <https://html.spec.whatwg.org/#creating-a-new-browsing-context>
@@ -458,14 +456,12 @@ fn create_a_new_child_navigable(
     // Note: The document state fields that live in content (document reference, origin) are
     // already satisfied by the document created above. The UA-side document state (navigable
     // tree registration, session history) is set up in the CreateChildNavigable handler.
-
     // Step 7: "Let navigable be a new navigable."
     // (allocated above as `content_navigable`)
 
     // Step 8: "Initialize the navigable navigable given documentState and parentNavigable."
     // Note: The UA initializes its navigable state upon receiving CreateChildNavigable.
     // The content side already has the document created and registered.
-
     // Step 9: "Set element's content navigable to navigable."
     if let Some(content_document) = process.documents.get_mut(&parent_document_id) {
         content_document.navigable_container_states.insert(
@@ -600,14 +596,12 @@ fn run_iframe_load_event_steps(
 
     // Step 1: Assert element's content navigable is not null.
     // (Checked by caller before invoking this function.)
-
     // Step 2: "Let childDocument be element's content navigable's active document."
     // Note: At this point, the user agent has completed creation of the browsing context
     // and the active document exists.
 
     // Step 3: "If childDocument has its mute iframe load flag set, then return."
     // TODO: Implement document mute iframe load flag tracking.
-
     let iframe_object = crate::js::platform_objects::resolve_element_object(
         iframe_node_id,
         &mut content_document.settings.realm_execution_context,
@@ -616,7 +610,6 @@ fn run_iframe_load_event_steps(
 
     // Step 4: "If element's pending resource-timing start time is not null, then:"
     // TODO: Implement iframe resource timing.
-
     // Step 5: "Set childDocument's iframe load in progress flag."
     // TODO: Implement document iframe load in progress flag.
 
@@ -635,12 +628,11 @@ fn run_iframe_load_event_steps(
             msg
         })?;
 
-    fire_event(ec, &event_target, &iframe_object, "load", time_millis, false)
+    fire_event(ec, &event_target, "load", time_millis, false)
         .map_err(|error| format!("fire_event failed: {error:?}"))?;
 
     // Step 7: "Unset childDocument's iframe load in progress flag."
     // TODO: Implement clearing of iframe load in progress flag.
-
     Ok(())
 }
 
@@ -903,8 +895,10 @@ fn process_iframe_attributes(
                         },
                     );
                 }
+
                 // Step 2.3.1: "Run the iframe load event steps given element."
                 run_iframe_load_event_steps(process, parent_document_id, iframe_node_id)?;
+
                 // Step 2.3.2: "Return."
                 return Ok(());
             }
@@ -920,8 +914,10 @@ fn process_iframe_attributes(
                         },
                     );
                 }
+
                 // Step 2.3.1: "Run the iframe load event steps given element."
                 run_iframe_load_event_steps(process, parent_document_id, iframe_node_id)?;
+
                 // Step 2.3.2: "Return."
                 return Ok(());
             }
@@ -946,18 +942,15 @@ fn process_iframe_attributes(
     // Step 2.4: "Let referrerPolicy be the current state of element's referrerpolicy
     // content attribute."
     // TODO: Pass referrerPolicy through to navigate_an_iframe_or_frame.
-
     // Step 2.5: "Set element's current navigation was lazy loaded boolean to false."
     // TODO: Implement current navigation was lazy loaded tracking.
 
     // Step 2.6: "If the will lazy load element steps given element return true:"
     // TODO: Implement lazy loading for iframes with URL navigations.
-
     // Step 1: "If element's srcdoc attribute is specified:"
     if let IframeNavigationTarget::Srcdoc { html } = &target {
         // Step 1.1: "Set element's current navigation was lazy loaded boolean to false."
         // TODO: Implement current navigation was lazy loaded tracking.
-
         // Step 1.2: "If the will lazy load element steps given element return true:"
         // TODO: Implement lazy loading.
 

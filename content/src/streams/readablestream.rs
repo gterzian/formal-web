@@ -440,7 +440,6 @@ fn readable_stream_tee(
 ) -> Completion<ReadableStreamTeeBranches, crate::js::Types> {
     // Step 1: "Assert: stream implements ReadableStream."
     // Step 2: "Assert: cloneForBranch2 is a boolean."
-
     // Step 3: "If stream.[[controller]] implements ReadableByteStreamController, return ? ReadableByteStreamTee(stream)."
     if stream
         .controller_slot()
@@ -462,7 +461,6 @@ fn readable_stream_default_tee(
 ) -> Completion<ReadableStreamTeeBranches, crate::js::Types> {
     // Step 1: "Assert: stream implements ReadableStream."
     // Step 2: "Assert: cloneForBranch2 is a boolean."
-
     // Step 3: "Let reader be ? AcquireReadableStreamDefaultReader(stream)."
     let reader_object = acquire_readable_stream_default_reader(stream.clone(), ec)?;
     let reader =
@@ -632,9 +630,11 @@ pub(crate) fn readable_stream_default_tee_pull_algorithm(
         if tee_state.reading {
             // Step 13.1.1: "Set readAgain to true."
             tee_state.read_again = true;
+
             // Step 13.1.2: "Return a promise resolved with undefined."
             return Ok(ec.value_undefined());
         }
+
         // Step 13.2: "Set reading to true."
         tee_state.reading = true;
     }
@@ -1197,7 +1197,6 @@ pub(crate) fn readable_stream_from_iterable(
     // Step 2: "Let iteratorRecord be ? GetIterator(asyncIterable, async)."
     // Note: `get_readable_stream_from_iterator_record()` normalizes async iterators and the
     // async-from-sync fallback into a record whose `next_result_promise()` matches the spec.
-
     // Step 3: "Let startAlgorithm be an algorithm that returns undefined."
     let start_algorithm = StartAlgorithm::ReturnUndefined;
 
@@ -1239,7 +1238,6 @@ pub(crate) fn readable_stream_from_iterable_pull_algorithm(
     };
 
     // Step 4.3: "Let nextPromise be a promise resolved with nextResult.[[Value]]."
-
     // Step 4.4: "Return the result of reacting to nextPromise with the following fulfillment steps, given iterResult:"
     let name_key = ec.property_key_from_str("");
     let on_fulfilled = create_builtin_fn_with_traced_captures(
@@ -1631,7 +1629,6 @@ pub(crate) fn readable_stream_close(
 
             // Step 6.2: "Set reader.[[readRequests]] to an empty list."
             // Note: `take_read_requests()` empties the list before the requests are processed.
-
             // Step 6.3: "For each readRequest of readRequests,"
             for read_request in read_requests {
                 // Step 6.3.1: "Perform readRequest's close steps."
@@ -1743,7 +1740,6 @@ pub(crate) fn readable_stream_fulfill_read_request(
         .ok_or_else(|| ec.new_type_error("ReadableStream is not locked to a default reader"))?;
 
     // Step 2: "Let reader be stream.[[reader]]."
-
     // Step 3: "Assert: reader.[[readRequests]] is not empty."
     debug_assert!(reader.read_requests_len() > 0);
 
@@ -1904,6 +1900,7 @@ fn byte_tee_forward_error_on_rejected_fn(
     ec: &mut dyn ExecutionContext<crate::js::Types>,
 ) -> Completion<JsValue, crate::js::Types> {
     let (captured_generation, tee_state) = captures;
+
     // Step helper: "If thisReader is not reader, return."
     if tee_state.borrow().reader_generation != *captured_generation {
         return Ok(ec.value_undefined());
@@ -2698,7 +2695,6 @@ fn readable_byte_stream_tee(
     // Step 11: Let branch1 be undefined.
     // Step 12: Let branch2 be undefined.
     // (All steps 4-12 initialized in ByteTeeState below.)
-
     // Step 13: Let cancelPromise be a new promise.
     let (cancel_promise_value, cancel_resolvers) = ec.new_promise_pending()?;
     let cancel_promise = <crate::js::Types as JsTypes>::value_as_object(&cancel_promise_value)
@@ -2747,8 +2743,8 @@ fn readable_byte_stream_tee(
 
     // Step 23: Perform forwardReaderError, given reader.
     byte_tee_forward_reader_error(&reader_object, &tee_state, ec)?;
-    // Step 24: Return « branch1, branch2 ».
 
+    // Step 24: Return « branch1, branch2 ».
     Ok(ReadableStreamTeeBranches {
         _branch1: branch1,
         branch1_object,
@@ -2959,16 +2955,13 @@ fn readable_stream_pipe_to(
     ec: &mut dyn ExecutionContext<crate::js::Types>,
 ) -> Completion<JsObject, crate::js::Types> {
     // Step 1: "Assert: source implements ReadableStream."
-
     // Step 2: "Assert: dest implements WritableStream."
 
     // Step 3: "Assert: preventClose, preventAbort, and preventCancel are all booleans."
-
     // Step 4: "If signal was not given, let signal be undefined."
 
     // Step 5: "Assert: either signal is undefined, or signal implements AbortSignal."
     // Note: `pipe_to()` and `pipe_through()` normalize the `signal` argument to `Option<AbortSignal>` before calling this helper.
-
     // Step 13: "Let promise be a new promise."
     // Note: the promise is allocated before the remaining setup so unexpected internal setup
     // failures are still reported through the same returned promise object.
@@ -2980,7 +2973,6 @@ fn readable_stream_pipe_to(
 
     // Step 8: "If source.[[controller]] implements ReadableByteStreamController, let reader be either ! AcquireReadableStreamBYOBReader(source) or ! AcquireReadableStreamDefaultReader(source), at the user agent's discretion."
     // Note: Readable byte streams are not implemented yet, so the implementation always uses the default reader path.
-
     // Step 9: "Otherwise, let reader be ! AcquireReadableStreamDefaultReader(source)."
     let reader_object = match acquire_readable_stream_default_reader(source.clone(), ec) {
         Ok(reader_object) => reader_object,
@@ -3028,7 +3020,6 @@ fn readable_stream_pipe_to(
     source.set_disturbed(true);
 
     // Step 12: "Let shuttingDown be false."
-
     // Step 15: "In parallel but not really; see #905, using reader and writer, read all chunks from source and write them to dest."
     // Note: The pipe progress below follows a single typed state machine and advances from Boa promise reactions at each microtask.
     let state = PipeToState::new(PipeToStateInner {

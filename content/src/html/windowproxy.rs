@@ -38,6 +38,7 @@ fn trap_get_prototype_of(
     let proto = ec.get_prototype_of(win)?;
     match proto {
         Some(p) => Ok(<crate::js::Types as JsTypes>::value_from_object(p)),
+
         // Step 3: "Return null."
         None => Ok(ec.value_null()),
     }
@@ -193,6 +194,7 @@ fn trap_delete_property(
     // Step 2.1: "If P is an array index property name:"
     if is_array_index_key(&key, ec) {
         let prop_key = ec.to_property_key(key)?;
+
         // Step 2.1.1: "Let desc be ! this.[[GetOwnProperty]](P)."
         // Uses has_own_property as proxy for "desc is undefined".
         // Step 2.1.2: "If desc is undefined, then return true."

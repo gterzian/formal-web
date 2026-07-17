@@ -22,8 +22,10 @@ pub(crate) fn get_a_copy_of_the_buffer_source(
     if let Some(typed_array) = <Types as JsTypes>::object_as_typed_array(&object) {
         // Step 5.1: "Set jsArrayBuffer to jsBufferSource.[[ViewedArrayBuffer]]."
         let array_buffer = ec.typed_array_buffer(&typed_array)?;
+
         // Step 5.2: "Set offset to jsBufferSource.[[ByteOffset]]."
         let offset = ec.typed_array_byte_offset(&typed_array)? as usize;
+
         // Step 5.3: "Set length to jsBufferSource.[[ByteLength]]."
         let length = ec.typed_array_byte_length(&typed_array)? as usize;
 

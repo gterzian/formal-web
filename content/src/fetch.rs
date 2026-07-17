@@ -110,10 +110,13 @@ impl FetchController {
     pub(crate) fn abort(&mut self, error: Option<String>) {
         // Step 1. Set controller's state to "aborted".
         self.state = FetchControllerState::Aborted;
+
         // Step 2. Let fallbackError be an "AbortError" DOMException.
         let fallback_error = String::from("AbortError");
+
         // Step 3. Set error to fallbackError if it is not given.
         let error = error.unwrap_or_else(|| fallback_error.clone());
+
         // Step 4. Let serializedError be StructuredSerialize(error).
         // TODO: Replace this placeholder with StructuredSerialize(error).
         // formal-web does not yet expose DOMException or structured clone values across

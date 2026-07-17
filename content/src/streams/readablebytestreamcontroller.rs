@@ -1,5 +1,3 @@
-
-
 use std::{cell::Cell, collections::VecDeque, rc::Rc};
 
 use crate::js::{Types, create_builtin_fn_with_traced_captures};
@@ -815,7 +813,6 @@ impl ReadableByteStreamController {
         }
 
         // Step 6: IsDetachedBuffer check — already done by from_value above.
-
         // Step 7: Let transferredBuffer be ? TransferArrayBuffer(buffer).
         let realm = ec.current_realm();
         let intrinsics = ec.realm_intrinsics(&realm);

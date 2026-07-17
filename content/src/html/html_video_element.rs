@@ -34,6 +34,7 @@ impl HTMLVideoElement {
         if self.media_element.ready_state == HTMLMediaElement::HAVE_NOTHING {
             return 0;
         }
+
         // Step 2: Return the natural width of the video in CSS pixels.
         self.video_width
     }
@@ -44,6 +45,7 @@ impl HTMLVideoElement {
         if self.media_element.ready_state == HTMLMediaElement::HAVE_NOTHING {
             return 0;
         }
+
         // Step 2: Return the natural height of the video in CSS pixels.
         self.video_height
     }

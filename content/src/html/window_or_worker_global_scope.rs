@@ -86,7 +86,6 @@ pub(crate) trait WindowOrWorkerGlobalScope {
         }
 
         // Step 7-9: realm, uniqueHandle, task (handled by global_scope).
-
         // Step 10: "Set task's timer nesting level to nesting level + 1."
         let task_nesting_level = nesting_level.saturating_add(1);
 

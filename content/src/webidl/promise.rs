@@ -39,12 +39,15 @@ pub(crate) fn resolved_promise(
     // Step 2: "Let constructor be realm.[[Intrinsics]].[[%Promise%]]."
     let realm = ec.current_realm();
     let intrinsics = ec.realm_intrinsics(&realm);
+
     // Step 3: "Let promiseCapability be ? NewPromiseCapability(constructor)."
     let capability = ec.new_promise_capability(intrinsics.promise)?;
+
     // Step 4: "Perform ! Call(promiseCapability.[[Resolve]], undefined, « value »)."
     let resolve_obj = <Types as JsTypes>::object_from_function(capability.resolve);
     let undefined = ec.value_undefined();
     ec.call(&resolve_obj, &undefined, &[value])?;
+
     // Step 5: "Return promiseCapability."
     Ok(<Types as JsTypes>::value_as_object(&capability.promise)
         .unwrap_or_else(|| ec.realm_global_object()))
@@ -58,12 +61,15 @@ pub(crate) fn rejected_promise(
     // Step 1: "Let constructor be realm.[[Intrinsics]].[[%Promise%]]."
     let realm = ec.current_realm();
     let intrinsics = ec.realm_intrinsics(&realm);
+
     // Step 2: "Let promiseCapability be ? NewPromiseCapability(constructor)."
     let capability = ec.new_promise_capability(intrinsics.promise)?;
+
     // Step 3: "Perform ! Call(promiseCapability.[[Reject]], undefined, « r »)."
     let reject_obj = <Types as JsTypes>::object_from_function(capability.reject);
     let undefined = ec.value_undefined();
     ec.call(&reject_obj, &undefined, &[reason])?;
+
     // Step 4: "Return promiseCapability."
     Ok(<Types as JsTypes>::value_as_object(&capability.promise)
         .unwrap_or_else(|| ec.realm_global_object()))
@@ -80,10 +86,12 @@ pub(crate) fn promise_from_value(
     let realm = ec.current_realm();
     let intrinsics = ec.realm_intrinsics(&realm);
     let capability = ec.new_promise_capability(intrinsics.promise)?;
+
     // Step 2: "Perform ? Call(promiseCapability.[[Resolve]], undefined, « V »)."
     let resolve_obj = <Types as JsTypes>::object_from_function(capability.resolve);
     let undefined = ec.value_undefined();
     ec.call(&resolve_obj, &undefined, &[value])?;
+
     // Step 3: "Return promiseCapability."
     Ok(<Types as JsTypes>::value_as_object(&capability.promise)
         .unwrap_or_else(|| ec.realm_global_object()))
@@ -111,6 +119,7 @@ pub(crate) fn transform_promise_to_undefined(
         ec.new_type_error("transform_promise_to_undefined: value is not a Promise");
     let name_key = ec.property_key_from_str("");
     let on_fulfilled = create_builtin_fn_static(ec, resolve_to_undefined_impl, 1, name_key);
+
     // Step 7 of react: "PerformPromiseThen(promise, onFulfilled, ...)."
     // Note: We pass None for result_capability because our trait impl
     // ignores it (calls promise.then() which creates its own).  The
@@ -118,6 +127,7 @@ pub(crate) fn transform_promise_to_undefined(
     let js_promise =
         <Types as JsTypes>::object_as_promise(promise_object).ok_or_else(|| not_promise_err)?;
     let result = ec.perform_promise_then(js_promise, Some(on_fulfilled), None, None)?;
+
     // Step 8 of react: "Return newCapability."
     Ok(<Types as JsTypes>::value_as_object(&result).unwrap_or_else(|| ec.realm_global_object()))
 }
@@ -258,12 +268,15 @@ where
             .cloned()
             .unwrap_or_else(|| handler_ec.value_undefined());
         let mut state_ref = captures.state_clone.borrow_mut();
+
         // Step 3.1: If rejected is true, abort these steps.
         if state_ref.rejected {
             return Ok(handler_ec.value_undefined());
         }
+
         // Step 3.2: Set rejected to true.
         state_ref.rejected = true;
+
         // Step 3.3: Perform failureSteps given arg.
         drop(state_ref);
         if let Some(failure_steps) = captures.failure_cell.borrow_mut().take() {
@@ -301,6 +314,7 @@ where
                 }
             }),
         );
+
         // Step 6.2: Return.
         return Ok(());
     }
@@ -316,7 +330,6 @@ where
     for (promise_index, promise) in promises.into_iter().enumerate() {
         // Step 9.1: Let promiseIndex be index.
         // (already `promise_index` from enumerate)
-
         // Step 9.2: Let fulfillmentHandler be the following steps given arg:
         //   9.2.1: Set result[promiseIndex] to arg.
         //   9.2.2: Set fulfilledCount to fulfilledCount + 1.
@@ -346,12 +359,15 @@ where
                 .cloned()
                 .unwrap_or_else(|| handler_ec.value_undefined());
             let mut state_ref = captures.state_for_fulfillment.borrow_mut();
+
             // Step 9.2.1: Set result[promiseIndex] to arg.
             if captures.promise_index < state_ref.result.len() {
                 state_ref.result[captures.promise_index] = Some(arg);
             }
+
             // Step 9.2.2: Set fulfilledCount to fulfilledCount + 1.
             state_ref.fulfilled_count += 1;
+
             // Step 9.2.3: If fulfilledCount equals total, then perform successSteps given result.
             if state_ref.fulfilled_count == state_ref.total {
                 let results: Vec<JsValue> = state_ref

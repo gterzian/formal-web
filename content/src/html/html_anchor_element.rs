@@ -54,14 +54,12 @@ impl HTMLAnchorElement {
 
         // Step 3: "If element is an a element, and event's target is an img with an ismap attribute specified, then:"
         // TODO: Model `img[ismap]` click coordinates and derive `hyperlinkSuffix` from the event target.
-
         // Step 4: "Let userInvolvement be event's user navigation involvement."
         // Note: Blitz-driven pointer activation currently reaches this hook only for direct user click dispatch, so the implementation collapses this to `activation`.
         let user_involvement = UserNavigationInvolvement::Activation;
 
         // Step 5: "If the user has expressed a preference to download the hyperlink, then set userInvolvement to \"browser UI\"."
         // Note: The implementation does not yet model a separate browser-UI download preference channel.
-
         // Step 6: "If element has a download attribute, or if the user has expressed a preference to download the hyperlink, then download the hyperlink created by element with hyperlinkSuffix set to hyperlinkSuffix and userInvolvement set to userInvolvement."
         // Note: Download handling is deferred; the implementation treats download anchors as non-navigating activation targets.
         if self.has_download_attribute() {
@@ -155,7 +153,6 @@ impl HTMLAnchorElement {
         let url = self.reinitialize_url(document_creation_url);
 
         // Step 2: "Let url be this's url."
-
         if url.is_none() && self.href_attribute().is_none() {
             // Step 3: "If url is null and this has no href content attribute, return the empty string."
             return String::new();
@@ -246,7 +243,6 @@ impl HyperlinkElementUtils for HTMLAnchorElement {
     fn set_the_url(&self, document_creation_url: &Url) -> Option<Url> {
         // Step 1: "Set this element's url to null."
         // Note: The implementation does not persist the associated hyperlink URL, so this method returns the computed URL instead of storing it on the [HTMLAnchorElement](https://html.spec.whatwg.org/#htmlanchorelement) [platform object](https://webidl.spec.whatwg.org/#dfn-platform-object).
-
         // Step 2: "If this element's href content attribute is absent, then return."
         let href = self.href_attribute()?;
 

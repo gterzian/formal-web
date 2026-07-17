@@ -13,7 +13,7 @@ use crate::js::platform_objects::with_global_scope;
 use crate::js::{
     Engine, Types, install_console_namespace, install_css_namespace, install_document_property,
 };
-use crate::webidl::bindings::{create_interface_instance, get_registry_prototype};
+use crate::webidl::bindings::get_registry_prototype;
 use js_engine::{EcmascriptHost, ExecutionContext, JsTypes};
 
 type JsValue = <Types as JsTypes>::JsValue;
@@ -49,8 +49,8 @@ pub struct EnvironmentSettingsObject {
     /// <https://html.spec.whatwg.org/#realm-execution-context>
     pub realm_execution_context: Engine,
 
-    /// <https://dom.spec.whatwg.org/#concept-document>
-    pub document: Rc<RefCell<BaseDocument>>,
+    /// <https://dom.spec.whatwg.org/#interface-document>
+    pub document: crate::dom::Document,
 
     /// <https://html.spec.whatwg.org/#concept-settings-object-origin>
     pub origin: Origin,
@@ -127,8 +127,9 @@ impl EnvironmentSettingsObject {
             }
         }
 
-        let document_object = create_interface_instance::<crate::js::Types, Document>(
-            Document::new(document.clone(), creation_url.clone()),
+        let (document_object, document) = crate::js::bindings::dom::document::create_document_platform_object(
+            document.clone(),
+            creation_url.clone(),
             &mut engine,
         )
         .map_err(|error| {
@@ -192,7 +193,7 @@ impl EnvironmentSettingsObject {
 
         Ok(Self {
             realm_execution_context: engine,
-            document,
+            document: document,
             origin: Origin {
                 serialized: creation_url.origin().unicode_serialization(),
             },
@@ -433,8 +434,6 @@ impl EnvironmentSettingsObject {
             .perform_a_microtask_checkpoint()
             .map_err(|error| self.error_to_string(error))
     }
-
-
 }
 
 impl js_engine::EcmascriptHost<crate::js::Types> for EnvironmentSettingsObject {
@@ -491,4 +490,3 @@ impl js_engine::EcmascriptHost<crate::js::Types> for EnvironmentSettingsObject {
         self.realm_execution_context.js_string_from_str(s)
     }
 }
-

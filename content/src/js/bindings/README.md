@@ -14,6 +14,114 @@ From inside out:
 | **Web IDL bindings infra** | `content/src/webidl/bindings/` | Generic traits (`WebIdlInterface`, `WebIdlNamespace`), registration (`register_interface_spec`), and member definitions (`OperationDef`, `AttributeDef`). NOT domain-specific. `OperationDef` and `AttributeDef` are parameterized over `T: JsTypes`. | `register_interface_spec::<T>(ec)` |
 | **JS bindings glue** | `content/src/js/bindings/<domain>/` | `WebIdlInterface` impl + thin function pointers that extract JS arguments, call domain functions, and wrap results. | `fn binding_fn(this, args, ec: &mut dyn ExecutionContext<T>) -> Completion<T::JsValue, T>` — must be thin, no algorithm logic |
 
+### Bindings layer: JS → IDL conversion, then call domain
+
+The JS bindings layer converts JavaScript values to proper Web IDL types, then
+calls a domain method. Domain methods never receive `JsValue` directly — they
+get the IDL-level types that the spec defines (e.g. `DOMString` → `String`,
+`EventListener?` → `Option<Callback>`, `boolean` → `bool`).
+
+The IDL→Rust type mapping is:
+
+| Web IDL type | Rust type | How the binding converts |
+|---|---|---|
+| `DOMString` | `String` | `ec.to_rust_string(value)?` |
+| `boolean` | `bool` | `ec.to_boolean(&value)` |
+| `EventListener?` | `Option<Callback>` | `nullable_value(value, ec, callback_interface_type_value)?` |
+| `Event` | `Event` (domain) | `ec.with_object_any(&obj).and_then(|d| d.downcast_ref::<Event>().cloned())` |
+| `AddEventListenerOptions` | `AddEventListenerOptions` | `flatten_more(value, ec)?` (spec algorithm in domain) |
+| `EventListenerOptions` | `bool` (capture) | `flatten(value, ec)?` (spec algorithm in domain) |
+
+**Spec algorithms for IDL conversion live in the domain module**, operating on
+IDL types (never `JsValue`). The binding converts the raw JS value to the IDL
+type first using Web IDL conversion rules (`content/src/webidl/dictionary.rs`),
+then passes the IDL type to the domain function.
+
+For example, `addEventListener`'s `options` parameter has Web IDL type
+`(boolean or AddEventListenerOptions)`. The binding:
+
+1. Converts the `JsValue` to `BooleanOrAddEventListenerOptions` (a Rust enum
+   representing the IDL union) using Web IDL union + dictionary conversion.
+2. Passes the IDL type to `crate::dom::flatten_more(options_union)`, which is a
+   pure domain function (no `JsValue`, no `ExecutionContext`).
+3. Receives `AddEventListenerOptions` (a domain struct) and extracts individual
+   fields for the domain `add_event_listener` method.
+
+**Dictionary conversion infrastructure** lives in `content/src/webidl/dictionary.rs`:
+- `open_dictionary`: Step 1 of the Web IDL dictionary conversion algorithm
+- `get_dictionary_member`: Steps 4.1.2-4.1.4 (Get + undefined check)
+
+Each interface binding that needs dictionary conversion calls these helpers
+with the appropriate member names and conversion logic. See
+`content/src/js/bindings/dom/event_target.rs::convert_options_union` for the
+complete pattern.
+
+**A thin binding function for `addEventListener(type, callback, options)`:**
+```rust
+fn add_event_listener(this, args, ec) -> Completion<JsValue, Types> {
+    let type_ = ec.to_rust_string(args[0])?;                    // DOMString → String
+    let callback = nullable_value(args[1], ec, ...)?;           // EventListener? → Option<Callback>
+    let options = crate::dom::flatten_more(args[2], ec)?;       // spec algorithm
+    let target = extract_event_target(this, ec);
+    target.add_event_listener(target.clone(), type_, callback,  // call domain method
+        options.capture, options.once, options.passive,         // with IDL types
+        options.signal);
+}
+```
+
+### Domain methods: IDL types only, implement the spec algorithm
+
+Domain methods receive proper IDL types (never `JsValue`), implement the spec
+algorithm with verbatim `// Step N:` comments, and have **only** the spec
+anchor URL as their doc comment.  No prose, no JsValue.
+
+```rust
+/// <https://dom.spec.whatwg.org/#dom-eventtarget-addeventlistener>
+pub(crate) fn add_event_listener(
+    &self,
+    event_target: EventTarget,  // domain type, not JsValue
+    type_: String,              // DOMString
+    callback: Option<Callback>, // EventListener?
+    capture: bool,              // boolean
+    once: bool,                 // boolean
+    passive: Option<bool>,      // boolean?
+    signal: Option<AbortSignal>,
+) {
+    // Step 2: If listener's signal is non-null and is aborted, then return.
+    // Step 3: If listener's callback is null, then return.
+    // Step 4: If listener's passive is null, then set it to the...
+    // Step 5: If eventTarget's event listener list does not contain...
+    // Step 6: If listener's signal is non-null, then add the following abort steps...
+}
+```
+
+### What the binding must NOT do
+
+- **No spec logic** — the binding does not implement any part of a spec
+algorithm.  It converts JS args to IDL types, calls a domain method, and
+wraps the return value.
+- **No path building** — `dispatchEvent` does not build the event path inline.
+The binding calls `build_path_from_target_js_object` (in the HTML/events bridge)
+and then calls the domain method `EventTarget::dispatch_event()`.
+- **No reflector manipulation** — The `EventTarget.reflector` field is set
+automatically by the Web IDL layer (`create_interface_instance` →
+`PostCreateReflector::set_reflector`).  Domain code and bindings must never
+touch reflectors.
+
+### Where code lives is dictated by which spec it implements
+
+- **Web IDL conversion algorithms** (union conversion, dictionary conversion,
+  type mapping) live in `content/src/webidl/`. They follow the Web IDL spec
+  (`#js-union`, `#js-dictionary`, etc.).
+- **DOM spec algorithms** live in `content/src/dom/`.
+- **HTML spec algorithms** live in `content/src/html/`.
+- **JS bindings glue** (thin arg extraction → call domain → wrap) lives in
+  `content/src/js/bindings/<domain>/`.
+
+If a function mixes spec concerns (e.g. converting a JS value to a DOM type
+via Web IDL rules), the Web IDL part goes in `content/src/webidl/` and the
+DOM-specific part stays in the domain.
+
 ### Rules of thumb
 
 1. **Domain methods are `impl` blocks on the domain struct.**  Never a standalone
@@ -28,13 +136,11 @@ From inside out:
        ec: &mut dyn ExecutionContext<T>,
    ) -> Completion<T::JsValue, T> {
        let obj = T::value_as_object(this).ok_or_else(|| ec.new_type_error("..."))?;
-       if let Some(data) = ec.with_object_any(&obj) {
-           if let Some(domain) = data.downcast_ref::<MyDomainType>() {
-               let result: RustType = domain.my_method(arg1, arg2);
-               return Ok(ec.value_from_string(ec.js_string_from_str(&result)));
-           }
-       }
-       Err(ec.new_type_error("receiver is not a MyDomainType"))
+       let domain = ec.with_object_any(&obj)
+           .and_then(|d| d.downcast_ref::<MyDomainType>())
+           .ok_or_else(|| ec.new_type_error("..."))?;
+       let result = domain.my_method(arg1, arg2);  // call domain method
+       Ok(ec.value_from_bool(result))               // wrap return value
    }
    ```
 
@@ -106,8 +212,21 @@ fn module_exports_binding<T: JsTypes>(
 | No `// Step N:` at all | Every spec-algorithm step has a `// Step N:` line before the corresponding code |
 | Combined steps (`// Steps 7-8: Set this.[[Module]]`) | Only when adjacent steps are implemented in the same code block — each still gets its own `// Step N:` line |
 | Inlining a named sub-algorithm into the parent function | When the spec calls a named sub-algorithm (e.g. "initialize an instance object", "create an exports object"), create a separate function with its own `/// <url>` anchor and `// Step N:` comments — mirror the spec's structure |
+| Extracting a non-named helper as a standalone function (e.g. `extract_signal_option`) | If the helper is not a named sub-algorithm in the spec, inline it into the parent function |
 | Steps in a doc comment above the function | Steps go inside the function body — `//` not `///` |
 | **Step comments on a JS binding function** | **Binding functions don't implement algorithms — no step comments** |
+| Prose doc comment on a non-spec helper (e.g. `simple_path`, `build_path_for_target`) | No doc comment at all — infrastructure functions have neither spec link nor prose |
+| Spec link on internal plumbing (reflector field, dispatch bridge, PostCreateReflector impl) | No doc comment — only code that directly implements a named spec algorithm or defines a spec concept gets an anchor |
+| Putting a spec algorithm's anchor on a dictionary struct (e.g. `#event-flatten-more` on `AddEventListenerOptions`) | IDL dictionary types use `#dictdef-<name>` (e.g. `#dictdef-addeventlisteneroptions`); algorithms use `#event-`, `#concept-`, or `#dom-` prefixes |
+| `JsObject` in a domain file (`content/src/dom/`, `content/src/html/`) | JsObject types belong in `content/src/js/` (the JS integration layer). Domain code operates on domain types like `EventTarget`, `Node`, `Event` |
+| ASCII art or section-header comments (`// ---- ...`) in source files | No separator comments — let function/item ordering speak for itself |
+| Prose explaining what a function does before its spec anchor | Anchor-only: `/// <url>`. If the mapping to the spec is unclear, add a `// Note:` on the next line, not prose in the doc comment |
+| Function name doesn't match the spec algorithm name (e.g. `fire_global_event` for "steps to fire beforeunload") | Rust function name MUST match the spec algorithm name with `_` separators (e.g. `steps_to_fire_beforeunload`). The spec→code mapping must be discoverable by name alone. |
+| Splitting a spec algorithm into multiple functions with non-spec names (e.g. `open_dictionary` + `get_dictionary_member` instead of a single `convert_js_to_dictionary`) | Name functions after the spec algorithm they implement. If you must split a spec algorithm into helpers, name them as internal private items and provide a single public function with the spec's name. Any deviation from the spec's algorithmic structure must be explained in a `// Note:`. |
+| Blank line between `// Step N:` comment and its code, or no blank line between code and the next `// Step` comment | NO blank line between comment and its code. Blank line AFTER the code, before the next step's comment. Also NO blank line between `{` (block opening) and the first step comment. See `dispatch.rs` for the correct pattern. |
+| Vague Note on a partial algorithm implementation (e.g. "this is a helper for X") | When a function partially implements a spec algorithm, annotate with `// Step N:` for ALL steps of the algorithm. Mark missing steps with `// TODO: Not yet implemented.` and sub-algorithm references with the spec anchor. The note should only describe discrepancies between the code and the spec text, not hand-wave about "this is a helper". See `html/dispatch.rs::fire_global_event` for the correct pattern. |
+| Creating a platform object copy outside `create_interface_instance` then manually syncing its reflector | Create the platform object inside `create_interface_instance` (reflector is set automatically by `PostCreateReflector::set_reflector`), then extract the clone from the JsObject for the ESO/domain struct. Never manually set reflectors. See `environment_settings_object.rs` for the correct pattern. |
+| Prefixing spec types with "domain" (e.g. `domain_document`) | Our Document is just `document`. The blitz document is the external dependency and should be labeled as such if disambiguation is needed (e.g. `blitz_document`). The "domain" prefix implies our types are somehow secondary to the "real" spec types, which is backwards.
 
 ### What NOT to do
 
