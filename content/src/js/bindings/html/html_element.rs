@@ -497,7 +497,6 @@ pub(crate) fn style_declaration_object(
         this: JsValue,
         ec: &mut dyn ExecutionContext<Types>,
     ) -> Completion<JsValue, Types> {
-
         // Step 1.1: convert to ASCII lowercase.
         let undef = ec.value_undefined();
         let property_name = ec

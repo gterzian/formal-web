@@ -84,7 +84,6 @@ pub(crate) fn validate_and_normalize_high_water_mark(
     value: &JsValue,
     ec: &mut dyn ExecutionContext<Types>,
 ) -> Completion<f64, Types> {
-
     // Step 1 (implicit): "Let highWaterMark be ? ToNumber(highWaterMark)."
     let number = ec.to_number(value.clone())?;
 
@@ -103,7 +102,6 @@ pub(crate) fn extract_high_water_mark(
     default_high_water_mark: f64,
     ec: &mut dyn ExecutionContext<Types>,
 ) -> Completion<f64, Types> {
-
     // Step 1: "If strategy[\"highWaterMark\"] does not exist, return defaultHWM."
     if strategy.is_undefined() || strategy.is_null() {
         return Ok(default_high_water_mark);
@@ -130,7 +128,6 @@ pub(crate) fn extract_size_algorithm(
     strategy: &JsValue,
     ec: &mut dyn ExecutionContext<Types>,
 ) -> Completion<SizeAlgorithm, Types> {
-
     // Step 1: "If strategy[\"size\"] does not exist, return an algorithm that returns 1."
     if strategy.is_undefined() || strategy.is_null() {
         return Ok(SizeAlgorithm::ReturnOne);

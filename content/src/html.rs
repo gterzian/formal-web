@@ -221,7 +221,6 @@ pub(crate) fn the_rules_for_choosing_a_navigable(
     global_scope: Option<&GlobalScope>,
     window_global: Option<<crate::js::Types as js_engine::JsTypes>::JsObject>,
 ) -> ChosenNavigableResult {
-
     // Step 1: Let chosen be null.
     let mut chosen: Option<NavigableId> = None;
 

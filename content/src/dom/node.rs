@@ -49,7 +49,6 @@ impl Node {
 
     /// <https://dom.spec.whatwg.org/#dom-node-childnodes>
     pub(crate) fn child_node_ids(&self) -> Vec<usize> {
-
         // Step 1: "Return a NodeList rooted at this matching only children."
         // The binding layer materializes the returned children as an array-backed list.
         let document = self.document.borrow();
@@ -156,14 +155,12 @@ impl Node {
 
     /// <https://dom.spec.whatwg.org/#dom-node-ownerdocument>
     pub(crate) fn owner_document_node_id(&self) -> Option<usize> {
-
         // Step 1: "Return null, if this is a document; otherwise this's node document."
         (self.node_id != 0).then_some(0)
     }
 
     /// <https://dom.spec.whatwg.org/#dom-node-haschildnodes>
     pub(crate) fn has_child_nodes(&self) -> bool {
-
         // Step 1: "Return true if this has children; otherwise false."
         !self.child_node_ids().is_empty()
     }
@@ -184,7 +181,6 @@ impl Node {
 
     /// <https://dom.spec.whatwg.org/#dom-node-nodevalue>
     pub(crate) fn set_node_value(&self, value: Option<&str>) {
-
         // Step 1: "If the given value is null, act as if it was the empty string instead."
         let normalized_value = value.unwrap_or("");
 
@@ -197,7 +193,6 @@ impl Node {
         };
 
         match node_data {
-
             // Step 2: "Replace data of this with 0, this's length, and the given value."
             NodeData::Text(_) => self.set_text_content(Some(normalized_value)),
 
@@ -236,7 +231,6 @@ impl Node {
 
     /// <https://dom.spec.whatwg.org/#dom-node-appendchild>
     pub(crate) fn append_child(&self, child: &Node) -> Result<usize, DOMException> {
-
         // Step 1: "Return the result of appending node to this."
         Self::append(child, self)
     }
@@ -247,7 +241,6 @@ impl Node {
         child: &Node,
         reference_child: Option<&Node>,
     ) -> Result<usize, DOMException> {
-
         // Step 1: "Return the result of pre-inserting node into this before child."
         Self::pre_insert(child, self, reference_child)
     }
@@ -278,7 +271,6 @@ impl Node {
 
     /// <https://dom.spec.whatwg.org/#dom-node-textcontent>
     pub(crate) fn text_content(&self) -> Option<String> {
-
         // Step 1: "Return the result of running get text content with this."
         self.get_text_content()
     }
@@ -287,14 +279,12 @@ impl Node {
     pub(crate) fn get_text_content(&self) -> Option<String> {
         let document = self.document.borrow();
         let Some(node) = document.get_node(self.node_id) else {
-
             // Step 4: "Null."
             // Note: Removed nodes are dropped from BaseDocument, so stale wrappers fall back to null instead of panicking.
             return None;
         };
 
         if matches!(node.data, NodeData::Element(_)) {
-
             // Step 1: "The descendant text content of node."
             // Note: BaseDocument does not currently materialize DocumentFragment wrappers in the JavaScript engine, so this reachable branch covers Element nodes.
             return Some(node.text_content());
@@ -303,7 +293,6 @@ impl Node {
         // Step 2: "node’s value."
         // Note: The implementation does not materialize Attr nodes, so there is no corresponding branch here.
         if let Some(text) = node.text_data() {
-
             // Step 3: "node’s data."
             // Text nodes are materialized as CharacterData.
             // Note: Comment and processing-instruction data are not retained separately.
@@ -316,7 +305,6 @@ impl Node {
 
     /// <https://dom.spec.whatwg.org/#dom-node-textcontent>
     pub(crate) fn set_text_content(&self, value: Option<&str>) {
-
         // Step 1: "If the given value is null, act as if it was the empty string instead, and then run set text content with this and the given value."
         let normalized_value = value.unwrap_or("");
 
@@ -336,7 +324,6 @@ impl Node {
         };
 
         if matches!(node_data, NodeData::Element(_)) {
-
             // Step 1: "String replace all with value within node."
             // Note: BaseDocument does not currently materialize DocumentFragment wrappers in the JavaScript engine, so this reachable branch covers Element nodes.
             string_replace_all(&self.document, self.node_id, value);
@@ -346,7 +333,6 @@ impl Node {
         // Step 2: "Set an existing attribute value with node and value."
         // Note: The implementation does not materialize Attr nodes, so there is no corresponding branch here.
         if matches!(node_data, NodeData::Text(_)) {
-
             // Step 3: "Replace data of node with 0, node’s length, and value."
             // DocumentMutator applies the full replacement in one operation.
             let mut document = self.document.borrow_mut();
@@ -360,7 +346,6 @@ impl Node {
 
     /// <https://dom.spec.whatwg.org/#concept-node-append>
     fn append(node: &Node, parent: &Node) -> Result<usize, DOMException> {
-
         // Step 1: "Pre-insert node into parent before null."
         Self::pre_insert(node, parent, None)
     }
@@ -371,7 +356,6 @@ impl Node {
         parent: &Node,
         child: Option<&Node>,
     ) -> Result<(), DOMException> {
-
         // Step 1: "If parent is not a Document, DocumentFragment, or Element node, then throw a \"HierarchyRequestError\" DOMException."
         if !Self::is_document_or_element_node(parent) {
             return Err(DOMException::hierarchy_request_error());
@@ -431,7 +415,6 @@ impl Node {
 
     /// <https://dom.spec.whatwg.org/#concept-node-pre-insert>
     fn pre_insert(node: &Node, parent: &Node, child: Option<&Node>) -> Result<usize, DOMException> {
-
         // Step 1: "Ensure pre-insert validity of node into parent before child."
         Self::ensure_pre_insertion_validity(node, parent, child)?;
 
@@ -457,7 +440,6 @@ impl Node {
         parent: &Node,
         reference_child_node_id: Option<usize>,
     ) -> Result<(), DOMException> {
-
         // Step 1: "Let nodes be node's children, if node is a DocumentFragment node; otherwise « node »."
         // Note: The current JavaScript-visible DOM implementation does not yet expose DocumentFragment nodes, so this helper always inserts « node ».
         // Step 2: "Let count be nodes's size."
@@ -475,7 +457,6 @@ impl Node {
 
         // Step 7: "For each node in nodes, in tree order:"
         if !Rc::ptr_eq(&node.document, &parent.document) {
-
             // Step 7.1: "Adopt node into parent's node document."
             // TODO: Implement https://dom.spec.whatwg.org/#concept-node-adopt across distinct `BaseDocument` instances.
             return Err(DOMException::not_supported_error());
@@ -485,12 +466,10 @@ impl Node {
         let mut mutator = document.mutate();
         match reference_child_node_id {
             Some(reference_child_node_id) => {
-
                 // Step 7.3: "Otherwise, insert node into parent's children before child's index."
                 mutator.insert_nodes_before(reference_child_node_id, &[node.node_id]);
             }
             None => {
-
                 // Step 7.2: "If child is null, then append node to parent's children."
                 mutator.append_children(parent.node_id, &[node.node_id]);
             }

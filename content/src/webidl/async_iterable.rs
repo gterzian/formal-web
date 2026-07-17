@@ -51,7 +51,6 @@ fn next_on_fulfilled_behaviour<T: AsyncValueIterable>(
         let done_result = js_engine::EcmascriptHost::get(ec, &result_object, "done");
         if let Ok(done_val) = done_result {
             if ec.to_boolean(&done_val) {
-
                 // Step 8.5.2: "If next is end of iteration, then:"
                 captures.iterator.finished.set(true);
                 captures
@@ -86,7 +85,6 @@ fn next_on_rejected_behaviour<T: AsyncValueIterable>(
     captures: &NextOnRejectedCaptures<T>,
     ec: &mut dyn ExecutionContext<Types>,
 ) -> Completion<JsValue, Types> {
-
     // Step 8.7.2: "Set object's is finished to true."
     captures.iterator.finished.set(true);
 
@@ -138,7 +136,6 @@ fn return_on_fulfilled_behaviour(
     captures: &ReturnOnFulfilledCaptures,
     ec: &mut dyn ExecutionContext<Types>,
 ) -> Completion<JsValue, Types> {
-
     // Step 12.1: "Return CreateIteratorResultObject(value, true)."
     Ok(Types::value_from_object(create_iterator_result_object(
         captures.value.clone(),
@@ -197,7 +194,6 @@ pub(crate) trait AsyncValueIterable:
         _value: JsValue,
         ec: &mut dyn ExecutionContext<Types>,
     ) -> Completion<JsObject, Types> {
-
         // Step 1: "Return a promise resolved with undefined."
         resolved_promise(ec.value_undefined(), ec)
     }
@@ -245,7 +241,6 @@ where
         operation: IteratorOperation,
         ec: &mut dyn ExecutionContext<Types>,
     ) -> Completion<JsObject, Types> {
-
         // Step 9: "Let ongoingPromise be object's ongoing promise."
         // Note: Extract the clone before the if-let to avoid holding
         // the GcCell borrow guard across the entire block, which would
@@ -253,7 +248,6 @@ where
         // lives until the end of the block in Rust).
         let ongoing = self.ongoing_promise.borrow().clone();
         if let Some(previous) = ongoing {
-
             // Step 10: "If ongoingPromise is not null, then:"
             // Step 10.1: "Let afterOngoingPromiseCapability be ! NewPromiseCapability(%Promise%)."
             // Note: result_capability is not wired on the Boa backend,
@@ -291,7 +285,6 @@ where
             *self.ongoing_promise.borrow_mut() = Some(result_obj.clone());
             Ok(result_obj)
         } else {
-
             // Step 11: "Otherwise:"
             // Step 11.1: "Set object's ongoing promise to the result of running nextSteps."
             let promise = self.start_operation(operation, ec)?;
@@ -313,7 +306,6 @@ where
 
     /// <https://webidl.spec.whatwg.org/#js-asynchronous-iterator-prototype-object>
     fn start_next(&self, ec: &mut dyn ExecutionContext<Types>) -> Completion<JsObject, Types> {
-
         // Step 8.1: "Let nextPromiseCapability be ! NewPromiseCapability(%Promise%)."
         // Note: We create a fallback capability for the finished/error paths.
         let next_capability = ec
@@ -404,7 +396,6 @@ where
         value: JsValue,
         ec: &mut dyn ExecutionContext<Types>,
     ) -> Completion<JsObject, Types> {
-
         // Step 8.1: "Let returnPromiseCapability be ! NewPromiseCapability(%Promise%)."
         // Note: used for finished/error fast-paths; normal path uses
         // the promise returned by perform_promise_then.
@@ -591,12 +582,10 @@ fn async_iterator_next_inner<T>(
 where
     T: AsyncValueIterable,
 {
-
     // Steps 2-5: this validation
     let iterator = match default_async_iterator_from_this::<T>(&this, ec) {
         Ok(iterator) => iterator,
         Err(error) => {
-
             // Step 5: "IfAbruptRejectPromise(object, thisValidationPromiseCapability)."
             let capability = ec
                 .new_promise_capability(ec.realm_intrinsics(&ec.current_realm()).promise)
@@ -690,7 +679,6 @@ pub(crate) fn create_value_async_iterator<T>(
 where
     T: AsyncValueIterable,
 {
-
     // Step 6: "Let iterator be a newly created default asynchronous iterator object for definition with idlObject as its target, \"value\" as its kind, and is finished set to false."
     // Step 7: "Run the asynchronous iterator initialization steps for definition with idlObject, iterator, and idlArgs, if any such steps exist."
     let state = target.create_async_iterator_state(args, ec)?;

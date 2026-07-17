@@ -272,7 +272,6 @@ fn structured_serialize_internal(
     memory: &mut MemoryMap,
     ec: &mut dyn ExecutionContext<Types>,
 ) -> Completion<SerializedRecord, Types> {
-
     // Step 1: If memory was not supplied, let memory be an empty map.
     //         (memory is always supplied here.)
     // Step 2: If memory[value] exists, then return memory[value].
@@ -460,7 +459,6 @@ fn serialize_array_buffer(
     buffer: &ArrayBuffer,
     ec: &mut dyn ExecutionContext<Types>,
 ) -> Completion<SerializedRecord, Types> {
-
     // Step 13.2.1: If IsDetachedBuffer(value) is true, then throw a "DataCloneError" DOMException.
     let data = ec
         .array_buffer_data(buffer)
@@ -493,7 +491,6 @@ fn serialize_shared_array_buffer(
     for_storage: bool,
     ec: &mut dyn ExecutionContext<Types>,
 ) -> Completion<SerializedRecord, Types> {
-
     // Step 13.1.1: If IsSharedArrayBuffer(value) is true:
     //   Step 13.1.1.1: If the current settings object's cross-origin isolated capability is false,
     //                    then throw a "DataCloneError" DOMException.
@@ -636,7 +633,6 @@ fn serialize_map_contents(
     object: &JsObject,
     ec: &mut dyn ExecutionContext<Types>,
 ) -> Completion<SerializedRecord, Types> {
-
     // Step 15.1: Set serialized to { [[Type]]: "Map", [[MapData]]: a new empty List }.
     let serialized = SerializedRecord::Map(Vec::new());
 
@@ -651,7 +647,6 @@ fn serialize_map_contents(
     // Step 15.5: For each Record { [[Key]], [[Value]] } entry of copiedList:
     let mut entries = Vec::new();
     for (key, val) in raw_entries {
-
         // Step 15.5.1: Let serializedKey be ? StructuredSerializeInternal(entry.[[Key]], forStorage, memory).
         let sk = structured_serialize_internal(&key, for_storage, memory, ec)?;
 
@@ -689,7 +684,6 @@ fn serialize_set_contents(
     object: &JsObject,
     ec: &mut dyn ExecutionContext<Types>,
 ) -> Completion<SerializedRecord, Types> {
-
     // Step 16.1: Set serialized to { [[Type]]: "Set", [[SetData]]: a new empty List }.
     let serialized = SerializedRecord::Set(Vec::new());
 
@@ -704,7 +698,6 @@ fn serialize_set_contents(
     // Step 16.5: For each entry of copiedList:
     let mut entries = Vec::new();
     for entry in raw_entries {
-
         // Step 16.5.1: Let serializedEntry be ? StructuredSerializeInternal(entry, forStorage, memory).
         let sv = structured_serialize_internal(&entry, for_storage, memory, ec)?;
 
@@ -727,7 +720,6 @@ fn serialize_error(
     object: &JsObject,
     ec: &mut dyn ExecutionContext<Types>,
 ) -> Completion<SerializedRecord, Types> {
-
     // Step 17.1: Let name be ? Get(value, "name").
     let name_val = EcmascriptHost::get(ec, object, "name")?;
 
@@ -917,7 +909,6 @@ pub fn structured_serialize_with_transfer(
     transfer_list: Vec<JsValue>,
     ec: &mut dyn ExecutionContext<Types>,
 ) -> Completion<SerializeWithTransferResult, Types> {
-
     // Step 1: Let memory be an empty map.
     let mut memory = MemoryMap::default();
 
@@ -966,7 +957,6 @@ pub fn structured_serialize_with_transfer(
     for transferable in &transfer_list {
         let object = Types::value_as_object(transferable).ok_or_else(|| data_clone_error(ec))?;
         if let Some(buffer) = Types::object_as_array_buffer(&object) {
-
             // Step 5.1: If transferable has an [[ArrayBufferData]] internal slot:
             //   Step 5.1.1: If IsDetachedBuffer(transferable) is true, then throw.
             if ec.array_buffer_data(&buffer).is_none() {
@@ -1000,7 +990,6 @@ pub fn structured_serialize_with_transfer(
                 max_byte_length: None,
             });
         } else {
-
             // Step 5.2: Otherwise (platform object with [[Detached]] internal slot).
             // TODO: platform object transfer.
             return Err(data_clone_error(ec));
@@ -1027,7 +1016,6 @@ fn structured_deserialize(
     memory: &mut MemoryMap,
     ec: &mut dyn ExecutionContext<Types>,
 ) -> Completion<JsValue, Types> {
-
     // Step 1: If memory was not supplied, let memory be an empty map.
     //         (memory is always supplied here.)
     // Step 2: If memory[serialized] exists, then return memory[serialized].
@@ -1046,7 +1034,6 @@ fn structured_deserialize(
     let intrinsics = ec.realm_intrinsics(&realm);
 
     match serialized {
-
         // Step 5: If serialized.[[Type]] is "primitive", then set value to serialized.[[Value]].
         SerializedRecord::Primitive(p) => {
             value = deserialize_primitive_value(p, ec)?;
@@ -1256,7 +1243,6 @@ fn structured_deserialize(
     // Step 24: If deep is true:
     if deep {
         match serialized {
-
             // Step 24.a: If serialized.[[Type]] is "Map":
             SerializedRecord::Map(entries) => {
                 let map_obj = Types::value_as_object(&value)
@@ -1418,7 +1404,6 @@ pub fn structured_deserialize_with_transfer(
     target_realm: &JsValue,
     ec: &mut dyn ExecutionContext<Types>,
 ) -> Completion<DeserializeWithTransferResult, Types> {
-
     // Step 1: Let memory be an empty map.
     let mut memory = MemoryMap::default();
 
@@ -1429,7 +1414,6 @@ pub fn structured_deserialize_with_transfer(
     //          serializeWithTransferResult.[[TransferDataHolders]]:
     for holder in &serialize_result.transfer_data_holders {
         let value: JsValue = match holder {
-
             // Step 3.1: If transferDataHolder.[[Type]] is "ArrayBuffer", then set value to a new
             //            ArrayBuffer object in targetRealm whose [[ArrayBufferData]] internal slot
             //            value is transferDataHolder.[[ArrayBufferData]], and whose
@@ -1498,7 +1482,6 @@ pub fn structured_clone(
     options: Option<StructuredCloneOptions>,
     ec: &mut dyn ExecutionContext<Types>,
 ) -> Completion<JsValue, Types> {
-
     // Step 1: Let serialized be ? StructuredSerializeWithTransfer(value, options["transfer"]).
     let transfer = options
         .as_ref()

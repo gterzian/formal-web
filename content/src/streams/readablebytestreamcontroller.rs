@@ -804,7 +804,6 @@ impl ReadableByteStreamController {
         chunk: JsValue,
         ec: &mut dyn ExecutionContext<crate::js::Types>,
     ) -> Completion<(), crate::js::Types> {
-
         // Step 3-5: Extract buffer info from chunk
         let view = ArrayBufferViewDescriptor::from_value(chunk, ec)?;
         if view.byte_length() == 0 {
@@ -838,7 +837,6 @@ impl ReadableByteStreamController {
         let has_pending_pull_into = {
             let pending = self.pending_pull_intos.borrow();
             if let Some(first_pending) = pending.front() {
-
                 // Step 8.2: If ! IsDetachedBuffer(firstPendingPullInto's buffer) is true,
                 //           throw a TypeError exception.
                 if ec.array_buffer_data(&first_pending.view.buffer).is_none() {
@@ -1391,7 +1389,6 @@ pub(crate) fn set_up_readable_byte_stream_controller(
     auto_allocate_chunk_size: Option<usize>,
     ec: &mut dyn ExecutionContext<crate::js::Types>,
 ) -> Completion<(), crate::js::Types> {
-
     // Step 2 (implicit): Set controller.[[stream]] to stream.
     *controller.stream.borrow_mut() = Some(stream.clone());
 

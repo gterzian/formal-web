@@ -34,7 +34,6 @@ pub(crate) fn resolved_promise(
     value: JsValue,
     ec: &mut dyn ExecutionContext<Types>,
 ) -> Completion<JsObject, Types> {
-
     // Step 1: "Let value be the result of converting x to a JavaScript value."
     // Note: Step 1 is a no-op — value is already a JsValue.
     // Step 2: "Let constructor be realm.[[Intrinsics]].[[%Promise%]]."
@@ -59,7 +58,6 @@ pub(crate) fn rejected_promise(
     reason: JsValue,
     ec: &mut dyn ExecutionContext<Types>,
 ) -> Completion<JsObject, Types> {
-
     // Step 1: "Let constructor be realm.[[Intrinsics]].[[%Promise%]]."
     let realm = ec.current_realm();
     let intrinsics = ec.realm_intrinsics(&realm);
@@ -84,7 +82,6 @@ pub(crate) fn promise_from_value(
     value: JsValue,
     ec: &mut dyn ExecutionContext<Types>,
 ) -> Completion<JsObject, Types> {
-
     // Step 1: "Let promiseCapability be ? NewPromiseCapability(%Promise%)."
     let realm = ec.current_realm();
     let intrinsics = ec.realm_intrinsics(&realm);
@@ -225,7 +222,6 @@ where
         FnOnce(Vec<JsValue>, &mut dyn ExecutionContext<Types>) -> Completion<(), Types> + 'static,
     TFailure: FnOnce(JsValue, &mut dyn ExecutionContext<Types>) -> Completion<(), Types> + 'static,
 {
-
     // Step 1: Let fulfilledCount be 0.
     // Step 2: Let rejected be false.
     let state = gc_cell_new(WaitAllState {
@@ -308,7 +304,6 @@ where
 
     // Step 6: If total is 0, then:
     if total == 0 {
-
         // Step 6.1: Queue a microtask to perform successSteps given « ».
         let realm = ec.current_realm();
         ec.enqueue_job_with_realm(
@@ -333,7 +328,6 @@ where
 
     // Step 9: For each promise of promises:
     for (promise_index, promise) in promises.into_iter().enumerate() {
-
         // Step 9.1: Let promiseIndex be index.
         // (already `promise_index` from enumerate)
         // Step 9.2: Let fulfillmentHandler be the following steps given arg:
@@ -434,7 +428,6 @@ pub(crate) fn wait_for_all_get_promise(
     promises: Vec<JsObject>,
     ec: &mut dyn ExecutionContext<Types>,
 ) -> Completion<JsObject, Types> {
-
     // Step 1: Let promise be a new promise of type Promise<sequence<T>> in realm.
     // Note: new_promise_pending returns (promise_value, resolvers), not a capability struct.
     let (promise_value, resolvers) = ec.new_promise_pending()?;
@@ -454,7 +447,6 @@ pub(crate) fn wait_for_all_get_promise(
         promises,
         Box::new(
             move |results: Vec<JsValue>, inner_ec: &mut dyn ExecutionContext<Types>| {
-
                 // Step 2.1: Resolve promise with results.
                 let resolve: JsObject = resolvers_for_success.resolve.clone().into();
                 let undefined = inner_ec.value_undefined();
@@ -469,7 +461,6 @@ pub(crate) fn wait_for_all_get_promise(
         ),
         Box::new(
             move |reason: JsValue, inner_ec: &mut dyn ExecutionContext<Types>| {
-
                 // Step 3.1: Reject promise with reason.
                 let reject: JsObject = resolvers.reject.clone().into();
                 let undefined = inner_ec.value_undefined();

@@ -75,7 +75,6 @@ fn window_from_context(context: &mut Context) -> Option<&Window> {
 
 /// <https://webassembly.github.io/spec/js-api/#dom-webassembly-validate>
 pub(crate) fn validate_wasm_module(stable_bytes: &[u8]) -> bool {
-
     // Step 2: "Compile stableBytes as a WebAssembly module and store the results as module."
     // Step 3: "If module is error, return false."
     // Note: Steps 4-6 (validating builtins and imported strings) are not yet implemented.
@@ -164,7 +163,6 @@ fn asynchronously_instantiate_a_webassembly_module_boa(
     wasm_module: &WasmModule,
     context: &mut Context,
 ) -> Completion<JsValue, crate::js::Types> {
-
     // Step 1: "Let promise be a new promise."
     // Step 2: "Let module be moduleObject.[[Module]]."
     let module = wasm_module.module.clone();
@@ -303,7 +301,6 @@ fn compile_continuation_boa(
     bytes: Vec<u8>,
     context: &mut Context,
 ) -> Completion<(), crate::js::Types> {
-
     // Step 2.2.5.1: "Construct a WebAssembly module object from module, bytes,
     //                builtinSetNames, importedStringModule, and let moduleObject
     //                be the result."
@@ -342,7 +339,6 @@ fn compile_rejection_boa(
     message: String,
     context: &mut Context,
 ) -> Completion<(), crate::js::Types> {
-
     // Step 2.2.1: "If module is error, reject promise with a CompileError exception
     //              and return."
     let error = create_compile_error_boa(&message, context);
@@ -395,7 +391,6 @@ fn initialize_an_instance_object_boa(
     store: &Arc<Mutex<Store<()>>>,
     context: &mut Context,
 ) -> Completion<JsObject, crate::js::Types> {
-
     // Step 1: "Create an exports object from module and instance and let exportsObject be the result."
     let mut store_guard = store.lock().unwrap();
     let exports_object =
@@ -424,7 +419,6 @@ fn create_an_exports_object_boa(
     store_arc: &Arc<Mutex<Store<()>>>,
     context: &mut Context,
 ) -> Completion<JsObject, crate::js::Types> {
-
     // Step 1: "Let exportsObject be ! OrdinaryObjectCreate(null)."
     let exports_object = JsObject::from_proto_and_data(None, ());
 
@@ -438,11 +432,9 @@ fn create_an_exports_object_boa(
     // The spec's per-externtype branches (Steps 2.3-2.7) are collapsed
     // into a single match because Func is the only implemented extern kind.
     for (name, extern_val) in &export_list {
-
         // Step 2.3-2.7: "If externtype is of the form ..."
         let value = match extern_val {
             wasmtime::Extern::Func(func) => {
-
                 // Steps 2.3.x:  "Let func be the result of creating a new
                 //                Exported Function from funcaddr."
                 create_exported_function_wrapper_boa(*func, Arc::clone(store_arc), context)?

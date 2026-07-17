@@ -218,7 +218,6 @@ pub(crate) fn readable_stream_byob_reader_release(
     reader: ReadableStreamBYOBReader,
     ec: &mut dyn ExecutionContext<Types>,
 ) -> Completion<(), Types> {
-
     // Step 1: "Perform ! ReadableStreamReaderGenericRelease(reader)."
     reader.readable_stream_reader_generic_release(ec)?;
 

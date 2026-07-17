@@ -108,7 +108,6 @@ impl FetchController {
     // TODO: Wire this to AbortSignal/controller integration once content can initiate aborts and
     // formal-web can carry structured abort reasons across content, user-agent, net.
     pub(crate) fn abort(&mut self, error: Option<String>) {
-
         // Step 1. Set controller's state to "aborted".
         self.state = FetchControllerState::Aborted;
 
@@ -128,7 +127,6 @@ impl FetchController {
 
     /// <https://fetch.spec.whatwg.org/#fetch-controller-terminate>
     pub(crate) fn terminate(&mut self) {
-
         // Step 1. Set controller's state to "terminated".
         self.state = FetchControllerState::Terminated;
     }
@@ -196,7 +194,6 @@ impl FetchGroup {
 
     /// <https://fetch.spec.whatwg.org/#concept-fetch-group-terminate>
     pub(crate) fn terminate(&mut self) {
-
         // Step 1. For each fetch record record of fetchGroup's fetch records, if record's
         // controller is non-null and record's request's done flag is unset and keepalive is
         // false, terminate record's controller.

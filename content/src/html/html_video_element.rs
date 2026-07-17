@@ -30,7 +30,6 @@ impl HTMLVideoElement {
 
     /// <https://html.spec.whatwg.org/#dom-video-videowidth>
     pub(crate) fn video_width(&self) -> u32 {
-
         // Step 1: If readyState is HAVE_NOTHING, return 0.
         if self.media_element.ready_state == HTMLMediaElement::HAVE_NOTHING {
             return 0;
@@ -42,7 +41,6 @@ impl HTMLVideoElement {
 
     /// <https://html.spec.whatwg.org/#dom-video-videoheight>
     pub(crate) fn video_height(&self) -> u32 {
-
         // Step 1: If readyState is HAVE_NOTHING, return 0.
         if self.media_element.ready_state == HTMLMediaElement::HAVE_NOTHING {
             return 0;
@@ -54,7 +52,6 @@ impl HTMLVideoElement {
 
     /// <https://html.spec.whatwg.org/#dom-video-poster>
     pub(crate) fn poster(&self) -> String {
-
         // Step 1: Return the value of the poster content attribute.
         self.media_element
             .html_element
@@ -65,7 +62,6 @@ impl HTMLVideoElement {
 
     /// <https://html.spec.whatwg.org/#dom-video-poster>
     pub(crate) fn set_poster(&self, poster: &str) {
-
         // Step 1: Set this's poster content attribute to the given value.
         self.media_element
             .html_element

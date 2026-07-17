@@ -412,7 +412,6 @@ pub(crate) fn create_document_platform_object(
     creation_url: url::Url,
     ec: &mut dyn ExecutionContext<crate::js::Types>,
 ) -> Completion<(<crate::js::Types as JsTypes>::JsObject, crate::dom::Document), crate::js::Types> {
-
     // Step 1: Assert: interface is exposed in realm.
     // (Checked inside create_interface_instance via prototype resolution.)
     // Step 9: Set instance.[[Prototype]] to prototype.

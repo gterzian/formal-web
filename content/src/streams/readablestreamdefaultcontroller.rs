@@ -262,14 +262,12 @@ impl ReadableStreamDefaultController {
         &self,
         ec: &mut dyn ExecutionContext<Types>,
     ) -> Completion<Option<f64>, Types> {
-
         // Step 1: "Return ! ReadableStreamDefaultControllerGetDesiredSize(this)."
         self.get_desired_size(ec)
     }
 
     /// <https://streams.spec.whatwg.org/#rs-default-controller-close>
     pub(crate) fn close(&self, ec: &mut dyn ExecutionContext<Types>) -> Completion<(), Types> {
-
         // Step 1: "If ! ReadableStreamDefaultControllerCanCloseOrEnqueue(this) is false, throw a TypeError exception."
         if !self.can_close_or_enqueue(ec)? {
             return Err(ec.new_type_error("The stream is not in a state that permits close"));
@@ -285,7 +283,6 @@ impl ReadableStreamDefaultController {
         chunk: JsValue,
         ec: &mut dyn ExecutionContext<Types>,
     ) -> Completion<(), Types> {
-
         // Step 1: "If ! ReadableStreamDefaultControllerCanCloseOrEnqueue(this) is false, throw a TypeError exception."
         if !self.can_close_or_enqueue(ec)? {
             return Err(ec.new_type_error("The stream is not in a state that permits enqueue"));
@@ -301,7 +298,6 @@ impl ReadableStreamDefaultController {
         error: JsValue,
         ec: &mut dyn ExecutionContext<Types>,
     ) -> Completion<(), Types> {
-
         // Step 1: "Perform ! ReadableStreamDefaultControllerError(this, e)."
         self.error_steps(error, ec)
     }
@@ -312,7 +308,6 @@ impl ReadableStreamDefaultController {
         reason: JsValue,
         ec: &mut dyn ExecutionContext<Types>,
     ) -> Completion<JsObject, Types> {
-
         // Step 1: "Perform ! ResetQueue(this)."
         self.reset_queue();
 
@@ -340,7 +335,6 @@ impl ReadableStreamDefaultController {
         read_request: ReadRequest,
         ec: &mut dyn ExecutionContext<Types>,
     ) -> Completion<(), Types> {
-
         // Step 1: "Let stream be this.[[stream]]."
         let stream = self.stream_slot(ec)?;
 
@@ -373,14 +367,12 @@ impl ReadableStreamDefaultController {
             };
 
             if should_close_stream {
-
                 // Step 2.2.1: "Perform ! ReadableStreamDefaultControllerClearAlgorithms(this)."
                 self.clear_algorithms();
 
                 // Step 2.2.2: "Perform ! ReadableStreamClose(stream)."
                 readable_stream_close(stream, ec)?;
             } else {
-
                 // Step 2.3: "Otherwise, perform ! ReadableStreamDefaultControllerCallPullIfNeeded(this)."
                 self.call_pull_if_needed(ec)?;
             }
@@ -401,7 +393,6 @@ impl ReadableStreamDefaultController {
         &self,
         _ec: &mut dyn ExecutionContext<Types>,
     ) -> Completion<(), Types> {
-
         // Step 1: "Return."
         Ok(())
     }
@@ -411,7 +402,6 @@ impl ReadableStreamDefaultController {
         &self,
         ec: &mut dyn ExecutionContext<Types>,
     ) -> Completion<(), Types> {
-
         // Step 1: "Let shouldPull be ! ReadableStreamDefaultControllerShouldCallPull(controller)."
         let should_pull = self.should_call_pull(ec)?;
 
@@ -422,7 +412,6 @@ impl ReadableStreamDefaultController {
 
         // Step 3: "If controller.[[pulling]] is true,"
         if self.pulling.get() {
-
             // Step 3.1: "Set controller.[[pullAgain]] to true."
             self.pull_again.set(true);
 
@@ -443,7 +432,6 @@ impl ReadableStreamDefaultController {
             Some(pull_algorithm) => match pull_algorithm.call(&controller_object, ec) {
                 Ok(promise) => promise,
                 Err(error) => {
-
                     // Step 6 (throw -> rejection): "If pullAlgorithm throws, treat it as a
                     // rejected promise. Error the stream immediately (synchronously) rather
                     // than deferring to microtask, so that subsequent reads see the errored
@@ -488,7 +476,6 @@ impl ReadableStreamDefaultController {
         &self,
         ec: &mut dyn ExecutionContext<Types>,
     ) -> Completion<bool, Types> {
-
         // Step 1: "Let state be controller.[[stream]].[[state]]."
         let state = self.stream_slot(ec)?.state();
 
@@ -506,7 +493,6 @@ impl ReadableStreamDefaultController {
         &self,
         ec: &mut dyn ExecutionContext<Types>,
     ) -> Completion<(), Types> {
-
         // Step 1: "If ! ReadableStreamDefaultControllerCanCloseOrEnqueue(controller) is false, return."
         if !self.can_close_or_enqueue(ec)? {
             return Ok(());
@@ -520,7 +506,6 @@ impl ReadableStreamDefaultController {
 
         // Step 4: "If controller.[[queue]] is empty,"
         if self.queue_is_empty() {
-
             // Step 4.1: "Perform ! ReadableStreamDefaultControllerClearAlgorithms(controller)."
             self.clear_algorithms();
 
@@ -537,7 +522,6 @@ impl ReadableStreamDefaultController {
         chunk: JsValue,
         ec: &mut dyn ExecutionContext<Types>,
     ) -> Completion<(), Types> {
-
         // Step 1: "If ! ReadableStreamDefaultControllerCanCloseOrEnqueue(controller) is false, return."
         if !self.can_close_or_enqueue(ec)? {
             return Ok(());
@@ -552,7 +536,6 @@ impl ReadableStreamDefaultController {
         {
             readable_stream_fulfill_read_request(stream, chunk, false, ec)?;
         } else {
-
             // Step 4.1: "Let result be the result of performing controller.[[strategySizeAlgorithm]], passing in chunk, and interpreting the result as a completion record."
             let size_algorithm =
                 self.strategy_size_algorithm
@@ -566,7 +549,6 @@ impl ReadableStreamDefaultController {
             let chunk_size = match size_algorithm.size(&chunk, ec) {
                 Ok(chunk_size) => chunk_size,
                 Err(error) => {
-
                     // Step 4.2.1: "Perform ! ReadableStreamDefaultControllerError(controller, result.[[Value]])."
                     self.error_steps(error.clone(), ec)?;
 
@@ -603,7 +585,6 @@ impl ReadableStreamDefaultController {
         error: JsValue,
         ec: &mut dyn ExecutionContext<Types>,
     ) -> Completion<(), Types> {
-
         // Step 1: "Let stream be controller.[[stream]]."
         let stream = self.stream_slot(ec)?;
 
@@ -628,7 +609,6 @@ impl ReadableStreamDefaultController {
         &self,
         ec: &mut dyn ExecutionContext<Types>,
     ) -> Completion<Option<f64>, Types> {
-
         // Step 1: "Let state be controller.[[stream]].[[state]]."
         let state = self.stream_slot(ec)?.state();
 
@@ -658,7 +638,6 @@ impl ReadableStreamDefaultController {
 
     /// <https://streams.spec.whatwg.org/#readable-stream-default-controller-should-call-pull>
     fn should_call_pull(&self, ec: &mut dyn ExecutionContext<Types>) -> Completion<bool, Types> {
-
         // Step 1: "Let stream be controller.[[stream]]."
         let stream = self.stream_slot(ec)?;
 
@@ -730,7 +709,6 @@ pub(crate) fn set_up_readable_stream_default_controller(
     size_algorithm: SizeAlgorithm,
     ec: &mut dyn ExecutionContext<Types>,
 ) -> Completion<(), Types> {
-
     // Step 1: "Assert: stream.[[controller]] is undefined."
     debug_assert!(stream.controller_slot().is_none());
 
@@ -805,7 +783,6 @@ pub(crate) fn set_up_readable_stream_default_controller_from_underlying_source(
     size_algorithm: SizeAlgorithm,
     ec: &mut dyn ExecutionContext<Types>,
 ) -> Completion<(), Types> {
-
     // Step 1: "Let controller be a new ReadableStreamDefaultController."
     let controller = ReadableStreamDefaultController::new();
     let controller_object = create_interface_instance::<Types, ReadableStreamDefaultController>(

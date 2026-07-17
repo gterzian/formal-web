@@ -40,7 +40,6 @@ where
     Ty: JsTypes + JsTypesWithRealm,
 {
     for constant in constants {
-
         // Step 1.1: "If const is not exposed in realm, then continue."
         if let Some(exposed_globals) = constant.exposed {
             if exposed_globals != "Window" {

@@ -69,7 +69,6 @@ fn trap_prevent_extensions(
     _this: JsValue,
     ec: &mut dyn ExecutionContext<crate::js::Types>,
 ) -> Completion<JsValue, crate::js::Types> {
-
     // Step 1: "Return false."
     Ok(ec.value_from_bool(false))
 }
@@ -80,7 +79,6 @@ fn trap_is_extensible(
     _this: JsValue,
     ec: &mut dyn ExecutionContext<crate::js::Types>,
 ) -> Completion<JsValue, crate::js::Types> {
-
     // Step 1: "Return true."
     Ok(ec.value_from_bool(true))
 }

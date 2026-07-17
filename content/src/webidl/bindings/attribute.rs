@@ -85,7 +85,6 @@ where
     let target_obj = Ty::value_as_object(target)
         .ok_or_else(|| engine.new_type_error("target is not an object in attribute definition"))?;
     for attr in attributes {
-
         // Step 1.1: "If attr is not exposed in realm, then continue."
         if let Some(exposed_globals) = attr.exposed {
             // Note: For now, "Window" is the only supported global type.

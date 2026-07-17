@@ -21,7 +21,6 @@ impl HTMLInputElement {
 
     /// <https://html.spec.whatwg.org/#dom-input-value>
     pub(crate) fn value(&self) -> String {
-
         // Step 1: Return the element's current value.
         //
         // Blitz stores the user-typed text in TextInputData on the DOM
@@ -41,7 +40,6 @@ impl HTMLInputElement {
 
     /// <https://html.spec.whatwg.org/#dom-input-value>
     pub(crate) fn set_value(&self, value: &str) {
-
         // Step 1: Set the element's current value to the given value.
         let sanitized = value_to_string(value);
 

@@ -86,7 +86,6 @@ where
         .ok_or_else(|| engine.new_type_error("target is not an object in operation definition"))?;
 
     for op in operations {
-
         // Step 1.1: "If op is not exposed in realm, then continue."
         if let Some(exposed_globals) = op.exposed {
             if exposed_globals != "Window" {

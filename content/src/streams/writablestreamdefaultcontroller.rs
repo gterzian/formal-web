@@ -489,7 +489,6 @@ impl WritableStreamDefaultController {
         chunk: JsValue,
         ec: &mut dyn ExecutionContext<Types>,
     ) -> Completion<(), Types> {
-
         // Step 1: "Let stream be controller.[[stream]]."
         let stream = self.stream_slot(ec)?;
 
@@ -626,7 +625,6 @@ pub(crate) fn set_up_writable_stream_default_controller(
     size_algorithm: SizeAlgorithm,
     ec: &mut dyn ExecutionContext<Types>,
 ) -> Completion<(), Types> {
-
     // Step 1: "Assert: stream implements WritableStream."
     // Step 2: "Assert: stream.[[controller]] is undefined."
     // Step 3: "Set controller.[[stream]] to stream."
@@ -709,7 +707,6 @@ pub(crate) fn set_up_writable_stream_default_controller_from_underlying_sink(
     size_algorithm: SizeAlgorithm,
     ec: &mut dyn ExecutionContext<Types>,
 ) -> Completion<(), Types> {
-
     // Step 1: "Let controller be a new WritableStreamDefaultController."
     let (controller, controller_object) = create_writable_stream_default_controller(ec)?;
 
@@ -744,7 +741,6 @@ pub(crate) fn set_up_writable_stream_default_controller_from_underlying_sink(
     if let (Some((start, write, close, abort)), Some(underlying_sink)) =
         (sink_methods, underlying_sink_object)
     {
-
         // Step 6: "If underlyingSinkDict['start'] exists, then set startAlgorithm ..."
         if let Some(start) = start {
             start_algorithm = StartAlgorithm::JavaScript(SourceMethod::new(

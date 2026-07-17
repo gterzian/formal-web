@@ -44,7 +44,6 @@ impl HTMLAnchorElement {
         _event: &<crate::js::Types as js_engine::JsTypes>::JsObject,
         event_sender: &IpcSender<ContentEvent>,
     ) -> Result<(), String> {
-
         // Step 1: "If element has no href attribute, then return."
         if self.href_attribute().is_none() {
             return Ok(());
@@ -103,7 +102,6 @@ impl HTMLAnchorElement {
 
     /// <https://html.spec.whatwg.org/#get-an-element's-noopener>
     pub(crate) fn noopener(&self) -> bool {
-
         // Step 1: "Let noopener be false."
         let rel_tokens = self
             .rel()
@@ -133,7 +131,6 @@ impl HTMLAnchorElement {
         document_creation_url: &Url,
         hyperlink_suffix: Option<&str>,
     ) -> Option<String> {
-
         // Step 1: "If subject cannot navigate, then return."
         // Note: The current content process does not yet model sandboxing or disconnected-navigable checks, so the missing-`href` case is the only early return handled here.
         let mut url = self.reinitialize_url(document_creation_url)?;
@@ -152,19 +149,16 @@ impl HTMLAnchorElement {
 
     /// <https://html.spec.whatwg.org/#api-for-a-and-area-elements:dom-hyperlink-href>
     pub(crate) fn href(&self, document_creation_url: &Url) -> String {
-
         // Step 1: "Reinitialize url."
         let url = self.reinitialize_url(document_creation_url);
 
         // Step 2: "Let url be this's url."
         if url.is_none() && self.href_attribute().is_none() {
-
             // Step 3: "If url is null and this has no href content attribute, return the empty string."
             return String::new();
         }
 
         if let Some(href) = self.href_attribute().filter(|_| url.is_none()) {
-
             // Step 4: "Otherwise, if url is null, return this's href content attribute's value."
             return href;
         }
@@ -175,14 +169,12 @@ impl HTMLAnchorElement {
 
     /// <https://html.spec.whatwg.org/#dom-hyperlink-href>
     pub(crate) fn set_href(&self, href: &str) {
-
         // Step 1: "Set the href content attribute to the given value."
         self.html_element.element.set_attribute("href", href);
     }
 
     /// <https://html.spec.whatwg.org/#dom-a-target>
     pub(crate) fn target(&self) -> String {
-
         // Step 1: "Return the value of the target content attribute."
         self.html_element
             .element
@@ -192,14 +184,12 @@ impl HTMLAnchorElement {
 
     /// <https://html.spec.whatwg.org/#dom-a-target>
     pub(crate) fn set_target(&self, target: &str) {
-
         // Step 1: "Set the target content attribute to the given value."
         self.html_element.element.set_attribute("target", target);
     }
 
     /// <https://html.spec.whatwg.org/#dom-a-download>
     pub(crate) fn download(&self) -> String {
-
         // Step 1: "Return the value of the download content attribute."
         self.html_element
             .element
@@ -209,7 +199,6 @@ impl HTMLAnchorElement {
 
     /// <https://html.spec.whatwg.org/#dom-a-download>
     pub(crate) fn set_download(&self, download: &str) {
-
         // Step 1: "Set the download content attribute to the given value."
         self.html_element
             .element
@@ -218,7 +207,6 @@ impl HTMLAnchorElement {
 
     /// <https://html.spec.whatwg.org/#dom-a-rel>
     pub(crate) fn rel(&self) -> String {
-
         // Step 1: "Return the value of the rel content attribute."
         self.html_element
             .element
@@ -228,14 +216,12 @@ impl HTMLAnchorElement {
 
     /// <https://html.spec.whatwg.org/#dom-a-rel>
     pub(crate) fn set_rel(&self, rel: &str) {
-
         // Step 1: "Set the rel content attribute to the given value."
         self.html_element.element.set_attribute("rel", rel);
     }
 
     /// <https://html.spec.whatwg.org/#dom-a-referrerpolicy>
     pub(crate) fn referrer_policy(&self) -> String {
-
         // Step 1: "Return the value of the referrerpolicy content attribute."
         self.html_element
             .element
@@ -245,7 +231,6 @@ impl HTMLAnchorElement {
 
     /// <https://html.spec.whatwg.org/#dom-a-referrerpolicy>
     pub(crate) fn set_referrer_policy(&self, referrer_policy: &str) {
-
         // Step 1: "Set the referrerpolicy content attribute to the given value."
         self.html_element
             .element
@@ -256,7 +241,6 @@ impl HTMLAnchorElement {
 impl HyperlinkElementUtils for HTMLAnchorElement {
     /// <https://html.spec.whatwg.org/#api-for-a-and-area-elements:concept-hyperlink-url-set-2>
     fn set_the_url(&self, document_creation_url: &Url) -> Option<Url> {
-
         // Step 1: "Set this element's url to null."
         // Note: The implementation does not persist the associated hyperlink URL, so this method returns the computed URL instead of storing it on the [HTMLAnchorElement](https://html.spec.whatwg.org/#htmlanchorelement) [platform object](https://webidl.spec.whatwg.org/#dfn-platform-object).
         // Step 2: "If this element's href content attribute is absent, then return."
@@ -272,7 +256,6 @@ impl HyperlinkElementUtils for HTMLAnchorElement {
 
     /// <https://html.spec.whatwg.org/#api-for-a-and-area-elements:update-href>
     fn update_href(&self, url: &Url) {
-
         // Step 1: "Set the element's href content attribute's value to the element's url, serialized."
         self.html_element
             .element

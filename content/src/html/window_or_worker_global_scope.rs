@@ -31,7 +31,6 @@ pub(crate) trait WindowOrWorkerGlobalScope {
         arguments: Vec<JsValue>,
         ec: &mut dyn ExecutionContext<crate::js::Types>,
     ) -> Completion<u32, crate::js::Types> {
-
         // Step 1: "Return the result of running the timer initialization steps given this, handler, timeout, arguments, and false."
         let handler = timer_handler(handler, ec)?;
         self.timer_initialization_steps(handler, timeout, arguments, false, None, ec)
@@ -45,7 +44,6 @@ pub(crate) trait WindowOrWorkerGlobalScope {
         arguments: Vec<JsValue>,
         ec: &mut dyn ExecutionContext<crate::js::Types>,
     ) -> Completion<u32, crate::js::Types> {
-
         // Step 1: "Return the result of running the timer initialization steps given this, handler, timeout, arguments, and true."
         let handler = timer_handler(handler, ec)?;
         self.timer_initialization_steps(handler, timeout, arguments, true, None, ec)
@@ -53,14 +51,12 @@ pub(crate) trait WindowOrWorkerGlobalScope {
 
     /// <https://html.spec.whatwg.org/#dom-cleartimeout>
     fn clear_timeout(&self, timer_id: u32) {
-
         // Step 1: "Remove handle from this's map of setTimeout and setInterval IDs."
         self.global_scope().clear_timer(timer_id);
     }
 
     /// <https://html.spec.whatwg.org/#dom-clearinterval>
     fn clear_interval(&self, timer_id: u32) {
-
         // Step 1: "Remove handle from this's map of setTimeout and setInterval IDs."
         self.global_scope().clear_timer(timer_id);
     }
@@ -75,7 +71,6 @@ pub(crate) trait WindowOrWorkerGlobalScope {
         previous_id: Option<u32>,
         ec: &mut dyn ExecutionContext<crate::js::Types>,
     ) -> Completion<u32, crate::js::Types> {
-
         // Step 1-3: thisArg, id allocation, nesting level.
         let nesting_level = self
             .global_scope()

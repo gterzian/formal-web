@@ -48,7 +48,6 @@ impl HTMLIFrameElement {
 
     /// <https://html.spec.whatwg.org/#dom-iframe-src>
     pub(crate) fn src(&self) -> String {
-
         // Step 1: "Return the value of the src content attribute."
         self.html_element
             .element
@@ -58,14 +57,12 @@ impl HTMLIFrameElement {
 
     /// <https://html.spec.whatwg.org/#dom-iframe-src>
     pub(crate) fn set_src(&self, src: &str) {
-
         // Step 1: "Set this's src content attribute to the given value."
         self.html_element.element.set_attribute("src", src);
     }
 
     /// <https://html.spec.whatwg.org/#dom-iframe-srcdoc>
     pub(crate) fn srcdoc(&self) -> String {
-
         // Step 1: "Return the value of the srcdoc content attribute."
         self.html_element
             .element
@@ -75,14 +72,12 @@ impl HTMLIFrameElement {
 
     /// <https://html.spec.whatwg.org/#dom-iframe-srcdoc>
     pub(crate) fn set_srcdoc(&self, srcdoc: &str) {
-
         // Step 1: "Set this's srcdoc content attribute to the given value."
         self.html_element.element.set_attribute("srcdoc", srcdoc);
     }
 
     /// <https://html.spec.whatwg.org/#dom-iframe-name>
     pub(crate) fn name(&self) -> String {
-
         // Step 1: "Return the value of the name content attribute."
         self.html_element
             .element
@@ -92,14 +87,12 @@ impl HTMLIFrameElement {
 
     /// <https://html.spec.whatwg.org/#dom-iframe-name>
     pub(crate) fn set_name(&self, name: &str) {
-
         // Step 1: "Set this's name content attribute to the given value."
         self.html_element.element.set_attribute("name", name);
     }
 
     /// <https://html.spec.whatwg.org/#dom-dim-width>
     pub(crate) fn width(&self) -> String {
-
         // Step 1: "Return the value of the width content attribute."
         self.html_element
             .element
@@ -109,14 +102,12 @@ impl HTMLIFrameElement {
 
     /// <https://html.spec.whatwg.org/#dom-dim-width>
     pub(crate) fn set_width(&self, width: &str) {
-
         // Step 1: "Set this's width content attribute to the given value."
         self.html_element.element.set_attribute("width", width);
     }
 
     /// <https://html.spec.whatwg.org/#dom-dim-height>
     pub(crate) fn height(&self) -> String {
-
         // Step 1: "Return the value of the height content attribute."
         self.html_element
             .element
@@ -126,7 +117,6 @@ impl HTMLIFrameElement {
 
     /// <https://html.spec.whatwg.org/#dom-dim-height>
     pub(crate) fn set_height(&self, height: &str) {
-
         // Step 1: "Set this's height content attribute to the given value."
         self.html_element.element.set_attribute("height", height);
     }
@@ -285,7 +275,6 @@ fn navigate_an_iframe_or_frame(
     content_frame_id: FrameId,
     destination_url: &Url,
 ) -> Result<(), String> {
-
     // Step 4: "Navigate element's content navigable to url using element's node document."
     // Note: Navigation is performed by sending a request to the user agent, which executes
     // the navigate algorithm including historyHandling and referrer policy resolution.
@@ -680,7 +669,6 @@ fn run_iframe_post_connection_steps(
     parent_document_id: DocumentId,
     iframe_node_id: usize,
 ) -> Result<(), String> {
-
     // Step 1: "If insertedNode has a sandbox attribute, then parse the sandboxing
     // directive given the attribute's value and insertedNode's iframe sandboxing flag set."
     // <https://html.spec.whatwg.org/#parse-a-sandboxing-directive>
@@ -828,7 +816,6 @@ fn process_iframe_attributes(
         IframeNavigationTarget::Srcdoc { html: srcdoc_html }
     } else {
         let Some(url) = desired_url else {
-
             // Step 2.2: "If url is null, then return."
             return Ok(());
         };
@@ -962,7 +949,6 @@ fn process_iframe_attributes(
     // TODO: Implement lazy loading for iframes with URL navigations.
     // Step 1: "If element's srcdoc attribute is specified:"
     if let IframeNavigationTarget::Srcdoc { html } = &target {
-
         // Step 1.1: "Set element's current navigation was lazy loaded boolean to false."
         // TODO: Implement current navigation was lazy loaded tracking.
         // Step 1.2: "If the will lazy load element steps given element return true:"
@@ -1009,7 +995,6 @@ fn process_iframe_attributes(
 
 /// <https://html.spec.whatwg.org/#parse-a-sandboxing-directive>
 fn parse_a_sandboxing_directive(value: &str) -> HashSet<String> {
-
     // Step 1: "Let output be a new empty set."
     let mut output = HashSet::new();
 

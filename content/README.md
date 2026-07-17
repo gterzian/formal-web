@@ -64,12 +64,20 @@ if *event.dispatch_flag.borrow() || !*event.initialized_flag.borrow() {
 }
 
 // Step 3: Return the result of dispatching event to this.
-
 crate::dom::dispatch_event(ec, path, event)
 ```
 
-- Always insert a blank line between the last `// Step N:` comment and the
-  following Rust code.
+- Blank lines separate code BLOCKS, not comments from code. The pattern:
+  ```
+  // Step N: comment
+  code;
+                          ← blank line
+  // Step N+1: comment
+  code;
+  ```
+- NO blank line between the function/block opening `{` and the first step comment.
+- NO blank line between a step comment and its immediately following code.
+- Blank line AFTER the code, before the next step's comment.
 - Use `// TODO: Not yet implemented.` for spec steps that are not yet
   implemented — every step must be accounted for.
 - For sub-algorithms called by the spec, cross-reference with the anchor URL

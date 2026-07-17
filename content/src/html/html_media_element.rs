@@ -161,7 +161,6 @@ impl HTMLMediaElement {
 
     /// <https://html.spec.whatwg.org/#dom-media-src>
     pub(crate) fn set_src(&mut self, src: &str, ec: &mut dyn ExecutionContext<crate::js::Types>) {
-
         // Step 1: Set this's src content attribute to the given value.
         self.html_element.element.set_attribute("src", src);
 
@@ -231,7 +230,6 @@ impl HTMLMediaElement {
         &mut self,
         ec: &mut dyn ExecutionContext<crate::js::Types>,
     ) {
-
         // Step 1: Set this element's is currently stalled to false.
         self.is_currently_stalled = false;
 
@@ -253,7 +251,6 @@ impl HTMLMediaElement {
         // Note: Deferred to event dispatch — media element event task source not wired.
         // Step 7: If networkState is not set to NETWORK_EMPTY:
         if self.network_state != Self::NETWORK_EMPTY {
-
             // Step 7.1: Queue a media element task to fire emptied at the media element.
             // Note: Deferred to event dispatch.
             // Step 7.2: If a fetching process is in progress, stop it.
@@ -310,7 +307,6 @@ impl HTMLMediaElement {
         &mut self,
         ec: &mut dyn ExecutionContext<crate::js::Types>,
     ) {
-
         // Step 1: Set networkState to NETWORK_NO_SOURCE.
         self.network_state = Self::NETWORK_NO_SOURCE;
 
@@ -367,7 +363,6 @@ impl HTMLMediaElement {
         }
 
         await_a_stable_state(ec, move |job_ec| {
-
             // Step 5: ⌛ If blocked-on-parser flag is false, populate list of pending text tracks.
             // Note: No-op — text track support not yet implemented.
             // Step 6: ⌛ Determine the mode.
@@ -530,7 +525,6 @@ impl HTMLMediaElement {
         &mut self,
         ec: &mut dyn ExecutionContext<crate::js::Types>,
     ) -> Completion<<Types as JsTypes>::JsValue, crate::js::Types> {
-
         // Step 1: If the media element is not allowed to play, then return
         // a promise rejected with a "NotAllowedError" DOMException.
         // Note: Simplified — always allowed to play for now.
@@ -556,7 +550,6 @@ impl HTMLMediaElement {
 
     /// <https://html.spec.whatwg.org/#internal-play-steps>
     pub(crate) fn internal_play_steps(&mut self, ec: &mut dyn ExecutionContext<crate::js::Types>) {
-
         // Step 1: If the media element's networkState attribute has the
         // value NETWORK_EMPTY, invoke the media element's resource
         // selection algorithm.
@@ -569,7 +562,6 @@ impl HTMLMediaElement {
         // Note: Not yet implemented — ended state and seeking not tracked.
         // Step 3: If the media element's paused attribute is true:
         if self.paused {
-
             // Step 3.1: Change the value of paused to false.
             self.paused = false;
 
@@ -598,7 +590,6 @@ impl HTMLMediaElement {
 
     /// <https://html.spec.whatwg.org/#dom-media-pause>
     pub(crate) fn pause(&mut self, ec: &mut dyn ExecutionContext<crate::js::Types>) {
-
         // Step 1: If the media element's networkState attribute has the
         // value NETWORK_EMPTY, invoke the media element's resource
         // selection algorithm.
@@ -612,13 +603,11 @@ impl HTMLMediaElement {
 
     /// <https://html.spec.whatwg.org/#internal-pause-steps>
     pub(crate) fn internal_pause_steps(&mut self) {
-
         // Step 1: Set the media element's can autoplay flag to false.
         self.can_autoplay = false;
 
         // Step 2: If the media element's paused attribute is false:
         if !self.paused {
-
             // Step 2.1: Change the value of paused to true.
             self.paused = true;
 
@@ -637,7 +626,6 @@ impl HTMLMediaElement {
     /// <https://html.spec.whatwg.org/#dom-media-load>
     #[allow(dead_code)]
     pub(crate) fn load(&mut self, ec: &mut dyn ExecutionContext<crate::js::Types>) {
-
         // Step 1: Let resumptionSteps be the media element's lazy load resumption steps.
         // Step 2: If resumptionSteps is not null, set to null and invoke resumptionSteps.
         // Note: Lazy load resumption steps are not yet implemented — always null.

@@ -361,7 +361,6 @@ pub(crate) fn initialize_dependent_abort_signal(
     result_signal: &AbortSignal,
     signals: &[AbortSignal],
 ) {
-
     // Step 2: "For each signal of signals: if signal is aborted, then set resultSignal's abort reason to signal's abort reason and return resultSignal."
     for signal in signals {
         if signal.aborted_value() {
@@ -375,10 +374,8 @@ pub(crate) fn initialize_dependent_abort_signal(
 
     // Step 4: "For each signal of signals:"
     for signal in signals {
-
         // Step 4.1: "If signal's dependent is false:"
         if !signal.dependent_value() {
-
             // Step 4.1.1: "Append signal to resultSignal's source signals."
             result_signal.append_source_signal(signal);
 
@@ -389,7 +386,6 @@ pub(crate) fn initialize_dependent_abort_signal(
 
         // Step 4.2: "Otherwise, for each sourceSignal of signal's source signals:"
         for source_signal in signal.source_signals_value() {
-
             // Step 4.2.2: "Append sourceSignal to resultSignal's source signals."
             result_signal.append_source_signal(&source_signal);
 

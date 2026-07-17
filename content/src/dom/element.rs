@@ -262,7 +262,6 @@ impl Element {
 
     /// <https://dom.spec.whatwg.org/#dom-element-hasattribute>
     pub(crate) fn has_attribute(&self, qualified_name: &str) -> bool {
-
         // Step 1: "If this is in the HTML namespace and its node document is an HTML document, then set qualifiedName to qualifiedName in ASCII lowercase."
         let normalized_name = self.normalized_attribute_qualified_name(qualified_name);
 
@@ -298,7 +297,6 @@ impl Element {
 
     /// <https://drafts.csswg.org/cssom-view/#dom-element-getboundingclientrect>
     pub(crate) fn bounding_client_rect(&self) -> Option<DomRect> {
-
         // Step 1 of getBoundingClientRect(): "Let list be the result of invoking
         // getClientRects() on element."
         let list = self.client_rects_for_layout_box();
@@ -409,7 +407,6 @@ impl Element {
         qualified_name: &str,
         value: &str,
     ) {
-
         // Step 1: "Let (namespace, prefix, localName) be the result of validating and extracting namespace and qualifiedName given \"attribute\"."
         // Note: The implementation accepts the already-stringified qualified name shape used by the targeted WPTs and does not yet implement the full validation-and-extraction error surface.
         let (prefix, local_name) = split_qualified_name(qualified_name);

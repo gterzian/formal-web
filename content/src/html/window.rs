@@ -78,7 +78,6 @@ pub(crate) fn window_computed_style_properties_for_element(
     elt: &Element,
     pseudo_elt: Option<&str>,
 ) -> BTreeMap<String, String> {
-
     // Step 1: "Let doc be elt's node document."
     // Note: The style resolution helper reads elt's node document through the [Document](https://dom.spec.whatwg.org/#interface-document) [platform object](https://webidl.spec.whatwg.org/#dfn-platform-object).
     // Step 2: "Let obj be elt."
@@ -87,7 +86,6 @@ pub(crate) fn window_computed_style_properties_for_element(
     // Step 3: "If pseudoElt is provided, is not the empty string, and starts with a colon..."
     if let Some(pseudo_elt) = pseudo_elt.map(str::trim).filter(|value| !value.is_empty()) {
         if pseudo_elt.starts_with(':') {
-
             // Step 3.1: Parse pseudoElt as a <pseudo-element-selector>.
             // Step 3.2 / 3.3: Map invalid, ::slotted(), ::part(), or supported pseudo-element
             // requests to the corresponding pseudo-element object.
@@ -130,7 +128,6 @@ pub(crate) fn window_open_steps(
     global_scope: &GlobalScope,
     event_sender: &IpcSender<ContentEvent>,
 ) -> Completion<JsValue, crate::js::Types> {
-
     // Step 1: "If the event loop's termination nesting level is nonzero, then return null."
     // TODO: Content process does not yet track termination nesting.
     // Step 2: "Let sourceDocument be the entry global object's associated Document."
@@ -298,7 +295,6 @@ fn get_noopener_for_window_open(
     tokenized_features: &HashMap<String, String>,
     url: Option<&str>,
 ) -> bool {
-
     // Step 1: "If url is not null and url's blob URL entry is not null:"
     // Note: Blob URL origin checks are not yet implemented.
     let _ = url;
@@ -315,7 +311,6 @@ fn get_noopener_for_window_open(
 
 /// <https://html.spec.whatwg.org/#tokenize-the-features-argument>
 fn tokenize_features(features: &str) -> HashMap<String, String> {
-
     // Step 1: "Let tokenizedFeatures be a new ordered map."
     let mut tokenized_features = HashMap::new();
 
@@ -405,7 +400,6 @@ fn normalize_feature_name(name: &str) -> String {
 
 /// <https://html.spec.whatwg.org/#parse-a-boolean-feature>
 fn parse_boolean_feature(value: &str) -> bool {
-
     // Step 1: "If value is the empty string, then return true."
     if value.is_empty() {
         return true;
@@ -429,7 +423,6 @@ fn parse_boolean_feature(value: &str) -> bool {
 pub(crate) fn check_if_popup_window_is_requested(
     tokenized_features: &HashMap<String, String>,
 ) -> bool {
-
     // Step 1: "If tokenizedFeatures is empty, then return false."
     if tokenized_features.is_empty() {
         return false;
@@ -473,7 +466,6 @@ pub(crate) fn check_if_window_feature_is_set(
     feature_name: &str,
     default_value: bool,
 ) -> bool {
-
     // Step 1: "If tokenizedFeatures[featureName] exists, then return the result of parsing
     //          tokenizedFeatures[featureName] as a boolean feature."
     if let Some(value) = tokenized_features.get(feature_name) {

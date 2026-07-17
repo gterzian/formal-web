@@ -83,7 +83,6 @@ pub(crate) fn call_user_objects_operation(
     args: &[JsValue],
     this_arg: Option<&JsValue>,
 ) -> Completion<JsValue, Types> {
-
     // Step 1: "Let completion be an uninitialized variable."
     // Step 2: "If thisArg was not given, let thisArg be undefined."
     let mut effective_this_arg = this_arg.cloned().unwrap_or_else(|| ec.value_undefined());
@@ -103,7 +102,6 @@ pub(crate) fn call_user_objects_operation(
 
     // Step 10: "If IsCallable(O) is false, then:"
     if !ec.is_callable(&object_value) {
-
         // Step 10.1: "Let getResult be Completion(Get(O, opName))."
         let key = ec.property_key_from_str(op_name);
         let operation = ExecutionContext::get(ec, object.clone(), key)?;
@@ -158,7 +156,6 @@ pub(crate) fn invoke_callback_function(
     exception_behavior: ExceptionBehavior,
     this_arg: Option<&JsValue>,
 ) -> Completion<JsValue, Types> {
-
     // Step 1: "Let completion be an uninitialized variable."
     // Step 2: "If thisArg was not given, let thisArg be undefined."
     let effective_this_arg = this_arg.cloned().unwrap_or_else(|| host.value_undefined());
@@ -169,7 +166,6 @@ pub(crate) fn invoke_callback_function(
 
     // Step 4: "If IsCallable(F) is false:"
     if !host.is_callable(&function_value) {
-
         // Step 4.1: "Return the result of converting undefined to the callback function's return type."
         // Note: The current content process returns the raw ECMAScript `undefined` value here; current callers either expect `undefined`/`any` directly or immediately perform the surrounding algorithm's return-value conversion.
         return Ok(host.value_undefined());

@@ -24,7 +24,6 @@ pub(crate) struct CSS;
 impl CSS {
     /// <https://drafts.csswg.org/css-conditional-3/#dom-css-supports-conditiontext-conditiontext>
     pub(crate) fn supports(property: &str, value: &str) -> bool {
-
         // Step 1: If property is an ASCII case-insensitive match for any defined CSS property
         //          that the UA supports, or is a custom property name string, and value
         //          successfully parses according to that property's grammar, return true.

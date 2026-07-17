@@ -47,7 +47,6 @@ pub(crate) fn fire_event(
     time_millis: f64,
     legacy_target_override: bool,
 ) -> Completion<bool, Types> {
-
     // Step 1: If eventConstructor is not given, then let eventConstructor be Event.
     // (Event is always used for this code path.)
     // Step 2: Let event be the result of creating an event given eventConstructor,
@@ -94,7 +93,6 @@ fn append_to_event_path(
     invocation_target: EventTarget,
     shadow_adjusted_target: Option<EventTarget>,
 ) {
-
     // Step 1: Let invocationTargetInShadowTree be false.
     // Step 3: Let rootOfClosedTree be false.
     // (Shadow tree fields are not yet modeled; always false.)
@@ -128,7 +126,6 @@ fn build_path_for_target(
 
     // Step 6.9: While parent is non-null:
     while let Some(parent_target) = parent {
-
         // Step 6.9.6-6.9.8: Append to an event path with event, parent, …
         append_to_event_path(&mut path, parent_target.clone(), None);
 
@@ -146,7 +143,6 @@ pub(crate) fn dispatch_event(
     path: &[EventPathItem],
     event: &Event,
 ) -> Completion<bool, Types> {
-
     // Step 1: Set event's dispatch flag.
     *event.dispatch_flag.borrow_mut() = true;
 
@@ -184,7 +180,6 @@ pub(crate) fn dispatch_event(
         } else if *event.bubbles.borrow() {
             BUBBLING_PHASE
         } else {
-
             // Step 6.14.2.1: If event's bubbles attribute is false, then continue.
             continue;
         };
@@ -213,7 +208,6 @@ pub(crate) fn dispatch_event(
 
     // Step 12: If activationTarget is non-null:
     if let Some(idx) = activation_target_idx {
-
         // Step 12.1: If event's canceled flag is unset, then run
         //            activationTarget's activation behavior with event.
         if !canceled {
@@ -299,13 +293,11 @@ fn inner_invoke(
     listeners: &[EventListener],
     phase: ListenerPhase,
 ) -> Completion<bool, Types> {
-
     // Step 1: Let found be false.
     let mut found = false;
 
     // Step 2: For each listener of listeners, whose removed is false:
     for listener in listeners.iter().filter(|listener| !listener.removed) {
-
         // Step 2.1: If event's type attribute value is not listener's type, continue.
         if event.type_ != listener.type_ {
             continue;

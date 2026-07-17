@@ -138,7 +138,6 @@ impl EventTarget {
         passive: Option<bool>,
         signal: Option<AbortSignal>,
     ) {
-
         // Step 2: If listener's signal is non-null and is aborted, then return.
         if let Some(signal) = signal.as_ref() {
             if signal.aborted_value() {
@@ -205,7 +204,6 @@ impl EventTarget {
         callback: &Callback,
         capture: bool,
     ) {
-
         // Step 2: Set listener's removed to true and remove listener from
         // eventTarget's event listener list.
         let mut listeners = self.event_listener_list.borrow_mut();
@@ -226,7 +224,6 @@ impl EventTarget {
 
     /// <https://dom.spec.whatwg.org/#remove-an-event-listener>
     pub(crate) fn remove_event_listener_by_id(&self, listener_id: u64) {
-
         // Step 2: Set listener's removed to true and remove listener from
         // eventTarget's event listener list.
         let mut listeners = self.event_listener_list.borrow_mut();
@@ -256,7 +253,6 @@ impl EventTarget {
         path: &[super::EventPathItem],
         ec: &mut dyn ExecutionContext<Types>,
     ) -> Completion<bool, Types> {
-
         // Step 1: If event's dispatch flag is set, or if its initialized flag is not set,
         // then throw an "InvalidStateError" DOMException.
         if *event.dispatch_flag.borrow() || !*event.initialized_flag.borrow() {

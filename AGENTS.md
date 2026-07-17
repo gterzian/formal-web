@@ -73,8 +73,10 @@ for the definitive spec-annotation reference with examples and common mistakes.
 1. **Step comments** — Every spec step has a `// Step N:` comment inside the
    function body quoting the **exact spec step text verbatim** — not an
    abbreviation or summary.  Step numbering must match the spec exactly.
-   Always insert a blank line between the last `// Step N:` comment of a step
-   and the following Rust code, to make step boundaries visually distinct.
+   Blank lines separate code BLOCKS, not comments from code:
+   - NO blank line between the function/block opening `{` and the first step comment.
+   - NO blank line between a step comment and its immediately following code.
+   - Blank line AFTER the code, before the next step's comment.
 2. **Anchor URLs** — Every function, struct, associated constant, and
    constant definition top doc comment has **only** the correct spec anchor
    URL (`<https://html.spec.whatwg.org/#...>`).  No description, no step

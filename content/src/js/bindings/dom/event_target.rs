@@ -57,7 +57,6 @@ fn convert_options_union(
     value: &JsValue,
     ec: &mut dyn ExecutionContext<crate::js::Types>,
 ) -> Completion<BooleanOrAddEventListenerOptions, crate::js::Types> {
-
     // Step 12: If V is a Boolean, then: if types includes boolean, convert.
     if let Some(b) = <crate::js::Types as JsTypes>::value_as_bool(value) {
         return Ok(BooleanOrAddEventListenerOptions::Boolean(b));

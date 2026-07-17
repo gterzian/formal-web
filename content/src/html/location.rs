@@ -53,7 +53,6 @@ impl Location {
 
     /// <https://html.spec.whatwg.org/#dom-location-href>
     pub(crate) fn href(&self, entry_settings_origin: &str) -> Result<String, LocationError> {
-
         // Step 1: "If this's relevant Document is non-null and its origin is not same
         // origin-domain with the entry settings object's origin, then throw a SecurityError
         // DOMException."
@@ -65,7 +64,6 @@ impl Location {
 
     /// <https://html.spec.whatwg.org/#dom-location-origin>
     pub(crate) fn origin(&self, entry_settings_origin: &str) -> Result<String, LocationError> {
-
         // Step 1: "If this's relevant Document is non-null and its origin is not same
         // origin-domain with the entry settings object's origin, then throw a SecurityError
         // DOMException."
@@ -77,7 +75,6 @@ impl Location {
 
     /// <https://html.spec.whatwg.org/#dom-location-protocol>
     pub(crate) fn protocol(&self, entry_settings_origin: &str) -> Result<String, LocationError> {
-
         // Step 1: "If this's relevant Document is non-null and its origin is not same
         // origin-domain with the entry settings object's origin, then throw a SecurityError
         // DOMException."
@@ -89,7 +86,6 @@ impl Location {
 
     /// <https://html.spec.whatwg.org/#dom-location-host>
     pub(crate) fn host(&self, entry_settings_origin: &str) -> Result<String, LocationError> {
-
         // Step 1: "If this's relevant Document is non-null and its origin is not same
         // origin-domain with the entry settings object's origin, then throw a SecurityError
         // DOMException."
@@ -117,7 +113,6 @@ impl Location {
 
     /// <https://html.spec.whatwg.org/#dom-location-hostname>
     pub(crate) fn hostname(&self, entry_settings_origin: &str) -> Result<String, LocationError> {
-
         // Step 1: "If this's relevant Document is non-null and its origin is not same
         // origin-domain with the entry settings object's origin, then throw a SecurityError
         // DOMException."
@@ -134,7 +129,6 @@ impl Location {
 
     /// <https://html.spec.whatwg.org/#dom-location-port>
     pub(crate) fn port(&self, entry_settings_origin: &str) -> Result<String, LocationError> {
-
         // Step 1: "If this's relevant Document is non-null and its origin is not same
         // origin-domain with the entry settings object's origin, then throw a SecurityError
         // DOMException."
@@ -151,7 +145,6 @@ impl Location {
 
     /// <https://html.spec.whatwg.org/#dom-location-pathname>
     pub(crate) fn pathname(&self, entry_settings_origin: &str) -> Result<String, LocationError> {
-
         // Step 1: "If this's relevant Document is non-null and its origin is not same
         // origin-domain with the entry settings object's origin, then throw a SecurityError
         // DOMException."
@@ -163,7 +156,6 @@ impl Location {
 
     /// <https://html.spec.whatwg.org/#dom-location-search>
     pub(crate) fn search(&self, entry_settings_origin: &str) -> Result<String, LocationError> {
-
         // Step 1: "If this's relevant Document is non-null and its origin is not same
         // origin-domain with the entry settings object's origin, then throw a SecurityError
         // DOMException."
@@ -184,7 +176,6 @@ impl Location {
 
     /// <https://html.spec.whatwg.org/#dom-location-hash>
     pub(crate) fn hash(&self, entry_settings_origin: &str) -> Result<String, LocationError> {
-
         // Step 1: "If this's relevant Document is non-null and its origin is not same
         // origin-domain with the entry settings object's origin, then throw a SecurityError
         // DOMException."
@@ -209,7 +200,6 @@ impl Location {
         value: &str,
         entry_settings_base_url: &Url,
     ) -> Result<(), LocationError> {
-
         // Step 1: "If this's relevant Document is null, then return."
         if self.relevant_document_is_null() {
             return Ok(());
@@ -231,7 +221,6 @@ impl Location {
         value: &str,
         entry_settings_origin: &str,
     ) -> Result<(), LocationError> {
-
         // Step 1: "If this's relevant Document is null, then return."
         if self.relevant_document_is_null() {
             return Ok(());
@@ -248,7 +237,6 @@ impl Location {
         // state as state override."
         let scheme = value.trim_end_matches(':');
         if scheme.is_empty() || copy_url.set_scheme(scheme).is_err() {
-
             // Step 5: "If possibleFailure is failure, then throw a SyntaxError DOMException."
             return Err(LocationError::Syntax);
         }
@@ -268,7 +256,6 @@ impl Location {
         value: &str,
         entry_settings_origin: &str,
     ) -> Result<(), LocationError> {
-
         // Step 1: "If this's relevant Document is null, then return."
         if self.relevant_document_is_null() {
             return Ok(());
@@ -299,7 +286,6 @@ impl Location {
         value: &str,
         entry_settings_origin: &str,
     ) -> Result<(), LocationError> {
-
         // Step 1: "If this's relevant Document is null, then return."
         if self.relevant_document_is_null() {
             return Ok(());
@@ -330,7 +316,6 @@ impl Location {
         value: &str,
         entry_settings_origin: &str,
     ) -> Result<(), LocationError> {
-
         // Step 1: "If this's relevant Document is null, then return."
         if self.relevant_document_is_null() {
             return Ok(());
@@ -354,7 +339,6 @@ impl Location {
                 error!("[location] failed to clear port on URL");
             }
         } else {
-
             // Step 6: "Otherwise, basic URL parse the given value ... with port state as state
             // override."
             self.basic_url_parse_port_state(&mut copy_url, value);
@@ -370,7 +354,6 @@ impl Location {
         value: &str,
         entry_settings_origin: &str,
     ) -> Result<(), LocationError> {
-
         // Step 1: "If this's relevant Document is null, then return."
         if self.relevant_document_is_null() {
             return Ok(());
@@ -405,7 +388,6 @@ impl Location {
         value: &str,
         entry_settings_origin: &str,
     ) -> Result<(), LocationError> {
-
         // Step 1: "If this's relevant Document is null, then return."
         if self.relevant_document_is_null() {
             return Ok(());
@@ -422,7 +404,6 @@ impl Location {
         if value.is_empty() {
             copy_url.set_query(None);
         } else {
-
             // Step 5.1: "Let input be the given value with a single leading '?' removed, if
             // any."
             let input = value.strip_prefix('?').unwrap_or(value);
@@ -444,7 +425,6 @@ impl Location {
         value: &str,
         entry_settings_origin: &str,
     ) -> Result<(), LocationError> {
-
         // Step 1: "If this's relevant Document is null, then return."
         if self.relevant_document_is_null() {
             return Ok(());
@@ -486,7 +466,6 @@ impl Location {
         entry_settings_base_url: &Url,
         entry_settings_origin: &str,
     ) -> Result<(), LocationError> {
-
         // Step 1: "If this's relevant Document is null, then return."
         if self.relevant_document_is_null() {
             return Ok(());
@@ -512,7 +491,6 @@ impl Location {
         url: &str,
         entry_settings_base_url: &Url,
     ) -> Result<(), LocationError> {
-
         // Step 1: "If this's relevant Document is null, then return."
         if self.relevant_document_is_null() {
             return Ok(());
@@ -533,7 +511,6 @@ impl Location {
         &self,
         entry_settings_origin: &str,
     ) -> Result<(), LocationError> {
-
         // Step 1: "Let document be this's relevant Document."
         // Note: The model carries relevant document presence as `relevant_document_origin`.
         // Step 2: "If document is null, then return."
@@ -554,7 +531,6 @@ impl Location {
         &self,
         entry_settings_origin: &str,
     ) -> Result<Vec<String>, LocationError> {
-
         // Step 1: "If this's relevant Document is null, then return this's empty DOMStringList."
         if self.relevant_document_is_null() {
             return Ok(Vec::new());
@@ -577,7 +553,6 @@ impl Location {
         url: &Url,
         _history_handling: NavigationHistoryBehavior,
     ) -> Result<(), LocationError> {
-
         // Step 1: "Let navigable be location's relevant global object's navigable."
         // Note: Location uses `downcast_ref` through the `window` handle.
         // This is safe — the Window JsObject is stored as a `#[gc_struct]`
