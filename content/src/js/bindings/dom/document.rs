@@ -11,7 +11,6 @@ use crate::js::platform_objects::{
 use crate::webidl::bindings::{AttributeDef, InterfaceDefinition, OperationDef, WebIdlInterface, create_interface_instance};
 
 use js_engine::{Completion, ExecutionContext, JsTypes};
-use url::Url;
 
 impl WebIdlInterface<crate::js::Types> for Document {
     const NAME: &'static str = "Document";
