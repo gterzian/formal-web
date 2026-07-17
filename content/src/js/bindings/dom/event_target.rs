@@ -1,9 +1,9 @@
 type JsValue = <crate::js::Types as JsTypes>::JsValue;
 type JsObject = <crate::js::Types as JsTypes>::JsObject;
 
-use crate::dom::EventTarget;
+use crate::dom::{BooleanOrAddEventListenerOptions, EventTarget};
 use crate::js::try_with_event_target_mut;
-use crate::webidl::{callback_interface_type_value, nullable_value};
+use crate::webidl::{callback_interface_type_value, dictionary, nullable_value};
 
 use js_engine::{Completion, ExecutionContext, JsTypes};
 
@@ -51,6 +51,54 @@ impl WebIdlInterface<crate::js::Types> for EventTarget {
     }
 }
 
+/// <https://webidl.spec.whatwg.org/#js-union>
+/// Convert a JS value to the Web IDL union `(boolean or AddEventListenerOptions)`.
+fn convert_options_union(
+    value: &JsValue,
+    ec: &mut dyn ExecutionContext<crate::js::Types>,
+) -> Completion<BooleanOrAddEventListenerOptions, crate::js::Types> {
+    // Step 12: If V is a Boolean, then: if types includes boolean, convert.
+    if let Some(b) = <crate::js::Types as JsTypes>::value_as_bool(value) {
+        return Ok(BooleanOrAddEventListenerOptions::Boolean(b));
+    }
+
+    // Step 4.1: If V is null or undefined and types includes dictionary, convert.
+    // Step 11.4: If V is an Object and types includes dictionary, convert.
+    let source = dictionary::open_dictionary::<crate::js::Types>(value, ec)?;
+
+    // Step 4: For each dictionary member in AddEventListenerOptions
+    let mut dict = crate::dom::AddEventListenerOptions::default();
+
+    // Member: capture (boolean, default false) — inherited from EventListenerOptions
+    if let Some(val) = dictionary::get_dictionary_member::<crate::js::Types>(&source, "capture", ec)? {
+        dict.capture = ec.to_boolean(&val);
+    }
+
+    // Member: once (boolean, default false)
+    if let Some(val) = dictionary::get_dictionary_member::<crate::js::Types>(&source, "once", ec)? {
+        dict.once = ec.to_boolean(&val);
+    }
+
+    // Member: passive (boolean, no default — stays None if absent)
+    if let Some(val) = dictionary::get_dictionary_member::<crate::js::Types>(&source, "passive", ec)? {
+        dict.passive = Some(ec.to_boolean(&val));
+    }
+
+    // Member: signal (AbortSignal, no default — stays None if absent)
+    if let Some(val) = dictionary::get_dictionary_member::<crate::js::Types>(&source, "signal", ec)? {
+        let signal_obj = <crate::js::Types as JsTypes>::value_as_object(&val)
+            .ok_or_else(|| ec.new_type_error("addEventListener signal must be an AbortSignal"))?;
+        dict.signal = Some(
+            ec
+                .with_object_any(&signal_obj)
+                .and_then(|d| d.downcast_ref::<crate::dom::AbortSignal>().cloned())
+                .ok_or_else(|| ec.new_type_error("addEventListener signal must be an AbortSignal"))?
+        );
+    }
+
+    Ok(BooleanOrAddEventListenerOptions::Dict(dict))
+}
+
 fn add_event_listener(
     this: &JsValue,
     args: &[JsValue],
@@ -59,7 +107,8 @@ fn add_event_listener(
     let event_target = current_event_target_object(this, ec);
     let undefined = ec.value_undefined();
     let type_ = ec.to_rust_string(args.first().cloned().unwrap_or_else(|| undefined.clone()))?;
-    let options = crate::dom::flatten_more(args.get(2).unwrap_or(&undefined), ec)?;
+    let options_union = convert_options_union(args.get(2).unwrap_or(&undefined), ec)?;
+    let options = crate::dom::flatten_more(options_union);
     let callback = nullable_value(
         args.get(1).unwrap_or(&undefined),
         ec,
@@ -98,7 +147,8 @@ fn remove_event_listener(
     else {
         return Ok(ec.value_undefined());
     };
-    let capture = crate::dom::flatten(args.get(2).unwrap_or(&undefined), ec)?;
+    let options_union = convert_options_union(args.get(2).unwrap_or(&undefined), ec)?;
+    let capture = crate::dom::flatten(&options_union);
     let receiver = crate::js::Types::value_from_object(event_target);
 
     try_with_event_target_mut(&receiver, ec, |target| {

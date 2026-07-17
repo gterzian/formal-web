@@ -3,6 +3,7 @@ mod async_iterable;
 pub(crate) mod bindings;
 mod buffer_source;
 mod callback;
+pub(crate) mod dictionary;
 pub(crate) mod promise;
 
 pub(crate) use array_index::is_array_index_key;

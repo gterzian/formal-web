@@ -18,6 +18,8 @@ pub use dom_exception::DOMException;
 pub use element::Element;
 pub(crate) use event::EventTargetAccess;
 pub use event::{AT_TARGET, BUBBLING_PHASE, CAPTURING_PHASE, Event, EventTarget, UIEvent};
-pub(crate) use event::{flatten, flatten_more};
+pub(crate) use event::{
+    AddEventListenerOptions, BooleanOrAddEventListenerOptions, flatten, flatten_more,
+};
 pub use node::Node;
 

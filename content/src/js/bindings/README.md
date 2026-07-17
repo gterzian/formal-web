@@ -32,10 +32,29 @@ The IDL→Rust type mapping is:
 | `AddEventListenerOptions` | `AddEventListenerOptions` | `flatten_more(value, ec)?` (spec algorithm in domain) |
 | `EventListenerOptions` | `bool` (capture) | `flatten(value, ec)?` (spec algorithm in domain) |
 
-**Spec algorithms for IDL conversion live in the domain module**, not in the
-bindings.  For example `flatten` (#concept-flatten-options) and `flatten more`
-(#event-flatten-more) are in `content/src/dom/event.rs`.  The binding just
-calls them.
+**Spec algorithms for IDL conversion live in the domain module**, operating on
+IDL types (never `JsValue`). The binding converts the raw JS value to the IDL
+type first using Web IDL conversion rules (`content/src/webidl/dictionary.rs`),
+then passes the IDL type to the domain function.
+
+For example, `addEventListener`'s `options` parameter has Web IDL type
+`(boolean or AddEventListenerOptions)`. The binding:
+
+1. Converts the `JsValue` to `BooleanOrAddEventListenerOptions` (a Rust enum
+   representing the IDL union) using Web IDL union + dictionary conversion.
+2. Passes the IDL type to `crate::dom::flatten_more(options_union)`, which is a
+   pure domain function (no `JsValue`, no `ExecutionContext`).
+3. Receives `AddEventListenerOptions` (a domain struct) and extracts individual
+   fields for the domain `add_event_listener` method.
+
+**Dictionary conversion infrastructure** lives in `content/src/webidl/dictionary.rs`:
+- `open_dictionary`: Step 1 of the Web IDL dictionary conversion algorithm
+- `get_dictionary_member`: Steps 4.1.2-4.1.4 (Get + undefined check)
+
+Each interface binding that needs dictionary conversion calls these helpers
+with the appropriate member names and conversion logic. See
+`content/src/js/bindings/dom/event_target.rs::convert_options_union` for the
+complete pattern.
 
 **A thin binding function for `addEventListener(type, callback, options)`:**
 ```rust

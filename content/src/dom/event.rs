@@ -9,8 +9,6 @@ use std::cell::Cell;
 
 use super::{AbortAlgorithm, AbortSignal};
 
-type JsValue = <Types as JsTypes>::JsValue;
-
 type JsObject = <Types as JsTypes>::JsObject;
 
 pub const NONE: u16 = 0;
@@ -93,7 +91,7 @@ impl EventTargetAccess for EventTarget {
 }
 
 /// <https://dom.spec.whatwg.org/#dictdef-addeventlisteneroptions>
-#[derive(Clone)]
+#[derive(Clone, Default)]
 pub(crate) struct AddEventListenerOptions {
     pub capture: bool,
     pub once: bool,
@@ -101,58 +99,31 @@ pub(crate) struct AddEventListenerOptions {
     pub signal: Option<AbortSignal>,
 }
 
+/// Represents the Web IDL union type `(boolean or AddEventListenerOptions)`.
+pub(crate) enum BooleanOrAddEventListenerOptions {
+    Boolean(bool),
+    Dict(AddEventListenerOptions),
+}
+
 /// <https://dom.spec.whatwg.org/#concept-flatten-options>
-pub(crate) fn flatten(
-    options: &JsValue,
-    ec: &mut dyn ExecutionContext<Types>,
-) -> Completion<bool, Types> {
-    if let Some(boolean) = Types::value_as_bool(options) {
-        return Ok(boolean);
+pub(crate) fn flatten(options: &BooleanOrAddEventListenerOptions) -> bool {
+    match options {
+        BooleanOrAddEventListenerOptions::Boolean(b) => *b,
+        BooleanOrAddEventListenerOptions::Dict(d) => d.capture,
     }
-    let Some(object) = Types::value_as_object(options) else {
-        return Ok(false);
-    };
-    let capture_val = ExecutionContext::get(ec, object, ec.property_key_from_str("capture"))?;
-    Ok(ec.to_boolean(&capture_val))
 }
 
 /// <https://dom.spec.whatwg.org/#event-flatten-more>
-pub(crate) fn flatten_more(
-    options: &JsValue,
-    ec: &mut dyn ExecutionContext<Types>,
-) -> Completion<AddEventListenerOptions, Types> {
-    let capture = flatten(options, ec)?;
-    let Some(object) = Types::value_as_object(options) else {
-        return Ok(AddEventListenerOptions { capture, once: false, passive: None, signal: None });
-    };
-    let once_val = ExecutionContext::get(ec, object.clone(), ec.property_key_from_str("once"))?;
-    let once = ec.to_boolean(&once_val);
-    let passive = {
-        let pk = ec.property_key_from_str("passive");
-        if ExecutionContext::has_property(ec, object.clone(), pk.clone())? {
-            let pv = ExecutionContext::get(ec, object.clone(), pk)?;
-            Some(ec.to_boolean(&pv))
-        } else {
-            None
-        }
-    };
-    let signal = {
-        let sk = ec.property_key_from_str("signal");
-        if !ExecutionContext::has_property(ec, object.clone(), sk.clone())? {
-            None
-        } else {
-            let sv = ExecutionContext::get(ec, object.clone(), sk)?;
-            let signal_obj = Types::value_as_object(&sv)
-                .ok_or_else(|| ec.new_type_error("addEventListener signal must be an AbortSignal"))?;
-            Some(
-                ec
-                    .with_object_any(&signal_obj)
-                    .and_then(|d| d.downcast_ref::<AbortSignal>().cloned())
-                    .ok_or_else(|| ec.new_type_error("addEventListener signal must be an AbortSignal"))?
-            )
-        }
-    };
-    Ok(AddEventListenerOptions { capture, once, passive, signal })
+pub(crate) fn flatten_more(options: BooleanOrAddEventListenerOptions) -> AddEventListenerOptions {
+    match options {
+        BooleanOrAddEventListenerOptions::Boolean(b) => AddEventListenerOptions {
+            capture: b,
+            once: false,
+            passive: None,
+            signal: None,
+        },
+        BooleanOrAddEventListenerOptions::Dict(d) => d,
+    }
 }
 
 impl EventTarget {
