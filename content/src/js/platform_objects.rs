@@ -14,6 +14,10 @@ use crate::js::downcast::event_target_from_js_object;
 use crate::webidl::bindings::create_interface_instance;
 use js_engine::{Completion, ExecutionContext, JsTypes};
 
+use crate::js::Types;
+
+type JsObject = <Types as JsTypes>::JsObject;
+
 /// <https://html.spec.whatwg.org/#global-object>
 ///
 /// Type-key for storing the realm's global object `JsObject` in `host_any`.
@@ -260,9 +264,13 @@ fn element_object_from_document(
     Ok(object)
 }
 
+/// <https://dom.spec.whatwg.org/#concept-event-dispatch>
+// Note: The dispatch algorithm's Step 2 builds the event path by walking the
+// DOM parent chain. This function implements only that parent-chain traversal
+// for click events from the UI event system, without shadow-tree or slot steps.
 pub(crate) fn build_path_from_target_js_object(
-    target_object: &<crate::js::Types as JsTypes>::JsObject,
-    ec: &mut dyn ExecutionContext<crate::js::Types>,
+    target_object: &JsObject,
+    ec: &mut dyn ExecutionContext<Types>,
 ) -> Vec<EventPathItem> {
     let mut path: Vec<EventPathItem> = Vec::new();
     let node_info = ec.with_object_any(target_object).and_then(|data| {

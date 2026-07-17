@@ -179,8 +179,15 @@ fn module_exports_binding<T: JsTypes>(
 | No `// Step N:` at all | Every spec-algorithm step has a `// Step N:` line before the corresponding code |
 | Combined steps (`// Steps 7-8: Set this.[[Module]]`) | Only when adjacent steps are implemented in the same code block — each still gets its own `// Step N:` line |
 | Inlining a named sub-algorithm into the parent function | When the spec calls a named sub-algorithm (e.g. "initialize an instance object", "create an exports object"), create a separate function with its own `/// <url>` anchor and `// Step N:` comments — mirror the spec's structure |
+| Extracting a non-named helper as a standalone function (e.g. `extract_signal_option`) | If the helper is not a named sub-algorithm in the spec, inline it into the parent function |
 | Steps in a doc comment above the function | Steps go inside the function body — `//` not `///` |
 | **Step comments on a JS binding function** | **Binding functions don't implement algorithms — no step comments** |
+| Prose doc comment on a non-spec helper (e.g. `simple_path`, `build_path_for_target`) | No doc comment at all — infrastructure functions have neither spec link nor prose |
+| Spec link on internal plumbing (reflector field, dispatch bridge, PostCreateReflector impl) | No doc comment — only code that directly implements a named spec algorithm or defines a spec concept gets an anchor |
+| Putting a spec algorithm's anchor on a dictionary struct (e.g. `#event-flatten-more` on `AddEventListenerOptions`) | IDL dictionary types use `#dictdef-<name>` (e.g. `#dictdef-addeventlisteneroptions`); algorithms use `#event-`, `#concept-`, or `#dom-` prefixes |
+| `JsObject` in a domain file (`content/src/dom/`, `content/src/html/`) | JsObject types belong in `content/src/js/` (the JS integration layer). Domain code operates on domain types like `EventTarget`, `Node`, `Event` |
+| ASCII art or section-header comments (`// ---- ...`) in source files | No separator comments — let function/item ordering speak for itself |
+| Prose explaining what a function does before its spec anchor | Anchor-only: `/// <url>`. If the mapping to the spec is unclear, add a `// Note:` on the next line, not prose in the doc comment
 
 ### What NOT to do
 

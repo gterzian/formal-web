@@ -2,6 +2,7 @@ use log::trace;
 
 use super::event::EventTargetAccess;
 use crate::js::Types;
+use crate::webidl::bindings::create_interface_instance;
 use crate::webidl::call_user_objects_operation;
 use js_engine::{Completion, ExecutionContext, JsTypes};
 
@@ -29,7 +30,6 @@ enum ListenerPhase {
     Bubbling,
 }
 
-/// Build a single-entry event path (for targets with no parent walking).
 pub(crate) fn simple_path(
     target_access: &dyn super::event::EventTargetAccess,
 ) -> Vec<EventPathItem> {
@@ -63,7 +63,7 @@ pub(crate) fn fire_event(
         time_millis,
     );
     let event_object =
-        crate::webidl::bindings::create_interface_instance::<Types, Event>(event_domain, ec)?;
+        create_interface_instance::<Types, Event>(event_domain, ec)?;
     // Clone the Event domain object from the JsObject — GcCell fields share
     // data, and the reflector was set automatically by create_interface_instance.
     let event: Event = ec
@@ -87,10 +87,6 @@ pub(crate) fn dispatch_with_path(
     dispatch_event(ec, path, event)
 }
 
-// ---------------------------------------------------------------------------
-// append to an event path
-// ---------------------------------------------------------------------------
-
 /// <https://dom.spec.whatwg.org/#concept-event-path-append>
 fn append_to_event_path(
     path: &mut Vec<EventPathItem>,
@@ -110,9 +106,6 @@ fn append_to_event_path(
     });
 }
 
-/// Build the event path for a single target.
-/// Mirrors spec Step 6.3 through Step 6.9 of the dispatch algorithm.
-///
 /// <https://dom.spec.whatwg.org/#concept-event-dispatch>
 fn build_path_for_target(
     target_access: &dyn super::event::EventTargetAccess,
@@ -145,10 +138,6 @@ fn build_path_for_target(
 
     path
 }
-
-// ---------------------------------------------------------------------------
-// Core event dispatch loop
-// ---------------------------------------------------------------------------
 
 /// <https://dom.spec.whatwg.org/#concept-event-dispatch>
 pub(crate) fn dispatch_event(
@@ -232,10 +221,6 @@ pub(crate) fn dispatch_event(
     // Step 13: Return false if event's canceled flag is set; otherwise true.
     Ok(!canceled)
 }
-
-// ---------------------------------------------------------------------------
-// invoke / inner_invoke
-// ---------------------------------------------------------------------------
 
 /// <https://dom.spec.whatwg.org/#concept-event-listener-invoke>
 fn invoke(
