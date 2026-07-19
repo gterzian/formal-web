@@ -439,7 +439,14 @@ mod v8_cells {
 #[cfg(feature = "boa")]
 pub type GcCell<T> = boa_gc::Gc<boa_gc::GcRefCell<T>>;
 
-#[cfg(any(feature = "jsc", feature = "v8"))]
+#[cfg(feature = "jsc")]
+pub type GcCell<T> = std::rc::Rc<std::cell::RefCell<T>>;
+
+// TODO(v8): Move platform-object ownership to a per-isolate `cppgc::Heap` and
+// replace off-heap roots with traced `Member`/`WeakMember` edges. This requires
+// changing context-free cell construction and borrowing before this alias can
+// use rusty_v8's cppgc types safely.
+#[cfg(feature = "v8")]
 pub type GcCell<T> = std::rc::Rc<std::cell::RefCell<T>>;
 
 /// Construct a [`GcCell`] with the given value.

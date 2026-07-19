@@ -126,6 +126,20 @@ strategies, transform, writable), formal gc-protection.
 
 ## Remaining work
 
+### V8 platform-object tracing through cppgc
+
+V8 currently stores generic `GcCell<T>` values in `Rc<RefCell<T>>` and keeps
+reflectors through V8 weak handles. Migrate platform-object ownership to a
+`cppgc::Heap` attached to each shared isolate. Objects allocated on that heap
+must trace every `Member`, `WeakMember`, and `TracedReference` edge, while
+off-heap owners use `Persistent` handles only when they are genuine roots.
+
+The generic cell API must change as part of this work: cppgc allocation needs
+the isolate heap, and cppgc cell access requires isolate-scoped proof instead
+of the current context-free `gc_cell_new`, `borrow`, and `borrow_mut` calls.
+Add forced-collection tests covering reflector cycles, platform-object cycles,
+weak edges, finalization, and isolate destruction.
+
 ### JSC microtask drain during nested C API calls
 
 `promise_state()` uses `eval_script_raw("void 0")` to drain microtasks, but

@@ -361,7 +361,8 @@ fn delayed_title(
     let cap = ec.new_promise_capability(intrinsics.promise)?;
     let title_val = ec.value_from_string(ec.js_string_from_str(&title));
     let undef = ec.value_undefined();
-    ec.call(&cap.resolve, &undef, &[title_val])?;
+    let resolve = TestTypes::object_from_function(cap.resolve.clone());
+    ec.call(&resolve, &undef, &[title_val])?;
     Ok(cap.promise)
 }
 
@@ -487,7 +488,8 @@ fn reject_with_message_test(
     let cap = ec.new_promise_capability(intrinsics.promise)?;
     let err = ec.new_type_error(&msg);
     let undef = ec.value_undefined();
-    ec.call(&cap.reject, &undef, &[err])?;
+    let reject = TestTypes::object_from_function(cap.reject.clone());
+    ec.call(&reject, &undef, &[err])?;
     Ok(cap.promise)
 }
 
@@ -1182,7 +1184,8 @@ mod tests {
             .unwrap();
         let undef = engine.value_undefined();
         let val42 = engine.value_from_number(42.0);
-        js_engine::EcmascriptHost::call(&mut engine, &pcap.resolve, &undef, &[val42]).unwrap();
+        let resolve = TestTypes::object_from_function(pcap.resolve.clone());
+        js_engine::EcmascriptHost::call(&mut engine, &resolve, &undef, &[val42]).unwrap();
 
         // Verify the promise is an object (it resolved successfully).
         assert!(TestTypes::value_as_object(&pcap.promise).is_some());
@@ -2038,7 +2041,8 @@ mod tests {
             .unwrap();
         let err = engine.new_type_error("test rejection");
         let undef = engine.value_undefined();
-        engine.call(&cap.reject, &undef, &[err]).unwrap();
+        let reject = TestTypes::object_from_function(cap.reject.clone());
+        engine.call(&reject, &undef, &[err]).unwrap();
         let rejected_promise =
             TestTypes::object_as_promise(&TestTypes::value_as_object(&cap.promise).unwrap())
                 .unwrap();
@@ -2070,7 +2074,8 @@ mod tests {
             .unwrap();
         let val = engine.value_from_number(42.0);
         let undef = engine.value_undefined();
-        engine.call(&cap.resolve, &undef, from_ref(&val)).unwrap();
+        let resolve = TestTypes::object_from_function(cap.resolve.clone());
+        engine.call(&resolve, &undef, from_ref(&val)).unwrap();
 
         // Attach a handler via perform_promise_then.
         let called = std::rc::Rc::new(std::cell::RefCell::new(false));

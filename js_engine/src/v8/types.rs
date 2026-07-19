@@ -22,17 +22,17 @@ pub(crate) enum CachedPrimitive {
     Other,
 }
 
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug)]
 pub(crate) struct ObjectProfile {
-    pub is_array_buffer: bool,
-    pub is_shared_array_buffer: bool,
-    pub is_typed_array: bool,
-    pub is_data_view: bool,
-    pub is_promise: bool,
-    pub is_function: bool,
-    pub is_constructor: bool,
-    pub is_map: bool,
-    pub is_set: bool,
+    pub object_handle: v8::Global<v8::Object>,
+    pub array_buffer_handle: Option<v8::Global<v8::ArrayBuffer>>,
+    pub shared_array_buffer_handle: Option<v8::Global<v8::SharedArrayBuffer>>,
+    pub typed_array_handle: Option<v8::Global<v8::TypedArray>>,
+    pub data_view_handle: Option<v8::Global<v8::DataView>>,
+    pub promise_handle: Option<v8::Global<v8::Promise>>,
+    pub function_handle: Option<v8::Global<v8::Function>>,
+    pub map_handle: Option<v8::Global<v8::Map>>,
+    pub set_handle: Option<v8::Global<v8::Set>>,
     pub is_weak_map: bool,
     pub is_weak_set: bool,
     pub is_generator: bool,
@@ -85,8 +85,7 @@ impl V8Value {
     }
 
     pub fn as_object(&self) -> Option<V8Object> {
-        self.object_profile.as_ref()?;
-        Some(V8Object(self.clone()))
+        V8Object::from_value(self.clone())
     }
 
     pub fn as_string(&self) -> Option<V8String> {
@@ -114,7 +113,14 @@ impl fmt::Display for V8Value {
 }
 
 #[derive(Clone, Debug)]
-pub struct V8Object(pub(crate) V8Value);
+pub struct V8Object(pub(crate) V8Value, pub(crate) v8::Global<v8::Object>);
+
+impl V8Object {
+    pub(crate) fn from_value(value: V8Value) -> Option<Self> {
+        let handle = value.object_profile.as_ref()?.object_handle.clone();
+        Some(Self(value, handle))
+    }
+}
 
 impl From<V8Object> for V8Value {
     fn from(object: V8Object) -> Self {
@@ -127,6 +133,60 @@ impl PartialEq for V8Object {
         self.0.isolate_id == other.0.isolate_id && self.0.handle == other.0.handle
     }
 }
+
+macro_rules! typed_v8_object {
+    ($name:ident, $handle:ty) => {
+        #[derive(Clone, Debug)]
+        pub struct $name(pub(crate) V8Object, pub(crate) v8::Global<$handle>);
+
+        impl From<$name> for V8Object {
+            fn from(value: $name) -> Self {
+                let $name(object, _handle) = value;
+                object
+            }
+        }
+
+        impl AsRef<V8Object> for $name {
+            fn as_ref(&self) -> &V8Object {
+                &self.0
+            }
+        }
+    };
+}
+
+macro_rules! tagged_v8_object {
+    ($name:ident) => {
+        #[derive(Clone, Debug)]
+        pub struct $name(pub(crate) V8Object);
+
+        impl From<$name> for V8Object {
+            fn from(value: $name) -> Self {
+                value.0
+            }
+        }
+
+        impl AsRef<V8Object> for $name {
+            fn as_ref(&self) -> &V8Object {
+                &self.0
+            }
+        }
+    };
+}
+
+typed_v8_object!(V8ArrayBuffer, v8::ArrayBuffer);
+typed_v8_object!(V8SharedArrayBuffer, v8::SharedArrayBuffer);
+typed_v8_object!(V8TypedArray, v8::TypedArray);
+typed_v8_object!(V8DataView, v8::DataView);
+typed_v8_object!(V8Promise, v8::Promise);
+typed_v8_object!(V8Map, v8::Map);
+typed_v8_object!(V8Set, v8::Set);
+tagged_v8_object!(V8WeakMap);
+tagged_v8_object!(V8WeakSet);
+tagged_v8_object!(V8WeakRef);
+tagged_v8_object!(V8Generator);
+tagged_v8_object!(V8AsyncGenerator);
+typed_v8_object!(V8Function, v8::Function);
+typed_v8_object!(V8Constructor, v8::Function);
 
 #[derive(Clone, Debug)]
 pub struct V8String {
@@ -202,17 +262,6 @@ pub struct V8Realm {
 pub struct V8Types;
 
 impl V8Types {
-    fn object_if(
-        value: &V8Value,
-        predicate: impl FnOnce(&ObjectProfile) -> bool,
-    ) -> Option<V8Object> {
-        value
-            .object_profile
-            .as_ref()
-            .is_some_and(|profile| predicate(profile))
-            .then(|| V8Object(value.clone()))
-    }
-
     fn cached_string(value: &V8Value) -> Option<V8String> {
         let CachedPrimitive::String(utf16) = &value.primitive else {
             return None;
@@ -240,56 +289,56 @@ impl JsTypes for V8Types {
     type JsBigInt = V8BigInt;
     type JsValue = V8Value;
     type JsObject = V8Object;
-    type ArrayBuffer = V8Object;
-    type SharedArrayBuffer = V8Object;
-    type TypedArray = V8Object;
-    type DataView = V8Object;
-    type Promise = V8Object;
-    type Map = V8Object;
-    type Set = V8Object;
-    type WeakMap = V8Object;
-    type WeakSet = V8Object;
-    type WeakRef = V8Object;
-    type Generator = V8Object;
-    type AsyncGenerator = V8Object;
-    type Function = V8Object;
-    type Constructor = V8Object;
+    type ArrayBuffer = V8ArrayBuffer;
+    type SharedArrayBuffer = V8SharedArrayBuffer;
+    type TypedArray = V8TypedArray;
+    type DataView = V8DataView;
+    type Promise = V8Promise;
+    type Map = V8Map;
+    type Set = V8Set;
+    type WeakMap = V8WeakMap;
+    type WeakSet = V8WeakSet;
+    type WeakRef = V8WeakRef;
+    type Generator = V8Generator;
+    type AsyncGenerator = V8AsyncGenerator;
+    type Function = V8Function;
+    type Constructor = V8Constructor;
     type PropertyKey = V8PropertyKey;
 
     fn object_from_array_buffer(value: Self::ArrayBuffer) -> Self::JsObject {
-        value
+        value.into()
     }
 
     fn object_from_shared_array_buffer(value: Self::SharedArrayBuffer) -> Self::JsObject {
-        value
+        value.into()
     }
 
     fn object_from_typed_array(value: Self::TypedArray) -> Self::JsObject {
-        value
+        value.into()
     }
 
     fn object_from_data_view(value: Self::DataView) -> Self::JsObject {
-        value
+        value.into()
     }
 
     fn object_from_promise(value: Self::Promise) -> Self::JsObject {
-        value
+        value.into()
     }
 
     fn object_from_map(value: Self::Map) -> Self::JsObject {
-        value
+        value.into()
     }
 
     fn object_from_set(value: Self::Set) -> Self::JsObject {
-        value
+        value.into()
     }
 
     fn object_from_function(value: Self::Function) -> Self::JsObject {
-        value
+        value.into()
     }
 
     fn object_from_constructor(value: Self::Constructor) -> Self::JsObject {
-        value
+        value.into()
     }
 
     fn value_from_object(value: Self::JsObject) -> Self::JsValue {
@@ -305,8 +354,7 @@ impl JsTypes for V8Types {
     }
 
     fn value_as_object(value: &Self::JsValue) -> Option<Self::JsObject> {
-        value.object_profile.as_ref()?;
-        Some(V8Object(value.clone()))
+        V8Object::from_value(value.clone())
     }
 
     fn value_as_string(value: &Self::JsValue) -> Option<Self::JsString> {
@@ -346,47 +394,84 @@ impl JsTypes for V8Types {
     }
 
     fn object_as_array_buffer(object: &Self::JsObject) -> Option<Self::ArrayBuffer> {
-        Self::object_if(&object.0, |profile| profile.is_array_buffer)
+        let handle = object
+            .0
+            .object_profile
+            .as_ref()?
+            .array_buffer_handle
+            .clone()?;
+        Some(V8ArrayBuffer(object.clone(), handle))
     }
 
     fn object_as_shared_array_buffer(object: &Self::JsObject) -> Option<Self::SharedArrayBuffer> {
-        Self::object_if(&object.0, |profile| profile.is_shared_array_buffer)
+        let handle = object
+            .0
+            .object_profile
+            .as_ref()?
+            .shared_array_buffer_handle
+            .clone()?;
+        Some(V8SharedArrayBuffer(object.clone(), handle))
     }
 
     fn object_as_typed_array(object: &Self::JsObject) -> Option<Self::TypedArray> {
-        Self::object_if(&object.0, |profile| profile.is_typed_array)
+        let handle = object
+            .0
+            .object_profile
+            .as_ref()?
+            .typed_array_handle
+            .clone()?;
+        Some(V8TypedArray(object.clone(), handle))
     }
 
     fn object_as_data_view(object: &Self::JsObject) -> Option<Self::DataView> {
-        Self::object_if(&object.0, |profile| profile.is_data_view)
+        let handle = object.0.object_profile.as_ref()?.data_view_handle.clone()?;
+        Some(V8DataView(object.clone(), handle))
     }
 
     fn object_as_promise(object: &Self::JsObject) -> Option<Self::Promise> {
-        Self::object_if(&object.0, |profile| profile.is_promise)
+        let handle = object.0.object_profile.as_ref()?.promise_handle.clone()?;
+        Some(V8Promise(object.clone(), handle))
     }
 
     fn object_as_function(object: &Self::JsObject) -> Option<Self::Function> {
-        Self::object_if(&object.0, |profile| profile.is_function)
+        let handle = object.0.object_profile.as_ref()?.function_handle.clone()?;
+        Some(V8Function(object.clone(), handle))
     }
 
     fn object_as_constructor(object: &Self::JsObject) -> Option<Self::Constructor> {
-        Self::object_if(&object.0, |profile| profile.is_constructor)
+        let profile = object.0.object_profile.as_ref()?;
+        Some(V8Constructor(
+            object.clone(),
+            profile.function_handle.clone()?,
+        ))
     }
 
     fn object_as_map(object: &Self::JsObject) -> Option<Self::Map> {
-        Self::object_if(&object.0, |profile| profile.is_map)
+        let handle = object.0.object_profile.as_ref()?.map_handle.clone()?;
+        Some(V8Map(object.clone(), handle))
     }
 
     fn object_as_set(object: &Self::JsObject) -> Option<Self::Set> {
-        Self::object_if(&object.0, |profile| profile.is_set)
+        let handle = object.0.object_profile.as_ref()?.set_handle.clone()?;
+        Some(V8Set(object.clone(), handle))
     }
 
     fn object_as_weak_map(object: &Self::JsObject) -> Option<Self::WeakMap> {
-        Self::object_if(&object.0, |profile| profile.is_weak_map)
+        object
+            .0
+            .object_profile
+            .as_ref()?
+            .is_weak_map
+            .then(|| V8WeakMap(object.clone()))
     }
 
     fn object_as_weak_set(object: &Self::JsObject) -> Option<Self::WeakSet> {
-        Self::object_if(&object.0, |profile| profile.is_weak_set)
+        object
+            .0
+            .object_profile
+            .as_ref()?
+            .is_weak_set
+            .then(|| V8WeakSet(object.clone()))
     }
 
     fn object_as_weak_ref(_object: &Self::JsObject) -> Option<Self::WeakRef> {
@@ -394,7 +479,12 @@ impl JsTypes for V8Types {
     }
 
     fn object_as_generator(object: &Self::JsObject) -> Option<Self::Generator> {
-        Self::object_if(&object.0, |profile| profile.is_generator)
+        object
+            .0
+            .object_profile
+            .as_ref()?
+            .is_generator
+            .then(|| V8Generator(object.clone()))
     }
 
     fn object_as_async_generator(_object: &Self::JsObject) -> Option<Self::AsyncGenerator> {

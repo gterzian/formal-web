@@ -3,9 +3,10 @@ use std::cell::{Cell, RefCell, RefMut};
 use std::collections::{HashMap, VecDeque};
 use std::convert::TryFrom;
 use std::ffi::c_void;
+use std::mem::replace;
 use std::panic::{AssertUnwindSafe, catch_unwind};
-use std::ptr::NonNull;
-use std::rc::Rc;
+use std::ptr::{NonNull, from_ref};
+use std::rc::{Rc, Weak as RcWeak};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Once};
 
@@ -23,7 +24,11 @@ use crate::{
 };
 
 use super::types::{CachedPrimitive, ObjectProfile, V8ArrayBufferState};
-use super::{V8BigInt, V8Object, V8PropertyKey, V8Realm, V8String, V8Symbol, V8Types, V8Value};
+use super::{
+    V8ArrayBuffer, V8BigInt, V8Constructor, V8DataView, V8Function, V8Generator, V8Map, V8Object,
+    V8Promise, V8PropertyKey, V8Realm, V8Set, V8SharedArrayBuffer, V8String, V8Symbol,
+    V8TypedArray, V8Types, V8Value,
+};
 
 const HOST_OBJECT_TAG: u16 = 1;
 static HOST_OBJECT_MARKER: u8 = 0;
@@ -41,17 +46,32 @@ type CaptureBehaviour<T, C> = fn(
 ) -> Completion<<T as JsTypes>::JsValue, T>;
 
 enum QueuedJob {
-    Plain(Box<dyn FnOnce()>),
-    WithRealm(V8Realm, RealmJob),
+    Plain(Rc<V8RealmState>, Box<dyn FnOnce()>),
+    WithRealm(Rc<V8RealmState>, RealmJob),
 }
 
 struct CallbackRecord {
     isolate_id: u64,
+    creation_realm: RcWeak<V8RealmState>,
     behaviour: StoredBehaviour,
 }
 
 struct HostObjectRecord {
     data: Box<dyn Any>,
+}
+
+#[derive(Default)]
+struct RealmHostData {
+    values: HashMap<TypeId, Box<dyn Any>>,
+    associated_objects: Vec<(V8Object, Box<dyn Any>)>,
+}
+
+#[derive(Clone)]
+struct V8RealmState {
+    realm: V8Realm,
+    realm_global: RefCell<V8Object>,
+    intrinsics: Option<RealmIntrinsics<V8Types>>,
+    host_data_holder: Option<V8Object>,
 }
 
 type StoredCallbackScope = v8::PinScope<'static, 'static>;
@@ -64,7 +84,12 @@ thread_local! {
 
 struct SharedIsolate {
     isolate_id: u64,
+    realm_states: RefCell<Vec<RcWeak<V8RealmState>>>,
+    queued_jobs: RefCell<VecDeque<QueuedJob>>,
+    host_object_handles: RefCell<Vec<v8::Weak<v8::Object>>>,
+    callback_handles: RefCell<Vec<v8::Weak<v8::Function>>>,
     isolate: RefCell<v8::OwnedIsolate>,
+    microtask_queue: v8::UniqueRef<v8::MicrotaskQueue>,
 }
 
 impl SharedIsolate {
@@ -72,9 +97,15 @@ impl SharedIsolate {
         initialize_v8();
         let mut isolate = v8::Isolate::new(v8::CreateParams::default());
         isolate.set_microtasks_policy(v8::MicrotasksPolicy::Explicit);
+        let microtask_queue = v8::MicrotaskQueue::new(&mut isolate, v8::MicrotasksPolicy::Explicit);
         Rc::new(Self {
             isolate_id: NEXT_ISOLATE_ID.fetch_add(1, Ordering::Relaxed),
+            realm_states: RefCell::new(Vec::new()),
+            queued_jobs: RefCell::new(VecDeque::new()),
+            host_object_handles: RefCell::new(Vec::new()),
+            callback_handles: RefCell::new(Vec::new()),
             isolate: RefCell::new(isolate),
+            microtask_queue,
         })
     }
 
@@ -224,14 +255,7 @@ impl Drop for CurrentEngineGuard {
 
 pub struct V8Engine {
     isolate_id: u64,
-    realm: V8Realm,
-    realm_global: V8Object,
-    intrinsics: Option<RealmIntrinsics<V8Types>>,
-    host_data: HashMap<TypeId, Box<dyn Any>>,
-    associated_objects: Vec<(V8Object, Box<dyn Any>)>,
-    queued_jobs: VecDeque<QueuedJob>,
-    host_object_handles: Vec<v8::Weak<v8::Object>>,
-    callback_handles: Vec<v8::Weak<v8::Function>>,
+    realm_state: Rc<V8RealmState>,
     host_hooks: HostHooks<V8Types>,
     shared_isolate: Rc<SharedIsolate>,
 }
@@ -303,6 +327,30 @@ fn wrap_local_value(
     let object_profile = if value.is_object() {
         let object = v8::Local::<v8::Object>::try_from(value).expect("V8 object type check failed");
         host_data = host_data_pointer(scope, object);
+        let array_buffer_handle = v8::Local::<v8::ArrayBuffer>::try_from(value)
+            .ok()
+            .map(|handle| v8::Global::new(scope, handle));
+        let shared_array_buffer_handle = v8::Local::<v8::SharedArrayBuffer>::try_from(value)
+            .ok()
+            .map(|handle| v8::Global::new(scope, handle));
+        let typed_array_handle = v8::Local::<v8::TypedArray>::try_from(value)
+            .ok()
+            .map(|handle| v8::Global::new(scope, handle));
+        let data_view_handle = v8::Local::<v8::DataView>::try_from(value)
+            .ok()
+            .map(|handle| v8::Global::new(scope, handle));
+        let promise_handle = v8::Local::<v8::Promise>::try_from(value)
+            .ok()
+            .map(|handle| v8::Global::new(scope, handle));
+        let function_handle = v8::Local::<v8::Function>::try_from(value)
+            .ok()
+            .map(|handle| v8::Global::new(scope, handle));
+        let map_handle = v8::Local::<v8::Map>::try_from(value)
+            .ok()
+            .map(|handle| v8::Global::new(scope, handle));
+        let set_handle = v8::Local::<v8::Set>::try_from(value)
+            .ok()
+            .map(|handle| v8::Global::new(scope, handle));
         let array_buffer_state = if value.is_array_buffer() {
             let array_buffer = v8::Local::<v8::ArrayBuffer>::try_from(value)
                 .expect("V8 ArrayBuffer type check failed");
@@ -343,15 +391,15 @@ fn wrap_local_value(
             None
         };
         Some(Box::new(ObjectProfile {
-            is_array_buffer: value.is_array_buffer(),
-            is_shared_array_buffer: value.is_shared_array_buffer(),
-            is_typed_array: value.is_typed_array(),
-            is_data_view: value.is_data_view(),
-            is_promise: value.is_promise(),
-            is_function: value.is_function(),
-            is_constructor: value.is_function(),
-            is_map: value.is_map(),
-            is_set: value.is_set(),
+            object_handle: v8::Global::new(scope, object),
+            array_buffer_handle,
+            shared_array_buffer_handle,
+            typed_array_handle,
+            data_view_handle,
+            promise_handle,
+            function_handle,
+            map_handle,
+            set_handle,
             is_weak_map: value.is_weak_map(),
             is_weak_set: value.is_weak_set(),
             is_generator: value.is_generator_object(),
@@ -379,6 +427,10 @@ fn wrap_local_value(
     }
 }
 
+fn object_from_wrapped_value(value: V8Value) -> V8Object {
+    V8Object::from_value(value).expect("V8 object wrapper requires an object value")
+}
+
 fn local_value<'scope>(
     scope: &mut v8::PinScope<'scope, '_>,
     isolate_id: u64,
@@ -398,13 +450,28 @@ fn local_object<'scope>(
     isolate_id: u64,
     object: &V8Object,
 ) -> Result<v8::Local<'scope, v8::Object>, V8Value> {
-    let value = local_value(scope, isolate_id, &object.0)?;
-    v8::Local::<v8::Object>::try_from(value).map_err(|_| {
+    if object.0.isolate_id != isolate_id {
         let message = v8::String::new(scope, "value is not an object")
             .expect("static V8 error string allocation failed");
         let exception = v8::Exception::type_error(scope, message);
-        wrap_local_value(scope, isolate_id, exception)
-    })
+        return Err(wrap_local_value(scope, isolate_id, exception));
+    }
+    Ok(v8::Local::new(scope, &object.1))
+}
+
+fn local_typed_object<'scope, T>(
+    scope: &mut v8::PinScope<'scope, '_>,
+    isolate_id: u64,
+    object: &V8Object,
+    handle: &v8::Global<T>,
+) -> Result<v8::Local<'scope, T>, V8Value> {
+    if object.0.isolate_id != isolate_id {
+        let message = v8::String::new(scope, "value belongs to a different V8 isolate")
+            .expect("static V8 error string allocation failed");
+        let exception = v8::Exception::type_error(scope, message);
+        return Err(wrap_local_value(scope, isolate_id, exception));
+    }
+    Ok(v8::Local::new(scope, handle))
 }
 
 fn local_property_key<'scope>(
@@ -513,19 +580,27 @@ fn native_callback(
         let engine = &mut *engine_pointer;
         let result = if record.isolate_id != engine.isolate_id {
             Err(engine.new_type_error("native callback belongs to a different V8 isolate"))
+        } else if let Some(creation_realm) = record.creation_realm.upgrade() {
+            let previous_realm = replace(&mut engine.realm_state, creation_realm);
+            let completion = {
+                let _current_callback_scope =
+                    CurrentCallbackScopeGuard::enter(scope, record.isolate_id);
+                let callback_arguments: Vec<_> = (0..arguments.length())
+                    .map(|index| wrap_local_value(scope, record.isolate_id, arguments.get(index)))
+                    .collect();
+                let this_value =
+                    wrap_local_value(scope, record.isolate_id, arguments.this().into());
+                match catch_unwind(AssertUnwindSafe(|| {
+                    (record.behaviour)(&callback_arguments, this_value, engine)
+                })) {
+                    Ok(completion) => completion,
+                    Err(_) => Err(engine.new_type_error("Rust panic in native callback")),
+                }
+            };
+            engine.realm_state = previous_realm;
+            completion
         } else {
-            let _current_callback_scope =
-                CurrentCallbackScopeGuard::enter(scope, record.isolate_id);
-            let callback_arguments: Vec<_> = (0..arguments.length())
-                .map(|index| wrap_local_value(scope, record.isolate_id, arguments.get(index)))
-                .collect();
-            let this_value = wrap_local_value(scope, record.isolate_id, arguments.this().into());
-            match catch_unwind(AssertUnwindSafe(|| {
-                (record.behaviour)(&callback_arguments, this_value, engine)
-            })) {
-                Ok(completion) => completion,
-                Err(_) => Err(engine.new_type_error("Rust panic in native callback")),
-            }
+            Err(engine.new_type_error("native callback creation realm no longer exists"))
         };
         (result, record.isolate_id)
     };
@@ -578,11 +653,22 @@ impl V8Engine {
         let isolate_id = shared_isolate.isolate_id;
 
         let (context_handle, realm_global) = v8_shared_scope!(scope, shared_isolate, isolate_id, {
-            let context = v8::Context::new(scope, v8::ContextOptions::default());
+            let microtask_queue = from_ref(&*shared_isolate.microtask_queue).cast_mut();
+            let context = v8::Context::new(
+                scope,
+                v8::ContextOptions {
+                    microtask_queue: Some(microtask_queue),
+                    ..v8::ContextOptions::default()
+                },
+            );
             let context_handle = v8::Global::new(scope, context);
             let context_scope = &mut v8::ContextScope::new(scope, context);
             let global = context.global(context_scope);
-            let realm_global = V8Object(wrap_local_value(context_scope, isolate_id, global.into()));
+            let realm_global = object_from_wrapped_value(wrap_local_value(
+                context_scope,
+                isolate_id,
+                global.into(),
+            ));
             (context_handle, realm_global)
         });
 
@@ -590,34 +676,85 @@ impl V8Engine {
             isolate_id,
             context: context_handle,
         };
+        let realm_state = Rc::new(V8RealmState {
+            realm,
+            realm_global: RefCell::new(realm_global),
+            intrinsics: None,
+            host_data_holder: None,
+        });
         let mut engine = Self {
             isolate_id,
-            realm,
-            realm_global,
-            intrinsics: None,
-            host_data: HashMap::new(),
-            associated_objects: Vec::new(),
-            queued_jobs: VecDeque::new(),
-            host_object_handles: Vec::new(),
-            callback_handles: Vec::new(),
+            realm_state,
             host_hooks: HostHooks::empty(),
             shared_isolate,
         };
-        engine.intrinsics = Some(engine.load_intrinsics());
+        let intrinsics = engine.load_intrinsics();
+        Rc::get_mut(&mut engine.realm_state)
+            .expect("new V8 realm state must not be shared while initializing intrinsics")
+            .intrinsics = Some(intrinsics.clone());
+        let host_data_holder = engine.create_object_with_any(
+            intrinsics.object_prototype,
+            Box::new(RealmHostData::default()),
+        );
+        Rc::get_mut(&mut engine.realm_state)
+            .expect("new V8 realm state must not be shared while initializing host data")
+            .host_data_holder = Some(host_data_holder);
+        engine
+            .shared_isolate
+            .realm_states
+            .borrow_mut()
+            .push(Rc::downgrade(&engine.realm_state));
         engine
     }
 
     pub fn associate_existing_object(&mut self, object: &V8Object, data: Box<dyn Any>) {
-        self.associated_objects.push((object.clone(), data));
+        self.realm_host_data_mut()
+            .associated_objects
+            .push((object.clone(), data));
     }
 
     pub fn new_child_realm(&self) -> Self {
         Self::new_with_shared_isolate(Rc::clone(&self.shared_isolate))
     }
 
+    fn realm_host_data(&self) -> &RealmHostData {
+        let holder = self
+            .realm_state
+            .host_data_holder
+            .as_ref()
+            .expect("V8 realm host data is not initialized");
+        self.with_object_any(holder)
+            .and_then(|data| data.downcast_ref::<RealmHostData>())
+            .expect("V8 realm host-data holder contains an unexpected value")
+    }
+
+    fn realm_host_data_mut(&mut self) -> &mut RealmHostData {
+        let holder = self
+            .realm_state
+            .host_data_holder
+            .as_ref()
+            .expect("V8 realm host data is not initialized")
+            .clone();
+        self.with_object_any_mut(&holder)
+            .and_then(|data| data.downcast_mut::<RealmHostData>())
+            .expect("V8 realm host-data holder contains an unexpected value")
+    }
+
+    fn state_for_realm(&self, realm: &V8Realm) -> Option<Rc<V8RealmState>> {
+        if realm.isolate_id != self.isolate_id {
+            return None;
+        }
+        let mut realm_states = self.shared_isolate.realm_states.borrow_mut();
+        realm_states.retain(|state| state.strong_count() != 0);
+        realm_states
+            .iter()
+            .filter_map(RcWeak::upgrade)
+            .find(|state| state.realm.context == realm.context)
+    }
+
     pub(crate) fn create_weak_object(&mut self, object: &V8Object) -> Rc<v8::Weak<v8::Object>> {
         let isolate_id = self.isolate_id;
-        v8_engine_scope_with_context!(scope, self, &self.realm.context, {
+        v8_engine_scope_with_context!(scope, self, &self.realm_state.realm.context, {
             let local = local_object(scope, isolate_id, object)
                 .expect("reflector creation received a non-object or cross-isolate handle");
             Rc::new(v8::Weak::new(scope, local))
@@ -626,10 +763,14 @@ impl V8Engine {
 
     pub(crate) fn upgrade_weak_object(&mut self, weak: &v8::Weak<v8::Object>) -> Option<V8Object> {
         let isolate_id = self.isolate_id;
-        v8_engine_scope_with_context!(scope, self, &self.realm.context, {
+        v8_engine_scope_with_context!(scope, self, &self.realm_state.realm.context, {
             let global = weak.to_global(scope)?;
             let local = v8::Local::new(scope, global);
-            Some(V8Object(wrap_local_value(scope, isolate_id, local.into())))
+            Some(object_from_wrapped_value(wrap_local_value(
+                scope,
+                isolate_id,
+                local.into(),
+            )))
         })
     }
 
@@ -645,7 +786,7 @@ impl V8Engine {
         }
         let _current_engine = CurrentEngineGuard::enter(self);
         let isolate_id = self.isolate_id;
-        v8_engine_scope_with_context!(scope, self, &self.realm.context, {
+        v8_engine_scope_with_context!(scope, self, &self.realm_state.realm.context, {
             v8::tc_scope!(let try_catch, scope);
             let Some(source) = v8::String::new(try_catch, source) else {
                 return Err(caught_exception(
@@ -690,30 +831,36 @@ impl V8Engine {
         }
     }
 
+    fn intrinsic_constructor(&mut self, source: &str) -> V8Constructor {
+        let object = self.intrinsic_object(source);
+        V8Types::object_as_constructor(&object)
+            .unwrap_or_else(|| panic!("V8 intrinsic `{source}` is not a constructor"))
+    }
+
     fn load_intrinsics(&mut self) -> RealmIntrinsics<V8Types> {
         RealmIntrinsics {
-            array_buffer: self.intrinsic_object("ArrayBuffer"),
-            shared_array_buffer: self.intrinsic_object("SharedArrayBuffer"),
-            promise: self.intrinsic_object("Promise"),
-            object: self.intrinsic_object("Object"),
-            function: self.intrinsic_object("Function"),
-            error: self.intrinsic_object("Error"),
-            type_error: self.intrinsic_object("TypeError"),
-            range_error: self.intrinsic_object("RangeError"),
-            syntax_error: self.intrinsic_object("SyntaxError"),
-            reference_error: self.intrinsic_object("ReferenceError"),
-            uri_error: self.intrinsic_object("URIError"),
-            eval_error: self.intrinsic_object("EvalError"),
-            array: self.intrinsic_object("Array"),
-            uint8_array: self.intrinsic_object("Uint8Array"),
-            boolean: self.intrinsic_object("Boolean"),
-            number: self.intrinsic_object("Number"),
-            string: self.intrinsic_object("String"),
-            bigint: self.intrinsic_object("BigInt"),
-            date: self.intrinsic_object("Date"),
-            regexp: self.intrinsic_object("RegExp"),
-            map: self.intrinsic_object("Map"),
-            set: self.intrinsic_object("Set"),
+            array_buffer: self.intrinsic_constructor("ArrayBuffer"),
+            shared_array_buffer: self.intrinsic_constructor("SharedArrayBuffer"),
+            promise: self.intrinsic_constructor("Promise"),
+            object: self.intrinsic_constructor("Object"),
+            function: self.intrinsic_constructor("Function"),
+            error: self.intrinsic_constructor("Error"),
+            type_error: self.intrinsic_constructor("TypeError"),
+            range_error: self.intrinsic_constructor("RangeError"),
+            syntax_error: self.intrinsic_constructor("SyntaxError"),
+            reference_error: self.intrinsic_constructor("ReferenceError"),
+            uri_error: self.intrinsic_constructor("URIError"),
+            eval_error: self.intrinsic_constructor("EvalError"),
+            array: self.intrinsic_constructor("Array"),
+            uint8_array: self.intrinsic_constructor("Uint8Array"),
+            boolean: self.intrinsic_constructor("Boolean"),
+            number: self.intrinsic_constructor("Number"),
+            string: self.intrinsic_constructor("String"),
+            bigint: self.intrinsic_constructor("BigInt"),
+            date: self.intrinsic_constructor("Date"),
+            regexp: self.intrinsic_constructor("RegExp"),
+            map: self.intrinsic_constructor("Map"),
+            set: self.intrinsic_constructor("Set"),
             boolean_prototype: self.intrinsic_object("Boolean.prototype"),
             number_prototype: self.intrinsic_object("Number.prototype"),
             string_prototype: self.intrinsic_object("String.prototype"),
@@ -743,16 +890,17 @@ impl V8Engine {
         length: u32,
         name: V8PropertyKey,
         is_constructor: bool,
-    ) -> V8Object {
+    ) -> V8Function {
         let record = Box::new(CallbackRecord {
             isolate_id: self.isolate_id,
+            creation_realm: Rc::downgrade(&self.realm_state),
             behaviour,
         });
         let record_pointer = Box::into_raw(record);
         let isolate_id = self.isolate_id;
         let function_name = self.property_key_to_rust_string(&name);
 
-        v8_engine_scope_with_context!(scope, self, &self.realm.context, {
+        v8_engine_scope_with_context!(scope, self, &self.realm_state.realm.context, {
             let external = v8::External::new(scope, record_pointer.cast());
             let constructor_behavior = if is_constructor {
                 v8::ConstructorBehavior::Allow
@@ -785,8 +933,13 @@ impl V8Engine {
                     }
                 }),
             );
-            self.callback_handles.push(callback_handle);
-            V8Object(function_value)
+            self.shared_isolate
+                .callback_handles
+                .borrow_mut()
+                .push(callback_handle);
+            let object = object_from_wrapped_value(function_value);
+            V8Types::object_as_function(&object)
+                .expect("V8 native function wrapper is not a function")
         })
     }
 }
@@ -801,7 +954,14 @@ impl JsEngine<V8Types> for V8Engine {
     fn create_realm(&mut self) -> V8Realm {
         let isolate_id = self.isolate_id;
         v8_engine_scope!(scope, self, {
-            let context = v8::Context::new(scope, v8::ContextOptions::default());
+            let microtask_queue = from_ref(&*self.shared_isolate.microtask_queue).cast_mut();
+            let context = v8::Context::new(
+                scope,
+                v8::ContextOptions {
+                    microtask_queue: Some(microtask_queue),
+                    ..v8::ContextOptions::default()
+                },
+            );
             V8Realm {
                 isolate_id,
                 context: v8::Global::new(scope, context),
@@ -818,8 +978,8 @@ impl JsEngine<V8Types> for V8Engine {
         if realm.isolate_id != self.isolate_id || global.0.isolate_id != self.isolate_id {
             return;
         }
-        if realm.context == self.realm.context {
-            self.realm_global = global;
+        if realm.context == self.realm_state.realm.context {
+            self.realm_state.realm_global.replace(global);
         }
     }
 
@@ -902,16 +1062,16 @@ impl JsEngine<V8Types> for V8Engine {
 
     fn allocate_array_buffer(
         &mut self,
-        constructor: V8Object,
+        constructor: V8Constructor,
         byte_length: u64,
         max_byte_length: Option<u64>,
-    ) -> Completion<V8Object, V8Types> {
+    ) -> Completion<V8ArrayBuffer, V8Types> {
         ExecutionContext::allocate_array_buffer(self, constructor, byte_length, max_byte_length)
     }
 
     fn detach_array_buffer(
         &mut self,
-        array_buffer: V8Object,
+        array_buffer: V8ArrayBuffer,
         key: Option<V8Value>,
     ) -> Completion<(), V8Types> {
         ExecutionContext::detach_array_buffer(self, array_buffer, key)
@@ -919,11 +1079,11 @@ impl JsEngine<V8Types> for V8Engine {
 
     fn clone_array_buffer(
         &mut self,
-        source: V8Object,
+        source: V8ArrayBuffer,
         source_byte_offset: u64,
         source_length: u64,
-        constructor: V8Object,
-    ) -> Completion<V8Object, V8Types> {
+        constructor: V8Constructor,
+    ) -> Completion<V8ArrayBuffer, V8Types> {
         ExecutionContext::clone_array_buffer(
             self,
             source,
@@ -935,13 +1095,15 @@ impl JsEngine<V8Types> for V8Engine {
 
     fn allocate_shared_array_buffer(
         &mut self,
-        _constructor: V8Object,
+        _constructor: V8Constructor,
         byte_length: u64,
-    ) -> Completion<V8Object, V8Types> {
+    ) -> Completion<V8SharedArrayBuffer, V8Types> {
         let byte_length = self.value_from_number(byte_length as f64);
         let value =
             self.call_js_helper("length => new SharedArrayBuffer(length)", &[byte_length])?;
-        V8Types::value_as_object(&value)
+        let object = V8Types::value_as_object(&value)
+            .ok_or_else(|| self.new_type_error("SharedArrayBuffer allocation failed"))?;
+        V8Types::object_as_shared_array_buffer(&object)
             .ok_or_else(|| self.new_type_error("SharedArrayBuffer allocation failed"))
     }
 
@@ -1019,14 +1181,14 @@ where
     );
     let result = engine.make_builtin_function(stored, length, name, is_constructor);
 
-    // SAFETY: In a V8-selected build T::Function is V8Object. The result is
+    // SAFETY: In a V8-selected build T::Function is V8Function. The result is
     // moved into its associated-type spelling without duplicating ownership.
     unsafe {
         let mut destination = std::mem::MaybeUninit::<T::Function>::uninit();
         std::ptr::copy_nonoverlapping(
             std::ptr::addr_of!(result).cast::<u8>(),
             destination.as_mut_ptr().cast::<u8>(),
-            std::mem::size_of::<V8Object>(),
+            std::mem::size_of::<V8Function>(),
         );
         std::mem::forget(result);
         destination.assume_init()
@@ -1043,7 +1205,7 @@ impl EcmascriptHost<V8Types> for V8Engine {
         value
             .object_profile
             .as_ref()
-            .is_some_and(|profile| profile.is_function)
+            .is_some_and(|profile| profile.function_handle.is_some())
     }
 
     fn call(
@@ -1062,7 +1224,7 @@ impl EcmascriptHost<V8Types> for V8Engine {
         }
         let _current_engine = CurrentEngineGuard::enter(self);
         let isolate_id = self.isolate_id;
-        v8_engine_scope_with_context!(scope, self, &self.realm.context, {
+        v8_engine_scope_with_context!(scope, self, &self.realm_state.realm.context, {
             v8::tc_scope!(let try_catch, scope);
             let callable = local_value(try_catch, isolate_id, &callable.0)?;
             let function = v8::Local::<v8::Function>::try_from(callable).map_err(|_| {
@@ -1083,25 +1245,39 @@ impl EcmascriptHost<V8Types> for V8Engine {
     fn perform_a_microtask_checkpoint(&mut self) -> Completion<(), V8Types> {
         let _current_engine = CurrentEngineGuard::enter(self);
         loop {
-            while let Some(job) = self.queued_jobs.pop_front() {
-                match job {
-                    QueuedJob::Plain(job) => job(),
-                    QueuedJob::WithRealm(realm, job) => {
-                        if realm.isolate_id != self.isolate_id {
-                            return Err(
-                                self.new_type_error("job realm belongs to a different V8 isolate")
-                            );
-                        }
-                        job(self);
+            loop {
+                let queued_job = self.shared_isolate.queued_jobs.borrow_mut().pop_front();
+                let Some(queued_job) = queued_job else {
+                    break;
+                };
+                let (realm_state, job_result) = match queued_job {
+                    QueuedJob::Plain(realm_state, job) => {
+                        let previous_realm =
+                            replace(&mut self.realm_state, Rc::clone(&realm_state));
+                        let result = catch_unwind(AssertUnwindSafe(job));
+                        self.realm_state = previous_realm;
+                        (realm_state, result)
                     }
+                    QueuedJob::WithRealm(realm_state, job) => {
+                        let previous_realm =
+                            replace(&mut self.realm_state, Rc::clone(&realm_state));
+                        let result = catch_unwind(AssertUnwindSafe(|| job(self)));
+                        self.realm_state = previous_realm;
+                        (realm_state, result)
+                    }
+                };
+                if job_result.is_err() {
+                    let previous_realm = replace(&mut self.realm_state, realm_state);
+                    let exception = self.new_type_error("Rust panic in queued V8 job");
+                    self.realm_state = previous_realm;
+                    return Err(exception);
                 }
             }
-            let queued_before_checkpoint = self.queued_jobs.len();
             let shared_isolate = Rc::clone(&self.shared_isolate);
             v8_shared_isolate!(isolate, shared_isolate, self.isolate_id, {
-                isolate.perform_microtask_checkpoint();
+                shared_isolate.microtask_queue.perform_checkpoint(isolate);
             });
-            if self.queued_jobs.len() == queued_before_checkpoint {
+            if self.shared_isolate.queued_jobs.borrow().is_empty() {
                 break;
             }
         }
@@ -1124,7 +1300,7 @@ impl EcmascriptHost<V8Types> for V8Engine {
 
     fn value_undefined(&mut self) -> V8Value {
         let isolate_id = self.isolate_id;
-        v8_engine_scope_with_context!(scope, self, &self.realm.context, {
+        v8_engine_scope_with_context!(scope, self, &self.realm_state.realm.context, {
             let value = v8::undefined(scope).into();
             wrap_local_value(scope, isolate_id, value)
         })
@@ -1132,7 +1308,7 @@ impl EcmascriptHost<V8Types> for V8Engine {
 
     fn value_null(&mut self) -> V8Value {
         let isolate_id = self.isolate_id;
-        v8_engine_scope_with_context!(scope, self, &self.realm.context, {
+        v8_engine_scope_with_context!(scope, self, &self.realm_state.realm.context, {
             let value = v8::null(scope).into();
             wrap_local_value(scope, isolate_id, value)
         })
@@ -1140,7 +1316,7 @@ impl EcmascriptHost<V8Types> for V8Engine {
 
     fn value_from_bool(&mut self, boolean: bool) -> V8Value {
         let isolate_id = self.isolate_id;
-        v8_engine_scope_with_context!(scope, self, &self.realm.context, {
+        v8_engine_scope_with_context!(scope, self, &self.realm_state.realm.context, {
             let value = v8::Boolean::new(scope, boolean).into();
             wrap_local_value(scope, isolate_id, value)
         })
@@ -1148,7 +1324,7 @@ impl EcmascriptHost<V8Types> for V8Engine {
 
     fn value_from_number(&mut self, number: f64) -> V8Value {
         let isolate_id = self.isolate_id;
-        v8_engine_scope_with_context!(scope, self, &self.realm.context, {
+        v8_engine_scope_with_context!(scope, self, &self.realm_state.realm.context, {
             let value = v8::Number::new(scope, number).into();
             wrap_local_value(scope, isolate_id, value)
         })
@@ -1159,7 +1335,7 @@ impl EcmascriptHost<V8Types> for V8Engine {
             return value;
         }
         let isolate_id = self.isolate_id;
-        v8_engine_scope_with_context!(scope, self, &self.realm.context, {
+        v8_engine_scope_with_context!(scope, self, &self.realm_state.realm.context, {
             let local =
                 v8::String::new_from_two_byte(scope, &string.utf16, v8::NewStringType::Normal)
                     .expect("V8 string allocation failed");
@@ -1351,7 +1527,7 @@ impl ExecutionContext<V8Types> for V8Engine {
         value
             .object_profile
             .as_ref()
-            .is_some_and(|profile| profile.is_constructor)
+            .is_some_and(|profile| profile.function_handle.is_some())
     }
 
     fn is_extensible(&mut self, object: &V8Object) -> Completion<bool, V8Types> {
@@ -1425,7 +1601,7 @@ impl ExecutionContext<V8Types> for V8Engine {
     ) -> Completion<V8Value, V8Types> {
         let _current_engine = CurrentEngineGuard::enter(self);
         let isolate_id = self.isolate_id;
-        v8_engine_scope_with_context!(scope, self, &self.realm.context, {
+        v8_engine_scope_with_context!(scope, self, &self.realm_state.realm.context, {
             v8::tc_scope!(let try_catch, scope);
             let object = local_object(try_catch, isolate_id, &object)?;
             let key = local_property_key(try_catch, isolate_id, &property_key)?;
@@ -1454,7 +1630,7 @@ impl ExecutionContext<V8Types> for V8Engine {
     ) -> Completion<(), V8Types> {
         let _current_engine = CurrentEngineGuard::enter(self);
         let isolate_id = self.isolate_id;
-        v8_engine_scope_with_context!(scope, self, &self.realm.context, {
+        v8_engine_scope_with_context!(scope, self, &self.realm_state.realm.context, {
             v8::tc_scope!(let try_catch, scope);
             let object = local_object(try_catch, isolate_id, &object)?;
             let key = local_property_key(try_catch, isolate_id, &property_key)?;
@@ -1481,7 +1657,7 @@ impl ExecutionContext<V8Types> for V8Engine {
     ) -> Completion<bool, V8Types> {
         let _current_engine = CurrentEngineGuard::enter(self);
         let isolate_id = self.isolate_id;
-        v8_engine_scope_with_context!(scope, self, &self.realm.context, {
+        v8_engine_scope_with_context!(scope, self, &self.realm_state.realm.context, {
             v8::tc_scope!(let try_catch, scope);
             let object = local_object(try_catch, isolate_id, &object)?;
             let key = local_name(try_catch, isolate_id, &property_key)?;
@@ -1561,7 +1737,7 @@ impl ExecutionContext<V8Types> for V8Engine {
     ) -> Completion<(), V8Types> {
         let _current_engine = CurrentEngineGuard::enter(self);
         let isolate_id = self.isolate_id;
-        v8_engine_scope_with_context!(scope, self, &self.realm.context, {
+        v8_engine_scope_with_context!(scope, self, &self.realm_state.realm.context, {
             v8::tc_scope!(let try_catch, scope);
             let object = local_object(try_catch, isolate_id, &object)?;
             let key = local_name(try_catch, isolate_id, &property_key)?;
@@ -1569,11 +1745,15 @@ impl ExecutionContext<V8Types> for V8Engine {
             let undefined = v8::undefined(try_catch).into();
             let mut v8_descriptor = if descriptor.get.is_some() || descriptor.set.is_some() {
                 let getter = match &descriptor.get {
-                    Some(getter) => local_value(try_catch, isolate_id, &getter.0)?,
+                    Some(getter) => {
+                        local_typed_object(try_catch, isolate_id, &getter.0, &getter.1)?.into()
+                    }
                     None => undefined,
                 };
                 let setter = match &descriptor.set {
-                    Some(setter) => local_value(try_catch, isolate_id, &setter.0)?,
+                    Some(setter) => {
+                        local_typed_object(try_catch, isolate_id, &setter.0, &setter.1)?.into()
+                    }
                     None => undefined,
                 };
                 v8::PropertyDescriptor::new_from_get_set(getter, setter)
@@ -1617,7 +1797,7 @@ impl ExecutionContext<V8Types> for V8Engine {
     ) -> Completion<(), V8Types> {
         let _current_engine = CurrentEngineGuard::enter(self);
         let isolate_id = self.isolate_id;
-        v8_engine_scope_with_context!(scope, self, &self.realm.context, {
+        v8_engine_scope_with_context!(scope, self, &self.realm_state.realm.context, {
             v8::tc_scope!(let try_catch, scope);
             let object = local_object(try_catch, isolate_id, &object)?;
             let key = local_property_key(try_catch, isolate_id, &property_key)?;
@@ -1668,7 +1848,7 @@ impl ExecutionContext<V8Types> for V8Engine {
         &mut self,
         value: V8Value,
         property_key: V8PropertyKey,
-    ) -> Completion<Option<V8Object>, V8Types> {
+    ) -> Completion<Option<V8Function>, V8Types> {
         let method = self.get_v(value, property_key)?;
         if V8Types::value_is_null(&method) || V8Types::value_is_undefined(&method) {
             return Ok(None);
@@ -1686,7 +1866,7 @@ impl ExecutionContext<V8Types> for V8Engine {
     ) -> Completion<bool, V8Types> {
         let _current_engine = CurrentEngineGuard::enter(self);
         let isolate_id = self.isolate_id;
-        v8_engine_scope_with_context!(scope, self, &self.realm.context, {
+        v8_engine_scope_with_context!(scope, self, &self.realm_state.realm.context, {
             v8::tc_scope!(let try_catch, scope);
             let object = local_object(try_catch, isolate_id, &object)?;
             let key = local_property_key(try_catch, isolate_id, &property_key)?;
@@ -1703,7 +1883,7 @@ impl ExecutionContext<V8Types> for V8Engine {
     ) -> Completion<bool, V8Types> {
         let _current_engine = CurrentEngineGuard::enter(self);
         let isolate_id = self.isolate_id;
-        v8_engine_scope_with_context!(scope, self, &self.realm.context, {
+        v8_engine_scope_with_context!(scope, self, &self.realm_state.realm.context, {
             v8::tc_scope!(let try_catch, scope);
             let object = local_object(try_catch, isolate_id, &object)?;
             let key = local_name(try_catch, isolate_id, &property_key)?;
@@ -1736,7 +1916,7 @@ impl ExecutionContext<V8Types> for V8Engine {
         let descriptor = {
             let _current_engine = CurrentEngineGuard::enter(self);
             let isolate_id = self.isolate_id;
-            v8_engine_scope_with_context!(scope, self, &self.realm.context, {
+            v8_engine_scope_with_context!(scope, self, &self.realm_state.realm.context, {
                 v8::tc_scope!(let try_catch, scope);
                 let object = local_object(try_catch, isolate_id, &object)?;
                 let key = local_name(try_catch, isolate_id, &property_key)?;
@@ -1765,13 +1945,13 @@ impl ExecutionContext<V8Types> for V8Engine {
 
     fn construct(
         &mut self,
-        function: V8Object,
+        function: V8Constructor,
         arguments: &[V8Value],
-        new_target: Option<V8Object>,
+        new_target: Option<V8Constructor>,
     ) -> Completion<V8Object, V8Types> {
         if let Some(new_target) = new_target {
-            let mut helper_arguments = vec![function.0];
-            helper_arguments.push(new_target.0);
+            let mut helper_arguments = vec![function.0.0];
+            helper_arguments.push(new_target.0.0);
             helper_arguments.extend_from_slice(arguments);
             let result = self.call_js_helper(
                 "(constructor, newTarget, ...args) => Reflect.construct(constructor, args, newTarget)",
@@ -1781,15 +1961,15 @@ impl ExecutionContext<V8Types> for V8Engine {
                 .ok_or_else(|| self.new_type_error("constructor did not return an object"));
         }
 
-        let wrapper_primitive = self.intrinsics.as_ref().and_then(|intrinsics| {
+        let wrapper_primitive = self.realm_state.intrinsics.as_ref().and_then(|intrinsics| {
             let argument = arguments.first().map(|value| value.primitive.clone());
-            if function == intrinsics.boolean {
+            if function.0 == intrinsics.boolean.0 {
                 Some(argument.unwrap_or(CachedPrimitive::Boolean(false)))
-            } else if function == intrinsics.number {
+            } else if function.0 == intrinsics.number.0 {
                 Some(argument.unwrap_or(CachedPrimitive::Number(0.0)))
-            } else if function == intrinsics.string {
+            } else if function.0 == intrinsics.string.0 {
                 Some(argument.unwrap_or_else(|| CachedPrimitive::String(Arc::from([]))))
-            } else if function == intrinsics.bigint {
+            } else if function.0 == intrinsics.bigint.0 {
                 argument
             } else {
                 None
@@ -1797,12 +1977,9 @@ impl ExecutionContext<V8Types> for V8Engine {
         });
         let _current_engine = CurrentEngineGuard::enter(self);
         let isolate_id = self.isolate_id;
-        v8_engine_scope_with_context!(scope, self, &self.realm.context, {
+        v8_engine_scope_with_context!(scope, self, &self.realm_state.realm.context, {
             v8::tc_scope!(let try_catch, scope);
-            let function = local_value(try_catch, isolate_id, &function.0)?;
-            let function = v8::Local::<v8::Function>::try_from(function).map_err(|_| {
-                caught_exception(try_catch, isolate_id, None, "value is not a constructor")
-            })?;
+            let function = local_typed_object(try_catch, isolate_id, &function.0, &function.1)?;
             let local_arguments: Result<Vec<_>, _> = arguments
                 .iter()
                 .map(|argument| local_value(try_catch, isolate_id, argument))
@@ -1810,7 +1987,8 @@ impl ExecutionContext<V8Types> for V8Engine {
             let Some(object) = function.new_instance(try_catch, &local_arguments?) else {
                 return Err(caught!(try_catch, isolate_id, "constructor call failed"));
             };
-            let mut object = V8Object(wrap_local_value(try_catch, isolate_id, object.into()));
+            let mut object =
+                object_from_wrapped_value(wrap_local_value(try_catch, isolate_id, object.into()));
             if let Some(wrapper_primitive) = wrapper_primitive
                 && let Some(profile) = object.0.object_profile.as_mut()
             {
@@ -1827,7 +2005,7 @@ impl ExecutionContext<V8Types> for V8Engine {
     ) -> Completion<bool, V8Types> {
         let _current_engine = CurrentEngineGuard::enter(self);
         let isolate_id = self.isolate_id;
-        v8_engine_scope_with_context!(scope, self, &self.realm.context, {
+        v8_engine_scope_with_context!(scope, self, &self.realm_state.realm.context, {
             v8::tc_scope!(let try_catch, scope);
             let object = local_object(try_catch, isolate_id, &object)?;
             let level = match level {
@@ -1856,14 +2034,16 @@ impl ExecutionContext<V8Types> for V8Engine {
     fn species_constructor(
         &mut self,
         object: V8Object,
-        default_constructor: V8Object,
-    ) -> Completion<V8Object, V8Types> {
+        default_constructor: V8Constructor,
+    ) -> Completion<V8Constructor, V8Types> {
         let result = self.call_js_helper(
             "(object, defaultConstructor) => { const constructor = object.constructor; if (constructor === undefined) return defaultConstructor; if (Object(constructor) !== constructor) throw new TypeError('constructor is not an object'); const species = constructor[Symbol.species]; if (species == null) return defaultConstructor; if (typeof species !== 'function') throw new TypeError('species is not a constructor'); return species; }",
-            &[object.0, default_constructor.0],
+            &[object.0, default_constructor.0.0],
         )?;
-        V8Types::value_as_object(&result)
-            .ok_or_else(|| self.new_type_error("SpeciesConstructor did not return an object"))
+        let result = V8Types::value_as_object(&result)
+            .ok_or_else(|| self.new_type_error("SpeciesConstructor did not return an object"))?;
+        V8Types::object_as_constructor(&result)
+            .ok_or_else(|| self.new_type_error("SpeciesConstructor did not return a constructor"))
     }
 
     fn get_function_realm(&mut self, function: &V8Object) -> Completion<V8Realm, V8Types> {
@@ -1871,7 +2051,7 @@ impl ExecutionContext<V8Types> for V8Engine {
             return Err(self.new_type_error("function belongs to a different V8 isolate"));
         }
         let isolate_id = self.isolate_id;
-        v8_engine_scope_with_context!(scope, self, &self.realm.context, {
+        v8_engine_scope_with_context!(scope, self, &self.realm_state.realm.context, {
             let function = local_object(scope, isolate_id, function)?;
             let context = function.get_creation_context(scope).ok_or_else(|| {
                 caught_exception(scope, isolate_id, None, "function has no creation context")
@@ -1887,7 +2067,7 @@ impl ExecutionContext<V8Types> for V8Engine {
         &mut self,
         object: V8Value,
         kind: IteratorKind,
-        method: Option<V8Object>,
+        method: Option<V8Function>,
     ) -> Completion<IteratorRecord<V8Types>, V8Types> {
         let method = match method {
             Some(method) => method,
@@ -1901,7 +2081,7 @@ impl ExecutionContext<V8Types> for V8Engine {
                     .ok_or_else(|| self.new_type_error("value is not iterable"))?
             }
         };
-        let iterator_value = EcmascriptHost::call(self, &method, &object, &[])?;
+        let iterator_value = EcmascriptHost::call(self, &method.0, &object, &[])?;
         let iterator = V8Types::value_as_object(&iterator_value)
             .ok_or_else(|| self.new_type_error("iterator method did not return an object"))?;
         let next = self
@@ -1919,7 +2099,7 @@ impl ExecutionContext<V8Types> for V8Engine {
         iterator: &mut IteratorRecord<V8Types>,
     ) -> Completion<Option<V8Value>, V8Types> {
         let this_value = iterator.iterator.0.clone();
-        let result = EcmascriptHost::call(self, &iterator.next_method, &this_value, &[])?;
+        let result = EcmascriptHost::call(self, &iterator.next_method.0, &this_value, &[])?;
         let result_object = V8Types::value_as_object(&result)
             .ok_or_else(|| self.new_type_error("iterator result is not an object"))?;
         let done = ExecutionContext::get(
@@ -1943,7 +2123,7 @@ impl ExecutionContext<V8Types> for V8Engine {
         if let Some(return_method) =
             self.get_method(iterator_value.clone(), self.property_key_from_str("return"))?
         {
-            let close_result = EcmascriptHost::call(self, &return_method, &iterator_value, &[])?;
+            let close_result = EcmascriptHost::call(self, &return_method.0, &iterator_value, &[])?;
             if V8Types::value_as_object(&close_result).is_none() {
                 return Err(self.new_type_error("iterator return method did not return an object"));
             }
@@ -1960,11 +2140,11 @@ impl ExecutionContext<V8Types> for V8Engine {
     }
 
     fn current_realm(&self) -> V8Realm {
-        self.realm.clone()
+        self.realm_state.realm.clone()
     }
 
     fn realm_global_object(&self) -> V8Object {
-        self.realm_global.clone()
+        self.realm_state.realm_global.borrow().clone()
     }
 
     fn realm_intrinsics(&self, realm: &V8Realm) -> RealmIntrinsics<V8Types> {
@@ -1972,14 +2152,19 @@ impl ExecutionContext<V8Types> for V8Engine {
             realm.isolate_id, self.isolate_id,
             "realm belongs to a different V8 isolate"
         );
-        self.intrinsics
+        self.state_for_realm(realm)
+            .unwrap_or_else(|| Rc::clone(&self.realm_state))
+            .intrinsics
             .as_ref()
             .expect("V8 intrinsics are not initialized")
             .clone()
     }
 
     fn enqueue_job(&mut self, job: Box<dyn FnOnce()>) {
-        self.queued_jobs.push_back(QueuedJob::Plain(job));
+        self.shared_isolate
+            .queued_jobs
+            .borrow_mut()
+            .push_back(QueuedJob::Plain(Rc::clone(&self.realm_state), job));
     }
 
     fn enqueue_job_with_realm(
@@ -1987,7 +2172,17 @@ impl ExecutionContext<V8Types> for V8Engine {
         realm: V8Realm,
         job: Box<dyn FnOnce(&mut dyn ExecutionContext<V8Types>)>,
     ) {
-        self.queued_jobs.push_back(QueuedJob::WithRealm(realm, job));
+        assert_eq!(
+            realm.isolate_id, self.isolate_id,
+            "queued job realm belongs to a different V8 isolate"
+        );
+        let realm_state = self
+            .state_for_realm(&realm)
+            .unwrap_or_else(|| Rc::clone(&self.realm_state));
+        self.shared_isolate
+            .queued_jobs
+            .borrow_mut()
+            .push_back(QueuedJob::WithRealm(realm_state, job));
     }
 
     fn run_jobs(&mut self) {
@@ -1996,8 +2191,9 @@ impl ExecutionContext<V8Types> for V8Engine {
         }
     }
 
-    fn is_detached_buffer(&self, array_buffer: &V8Object) -> bool {
+    fn is_detached_buffer(&self, array_buffer: &V8ArrayBuffer) -> bool {
         array_buffer
+            .0
             .0
             .object_profile
             .as_ref()
@@ -2005,8 +2201,9 @@ impl ExecutionContext<V8Types> for V8Engine {
             .is_some_and(|state| state.detached.get())
     }
 
-    fn is_fixed_length_array_buffer(&self, array_buffer: &V8Object) -> bool {
+    fn is_fixed_length_array_buffer(&self, array_buffer: &V8ArrayBuffer) -> bool {
         array_buffer
+            .0
             .0
             .object_profile
             .as_ref()
@@ -2016,10 +2213,10 @@ impl ExecutionContext<V8Types> for V8Engine {
 
     fn allocate_array_buffer(
         &mut self,
-        _constructor: V8Object,
+        _constructor: V8Constructor,
         byte_length: u64,
         max_byte_length: Option<u64>,
-    ) -> Completion<V8Object, V8Types> {
+    ) -> Completion<V8ArrayBuffer, V8Types> {
         if let Some(max_byte_length) = max_byte_length {
             let byte_length = self.value_from_number(byte_length as f64);
             let max_byte_length = self.value_from_number(max_byte_length as f64);
@@ -2027,29 +2224,30 @@ impl ExecutionContext<V8Types> for V8Engine {
                 "(length, maxByteLength) => new ArrayBuffer(length, { maxByteLength })",
                 &[byte_length, max_byte_length],
             )?;
-            return V8Types::value_as_object(&value)
+            let object = V8Types::value_as_object(&value)
+                .ok_or_else(|| self.new_type_error("ArrayBuffer allocation failed"))?;
+            return V8Types::object_as_array_buffer(&object)
                 .ok_or_else(|| self.new_type_error("ArrayBuffer allocation failed"));
         }
         let isolate_id = self.isolate_id;
         let byte_length = usize::try_from(byte_length)
             .map_err(|_| self.new_range_error("ArrayBuffer length is too large"))?;
-        v8_engine_scope_with_context!(scope, self, &self.realm.context, {
+        v8_engine_scope_with_context!(scope, self, &self.realm_state.realm.context, {
             let array_buffer = v8::ArrayBuffer::new(scope, byte_length);
-            Ok(V8Object(wrap_local_value(
-                scope,
-                isolate_id,
-                array_buffer.into(),
-            )))
+            let object =
+                object_from_wrapped_value(wrap_local_value(scope, isolate_id, array_buffer.into()));
+            V8Types::object_as_array_buffer(&object)
+                .ok_or_else(|| self.new_type_error("ArrayBuffer allocation failed"))
         })
     }
 
     fn clone_array_buffer(
         &mut self,
-        source: V8Object,
+        source: V8ArrayBuffer,
         source_byte_offset: u64,
         source_length: u64,
-        constructor: V8Object,
-    ) -> Completion<V8Object, V8Types> {
+        constructor: V8Constructor,
+    ) -> Completion<V8ArrayBuffer, V8Types> {
         let bytes = self
             .array_buffer_data(&source)
             .ok_or_else(|| self.new_type_error("source ArrayBuffer is detached"))?;
@@ -2065,6 +2263,7 @@ impl ExecutionContext<V8Types> for V8Engine {
             ExecutionContext::allocate_array_buffer(self, constructor, source_length, None)?;
         let state = clone
             .0
+            .0
             .object_profile
             .as_ref()
             .and_then(|profile| profile.array_buffer_state.as_ref())
@@ -2077,15 +2276,12 @@ impl ExecutionContext<V8Types> for V8Engine {
 
     fn detach_array_buffer(
         &mut self,
-        array_buffer: V8Object,
+        array_buffer: V8ArrayBuffer,
         key: Option<V8Value>,
     ) -> Completion<(), V8Types> {
         let isolate_id = self.isolate_id;
-        v8_engine_scope_with_context!(scope, self, &self.realm.context, {
-            let value = local_value(scope, isolate_id, &array_buffer.0)?;
-            let local = v8::Local::<v8::ArrayBuffer>::try_from(value).map_err(|_| {
-                caught_exception(scope, isolate_id, None, "value is not an ArrayBuffer")
-            })?;
+        v8_engine_scope_with_context!(scope, self, &self.realm_state.realm.context, {
+            let local = local_typed_object(scope, isolate_id, &array_buffer.0, &array_buffer.1)?;
             let key = key
                 .as_ref()
                 .map(|key| local_value(scope, isolate_id, key))
@@ -2093,6 +2289,7 @@ impl ExecutionContext<V8Types> for V8Engine {
             match local.detach(key) {
                 Some(true) => {
                     if let Some(state) = array_buffer
+                        .0
                         .0
                         .object_profile
                         .as_ref()
@@ -2114,7 +2311,7 @@ impl ExecutionContext<V8Types> for V8Engine {
 
     fn get_value_from_buffer(
         &mut self,
-        array_buffer: &V8Object,
+        array_buffer: &V8ArrayBuffer,
         byte_index: u64,
         element_type: TypedArrayElementType,
         _is_typed_array: bool,
@@ -2137,14 +2334,14 @@ impl ExecutionContext<V8Types> for V8Engine {
         let byte_index = self.value_from_number(byte_index as f64);
         self.call_js_helper(
             &format!("(buffer, offset) => new {constructor}(buffer, offset, 1)[0]"),
-            &[array_buffer.0.clone(), byte_index],
+            &[array_buffer.0.0.clone(), byte_index],
         )
         .unwrap_or_else(|exception| exception)
     }
 
     fn set_value_in_buffer(
         &mut self,
-        array_buffer: &V8Object,
+        array_buffer: &V8ArrayBuffer,
         byte_index: u64,
         element_type: TypedArrayElementType,
         value: V8Value,
@@ -2170,36 +2367,47 @@ impl ExecutionContext<V8Types> for V8Engine {
             &format!(
                 "(buffer, offset, value) => {{ new {constructor}(buffer, offset, 1)[0] = value; }}"
             ),
-            &[array_buffer.0.clone(), byte_index, value],
+            &[array_buffer.0.0.clone(), byte_index, value],
         )?;
         Ok(())
     }
 
-    fn typed_array_buffer(&mut self, typed_array: &V8Object) -> Completion<V8Object, V8Types> {
-        let value =
-            self.call_js_helper("view => view.buffer", std::slice::from_ref(&typed_array.0))?;
-        V8Types::value_as_object(&value)
+    fn typed_array_buffer(
+        &mut self,
+        typed_array: &V8TypedArray,
+    ) -> Completion<V8ArrayBuffer, V8Types> {
+        let value = self.call_js_helper(
+            "view => view.buffer",
+            std::slice::from_ref(&typed_array.0.0),
+        )?;
+        let object = V8Types::value_as_object(&value)
+            .ok_or_else(|| self.new_type_error("typed array has no ArrayBuffer"))?;
+        V8Types::object_as_array_buffer(&object)
             .ok_or_else(|| self.new_type_error("typed array has no ArrayBuffer"))
     }
 
-    fn typed_array_byte_offset(&mut self, typed_array: &V8Object) -> Completion<u64, V8Types> {
+    fn typed_array_byte_offset(&mut self, typed_array: &V8TypedArray) -> Completion<u64, V8Types> {
         let value = self.call_js_helper(
             "view => view.byteOffset",
-            std::slice::from_ref(&typed_array.0),
+            std::slice::from_ref(&typed_array.0.0),
         )?;
         Ok(V8Types::value_as_number(&value).unwrap_or(0.0) as u64)
     }
 
-    fn typed_array_byte_length(&mut self, typed_array: &V8Object) -> Completion<u64, V8Types> {
+    fn typed_array_byte_length(&mut self, typed_array: &V8TypedArray) -> Completion<u64, V8Types> {
         let value = self.call_js_helper(
             "view => view.byteLength",
-            std::slice::from_ref(&typed_array.0),
+            std::slice::from_ref(&typed_array.0.0),
         )?;
         Ok(V8Types::value_as_number(&value).unwrap_or(0.0) as u64)
     }
 
-    fn typed_array_element_type(&self, typed_array: &V8Object) -> Option<TypedArrayElementType> {
+    fn typed_array_element_type(
+        &self,
+        typed_array: &V8TypedArray,
+    ) -> Option<TypedArrayElementType> {
         typed_array
+            .0
             .0
             .object_profile
             .as_ref()
@@ -2209,10 +2417,10 @@ impl ExecutionContext<V8Types> for V8Engine {
     fn construct_typed_array_view(
         &mut self,
         element_type: TypedArrayElementType,
-        buffer: V8Object,
+        buffer: V8ArrayBuffer,
         byte_offset: u64,
         byte_length: u64,
-    ) -> Completion<V8Object, V8Types> {
+    ) -> Completion<V8TypedArray, V8Types> {
         let isolate_id = self.isolate_id;
         let byte_offset = usize::try_from(byte_offset)
             .map_err(|_| self.new_range_error("typed array byte offset is too large"))?;
@@ -2235,11 +2443,8 @@ impl ExecutionContext<V8Types> for V8Engine {
         }
         let length = usize::try_from(byte_length / element_size)
             .map_err(|_| self.new_range_error("typed array length is too large"))?;
-        v8_engine_scope_with_context!(scope, self, &self.realm.context, {
-            let buffer_value = local_value(scope, isolate_id, &buffer.0)?;
-            let buffer = v8::Local::<v8::ArrayBuffer>::try_from(buffer_value).map_err(|_| {
-                caught_exception(scope, isolate_id, None, "value is not an ArrayBuffer")
-            })?;
+        v8_engine_scope_with_context!(scope, self, &self.realm_state.realm.context, {
+            let buffer = local_typed_object(scope, isolate_id, &buffer.0, &buffer.1)?;
             if element_type == TypedArrayElementType::Float16 {
                 return Err(caught_exception(
                     scope,
@@ -2287,60 +2492,61 @@ impl ExecutionContext<V8Types> for V8Engine {
             let view = view.ok_or_else(|| {
                 caught_exception(scope, isolate_id, None, "typed array construction failed")
             })?;
-            Ok(V8Object(wrap_local_value(scope, isolate_id, view)))
+            let object = object_from_wrapped_value(wrap_local_value(scope, isolate_id, view));
+            V8Types::object_as_typed_array(&object)
+                .ok_or_else(|| self.new_type_error("typed array construction failed"))
         })
     }
 
-    fn data_view_buffer(&mut self, data_view: &V8Object) -> Completion<V8Object, V8Types> {
+    fn data_view_buffer(&mut self, data_view: &V8DataView) -> Completion<V8ArrayBuffer, V8Types> {
         let value =
-            self.call_js_helper("view => view.buffer", std::slice::from_ref(&data_view.0))?;
-        V8Types::value_as_object(&value)
+            self.call_js_helper("view => view.buffer", std::slice::from_ref(&data_view.0.0))?;
+        let object = V8Types::value_as_object(&value)
+            .ok_or_else(|| self.new_type_error("DataView has no ArrayBuffer"))?;
+        V8Types::object_as_array_buffer(&object)
             .ok_or_else(|| self.new_type_error("DataView has no ArrayBuffer"))
     }
 
-    fn data_view_byte_offset(&mut self, data_view: &V8Object) -> Completion<u64, V8Types> {
+    fn data_view_byte_offset(&mut self, data_view: &V8DataView) -> Completion<u64, V8Types> {
         let value = self.call_js_helper(
             "view => view.byteOffset",
-            std::slice::from_ref(&data_view.0),
+            std::slice::from_ref(&data_view.0.0),
         )?;
         Ok(V8Types::value_as_number(&value).unwrap_or(0.0) as u64)
     }
 
-    fn data_view_byte_length(&mut self, data_view: &V8Object) -> Completion<u64, V8Types> {
+    fn data_view_byte_length(&mut self, data_view: &V8DataView) -> Completion<u64, V8Types> {
         let value = self.call_js_helper(
             "view => view.byteLength",
-            std::slice::from_ref(&data_view.0),
+            std::slice::from_ref(&data_view.0.0),
         )?;
         Ok(V8Types::value_as_number(&value).unwrap_or(0.0) as u64)
     }
 
     fn construct_data_view_from_buffer(
         &mut self,
-        buffer: V8Object,
+        buffer: V8ArrayBuffer,
         byte_offset: u64,
         byte_length: u64,
-    ) -> Completion<V8Object, V8Types> {
+    ) -> Completion<V8DataView, V8Types> {
         let isolate_id = self.isolate_id;
         let byte_offset = usize::try_from(byte_offset)
             .map_err(|_| self.new_range_error("DataView byte offset is too large"))?;
         let byte_length = usize::try_from(byte_length)
             .map_err(|_| self.new_range_error("DataView byte length is too large"))?;
-        v8_engine_scope_with_context!(scope, self, &self.realm.context, {
-            let buffer = local_value(scope, isolate_id, &buffer.0)?;
-            let buffer = v8::Local::<v8::ArrayBuffer>::try_from(buffer).map_err(|_| {
-                caught_exception(scope, isolate_id, None, "value is not an ArrayBuffer")
-            })?;
+        v8_engine_scope_with_context!(scope, self, &self.realm_state.realm.context, {
+            let buffer = local_typed_object(scope, isolate_id, &buffer.0, &buffer.1)?;
             let data_view = v8::DataView::new(scope, buffer, byte_offset, byte_length);
-            Ok(V8Object(wrap_local_value(
-                scope,
-                isolate_id,
-                data_view.into(),
-            )))
+            let object =
+                object_from_wrapped_value(wrap_local_value(scope, isolate_id, data_view.into()));
+            V8Types::object_as_data_view(&object)
+                .ok_or_else(|| self.new_type_error("DataView construction failed"))
         })
     }
 
-    fn array_buffer_data(&self, array_buffer: &V8Object) -> Option<Vec<u8>> {
+    fn array_buffer_data(&self, array_buffer: &V8ArrayBuffer) -> Option<Vec<u8>> {
         let state = array_buffer
+            .0
             .0
             .object_profile
             .as_ref()?
@@ -2373,10 +2579,10 @@ impl ExecutionContext<V8Types> for V8Engine {
         self.to_rust_string(value)
     }
 
-    fn map_get_entries(&mut self, map: &V8Object) -> Completion<Vec<(V8Value, V8Value)>, V8Types> {
+    fn map_get_entries(&mut self, map: &V8Map) -> Completion<Vec<(V8Value, V8Value)>, V8Types> {
         let entries = self.call_js_helper(
             "map => Array.from(map.entries()).flat()",
-            std::slice::from_ref(&map.0),
+            std::slice::from_ref(&map.0.0),
         )?;
         let entries = V8Types::value_as_object(&entries)
             .ok_or_else(|| self.new_type_error("Map entries did not produce an array"))?;
@@ -2395,21 +2601,21 @@ impl ExecutionContext<V8Types> for V8Engine {
 
     fn map_set_entry(
         &mut self,
-        map: &V8Object,
+        map: &V8Map,
         key: V8Value,
         value: V8Value,
     ) -> Completion<(), V8Types> {
         self.call_js_helper(
             "(map, key, value) => { map.set(key, value); }",
-            &[map.0.clone(), key, value],
+            &[map.0.0.clone(), key, value],
         )?;
         Ok(())
     }
 
-    fn set_get_values(&mut self, set: &V8Object) -> Completion<Vec<V8Value>, V8Types> {
+    fn set_get_values(&mut self, set: &V8Set) -> Completion<Vec<V8Value>, V8Types> {
         let values = self.call_js_helper(
             "set => Array.from(set.values())",
-            std::slice::from_ref(&set.0),
+            std::slice::from_ref(&set.0.0),
         )?;
         let values = V8Types::value_as_object(&values)
             .ok_or_else(|| self.new_type_error("Set values did not produce an array"))?;
@@ -2427,34 +2633,36 @@ impl ExecutionContext<V8Types> for V8Engine {
         Ok(result)
     }
 
-    fn set_add_entry(&mut self, set: &V8Object, value: V8Value) -> Completion<(), V8Types> {
+    fn set_add_entry(&mut self, set: &V8Set, value: V8Value) -> Completion<(), V8Types> {
         self.call_js_helper(
             "(set, value) => { set.add(value); }",
-            &[set.0.clone(), value],
+            &[set.0.0.clone(), value],
         )?;
         Ok(())
     }
 
     fn promise_resolve(
         &mut self,
-        constructor: V8Object,
+        constructor: V8Constructor,
         value: V8Value,
-    ) -> Completion<V8Object, V8Types> {
+    ) -> Completion<V8Promise, V8Types> {
         let promise = self.call_js_helper(
             "(constructor, value) => Promise.resolve.call(constructor, value)",
-            &[constructor.0, value],
+            &[constructor.0.0, value],
         )?;
-        V8Types::value_as_object(&promise)
+        let object = V8Types::value_as_object(&promise)
+            .ok_or_else(|| self.new_type_error("PromiseResolve did not return a promise"))?;
+        V8Types::object_as_promise(&object)
             .ok_or_else(|| self.new_type_error("PromiseResolve did not return a promise"))
     }
 
     fn new_promise_capability(
         &mut self,
-        constructor: V8Object,
+        constructor: V8Constructor,
     ) -> Completion<PromiseCapability<V8Types>, V8Types> {
         let parts = self.call_js_helper(
             "constructor => { let resolve, reject; const promise = new constructor((res, rej) => { resolve = res; reject = rej; }); return [promise, resolve, reject]; }",
-            &[constructor.0],
+            &[constructor.0.0],
         )?;
         let parts = V8Types::value_as_object(&parts)
             .ok_or_else(|| self.new_type_error("promise capability did not produce an array"))?;
@@ -2475,50 +2683,141 @@ impl ExecutionContext<V8Types> for V8Engine {
     }
 
     fn new_promise_pending(&mut self) -> Completion<(V8Value, PromiseResolvers<V8Types>), V8Types> {
-        let promise_constructor = self.realm_intrinsics(&self.realm).promise;
+        let realm = self.realm_state.realm.clone();
+        let promise_constructor = self.realm_intrinsics(&realm).promise;
         let capability = self.new_promise_capability(promise_constructor)?;
         let promise = capability.promise;
         let resolve = capability.resolve;
         let reject = capability.reject;
-        let resolvers = PromiseResolvers::new(resolve, reject, self);
+        let resolvers = PromiseResolvers::new(resolve.0, reject.0, self);
         Ok((promise, resolvers))
     }
 
     fn perform_promise_then(
         &mut self,
-        promise: V8Object,
-        on_fulfilled: Option<V8Object>,
-        on_rejected: Option<V8Object>,
+        promise: V8Promise,
+        on_fulfilled: Option<V8Function>,
+        on_rejected: Option<V8Function>,
         result_capability: Option<PromiseCapability<V8Types>>,
     ) -> Completion<V8Value, V8Types> {
-        let undefined = self.value_undefined();
-        let on_fulfilled = on_fulfilled.map_or_else(|| undefined.clone(), |function| function.0);
-        let on_rejected = on_rejected.map_or(undefined, |function| function.0);
-        if let Some(result_capability) = result_capability {
-            return self.call_js_helper(
-                "(promise, onFulfilled, onRejected, resultPromise, resolve, reject) => { promise.then(value => { try { resolve(onFulfilled === undefined ? value : onFulfilled(value)); } catch (error) { reject(error); } }, reason => { if (onRejected === undefined) { reject(reason); return; } try { resolve(onRejected(reason)); } catch (error) { reject(error); } }); return resultPromise; }",
-                &[
-                    promise.0,
-                    on_fulfilled,
-                    on_rejected,
-                    result_capability.promise,
-                    result_capability.resolve.0,
-                    result_capability.reject.0,
-                ],
-            );
-        }
-        self.call_js_helper(
-            "(promise, onFulfilled, onRejected) => promise.then(onFulfilled, onRejected)",
-            &[promise.0, on_fulfilled, on_rejected],
-        )
+        let returned_promise = result_capability
+            .as_ref()
+            .map(|capability| capability.promise.clone());
+        let fulfilled_capability = result_capability
+            .as_ref()
+            .map(|capability| (capability.resolve.clone(), capability.reject.clone()));
+        let rejected_capability = result_capability
+            .as_ref()
+            .map(|capability| (capability.resolve.clone(), capability.reject.clone()));
+        let empty_name = self.property_key_from_str("");
+
+        let fulfilled_handler = self.make_builtin_function(
+            Box::new(move |arguments, _this, execution_context| {
+                let value = arguments
+                    .first()
+                    .cloned()
+                    .unwrap_or_else(|| execution_context.value_undefined());
+                let completion = if let Some(on_fulfilled) = &on_fulfilled {
+                    let undefined = execution_context.value_undefined();
+                    execution_context.call(&on_fulfilled.0, &undefined, &[value])
+                } else {
+                    Ok(value)
+                };
+                let Some((resolve, reject)) = &fulfilled_capability else {
+                    return completion;
+                };
+                let undefined = execution_context.value_undefined();
+                match completion {
+                    Ok(value) => match execution_context.call(&resolve.0, &undefined, &[value]) {
+                        Ok(_) => Ok(undefined),
+                        Err(exception) => {
+                            execution_context.call(&reject.0, &undefined, &[exception])?;
+                            Ok(undefined)
+                        }
+                    },
+                    Err(exception) => {
+                        execution_context.call(&reject.0, &undefined, &[exception])?;
+                        Ok(undefined)
+                    }
+                }
+            }),
+            1,
+            empty_name.clone(),
+            false,
+        );
+        let rejected_handler = self.make_builtin_function(
+            Box::new(move |arguments, _this, execution_context| {
+                let reason = arguments
+                    .first()
+                    .cloned()
+                    .unwrap_or_else(|| execution_context.value_undefined());
+                let completion = if let Some(on_rejected) = &on_rejected {
+                    let undefined = execution_context.value_undefined();
+                    execution_context.call(&on_rejected.0, &undefined, &[reason])
+                } else {
+                    Err(reason)
+                };
+                let Some((resolve, reject)) = &rejected_capability else {
+                    return completion;
+                };
+                let undefined = execution_context.value_undefined();
+                match completion {
+                    Ok(value) => match execution_context.call(&resolve.0, &undefined, &[value]) {
+                        Ok(_) => Ok(undefined),
+                        Err(exception) => {
+                            execution_context.call(&reject.0, &undefined, &[exception])?;
+                            Ok(undefined)
+                        }
+                    },
+                    Err(exception) => {
+                        execution_context.call(&reject.0, &undefined, &[exception])?;
+                        Ok(undefined)
+                    }
+                }
+            }),
+            1,
+            empty_name,
+            false,
+        );
+
+        let _current_engine = CurrentEngineGuard::enter(self);
+        let isolate_id = self.isolate_id;
+        v8_engine_scope_with_context!(scope, self, &self.realm_state.realm.context, {
+            v8::tc_scope!(let try_catch, scope);
+            let promise = local_typed_object(try_catch, isolate_id, &promise.0, &promise.1)?;
+            let fulfilled_handler = local_typed_object(
+                try_catch,
+                isolate_id,
+                &fulfilled_handler.0,
+                &fulfilled_handler.1,
+            )?;
+            let rejected_handler = local_typed_object(
+                try_catch,
+                isolate_id,
+                &rejected_handler.0,
+                &rejected_handler.1,
+            )?;
+            let Some(derived_promise) =
+                promise.then2(try_catch, fulfilled_handler, rejected_handler)
+            else {
+                return Err(caught!(
+                    try_catch,
+                    isolate_id,
+                    "failed to register promise reactions"
+                ));
+            };
+            Ok(returned_promise
+                .unwrap_or_else(|| wrap_local_value(try_catch, isolate_id, derived_promise.into())))
+        })
     }
 
     fn promise_state(&mut self, promise: &V8Object) -> Completion<PromiseState<V8Types>, V8Types> {
         let isolate_id = self.isolate_id;
-        v8_engine_scope_with_context!(scope, self, &self.realm.context, {
-            let promise_value = local_value(scope, isolate_id, &promise.0)?;
-            let promise = v8::Local::<v8::Promise>::try_from(promise_value)
-                .map_err(|_| caught_exception(scope, isolate_id, None, "value is not a Promise"))?;
+        v8_engine_scope_with_context!(scope, self, &self.realm_state.realm.context, {
+            let promise = V8Types::object_as_promise(promise).ok_or_else(|| {
+                caught_exception(scope, isolate_id, None, "value is not a Promise")
+            })?;
+            let promise = local_typed_object(scope, isolate_id, &promise.0, &promise.1)?;
             match promise.state() {
                 v8::PromiseState::Pending => Ok(PromiseState::Pending),
                 v8::PromiseState::Fulfilled => {
@@ -2539,14 +2838,14 @@ impl ExecutionContext<V8Types> for V8Engine {
 
     fn generator_start(
         &mut self,
-        _generator: V8Object,
-        _closure: V8Object,
+        _generator: V8Generator,
+        _closure: V8Function,
     ) -> Completion<(), V8Types> {
         Ok(())
     }
 
     fn global_object(&self) -> V8Object {
-        self.realm_global.clone()
+        self.realm_state.realm_global.borrow().clone()
     }
 
     fn property_key_from_str(&self, string: &str) -> V8PropertyKey {
@@ -2563,7 +2862,7 @@ impl ExecutionContext<V8Types> for V8Engine {
 
     fn value_from_property_key(&mut self, key: V8PropertyKey) -> V8Value {
         let isolate_id = self.isolate_id;
-        v8_engine_scope_with_context!(scope, self, &self.realm.context, {
+        v8_engine_scope_with_context!(scope, self, &self.realm_state.realm.context, {
             match local_property_key(scope, isolate_id, &key) {
                 Ok(value) => wrap_local_value(scope, isolate_id, value),
                 Err(error) => error,
@@ -2593,15 +2892,15 @@ impl ExecutionContext<V8Types> for V8Engine {
     }
 
     fn store_host_any(&mut self, id: TypeId, value: Box<dyn Any>) {
-        self.host_data.insert(id, value);
+        self.realm_host_data_mut().values.insert(id, value);
     }
 
     fn get_host_any(&self, id: &TypeId) -> Option<&dyn Any> {
-        self.host_data.get(id).map(Box::as_ref)
+        self.realm_host_data().values.get(id).map(Box::as_ref)
     }
 
     fn remove_host_any(&mut self, id: &TypeId) -> Option<Box<dyn Any>> {
-        self.host_data.remove(id)
+        self.realm_host_data_mut().values.remove(id)
     }
 
     fn create_object_with_any(
@@ -2610,7 +2909,7 @@ impl ExecutionContext<V8Types> for V8Engine {
         data: Box<dyn Any + 'static>,
     ) -> V8Object {
         let isolate_id = self.isolate_id;
-        v8_engine_scope_with_context!(scope, self, &self.realm.context, {
+        v8_engine_scope_with_context!(scope, self, &self.realm_state.realm.context, {
             let object_template = v8::ObjectTemplate::new(scope);
             object_template.set_internal_field_count(2);
             let object = object_template
@@ -2631,7 +2930,8 @@ impl ExecutionContext<V8Types> for V8Engine {
             assert!(object.set_internal_field(0, marker.into()));
             object.set_aligned_pointer_in_internal_field(1, record_pointer.cast(), HOST_OBJECT_TAG);
 
-            let value = V8Object(wrap_local_value(scope, isolate_id, object.into()));
+            let value =
+                object_from_wrapped_value(wrap_local_value(scope, isolate_id, object.into()));
             let weak = v8::Weak::with_guaranteed_finalizer(
                 scope,
                 object,
@@ -2645,7 +2945,10 @@ impl ExecutionContext<V8Types> for V8Engine {
                     }
                 }),
             );
-            self.host_object_handles.push(weak);
+            self.shared_isolate
+                .host_object_handles
+                .borrow_mut()
+                .push(weak);
             value
         })
     }
@@ -2659,7 +2962,8 @@ impl ExecutionContext<V8Types> for V8Engine {
             let record = unsafe { &*pointer.cast::<HostObjectRecord>().as_ptr() };
             return Some(record.data.as_ref());
         }
-        self.associated_objects
+        self.realm_host_data()
+            .associated_objects
             .iter()
             .find(|(candidate, _)| candidate == object)
             .map(|(_, data)| data.as_ref())
@@ -2674,7 +2978,8 @@ impl ExecutionContext<V8Types> for V8Engine {
             let record = unsafe { &mut *pointer.cast::<HostObjectRecord>().as_ptr() };
             return Some(record.data.as_mut());
         }
-        self.associated_objects
+        self.realm_host_data_mut()
+            .associated_objects
             .iter_mut()
             .find(|(candidate, _)| candidate == object)
             .map(|(_, data)| data.as_mut())
@@ -2693,7 +2998,8 @@ impl ExecutionContext<V8Types> for V8Engine {
             let record = unsafe { &mut *pointer.cast::<HostObjectRecord>().as_ptr() };
             Some(record.data.as_mut())
         } else {
-            self.associated_objects
+            self.realm_host_data_mut()
+                .associated_objects
                 .iter_mut()
                 .find(|(candidate, _)| candidate == object)
                 .map(|(_, data)| data.as_mut() as *mut dyn Any)
@@ -2709,7 +3015,7 @@ impl ExecutionContext<V8Types> for V8Engine {
 
     fn new_type_error(&mut self, message: &str) -> V8Value {
         let isolate_id = self.isolate_id;
-        v8_engine_scope_with_context!(scope, self, &self.realm.context, {
+        v8_engine_scope_with_context!(scope, self, &self.realm_state.realm.context, {
             let message =
                 v8::String::new(scope, message).expect("V8 TypeError message allocation failed");
             let exception = v8::Exception::type_error(scope, message);
@@ -2719,7 +3025,7 @@ impl ExecutionContext<V8Types> for V8Engine {
 
     fn new_range_error(&mut self, message: &str) -> V8Value {
         let isolate_id = self.isolate_id;
-        v8_engine_scope_with_context!(scope, self, &self.realm.context, {
+        v8_engine_scope_with_context!(scope, self, &self.realm_state.realm.context, {
             let message =
                 v8::String::new(scope, message).expect("V8 RangeError message allocation failed");
             let exception = v8::Exception::range_error(scope, message);
@@ -2729,7 +3035,7 @@ impl ExecutionContext<V8Types> for V8Engine {
 
     fn new_syntax_error(&mut self, message: &str) -> V8Value {
         let isolate_id = self.isolate_id;
-        v8_engine_scope_with_context!(scope, self, &self.realm.context, {
+        v8_engine_scope_with_context!(scope, self, &self.realm_state.realm.context, {
             let message =
                 v8::String::new(scope, message).expect("V8 SyntaxError message allocation failed");
             let exception = v8::Exception::syntax_error(scope, message);
@@ -2743,13 +3049,17 @@ impl ExecutionContext<V8Types> for V8Engine {
         handler: V8Object,
     ) -> Completion<V8Object, V8Types> {
         let isolate_id = self.isolate_id;
-        v8_engine_scope_with_context!(scope, self, &self.realm.context, {
+        v8_engine_scope_with_context!(scope, self, &self.realm_state.realm.context, {
             let target = local_object(scope, isolate_id, &target)?;
             let handler = local_object(scope, isolate_id, &handler)?;
             let proxy = v8::Proxy::new(scope, target, handler).ok_or_else(|| {
                 caught_exception(scope, isolate_id, None, "Proxy creation failed")
             })?;
-            Ok(V8Object(wrap_local_value(scope, isolate_id, proxy.into())))
+            Ok(object_from_wrapped_value(wrap_local_value(
+                scope,
+                isolate_id,
+                proxy.into(),
+            )))
         })
     }
 
@@ -2759,9 +3069,9 @@ impl ExecutionContext<V8Types> for V8Engine {
 
     fn create_empty_array(&mut self) -> V8Object {
         let isolate_id = self.isolate_id;
-        v8_engine_scope_with_context!(scope, self, &self.realm.context, {
+        v8_engine_scope_with_context!(scope, self, &self.realm_state.realm.context, {
             let array = v8::Array::new(scope, 0);
-            V8Object(wrap_local_value(scope, isolate_id, array.into()))
+            object_from_wrapped_value(wrap_local_value(scope, isolate_id, array.into()))
         })
     }
 
@@ -2775,7 +3085,7 @@ impl ExecutionContext<V8Types> for V8Engine {
 
     fn create_plain_object(&mut self, prototype: Option<&V8Object>) -> V8Object {
         let isolate_id = self.isolate_id;
-        v8_engine_scope_with_context!(scope, self, &self.realm.context, {
+        v8_engine_scope_with_context!(scope, self, &self.realm_state.realm.context, {
             let object = v8::Object::new(scope);
             if let Some(prototype) = prototype {
                 let prototype = local_value(scope, isolate_id, &prototype.0)
@@ -2784,7 +3094,7 @@ impl ExecutionContext<V8Types> for V8Engine {
                     .set_prototype(scope, prototype)
                     .expect("V8 failed to set plain-object prototype");
             }
-            V8Object(wrap_local_value(scope, isolate_id, object.into()))
+            object_from_wrapped_value(wrap_local_value(scope, isolate_id, object.into()))
         })
     }
 
@@ -2797,13 +3107,13 @@ impl ExecutionContext<V8Types> for V8Engine {
     }
 
     fn evaluate_script(&mut self, source: &str) -> Completion<V8Value, V8Types> {
-        let realm = self.realm.clone();
+        let realm = self.realm_state.realm.clone();
         JsEngine::evaluate_script(self, source, &realm)
     }
 
     fn value_from_bigint(&mut self, number: i64) -> V8Value {
         let isolate_id = self.isolate_id;
-        v8_engine_scope_with_context!(scope, self, &self.realm.context, {
+        v8_engine_scope_with_context!(scope, self, &self.realm_state.realm.context, {
             let bigint = v8::BigInt::new_from_i64(scope, number);
             wrap_local_value(scope, isolate_id, bigint.into())
         })
@@ -2818,7 +3128,7 @@ impl ExecutionContext<V8Types> for V8Engine {
         ) -> Completion<V8Value, V8Types>,
         length: u32,
         name: V8PropertyKey,
-    ) -> V8Object {
+    ) -> V8Function {
         self.make_builtin_function(Box::new(behaviour), length, name, false)
     }
 
@@ -2827,7 +3137,7 @@ impl ExecutionContext<V8Types> for V8Engine {
         behaviour: StoredBehaviour,
         length: u32,
         name: V8PropertyKey,
-    ) -> V8Object {
+    ) -> V8Function {
         self.make_builtin_function(behaviour, length, name, false)
     }
 
@@ -2837,26 +3147,106 @@ impl ExecutionContext<V8Types> for V8Engine {
         length: u32,
         name: V8PropertyKey,
         is_constructor: bool,
-    ) -> V8Object {
+    ) -> V8Function {
         self.make_builtin_function(behaviour, length, name, is_constructor)
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use std::cell::Cell;
+    use std::any::TypeId;
+    use std::cell::{Cell, RefCell};
+    use std::ptr::from_ref;
     use std::rc::Rc;
+
+    use rusty_v8 as v8;
 
     use crate::{EcmascriptHost, ExecutionContext, JsTypes};
 
-    use super::{V8Engine, V8Types};
+    use super::super::{V8AsyncGenerator, V8WeakMap, V8WeakRef, V8WeakSet};
+    use super::{
+        CURRENT_CALLBACK_ISOLATE_ID, CURRENT_CALLBACK_SCOPE, V8ArrayBuffer, V8Constructor,
+        V8DataView, V8Engine, V8Function, V8Generator, V8Map, V8Object, V8Promise, V8Set,
+        V8SharedArrayBuffer, V8TypedArray, V8Types,
+    };
 
     struct DropFlag(Rc<Cell<bool>>);
+
+    struct RealmMarker(&'static str);
 
     impl Drop for DropFlag {
         fn drop(&mut self) {
             self.0.set(true);
         }
+    }
+
+    #[test]
+    fn object_categories_keep_distinct_strong_v8_handles() {
+        let type_ids = [
+            TypeId::of::<V8Object>(),
+            TypeId::of::<V8ArrayBuffer>(),
+            TypeId::of::<V8SharedArrayBuffer>(),
+            TypeId::of::<V8TypedArray>(),
+            TypeId::of::<V8DataView>(),
+            TypeId::of::<V8Promise>(),
+            TypeId::of::<V8Map>(),
+            TypeId::of::<V8Set>(),
+            TypeId::of::<V8WeakMap>(),
+            TypeId::of::<V8WeakSet>(),
+            TypeId::of::<V8WeakRef>(),
+            TypeId::of::<V8Generator>(),
+            TypeId::of::<V8AsyncGenerator>(),
+            TypeId::of::<V8Function>(),
+            TypeId::of::<V8Constructor>(),
+        ];
+        for (index, type_id) in type_ids.iter().enumerate() {
+            assert!(!type_ids[..index].contains(type_id));
+        }
+
+        let mut engine = V8Engine::new();
+        let mut evaluate_object = |source| {
+            let value = ExecutionContext::evaluate_script(&mut engine, source)
+                .expect("the typed V8 object must evaluate");
+            V8Types::value_as_object(&value).expect("the evaluated value must be an object")
+        };
+
+        let array_buffer = evaluate_object("new ArrayBuffer(8)");
+        let array_buffer = V8Types::object_as_array_buffer(&array_buffer)
+            .expect("ArrayBuffer must retain a Global<ArrayBuffer>");
+        let _: &v8::Global<v8::ArrayBuffer> = &array_buffer.1;
+
+        let shared_array_buffer = evaluate_object("new SharedArrayBuffer(8)");
+        let shared_array_buffer = V8Types::object_as_shared_array_buffer(&shared_array_buffer)
+            .expect("SharedArrayBuffer must retain a Global<SharedArrayBuffer>");
+        let _: &v8::Global<v8::SharedArrayBuffer> = &shared_array_buffer.1;
+
+        let typed_array = evaluate_object("new Uint8Array(8)");
+        let typed_array = V8Types::object_as_typed_array(&typed_array)
+            .expect("TypedArray must retain a Global<TypedArray>");
+        let _: &v8::Global<v8::TypedArray> = &typed_array.1;
+
+        let data_view = evaluate_object("new DataView(new ArrayBuffer(8))");
+        let data_view = V8Types::object_as_data_view(&data_view)
+            .expect("DataView must retain a Global<DataView>");
+        let _: &v8::Global<v8::DataView> = &data_view.1;
+
+        let promise = evaluate_object("Promise.resolve(1)");
+        let promise =
+            V8Types::object_as_promise(&promise).expect("Promise must retain a Global<Promise>");
+        let _: &v8::Global<v8::Promise> = &promise.1;
+
+        let map = evaluate_object("new Map()");
+        let map = V8Types::object_as_map(&map).expect("Map must retain a Global<Map>");
+        let _: &v8::Global<v8::Map> = &map.1;
+
+        let set = evaluate_object("new Set()");
+        let set = V8Types::object_as_set(&set).expect("Set must retain a Global<Set>");
+        let _: &v8::Global<v8::Set> = &set.1;
+
+        let function = evaluate_object("(function typedFunction() {})");
+        let function = V8Types::object_as_function(&function)
+            .expect("Function must retain a Global<Function>");
+        let _: &v8::Global<v8::Function> = &function.1;
     }
 
     #[test]
@@ -2909,7 +3299,7 @@ mod tests {
             callback_name.clone(),
             false,
         );
-        let callback_value = V8Types::value_from_object(callback);
+        let callback_value = V8Types::value_from_object(callback.0);
         let global = second_document_engine.realm_global_object();
         second_document_engine
             .create_data_property(global, callback_name, callback_value)
@@ -2924,6 +3314,329 @@ mod tests {
                 .expect("the callback result must be numeric"),
             7.0
         );
+    }
+
+    #[test]
+    fn sibling_contexts_use_the_shared_explicit_microtask_queue() {
+        let parent_engine = V8Engine::new();
+        let first_engine = parent_engine.new_child_realm();
+        let second_engine = parent_engine.new_child_realm();
+
+        assert!(Rc::ptr_eq(
+            &first_engine.shared_isolate,
+            &second_engine.shared_isolate
+        ));
+
+        let shared_queue = from_ref(&*first_engine.shared_isolate.microtask_queue);
+        let first_realm = first_engine.current_realm();
+        let first_queue =
+            v8_engine_scope_with_context!(scope, first_engine, &first_realm.context, {
+                let context = v8::Local::new(scope, &first_realm.context);
+                from_ref(context.get_microtask_queue())
+            });
+        let second_realm = second_engine.current_realm();
+        let second_queue =
+            v8_engine_scope_with_context!(scope, second_engine, &second_realm.context, {
+                let context = v8::Local::new(scope, &second_realm.context);
+                from_ref(context.get_microtask_queue())
+            });
+
+        assert_eq!(first_queue, shared_queue);
+        assert_eq!(second_queue, shared_queue);
+    }
+
+    #[test]
+    fn promise_callback_runs_with_its_creation_realm() {
+        let parent_engine = V8Engine::new();
+        let mut checkpoint_engine = parent_engine.new_child_realm();
+        let mut promise_engine = parent_engine.new_child_realm();
+        checkpoint_engine.store_host_any(
+            TypeId::of::<RealmMarker>(),
+            Box::new(RealmMarker("checkpoint")),
+        );
+        promise_engine.store_host_any(
+            TypeId::of::<RealmMarker>(),
+            Box::new(RealmMarker("promise")),
+        );
+
+        let promise_global = promise_engine.realm_global_object();
+        let expected_global = promise_global.clone();
+        let callback_used_creation_realm = Rc::new(Cell::new(false));
+        let callback_result = Rc::clone(&callback_used_creation_realm);
+        let callback_name = promise_engine.property_key_from_str("creationRealmCallback");
+        let callback = promise_engine.create_builtin_function(
+            Box::new(move |_arguments, _this, execution_context| {
+                let marker = execution_context
+                    .get_host_any(&TypeId::of::<RealmMarker>())
+                    .and_then(|data| data.downcast_ref::<RealmMarker>())
+                    .map(|marker| marker.0);
+                callback_result.set(
+                    execution_context.realm_global_object() == expected_global
+                        && marker == Some("promise"),
+                );
+                Ok(execution_context.value_undefined())
+            }),
+            0,
+            callback_name.clone(),
+            false,
+        );
+        promise_engine
+            .create_data_property(
+                promise_global,
+                callback_name,
+                V8Types::value_from_object(callback.0),
+            )
+            .expect("the promise callback must be installed");
+        ExecutionContext::evaluate_script(
+            &mut promise_engine,
+            "Promise.resolve().then(creationRealmCallback)",
+        )
+        .expect("the promise callback must be queued");
+
+        checkpoint_engine
+            .perform_a_microtask_checkpoint()
+            .expect("the sibling checkpoint must drain the shared queue");
+
+        assert!(callback_used_creation_realm.get());
+        assert_eq!(
+            checkpoint_engine
+                .get_host_any(&TypeId::of::<RealmMarker>())
+                .and_then(|data| data.downcast_ref::<RealmMarker>())
+                .map(|marker| marker.0),
+            Some("checkpoint")
+        );
+    }
+
+    #[test]
+    fn perform_promise_then_bypasses_a_patched_then_method() {
+        let mut engine = V8Engine::new();
+        let promise = ExecutionContext::evaluate_script(
+            &mut engine,
+            "globalThis.thenCalls = 0; const originalThen = Promise.prototype.then; Promise.prototype.then = function(...arguments) { thenCalls += 1; return originalThen.apply(this, arguments); }; Promise.resolve(42)",
+        )
+        .expect("the patched Promise and source promise must be created");
+        let promise =
+            V8Types::value_as_object(&promise).expect("the source value must be a Promise");
+        let promise =
+            V8Types::object_as_promise(&promise).expect("the source value must be a Promise");
+        let callback_called = Rc::new(Cell::new(false));
+        let callback_result = Rc::clone(&callback_called);
+        let callback_name = engine.property_key_from_str("promiseReaction");
+        let callback = engine.create_builtin_function(
+            Box::new(move |_arguments, _this, execution_context| {
+                callback_result.set(true);
+                Ok(execution_context.value_undefined())
+            }),
+            1,
+            callback_name,
+            false,
+        );
+
+        engine
+            .perform_promise_then(promise, Some(callback), None, None)
+            .expect("the direct V8 promise reaction must be registered");
+        engine
+            .perform_a_microtask_checkpoint()
+            .expect("the direct V8 promise reaction must run");
+        let then_calls = ExecutionContext::evaluate_script(&mut engine, "thenCalls")
+            .expect("the patched then call count must be readable");
+
+        assert!(callback_called.get());
+        assert_eq!(
+            engine
+                .to_number(then_calls)
+                .expect("the patched then call count must be numeric"),
+            0.0
+        );
+    }
+
+    #[test]
+    fn nested_cross_realm_callbacks_restore_each_previous_realm() {
+        let parent_engine = V8Engine::new();
+        let mut first_engine = parent_engine.new_child_realm();
+        let mut second_engine = parent_engine.new_child_realm();
+        first_engine.store_host_any(TypeId::of::<RealmMarker>(), Box::new(RealmMarker("first")));
+        second_engine.store_host_any(TypeId::of::<RealmMarker>(), Box::new(RealmMarker("second")));
+
+        let first_global = first_engine.realm_global_object();
+        let first_callback_global = first_global.clone();
+        let first_callback_used_first_realm = Rc::new(Cell::new(false));
+        let first_callback_result = Rc::clone(&first_callback_used_first_realm);
+        let first_callback_name = first_engine.property_key_from_str("firstRealmCallback");
+        let first_callback = first_engine.create_builtin_function(
+            Box::new(move |_arguments, _this, execution_context| {
+                let marker = execution_context
+                    .get_host_any(&TypeId::of::<RealmMarker>())
+                    .and_then(|data| data.downcast_ref::<RealmMarker>())
+                    .map(|marker| marker.0);
+                first_callback_result.set(
+                    execution_context.realm_global_object() == first_callback_global
+                        && marker == Some("first"),
+                );
+                panic!("intentional nested callback panic")
+            }),
+            0,
+            first_callback_name,
+            false,
+        );
+
+        let second_global = second_engine.realm_global_object();
+        let second_callback_global = second_global.clone();
+        let second_callback_restored = Rc::new(Cell::new(false));
+        let second_callback_result = Rc::clone(&second_callback_restored);
+        let second_callback_name = second_engine.property_key_from_str("secondRealmCallback");
+        let second_callback = second_engine.create_builtin_function(
+            Box::new(move |_arguments, _this, execution_context| {
+                let undefined = execution_context.value_undefined();
+                let inner_result = execution_context.call(&first_callback.0, &undefined, &[]);
+                assert!(inner_result.is_err());
+                let marker = execution_context
+                    .get_host_any(&TypeId::of::<RealmMarker>())
+                    .and_then(|data| data.downcast_ref::<RealmMarker>())
+                    .map(|marker| marker.0);
+                second_callback_result.set(
+                    execution_context.realm_global_object() == second_callback_global
+                        && marker == Some("second"),
+                );
+                Ok(execution_context.value_undefined())
+            }),
+            0,
+            second_callback_name.clone(),
+            false,
+        );
+        second_engine
+            .create_data_property(
+                second_global,
+                second_callback_name,
+                V8Types::value_from_object(second_callback.0),
+            )
+            .expect("the second callback must be installed");
+        ExecutionContext::evaluate_script(
+            &mut second_engine,
+            "Promise.resolve().then(secondRealmCallback)",
+        )
+        .expect("the nested callback must be queued");
+
+        first_engine
+            .perform_a_microtask_checkpoint()
+            .expect("the nested callbacks must complete");
+
+        assert!(first_callback_used_first_realm.get());
+        assert!(second_callback_restored.get());
+        assert_eq!(first_engine.realm_global_object(), first_global);
+    }
+
+    #[test]
+    fn rust_jobs_use_their_creation_realm_and_drain_until_stable() {
+        let parent_engine = V8Engine::new();
+        let mut checkpoint_engine = parent_engine.new_child_realm();
+        let mut promise_engine = parent_engine.new_child_realm();
+        promise_engine.store_host_any(
+            TypeId::of::<RealmMarker>(),
+            Box::new(RealmMarker("promise")),
+        );
+
+        let execution_steps = Rc::new(RefCell::new(Vec::new()));
+        let callback_steps = Rc::clone(&execution_steps);
+        let promise_global = promise_engine.realm_global_object();
+        let expected_global = promise_global.clone();
+        let callback_name = promise_engine.property_key_from_str("enqueueRealmJobs");
+        let callback = promise_engine.create_builtin_function(
+            Box::new(move |_arguments, _this, execution_context| {
+                callback_steps.borrow_mut().push("promise");
+                let first_job_steps = Rc::clone(&callback_steps);
+                let first_job_global = expected_global.clone();
+                let realm = execution_context.current_realm();
+                execution_context.enqueue_job_with_realm(
+                    realm,
+                    Box::new(move |job_context| {
+                        let marker = job_context
+                            .get_host_any(&TypeId::of::<RealmMarker>())
+                            .and_then(|data| data.downcast_ref::<RealmMarker>())
+                            .map(|marker| marker.0);
+                        assert_eq!(job_context.realm_global_object(), first_job_global);
+                        assert_eq!(marker, Some("promise"));
+                        first_job_steps.borrow_mut().push("first job");
+
+                        let second_job_steps = Rc::clone(&first_job_steps);
+                        let second_realm = job_context.current_realm();
+                        job_context.enqueue_job_with_realm(
+                            second_realm,
+                            Box::new(move |nested_job_context| {
+                                let marker = nested_job_context
+                                    .get_host_any(&TypeId::of::<RealmMarker>())
+                                    .and_then(|data| data.downcast_ref::<RealmMarker>())
+                                    .map(|marker| marker.0);
+                                assert_eq!(marker, Some("promise"));
+                                second_job_steps.borrow_mut().push("second job");
+                            }),
+                        );
+                    }),
+                );
+                Ok(execution_context.value_undefined())
+            }),
+            0,
+            callback_name.clone(),
+            false,
+        );
+        promise_engine
+            .create_data_property(
+                promise_global,
+                callback_name,
+                V8Types::value_from_object(callback.0),
+            )
+            .expect("the job callback must be installed");
+        ExecutionContext::evaluate_script(
+            &mut promise_engine,
+            "Promise.resolve().then(enqueueRealmJobs)",
+        )
+        .expect("the promise job must be queued");
+
+        checkpoint_engine
+            .perform_a_microtask_checkpoint()
+            .expect("the shared queues must drain until stable");
+
+        assert_eq!(
+            execution_steps.borrow().as_slice(),
+            ["promise", "first job", "second job"]
+        );
+    }
+
+    #[test]
+    fn queued_realm_state_survives_context_destruction_and_forced_gc() {
+        let mut parent_engine = V8Engine::new();
+        let mut child_engine = parent_engine.new_child_realm();
+        let realm_data_dropped = Rc::new(Cell::new(false));
+        child_engine.store_host_any(
+            TypeId::of::<DropFlag>(),
+            Box::new(DropFlag(Rc::clone(&realm_data_dropped))),
+        );
+        let job_ran = Rc::new(Cell::new(false));
+        let job_result = Rc::clone(&job_ran);
+        let child_realm = child_engine.current_realm();
+        child_engine.enqueue_job_with_realm(
+            child_realm,
+            Box::new(move |execution_context| {
+                assert!(
+                    execution_context
+                        .get_host_any(&TypeId::of::<DropFlag>())
+                        .and_then(|data| data.downcast_ref::<DropFlag>())
+                        .is_some()
+                );
+                job_result.set(true);
+            }),
+        );
+
+        drop(child_engine);
+        assert!(!realm_data_dropped.get());
+
+        parent_engine
+            .perform_a_microtask_checkpoint()
+            .expect("the queued child-realm job must remain valid");
+        parent_engine.gc();
+
+        assert!(job_ran.get());
+        assert!(realm_data_dropped.get());
     }
 
     #[test]
@@ -2946,7 +3659,7 @@ mod tests {
             callback_name.clone(),
             false,
         );
-        let callback_value = V8Types::value_from_object(callback);
+        let callback_value = V8Types::value_from_object(callback.0);
         let global = engine.realm_global_object();
         engine
             .create_data_property(global, callback_name, callback_value)
@@ -2977,7 +3690,7 @@ mod tests {
             callback_name.clone(),
             false,
         );
-        let callback_value = V8Types::value_from_object(callback);
+        let callback_value = V8Types::value_from_object(callback.0);
         let global = engine.realm_global_object();
         engine
             .create_data_property(global, callback_name, callback_value)
@@ -3021,8 +3734,9 @@ mod tests {
             .get_function_realm(&function)
             .expect("the function realm must be found");
 
-        assert_eq!(function_realm.isolate_id, child_engine.realm.isolate_id);
-        assert_eq!(function_realm.context, child_engine.realm.context);
+        let child_realm = child_engine.current_realm();
+        assert_eq!(function_realm.isolate_id, child_realm.isolate_id);
+        assert_eq!(function_realm.context, child_realm.context);
     }
 
     #[test]
