@@ -136,7 +136,7 @@ pub(crate) fn create_interface_instance<Ty, T>(
     ec: &mut dyn ExecutionContext<Ty>,
 ) -> Completion<Ty::JsObject, Ty>
 where
-    Ty: JsTypes + JsTypesWithRealm,
+    Ty: JsTypes + JsTypesWithRealm + PostCreateReflector<Ty>,
     T: 'static,
 {
     // <https://webidl.spec.whatwg.org/#internally-create-a-new-object-implementing-the-interface>
@@ -165,6 +165,8 @@ where
     //   indexed properties, named properties, or both:"
     //   Not yet implemented.
     // Step 14: "Return instance."
+    <Ty as PostCreateReflector<Ty>>::set_reflector(&instance, ec);
+
     Ok(instance)
 }
 
