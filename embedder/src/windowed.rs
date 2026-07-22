@@ -29,7 +29,6 @@ use kurbo::Affine;
 use serde_json::Value;
 use std::collections::HashMap;
 
-use ipc_messages::graphics::FrameHitInfo;
 use std::sync::{Arc, LazyLock, Mutex};
 use std::time::{Duration, Instant};
 use uuid::Uuid;
@@ -195,7 +194,7 @@ pub(super) struct WindowedApp {
     pub(super) provider: Option<WebviewProvider>,
     pub(super) active_window_id: Option<WindowId>,
     /// Pre-composed scenes from the graphics process, keyed by webview.
-    pub(super) composed_scenes: HashMap<WebviewId, (RecordedScene, Vec<FrameHitInfo>)>,
+    pub(super) composed_scenes: HashMap<WebviewId, RecordedScene>,
     /// Font receiver for resolving font data in composed scenes.
     pub(super) scene_font_receiver: FontTransportReceiver,
 }
@@ -418,7 +417,7 @@ impl WindowedApp {
 
     fn paint_frame(
         state: &mut WindowState,
-        composed_scenes: &HashMap<WebviewId, (RecordedScene, Vec<FrameHitInfo>)>,
+        composed_scenes: &HashMap<WebviewId, RecordedScene>,
         font_receiver: &mut FontTransportReceiver,
     ) {
         if !Self::has_visible_viewport(state) {
@@ -454,7 +453,7 @@ impl WindowedApp {
         state.renderer.render(|scene| {
             if let Some(webview_id) = active_tab {
                 // Use the composed scene from the graphics process.
-                if let Some((recorded_scene, _hit_info)) = composed_scenes.get(&webview_id) {
+                if let Some(recorded_scene) = composed_scenes.get(&webview_id) {
                     debug!(
                         "[embedder] paint_frame appending composed scene webview={:?} summary={:?}",
                         webview_id,
@@ -469,16 +468,7 @@ impl WindowedApp {
                     for (i, cmd) in content_scene.commands.iter().enumerate() {
                         debug!("[embedder] paint_frame cmd[{}]: {:?}", i, cmd);
                     }
-                    // Fill the content area with white before compositing the scene.
-                    // The content scene may have a transparent background (e.g. about:blank).
                     let content_transform = Affine::translate((0.0, chrome_height));
-                    scene.fill(
-                        kurbo::Fill::NonZero,
-                        content_transform,
-                        peniko::Color::WHITE,
-                        None,
-                        &kurbo::Rect::new(0.0, 0.0, f64::from(size.width), f64::from(size.height)),
-                    );
                     scene.append_scene(content_scene, content_transform);
                 } else {
                     debug!(
@@ -1108,6 +1098,10 @@ impl ApplicationHandler<FormalWebUserEvent> for WindowedApp {
                 }
             }
             FormalWebUserEvent::NewWebview(webview_id, _) => {
+                debug!(
+                    "[embedder] NewWebview webview={:?}",
+                    webview_id
+                );
                 if let Some(active_window) = self.active_window_id
                     && let Some(state) = self.windows.get_mut(&active_window)
                 {
@@ -1156,7 +1150,6 @@ impl ApplicationHandler<FormalWebUserEvent> for WindowedApp {
                 scene_bytes,
                 font_registrations,
                 font_data,
-                frame_hit_info,
             } => {
                 debug!(
                     "[embedder] NewWebContentScene webview={:?} scene_bytes={}",
@@ -1166,11 +1159,8 @@ impl ApplicationHandler<FormalWebUserEvent> for WindowedApp {
                 // Register fonts from the graphics process.
                 self.scene_font_receiver
                     .register_fonts(font_registrations, &font_data);
-                // Forward the frame hit info to the provider for UI event routing.
-                if let Some(provider) = self.provider.as_mut() {
-                    provider.store_frame_hit_info(webview_id, frame_hit_info.clone());
-                }
                 // Deserialize and store the composed scene directly in the app.
+                // FrameHitInfo stays in the user agent for UI event routing.
                 match ipc_messages::content::deserialize_scene_from_slice(&scene_bytes) {
                     Ok(scene) => {
                         debug!(
@@ -1178,7 +1168,7 @@ impl ApplicationHandler<FormalWebUserEvent> for WindowedApp {
                             webview_id
                         );
                         self.composed_scenes
-                            .insert(webview_id, (scene, frame_hit_info));
+                            .insert(webview_id, scene.clone());
                         // Trigger a redraw so the new scene is rendered.
                         if let Some(window) = Self::window_for_webview(self, webview_id) {
                             if let Some(state) = self.windows.get(&window) {

@@ -82,6 +82,10 @@ impl Embedder for EventLoopEmbedder {
     }
 
     fn new_webview(&self, webview_id: WebviewId, target_name: String) -> Result<(), String> {
+        log::debug!(
+            "[embedder] Embedder::new_webview webview={:?} target={}",
+            webview_id, target_name
+        );
         self.dispatcher
             .send(FormalWebUserEvent::NewWebview(webview_id, target_name))
     }
@@ -128,7 +132,6 @@ impl Embedder for EventLoopEmbedder {
         scene_bytes: Vec<u8>,
         font_registrations: Vec<ipc_messages::content::RegisteredFont>,
         font_data: std::collections::HashMap<usize, Vec<u8>>,
-        frame_hit_info: Vec<ipc_messages::graphics::FrameHitInfo>,
     ) -> Result<(), String> {
         self.dispatcher
             .send(FormalWebUserEvent::NewWebContentScene {
@@ -136,7 +139,6 @@ impl Embedder for EventLoopEmbedder {
                 scene_bytes,
                 font_registrations,
                 font_data,
-                frame_hit_info,
             })
     }
 }
@@ -148,7 +150,6 @@ pub enum FormalWebUserEvent {
         scene_bytes: Vec<u8>,
         font_registrations: Vec<ipc_messages::content::RegisteredFont>,
         font_data: std::collections::HashMap<usize, Vec<u8>>,
-        frame_hit_info: Vec<ipc_messages::graphics::FrameHitInfo>,
     },
     NavigationRequested {
         webview_id: WebviewId,

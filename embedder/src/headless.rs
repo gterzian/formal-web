@@ -17,7 +17,6 @@ use blitz_traits::events::{
 };
 use blitz_traits::shell::ColorScheme;
 use ipc_messages::content::{FontTransportReceiver, RecordedScene, WebviewId};
-use ipc_messages::graphics::FrameHitInfo;
 use keyboard_types::Modifiers as KeyboardModifiers;
 use log::error;
 use serde_json::Value;
@@ -45,7 +44,7 @@ pub(super) struct HeadlessEmbedderApp {
     pub(super) provider: Option<WebviewProvider>,
     pub(super) current_webview_id: Option<WebviewId>,
     pub(super) buttons: MouseEventButtons,
-    pub(super) composed_scenes: HashMap<WebviewId, (RecordedScene, Vec<FrameHitInfo>)>,
+    pub(super) composed_scenes: HashMap<WebviewId, RecordedScene>,
     pub(super) scene_font_receiver: FontTransportReceiver,
 }
 
@@ -351,7 +350,6 @@ impl ApplicationHandler<FormalWebUserEvent> for HeadlessEmbedderApp {
                 scene_bytes,
                 font_registrations,
                 font_data,
-                frame_hit_info,
             } => {
                 // Register fonts from the graphics process.
                 self.scene_font_receiver
@@ -360,7 +358,7 @@ impl ApplicationHandler<FormalWebUserEvent> for HeadlessEmbedderApp {
                 match ipc_messages::content::deserialize_scene_from_slice(&scene_bytes) {
                     Ok(scene) => {
                         self.composed_scenes
-                            .insert(webview_id, (scene, frame_hit_info));
+                            .insert(webview_id, scene);
                     }
                     Err(error) => {
                         error!("[embedder] failed to deserialize composed scene: {error}");

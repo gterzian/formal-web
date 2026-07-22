@@ -1,6 +1,5 @@
 pub mod ui_event;
 
-use anyrender::{PaintScene, Scene as RenderScene};
 use blitz_traits::events::UiEvent;
 use blitz_traits::shell::ColorScheme;
 use crossbeam_channel::{Receiver, unbounded};
@@ -8,9 +7,6 @@ use ipc_messages::content::{
     FrameId, NavigableId, NavigateRequest,
     UserNavigationInvolvement, WebviewId, WebviewProviderMessage,
 };
-use ipc_messages::graphics::FrameHitInfo;
-use ipc_messages::media::VideoPaintId;
-use kurbo::Affine;
 use log::{debug, error, trace};
 use std::collections::HashMap;
 use std::env;
@@ -37,6 +33,7 @@ pub struct VisibleFrameViewport {
 #[derive(Clone)]
 pub struct WebviewState {
     pub current_navigable_id: Option<NavigableId>,
+    #[allow(dead_code)]
     focused_frame_id: Option<FrameId>,
 }
 
@@ -52,17 +49,8 @@ impl Default for WebviewState {
 #[derive(Clone, Copy)]
 struct ChildNavigableHost {
     parent_traversable_id: WebviewId,
+    #[allow(dead_code)]
     content_frame_id: FrameId,
-}
-
-#[derive(Clone, PartialEq)]
-struct PublishedChildViewport {
-    width: u32,
-    height: u32,
-    scale: f32,
-    color_scheme: ColorScheme,
-    offset_x: f32,
-    offset_y: f32,
 }
 
 fn startup_destination_url(startup_url: Option<&str>) -> Result<String, String> {
@@ -91,10 +79,7 @@ pub struct WebviewProvider {
     webviews: HashMap<WebviewId, WebviewState>,
     child_navigable_hosts_by_webview: HashMap<WebviewId, ChildNavigableHost>,
     child_host_webviews_by_content_navigable: HashMap<FrameId, WebviewId>,
-    published_child_viewports: HashMap<WebviewId, PublishedChildViewport>,
-    /// The latest frame hit info per webview, published by the graphics process.
-    frame_hit_info: HashMap<WebviewId, Vec<FrameHitInfo>>,
-
+    #[allow(dead_code)]
     viewport_snapshot: Option<(u32, u32, f32, ColorScheme)>,
     embedder: Arc<dyn Embedder>,
     user_agent: UserAgent,
@@ -113,23 +98,11 @@ impl WebviewProvider {
             webviews: HashMap::new(),
             child_navigable_hosts_by_webview: HashMap::new(),
             child_host_webviews_by_content_navigable: HashMap::new(),
-            published_child_viewports: HashMap::new(),
-            frame_hit_info: HashMap::new(),
             viewport_snapshot: None,
             embedder,
             user_agent,
             provider_message_receiver,
         })
-    }
-
-    /// Store the latest frame hit info from the graphics process.
-    /// Used by `route_ui_event` for hit-testing.
-    pub fn store_frame_hit_info(
-        &mut self,
-        webview_id: WebviewId,
-        hit_info: Vec<FrameHitInfo>,
-    ) {
-        self.frame_hit_info.insert(webview_id, hit_info);
     }
 
     /// Process ALL pending provider messages in one batch.
@@ -214,61 +187,24 @@ impl WebviewProvider {
         }
     }
 
-    /// Route a UI event to the correct frame using frame hit info from the
-    /// graphics process. If no hit info is available, route directly to the
-    /// root webview (which is correct for single-frame pages).
-    fn route_ui_event(
-        &self,
-        root_webview_id: WebviewId,
-        event: UiEvent,
-    ) -> (WebviewId, UiEvent, Vec<FrameId>) {
-        // Try to find the target frame via hit-testing using FrameHitInfo.
-        // For pointer events, find which frame's clip bounds contain the pointer.
-        if let Some(hit_info_list) = self.frame_hit_info.get(&root_webview_id) {
-            if let Some((coords_x, coords_y)) = pointer_coords(&event) {
-                // Walk the hit info list in root-to-leaf order, checking clip bounds.
-                for info in hit_info_list.iter().rev() {
-                    // Check if pointer falls within this frame's root clip bounds.
-                    if coords_x >= info.root_clip_bounds[0]
-                        && coords_y >= info.root_clip_bounds[1]
-                        && coords_x <= info.root_clip_bounds[2]
-                        && coords_y <= info.root_clip_bounds[3]
-                    {
-                        // Convert coordinates to the frame's local space.
-                        let local_x = coords_x - info.root_clip_bounds[0];
-                        let local_y = coords_y - info.root_clip_bounds[1];
-                        let routed_event = translate_event_coords(&event, local_x as f32, local_y as f32);
-
-                        // Check if this frame belongs to a child webview.
-                        if let Some(child_host) = info
-                            .child_frame_ids
-                            .iter()
-                            .find_map(|child_id| {
-                                self.child_host_webviews_by_content_navigable
-                                    .get(child_id)
-                            })
-                        {
-                            return (*child_host, routed_event, Vec::new());
-                        }
-
-                        return (root_webview_id, routed_event, vec![info.frame_id]);
-                    }
-                }
-            }
+    pub fn send_ui_event(&self, webview_id: WebviewId, event: UiEvent) -> Result<(), String> {
+        if input_debug_enabled() {
+            let event_type = match &event {
+                UiEvent::PointerMove(_) => "PointerMove",
+                UiEvent::PointerUp(_) => "PointerUp",
+                UiEvent::PointerDown(_) => "PointerDown",
+                UiEvent::Wheel(_) => "Wheel",
+                _ => "other",
+            };
+            trace!(
+                "[input-debug][webview] send_ui_event webview={:?} type={}",
+                webview_id,
+                event_type,
+            );
         }
-
-        // Fallback: route directly to the root webview.
-        (root_webview_id, event, Vec::new())
-    }
-
-    pub fn send_ui_event(&mut self, webview_id: WebviewId, event: UiEvent) -> Result<(), String> {
         self.embedder.request_redraw(webview_id);
-        let (target_webview_id, routed_event, composed_frame_ids) =
-            self.route_ui_event(webview_id, event);
-        let event_message = ui_event::serialize_ui_event(&routed_event)?;
-        self.user_agent
-            .dispatch_event_for(target_webview_id.0, event_message)?;
-        self.note_rendering_opportunities(webview_id, composed_frame_ids, "ui_event");
+        let event_message = ui_event::serialize_ui_event(&event)?;
+        self.user_agent.send_ui_event(webview_id, event_message)?;
         Ok(())
     }
 
@@ -355,62 +291,10 @@ impl WebviewProvider {
         self.webviews.insert(webview_id, WebviewState::default());
     }
 
-    pub fn note_rendering_opportunities(
-        &self,
-        root_webview_id: WebviewId,
-        frame_ids: Vec<FrameId>,
-        reason: &str,
-    ) {
-        self.note_rendering_opportunity(root_webview_id, reason);
-        for frame_id in frame_ids {
-            if let Some(child_webview_id) = self
-                .child_host_webviews_by_content_navigable
-                .get(&frame_id)
-            {
-                self.note_rendering_opportunity(*child_webview_id, reason);
-            }
-        }
-    }
-
-    pub fn composed_scene_for_webview(
-        &mut self,
-        _webview_id: WebviewId,
-    ) -> Option<RenderScene> {
-        // Scene composition is now handled by the graphics process.
-        // This method should not be called — the embedder uses
-        // WindowedApp::composed_scenes directly.
-        None
-    }
-
-    pub fn append_web_content_scene(
-        &mut self,
-        _webview_id: WebviewId,
-        _target_scene: &mut impl PaintScene,
-        _transform: Affine,
-    ) -> bool {
-        // Scenes are composed by the graphics process and stored directly
-        // in the embedder. This path is obsolete.
-        false
-    }
-
-    pub fn current_scene(&mut self, _webview_id: WebviewId) -> Option<RenderScene> {
-        None
-    }
-
-    pub fn visible_frame_viewports(&mut self, _webview_id: WebviewId) -> Vec<VisibleFrameViewport> {
-        // Viewport computation is now done in the graphics process compositor.
-        Vec::new()
-    }
-
     pub fn current_navigable_id(&self, webview_id: WebviewId) -> Option<NavigableId> {
         self.webviews
             .get(&webview_id)
             .and_then(|state| state.current_navigable_id)
-    }
-
-    fn publish_visible_child_viewports(&mut self, _viewports: Vec<VisibleFrameViewport>) {
-        // Child viewport publishing is now handled by the graphics process
-        // via FrameHitInfo.
     }
 
     pub fn on_navigation_committed(&mut self, webview_id: WebviewId) {
@@ -439,45 +323,20 @@ impl WebviewProvider {
         }
     }
 
+    pub fn append_web_content_scene(
+        &mut self,
+        _webview_id: WebviewId,
+        _target_scene: &mut impl anyrender::PaintScene,
+        _transform: kurbo::Affine,
+    ) -> bool {
+        false
+    }
+
+    pub fn visible_frame_viewports(&mut self, _webview_id: WebviewId) -> Vec<VisibleFrameViewport> {
+        Vec::new()
+    }
+
     pub fn embedder(&self) -> &Arc<dyn Embedder> {
         &self.embedder
     }
-}
-
-/// Extract pointer coordinates from a UI event, if applicable.
-fn pointer_coords(event: &UiEvent) -> Option<(f64, f64)> {
-    match event {
-        UiEvent::PointerMove(e)
-        | UiEvent::PointerUp(e)
-        | UiEvent::PointerDown(e) => {
-            Some((f64::from(e.coords.client_x), f64::from(e.coords.client_y)))
-        }
-        UiEvent::Wheel(e) => {
-            Some((f64::from(e.coords.client_x), f64::from(e.coords.client_y)))
-        }
-        _ => None,
-    }
-}
-
-/// Translate event coordinates by an offset (for hit-tested child frames).
-fn translate_event_coords(event: &UiEvent, dx: f32, dy: f32) -> UiEvent {
-    let mut translated = event.clone();
-    match &mut translated {
-        UiEvent::PointerMove(e)
-        | UiEvent::PointerUp(e)
-        | UiEvent::PointerDown(e) => {
-            e.coords.page_x -= dx;
-            e.coords.page_y -= dy;
-            e.coords.client_x -= dx;
-            e.coords.client_y -= dy;
-        }
-        UiEvent::Wheel(e) => {
-            e.coords.page_x -= dx;
-            e.coords.page_y -= dy;
-            e.coords.client_x -= dx;
-            e.coords.client_y -= dy;
-        }
-        _ => {}
-    }
-    translated
 }

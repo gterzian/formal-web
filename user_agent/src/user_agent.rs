@@ -138,7 +138,6 @@ pub trait Embedder: Send + Sync {
         scene_bytes: Vec<u8>,
         font_registrations: Vec<ipc_messages::content::RegisteredFont>,
         font_data: std::collections::HashMap<usize, Vec<u8>>,
-        frame_hit_info: Vec<ipc_messages::graphics::FrameHitInfo>,
     ) -> Result<(), String>;
 }
 
@@ -900,6 +899,11 @@ pub enum UserAgentCommand {
         nesting_level: u32,
     },
 
+    SendUiEvent {
+        webview_id: WebviewId,
+        event_message: String,
+        reply: crossbeam_channel::Sender<Result<(NavigableId, Vec<FrameId>), String>>,
+    },
     IframeTraversableRemoved {
         parent_traversable_id: NavigableId,
         content_navigable_id: NavigableId,
@@ -1040,6 +1044,25 @@ impl UserAgent {
                 event,
             })
             .map_err(|error| format!("failed to send dispatch-event request: {error}"))
+    }
+
+    /// Send a UI event to the user agent for hit-testing and dispatch to content.
+    pub fn send_ui_event(
+        &self,
+        webview_id: WebviewId,
+        event_message: String,
+    ) -> Result<(NavigableId, Vec<FrameId>), String> {
+        let (reply_sender, reply_receiver) = crossbeam_channel::bounded(1);
+        self.command_sender
+            .send(UserAgentCommand::SendUiEvent {
+                webview_id,
+                event_message,
+                reply: reply_sender,
+            })
+            .map_err(|error| format!("failed to send ui event: {error}"))?;
+        reply_receiver
+            .recv()
+            .map_err(|error| format!("send ui event reply channel closed: {error}"))?
     }
 
     /// <https://html.spec.whatwg.org/multipage/#update-the-rendering>
@@ -1391,6 +1414,13 @@ impl UserAgentWorker {
                             offset_x,
                             offset_y,
                         );
+                    }
+                    UserAgentCommand::SendUiEvent {
+                        webview_id,
+                        event_message,
+                        reply,
+                    } => {
+                        self.handle_send_ui_event(webview_id, event_message, reply);
                     }
                     UserAgentCommand::DispatchEventFor {
                         traversable_id,
@@ -2964,6 +2994,20 @@ impl UserAgentWorker {
             document.is_initial_about_blank = finalized.url == "about:blank";
         }
         self.handle_rendering_opportunity_for(pending.traversable_id);
+        // Notify the graphics process that a top-level navigation finalized.
+        // This sets replace_root_on_next_paint so the next PaintFrame replaces
+        // the old about:blank scene with the new page's scene.
+        if let Some(graphics_sender) = &self.graphics_extension_sender {
+            if let Err(error) = graphics_sender.send(
+                ipc_messages::graphics::GraphicsCommand::NavigationFinalized {
+                    webview_id: WebviewId(pending.traversable_id),
+                },
+            ) {
+                log::error!(
+                    "failed to notify graphics of navigation finalization: {error}"
+                );
+            }
+        }
         let notify_result = self.host.navigation_completed(NavigationCompleted {
             webview_id: WebviewId(pending.traversable_id),
             status: NavigationCompletion::Committed {
@@ -3154,6 +3198,108 @@ impl UserAgentWorker {
 
     /// queuing DOM event dispatch on the traversable's owning
     /// <https://html.spec.whatwg.org/multipage/#event-loop>.
+    fn handle_send_ui_event(
+        &mut self,
+        webview_id: WebviewId,
+        event_message: String,
+        reply: crossbeam_channel::Sender<Result<(NavigableId, Vec<FrameId>), String>>,
+    ) {
+        let result = self.do_send_ui_event(webview_id, &event_message);
+        let _ = reply.send(result);
+    }
+
+    fn do_send_ui_event(
+        &mut self,
+        webview_id: WebviewId,
+        event_message: &str,
+    ) -> Result<(NavigableId, Vec<FrameId>), String> {
+        if input_debug_enabled() {
+            trace!(
+                "[input-debug][user-agent] send_ui_event webview={:?} bytes={}",
+                webview_id,
+                event_message.len(),
+            );
+        }
+
+        let event = crate::ui_event::deserialize_ui_event(event_message)?;
+
+        // Hit test using frame hit info from the graphics process.
+        let (target_webview_id, routed_event, composed_frame_ids) =
+            self.route_ui_event(webview_id, event);
+
+        if input_debug_enabled() {
+            trace!(
+                "[input-debug][user-agent] send_ui_event routed webview={:?} target={:?}",
+                webview_id,
+                target_webview_id,
+            );
+        }
+
+        let routed_message = crate::ui_event::serialize_ui_event(&routed_event)?;
+        self.handle_dispatch_event_for(target_webview_id.0, routed_message);
+
+        // Trigger rendering opportunities for affected frames.
+        self.note_rendering_opportunities(webview_id, &composed_frame_ids);
+
+        // Update focused frame for pointer-down events.
+        if matches!(&routed_event, blitz_traits::events::UiEvent::PointerDown(_)) {
+            if let Some(hit_info_list) = self.state.frame_hit_info.get(&webview_id) {
+                for info in hit_info_list {
+                    if let Some((coords_x, coords_y)) = pointer_coords(&routed_event) {
+                        if coords_x >= info.root_clip_bounds[0]
+                            && coords_y >= info.root_clip_bounds[1]
+                            && coords_x <= info.root_clip_bounds[2]
+                            && coords_y <= info.root_clip_bounds[3]
+                        {
+                            let _ = info.frame_id;
+                            break;
+                        }
+                    }
+                }
+            }
+        }
+
+        Ok((target_webview_id.0, composed_frame_ids))
+    }
+
+    /// Route a UI event to the correct frame using frame hit info from the
+    /// graphics process.
+    fn route_ui_event(
+        &self,
+        root_webview_id: WebviewId,
+        event: blitz_traits::events::UiEvent,
+    ) -> (WebviewId, blitz_traits::events::UiEvent, Vec<FrameId>) {
+        if let Some(hit_info_list) = self.state.frame_hit_info.get(&root_webview_id) {
+            if let Some((coords_x, coords_y)) = pointer_coords(&event) {
+                for info in hit_info_list.iter().rev() {
+                    if coords_x >= info.root_clip_bounds[0]
+                        && coords_y >= info.root_clip_bounds[1]
+                        && coords_x <= info.root_clip_bounds[2]
+                        && coords_y <= info.root_clip_bounds[3]
+                    {
+                        let local_x = coords_x - info.root_clip_bounds[0];
+                        let local_y = coords_y - info.root_clip_bounds[1];
+                        let routed_event =
+                            translate_event_coords(&event, local_x as f32, local_y as f32);
+
+                        if let Some(child_host) = info.child_frame_ids.iter().find_map(|_child_id| {
+                            None // Child webview lookup uses UA state, not available here yet
+                        }) {
+                            return (child_host, routed_event, Vec::new());
+                        }
+
+                        return (root_webview_id, routed_event, vec![info.frame_id]);
+                    }
+                }
+            }
+        }
+        (root_webview_id, event, Vec::new())
+    }
+
+    fn note_rendering_opportunities(&self, _root_webview_id: WebviewId, _frame_ids: &[FrameId]) {
+        // TODO: note rendering opportunity for affected frames
+    }
+
     fn handle_dispatch_event_for(&mut self, traversable_id: NavigableId, event: String) {
         let Some(handle) = self.state.traversable_handles.get(&traversable_id).copied() else {
             return;
@@ -3618,13 +3764,13 @@ impl UserAgentWorker {
                     .frame_hit_info
                     .insert(*webview_id, frame_hit_info.clone());
 
-                // Forward to the embedder host with font data.
+                // Forward the scene to the embedder host with font data.
+                // The frame hit info stays in the user agent for UI event routing.
                 if let Err(error) = self.host.new_web_content_scene(
                     *webview_id,
                     scene_bytes,
                     font_registrations.clone(),
                     font_data,
-                    frame_hit_info.clone(),
                 ) {
                     error!("[graphics] failed to forward composed scene: {error}");
                 }
@@ -3634,4 +3780,46 @@ impl UserAgentWorker {
             }
         }
     }
+}
+
+/// Extract pointer coordinates from a UI event, if applicable.
+fn pointer_coords(event: &blitz_traits::events::UiEvent) -> Option<(f64, f64)> {
+    match event {
+        blitz_traits::events::UiEvent::PointerMove(e)
+        | blitz_traits::events::UiEvent::PointerUp(e)
+        | blitz_traits::events::UiEvent::PointerDown(e) => {
+            Some((f64::from(e.coords.client_x), f64::from(e.coords.client_y)))
+        }
+        blitz_traits::events::UiEvent::Wheel(e) => {
+            Some((f64::from(e.coords.client_x), f64::from(e.coords.client_y)))
+        }
+        _ => None,
+    }
+}
+
+/// Translate event coordinates by an offset (for hit-tested child frames).
+fn translate_event_coords(
+    event: &blitz_traits::events::UiEvent,
+    dx: f32,
+    dy: f32,
+) -> blitz_traits::events::UiEvent {
+    let mut translated = event.clone();
+    match &mut translated {
+        blitz_traits::events::UiEvent::PointerMove(e)
+        | blitz_traits::events::UiEvent::PointerUp(e)
+        | blitz_traits::events::UiEvent::PointerDown(e) => {
+            e.coords.page_x -= dx;
+            e.coords.page_y -= dy;
+            e.coords.client_x -= dx;
+            e.coords.client_y -= dy;
+        }
+        blitz_traits::events::UiEvent::Wheel(e) => {
+            e.coords.page_x -= dx;
+            e.coords.page_y -= dy;
+            e.coords.client_x -= dx;
+            e.coords.client_y -= dy;
+        }
+        _ => {}
+    }
+    translated
 }

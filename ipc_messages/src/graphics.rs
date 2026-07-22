@@ -66,6 +66,11 @@ pub enum GraphicsCommand {
         parent_traversable_id: WebviewId,
         content_frame_id: FrameId,
     },
+    /// Notify the compositor that a top-level navigation finalized.
+    /// Resets the compositor so the next PaintFrame replaces the old root scene.
+    NavigationFinalized {
+        webview_id: WebviewId,
+    },
     /// Shut down the graphics process.
     Shutdown,
 }

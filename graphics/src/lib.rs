@@ -234,6 +234,11 @@ fn handle_command<B: MediaBackend + 'static>(
                     .note_child_navigation_finalized(content_frame_id);
             }
         }
+        GraphicsCommand::NavigationFinalized { webview_id } => {
+            if let Some(slot) = webviews.get_mut(&webview_id) {
+                slot.compositor.note_navigation_finalized();
+            }
+        }
         GraphicsCommand::CreateMediaPipeline {
             pipeline_id,
             url,
