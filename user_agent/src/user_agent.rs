@@ -3779,43 +3779,19 @@ impl UserAgentWorker {
                     video_frame.width, video_frame.height, pipeline_id,
                 );
 
-                // VideoFrame.data is #[serde(skip)] — extract pixel data, send via
-                // shmem alongside the command, then send a copy to the webview provider.
-                let frame_width = video_frame.width;
-                let frame_height = video_frame.height;
-                let pixel_data = std::mem::take(&mut video_frame.data);
-
-                // Send to the graphics process with pixel data in shared memory.
-                if let Some(graphics_sender) = &self.graphics_extension_sender {
-                    let mut shmem_map = std::collections::HashMap::new();
-                    shmem_map.insert(0, ipc::IpcSharedRegion::from_bytes(&pixel_data));
-                    let command = ipc_messages::graphics::GraphicsCommand::VideoFrameReady {
-                        webview_id,
-                        paint_id,
-                        data: video_frame,
-                    };
-                    if let Err(error) = graphics_sender.send_with_shmem_map(command, shmem_map) {
-                        error!("[media] failed to send video frame to graphics process: {error}");
-                    }
-                }
-
-                // Reconstruct video frame for the webview provider path.
-                let provider_video_frame = ipc_messages::media::VideoFrame {
-                    pipeline_id,
-                    width: frame_width,
-                    height: frame_height,
-                    data: pixel_data,
-                };
+                // Media now runs inside the graphics process — video frames from the
+                // media backend go directly to the compositor within the graphics process.
+                // Keep forwarding to the webview provider for the local composition path.
                 debug!(
                     "[media] forwarding frame to compositor: {}x{} paint={:?}",
-                    frame_width, frame_height, paint_id
+                    video_frame.width, video_frame.height, paint_id
                 );
                 if let Err(error) =
                     self.webview_provider_sender
                         .send(WebviewProviderMessage::VideoFrameReady {
                             webview_id,
                             paint_id,
-                            data: provider_video_frame,
+                            data: video_frame,
                         })
                 {
                     error!("[media] failed to enqueue video frame: {error}");

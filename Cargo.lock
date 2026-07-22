@@ -2273,20 +2273,13 @@ dependencies = [
  "anyrender",
  "crossbeam-channel",
  "env_logger",
- "gstreamer",
- "gstreamer-app",
  "ipc",
  "ipc_messages",
  "kurbo",
  "log",
- "objc2 0.6.4",
- "objc2-av-foundation",
- "objc2-core-media",
- "objc2-core-video",
- "objc2-foundation 0.3.2",
+ "media",
  "peniko",
  "serde",
- "url",
 ]
 
 [[package]]

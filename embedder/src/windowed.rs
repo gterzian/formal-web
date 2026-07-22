@@ -22,13 +22,14 @@ use blitz_traits::events::{
     MouseEventButton, MouseEventButtons, PointerCoords, PointerDetails, UiEvent,
 };
 use blitz_traits::shell::{ColorScheme, ShellProvider};
-use ipc_messages::content::WebviewId;
+use ipc_messages::content::{FontTransportReceiver, RecordedScene, RegisteredFont, WebviewId};
 #[cfg(target_os = "macos")]
 use keyboard_types::{Key, Modifiers as KeyboardModifiers};
 use kurbo::Affine;
 use serde_json::Value;
 use std::collections::HashMap;
 
+use ipc_messages::graphics::FrameHitInfo;
 use std::sync::{Arc, LazyLock, Mutex};
 use std::time::{Duration, Instant};
 use uuid::Uuid;
@@ -193,6 +194,10 @@ pub(super) struct WindowedApp {
     pub(super) windows: HashMap<WindowId, WindowState>,
     pub(super) provider: Option<WebviewProvider>,
     pub(super) active_window_id: Option<WindowId>,
+    /// Pre-composed scenes from the graphics process, keyed by webview.
+    pub(super) composed_scenes: HashMap<WebviewId, (RecordedScene, Vec<FrameHitInfo>)>,
+    /// Font receiver for resolving font data in composed scenes.
+    pub(super) scene_font_receiver: FontTransportReceiver,
 }
 
 type ViewportSnapshot = Option<(u32, u32, f32, ColorScheme)>;
@@ -1114,14 +1119,24 @@ impl ApplicationHandler<FormalWebUserEvent> for WindowedApp {
                 font_data,
                 frame_hit_info,
             } => {
-                if let Some(provider) = self.provider.as_mut() {
-                    provider.store_composed_scene(
-                        webview_id,
-                        scene_bytes,
-                        font_registrations,
-                        font_data,
-                        frame_hit_info,
-                    );
+                // Register fonts from the graphics process.
+                self.scene_font_receiver
+                    .register_fonts(font_registrations, &font_data);
+                // Deserialize and store the composed scene directly in the app.
+                match ipc_messages::content::deserialize_scene_from_slice(&scene_bytes) {
+                    Ok(scene) => {
+                        self.composed_scenes
+                            .insert(webview_id, (scene, frame_hit_info));
+                        // Trigger a redraw so the new scene is rendered.
+                        if let Some(window) = Self::window_for_webview(self, webview_id) {
+                            if let Some(state) = self.windows.get(&window) {
+                                Self::request_window_redraw(state);
+                            }
+                        }
+                    }
+                    Err(error) => {
+                        error!("[embedder] failed to deserialize composed scene: {error}");
+                    }
                 }
             }
             FormalWebUserEvent::Exit => event_loop.exit(),

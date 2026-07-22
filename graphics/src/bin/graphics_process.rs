@@ -1,11 +1,7 @@
 use ipc_messages::graphics::{GraphicsCommand, GraphicsEvent};
-
-// A concrete backend placeholder until media backends are integrated.
-// This allows the graphics process to be built and run for composition only.
-use graphics::backend::MediaBackend;
+use media::backend::{BackendEvent, MediaBackend, PipelineHandle};
 
 struct NoopBackend;
-
 impl MediaBackend for NoopBackend {
     type Pipeline = NoopPipeline;
     fn init() -> Result<Self, String> {
@@ -16,25 +12,23 @@ impl MediaBackend for NoopBackend {
         _id: ipc_messages::media::MediaPipelineId,
         _url: String,
     ) -> Result<Self::Pipeline, String> {
-        Err("no media backend available".into())
+        Err("no media backend".into())
     }
-    fn event_receiver(&self) -> crossbeam_channel::Receiver<graphics::backend::BackendEvent> {
+    fn event_receiver(&self) -> crossbeam_channel::Receiver<BackendEvent> {
         let (tx, rx) = crossbeam_channel::unbounded();
         drop(tx);
         rx
     }
 }
-
 struct NoopPipeline;
-
-impl graphics::backend::PipelineHandle for NoopPipeline {
+impl PipelineHandle for NoopPipeline {
     fn play(&self) -> Result<(), String> {
         Ok(())
     }
     fn pause(&self) -> Result<(), String> {
         Ok(())
     }
-    fn seek(&self, _position_secs: f64) -> Result<(), String> {
+    fn seek(&self, _p: f64) -> Result<(), String> {
         Ok(())
     }
     fn destroy(self) -> Result<(), String> {
@@ -48,18 +42,18 @@ fn main() {
 
     let token = {
         let mut args = std::env::args().skip(1);
-        let mut found_token_value = None;
+        let mut found = None;
         while let Some(arg) = args.next() {
             if arg == "--graphics-token" {
-                found_token_value = args.next();
+                found = args.next();
                 break;
             }
-            if let Some(value) = arg.strip_prefix("--graphics-token=") {
-                found_token_value = Some(value.to_owned());
+            if let Some(val) = arg.strip_prefix("--graphics-token=") {
+                found = Some(val.to_owned());
                 break;
             }
         }
-        found_token_value.unwrap_or_default()
+        found.unwrap_or_default()
     };
 
     let result = ipc::run_extension::<GraphicsCommand, GraphicsEvent>(&token, |server| {

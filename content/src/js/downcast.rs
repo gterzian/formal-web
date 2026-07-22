@@ -3,7 +3,9 @@
 //! These use [`ExecutionContext::with_object_any`] / `with_object_any_mut`
 //! to extract native Rust data from JavaScript platform objects.
 
-use crate::dom::{AbortController, AbortSignal, Document, Element, Event, EventTarget, Node, UIEvent};
+use crate::dom::{
+    AbortController, AbortSignal, Document, Element, Event, EventTarget, Node, UIEvent,
+};
 use crate::html::{
     HTMLAnchorElement, HTMLElement, HTMLIFrameElement, HTMLInputElement, HTMLMediaElement,
     HTMLVideoElement, Window,

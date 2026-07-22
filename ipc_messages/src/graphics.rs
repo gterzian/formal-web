@@ -1,5 +1,5 @@
 use crate::content::{FrameId, PaintFrame, RegisteredFont, WebviewId};
-use crate::media::{VideoFrame, VideoPaintId};
+use crate::media::{MediaPipelineId, VideoPaintId};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
@@ -32,18 +32,27 @@ pub enum GraphicsCommand {
     /// A paint frame (scene + composition metadata) from a content process.
     /// The full PaintFrame with its shmem regions is reconstructed before sending.
     PaintFrame { frame: PaintFrame },
-    /// A decoded video frame from the media backend, ready for compositing.
-    VideoFrameReady {
-        webview_id: WebviewId,
-        paint_id: VideoPaintId,
-        /// RGBA8 pixel data.
-        data: VideoFrame,
-    },
     /// Remove a video frame slot (pipeline destroyed).
     RemoveVideoFrame {
         webview_id: WebviewId,
         paint_id: VideoPaintId,
     },
+    /// Create a media pipeline (video playback) internally in the graphics process.
+    CreateMediaPipeline {
+        pipeline_id: MediaPipelineId,
+        url: String,
+    },
+    /// Start or resume playback of a media pipeline.
+    MediaPlay { pipeline_id: MediaPipelineId },
+    /// Pause playback of a media pipeline.
+    MediaPause { pipeline_id: MediaPipelineId },
+    /// Seek a media pipeline to a position.
+    MediaSeek {
+        pipeline_id: MediaPipelineId,
+        position_secs: f64,
+    },
+    /// Destroy a media pipeline.
+    MediaDestroy { pipeline_id: MediaPipelineId },
     /// Register a child navigable host mapping.
     RegisterChildNavigableHost {
         child_webview_id: WebviewId,
@@ -63,22 +72,31 @@ pub enum GraphicsCommand {
 // GraphicsEvent — messages from graphics process → user agent
 // ---------------------------------------------------------------------------
 
-/// Hit-testing info for a single frame in the composed scene.
+/// Frame tree node layout data — published by the graphics process for the UA
+/// to do hit-testing and event routing. Each node represents one frame (root,
+/// iframe child, or video frame slot) with its position and clip rect in root
+/// coordinates, plus the transform from child local space to parent space.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct FrameHitInfo {
     pub frame_id: FrameId,
     /// The webview that owns this frame.
     pub webview_id: WebviewId,
-    /// Local viewport size (logical pixels).
+    /// Parent frame, if this is a child frame.
+    pub parent_frame_id: Option<FrameId>,
+    /// Viewport width in logical pixels.
     pub viewport_width: u32,
+    /// Viewport height in logical pixels.
     pub viewport_height: u32,
-    /// Offset from the parent frame's origin (in root coordinates).
-    pub offset_x: f32,
-    pub offset_y: f32,
-    /// Whether this frame is a child of another frame.
-    pub is_child_frame: bool,
-    /// Whether this frame has child frames.
-    pub has_child_frames: bool,
+    /// Clip rectangle in root coordinates [x0, y0, x1, y1].
+    /// The UA checks if a pointer event falls within this rect
+    /// to determine which frame the event targets.
+    pub root_clip_bounds: [f64; 4],
+    /// Affine transform [a, b, c, d, tx, ty] from this frame's local
+    /// coordinate space to its parent frame's space. The UA uses this
+    /// to convert pointer coordinates when traversing the frame tree.
+    pub child_to_parent_transform: [f64; 6],
+    /// IDs of direct child frames in this frame's embed tree.
+    pub child_frame_ids: Vec<FrameId>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

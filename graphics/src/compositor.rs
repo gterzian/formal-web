@@ -222,25 +222,61 @@ impl Compositor {
             return;
         };
 
-        let is_child_frame = frame.parent_frame_id.is_some();
+        let child_ids: Vec<FrameId> = frame
+            .child_frames
+            .iter()
+            .map(|c| c.child_frame_id)
+            .collect();
+        // Use the first child's root clip bounds as the clip for this frame
+        // (the frame's own clip is its viewport, which covers the full content area).
+        let root_clip = frame
+            .child_frames
+            .first()
+            .map(|c| {
+                [
+                    c.root_clip_bounds.x0,
+                    c.root_clip_bounds.y0,
+                    c.root_clip_bounds.x1,
+                    c.root_clip_bounds.y1,
+                ]
+            })
+            .unwrap_or([
+                0.0,
+                0.0,
+                f64::from(frame.viewport_width),
+                f64::from(frame.viewport_height),
+            ]);
+
+        // Compute child_to_parent_transform from the inverse of each child's local transform.
+        // For the frame itself, the transform from its local space to parent is identity
+        // unless it has a parent frame with a recorded layout.
+        let parent_transform = if let Some(parent_id) = frame.parent_frame_id {
+            if let Some(parent_frame) = self.committed_frames.get(&parent_id) {
+                parent_frame
+                    .child_frames
+                    .iter()
+                    .find(|c| c.child_frame_id == frame_id)
+                    .map(|layout| {
+                        let t = layout.child_local_from_parent.as_coeffs();
+                        [t[0], t[1], t[2], t[3], t[4], t[5]]
+                    })
+                    .unwrap_or([1.0, 0.0, 0.0, 1.0, 0.0, 0.0])
+            } else {
+                [1.0, 0.0, 0.0, 1.0, 0.0, 0.0]
+            }
+        } else {
+            [1.0, 0.0, 0.0, 1.0, 0.0, 0.0]
+        };
 
         hit_info.push(FrameHitInfo {
             frame_id,
             webview_id,
+            parent_frame_id: frame.parent_frame_id,
             viewport_width: frame.viewport_width,
             viewport_height: frame.viewport_height,
-            offset_x: frame
-                .child_frames
-                .first()
-                .map(|c| c.root_clip_bounds.x0 as f32)
-                .unwrap_or(0.0),
-            offset_y: frame
-                .child_frames
-                .first()
-                .map(|c| c.root_clip_bounds.y0 as f32)
-                .unwrap_or(0.0),
-            is_child_frame,
-            has_child_frames: !frame.child_frames.is_empty(),
+            root_clip_bounds: root_clip,
+            child_to_parent_transform: parent_transform,
+            child_frame_ids: child_ids,
         });
 
         for child in &frame.child_frames {

@@ -7,7 +7,7 @@ use blitz_traits::shell::ColorScheme;
 use compositor::Compositor;
 use crossbeam_channel::{Receiver, unbounded};
 use ipc_messages::content::{
-    FontTransportReceiver, FrameId, NavigableId, NavigateRequest, PaintFrame, RecordedScene,
+    FontTransportReceiver, FrameId, NavigableId, NavigateRequest, PaintFrame,
     UserNavigationInvolvement, WebviewId, WebviewProviderMessage,
 };
 use ipc_messages::media::VideoPaintId;
@@ -85,11 +85,7 @@ pub struct WebviewProvider {
     child_host_webviews_by_content_navigable: HashMap<FrameId, WebviewId>,
     published_child_viewports: HashMap<WebviewId, PublishedChildViewport>,
     font_receiver: FontTransportReceiver,
-    /// Pre-composed scenes received from the graphics process, keyed by webview.
-    /// Stores the deserialized RecordedScene plus hit-testing info.
-    composed_scenes: HashMap<WebviewId, (RecordedScene, Vec<ipc_messages::graphics::FrameHitInfo>)>,
-    /// Hit-testing info from the latest composed scene, used for ui event routing.
-    last_frame_hit_info: HashMap<WebviewId, Vec<ipc_messages::graphics::FrameHitInfo>>,
+
     viewport_snapshot: Option<(u32, u32, f32, ColorScheme)>,
     embedder: Arc<dyn Embedder>,
     user_agent: UserAgent,
@@ -123,8 +119,6 @@ impl WebviewProvider {
             child_host_webviews_by_content_navigable: HashMap::new(),
             published_child_viewports: HashMap::new(),
             font_receiver: FontTransportReceiver::default(),
-            composed_scenes: HashMap::new(),
-            last_frame_hit_info: HashMap::new(),
             viewport_snapshot: None,
             embedder,
             user_agent,
@@ -456,27 +450,6 @@ impl WebviewProvider {
     /// Prefer a composed scene from the graphics process. Fall back to
     /// local composition (iframe + video frame stacking) if none available.
     fn composed_scene_for_webview(&mut self, webview_id: WebviewId) -> Option<RenderScene> {
-        // Check if the graphics process has already composed a scene for this webview.
-        // Only use if it has glyph content (text) — otherwise fall back to local composition
-        // which has the full scene from the content process with proper font data.
-        if let Some((recorded_scene, _hit_info)) = self.composed_scenes.get(&webview_id) {
-            let summary = recorded_scene.summary();
-            debug!(
-                "[webview] composed scene for {:?}: {} commands, {} glyphs, {} fills, {} strokes",
-                webview_id,
-                summary.commands,
-                summary.glyphs,
-                summary.fill_commands,
-                summary.stroke_commands,
-            );
-            if summary.glyph_runs > 0 && summary.font_refs > 0 {
-                let scene = recorded_scene.clone().into_scene(&self.font_receiver);
-                return Some(scene);
-            }
-            debug!("[webview] composed scene has no text, using local composition");
-        }
-
-        // Fall back to local composition.
         let (scene, viewports) = {
             let state = self.webviews.get_mut(&webview_id)?;
             let scene = state.compositor.compose_scene(&self.font_receiver);
@@ -487,39 +460,6 @@ impl WebviewProvider {
         };
         self.publish_visible_child_viewports(viewports);
         scene
-    }
-
-    /// Store a pre-composed scene from the graphics process.
-    pub fn store_composed_scene(
-        &mut self,
-        webview_id: WebviewId,
-        scene_bytes: Vec<u8>,
-        font_registrations: Vec<ipc_messages::content::RegisteredFont>,
-        font_data: std::collections::HashMap<usize, Vec<u8>>,
-        frame_hit_info: Vec<ipc_messages::graphics::FrameHitInfo>,
-    ) {
-        // Register fonts from the graphics process before deserializing.
-        self.font_receiver
-            .register_fonts(font_registrations, &font_data);
-
-        // Deserialize the scene bytes into a RecordedScene.
-        let recorded_scene = match ipc_messages::content::deserialize_scene_from_slice(&scene_bytes)
-        {
-            Ok(scene) => scene,
-            Err(error) => {
-                error!(
-                    "[webview] failed to deserialize composed scene for {:?}: {error}",
-                    webview_id
-                );
-                return;
-            }
-        };
-
-        self.last_frame_hit_info
-            .insert(webview_id, frame_hit_info.clone());
-        self.composed_scenes
-            .insert(webview_id, (recorded_scene, frame_hit_info));
-        self.embedder.request_redraw(webview_id);
     }
 
     pub fn append_web_content_scene(
