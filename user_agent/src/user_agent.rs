@@ -32,7 +32,7 @@ use crate::event_loop::{
     traversable_viewport_command,
 };
 use crate::timer::{TimerCommand, run_timer_thread};
-use ipc_messages::media::{MediaPipelineId, VideoPaintId};
+
 
 pub(crate) fn sidecar_executable_path(binary_name: &str) -> Result<PathBuf, String> {
     let current_executable = std::env::current_exe()
@@ -1252,6 +1252,7 @@ struct UserAgentWorker {
     graphics_event_receiver:
         crossbeam_channel::Receiver<ipc::IpcIncoming<ipc_messages::graphics::GraphicsEvent>>,
     /// Child process handle for the graphics process.
+    #[allow(dead_code)]
     graphics_child: Option<std::process::Child>,
 
     /// Host integration used to surface navigation, paint, clipboard, and viewport state.
@@ -1528,7 +1529,6 @@ impl UserAgentWorker {
             self.command_sender.clone(),
             self.timer_command_sender.clone(),
             self.host.clone(),
-            self.webview_provider_sender.clone(),
             self.trace_sender.clone(),
             self.net_connection.sender(),
             self.graphics_extension_sender.clone(),

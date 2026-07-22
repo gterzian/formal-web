@@ -586,11 +586,13 @@ impl TryFrom<SerializableUiEvent> for UiEvent {
     }
 }
 
+#[allow(dead_code)]
 pub fn serialize_ui_event(event: &UiEvent) -> Result<String, String> {
     serde_json::to_string(&SerializableUiEvent::from(event))
         .map_err(|error| format!("failed to serialize UI event: {error}"))
 }
 
+#[allow(dead_code)]
 pub fn deserialize_ui_event(message: &str) -> Result<UiEvent, String> {
     let event: SerializableUiEvent = serde_json::from_str(message)
         .map_err(|error| format!("failed to deserialize UI event: {error}"))?;

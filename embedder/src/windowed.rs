@@ -22,7 +22,7 @@ use blitz_traits::events::{
     MouseEventButton, MouseEventButtons, PointerCoords, PointerDetails, UiEvent,
 };
 use blitz_traits::shell::{ColorScheme, ShellProvider};
-use ipc_messages::content::{FontTransportReceiver, RecordedScene, RegisteredFont, WebviewId};
+use ipc_messages::content::{FontTransportReceiver, RecordedScene, WebviewId};
 #[cfg(target_os = "macos")]
 use keyboard_types::{Key, Modifiers as KeyboardModifiers};
 use kurbo::Affine;

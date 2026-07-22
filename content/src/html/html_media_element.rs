@@ -11,7 +11,7 @@ use crate::js::platform_objects::with_global_scope;
 use crate::webidl::resolved_promise;
 use ipc_messages::content::{Event as ContentEvent, RegisterMediaPipeline};
 use ipc_messages::graphics::GraphicsCommand;
-use ipc_messages::media::{MediaPipelineId, VideoPaintId};
+use ipc_messages::media::VideoPaintId;
 use js_engine::gc_struct;
 
 use js_engine::{Completion, ExecutionContext, JsTypes};

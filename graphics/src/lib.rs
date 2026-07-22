@@ -3,7 +3,7 @@ pub mod compositor;
 use std::collections::HashMap;
 
 use compositor::{Compositor, CompositorVideoFrame};
-use crossbeam_channel::{select, tick, unbounded};
+use crossbeam_channel::{select, tick};
 use ipc_messages::content::{FontTransportReceiver, FontTransportSender, FrameId, WebviewId};
 use ipc_messages::graphics::{FrameHitInfo, GraphicsCommand, GraphicsEvent};
 use ipc_messages::media::{MediaPipelineId, VideoPaintId};
@@ -57,24 +57,21 @@ pub struct VisibleFrameViewport {
 pub fn run_graphics_process<B: MediaBackend + 'static>(
     cmd_rx: crossbeam_channel::Receiver<ipc::IpcIncoming<GraphicsCommand>>,
     graphics_event_tx: ipc::IpcSender<GraphicsEvent>,
-    mut media_backend: Option<B>,
+    media_backend: Option<B>,
 ) {
     let mut webviews: HashMap<WebviewId, WebviewCompositorSlot> = HashMap::new();
     let event_sender = graphics_event_tx;
 
     // Media pipeline state.
     let mut pipelines: HashMap<MediaPipelineId, B::Pipeline> = HashMap::new();
-    let media_event_rx: Option<crossbeam_channel::Receiver<MediaBackendEvent>> =
-        media_backend.as_ref().map(|b| b.event_receiver());
     let sample_tick = tick(std::time::Duration::from_millis(8));
-
-    let mut pipeline_webview_map: HashMap<MediaPipelineId, (WebviewId, VideoPaintId)> =
+    let _pipeline_webview_map: HashMap<MediaPipelineId, (WebviewId, VideoPaintId)> =
         HashMap::new();
 
     // Use crossbeam's never() channel when there's no backend so the select! loop
     // has a single uniform structure regardless of whether a backend exists.
     let (mut backend, media_event_rx) = match media_backend {
-        Some(mut b) => {
+        Some(b) => {
             let rx = b.event_receiver();
             (Some(b), rx)
         }
@@ -91,7 +88,7 @@ pub fn run_graphics_process<B: MediaBackend + 'static>(
                     &event_sender,
                     &incoming.shmem_regions,
                     &mut pipelines,
-                    &mut pipeline_webview_map,
+                    &_pipeline_webview_map,
                     backend.as_mut(),
                 ) {
                     break;
@@ -99,7 +96,7 @@ pub fn run_graphics_process<B: MediaBackend + 'static>(
             }
             recv(media_event_rx) -> event => {
                 let Ok(event) = event else { break };
-                handle_media_event(event, &pipeline_webview_map, &mut webviews);
+                handle_media_event(event, &_pipeline_webview_map, &mut webviews);
             }
             recv(sample_tick) -> _ => {
                 for pipeline in pipelines.values() {
@@ -163,7 +160,7 @@ fn handle_command<B: MediaBackend + 'static>(
     composed_scene_sender: &ipc::IpcSender<GraphicsEvent>,
     shmem_regions: &HashMap<usize, ipc::IpcSharedRegion>,
     pipelines: &mut HashMap<MediaPipelineId, B::Pipeline>,
-    pipeline_webview_map: &mut HashMap<MediaPipelineId, (WebviewId, VideoPaintId)>,
+    _pipeline_webview_map: &HashMap<MediaPipelineId, (WebviewId, VideoPaintId)>,
     media_backend: Option<&mut B>,
 ) -> bool {
     match cmd {
