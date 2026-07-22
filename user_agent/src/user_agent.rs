@@ -2,6 +2,7 @@ mod event_loop;
 mod fetch;
 pub(crate) mod ipc_manifest;
 mod timer;
+pub(crate) mod ui_event;
 
 use blitz_traits::shell::ColorScheme;
 use crossbeam_channel::{Receiver, Sender, bounded, select, unbounded};
@@ -129,6 +130,16 @@ pub trait Embedder: Send + Sync {
     fn window_viewport_snapshot(&self) -> Option<(u32, u32, f32, ColorScheme)>;
     fn clipboard_get_text(&self, timeout: Duration) -> Result<String, String>;
     fn clipboard_set_text(&self, text: String, timeout: Duration) -> Result<(), String>;
+    /// Forward a composed web content scene from the graphics process to the
+    /// embedder for rendering.
+    fn new_web_content_scene(
+        &self,
+        webview_id: WebviewId,
+        scene_bytes: Vec<u8>,
+        font_registrations: Vec<ipc_messages::content::RegisteredFont>,
+        font_data: std::collections::HashMap<usize, Vec<u8>>,
+        frame_hit_info: Vec<ipc_messages::graphics::FrameHitInfo>,
+    ) -> Result<(), String>;
 }
 
 /// <https://html.spec.whatwg.org/multipage/#cross-origin-isolation-mode>
@@ -433,6 +444,9 @@ pub struct UserAgentState {
     /// cache of active and pending documents keyed by
     /// <https://dom.spec.whatwg.org/#concept-document> identifiers.
     pub documents: HashMap<DocumentId, DocumentState>,
+    /// The latest hit-testing info for each webview, published by the
+    /// graphics process alongside each composed scene.
+    pub frame_hit_info: HashMap<WebviewId, Vec<ipc_messages::graphics::FrameHitInfo>>,
     /// queue of navigations paused while content runs `beforeunload`.
     pub pending_before_unload_navigations:
         HashMap<BeforeUnloadCheckId, PendingBeforeUnloadNavigation>,
@@ -549,6 +563,7 @@ impl Default for UserAgentState {
             pending_navigation_fetch_ids_by_fetch_id: HashMap::new(),
             pending_navigation_finalizations: HashMap::new(),
             pending_navigation_finalization_ids_by_navigation_id: HashMap::new(),
+            frame_hit_info: HashMap::new(),
         }
     }
 }
@@ -1247,6 +1262,13 @@ struct UserAgentWorker {
     /// Maps media pipeline IDs to their owning webview and paint ID, so that
     /// incoming video frames can be routed to the correct compositor slot.
     pipeline_to_webview: HashMap<MediaPipelineId, (WebviewId, VideoPaintId)>,
+    /// IPC sender to the graphics process.
+    graphics_extension_sender: Option<ipc::IpcSender<ipc_messages::graphics::GraphicsCommand>>,
+    /// Crossbeam proxy for graphics extension events (composed scenes).
+    graphics_event_receiver:
+        crossbeam_channel::Receiver<ipc::IpcIncoming<ipc_messages::graphics::GraphicsEvent>>,
+    /// Child process handle for the graphics process.
+    graphics_child: Option<std::process::Child>,
 
     /// Host integration used to surface navigation, paint, clipboard, and viewport state.
     host: Arc<dyn Embedder>,
@@ -1286,6 +1308,30 @@ impl UserAgentWorker {
             })
             .unwrap_or_else(|error| panic!("failed to spawn formal-web-timer thread: {error}"));
 
+        // Start the graphics process (always — handles composition even without media).
+        let (graphics_extension_sender, graphics_event_receiver, graphics_child) = {
+            use crate::ipc_manifest::GraphicsExtensionManifest;
+            match ipc::ExtensionHandle::launch::<
+                GraphicsExtensionManifest,
+                ipc_messages::graphics::GraphicsCommand,
+                ipc_messages::graphics::GraphicsEvent,
+            >(&GraphicsExtensionManifest)
+            {
+                Ok((mut handle, connection)) => {
+                    let sender = connection.sender.clone();
+                    let receiver = connection.receiver;
+                    let child = handle.take_child();
+                    (Some(sender), ipc::crossbeam_proxy(receiver), child)
+                }
+                Err(error) => {
+                    log::error!("failed to start graphics process: {error}");
+                    let (dummy_tx, dummy_rx) = crossbeam_channel::unbounded();
+                    drop(dummy_tx);
+                    (None, dummy_rx, None)
+                }
+            }
+        };
+
         #[cfg(feature = "media")]
         let (media_extension_sender, media_event_receiver, media_child) = {
             use crate::ipc_manifest::MediaExtensionManifest;
@@ -1321,6 +1367,9 @@ impl UserAgentWorker {
             media_event_receiver,
             media_child,
             pipeline_to_webview: HashMap::new(),
+            graphics_extension_sender,
+            graphics_event_receiver,
+            graphics_child,
             host,
             webview_provider_sender,
             navigation_tracer: TLATracer::new(
@@ -1459,6 +1508,10 @@ impl UserAgentWorker {
                         let Ok(incoming) = response else { break; };
                         self.handle_net_navigation_response(incoming.payload);
                     }
+                    recv(self.graphics_event_receiver) -> event => {
+                        let Ok(mut incoming) = event else { break; };
+                        self.handle_graphics_event(&mut incoming);
+                    }
                     recv(self.media_event_receiver) -> event => {
                         let Ok(mut incoming) = event else { break; };
                         // Extract video frame data from shared memory before forwarding.
@@ -1548,6 +1601,7 @@ impl UserAgentWorker {
             self.trace_sender.clone(),
             self.net_connection.sender(),
             self.media_extension_sender.clone(),
+            self.graphics_extension_sender.clone(),
         )?;
         self.state.event_loops.insert(event_loop_id, entry);
         // Step 3: Let agent be a new agent whose [[CanBlock]] is canBlock, [[Signifier]] is
@@ -1726,6 +1780,16 @@ impl UserAgentWorker {
             .map_err(|error| {
                 format!("failed to enqueue webview-provider new-webview message: {error}")
             })?;
+        // Register the webview with the graphics process.
+        if let Some(graphics_sender) = &self.graphics_extension_sender {
+            if let Err(error) =
+                graphics_sender.send(ipc_messages::graphics::GraphicsCommand::RegisterWebview {
+                    webview_id: WebviewId(traversable_id),
+                })
+            {
+                error!("failed to register webview with graphics process: {error}");
+            }
+        }
         self.host.webview_provider_sync()?;
         // Step 13: Return traversable.
         Ok(traversable_id)
@@ -1866,6 +1930,26 @@ impl UserAgentWorker {
                     "failed to enqueue webview-provider child-host registration message: {error}"
                 )
             })?;
+        // Register the child navigable with the graphics process.
+        if let Some(graphics_sender) = &self.graphics_extension_sender {
+            if let Err(error) = graphics_sender.send(
+                ipc_messages::graphics::GraphicsCommand::RegisterChildNavigableHost {
+                    child_webview_id: WebviewId(traversable_id),
+                    parent_traversable_id: WebviewId(parent_navigable_id),
+                    content_frame_id,
+                },
+            ) {
+                error!("failed to register child navigable with graphics process: {error}");
+            }
+            // Also register the child webview itself.
+            if let Err(error) =
+                graphics_sender.send(ipc_messages::graphics::GraphicsCommand::RegisterWebview {
+                    webview_id: WebviewId(traversable_id),
+                })
+            {
+                error!("failed to register child webview with graphics process: {error}");
+            }
+        }
         self.host.webview_provider_sync()?;
 
         Ok(traversable_id)
@@ -2507,6 +2591,16 @@ impl UserAgentWorker {
                 .map_err(|error| {
                     format!("failed to enqueue webview-provider new-webview message: {error}")
                 })?;
+            // Register the webview with the graphics process.
+            if let Some(graphics_sender) = &self.graphics_extension_sender {
+                if let Err(error) =
+                    graphics_sender.send(ipc_messages::graphics::GraphicsCommand::RegisterWebview {
+                        webview_id: WebviewId(navigable_id),
+                    })
+                {
+                    error!("failed to register webview with graphics process: {error}");
+                }
+            }
             self.host.webview_provider_sync()?;
         }
         Ok(())
@@ -3600,11 +3694,77 @@ impl UserAgentWorker {
             .insert(pipeline_id, (webview_id, video_paint_id));
     }
 
+    /// Handle a GraphicsEvent (composed scene) from the graphics process.
+    fn handle_graphics_event(
+        &mut self,
+        incoming: &mut ipc::IpcIncoming<ipc_messages::graphics::GraphicsEvent>,
+    ) {
+        use ipc_messages::graphics::GraphicsEvent;
+        match &incoming.payload {
+            GraphicsEvent::ComposedSceneReady {
+                webview_id,
+                scene_shmem_key,
+                font_registrations,
+                frame_hit_info,
+            } => {
+                debug!(
+                    "[graphics] received composed scene for webview {:?} key={} fonts={} hit_info={}",
+                    webview_id,
+                    scene_shmem_key,
+                    font_registrations.len(),
+                    frame_hit_info.len(),
+                );
+
+                // Extract scene bytes from shared memory.
+                let scene_bytes = incoming
+                    .shmem_regions
+                    .get(scene_shmem_key)
+                    .map(|region| region.as_slice().to_vec())
+                    .unwrap_or_default();
+
+                // Extract font data from shared memory.
+                let mut font_data: std::collections::HashMap<usize, Vec<u8>> =
+                    std::collections::HashMap::new();
+                for font in font_registrations {
+                    if let Some(region) = incoming.shmem_regions.get(&font.data_shmem_key) {
+                        font_data.insert(font.data_shmem_key, region.as_slice().to_vec());
+                    }
+                }
+
+                // Store hit-testing info for ui event routing.
+                self.state
+                    .frame_hit_info
+                    .insert(*webview_id, frame_hit_info.clone());
+
+                // Forward to the embedder host with font data.
+                if let Err(error) = self.host.new_web_content_scene(
+                    *webview_id,
+                    scene_bytes,
+                    font_registrations.clone(),
+                    font_data,
+                    frame_hit_info.clone(),
+                ) {
+                    error!("[graphics] failed to forward composed scene: {error}");
+                }
+
+                // Note: Do NOT trigger a rendering opportunity here — that would
+                // create a feedback loop (compose → render → PaintFrame → compose → ...),
+                // flooding the graphics process with hundreds of PaintFrames per second.
+                // The content process drives its own rendering via the HTML event loop;
+                // rendering opportunities come from user input and viewport changes only.
+            }
+            GraphicsEvent::ShutdownComplete => {
+                debug!("[graphics] graphics process shutdown complete");
+            }
+        }
+    }
+
     /// Handle a MediaEvent from the media process.
     fn handle_media_event(&mut self, event: ipc_messages::media::MediaEvent) {
         use ipc_messages::media::MediaEvent;
         match event {
             MediaEvent::Frame(video_frame) => {
+                let mut video_frame = video_frame;
                 let pipeline_id = video_frame.pipeline_id;
                 let Some(&(webview_id, paint_id)) = self.pipeline_to_webview.get(&pipeline_id)
                 else {
@@ -3618,19 +3778,44 @@ impl UserAgentWorker {
                     "[media] received video frame: {}x{} pipeline={:?}",
                     video_frame.width, video_frame.height, pipeline_id,
                 );
-                // Forward the frame to the webview provider via the provider message channel.
-                // The compositor stores it by VideoPaintId and uses it during the next
-                // composition pass.
+
+                // VideoFrame.data is #[serde(skip)] — extract pixel data, send via
+                // shmem alongside the command, then send a copy to the webview provider.
+                let frame_width = video_frame.width;
+                let frame_height = video_frame.height;
+                let pixel_data = std::mem::take(&mut video_frame.data);
+
+                // Send to the graphics process with pixel data in shared memory.
+                if let Some(graphics_sender) = &self.graphics_extension_sender {
+                    let mut shmem_map = std::collections::HashMap::new();
+                    shmem_map.insert(0, ipc::IpcSharedRegion::from_bytes(&pixel_data));
+                    let command = ipc_messages::graphics::GraphicsCommand::VideoFrameReady {
+                        webview_id,
+                        paint_id,
+                        data: video_frame,
+                    };
+                    if let Err(error) = graphics_sender.send_with_shmem_map(command, shmem_map) {
+                        error!("[media] failed to send video frame to graphics process: {error}");
+                    }
+                }
+
+                // Reconstruct video frame for the webview provider path.
+                let provider_video_frame = ipc_messages::media::VideoFrame {
+                    pipeline_id,
+                    width: frame_width,
+                    height: frame_height,
+                    data: pixel_data,
+                };
                 debug!(
                     "[media] forwarding frame to compositor: {}x{} paint={:?}",
-                    video_frame.width, video_frame.height, paint_id
+                    frame_width, frame_height, paint_id
                 );
                 if let Err(error) =
                     self.webview_provider_sender
                         .send(WebviewProviderMessage::VideoFrameReady {
                             webview_id,
                             paint_id,
-                            data: video_frame,
+                            data: provider_video_frame,
                         })
                 {
                     error!("[media] failed to enqueue video frame: {error}");
@@ -3639,18 +3824,12 @@ impl UserAgentWorker {
                         "[media] frame enqueued, requesting redraw+render for webview {:?}",
                         webview_id
                     );
-                    // Trigger a redraw so the compositor picks up the new frame.
                     let _ = self.host.request_redraw(webview_id);
-                    // Also trigger a rendering opportunity so the content process re-renders
-                    // and sends updated composition metadata (clip bounds) synchronized
-                    // with the video frame stream. Without this, the video frame is painted
-                    // using stale clip bounds when the page scrolls.
                     let _ = self
                         .command_sender
                         .send(UserAgentCommand::RenderingOpportunityFor {
                             traversable_id: webview_id.0,
                         });
-                    // Push a sync so the embedder processes the message promptly.
                     let _ = self.host.webview_provider_sync();
                 }
             }

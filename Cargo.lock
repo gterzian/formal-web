@@ -2267,6 +2267,29 @@ dependencies = [
 ]
 
 [[package]]
+name = "graphics"
+version = "0.1.0"
+dependencies = [
+ "anyrender",
+ "crossbeam-channel",
+ "env_logger",
+ "gstreamer",
+ "gstreamer-app",
+ "ipc",
+ "ipc_messages",
+ "kurbo",
+ "log",
+ "objc2 0.6.4",
+ "objc2-av-foundation",
+ "objc2-core-media",
+ "objc2-core-video",
+ "objc2-foundation 0.3.2",
+ "peniko",
+ "serde",
+ "url",
+]
+
+[[package]]
 name = "grid"
 version = "1.0.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -6226,8 +6249,10 @@ dependencies = [
  "crossbeam-channel",
  "ipc",
  "ipc_messages",
+ "keyboard-types",
  "log",
  "psl",
+ "serde",
  "serde_json",
  "url",
  "uuid",

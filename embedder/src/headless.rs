@@ -340,6 +340,23 @@ impl ApplicationHandler<FormalWebUserEvent> for HeadlessEmbedderApp {
             FormalWebUserEvent::ClipboardWrite { text, reply } => {
                 let _ = reply.send(write_clipboard_text(text));
             }
+            FormalWebUserEvent::NewWebContentScene {
+                webview_id,
+                scene_bytes,
+                font_registrations,
+                font_data,
+                frame_hit_info,
+            } => {
+                if let Some(provider) = self.provider.as_mut() {
+                    provider.store_composed_scene(
+                        webview_id,
+                        scene_bytes,
+                        font_registrations,
+                        font_data,
+                        frame_hit_info,
+                    );
+                }
+            }
             FormalWebUserEvent::Exit => {
                 self.with_automation(|a, _| {
                     a.abort_pending_navigation(String::from("headless exited"))

@@ -6,7 +6,6 @@ use ipc::IpcSender;
 use ipc_messages::content::{DocumentId, Event as ContentEvent, NavigableId, WindowTimerKey};
 use url::Url;
 
-
 use crate::html::{TimerHandler, Window};
 use crate::js::build_context::{build_context, build_realm};
 use crate::js::platform_objects::with_global_scope;
@@ -127,16 +126,17 @@ impl EnvironmentSettingsObject {
             }
         }
 
-        let (document_object, document) = crate::js::bindings::dom::document::create_document_platform_object(
-            document.clone(),
-            creation_url.clone(),
-            &mut engine,
-        )
-        .map_err(|error| {
-            engine
-                .to_rust_string(error)
-                .unwrap_or_else(|_| "unknown error".to_string())
-        })?;
+        let (document_object, document) =
+            crate::js::bindings::dom::document::create_document_platform_object(
+                document.clone(),
+                creation_url.clone(),
+                &mut engine,
+            )
+            .map_err(|error| {
+                engine
+                    .to_rust_string(error)
+                    .unwrap_or_else(|_| "unknown error".to_string())
+            })?;
 
         with_global_scope(&mut engine, |global_scope| {
             global_scope.store_document_object(document_object);

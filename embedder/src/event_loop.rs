@@ -121,10 +121,35 @@ impl Embedder for EventLoopEmbedder {
     fn clipboard_set_text(&self, text: String, timeout: Duration) -> Result<(), String> {
         clipboard_set_text(text, timeout)
     }
+
+    fn new_web_content_scene(
+        &self,
+        webview_id: WebviewId,
+        scene_bytes: Vec<u8>,
+        font_registrations: Vec<ipc_messages::content::RegisteredFont>,
+        font_data: std::collections::HashMap<usize, Vec<u8>>,
+        frame_hit_info: Vec<ipc_messages::graphics::FrameHitInfo>,
+    ) -> Result<(), String> {
+        self.dispatcher
+            .send(FormalWebUserEvent::NewWebContentScene {
+                webview_id,
+                scene_bytes,
+                font_registrations,
+                font_data,
+                frame_hit_info,
+            })
+    }
 }
 
 pub enum FormalWebUserEvent {
     RequestRedraw(WebviewId),
+    NewWebContentScene {
+        webview_id: WebviewId,
+        scene_bytes: Vec<u8>,
+        font_registrations: Vec<ipc_messages::content::RegisteredFont>,
+        font_data: std::collections::HashMap<usize, Vec<u8>>,
+        frame_hit_info: Vec<ipc_messages::graphics::FrameHitInfo>,
+    },
     NavigationRequested {
         webview_id: WebviewId,
         destination_url: String,

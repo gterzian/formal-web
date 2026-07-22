@@ -77,7 +77,13 @@ pub(crate) fn try_set_event_target_reflector(
             } else if let Some(input) = data.downcast_mut::<HTMLInputElement>() {
                 input.html_element.element.node.event_target.reflector = Some(obj_clone);
             } else if let Some(video) = data.downcast_mut::<HTMLVideoElement>() {
-                video.media_element.html_element.element.node.event_target.reflector = Some(obj_clone);
+                video
+                    .media_element
+                    .html_element
+                    .element
+                    .node
+                    .event_target
+                    .reflector = Some(obj_clone);
             } else if let Some(node) = data.downcast_mut::<Node>() {
                 node.event_target.reflector = Some(obj_clone);
             } else if let Some(target) = data.downcast_mut::<EventTarget>() {

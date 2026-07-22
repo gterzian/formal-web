@@ -254,7 +254,9 @@ impl EventTarget {
         // Step 1: If event's dispatch flag is set, or if its initialized flag is not set,
         // then throw an "InvalidStateError" DOMException.
         if *event.dispatch_flag.borrow() || !*event.initialized_flag.borrow() {
-            return Err(ec.new_type_error("InvalidStateError: event is already being dispatched or not initialized"));
+            return Err(ec.new_type_error(
+                "InvalidStateError: event is already being dispatched or not initialized",
+            ));
         }
 
         // Step 2: Initialize event's isTrusted attribute to false.

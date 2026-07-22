@@ -53,17 +53,15 @@ pub(crate) fn fire_event(
     // in the relevant realm of target.
     let event_domain = Event::new(
         event_type.to_owned(),
-
         // Step 3: Initialize event's type attribute to e.
         // Step 4: Initialize any other IDL attributes of event...
-        false,  // bubbles
-        false,  // cancelable
-        false,  // composed
-        true,   // isTrusted
+        false, // bubbles
+        false, // cancelable
+        false, // composed
+        true,  // isTrusted
         time_millis,
     );
-    let event_object =
-        create_interface_instance::<Types, Event>(event_domain, ec)?;
+    let event_object = create_interface_instance::<Types, Event>(event_domain, ec)?;
     // Clone the Event domain object from the JsObject — GcCell fields share
     // data, and the reflector was set automatically by create_interface_instance.
     let event: Event = ec

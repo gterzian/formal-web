@@ -1,0 +1,47 @@
+[package]
+name = "graphics"
+version = "0.1.0"
+edition = "2024"
+publish = false
+autobins = false
+
+[features]
+default = []
+# GStreamer backend — available on all platforms.
+backend-gstreamer = ["dep:gstreamer", "dep:gstreamer-app"]
+# AVFoundation backend — macOS/iOS only.
+backend-avfoundation = []
+ipc-channel-backend = ["ipc/ipc-channel-backend"]
+
+[lib]
+path = "src/lib.rs"
+
+[[bin]]
+name = "formal-web-graphics"
+path = "src/bin/graphics_process.rs"
+
+[dependencies]
+anyrender = { version = "0.10", features = ["serde"] }
+ipc = { path = "../ipc" }
+ipc_messages = { path = "../ipc_messages" }
+kurbo = "0.13"
+peniko = "0.6"
+serde = { version = "1", features = ["derive"] }
+log = "0.4"
+env_logger = "0.11"
+crossbeam-channel = "0.5"
+url = "2"
+
+# --- GStreamer backend ---
+[target.'cfg(not(any(target_os = "macos", target_os = "ios")))'.dependencies]
+gstreamer = { version = "0.23", features = ["v1_22"] }
+gstreamer-app = { version = "0.23" }
+
+[target.'cfg(any(target_os = "macos", target_os = "ios"))'.dependencies]
+gstreamer = { version = "0.23", features = ["v1_22"], optional = true }
+gstreamer-app = { version = "0.23", optional = true }
+objc2 = "0.6.4"
+objc2-foundation = "0.3.2"
+objc2-av-foundation = { version = "0.3.2", features = ["objc2-core-media"] }
+objc2-core-media = "0.3.2"
+objc2-core-video = "0.3.2"

@@ -5,6 +5,7 @@ use ipc_messages::content::{
     ElementClickResult, Event as ContentEvent, EventLoopId, NavigableId, TraversableViewport,
     ViewportSnapshot, WebviewProviderMessage,
 };
+use ipc_messages::graphics::GraphicsCommand;
 use log::{debug, error};
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::process::Child;
@@ -175,6 +176,8 @@ struct EventLoopWorker {
     /// IPC sender to the media extension.
     #[allow(dead_code)]
     media_extension_sender: Option<ipc::IpcSender<ipc_messages::media::MediaCommand>>,
+    /// IPC sender to the graphics process.
+    graphics_extension_sender: Option<ipc::IpcSender<GraphicsCommand>>,
 }
 
 /// <https://html.spec.whatwg.org/multipage/#event-loop-processing-model>
@@ -209,6 +212,7 @@ impl EventLoopWorker {
         trace_sender: Option<TraceSender>,
         network_extension_sender: ipc::IpcSender<ipc_messages::network::Request>,
         media_extension_sender: Option<ipc::IpcSender<ipc_messages::media::MediaCommand>>,
+        graphics_extension_sender: Option<ipc::IpcSender<GraphicsCommand>>,
     ) -> Result<Self, String> {
         let manifest = crate::ipc_manifest::ContentExtensionManifest::new(process_label);
         let (mut handle, connection) = ipc::ExtensionHandle::launch::<
@@ -243,6 +247,7 @@ impl EventLoopWorker {
             awaiting_task_completion: false,
             pending_task_commands: VecDeque::new(),
             media_extension_sender,
+            graphics_extension_sender,
         };
 
         worker.send_command_inner(&ContentCommand::ContentBootstrap {
@@ -534,6 +539,20 @@ impl EventLoopWorker {
                     frame.viewport_width,
                     frame.viewport_height,
                 ));
+                // Route the PaintFrame to the graphics process for composition.
+                if let Some(graphics_sender) = &self.graphics_extension_sender {
+                    let command = GraphicsCommand::PaintFrame {
+                        frame: frame.clone(),
+                    };
+                    if let Err(error) =
+                        graphics_sender.send_with_shmem_map(command, incoming_shmem.clone())
+                    {
+                        error!("failed to send paint frame to graphics process: {error}");
+                    }
+                }
+
+                // Always send through the webview provider channel for local composition
+                // (fallback while graphics process composition is being established).
                 if let Err(error) =
                     self.webview_provider_sender
                         .send(WebviewProviderMessage::PaintFrame {
@@ -543,8 +562,6 @@ impl EventLoopWorker {
                 {
                     error!("failed to enqueue webview-provider paint frame: {error}");
                 } else {
-                    // Silently ignore send failures during shutdown — the event
-                    // loop may have already closed.
                     let _ = self.host.webview_provider_sync();
                     let _ = self.host.new_frame_rendered();
                 }
@@ -714,6 +731,7 @@ pub fn spawn_event_loop_entry(
     trace_sender: Option<TraceSender>,
     network_extension_sender: ipc::IpcSender<ipc_messages::network::Request>,
     media_extension_sender: Option<ipc::IpcSender<ipc_messages::media::MediaCommand>>,
+    graphics_extension_sender: Option<ipc::IpcSender<GraphicsCommand>>,
 ) -> Result<EventLoopEntry, String> {
     let (command_sender, command_receiver) = unbounded();
     let mut worker = EventLoopWorker::new(
@@ -727,6 +745,7 @@ pub fn spawn_event_loop_entry(
         trace_sender,
         network_extension_sender,
         media_extension_sender,
+        graphics_extension_sender,
     )?;
     let join_handle = thread::Builder::new()
         .name(format!("formal-web-event-loop-{event_loop_id}"))

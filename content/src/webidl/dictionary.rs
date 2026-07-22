@@ -88,10 +88,11 @@ pub(crate) fn convert_boolean_or_add_event_listener_options<T: JsTypes + JsTypes
         let signal_obj = T::value_as_object(&val)
             .ok_or_else(|| ec.new_type_error("addEventListener signal must be an AbortSignal"))?;
         dict.signal = Some(
-            ec
-                .with_object_any(&signal_obj)
+            ec.with_object_any(&signal_obj)
                 .and_then(|d| d.downcast_ref::<AbortSignal>().cloned())
-                .ok_or_else(|| ec.new_type_error("addEventListener signal must be an AbortSignal"))?
+                .ok_or_else(|| {
+                    ec.new_type_error("addEventListener signal must be an AbortSignal")
+                })?,
         );
     }
 

@@ -14,11 +14,14 @@ blitz-traits = { workspace = true }
 crossbeam-channel = "0.5"
 ipc_messages = { path = "../ipc_messages" }
 ipc = { path = "../ipc" }
-serde_json = "1"
 psl = "2"
 url = "2"
 uuid = { version = "1", features = ["serde", "v4"] }
 log = "0.4"
 verification = { path = "../verification" }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+keyboard-types = "0.7"
+
 [lib]
 path = "src/user_agent.rs"
