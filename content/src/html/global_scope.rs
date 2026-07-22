@@ -13,7 +13,7 @@ use ipc_messages::content::DocumentId;
 use ipc_messages::content::{
     Event as ContentEvent, NavigableId, WindowTimerClearRequest, WindowTimerKey, WindowTimerRequest,
 };
-use ipc_messages::media::{MediaCommand, VideoPaintId};
+use ipc_messages::media::VideoPaintId;
 use js_engine::gc::{GcCell, gc_cell_new};
 use js_engine::{JsTypes, gc_struct};
 use log::{debug, error};
@@ -197,9 +197,9 @@ pub struct GlobalScope {
     #[ignore_trace]
     video_paint_registry: RefCell<Option<Rc<RefCell<HashMap<(DocumentId, usize), VideoPaintId>>>>>,
 
-    /// Direct sender to the media extension.
+    /// Direct sender to the graphics process (composition + media).
     #[ignore_trace]
-    media_extension_sender: RefCell<Option<IpcSender<MediaCommand>>>,
+    graphics_sender: RefCell<Option<IpcSender<ipc_messages::graphics::GraphicsCommand>>>,
 
     /// <https://html.spec.whatwg.org/#concept-document-creation-url>
     /// The creation URL of this window's Document.
@@ -233,7 +233,7 @@ impl GlobalScope {
 
             new_document_registry: RefCell::new(None),
             video_paint_registry: RefCell::new(None),
-            media_extension_sender: RefCell::new(None),
+            graphics_sender: RefCell::new(None),
 
             creation_url: RefCell::new(None),
             #[cfg(all(boa_backend, feature = "wasm"))]
@@ -658,12 +658,17 @@ impl GlobalScope {
     /// ContentProcess access.  ContentProcess sets this during document
     /// creation so that `resource_selection_algorithm` can register
     /// paint IDs during JS execution.
-    pub(crate) fn set_media_extension_sender(&self, sender: IpcSender<MediaCommand>) {
-        self.media_extension_sender.borrow_mut().replace(sender);
+    pub(crate) fn set_graphics_sender(
+        &self,
+        sender: IpcSender<ipc_messages::graphics::GraphicsCommand>,
+    ) {
+        self.graphics_sender.borrow_mut().replace(sender);
     }
 
-    pub(crate) fn media_extension_sender(&self) -> Option<IpcSender<MediaCommand>> {
-        self.media_extension_sender.borrow().clone()
+    pub(crate) fn graphics_sender(
+        &self,
+    ) -> Option<IpcSender<ipc_messages::graphics::GraphicsCommand>> {
+        self.graphics_sender.borrow().clone()
     }
 
     pub(crate) fn allocate_media_pipeline_id(&self) -> ipc_messages::media::MediaPipelineId {

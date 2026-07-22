@@ -65,32 +65,6 @@ impl ExtensionManifest for GraphicsExtensionManifest {
     }
 }
 
-// ── Media extension manifest ────────────────────────────────────────────────
-
-pub struct MediaExtensionManifest;
-
-impl ExtensionManifest for MediaExtensionManifest {
-    fn endpoint(&self) -> ExtensionEndpoint {
-        ExtensionEndpoint::Singleton {
-            service_name: "formal-web.media",
-        }
-    }
-
-    fn spawn(&self, token: &BootstrapToken) -> Result<std::process::Child, IpcError> {
-        let executable_path = sidecar_executable_path("formal-web-media")
-            .map_err(|error| IpcError::Transport(error))?;
-
-        let mut child_process = ProcessCommand::new(&executable_path);
-        #[cfg(unix)]
-        child_process.arg0("formal-web-media");
-        child_process.arg("--media-token").arg(&token.to_string());
-
-        child_process
-            .spawn()
-            .map_err(|error| IpcError::Transport(format!("failed to start media process: {error}")))
-    }
-}
-
 // ── Content extension manifest ──────────────────────────────────────────────
 
 /// Manifest for one content process instance.

@@ -1,6 +1,6 @@
 pub mod backend;
 
-use backend::{BackendEvent, MediaBackend, PipelineHandle};
+use backend::{MediaBackend, MediaBackendEvent, PipelineHandle};
 use ipc_messages::media::{MediaCommand, MediaEvent, MediaPipelineId};
 use std::collections::HashMap;
 use std::env;
@@ -66,11 +66,11 @@ pub fn run_media_process<B: MediaBackend>(
 // ---------------------------------------------------------------------------
 
 fn forward_backend_event(
-    event: BackendEvent,
+    event: MediaBackendEvent,
     ipc_event_tx: &ipc::IpcSender<MediaEvent>,
 ) -> Result<(), ()> {
     match event {
-        BackendEvent::Frame(mut video_frame) => {
+        MediaBackendEvent::Frame(mut video_frame) => {
             let data = std::mem::take(&mut video_frame.data);
             let mut shmem_map = std::collections::HashMap::new();
             shmem_map.insert(0, ipc::IpcSharedRegion::from_bytes(&data));
@@ -81,12 +81,12 @@ fn forward_backend_event(
                 return Err(());
             }
         }
-        BackendEvent::Eos { pipeline_id } => {
+        MediaBackendEvent::Eos { pipeline_id } => {
             if ipc_event_tx.send(MediaEvent::Eos { pipeline_id }).is_err() {
                 return Err(());
             }
         }
-        BackendEvent::Error {
+        MediaBackendEvent::Error {
             pipeline_id,
             message,
         } => {
@@ -100,7 +100,7 @@ fn forward_backend_event(
                 return Err(());
             }
         }
-        BackendEvent::DurationChanged {
+        MediaBackendEvent::DurationChanged {
             pipeline_id,
             duration_secs,
         } => {

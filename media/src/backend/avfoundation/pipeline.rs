@@ -5,7 +5,7 @@ use objc2::MainThreadMarker;
 
 use ipc_messages::media::MediaPipelineId;
 
-use crate::backend::{BackendEvent, PipelineHandle};
+use crate::backend::{MediaBackendEvent, PipelineHandle};
 
 use super::av_sys::{AvPlayer, AvVideoOutput, url_from_string};
 
@@ -13,7 +13,7 @@ use super::av_sys::{AvPlayer, AvVideoOutput, url_from_string};
 // AvfPipeline
 //
 // Runs inside the select loop on the main thread.
-// Frames are sent as BackendEvent::Frame.
+// Frames are sent as MediaBackendEvent::Frame.
 // ---------------------------------------------------------------------------
 
 pub struct AvfPipeline {
@@ -21,7 +21,7 @@ pub struct AvfPipeline {
     player: AvPlayer,
     item: super::av_sys::AvPlayerItem,
     video_output: AvVideoOutput,
-    event_tx: Sender<BackendEvent>,
+    event_tx: Sender<MediaBackendEvent>,
     destroyed: Cell<bool>,
     duration_reported: Cell<bool>,
 }
@@ -30,7 +30,7 @@ impl AvfPipeline {
     pub fn new(
         id: MediaPipelineId,
         url_string: String,
-        event_tx: Sender<BackendEvent>,
+        event_tx: Sender<MediaBackendEvent>,
     ) -> Result<Self, String> {
         let mtm = MainThreadMarker::new()
             .ok_or_else(|| String::from("AvfPipeline must be created on the main thread"))?;
@@ -113,7 +113,7 @@ impl PipelineHandle for AvfPipeline {
                     {
                         let _ = self
                             .event_tx
-                            .send(crate::backend::BackendEvent::Frame(frame));
+                            .send(crate::backend::MediaBackendEvent::Frame(frame));
                     }
                 }
             }

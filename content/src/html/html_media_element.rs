@@ -10,7 +10,8 @@ use crate::html::{HTMLElement, await_a_stable_state};
 use crate::js::platform_objects::with_global_scope;
 use crate::webidl::resolved_promise;
 use ipc_messages::content::{Event as ContentEvent, RegisterMediaPipeline};
-use ipc_messages::media::VideoPaintId;
+use ipc_messages::graphics::GraphicsCommand;
+use ipc_messages::media::{MediaPipelineId, VideoPaintId};
 use js_engine::gc_struct;
 
 use js_engine::{Completion, ExecutionContext, JsTypes};
@@ -390,24 +391,24 @@ impl HTMLMediaElement {
                     .ok();
 
                     if let Some(pipeline_id) = pipeline_id {
-                        // Send CreatePipeline + Play directly to the media extension.
-                        let media_sender = with_global_scope(job_ec, |global_scope| {
-                            Ok(global_scope.media_extension_sender())
+                        // Send CreatePipeline + Play directly to the graphics process.
+                        let graphics_sender = with_global_scope(job_ec, |global_scope| {
+                            Ok(global_scope.graphics_sender())
                         })
                         .ok()
                         .flatten();
 
-                        if let Some(ref media_sender) = media_sender {
-                            if let Err(error) = media_sender.send(
-                                ipc_messages::media::MediaCommand::CreatePipeline {
+                        if let Some(ref graphics_sender) = graphics_sender {
+                            if let Err(error) =
+                                graphics_sender.send(GraphicsCommand::CreateMediaPipeline {
                                     pipeline_id,
                                     url: resolved_url.clone(),
-                                },
-                            ) {
+                                })
+                            {
                                 error!("[media] failed to send CreatePipeline: {error}");
                             }
-                            if let Err(error) = media_sender
-                                .send(ipc_messages::media::MediaCommand::Play { pipeline_id })
+                            if let Err(error) =
+                                graphics_sender.send(GraphicsCommand::MediaPlay { pipeline_id })
                             {
                                 error!("[media] failed to send Play: {error}");
                             }

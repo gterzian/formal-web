@@ -3,19 +3,19 @@ mod pipeline;
 
 pub use pipeline::AvfPipeline;
 
-use crate::backend::{BackendEvent, MediaBackend};
+use crate::backend::{MediaBackend, MediaBackendEvent};
 use ipc_messages::media::MediaPipelineId;
 
 pub struct AvfBackend {
-    event_tx: crossbeam_channel::Sender<BackendEvent>,
-    event_rx: crossbeam_channel::Receiver<BackendEvent>,
+    event_tx: crossbeam_channel::Sender<MediaBackendEvent>,
+    event_rx: crossbeam_channel::Receiver<MediaBackendEvent>,
 }
 
 impl MediaBackend for AvfBackend {
     type Pipeline = AvfPipeline;
 
     fn init() -> Result<Self, String> {
-        let (event_tx, event_rx) = crossbeam_channel::unbounded::<BackendEvent>();
+        let (event_tx, event_rx) = crossbeam_channel::unbounded::<MediaBackendEvent>();
         Ok(Self { event_tx, event_rx })
     }
 
@@ -27,7 +27,7 @@ impl MediaBackend for AvfBackend {
         AvfPipeline::new(id, url, self.event_tx.clone())
     }
 
-    fn event_receiver(&self) -> crossbeam_channel::Receiver<BackendEvent> {
+    fn event_receiver(&self) -> crossbeam_channel::Receiver<MediaBackendEvent> {
         self.event_rx.clone()
     }
 }

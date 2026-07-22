@@ -1,7 +1,7 @@
 use ipc_messages::media::MediaPipelineId;
 
 // ---------------------------------------------------------------------------
-// BackendEvent — backend-agnostic event delivered from the backend's
+// MediaBackendEvent — backend-agnostic event delivered from the backend's
 // notification mechanism (GStreamer bus, AVFoundation KVO/notifications) to
 // the generic dispatch loop.
 // ---------------------------------------------------------------------------
@@ -16,7 +16,7 @@ use ipc_messages::media::MediaPipelineId;
 use ipc_messages::media::VideoFrame;
 
 #[derive(Debug, Clone)]
-pub enum BackendEvent {
+pub enum MediaBackendEvent {
     /// A decoded video frame is ready.
     Frame(VideoFrame),
     /// The pipeline reached end of stream.
@@ -71,16 +71,16 @@ pub trait MediaBackend: Send + 'static {
 
     /// Create a pipeline for the given URL. The pipeline should start in the
     /// Paused state. Decoded video frames are sent via `event_receiver`
-    /// as `BackendEvent::Frame`.
+    /// as `MediaBackendEvent::Frame`.
     fn create_pipeline(
         &mut self,
         id: MediaPipelineId,
         url: String,
     ) -> Result<Self::Pipeline, String>;
 
-    /// Returns the receiver for backend-originated events (BusEvent → BackendEvent
+    /// Returns the receiver for backend-originated events (BusEvent → MediaBackendEvent
     /// conversion happens inside the backend). Called once before the select loop.
-    fn event_receiver(&self) -> crossbeam_channel::Receiver<BackendEvent>;
+    fn event_receiver(&self) -> crossbeam_channel::Receiver<MediaBackendEvent>;
 }
 
 // ---------------------------------------------------------------------------

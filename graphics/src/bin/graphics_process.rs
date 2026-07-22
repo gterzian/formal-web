@@ -1,5 +1,5 @@
 use ipc_messages::graphics::{GraphicsCommand, GraphicsEvent};
-use media::backend::{BackendEvent, MediaBackend, PipelineHandle};
+use media::backend::{MediaBackend, MediaBackendEvent, PipelineHandle};
 
 struct NoopBackend;
 impl MediaBackend for NoopBackend {
@@ -14,7 +14,7 @@ impl MediaBackend for NoopBackend {
     ) -> Result<Self::Pipeline, String> {
         Err("no media backend".into())
     }
-    fn event_receiver(&self) -> crossbeam_channel::Receiver<BackendEvent> {
+    fn event_receiver(&self) -> crossbeam_channel::Receiver<MediaBackendEvent> {
         let (tx, rx) = crossbeam_channel::unbounded();
         drop(tx);
         rx

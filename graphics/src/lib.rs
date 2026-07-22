@@ -9,7 +9,7 @@ use ipc_messages::graphics::{FrameHitInfo, GraphicsCommand, GraphicsEvent};
 use ipc_messages::media::{MediaPipelineId, VideoPaintId};
 use log::{debug, error};
 
-use media::backend::{BackendEvent, MediaBackend, PipelineHandle};
+use media::backend::{MediaBackend, MediaBackendEvent, PipelineHandle};
 
 /// The composed scene for one webview — the final result after compositing
 /// all iframe and video embed sites into the root scene.
@@ -64,33 +64,22 @@ pub fn run_graphics_process<B: MediaBackend + 'static>(
 
     // Media pipeline state.
     let mut pipelines: HashMap<MediaPipelineId, B::Pipeline> = HashMap::new();
-    let backend_event_rx: Option<crossbeam_channel::Receiver<BackendEvent>> =
+    let media_event_rx: Option<crossbeam_channel::Receiver<MediaBackendEvent>> =
         media_backend.as_ref().map(|b| b.event_receiver());
     let sample_tick = tick(std::time::Duration::from_millis(8));
 
     let mut pipeline_webview_map: HashMap<MediaPipelineId, (WebviewId, VideoPaintId)> =
         HashMap::new();
 
-    // If no backend, just loop on commands.
-    let Some(mut backend) = media_backend else {
-        loop {
-            let Ok(incoming) = cmd_rx.recv() else { break };
-            if handle_command(
-                incoming.payload,
-                &mut webviews,
-                &event_sender,
-                &incoming.shmem_regions,
-                &mut pipelines,
-                &mut pipeline_webview_map,
-                None as Option<&mut B>,
-            ) {
-                break;
-            }
+    // Use crossbeam's never() channel when there's no backend so the select! loop
+    // has a single uniform structure regardless of whether a backend exists.
+    let (mut backend, media_event_rx) = match media_backend {
+        Some(mut b) => {
+            let rx = b.event_receiver();
+            (Some(b), rx)
         }
-        return;
+        None => (None, crossbeam_channel::never()),
     };
-
-    let backend_event_rx = backend.event_receiver();
 
     loop {
         select! {
@@ -103,14 +92,14 @@ pub fn run_graphics_process<B: MediaBackend + 'static>(
                     &incoming.shmem_regions,
                     &mut pipelines,
                     &mut pipeline_webview_map,
-                    Some(&mut backend),
+                    backend.as_mut(),
                 ) {
                     break;
                 }
             }
-            recv(backend_event_rx) -> event => {
+            recv(media_event_rx) -> event => {
                 let Ok(event) = event else { break };
-                handle_backend_event(event, &pipeline_webview_map, &mut webviews, &event_sender);
+                handle_media_event(event, &pipeline_webview_map, &mut webviews);
             }
             recv(sample_tick) -> _ => {
                 for pipeline in pipelines.values() {
@@ -121,14 +110,13 @@ pub fn run_graphics_process<B: MediaBackend + 'static>(
     }
 }
 
-fn handle_backend_event(
-    event: BackendEvent,
+fn handle_media_event(
+    event: MediaBackendEvent,
     pipeline_webview_map: &HashMap<MediaPipelineId, (WebviewId, VideoPaintId)>,
     webviews: &mut HashMap<WebviewId, WebviewCompositorSlot>,
-    composed_scene_sender: &ipc::IpcSender<GraphicsEvent>,
 ) {
     match event {
-        BackendEvent::Frame(mut video_frame) => {
+        MediaBackendEvent::Frame(mut video_frame) => {
             let pipeline_id = video_frame.pipeline_id;
             let Some(&(webview_id, paint_id)) = pipeline_webview_map.get(&pipeline_id) else {
                 debug!("[graphics] frame for unknown pipeline {:?}", pipeline_id);
@@ -141,28 +129,23 @@ fn handle_backend_event(
                 height: video_frame.height,
                 data: pixel_bytes,
             };
+            // Store the video frame for the next PaintFrame-triggered composition.
+            // We do NOT compose here — the video frame is already in the compositor
+            // and will be picked up when the next DOM PaintFrame arrives.
             if let Some(slot) = webviews.get_mut(&webview_id) {
                 slot.compositor.update_video_frame(cf);
-                if slot.compositor.committed_root_frame_id().is_some() {
-                    if let Some(composed) = slot
-                        .compositor
-                        .compose_scene(&slot.font_receiver, webview_id)
-                    {
-                        let _ = send_composed_scene(composed_scene_sender.clone(), slot, composed);
-                    }
-                }
             }
         }
-        BackendEvent::Eos { pipeline_id } => {
+        MediaBackendEvent::Eos { pipeline_id } => {
             debug!("[graphics] pipeline {:?} end of stream", pipeline_id);
         }
-        BackendEvent::Error {
+        MediaBackendEvent::Error {
             pipeline_id,
             message,
         } => {
             error!("[graphics] pipeline {:?} error: {}", pipeline_id, message);
         }
-        BackendEvent::DurationChanged {
+        MediaBackendEvent::DurationChanged {
             pipeline_id,
             duration_secs,
         } => {

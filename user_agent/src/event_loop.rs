@@ -173,9 +173,6 @@ struct EventLoopWorker {
     /// processing model.
     awaiting_task_completion: bool,
     pending_task_commands: VecDeque<PendingTaskCommand>,
-    /// IPC sender to the media extension.
-    #[allow(dead_code)]
-    media_extension_sender: Option<ipc::IpcSender<ipc_messages::media::MediaCommand>>,
     /// IPC sender to the graphics process.
     graphics_extension_sender: Option<ipc::IpcSender<GraphicsCommand>>,
 }
@@ -211,7 +208,6 @@ impl EventLoopWorker {
         command_receiver: Receiver<EventLoopCommand>,
         trace_sender: Option<TraceSender>,
         network_extension_sender: ipc::IpcSender<ipc_messages::network::Request>,
-        media_extension_sender: Option<ipc::IpcSender<ipc_messages::media::MediaCommand>>,
         graphics_extension_sender: Option<ipc::IpcSender<GraphicsCommand>>,
     ) -> Result<Self, String> {
         let manifest = crate::ipc_manifest::ContentExtensionManifest::new(process_label);
@@ -230,7 +226,7 @@ impl EventLoopWorker {
         let content_command_sender = connection.sender.clone();
         // Clone senders for forwarding before they're moved into Self.
         let network_extension_sender_fwd = network_extension_sender.clone();
-        let media_extension_sender_fwd = media_extension_sender.clone();
+        let graphics_sender_for_bootstrap = graphics_extension_sender.clone();
         let worker = Self {
             event_loop_id,
             command_sender,
@@ -246,13 +242,13 @@ impl EventLoopWorker {
             stop_reply: None,
             awaiting_task_completion: false,
             pending_task_commands: VecDeque::new(),
-            media_extension_sender,
             graphics_extension_sender,
         };
 
         worker.send_command_inner(&ContentCommand::ContentBootstrap {
             net_sender: network_extension_sender_fwd,
-            media_sender: media_extension_sender_fwd,
+            media_sender: None,
+            graphics_sender: graphics_sender_for_bootstrap,
             content_command_sender,
             trace_sender,
         })?;
@@ -531,6 +527,8 @@ impl EventLoopWorker {
                 }
             }
             ContentEvent::PaintReady(frame) => {
+                // Content sends PaintFrames directly to the graphics process.
+                // The UA acknowledges the event but does not forward it.
                 log_render_state_debug(format!(
                     "paint ready event_loop={} traversable={} frame={} size=({}, {})",
                     self.event_loop_id,
@@ -539,47 +537,14 @@ impl EventLoopWorker {
                     frame.viewport_width,
                     frame.viewport_height,
                 ));
-                // Route the PaintFrame to the graphics process for composition.
-                if let Some(graphics_sender) = &self.graphics_extension_sender {
-                    let command = GraphicsCommand::PaintFrame {
-                        frame: frame.clone(),
-                    };
-                    if let Err(error) =
-                        graphics_sender.send_with_shmem_map(command, incoming_shmem.clone())
-                    {
-                        error!("failed to send paint frame to graphics process: {error}");
-                    }
-                }
-
-                // Always send through the webview provider channel for local composition
-                // (fallback while graphics process composition is being established).
-                if let Err(error) =
-                    self.webview_provider_sender
-                        .send(WebviewProviderMessage::PaintFrame {
-                            frame,
-                            shmem_regions: incoming_shmem.clone(),
-                        })
-                {
-                    error!("failed to enqueue webview-provider paint frame: {error}");
-                } else {
-                    let _ = self.host.webview_provider_sync();
-                    let _ = self.host.new_frame_rendered();
-                }
             }
             ContentEvent::RegisterMediaPipeline(request) => {
+                // Content sends CreateMediaPipeline directly to the graphics process.
+                // The UA just acknowledges the registration for bookkeeping.
                 debug!(
-                    "[media] event loop forwarding RegisterMediaPipeline url={}",
+                    "[media] RegisterMediaPipeline url={} (ignored — direct to graphics)",
                     request.url
                 );
-                self.user_agent_command_sender
-                    .send(UserAgentCommand::MediaLoadRequested {
-                        url: request.url,
-                        document_id: request.document_id,
-                        traversable_id: request.traversable_id,
-                        pipeline_id: request.pipeline_id,
-                        video_paint_id: request.video_paint_id,
-                    })
-                    .map_err(|error| format!("failed to send media load request: {error}"))?;
             }
 
             ContentEvent::ShutdownCompleted => return Ok(false),
@@ -730,7 +695,6 @@ pub fn spawn_event_loop_entry(
     webview_provider_sender: Sender<WebviewProviderMessage>,
     trace_sender: Option<TraceSender>,
     network_extension_sender: ipc::IpcSender<ipc_messages::network::Request>,
-    media_extension_sender: Option<ipc::IpcSender<ipc_messages::media::MediaCommand>>,
     graphics_extension_sender: Option<ipc::IpcSender<GraphicsCommand>>,
 ) -> Result<EventLoopEntry, String> {
     let (command_sender, command_receiver) = unbounded();
@@ -744,7 +708,6 @@ pub fn spawn_event_loop_entry(
         command_receiver,
         trace_sender,
         network_extension_sender,
-        media_extension_sender,
         graphics_extension_sender,
     )?;
     let join_handle = thread::Builder::new()

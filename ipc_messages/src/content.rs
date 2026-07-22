@@ -874,6 +874,8 @@ pub enum Command {
     ContentBootstrap {
         net_sender: ipc::IpcSender<crate::network::Request>,
         media_sender: Option<ipc::IpcSender<crate::media::MediaCommand>>,
+        /// Direct sender to the graphics process.
+        graphics_sender: Option<ipc::IpcSender<crate::graphics::GraphicsCommand>>,
         /// The content process's own command sender. Net uses this to route
         /// `CompleteDocumentFetch` directly to this content process.
         content_command_sender: ipc::IpcSender<Command>,

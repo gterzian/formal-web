@@ -889,13 +889,6 @@ pub enum UserAgentCommand {
         fetch_id: NavigationFetchId,
         response: ContentFetchResponse,
     },
-    MediaLoadRequested {
-        url: String,
-        document_id: DocumentId,
-        traversable_id: NavigableId,
-        pipeline_id: MediaPipelineId,
-        video_paint_id: VideoPaintId,
-    },
     NavigationFetchFailed {
         fetch_id: NavigationFetchId,
     },
@@ -1252,16 +1245,7 @@ struct UserAgentWorker {
     net_connection: crate::fetch::NetConnection,
     timer_command_sender: Sender<TimerCommand>,
     timer_join_handle: Option<JoinHandle<()>>,
-    /// Crossbeam proxy for media extension events.
-    media_event_receiver:
-        crossbeam_channel::Receiver<ipc::IpcIncoming<ipc_messages::media::MediaEvent>>,
-    /// Child process handle for the media process.
-    media_child: Option<std::process::Child>,
-    /// IPC sender to the media extension (for direct content connections).
-    media_extension_sender: Option<ipc::IpcSender<ipc_messages::media::MediaCommand>>,
-    /// Maps media pipeline IDs to their owning webview and paint ID, so that
-    /// incoming video frames can be routed to the correct compositor slot.
-    pipeline_to_webview: HashMap<MediaPipelineId, (WebviewId, VideoPaintId)>,
+
     /// IPC sender to the graphics process.
     graphics_extension_sender: Option<ipc::IpcSender<ipc_messages::graphics::GraphicsCommand>>,
     /// Crossbeam proxy for graphics extension events (composed scenes).
@@ -1308,7 +1292,7 @@ impl UserAgentWorker {
             })
             .unwrap_or_else(|error| panic!("failed to spawn formal-web-timer thread: {error}"));
 
-        // Start the graphics process (always — handles composition even without media).
+        // Start the graphics process (handles composition + media playback).
         let (graphics_extension_sender, graphics_event_receiver, graphics_child) = {
             use crate::ipc_manifest::GraphicsExtensionManifest;
             match ipc::ExtensionHandle::launch::<
@@ -1332,31 +1316,6 @@ impl UserAgentWorker {
             }
         };
 
-        #[cfg(feature = "media")]
-        let (media_extension_sender, media_event_receiver, media_child) = {
-            use crate::ipc_manifest::MediaExtensionManifest;
-            let (mut handle, connection) = ipc::ExtensionHandle::launch::<
-                MediaExtensionManifest,
-                ipc_messages::media::MediaCommand,
-                ipc_messages::media::MediaEvent,
-            >(&MediaExtensionManifest)
-            .unwrap_or_else(|error| panic!("failed to start media extension: {error}"));
-            let sender = connection.sender.clone();
-            let receiver = connection.receiver;
-            let child = handle.take_child();
-            (Some(sender), ipc::crossbeam_proxy(receiver), child)
-        };
-        #[cfg(not(feature = "media"))]
-        let (media_extension_sender, media_event_receiver, media_child): (
-            Option<ipc::IpcSender<ipc_messages::media::MediaCommand>>,
-            crossbeam_channel::Receiver<ipc::IpcIncoming<ipc_messages::media::MediaEvent>>,
-            Option<std::process::Child>,
-        ) = {
-            let (dummy_tx, dummy_rx) = crossbeam_channel::unbounded();
-            drop(dummy_tx);
-            (None, dummy_rx, None)
-        };
-
         Self {
             state: UserAgentState::default(),
             command_sender: user_agent_command_sender.clone(),
@@ -1364,9 +1323,7 @@ impl UserAgentWorker {
             net_connection,
             timer_command_sender,
             timer_join_handle: Some(timer_join_handle),
-            media_event_receiver,
-            media_child,
-            pipeline_to_webview: HashMap::new(),
+
             graphics_extension_sender,
             graphics_event_receiver,
             graphics_child,
@@ -1379,7 +1336,6 @@ impl UserAgentWorker {
             ),
             trace_sender,
             next_automation_request_id: 1,
-            media_extension_sender,
         }
     }
 
@@ -1468,23 +1424,7 @@ impl UserAgentWorker {
                         );
                     }
 
-                    UserAgentCommand::MediaLoadRequested {
-                        url,
-                        document_id: _document_id,
-                        traversable_id,
-                        pipeline_id,
-                        video_paint_id,
-                    } => {
-                        debug!(
-                            "[media] registering pipeline url={} traversable={}",
-                            url, traversable_id
-                        );
-                        self.register_media_pipeline(
-                            pipeline_id,
-                            traversable_id,
-                            video_paint_id,
-                        );
-                    }
+
                     UserAgentCommand::IframeTraversableRemoved {
                         parent_traversable_id,
                         content_navigable_id,
@@ -1512,16 +1452,7 @@ impl UserAgentWorker {
                         let Ok(mut incoming) = event else { break; };
                         self.handle_graphics_event(&mut incoming);
                     }
-                    recv(self.media_event_receiver) -> event => {
-                        let Ok(mut incoming) = event else { break; };
-                        // Extract video frame data from shared memory before forwarding.
-                        if let ipc_messages::media::MediaEvent::Frame(video_frame) = &mut incoming.payload {
-                            if let Some(region) = incoming.shmem_regions.get(&0) {
-                                video_frame.data = region.as_slice().to_vec();
-                            }
-                        }
-                        self.handle_media_event(incoming.payload);
-                    }
+
                 }
         }
     }
@@ -1600,7 +1531,6 @@ impl UserAgentWorker {
             self.webview_provider_sender.clone(),
             self.trace_sender.clone(),
             self.net_connection.sender(),
-            self.media_extension_sender.clone(),
             self.graphics_extension_sender.clone(),
         )?;
         self.state.event_loops.insert(event_loop_id, entry);
@@ -3645,53 +3575,7 @@ impl UserAgentWorker {
             shutdown_result = Err(String::from("timer thread panicked"));
         }
 
-        // Shut down the media extension directly.
-        if let Some(media_sender) = &self.media_extension_sender {
-            if let Err(error) = media_sender.send(ipc_messages::media::MediaCommand::Shutdown) {
-                shutdown_result = Err(format!("failed to request media shutdown: {error}"));
-            }
-
-            if let Some(mut media_child) = self.media_child.take() {
-                let deadline = std::time::Instant::now() + std::time::Duration::from_millis(150);
-                loop {
-                    match media_child.try_wait() {
-                        Ok(Some(_)) => break,
-                        Ok(None) => {
-                            if std::time::Instant::now() >= deadline {
-                                let _ = media_child.kill();
-                                let _ = media_child.wait();
-                                break;
-                            }
-                            std::thread::sleep(std::time::Duration::from_millis(5));
-                        }
-                        Err(error) => {
-                            log::error!("failed to poll media process exit: {error}");
-                            let _ = media_child.kill();
-                            let _ = media_child.wait();
-                            break;
-                        }
-                    }
-                }
-            }
-        }
-
         let _ = reply.send(shutdown_result);
-    }
-
-    /// Register the pipeline→webview mapping for video frame routing.
-    fn register_media_pipeline(
-        &mut self,
-        pipeline_id: MediaPipelineId,
-        traversable_id: NavigableId,
-        video_paint_id: VideoPaintId,
-    ) {
-        debug!(
-            "[media] registering pipeline mapping: pipeline={:?} traversable={} paint={:?}",
-            pipeline_id, traversable_id.0, video_paint_id,
-        );
-        let webview_id = WebviewId(traversable_id);
-        self.pipeline_to_webview
-            .insert(pipeline_id, (webview_id, video_paint_id));
     }
 
     /// Handle a GraphicsEvent (composed scene) from the graphics process.
@@ -3755,77 +3639,6 @@ impl UserAgentWorker {
             }
             GraphicsEvent::ShutdownComplete => {
                 debug!("[graphics] graphics process shutdown complete");
-            }
-        }
-    }
-
-    /// Handle a MediaEvent from the media process.
-    fn handle_media_event(&mut self, event: ipc_messages::media::MediaEvent) {
-        use ipc_messages::media::MediaEvent;
-        match event {
-            MediaEvent::Frame(video_frame) => {
-                let mut video_frame = video_frame;
-                let pipeline_id = video_frame.pipeline_id;
-                let Some(&(webview_id, paint_id)) = self.pipeline_to_webview.get(&pipeline_id)
-                else {
-                    debug!(
-                        "[media] received frame for unknown pipeline {:?}",
-                        pipeline_id
-                    );
-                    return;
-                };
-                debug!(
-                    "[media] received video frame: {}x{} pipeline={:?}",
-                    video_frame.width, video_frame.height, pipeline_id,
-                );
-
-                // Media now runs inside the graphics process — video frames from the
-                // media backend go directly to the compositor within the graphics process.
-                // Keep forwarding to the webview provider for the local composition path.
-                debug!(
-                    "[media] forwarding frame to compositor: {}x{} paint={:?}",
-                    video_frame.width, video_frame.height, paint_id
-                );
-                if let Err(error) =
-                    self.webview_provider_sender
-                        .send(WebviewProviderMessage::VideoFrameReady {
-                            webview_id,
-                            paint_id,
-                            data: video_frame,
-                        })
-                {
-                    error!("[media] failed to enqueue video frame: {error}");
-                } else {
-                    debug!(
-                        "[media] frame enqueued, requesting redraw+render for webview {:?}",
-                        webview_id
-                    );
-                    let _ = self.host.request_redraw(webview_id);
-                    let _ = self
-                        .command_sender
-                        .send(UserAgentCommand::RenderingOpportunityFor {
-                            traversable_id: webview_id.0,
-                        });
-                    let _ = self.host.webview_provider_sync();
-                }
-            }
-            MediaEvent::Eos { pipeline_id } => {
-                debug!("[media] pipeline {:?} reached end of stream", pipeline_id);
-            }
-            MediaEvent::Error {
-                pipeline_id,
-                message,
-            } => {
-                error!("[media] pipeline {:?} error: {}", pipeline_id, message);
-            }
-            MediaEvent::DurationChanged {
-                pipeline_id,
-                duration_secs,
-            } => {
-                debug!(
-                    "[media] pipeline {:?} duration: {}s",
-                    pipeline_id, duration_secs
-                );
             }
         }
     }
