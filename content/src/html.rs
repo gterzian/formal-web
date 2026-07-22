@@ -1,6 +1,6 @@
 use js_engine::{Completion, ExecutionContext, JsTypes};
 
-use crate::js::Types;
+use crate::js::{Engine, Types};
 
 type JsValue = <Types as JsTypes>::JsValue;
 type JsObject = <Types as JsTypes>::JsObject;
@@ -110,6 +110,7 @@ pub fn await_a_stable_state<F>(
 
 /// <https://html.spec.whatwg.org/#creating-a-new-browsing-context>
 pub(crate) fn create_a_new_browsing_context_and_document(
+    parent_engine: &mut Engine,
     event_sender: &IpcSender<ContentEvent>,
     traversable_id: NavigableId,
     document_id: DocumentId,
@@ -121,12 +122,17 @@ pub(crate) fn create_a_new_browsing_context_and_document(
     ),
     String,
 > {
-    create_a_new_realm(None, event_sender, traversable_id, document_id)
+    create_a_new_realm(
+        Some(parent_engine),
+        event_sender,
+        traversable_id,
+        document_id,
+    )
 }
 
 /// <https://html.spec.whatwg.org/#creating-a-new-browsing-context>
 pub(crate) fn create_a_new_realm(
-    parent: Option<&mut crate::js::Engine>,
+    parent_engine: Option<&mut Engine>,
     event_sender: &IpcSender<ContentEvent>,
     traversable_id: NavigableId,
     document_id: DocumentId,
@@ -156,7 +162,7 @@ pub(crate) fn create_a_new_realm(
     // Steps 9-10, 13: Obtain agent, create realm, set up window environment
     // settings object.
     let settings = EnvironmentSettingsObject::new_in_realm(
-        parent,
+        parent_engine,
         Rc::clone(&document),
         Url::parse("about:blank").map_err(|error| error.to_string())?,
         Some(event_sender.clone()),
@@ -220,6 +226,7 @@ pub(crate) fn the_rules_for_choosing_a_navigable(
     noopener: bool,
     global_scope: Option<&GlobalScope>,
     window_global: Option<<crate::js::Types as js_engine::JsTypes>::JsObject>,
+    parent_engine: Option<&mut Engine>,
 ) -> ChosenNavigableResult {
     // Step 1: Let chosen be null.
     let mut chosen: Option<NavigableId> = None;
@@ -292,8 +299,11 @@ pub(crate) fn the_rules_for_choosing_a_navigable(
                 let new_document_id = DocumentId::new();
 
                 let (global_object, settings, document) = match global_scope
-                    .create_auxiliary_context_document(new_traversable_id, new_document_id)
-                {
+                    .create_auxiliary_context_document(
+                        parent_engine,
+                        new_traversable_id,
+                        new_document_id,
+                    ) {
                     Ok(result) => result,
                     Err(error) => {
                         error!(

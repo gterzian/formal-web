@@ -120,11 +120,14 @@ pub struct PromiseResolvers<T: JsTypes> {
     // alive across Clone/Drop cycles.
     #[cfg(not(feature = "boa"))]
     #[allow(dead_code)]
-    root: Option<(
-        std::rc::Rc<crate::gc::GcRootHandle<T>>,
-        std::rc::Rc<crate::gc::GcRootHandle<T>>,
-    )>,
+    root: Option<PromiseResolverRoots<T>>,
 }
+
+#[cfg(not(feature = "boa"))]
+type PromiseResolverRoots<T> = (
+    std::rc::Rc<crate::gc::GcRootHandle<T>>,
+    std::rc::Rc<crate::gc::GcRootHandle<T>>,
+);
 
 impl<T: JsTypes> std::fmt::Debug for PromiseResolvers<T> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {

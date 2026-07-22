@@ -17,6 +17,7 @@
 //! | [`gc`] | `Trace`, `Finalize`, `GcRootHandle` (engine-specific) |
 //! | [`boa`] | Boa backend (feature = "boa") |
 //! | [`jsc`] | JSC backend (feature = "jsc") |
+//! | [`v8`] | V8 backend (feature = "v8") |
 //!
 //! ## Feature flags
 //!
@@ -24,6 +25,7 @@
 //! |---|---|---|
 //! | `boa` | Boa (git dep) | **default** |
 //! | `jsc` | JavaScriptCore (macOS) | opt-in |
+//! | `v8` | V8 (macOS arm64) | opt-in |
 //!
 //! At most one engine feature can be active.
 
@@ -42,6 +44,9 @@ pub mod jsc_sys;
 #[cfg(feature = "jsc")]
 pub mod jsc;
 
+#[cfg(feature = "v8")]
+pub mod v8;
+
 pub use engine::{Completion, EcmascriptHost, ExecutionContext, HostHooks, JsEngine};
 pub use enums::{
     IntegrityLevel, IteratorKind, Numeric, PreferredType, PromiseRejectionOperation, PromiseState,
@@ -51,7 +56,7 @@ pub use gc::{Finalize, GcCell, GcRootHandle, JsTypesGcExt, Trace, gc_cell_new};
 #[cfg(feature = "boa")]
 pub use js_engine_macros::gc_struct_boa as gc_struct;
 
-#[cfg(not(feature = "boa"))]
+#[cfg(any(feature = "jsc", feature = "v8"))]
 pub use js_engine_macros::gc_struct_jsc as gc_struct;
 
 pub use js_engine_macros::ignore_trace;

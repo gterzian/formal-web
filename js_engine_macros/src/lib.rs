@@ -9,14 +9,14 @@
 //! - **Boa** (`feature = "boa"`): `gc_struct_boa` emits
 //!   `#[derive(boa_gc::Finalize, boa_gc::Trace, boa_engine::JsData)]`
 //!   and translates `#[ignore_trace]` -> `#[unsafe_ignore_trace]`.
-//! - **JSC / other** (`not(feature = "boa")`): `gc_struct_jsc` emits
+//! - **JSC / V8**: `gc_struct_jsc` emits
 //!   no-op `Trace`/`Finalize` impls and strips `#[ignore_trace]`.
 //!
 //! ## `#[ignore_trace]` (field-level)
 //!
 //! Marks a field as not participating in GC tracing.  On Boa this becomes
 //! `#[unsafe_ignore_trace]` (consumed by `boa_gc::Trace` derive); on JSC
-//! it is stripped (no GC tracing needed).  Only valid inside a `#[gc_struct]`.
+//! it is stripped (persistent handles do not use tracing).  Only valid inside a `#[gc_struct]`.
 //!
 //! Usage:
 //! ```ignore

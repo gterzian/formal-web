@@ -327,7 +327,18 @@ pub(crate) fn dispatch_trusted_click_event(
         document, settings, event_sender, deferred,
     );
     let time_millis = handler.settings.current_time_millis();
-    let event_domain = Event::new("click".into(), true, true, true, true, time_millis);
+    let event = {
+        let ec = handler.settings.ec();
+        let event_object = create_interface_instance::<Types, Event>(
+            Event::new("click".into(), true, true, true, true, time_millis),
+            ec,
+        )
+        .map_err(|error| format!("failed to create trusted click event: {error:?}"))?;
+        ec.with_object_any(&event_object)
+            .and_then(|data| data.downcast_ref::<Event>())
+            .cloned()
+            .ok_or_else(|| String::from("trusted click object does not contain an Event"))?
+    };
     let path = {
         let ec = handler.settings.ec();
         let target = crate::js::platform_objects::resolve_element_object(target_node_id, ec)
@@ -335,6 +346,123 @@ pub(crate) fn dispatch_trusted_click_event(
         crate::js::platform_objects::build_path_from_target_js_object(&target, ec)
     };
     let ec = handler.settings.ec();
-    dispatch_with_path(ec, &path, &event_domain).map_err(|e| format!("failed to dispatch click event: {e:?}"))?;
-    handler.settings.perform_a_microtask_checkpoint().map_err(|e| format!("microtask checkpoint after click: {e:?}"))
+    dispatch_with_path(ec, &path, &event)
+        .map_err(|error| format!("failed to dispatch click event: {error:?}"))?;
+    handler
+        .settings
+        .perform_a_microtask_checkpoint()
+        .map_err(|error| format!("microtask checkpoint after click: {error:?}"))
+}
+
+#[cfg(test)]
+mod tests {
+    use std::{cell::RefCell, rc::Rc};
+
+    use blitz_dom::{BaseDocument, DocumentConfig};
+    use ipc::channel;
+    use ipc_messages::content::{DocumentId, Event as ContentEvent, NavigableId};
+    use serde_json::json;
+    use url::Url;
+
+    use crate::dom::{Event, UIEvent as JsUiEvent, dispatch_with_path};
+    use crate::html::{
+        EnvironmentSettingsObject, execute_parser_scripts, parse_html_into_document,
+    };
+    use crate::js::Types;
+    use crate::js::platform_objects::{build_path_from_target_js_object, resolve_element_object};
+    use crate::webidl::bindings::create_interface_instance;
+
+    use super::dispatch_trusted_click_event;
+
+    fn new_document() -> Rc<RefCell<BaseDocument>> {
+        Rc::new(RefCell::new(BaseDocument::new(DocumentConfig::default())))
+    }
+
+    #[test]
+    fn click_events_invoke_listener_in_child_realm() {
+        let creation_url = Url::parse("about:blank").expect("parse creation URL");
+        let mut parent_settings =
+            EnvironmentSettingsObject::new(new_document(), creation_url.clone(), None, None, None)
+                .expect("build parent settings object");
+        let child_document = new_document();
+        let scripts = parse_html_into_document(
+            &mut child_document.borrow_mut(),
+            r#"<button id="target">Click</button>
+                <script>
+                    globalThis.clickCount = 0;
+                    document.getElementById("target").addEventListener("click", function() {
+                        globalThis.clickCount += 1;
+                    });
+                </script>"#,
+        );
+        let mut child_settings = EnvironmentSettingsObject::new_in_realm(
+            Some(&mut parent_settings.realm_execution_context),
+            Rc::clone(&child_document),
+            creation_url,
+            None,
+            None,
+            None,
+        )
+        .expect("build child settings object");
+        execute_parser_scripts(&mut child_settings, scripts).expect("execute child script");
+        let target_node_id = child_document
+            .borrow()
+            .query_selector("#target")
+            .expect("query selector")
+            .expect("find click target");
+        let (event_sender, _event_receiver) =
+            channel::<ContentEvent>().expect("create event channel");
+
+        dispatch_trusted_click_event(
+            DocumentId::from_u128(1),
+            NavigableId::from_u128(2),
+            Some(NavigableId::from_u128(1)),
+            NavigableId::from_u128(1),
+            Rc::clone(&child_document),
+            &mut child_settings,
+            &event_sender,
+            target_node_id,
+        )
+        .expect("dispatch trusted click");
+
+        assert_eq!(
+            child_settings
+                .evaluate_script_to_json("globalThis.clickCount")
+                .expect("read click count"),
+            json!(1),
+        );
+
+        child_settings
+            .evaluate_script_to_json("globalThis.clickCount = 0")
+            .expect("reset click count");
+        let ui_event = {
+            let ec = child_settings.ec();
+            let event_object = create_interface_instance::<Types, JsUiEvent>(
+                JsUiEvent {
+                    event: Event::new("click".into(), true, true, false, true, 0.0),
+                    view: None,
+                    detail: 0,
+                },
+                ec,
+            )
+            .expect("create UIEvent");
+            ec.with_object_any(&event_object)
+                .and_then(|data| data.downcast_ref::<JsUiEvent>())
+                .map(|ui_event| ui_event.event.clone())
+                .expect("read embedded Event")
+        };
+        let path = {
+            let ec = child_settings.ec();
+            let target = resolve_element_object(target_node_id, ec).expect("resolve click target");
+            build_path_from_target_js_object(&target, ec)
+        };
+        dispatch_with_path(child_settings.ec(), &path, &ui_event).expect("dispatch UIEvent");
+
+        assert_eq!(
+            child_settings
+                .evaluate_script_to_json("globalThis.clickCount")
+                .expect("read UIEvent click count"),
+            json!(1),
+        );
+    }
 }

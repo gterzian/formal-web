@@ -906,12 +906,15 @@ pub enum Event {
 #[cfg(test)]
 mod tests {
     use super::{
-        Command, DocumentFetchId, FetchResponse, FontTransportReceiver, FontTransportSender,
-        FrameCompositionMetadata, FrameId, LoadedDocumentResponse, NavigableId, PaintFrame,
-        PaintTransportSummary, SceneSummary, WebviewId,
+        Command, DocumentFetchId, DocumentId, FetchResponse, FontTransportReceiver,
+        FontTransportSender, FrameCompositionMetadata, FrameId, LoadedDocumentResponse,
+        NavigableId, PaintFrame, PaintTransportSummary, PreparedScene, SceneSummary, WebviewId,
     };
     use anyrender::{Glyph, PaintScene, Scene, recording::RenderCommand};
-    use peniko::{Color, Fill, FontData, kurbo::Affine};
+    use peniko::{
+        Color, Fill, FontData,
+        kurbo::{Affine, Vec2},
+    };
 
     fn scene_with_glyph(font: &FontData, glyph_id: u16, x: f32, y: f32) -> Scene {
         let mut scene = Scene::new();
@@ -920,6 +923,7 @@ mod tests {
             16.0,
             true,
             &[],
+            Vec2::ZERO,
             Fill::NonZero,
             Color::BLACK,
             1.0,
@@ -942,7 +946,7 @@ mod tests {
                 assert_eq!(command.font_data.data.data(), expected_bytes);
                 assert_eq!(command.font_data.index, 0);
                 assert_eq!(command.glyphs.len(), 1);
-                assert_eq!(command.glyphs[0].id, expected_glyph_id.into());
+                assert_eq!(command.glyphs[0].id, u32::from(expected_glyph_id));
             }
             other => panic!("expected glyph run, got {other:?}"),
         }
@@ -953,7 +957,8 @@ mod tests {
         let font = FontData::new(vec![1_u8, 2, 3, 4].into(), 0);
         let scene = scene_with_glyph(&font, 7, 12.0, 18.0);
         let mut sender = FontTransportSender::default();
-        let prepared = sender.prepare_scene(11, scene.clone());
+        let mut next_shmem_key = 0;
+        let prepared = sender.prepare_scene(11, scene.clone(), &mut next_shmem_key);
 
         assert_eq!(prepared.scene.font_ids.len(), 1);
         assert_eq!(prepared.registered_fonts.len(), 1);
@@ -977,9 +982,18 @@ mod tests {
             }
         );
 
+        let PreparedScene {
+            scene,
+            registered_fonts,
+            font_shmem,
+        } = prepared;
+        let font_data = font_shmem
+            .into_iter()
+            .map(|(key, region)| (key, region.as_slice().to_vec()))
+            .collect();
         let mut receiver = FontTransportReceiver::default();
-        receiver.register_fonts(prepared.registered_fonts);
-        let roundtripped = prepared.scene.into_scene(&receiver);
+        receiver.register_fonts(registered_fonts, &font_data);
+        let roundtripped = scene.into_scene(&receiver);
         assert_single_glyph_run_font(&roundtripped, &[1, 2, 3, 4], 7);
     }
 
@@ -992,6 +1006,7 @@ mod tests {
             16.0,
             true,
             &[],
+            Vec2::ZERO,
             Fill::NonZero,
             Color::BLACK,
             1.0,
@@ -1006,14 +1021,24 @@ mod tests {
         );
 
         let mut sender = FontTransportSender::default();
-        let prepared = sender.prepare_scene(17, scene.clone());
+        let mut next_shmem_key = 0;
+        let prepared = sender.prepare_scene(17, scene.clone(), &mut next_shmem_key);
         assert_eq!(prepared.scene.font_ids.len(), 1);
         assert_eq!(prepared.registered_fonts.len(), 1);
         assert_eq!(prepared.scene.summary().font_refs, 1);
 
+        let PreparedScene {
+            scene,
+            registered_fonts,
+            font_shmem,
+        } = prepared;
+        let font_data = font_shmem
+            .into_iter()
+            .map(|(key, region)| (key, region.as_slice().to_vec()))
+            .collect();
         let mut receiver = FontTransportReceiver::default();
-        receiver.register_fonts(prepared.registered_fonts);
-        let roundtripped = prepared.scene.into_scene(&receiver);
+        receiver.register_fonts(registered_fonts, &font_data);
+        let roundtripped = scene.into_scene(&receiver);
         assert_eq!(roundtripped.commands.len(), 2);
     }
 
@@ -1022,21 +1047,23 @@ mod tests {
         let font = FontData::new(vec![1_u8, 2, 3, 4].into(), 0);
         let scene = scene_with_glyph(&font, 7, 12.0, 18.0);
         let mut sender = FontTransportSender::default();
-        let prepared = sender.prepare_scene(23, scene);
+        let mut next_shmem_key = 0;
+        let prepared = sender.prepare_scene(23, scene, &mut next_shmem_key);
         let expected_recorded = prepared.scene.clone();
-        let paint_frame = PaintFrame::new(
+        let (paint_frame, shmem_regions) = PaintFrame::new(
             WebviewId(NavigableId::from_u128(7)),
             FrameId::from_u128(7),
             320,
             240,
             FrameCompositionMetadata::default(),
             prepared,
+            &mut next_shmem_key,
         )
         .expect("paint frame should serialize into shared memory");
 
         let mut receiver = FontTransportReceiver::default();
         let roundtripped = paint_frame
-            .into_recorded_scene(&mut receiver)
+            .into_recorded_scene(&mut receiver, &shmem_regions)
             .expect("paint frame should deserialize scene bytes");
 
         assert_eq!(roundtripped, expected_recorded);
@@ -1047,52 +1074,64 @@ mod tests {
         let font = FontData::new(vec![1_u8, 2, 3, 4].into(), 0);
         let mut sender = FontTransportSender::default();
         let mut receiver = FontTransportReceiver::default();
+        let mut next_shmem_key = 0;
 
-        let first_frame = PaintFrame::new(
+        let first_prepared = sender.prepare_scene(
+            29,
+            scene_with_glyph(&font, 7, 12.0, 18.0),
+            &mut next_shmem_key,
+        );
+        let (first_frame, first_shmem_regions) = PaintFrame::new(
             WebviewId(NavigableId::from_u128(7)),
             FrameId::from_u128(7),
             320,
             240,
             FrameCompositionMetadata::default(),
-            sender.prepare_scene(29, scene_with_glyph(&font, 7, 12.0, 18.0)),
+            first_prepared,
+            &mut next_shmem_key,
         )
         .expect("first frame should serialize");
-        let first_summary = first_frame.transport_summary();
+        let first_summary = first_frame.transport_summary(&first_shmem_regions);
         assert_eq!(
             first_summary,
             PaintTransportSummary {
                 scene_bytes: first_summary.scene_bytes,
                 registered_fonts: 1,
-                registered_font_bytes: 4,
             }
         );
 
         let first_scene = first_frame
-            .into_recorded_scene(&mut receiver)
+            .into_recorded_scene(&mut receiver, &first_shmem_regions)
             .expect("first frame should decode")
             .into_scene(&receiver);
         assert_single_glyph_run_font(&first_scene, &[1, 2, 3, 4], 7);
 
-        let second_frame = PaintFrame::new(
+        let second_prepared = sender.prepare_scene(
+            29,
+            scene_with_glyph(&font, 8, 28.0, 18.0),
+            &mut next_shmem_key,
+        );
+        let (second_frame, second_shmem_regions) = PaintFrame::new(
             WebviewId(NavigableId::from_u128(7)),
             FrameId::from_u128(7),
             320,
             240,
             FrameCompositionMetadata::default(),
-            sender.prepare_scene(29, scene_with_glyph(&font, 8, 28.0, 18.0)),
+            second_prepared,
+            &mut next_shmem_key,
         )
         .expect("second frame should serialize");
+        let second_summary = second_frame.transport_summary(&second_shmem_regions);
         assert_eq!(
-            second_frame.transport_summary(),
+            second_summary,
             PaintTransportSummary {
-                scene_bytes: second_frame.transport_summary().scene_bytes,
+                scene_bytes: second_summary.scene_bytes,
                 registered_fonts: 0,
-                registered_font_bytes: 0,
             }
         );
 
         let second_scene = second_frame
-            .into_recorded_scene(&mut receiver)
+            .into_recorded_scene(&mut receiver, &second_shmem_regions)
             .expect("second frame should decode")
             .into_scene(&receiver);
         assert_single_glyph_run_font(&second_scene, &[1, 2, 3, 4], 8);
@@ -1102,7 +1141,7 @@ mod tests {
     fn create_loaded_document_command_round_trips_response_metadata() {
         let encoded = postcard::to_allocvec(&Command::CreateLoadedDocument {
             traversable_id: NavigableId::from_u128(3),
-            document_id: 7,
+            document_id: DocumentId::from_u128(7),
             frame_id: None,
             response: LoadedDocumentResponse {
                 final_url: String::from("https://example.test/final"),
@@ -1127,7 +1166,7 @@ mod tests {
                 top_level_traversable_id,
             } => {
                 assert_eq!(traversable_id, NavigableId::from_u128(3));
-                assert_eq!(document_id, 7);
+                assert_eq!(document_id, DocumentId::from_u128(7));
                 assert_eq!(frame_id, None);
                 assert_eq!(parent_traversable_id, Some(NavigableId::from_u128(2)));
                 assert_eq!(top_level_traversable_id, NavigableId::from_u128(1));

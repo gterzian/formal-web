@@ -8,12 +8,30 @@ use crate::enums::{
     IntegrityLevel, IteratorKind, PromiseRejectionOperation, SharedMemoryOrder,
     TypedArrayElementType,
 };
-use crate::records::{IteratorRecord, PromiseCapability, PromiseResolvers, RealmIntrinsics};
+use crate::records::{
+    IteratorRecord, ModuleRequest, PromiseCapability, PromiseResolvers, RealmIntrinsics,
+};
 use crate::types::{JsTypes, JsTypesWithRealm};
 use crate::{Numeric, PreferredType, PropertyDescriptor, RootedPromiseCapability};
 
 /// <https://tc39.es/ecma262/#sec-completion-record-specification-type>
 pub type Completion<T, Ty> = Result<T, <Ty as JsTypes>::JsValue>;
+pub type RealmJob<T> = Box<dyn FnOnce(&mut dyn ExecutionContext<T>)>;
+pub type MapEntries<T> = Vec<(<T as JsTypes>::JsValue, <T as JsTypes>::JsValue)>;
+pub type ObjectDataMutation<'a, T> =
+    Box<dyn FnOnce(&mut dyn std::any::Any, &mut dyn ExecutionContext<T>) + 'a>;
+pub type BuiltinFunction<T> = fn(
+    &[<T as JsTypes>::JsValue],
+    <T as JsTypes>::JsValue,
+    &mut dyn ExecutionContext<T>,
+) -> Completion<<T as JsTypes>::JsValue, T>;
+pub type BuiltinClosure<T> = Box<
+    dyn Fn(
+        &[<T as JsTypes>::JsValue],
+        <T as JsTypes>::JsValue,
+        &mut dyn ExecutionContext<T>,
+    ) -> Completion<<T as JsTypes>::JsValue, T>,
+>;
 
 /// <https://webidl.spec.whatwg.org/#call-a-user-objects-operation>
 /// <https://webidl.spec.whatwg.org/#invoke-a-callback-function>
@@ -339,7 +357,7 @@ pub trait ExecutionContext<T: JsTypes + JsTypesWithRealm>: EcmascriptHost<T> {
     ) -> Completion<T::JsValue, T>;
 
     // ────────────────────────────────────────────────────────────────────────
-    // §9.3 Realm — runtime access
+    // §9.3 Realm access
     // ────────────────────────────────────────────────────────────────────────
 
     /// <https://tc39.es/ecma262/#sec-execution-contexts>
@@ -365,17 +383,13 @@ pub trait ExecutionContext<T: JsTypes + JsTypesWithRealm>: EcmascriptHost<T> {
     /// Like `enqueue_job` but the job receives access to the execution context.
     /// The closure runs with the given realm restored as the current realm.
     /// <https://tc39.es/ecma262/#sec-enqueuejob>
-    fn enqueue_job_with_realm(
-        &mut self,
-        realm: T::Realm,
-        job: Box<dyn FnOnce(&mut dyn ExecutionContext<T>)>,
-    );
+    fn enqueue_job_with_realm(&mut self, realm: T::Realm, job: RealmJob<T>);
 
     /// <https://tc39.es/ecma262/#sec-runjobs>
     fn run_jobs(&mut self);
 
     // ────────────────────────────────────────────────────────────────────────
-    // §25.1 ArrayBuffer Abstract Operations — runtime queries
+    // §25.1 ArrayBuffer Abstract Operations — queries
     // ────────────────────────────────────────────────────────────────────────
 
     /// <https://tc39.es/ecma262/#sec-isdetachedbuffer>
@@ -410,7 +424,7 @@ pub trait ExecutionContext<T: JsTypes + JsTypesWithRealm>: EcmascriptHost<T> {
 
     /// <https://tc39.es/ecma262/#sec-getvaluefrombuffer>
     fn get_value_from_buffer(
-        &self,
+        &mut self,
         array_buffer: &T::ArrayBuffer,
         byte_index: u64,
         element_type: TypedArrayElementType,
@@ -521,7 +535,7 @@ pub trait ExecutionContext<T: JsTypes + JsTypesWithRealm>: EcmascriptHost<T> {
 
     /// <https://tc39.es/ecma262/#sec-map-objects>
     /// Get all entries from a Map as a Vec of (key, value) pairs.
-    fn map_get_entries(&mut self, map: &T::Map) -> Completion<Vec<(T::JsValue, T::JsValue)>, T>;
+    fn map_get_entries(&mut self, map: &T::Map) -> Completion<MapEntries<T>, T>;
 
     /// <https://tc39.es/ecma262/#sec-map.prototype.set>
     /// Add a (key, value) entry to a Map.
@@ -630,6 +644,9 @@ pub trait ExecutionContext<T: JsTypes + JsTypesWithRealm>: EcmascriptHost<T> {
     /// `@@iterator`) in iterable and async-iterable algorithms.
     fn property_key_from_symbol(&self, sym: &T::JsSymbol) -> T::PropertyKey;
 
+    /// Convert a property key to the corresponding ECMAScript value.
+    fn value_from_property_key(&mut self, key: T::PropertyKey) -> T::JsValue;
+
     /// Create a `PropertyKey` from a well-known Symbol name (e.g. "asyncIterator",
     /// "iterator", "hasInstance", "toPrimitive").
     fn property_key_from_well_known_symbol(&mut self, name: &str) -> T::PropertyKey;
@@ -678,11 +695,7 @@ pub trait ExecutionContext<T: JsTypes + JsTypesWithRealm>: EcmascriptHost<T> {
     /// during mutation.  This is the canonical API for patterns like
     /// `set_onload`, `play()`, `pause()`, `set_src()` where the mutation
     /// needs to call back into ECMA-262 operations.
-    fn with_object_any_mut_with(
-        &mut self,
-        object: &T::JsObject,
-        f: Box<dyn FnOnce(&mut dyn std::any::Any, &mut dyn ExecutionContext<T>) + '_>,
-    );
+    fn with_object_any_mut_with(&mut self, object: &T::JsObject, f: ObjectDataMutation<'_, T>);
 
     // ── Error Construction ──────────────────────────────────────────────
 
@@ -811,11 +824,7 @@ pub trait ExecutionContext<T: JsTypes + JsTypesWithRealm>: EcmascriptHost<T> {
     /// The function pointer has no captures, so it is always GC-safe.
     fn create_builtin_fn_static(
         &mut self,
-        behaviour: fn(
-            &[T::JsValue],
-            T::JsValue,
-            &mut dyn ExecutionContext<T>,
-        ) -> Completion<T::JsValue, T>,
+        behaviour: BuiltinFunction<T>,
         length: u32,
         name: T::PropertyKey,
     ) -> T::Function;
@@ -829,13 +838,7 @@ pub trait ExecutionContext<T: JsTypes + JsTypesWithRealm>: EcmascriptHost<T> {
     #[doc(hidden)]
     fn create_builtin_fn(
         &mut self,
-        behaviour: Box<
-            dyn Fn(
-                &[T::JsValue],
-                T::JsValue,
-                &mut dyn ExecutionContext<T>,
-            ) -> Completion<T::JsValue, T>,
-        >,
+        behaviour: BuiltinClosure<T>,
         length: u32,
         name: T::PropertyKey,
     ) -> T::Function;
@@ -846,13 +849,7 @@ pub trait ExecutionContext<T: JsTypes + JsTypesWithRealm>: EcmascriptHost<T> {
     #[doc(hidden)]
     fn create_builtin_function(
         &mut self,
-        behaviour: Box<
-            dyn Fn(
-                &[T::JsValue],
-                T::JsValue,
-                &mut dyn ExecutionContext<T>,
-            ) -> Completion<T::JsValue, T>,
-        >,
+        behaviour: BuiltinClosure<T>,
         length: u32,
         name: T::PropertyKey,
         is_constructor: bool,
@@ -972,19 +969,27 @@ pub trait JsEngine<T: JsTypes> {
 // HostHooks
 // ────────────────────────────────────────────────────────────────────────────
 
+pub type EnsureCanCompileStringsHook<T> =
+    Box<dyn Fn(&<T as JsTypesWithRealm>::Realm) -> Completion<(), T>>;
+pub type PromiseRejectionTrackerHook<T> =
+    Box<dyn Fn(<T as JsTypes>::Promise, PromiseRejectionOperation)>;
+pub type EnqueuePromiseJobHook<T> =
+    Box<dyn Fn(Box<dyn FnOnce()>, Option<<T as JsTypesWithRealm>::Realm>)>;
+pub type LoadImportedModuleHook<T> = Box<dyn Fn(ModuleRequest<T>, PromiseCapability<T>)>;
+
 /// <https://html.spec.whatwg.org/#javascript-specification-host-hooks>
 pub struct HostHooks<T: JsTypesWithRealm> {
     /// <https://html.spec.whatwg.org/#hostensurecancompilestrings>
-    pub ensure_can_compile_strings: Option<Box<dyn Fn(&T::Realm) -> Completion<(), T>>>,
+    pub ensure_can_compile_strings: Option<EnsureCanCompileStringsHook<T>>,
 
     /// <https://html.spec.whatwg.org/#hostpromiserejectiontracker>
-    pub promise_rejection_tracker: Option<Box<dyn Fn(T::Promise, PromiseRejectionOperation)>>,
+    pub promise_rejection_tracker: Option<PromiseRejectionTrackerHook<T>>,
 
     /// <https://html.spec.whatwg.org/#hostenqueuepromisejob>
-    pub enqueue_promise_job: Option<Box<dyn Fn(Box<dyn FnOnce()>, Option<T::Realm>)>>,
+    pub enqueue_promise_job: Option<EnqueuePromiseJobHook<T>>,
 
     /// <https://html.spec.whatwg.org/#hostloadimportedmodule>
-    pub load_imported_module: Option<Box<dyn Fn(ModuleRequest<T>, PromiseCapability<T>)>>,
+    pub load_imported_module: Option<LoadImportedModuleHook<T>>,
 }
 
 impl<T: JsTypesWithRealm> HostHooks<T> {
@@ -997,6 +1002,3 @@ impl<T: JsTypesWithRealm> HostHooks<T> {
         }
     }
 }
-
-// Needed for HostHooks field type resolution
-use crate::records::ModuleRequest;

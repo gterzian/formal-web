@@ -5,7 +5,7 @@ type JsValue = <Types as JsTypes>::JsValue;
 type JsObject = <Types as JsTypes>::JsObject;
 type ArrayBuffer = <Types as JsTypes>::ArrayBuffer;
 
-use js_engine::{Completion, ExecutionContext, JsTypes, TypedArrayElementType};
+use js_engine::{Completion, ExecutionContext, JsTypes, SharedMemoryOrder, TypedArrayElementType};
 
 use crate::webidl::bindings::create_interface_instance;
 use crate::webidl::{rejected_promise, resolved_promise};
@@ -1224,7 +1224,7 @@ impl ReadableByteStreamController {
                 let to_take = remaining.min(entry.remaining_len());
                 let start = entry.remaining_byte_offset();
                 let bytes = {
-                    let data = entry.buffer.data().ok_or_else(|| {
+                    let data = ec.array_buffer_data(&entry.buffer).ok_or_else(|| {
                         ec.new_type_error("Readable byte stream queue entry buffer is detached")
                     })?;
                     data[start..start + to_take].to_vec()
@@ -1240,15 +1240,18 @@ impl ReadableByteStreamController {
 
         self.queue_total_size
             .set(self.queue_total_size.get().saturating_sub(copied.len()));
-        #[cfg_attr(jsc_backend, allow(unused_mut))]
-        let mut data = descriptor
-            .view
-            .buffer
-            .data_mut()
-            .ok_or_else(|| ec.new_type_error("BYOB request buffer is detached"))?;
         let start = descriptor.view.byte_offset() + descriptor.bytes_filled;
-        let end = start + copied.len();
-        data[start..end].copy_from_slice(&copied);
+        for (relative_index, byte) in copied.iter().copied().enumerate() {
+            let value = ec.value_from_number(f64::from(byte));
+            ec.set_value_in_buffer(
+                &descriptor.view.buffer,
+                (start + relative_index) as u64,
+                TypedArrayElementType::Uint8,
+                value,
+                true,
+                SharedMemoryOrder::Unordered,
+            )?;
+        }
         descriptor.bytes_filled += copied.len();
         Ok(())
     }
@@ -1526,7 +1529,12 @@ fn pull_steps_on_rejected(
     captures: &ReadableByteStreamController,
     ec: &mut dyn ExecutionContext<crate::js::Types>,
 ) -> Completion<JsValue, crate::js::Types> {
-    captures.error_steps(args.first().cloned().unwrap_or_default(), ec)?;
+    captures.error_steps(
+        args.first()
+            .cloned()
+            .unwrap_or_else(|| ec.value_undefined()),
+        ec,
+    )?;
     Ok(ec.value_undefined())
 }
 
@@ -1547,6 +1555,11 @@ fn setup_on_rejected(
     captures: &ReadableByteStreamController,
     ec: &mut dyn ExecutionContext<crate::js::Types>,
 ) -> Completion<JsValue, crate::js::Types> {
-    captures.error_steps(args.first().cloned().unwrap_or_default(), ec)?;
+    captures.error_steps(
+        args.first()
+            .cloned()
+            .unwrap_or_else(|| ec.value_undefined()),
+        ec,
+    )?;
     Ok(ec.value_undefined())
 }

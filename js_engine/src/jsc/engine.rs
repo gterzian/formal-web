@@ -1612,7 +1612,7 @@ impl JscEngine {
     }
 
     fn descriptor_field_value(
-        &self,
+        &mut self,
         descriptor_object: *mut JSObjectRef,
         field_name: &str,
     ) -> Result<Option<JscValue>, JscValue> {
@@ -3656,7 +3656,7 @@ impl ExecutionContext<JscTypes> for JscEngine {
         true
     }
     fn get_value_from_buffer(
-        &self,
+        &mut self,
         array_buffer: &JscArrayBuffer,
         byte_index: u64,
         element_type: TypedArrayElementType,
@@ -4845,6 +4845,10 @@ impl ExecutionContext<JscTypes> for JscEngine {
 
     fn property_key_from_symbol(&self, sym: &JscSymbol) -> JscPropertyKey {
         JscPropertyKey::Symbol(*sym)
+    }
+
+    fn value_from_property_key(&mut self, key: JscPropertyKey) -> JscValue {
+        key.into()
     }
 
     fn property_key_from_well_known_symbol(&mut self, name: &str) -> JscPropertyKey {

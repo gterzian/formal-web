@@ -3,7 +3,14 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-const PREBUILD_TARGET_DIR_NAME: &str = "sidecar-prebuild";
+const PREBUILD_TARGET_DIR_NAME: &str = "helper-prebuild";
+
+#[derive(Clone, Copy)]
+enum JavascriptBackend {
+    Boa,
+    Jsc,
+    V8,
+}
 
 fn main() {
     #[allow(unused_mut)]
@@ -71,27 +78,22 @@ fn prebuild_binaries(prebuild_list: &[(&str, &str)]) -> Result<(), String> {
     if profile == "release" {
         command.arg("--release");
     }
+    let javascript_backend = selected_javascript_backend()?;
+
     // Determine the features to pass to prebuild packages.
-    // The content crate has its own backend features (boa/jsc) and media feature.
+    // The content crate has its own backend and media features.
     let has_media = cfg!(feature = "media");
-    let has_boa = cfg!(feature = "boa");
-    if has_boa {
-        // Boa backend: override content defaults (which use jsc)
-        if has_media {
-            command.args(["--no-default-features", "--features", "boa,media"]);
-        } else {
-            command.args(["--no-default-features", "--features", "boa"]);
-        }
+    let backend_feature = match javascript_backend {
+        JavascriptBackend::Boa => "boa",
+        JavascriptBackend::Jsc => "jsc",
+        JavascriptBackend::V8 => "v8",
+    };
+    let content_features = if has_media {
+        format!("{backend_feature},media")
     } else {
-        // JSC backend
-        if has_media {
-            // Content defaults are ["media", "boa"] — must override to jsc+media.
-            command.args(["--no-default-features", "--features", "jsc,media"]);
-        } else {
-            // JSC without media
-            command.args(["--no-default-features", "--features", "jsc"]);
-        }
-    }
+        backend_feature.to_owned()
+    };
+    command.args(["--no-default-features", "--features", &content_features]);
     command.arg("--target-dir").arg(&prebuild_target_root);
     for (package_name, binary_name) in prebuild_list {
         command
@@ -125,6 +127,37 @@ fn prebuild_binaries(prebuild_list: &[(&str, &str)]) -> Result<(), String> {
     }
 
     Ok(())
+}
+
+fn selected_javascript_backend() -> Result<JavascriptBackend, String> {
+    let enabled_backends = [
+        (cfg!(feature = "boa"), JavascriptBackend::Boa, "boa"),
+        (cfg!(feature = "jsc"), JavascriptBackend::Jsc, "jsc"),
+        (cfg!(feature = "v8"), JavascriptBackend::V8, "v8"),
+    ];
+    let selected_backends: Vec<_> = enabled_backends
+        .into_iter()
+        .filter(|(enabled, _, _)| *enabled)
+        .collect();
+
+    if selected_backends.len() != 1 {
+        let selected_names: Vec<_> = selected_backends.iter().map(|(_, _, name)| *name).collect();
+        return Err(format!(
+            "exactly one JavaScript backend feature must be enabled; selected: {}",
+            if selected_names.is_empty() {
+                "none".to_owned()
+            } else {
+                selected_names.join(", ")
+            }
+        ));
+    }
+
+    if cfg!(feature = "v8") && cfg!(feature = "wasm") {
+        return Err("features `v8` and `wasm` cannot be enabled together".to_owned());
+    }
+
+    let (_, selected_backend, _) = selected_backends[0];
+    Ok(selected_backend)
 }
 
 fn copy_prebuilt_binary(

@@ -356,7 +356,7 @@ fn get_locked(
     let locked = with_readable_stream_ref(&stream_object, ec, |stream: &ReadableStream| {
         stream.locked()
     })?;
-    Ok(JsValue::from(locked))
+    Ok(ec.value_from_bool(locked))
 }
 
 fn cancel_method(
@@ -490,7 +490,7 @@ fn get_desired_size(
         with_readable_stream_default_controller_ref(&controller_object, ec, |c| c.clone())?;
     let size = controller.desired_size(ec)?;
     Ok(match size {
-        Some(s) => JsValue::from(s),
+        Some(size) => ec.value_from_number(size),
         None => ec.value_null(),
     })
 }
@@ -507,7 +507,7 @@ fn get_byte_desired_size(
         with_readable_byte_stream_controller_ref(&controller_object, ec, |c| c.clone())?;
     let size = controller.desired_size(ec)?;
     Ok(match size {
-        Some(s) => JsValue::from(s),
+        Some(size) => ec.value_from_number(size),
         None => ec.value_null(),
     })
 }

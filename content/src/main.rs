@@ -25,6 +25,7 @@ use crate::html::{
     parse_html_into_document, run_dom_post_connection_steps_for_document,
     run_dom_removing_steps_for_document, run_iframe_load_event_steps_for_traversable,
 };
+use crate::js::Engine;
 use crate::js::platform_objects::with_global_scope;
 use crate::ui_event::deserialize_ui_event;
 #[cfg(all(boa_backend, feature = "wasm"))]
@@ -419,6 +420,7 @@ pub(crate) struct ContentProcess {
     media_extension_sender: Option<ipc::IpcSender<ipc_messages::media::MediaCommand>>,
     /// This content process's own command sender, used by net for direct response routing.
     content_command_sender: ipc::IpcSender<Command>,
+    realm_parent: Engine,
 }
 
 impl ContentProcess {
@@ -453,7 +455,26 @@ impl ContentProcess {
             network_extension_sender,
             media_extension_sender,
             content_command_sender,
+            realm_parent: Engine::new(),
         }
+    }
+
+    fn create_environment_settings_object(
+        &mut self,
+        document: Rc<RefCell<BaseDocument>>,
+        creation_url: Url,
+        traversable_id: NavigableId,
+        document_id: DocumentId,
+    ) -> Result<EnvironmentSettingsObject, String> {
+        let event_sender = self.event_sender.clone();
+        EnvironmentSettingsObject::new_in_realm(
+            Some(&mut self.realm_parent),
+            document,
+            creation_url,
+            Some(event_sender),
+            Some(traversable_id),
+            Some(document_id),
+        )
     }
 
     /// Set the clipboard cache from a prefetched clipboard text.
@@ -911,12 +932,11 @@ impl ContentProcess {
             document_id,
             None,
         ))));
-        let mut settings = EnvironmentSettingsObject::new(
+        let mut settings = self.create_environment_settings_object(
             Rc::clone(&document),
             Url::parse("about:blank").map_err(|error| error.to_string())?,
-            Some(self.event_sender.clone()),
-            Some(traversable_id),
-            Some(document_id),
+            traversable_id,
+            document_id,
         )?;
 
         // Set the video-paint registry on GlobalScope so that
@@ -1014,12 +1034,11 @@ impl ContentProcess {
             document_id,
             Some(final_url.clone()),
         ))));
-        let mut settings = EnvironmentSettingsObject::new(
+        let mut settings = self.create_environment_settings_object(
             Rc::clone(&document),
             Url::parse(&final_url).map_err(|error| error.to_string())?,
-            Some(self.event_sender.clone()),
-            Some(traversable_id),
-            Some(document_id),
+            traversable_id,
+            document_id,
         )?;
 
         // Set the video-paint registry on GlobalScope so that

@@ -20,6 +20,16 @@ cargo build --release --no-default-features --features jsc,media
 cargo run --release --no-default-features --features jsc,media
 ```
 
+**V8** (experimental, macOS arm64 only):
+```bash
+cargo build --release --no-default-features --features v8,media
+cargo run --release --no-default-features --features v8,media
+```
+
+V8 cannot be combined with `wasm`. The first build downloads the pinned V8
+archive. Set `RUSTY_V8_ARCHIVE` or `RUSTY_V8_MIRROR` for offline or mirrored
+builds.
+
 **GStreamer** media backend instead of AVFoundation:
 ```bash
 cargo build --release --no-default-features --features backend-gstreamer,boa,media

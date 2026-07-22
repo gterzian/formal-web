@@ -3,7 +3,7 @@
 //! These use [`ExecutionContext::with_object_any`] / `with_object_any_mut`
 //! to extract native Rust data from JavaScript platform objects.
 
-use crate::dom::{AbortController, AbortSignal, Document, Element, Event, EventTarget, Node};
+use crate::dom::{AbortController, AbortSignal, Document, Element, Event, EventTarget, Node, UIEvent};
 use crate::html::{
     HTMLAnchorElement, HTMLElement, HTMLIFrameElement, HTMLInputElement, HTMLMediaElement,
     HTMLVideoElement, Window,
@@ -86,6 +86,8 @@ pub(crate) fn try_set_event_target_reflector(
                 signal.with_event_target_mut(|et| et.reflector = Some(obj_clone));
             } else if let Some(event) = data.downcast_mut::<Event>() {
                 event.reflector = Some(obj_clone);
+            } else if let Some(ui_event) = data.downcast_mut::<UIEvent>() {
+                ui_event.event.reflector = Some(obj_clone);
             }
         }
     }
