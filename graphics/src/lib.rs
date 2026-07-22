@@ -94,7 +94,7 @@ pub fn run_graphics_process<B: MediaBackend + 'static>(
             }
             recv(media_event_rx) -> event => {
                 let Ok(event) = event else { break };
-                handle_media_event(event, &pipeline_webview_map, &mut webviews);
+                handle_media_event(event, &pipeline_webview_map, &mut webviews, &event_sender);
             }
             recv(sample_tick) -> _ => {
                 for pipeline in pipelines.values() {
@@ -109,6 +109,7 @@ fn handle_media_event(
     event: MediaBackendEvent,
     pipeline_webview_map: &HashMap<MediaPipelineId, (WebviewId, VideoPaintId)>,
     webviews: &mut HashMap<WebviewId, WebviewCompositorSlot>,
+    composed_scene_sender: &ipc::IpcSender<GraphicsEvent>,
 ) {
     match event {
         MediaBackendEvent::Frame(mut video_frame) => {
@@ -124,11 +125,17 @@ fn handle_media_event(
                 height: video_frame.height,
                 data: pixel_bytes,
             };
-            // Store the video frame for the next PaintFrame-triggered composition.
-            // We do NOT compose here — the video frame is already in the compositor
-            // and will be picked up when the next DOM PaintFrame arrives.
             if let Some(slot) = webviews.get_mut(&webview_id) {
                 slot.compositor.update_video_frame(cf);
+                // Compose and send the scene so the video appears immediately.
+                if slot.compositor.committed_root_frame_id().is_some() {
+                    if let Some(composed) = slot
+                        .compositor
+                        .compose_scene(&slot.font_receiver, webview_id)
+                    {
+                        let _ = send_composed_scene(composed_scene_sender.clone(), slot, composed);
+                    }
+                }
             }
         }
         MediaBackendEvent::Eos { pipeline_id } => {

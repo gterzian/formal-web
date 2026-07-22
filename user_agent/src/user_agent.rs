@@ -902,7 +902,6 @@ pub enum UserAgentCommand {
     SendUiEvent {
         webview_id: WebviewId,
         event_message: String,
-        reply: crossbeam_channel::Sender<Result<(NavigableId, Vec<FrameId>), String>>,
     },
     IframeTraversableRemoved {
         parent_traversable_id: NavigableId,
@@ -1051,18 +1050,13 @@ impl UserAgent {
         &self,
         webview_id: WebviewId,
         event_message: String,
-    ) -> Result<(NavigableId, Vec<FrameId>), String> {
-        let (reply_sender, reply_receiver) = crossbeam_channel::bounded(1);
+    ) -> Result<(), String> {
         self.command_sender
             .send(UserAgentCommand::SendUiEvent {
                 webview_id,
                 event_message,
-                reply: reply_sender,
             })
-            .map_err(|error| format!("failed to send ui event: {error}"))?;
-        reply_receiver
-            .recv()
-            .map_err(|error| format!("send ui event reply channel closed: {error}"))?
+            .map_err(|error| format!("failed to send ui event: {error}"))
     }
 
     /// <https://html.spec.whatwg.org/multipage/#update-the-rendering>
@@ -1418,9 +1412,8 @@ impl UserAgentWorker {
                     UserAgentCommand::SendUiEvent {
                         webview_id,
                         event_message,
-                        reply,
                     } => {
-                        self.handle_send_ui_event(webview_id, event_message, reply);
+                        self.handle_send_ui_event(webview_id, event_message);
                     }
                     UserAgentCommand::DispatchEventFor {
                         traversable_id,
@@ -3202,17 +3195,7 @@ impl UserAgentWorker {
         &mut self,
         webview_id: WebviewId,
         event_message: String,
-        reply: crossbeam_channel::Sender<Result<(NavigableId, Vec<FrameId>), String>>,
     ) {
-        let result = self.do_send_ui_event(webview_id, &event_message);
-        let _ = reply.send(result);
-    }
-
-    fn do_send_ui_event(
-        &mut self,
-        webview_id: WebviewId,
-        event_message: &str,
-    ) -> Result<(NavigableId, Vec<FrameId>), String> {
         if input_debug_enabled() {
             trace!(
                 "[input-debug][user-agent] send_ui_event webview={:?} bytes={}",
@@ -3221,10 +3204,11 @@ impl UserAgentWorker {
             );
         }
 
-        let event = crate::ui_event::deserialize_ui_event(event_message)?;
+        let Ok(event) = crate::ui_event::deserialize_ui_event(&event_message) else {
+            return;
+        };
 
-        // Hit test using frame hit info from the graphics process.
-        let (target_webview_id, routed_event, composed_frame_ids) =
+        let (target_webview_id, routed_event, _composed_frame_ids) =
             self.route_ui_event(webview_id, event);
 
         if input_debug_enabled() {
@@ -3235,31 +3219,9 @@ impl UserAgentWorker {
             );
         }
 
-        let routed_message = crate::ui_event::serialize_ui_event(&routed_event)?;
-        self.handle_dispatch_event_for(target_webview_id.0, routed_message);
-
-        // Trigger rendering opportunities for affected frames.
-        self.note_rendering_opportunities(webview_id, &composed_frame_ids);
-
-        // Update focused frame for pointer-down events.
-        if matches!(&routed_event, blitz_traits::events::UiEvent::PointerDown(_)) {
-            if let Some(hit_info_list) = self.state.frame_hit_info.get(&webview_id) {
-                for info in hit_info_list {
-                    if let Some((coords_x, coords_y)) = pointer_coords(&routed_event) {
-                        if coords_x >= info.root_clip_bounds[0]
-                            && coords_y >= info.root_clip_bounds[1]
-                            && coords_x <= info.root_clip_bounds[2]
-                            && coords_y <= info.root_clip_bounds[3]
-                        {
-                            let _ = info.frame_id;
-                            break;
-                        }
-                    }
-                }
-            }
+        if let Ok(routed_message) = crate::ui_event::serialize_ui_event(&routed_event) {
+            self.handle_dispatch_event_for(target_webview_id.0, routed_message);
         }
-
-        Ok((target_webview_id.0, composed_frame_ids))
     }
 
     /// Route a UI event to the correct frame using frame hit info from the
@@ -3294,10 +3256,6 @@ impl UserAgentWorker {
             }
         }
         (root_webview_id, event, Vec::new())
-    }
-
-    fn note_rendering_opportunities(&self, _root_webview_id: WebviewId, _frame_ids: &[FrameId]) {
-        // TODO: note rendering opportunity for affected frames
     }
 
     fn handle_dispatch_event_for(&mut self, traversable_id: NavigableId, event: String) {

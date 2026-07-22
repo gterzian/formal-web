@@ -1,40 +1,5 @@
 use ipc_messages::graphics::{GraphicsCommand, GraphicsEvent};
-use media::backend::{MediaBackend, MediaBackendEvent, PipelineHandle};
-
-struct NoopBackend;
-impl MediaBackend for NoopBackend {
-    type Pipeline = NoopPipeline;
-    fn init() -> Result<Self, String> {
-        Ok(Self)
-    }
-    fn create_pipeline(
-        &mut self,
-        _id: ipc_messages::media::MediaPipelineId,
-        _url: String,
-    ) -> Result<Self::Pipeline, String> {
-        Err("no media backend".into())
-    }
-    fn event_receiver(&self) -> crossbeam_channel::Receiver<MediaBackendEvent> {
-        let (tx, rx) = crossbeam_channel::unbounded();
-        drop(tx);
-        rx
-    }
-}
-struct NoopPipeline;
-impl PipelineHandle for NoopPipeline {
-    fn play(&self) -> Result<(), String> {
-        Ok(())
-    }
-    fn pause(&self) -> Result<(), String> {
-        Ok(())
-    }
-    fn seek(&self, _p: f64) -> Result<(), String> {
-        Ok(())
-    }
-    fn destroy(self) -> Result<(), String> {
-        Ok(())
-    }
-}
+use media::backend::MediaBackend;
 
 fn main() {
     env_logger::init();
@@ -59,7 +24,35 @@ fn main() {
     let result = ipc::run_extension::<GraphicsCommand, GraphicsEvent>(&token, |server| {
         let receiver = ipc::crossbeam_proxy(server.connection.receiver);
         let event_tx = server.connection.sender.clone();
-        let backend: Option<NoopBackend> = None;
+
+        // Initialize the platform-specific media backend.
+        // On Apple platforms AVFoundation is used; elsewhere GStreamer.
+        #[cfg(any(target_os = "macos", target_os = "ios"))]
+        let backend: Option<media::backend::avfoundation::AvfBackend> =
+            match media::backend::avfoundation::AvfBackend::init() {
+                Ok(b) => {
+                    log::info!("[graphics] AVFoundation backend initialized");
+                    Some(b)
+                }
+                Err(e) => {
+                    log::error!("[graphics] AVFoundation init failed: {e}");
+                    None
+                }
+            };
+
+        #[cfg(not(any(target_os = "macos", target_os = "ios")))]
+        let backend: Option<media::backend::gstreamer::GStreamerBackend> =
+            match media::backend::gstreamer::GStreamerBackend::init() {
+                Ok(b) => {
+                    log::info!("[graphics] GStreamer backend initialized");
+                    Some(b)
+                }
+                Err(e) => {
+                    log::error!("[graphics] GStreamer init failed: {e}");
+                    None
+                }
+            };
+
         graphics::run_graphics_process(receiver, event_tx, backend);
         Ok(())
     });

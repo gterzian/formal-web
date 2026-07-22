@@ -203,8 +203,16 @@ impl WebviewProvider {
             );
         }
         self.embedder.request_redraw(webview_id);
-        let event_message = ui_event::serialize_ui_event(&event)?;
-        self.user_agent.send_ui_event(webview_id, event_message)?;
+        match ui_event::serialize_ui_event(&event) {
+            Ok(event_message) => {
+                if let Err(error) = self.user_agent.send_ui_event(webview_id, event_message) {
+                    error!("failed to send ui event: {error}");
+                }
+            }
+            Err(error) => {
+                error!("failed to serialize ui event: {error}");
+            }
+        }
         Ok(())
     }
 
