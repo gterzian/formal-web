@@ -26,7 +26,6 @@ struct WebviewCompositorSlot {
     font_sender: FontTransportSender,
     next_shmem_key: usize,
     child_frame_to_parent: HashMap<FrameId, WebviewId>,
-    _child_webview_to_frame: HashMap<WebviewId, (WebviewId, FrameId)>,
 }
 
 impl WebviewCompositorSlot {
@@ -37,7 +36,6 @@ impl WebviewCompositorSlot {
             font_sender: FontTransportSender::default(),
             next_shmem_key: 1,
             child_frame_to_parent: HashMap::new(),
-            _child_webview_to_frame: HashMap::new(),
         }
     }
 }
@@ -65,7 +63,7 @@ pub fn run_graphics_process<B: MediaBackend + 'static>(
     // Media pipeline state.
     let mut pipelines: HashMap<MediaPipelineId, B::Pipeline> = HashMap::new();
     let sample_tick = tick(std::time::Duration::from_millis(8));
-    let _pipeline_webview_map: HashMap<MediaPipelineId, (WebviewId, VideoPaintId)> =
+    let mut pipeline_webview_map: HashMap<MediaPipelineId, (WebviewId, VideoPaintId)> =
         HashMap::new();
 
     // Use crossbeam's never() channel when there's no backend so the select! loop
@@ -88,7 +86,7 @@ pub fn run_graphics_process<B: MediaBackend + 'static>(
                     &event_sender,
                     &incoming.shmem_regions,
                     &mut pipelines,
-                    &_pipeline_webview_map,
+                    &mut pipeline_webview_map,
                     backend.as_mut(),
                 ) {
                     break;
@@ -96,7 +94,7 @@ pub fn run_graphics_process<B: MediaBackend + 'static>(
             }
             recv(media_event_rx) -> event => {
                 let Ok(event) = event else { break };
-                handle_media_event(event, &_pipeline_webview_map, &mut webviews);
+                handle_media_event(event, &pipeline_webview_map, &mut webviews);
             }
             recv(sample_tick) -> _ => {
                 for pipeline in pipelines.values() {
@@ -160,7 +158,7 @@ fn handle_command<B: MediaBackend + 'static>(
     composed_scene_sender: &ipc::IpcSender<GraphicsEvent>,
     shmem_regions: &HashMap<usize, ipc::IpcSharedRegion>,
     pipelines: &mut HashMap<MediaPipelineId, B::Pipeline>,
-    _pipeline_webview_map: &HashMap<MediaPipelineId, (WebviewId, VideoPaintId)>,
+    pipeline_webview_map: &mut HashMap<MediaPipelineId, (WebviewId, VideoPaintId)>,
     media_backend: Option<&mut B>,
 ) -> bool {
     match cmd {
@@ -218,15 +216,13 @@ fn handle_command<B: MediaBackend + 'static>(
             }
         }
         GraphicsCommand::RegisterChildNavigableHost {
-            child_webview_id,
+            child_webview_id: _,
             parent_traversable_id,
             content_frame_id,
         } => {
             if let Some(slot) = webviews.get_mut(&parent_traversable_id) {
                 slot.child_frame_to_parent
                     .insert(content_frame_id, parent_traversable_id);
-                slot._child_webview_to_frame
-                    .insert(child_webview_id, (parent_traversable_id, content_frame_id));
             }
         }
         GraphicsCommand::ChildNavigationFinalized {
@@ -238,11 +234,17 @@ fn handle_command<B: MediaBackend + 'static>(
                     .note_child_navigation_finalized(content_frame_id);
             }
         }
-        GraphicsCommand::CreateMediaPipeline { pipeline_id, url } => {
+        GraphicsCommand::CreateMediaPipeline {
+            pipeline_id,
+            url,
+            webview_id,
+            video_paint_id,
+        } => {
             debug!(
-                "[graphics:media] create pipeline {:?} url={}",
-                pipeline_id, url
+                "[graphics:media] create pipeline {:?} url={} webview={:?} paint={:?}",
+                pipeline_id, url, webview_id, video_paint_id
             );
+            pipeline_webview_map.insert(pipeline_id, (webview_id, video_paint_id));
             if let Some(backend) = media_backend {
                 match backend.create_pipeline(pipeline_id, url) {
                     Ok(pipeline) => {

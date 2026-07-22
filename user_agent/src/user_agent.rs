@@ -1281,14 +1281,12 @@ impl UserAgentWorker {
             .unwrap_or_else(|error| panic!("failed to start net extension: {error}"));
         let (timer_command_sender, timer_command_receiver) = unbounded();
         let timer_user_agent_command_sender = user_agent_command_sender.clone();
-        let timer_trace_sender = trace_sender.clone();
         let timer_join_handle = thread::Builder::new()
             .name(String::from("formal-web:timer"))
             .spawn(move || {
                 run_timer_thread(
                     timer_command_receiver,
                     timer_user_agent_command_sender,
-                    timer_trace_sender,
                 )
             })
             .unwrap_or_else(|error| panic!("failed to spawn formal-web-timer thread: {error}"));
@@ -3630,12 +3628,6 @@ impl UserAgentWorker {
                 ) {
                     error!("[graphics] failed to forward composed scene: {error}");
                 }
-
-                // Note: Do NOT trigger a rendering opportunity here — that would
-                // create a feedback loop (compose → render → PaintFrame → compose → ...),
-                // flooding the graphics process with hundreds of PaintFrames per second.
-                // The content process drives its own rendering via the HTML event loop;
-                // rendering opportunities come from user input and viewport changes only.
             }
             GraphicsEvent::ShutdownComplete => {
                 debug!("[graphics] graphics process shutdown complete");

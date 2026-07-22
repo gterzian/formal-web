@@ -9,7 +9,7 @@ use crate::js::Types;
 use crate::html::{HTMLElement, await_a_stable_state};
 use crate::js::platform_objects::with_global_scope;
 use crate::webidl::resolved_promise;
-use ipc_messages::content::{Event as ContentEvent, RegisterMediaPipeline};
+use ipc_messages::content::{Event as ContentEvent, RegisterMediaPipeline, WebviewId};
 use ipc_messages::graphics::GraphicsCommand;
 use ipc_messages::media::VideoPaintId;
 use js_engine::gc_struct;
@@ -403,6 +403,8 @@ impl HTMLMediaElement {
                                 graphics_sender.send(GraphicsCommand::CreateMediaPipeline {
                                     pipeline_id,
                                     url: resolved_url.clone(),
+                                    webview_id: WebviewId(traversable_id),
+                                    video_paint_id,
                                 })
                             {
                                 error!("[media] failed to send CreatePipeline: {error}");

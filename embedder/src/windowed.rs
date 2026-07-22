@@ -1,4 +1,4 @@
-use log::error;
+use log::{debug, error};
 mod chrome;
 
 use self::chrome::{ChromeAction, ChromeTabInfo, ChromeUi, ChromeViewState, WinitShellProvider};
@@ -416,7 +416,11 @@ impl WindowedApp {
         state.active_tab = Some(webview_id);
     }
 
-    fn paint_frame(state: &mut WindowState, provider: &mut Option<WebviewProvider>) {
+    fn paint_frame(
+        state: &mut WindowState,
+        composed_scenes: &HashMap<WebviewId, (RecordedScene, Vec<FrameHitInfo>)>,
+        font_receiver: &mut FontTransportReceiver,
+    ) {
         if !Self::has_visible_viewport(state) {
             return;
         }
@@ -442,15 +446,46 @@ impl WindowedApp {
             state.renderer.complete_resume();
         }
         let active_tab = state.active_tab;
+        debug!(
+            "[embedder] paint_frame webview={:?} composed_scenes_keys={:?}",
+            active_tab,
+            composed_scenes.keys().collect::<Vec<_>>()
+        );
         state.renderer.render(|scene| {
-            if let Some(webview_id) = active_tab
-                && let Some(provider) = provider.as_mut()
-            {
-                let _ = provider.append_web_content_scene(
-                    webview_id,
-                    scene,
-                    Affine::translate((0.0, chrome_height)),
-                );
+            if let Some(webview_id) = active_tab {
+                // Use the composed scene from the graphics process.
+                if let Some((recorded_scene, _hit_info)) = composed_scenes.get(&webview_id) {
+                    debug!(
+                        "[embedder] paint_frame appending composed scene webview={:?} summary={:?}",
+                        webview_id,
+                        recorded_scene.summary(),
+                    );
+                    let content_scene = recorded_scene.clone().into_scene(font_receiver);
+                    debug!(
+                        "[embedder] paint_frame into_scene result commands={} tolerance={:?}",
+                        content_scene.commands.len(),
+                        content_scene.tolerance,
+                    );
+                    for (i, cmd) in content_scene.commands.iter().enumerate() {
+                        debug!("[embedder] paint_frame cmd[{}]: {:?}", i, cmd);
+                    }
+                    // Fill the content area with white before compositing the scene.
+                    // The content scene may have a transparent background (e.g. about:blank).
+                    let content_transform = Affine::translate((0.0, chrome_height));
+                    scene.fill(
+                        kurbo::Fill::NonZero,
+                        content_transform,
+                        peniko::Color::WHITE,
+                        None,
+                        &kurbo::Rect::new(0.0, 0.0, f64::from(size.width), f64::from(size.height)),
+                    );
+                    scene.append_scene(content_scene, content_transform);
+                } else {
+                    debug!(
+                        "[embedder] paint_frame no composed scene for webview={:?}",
+                        webview_id
+                    );
+                }
             }
             if let Some(chrome_scene) = chrome_scene.clone() {
                 scene.append_scene(chrome_scene, Affine::IDENTITY);
@@ -626,7 +661,11 @@ impl ApplicationHandler<FormalWebUserEvent> for WindowedApp {
                 if let Some(state) = self.windows.get_mut(&window_id)
                     && (self.provider.is_some() || state.chrome.is_some())
                 {
-                    Self::paint_frame(state, &mut self.provider);
+                    Self::paint_frame(
+                        state,
+                        &self.composed_scenes,
+                        &mut self.scene_font_receiver,
+                    );
                 }
             }
             WindowEvent::Occluded(occluded) => {
@@ -1119,12 +1158,25 @@ impl ApplicationHandler<FormalWebUserEvent> for WindowedApp {
                 font_data,
                 frame_hit_info,
             } => {
+                debug!(
+                    "[embedder] NewWebContentScene webview={:?} scene_bytes={}",
+                    webview_id,
+                    scene_bytes.len()
+                );
                 // Register fonts from the graphics process.
                 self.scene_font_receiver
                     .register_fonts(font_registrations, &font_data);
+                // Forward the frame hit info to the provider for UI event routing.
+                if let Some(provider) = self.provider.as_mut() {
+                    provider.store_frame_hit_info(webview_id, frame_hit_info.clone());
+                }
                 // Deserialize and store the composed scene directly in the app.
                 match ipc_messages::content::deserialize_scene_from_slice(&scene_bytes) {
                     Ok(scene) => {
+                        debug!(
+                            "[embedder] NewWebContentScene stored for webview={:?}",
+                            webview_id
+                        );
                         self.composed_scenes
                             .insert(webview_id, (scene, frame_hit_info));
                         // Trigger a redraw so the new scene is rendered.

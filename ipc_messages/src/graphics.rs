@@ -41,6 +41,8 @@ pub enum GraphicsCommand {
     CreateMediaPipeline {
         pipeline_id: MediaPipelineId,
         url: String,
+        webview_id: WebviewId,
+        video_paint_id: VideoPaintId,
     },
     /// Start or resume playback of a media pipeline.
     MediaPlay { pipeline_id: MediaPipelineId },

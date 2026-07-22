@@ -241,7 +241,6 @@ impl EventLoopWorker {
 
         worker.send_command_inner(&ContentCommand::ContentBootstrap {
             net_sender: network_extension_sender_fwd,
-            media_sender: None,
             graphics_sender: graphics_sender_for_bootstrap,
             content_command_sender,
             trace_sender,
