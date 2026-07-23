@@ -1,18 +1,8 @@
 use crate::content::{FrameId, PaintFrame, RegisteredFont, WebviewId};
-use std::collections::HashMap;
 use crate::media::{MediaPipelineId, VideoPaintId};
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 use uuid::Uuid;
-
-/// A platform-specific handle to a GPU surface that can be shared across
-/// processes without CPU round-trips.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
-pub enum PlatformSurfaceHandle {
-    /// macOS: IOSurfaceID — a u32 global identifier for an IOSurface object.
-    #[cfg(target_os = "macos")]
-    #[serde(rename = "iosurface")]
-    IOSurface(u32),
-}
 
 /// Identifies a per-webview compositor slot within the graphics process.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -117,10 +107,11 @@ pub struct FrameHitInfo {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum GraphicsEvent {
-    /// A zero-copy GPU surface frame is ready for one webview.
+    /// A rendered surface frame is ready for one webview.
+    /// Carries RGBA pixel data rendered by the graphics process.
     SurfaceFrameReady {
         webview_id: WebviewId,
-        surface: PlatformSurfaceHandle,
+        pixels: Vec<u8>,
         width: u32,
         height: u32,
         generation: u64,

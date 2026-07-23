@@ -146,7 +146,7 @@ impl Embedder for EventLoopEmbedder {
     fn new_web_content_surface(
         &self,
         webview_id: WebviewId,
-        iosurface_id: u32,
+        pixels: Vec<u8>,
         width: u32,
         height: u32,
         generation: u64,
@@ -154,7 +154,7 @@ impl Embedder for EventLoopEmbedder {
         self.dispatcher
             .send(FormalWebUserEvent::NewWebContentSurface {
                 webview_id,
-                iosurface_id,
+                pixels,
                 width,
                 height,
                 generation,
@@ -172,7 +172,7 @@ pub enum FormalWebUserEvent {
     },
     NewWebContentSurface {
         webview_id: WebviewId,
-        iosurface_id: u32,
+        pixels: Vec<u8>,
         width: u32,
         height: u32,
         generation: u64,

@@ -11,7 +11,7 @@ use super::{
     automation_visible_frame_viewports, normalize_browser_destination, read_clipboard_text,
     startup_destination_url, write_clipboard_text,
 };
-use anyrender::{Paint, PaintScene, RenderContext, WindowRenderer};
+use anyrender::{Paint, PaintScene, WindowRenderer};
 use anyrender_vello::VelloWindowRenderer;
 use automation::{
     AutomationController, AutomationHost, AutomationSnapshot, AutomationVisibleFrameViewport,
@@ -22,18 +22,7 @@ use blitz_traits::events::{
     MouseEventButton, MouseEventButtons, PointerCoords, PointerDetails, UiEvent,
 };
 use blitz_traits::shell::{ColorScheme, ShellProvider};
-use ipc_messages::content::{FontTransportReceiver, RecordedScene, WebviewId};
-#[cfg(target_os = "macos")]
-use objc2::rc::Retained;
-#[cfg(target_os = "macos")]
-use objc2::runtime::ProtocolObject;
-#[cfg(target_os = "macos")]
-use objc2::msg_send;
-#[cfg(target_os = "macos")]
-use objc2_metal::{MTLTextureDescriptor, MTLTextureType, MTLPixelFormat,
-                  MTLStorageMode, MTLTextureUsage};
-#[cfg(target_os = "macos")]
-use wgpu::hal::{self, metal::Api as MetalApi};
+use ipc_messages::content::WebviewId;
 #[cfg(target_os = "macos")]
 use keyboard_types::{Key, Modifiers as KeyboardModifiers};
 use kurbo::Affine;
@@ -168,6 +157,8 @@ fn apple_standard_keybinding_for_key_down(event: &BlitzKeyEvent) -> Option<&'sta
 pub(super) struct WindowState {
     pub(super) window: Option<Arc<Window>>,
     pub(super) renderer: VelloWindowRenderer,
+    /// Cached rendered image data from the graphics process, keyed by webview.
+    pub(super) surface_images: HashMap<WebviewId, peniko::ImageData>,
     pub(super) chrome: Option<ChromeUi>,
     pub(super) tabs: HashMap<WebviewId, TabState>,
     pub(super) tab_order: Vec<WebviewId>,
@@ -185,6 +176,7 @@ impl WindowState {
         Self {
             window: None,
             renderer: VelloWindowRenderer::new(),
+            surface_images: HashMap::new(),
             chrome: None,
             tabs: HashMap::new(),
             tab_order: Vec::new(),
@@ -199,15 +191,20 @@ impl WindowState {
     }
 }
 
-#[derive(Default)]
 pub(super) struct WindowedApp {
     pub(super) windows: HashMap<WindowId, WindowState>,
     pub(super) provider: Option<WebviewProvider>,
     pub(super) active_window_id: Option<WindowId>,
-    /// Pre-composed scenes from the graphics process, keyed by webview.
-    pub(super) composed_scenes: HashMap<WebviewId, RecordedScene>,
-    /// Font receiver for resolving font data in composed scenes.
-    pub(super) scene_font_receiver: FontTransportReceiver,
+}
+
+impl Default for WindowedApp {
+    fn default() -> Self {
+        Self {
+            windows: HashMap::new(),
+            provider: None,
+            active_window_id: None,
+        }
+    }
 }
 
 type ViewportSnapshot = Option<(u32, u32, f32, ColorScheme)>;
@@ -426,11 +423,7 @@ impl WindowedApp {
         state.active_tab = Some(webview_id);
     }
 
-    fn paint_frame(
-        state: &mut WindowState,
-        composed_scenes: &HashMap<WebviewId, RecordedScene>,
-        font_receiver: &mut FontTransportReceiver,
-    ) {
+    fn paint_frame(state: &mut WindowState) {
         if !Self::has_visible_viewport(state) {
             return;
         }
@@ -456,37 +449,27 @@ impl WindowedApp {
             state.renderer.complete_resume();
         }
         let active_tab = state.active_tab;
-        debug!(
-            "[embedder] paint_frame webview={:?} composed_scenes_keys={:?}",
-            active_tab,
-            composed_scenes.keys().collect::<Vec<_>>()
-        );
         state.renderer.render(|scene| {
-            if let Some(webview_id) = active_tab {
-                // Use the composed scene from the graphics process.
-                if let Some(recorded_scene) = composed_scenes.get(&webview_id) {
-                    debug!(
-                        "[embedder] paint_frame appending composed scene webview={:?} summary={:?}",
-                        webview_id,
-                        recorded_scene.summary(),
-                    );
-                    let content_scene = recorded_scene.clone().into_scene(font_receiver);
-                    debug!(
-                        "[embedder] paint_frame into_scene result commands={} tolerance={:?}",
-                        content_scene.commands.len(),
-                        content_scene.tolerance,
-                    );
-                    for (i, cmd) in content_scene.commands.iter().enumerate() {
-                        debug!("[embedder] paint_frame cmd[{}]: {:?}", i, cmd);
-                    }
-                    let content_transform = Affine::translate((0.0, chrome_height));
-                    scene.append_scene(content_scene, content_transform);
-                } else {
-                    debug!(
-                        "[embedder] paint_frame no composed scene for webview={:?}",
-                        webview_id
-                    );
-                }
+            if let Some(webview_id) = active_tab
+                && let Some(image_data) = state.surface_images.get(&webview_id)
+            {
+                let w = image_data.width;
+                let h = image_data.height;
+                debug!(
+                    "[embedder] paint_frame drawing surface webview={:?} {}x{}",
+                    webview_id, w, h
+                );
+                let content_transform = Affine::translate((0.0, chrome_height));
+                scene.fill(
+                    peniko::Fill::NonZero,
+                    content_transform,
+                    Paint::Image(peniko::ImageBrushRef {
+                        image: image_data,
+                        sampler: Default::default(),
+                    }),
+                    None,
+                    &kurbo::Rect::new(0.0, 0.0, f64::from(w), f64::from(h)),
+                );
             }
             if let Some(chrome_scene) = chrome_scene.clone() {
                 scene.append_scene(chrome_scene, Affine::IDENTITY);
@@ -636,6 +619,9 @@ impl ApplicationHandler<FormalWebUserEvent> for WindowedApp {
         if let Some(provider) = self.provider.as_ref() {
             let _ = provider.navigate(None, &destination);
         }
+
+
+
         self.windows.insert(window_id, state);
         if let Some(window_state) = self.windows.get(&window_id) {
             Self::request_window_redraw(window_state);
@@ -666,7 +652,7 @@ impl ApplicationHandler<FormalWebUserEvent> for WindowedApp {
                 if let Some(state) = self.windows.get_mut(&window_id)
                     && (self.provider.is_some() || state.chrome.is_some())
                 {
-                    Self::paint_frame(state, &self.composed_scenes, &mut self.scene_font_receiver);
+                    Self::paint_frame(state);
                 }
             }
             WindowEvent::Occluded(occluded) => {
@@ -1160,57 +1146,51 @@ impl ApplicationHandler<FormalWebUserEvent> for WindowedApp {
                 font_registrations,
                 font_data,
             } => {
+                // Removed: the IOSurface surface path replaces the old scene bytes path.
+                // Trigger a redraw so the surface-based path can render.
                 debug!(
-                    "[embedder] NewWebContentScene webview={:?} scene_bytes={}",
+                    "[embedder] NewWebContentScene (ignored, using surface path) webview={:?}",
                     webview_id,
-                    scene_bytes.len()
                 );
-                // Register fonts from the graphics process.
-                self.scene_font_receiver
-                    .register_fonts(font_registrations, &font_data);
-                // Deserialize and store the composed scene directly in the app.
-                // FrameHitInfo stays in the user agent for UI event routing.
-                match ipc_messages::content::deserialize_scene_from_slice(&scene_bytes) {
-                    Ok(scene) => {
-                        debug!(
-                            "[embedder] NewWebContentScene stored scene for webview={:?} commands={}",
-                            webview_id,
-                            scene.commands.len(),
-                        );
-                        self.composed_scenes.insert(webview_id, scene);
-                        // Trigger a redraw so the new scene is rendered.
-                        // Use RequestRedraw as a fallback even when window_for_webview fails
-                        // (e.g., first scene arriving before NewWebview is processed).
-                        if let Some(window) = Self::window_for_webview(self, webview_id) {
-                            if let Some(state) = self.windows.get(&window) {
-                                Self::request_window_redraw(state);
-                            }
-                        } else {
-                            // Webview not yet registered in any window; request an
-                            // eventual redraw via the user event loop.
-                            let _ = super::send_user_event(FormalWebUserEvent::RequestRedraw(
-                                webview_id,
-                            ));
-                        }
-                    }
-                    Err(error) => {
-                        error!("[embedder] failed to deserialize composed scene: {error}");
-                    }
+                if let Some(window) = Self::window_for_webview(self, webview_id)
+                    && let Some(state) = self.windows.get(&window)
+                {
+                    Self::request_window_redraw(state);
                 }
+                let _ = scene_bytes.len();
+                let _ = font_registrations;
+                let _ = font_data;
             }
             FormalWebUserEvent::NewWebContentSurface {
                 webview_id,
-                iosurface_id,
+                pixels,
                 width,
                 height,
-                generation,
+                generation: _generation,
             } => {
-                debug!(
-                    "[embedder] NewWebContentSurface {:?} id={} ({}x{}) gen={}",
-                    webview_id, iosurface_id, width, height, generation
-                );
-                // TODO: Import IOSurface via IOSurfaceLookup → wrap as wgpu::Texture
-                // → register with Vello → store ResourceId → draw in paint_frame
+                // Store the rendered pixel data as ImageData for the active tab.
+                let width = width;
+                let height = height;
+                if pixels.len() as u32 == width * height * 4 && width > 0 && height > 0 {
+                    let image_data = peniko::ImageData {
+                        data: pixels.into(),
+                        format: peniko::ImageFormat::Rgba8,
+                        alpha_type: peniko::ImageAlphaType::Alpha,
+                        width,
+                        height,
+                    };
+                    if let Some(window_id) = Self::window_for_webview(self, webview_id) {
+                        if let Some(state) = self.windows.get_mut(&window_id) {
+                            state.surface_images.insert(webview_id, image_data);
+                        }
+                    }
+                }
+                // Trigger redraw so paint_frame picks up the new image.
+                if let Some(window) = Self::window_for_webview(self, webview_id)
+                    && let Some(state) = self.windows.get(&window)
+                {
+                    Self::request_window_redraw(state);
+                }
             }
             FormalWebUserEvent::Exit => event_loop.exit(),
         }

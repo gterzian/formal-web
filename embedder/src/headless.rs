@@ -366,14 +366,14 @@ impl ApplicationHandler<FormalWebUserEvent> for HeadlessEmbedderApp {
             }
             FormalWebUserEvent::NewWebContentSurface {
                 webview_id,
-                iosurface_id,
-                width,
-                height,
-                generation,
+                pixels: _pixels,
+                width: _width,
+                height: _height,
+                generation: _generation,
             } => {
                 debug!(
-                    "[embedder] headless NewWebContentSurface {:?} id={} gen={}",
-                    webview_id, iosurface_id, generation
+                    "[embedder] headless NewWebContentSurface {:?}",
+                    webview_id
                 );
             }
             FormalWebUserEvent::Exit => {

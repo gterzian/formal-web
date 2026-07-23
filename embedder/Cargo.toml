@@ -29,6 +29,7 @@ blitz-traits = { workspace = true }
 clap = { version = "4.5", features = ["derive"] }
 cursor-icon = "1"
 html5ever = "0.37"
+ipc = { path = "../ipc" }
 ipc-channel = "0.21"
 ipc_messages = { path = "../ipc_messages" }
 keyboard-types = "0.7"

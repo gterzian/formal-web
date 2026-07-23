@@ -138,11 +138,11 @@ pub trait Embedder: Send + Sync {
         font_registrations: Vec<ipc_messages::content::RegisteredFont>,
         font_data: std::collections::HashMap<usize, Vec<u8>>,
     ) -> Result<(), String>;
-    /// Forward a zero-copy GPU surface handle from the graphics process.
+    /// Forward rendered RGBA pixel data from the graphics process.
     fn new_web_content_surface(
         &self,
         webview_id: WebviewId,
-        iosurface_id: u32,
+        pixels: Vec<u8>,
         width: u32,
         height: u32,
         generation: u64,
@@ -3248,9 +3248,7 @@ impl UserAgentWorker {
                 return;
             }
         }
-        self.state
-            .focused_frame_id
-            .insert(root_webview_id, None);
+        self.state.focused_frame_id.insert(root_webview_id, None);
     }
 
     /// queuing DOM event dispatch on the traversable's owning
@@ -3305,7 +3303,8 @@ impl UserAgentWorker {
         // if one exists from a previous pointer-down event.
         let Some((coords_x, coords_y)) = pointer_coords(&event) else {
             // Non-positional event: route via focused frame if one exists.
-            let ids: Vec<FrameId> = self.state
+            let ids: Vec<FrameId> = self
+                .state
                 .frame_hit_info
                 .get(&root_webview_id)
                 .map(|list| list.iter().map(|info| info.frame_id).collect())
@@ -3871,14 +3870,10 @@ impl UserAgentWorker {
                         let offset_y = (cv.root_clip_bounds[1] as f32) / viewport_scale;
                         let key = (width.max(1), height.max(1), offset_x, offset_y);
                         let child_wv = ipc_messages::content::WebviewId(child_traversable_id);
-                        if self.state.published_child_viewports.get(&child_wv)
-                            == Some(&key)
-                        {
+                        if self.state.published_child_viewports.get(&child_wv) == Some(&key) {
                             continue;
                         }
-                        self.state
-                            .published_child_viewports
-                            .insert(child_wv, key);
+                        self.state.published_child_viewports.insert(child_wv, key);
                         self.handle_set_traversable_viewport(
                             child_traversable_id,
                             (width.max(1), height.max(1), scale, cs.clone()),
@@ -3890,7 +3885,7 @@ impl UserAgentWorker {
             }
             GraphicsEvent::SurfaceFrameReady {
                 webview_id,
-                surface,
+                pixels,
                 width,
                 height,
                 generation,
@@ -3898,16 +3893,48 @@ impl UserAgentWorker {
                 child_viewports,
                 child_frame_to_webview,
             } => {
-                debug!("[graphics] received surface frame for {:?}", webview_id);
-                let iosurface_id = match surface {
-                    ipc_messages::graphics::PlatformSurfaceHandle::IOSurface(id) => *id,
-                };
-                self.state.frame_hit_info.insert(*webview_id, frame_hit_info.clone());
-                self.state.child_frame_to_webview.insert(*webview_id, child_frame_to_webview.clone());
+                debug!("[graphics] received surface frame for {:?} ({}x{}, {}B)", webview_id, width, height, pixels.len());
+                self.state
+                    .frame_hit_info
+                    .insert(*webview_id, frame_hit_info.clone());
+                self.state
+                    .child_frame_to_webview
+                    .insert(*webview_id, child_frame_to_webview.clone());
                 if let Err(e) = self.host.new_web_content_surface(
-                    *webview_id, iosurface_id, *width, *height, *generation,
+                    *webview_id,
+                    pixels.clone(),
+                    *width,
+                    *height,
+                    *generation,
                 ) {
                     error!("[graphics] forward surface: {e}");
+                }
+
+                // Publish child viewports so child traversables know their
+                // visible viewport dimensions (iframe size and position).
+                for cv in child_viewports {
+                    let child_traversable_id = cv.child_webview_id.0;
+                    let cw = (cv.root_clip_bounds[2] - cv.root_clip_bounds[0]) as u32;
+                    let ch = (cv.root_clip_bounds[3] - cv.root_clip_bounds[1]) as u32;
+                    if let Some(&((_vw, _vh, scale, ref cs), _ox, _oy)) =
+                        self.state.traversable_viewports.get(&webview_id.0)
+                    {
+                        let viewport_scale = scale.max(1.0);
+                        let offset_x = (cv.root_clip_bounds[0] as f32) / viewport_scale;
+                        let offset_y = (cv.root_clip_bounds[1] as f32) / viewport_scale;
+                        let key = (cw.max(1), ch.max(1), offset_x, offset_y);
+                        let child_wv = ipc_messages::content::WebviewId(child_traversable_id);
+                        if self.state.published_child_viewports.get(&child_wv) == Some(&key) {
+                            continue;
+                        }
+                        self.state.published_child_viewports.insert(child_wv, key);
+                        self.handle_set_traversable_viewport(
+                            child_traversable_id,
+                            (cw.max(1), ch.max(1), scale, cs.clone()),
+                            offset_x,
+                            offset_y,
+                        );
+                    }
                 }
             }
             GraphicsEvent::ShutdownComplete => {

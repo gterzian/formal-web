@@ -1,12 +1,11 @@
 pub mod compositor;
-pub(crate) mod iosurface_surface;
 pub(crate) mod renderer;
 
 use std::collections::HashMap;
 
 use compositor::{Compositor, CompositorVideoFrame};
 use crossbeam_channel::{select, tick};
-use ipc_messages::content::{FontTransportReceiver, FontTransportSender, FrameId, WebviewId};
+use ipc_messages::content::{FontTransportReceiver, FrameId, WebviewId};
 use ipc_messages::graphics::{FrameHitInfo, GraphicsCommand, GraphicsEvent};
 use ipc_messages::media::{MediaPipelineId, VideoPaintId};
 use log::{debug, error};
@@ -33,8 +32,6 @@ struct WebviewCompositorSlot {
     compositor: Compositor,
     gpu_renderer: crate::renderer::GpuRenderer,
     font_receiver: FontTransportReceiver,
-    font_sender: FontTransportSender,
-    next_shmem_key: usize,
     child_frame_to_parent: HashMap<FrameId, WebviewId>,
 }
 
@@ -47,8 +44,6 @@ impl WebviewCompositorSlot {
                 Err(e) => panic!("GpuRenderer init: {e}"),
             },
             font_receiver: FontTransportReceiver::default(),
-            font_sender: FontTransportSender::default(),
-            next_shmem_key: 1,
             child_frame_to_parent: HashMap::new(),
         }
     }
@@ -256,8 +251,7 @@ fn handle_command<B: MediaBackend + 'static>(
             // arrives. Child frames are remapped into the parent's compositor slot;
             // when the root exists, every new frame triggers a re-composition so
             // the updated scene is pushed back to the user agent.
-            let should_compose =
-                slot.compositor.committed_root_frame_id().is_some();
+            let should_compose = slot.compositor.committed_root_frame_id().is_some();
             if should_compose {
                 if let Some(mut composed) = slot
                     .compositor
@@ -292,10 +286,8 @@ fn handle_command<B: MediaBackend + 'static>(
                 slot.child_frame_to_parent
                     .insert(content_frame_id, parent_traversable_id);
             }
-            child_webview_to_parent.insert(
-                child_webview_id,
-                (parent_traversable_id, content_frame_id),
-            );
+            child_webview_to_parent
+                .insert(child_webview_id, (parent_traversable_id, content_frame_id));
         }
         GraphicsCommand::ChildNavigationFinalized {
             parent_traversable_id,
@@ -362,6 +354,7 @@ fn handle_command<B: MediaBackend + 'static>(
                 }
             }
         }
+
         GraphicsCommand::Shutdown => return true,
     }
     false
@@ -412,17 +405,27 @@ fn send_composed_scene(
         child_frame_to_webview,
     } = composed;
 
-    let width = frame_hit_info.first().map(|h| h.viewport_width).unwrap_or(0);
-    let height = frame_hit_info.first().map(|h| h.viewport_height).unwrap_or(0);
+    let width = frame_hit_info
+        .first()
+        .map(|h| h.viewport_width)
+        .unwrap_or(0);
+    let height = frame_hit_info
+        .first()
+        .map(|h| h.viewport_height)
+        .unwrap_or(0);
     if width == 0 || height == 0 {
+        eprintln!("[TRACE] send_composed_scene: zero viewport for {:?}", webview_id);
         error!("[graphics] zero viewport for {:?}", webview_id);
         return Err(());
     }
-
-    let (iosurface_id, generation) = match slot.gpu_renderer.render_scene(&scene, width, height) {
-        Some(r) => r,
-        None => { error!("[graphics] render failed for {:?}", webview_id); return Err(()); }
-    };
+    let (_iosurface_id, generation, pixels) =
+        match slot.gpu_renderer.render_scene(&scene, width, height) {
+            Some(r) => r,
+            None => {
+                error!("[graphics] render failed for {:?}", webview_id);
+                return Err(());
+            }
+        };
 
     let child_ports: Vec<ipc_messages::graphics::ChildViewport> = child_viewports
         .into_iter()
@@ -435,7 +438,7 @@ fn send_composed_scene(
     if sender
         .send(GraphicsEvent::SurfaceFrameReady {
             webview_id,
-            surface: ipc_messages::graphics::PlatformSurfaceHandle::IOSurface(iosurface_id),
+            pixels,
             width,
             height,
             generation,
@@ -447,5 +450,6 @@ fn send_composed_scene(
     {
         return Err(());
     }
+
     Ok(())
 }
