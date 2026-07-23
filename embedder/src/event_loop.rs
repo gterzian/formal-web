@@ -142,6 +142,24 @@ impl Embedder for EventLoopEmbedder {
                 font_data,
             })
     }
+
+    fn new_web_content_surface(
+        &self,
+        webview_id: WebviewId,
+        iosurface_id: u32,
+        width: u32,
+        height: u32,
+        generation: u64,
+    ) -> Result<(), String> {
+        self.dispatcher
+            .send(FormalWebUserEvent::NewWebContentSurface {
+                webview_id,
+                iosurface_id,
+                width,
+                height,
+                generation,
+            })
+    }
 }
 
 pub enum FormalWebUserEvent {
@@ -151,6 +169,13 @@ pub enum FormalWebUserEvent {
         scene_bytes: Vec<u8>,
         font_registrations: Vec<ipc_messages::content::RegisteredFont>,
         font_data: std::collections::HashMap<usize, Vec<u8>>,
+    },
+    NewWebContentSurface {
+        webview_id: WebviewId,
+        iosurface_id: u32,
+        width: u32,
+        height: u32,
+        generation: u64,
     },
     NavigationRequested {
         webview_id: WebviewId,

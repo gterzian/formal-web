@@ -18,7 +18,7 @@ use blitz_traits::events::{
 use blitz_traits::shell::ColorScheme;
 use ipc_messages::content::{FontTransportReceiver, RecordedScene, WebviewId};
 use keyboard_types::Modifiers as KeyboardModifiers;
-use log::error;
+use log::{debug, error};
 use serde_json::Value;
 use std::collections::HashMap;
 use std::time::Duration;
@@ -363,6 +363,18 @@ impl ApplicationHandler<FormalWebUserEvent> for HeadlessEmbedderApp {
                         error!("[embedder] failed to deserialize composed scene: {error}");
                     }
                 }
+            }
+            FormalWebUserEvent::NewWebContentSurface {
+                webview_id,
+                iosurface_id,
+                width,
+                height,
+                generation,
+            } => {
+                debug!(
+                    "[embedder] headless NewWebContentSurface {:?} id={} gen={}",
+                    webview_id, iosurface_id, generation
+                );
             }
             FormalWebUserEvent::Exit => {
                 self.with_automation(|a, _| {

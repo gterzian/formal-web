@@ -11,7 +11,7 @@ use super::{
     automation_visible_frame_viewports, normalize_browser_destination, read_clipboard_text,
     startup_destination_url, write_clipboard_text,
 };
-use anyrender::{PaintScene, WindowRenderer};
+use anyrender::{Paint, PaintScene, RenderContext, WindowRenderer};
 use anyrender_vello::VelloWindowRenderer;
 use automation::{
     AutomationController, AutomationHost, AutomationSnapshot, AutomationVisibleFrameViewport,
@@ -23,6 +23,17 @@ use blitz_traits::events::{
 };
 use blitz_traits::shell::{ColorScheme, ShellProvider};
 use ipc_messages::content::{FontTransportReceiver, RecordedScene, WebviewId};
+#[cfg(target_os = "macos")]
+use objc2::rc::Retained;
+#[cfg(target_os = "macos")]
+use objc2::runtime::ProtocolObject;
+#[cfg(target_os = "macos")]
+use objc2::msg_send;
+#[cfg(target_os = "macos")]
+use objc2_metal::{MTLTextureDescriptor, MTLTextureType, MTLPixelFormat,
+                  MTLStorageMode, MTLTextureUsage};
+#[cfg(target_os = "macos")]
+use wgpu::hal::{self, metal::Api as MetalApi};
 #[cfg(target_os = "macos")]
 use keyboard_types::{Key, Modifiers as KeyboardModifiers};
 use kurbo::Affine;
@@ -1186,6 +1197,20 @@ impl ApplicationHandler<FormalWebUserEvent> for WindowedApp {
                         error!("[embedder] failed to deserialize composed scene: {error}");
                     }
                 }
+            }
+            FormalWebUserEvent::NewWebContentSurface {
+                webview_id,
+                iosurface_id,
+                width,
+                height,
+                generation,
+            } => {
+                debug!(
+                    "[embedder] NewWebContentSurface {:?} id={} ({}x{}) gen={}",
+                    webview_id, iosurface_id, width, height, generation
+                );
+                // TODO: Import IOSurface via IOSurfaceLookup → wrap as wgpu::Texture
+                // → register with Vello → store ResourceId → draw in paint_frame
             }
             FormalWebUserEvent::Exit => event_loop.exit(),
         }

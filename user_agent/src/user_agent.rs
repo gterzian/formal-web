@@ -138,6 +138,15 @@ pub trait Embedder: Send + Sync {
         font_registrations: Vec<ipc_messages::content::RegisteredFont>,
         font_data: std::collections::HashMap<usize, Vec<u8>>,
     ) -> Result<(), String>;
+    /// Forward a zero-copy GPU surface handle from the graphics process.
+    fn new_web_content_surface(
+        &self,
+        webview_id: WebviewId,
+        iosurface_id: u32,
+        width: u32,
+        height: u32,
+        generation: u64,
+    ) -> Result<(), String>;
 }
 
 /// <https://html.spec.whatwg.org/multipage/#cross-origin-isolation-mode>
@@ -3877,6 +3886,28 @@ impl UserAgentWorker {
                             offset_y,
                         );
                     }
+                }
+            }
+            GraphicsEvent::SurfaceFrameReady {
+                webview_id,
+                surface,
+                width,
+                height,
+                generation,
+                frame_hit_info,
+                child_viewports,
+                child_frame_to_webview,
+            } => {
+                debug!("[graphics] received surface frame for {:?}", webview_id);
+                let iosurface_id = match surface {
+                    ipc_messages::graphics::PlatformSurfaceHandle::IOSurface(id) => *id,
+                };
+                self.state.frame_hit_info.insert(*webview_id, frame_hit_info.clone());
+                self.state.child_frame_to_webview.insert(*webview_id, child_frame_to_webview.clone());
+                if let Err(e) = self.host.new_web_content_surface(
+                    *webview_id, iosurface_id, *width, *height, *generation,
+                ) {
+                    error!("[graphics] forward surface: {e}");
                 }
             }
             GraphicsEvent::ShutdownComplete => {

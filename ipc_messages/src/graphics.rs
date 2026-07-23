@@ -4,6 +4,16 @@ use crate::media::{MediaPipelineId, VideoPaintId};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
+/// A platform-specific handle to a GPU surface that can be shared across
+/// processes without CPU round-trips.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub enum PlatformSurfaceHandle {
+    /// macOS: IOSurfaceID — a u32 global identifier for an IOSurface object.
+    #[cfg(target_os = "macos")]
+    #[serde(rename = "iosurface")]
+    IOSurface(u32),
+}
+
 /// Identifies a per-webview compositor slot within the graphics process.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct CompositorSlotId(pub Uuid);
@@ -107,6 +117,17 @@ pub struct FrameHitInfo {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum GraphicsEvent {
+    /// A zero-copy GPU surface frame is ready for one webview.
+    SurfaceFrameReady {
+        webview_id: WebviewId,
+        surface: PlatformSurfaceHandle,
+        width: u32,
+        height: u32,
+        generation: u64,
+        frame_hit_info: Vec<FrameHitInfo>,
+        child_viewports: Vec<ChildViewport>,
+        child_frame_to_webview: HashMap<FrameId, WebviewId>,
+    },
     /// A composed scene is ready for one webview. The scene bytes and font data
     /// are placed in the IPC shared memory map under the provided keys.
     ComposedSceneReady {

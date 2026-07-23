@@ -1,4 +1,6 @@
 pub mod compositor;
+pub(crate) mod iosurface_surface;
+pub(crate) mod renderer;
 
 use std::collections::HashMap;
 
@@ -29,6 +31,7 @@ pub struct ComposedScene {
 
 struct WebviewCompositorSlot {
     compositor: Compositor,
+    gpu_renderer: crate::renderer::GpuRenderer,
     font_receiver: FontTransportReceiver,
     font_sender: FontTransportSender,
     next_shmem_key: usize,
@@ -39,6 +42,10 @@ impl WebviewCompositorSlot {
     fn new() -> Self {
         Self {
             compositor: Compositor::default(),
+            gpu_renderer: match crate::renderer::GpuRenderer::new() {
+                Ok(r) => r,
+                Err(e) => panic!("GpuRenderer init: {e}"),
+            },
             font_receiver: FontTransportReceiver::default(),
             font_sender: FontTransportSender::default(),
             next_shmem_key: 1,
@@ -404,48 +411,38 @@ fn send_composed_scene(
         child_viewports,
         child_frame_to_webview,
     } = composed;
-    let prepared = slot
-        .font_sender
-        .prepare_scene(0, scene, &mut slot.next_shmem_key);
-    let font_registrations = prepared.registered_fonts.clone();
-    use ipc_messages::content::PaintFrame;
-    let (pf, shmem) = match PaintFrame::new(
-        webview_id,
-        ipc_messages::content::FrameId::from_u128(0),
-        0,
-        0,
-        ipc_messages::content::FrameCompositionMetadata::default(),
-        prepared,
-        &mut slot.next_shmem_key,
-    ) {
-        Ok(r) => r,
-        Err(e) => {
-            error!("[graphics] serialize composed: {e}");
-            return Err(());
-        }
+
+    let width = frame_hit_info.first().map(|h| h.viewport_width).unwrap_or(0);
+    let height = frame_hit_info.first().map(|h| h.viewport_height).unwrap_or(0);
+    if width == 0 || height == 0 {
+        error!("[graphics] zero viewport for {:?}", webview_id);
+        return Err(());
+    }
+
+    let (iosurface_id, generation) = match slot.gpu_renderer.render_scene(&scene, width, height) {
+        Some(r) => r,
+        None => { error!("[graphics] render failed for {:?}", webview_id); return Err(()); }
     };
-    let key = pf.scene_shmem_key;
+
+    let child_ports: Vec<ipc_messages::graphics::ChildViewport> = child_viewports
+        .into_iter()
+        .map(|(cwv, b)| ipc_messages::graphics::ChildViewport {
+            child_webview_id: cwv,
+            root_clip_bounds: b,
+        })
+        .collect();
+
     if sender
-        .send_with_shmem_map(
-            GraphicsEvent::ComposedSceneReady {
-                webview_id,
-                scene_shmem_key: key,
-                font_registrations,
-                frame_hit_info,
-                child_viewports: child_viewports
-                    .into_iter()
-                    .map(|(child_wv, bounds)| {
-                        use ipc_messages::graphics::ChildViewport;
-                        ChildViewport {
-                            child_webview_id: child_wv,
-                            root_clip_bounds: bounds,
-                        }
-                    })
-                    .collect(),
-                    child_frame_to_webview,
-            },
-            shmem,
-        )
+        .send(GraphicsEvent::SurfaceFrameReady {
+            webview_id,
+            surface: ipc_messages::graphics::PlatformSurfaceHandle::IOSurface(iosurface_id),
+            width,
+            height,
+            generation,
+            frame_hit_info,
+            child_viewports: child_ports,
+            child_frame_to_webview,
+        })
         .is_err()
     {
         return Err(());
