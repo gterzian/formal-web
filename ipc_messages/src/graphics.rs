@@ -1,4 +1,5 @@
 use crate::content::{FrameId, PaintFrame, RegisteredFont, WebviewId};
+use std::collections::HashMap;
 use crate::media::{MediaPipelineId, VideoPaintId};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
@@ -117,7 +118,23 @@ pub enum GraphicsEvent {
         font_registrations: Vec<RegisteredFont>,
         /// Hit-testing info for the frame tree.
         frame_hit_info: Vec<FrameHitInfo>,
+        /// Viewport data for child frames (iframes), used by the UA to
+        /// publish viewport dimensions to child traversables.
+        child_viewports: Vec<ChildViewport>,
+        /// Mapping from content_frame_id to child WebviewId, used by the UA
+        /// to route UI events to the correct child traversable.
+        child_frame_to_webview: HashMap<FrameId, WebviewId>,
     },
     /// The graphics process is shutting down.
     ShutdownComplete,
+}
+
+/// Viewport data for a child frame (iframe), used by the UA to publish
+/// viewport dimensions to child traversables via set_traversable_viewport.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ChildViewport {
+    /// The child webview that owns this frame.
+    pub child_webview_id: WebviewId,
+    /// Clip rectangle in root coordinates [x0, y0, x1, y1].
+    pub root_clip_bounds: [f64; 4],
 }

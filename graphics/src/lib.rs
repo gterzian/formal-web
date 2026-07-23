@@ -18,6 +18,13 @@ pub struct ComposedScene {
     pub webview_id: WebviewId,
     pub scene: anyrender::Scene,
     pub frame_hit_info: Vec<FrameHitInfo>,
+    /// Viewport data for child frames, keyed by child webview_id.
+    /// Populated during compose_scene from the compositor's visible_frame_viewports.
+    pub child_viewports: HashMap<WebviewId, [f64; 4]>,
+    /// Mapping from child frame_id (the content_frame_id used in embed sites)
+    /// to the child webview_id. Used by the UA to route UI events to the
+    /// correct child traversable instead of the root.
+    pub child_frame_to_webview: HashMap<FrameId, WebviewId>,
 }
 
 struct WebviewCompositorSlot {
@@ -66,6 +73,11 @@ pub fn run_graphics_process<B: MediaBackend + 'static>(
     let mut pipeline_webview_map: HashMap<MediaPipelineId, (WebviewId, VideoPaintId)> =
         HashMap::new();
 
+    // Reverse mapping from child webview -> (parent webview, content_frame_id).
+    // Populated by RegisterChildNavigableHost and used in PaintFrame to remap
+    // child PaintFrames into the parent's compositor slot.
+    let mut child_webview_to_parent: HashMap<WebviewId, (WebviewId, FrameId)> = HashMap::new();
+
     // Use crossbeam's never() channel when there's no backend so the select! loop
     // has a single uniform structure regardless of whether a backend exists.
     let (mut backend, media_event_rx) = match media_backend {
@@ -88,13 +100,20 @@ pub fn run_graphics_process<B: MediaBackend + 'static>(
                     &mut pipelines,
                     &mut pipeline_webview_map,
                     backend.as_mut(),
+                    &mut child_webview_to_parent,
                 ) {
                     break;
                 }
             }
             recv(media_event_rx) -> event => {
                 let Ok(event) = event else { break };
-                handle_media_event(event, &pipeline_webview_map, &mut webviews, &event_sender);
+                handle_media_event(
+                    event,
+                    &pipeline_webview_map,
+                    &mut webviews,
+                    &event_sender,
+                    &child_webview_to_parent,
+                );
             }
             recv(sample_tick) -> _ => {
                 for pipeline in pipelines.values() {
@@ -110,6 +129,7 @@ fn handle_media_event(
     pipeline_webview_map: &HashMap<MediaPipelineId, (WebviewId, VideoPaintId)>,
     webviews: &mut HashMap<WebviewId, WebviewCompositorSlot>,
     composed_scene_sender: &ipc::IpcSender<GraphicsEvent>,
+    child_webview_to_parent: &HashMap<WebviewId, (WebviewId, FrameId)>,
 ) {
     match event {
         MediaBackendEvent::Frame(mut video_frame) => {
@@ -133,10 +153,17 @@ fn handle_media_event(
                 slot.compositor.update_video_frame(cf);
                 // Compose and send the scene so the video appears immediately.
                 if slot.compositor.committed_root_frame_id().is_some() {
-                    if let Some(composed) = slot
+                    if let Some(mut composed) = slot
                         .compositor
                         .compose_scene(&slot.font_receiver, webview_id)
                     {
+                        let (cv, cftw) = build_child_data(
+                            &mut slot.compositor,
+                            child_webview_to_parent,
+                            &slot.font_receiver,
+                        );
+                        composed.child_viewports = cv;
+                        composed.child_frame_to_webview = cftw;
                         let _ = send_composed_scene(composed_scene_sender.clone(), slot, composed);
                     }
                 }
@@ -171,6 +198,7 @@ fn handle_command<B: MediaBackend + 'static>(
     pipelines: &mut HashMap<MediaPipelineId, B::Pipeline>,
     pipeline_webview_map: &mut HashMap<MediaPipelineId, (WebviewId, VideoPaintId)>,
     media_backend: Option<&mut B>,
+    child_webview_to_parent: &mut HashMap<WebviewId, (WebviewId, FrameId)>,
 ) -> bool {
     match cmd {
         GraphicsCommand::RegisterWebview { webview_id } => {
@@ -184,15 +212,23 @@ fn handle_command<B: MediaBackend + 'static>(
             webviews.remove(&webview_id);
         }
         GraphicsCommand::PaintFrame { frame } => {
-            let webview_id = frame.traversable_id;
+            // Remap child PaintFrames into the parent's compositor slot.
+            let (target_webview_id, actual_frame_id, is_root_candidate) =
+                if let Some(&(parent_id, content_frame_id)) =
+                    child_webview_to_parent.get(&frame.traversable_id)
+                {
+                    (parent_id, content_frame_id, false)
+                } else {
+                    (frame.traversable_id, frame.frame_id, true)
+                };
+            let webview_id = target_webview_id;
             let slot = webviews
                 .entry(webview_id)
                 .or_insert_with(WebviewCompositorSlot::new);
-            let is_root_candidate = !slot.child_frame_to_parent.contains_key(&frame.frame_id);
             let composition = frame.composition.clone();
             let viewport_width = frame.viewport_width;
             let viewport_height = frame.viewport_height;
-            let frame_id = frame.frame_id;
+            let frame_id = actual_frame_id;
             let recorded_scene =
                 match frame.into_recorded_scene(&mut slot.font_receiver, shmem_regions) {
                     Ok(s) => s,
@@ -209,11 +245,25 @@ fn handle_command<B: MediaBackend + 'static>(
                 recorded_scene,
                 is_root_candidate,
             );
-            if slot.compositor.committed_root_frame_id() == Some(frame_id) {
-                if let Some(composed) = slot
+            // Compose and send when the root frame is updated or a child frame
+            // arrives (recompose parent scene so new child content appears).
+            let should_compose =
+                slot.compositor.committed_root_frame_id() == Some(frame_id)
+                    || slot.compositor.committed_root_frame_id().is_some()
+                        && child_webview_to_parent.contains_key(&target_webview_id);
+            if should_compose {
+                if let Some(mut composed) = slot
                     .compositor
                     .compose_scene(&slot.font_receiver, webview_id)
                 {
+                    // Populate child data for the UA to publish and route.
+                    let (cv, cftw) = build_child_data(
+                        &mut slot.compositor,
+                        child_webview_to_parent,
+                        &slot.font_receiver,
+                    );
+                    composed.child_viewports = cv;
+                    composed.child_frame_to_webview = cftw;
                     let _ = send_composed_scene(composed_scene_sender.clone(), slot, composed);
                 }
             }
@@ -227,7 +277,7 @@ fn handle_command<B: MediaBackend + 'static>(
             }
         }
         GraphicsCommand::RegisterChildNavigableHost {
-            child_webview_id: _,
+            child_webview_id,
             parent_traversable_id,
             content_frame_id,
         } => {
@@ -235,6 +285,10 @@ fn handle_command<B: MediaBackend + 'static>(
                 slot.child_frame_to_parent
                     .insert(content_frame_id, parent_traversable_id);
             }
+            child_webview_to_parent.insert(
+                child_webview_id,
+                (parent_traversable_id, content_frame_id),
+            );
         }
         GraphicsCommand::ChildNavigationFinalized {
             parent_traversable_id,
@@ -306,6 +360,38 @@ fn handle_command<B: MediaBackend + 'static>(
     false
 }
 
+/// Extract child frame data from the compositor and match against the
+/// child_webview_to_parent mapping. Returns (child_viewports, child_frame_to_webview).
+fn build_child_data(
+    compositor: &mut Compositor,
+    child_webview_to_parent: &HashMap<WebviewId, (WebviewId, FrameId)>,
+    font_receiver: &FontTransportReceiver,
+) -> (HashMap<WebviewId, [f64; 4]>, HashMap<FrameId, WebviewId>) {
+    let mut viewports = HashMap::new();
+    let mut frame_to_webview = HashMap::new();
+    // Build a reverse lookup: content_frame_id -> child_webview_id
+    let frame_to_child: HashMap<FrameId, WebviewId> = child_webview_to_parent
+        .iter()
+        .map(|(child, &(_, content_fid))| (content_fid, *child))
+        .collect();
+    for vp in compositor.visible_frame_viewports(font_receiver) {
+        let Some(&child_wv) = frame_to_child.get(&vp.frame_id) else {
+            continue;
+        };
+        frame_to_webview.insert(vp.frame_id, child_wv);
+        viewports.insert(
+            child_wv,
+            [
+                f64::from(vp.offset_x),
+                f64::from(vp.offset_y),
+                f64::from(vp.offset_x) + f64::from(vp.width),
+                f64::from(vp.offset_y) + f64::from(vp.height),
+            ],
+        );
+    }
+    (viewports, frame_to_webview)
+}
+
 fn send_composed_scene(
     sender: ipc::IpcSender<GraphicsEvent>,
     slot: &mut WebviewCompositorSlot,
@@ -315,6 +401,8 @@ fn send_composed_scene(
         webview_id,
         scene,
         frame_hit_info,
+        child_viewports,
+        child_frame_to_webview,
     } = composed;
     let prepared = slot
         .font_sender
@@ -344,6 +432,17 @@ fn send_composed_scene(
                 scene_shmem_key: key,
                 font_registrations,
                 frame_hit_info,
+                child_viewports: child_viewports
+                    .into_iter()
+                    .map(|(child_wv, bounds)| {
+                        use ipc_messages::graphics::ChildViewport;
+                        ChildViewport {
+                            child_webview_id: child_wv,
+                            root_clip_bounds: bounds,
+                        }
+                    })
+                    .collect(),
+                    child_frame_to_webview,
             },
             shmem,
         )

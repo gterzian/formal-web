@@ -445,6 +445,11 @@ pub struct UserAgentState {
     /// The latest hit-testing info for each webview, published by the
     /// graphics process alongside each composed scene.
     pub frame_hit_info: HashMap<WebviewId, Vec<ipc_messages::graphics::FrameHitInfo>>,
+    /// Mapping from content frame_id to child webview_id for each root
+    /// webview. Published by the graphics process alongside each composed
+    /// scene. Used by route_ui_event to route pointer events to child
+    /// traversables (iframes).
+    pub child_frame_to_webview: HashMap<WebviewId, HashMap<FrameId, WebviewId>>,
     /// queue of navigations paused while content runs `beforeunload`.
     pub pending_before_unload_navigations:
         HashMap<BeforeUnloadCheckId, PendingBeforeUnloadNavigation>,
@@ -562,6 +567,7 @@ impl Default for UserAgentState {
             pending_navigation_finalizations: HashMap::new(),
             pending_navigation_finalization_ids_by_navigation_id: HashMap::new(),
             frame_hit_info: HashMap::new(),
+            child_frame_to_webview: HashMap::new(),
         }
     }
 }
@@ -3241,7 +3247,13 @@ impl UserAgentWorker {
                 // Set the event coordinates to the local frame position.
                 let routed_event = set_event_local_coords(&event, local_x as f32, local_y as f32);
 
-                // Child webview lookup is not yet available here.
+                // Route to child webview if this frame belongs to an iframe.
+                if let Some(map) = self.state.child_frame_to_webview.get(&root_webview_id) {
+                    if let Some(&child_wv) = map.get(&info.frame_id) {
+                        return (child_wv, routed_event, composed_frame_ids);
+                    }
+                }
+
                 return (root_webview_id, routed_event, composed_frame_ids);
             }
         }
@@ -3684,6 +3696,8 @@ impl UserAgentWorker {
                 scene_shmem_key,
                 font_registrations,
                 frame_hit_info,
+                child_viewports,
+                child_frame_to_webview,
             } => {
                 debug!(
                     "[graphics] received composed scene for webview {:?} key={} fonts={} hit_info={}",
@@ -3713,6 +3727,10 @@ impl UserAgentWorker {
                 self.state
                     .frame_hit_info
                     .insert(*webview_id, frame_hit_info.clone());
+                // Store child frame -> webview mapping for iframe event routing.
+                self.state
+                    .child_frame_to_webview
+                    .insert(*webview_id, child_frame_to_webview.clone());
 
                 // Forward the scene to the embedder host with font data.
                 // The frame hit info stays in the user agent for UI event routing.
@@ -3723,6 +3741,28 @@ impl UserAgentWorker {
                     font_data,
                 ) {
                     error!("[graphics] failed to forward composed scene: {error}");
+                }
+
+                // Publish child viewports so child traversables know their
+                // visible viewport dimensions (iframe size and position).
+                for cv in child_viewports {
+                    let child_traversable_id = cv.child_webview_id.0;
+                    // root_clip_bounds = [x0, y0, x1, y1] in root coordinates
+                    let width = (cv.root_clip_bounds[2] - cv.root_clip_bounds[0]) as u32;
+                    let height = (cv.root_clip_bounds[3] - cv.root_clip_bounds[1]) as u32;
+                    let offset_x = cv.root_clip_bounds[0] as f32;
+                    let offset_y = cv.root_clip_bounds[1] as f32;
+                    // Use the root webview's viewport snapshot for scale/color.
+                    if let Some(&((_vw, _vh, scale, ref cs), _ox, _oy)) =
+                        self.state.traversable_viewports.get(&webview_id.0)
+                    {
+                        self.handle_set_traversable_viewport(
+                            child_traversable_id,
+                            (width.max(1), height.max(1), scale, cs.clone()),
+                            offset_x,
+                            offset_y,
+                        );
+                    }
                 }
             }
             GraphicsEvent::ShutdownComplete => {

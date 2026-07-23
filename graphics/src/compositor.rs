@@ -197,6 +197,8 @@ impl Compositor {
             webview_id,
             scene,
             frame_hit_info,
+            child_viewports: HashMap::new(),
+            child_frame_to_webview: HashMap::new(),
         })
     }
 

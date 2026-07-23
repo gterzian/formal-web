@@ -165,6 +165,10 @@ pub(super) struct WindowState {
     pub(super) window_occluded: bool,
     pub(super) animation_timer: Option<Instant>,
     pub(super) keyboard_modifiers: Modifiers,
+    /// Last time a rendering opportunity was requested. Used to throttle
+    /// rendering opportunities to ~60fps to avoid flooding the content
+    /// process with UpdateTheRendering commands during rapid input.
+    pub(super) last_render_opportunity: Option<Instant>,
     pub(super) buttons: MouseEventButtons,
     pub(super) pointer_pos: PhysicalPosition<f64>,
 }
@@ -184,6 +188,7 @@ impl WindowState {
             keyboard_modifiers: Modifiers::default(),
             buttons: MouseEventButtons::None,
             pointer_pos: PhysicalPosition::default(),
+            last_render_opportunity: None,
         }
     }
 }
@@ -279,12 +284,21 @@ impl WindowedApp {
     }
 
     fn request_visible_redraw(
-        window_state: &WindowState,
+        window_state: &mut WindowState,
         provider: Option<&WebviewProvider>,
         reason: &str,
     ) {
         Self::request_window_redraw(window_state);
         if let Some((provider, webview_id)) = provider.zip(window_state.active_tab) {
+            // Skip if we just requested one (throttle to ~60fps).
+            let now = Instant::now();
+            if window_state
+                .last_render_opportunity
+                .is_some_and(|last| now.duration_since(last).as_millis() < 16)
+            {
+                return;
+            }
+            window_state.last_render_opportunity = Some(now);
             provider.note_rendering_opportunity(webview_id, reason);
         }
     }
@@ -985,13 +999,10 @@ impl ApplicationHandler<FormalWebUserEvent> for WindowedApp {
                             ) {
                                 error!("wheel event error: {error}");
                             }
-                            // Request a rendering opportunity so the content process
-                            // sends a new PaintFrame reflecting the scrolled position.
-                            provider.note_rendering_opportunity(webview_id, "wheel_event");
                         });
                     }
-                    if let Some(state) = self.windows.get(&window_id) {
-                        Self::request_window_redraw(state);
+                    if let Some(state) = self.windows.get_mut(&window_id) {
+                        Self::request_visible_redraw(state, self.provider.as_ref(), "wheel_event");
                     }
                 }
             }
