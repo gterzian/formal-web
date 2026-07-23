@@ -544,9 +544,13 @@ impl WindowedApp {
         let Some(webview_id) = webview_id else {
             return;
         };
+        let needs_render = matches!(event, UiEvent::KeyDown(_) | UiEvent::Ime(_));
         self.with_provider(|provider| {
             if let Err(error) = provider.send_ui_event(webview_id, event) {
                 error!("content event error: {error}");
+            }
+            if needs_render {
+                provider.note_rendering_opportunity(webview_id, "keyboard_event");
             }
         });
         if let Some(window_state) = self.windows.get(&window_id) {
@@ -651,11 +655,7 @@ impl ApplicationHandler<FormalWebUserEvent> for WindowedApp {
                 if let Some(state) = self.windows.get_mut(&window_id)
                     && (self.provider.is_some() || state.chrome.is_some())
                 {
-                    Self::paint_frame(
-                        state,
-                        &self.composed_scenes,
-                        &mut self.scene_font_receiver,
-                    );
+                    Self::paint_frame(state, &self.composed_scenes, &mut self.scene_font_receiver);
                 }
             }
             WindowEvent::Occluded(occluded) => {
@@ -858,6 +858,7 @@ impl ApplicationHandler<FormalWebUserEvent> for WindowedApp {
                                 if let Err(error) = result {
                                     error!("content event error: {error}");
                                 }
+                                provider.note_rendering_opportunity(webview_id, "mouse_click");
                             });
                         }
                         if let Some(state) = self.windows.get(&window_id) {
@@ -924,6 +925,7 @@ impl ApplicationHandler<FormalWebUserEvent> for WindowedApp {
                                 if let Err(error) = result {
                                     error!("touch event error: {error}");
                                 }
+                                provider.note_rendering_opportunity(webview_id, "touch_event");
                             });
                         }
                         if let Some(state) = self.windows.get(&window_id) {
@@ -939,13 +941,14 @@ impl ApplicationHandler<FormalWebUserEvent> for WindowedApp {
                         BlitzWheelDelta::Pixels(pixel_delta.x, pixel_delta.y)
                     }
                 };
-                if Self::pointer_in_chrome_st(
+                let pointer_in_chrome = Self::pointer_in_chrome_st(
                     &self.windows,
                     window_id,
                     self.windows
                         .get(&window_id)
                         .map_or(PhysicalPosition::default(), |state| state.pointer_pos),
-                ) {
+                );
+                if pointer_in_chrome {
                     if let Some(state) = self.windows.get_mut(&window_id) {
                         if !Self::pointer_in_viewport(state, state.pointer_pos) {
                             return;
@@ -982,6 +985,9 @@ impl ApplicationHandler<FormalWebUserEvent> for WindowedApp {
                             ) {
                                 error!("wheel event error: {error}");
                             }
+                            // Request a rendering opportunity so the content process
+                            // sends a new PaintFrame reflecting the scrolled position.
+                            provider.note_rendering_opportunity(webview_id, "wheel_event");
                         });
                     }
                     if let Some(state) = self.windows.get(&window_id) {
@@ -1098,10 +1104,7 @@ impl ApplicationHandler<FormalWebUserEvent> for WindowedApp {
                 }
             }
             FormalWebUserEvent::NewWebview(webview_id, _) => {
-                debug!(
-                    "[embedder] NewWebview webview={:?}",
-                    webview_id
-                );
+                debug!("[embedder] NewWebview webview={:?}", webview_id);
                 if let Some(active_window) = self.active_window_id
                     && let Some(state) = self.windows.get_mut(&active_window)
                 {
@@ -1164,16 +1167,24 @@ impl ApplicationHandler<FormalWebUserEvent> for WindowedApp {
                 match ipc_messages::content::deserialize_scene_from_slice(&scene_bytes) {
                     Ok(scene) => {
                         debug!(
-                            "[embedder] NewWebContentScene stored for webview={:?}",
-                            webview_id
+                            "[embedder] NewWebContentScene stored scene for webview={:?} commands={}",
+                            webview_id,
+                            scene.commands.len(),
                         );
-                        self.composed_scenes
-                            .insert(webview_id, scene.clone());
+                        self.composed_scenes.insert(webview_id, scene);
                         // Trigger a redraw so the new scene is rendered.
+                        // Use RequestRedraw as a fallback even when window_for_webview fails
+                        // (e.g., first scene arriving before NewWebview is processed).
                         if let Some(window) = Self::window_for_webview(self, webview_id) {
                             if let Some(state) = self.windows.get(&window) {
                                 Self::request_window_redraw(state);
                             }
+                        } else {
+                            // Webview not yet registered in any window; request an
+                            // eventual redraw via the user event loop.
+                            let _ = super::send_user_event(FormalWebUserEvent::RequestRedraw(
+                                webview_id,
+                            ));
                         }
                     }
                     Err(error) => {

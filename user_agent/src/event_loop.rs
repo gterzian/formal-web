@@ -172,7 +172,6 @@ struct EventLoopWorker {
     /// processing model.
     awaiting_task_completion: bool,
     pending_task_commands: VecDeque<PendingTaskCommand>,
-
 }
 
 /// <https://html.spec.whatwg.org/multipage/#event-loop-processing-model>
@@ -184,7 +183,9 @@ fn requires_command_completed_wakeup(command: &ContentCommand) -> bool {
         ContentCommand::CreateEmptyDocument { .. }
             | ContentCommand::CreateLoadedDocument { .. }
             | ContentCommand::DestroyDocument { .. }
-            | ContentCommand::DispatchEvent { .. }
+            // DispatchEvent is sent immediately (no completion wait) so that
+            // UI events are not queued behind a stuck task-bearing command.
+            // The content process will still process the event correctly.
             | ContentCommand::RunBeforeUnload { .. }
             | ContentCommand::UpdateTheRendering { .. }
             | ContentCommand::RunWindowTimer { .. }
@@ -387,10 +388,7 @@ impl EventLoopWorker {
     }
 
     /// <https://html.spec.whatwg.org/multipage/#event-loop-processing-model>
-    fn handle_content_event_message(
-        &mut self,
-        event: ContentEvent,
-    ) -> Result<bool, String> {
+    fn handle_content_event_message(&mut self, event: ContentEvent) -> Result<bool, String> {
         match event {
             ContentEvent::WindowTimerRequested(request) => {
                 // Content already ran the timer initialization algorithm far enough to assign

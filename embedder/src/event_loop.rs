@@ -84,7 +84,8 @@ impl Embedder for EventLoopEmbedder {
     fn new_webview(&self, webview_id: WebviewId, target_name: String) -> Result<(), String> {
         log::debug!(
             "[embedder] Embedder::new_webview webview={:?} target={}",
-            webview_id, target_name
+            webview_id,
+            target_name
         );
         self.dispatcher
             .send(FormalWebUserEvent::NewWebview(webview_id, target_name))

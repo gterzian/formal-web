@@ -68,9 +68,7 @@ pub enum GraphicsCommand {
     },
     /// Notify the compositor that a top-level navigation finalized.
     /// Resets the compositor so the next PaintFrame replaces the old root scene.
-    NavigationFinalized {
-        webview_id: WebviewId,
-    },
+    NavigationFinalized { webview_id: WebviewId },
     /// Shut down the graphics process.
     Shutdown,
 }

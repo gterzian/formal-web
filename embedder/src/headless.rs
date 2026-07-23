@@ -357,8 +357,7 @@ impl ApplicationHandler<FormalWebUserEvent> for HeadlessEmbedderApp {
                 // Deserialize and store the composed scene.
                 match ipc_messages::content::deserialize_scene_from_slice(&scene_bytes) {
                     Ok(scene) => {
-                        self.composed_scenes
-                            .insert(webview_id, scene);
+                        self.composed_scenes.insert(webview_id, scene);
                     }
                     Err(error) => {
                         error!("[embedder] failed to deserialize composed scene: {error}");

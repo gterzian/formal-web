@@ -33,7 +33,6 @@ use crate::event_loop::{
 };
 use crate::timer::{TimerCommand, run_timer_thread};
 
-
 pub(crate) fn sidecar_executable_path(binary_name: &str) -> Result<PathBuf, String> {
     let current_executable = std::env::current_exe()
         .map_err(|error| format!("failed to resolve current executable: {error}"))?;
@@ -1301,10 +1300,7 @@ impl UserAgentWorker {
         let timer_join_handle = thread::Builder::new()
             .name(String::from("formal-web:timer"))
             .spawn(move || {
-                run_timer_thread(
-                    timer_command_receiver,
-                    timer_user_agent_command_sender,
-                )
+                run_timer_thread(timer_command_receiver, timer_user_agent_command_sender)
             })
             .unwrap_or_else(|error| panic!("failed to spawn formal-web-timer thread: {error}"));
 
@@ -2996,9 +2992,7 @@ impl UserAgentWorker {
                     webview_id: WebviewId(pending.traversable_id),
                 },
             ) {
-                log::error!(
-                    "failed to notify graphics of navigation finalization: {error}"
-                );
+                log::error!("failed to notify graphics of navigation finalization: {error}");
             }
         }
         let notify_result = self.host.navigation_completed(NavigationCompleted {
@@ -3191,11 +3185,7 @@ impl UserAgentWorker {
 
     /// queuing DOM event dispatch on the traversable's owning
     /// <https://html.spec.whatwg.org/multipage/#event-loop>.
-    fn handle_send_ui_event(
-        &mut self,
-        webview_id: WebviewId,
-        event_message: String,
-    ) {
+    fn handle_send_ui_event(&mut self, webview_id: WebviewId, event_message: String) {
         if input_debug_enabled() {
             trace!(
                 "[input-debug][user-agent] send_ui_event webview={:?} bytes={}",
@@ -3211,51 +3201,53 @@ impl UserAgentWorker {
         let (target_webview_id, routed_event, _composed_frame_ids) =
             self.route_ui_event(webview_id, event);
 
-        if input_debug_enabled() {
-            trace!(
-                "[input-debug][user-agent] send_ui_event routed webview={:?} target={:?}",
-                webview_id,
-                target_webview_id,
-            );
-        }
-
         if let Ok(routed_message) = crate::ui_event::serialize_ui_event(&routed_event) {
             self.handle_dispatch_event_for(target_webview_id.0, routed_message);
         }
     }
 
     /// Route a UI event to the correct frame using frame hit info from the
-    /// graphics process.
+    /// graphics process. Returns (target_webview, routed_event, composed_frame_ids)
+    /// where composed_frame_ids lists all frames that need rendering opportunities.
     fn route_ui_event(
         &self,
         root_webview_id: WebviewId,
         event: blitz_traits::events::UiEvent,
     ) -> (WebviewId, blitz_traits::events::UiEvent, Vec<FrameId>) {
-        if let Some(hit_info_list) = self.state.frame_hit_info.get(&root_webview_id) {
-            if let Some((coords_x, coords_y)) = pointer_coords(&event) {
-                for info in hit_info_list.iter().rev() {
-                    if coords_x >= info.root_clip_bounds[0]
-                        && coords_y >= info.root_clip_bounds[1]
-                        && coords_x <= info.root_clip_bounds[2]
-                        && coords_y <= info.root_clip_bounds[3]
-                    {
-                        let local_x = coords_x - info.root_clip_bounds[0];
-                        let local_y = coords_y - info.root_clip_bounds[1];
-                        let routed_event =
-                            translate_event_coords(&event, local_x as f32, local_y as f32);
+        // For non-positional events (keyboard, IME), return unchanged.
+        let Some((coords_x, coords_y)) = pointer_coords(&event) else {
+            return (root_webview_id, event, Vec::new());
+        };
 
-                        if let Some(child_host) = info.child_frame_ids.iter().find_map(|_child_id| {
-                            None // Child webview lookup uses UA state, not available here yet
-                        }) {
-                            return (child_host, routed_event, Vec::new());
-                        }
+        let Some(hit_info_list) = self.state.frame_hit_info.get(&root_webview_id) else {
+            return (root_webview_id, event, Vec::new());
+        };
 
-                        return (root_webview_id, routed_event, vec![info.frame_id]);
-                    }
-                }
+        // Collect all frame IDs for rendering opportunities.
+        let composed_frame_ids: Vec<FrameId> =
+            hit_info_list.iter().map(|info| info.frame_id).collect();
+
+        // Find the deepest frame that contains the pointer.
+        for info in hit_info_list.iter().rev() {
+            if coords_x >= info.root_clip_bounds[0]
+                && coords_y >= info.root_clip_bounds[1]
+                && coords_x <= info.root_clip_bounds[2]
+                && coords_y <= info.root_clip_bounds[3]
+            {
+                // Compute local coordinates within this frame.
+                let local_x = coords_x - info.root_clip_bounds[0];
+                let local_y = coords_y - info.root_clip_bounds[1];
+
+                // Set the event coordinates to the local frame position.
+                let routed_event = set_event_local_coords(&event, local_x as f32, local_y as f32);
+
+                // Child webview lookup is not yet available here.
+                return (root_webview_id, routed_event, composed_frame_ids);
             }
         }
-        (root_webview_id, event, Vec::new())
+
+        // No frame matched; pass through unchanged.
+        (root_webview_id, event, composed_frame_ids)
     }
 
     fn handle_dispatch_event_for(&mut self, traversable_id: NavigableId, event: String) {
@@ -3756,28 +3748,32 @@ fn pointer_coords(event: &blitz_traits::events::UiEvent) -> Option<(f64, f64)> {
 }
 
 /// Translate event coordinates by an offset (for hit-tested child frames).
-fn translate_event_coords(
+/// Set event coordinates to a local frame position.
+/// The embedder sends coordinates in root-viewport space; this converts
+/// them to the target frame's local coordinate space by setting client
+/// and page coordinates to the given local (x, y).
+fn set_event_local_coords(
     event: &blitz_traits::events::UiEvent,
-    dx: f32,
-    dy: f32,
+    local_x: f32,
+    local_y: f32,
 ) -> blitz_traits::events::UiEvent {
-    let mut translated = event.clone();
-    match &mut translated {
+    let mut routed = event.clone();
+    match &mut routed {
         blitz_traits::events::UiEvent::PointerMove(e)
         | blitz_traits::events::UiEvent::PointerUp(e)
         | blitz_traits::events::UiEvent::PointerDown(e) => {
-            e.coords.page_x -= dx;
-            e.coords.page_y -= dy;
-            e.coords.client_x -= dx;
-            e.coords.client_y -= dy;
+            e.coords.client_x = local_x;
+            e.coords.client_y = local_y;
+            e.coords.page_x = local_x;
+            e.coords.page_y = local_y;
         }
         blitz_traits::events::UiEvent::Wheel(e) => {
-            e.coords.page_x -= dx;
-            e.coords.page_y -= dy;
-            e.coords.client_x -= dx;
-            e.coords.client_y -= dy;
+            e.coords.client_x = local_x;
+            e.coords.client_y = local_y;
+            e.coords.page_x = local_x;
+            e.coords.page_y = local_y;
         }
         _ => {}
     }
-    translated
+    routed
 }

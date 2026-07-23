@@ -4,8 +4,8 @@ use blitz_traits::events::UiEvent;
 use blitz_traits::shell::ColorScheme;
 use crossbeam_channel::{Receiver, unbounded};
 use ipc_messages::content::{
-    FrameId, NavigableId, NavigateRequest,
-    UserNavigationInvolvement, WebviewId, WebviewProviderMessage,
+    FrameId, NavigableId, NavigateRequest, UserNavigationInvolvement, WebviewId,
+    WebviewProviderMessage,
 };
 use log::{debug, error, trace};
 use std::collections::HashMap;
@@ -128,9 +128,7 @@ impl WebviewProvider {
 
     fn handle_provider_message(&mut self, message: WebviewProviderMessage) -> Result<(), String> {
         match message {
-            WebviewProviderMessage::PaintFrame {
-                ..
-            } => {
+            WebviewProviderMessage::PaintFrame { .. } => {
                 // PaintFrames go directly to the graphics process.
                 // The UA receives PaintReady for bookkeeping only.
                 Ok(())
@@ -151,9 +149,7 @@ impl WebviewProvider {
                 self.on_new_webview(webview_id);
                 Ok(())
             }
-            WebviewProviderMessage::VideoFrameReady {
-                ..
-            } => {
+            WebviewProviderMessage::VideoFrameReady { .. } => {
                 // Video frames go directly to the graphics process.
                 Ok(())
             }
@@ -188,20 +184,6 @@ impl WebviewProvider {
     }
 
     pub fn send_ui_event(&self, webview_id: WebviewId, event: UiEvent) -> Result<(), String> {
-        if input_debug_enabled() {
-            let event_type = match &event {
-                UiEvent::PointerMove(_) => "PointerMove",
-                UiEvent::PointerUp(_) => "PointerUp",
-                UiEvent::PointerDown(_) => "PointerDown",
-                UiEvent::Wheel(_) => "Wheel",
-                _ => "other",
-            };
-            trace!(
-                "[input-debug][webview] send_ui_event webview={:?} type={}",
-                webview_id,
-                event_type,
-            );
-        }
         self.embedder.request_redraw(webview_id);
         match ui_event::serialize_ui_event(&event) {
             Ok(event_message) => {
@@ -306,8 +288,7 @@ impl WebviewProvider {
     }
 
     pub fn on_navigation_committed(&mut self, webview_id: WebviewId) {
-        if let Some(child_navigable_host) = self.child_navigable_hosts_by_webview.get(&webview_id)
-        {
+        if let Some(child_navigable_host) = self.child_navigable_hosts_by_webview.get(&webview_id) {
             let parent_traversable_id = child_navigable_host.parent_traversable_id;
             if input_debug_enabled() {
                 trace!(

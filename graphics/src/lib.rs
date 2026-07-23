@@ -118,6 +118,10 @@ fn handle_media_event(
                 debug!("[graphics] frame for unknown pipeline {:?}", pipeline_id);
                 return;
             };
+            debug!(
+                "[graphics] video frame arrived pipeline={:?} webview={:?}",
+                pipeline_id, webview_id
+            );
             let pixel_bytes: std::sync::Arc<[u8]> = std::mem::take(&mut video_frame.data).into();
             let cf = CompositorVideoFrame {
                 video_paint_id: paint_id,
