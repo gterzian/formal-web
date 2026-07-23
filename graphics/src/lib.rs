@@ -245,12 +245,12 @@ fn handle_command<B: MediaBackend + 'static>(
                 recorded_scene,
                 is_root_candidate,
             );
-            // Compose and send when the root frame is updated or a child frame
-            // arrives (recompose parent scene so new child content appears).
+            // Compose and send when the root frame is updated or any child frame
+            // arrives. Child frames are remapped into the parent's compositor slot;
+            // when the root exists, every new frame triggers a re-composition so
+            // the updated scene is pushed back to the user agent.
             let should_compose =
-                slot.compositor.committed_root_frame_id() == Some(frame_id)
-                    || slot.compositor.committed_root_frame_id().is_some()
-                        && child_webview_to_parent.contains_key(&target_webview_id);
+                slot.compositor.committed_root_frame_id().is_some();
             if should_compose {
                 if let Some(mut composed) = slot
                     .compositor

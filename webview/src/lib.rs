@@ -184,7 +184,6 @@ impl WebviewProvider {
     }
 
     pub fn send_ui_event(&self, webview_id: WebviewId, event: UiEvent) -> Result<(), String> {
-        self.embedder.request_redraw(webview_id);
         match ui_event::serialize_ui_event(&event) {
             Ok(event_message) => {
                 if let Err(error) = self.user_agent.send_ui_event(webview_id, event_message) {
@@ -271,6 +270,12 @@ impl WebviewProvider {
         );
         self.child_host_webviews_by_content_navigable
             .insert(content_frame_id, child_host_webview_id);
+
+        // The parent may not have a composed frame tree yet when the child host registers.
+        // Force parent+child rendering opportunities so embed-site geometry becomes
+        // available and child viewport publication does not wait for later input.
+        self.note_rendering_opportunity(parent_traversable_id, "child_host_registered");
+        self.note_rendering_opportunity(child_host_webview_id, "child_host_registered");
     }
 
     pub fn on_new_webview(&mut self, webview_id: WebviewId) {
@@ -299,8 +304,10 @@ impl WebviewProvider {
 
             // Child frame navigation is handled by the graphics process.
             // Request rendering opportunities so the new content appears promptly.
+            // Also request parent rendering so updated child geometry is visible.
             self.note_rendering_opportunity(webview_id, "child_navigation_committed");
-            self.embedder.request_redraw(webview_id);
+            self.note_rendering_opportunity(parent_traversable_id, "child_navigation_committed");
+            self.embedder.request_redraw(parent_traversable_id);
             return;
         }
 

@@ -210,79 +210,103 @@ impl Compositor {
         let Some(root_frame_id) = self.root_frame_id else {
             return hit_info;
         };
-        self.collect_frame_hit_info(root_frame_id, webview_id, &mut hit_info);
-        hit_info
-    }
-
-    fn collect_frame_hit_info(
-        &self,
-        frame_id: FrameId,
-        webview_id: ipc_messages::content::WebviewId,
-        hit_info: &mut Vec<FrameHitInfo>,
-    ) {
-        let Some(frame) = self.committed_frames.get(&frame_id) else {
-            return;
-        };
-
-        let child_ids: Vec<FrameId> = frame
-            .child_frames
-            .iter()
-            .map(|c| c.child_frame_id)
-            .collect();
-        // Use the first child's root clip bounds as the clip for this frame
-        // (the frame's own clip is its viewport, which covers the full content area).
-        let root_clip = frame
-            .child_frames
-            .first()
-            .map(|c| {
-                [
-                    c.root_clip_bounds.x0,
-                    c.root_clip_bounds.y0,
-                    c.root_clip_bounds.x1,
-                    c.root_clip_bounds.y1,
-                ]
-            })
-            .unwrap_or([
+        // Root frame: clip is its own viewport in root space.
+        if let Some(frame) = self.committed_frames.get(&root_frame_id) {
+            let root_clip = [
                 0.0,
                 0.0,
                 f64::from(frame.viewport_width),
                 f64::from(frame.viewport_height),
-            ]);
+            ];
+            let child_ids: Vec<FrameId> = frame
+                .child_frames
+                .iter()
+                .map(|c| c.child_frame_id)
+                .collect();
+            hit_info.push(FrameHitInfo {
+                frame_id: root_frame_id,
+                webview_id,
+                parent_frame_id: None,
+                viewport_width: frame.viewport_width,
+                viewport_height: frame.viewport_height,
+                root_clip_bounds: root_clip,
+                child_to_parent_transform: [1.0, 0.0, 0.0, 1.0, 0.0, 0.0],
+                child_frame_ids: child_ids,
+            });
+        }
 
-        // Compute child_to_parent_transform from the inverse of each child's local transform.
-        // For the frame itself, the transform from its local space to parent is identity
-        // unless it has a parent frame with a recorded layout.
-        let parent_transform = if let Some(parent_id) = frame.parent_frame_id {
-            if let Some(parent_frame) = self.committed_frames.get(&parent_id) {
-                parent_frame
-                    .child_frames
-                    .iter()
-                    .find(|c| c.child_frame_id == frame_id)
-                    .map(|layout| {
-                        let t = layout.child_local_from_parent.as_coeffs();
-                        [t[0], t[1], t[2], t[3], t[4], t[5]]
-                    })
-                    .unwrap_or([1.0, 0.0, 0.0, 1.0, 0.0, 0.0])
+        // Children: each child's clip in root space comes from the parent's
+        // NavigableContainerLayout.root_clip_bounds (the iframe's visible clip
+        // rect in root coordinates), NOT from the child's own viewport dimensions.
+        self.collect_child_hit_info(root_frame_id, webview_id, &mut hit_info);
+        hit_info
+    }
+
+    /// Recursively collect hit-testing info for child frames only.
+    /// Each child's root_clip_bounds is taken directly from the parent's
+    /// NavigableContainerLayout, preserving the iframe's visible clip area
+    /// (which may be smaller than the child's full viewport).
+    fn collect_child_hit_info(
+        &self,
+        parent_frame_id: FrameId,
+        webview_id: ipc_messages::content::WebviewId,
+        hit_info: &mut Vec<FrameHitInfo>,
+    ) {
+        let Some(parent_frame) = self.committed_frames.get(&parent_frame_id) else {
+            return;
+        };
+        for child_layout in &parent_frame.child_frames {
+            let child_frame_id = child_layout.child_frame_id;
+            let Some(child_frame) = self.committed_frames.get(&child_frame_id) else {
+                continue;
+            };
+
+            // Use the parent's layout clip rect for this child — this is the
+            // iframe's visible area in root space, matching hit_test_frame on main.
+            let root_clip = [
+                child_layout.root_clip_bounds.x0,
+                child_layout.root_clip_bounds.y0,
+                child_layout.root_clip_bounds.x1,
+                child_layout.root_clip_bounds.y1,
+            ];
+
+            let child_ids: Vec<FrameId> = child_frame
+                .child_frames
+                .iter()
+                .map(|c| c.child_frame_id)
+                .collect();
+
+            let parent_transform = if let Some(parent_id) = child_frame.parent_frame_id {
+                if let Some(parent) = self.committed_frames.get(&parent_id) {
+                    parent
+                        .child_frames
+                        .iter()
+                        .find(|c| c.child_frame_id == child_frame_id)
+                        .map(|layout| {
+                            let t = layout.child_local_from_parent.as_coeffs();
+                            [t[0], t[1], t[2], t[3], t[4], t[5]]
+                        })
+                        .unwrap_or([1.0, 0.0, 0.0, 1.0, 0.0, 0.0])
+                } else {
+                    [1.0, 0.0, 0.0, 1.0, 0.0, 0.0]
+                }
             } else {
                 [1.0, 0.0, 0.0, 1.0, 0.0, 0.0]
-            }
-        } else {
-            [1.0, 0.0, 0.0, 1.0, 0.0, 0.0]
-        };
+            };
 
-        hit_info.push(FrameHitInfo {
-            frame_id,
-            webview_id,
-            parent_frame_id: frame.parent_frame_id,
-            viewport_width: frame.viewport_width,
-            viewport_height: frame.viewport_height,
-            root_clip_bounds: root_clip,
-            child_to_parent_transform: parent_transform,
-            child_frame_ids: child_ids,
-        });
+            hit_info.push(FrameHitInfo {
+                frame_id: child_frame_id,
+                webview_id,
+                parent_frame_id: child_frame.parent_frame_id,
+                viewport_width: child_frame.viewport_width,
+                viewport_height: child_frame.viewport_height,
+                root_clip_bounds: root_clip,
+                child_to_parent_transform: parent_transform,
+                child_frame_ids: child_ids,
+            });
 
-        for child in &frame.child_frames {
-            self.collect_frame_hit_info(child.child_frame_id, webview_id, hit_info);
+            // Recurse into nested children.
+            self.collect_child_hit_info(child_frame_id, webview_id, hit_info);
         }
     }
 

@@ -450,6 +450,16 @@ pub struct UserAgentState {
     /// scene. Used by route_ui_event to route pointer events to child
     /// traversables (iframes).
     pub child_frame_to_webview: HashMap<WebviewId, HashMap<FrameId, WebviewId>>,
+    /// The last frame that received a pointer-down event, used to route
+    /// non-positional events (keyboard, IME) to the correct frame even when
+    /// no pointer is active.
+    pub focused_frame_id: HashMap<WebviewId, Option<FrameId>>,
+    /// Cached child viewport publications to avoid re-publishing unchanged
+    /// viewports. Each entry is (width, height, offset_x, offset_y).
+    /// Without this cache, every ComposedSceneReady triggers
+    /// set_traversable_viewport → request_render_update → PaintFrame →
+    /// Compose → ComposedSceneReady → ... creating a render cascade.
+    published_child_viewports: HashMap<WebviewId, (u32, u32, f32, f32)>,
     /// queue of navigations paused while content runs `beforeunload`.
     pub pending_before_unload_navigations:
         HashMap<BeforeUnloadCheckId, PendingBeforeUnloadNavigation>,
@@ -568,6 +578,8 @@ impl Default for UserAgentState {
             pending_navigation_finalization_ids_by_navigation_id: HashMap::new(),
             frame_hit_info: HashMap::new(),
             child_frame_to_webview: HashMap::new(),
+            focused_frame_id: HashMap::new(),
+            published_child_viewports: HashMap::new(),
         }
     }
 }
@@ -1903,6 +1915,13 @@ impl UserAgentWorker {
                 error!("failed to register child webview with graphics process: {error}");
             }
         }
+        // Store immediately in the UA state so event routing works before
+        // the first ComposedSceneReady arrives from the graphics process.
+        self.state
+            .child_frame_to_webview
+            .entry(WebviewId(parent_navigable_id))
+            .or_default()
+            .insert(content_frame_id, WebviewId(traversable_id));
         self.host.webview_provider_sync()?;
 
         Ok(traversable_id)
@@ -3189,6 +3208,42 @@ impl UserAgentWorker {
             .send(EventLoopCommand::FireAndForget { command });
     }
 
+    /// Track which frame was last focused via pointer-down, for routing
+    /// non-positional events (keyboard, IME).
+    fn update_focused_frame(
+        &mut self,
+        root_webview_id: WebviewId,
+        event: &blitz_traits::events::UiEvent,
+    ) {
+        if !matches!(event, blitz_traits::events::UiEvent::PointerDown(_)) {
+            return;
+        }
+        let Some((coords_x, coords_y)) = pointer_coords(event) else {
+            return;
+        };
+        let viewport_scale = self.host.viewport_scale_factor().max(1.0);
+        let phys_x = coords_x * viewport_scale as f64;
+        let phys_y = coords_y * viewport_scale as f64;
+        let Some(hit_info_list) = self.state.frame_hit_info.get(&root_webview_id) else {
+            return;
+        };
+        for info in hit_info_list.iter().rev() {
+            if phys_x >= info.root_clip_bounds[0]
+                && phys_y >= info.root_clip_bounds[1]
+                && phys_x <= info.root_clip_bounds[2]
+                && phys_y <= info.root_clip_bounds[3]
+            {
+                self.state
+                    .focused_frame_id
+                    .insert(root_webview_id, Some(info.frame_id));
+                return;
+            }
+        }
+        self.state
+            .focused_frame_id
+            .insert(root_webview_id, None);
+    }
+
     /// queuing DOM event dispatch on the traversable's owning
     /// <https://html.spec.whatwg.org/multipage/#event-loop>.
     fn handle_send_ui_event(&mut self, webview_id: WebviewId, event_message: String) {
@@ -3204,48 +3259,95 @@ impl UserAgentWorker {
             return;
         };
 
+        // Track which frame is focused based on pointer-down events.
+        self.update_focused_frame(webview_id, &event);
+
         let (target_webview_id, routed_event, _composed_frame_ids) =
-            self.route_ui_event(webview_id, event);
+            self.route_ui_event(webview_id, event.clone());
 
         if let Ok(routed_message) = crate::ui_event::serialize_ui_event(&routed_event) {
             self.handle_dispatch_event_for(target_webview_id.0, routed_message);
         }
+
+        // Send a rendering opportunity to the target traversable only.
+        // The graphics process handles composition across frames, so only
+        // the frame that received the event needs to re-render. Rendering
+        // ALL frames on every input event floods the pipeline (each render
+        // triggers PaintFrame → graphics compose → ComposedSceneReady → IPC).
+        self.handle_rendering_opportunity_for(target_webview_id.0);
     }
 
     /// Route a UI event to the correct frame using frame hit info from the
     /// graphics process. Returns (target_webview, routed_event, composed_frame_ids)
     /// where composed_frame_ids lists all frames that need rendering opportunities.
+    ///
+    /// The frame_hit_info root_clip_bounds are in physical/device pixels (matching
+    /// the compositor's internal coordinate space), but event coordinates from the
+    /// embedder are in logical/CSS pixels. We multiply by viewport_scale before hit
+    /// testing, matching the old WebviewProvider::route_ui_event which did the same.
     fn route_ui_event(
         &self,
         root_webview_id: WebviewId,
         event: blitz_traits::events::UiEvent,
     ) -> (WebviewId, blitz_traits::events::UiEvent, Vec<FrameId>) {
-        // For non-positional events (keyboard, IME), return unchanged.
+        let viewport_scale = self.host.viewport_scale_factor().max(1.0);
+
+        // For non-positional events (keyboard, IME), route to the focused frame
+        // if one exists from a previous pointer-down event.
         let Some((coords_x, coords_y)) = pointer_coords(&event) else {
-            return (root_webview_id, event, Vec::new());
+            // Non-positional event: route via focused frame if one exists.
+            let ids: Vec<FrameId> = self.state
+                .frame_hit_info
+                .get(&root_webview_id)
+                .map(|list| list.iter().map(|info| info.frame_id).collect())
+                .unwrap_or_default();
+
+            if let Some(Some(focused_frame_id)) = self.state.focused_frame_id.get(&root_webview_id)
+            {
+                if let Some(map) = self.state.child_frame_to_webview.get(&root_webview_id) {
+                    if let Some(&focused_wv) = map.get(focused_frame_id) {
+                        return (focused_wv, event, ids);
+                    }
+                }
+            }
+            return (root_webview_id, event, ids);
         };
 
         let Some(hit_info_list) = self.state.frame_hit_info.get(&root_webview_id) else {
             return (root_webview_id, event, Vec::new());
         };
 
+        // Convert logical event coords to physical for hit testing against
+        // root_clip_bounds (which are in physical pixels from the compositor).
+        let phys_x = coords_x * viewport_scale as f64;
+        let phys_y = coords_y * viewport_scale as f64;
+
         // Collect all frame IDs for rendering opportunities.
         let composed_frame_ids: Vec<FrameId> =
             hit_info_list.iter().map(|info| info.frame_id).collect();
 
-        // Find the deepest frame that contains the pointer.
+        // Find the deepest frame that contains the pointer, in physical coords.
         for info in hit_info_list.iter().rev() {
-            if coords_x >= info.root_clip_bounds[0]
-                && coords_y >= info.root_clip_bounds[1]
-                && coords_x <= info.root_clip_bounds[2]
-                && coords_y <= info.root_clip_bounds[3]
+            if phys_x >= info.root_clip_bounds[0]
+                && phys_y >= info.root_clip_bounds[1]
+                && phys_x <= info.root_clip_bounds[2]
+                && phys_y <= info.root_clip_bounds[3]
             {
-                // Compute local coordinates within this frame.
-                let local_x = coords_x - info.root_clip_bounds[0];
-                let local_y = coords_y - info.root_clip_bounds[1];
+                // Compute position within this frame in physical pixels, matching
+                // the old compositor's hit_test local_x/y.
+                let local_phys_x = phys_x - info.root_clip_bounds[0];
+                let local_phys_y = phys_y - info.root_clip_bounds[1];
 
-                // Set the event coordinates to the local frame position.
-                let routed_event = set_event_local_coords(&event, local_x as f32, local_y as f32);
+                // Match old retarget_ui_event_for_hit which computed:
+                //   routed_client_x = (viewport.offset_x + hit.local_x) / viewport_scale
+                // where viewport.offset_x = root_clip_bounds.x0 (physical pixels).
+                // This gives the root-space CSS position including iframe offset.
+                let routed_css_x =
+                    ((info.root_clip_bounds[0] + local_phys_x) / viewport_scale as f64) as f32;
+                let routed_css_y =
+                    ((info.root_clip_bounds[1] + local_phys_y) / viewport_scale as f64) as f32;
+
+                let routed_event = set_event_local_coords(&event, routed_css_x, routed_css_y);
 
                 // Route to child webview if this frame belongs to an iframe.
                 if let Some(map) = self.state.child_frame_to_webview.get(&root_webview_id) {
@@ -3745,17 +3847,29 @@ impl UserAgentWorker {
 
                 // Publish child viewports so child traversables know their
                 // visible viewport dimensions (iframe size and position).
+                // Skip unchanged viewports to avoid render cascades:
+                // set_traversable_viewport → request_render_update → PaintFrame
+                // → Compose → ComposedSceneReady → handle_graphics_event → ...
                 for cv in child_viewports {
                     let child_traversable_id = cv.child_webview_id.0;
-                    // root_clip_bounds = [x0, y0, x1, y1] in root coordinates
                     let width = (cv.root_clip_bounds[2] - cv.root_clip_bounds[0]) as u32;
                     let height = (cv.root_clip_bounds[3] - cv.root_clip_bounds[1]) as u32;
-                    let offset_x = cv.root_clip_bounds[0] as f32;
-                    let offset_y = cv.root_clip_bounds[1] as f32;
-                    // Use the root webview's viewport snapshot for scale/color.
                     if let Some(&((_vw, _vh, scale, ref cs), _ox, _oy)) =
                         self.state.traversable_viewports.get(&webview_id.0)
                     {
+                        let viewport_scale = scale.max(1.0);
+                        let offset_x = (cv.root_clip_bounds[0] as f32) / viewport_scale;
+                        let offset_y = (cv.root_clip_bounds[1] as f32) / viewport_scale;
+                        let key = (width.max(1), height.max(1), offset_x, offset_y);
+                        let child_wv = ipc_messages::content::WebviewId(child_traversable_id);
+                        if self.state.published_child_viewports.get(&child_wv)
+                            == Some(&key)
+                        {
+                            continue;
+                        }
+                        self.state
+                            .published_child_viewports
+                            .insert(child_wv, key);
                         self.handle_set_traversable_viewport(
                             child_traversable_id,
                             (width.max(1), height.max(1), scale, cs.clone()),
