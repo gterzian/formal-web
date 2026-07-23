@@ -652,12 +652,12 @@ impl RecordedScene {
     }
 }
 
-fn serialize_scene_to_vec(scene: &RecordedScene) -> Result<Vec<u8>, String> {
+pub fn serialize_scene_to_vec(scene: &RecordedScene) -> Result<Vec<u8>, String> {
     postcard::to_allocvec(scene)
         .map_err(|error| format!("failed to serialize paint scene: {error}"))
 }
 
-fn deserialize_scene_from_slice(scene_bytes: &[u8]) -> Result<RecordedScene, String> {
+pub fn deserialize_scene_from_slice(scene_bytes: &[u8]) -> Result<RecordedScene, String> {
     postcard::from_bytes(scene_bytes)
         .map_err(|error| format!("failed to deserialize paint scene: {error}"))
 }
@@ -873,7 +873,8 @@ pub enum Command {
     /// configuration.
     ContentBootstrap {
         net_sender: ipc::IpcSender<crate::network::Request>,
-        media_sender: Option<ipc::IpcSender<crate::media::MediaCommand>>,
+        /// Direct sender to the graphics process.
+        graphics_sender: Option<ipc::IpcSender<crate::graphics::GraphicsCommand>>,
         /// The content process's own command sender. Net uses this to route
         /// `CompleteDocumentFetch` directly to this content process.
         content_command_sender: ipc::IpcSender<Command>,

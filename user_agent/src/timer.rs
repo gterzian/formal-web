@@ -4,7 +4,6 @@ use log::debug;
 use std::collections::HashMap;
 use std::time::{Duration, Instant};
 use uuid::Uuid;
-use verification::TraceSender;
 
 use crate::UserAgentCommand;
 
@@ -213,7 +212,6 @@ impl TimerWorker {
 pub fn run_timer_thread(
     command_receiver: Receiver<TimerCommand>,
     user_agent_command_sender: Sender<UserAgentCommand>,
-    _trace_sender: Option<TraceSender>,
 ) {
     let mut worker = TimerWorker::new(command_receiver, user_agent_command_sender);
     worker.run();

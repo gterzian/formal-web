@@ -8,7 +8,9 @@ use crate::js::platform_objects::{
     document_object, invalidate_cached_node_ids, resolve_element_object,
     resolve_or_create_text_node_object,
 };
-use crate::webidl::bindings::{AttributeDef, InterfaceDefinition, OperationDef, WebIdlInterface, create_interface_instance};
+use crate::webidl::bindings::{
+    AttributeDef, InterfaceDefinition, OperationDef, WebIdlInterface, create_interface_instance,
+};
 
 use js_engine::{Completion, ExecutionContext, JsTypes};
 
@@ -414,12 +416,16 @@ pub(crate) fn create_document_platform_object(
     blitz_document: Rc<RefCell<blitz_dom::BaseDocument>>,
     creation_url: url::Url,
     ec: &mut dyn ExecutionContext<crate::js::Types>,
-) -> Completion<(<crate::js::Types as JsTypes>::JsObject, crate::dom::Document), crate::js::Types> {
+) -> Completion<
+    (
+        <crate::js::Types as JsTypes>::JsObject,
+        crate::dom::Document,
+    ),
+    crate::js::Types,
+> {
     let document = crate::dom::Document::new(blitz_document, creation_url);
-    let document_object = create_interface_instance::<crate::js::Types, crate::dom::Document>(
-        document,
-        ec,
-    )?;
+    let document_object =
+        create_interface_instance::<crate::js::Types, crate::dom::Document>(document, ec)?;
 
     // The ESO needs a Document reference for access to shared GcCell-backed
     // state. The reflector was set automatically by

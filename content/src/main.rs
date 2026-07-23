@@ -416,8 +416,8 @@ pub(crate) struct ContentProcess {
     video_paint_registry: Rc<RefCell<HashMap<(DocumentId, usize), VideoPaintId>>>,
     /// Direct sender to the net extension. Set during DirectChannelsSetup.
     network_extension_sender: ipc::IpcSender<ipc_messages::network::Request>,
-    /// Direct sender to the media extension. Set during ContentBootstrap.
-    media_extension_sender: Option<ipc::IpcSender<ipc_messages::media::MediaCommand>>,
+    /// Direct sender to the graphics process (composition + media). Set during ContentBootstrap.
+    graphics_sender: Option<ipc::IpcSender<ipc_messages::graphics::GraphicsCommand>>,
     /// This content process's own command sender, used by net for direct response routing.
     content_command_sender: ipc::IpcSender<Command>,
     realm_parent: Engine,
@@ -429,7 +429,7 @@ impl ContentProcess {
         _wasm_signal_sender: crossbeam_channel::Sender<()>,
         event_loop_id: EventLoopId,
         network_extension_sender: ipc::IpcSender<ipc_messages::network::Request>,
-        media_extension_sender: Option<ipc::IpcSender<ipc_messages::media::MediaCommand>>,
+        graphics_sender: Option<ipc::IpcSender<ipc_messages::graphics::GraphicsCommand>>,
         content_command_sender: ipc::IpcSender<Command>,
         trace_sender: Option<TraceSender>,
     ) -> Self {
@@ -453,7 +453,7 @@ impl ContentProcess {
             #[cfg(all(boa_backend, feature = "wasm"))]
             wasm: crate::wasm::ContentWasmState::new(_wasm_signal_sender),
             network_extension_sender,
-            media_extension_sender,
+            graphics_sender,
             content_command_sender,
             realm_parent: Engine::new(),
         }
@@ -943,8 +943,8 @@ impl ContentProcess {
         // resource_selection_algorithm can register paint IDs.
         if let Err(error) = with_global_scope(settings.ec(), |global_scope| {
             global_scope.set_video_paint_registry(Rc::clone(&self.video_paint_registry));
-            if let Some(ref sender) = self.media_extension_sender {
-                global_scope.set_media_extension_sender(sender.clone());
+            if let Some(ref sender) = self.graphics_sender {
+                global_scope.set_graphics_sender(sender.clone());
             }
             Ok(())
         }) {
@@ -1045,8 +1045,8 @@ impl ContentProcess {
         // resource_selection_algorithm can register paint IDs.
         if let Err(error) = with_global_scope(settings.ec(), |global_scope| {
             global_scope.set_video_paint_registry(Rc::clone(&self.video_paint_registry));
-            if let Some(ref sender) = self.media_extension_sender {
-                global_scope.set_media_extension_sender(sender.clone());
+            if let Some(ref sender) = self.graphics_sender {
+                global_scope.set_graphics_sender(sender.clone());
             }
             Ok(())
         }) {
@@ -1478,6 +1478,18 @@ impl ContentProcess {
         };
 
         let (paint_frame, shmem_map) = paint_frame;
+
+        // Send the PaintFrame directly to the graphics process for composition.
+        if let Some(graphics_sender) = &self.graphics_sender {
+            let command = ipc_messages::graphics::GraphicsCommand::PaintFrame {
+                frame: paint_frame.clone(),
+            };
+            if let Err(error) = graphics_sender.send_with_shmem_map(command, shmem_map.clone()) {
+                error!("failed to send paint frame to graphics process: {error}");
+            }
+        }
+
+        // Also send to the UA event loop for legacy handling.
         event_sender
             .send_with_shmem_map(ContentEvent::PaintReady(paint_frame), shmem_map)
             .map_err(|error| format!("failed to send paint frame: {error}"))
@@ -2254,17 +2266,18 @@ pub fn run_content_process(token: String) -> Result<(), String> {
 
         let cmd_rx = ipc::crossbeam_proxy(server.connection.receiver);
 
-        let (network_extension_sender, media_sender, content_command_sender, trace_sender) = {
+        let (network_extension_sender, graphics_sender, content_command_sender, trace_sender) = {
             match cmd_rx.recv() {
                 Ok(incoming) => match incoming.payload {
                     ContentBootstrap {
                         net_sender,
-                        media_sender,
+                        graphics_sender,
                         content_command_sender,
                         trace_sender,
+                        ..
                     } => (
                         net_sender,
-                        media_sender,
+                        graphics_sender,
                         content_command_sender,
                         trace_sender,
                     ),
@@ -2286,7 +2299,7 @@ pub fn run_content_process(token: String) -> Result<(), String> {
                 wasm_signal_sender,
                 event_loop_id,
                 network_extension_sender,
-                media_sender,
+                graphics_sender,
                 content_command_sender,
                 trace_sender,
             )

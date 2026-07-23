@@ -38,6 +38,7 @@ members = [
     ".",
     "automation",
     "content",
+    "graphics",
     "ipc",
     "ipc/xpc-sys",
     "embedder",
@@ -54,6 +55,7 @@ default-members = [
     ".",
     "embedder",
     "content",
+    "graphics",
     "net",
     "media",
 ]

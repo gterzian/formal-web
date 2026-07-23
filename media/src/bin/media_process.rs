@@ -3,9 +3,6 @@ use std::process;
 
 fn main() {
     env_logger::init();
-
-    if let Err(error) = media::run_media_process_from_args() {
-        error!("formal-web-media: {error}");
-        process::exit(1);
-    }
+    error!("formal-web-media is obsolete — media is handled by the graphics process");
+    process::exit(1);
 }

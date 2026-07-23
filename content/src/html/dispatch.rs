@@ -44,7 +44,14 @@ pub(crate) fn steps_to_fire_beforeunload(
     // Step 4, sub-step 3: Initialize event's type attribute to e.
     // Step 4, sub-step 4: Initialize any other IDL attributes of event as
     //                     described (cancelable).
-    let event = Event::new(event_type.into(), false, cancelable, false, true, time_millis);
+    let event = Event::new(
+        event_type.into(),
+        false,
+        cancelable,
+        false,
+        true,
+        time_millis,
+    );
     let event_object = create_interface_instance::<Types, Event>(event, ec)?;
     let event: Event = ec
         .with_object_any(&event_object)

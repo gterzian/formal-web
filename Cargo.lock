@@ -1566,11 +1566,16 @@ dependencies = [
  "cursor-icon",
  "env_logger",
  "html5ever 0.37.1",
+ "ipc",
  "ipc-channel",
  "ipc_messages",
  "keyboard-types",
  "kurbo",
  "log",
+ "objc2 0.6.4",
+ "objc2-core-foundation",
+ "objc2-io-surface",
+ "objc2-metal 0.3.2",
  "peniko",
  "png 0.17.16",
  "serde",
@@ -1578,6 +1583,7 @@ dependencies = [
  "uuid",
  "verification",
  "webview",
+ "wgpu",
  "winit",
 ]
 
@@ -2264,6 +2270,31 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "fdf242682df893b86f33a73828fb09ca4b2d3bb6cc95249707fc684d27484b91"
 dependencies = [
  "bitflags 2.13.0",
+]
+
+[[package]]
+name = "graphics"
+version = "0.1.0"
+dependencies = [
+ "anyrender",
+ "anyrender_vello",
+ "crossbeam-channel",
+ "env_logger",
+ "ipc",
+ "ipc_messages",
+ "kurbo",
+ "log",
+ "media",
+ "objc2 0.6.4",
+ "objc2-core-foundation",
+ "objc2-io-surface",
+ "objc2-metal 0.3.2",
+ "peniko",
+ "pollster",
+ "serde",
+ "vello",
+ "wgpu",
+ "wgpu_context",
 ]
 
 [[package]]
@@ -3711,7 +3742,9 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "2a180dd8642fa45cdb7dd721cd4c11b1cadd4929ce112ebd8b9f5803cc79d536"
 dependencies = [
  "bitflags 2.13.0",
+ "block2 0.6.2",
  "dispatch2",
+ "libc",
  "objc2 0.6.4",
 ]
 
@@ -3853,8 +3886,10 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "180788110936d59bab6bd83b6060ffdfffb3b922ba1396b312ae795e1de9d81d"
 dependencies = [
  "bitflags 2.13.0",
+ "libc",
  "objc2 0.6.4",
  "objc2-core-foundation",
+ "objc2-foundation 0.3.2",
 ]
 
 [[package]]
@@ -3901,7 +3936,9 @@ checksum = "a0125f776a10d00af4152d74616409f0d4a2053a6f57fa5b7d6aa2854ac04794"
 dependencies = [
  "bitflags 2.13.0",
  "block2 0.6.2",
+ "dispatch2",
  "objc2 0.6.4",
+ "objc2-core-foundation",
  "objc2-foundation 0.3.2",
 ]
 
@@ -6226,8 +6263,10 @@ dependencies = [
  "crossbeam-channel",
  "ipc",
  "ipc_messages",
+ "keyboard-types",
  "log",
  "psl",
+ "serde",
  "serde_json",
  "url",
  "uuid",

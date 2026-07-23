@@ -1,4 +1,4 @@
-use log::error;
+use log::{debug, error};
 mod chrome;
 
 use self::chrome::{ChromeAction, ChromeTabInfo, ChromeUi, ChromeViewState, WinitShellProvider};
@@ -11,7 +11,7 @@ use super::{
     automation_visible_frame_viewports, normalize_browser_destination, read_clipboard_text,
     startup_destination_url, write_clipboard_text,
 };
-use anyrender::{PaintScene, WindowRenderer};
+use anyrender::{Paint, PaintScene, WindowRenderer};
 use anyrender_vello::VelloWindowRenderer;
 use automation::{
     AutomationController, AutomationHost, AutomationSnapshot, AutomationVisibleFrameViewport,
@@ -157,6 +157,8 @@ fn apple_standard_keybinding_for_key_down(event: &BlitzKeyEvent) -> Option<&'sta
 pub(super) struct WindowState {
     pub(super) window: Option<Arc<Window>>,
     pub(super) renderer: VelloWindowRenderer,
+    /// Cached rendered image data from the graphics process, keyed by webview.
+    pub(super) surface_images: HashMap<WebviewId, peniko::ImageData>,
     pub(super) chrome: Option<ChromeUi>,
     pub(super) tabs: HashMap<WebviewId, TabState>,
     pub(super) tab_order: Vec<WebviewId>,
@@ -174,6 +176,7 @@ impl WindowState {
         Self {
             window: None,
             renderer: VelloWindowRenderer::new(),
+            surface_images: HashMap::new(),
             chrome: None,
             tabs: HashMap::new(),
             tab_order: Vec::new(),
@@ -188,11 +191,20 @@ impl WindowState {
     }
 }
 
-#[derive(Default)]
 pub(super) struct WindowedApp {
     pub(super) windows: HashMap<WindowId, WindowState>,
     pub(super) provider: Option<WebviewProvider>,
     pub(super) active_window_id: Option<WindowId>,
+}
+
+impl Default for WindowedApp {
+    fn default() -> Self {
+        Self {
+            windows: HashMap::new(),
+            provider: None,
+            active_window_id: None,
+        }
+    }
 }
 
 type ViewportSnapshot = Option<(u32, u32, f32, ColorScheme)>;
@@ -411,7 +423,7 @@ impl WindowedApp {
         state.active_tab = Some(webview_id);
     }
 
-    fn paint_frame(state: &mut WindowState, provider: &mut Option<WebviewProvider>) {
+    fn paint_frame(state: &mut WindowState) {
         if !Self::has_visible_viewport(state) {
             return;
         }
@@ -439,12 +451,24 @@ impl WindowedApp {
         let active_tab = state.active_tab;
         state.renderer.render(|scene| {
             if let Some(webview_id) = active_tab
-                && let Some(provider) = provider.as_mut()
+                && let Some(image_data) = state.surface_images.get(&webview_id)
             {
-                let _ = provider.append_web_content_scene(
-                    webview_id,
-                    scene,
-                    Affine::translate((0.0, chrome_height)),
+                let w = image_data.width;
+                let h = image_data.height;
+                debug!(
+                    "[embedder] paint_frame drawing surface webview={:?} {}x{}",
+                    webview_id, w, h
+                );
+                let content_transform = Affine::translate((0.0, chrome_height));
+                scene.fill(
+                    peniko::Fill::NonZero,
+                    content_transform,
+                    Paint::Image(peniko::ImageBrushRef {
+                        image: image_data,
+                        sampler: Default::default(),
+                    }),
+                    None,
+                    &kurbo::Rect::new(0.0, 0.0, f64::from(w), f64::from(h)),
                 );
             }
             if let Some(chrome_scene) = chrome_scene.clone() {
@@ -514,9 +538,13 @@ impl WindowedApp {
         let Some(webview_id) = webview_id else {
             return;
         };
+        let needs_render = matches!(event, UiEvent::KeyDown(_) | UiEvent::Ime(_));
         self.with_provider(|provider| {
             if let Err(error) = provider.send_ui_event(webview_id, event) {
                 error!("content event error: {error}");
+            }
+            if needs_render {
+                provider.note_rendering_opportunity(webview_id, "keyboard_event");
             }
         });
         if let Some(window_state) = self.windows.get(&window_id) {
@@ -591,6 +619,9 @@ impl ApplicationHandler<FormalWebUserEvent> for WindowedApp {
         if let Some(provider) = self.provider.as_ref() {
             let _ = provider.navigate(None, &destination);
         }
+
+
+
         self.windows.insert(window_id, state);
         if let Some(window_state) = self.windows.get(&window_id) {
             Self::request_window_redraw(window_state);
@@ -621,7 +652,7 @@ impl ApplicationHandler<FormalWebUserEvent> for WindowedApp {
                 if let Some(state) = self.windows.get_mut(&window_id)
                     && (self.provider.is_some() || state.chrome.is_some())
                 {
-                    Self::paint_frame(state, &mut self.provider);
+                    Self::paint_frame(state);
                 }
             }
             WindowEvent::Occluded(occluded) => {
@@ -905,13 +936,14 @@ impl ApplicationHandler<FormalWebUserEvent> for WindowedApp {
                         BlitzWheelDelta::Pixels(pixel_delta.x, pixel_delta.y)
                     }
                 };
-                if Self::pointer_in_chrome_st(
+                let pointer_in_chrome = Self::pointer_in_chrome_st(
                     &self.windows,
                     window_id,
                     self.windows
                         .get(&window_id)
                         .map_or(PhysicalPosition::default(), |state| state.pointer_pos),
-                ) {
+                );
+                if pointer_in_chrome {
                     if let Some(state) = self.windows.get_mut(&window_id) {
                         if !Self::pointer_in_viewport(state, state.pointer_pos) {
                             return;
@@ -1064,6 +1096,7 @@ impl ApplicationHandler<FormalWebUserEvent> for WindowedApp {
                 }
             }
             FormalWebUserEvent::NewWebview(webview_id, _) => {
+                debug!("[embedder] NewWebview webview={:?}", webview_id);
                 if let Some(active_window) = self.active_window_id
                     && let Some(state) = self.windows.get_mut(&active_window)
                 {
@@ -1106,6 +1139,58 @@ impl ApplicationHandler<FormalWebUserEvent> for WindowedApp {
             }
             FormalWebUserEvent::ClipboardWrite { text, reply } => {
                 let _ = reply.send(write_clipboard_text(text));
+            }
+            FormalWebUserEvent::NewWebContentScene {
+                webview_id,
+                scene_bytes,
+                font_registrations,
+                font_data,
+            } => {
+                // Removed: the IOSurface surface path replaces the old scene bytes path.
+                // Trigger a redraw so the surface-based path can render.
+                debug!(
+                    "[embedder] NewWebContentScene (ignored, using surface path) webview={:?}",
+                    webview_id,
+                );
+                if let Some(window) = Self::window_for_webview(self, webview_id)
+                    && let Some(state) = self.windows.get(&window)
+                {
+                    Self::request_window_redraw(state);
+                }
+                let _ = scene_bytes.len();
+                let _ = font_registrations;
+                let _ = font_data;
+            }
+            FormalWebUserEvent::NewWebContentSurface {
+                webview_id,
+                pixels,
+                width,
+                height,
+                generation: _generation,
+            } => {
+                // Store the rendered pixel data as ImageData for the active tab.
+                let width = width;
+                let height = height;
+                if pixels.len() as u32 == width * height * 4 && width > 0 && height > 0 {
+                    let image_data = peniko::ImageData {
+                        data: pixels.into(),
+                        format: peniko::ImageFormat::Rgba8,
+                        alpha_type: peniko::ImageAlphaType::Alpha,
+                        width,
+                        height,
+                    };
+                    if let Some(window_id) = Self::window_for_webview(self, webview_id) {
+                        if let Some(state) = self.windows.get_mut(&window_id) {
+                            state.surface_images.insert(webview_id, image_data);
+                        }
+                    }
+                }
+                // Trigger redraw so paint_frame picks up the new image.
+                if let Some(window) = Self::window_for_webview(self, webview_id)
+                    && let Some(state) = self.windows.get(&window)
+                {
+                    Self::request_window_redraw(state);
+                }
             }
             FormalWebUserEvent::Exit => event_loop.exit(),
         }

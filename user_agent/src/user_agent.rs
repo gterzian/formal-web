@@ -2,6 +2,7 @@ mod event_loop;
 mod fetch;
 pub(crate) mod ipc_manifest;
 mod timer;
+pub(crate) mod ui_event;
 
 use blitz_traits::shell::ColorScheme;
 use crossbeam_channel::{Receiver, Sender, bounded, select, unbounded};
@@ -31,7 +32,6 @@ use crate::event_loop::{
     traversable_viewport_command,
 };
 use crate::timer::{TimerCommand, run_timer_thread};
-use ipc_messages::media::{MediaPipelineId, VideoPaintId};
 
 pub(crate) fn sidecar_executable_path(binary_name: &str) -> Result<PathBuf, String> {
     let current_executable = std::env::current_exe()
@@ -129,6 +129,24 @@ pub trait Embedder: Send + Sync {
     fn window_viewport_snapshot(&self) -> Option<(u32, u32, f32, ColorScheme)>;
     fn clipboard_get_text(&self, timeout: Duration) -> Result<String, String>;
     fn clipboard_set_text(&self, text: String, timeout: Duration) -> Result<(), String>;
+    /// Forward a composed web content scene from the graphics process to the
+    /// embedder for rendering.
+    fn new_web_content_scene(
+        &self,
+        webview_id: WebviewId,
+        scene_bytes: Vec<u8>,
+        font_registrations: Vec<ipc_messages::content::RegisteredFont>,
+        font_data: std::collections::HashMap<usize, Vec<u8>>,
+    ) -> Result<(), String>;
+    /// Forward rendered RGBA pixel data from the graphics process.
+    fn new_web_content_surface(
+        &self,
+        webview_id: WebviewId,
+        pixels: Vec<u8>,
+        width: u32,
+        height: u32,
+        generation: u64,
+    ) -> Result<(), String>;
 }
 
 /// <https://html.spec.whatwg.org/multipage/#cross-origin-isolation-mode>
@@ -433,6 +451,24 @@ pub struct UserAgentState {
     /// cache of active and pending documents keyed by
     /// <https://dom.spec.whatwg.org/#concept-document> identifiers.
     pub documents: HashMap<DocumentId, DocumentState>,
+    /// The latest hit-testing info for each webview, published by the
+    /// graphics process alongside each composed scene.
+    pub frame_hit_info: HashMap<WebviewId, Vec<ipc_messages::graphics::FrameHitInfo>>,
+    /// Mapping from content frame_id to child webview_id for each root
+    /// webview. Published by the graphics process alongside each composed
+    /// scene. Used by route_ui_event to route pointer events to child
+    /// traversables (iframes).
+    pub child_frame_to_webview: HashMap<WebviewId, HashMap<FrameId, WebviewId>>,
+    /// The last frame that received a pointer-down event, used to route
+    /// non-positional events (keyboard, IME) to the correct frame even when
+    /// no pointer is active.
+    pub focused_frame_id: HashMap<WebviewId, Option<FrameId>>,
+    /// Cached child viewport publications to avoid re-publishing unchanged
+    /// viewports. Each entry is (width, height, offset_x, offset_y).
+    /// Without this cache, every ComposedSceneReady triggers
+    /// set_traversable_viewport → request_render_update → PaintFrame →
+    /// Compose → ComposedSceneReady → ... creating a render cascade.
+    published_child_viewports: HashMap<WebviewId, (u32, u32, f32, f32)>,
     /// queue of navigations paused while content runs `beforeunload`.
     pub pending_before_unload_navigations:
         HashMap<BeforeUnloadCheckId, PendingBeforeUnloadNavigation>,
@@ -549,6 +585,10 @@ impl Default for UserAgentState {
             pending_navigation_fetch_ids_by_fetch_id: HashMap::new(),
             pending_navigation_finalizations: HashMap::new(),
             pending_navigation_finalization_ids_by_navigation_id: HashMap::new(),
+            frame_hit_info: HashMap::new(),
+            child_frame_to_webview: HashMap::new(),
+            focused_frame_id: HashMap::new(),
+            published_child_viewports: HashMap::new(),
         }
     }
 }
@@ -874,13 +914,6 @@ pub enum UserAgentCommand {
         fetch_id: NavigationFetchId,
         response: ContentFetchResponse,
     },
-    MediaLoadRequested {
-        url: String,
-        document_id: DocumentId,
-        traversable_id: NavigableId,
-        pipeline_id: MediaPipelineId,
-        video_paint_id: VideoPaintId,
-    },
     NavigationFetchFailed {
         fetch_id: NavigationFetchId,
     },
@@ -892,6 +925,10 @@ pub enum UserAgentCommand {
         nesting_level: u32,
     },
 
+    SendUiEvent {
+        webview_id: WebviewId,
+        event_message: String,
+    },
     IframeTraversableRemoved {
         parent_traversable_id: NavigableId,
         content_navigable_id: NavigableId,
@@ -1032,6 +1069,20 @@ impl UserAgent {
                 event,
             })
             .map_err(|error| format!("failed to send dispatch-event request: {error}"))
+    }
+
+    /// Send a UI event to the user agent for hit-testing and dispatch to content.
+    pub fn send_ui_event(
+        &self,
+        webview_id: WebviewId,
+        event_message: String,
+    ) -> Result<(), String> {
+        self.command_sender
+            .send(UserAgentCommand::SendUiEvent {
+                webview_id,
+                event_message,
+            })
+            .map_err(|error| format!("failed to send ui event: {error}"))
     }
 
     /// <https://html.spec.whatwg.org/multipage/#update-the-rendering>
@@ -1237,16 +1288,15 @@ struct UserAgentWorker {
     net_connection: crate::fetch::NetConnection,
     timer_command_sender: Sender<TimerCommand>,
     timer_join_handle: Option<JoinHandle<()>>,
-    /// Crossbeam proxy for media extension events.
-    media_event_receiver:
-        crossbeam_channel::Receiver<ipc::IpcIncoming<ipc_messages::media::MediaEvent>>,
-    /// Child process handle for the media process.
-    media_child: Option<std::process::Child>,
-    /// IPC sender to the media extension (for direct content connections).
-    media_extension_sender: Option<ipc::IpcSender<ipc_messages::media::MediaCommand>>,
-    /// Maps media pipeline IDs to their owning webview and paint ID, so that
-    /// incoming video frames can be routed to the correct compositor slot.
-    pipeline_to_webview: HashMap<MediaPipelineId, (WebviewId, VideoPaintId)>,
+
+    /// IPC sender to the graphics process.
+    graphics_extension_sender: Option<ipc::IpcSender<ipc_messages::graphics::GraphicsCommand>>,
+    /// Crossbeam proxy for graphics extension events (composed scenes).
+    graphics_event_receiver:
+        crossbeam_channel::Receiver<ipc::IpcIncoming<ipc_messages::graphics::GraphicsEvent>>,
+    /// Child process handle for the graphics process.
+    #[allow(dead_code)]
+    graphics_child: Option<std::process::Child>,
 
     /// Host integration used to surface navigation, paint, clipboard, and viewport state.
     host: Arc<dyn Embedder>,
@@ -1274,41 +1324,35 @@ impl UserAgentWorker {
             .unwrap_or_else(|error| panic!("failed to start net extension: {error}"));
         let (timer_command_sender, timer_command_receiver) = unbounded();
         let timer_user_agent_command_sender = user_agent_command_sender.clone();
-        let timer_trace_sender = trace_sender.clone();
         let timer_join_handle = thread::Builder::new()
             .name(String::from("formal-web:timer"))
             .spawn(move || {
-                run_timer_thread(
-                    timer_command_receiver,
-                    timer_user_agent_command_sender,
-                    timer_trace_sender,
-                )
+                run_timer_thread(timer_command_receiver, timer_user_agent_command_sender)
             })
             .unwrap_or_else(|error| panic!("failed to spawn formal-web-timer thread: {error}"));
 
-        #[cfg(feature = "media")]
-        let (media_extension_sender, media_event_receiver, media_child) = {
-            use crate::ipc_manifest::MediaExtensionManifest;
-            let (mut handle, connection) = ipc::ExtensionHandle::launch::<
-                MediaExtensionManifest,
-                ipc_messages::media::MediaCommand,
-                ipc_messages::media::MediaEvent,
-            >(&MediaExtensionManifest)
-            .unwrap_or_else(|error| panic!("failed to start media extension: {error}"));
-            let sender = connection.sender.clone();
-            let receiver = connection.receiver;
-            let child = handle.take_child();
-            (Some(sender), ipc::crossbeam_proxy(receiver), child)
-        };
-        #[cfg(not(feature = "media"))]
-        let (media_extension_sender, media_event_receiver, media_child): (
-            Option<ipc::IpcSender<ipc_messages::media::MediaCommand>>,
-            crossbeam_channel::Receiver<ipc::IpcIncoming<ipc_messages::media::MediaEvent>>,
-            Option<std::process::Child>,
-        ) = {
-            let (dummy_tx, dummy_rx) = crossbeam_channel::unbounded();
-            drop(dummy_tx);
-            (None, dummy_rx, None)
+        // Start the graphics process (handles composition + media playback).
+        let (graphics_extension_sender, graphics_event_receiver, graphics_child) = {
+            use crate::ipc_manifest::GraphicsExtensionManifest;
+            match ipc::ExtensionHandle::launch::<
+                GraphicsExtensionManifest,
+                ipc_messages::graphics::GraphicsCommand,
+                ipc_messages::graphics::GraphicsEvent,
+            >(&GraphicsExtensionManifest)
+            {
+                Ok((mut handle, connection)) => {
+                    let sender = connection.sender.clone();
+                    let receiver = connection.receiver;
+                    let child = handle.take_child();
+                    (Some(sender), ipc::crossbeam_proxy(receiver), child)
+                }
+                Err(error) => {
+                    log::error!("failed to start graphics process: {error}");
+                    let (dummy_tx, dummy_rx) = crossbeam_channel::unbounded();
+                    drop(dummy_tx);
+                    (None, dummy_rx, None)
+                }
+            }
         };
 
         Self {
@@ -1318,9 +1362,10 @@ impl UserAgentWorker {
             net_connection,
             timer_command_sender,
             timer_join_handle: Some(timer_join_handle),
-            media_event_receiver,
-            media_child,
-            pipeline_to_webview: HashMap::new(),
+
+            graphics_extension_sender,
+            graphics_event_receiver,
+            graphics_child,
             host,
             webview_provider_sender,
             navigation_tracer: TLATracer::new(
@@ -1330,7 +1375,6 @@ impl UserAgentWorker {
             ),
             trace_sender,
             next_automation_request_id: 1,
-            media_extension_sender,
         }
     }
 
@@ -1388,6 +1432,12 @@ impl UserAgentWorker {
                             offset_y,
                         );
                     }
+                    UserAgentCommand::SendUiEvent {
+                        webview_id,
+                        event_message,
+                    } => {
+                        self.handle_send_ui_event(webview_id, event_message);
+                    }
                     UserAgentCommand::DispatchEventFor {
                         traversable_id,
                         event,
@@ -1419,23 +1469,7 @@ impl UserAgentWorker {
                         );
                     }
 
-                    UserAgentCommand::MediaLoadRequested {
-                        url,
-                        document_id: _document_id,
-                        traversable_id,
-                        pipeline_id,
-                        video_paint_id,
-                    } => {
-                        debug!(
-                            "[media] registering pipeline url={} traversable={}",
-                            url, traversable_id
-                        );
-                        self.register_media_pipeline(
-                            pipeline_id,
-                            traversable_id,
-                            video_paint_id,
-                        );
-                    }
+
                     UserAgentCommand::IframeTraversableRemoved {
                         parent_traversable_id,
                         content_navigable_id,
@@ -1459,16 +1493,11 @@ impl UserAgentWorker {
                         let Ok(incoming) = response else { break; };
                         self.handle_net_navigation_response(incoming.payload);
                     }
-                    recv(self.media_event_receiver) -> event => {
+                    recv(self.graphics_event_receiver) -> event => {
                         let Ok(mut incoming) = event else { break; };
-                        // Extract video frame data from shared memory before forwarding.
-                        if let ipc_messages::media::MediaEvent::Frame(video_frame) = &mut incoming.payload {
-                            if let Some(region) = incoming.shmem_regions.get(&0) {
-                                video_frame.data = region.as_slice().to_vec();
-                            }
-                        }
-                        self.handle_media_event(incoming.payload);
+                        self.handle_graphics_event(&mut incoming);
                     }
+
                 }
         }
     }
@@ -1544,10 +1573,9 @@ impl UserAgentWorker {
             self.command_sender.clone(),
             self.timer_command_sender.clone(),
             self.host.clone(),
-            self.webview_provider_sender.clone(),
             self.trace_sender.clone(),
             self.net_connection.sender(),
-            self.media_extension_sender.clone(),
+            self.graphics_extension_sender.clone(),
         )?;
         self.state.event_loops.insert(event_loop_id, entry);
         // Step 3: Let agent be a new agent whose [[CanBlock]] is canBlock, [[Signifier]] is
@@ -1726,6 +1754,16 @@ impl UserAgentWorker {
             .map_err(|error| {
                 format!("failed to enqueue webview-provider new-webview message: {error}")
             })?;
+        // Register the webview with the graphics process.
+        if let Some(graphics_sender) = &self.graphics_extension_sender {
+            if let Err(error) =
+                graphics_sender.send(ipc_messages::graphics::GraphicsCommand::RegisterWebview {
+                    webview_id: WebviewId(traversable_id),
+                })
+            {
+                error!("failed to register webview with graphics process: {error}");
+            }
+        }
         self.host.webview_provider_sync()?;
         // Step 13: Return traversable.
         Ok(traversable_id)
@@ -1866,6 +1904,33 @@ impl UserAgentWorker {
                     "failed to enqueue webview-provider child-host registration message: {error}"
                 )
             })?;
+        // Register the child navigable with the graphics process.
+        if let Some(graphics_sender) = &self.graphics_extension_sender {
+            if let Err(error) = graphics_sender.send(
+                ipc_messages::graphics::GraphicsCommand::RegisterChildNavigableHost {
+                    child_webview_id: WebviewId(traversable_id),
+                    parent_traversable_id: WebviewId(parent_navigable_id),
+                    content_frame_id,
+                },
+            ) {
+                error!("failed to register child navigable with graphics process: {error}");
+            }
+            // Also register the child webview itself.
+            if let Err(error) =
+                graphics_sender.send(ipc_messages::graphics::GraphicsCommand::RegisterWebview {
+                    webview_id: WebviewId(traversable_id),
+                })
+            {
+                error!("failed to register child webview with graphics process: {error}");
+            }
+        }
+        // Store immediately in the UA state so event routing works before
+        // the first ComposedSceneReady arrives from the graphics process.
+        self.state
+            .child_frame_to_webview
+            .entry(WebviewId(parent_navigable_id))
+            .or_default()
+            .insert(content_frame_id, WebviewId(traversable_id));
         self.host.webview_provider_sync()?;
 
         Ok(traversable_id)
@@ -2507,6 +2572,16 @@ impl UserAgentWorker {
                 .map_err(|error| {
                     format!("failed to enqueue webview-provider new-webview message: {error}")
                 })?;
+            // Register the webview with the graphics process.
+            if let Some(graphics_sender) = &self.graphics_extension_sender {
+                if let Err(error) =
+                    graphics_sender.send(ipc_messages::graphics::GraphicsCommand::RegisterWebview {
+                        webview_id: WebviewId(navigable_id),
+                    })
+                {
+                    error!("failed to register webview with graphics process: {error}");
+                }
+            }
             self.host.webview_provider_sync()?;
         }
         Ok(())
@@ -2942,6 +3017,18 @@ impl UserAgentWorker {
             document.is_initial_about_blank = finalized.url == "about:blank";
         }
         self.handle_rendering_opportunity_for(pending.traversable_id);
+        // Notify the graphics process that a top-level navigation finalized.
+        // This sets replace_root_on_next_paint so the next PaintFrame replaces
+        // the old about:blank scene with the new page's scene.
+        if let Some(graphics_sender) = &self.graphics_extension_sender {
+            if let Err(error) = graphics_sender.send(
+                ipc_messages::graphics::GraphicsCommand::NavigationFinalized {
+                    webview_id: WebviewId(pending.traversable_id),
+                },
+            ) {
+                log::error!("failed to notify graphics of navigation finalization: {error}");
+            }
+        }
         let notify_result = self.host.navigation_completed(NavigationCompleted {
             webview_id: WebviewId(pending.traversable_id),
             status: NavigationCompletion::Committed {
@@ -3130,8 +3217,161 @@ impl UserAgentWorker {
             .send(EventLoopCommand::FireAndForget { command });
     }
 
+    /// Track which frame was last focused via pointer-down, for routing
+    /// non-positional events (keyboard, IME).
+    fn update_focused_frame(
+        &mut self,
+        root_webview_id: WebviewId,
+        event: &blitz_traits::events::UiEvent,
+    ) {
+        if !matches!(event, blitz_traits::events::UiEvent::PointerDown(_)) {
+            return;
+        }
+        let Some((coords_x, coords_y)) = pointer_coords(event) else {
+            return;
+        };
+        let viewport_scale = self.host.viewport_scale_factor().max(1.0);
+        let phys_x = coords_x * viewport_scale as f64;
+        let phys_y = coords_y * viewport_scale as f64;
+        let Some(hit_info_list) = self.state.frame_hit_info.get(&root_webview_id) else {
+            return;
+        };
+        for info in hit_info_list.iter().rev() {
+            if phys_x >= info.root_clip_bounds[0]
+                && phys_y >= info.root_clip_bounds[1]
+                && phys_x <= info.root_clip_bounds[2]
+                && phys_y <= info.root_clip_bounds[3]
+            {
+                self.state
+                    .focused_frame_id
+                    .insert(root_webview_id, Some(info.frame_id));
+                return;
+            }
+        }
+        self.state.focused_frame_id.insert(root_webview_id, None);
+    }
+
     /// queuing DOM event dispatch on the traversable's owning
     /// <https://html.spec.whatwg.org/multipage/#event-loop>.
+    fn handle_send_ui_event(&mut self, webview_id: WebviewId, event_message: String) {
+        if input_debug_enabled() {
+            trace!(
+                "[input-debug][user-agent] send_ui_event webview={:?} bytes={}",
+                webview_id,
+                event_message.len(),
+            );
+        }
+
+        let Ok(event) = crate::ui_event::deserialize_ui_event(&event_message) else {
+            return;
+        };
+
+        // Track which frame is focused based on pointer-down events.
+        self.update_focused_frame(webview_id, &event);
+
+        let (target_webview_id, routed_event, _composed_frame_ids) =
+            self.route_ui_event(webview_id, event.clone());
+
+        if let Ok(routed_message) = crate::ui_event::serialize_ui_event(&routed_event) {
+            self.handle_dispatch_event_for(target_webview_id.0, routed_message);
+        }
+
+        // Send a rendering opportunity to the target traversable only.
+        // The graphics process handles composition across frames, so only
+        // the frame that received the event needs to re-render. Rendering
+        // ALL frames on every input event floods the pipeline (each render
+        // triggers PaintFrame → graphics compose → ComposedSceneReady → IPC).
+        self.handle_rendering_opportunity_for(target_webview_id.0);
+    }
+
+    /// Route a UI event to the correct frame using frame hit info from the
+    /// graphics process. Returns (target_webview, routed_event, composed_frame_ids)
+    /// where composed_frame_ids lists all frames that need rendering opportunities.
+    ///
+    /// The frame_hit_info root_clip_bounds are in physical/device pixels (matching
+    /// the compositor's internal coordinate space), but event coordinates from the
+    /// embedder are in logical/CSS pixels. We multiply by viewport_scale before hit
+    /// testing, matching the old WebviewProvider::route_ui_event which did the same.
+    fn route_ui_event(
+        &self,
+        root_webview_id: WebviewId,
+        event: blitz_traits::events::UiEvent,
+    ) -> (WebviewId, blitz_traits::events::UiEvent, Vec<FrameId>) {
+        let viewport_scale = self.host.viewport_scale_factor().max(1.0);
+
+        // For non-positional events (keyboard, IME), route to the focused frame
+        // if one exists from a previous pointer-down event.
+        let Some((coords_x, coords_y)) = pointer_coords(&event) else {
+            // Non-positional event: route via focused frame if one exists.
+            let ids: Vec<FrameId> = self
+                .state
+                .frame_hit_info
+                .get(&root_webview_id)
+                .map(|list| list.iter().map(|info| info.frame_id).collect())
+                .unwrap_or_default();
+
+            if let Some(Some(focused_frame_id)) = self.state.focused_frame_id.get(&root_webview_id)
+            {
+                if let Some(map) = self.state.child_frame_to_webview.get(&root_webview_id) {
+                    if let Some(&focused_wv) = map.get(focused_frame_id) {
+                        return (focused_wv, event, ids);
+                    }
+                }
+            }
+            return (root_webview_id, event, ids);
+        };
+
+        let Some(hit_info_list) = self.state.frame_hit_info.get(&root_webview_id) else {
+            return (root_webview_id, event, Vec::new());
+        };
+
+        // Convert logical event coords to physical for hit testing against
+        // root_clip_bounds (which are in physical pixels from the compositor).
+        let phys_x = coords_x * viewport_scale as f64;
+        let phys_y = coords_y * viewport_scale as f64;
+
+        // Collect all frame IDs for rendering opportunities.
+        let composed_frame_ids: Vec<FrameId> =
+            hit_info_list.iter().map(|info| info.frame_id).collect();
+
+        // Find the deepest frame that contains the pointer, in physical coords.
+        for info in hit_info_list.iter().rev() {
+            if phys_x >= info.root_clip_bounds[0]
+                && phys_y >= info.root_clip_bounds[1]
+                && phys_x <= info.root_clip_bounds[2]
+                && phys_y <= info.root_clip_bounds[3]
+            {
+                // Compute position within this frame in physical pixels, matching
+                // the old compositor's hit_test local_x/y.
+                let local_phys_x = phys_x - info.root_clip_bounds[0];
+                let local_phys_y = phys_y - info.root_clip_bounds[1];
+
+                // Match old retarget_ui_event_for_hit which computed:
+                //   routed_client_x = (viewport.offset_x + hit.local_x) / viewport_scale
+                // where viewport.offset_x = root_clip_bounds.x0 (physical pixels).
+                // This gives the root-space CSS position including iframe offset.
+                let routed_css_x =
+                    ((info.root_clip_bounds[0] + local_phys_x) / viewport_scale as f64) as f32;
+                let routed_css_y =
+                    ((info.root_clip_bounds[1] + local_phys_y) / viewport_scale as f64) as f32;
+
+                let routed_event = set_event_local_coords(&event, routed_css_x, routed_css_y);
+
+                // Route to child webview if this frame belongs to an iframe.
+                if let Some(map) = self.state.child_frame_to_webview.get(&root_webview_id) {
+                    if let Some(&child_wv) = map.get(&info.frame_id) {
+                        return (child_wv, routed_event, composed_frame_ids);
+                    }
+                }
+
+                return (root_webview_id, routed_event, composed_frame_ids);
+            }
+        }
+
+        // No frame matched; pass through unchanged.
+        (root_webview_id, event, composed_frame_ids)
+    }
+
     fn handle_dispatch_event_for(&mut self, traversable_id: NavigableId, event: String) {
         let Some(handle) = self.state.traversable_handles.get(&traversable_id).copied() else {
             return;
@@ -3551,127 +3791,201 @@ impl UserAgentWorker {
             shutdown_result = Err(String::from("timer thread panicked"));
         }
 
-        // Shut down the media extension directly.
-        if let Some(media_sender) = &self.media_extension_sender {
-            if let Err(error) = media_sender.send(ipc_messages::media::MediaCommand::Shutdown) {
-                shutdown_result = Err(format!("failed to request media shutdown: {error}"));
-            }
-
-            if let Some(mut media_child) = self.media_child.take() {
-                let deadline = std::time::Instant::now() + std::time::Duration::from_millis(150);
-                loop {
-                    match media_child.try_wait() {
-                        Ok(Some(_)) => break,
-                        Ok(None) => {
-                            if std::time::Instant::now() >= deadline {
-                                let _ = media_child.kill();
-                                let _ = media_child.wait();
-                                break;
-                            }
-                            std::thread::sleep(std::time::Duration::from_millis(5));
-                        }
-                        Err(error) => {
-                            log::error!("failed to poll media process exit: {error}");
-                            let _ = media_child.kill();
-                            let _ = media_child.wait();
-                            break;
-                        }
-                    }
-                }
-            }
-        }
-
         let _ = reply.send(shutdown_result);
     }
 
-    /// Register the pipeline→webview mapping for video frame routing.
-    fn register_media_pipeline(
+    /// Handle a GraphicsEvent (composed scene) from the graphics process.
+    fn handle_graphics_event(
         &mut self,
-        pipeline_id: MediaPipelineId,
-        traversable_id: NavigableId,
-        video_paint_id: VideoPaintId,
+        incoming: &mut ipc::IpcIncoming<ipc_messages::graphics::GraphicsEvent>,
     ) {
-        debug!(
-            "[media] registering pipeline mapping: pipeline={:?} traversable={} paint={:?}",
-            pipeline_id, traversable_id.0, video_paint_id,
-        );
-        let webview_id = WebviewId(traversable_id);
-        self.pipeline_to_webview
-            .insert(pipeline_id, (webview_id, video_paint_id));
-    }
+        use ipc_messages::graphics::GraphicsEvent;
+        match &incoming.payload {
+            GraphicsEvent::ComposedSceneReady {
+                webview_id,
+                scene_shmem_key,
+                font_registrations,
+                frame_hit_info,
+                child_viewports,
+                child_frame_to_webview,
+            } => {
+                debug!(
+                    "[graphics] received composed scene for webview {:?} key={} fonts={} hit_info={}",
+                    webview_id,
+                    scene_shmem_key,
+                    font_registrations.len(),
+                    frame_hit_info.len(),
+                );
 
-    /// Handle a MediaEvent from the media process.
-    fn handle_media_event(&mut self, event: ipc_messages::media::MediaEvent) {
-        use ipc_messages::media::MediaEvent;
-        match event {
-            MediaEvent::Frame(video_frame) => {
-                let pipeline_id = video_frame.pipeline_id;
-                let Some(&(webview_id, paint_id)) = self.pipeline_to_webview.get(&pipeline_id)
-                else {
-                    debug!(
-                        "[media] received frame for unknown pipeline {:?}",
-                        pipeline_id
-                    );
-                    return;
-                };
-                debug!(
-                    "[media] received video frame: {}x{} pipeline={:?}",
-                    video_frame.width, video_frame.height, pipeline_id,
-                );
-                // Forward the frame to the webview provider via the provider message channel.
-                // The compositor stores it by VideoPaintId and uses it during the next
-                // composition pass.
-                debug!(
-                    "[media] forwarding frame to compositor: {}x{} paint={:?}",
-                    video_frame.width, video_frame.height, paint_id
-                );
-                if let Err(error) =
-                    self.webview_provider_sender
-                        .send(WebviewProviderMessage::VideoFrameReady {
-                            webview_id,
-                            paint_id,
-                            data: video_frame,
-                        })
-                {
-                    error!("[media] failed to enqueue video frame: {error}");
-                } else {
-                    debug!(
-                        "[media] frame enqueued, requesting redraw+render for webview {:?}",
-                        webview_id
-                    );
-                    // Trigger a redraw so the compositor picks up the new frame.
-                    let _ = self.host.request_redraw(webview_id);
-                    // Also trigger a rendering opportunity so the content process re-renders
-                    // and sends updated composition metadata (clip bounds) synchronized
-                    // with the video frame stream. Without this, the video frame is painted
-                    // using stale clip bounds when the page scrolls.
-                    let _ = self
-                        .command_sender
-                        .send(UserAgentCommand::RenderingOpportunityFor {
-                            traversable_id: webview_id.0,
-                        });
-                    // Push a sync so the embedder processes the message promptly.
-                    let _ = self.host.webview_provider_sync();
+                // Extract scene bytes from shared memory.
+                let scene_bytes = incoming
+                    .shmem_regions
+                    .get(scene_shmem_key)
+                    .map(|region| region.as_slice().to_vec())
+                    .unwrap_or_default();
+
+                // Extract font data from shared memory.
+                let mut font_data: std::collections::HashMap<usize, Vec<u8>> =
+                    std::collections::HashMap::new();
+                for font in font_registrations {
+                    if let Some(region) = incoming.shmem_regions.get(&font.data_shmem_key) {
+                        font_data.insert(font.data_shmem_key, region.as_slice().to_vec());
+                    }
+                }
+
+                // Store hit-testing info for ui event routing.
+                self.state
+                    .frame_hit_info
+                    .insert(*webview_id, frame_hit_info.clone());
+                // Store child frame -> webview mapping for iframe event routing.
+                self.state
+                    .child_frame_to_webview
+                    .insert(*webview_id, child_frame_to_webview.clone());
+
+                // Forward the scene to the embedder host with font data.
+                // The frame hit info stays in the user agent for UI event routing.
+                if let Err(error) = self.host.new_web_content_scene(
+                    *webview_id,
+                    scene_bytes,
+                    font_registrations.clone(),
+                    font_data,
+                ) {
+                    error!("[graphics] failed to forward composed scene: {error}");
+                }
+
+                // Publish child viewports so child traversables know their
+                // visible viewport dimensions (iframe size and position).
+                // Skip unchanged viewports to avoid render cascades:
+                // set_traversable_viewport → request_render_update → PaintFrame
+                // → Compose → ComposedSceneReady → handle_graphics_event → ...
+                for cv in child_viewports {
+                    let child_traversable_id = cv.child_webview_id.0;
+                    let width = (cv.root_clip_bounds[2] - cv.root_clip_bounds[0]) as u32;
+                    let height = (cv.root_clip_bounds[3] - cv.root_clip_bounds[1]) as u32;
+                    if let Some(&((_vw, _vh, scale, ref cs), _ox, _oy)) =
+                        self.state.traversable_viewports.get(&webview_id.0)
+                    {
+                        let viewport_scale = scale.max(1.0);
+                        let offset_x = (cv.root_clip_bounds[0] as f32) / viewport_scale;
+                        let offset_y = (cv.root_clip_bounds[1] as f32) / viewport_scale;
+                        let key = (width.max(1), height.max(1), offset_x, offset_y);
+                        let child_wv = ipc_messages::content::WebviewId(child_traversable_id);
+                        if self.state.published_child_viewports.get(&child_wv) == Some(&key) {
+                            continue;
+                        }
+                        self.state.published_child_viewports.insert(child_wv, key);
+                        self.handle_set_traversable_viewport(
+                            child_traversable_id,
+                            (width.max(1), height.max(1), scale, cs.clone()),
+                            offset_x,
+                            offset_y,
+                        );
+                    }
                 }
             }
-            MediaEvent::Eos { pipeline_id } => {
-                debug!("[media] pipeline {:?} reached end of stream", pipeline_id);
-            }
-            MediaEvent::Error {
-                pipeline_id,
-                message,
+            GraphicsEvent::SurfaceFrameReady {
+                webview_id,
+                pixels,
+                width,
+                height,
+                generation,
+                frame_hit_info,
+                child_viewports,
+                child_frame_to_webview,
             } => {
-                error!("[media] pipeline {:?} error: {}", pipeline_id, message);
+                debug!("[graphics] received surface frame for {:?} ({}x{}, {}B)", webview_id, width, height, pixels.len());
+                self.state
+                    .frame_hit_info
+                    .insert(*webview_id, frame_hit_info.clone());
+                self.state
+                    .child_frame_to_webview
+                    .insert(*webview_id, child_frame_to_webview.clone());
+                if let Err(e) = self.host.new_web_content_surface(
+                    *webview_id,
+                    pixels.clone(),
+                    *width,
+                    *height,
+                    *generation,
+                ) {
+                    error!("[graphics] forward surface: {e}");
+                }
+
+                // Publish child viewports so child traversables know their
+                // visible viewport dimensions (iframe size and position).
+                for cv in child_viewports {
+                    let child_traversable_id = cv.child_webview_id.0;
+                    let cw = (cv.root_clip_bounds[2] - cv.root_clip_bounds[0]) as u32;
+                    let ch = (cv.root_clip_bounds[3] - cv.root_clip_bounds[1]) as u32;
+                    if let Some(&((_vw, _vh, scale, ref cs), _ox, _oy)) =
+                        self.state.traversable_viewports.get(&webview_id.0)
+                    {
+                        let viewport_scale = scale.max(1.0);
+                        let offset_x = (cv.root_clip_bounds[0] as f32) / viewport_scale;
+                        let offset_y = (cv.root_clip_bounds[1] as f32) / viewport_scale;
+                        let key = (cw.max(1), ch.max(1), offset_x, offset_y);
+                        let child_wv = ipc_messages::content::WebviewId(child_traversable_id);
+                        if self.state.published_child_viewports.get(&child_wv) == Some(&key) {
+                            continue;
+                        }
+                        self.state.published_child_viewports.insert(child_wv, key);
+                        self.handle_set_traversable_viewport(
+                            child_traversable_id,
+                            (cw.max(1), ch.max(1), scale, cs.clone()),
+                            offset_x,
+                            offset_y,
+                        );
+                    }
+                }
             }
-            MediaEvent::DurationChanged {
-                pipeline_id,
-                duration_secs,
-            } => {
-                debug!(
-                    "[media] pipeline {:?} duration: {}s",
-                    pipeline_id, duration_secs
-                );
+            GraphicsEvent::ShutdownComplete => {
+                debug!("[graphics] graphics process shutdown complete");
             }
         }
     }
+}
+
+/// Extract pointer coordinates from a UI event, if applicable.
+fn pointer_coords(event: &blitz_traits::events::UiEvent) -> Option<(f64, f64)> {
+    match event {
+        blitz_traits::events::UiEvent::PointerMove(e)
+        | blitz_traits::events::UiEvent::PointerUp(e)
+        | blitz_traits::events::UiEvent::PointerDown(e) => {
+            Some((f64::from(e.coords.client_x), f64::from(e.coords.client_y)))
+        }
+        blitz_traits::events::UiEvent::Wheel(e) => {
+            Some((f64::from(e.coords.client_x), f64::from(e.coords.client_y)))
+        }
+        _ => None,
+    }
+}
+
+/// Translate event coordinates by an offset (for hit-tested child frames).
+/// Set event coordinates to a local frame position.
+/// The embedder sends coordinates in root-viewport space; this converts
+/// them to the target frame's local coordinate space by setting client
+/// and page coordinates to the given local (x, y).
+fn set_event_local_coords(
+    event: &blitz_traits::events::UiEvent,
+    local_x: f32,
+    local_y: f32,
+) -> blitz_traits::events::UiEvent {
+    let mut routed = event.clone();
+    match &mut routed {
+        blitz_traits::events::UiEvent::PointerMove(e)
+        | blitz_traits::events::UiEvent::PointerUp(e)
+        | blitz_traits::events::UiEvent::PointerDown(e) => {
+            e.coords.client_x = local_x;
+            e.coords.client_y = local_y;
+            e.coords.page_x = local_x;
+            e.coords.page_y = local_y;
+        }
+        blitz_traits::events::UiEvent::Wheel(e) => {
+            e.coords.client_x = local_x;
+            e.coords.client_y = local_y;
+            e.coords.page_x = local_x;
+            e.coords.page_y = local_y;
+        }
+        _ => {}
+    }
+    routed
 }

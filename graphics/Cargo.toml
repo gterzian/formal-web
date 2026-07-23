@@ -1,0 +1,40 @@
+[package]
+name = "graphics"
+version = "0.1.0"
+edition = "2024"
+publish = false
+autobins = false
+
+[features]
+default = []
+ipc-channel-backend = ["ipc/ipc-channel-backend"]
+
+[lib]
+path = "src/lib.rs"
+
+[[bin]]
+name = "formal-web-graphics"
+path = "src/bin/graphics_process.rs"
+
+[dependencies]
+anyrender = { version = "0.10", features = ["serde"] }
+anyrender_vello = "0.10.1"
+ipc = { path = "../ipc" }
+ipc_messages = { path = "../ipc_messages" }
+media = { path = "../media" }
+kurbo = "0.13"
+peniko = "0.6"
+serde = { version = "1", features = ["derive"] }
+log = "0.4"
+env_logger = "0.11"
+crossbeam-channel = "0.5"
+wgpu_context = "0.6.0"
+wgpu = "29"
+vello = "0.9"
+pollster = "0.4"
+
+[target.'cfg(target_os = "macos")'.dependencies]
+objc2 = "0.6"
+objc2-metal = "0.3"
+objc2-core-foundation = "0.3"
+objc2-io-surface = "0.3"

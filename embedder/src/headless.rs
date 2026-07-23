@@ -16,10 +16,11 @@ use blitz_traits::events::{
     MouseEventButtons, PointerCoords, PointerDetails, UiEvent,
 };
 use blitz_traits::shell::ColorScheme;
-use ipc_messages::content::WebviewId;
+use ipc_messages::content::{FontTransportReceiver, RecordedScene, WebviewId};
 use keyboard_types::Modifiers as KeyboardModifiers;
-use log::error;
+use log::{debug, error};
 use serde_json::Value;
+use std::collections::HashMap;
 use std::time::Duration;
 use webview::WebviewProvider;
 
@@ -43,6 +44,8 @@ pub(super) struct HeadlessEmbedderApp {
     pub(super) provider: Option<WebviewProvider>,
     pub(super) current_webview_id: Option<WebviewId>,
     pub(super) buttons: MouseEventButtons,
+    pub(super) composed_scenes: HashMap<WebviewId, RecordedScene>,
+    pub(super) scene_font_receiver: FontTransportReceiver,
 }
 
 impl Default for HeadlessEmbedderApp {
@@ -55,6 +58,8 @@ impl Default for HeadlessEmbedderApp {
             provider: None,
             current_webview_id: None,
             buttons: MouseEventButtons::None,
+            composed_scenes: HashMap::new(),
+            scene_font_receiver: FontTransportReceiver::default(),
         }
     }
 }
@@ -339,6 +344,37 @@ impl ApplicationHandler<FormalWebUserEvent> for HeadlessEmbedderApp {
             }
             FormalWebUserEvent::ClipboardWrite { text, reply } => {
                 let _ = reply.send(write_clipboard_text(text));
+            }
+            FormalWebUserEvent::NewWebContentScene {
+                webview_id,
+                scene_bytes,
+                font_registrations,
+                font_data,
+            } => {
+                // Register fonts from the graphics process.
+                self.scene_font_receiver
+                    .register_fonts(font_registrations, &font_data);
+                // Deserialize and store the composed scene.
+                match ipc_messages::content::deserialize_scene_from_slice(&scene_bytes) {
+                    Ok(scene) => {
+                        self.composed_scenes.insert(webview_id, scene);
+                    }
+                    Err(error) => {
+                        error!("[embedder] failed to deserialize composed scene: {error}");
+                    }
+                }
+            }
+            FormalWebUserEvent::NewWebContentSurface {
+                webview_id,
+                pixels: _pixels,
+                width: _width,
+                height: _height,
+                generation: _generation,
+            } => {
+                debug!(
+                    "[embedder] headless NewWebContentSurface {:?}",
+                    webview_id
+                );
             }
             FormalWebUserEvent::Exit => {
                 self.with_automation(|a, _| {

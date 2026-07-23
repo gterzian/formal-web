@@ -263,7 +263,10 @@ pub(crate) fn build_path_from_target_js_object(
         if let Some(element) = data.downcast_ref::<Element>() {
             Some((element.node.node_id, element.node.document.clone()))
         } else if let Some(html_element) = data.downcast_ref::<HTMLElement>() {
-            Some((html_element.element.node.node_id, html_element.element.node.document.clone()))
+            Some((
+                html_element.element.node.node_id,
+                html_element.element.node.document.clone(),
+            ))
         } else if let Some(node) = data.downcast_ref::<Node>() {
             Some((node.node_id, node.document.clone()))
         } else if let Some(document) = data.downcast_ref::<Document>() {
@@ -275,19 +278,30 @@ pub(crate) fn build_path_from_target_js_object(
 
     if let Some((node_id, document)) = node_info {
         if let Some(event_target) = event_target_from_js_object(ec, target_object) {
-            path.push(EventPathItem { invocation_target: event_target.clone(), shadow_adjusted_target: Some(event_target) });
+            path.push(EventPathItem {
+                invocation_target: event_target.clone(),
+                shadow_adjusted_target: Some(event_target),
+            });
         }
         let mut current_node_id = node_id;
         let mut visited = HashSet::new();
         visited.insert(node_id);
         loop {
-            let parent_id = { let doc = document.borrow(); doc.get_node(current_node_id).and_then(|n| n.parent) };
+            let parent_id = {
+                let doc = document.borrow();
+                doc.get_node(current_node_id).and_then(|n| n.parent)
+            };
             match parent_id {
                 Some(pid) if !visited.contains(&pid) => {
                     visited.insert(pid);
                     if let Ok(parent_object) = resolve_element_object(pid, ec) {
-                        if let Some(parent_event_target) = event_target_from_js_object(ec, &parent_object) {
-                            path.push(EventPathItem { invocation_target: parent_event_target, shadow_adjusted_target: None });
+                        if let Some(parent_event_target) =
+                            event_target_from_js_object(ec, &parent_object)
+                        {
+                            path.push(EventPathItem {
+                                invocation_target: parent_event_target,
+                                shadow_adjusted_target: None,
+                            });
                         }
                         current_node_id = pid;
                     } else {
@@ -299,7 +313,10 @@ pub(crate) fn build_path_from_target_js_object(
         }
     } else {
         if let Some(event_target) = event_target_from_js_object(ec, target_object) {
-            path.push(EventPathItem { invocation_target: event_target.clone(), shadow_adjusted_target: Some(event_target) });
+            path.push(EventPathItem {
+                invocation_target: event_target.clone(),
+                shadow_adjusted_target: Some(event_target),
+            });
         }
     }
     path

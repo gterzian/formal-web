@@ -29,6 +29,7 @@ blitz-traits = { workspace = true }
 clap = { version = "4.5", features = ["derive"] }
 cursor-icon = "1"
 html5ever = "0.37"
+ipc = { path = "../ipc" }
 ipc-channel = "0.21"
 ipc_messages = { path = "../ipc_messages" }
 keyboard-types = "0.7"
@@ -39,7 +40,14 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 verification = { path = "../verification" }
 winit = "0.30"
+wgpu = "29"
 uuid = { version = "1", features = ["v4"] }
 log = "0.4"
 env_logger = "0.11"
 webview = { path = "../webview", default-features = false }
+
+[target.'cfg(target_os = "macos")'.dependencies]
+objc2 = "0.6"
+objc2-metal = "0.3"
+objc2-core-foundation = "0.3"
+objc2-io-surface = "0.3"

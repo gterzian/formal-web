@@ -5,15 +5,13 @@ use blitz_traits::SmolStr;
 use blitz_traits::events::{BlitzKeyEvent, DomEvent, DomEventData, EventState, UiEvent};
 use ipc::IpcSender;
 use ipc_messages::content::{DocumentId, Event as ContentEvent, NavigableId};
+use js_engine::ExecutionContext;
 #[cfg(target_os = "macos")]
 use keyboard_types::{Key, Modifiers as KeyboardModifiers};
 use log::{error, trace};
-use js_engine::ExecutionContext;
 
 use crate::dom::event::{Event, EventTarget};
-use crate::dom::{
-    EventPathItem, UIEvent as JsUiEvent, dispatch_with_path,
-};
+use crate::dom::{EventPathItem, UIEvent as JsUiEvent, dispatch_with_path};
 use crate::html::{EnvironmentSettingsObject, Window};
 use crate::js::Types;
 use crate::webidl::bindings::create_interface_instance;
@@ -128,8 +126,16 @@ fn debug_blitz_node_label(document: &dyn BlitzDocument, node_id: usize) -> Optio
     }
     let element = node.element_data()?;
     let tag_name = element.name.local.as_ref();
-    let id = element.id.as_ref().map(|id| id.as_ref()).filter(|id| !id.is_empty());
-    let prefix = if node.is_anonymous() { "anonymous:" } else { "" };
+    let id = element
+        .id
+        .as_ref()
+        .map(|id| id.as_ref())
+        .filter(|id| !id.is_empty());
+    let prefix = if node.is_anonymous() {
+        "anonymous:"
+    } else {
+        ""
+    };
     Some(match id {
         Some(id) => format!("{prefix}{tag_name}#{id}"),
         None => format!("{prefix}{tag_name}"),
@@ -150,7 +156,10 @@ fn debug_scroll_state(document: &BaseDocument) -> String {
             }
         }
     });
-    format!("viewport=({:.1},{:.1}) html={html_scroll:?} body={body_scroll:?}", viewport.x, viewport.y)
+    format!(
+        "viewport=({:.1},{:.1}) html={html_scroll:?} body={body_scroll:?}",
+        viewport.x, viewport.y
+    )
 }
 
 fn localize_ui_event_for_document(
@@ -175,7 +184,10 @@ fn localize_ui_event_for_document(
             e.coords.page_x = e.coords.client_x + scroll_x;
             e.coords.page_y = e.coords.client_y + scroll_y;
         }
-        UiEvent::KeyUp(_) | UiEvent::KeyDown(_) | UiEvent::Ime(_) | UiEvent::AppleStandardKeybinding(_) => {}
+        UiEvent::KeyUp(_)
+        | UiEvent::KeyDown(_)
+        | UiEvent::Ime(_)
+        | UiEvent::AppleStandardKeybinding(_) => {}
     }
 }
 
@@ -188,14 +200,25 @@ fn build_event_path(
     let mut path = Vec::with_capacity(chain.len() + 2);
     for (index, node_id) in chain.iter().enumerate() {
         if let Ok(object) = crate::js::platform_objects::resolve_element_object(*node_id, ec) {
-            if let Some(event_target) = crate::js::downcast::event_target_from_js_object(ec, &object) {
-                path.push(EventPathItem { invocation_target: event_target.clone(), shadow_adjusted_target: (index == 0).then_some(event_target) });
+            if let Some(event_target) =
+                crate::js::downcast::event_target_from_js_object(ec, &object)
+            {
+                path.push(EventPathItem {
+                    invocation_target: event_target.clone(),
+                    shadow_adjusted_target: (index == 0).then_some(event_target),
+                });
             }
         }
     }
-    path.push(EventPathItem { invocation_target: document_event_target, shadow_adjusted_target: None });
+    path.push(EventPathItem {
+        invocation_target: document_event_target,
+        shadow_adjusted_target: None,
+    });
     if let Some(global_event_target) = global_event_target {
-        path.push(EventPathItem { invocation_target: global_event_target, shadow_adjusted_target: None });
+        path.push(EventPathItem {
+            invocation_target: global_event_target,
+            shadow_adjusted_target: None,
+        });
     }
     path
 }
@@ -219,17 +242,40 @@ impl<'a> BlitzJSEventHandler<'a> {
         _event_sender: &'a IpcSender<ContentEvent>,
         deferred_apple_keybinding: Rc<RefCell<DeferredAppleStandardKeybinding>>,
     ) -> Self {
-        Self { document_id, source_navigable_id, _document: document, settings, deferred_apple_keybinding }
+        Self {
+            document_id,
+            source_navigable_id,
+            _document: document,
+            settings,
+            deferred_apple_keybinding,
+        }
     }
 }
 
 impl EventHandler for BlitzJSEventHandler<'_> {
-    fn handle_event(&mut self, chain: &[usize], event: &mut DomEvent, doc: &mut dyn BlitzDocument, event_state: &mut EventState) {
+    fn handle_event(
+        &mut self,
+        chain: &[usize],
+        event: &mut DomEvent,
+        doc: &mut dyn BlitzDocument,
+        event_state: &mut EventState,
+    ) {
         if input_debug_enabled() {
             let target_label = debug_blitz_node_label(doc, event.target);
-            let chain_labels: Vec<_> = chain.iter().map(|n| debug_blitz_node_label(doc, *n).unwrap_or_else(|| format!("node#{n}"))).collect();
-            trace!("[input-debug][content-dom] document={} traversable={} type={} target_node={} target_label={:?} chain={:?} chain_labels={:?}",
-                self.document_id, self.source_navigable_id, event.name(), event.target, target_label, chain, chain_labels);
+            let chain_labels: Vec<_> = chain
+                .iter()
+                .map(|n| debug_blitz_node_label(doc, *n).unwrap_or_else(|| format!("node#{n}")))
+                .collect();
+            trace!(
+                "[input-debug][content-dom] document={} traversable={} type={} target_node={} target_label={:?} chain={:?} chain_labels={:?}",
+                self.document_id,
+                self.source_navigable_id,
+                event.name(),
+                event.target,
+                target_label,
+                chain,
+                chain_labels
+            );
         }
 
         let time_stamp = self.settings.current_time_millis();
@@ -255,17 +301,29 @@ impl EventHandler for BlitzJSEventHandler<'_> {
 
         let path = build_event_path(chain, doc_et, global_et, ec);
         if let Err(error) = dispatch_with_path(ec, &path, &domain_event) {
-            let error_msg = self.settings.ec().to_rust_string(error.clone()).unwrap_or_else(|_| format!("{error:?}"));
+            let error_msg = self
+                .settings
+                .ec()
+                .to_rust_string(error.clone())
+                .unwrap_or_else(|_| format!("{error:?}"));
             error!("failed to dispatch UI event through JavaScript listeners: {error_msg}");
             return;
         }
 
-        if let Some(ui_event) = ec.with_object_any(&event_object).and_then(|d| d.downcast_ref::<JsUiEvent>().cloned()) {
+        if let Some(ui_event) = ec
+            .with_object_any(&event_object)
+            .and_then(|d| d.downcast_ref::<JsUiEvent>().cloned())
+        {
             ui_event.apply_to_event_state(event_state);
         }
 
-        if let DomEventData::KeyDown(key_event) = &event.data && let Some(command) = apple_standard_keybinding_for_key_down(key_event) {
-            *self.deferred_apple_keybinding.borrow_mut() = DeferredAppleStandardKeybinding { command: Some(command), keydown_default_prevented: event_state.is_cancelled() };
+        if let DomEventData::KeyDown(key_event) = &event.data
+            && let Some(command) = apple_standard_keybinding_for_key_down(key_event)
+        {
+            *self.deferred_apple_keybinding.borrow_mut() = DeferredAppleStandardKeybinding {
+                command: Some(command),
+                keydown_default_prevented: event_state.is_cancelled(),
+            };
             event_state.prevent_default();
         }
 
@@ -289,24 +347,45 @@ pub(crate) fn dispatch_ui_event(
 ) -> Result<(), String> {
     let is_wheel = matches!(event, UiEvent::Wheel(_));
     if input_debug_enabled() {
-        trace!("[input-debug][content] document={} traversable={} event={}", document_id, source_navigable_id, ui_event_kind(&event));
+        trace!(
+            "[input-debug][content] document={} traversable={} event={}",
+            document_id,
+            source_navigable_id,
+            ui_event_kind(&event)
+        );
     }
     let mut event = event;
-    { let d = document.borrow(); localize_ui_event_for_document(&d, viewport_offset_x, viewport_offset_y, &mut event); }
+    {
+        let d = document.borrow();
+        localize_ui_event_for_document(&d, viewport_offset_x, viewport_offset_y, &mut event);
+    }
     let mut document = document;
     let deferred = Rc::new(RefCell::new(DeferredAppleStandardKeybinding::default()));
     let handler = BlitzJSEventHandler::new(
-        document_id, source_navigable_id, parent_navigable_id, top_level_navigable_id,
-        Rc::clone(&document), settings, event_sender, Rc::clone(&deferred),
+        document_id,
+        source_navigable_id,
+        parent_navigable_id,
+        top_level_navigable_id,
+        Rc::clone(&document),
+        settings,
+        event_sender,
+        Rc::clone(&deferred),
     );
     let mut driver = EventDriver::new(&mut document, handler);
     driver.handle_ui_event(event);
     let dak = *deferred.borrow();
-    if let Some(command) = dak.command && !dak.keydown_default_prevented {
+    if let Some(command) = dak.command
+        && !dak.keydown_default_prevented
+    {
         driver.handle_ui_event(UiEvent::AppleStandardKeybinding(SmolStr::new(command)));
     }
     if is_wheel && input_debug_enabled() {
-        trace!("[input-debug][scroll] document={} traversable={} {}", document_id, source_navigable_id, debug_scroll_state(&document.borrow()));
+        trace!(
+            "[input-debug][scroll] document={} traversable={} {}",
+            document_id,
+            source_navigable_id,
+            debug_scroll_state(&document.borrow())
+        );
     }
     Ok(())
 }
@@ -323,11 +402,17 @@ pub(crate) fn dispatch_trusted_click_event(
 ) -> Result<(), String> {
     let deferred = Rc::new(RefCell::new(DeferredAppleStandardKeybinding::default()));
     let handler = BlitzJSEventHandler::new(
-        document_id, source_navigable_id, parent_navigable_id, top_level_navigable_id,
-        document, settings, event_sender, deferred,
+        document_id,
+        source_navigable_id,
+        parent_navigable_id,
+        top_level_navigable_id,
+        document,
+        settings,
+        event_sender,
+        deferred,
     );
     let time_millis = handler.settings.current_time_millis();
-    let event = {
+    let event_domain = {
         let ec = handler.settings.ec();
         let event_object = create_interface_instance::<Types, Event>(
             Event::new("click".into(), true, true, true, true, time_millis),
@@ -346,12 +431,12 @@ pub(crate) fn dispatch_trusted_click_event(
         crate::js::platform_objects::build_path_from_target_js_object(&target, ec)
     };
     let ec = handler.settings.ec();
-    dispatch_with_path(ec, &path, &event)
-        .map_err(|error| format!("failed to dispatch click event: {error:?}"))?;
+    dispatch_with_path(ec, &path, &event_domain)
+        .map_err(|e| format!("failed to dispatch click event: {e:?}"))?;
     handler
         .settings
         .perform_a_microtask_checkpoint()
-        .map_err(|error| format!("microtask checkpoint after click: {error:?}"))
+        .map_err(|e| format!("microtask checkpoint after click: {e:?}"))
 }
 
 #[cfg(test)]

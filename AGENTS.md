@@ -169,7 +169,10 @@ shared dependency resolution and incremental compilation.
 
 - **Root binary** (`formal-web`): runs the embedder directly in-process, creating the window and event loop.
 - **Embedder crate** (`embedder`): a library used by the root binary that owns the winit event loop, window, chrome, and automation plumbing. A standalone `formal-web-embedder` binary is also produced for direct use.
-- **Helper processes** (`formal-web-content`, `formal-web-net`, `formal-web-media`): spawned by the embedder.
+- **Helper processes** (`formal-web-content`, `formal-web-net`, `formal-web-media`, `formal-web-graphics`): spawned by the embedder.
+  - `formal-web-graphics` owns per-webview compositors and video/audio playback (media backend).
+    It receives `PaintFrame` and `VideoFrame` payloads and sends back composed scenes with
+    `FrameHitInfo` for hit-testing.
 - **`js_engine` crate**: a generic JS engine trait and ECMA-262 abstract operations. Two backends: Boa (default, most operational) and JSC (macOS opt-in). WebAssembly is a separate feature (`wasm`). See `js_engine/README.md`.
 - **`js_engine_macros` crate**: proc-macro companion providing `#[gc_struct]` for GC-traced platform objects.
 
@@ -236,7 +239,7 @@ cargo build --release -p net     --bin formal-web-net
 cargo build --release -p embedder --bin formal-web-embedder
 ```
 
-### Media binary
+### Media / Graphics binary
 
 ```bash
 # macOS: AVFoundation (default) — no special flags needed
@@ -248,6 +251,9 @@ cargo build --release -p media --bin formal-web-media \
 
 # Linux: GStreamer (only backend) — no special flags needed
 cargo build --release -p media --bin formal-web-media
+
+# Graphics process (composition + media backend)
+cargo build --release -p graphics --bin formal-web-graphics
 ```
 
 ### External dependencies: blitz and anyrender

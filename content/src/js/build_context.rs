@@ -97,7 +97,8 @@ fn setup_realm(engine: &mut Engine, document: Rc<RefCell<BaseDocument>>) -> Resu
     let global_obj = engine.realm_global_object();
     engine.associate_existing_object(&global_obj, Box::new(window));
     // Set the EventTarget reflector for the Window.
-    let global_value = <crate::js::Types as js_engine::JsTypes>::value_from_object(global_obj.clone());
+    let global_value =
+        <crate::js::Types as js_engine::JsTypes>::value_from_object(global_obj.clone());
     crate::js::try_set_event_target_reflector(&global_value, engine);
 
     // Step 2: Store the global object in host_any.

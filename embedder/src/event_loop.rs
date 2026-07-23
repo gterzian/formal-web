@@ -82,6 +82,11 @@ impl Embedder for EventLoopEmbedder {
     }
 
     fn new_webview(&self, webview_id: WebviewId, target_name: String) -> Result<(), String> {
+        log::debug!(
+            "[embedder] Embedder::new_webview webview={:?} target={}",
+            webview_id,
+            target_name
+        );
         self.dispatcher
             .send(FormalWebUserEvent::NewWebview(webview_id, target_name))
     }
@@ -121,10 +126,57 @@ impl Embedder for EventLoopEmbedder {
     fn clipboard_set_text(&self, text: String, timeout: Duration) -> Result<(), String> {
         clipboard_set_text(text, timeout)
     }
+
+    fn new_web_content_scene(
+        &self,
+        webview_id: WebviewId,
+        scene_bytes: Vec<u8>,
+        font_registrations: Vec<ipc_messages::content::RegisteredFont>,
+        font_data: std::collections::HashMap<usize, Vec<u8>>,
+    ) -> Result<(), String> {
+        self.dispatcher
+            .send(FormalWebUserEvent::NewWebContentScene {
+                webview_id,
+                scene_bytes,
+                font_registrations,
+                font_data,
+            })
+    }
+
+    fn new_web_content_surface(
+        &self,
+        webview_id: WebviewId,
+        pixels: Vec<u8>,
+        width: u32,
+        height: u32,
+        generation: u64,
+    ) -> Result<(), String> {
+        self.dispatcher
+            .send(FormalWebUserEvent::NewWebContentSurface {
+                webview_id,
+                pixels,
+                width,
+                height,
+                generation,
+            })
+    }
 }
 
 pub enum FormalWebUserEvent {
     RequestRedraw(WebviewId),
+    NewWebContentScene {
+        webview_id: WebviewId,
+        scene_bytes: Vec<u8>,
+        font_registrations: Vec<ipc_messages::content::RegisteredFont>,
+        font_data: std::collections::HashMap<usize, Vec<u8>>,
+    },
+    NewWebContentSurface {
+        webview_id: WebviewId,
+        pixels: Vec<u8>,
+        width: u32,
+        height: u32,
+        generation: u64,
+    },
     NavigationRequested {
         webview_id: WebviewId,
         destination_url: String,
