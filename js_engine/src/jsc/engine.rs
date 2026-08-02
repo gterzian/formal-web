@@ -483,6 +483,9 @@ extern "C" fn job_call_as_function(
         if let Some(ptr) = engine_ptr {
             let engine = unsafe { &mut *ptr };
             if let Some(job) = unsafe { (*data_ptr).job.take() } {
+                if std::env::var_os("FORMAL_WEB_DEBUG_STREAMS").is_some() {
+                    log::debug!("[stream-debug][jsc] job_call_as_function: running job");
+                }
                 job(engine);
             }
         } else {
@@ -1635,6 +1638,9 @@ impl JscEngine {
     /// a JS call is active (depth ≥ 1) are interleaved with JSC's own
     /// microtask queue in FIFO order.
     pub(crate) fn enqueue_js_microtask(&mut self, job: Box<dyn FnOnce(&mut JscEngine)>) {
+        if std::env::var_os("FORMAL_WEB_DEBUG_STREAMS").is_some() {
+            log::debug!("[stream-debug][jsc] enqueue_js_microtask: queueing job");
+        }
         // Store the job as private data on a JOB_CLASS function object and
         // queue the function as a microtask via a resolved promise's
         // `%Promise.prototype.then%` reaction.  JSC executes queued
@@ -5536,7 +5542,8 @@ impl EcmascriptHost<JscTypes> for JscEngine {
         Ok(())
     }
     fn report_exception(&mut self, error: JscValue) {
-        log::error!("uncaught callback error: {}", error.display());
+        let backtrace = std::backtrace::Backtrace::force_capture();
+        log::error!("uncaught callback error: {}\n{backtrace}", error.display());
     }
 
     fn gc(&mut self) {

@@ -158,11 +158,7 @@ Two additions make the records reliable:
 
 ## Open issues
 
-- **Piping test infra flakiness** — `pipe-through.any.js` (and previously
-  `close-propagation-backward`) intermittently report `ERROR`/`TIMEOUT`
-  in full-suite runs while passing standalone.  Also affects Boa.  The
-  earlier `SIGSEGV` in `run_window_timer` (dangling timer callback) is
-  fixed by the timer GC rooting below.
+- **Piping test infra flakiness** — `pipe-through.any.js`, `error-propagation-backward.any.js`, and `error-propagation-forward.any.js` intermittently report `TIMEOUT`/`ERROR`/`FAIL`, plus an occasional content-process `SIGSEGV` in `abort.any.js`.  See the session investigation log below.  The `main` branch (with the plain Rust job queue, before the microtask-job redesign and the ObjC managed-reference rooting) does **not** reproduce this, so the regression is from the recent JSC commits (`d88c9f36e`, `0f171bf24`, `57e774a74`).  The earlier `SIGSEGV` in `run_window_timer` (dangling timer callback) is fixed by the timer GC rooting below, but the piping flakiness remains.
 - **`uncaught callback error: undefined` during gc-protection** — the
   first `setTimeout(0)` callback reports this error (logged, not thrown).
 - **Microtask drain during nested C API calls** — JSC only drains its
@@ -270,3 +266,75 @@ end of session).
 structured-clone, `patched-global` DataView-vs-Uint8Array,
 `respond-after-enqueue` zero-fill); the pipe-through full-suite TIMEOUT;
 `queueMicrotask` availability beyond the page global.
+
+### 2026-08-03 — piping test flakiness (pipe-through TIMEOUT) on JSC
+
+**Files changed:** `content/src/streams/readablestream.rs`
+(env-gated `[stream-debug][pipe]` logging: `log_pipe_debug` calls in
+`shutdown`, `finalize`, `write_chunk`, `perform_action`,
+`prune_settled_pending_writes`, `pipe_to_on_promise_settled`),
+`js_engine/src/jsc/engine.rs` (`[stream-debug][jsc]` logs in
+`enqueue_js_microtask`/`job_call_as_function`; backtrace in
+`report_exception`), `tests/formal/tests/pipe-repro.html` (repro page;
+passes 20/20 standalone, removed after session).  All logging is gated
+behind `FORMAL_WEB_DEBUG_STREAMS=1`.
+**Reproduction:** `formal-web-wpt streams/piping` (13 tests) flakes on
+JSC roughly every other run.  Failure modes seen across ~50 runs:
+`pipe-through.any.js` (whole-file TIMEOUT, or subtest TIMEOUT
+"Piping through a transform errored on the writable end..." with the
+rest NOTRUN), `error-propagation-backward.any.js` (whole-file TIMEOUT),
+`error-propagation-forward.any.js` (FAIL "shutdown must not occur until
+the final write completes; preventAbort = true" — the pipe finalized
+early), and one content-process `SIGSEGV` in `abort.any.js` (during job
+execution).  Full-suite runs flake the same way (`wpt_full_2/3`).  The
+failing subtest passes standalone (20/20).
+**What was confirmed (instrumentation):**
+- The pipe state machine **completes correctly** in the TIMEOUT cases:
+  `finalize` is reached and the pipe promise settles with the right
+error.  The hang is in the JS-level promise/timer machinery, not the
+pipe: the test's `flushAsyncEvents` (4 chained `setTimeout(0)` + `.then`)
+stalls while the testharness 10s timeout timer still fires — so plain
+timer callbacks work but promise reactions stop being processed.
+- Early-finalize evidence: `shutdown: should_wait=false
+pending_writes=1` occurs in `error-propagation-backward` (spec-valid
+when the destination is erroring/errored — the spec only waits for
+pending writes while dest is "writable").  For the failing
+`error-propagation-forward` test the destination stays writable, yet no
+`should_wait=false pending_writes>=1` appears in that page's log — the
+pending write must have been pruned from `pending_writes` (i.e. JSC
+`promise_state` reported a genuinely-pending write as settled) before
+shutdown ran.
+- `TypeError: f is not a function. (In 'f()', 'f' is an instance of
+FormalWebPlain)` — a JSC function object was GC-collected and its memory
+recycled while still referenced (queued microtask / reaction record),
+consistent with engine-created function objects (JOB_CLASS job fns from
+the `Promise.resolve().then(jobFn)` microtask redesign; settlement-
+reaction wrappers from `wrap_settlement_reaction`) not surviving GC.
+- "uncaught callback error: error1: error1!" — backtrace (user-run +
+instrumentation): `report_exception` from `content::dom::dispatch::invoke
+← dispatch_event ← fire_event ← continue_document_load`, i.e. during the
+window "load" event.  No test/harness/inject code registers a "load"
+listener, and the listener type filter is correct — which listener
+throws error1 is unresolved.  This error is a symptom, not the cause
+(failing runs occur without it).
+**What was ruled out:**
+- Boa reproduction: not achieved anywhere.  Current-repo Boa build: 8
+piping + 3 full-suite runs clean.  `main` branch (`../formal-web`,
+pace_frame_rate, Boa): 10 piping + 6 full-suite runs + user's full-suite
+run clean.  The "also affects Boa" note in the earlier flakiness entry
+could not be confirmed.
+- Pre-commit regression point: the full pre-commit workspace build (at
+`8f7b04ee4`, before `d88c9f36e`/`0f171bf24`/`57e774a74`) was never
+completed, so the regression point is inferred from `main` being clean,
+not directly tested.
+- `__fw_ps_*` global clobbering in the eval-based `promise_state`: the
+pipe paths run at nesting depth >= 1 where the eval-drain is a no-op, so
+the re-entrancy-clobbering scenario was not confirmed.
+- The `write_in_progress`/pending-writes wait logic (`0f171bf24`): the
+`should_wait=false` + pending-write case matches the spec when dest is
+erroring; not itself the bug.
+**Not investigated:** which listener throws error1 during the "load"
+event; the exact microtask-stall mechanism (GC of JOB_CLASS/reaction
+function objects is the leading hypothesis, unverified); whether the
+flake predates `d88c9f36e` on JSC (needs a full pre-commit workspace
+build).
