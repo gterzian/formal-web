@@ -136,6 +136,11 @@ unsafe extern "C" {
         description: *mut JSStringRef,
     ) -> *mut JSValueRef;
     pub fn JSValueIsDate(ctx: *mut JSContextRef, value: *mut JSValueRef) -> bool;
+    pub fn JSValueToObject(
+        ctx: *mut JSContextRef,
+        value: *mut JSValueRef,
+        exception: *mut *mut JSValueRef,
+    ) -> *mut JSObjectRef;
 }
 
 // ── Object functions ──────────────────────────────────────────────────────
@@ -181,6 +186,32 @@ unsafe extern "C" {
         ctx: *mut JSContextRef,
         object: *mut JSObjectRef,
         propertyName: *mut JSStringRef,
+        exception: *mut *mut JSValueRef,
+    ) -> bool;
+    pub fn JSObjectHasPropertyForKey(
+        ctx: *mut JSContextRef,
+        object: *mut JSObjectRef,
+        propertyKey: *mut JSValueRef,
+        exception: *mut *mut JSValueRef,
+    ) -> bool;
+    pub fn JSObjectGetPropertyForKey(
+        ctx: *mut JSContextRef,
+        object: *mut JSObjectRef,
+        propertyKey: *mut JSValueRef,
+        exception: *mut *mut JSValueRef,
+    ) -> *mut JSValueRef;
+    pub fn JSObjectSetPropertyForKey(
+        ctx: *mut JSContextRef,
+        object: *mut JSObjectRef,
+        propertyKey: *mut JSValueRef,
+        value: *mut JSValueRef,
+        attributes: JSPropertyAttributes,
+        exception: *mut *mut JSValueRef,
+    );
+    pub fn JSObjectDeletePropertyForKey(
+        ctx: *mut JSContextRef,
+        object: *mut JSObjectRef,
+        propertyKey: *mut JSValueRef,
         exception: *mut *mut JSValueRef,
     ) -> bool;
     pub fn JSObjectGetPrototype(

@@ -315,6 +315,10 @@ struct Intrinsics {
     bigint_fn: Option<JscObject>,
     promise_resolve_fn: Option<JscObject>,
     promise_ctor: Option<JscObject>,
+    // %Promise.prototype.then%, captured at engine construction before user
+    // code can patch Promise.prototype.then.  `perform_promise_then` uses
+    // it so internal promise reactions never observe patched `then`.
+    promise_prototype_then: Option<JscObject>,
     dataview_ctor: Option<JscObject>,
     proxy_ctor: Option<JscObject>,
     shared_array_buffer_ctor: Option<JscObject>,
@@ -328,6 +332,11 @@ struct Intrinsics {
     type_error_ctor: Option<JscObject>,
     range_error_ctor: Option<JscObject>,
     syntax_error_ctor: Option<JscObject>,
+    // %AsyncIteratorPrototype% (computed via eval; JSC exposes no direct
+    // C API for it, but it is reachable through the async generator
+    // prototype chain: Object.getPrototypeOf(Object.getPrototypeOf(
+    // async function* () {}).prototype)).
+    async_iterator_prototype: Option<JscObject>,
     // Integrity operations
     object_freeze: Option<JscObject>,
     object_seal: Option<JscObject>,
@@ -379,6 +388,49 @@ macro_rules! cached_intrinsic_ctor {
     }};
 }
 
+/// Resolve JSC's %AsyncIteratorPrototype% through the async generator
+/// prototype chain: `Object.getPrototypeOf(Object.getPrototypeOf(
+/// async function* () {}).prototype)`.  JSC exposes no direct C API for
+/// this intrinsic; the eval is cached in `Intrinsics`.  Falls back to the
+/// global object if the eval fails.
+fn resolve_async_iterator_prototype(context: &JscContext) -> JscObject {
+    let script = JscString::from_rust(
+        "Object.getPrototypeOf(Object.getPrototypeOf(async function* () {}).prototype)",
+    );
+    let mut exception: *mut JSValueRef = std::ptr::null_mut();
+    let result = unsafe {
+        JSEvaluateScript(
+            context.as_context_ref(),
+            script.raw,
+            std::ptr::null_mut(),
+            std::ptr::null_mut(),
+            1,
+            &mut exception,
+        )
+    };
+    if !exception.is_null() || result.is_null() {
+        return context.global_object();
+    }
+    JscObject {
+        raw: result as *mut JSObjectRef,
+        ctx: context.as_context_ref(),
+    }
+}
+
+/// Resolve the intrinsic %Promise.prototype.then% before any user code can
+/// patch `Promise.prototype.then`.  `perform_promise_then` calls this
+/// function so internal promise reactions never observe a patched `then`.
+fn resolve_promise_prototype_then(context: &JscContext) -> Option<JscObject> {
+    let raw = resolve_global_path(context.as_context_ref(), &["Promise", "prototype", "then"]);
+    if raw.is_null() {
+        return None;
+    }
+    Some(JscObject {
+        raw,
+        ctx: context.as_context_ref(),
+    })
+}
+
 /// JSClass for plain objects (no callbacks).  Uses JSObjectMake to
 /// avoid eval_script_raw (which causes nested JSEvaluateScript crashes).
 static PLAIN_OBJECT_CLASS: LazyLock<JscClass> = LazyLock::new(|| {
@@ -398,6 +450,80 @@ static PLAIN_OBJECT_CLASS: LazyLock<JscClass> = LazyLock::new(|| {
             deleteProperty: None,
             getPropertyNames: None,
             callAsFunction: None,
+            callAsConstructor: None,
+            hasInstance: None,
+            convertToType: None,
+        })
+    })
+});
+
+/// Private data for `JOB_CLASS` function objects: the Rust job to run when
+/// the queued microtask fires.
+struct JobData {
+    job: Option<Box<dyn FnOnce(&mut JscEngine)>>,
+}
+
+/// `callAsFunction` for `JOB_CLASS` objects.  Runs the stored job when the
+/// microtask queued via `enqueue_job_*` fires.
+extern "C" fn job_call_as_function(
+    ctx: *mut JSContextRef,
+    function: *mut JSObjectRef,
+    _this_object: *mut JSObjectRef,
+    _argument_count: usize,
+    _arguments: *const *mut JSValueRef,
+    _exception: *mut *mut JSValueRef,
+) -> *mut JSValueRef {
+    // Copy the engine pointer out of the thread-local first so the
+    // RefCell borrow is released before the job runs; jobs call back into
+    // the engine (e.g. `EngineGuard::new` in `perform_promise_then`),
+    // which would otherwise re-borrow the already-borrowed cell.
+    let engine_ptr: Option<*mut JscEngine> = CURRENT_ENGINE.with(|current| *current.borrow());
+    let data_ptr = unsafe { JSObjectGetPrivate(function) } as *mut JobData;
+    if !data_ptr.is_null() {
+        if let Some(ptr) = engine_ptr {
+            let engine = unsafe { &mut *ptr };
+            if let Some(job) = unsafe { (*data_ptr).job.take() } {
+                job(engine);
+            }
+        } else {
+            log::error!("job_call_as_function: CURRENT_ENGINE not set");
+        }
+    }
+    unsafe { JSValueMakeUndefined(ctx) }
+}
+
+/// `finalize` for `JOB_CLASS` objects: drops the stored job (its captured
+/// domain state) if the microtask never ran.
+extern "C" fn job_finalize(object: *mut JSObjectRef) {
+    unsafe {
+        let data_ptr = JSObjectGetPrivate(object) as *mut JobData;
+        if !data_ptr.is_null() {
+            drop(Box::from_raw(data_ptr));
+        }
+    }
+}
+
+/// JSClass for the microtask job function objects created by
+/// `enqueue_job_*`.  The job closure is stored as private data; the
+/// function's `callAsFunction` runs it when JSC executes the queued
+/// microtask.
+static JOB_CLASS: LazyLock<JscClass> = LazyLock::new(|| {
+    JscClass(unsafe {
+        JSClassCreate(&JSClassDefinition {
+            version: 0,
+            attributes: kJSClassAttributeNone,
+            className: b"FormalWebJob\0".as_ptr() as *const c_char,
+            parentClass: std::ptr::null_mut(),
+            staticValues: std::ptr::null(),
+            staticFunctions: std::ptr::null(),
+            initialize: None,
+            finalize: Some(job_finalize),
+            hasProperty: None,
+            getProperty: None,
+            setProperty: None,
+            deleteProperty: None,
+            getPropertyNames: None,
+            callAsFunction: Some(job_call_as_function),
             callAsConstructor: None,
             hasInstance: None,
             convertToType: None,
@@ -1456,7 +1582,14 @@ pub struct JscEngine {
     /// references (JSManagedValue + addManagedReference); the references
     /// are removed when the engine is dropped.
     managed_objects: Vec<JscManagedValue>,
-    queued_jobs: Vec<Box<dyn FnOnce(&mut JscEngine)>>,
+    /// Microtask jobs enqueued while no JS call is active (nesting depth
+    /// 0).  JSC drains microtasks as soon as the outermost C API call
+    /// returns, so a depth-0 enqueue would run the job synchronously;
+    /// deferring here lets `run_jobs`/`perform_a_microtask_checkpoint`
+    /// flush them at the next checkpoint instead.  Jobs enqueued while a
+    /// JS call is active go straight into JSC's microtask queue via
+    /// `enqueue_js_microtask`.
+    pending_jobs: Vec<Box<dyn FnOnce(&mut JscEngine)>>,
     /// Cached `Function.prototype.call` for correct this-binding when
     /// calling JS functions with non-object `this` values.
     fn_call: Option<JscObject>,
@@ -1479,15 +1612,15 @@ pub struct JscEngine {
 }
 
 /// Drop `host_data` (which contains `GcRootHandle` unroot closures) and
-/// `queued_jobs` before `context` (which releases `JSGlobalContextRef`),
+/// `pending_jobs` before `context` (which releases `JSGlobalContextRef`),
 /// ensuring cleanup closures can still access the JS context.
 impl Drop for JscEngine {
     fn drop(&mut self) {
-        // Drop host_data and queued_jobs first, before context is dropped.
+        // Drop host_data and pending_jobs first, before context is dropped.
         // Rust drops fields in declaration order; by taking these early we
         // ensure unroot actions run while the JSGlobalContextRef is still valid.
         self.host_data.clear();
-        self.queued_jobs.clear();
+        self.pending_jobs.clear();
         // Remove the managed references created via create_object_with_any
         // (each drop removes its addManagedReference edge) while the
         // context is still valid.
@@ -1496,18 +1629,81 @@ impl Drop for JscEngine {
 }
 
 impl JscEngine {
+    /// Queue a job for execution as a JSC microtask.  Called from the
+    /// `ExecutionContext::enqueue_job` / `enqueue_job_with_realm`
+    /// implementations; kept as an inherent method so jobs enqueued while
+    /// a JS call is active (depth ≥ 1) are interleaved with JSC's own
+    /// microtask queue in FIFO order.
+    pub(crate) fn enqueue_js_microtask(&mut self, job: Box<dyn FnOnce(&mut JscEngine)>) {
+        // Store the job as private data on a JOB_CLASS function object and
+        // queue the function as a microtask via a resolved promise's
+        // `%Promise.prototype.then%` reaction.  JSC executes queued
+        // microtasks (including this reaction) at its next microtask
+        // drain, interleaved correctly with all other microtasks.
+        let ctx = self.ctx_ptr();
+        let data = Box::new(JobData { job: Some(job) });
+        let job_fn = unsafe {
+            JSObjectMake(
+                ctx,
+                JOB_CLASS.0,
+                Box::into_raw(data) as *mut std::ffi::c_void,
+            )
+        };
+        if job_fn.is_null() {
+            log::error!("enqueue_js_microtask: could not create the job function");
+            return;
+        }
+
+        // %Promise%.resolve(undefined)
+        let realm = self.current_realm();
+        let constructor = self.realm_intrinsics(&realm).promise;
+        let undefined = self.value_undefined();
+        let resolved = match self.promise_resolve(constructor, undefined) {
+            Ok(promise) => promise,
+            Err(error) => {
+                log::error!("enqueue_js_microtask: Promise.resolve failed: {error:?}");
+                return;
+            }
+        };
+
+        // %Promise.prototype.then%(resolvedPromise, jobFn)
+        let Some(then_fn) = self.intrinsics.promise_prototype_then else {
+            log::error!("enqueue_js_microtask: %Promise.prototype.then% not resolved");
+            return;
+        };
+        let undefined = unsafe { JSValueMakeUndefined(ctx) };
+        let args = [job_fn as *mut JSValueRef, undefined];
+        let mut exc: *mut JSValueRef = std::ptr::null_mut();
+        unsafe {
+            JSObjectCallAsFunction(
+                ctx,
+                then_fn.raw,
+                resolved.raw,
+                args.len(),
+                args.as_ptr(),
+                &mut exc,
+            );
+        }
+        if !exc.is_null() {
+            log::error!("enqueue_js_microtask: %Promise.prototype.then% raised an exception");
+        }
+    }
+
     pub fn new() -> Self {
         let context = JscContext::new();
         let realm_global = context.global_object();
+        let mut intrinsics = Intrinsics::default();
+        intrinsics.async_iterator_prototype = Some(resolve_async_iterator_prototype(&context));
+        intrinsics.promise_prototype_then = resolve_promise_prototype_then(&context);
         Self {
             context,
             realm_global,
             host_data: HashMap::new(),
             next_root_id: 0,
             managed_objects: Vec::new(),
-            queued_jobs: Vec::new(),
+            pending_jobs: Vec::new(),
             fn_call: None,
-            intrinsics: Intrinsics::default(),
+            intrinsics,
             settled_promises: HashMap::new(),
             promise_resolvers: HashMap::new(),
         }
@@ -1533,15 +1729,17 @@ impl JscEngine {
             raw: raw_obj,
             ctx: ctx_ptr,
         };
+        let mut intrinsics = Intrinsics::default();
+        intrinsics.async_iterator_prototype = Some(resolve_async_iterator_prototype(&self.context));
         Self {
             context: self.context.clone(),
             realm_global,
             host_data: HashMap::new(),
             next_root_id: 0,
             managed_objects: Vec::new(),
-            queued_jobs: Vec::new(),
+            pending_jobs: Vec::new(),
             fn_call: None,
-            intrinsics: Intrinsics::default(),
+            intrinsics,
             settled_promises: HashMap::new(),
             promise_resolvers: HashMap::new(),
         }
@@ -1557,15 +1755,18 @@ impl JscEngine {
             raw: raw_obj,
             ctx: ctx_ptr,
         };
+        let mut intrinsics = Intrinsics::default();
+        intrinsics.async_iterator_prototype = Some(resolve_async_iterator_prototype(&context));
+        intrinsics.promise_prototype_then = resolve_promise_prototype_then(&context);
         Self {
             context,
             realm_global,
             host_data: HashMap::new(),
             next_root_id: 0,
             managed_objects: Vec::new(),
-            queued_jobs: Vec::new(),
+            pending_jobs: Vec::new(),
             fn_call: None,
-            intrinsics: Intrinsics::default(),
+            intrinsics,
             settled_promises: HashMap::new(),
             promise_resolvers: HashMap::new(),
         }
@@ -1641,13 +1842,6 @@ impl JscEngine {
         JscValue {
             raw: unsafe { JSValueMakeBoolean(ctx_ptr, b) },
             ctx: ctx_ptr,
-        }
-    }
-
-    fn property_key_to_jsstring(&self, key: &JscPropertyKey) -> Option<JscString> {
-        match key {
-            JscPropertyKey::String(s) => Some(s.clone()),
-            JscPropertyKey::Symbol(_) => None,
         }
     }
 
@@ -2351,10 +2545,25 @@ impl ExecutionContext<JscTypes> for JscEngine {
                 // <https://tc39.es/ecma262/#sec-toobject>
                 Err(self.new_type_error("Cannot convert undefined or null to object"))
             }
-            _ => Ok(JscObject {
-                raw: value.raw as *mut JSObjectRef,
-                ctx: self.ctx_ptr(),
-            }),
+            _ => {
+                // <https://tc39.es/ecma262/#sec-toobject>
+                // Box the primitive (string, number, boolean, symbol, bigint)
+                // into its wrapper object.
+                let mut exception: *mut JSValueRef = std::ptr::null_mut();
+                let raw = unsafe {
+                    JSValueToObject(self.context.as_context_ref(), value.raw, &mut exception)
+                };
+                if !exception.is_null() {
+                    return Err(JscValue {
+                        raw: exception,
+                        ctx: self.ctx_ptr(),
+                    });
+                }
+                Ok(JscObject {
+                    raw,
+                    ctx: self.ctx_ptr(),
+                })
+            }
         }
     }
     fn to_property_key(&mut self, value: JscValue) -> Completion<JscPropertyKey, JscTypes> {
@@ -2599,57 +2808,24 @@ impl ExecutionContext<JscTypes> for JscEngine {
                 })
             }
             JscPropertyKey::Symbol(sym) => {
-                // JSC's C API `JSObjectGetProperty` only takes a JSStringRef,
-                // not a symbol.  Fall back to eval: `obj[sym]`.
-                let global = self.context.global_object();
-                let ctx_ptr = self.ctx_ptr();
-                let obj_key = JscString::from_rust("__fw_get_obj");
-                let sym_key = JscString::from_rust("__fw_get_sym");
-                let mut exc: *mut JSValueRef = std::ptr::null_mut();
-                unsafe {
-                    JSObjectSetProperty(
-                        ctx_ptr,
-                        global.raw,
-                        obj_key.raw,
-                        object.as_value_ref(),
-                        kJSPropertyAttributeNone,
-                        &mut exc,
-                    );
-                    if exc.is_null() {
-                        JSObjectSetProperty(
-                            ctx_ptr,
-                            global.raw,
-                            sym_key.raw,
-                            sym.value.raw,
-                            kJSPropertyAttributeNone,
-                            &mut exc,
-                        );
-                    }
-                }
-                if !exc.is_null() {
-                    unsafe {
-                        JSObjectDeleteProperty(ctx_ptr, global.raw, obj_key.raw, &mut exc);
-                    }
-                    return Err(JscValue {
-                        raw: exc,
-                        ctx: ctx_ptr,
-                    });
-                }
-                let (result, exception) = self.eval_script_raw("__fw_get_obj[__fw_get_sym]");
-                // Cleanup temporary globals.
-                unsafe {
-                    JSObjectDeleteProperty(ctx_ptr, global.raw, obj_key.raw, &mut exc);
-                    JSObjectDeleteProperty(ctx_ptr, global.raw, sym_key.raw, &mut exc);
-                }
+                let mut exception: *mut JSValueRef = std::ptr::null_mut();
+                let result = unsafe {
+                    JSObjectGetPropertyForKey(
+                        self.context.as_context_ref(),
+                        object.raw,
+                        sym.value.raw,
+                        &mut exception,
+                    )
+                };
                 if !exception.is_null() {
                     return Err(JscValue {
                         raw: exception,
-                        ctx: ctx_ptr,
+                        ctx: self.ctx_ptr(),
                     });
                 }
                 Ok(JscValue {
                     raw: result,
-                    ctx: ctx_ptr,
+                    ctx: self.ctx_ptr(),
                 })
             }
         }
@@ -2673,19 +2849,26 @@ impl ExecutionContext<JscTypes> for JscEngine {
         _throw: bool,
     ) -> Completion<(), JscTypes> {
         let _guard = EngineGuard::new(self as *mut JscEngine);
-        let Some(prop_str) = self.property_key_to_jsstring(&property_key) else {
-            return Ok(());
-        };
         let mut exception: *mut JSValueRef = std::ptr::null_mut();
         unsafe {
-            JSObjectSetProperty(
-                self.context.as_context_ref(),
-                object.raw,
-                prop_str.raw,
-                value.raw,
-                kJSPropertyAttributeNone,
-                &mut exception,
-            )
+            match &property_key {
+                JscPropertyKey::String(prop_str) => JSObjectSetProperty(
+                    self.context.as_context_ref(),
+                    object.raw,
+                    prop_str.raw,
+                    value.raw,
+                    kJSPropertyAttributeNone,
+                    &mut exception,
+                ),
+                JscPropertyKey::Symbol(sym) => JSObjectSetPropertyForKey(
+                    self.context.as_context_ref(),
+                    object.raw,
+                    sym.value.raw,
+                    value.raw,
+                    kJSPropertyAttributeNone,
+                    &mut exception,
+                ),
+            }
         };
         if !exception.is_null() {
             return Err(JscValue {
@@ -2711,12 +2894,10 @@ impl ExecutionContext<JscTypes> for JscEngine {
         descriptor: PropertyDescriptor<JscTypes>,
     ) -> Completion<(), JscTypes> {
         let _guard = EngineGuard::new(self as *mut JscEngine);
-        let Some(prop_str) = self.property_key_to_jsstring(&property_key) else {
-            return Ok(());
-        };
 
         // Build a descriptor object natively (no eval, no temp globals)
-        // then call cached Object.defineProperty.
+        // then call cached Object.defineProperty.  The key is passed as a
+        // value so symbol keys (e.g. @@asyncIterator) work too.
         let define_prop =
             cached_intrinsic!(self, object_define_property, ["Object", "defineProperty"]);
         let ctx = self.ctx_ptr();
@@ -2771,8 +2952,8 @@ impl ExecutionContext<JscTypes> for JscEngine {
             return Err(JscValue { raw: exc, ctx });
         }
 
-        let name_val = unsafe { JSValueMakeString(ctx, prop_str.raw) };
-        let args = [object.as_value_ref(), name_val, desc_obj.as_value_ref()];
+        let name_val = self.property_key_to_value(&property_key);
+        let args = [object.as_value_ref(), name_val.raw, desc_obj.as_value_ref()];
         let undef = unsafe { JSValueMakeUndefined(ctx) };
         let mut call_exc: *mut JSValueRef = std::ptr::null_mut();
         unsafe {
@@ -2893,17 +3074,22 @@ impl ExecutionContext<JscTypes> for JscEngine {
         object: JscObject,
         property_key: JscPropertyKey,
     ) -> Completion<(), JscTypes> {
-        let Some(prop_str) = self.property_key_to_jsstring(&property_key) else {
-            return Ok(());
-        };
         let mut exception: *mut JSValueRef = std::ptr::null_mut();
         unsafe {
-            JSObjectDeleteProperty(
-                self.context.as_context_ref(),
-                object.raw,
-                prop_str.raw,
-                &mut exception,
-            )
+            match &property_key {
+                JscPropertyKey::String(prop_str) => JSObjectDeleteProperty(
+                    self.context.as_context_ref(),
+                    object.raw,
+                    prop_str.raw,
+                    &mut exception,
+                ),
+                JscPropertyKey::Symbol(sym) => JSObjectDeletePropertyForKey(
+                    self.context.as_context_ref(),
+                    object.raw,
+                    sym.value.raw,
+                    &mut exception,
+                ),
+            }
         };
         if !exception.is_null() {
             return Err(JscValue {
@@ -2977,10 +3163,27 @@ impl ExecutionContext<JscTypes> for JscEngine {
         object: JscObject,
         property_key: JscPropertyKey,
     ) -> Completion<bool, JscTypes> {
-        let Some(prop_str) = self.property_key_to_jsstring(&property_key) else {
-            return Ok(false);
+        let mut exception: *mut JSValueRef = std::ptr::null_mut();
+        let result = unsafe {
+            match &property_key {
+                JscPropertyKey::String(prop_str) => {
+                    JSObjectHasProperty(self.context.as_context_ref(), object.raw, prop_str.raw)
+                }
+                JscPropertyKey::Symbol(sym) => JSObjectHasPropertyForKey(
+                    self.context.as_context_ref(),
+                    object.raw,
+                    sym.value.raw,
+                    &mut exception,
+                ),
+            }
         };
-        Ok(unsafe { JSObjectHasProperty(self.context.as_context_ref(), object.raw, prop_str.raw) })
+        if !exception.is_null() {
+            return Err(JscValue {
+                raw: exception,
+                ctx: self.ctx_ptr(),
+            });
+        }
+        Ok(result)
     }
     fn has_own_property(
         &mut self,
@@ -3545,7 +3748,10 @@ impl ExecutionContext<JscTypes> for JscEngine {
         let uri_error_prototype = fetch_proto(uri_error);
         let eval_error_prototype = fetch_proto(eval_error);
 
-        let async_iterator_prototype = object_prototype;
+        let async_iterator_prototype = self
+            .intrinsics
+            .async_iterator_prototype
+            .unwrap_or(object_prototype);
 
         RealmIntrinsics {
             array_buffer,
@@ -3620,33 +3826,55 @@ impl ExecutionContext<JscTypes> for JscEngine {
 
     // ── §9.6 Jobs ─────────────────────────────────────────────────────────
     fn enqueue_job(&mut self, job: Box<dyn FnOnce()>) {
-        self.queued_jobs.push(Box::new(move |_: &mut JscEngine| {
+        let wrapped: Box<dyn FnOnce(&mut JscEngine)> = Box::new(move |_: &mut JscEngine| {
             job();
-        }));
+        });
+        if nesting_depth() == 0 {
+            // No JS call is active: JSC would drain microtasks as soon as
+            // the queueing call returns, running the job synchronously.
+            // Defer to the next checkpoint instead.
+            self.pending_jobs.push(wrapped);
+        } else {
+            self.enqueue_js_microtask(wrapped);
+        }
     }
     fn enqueue_job_with_realm(
         &mut self,
         _realm: JscRealm,
         job: Box<dyn FnOnce(&mut dyn ExecutionContext<JscTypes>)>,
     ) {
-        self.queued_jobs
-            .push(Box::new(move |engine: &mut JscEngine| {
-                job(engine);
-            }));
+        let wrapped: Box<dyn FnOnce(&mut JscEngine)> = Box::new(move |engine: &mut JscEngine| {
+            job(engine);
+        });
+        if nesting_depth() == 0 {
+            // See `enqueue_job`: defer depth-0 enqueues to the checkpoint.
+            self.pending_jobs.push(wrapped);
+        } else {
+            self.enqueue_js_microtask(wrapped);
+        }
     }
     fn run_jobs(&mut self) {
-        // JSC drains its microtask queue automatically every time control
-        // returns from the outermost JS call on the stack.  Since any Rust
-        // code that queues JSC microtasks does so through the JSC C API,
-        // the drain happens on that call's return — no explicit drain needed.
-        if self.queued_jobs.is_empty() {
+        // Jobs enqueued while a JS call is active (depth ≥ 1) are already
+        // JSC microtasks; they run at the next microtask drain (when the
+        // outermost C API call returns), interleaved with all other
+        // microtasks.  At depth 0 there is no outer call to return from,
+        // so flush the deferred `pending_jobs` and force a drain.  The
+        // `EngineGuard` keeps CURRENT_ENGINE set while the queueing calls
+        // below drain synchronously, so the job callbacks can find the
+        // engine.
+        if nesting_depth() > 0 {
             return;
         }
-        let _guard = EngineGuard::new(self as *mut JscEngine);
-        let jobs = std::mem::take(&mut self.queued_jobs);
-        for job in jobs {
-            job(self);
+        if !self.pending_jobs.is_empty() {
+            let _guard = EngineGuard::new(self as *mut JscEngine);
+            let pending = std::mem::take(&mut self.pending_jobs);
+            for job in pending {
+                self.enqueue_js_microtask(job);
+            }
         }
+        // Force JSC to drain any microtasks queued by the flush above (or
+        // by prior JS execution) at this checkpoint.
+        self.eval_script_raw("void 0");
     }
 
     // ── §25 ArrayBuffer — runtime queries ─────────────────────────────────
@@ -4558,13 +4786,17 @@ impl ExecutionContext<JscTypes> for JscEngine {
         let wrapped_rejected =
             on_rejected.map(|f| self.wrap_settlement_reaction(promise_ptr, false, f.as_value()));
 
-        // Get the "then" method from the promise via C API to avoid
-        // JSEvaluateScript compilation overhead.
-        let then_str = JscString::from_rust("then");
-        let then_method = unsafe { JSObjectGetProperty(ctx, promise.raw, then_str.raw, &mut exc) };
-        if then_method.is_null() || !exc.is_null() {
-            return Err(JscValue { raw: exc, ctx });
-        }
+        // Use the intrinsic %Promise.prototype.then% (captured at engine
+        // construction, before user code can patch it) so internal promise
+        // reactions are unaffected by modifications to the public `then`
+        // property.
+        let then_method = match self.intrinsics.promise_prototype_then {
+            Some(then_fn) => then_fn,
+            None => {
+                log::error!("perform_promise_then: %Promise.prototype.then% not resolved");
+                return Err(self.new_type_error("missing %Promise.prototype.then%"));
+            }
+        };
 
         // Build args: promise.then(onFulfilled, onRejected)
         let onf_raw = wrapped_fulfilled
@@ -4580,7 +4812,7 @@ impl ExecutionContext<JscTypes> for JscEngine {
         let result = unsafe {
             JSObjectCallAsFunction(
                 ctx,
-                then_method as *mut JSObjectRef,
+                then_method.raw,
                 promise.raw,
                 then_args.len(),
                 then_args.as_ptr(),
@@ -4594,17 +4826,18 @@ impl ExecutionContext<JscTypes> for JscEngine {
         // If a result_capability is provided, chain a second .then() to
         // pipe the capability's resolve/reject into the result promise.
         if let Some(ref cap) = result_capability {
-            let then_method2 = unsafe {
-                JSObjectGetProperty(ctx, result as *mut JSObjectRef, then_str.raw, &mut exc)
+            let then_method2 = match self.intrinsics.promise_prototype_then {
+                Some(then_fn) => then_fn,
+                None => {
+                    log::error!("perform_promise_then: %Promise.prototype.then% not resolved");
+                    return Err(self.new_type_error("missing %Promise.prototype.then%"));
+                }
             };
-            if then_method2.is_null() || !exc.is_null() {
-                return Err(JscValue { raw: exc, ctx });
-            }
             let chain_args = [cap.resolve.as_value_ref(), cap.reject.as_value_ref()];
             let _ = unsafe {
                 JSObjectCallAsFunction(
                     ctx,
-                    then_method2 as *mut JSObjectRef,
+                    then_method2.raw,
                     result as *mut JSObjectRef,
                     chain_args.len(),
                     chain_args.as_ptr(),

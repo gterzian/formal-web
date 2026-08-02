@@ -4,7 +4,7 @@ use crate::js::Types;
 
 type JsValue = <Types as JsTypes>::JsValue;
 
-use crate::html::{GlobalScope, TimerHandler, Window};
+use crate::html::{GlobalScope, TimerHandler, TimerRegistration, Window};
 use crate::webidl::Callback;
 
 use crate::html::safe_passing_of_structured_data::{self, StructuredCloneOptions};
@@ -92,12 +92,15 @@ pub(crate) trait WindowOrWorkerGlobalScope {
         // Step 11: scheduling.
         self.global_scope()
             .timer_initialization_steps(
-                previous_id,
-                handler,
-                arguments,
-                repeat,
-                timeout_ms,
-                task_nesting_level,
+                TimerRegistration {
+                    previous_id,
+                    handler,
+                    arguments,
+                    repeat,
+                    timeout_ms,
+                    nesting_level: task_nesting_level,
+                },
+                ec,
             )
             .map_err(|message| ec.new_type_error(&message))
     }

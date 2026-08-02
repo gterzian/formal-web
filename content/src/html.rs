@@ -33,7 +33,7 @@ use ipc_messages::content::{
 pub use environment_settings_object::EnvironmentSettingsObject;
 pub use global_scope::GlobalScope;
 pub use global_scope::GlobalScopeKind;
-pub(crate) use global_scope::TimerHandler;
+pub(crate) use global_scope::{TimerHandler, TimerRegistration};
 
 pub use html_anchor_element::HTMLAnchorElement;
 pub(crate) use html_dom_tree::{

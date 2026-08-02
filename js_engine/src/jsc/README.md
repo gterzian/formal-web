@@ -24,24 +24,53 @@ rustup run 1.94.0 cargo test --no-default-features --features jsc -p content gen
 ## Status / WPT results
 
 **PASS:** CSS.supports, DOM Element tests, Node-constants, document.title,
-document-dir, iframe, anchor, basic streams (constructor, default-reader,
-strategies, transform, writable), formal gc-protection,
-callback-gc-protection, streams/writable-streams/constructor, all
-`streams/piping/*` except `abort` (disabled in meta), and
-`streams/readable-streams/cancel` + `read-task-handling`.
+document-dir, iframe, anchor, formal gc-protection, callback-gc-protection,
+all `streams/piping/*` (including `abort.any.js` when run), and the full
+readable/transform/writable stream suites: `async-iterator`, `from`,
+`patched-global` (default streams), `tee`, `general`, `cancel`,
+`default-reader`, `read-task-handling`, strategies, transform, writable.
 
-**FAIL:** structured-clone (Blob not implemented), wasm compile (timeout),
-formal/byob-debug (WIP internal test).
+**FAIL (BYOB, pre-existing):**
 
-**Unexpected in default suite (unfixed, pre-existing):**
-`streams/readable-byte-streams/patched-global.any.js` and
-`streams/readable-byte-streams/respond-after-enqueue.any.js` (BYOB
-buffer-fill bug: read-into buffers come back zero-filled).  Both fail on
-HEAD too — not caused by the piping fixes.
+- `streams/readable-byte-streams/enqueue-with-detached-buffer.any.js` —
+  "The object could not be cloned." (structured-clone/transfer behavior).
+- `streams/readable-byte-streams/patched-global.any.js` —
+  `result.value` is a `DataView` instead of the requested `Uint8Array`
+  (BYOB read-into view construction).
+- `streams/readable-byte-streams/respond-after-enqueue.any.js` —
+  read-into buffers come back zero-filled (BYOB buffer-fill bug).  The
+  last two also fail on Boa (zero-fill family); the first passes on Boa.
+
+**Flaky (infra):** `streams/piping/pipe-through.any.js` intermittently
+`ERROR`/`TIMEOUT` (first subtest: "Piping through a transform errored on
+the writable end does not cause an unhandled promise rejection") in full
+suite runs; passes standalone repeatedly.  Also affects Boa, so it is not
+engine-specific.
 
 Generic engine tests: 95/96 pass; only
 `generic_js_test::tests::constructor_has_function_prototype_methods_on_jsc`
 fails (`TestWidget.toString()` returns `[object FormalWebBuiltin]`).
+
+## Microtask jobs
+
+Rust-side "queue a microtask" jobs (`enqueue_job` / `enqueue_job_with_realm`)
+are enqueued into **JSC's own microtask queue** rather than a separate Rust
+list: the job closure is stored as private data on a `JOB_CLASS` function
+object and queued via `Promise.resolve(undefined).then(jobFn)` using the
+captured `%Promise.prototype.then%`.  JSC runs these interleaved FIFO with
+all other microtasks, so a job's promise resolutions queue reactions that
+run after it (spec microtask semantics).  During a drain the JSLock is
+held (drain runs in `JSLockHolder::willReleaseLock`), so a job's nested
+C API calls never re-drain mid-job.
+
+Depth-0 enqueues (no JS call active — e.g. the content process's microtask
+checkpoint) are deferred into `JscEngine::pending_jobs`, because calling
+into JS to queue a microtask at depth 0 is itself the outermost C API
+call and JSC drains on its return, which would run the job synchronously.
+`run_jobs` / `perform_a_microtask_checkpoint` flush `pending_jobs` (under
+an `EngineGuard`) and force a drain with `eval_script_raw("void 0")`.
+`queueMicrotask` does **not** exist in this JSC (`typeof === "undefined"`),
+so the promise+then hop is the substitute.
 
 ## GC integration (managed references)
 
@@ -78,28 +107,24 @@ Generic GC tests live in `content/src/generic_js_test.rs`
 
 ## Piping test status
 
-All `streams/piping/*` tests pass except `abort.any.js` (disabled in meta
-because readable byte stream tee abort semantics are unimplemented).  The
-pipe state machine and the JSC promise-state plumbing were reworked to
-make them pass:
+All `streams/piping/*` tests pass (including `abort.any.js`, which runs
+when metadata is ignored for explicit paths).  The pipe state machine and
+the JSC promise-state plumbing were reworked earlier; this session added:
 
-- **Write registration vs shutdown race** — `write_chunk` runs the sink's
-  write algorithm through `writer.write`, which can synchronously trigger
-  nested promise reactions (JSC drains microtasks when a JS call returns).
-  A nested reaction could run the error/close propagation and finalize
-  before the write promise was pushed to `pending_writes`.  Fixed with a
-  `write_in_progress` flag: shutdown waits for the write to be registered
-  when the destination is still writable.  (`content/src/streams/readablestream.rs`)
-- **Action promise registration vs shutdown race** — `perform_action` sets
-  the pipe state to `ShuttingDownPendingAction` before the action promise
-  is created, so a nested reaction could finalize with no action promise
-  recorded (pipeTo fulfilled instead of rejecting with the close error).
-  Fixed by waiting in that branch until the action promise's own reaction
-  drives the shutdown.
-- **Wrong error on rejected action** — `pipeTo` rejected with the original
-  shutdown error instead of the cancel/abort action's rejection reason.
-  The `ShuttingDownPendingAction` branch polls the action promise via
-  `promise_state`; see the resolver-recording and stale-record fixes below.
+- **Microtask job interleaving** — the tee "only pull enough to fill the
+  emptiest queue" test failed because the separate Rust job queue ran
+  outside JSC's microtask ordering: at the depth-0 checkpoint, a job's
+  nested `call()` (resolving a read promise) is the outermost C API call
+  and JSC drained microtasks mid-job, firing `Promise.all` reactions
+  before the job's synchronous readAgain-repull.  Fixed by moving jobs
+  into JSC's microtask queue (see "Microtask jobs" above).
+- **Source error ordering** — "errors in the source should propagate to
+  both branches" failed because `pull_steps` called `CallPullIfNeeded`
+  (which errors the stream synchronously when the pull algorithm throws)
+  *before* the read-request chunk steps queued the tee's chunk-delivery
+  job, so the branch error reaction ran before `'b'` reached branch1.
+  Fixed by delivering the chunk (`chunk steps`) before calling pull;
+  see `content/src/streams/README.md`.
 
 ## Promise settlement recording
 
@@ -133,34 +158,28 @@ Two additions make the records reliable:
 
 ## Open issues
 
-- **Piping test infra flakiness** — `close-propagation-backward` and
-  others intermittently report `ERROR`/`CRASH` ("WebDriver child did not
-  become ready", "Resource temporarily unavailable", content-process
-  `SIGSEGV` in `run_window_timer`/interface registration) on repeat runs;
-  the same test passes in other runs.  The `SIGSEGV`s are dangling-pointer
-  crashes from the missing timer/interface GC rooting below, exposed by
-  timing shifts.
+- **Piping test infra flakiness** — `pipe-through.any.js` (and previously
+  `close-propagation-backward`) intermittently report `ERROR`/`TIMEOUT`
+  in full-suite runs while passing standalone.  Also affects Boa.  The
+  earlier `SIGSEGV` in `run_window_timer` (dangling timer callback) is
+  fixed by the timer GC rooting below.
 - **`uncaught callback error: undefined` during gc-protection** — the
-  first `setTimeout(0)` callback reports this error.  The timer's
-  `Callback`/`arguments` live in `window_timers` with no GC rooting on
-  JSC, so the now-working `gc()` collects the callback function before
-  the timer fires (dangling pointer).  Related to the `WindowTimer`
-  issue below; the test still passes (the error is logged, not thrown).
-- **Microtask drain during nested C API calls** — `promise_state()` uses
-  `eval_script_raw("void 0")` to drain microtasks, but JSC only drains its
+  first `setTimeout(0)` callback reports this error (logged, not thrown).
+- **Microtask drain during nested C API calls** — JSC only drains its
   queue when control returns from the outermost C API call; inside nested
-  calls `.then()` handlers never fire.
+  calls `.then()` handlers never fire.  Mitigated by the settlement
+  recording below plus the microtask job redesign, but the eval-based
+  fallback in `promise_state()` still returns `Pending` for untracked
+  promises inside reactions.
   *Failed attempt:* no public C API forces JSC microtask drainage; a
   `CFRunLoopRunInMode` pump inside a reaction does not drain the remaining
-  queue either.  (Mitigated by the settlement recording above, but the
-  eval-based fallback still returns `Pending` for untracked promises
-  inside reactions.)
+  queue either.
 - **`setTimeout` not pumped during piping tests** — `delay()` timeouts.
 - **`instanceof Window` returns false** — the global object's
   `[[Prototype]]` is immutable through the public C API.
-- **`WindowTimer.arguments`** — `Vec<JsValue>` elements unprotected from
-  GC; needs `GcRootHandle` wrapping.
-- **`detach_array_buffer`** — no-op (`Ok(())`).
+- **`detach_array_buffer`** — no-op (`Ok(())`); also the original chunk
+  buffer is never detached in byte-stream `enqueue_steps` (only cloned),
+  which contributes to the detached-buffer BYOB failure.
 - **`species_constructor`** — always returns `default_constructor`.
 - **Cross-realm `new.target`** — `get_function_realm` always returns the
   current realm.
@@ -186,3 +205,68 @@ Two additions make the records reliable:
   *Failed attempt:* the old `JSValueProtect`/`JSValueUnprotect` also left
   values uncollected after unprotect in this JSC version — no release
   difference between the two mechanisms.
+
+## Session investigation log
+
+### 2026-08-03 — JSC stream suite parity with Boa
+
+**Files changed:** `js_engine/src/jsc/engine.rs`, `js_engine/src/jsc_sys.rs`,
+`content/src/html/global_scope.rs`, `content/src/html/environment_settings_object.rs`,
+`content/src/html/window_or_worker_global_scope.rs`,
+`content/src/streams/readablestreamdefaultcontroller.rs`.
+**Instrumentation added:** temporary `eprintln!` markers in the tee pull
+algorithm, chunk-delivery job, `call_pull_if_needed`, and pipeTo state
+machine; all removed.  Browser repro pages under `scratchpad/` (removed at
+end of session).
+**What was confirmed:**
+- Symbol property keys were silently no-ops (`define_property_or_throw`
+  returned `Ok` for `JscPropertyKey::Symbol`), so
+  `ReadableStream.prototype[@@asyncIterator]` was never installed.
+  Fixed with `JSObjectGetPropertyForKey`/`JSObjectSetPropertyForKey`/
+  `JSObjectHasPropertyForKey`/`JSObjectDeletePropertyForKey` (macOS
+  10.15+).
+- `realm_intrinsics().async_iterator_prototype` was a placeholder
+  (`Object.prototype`); the real `%AsyncIteratorPrototype%` is reachable
+  via `Object.getPrototypeOf(Object.getPrototypeOf(async function* () {}
+  ).prototype)` and is what `for await` needs (`%AsyncIteratorPrototype%
+  [@@asyncIterator]` returns `this`).
+- `to_object` returned raw primitive cells as objects; a string arg to
+  `ReadableStream.from('ab')` crashed `JSObjectGetPropertyForKey`.  Fixed
+  with `JSValueToObject`.
+- `perform_promise_then` read the user-visible `then` property; the
+  patched-global test required the intrinsic `%Promise.prototype.then%`,
+  captured at engine construction.
+- Tee pull-count ordering failure root cause: the separate Rust job
+  queue + JSC draining microtasks at the outermost C API call return
+  (see "Microtask jobs" above).
+- Tee error-propagation failure root cause: `pull_steps` ordered
+  `CallPullIfNeeded` (synchronous stream error on pull throw) before the
+  chunk delivery, so the branch error reaction ran before `'b'` was
+  delivered.  Fixed by delivering the chunk first.
+- Timer `run_window_timer` `SIGSEGV` root cause: `WindowTimer`'s
+  callback/arguments were unrooted on JSC; the working `gc()` collected
+  them.  Fixed with `GcRootHandle` (`protect_value`) roots stored on
+  `WindowTimer`.
+- Freshly rebuilt helper binaries intermittently get `SIGKILL (Code
+  Signature Invalid)` on macOS; re-sign with
+  `codesign --force --deep -s - target/release/formal-web*`.  Caused
+  false "regressions" (e.g. `enqueue-with-detached-buffer` "failing" on
+  Boa) and "WebDriver child did not become ready" flakiness.
+**What was ruled out:**
+- *Lock-holder hack:* wrapping each queued Rust job in a no-op
+  `JOB_CLASS`-style builtin call to hold JSC's JSLock across the job
+  fixed the ordering but was superseded by the microtask redesign.  Two
+  pitfalls found: a cached lock-holder object is not GC-rooted and gets
+  collected (dangling pointer crash), and the `CURRENT_ENGINE` RefCell
+  must not be borrowed while running the job (re-borrow panic).
+- *`queueMicrotask`:* not available in this JSC (`typeof === "undefined"`).
+- *Spec-deferred pull erroring:* reverting `call_pull_if_needed` to error
+  the stream only upon pullPromise rejection (spec) fixed JSC but broke
+  Boa's `tee.any.js` (Boa runs the pullPromise rejection reaction *after*
+  a subsequently queued `enqueue_job` microtask, so `reader2.read()`
+  resolved `'a'` before the tee branches errored).  Kept synchronous
+  erroring and reordered chunk delivery instead.
+**Not investigated:** BYOB failures (`enqueue-with-detached-buffer`
+structured-clone, `patched-global` DataView-vs-Uint8Array,
+`respond-after-enqueue` zero-fill); the pipe-through full-suite TIMEOUT;
+`queueMicrotask` availability beyond the page global.
