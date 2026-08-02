@@ -26,12 +26,18 @@ rustup run 1.94.0 cargo test --no-default-features --features jsc -p content gen
 **PASS:** CSS.supports, DOM Element tests, Node-constants, document.title,
 document-dir, iframe, anchor, basic streams (constructor, default-reader,
 strategies, transform, writable), formal gc-protection,
-callback-gc-protection, streams/writable-streams/constructor.
-
-**TIMEOUT:** Most piping tests, cancel, read-task-handling.
+callback-gc-protection, streams/writable-streams/constructor, all
+`streams/piping/*` except `abort` (disabled in meta), and
+`streams/readable-streams/cancel` + `read-task-handling`.
 
 **FAIL:** structured-clone (Blob not implemented), wasm compile (timeout),
 formal/byob-debug (WIP internal test).
+
+**Unexpected in default suite (unfixed, pre-existing):**
+`streams/readable-byte-streams/patched-global.any.js` and
+`streams/readable-byte-streams/respond-after-enqueue.any.js` (BYOB
+buffer-fill bug: read-into buffers come back zero-filled).  Both fail on
+HEAD too — not caused by the piping fixes.
 
 Generic engine tests: 95/96 pass; only
 `generic_js_test::tests::constructor_has_function_prototype_methods_on_jsc`
@@ -70,13 +76,85 @@ Generic GC tests live in `content/src/generic_js_test.rs`
 `js_value_cell_keeps_value_alive_then_releases`,
 `js_object_cell_keeps_value_alive_then_releases`) and run on every backend.
 
+## Piping test status
+
+All `streams/piping/*` tests pass except `abort.any.js` (disabled in meta
+because readable byte stream tee abort semantics are unimplemented).  The
+pipe state machine and the JSC promise-state plumbing were reworked to
+make them pass:
+
+- **Write registration vs shutdown race** — `write_chunk` runs the sink's
+  write algorithm through `writer.write`, which can synchronously trigger
+  nested promise reactions (JSC drains microtasks when a JS call returns).
+  A nested reaction could run the error/close propagation and finalize
+  before the write promise was pushed to `pending_writes`.  Fixed with a
+  `write_in_progress` flag: shutdown waits for the write to be registered
+  when the destination is still writable.  (`content/src/streams/readablestream.rs`)
+- **Action promise registration vs shutdown race** — `perform_action` sets
+  the pipe state to `ShuttingDownPendingAction` before the action promise
+  is created, so a nested reaction could finalize with no action promise
+  recorded (pipeTo fulfilled instead of rejecting with the close error).
+  Fixed by waiting in that branch until the action promise's own reaction
+  drives the shutdown.
+- **Wrong error on rejected action** — `pipeTo` rejected with the original
+  shutdown error instead of the cancel/abort action's rejection reason.
+  The `ShuttingDownPendingAction` branch polls the action promise via
+  `promise_state`; see the resolver-recording and stale-record fixes below.
+
+## Promise settlement recording
+
+`perform_promise_then` wraps every reaction in a builtin that records the
+promise's settlement (`promise object pointer → (fulfilled, value)`) in
+`JscEngine::settled_promises` before delegating to the original handler
+(the original handler is rooted through a `JscManagedValue` owned by the
+wrapper — it is invisible to JSC's GC otherwise).  `promise_state` consults
+the record first, falling back to the eval-based drain.  This lets the
+streams pipe state machine observe settled promises from inside reaction
+callbacks, where JSC's microtask drain is a re-entrancy no-op.
+
+Two additions make the records reliable:
+
+- **Resolver recording** — `new_promise_capability` registers the
+  resolve/reject functions in `JscEngine::promise_resolvers` (resolver
+  pointer → (promise pointer, is_reject)).  `call` consults it, so invoking
+  a resolver records the promise's settlement synchronously.  This makes
+  `promise_state` correct for promises settled through the engine's own
+  resolvers (writer `ready`, closed promises, write/close/abort request
+  promises) even inside nested calls, where the eval fallback returns
+  `Pending`.
+- **Stale-record cleanup** — records are keyed by promise pointer; when JSC
+  collects a promise and recycles its address, a newer promise at that
+  address would hit the old record.  `perform_promise_then` removes any
+  record at the promise's address before attaching a reaction (the reaction
+  re-records the true settlement when it fires), and `new_promise_capability`
+  does the same for freshly created promises.  Without this, the
+  "rejected cancel promise" piping test intermittently rejected with the
+  wrong error.  Records are also cleared in `gc()`.
+
 ## Open issues
 
+- **Piping test infra flakiness** — `close-propagation-backward` and
+  others intermittently report `ERROR`/`CRASH` ("WebDriver child did not
+  become ready", "Resource temporarily unavailable", content-process
+  `SIGSEGV` in `run_window_timer`/interface registration) on repeat runs;
+  the same test passes in other runs.  The `SIGSEGV`s are dangling-pointer
+  crashes from the missing timer/interface GC rooting below, exposed by
+  timing shifts.
+- **`uncaught callback error: undefined` during gc-protection** — the
+  first `setTimeout(0)` callback reports this error.  The timer's
+  `Callback`/`arguments` live in `window_timers` with no GC rooting on
+  JSC, so the now-working `gc()` collects the callback function before
+  the timer fires (dangling pointer).  Related to the `WindowTimer`
+  issue below; the test still passes (the error is logged, not thrown).
 - **Microtask drain during nested C API calls** — `promise_state()` uses
   `eval_script_raw("void 0")` to drain microtasks, but JSC only drains its
   queue when control returns from the outermost C API call; inside nested
   calls `.then()` handlers never fire.
-  *Failed attempt:* no public C API forces JSC microtask drainage.
+  *Failed attempt:* no public C API forces JSC microtask drainage; a
+  `CFRunLoopRunInMode` pump inside a reaction does not drain the remaining
+  queue either.  (Mitigated by the settlement recording above, but the
+  eval-based fallback still returns `Pending` for untracked promises
+  inside reactions.)
 - **`setTimeout` not pumped during piping tests** — `delay()` timeouts.
 - **`instanceof Window` returns false** — the global object's
   `[[Prototype]]` is immutable through the public C API.

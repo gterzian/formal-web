@@ -1429,6 +1429,17 @@ impl JsTypesWithRealm for JscTypes {
     type Realm = JscRealm;
 }
 
+/// Settlement record for a promise whose reaction was attached through
+/// [`JscEngine::perform_promise_then`]: the (fulfilled, value) pair
+/// observed when the reaction fired.  Lets `promise_state` answer
+/// synchronously even inside a nested reaction callback, where JSC's
+/// eval-based microtask drain is a re-entrancy no-op.
+#[derive(Clone, Copy)]
+struct PromiseSettlement {
+    fulfilled: bool,
+    value: JscValue,
+}
+
 /// JSC engine wrapper.  Owns a `JSGlobalContextRef` and implements
 /// `JsEngine<JscTypes>`, `ExecutionContext<JscTypes>`, and
 /// `EcmascriptHost<JscTypes>`.
@@ -1452,6 +1463,19 @@ pub struct JscEngine {
     /// Cached global intrinsic function/constructor references, replacing
     /// per-call JSEvaluateScript with one-time native property walks.
     intrinsics: Intrinsics,
+    /// Promise settlements observed by the wrapped reactions created in
+    /// `perform_promise_then`, keyed by promise object pointer.  Consulted
+    /// by `promise_state` so it can answer synchronously inside nested
+    /// reaction callbacks (where JSC's microtask drain is re-entrancy
+    /// guarded).  Cleared in `gc()` — records are only needed within a
+    /// single callback.
+    settled_promises: HashMap<usize, PromiseSettlement>,
+    /// Promise resolver functions created by `new_promise_capability`,
+    /// keyed by resolver object pointer: (promise pointer, is_reject).
+    /// `call` consults this so invoking a resolver records the promise's
+    /// settlement synchronously, making `promise_state` reliable inside
+    /// nested reaction callbacks.
+    promise_resolvers: HashMap<usize, (usize, bool)>,
 }
 
 /// Drop `host_data` (which contains `GcRootHandle` unroot closures) and
@@ -1484,6 +1508,8 @@ impl JscEngine {
             queued_jobs: Vec::new(),
             fn_call: None,
             intrinsics: Intrinsics::default(),
+            settled_promises: HashMap::new(),
+            promise_resolvers: HashMap::new(),
         }
     }
 
@@ -1516,6 +1542,8 @@ impl JscEngine {
             queued_jobs: Vec::new(),
             fn_call: None,
             intrinsics: Intrinsics::default(),
+            settled_promises: HashMap::new(),
+            promise_resolvers: HashMap::new(),
         }
     }
 
@@ -1538,6 +1566,8 @@ impl JscEngine {
             queued_jobs: Vec::new(),
             fn_call: None,
             intrinsics: Intrinsics::default(),
+            settled_promises: HashMap::new(),
+            promise_resolvers: HashMap::new(),
         }
     }
     pub fn context(&self) -> &JscContext {
@@ -1546,6 +1576,46 @@ impl JscEngine {
     /// The raw `JSContextRef` pointer used for constructing `JscValue` / `JscObject`.
     fn ctx_ptr(&self) -> *mut JSContextRef {
         self.context.as_context_ref()
+    }
+
+    /// Wrap a `.then` reaction so the promise's settlement is recorded in
+    /// `settled_promises` before the original handler runs.  The record is
+    /// keyed by the promise object pointer, matching `promise_state`'s key.
+    fn wrap_settlement_reaction(
+        &mut self,
+        promise_ptr: usize,
+        fulfilled: bool,
+        original: JscValue,
+    ) -> JscFunction {
+        let ctx = self.ctx_ptr();
+        let name = JscPropertyKey::from_rust("settlement_reaction");
+        // The promise roots the wrapper, not the original handler; the
+        // original lives only in the wrapper's private data (invisible to
+        // JSC's GC).  Root it through a managed reference owned by the
+        // wrapper closure so it survives until the wrapper is finalized.
+        let original_root = JscManagedValue::new(ctx, original.raw).map(std::rc::Rc::new);
+        let behaviour: StoredBehaviour = Box::new(move |args, this, ec| {
+            // Keep the root alive for this closure's lifetime (shared via
+            // Rc because the closure is `Fn`).
+            let _root_guard = original_root.clone();
+            let value = args
+                .first()
+                .cloned()
+                .unwrap_or_else(|| ec.value_undefined());
+            if let Some(engine) = ec.as_any_mut().downcast_mut::<JscEngine>() {
+                engine
+                    .settled_promises
+                    .insert(promise_ptr, PromiseSettlement { fulfilled, value });
+            }
+            // Delegate to the original reaction handler with the same
+            // arguments; its result feeds the chained promise.
+            let handler = match JscTypes::value_as_object(&original) {
+                Some(handler) => handler,
+                None => return Ok(ec.value_undefined()),
+            };
+            EcmascriptHost::call(ec, &handler, &this, args)
+        });
+        make_builtin_function(ctx, behaviour, &name, 0, false)
     }
 
     #[allow(dead_code)]
@@ -4419,6 +4489,19 @@ impl ExecutionContext<JscTypes> for JscEngine {
             None => return Err(self.make_string("Promise executor did not receive reject")),
         };
 
+        // Register the resolvers so `call` can record the promise's
+        // settlement synchronously when they are invoked.  This makes
+        // `promise_state` reliable for these promises even inside nested
+        // reaction callbacks, where JSC's eval-based drain is a no-op.
+        let promise_ptr = promise_raw as usize;
+        // The new promise cannot be settled yet; any record at its address
+        // belongs to a previous promise that was collected (address reused).
+        self.settled_promises.remove(&promise_ptr);
+        self.promise_resolvers
+            .insert(resolve_obj.raw as usize, (promise_ptr, false));
+        self.promise_resolvers
+            .insert(reject_obj.raw as usize, (promise_ptr, true));
+
         Ok(PromiseCapability {
             promise: JscValue {
                 raw: promise_raw as *mut JSValueRef,
@@ -4458,6 +4541,23 @@ impl ExecutionContext<JscTypes> for JscEngine {
         let ctx = self.context.as_context_ref();
         let mut exc: *mut JSValueRef = std::ptr::null_mut();
 
+        // Wrap the reactions so their settlement is recorded Rust-side.
+        // JSC only drains its microtask queue when control returns from the
+        // outermost C API call, so inside a reaction callback `promise_state`
+        // cannot observe a settled promise through eval-based draining; the
+        // record lets it answer synchronously.
+        let promise_ptr = promise.as_raw() as usize;
+        // Drop any settlement record at this promise's address before
+        // attaching a reaction: the promise may be a new allocation at an
+        // address previously occupied by a collected promise, so an old
+        // record would mislead `promise_state` until this reaction fires
+        // and records the true settlement.
+        self.settled_promises.remove(&promise_ptr);
+        let wrapped_fulfilled =
+            on_fulfilled.map(|f| self.wrap_settlement_reaction(promise_ptr, true, f.as_value()));
+        let wrapped_rejected =
+            on_rejected.map(|f| self.wrap_settlement_reaction(promise_ptr, false, f.as_value()));
+
         // Get the "then" method from the promise via C API to avoid
         // JSEvaluateScript compilation overhead.
         let then_str = JscString::from_rust("then");
@@ -4467,13 +4567,13 @@ impl ExecutionContext<JscTypes> for JscEngine {
         }
 
         // Build args: promise.then(onFulfilled, onRejected)
-        let onf_raw = on_fulfilled
+        let onf_raw = wrapped_fulfilled
             .as_ref()
-            .map(|f| f.as_value_ref())
+            .map(|f: &JscFunction| f.as_value_ref())
             .unwrap_or_else(|| unsafe { JSValueMakeUndefined(ctx) });
-        let onr_raw = on_rejected
+        let onr_raw = wrapped_rejected
             .as_ref()
-            .map(|f| f.as_value_ref())
+            .map(|f: &JscFunction| f.as_value_ref())
             .unwrap_or_else(|| unsafe { JSValueMakeUndefined(ctx) });
         let then_args = [onf_raw, onr_raw];
 
@@ -4530,6 +4630,19 @@ impl ExecutionContext<JscTypes> for JscEngine {
         &mut self,
         promise: &JscObject,
     ) -> Completion<crate::enums::PromiseState<JscTypes>, JscTypes> {
+        // If a reaction for this promise was attached through
+        // `perform_promise_then` and has already fired, its settlement was
+        // recorded Rust-side — answer synchronously.  This works inside
+        // nested reaction callbacks, where the eval-based drain below is a
+        // re-entrancy no-op (JSC only drains at the outermost C API call).
+        if let Some(record) = self.settled_promises.get(&(promise.as_raw() as usize)) {
+            return Ok(if record.fulfilled {
+                crate::enums::PromiseState::Fulfilled(record.value)
+            } else {
+                crate::enums::PromiseState::Rejected(record.value)
+            });
+        }
+
         // Note: There is no way to observe a promise's state synchronously
         // through JSC's C API when inside a nested JS call (microtasks don't
         // drain).  This function uses eval-based .then() handlers + void 0
@@ -5110,6 +5223,18 @@ impl EcmascriptHost<JscTypes> for JscEngine {
         // panic-safe).
         let _guard = EngineGuard::new(self as *mut JscEngine);
 
+        // If the callable is a promise resolver created by
+        // `new_promise_capability`, record the promise's settlement as soon
+        // as it is invoked, so `promise_state` can answer synchronously
+        // inside nested reaction callbacks.  (Promise resolution with a
+        // promise value is asynchronous via assimilation; such records are
+        // only consulted for promises the stream algorithms poll, which
+        // resolve with plain values.)
+        let resolver_record = self
+            .promise_resolvers
+            .get(&(callable.as_raw() as usize))
+            .copied();
+
         let this_type = unsafe { JSValueGetType(self.context.as_context_ref(), this_arg.raw) };
         let mut exception: *mut JSValueRef = std::ptr::null_mut();
         let result = if this_type == JSType::kJSTypeObject {
@@ -5158,12 +5283,15 @@ impl EcmascriptHost<JscTypes> for JscEngine {
             });
         }
 
-        // Drain JSC's internal microtask queue by evaluating a no-op.
-        // JSEvaluateScript drains microtasks at the end of script evaluation.
-        // CURRENT_ENGINE is still set here (via _guard) so that any builtin
-        // function callbacks triggered by microtasks (e.g. promise reaction
-        // handlers) can find the engine.
-        let _ = self.eval_script_raw("void 0");
+        if let (Some((promise_ptr, is_reject)), Some(value)) = (resolver_record, args.first()) {
+            self.settled_promises.insert(
+                promise_ptr,
+                PromiseSettlement {
+                    fulfilled: !is_reject,
+                    value: *value,
+                },
+            );
+        }
 
         Ok(JscValue {
             raw: result,
@@ -5179,6 +5307,9 @@ impl EcmascriptHost<JscTypes> for JscEngine {
     }
 
     fn gc(&mut self) {
+        // Settlement records are only needed within the callback that wrote
+        // them; drop them so the map stays bounded.
+        self.settled_promises.clear();
         let ctx_ptr = self.ctx_ptr();
         unsafe {
             // JSSynchronousGarbageCollectForDebugging (the collector used by
