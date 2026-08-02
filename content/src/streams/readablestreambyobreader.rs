@@ -3,6 +3,7 @@ use js_engine::{Completion, ExecutionContext, JsTypes, PromiseResolvers};
 use crate::js::Types;
 use crate::webidl::bindings::create_interface_instance;
 use js_engine::gc::GcCell;
+use js_engine::gc::JsObjectCell;
 use js_engine::gc::gc_cell_new;
 use js_engine::gc_struct;
 
@@ -19,7 +20,7 @@ type JsObject = <Types as JsTypes>::JsObject;
 #[gc_struct]
 pub struct ReadableStreamBYOBReader {
     stream: GcCell<Option<ReadableStream>>,
-    closed_promise: GcCell<Option<JsObject>>,
+    closed_promise: JsObjectCell,
     closed_resolvers: GcCell<Option<PromiseResolvers<Types>>>,
 }
 
@@ -27,7 +28,7 @@ impl ReadableStreamBYOBReader {
     pub(crate) fn new() -> Self {
         Self {
             stream: gc_cell_new(None),
-            closed_promise: gc_cell_new(None),
+            closed_promise: JsObjectCell::new(None),
             closed_resolvers: gc_cell_new(None),
         }
     }
@@ -143,22 +144,9 @@ impl ReadableStreamGenericReader for ReadableStreamBYOBReader {
     }
 
     fn set_closed_promise_slot_value(&self, promise: Option<JsObject>) {
-        // JSC: protect new value from GC, unprotect old value
-        #[cfg(feature = "jsc")]
-        {
-            let old = self.closed_promise.borrow().clone();
-            if let Some(ref old_obj) = old {
-                unsafe {
-                    js_engine::jsc_sys::JSValueUnprotect(old_obj.ctx(), old_obj.as_value_ref());
-                }
-            }
-            if let Some(ref new_obj) = promise {
-                unsafe {
-                    js_engine::jsc_sys::JSValueProtect(new_obj.ctx(), new_obj.as_value_ref());
-                }
-            }
-        }
-        *self.closed_promise.borrow_mut() = promise;
+        // JsObjectCell keeps the promise alive via a managed reference;
+        // replacing it removes the reference for the previous value.
+        self.closed_promise.set(promise);
     }
 
     fn closed_resolvers_slot_value(&self) -> Option<PromiseResolvers<Types>> {

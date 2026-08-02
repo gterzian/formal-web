@@ -1,6 +1,7 @@
 use crate::webidl::bindings::create_interface_instance;
 use crate::webidl::{mark_promise_as_handled, rejected_promise, resolved_promise};
 use js_engine::gc::GcCell;
+use js_engine::gc::JsObjectCell;
 use js_engine::gc::gc_cell_new;
 use js_engine::gc_struct;
 use js_engine::{Completion, ExecutionContext, JsTypes, PromiseResolvers};
@@ -23,11 +24,11 @@ pub struct WritableStreamDefaultWriter {
     stream: GcCell<Option<WritableStream>>,
 
     /// <https://streams.spec.whatwg.org/#writablestreamdefaultwriter-readypromise>
-    ready_promise: GcCell<Option<JsObject>>,
+    ready_promise: JsObjectCell,
     ready_resolvers: GcCell<Option<PromiseResolvers<Types>>>,
 
     /// <https://streams.spec.whatwg.org/#writablestreamdefaultwriter-closedpromise>
-    closed_promise: GcCell<Option<JsObject>>,
+    closed_promise: JsObjectCell,
     closed_resolvers: GcCell<Option<PromiseResolvers<Types>>>,
 }
 
@@ -35,9 +36,9 @@ impl WritableStreamDefaultWriter {
     pub(crate) fn new() -> Self {
         Self {
             stream: gc_cell_new(None),
-            ready_promise: gc_cell_new(None),
+            ready_promise: JsObjectCell::new(None),
             ready_resolvers: gc_cell_new(None),
-            closed_promise: gc_cell_new(None),
+            closed_promise: JsObjectCell::new(None),
             closed_resolvers: gc_cell_new(None),
         }
     }
@@ -51,22 +52,9 @@ impl WritableStreamDefaultWriter {
         self.ready_promise.borrow().clone()
     }
     pub(crate) fn set_ready_promise_value(&self, promise: Option<JsObject>) {
-        // JSC: protect new value from GC, unprotect old value
-        #[cfg(feature = "jsc")]
-        {
-            let old = self.ready_promise.borrow().clone();
-            if let Some(ref old_obj) = old {
-                unsafe {
-                    js_engine::jsc_sys::JSValueUnprotect(old_obj.ctx(), old_obj.as_value_ref());
-                }
-            }
-            if let Some(ref new_obj) = promise {
-                unsafe {
-                    js_engine::jsc_sys::JSValueProtect(new_obj.ctx(), new_obj.as_value_ref());
-                }
-            }
-        }
-        *self.ready_promise.borrow_mut() = promise;
+        // JsObjectCell keeps the promise alive via a managed reference;
+        // replacing it removes the reference for the previous value.
+        self.ready_promise.set(promise);
     }
     pub(crate) fn ready_resolvers_value(&self) -> Option<PromiseResolvers<Types>> {
         self.ready_resolvers.borrow().clone()
@@ -78,22 +66,9 @@ impl WritableStreamDefaultWriter {
         self.closed_promise.borrow().clone()
     }
     pub(crate) fn set_closed_promise_value(&self, promise: Option<JsObject>) {
-        // JSC: protect new value from GC, unprotect old value
-        #[cfg(feature = "jsc")]
-        {
-            let old = self.closed_promise.borrow().clone();
-            if let Some(ref old_obj) = old {
-                unsafe {
-                    js_engine::jsc_sys::JSValueUnprotect(old_obj.ctx(), old_obj.as_value_ref());
-                }
-            }
-            if let Some(ref new_obj) = promise {
-                unsafe {
-                    js_engine::jsc_sys::JSValueProtect(new_obj.ctx(), new_obj.as_value_ref());
-                }
-            }
-        }
-        *self.closed_promise.borrow_mut() = promise;
+        // JsObjectCell keeps the promise alive via a managed reference;
+        // replacing it removes the reference for the previous value.
+        self.closed_promise.set(promise);
     }
     pub(crate) fn closed_resolvers_value(&self) -> Option<PromiseResolvers<Types>> {
         self.closed_resolvers.borrow().clone()

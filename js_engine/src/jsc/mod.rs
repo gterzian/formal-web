@@ -38,9 +38,11 @@
 //! Raw FFI bindings live in [`crate::jsc_sys`].
 
 mod engine;
+mod objc_gc;
 mod types;
 
 pub use engine::{
     JscEngine, JscTypes, clear_current_engine, create_builtin_fn_with_captures, set_current_engine,
 };
+pub(crate) use objc_gc::JscManagedValue;
 pub use types::*;

@@ -14,6 +14,9 @@ fn main() {
     // When the "jsc" feature is enabled, link JavaScriptCore framework
     if has_jsc {
         println!("cargo::rustc-link-lib=framework=JavaScriptCore");
+        // CFRunLoopRunInMode / kCFRunLoopDefaultMode come from
+        // CoreFoundation (used by JscEngine::gc to pump deferred GC work).
+        println!("cargo::rustc-link-lib=framework=CoreFoundation");
     }
 
     if has_v8 {

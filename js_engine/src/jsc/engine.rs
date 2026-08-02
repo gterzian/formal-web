@@ -16,6 +16,7 @@ use std::collections::HashMap;
 use std::ffi::c_char;
 use std::sync::LazyLock;
 
+use super::objc_gc::JscManagedValue;
 use super::types::*;
 
 // ── Current engine (thread-local) ────────────────────────────────────
@@ -180,15 +181,15 @@ struct BuiltinFunctionData {
     behaviour: StoredBehaviour,
     name: String,
     length: u32,
-    /// Context pointer for JSValueProtect/JSValueUnprotect.
-    ctx: *mut JSContextRef,
     /// Cached function properties (toString, bind, call, apply).
     /// Stored as private data to avoid JSC's private property map.
-    /// Protected with JSValueProtect when set.
-    to_string_val: Option<*mut JSValueRef>,
-    bind_val: Option<*mut JSValueRef>,
-    call_val: Option<*mut JSValueRef>,
-    apply_val: Option<*mut JSValueRef>,
+    /// Kept alive via managed references (JSManagedValue +
+    /// addManagedReference) — dropped when the function object is
+    /// finalized, removing the reference.
+    to_string_val: Option<JscManagedValue>,
+    bind_val: Option<JscManagedValue>,
+    call_val: Option<JscManagedValue>,
+    apply_val: Option<JscManagedValue>,
 }
 
 /// Wrapper around `*mut JSClassRef` that implements `Sync` + `Send` so it
@@ -615,7 +616,6 @@ fn make_builtin_function(
         behaviour,
         name: name_str.clone(),
         length,
-        ctx,
         to_string_val: None,
         bind_val: None,
         call_val: None,
@@ -838,27 +838,10 @@ fn set_builtin_to_string(ctx: *mut JSContextRef, target: *mut JSObjectRef, name:
 /// freeing the captured closure.
 impl Drop for BuiltinFunctionData {
     fn drop(&mut self) {
-        // Unprotect any stored function values before freeing.
-        if let Some(val) = self.to_string_val {
-            unsafe {
-                JSValueUnprotect(self.ctx, val);
-            }
-        }
-        if let Some(val) = self.bind_val {
-            unsafe {
-                JSValueUnprotect(self.ctx, val);
-            }
-        }
-        if let Some(val) = self.call_val {
-            unsafe {
-                JSValueUnprotect(self.ctx, val);
-            }
-        }
-        if let Some(val) = self.apply_val {
-            unsafe {
-                JSValueUnprotect(self.ctx, val);
-            }
-        }
+        // The cached property managed values (to_string/bind/call/apply)
+        // drop here, removing their managed references.  The context is
+        // still alive while finalization runs (the engine outlives its
+        // function objects).
     }
 }
 
@@ -911,13 +894,25 @@ unsafe extern "C" fn builtin_get_property(
             JSValueMakeNumber(ctx, length as f64)
         } else if JSStringIsEqual(property_name, to_string_key.raw) {
             // Return the stored toString function (not the result of calling it)
-            (*data_ptr).to_string_val.unwrap_or(std::ptr::null_mut())
+            (*data_ptr)
+                .to_string_val
+                .as_ref()
+                .map_or(std::ptr::null_mut(), |managed| managed.value_ref())
         } else if JSStringIsEqual(property_name, bind_key.raw) {
-            (*data_ptr).bind_val.unwrap_or(std::ptr::null_mut())
+            (*data_ptr)
+                .bind_val
+                .as_ref()
+                .map_or(std::ptr::null_mut(), |managed| managed.value_ref())
         } else if JSStringIsEqual(property_name, call_key.raw) {
-            (*data_ptr).call_val.unwrap_or(std::ptr::null_mut())
+            (*data_ptr)
+                .call_val
+                .as_ref()
+                .map_or(std::ptr::null_mut(), |managed| managed.value_ref())
         } else if JSStringIsEqual(property_name, apply_key.raw) {
-            (*data_ptr).apply_val.unwrap_or(std::ptr::null_mut())
+            (*data_ptr)
+                .apply_val
+                .as_ref()
+                .map_or(std::ptr::null_mut(), |managed| managed.value_ref())
         } else {
             // Return NULL to signal "property not found, check prototype chain"
             std::ptr::null_mut()
@@ -961,29 +956,18 @@ unsafe extern "C" fn builtin_set_property(
             }
             true
         } else if JSStringIsEqual(property_name, to_string_jsc.raw) {
-            // Protect and store.
-            if let Some(old) = (*data_ptr).to_string_val.replace(value) {
-                JSValueUnprotect(ctx, old);
-            }
-            JSValueProtect(ctx, value);
+            // Store through a managed reference (replaces the old one,
+            // which drops its managed reference).
+            (*data_ptr).to_string_val = JscManagedValue::new(ctx, value);
             true
         } else if JSStringIsEqual(property_name, bind_jsc.raw) {
-            if let Some(old) = (*data_ptr).bind_val.replace(value) {
-                JSValueUnprotect(ctx, old);
-            }
-            JSValueProtect(ctx, value);
+            (*data_ptr).bind_val = JscManagedValue::new(ctx, value);
             true
         } else if JSStringIsEqual(property_name, call_jsc.raw) {
-            if let Some(old) = (*data_ptr).call_val.replace(value) {
-                JSValueUnprotect(ctx, old);
-            }
-            JSValueProtect(ctx, value);
+            (*data_ptr).call_val = JscManagedValue::new(ctx, value);
             true
         } else if JSStringIsEqual(property_name, apply_jsc.raw) {
-            if let Some(old) = (*data_ptr).apply_val.replace(value) {
-                JSValueUnprotect(ctx, old);
-            }
-            JSValueProtect(ctx, value);
+            (*data_ptr).apply_val = JscManagedValue::new(ctx, value);
             true
         } else {
             // Reject writes to unknown properties.
@@ -1457,9 +1441,10 @@ pub struct JscEngine {
     host_data: HashMap<std::any::TypeId, Box<dyn std::any::Any>>,
     #[allow(dead_code)]
     next_root_id: u64,
-    /// Tracks objects protected via `JSValueProtect` so they can be
-    /// unprotected when the engine is dropped.
-    protected_objects: Vec<*mut JSValueRef>,
+    /// Tracks platform-object wrapper values kept alive via managed
+    /// references (JSManagedValue + addManagedReference); the references
+    /// are removed when the engine is dropped.
+    managed_objects: Vec<JscManagedValue>,
     queued_jobs: Vec<Box<dyn FnOnce(&mut JscEngine)>>,
     /// Cached `Function.prototype.call` for correct this-binding when
     /// calling JS functions with non-object `this` values.
@@ -1479,15 +1464,10 @@ impl Drop for JscEngine {
         // ensure unroot actions run while the JSGlobalContextRef is still valid.
         self.host_data.clear();
         self.queued_jobs.clear();
-        let ctx_ptr = self.context.as_context_ref();
-        // Unprotect any objects protected via create_object_with_any.
-        for protected in self.protected_objects.drain(..) {
-            if !protected.is_null() {
-                unsafe {
-                    JSValueUnprotect(ctx_ptr, protected);
-                }
-            }
-        }
+        // Remove the managed references created via create_object_with_any
+        // (each drop removes its addManagedReference edge) while the
+        // context is still valid.
+        self.managed_objects.clear();
     }
 }
 
@@ -1500,7 +1480,7 @@ impl JscEngine {
             realm_global,
             host_data: HashMap::new(),
             next_root_id: 0,
-            protected_objects: Vec::new(),
+            managed_objects: Vec::new(),
             queued_jobs: Vec::new(),
             fn_call: None,
             intrinsics: Intrinsics::default(),
@@ -1532,7 +1512,7 @@ impl JscEngine {
             realm_global,
             host_data: HashMap::new(),
             next_root_id: 0,
-            protected_objects: Vec::new(),
+            managed_objects: Vec::new(),
             queued_jobs: Vec::new(),
             fn_call: None,
             intrinsics: Intrinsics::default(),
@@ -1554,7 +1534,7 @@ impl JscEngine {
             realm_global,
             host_data: HashMap::new(),
             next_root_id: 0,
-            protected_objects: Vec::new(),
+            managed_objects: Vec::new(),
             queued_jobs: Vec::new(),
             fn_call: None,
             intrinsics: Intrinsics::default(),
@@ -4707,14 +4687,14 @@ impl ExecutionContext<JscTypes> for JscEngine {
         map.insert(obj_ptr, data);
         self.store_host_any(map_type_id, Box::new(map));
 
-        // Protect the object with JSValueProtect so JSC's GC does not
-        // collect it while Rust still holds the pointer (via host_data).
-        // Cleanup happens in JscEngine::drop.
+        // Keep the wrapper alive through a managed reference while Rust
+        // still holds its pointer (via host_data).  Cleanup happens in
+        // JscEngine::drop (which drops each managed value, removing its
+        // addManagedReference edge).
         let ctx_ptr = self.ctx_ptr();
-        unsafe {
-            JSValueProtect(ctx_ptr, obj.as_value_ref());
+        if let Some(managed) = JscManagedValue::new(ctx_ptr, obj.as_value_ref()) {
+            self.managed_objects.push(managed);
         }
-        self.protected_objects.push(obj.as_value_ref());
 
         obj
     }
@@ -5025,35 +5005,31 @@ impl ExecutionContext<JscTypes> for JscEngine {
     }
 
     fn create_root(&mut self, value: &JscValue) -> crate::gc::GcRootHandle<JscTypes> {
-        // Use JSValueProtect to keep the value alive in JSC's GC graph.
-        // JSValueProtect/JSValueUnprotect maintain an internal reference
-        // count so the value survives GC cycles until unprotected.
+        // Keep the value alive through a managed reference (JSManagedValue
+        // + addManagedReference) instead of JSValueProtect.  When the last
+        // handle clone drops, the unroot action drops the managed value,
+        // which removes the reference so the GC can collect the value.
         let ctx_ptr = self.ctx_ptr();
         let value_raw = value.raw;
-        unsafe {
-            JSValueProtect(ctx_ptr, value_raw);
+        match JscManagedValue::new(ctx_ptr, value_raw) {
+            Some(managed) => {
+                crate::gc::GcRootHandle::new(*value, Some(Box::new(move |_val| drop(managed))))
+            }
+            // Primitives are not GC-managed; nothing to protect.
+            None => crate::gc::GcRootHandle::new(*value, None),
         }
-        crate::gc::GcRootHandle::new(
-            *value,
-            Some(Box::new(move |_val| unsafe {
-                JSValueUnprotect(ctx_ptr, value_raw);
-            })),
-        )
     }
 
     fn protect_value(&mut self, value: &JscValue) -> crate::gc::GcRootHandle<JscTypes> {
-        // Same as create_root: JSValueProtect + unprotect on drop.
+        // Same as create_root: managed reference + removal on drop.
         let ctx_ptr = self.ctx_ptr();
         let value_raw = value.raw;
-        unsafe {
-            JSValueProtect(ctx_ptr, value_raw);
+        match JscManagedValue::new(ctx_ptr, value_raw) {
+            Some(managed) => {
+                crate::gc::GcRootHandle::new(*value, Some(Box::new(move |_val| drop(managed))))
+            }
+            None => crate::gc::GcRootHandle::new(*value, None),
         }
-        crate::gc::GcRootHandle::new(
-            *value,
-            Some(Box::new(move |_val| unsafe {
-                JSValueUnprotect(ctx_ptr, value_raw);
-            })),
-        )
     }
 
     fn evaluate_script(&mut self, source: &str) -> Completion<JscValue, JscTypes> {
@@ -5205,7 +5181,15 @@ impl EcmascriptHost<JscTypes> for JscEngine {
     fn gc(&mut self) {
         let ctx_ptr = self.ctx_ptr();
         unsafe {
-            crate::jsc_sys::JSGarbageCollect(ctx_ptr);
+            // JSSynchronousGarbageCollectForDebugging (the collector used by
+            // WebKit's own ObjC API test suite) is the only collector that
+            // processes removed managed references: with the public
+            // JSGarbageCollect, removeManagedReference edges linger and the
+            // value stays alive.  The run-loop pump is additionally required
+            // for sweeping/finalization/FinalizationRegistry cleanup, which
+            // JSC defers to the thread's run loop.
+            crate::jsc_sys::JSSynchronousGarbageCollectForDebugging(ctx_ptr);
+            crate::jsc_sys::CFRunLoopRunInMode(crate::jsc_sys::kCFRunLoopDefaultMode, 0.0, false);
         }
     }
 
@@ -5254,6 +5238,21 @@ impl EcmascriptHost<JscTypes> for JscEngine {
 mod tests {
     use super::*;
     use crate::{EcmascriptHost, ExecutionContext, JsEngine, JsTypes};
+
+    #[test]
+    fn anchor_probe() {
+        let mut engine = JscEngine::new();
+        let realm = engine.current_realm();
+        let v = JsEngine::evaluate_script(&mut engine, "({ a: 1 })", &realm).unwrap();
+        let root = engine.create_root(&v);
+        eprintln!("ANCHOR probe: root created ok");
+        let v2 = JsEngine::evaluate_script(&mut engine, "({ b: 2 })", &realm).unwrap();
+        let root2 = engine.create_root(&v2);
+        eprintln!("ANCHOR probe: second root ok");
+        drop(root);
+        drop(root2);
+        eprintln!("ANCHOR probe: drops ok");
+    }
 
     #[test]
     fn value_construction_and_downcasts() {

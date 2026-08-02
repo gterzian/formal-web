@@ -36,9 +36,14 @@ Two categories of abstraction:
 | `enums` | `Numeric`, `PreferredType`, `IntegrityLevel`, `PromiseState`, etc. |
 | `records` | `IteratorRecord`, `PromiseCapability`, `PromiseResolvers`, `PropertyDescriptor`, `RealmIntrinsics` |
 | `gc` | `Trace`, `Finalize`, `GcRootHandle`, `GcCell` (backend-abstracted) |
-| `boa/` | Boa backend implementation |
+| `boa/` | Boa backend implementation (default) |
 | `jsc/` | JSC backend implementation (macOS only) |
 | `v8/` | V8 backend implementation through `rusty_v8` (macOS arm64 only) |
+
+Engine-specific documentation — status, GC integration, open issues, and
+investigation logs — lives in the nested `README.md` files:
+[`src/boa/README.md`](src/boa/README.md), [`src/jsc/README.md`](src/jsc/README.md),
+[`src/v8/README.md`](src/v8/README.md).
 
 ## Feature flags
 
@@ -51,9 +56,7 @@ Two categories of abstraction:
 Exactly one engine feature must be active. V8 and WebAssembly cannot be
 enabled together.
 
-## Build commands
-
-### Boa (default, runs WPT)
+## Build & test (default Boa backend)
 
 ```bash
 # Build everything
@@ -63,104 +66,14 @@ rustup run 1.94.0 cargo build --release
 rustup run 1.94.0 cargo run --release -- wpt
 ```
 
-### Boa + WebAssembly
+The other backends (JSC, V8) have their own build/test invocations —
+see the nested READMEs.  WebAssembly (`wasm` feature) is Boa-only.
+
+## Generic engine tests
+
+`content/src/generic_js_test.rs` exercises the generic layer (platform
+objects, promises, GC rooting, iterators, typed arrays) on every backend:
 
 ```bash
-rustup run 1.94.0 cargo build --release --features wasm
+rustup run 1.94.0 cargo test --no-default-features --features <jsc|v8> -p content generic_js_test
 ```
-
-### JSC (macOS only, experimental)
-
-```bash
-# Build js_engine crate
-rustup run 1.94.0 cargo build --release --no-default-features --features jsc -p js_engine
-
-# Build content binary with JSC
-rustup run 1.94.0 cargo build --release --no-default-features --features jsc -p content --bin formal-web-content
-
-# Run a single WPT test via JSC
-target/release/formal-web wpt dom/nodes/Element-hasAttribute.html
-```
-
-### V8 (macOS arm64, opt-in)
-
-```bash
-# Build every process with V8 and media support
-rustup run 1.94.0 cargo build --release \
-  --no-default-features --features v8,media
-
-# Run the browser after the complete build
-rustup run 1.94.0 cargo run --release \
-  --no-default-features --features v8,media
-
-# Run the generic engine tests
-rustup run 1.94.0 cargo test --no-default-features \
-  --features v8 -p content generic_js_test
-```
-
-The first build downloads the pinned V8 150.1.0 archive. Set
-`RUSTY_V8_ARCHIVE=/absolute/path/to/librusty_v8_release_aarch64-apple-darwin.a.gz`
-to use a local archive, or set `RUSTY_V8_MIRROR` to an alternate releases base
-URL. Cargo also caches downloaded archives under `.cargo/.rusty_v8` in the
-Cargo home directory.
-
-WebAssembly support is deferred for V8; use Boa with the `wasm` feature.
-
-## WPT test results
-
-### Boa backend (primary — run full suite)
-
-Latest: `executed=79 unexpected=0`
-
-Wasm tests are excluded from the default WPT run (opt-in `--features wasm`).
-
-### JSC backend (experimental)
-
-**PASS:** CSS.supports, DOM Element tests, Node-constants, document.title,
-document-dir, iframe, anchor, basic streams (constructor, default-reader,
-strategies, transform, writable), formal gc-protection.
-
-**TIMEOUT:**  Most piping tests, cancel, read-task-handling.
-
-**FAIL:** structured-clone (Blob not implemented), wasm compile (timeout).
-
-## Remaining work
-
-### V8 platform-object tracing through cppgc
-
-V8 currently stores generic `GcCell<T>` values in `Rc<RefCell<T>>` and keeps
-reflectors through V8 weak handles. Migrate platform-object ownership to a
-`cppgc::Heap` attached to each shared isolate. Objects allocated on that heap
-must trace every `Member`, `WeakMember`, and `TracedReference` edge, while
-off-heap owners use `Persistent` handles only when they are genuine roots.
-
-The generic cell API must change as part of this work: cppgc allocation needs
-the isolate heap, and cppgc cell access requires isolate-scoped proof instead
-of the current context-free `gc_cell_new`, `borrow`, and `borrow_mut` calls.
-Add forced-collection tests covering reflector cycles, platform-object cycles,
-weak edges, finalization, and isolate destruction.
-
-### JSC microtask drain during nested C API calls
-
-`promise_state()` uses `eval_script_raw("void 0")` to drain microtasks, but
-JSC only drains its microtask queue when control returns from the outermost
-C API call.  Inside nested calls (common — stream algorithm code runs inside
-a JS call), the eval does not trigger drainage and `.then()` handlers never
-fire.
-
-**Dead end:** No public C API forces JSC microtask drainage.  Tracked
-promise states fail because stream algorithms poll CHAINED promises (via
-`.then()`), not the original tracked promise.
-
-### Other unfixed issues
-
-- **`setTimeout` not pumped during piping tests** — `delay()` timeouts.
-- **`instanceof Window` returns false (JSC)** — Global object's `[[Prototype]]`
-  is immutable through the public C API.
-- **`WindowTimer.arguments`** — `Vec<JsValue>` elements unprotected from GC.
-  Needs `GcRootHandle` wrapping.
-- **`detach_array_buffer` (JSC)** — No-op (`Ok(())`).
-- **`species_constructor`** — Always returns `default_constructor`.
-- **Cross-realm `new.target`** — `get_function_realm` always returns current realm.
-- **WASM compile/instantiate timeout (JSC)** — Background compilation requires
-  the creating thread's run loop to be pumped.

@@ -123,14 +123,15 @@ impl<T: JsTypes> Clone for GcRootHandle<T> {
 // SECTION III: BACKEND-ABSTRACTED GC CELL
 // ============================================================================
 
-// ── ProtectedCell: auto-protect/unprotect JsValue/JsObject on set ─────────
+// ── ProtectedCell: auto-managed JsValue/JsObject on set ──────────────────
 //
 // On Boa: GcCell<JsValue> already traces through `#[derive(Trace)]` — no
 // explicit protection needed.  JsValueCell is just GcCell<JsValue>.
 //
 // On JSC: JsValue/JsObject references stored behind GcCell (Rc<RefCell>)
-// are invisible to JSC's GC.  JsValueCell wraps the inner value with
-// JSValueProtect on set and JSValueUnprotect on replacement.
+// are invisible to JSC's GC.  JsValueCell keeps the inner value alive via
+// JSC's managed-reference mechanism (JSManagedValue +
+// addManagedReference/removeManagedReference).
 //
 // Content code uses these as drop-in replacements for GcCell<JsValue> and
 // GcCell<Option<JsObject>>, calling set() instead of *borrow_mut() =.
@@ -199,169 +200,122 @@ mod boa_cells {
     }
 }
 
-// JSC: actual struct with auto-protect/unprotect
+// JSC: actual struct with auto-managed-value protection
 #[cfg(feature = "jsc")]
 pub use jsc_cells::*;
 
 #[cfg(feature = "jsc")]
 mod jsc_cells {
+    use std::cell::{Ref, RefCell, RefMut};
+    use std::rc::Rc;
+
+    use crate::jsc::JscManagedValue;
     use crate::jsc::{JscObject, JscValue};
-    use crate::jsc_sys;
 
     /// Auto-protecting cell for a single JsValue.
-    /// Use `set(val)` to assign (handles protect/unprotect).
+    /// Use `set(val)` to assign (manages the managed reference).
     /// Use `borrow()` / `borrow_mut()` for read access or in-place mutation.
-    pub struct JsValueCell(std::rc::Rc<std::cell::RefCell<JscValue>>);
-
-    /// Auto-protecting cell for an optional JsObject.
-    /// Use `set(val)` to assign (handles protect/unprotect).
-    pub struct JsObjectCell(std::rc::Rc<std::cell::RefCell<Option<JscObject>>>);
-
-    unsafe fn protect(val: &JscValue) {
-        let js_type = if val.ctx().is_null() {
-            return;
-        } else {
-            // SAFETY: `val.ctx()` is non-null, checked above.
-            unsafe { jsc_sys::JSValueGetType(val.ctx(), val.raw) }
-        };
-        // JSValueProtect works on any GC-managed heap value: objects,
-        // symbols (kJSTypeSymbol), and bigints (kJSTypeBigInt).  Only
-        // primitive values (undefined, null, boolean, number, string)
-        // are stack-allocated and need no protection.
-        match js_type {
-            crate::jsc_sys::JSType::kJSTypeObject
-            | crate::jsc_sys::JSType::kJSTypeSymbol
-            | crate::jsc_sys::JSType::kJSTypeBigInt => unsafe {
-                jsc_sys::JSValueProtect(val.ctx(), val.raw);
-            },
-            _ => {}
-        }
+    ///
+    /// The JS value is kept alive through JSC's managed-reference mechanism
+    /// ([`JscManagedValue`]: JSManagedValue + `addManagedReference`).
+    /// While the cell (or any clone of it) lives, the
+    /// wrapped value stays alive; when the last clone drops, the managed
+    /// reference is removed and the GC may collect the value.
+    pub struct JsValueCell {
+        slot: Rc<RefCell<JscValue>>,
+        managed: Rc<RefCell<Option<JscManagedValue>>>,
     }
 
-    unsafe fn unprotect(val: &JscValue) {
-        let js_type = if val.ctx().is_null() {
-            return;
-        } else {
-            // SAFETY: `val.ctx()` is non-null, checked above.
-            unsafe { jsc_sys::JSValueGetType(val.ctx(), val.raw) }
-        };
-        match js_type {
-            crate::jsc_sys::JSType::kJSTypeObject
-            | crate::jsc_sys::JSType::kJSTypeSymbol
-            | crate::jsc_sys::JSType::kJSTypeBigInt => unsafe {
-                jsc_sys::JSValueUnprotect(val.ctx(), val.raw);
-            },
-            _ => {}
-        }
+    /// Auto-protecting cell for an optional JsObject.
+    pub struct JsObjectCell {
+        slot: Rc<RefCell<Option<JscObject>>>,
+        managed: Rc<RefCell<Option<JscManagedValue>>>,
     }
 
     impl JsValueCell {
         pub fn new(val: JscValue) -> Self {
-            unsafe {
-                protect(&val);
+            let managed = JscManagedValue::new(val.ctx(), val.raw);
+            JsValueCell {
+                slot: Rc::new(RefCell::new(val)),
+                managed: Rc::new(RefCell::new(managed)),
             }
-            JsValueCell(std::rc::Rc::new(std::cell::RefCell::new(val)))
         }
 
         pub fn set(&self, val: JscValue) {
-            let mut slot = self.0.borrow_mut();
-            unsafe {
-                unprotect(&slot);
-            }
-            unsafe {
-                protect(&val);
-            }
-            *slot = val;
+            *self.slot.borrow_mut() = val;
+            // Replaces the previous managed value (dropping it removes the
+            // managed reference for the old value).
+            *self.managed.borrow_mut() = JscManagedValue::new(val.ctx(), val.raw);
         }
 
-        pub fn borrow(&self) -> std::cell::Ref<'_, JscValue> {
-            self.0.borrow()
+        pub fn borrow(&self) -> Ref<'_, JscValue> {
+            self.slot.borrow()
         }
 
-        pub fn borrow_mut(&self) -> std::cell::RefMut<'_, JscValue> {
-            self.0.borrow_mut()
+        pub fn borrow_mut(&self) -> RefMut<'_, JscValue> {
+            self.slot.borrow_mut()
         }
     }
 
     impl Drop for JsValueCell {
         fn drop(&mut self) {
-            // Unprotect the inner value when the last reference is dropped.
-            // Use try_borrow to avoid panicking if the cell is already borrowed
-            // (e.g. during cycle teardown or panic recovery).
-            if std::rc::Rc::strong_count(&self.0) == 1 {
-                if let Ok(val) = self.0.try_borrow() {
-                    unsafe {
-                        unprotect(&*val);
-                    }
-                }
-            }
+            // The JscManagedValue (in its own Rc) removes the managed
+            // reference when the last clone of the cell is dropped.
         }
     }
 
     impl Clone for JsValueCell {
         fn clone(&self) -> Self {
-            // Share the Rc reference — interior mutability must be preserved.
-            Self(self.0.clone())
+            // Share both Rc's — interior mutability and the managed
+            // reference must be preserved across clones.
+            Self {
+                slot: self.slot.clone(),
+                managed: self.managed.clone(),
+            }
         }
     }
 
     impl JsObjectCell {
         pub fn new(val: Option<JscObject>) -> Self {
-            if let Some(ref obj) = val {
-                let v = JscValue::from(obj.clone());
-                unsafe {
-                    protect(&v);
-                }
+            let managed = val.as_ref().and_then(|obj| {
+                let v = JscValue::from(*obj);
+                JscManagedValue::new(v.ctx(), v.raw)
+            });
+            JsObjectCell {
+                slot: Rc::new(RefCell::new(val)),
+                managed: Rc::new(RefCell::new(managed)),
             }
-            JsObjectCell(std::rc::Rc::new(std::cell::RefCell::new(val)))
         }
 
         pub fn set(&self, val: Option<JscObject>) {
-            let mut slot = self.0.borrow_mut();
-            if let Some(ref old) = *slot {
-                let ov = JscValue::from(old.clone());
-                unsafe {
-                    unprotect(&ov);
-                }
-            }
-            if let Some(ref new) = val {
-                let nv = JscValue::from(new.clone());
-                unsafe {
-                    protect(&nv);
-                }
-            }
-            *slot = val;
+            *self.slot.borrow_mut() = val;
+            *self.managed.borrow_mut() = val.as_ref().and_then(|obj| {
+                let v = JscValue::from(*obj);
+                JscManagedValue::new(v.ctx(), v.raw)
+            });
         }
 
-        pub fn borrow(&self) -> std::cell::Ref<'_, Option<JscObject>> {
-            self.0.borrow()
+        pub fn borrow(&self) -> Ref<'_, Option<JscObject>> {
+            self.slot.borrow()
         }
 
-        pub fn borrow_mut(&self) -> std::cell::RefMut<'_, Option<JscObject>> {
-            self.0.borrow_mut()
+        pub fn borrow_mut(&self) -> RefMut<'_, Option<JscObject>> {
+            self.slot.borrow_mut()
         }
     }
 
     impl Drop for JsObjectCell {
         fn drop(&mut self) {
-            // Unprotect the inner value when the last reference is dropped.
-            if std::rc::Rc::strong_count(&self.0) == 1 {
-                if let Ok(val) = self.0.try_borrow() {
-                    if let Some(obj) = &*val {
-                        let v = JscValue::from(obj.clone());
-                        unsafe {
-                            unprotect(&v);
-                        }
-                    }
-                }
-            }
+            // See JsValueCell::drop.
         }
     }
 
     impl Clone for JsObjectCell {
         fn clone(&self) -> Self {
-            // Share the Rc reference — interior mutability must be preserved.
-            Self(self.0.clone())
+            Self {
+                slot: self.slot.clone(),
+                managed: self.managed.clone(),
+            }
         }
     }
 }
