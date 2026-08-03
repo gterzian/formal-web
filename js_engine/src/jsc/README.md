@@ -47,6 +47,15 @@ the writable end does not cause an unhandled promise rejection") in full
 suite runs; passes standalone repeatedly.  Also affects Boa, so it is not
 engine-specific.
 
+The 2026-08-03 session (log below) fixed the `error-propagation-forward`
+early-finalize FAIL (stale settlement records), the `abort.any.js` and
+`close-propagation-*` SIGSEGV crashes (collected `Callback` objects), and
+one stack-overflow SIGSEGV (re-entrant `promise_state` eval fallback).
+`error-propagation-backward.any.js` and `pipe-through.any.js` still fail
+intermittently (TIMEOUT, or SIGSEGV after the pipe settles); the system
+JavaScriptCore was judged not viable for a web engine and no further
+fixes were pursued.
+
 Generic engine tests: 95/96 pass; only
 `generic_js_test::tests::constructor_has_function_prototype_methods_on_jsc`
 fails (`TestWidget.toString()` returns `[object FormalWebBuiltin]`).
@@ -155,10 +164,32 @@ Two additions make the records reliable:
   does the same for freshly created promises.  Without this, the
   "rejected cancel promise" piping test intermittently rejected with the
   wrong error.  Records are also cleared in `gc()`.
+- **Record-rooted promises** — each `PromiseSettlement` additionally roots
+  its promise via a managed reference (`_promise_root`).  While a record
+  exists the promise cannot be collected, so its address cannot be recycled
+  and a record found at an address always describes the promise currently
+  there.  This closes the stale-record window for *native* promises (e.g. a
+  test sink's `new Promise(...)`) that never pass through
+  `perform_promise_then`/`new_promise_capability`; without it,
+  `promise_state` misreported a genuinely-pending write as settled and the
+  pipe finalized early (`error-propagation-forward` "shutdown must not
+  occur until the final write completes").
 
 ## Open issues
 
-- **Piping test infra flakiness** — `pipe-through.any.js`, `error-propagation-backward.any.js`, and `error-propagation-forward.any.js` intermittently report `TIMEOUT`/`ERROR`/`FAIL`, plus an occasional content-process `SIGSEGV` in `abort.any.js`.  See the session investigation log below.  The `main` branch (with the plain Rust job queue, before the microtask-job redesign and the ObjC managed-reference rooting) does **not** reproduce this, so the regression is from the recent JSC commits (`d88c9f36e`, `0f171bf24`, `57e774a74`).  The earlier `SIGSEGV` in `run_window_timer` (dangling timer callback) is fixed by the timer GC rooting below, but the piping flakiness remains.
+- **Piping test infra flakiness** — `pipe-through.any.js` and
+  `error-propagation-backward.any.js` intermittently report `TIMEOUT` or
+  crash with a content-process `SIGSEGV`; the `error-propagation-forward`
+  early-finalize FAIL and the `abort.any.js`/`close-propagation-*` crashes
+  were fixed by the 2026-08-03 session (stale-record rooting, `Callback`
+  rooting, `promise_state` re-entrancy guard — see the session log).  The
+  `main` branch (with the plain Rust job queue, before the microtask-job
+  redesign and the ObjC managed-reference rooting) does **not** reproduce
+  this, so the regression is from the recent JSC commits (`d88c9f36e`,
+  `0f171bf24`, `57e774a74`).  The earlier `SIGSEGV` in `run_window_timer`
+  (dangling timer callback) is fixed by the timer GC rooting, but the
+  piping flakiness remains and the system JavaScriptCore was judged not
+  viable for a web engine (verdict in the session log).
 - **`uncaught callback error: undefined` during gc-protection** — the
   first `setTimeout(0)` callback reports this error (logged, not thrown).
 - **Microtask drain during nested C API calls** — JSC only drains its
@@ -338,3 +369,92 @@ event; the exact microtask-stall mechanism (GC of JOB_CLASS/reaction
 function objects is the leading hypothesis, unverified); whether the
 flake predates `d88c9f36e` on JSC (needs a full pre-commit workspace
 build).
+
+### 2026-08-03 — piping flakiness: stale records, collected callbacks, promise_state re-entrancy; JSC deemed unviable
+
+**Files changed (kept):** `js_engine/src/jsc/engine.rs` —
+`PromiseSettlement` now roots its promise (`_promise_root` managed
+value); `promise_state` has an `in_promise_state_eval` re-entrancy guard
+with the eval fallback extracted to the free function
+`promise_state_eval_fallback`.  `content/src/webidl/callback.rs` —
+`Callback::from_object` roots the callback object via `create_root`
+(managed reference; no-op on Boa).
+**Instrumentation added (all removed):** env-gated `[stream-debug][jsc]`
+logs (EngineGuard drain points, `run_jobs`, eval `void 0`,
+`perform_promise_then` attaches, settlement-reaction fires, resolver
+hits, `promise_state` record hits, `write_chunk` value, `finalize`
+reject), a `Promise.prototype.then` reaction-fire tracer injected into
+the test pages via the WPT runner, a temporary lldb wrapper around the
+content-process spawn (no lldb installed on the machine — removed), and
+unit tests probing the capability-reject flow, the `void 0` drain, and
+managed-reference survival under the automatic collector.
+**Reproduction:** full `streams/piping` suite flakes on JSC on most runs;
+failure modes seen: `pipe-through.any.js` TIMEOUT,
+`error-propagation-backward.any.js` TIMEOUT or ERROR (content-process
+SIGSEGV), `error-propagation-forward.any.js` FAIL ("shutdown must not
+occur until the final write completes; preventAbort = true"),
+`abort.any.js` SIGSEGV (during job execution).
+**What was confirmed:**
+- **Early-finalize FAIL = stale settlement records.**  `settled_promises`
+  is keyed by promise address; after JSC collects a promise and recycles
+  its address, a stale record misreports a genuinely-pending write as
+  settled, so `prune_settled_pending_writes` removes it and `shutdown`
+  computes `should_wait=false` → the pipe finalizes before the final
+  write completes.  The pre-existing cleanup only covered promises
+  passing through `perform_promise_then`/`new_promise_capability`, not
+  native promises (a test sink's `new Promise(...)`).  Fixed by rooting
+  the promise inside each record: while a record exists its address
+  cannot be recycled, so records can never go stale.  This eliminated the
+  `error-propagation-forward` FAIL in suite runs.
+- **SIGSEGV in `writer.write` = collected callback objects.**  The crash
+  report `formal-web-content-2026-08-03-052931.ips` shows a JOB_CLASS job
+  running inside a timer callback's return drain: `run_window_timer →
+  JscEngine::call → JSObjectCallAsFunction → [return] JSLockHolder →
+  willReleaseLock → drainMicrotasks → job_call_as_function →
+  pipe_to_on_promise_settled → write_chunk → writer.write →
+  JSObjectIsFunction` on a near-null `JSObjectRef`.  `Callback` held a
+  raw, unrooted `JsObject`; a sink method (e.g. `write`) referenced only
+  from Rust was collected by JSC's automatic GC, and
+  `invoke_callback_function`'s `IsCallable` check dereferenced the
+  dangling pointer.  Fixed by rooting the callback object in
+  `Callback::from_object`.  `abort.any.js` and `close-propagation-*`
+  stopped crashing in suite runs.
+- **Stack-overflow SIGSEGV = re-entrant `promise_state` eval fallback.**
+  With the debug logs on, failing runs showed a repeating cycle:
+  `promise_state: no settled record` → eval `void 0` → `settlement
+  reaction fired` → `on_promise_settled` (ShuttingDownPendingAction) →
+  `promise_state` again — consistent with the eval fallback firing queued
+  reactions at each JSEvaluateScript boundary, a drained reaction
+  re-entering `promise_state`, which evals and drains again (unbounded
+  recursion until stack overflow).  Fixed with the `in_promise_state_eval`
+  guard: re-entrant calls return `Pending` without evaluating.
+  *Caveat:* the README's earlier claim ("JSC only drains its queue at the
+  outermost C API call") was not conclusively verified either way — a
+  unit-test attempt to observe nested-drain fire timing was flawed (the
+  reaction fired at a top-level eval return, not during the nested call).
+  The guard is correct regardless of drain semantics: it bounds
+  re-entrancy.
+- Crash reports are **not** generated for the content process on this
+  machine (DiagnosticReports empty for the crashing runs), and lldb is
+  not installed, so no backtrace was captured for the post-fix crashes.
+**What was ruled out:**
+- Managed references (JSManagedValue + addManagedReference) being
+  ineffective under the automatic collector: a targeted unit test could
+  not isolate the mechanism — JSC's conservative stack scan keeps any
+  pointer-looking stack slot alive, so the object stayed alive regardless
+  of the managed edge.
+- `promise_state` eval fallback `__fw_ps_*` global clobbering as the sole
+  failure cause: the re-entrancy guard subsumes the failure mode.
+**Remaining failures after the fixes:** `error-propagation-backward.any.js`
+still intermittently TIMEOUTs or SIGSEGVs (the post-fix crash occurs
+right after the pipe promise settles and the user-level `.then` reactions
+fire; the dangling value there was not identified before the decision to
+stop), and `pipe-through.any.js` TIMEOUT persists.
+**Verdict:** the system JavaScriptCore's microtask/GC model — drains at
+every C API boundary; the automatic collector reclaiming values held only
+in Rust structures; the eval-based `promise_state` fallback running
+arbitrary JS at nested depth — is not viable for a web engine.  The
+principled fix (hold the JSLock across the entire content-command
+handling so microtasks drain only at the explicit checkpoint) is not
+implementable through the public C API.  The JSC backend remains
+experimental; Boa is the supported engine.

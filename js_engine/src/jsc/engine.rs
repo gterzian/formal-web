@@ -1563,10 +1563,21 @@ impl JsTypesWithRealm for JscTypes {
 /// observed when the reaction fired.  Lets `promise_state` answer
 /// synchronously even inside a nested reaction callback, where JSC's
 /// eval-based microtask drain is a re-entrancy no-op.
-#[derive(Clone, Copy)]
+///
+/// The record roots the promise itself (managed reference).  While a
+/// record exists the promise cannot be collected, so its address cannot be
+/// recycled by a newer promise; `promise_state` can therefore trust that a
+/// record found at an address describes the promise currently at that
+/// address.  Without the root, a collected promise's address could be
+/// reused, and a stale record would misreport a genuinely-pending promise
+/// as settled (observed as premature pipe shutdown in the piping tests).
 struct PromiseSettlement {
     fulfilled: bool,
     value: JscValue,
+    /// Root keeping the promise alive while the record exists.  Dropping
+    /// the record (perform_promise_then, new_promise_capability, gc,
+    /// engine drop) releases the promise.
+    _promise_root: Option<JscManagedValue>,
 }
 
 /// JSC engine wrapper.  Owns a `JSGlobalContextRef` and implements
@@ -1612,6 +1623,14 @@ pub struct JscEngine {
     /// settlement synchronously, making `promise_state` reliable inside
     /// nested reaction callbacks.
     promise_resolvers: HashMap<usize, (usize, bool)>,
+    /// Re-entrancy guard for the eval-based `promise_state` fallback.  The
+    /// fallback runs JSEvaluateScript, and JSC drains its microtask queue
+    /// at every JSEvaluateScript boundary; a drained reaction can re-enter
+    /// `promise_state`, which would eval again and drain again — unbounded
+    /// recursion (observed as a stack-overflow SIGSEGV in the piping
+    /// tests).  While set, nested `promise_state` calls return `Pending`
+    /// without touching the globals or evaluating.
+    in_promise_state_eval: bool,
 }
 
 /// Drop `host_data` (which contains `GcRootHandle` unroot closures) and
@@ -1712,6 +1731,7 @@ impl JscEngine {
             intrinsics,
             settled_promises: HashMap::new(),
             promise_resolvers: HashMap::new(),
+            in_promise_state_eval: false,
         }
     }
 
@@ -1748,6 +1768,7 @@ impl JscEngine {
             intrinsics,
             settled_promises: HashMap::new(),
             promise_resolvers: HashMap::new(),
+            in_promise_state_eval: false,
         }
     }
 
@@ -1775,6 +1796,7 @@ impl JscEngine {
             intrinsics,
             settled_promises: HashMap::new(),
             promise_resolvers: HashMap::new(),
+            in_promise_state_eval: false,
         }
     }
     pub fn context(&self) -> &JscContext {
@@ -1810,9 +1832,18 @@ impl JscEngine {
                 .cloned()
                 .unwrap_or_else(|| ec.value_undefined());
             if let Some(engine) = ec.as_any_mut().downcast_mut::<JscEngine>() {
-                engine
-                    .settled_promises
-                    .insert(promise_ptr, PromiseSettlement { fulfilled, value });
+                // Root the promise while the record exists so its address
+                // cannot be recycled; see `PromiseSettlement`.
+                let promise_raw = promise_ptr as *mut JSValueRef;
+                let promise_root = JscManagedValue::new(ctx, promise_raw);
+                engine.settled_promises.insert(
+                    promise_ptr,
+                    PromiseSettlement {
+                        fulfilled,
+                        value,
+                        _promise_root: promise_root,
+                    },
+                );
             }
             // Delegate to the original reaction handler with the same
             // arguments; its result feeds the chained promise.
@@ -2350,6 +2381,110 @@ pub fn create_builtin_fn_with_captures_impl<C: 'static>(
         Box::new(move |args, this, ec| (behaviour)(args, this, &captures, ec));
     let func = make_builtin_function(engine.ctx_ptr(), stored, &name, length, is_constructor);
     func
+}
+
+/// Eval-based `promise_state` fallback: attach a `.then` reaction via the
+/// promise's own `then`, drain with `void 0`, and read the result from the
+/// `__fw_ps_*` globals.  JSEvaluateScript drains JSC's microtask queue on
+/// return even at nested depth, so this can observe a settled promise from
+/// inside a nested reaction — at the cost of running any other queued
+/// reactions re-entrantly.  Callers must hold `in_promise_state_eval` to
+/// prevent unbounded recursion.
+fn promise_state_eval_fallback(
+    engine: &mut JscEngine,
+    promise: &JscObject,
+) -> Completion<crate::enums::PromiseState<JscTypes>, JscTypes> {
+    let _guard = EngineGuard::new(engine as *mut JscEngine);
+    let global = engine.context.global_object();
+    let mut exc: *mut JSValueRef = std::ptr::null_mut();
+
+    let p_key = JscString::from_rust("__fw_ps_promise");
+    unsafe {
+        JSObjectSetProperty(
+            engine.context.as_context_ref(),
+            global.raw,
+            p_key.raw,
+            promise.as_value_ref(),
+            kJSPropertyAttributeNone,
+            &mut exc,
+        )
+    };
+    if !exc.is_null() {
+        return Err(JscValue {
+            raw: exc,
+            ctx: engine.ctx_ptr(),
+        });
+    }
+
+    let setup_script = r#"
+            __fw_ps_state = "pending";
+            __fw_ps_value = undefined;
+            __fw_ps_promise.then(
+                function(v) { __fw_ps_state = "fulfilled"; __fw_ps_value = v; },
+                function(r) { __fw_ps_state = "rejected"; __fw_ps_value = r; }
+            );
+        "#;
+    engine.eval_script_raw(setup_script);
+    engine.eval_script_raw("void 0");
+
+    let state_key = JscString::from_rust("__fw_ps_state");
+    let state_val = unsafe {
+        JSObjectGetProperty(
+            engine.context.as_context_ref(),
+            global.raw,
+            state_key.raw,
+            &mut exc,
+        )
+    };
+    let value_key = JscString::from_rust("__fw_ps_value");
+    let value_val = unsafe {
+        JSObjectGetProperty(
+            engine.context.as_context_ref(),
+            global.raw,
+            value_key.raw,
+            &mut exc,
+        )
+    };
+
+    unsafe {
+        let cleanup_keys = [
+            JscString::from_rust("__fw_ps_promise"),
+            JscString::from_rust("__fw_ps_state"),
+            JscString::from_rust("__fw_ps_value"),
+        ];
+        for key in &cleanup_keys {
+            JSObjectDeleteProperty(
+                engine.context.as_context_ref(),
+                global.raw,
+                key.raw,
+                std::ptr::null_mut(),
+            );
+        }
+    }
+
+    let ctx_ptr = engine.ctx_ptr();
+    if !state_val.is_null() && unsafe { JSValueIsString(ctx_ptr, state_val) } {
+        let str_exc: *mut JSValueRef = std::ptr::null_mut();
+        let state_raw = unsafe { JSValueToStringCopy(ctx_ptr, state_val, str_exc as *mut _) };
+        if !state_raw.is_null() {
+            let state_str = unsafe { JscString::from_raw(state_raw) }.to_rust();
+            match state_str.as_str() {
+                "fulfilled" => Ok(crate::enums::PromiseState::Fulfilled(JscValue {
+                    raw: value_val,
+                    ctx: ctx_ptr,
+                })),
+                "rejected" => Ok(crate::enums::PromiseState::Rejected(JscValue {
+                    raw: value_val,
+                    ctx: ctx_ptr,
+                })),
+                _ => Ok(crate::enums::PromiseState::Pending),
+            }
+        } else {
+            Ok(crate::enums::PromiseState::Pending)
+        }
+    } else {
+        Ok(crate::enums::PromiseState::Pending)
+    }
 }
 
 impl ExecutionContext<JscTypes> for JscEngine {
@@ -4871,9 +5006,10 @@ impl ExecutionContext<JscTypes> for JscEngine {
     ) -> Completion<crate::enums::PromiseState<JscTypes>, JscTypes> {
         // If a reaction for this promise was attached through
         // `perform_promise_then` and has already fired, its settlement was
-        // recorded Rust-side — answer synchronously.  This works inside
-        // nested reaction callbacks, where the eval-based drain below is a
-        // re-entrancy no-op (JSC only drains at the outermost C API call).
+        // recorded Rust-side — answer synchronously.  This is reliable
+        // inside nested reaction callbacks, where the eval-based fallback
+        // below would run queued reactions re-entrantly (JSC drains at
+        // every JSEvaluateScript boundary, not just the outermost call).
         if let Some(record) = self.settled_promises.get(&(promise.as_raw() as usize)) {
             return Ok(if record.fulfilled {
                 crate::enums::PromiseState::Fulfilled(record.value)
@@ -4882,110 +5018,19 @@ impl ExecutionContext<JscTypes> for JscEngine {
             });
         }
 
-        // Note: There is no way to observe a promise's state synchronously
-        // through JSC's C API when inside a nested JS call (microtasks don't
-        // drain).  This function uses eval-based .then() handlers + void 0
-        // to attempt draining, which only works at the outermost C API level.
-        // Inside nested calls, this always returns Pending.
-        //
-        // Attempted fix (2026-07-12): tracked promise states via
-        // Rust-side RefCell updated by wrapped resolve/reject functions.
-        // Failed because .then() chaining creates NEW JSC-internal promises
-        // (via Promise.prototype.then) that are not tracked.  Only promises
-        // created directly by new_promise_capability were tracked, which
-        // didn't help for the chained promises that the stream algorithm
-        // actually polls.
-        let _guard = EngineGuard::new(self as *mut JscEngine);
-        let global = self.context.global_object();
-        let mut exc: *mut JSValueRef = std::ptr::null_mut();
-
-        let p_key = JscString::from_rust("__fw_ps_promise");
-        unsafe {
-            JSObjectSetProperty(
-                self.context.as_context_ref(),
-                global.raw,
-                p_key.raw,
-                promise.as_value_ref(),
-                kJSPropertyAttributeNone,
-                &mut exc,
-            )
-        };
-        if !exc.is_null() {
-            return Err(JscValue {
-                raw: exc,
-                ctx: self.ctx_ptr(),
-            });
+        // Re-entrancy guard: the eval fallback runs JSEvaluateScript, whose
+        // return drains JSC's microtask queue even at nested depth.  A
+        // drained reaction can re-enter `promise_state`; without this guard
+        // the recursion is unbounded (each nested promise_state evals and
+        // drains again), observed as a stack-overflow SIGSEGV in the piping
+        // tests.  Re-entrant calls answer Pending without evaluating.
+        if self.in_promise_state_eval {
+            return Ok(crate::enums::PromiseState::Pending);
         }
-
-        let setup_script = r#"
-            __fw_ps_state = "pending";
-            __fw_ps_value = undefined;
-            __fw_ps_promise.then(
-                function(v) { __fw_ps_state = "fulfilled"; __fw_ps_value = v; },
-                function(r) { __fw_ps_state = "rejected"; __fw_ps_value = r; }
-            );
-        "#;
-        self.eval_script_raw(setup_script);
-        self.eval_script_raw("void 0");
-
-        let state_key = JscString::from_rust("__fw_ps_state");
-        let state_val = unsafe {
-            JSObjectGetProperty(
-                self.context.as_context_ref(),
-                global.raw,
-                state_key.raw,
-                &mut exc,
-            )
-        };
-        let value_key = JscString::from_rust("__fw_ps_value");
-        let value_val = unsafe {
-            JSObjectGetProperty(
-                self.context.as_context_ref(),
-                global.raw,
-                value_key.raw,
-                &mut exc,
-            )
-        };
-
-        unsafe {
-            let cleanup_keys = [
-                JscString::from_rust("__fw_ps_promise"),
-                JscString::from_rust("__fw_ps_state"),
-                JscString::from_rust("__fw_ps_value"),
-            ];
-            for key in &cleanup_keys {
-                JSObjectDeleteProperty(
-                    self.context.as_context_ref(),
-                    global.raw,
-                    key.raw,
-                    std::ptr::null_mut(),
-                );
-            }
-        }
-
-        let ctx_ptr = self.ctx_ptr();
-        if !state_val.is_null() && unsafe { JSValueIsString(ctx_ptr, state_val) } {
-            let str_exc: *mut JSValueRef = std::ptr::null_mut();
-            let state_raw = unsafe { JSValueToStringCopy(ctx_ptr, state_val, str_exc as *mut _) };
-            if !state_raw.is_null() {
-                let state_str = unsafe { JscString::from_raw(state_raw) }.to_rust();
-                match state_str.as_str() {
-                    "fulfilled" => Ok(crate::enums::PromiseState::Fulfilled(JscValue {
-                        raw: value_val,
-                        ctx: ctx_ptr,
-                    })),
-                    "rejected" => Ok(crate::enums::PromiseState::Rejected(JscValue {
-                        raw: value_val,
-                        ctx: ctx_ptr,
-                    })),
-                    _ => Ok(crate::enums::PromiseState::Pending),
-                }
-            } else {
-                Ok(crate::enums::PromiseState::Pending)
-            }
-        } else {
-            Ok(crate::enums::PromiseState::Pending)
-        }
+        self.in_promise_state_eval = true;
+        let result = promise_state_eval_fallback(self, promise);
+        self.in_promise_state_eval = false;
+        result
     }
 
     // ── §27.5 Generator ───────────────────────────────────────────────────
@@ -5523,11 +5568,16 @@ impl EcmascriptHost<JscTypes> for JscEngine {
         }
 
         if let (Some((promise_ptr, is_reject)), Some(value)) = (resolver_record, args.first()) {
+            // Root the promise while the record exists so its address
+            // cannot be recycled; see `PromiseSettlement`.
+            let promise_raw = promise_ptr as *mut JSValueRef;
+            let promise_root = JscManagedValue::new(self.ctx_ptr(), promise_raw);
             self.settled_promises.insert(
                 promise_ptr,
                 PromiseSettlement {
                     fulfilled: !is_reject,
                     value: *value,
+                    _promise_root: promise_root,
                 },
             );
         }
