@@ -6,7 +6,7 @@ use crate::js::Types;
 use crate::webidl::bindings::create_interface_instance;
 use crate::webidl::{mark_promise_as_handled, rejected_promise, resolved_promise};
 use js_engine::gc::GcCell;
-use js_engine::gc::JsObjectCell;
+use js_engine::gc::GcCellSet;
 use js_engine::gc::gc_cell_new;
 use js_engine::gc_struct;
 
@@ -181,7 +181,7 @@ pub struct ReadableStreamDefaultReader {
     stream: GcCell<Option<ReadableStream>>,
 
     /// <https://streams.spec.whatwg.org/#readablestreamgenericreader-closedpromise>
-    closed_promise: JsObjectCell,
+    closed_promise: GcCell<Option<JsObject>>,
     /// promise remains pending.
     closed_resolvers: GcCell<Option<PromiseResolvers<Types>>>,
 
@@ -193,7 +193,7 @@ impl ReadableStreamDefaultReader {
     pub(crate) fn new() -> Self {
         Self {
             stream: gc_cell_new(None),
-            closed_promise: JsObjectCell::new(None),
+            closed_promise: gc_cell_new(None),
             closed_resolvers: gc_cell_new(None),
             read_requests: gc_cell_new(Vec::new()),
         }
@@ -355,7 +355,7 @@ impl ReadableStreamGenericReader for ReadableStreamDefaultReader {
     }
 
     fn set_closed_promise_slot_value(&self, promise: Option<JsObject>) {
-        // JsObjectCell keeps the promise alive via a managed reference;
+        // JSC: `set` re-registers the managed reference for the new value;
         // replacing it removes the reference for the previous value.
         self.closed_promise.set(promise);
     }
@@ -365,7 +365,8 @@ impl ReadableStreamGenericReader for ReadableStreamDefaultReader {
     }
 
     fn set_closed_resolvers_slot_value(&self, resolvers: Option<PromiseResolvers<Types>>) {
-        *self.closed_resolvers.borrow_mut() = resolvers;
+        // JSC: `set` registers managed edges for the resolve/reject callables.
+        self.closed_resolvers.set(resolvers);
     }
 
     fn as_reader_slot(&self) -> ReadableStreamReader {

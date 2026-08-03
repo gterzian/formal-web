@@ -29,6 +29,13 @@
 //! guaranteed to return the *same* wrapper for a given context (the VM
 //! caches wrappers), so the anchor can be found from a bare
 //! `JSContextRef` without any global registry.
+//!
+//! Platform objects can additionally get a **per-object owner**: a fresh
+//! `NSObject` exported as a property of the object's reflector (`JSValue
+//! setValue:forProperty:`), reachable from the JS runtime exactly while
+//! the reflector is.  [`JscGcOwner`] is the handle type for both the
+//! per-context anchor and per-object owners; `JscManagedValue::new`
+//! takes one so a cell's edges can be pointed at either.
 
 use std::ffi::c_void;
 
@@ -112,6 +119,14 @@ impl JSValue {
             value: *mut JSValueRef,
             context: &JSContext,
         ) -> Retained<JSValue>;
+
+        /// Set a named property on the wrapped JS object to an exported
+        /// Objective-C object.  This creates a `JSAPIWrapperObject` on the
+        /// object (the property key is a plain string), making the object
+        /// reachable from the JS runtime while the JS object is.  Used to
+        /// export the per-object GC owner on a platform object's reflector.
+        #[unsafe(method(setValue:forProperty:))]
+        fn set_value(&self, value: &NSObject, property: &NSObject);
     );
 }
 
@@ -131,6 +146,11 @@ static ANCHOR_ASSOC_KEY: u8 = 0;
 
 /// Name of the exported global property holding the anchor.
 const ANCHOR_GLOBAL_NAME: &str = "formalWebGcAnchor";
+
+/// Name of the property holding the per-object GC owner on each platform
+/// object's reflector (see `JscGcOwner::exported_on`).  Visible to JS like
+/// the anchor; kept obscure to avoid colliding with real properties.
+pub(crate) const PLATFORM_GC_OWNER_PROPERTY: &str = "formalWebGcOwner";
 
 /// Look up (creating if needed) the per-context GC anchor: a plain
 /// `NSObject` exported to the context's global object so the garbage
@@ -178,15 +198,75 @@ fn gc_anchor(
     (vm, anchor, js_context)
 }
 
+// ── GC owner handle ───────────────────────────────────────────────────────
+
+/// An owner for managed-reference edges: an Objective-C object exported
+/// to the JS runtime (a `JSAPIWrapperObject`), plus the virtual machine
+/// the edges are registered with.
+///
+/// Two kinds exist:
+///
+/// - the per-context **anchor** ([`JscGcOwner::anchor`]), exported on the
+///   global object, always reachable;
+/// - a **per-object owner** ([`JscGcOwner::exported_on`]), exported as a
+///   property of a platform object's reflector, reachable exactly while
+///   the reflector is.
+#[derive(Clone)]
+pub(crate) struct JscGcOwner {
+    /// The owner object; edges are scanned by the GC while this is
+    /// reachable from the JS runtime.
+    object: Retained<NSObject>,
+    /// The virtual machine the edges are registered with.
+    vm: Retained<JSVirtualMachine>,
+    /// The context wrapper; kept alive so the owner's export stays valid.
+    _context: Retained<JSContext>,
+}
+
+impl JscGcOwner {
+    /// The per-context anchor: a plain `NSObject` exported to the global
+    /// object, reachable for the whole context lifetime.
+    pub(crate) fn anchor(ctx: *mut JSContextRef) -> Self {
+        let (vm, anchor, js_context) = gc_anchor(ctx);
+        Self {
+            object: anchor,
+            vm,
+            _context: js_context,
+        }
+    }
+
+    /// Create a fresh `NSObject`, export it as `property` on the given JS
+    /// object (the reflector), and return it as an owner handle.
+    pub(crate) fn exported_on(
+        ctx: *mut JSContextRef,
+        object_ref: *mut JSValueRef,
+        property: &str,
+    ) -> Self {
+        objc2::rc::autoreleasepool(|_pool| {
+            let js_context =
+                JSContext::context_with_js_global_context_ref(ctx as *mut JSGlobalContextRef);
+            let vm = js_context.virtual_machine();
+            let owner = NSObject::new();
+            let name = NSString::from_str(property);
+            let js_value = JSValue::value_with_js_value_ref(object_ref, &js_context);
+            js_value.set_value(&owner, &name);
+            Self {
+                object: owner,
+                vm,
+                _context: js_context,
+            }
+        })
+    }
+}
+
 // ── RAII managed reference ────────────────────────────────────────────────
 
 /// A JS value kept alive through JSC's managed-reference mechanism.
 ///
 /// Created with [`JscManagedValue::new`]; the value is wrapped in a
 /// `JSManagedValue` and registered with the context's `JSVirtualMachine`
-/// via `addManagedReference:withOwner:`, using the per-context exported
-/// anchor as the owner (reachable from the JS runtime for the whole
-/// context lifetime).  When the last clone is dropped the edge is removed
+/// via `addManagedReference:withOwner:`, using the passed [`JscGcOwner`]
+/// (per-context anchor, or a per-object owner exported on a reflector).
+/// When the last clone is dropped the edge is removed
 /// (`removeManagedReference:withOwner:`) and the GC may collect the value.
 ///
 /// Only GC-managed heap values (objects, symbols, bigints) are wrapped;
@@ -197,24 +277,23 @@ pub(crate) struct JscManagedValue {
     /// The conditionally-retained value; the external object graph keeps
     /// this (and therefore the wrapped JS value) alive.
     managed: Retained<JSManagedValue>,
-    /// The virtual machine, needed to tear the edge down on drop.
-    vm: Retained<JSVirtualMachine>,
-    /// Anchor owner — the per-context exported `NSObject`.  Reachable
-    /// from the JS runtime while the context lives, so the edge is always
-    /// scanned while this value exists.
-    owner: Retained<NSObject>,
-    /// The context wrapper; kept alive so the anchor's export (and the
-    /// edge) stays valid for this value's lifetime.
-    _context: Retained<JSContext>,
+    /// The owner the edge is registered with (and the VM, needed to tear
+    /// the edge down on drop).
+    owner: JscGcOwner,
     /// The C-API value pointer, for callers that need the raw JSValueRef.
     value_ref: *mut JSValueRef,
 }
 
 impl JscManagedValue {
-    /// Protect `value` in `ctx` through the managed-reference mechanism.
+    /// Protect `value` in `ctx` through the managed-reference mechanism,
+    /// with the edge reported under `owner`.
     ///
     /// Returns `None` for primitive values (not GC-managed).
-    pub(crate) fn new(ctx: *mut JSContextRef, value: *mut JSValueRef) -> Option<Self> {
+    pub(crate) fn new(
+        ctx: *mut JSContextRef,
+        value: *mut JSValueRef,
+        owner: &JscGcOwner,
+    ) -> Option<Self> {
         if ctx.is_null() || value.is_null() {
             return None;
         }
@@ -234,15 +313,14 @@ impl JscManagedValue {
         // declares `value` as `strong`), and every object we keep is
         // explicitly retained (Retained), so nothing we need is released.
         objc2::rc::autoreleasepool(|_pool| {
-            let (vm, anchor, js_context) = gc_anchor(ctx);
+            let js_context =
+                JSContext::context_with_js_global_context_ref(ctx as *mut JSGlobalContextRef);
             let js_value = JSValue::value_with_js_value_ref(value, &js_context);
             let managed = JSManagedValue::managed_value_with_value(&js_value);
-            vm.add_managed_reference(&managed, &anchor);
+            owner.vm.add_managed_reference(&managed, &owner.object);
             Some(JscManagedValue {
                 managed,
-                vm,
-                owner: anchor,
-                _context: js_context,
+                owner: owner.clone(),
                 value_ref: value,
             })
         })
@@ -257,8 +335,10 @@ impl JscManagedValue {
 impl Drop for JscManagedValue {
     fn drop(&mut self) {
         // The runtime scans the edge until it is explicitly removed; the
-        // anchor owner stays reachable, so without this the value would
-        // never be collected.
-        self.vm.remove_managed_reference(&self.managed, &self.owner);
+        // owner stays reachable, so without this the value would never
+        // be collected.
+        self.owner
+            .vm
+            .remove_managed_reference(&self.managed, &self.owner.object);
     }
 }

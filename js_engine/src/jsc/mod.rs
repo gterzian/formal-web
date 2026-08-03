@@ -41,8 +41,9 @@ mod engine;
 mod objc_gc;
 mod types;
 
+pub(crate) use engine::current_engine_context;
 pub use engine::{
     JscEngine, JscTypes, clear_current_engine, create_builtin_fn_with_captures, set_current_engine,
 };
-pub(crate) use objc_gc::JscManagedValue;
+pub(crate) use objc_gc::{JscGcOwner, JscManagedValue, PLATFORM_GC_OWNER_PROPERTY};
 pub use types::*;

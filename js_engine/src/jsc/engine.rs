@@ -16,7 +16,7 @@ use std::collections::HashMap;
 use std::ffi::c_char;
 use std::sync::LazyLock;
 
-use super::objc_gc::JscManagedValue;
+use super::objc_gc::{JscGcOwner, JscManagedValue};
 use super::types::*;
 
 // ── Current engine (thread-local) ────────────────────────────────────
@@ -1071,6 +1071,7 @@ unsafe extern "C" fn builtin_set_property(
         let bind_jsc = JscString::from_rust("bind");
         let call_jsc = JscString::from_rust("call");
         let apply_jsc = JscString::from_rust("apply");
+        let anchor = JscGcOwner::anchor(ctx);
         if JSStringIsEqual(property_name, name_jsc.raw) {
             let str_ref = JSValueToStringCopy(ctx, value, std::ptr::null_mut());
             if !str_ref.is_null() {
@@ -1087,16 +1088,16 @@ unsafe extern "C" fn builtin_set_property(
         } else if JSStringIsEqual(property_name, to_string_jsc.raw) {
             // Store through a managed reference (replaces the old one,
             // which drops its managed reference).
-            (*data_ptr).to_string_val = JscManagedValue::new(ctx, value);
+            (*data_ptr).to_string_val = JscManagedValue::new(ctx, value, &anchor);
             true
         } else if JSStringIsEqual(property_name, bind_jsc.raw) {
-            (*data_ptr).bind_val = JscManagedValue::new(ctx, value);
+            (*data_ptr).bind_val = JscManagedValue::new(ctx, value, &anchor);
             true
         } else if JSStringIsEqual(property_name, call_jsc.raw) {
-            (*data_ptr).call_val = JscManagedValue::new(ctx, value);
+            (*data_ptr).call_val = JscManagedValue::new(ctx, value, &anchor);
             true
         } else if JSStringIsEqual(property_name, apply_jsc.raw) {
-            (*data_ptr).apply_val = JscManagedValue::new(ctx, value);
+            (*data_ptr).apply_val = JscManagedValue::new(ctx, value, &anchor);
             true
         } else {
             // Reject writes to unknown properties.
@@ -1822,7 +1823,8 @@ impl JscEngine {
         // original lives only in the wrapper's private data (invisible to
         // JSC's GC).  Root it through a managed reference owned by the
         // wrapper closure so it survives until the wrapper is finalized.
-        let original_root = JscManagedValue::new(ctx, original.raw).map(std::rc::Rc::new);
+        let original_root =
+            JscManagedValue::new(ctx, original.raw, &JscGcOwner::anchor(ctx)).map(std::rc::Rc::new);
         let behaviour: StoredBehaviour = Box::new(move |args, this, ec| {
             // Keep the root alive for this closure's lifetime (shared via
             // Rc because the closure is `Fn`).
@@ -1835,7 +1837,7 @@ impl JscEngine {
                 // Root the promise while the record exists so its address
                 // cannot be recycled; see `PromiseSettlement`.
                 let promise_raw = promise_ptr as *mut JSValueRef;
-                let promise_root = JscManagedValue::new(ctx, promise_raw);
+                let promise_root = JscManagedValue::new(ctx, promise_raw, &JscGcOwner::anchor(ctx));
                 engine.settled_promises.insert(
                     promise_ptr,
                     PromiseSettlement {
@@ -5089,7 +5091,8 @@ impl ExecutionContext<JscTypes> for JscEngine {
         // JscEngine::drop (which drops each managed value, removing its
         // addManagedReference edge).
         let ctx_ptr = self.ctx_ptr();
-        if let Some(managed) = JscManagedValue::new(ctx_ptr, obj.as_value_ref()) {
+        let anchor = JscGcOwner::anchor(ctx_ptr);
+        if let Some(managed) = JscManagedValue::new(ctx_ptr, obj.as_value_ref(), &anchor) {
             self.managed_objects.push(managed);
         }
 
@@ -5150,6 +5153,29 @@ impl ExecutionContext<JscTypes> for JscEngine {
             // fields), so no aliasing occurs.
             f(unsafe { &mut *data_ptr }, ec);
         }
+    }
+
+    fn adopt_platform_gc_owner(&mut self, object: &JscObject, data: &mut dyn crate::gc::GcOwner) {
+        // Create the per-object owner, export it on the reflector, and
+        // re-point the platform object's cell edges onto it.  The owner is
+        // reachable from the JS runtime exactly while the reflector is, so
+        // the struct's JS-value fields stay alive exactly while its JS
+        // object is reachable.
+        //
+        // Disabled by default: exporting the owner via `JSValue
+        // setValue:forProperty:` crashes the system JavaScriptCore's GC
+        // when called from within binding callbacks (see the JSC README).
+        // `FORMAL_WEB_GC_ADOPT=1` enables it for experimentation.
+        if std::env::var_os("FORMAL_WEB_GC_ADOPT").is_none() {
+            return;
+        }
+        let owner = crate::jsc::JscGcOwner::exported_on(
+            self.ctx_ptr(),
+            object.as_value_ref(),
+            crate::jsc::PLATFORM_GC_OWNER_PROPERTY,
+        );
+        let owner_ref = crate::gc::GcOwnerRef::jsc(owner);
+        data.adopt_gc_owner(&owner_ref);
     }
 
     fn new_type_error(&mut self, msg: &str) -> JscValue {
@@ -5408,7 +5434,8 @@ impl ExecutionContext<JscTypes> for JscEngine {
         // which removes the reference so the GC can collect the value.
         let ctx_ptr = self.ctx_ptr();
         let value_raw = value.raw;
-        match JscManagedValue::new(ctx_ptr, value_raw) {
+        let anchor = JscGcOwner::anchor(ctx_ptr);
+        match JscManagedValue::new(ctx_ptr, value_raw, &anchor) {
             Some(managed) => {
                 crate::gc::GcRootHandle::new(*value, Some(Box::new(move |_val| drop(managed))))
             }
@@ -5421,7 +5448,8 @@ impl ExecutionContext<JscTypes> for JscEngine {
         // Same as create_root: managed reference + removal on drop.
         let ctx_ptr = self.ctx_ptr();
         let value_raw = value.raw;
-        match JscManagedValue::new(ctx_ptr, value_raw) {
+        let anchor = JscGcOwner::anchor(ctx_ptr);
+        match JscManagedValue::new(ctx_ptr, value_raw, &anchor) {
             Some(managed) => {
                 crate::gc::GcRootHandle::new(*value, Some(Box::new(move |_val| drop(managed))))
             }
@@ -5571,7 +5599,11 @@ impl EcmascriptHost<JscTypes> for JscEngine {
             // Root the promise while the record exists so its address
             // cannot be recycled; see `PromiseSettlement`.
             let promise_raw = promise_ptr as *mut JSValueRef;
-            let promise_root = JscManagedValue::new(self.ctx_ptr(), promise_raw);
+            let promise_root = JscManagedValue::new(
+                self.ctx_ptr(),
+                promise_raw,
+                &JscGcOwner::anchor(self.ctx_ptr()),
+            );
             self.settled_promises.insert(
                 promise_ptr,
                 PromiseSettlement {

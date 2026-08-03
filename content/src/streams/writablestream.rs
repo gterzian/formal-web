@@ -10,7 +10,7 @@ use crate::js::{Types, create_builtin_fn_with_traced_captures};
 use crate::streams::{SizeAlgorithm, extract_high_water_mark, extract_size_algorithm};
 use crate::webidl::bindings::create_interface_instance;
 use crate::webidl::{resolved_promise, upon_settlement};
-use js_engine::gc::{GcCell, JsObjectCell, JsValueCell, gc_cell_new};
+use js_engine::gc::{GcCell, GcCellSet, gc_cell_new};
 use js_engine::gc_struct;
 
 use super::{
@@ -31,7 +31,7 @@ type JsObject = <Types as JsTypes>::JsObject;
 pub struct WritableStream {
     /// <https://streams.spec.whatwg.org/#writablestream-controller>
     controller: GcCell<Option<WritableStreamController>>,
-    controller_object: JsObjectCell,
+    controller_object: GcCell<Option<JsObject>>,
 
     /// <https://streams.spec.whatwg.org/#writablestream-writer>
     writer: GcCell<Option<WritableStreamWriter>>,
@@ -41,7 +41,7 @@ pub struct WritableStream {
     state: Rc<RefCell<WritableStreamState>>,
 
     /// <https://streams.spec.whatwg.org/#writablestream-storederror>
-    stored_error: JsValueCell,
+    stored_error: GcCell<JsValue>,
 
     /// <https://streams.spec.whatwg.org/#writablestream-writerequests>
     write_requests: GcCell<Vec<WriteRequest>>,
@@ -68,10 +68,10 @@ impl WritableStream {
         let undefined = ec.value_undefined();
         Self {
             controller: gc_cell_new(None),
-            controller_object: JsObjectCell::new(None),
+            controller_object: gc_cell_new(None),
             writer: gc_cell_new(None),
             state: Rc::new(RefCell::new(WritableStreamState::Writable)),
-            stored_error: JsValueCell::new(undefined),
+            stored_error: gc_cell_new(undefined),
             write_requests: gc_cell_new(Vec::new()),
             in_flight_write_request: gc_cell_new(None),
             close_request: gc_cell_new(None),

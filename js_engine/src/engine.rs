@@ -697,6 +697,20 @@ pub trait ExecutionContext<T: JsTypes + JsTypesWithRealm>: EcmascriptHost<T> {
     /// needs to call back into ECMA-262 operations.
     fn with_object_any_mut_with(&mut self, object: &T::JsObject, f: ObjectDataMutation<'_, T>);
 
+    /// (JSC) Create a per-object GC owner for `object`, export it on the
+    /// object (making it reachable from the JS runtime exactly while the
+    /// object is), and adopt the platform object's managed-reference cells
+    /// onto it — so a struct's JS-value fields stay alive exactly while
+    /// its JS object is reachable.  Called by `create_interface_instance`
+    /// right after the reflector exists.  No-op on Boa and V8.
+    #[cfg(not(feature = "boa"))]
+    fn adopt_platform_gc_owner(
+        &mut self,
+        _object: &T::JsObject,
+        _data: &mut dyn crate::gc::GcOwner,
+    ) {
+    }
+
     // ── Error Construction ──────────────────────────────────────────────
 
     /// <https://tc39.es/ecma262/#sec-native-error-types-used-in-this-standard-typeerror>

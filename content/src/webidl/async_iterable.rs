@@ -1,4 +1,5 @@
 use js_engine::gc::GcCell;
+use js_engine::gc::GcCellSet;
 use js_engine::gc::gc_cell_new;
 use js_engine::gc_struct;
 use std::{cell::Cell, rc::Rc};
@@ -221,6 +222,15 @@ unsafe impl<T: AsyncValueIterable + 'static> js_engine::gc::Trace for DefaultAsy
 #[cfg(not(feature = "boa"))]
 impl<T: AsyncValueIterable + 'static> js_engine::gc::Finalize for DefaultAsyncIterator<T> {}
 
+// JSC: the iterator's JS values all live in its own `GcCell` (managed
+// edges), so an outer cell enumerates nothing here.  Required so the
+// macro-generated `GcTraceable` impls of the `NextOn*Captures` structs
+// (which embed `DefaultAsyncIterator<T>`) compile.
+#[cfg(feature = "jsc")]
+impl<T: AsyncValueIterable> js_engine::gc::GcTraceable for DefaultAsyncIterator<T> {
+    fn visit_js_values(&self, _visit: &mut dyn FnMut(&js_engine::jsc::JscValue)) {}
+}
+
 impl<T> DefaultAsyncIterator<T>
 where
     T: AsyncValueIterable,
@@ -282,13 +292,13 @@ where
             // Step 10.4: "Set object's ongoing promise to afterOngoingPromiseCapability.[[Promise]]."
             let result_obj = Types::value_as_object(&then_value)
                 .ok_or_else(|| ec.new_type_error("PerformPromiseThen did not return an object"))?;
-            *self.ongoing_promise.borrow_mut() = Some(result_obj.clone());
+            self.ongoing_promise.set(Some(result_obj.clone()));
             Ok(result_obj)
         } else {
             // Step 11: "Otherwise:"
             // Step 11.1: "Set object's ongoing promise to the result of running nextSteps."
             let promise = self.start_operation(operation, ec)?;
-            *self.ongoing_promise.borrow_mut() = Some(promise.clone());
+            self.ongoing_promise.set(Some(promise.clone()));
             Ok(promise)
         }
     }

@@ -1,4 +1,4 @@
-use js_engine::gc::{JsObjectCell, JsValueCell};
+use js_engine::gc::{GcCell, gc_cell_new};
 use js_engine::gc_struct;
 use js_engine::{Completion, ExecutionContext, JsTypes, PromiseResolvers};
 
@@ -51,11 +51,11 @@ impl WriteRequest {
 }
 #[gc_struct]
 pub(crate) struct PendingAbortRequest {
-    promise: JsObjectCell,
+    promise: GcCell<Option<JsObject>>,
     resolvers: PromiseResolvers<Types>,
 
     /// <https://streams.spec.whatwg.org/#pending-abort-request-reason>
-    reason: JsValueCell,
+    reason: GcCell<JsValue>,
 
     /// <https://streams.spec.whatwg.org/#pending-abort-request-was-already-erroring>
     was_already_erroring: bool,
@@ -72,9 +72,9 @@ impl PendingAbortRequest {
             .as_object()
             .ok_or_else(|| ec.new_type_error("new_promise_pending did not return an object"))?;
         Ok(Self {
-            promise: JsObjectCell::new(Some(promise_obj)),
+            promise: gc_cell_new(Some(promise_obj)),
             resolvers,
-            reason: JsValueCell::new(reason),
+            reason: gc_cell_new(reason),
             was_already_erroring,
         })
     }

@@ -18,7 +18,7 @@ use crate::webidl::{
     transform_promise_to_undefined,
 };
 use js_engine::EcmascriptHost;
-use js_engine::gc::{GcCell, JsObjectCell, JsValueCell, gc_cell_new};
+use js_engine::gc::{GcCell, GcCellSet, gc_cell_new};
 use js_engine::gc_struct;
 use js_engine::records::PromiseResolvers;
 use js_engine::types::JsTypes;
@@ -44,7 +44,7 @@ pub struct ReadableStream {
     /// <https://streams.spec.whatwg.org/#readablestream-controller>
     controller: GcCell<Option<ReadableStreamController>>,
 
-    controller_object: JsObjectCell,
+    controller_object: GcCell<Option<JsObject>>,
 
     /// <https://streams.spec.whatwg.org/#readablestream-reader>
     reader: GcCell<Option<ReadableStreamReader>>,
@@ -58,18 +58,18 @@ pub struct ReadableStream {
     state: Rc<RefCell<ReadableStreamState>>,
 
     /// <https://streams.spec.whatwg.org/#readablestream-storederror>
-    stored_error: JsValueCell,
+    stored_error: GcCell<JsValue>,
 }
 
 impl ReadableStream {
     pub(crate) fn new(ec: &mut dyn ExecutionContext<Types>) -> Self {
         Self {
             controller: gc_cell_new(None),
-            controller_object: JsObjectCell::new(None),
+            controller_object: gc_cell_new(None),
             reader: gc_cell_new(None),
             disturbed: Rc::new(Cell::new(false)),
             state: Rc::new(RefCell::new(ReadableStreamState::Readable)),
-            stored_error: JsValueCell::new(ec.value_undefined()),
+            stored_error: gc_cell_new(ec.value_undefined()),
         }
     }
 
@@ -372,7 +372,7 @@ pub(crate) struct TeeState {
     reader: ReadableStreamDefaultReader,
     branch1: Option<ReadableStream>,
     branch2: Option<ReadableStream>,
-    cancel_promise: JsObjectCell,
+    cancel_promise: GcCell<Option<JsObject>>,
     cancel_resolvers: PromiseResolvers<crate::js::Types>,
     #[ignore_trace]
     reading: bool,
@@ -382,8 +382,8 @@ pub(crate) struct TeeState {
     canceled1: bool,
     #[ignore_trace]
     canceled2: bool,
-    reason1: JsValueCell,
-    reason2: JsValueCell,
+    reason1: GcCell<JsValue>,
+    reason2: GcCell<JsValue>,
 }
 
 fn default_tee_on_rejected_fn(
@@ -492,14 +492,14 @@ fn readable_stream_default_tee(
         reader,
         branch1: None,
         branch2: None,
-        cancel_promise: JsObjectCell::new(Some(cancel_promise)),
+        cancel_promise: gc_cell_new(Some(cancel_promise)),
         cancel_resolvers,
         reading: false,
         read_again: false,
         canceled1: false,
         canceled2: false,
-        reason1: JsValueCell::new(undefined.clone()),
-        reason2: JsValueCell::new(undefined.clone()),
+        reason1: gc_cell_new(undefined.clone()),
+        reason2: gc_cell_new(undefined.clone()),
     });
 
     // Step 16: "Let startAlgorithm be an algorithm that returns undefined."
@@ -926,8 +926,8 @@ enum ReadableStreamFromIteratorKind {
 
 #[gc_struct]
 struct ReadableStreamFromIteratorRecord {
-    iterator: JsObjectCell,
-    next_method: JsObjectCell,
+    iterator: GcCell<Option<JsObject>>,
+    next_method: GcCell<Option<JsObject>>,
     kind: ReadableStreamFromIteratorKind,
 }
 
@@ -1399,8 +1399,8 @@ fn get_readable_stream_from_iterator_record(
             ec,
         )?;
         return Ok(ReadableStreamFromIteratorRecord {
-            iterator: JsObjectCell::new(Some(iterator)),
-            next_method: JsObjectCell::new(Some(next_method)),
+            iterator: gc_cell_new(Some(iterator)),
+            next_method: gc_cell_new(Some(next_method)),
             kind: ReadableStreamFromIteratorKind::Async,
         });
     }
@@ -1427,8 +1427,8 @@ fn get_readable_stream_from_iterator_record(
         ec,
     )?;
     Ok(ReadableStreamFromIteratorRecord {
-        iterator: JsObjectCell::new(Some(iterator)),
-        next_method: JsObjectCell::new(Some(next_method)),
+        iterator: gc_cell_new(Some(iterator)),
+        next_method: gc_cell_new(Some(next_method)),
         kind: ReadableStreamFromIteratorKind::Sync,
     })
 }
@@ -1805,7 +1805,7 @@ pub(crate) struct ByteTeeState {
     /// <https://streams.spec.whatwg.org/#abstract-opdef-readablebytestreamtee>
     branch2: Option<ReadableStream>,
     /// <https://streams.spec.whatwg.org/#abstract-opdef-readablebytestreamtee>
-    cancel_promise: JsObjectCell,
+    cancel_promise: GcCell<Option<JsObject>>,
     /// <https://streams.spec.whatwg.org/#abstract-opdef-readablebytestreamtee>
     cancel_resolvers: PromiseResolvers<crate::js::Types>,
     /// <https://streams.spec.whatwg.org/#abstract-opdef-readablebytestreamtee>
@@ -1824,9 +1824,9 @@ pub(crate) struct ByteTeeState {
     #[ignore_trace]
     canceled2: bool,
     /// <https://streams.spec.whatwg.org/#abstract-opdef-readablebytestreamtee>
-    reason1: JsValueCell,
+    reason1: GcCell<JsValue>,
     /// <https://streams.spec.whatwg.org/#abstract-opdef-readablebytestreamtee>
-    reason2: JsValueCell,
+    reason2: GcCell<JsValue>,
     /// <https://streams.spec.whatwg.org/#abstract-opdef-readablebytestreamtee>
     #[ignore_trace]
     reader_generation: u64,
@@ -2706,15 +2706,15 @@ fn readable_byte_stream_tee(
         reader: ReadableStreamReader::Default(reader),
         branch1: None,
         branch2: None,
-        cancel_promise: JsObjectCell::new(Some(cancel_promise)),
+        cancel_promise: gc_cell_new(Some(cancel_promise)),
         cancel_resolvers,
         reading: false,
         read_again_for_branch1: false,
         read_again_for_branch2: false,
         canceled1: false,
         canceled2: false,
-        reason1: JsValueCell::new(undefined.clone()),
-        reason2: JsValueCell::new(undefined.clone()),
+        reason1: gc_cell_new(undefined.clone()),
+        reason2: gc_cell_new(undefined.clone()),
         reader_generation: 0,
     });
 
@@ -3023,7 +3023,7 @@ fn readable_stream_pipe_to(
     // Step 15: "In parallel but not really; see #905, using reader and writer, read all chunks from source and write them to dest."
     // Note: The pipe progress below follows a single typed state machine and advances from Boa promise reactions at each microtask.
     let state = PipeToState::new(PipeToStateInner {
-        promise: JsObjectCell::new(Some(pipe_promise_obj.clone())),
+        promise: gc_cell_new(Some(pipe_promise_obj.clone())),
         reader,
         writer,
         pending_writes: VecDeque::new(),
@@ -3109,10 +3109,10 @@ enum PipeShutdownAction {
 
 #[gc_struct]
 pub(crate) struct PipeToStateInner {
-    promise: JsObjectCell,
+    promise: GcCell<Option<JsObject>>,
     reader: ReadableStreamDefaultReader,
     writer: super::WritableStreamDefaultWriter,
-    pending_writes: VecDeque<JsObjectCell>,
+    pending_writes: VecDeque<GcCell<Option<JsObject>>>,
 
     #[ignore_trace]
     state: PipePumpState,
@@ -3127,8 +3127,8 @@ pub(crate) struct PipeToStateInner {
     prevent_cancel: bool,
 
     signal: Option<AbortSignal>,
-    shutdown_error: Option<JsValueCell>,
-    shutdown_action_promise: Option<JsObjectCell>,
+    shutdown_error: Option<GcCell<JsValue>>,
+    shutdown_action_promise: Option<GcCell<Option<JsObject>>>,
     resolvers: Option<js_engine::PromiseResolvers<crate::js::Types>>,
 
     #[ignore_trace]
@@ -3281,7 +3281,7 @@ impl PipeToState {
         self.0
             .borrow_mut()
             .pending_writes
-            .push_back(JsObjectCell::new(Some(write_promise)));
+            .push_back(gc_cell_new(Some(write_promise)));
         Ok(true)
     }
 
@@ -3573,7 +3573,7 @@ impl PipeToState {
         };
 
         self.0.borrow_mut().shutdown_action_promise =
-            Some(JsObjectCell::new(Some(action_promise.clone())));
+            Some(gc_cell_new(Some(action_promise.clone())));
         self.append_reaction(action_promise, ec)
     }
 
@@ -3650,7 +3650,7 @@ impl PipeToState {
     }
 
     fn set_shutdown_error(&self, error: Option<JsValue>) {
-        self.0.borrow_mut().shutdown_error = error.map(JsValueCell::new);
+        self.0.borrow_mut().shutdown_error = error.map(gc_cell_new);
     }
 
     fn update_pending_shutdown_action(
@@ -3795,8 +3795,8 @@ impl PipeToState {
 #[gc_struct]
 struct AbortThenCancelState {
     source: Option<ReadableStream>,
-    error: JsValueCell,
-    abort_rejection: Option<JsValueCell>,
+    error: GcCell<JsValue>,
+    abort_rejection: Option<GcCell<JsValue>>,
     resolvers: PromiseResolvers<crate::js::Types>,
 }
 
@@ -3999,7 +3999,7 @@ fn abort_destination_then_cancel_source(
         .unwrap_or_else(|| ec.realm_global_object());
     let state = gc_cell_new(AbortThenCancelState {
         source: Some(source),
-        error: JsValueCell::new(error),
+        error: gc_cell_new(error),
         abort_rejection: None,
         resolvers,
     });
@@ -4035,7 +4035,7 @@ fn start_abort_cancel_source(
 ) -> Completion<JsValue, crate::js::Types> {
     let (source, error) = {
         let mut state_ref = state.borrow_mut();
-        state_ref.abort_rejection = abort_rejection.map(JsValueCell::new);
+        state_ref.abort_rejection = abort_rejection.map(gc_cell_new);
         (state_ref.source.take(), state_ref.error.borrow().clone())
     };
 

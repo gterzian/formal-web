@@ -137,7 +137,7 @@ pub(crate) fn create_interface_instance<Ty, T>(
 ) -> Completion<Ty::JsObject, Ty>
 where
     Ty: JsTypes + JsTypesWithRealm + PostCreateReflector<Ty>,
-    T: 'static,
+    T: js_engine::gc::GcOwner + 'static,
 {
     // <https://webidl.spec.whatwg.org/#internally-create-a-new-object-implementing-the-interface>
 
@@ -166,6 +166,22 @@ where
     //   Not yet implemented.
     // Step 14: "Return instance."
     <Ty as PostCreateReflector<Ty>>::set_reflector(&instance, ec);
+
+    // JSC: create the per-object GC owner, export it on the reflector, and
+    // adopt the instance's cells onto it, so its JS-value fields stay alive
+    // exactly while the JS object is reachable.  (No-op on V8.)
+    #[cfg(feature = "jsc")]
+    {
+        let instance_for_closure = instance.clone();
+        ec.with_object_any_mut_with(
+            &instance,
+            Box::new(move |data, ec| {
+                if let Some(platform) = data.downcast_mut::<T>() {
+                    ec.adopt_platform_gc_owner(&instance_for_closure, platform);
+                }
+            }),
+        );
+    }
 
     Ok(instance)
 }
@@ -417,7 +433,7 @@ where
 pub(crate) fn register_interface_spec<Ty, I, E>(engine: &mut E) -> Completion<(), Ty>
 where
     Ty: JsTypes + JsTypesWithRealm,
-    I: WebIdlInterface<Ty> + 'static,
+    I: WebIdlInterface<Ty> + js_engine::gc::GcOwner + 'static,
     E: JsEngine<Ty> + ExecutionContext<Ty>,
 {
     // <https://webidl.spec.whatwg.org/#create-an-interface-object>
@@ -528,6 +544,21 @@ where
                 //   Note: handled inside create_platform_object.
                 // Step 1.10: "Let O be object, converted to a JavaScript value."
                 let instance = ec.create_object_with_any(resolved_prototype, Box::new(obj));
+
+                // JSC: adopt the instance's cells onto a per-object owner
+                // exported on the reflector (same as create_interface_instance).
+                #[cfg(feature = "jsc")]
+                {
+                    let instance_for_closure = instance.clone();
+                    ec.with_object_any_mut_with(
+                        &instance,
+                        Box::new(move |data, ec| {
+                            if let Some(platform) = data.downcast_mut::<I>() {
+                                ec.adopt_platform_gc_owner(&instance_for_closure, platform);
+                            }
+                        }),
+                    );
+                }
 
                 // Step 11: "For every interface ancestor interface in interfaces:"
                 // Only copies own interface's [[Unforgeables]]; ancestor iteration

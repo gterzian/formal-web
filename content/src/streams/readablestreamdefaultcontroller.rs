@@ -7,7 +7,7 @@ use crate::js::{Types, create_builtin_fn_with_traced_captures};
 use crate::streams::SizeAlgorithm;
 use crate::webidl::bindings::create_interface_instance;
 use crate::webidl::{mark_promise_as_handled, rejected_promise, resolved_promise};
-use js_engine::gc::{GcCell, JsValueCell, gc_cell_new};
+use js_engine::gc::{GcCell, GcCellSet, gc_cell_new};
 use js_engine::gc_struct;
 
 use super::readablestream::{
@@ -166,7 +166,7 @@ impl StartAlgorithm {
 /// `EnqueueValueWithSize` computes for it.
 #[gc_struct]
 struct QueueEntry {
-    chunk: JsValueCell,
+    chunk: GcCell<JsValue>,
     #[ignore_trace]
     size: f64,
 }
@@ -349,8 +349,8 @@ impl ReadableStreamDefaultController {
                     .expect("queue was checked to be non-empty");
                 let chunk_value = entry.chunk.borrow().clone();
                 // Protect the chunk immediately after extraction so it
-                // survives JSC GC even after the QueueEntry's JsValueCell
-                // is dropped (which calls JSValueUnprotect).
+                // survives JSC GC even after the QueueEntry's GcCell
+                // drops (which removes its managed reference).
                 let _chunk_root = ec.protect_value(&chunk_value);
                 {
                     let new_size = self.queue_total_size.get() - entry.size;
@@ -675,15 +675,15 @@ impl ReadableStreamDefaultController {
 
     /// <https://streams.spec.whatwg.org/#readable-stream-default-controller-clear-algorithms>
     fn clear_algorithms(&self) {
-        *self.pull_algorithm.borrow_mut() = None;
-        *self.cancel_algorithm.borrow_mut() = None;
-        *self.strategy_size_algorithm.borrow_mut() = None;
+        self.pull_algorithm.set(None);
+        self.cancel_algorithm.set(None);
+        self.strategy_size_algorithm.set(None);
     }
 
     /// <https://streams.spec.whatwg.org/#enqueue-value-with-size>
     fn enqueue_value_with_size(&self, chunk: JsValue, chunk_size: f64) {
         self.queue.borrow_mut().push_back(QueueEntry {
-            chunk: JsValueCell::new(chunk),
+            chunk: gc_cell_new(chunk),
             size: chunk_size,
         });
         self.queue_total_size
@@ -725,14 +725,14 @@ pub(crate) fn set_up_readable_stream_default_controller(
     controller.pulling.set(false);
 
     // Step 5: "Set controller.[[strategySizeAlgorithm]] to sizeAlgorithm and controller.[[strategyHWM]] to highWaterMark."
-    *controller.strategy_size_algorithm.borrow_mut() = Some(size_algorithm);
+    controller.strategy_size_algorithm.set(Some(size_algorithm));
     controller.strategy_high_water_mark.set(high_water_mark);
 
     // Step 6: "Set controller.[[pullAlgorithm]] to pullAlgorithm."
-    *controller.pull_algorithm.borrow_mut() = Some(pull_algorithm);
+    controller.pull_algorithm.set(Some(pull_algorithm));
 
     // Step 7: "Set controller.[[cancelAlgorithm]] to cancelAlgorithm."
-    *controller.cancel_algorithm.borrow_mut() = Some(cancel_algorithm);
+    controller.cancel_algorithm.set(Some(cancel_algorithm));
 
     // Step 8: "Set stream.[[controller]] to controller."
     stream.set_controller_slot(Some(ReadableStreamController::Default(controller.clone())));

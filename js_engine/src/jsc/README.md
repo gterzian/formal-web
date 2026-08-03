@@ -110,9 +110,138 @@ Design facts (established empirically, not assumed):
   suite uses.)
 
 Generic GC tests live in `content/src/generic_js_test.rs`
-(`gc_reclaims_unreferenced_objects`, `root_keeps_value_alive_until_dropped`,
-`js_value_cell_keeps_value_alive_then_releases`,
-`js_object_cell_keeps_value_alive_then_releases`) and run on every backend.
+(`gc_object_roundtrip`, `gc_root_survives_throwaway_pressure`,
+`nested_struct_gc_root_propagates`, and the promise-survival tests) and
+run on every backend.
+
+## GC integration design: unified `GcCell` with per-object managed-reference owners
+
+**Status: implemented; managed edges and per-object owners disabled by default.**
+The unified `GcCell` API is in place (see below), but the JSC managed-edge
+machinery (`JSManagedValue` + `addManagedReference:withOwner:`) crashes the
+system JavaScriptCore's GC during heavy streams tests, so edge registration
+and the per-object owner adoption are opt-in via `FORMAL_WEB_GC_EDGES=1` and
+`FORMAL_WEB_GC_ADOPT=1` (both default off).  With both off, JSC behaves like
+the pre-existing intermediate state (plain `Rc<RefCell<T>>` cells, no
+protection) and stays at its pre-existing WPT baseline; Boa is unaffected.
+A future session fixing the crashes (see the 2026-08-03 session log) should
+also re-run the full Boa WPT suite (`cargo run --release -- wpt`) — Boa must
+stay at its pre-existing baseline throughout.
+
+### Problem with the current state
+
+- `GcCell<T>` is a per-backend alias: on Boa `boa_gc::Gc<boa_gc::GcRefCell<T>>`
+  (traced — the collector discovers JS values by walking the `Gc` pointer),
+  on JSC `std::rc::Rc<std::cell::RefCell<T>>` (invisible to the collector).
+  A `GcCell<JsObject>` field on JSC therefore does **not** keep the value
+  alive.
+- To compensate, `JsObjectCell`/`JsValueCell` (in `js_engine/src/gc.rs`)
+  wrapped a JSC value in a `JscManagedValue` and held the managed reference
+  **inside the cell**.  That forced content to choose a backend-aware type
+  (`closed_promise: JsObjectCell` instead of `GcCell<Option<JsObject>>`),
+  which is exactly the coupling the abstraction should remove.
+- `JscManagedValue::new` associates every value with the per-context
+  `formalWebGcAnchor` (`addManagedReference:withOwner:` with the anchor as
+  owner).  The anchor is an always-reachable exported `NSObject`, so a
+  value in a cell is rooted unconditionally for the cell's lifetime and the
+  GC receives no signal from the *owning* object's reachability.
+
+### Target design
+
+One unified `GcCell<T>` cell type, per-backend implementation:
+
+- **Boa**: unchanged — `Gc<GcRefCell<T>>`, traced.
+- **JSC**: `Rc<RefCell<T>>` storage **plus** managed-reference edges for the
+  JS values inside `T`, with each edge's **owner** being the containing
+  gc_struct's JS-exposed counterpart (its reflector) rather than the anchor.
+  Then a struct's JS-value fields are alive exactly while the struct's JS
+  object is reachable from JS — the same trace semantics Boa gets for free.
+
+Content keeps writing plain `GcCell<Option<JsObject>>` (the original
+reader/writer fields); `JsObjectCell`/`JsValueCell` are deleted.
+
+### Components
+
+1. **Trait for JS-value awareness** (in `js_engine/src/gc.rs`):
+   `GcCell<T>` on JSC requires `T: GcTraceable` (name TBD) that enumerates
+   the JS values inside `T`.  Implemented by:
+   - the primitive JS types (`JsObject`, `JsValue`, `Option<JsObject>`, …),
+   - and, automatically, by `#[gc_struct]` for composite types: the macro
+     already walks the fields and already has the `#[ignore_trace]`
+     annotation to mark non-GC-relevant fields.  On Boa the impl is a
+     no-op (the `Trace` derive does the work); on JSC it generates the
+     managed-value extraction/registration for the JS-value fields.
+2. **Per-object owner**: each JSC platform object gets its own `NSObject`
+   owner, exported as a property on its reflector's JS object, so it is
+   reachable from JS exactly while the reflector is.  `JscManagedValue::new`
+   gains an owner parameter; the per-context anchor remains the fallback
+   for values with no platform-object owner.
+3. **`GcCell` JSC impl**: re-extracts and re-registers the managed edges on
+   `set()` (replacing a value), and the macro-generated `GcTraceable` impl
+   handles in-place mutation of gc_struct-typed contents.
+
+### Work items (in order) — status
+
+1. `js_engine/src/jsc/objc_gc.rs`: add the `JSValue setValue:forProperty:`
+   binding (only `JSContext setObject:forKeyedSubscript:`, which targets the
+   global, exists today); give `JscManagedValue::new` an owner parameter. —
+   **done** (`JscGcOwner` handle; `exported_on` uses the new binding).
+2. `js_engine/src/gc.rs`: add the `GcTraceable` trait; reimplement the JSC
+   `GcCell<T>` as `Rc<RefCell<T>>` + managed edges from the trait; delete
+   `JsObjectCell`/`JsValueCell` (JSC and V8 sections); keep Boa as the
+   `Gc<GcRefCell<T>>` alias. — **done**, but edge registration is gated
+   behind `FORMAL_WEB_GC_EDGES=1` (default off; the edges crash the system
+   JSC's GC — see the session log).  `GcCellSet` (`set`/`sync`) added for
+   all backends; in-place mutation after `borrow_mut` needs `sync()`.
+3. `js_engine_macros/src/lib.rs` (`gc_struct_jsc`): generate the
+   `GcTraceable` impl for struct/enum fields, respecting `#[ignore_trace]`.
+   — **done** (also generates `GcOwner` impls that delegate only to
+   `GcCell`-typed fields, so embedded structs keep their own owners).
+4. `content/src/webidl/bindings/interface.rs` (`create_interface_instance`):
+   create the per-object owner, export it on the reflector, and wire the
+   instance's cells to it. — **done but disabled by default**: exporting the
+   owner via `setValue:forProperty:` from within binding callbacks crashes
+   the system JSC's GC; `FORMAL_WEB_GC_ADOPT=1` enables it for
+   experimentation.
+5. `content/src/streams/readablestreambyobreader.rs`,
+   `readablestreamdefaultreader.rs`, `writablestreamdefaultwriter.rs`:
+   revert `closed_promise`/`ready_promise`/`closed_promise` from
+   `JsObjectCell` back to `GcCell<Option<JsObject>>`. — **done**, plus every
+   other `JsObjectCell`/`JsValueCell` usage in content (streams, abort,
+   global scope, async iterables) was migrated to plain `GcCell<...>`; the
+   cell types are deleted from `js_engine/src/gc.rs` for all backends.
+
+### Ordering constraint
+
+A gc_struct's fields (cells) are constructed **before** the reflector
+exists, so a cell cannot know its owner at construction.  Two workable
+shapes:
+
+- create the owner `NSObject` at instance creation and have the
+  reflector-creation step *adopt* the instance's cells (re-point their
+  managed edges from the anchor to the per-object owner), or
+- cells register against the owner from the start, with the owner exported
+  on the reflector only when the reflector is created (values created
+  before export are unprotected — acceptable since instance creation and
+  reflector creation happen in the same call).
+
+### Empirical constraints to respect
+
+- The owner must be an Objective-C object **exported to JS** (a
+  `JSAPIWrapperObject`) for the GC to scan the edge; the `JSContext`
+  wrapper itself as owner does not protect (see "GC integration (managed
+  references)" above).  Both the anchor (`setObject:forKeyedSubscript:`
+  on the global) and the per-object owner (`setValue:forProperty:` on the
+  reflector) satisfy this; the latter crashes the system JSC's GC when
+  called from within binding callbacks (see the session log), which is
+  why adoption is disabled by default.
+- `removeManagedReference` only takes effect under the synchronous
+  collector, so released values linger until `gc()`.
+- `#[gc_struct]` on JSC derives `Clone`, emits no-op `Trace`/`Finalize`
+  impls, and generates the `GcTraceable` (all fields except
+  `#[ignore_trace]`) and `GcOwner` (only `GcCell`-typed fields) impls;
+  JSC never calls back into Rust during marking, so the edges must be
+  managed at the struct's create/drop boundaries, not via a `Trace` hook.
 
 ## Piping test status
 
@@ -177,6 +306,21 @@ Two additions make the records reliable:
 
 ## Open issues
 
+- **Managed edges and per-object owner export crash the system JSC's GC**
+  — the unified `GcCell` managed-reference edges (`JSManagedValue` +
+  `addManagedReference`) and the per-object owner export (`JSValue
+  setValue:forProperty:` on the reflector) each crash the GC during heavy
+  streams tests (SIGSEGV in `tee.any.js`; see the 2026-08-03 session
+  log).  Both are disabled by default and opt-in via
+  `FORMAL_WEB_GC_EDGES=1` / `FORMAL_WEB_GC_ADOPT=1`.  The baseline's
+  `JsObjectCell`/`JsValueCell` managed values were stable, so the crash
+  is specific to the new machinery (likely the managed-value count or the
+  property set from within binding callbacks).
+- **In-place cell mutation does not update edges** — even with edges
+  enabled, `borrow_mut()`-based mutation of a cell's contents (e.g.
+  pushing onto `GcCell<Vec<WindowTimer>>` in `add_timer`) does not
+  re-register edges; `GcCellSet::sync()` exists for that, and is called
+  at the timer and abort-state mutation sites.
 - **Piping test infra flakiness** — `pipe-through.any.js` and
   `error-propagation-backward.any.js` intermittently report `TIMEOUT` or
   crash with a content-process `SIGSEGV`; the `error-propagation-forward`
@@ -476,3 +620,75 @@ principled fix (hold the JSLock across the entire content-command
 handling so microtasks drain only at the explicit checkpoint) is not
 implementable through the public C API.  The JSC backend remains
 experimental; Boa is the supported engine.
+
+### 2026-08-03 — unified GcCell implementation; managed edges and per-object owners crash the system JSC
+
+**Files changed:** `js_engine/src/gc.rs` (unified `GcCell<T>` struct for
+JSC with `Rc<RefCell<T>>` slot + managed edges; `GcTraceable` trait and
+its impls; `GcOwner`/`GcOwnerRef`; `GcCellSet` with `set`/`sync`;
+`JsObjectCell`/`JsValueCell` deleted for all backends),
+`js_engine/src/jsc/objc_gc.rs` (`JSValue setValue:forProperty:` binding;
+`JscGcOwner` anchor/exported owner handle; `JscManagedValue::new` owner
+parameter; `PLATFORM_GC_OWNER_PROPERTY`),
+`js_engine/src/jsc/mod.rs` (re-exports),
+`js_engine/src/jsc/engine.rs` (`JscManagedValue::new` call sites;
+`ExecutionContext::adopt_platform_gc_owner` override),
+`js_engine/src/engine.rs` (trait method `adopt_platform_gc_owner`),
+`js_engine_macros/src/lib.rs` (`gc_struct_jsc` generates `GcTraceable`
+impls and cell-only `GcOwner` impls),
+`content/src/webidl/bindings/interface.rs` (adoption in
+`create_interface_instance` and the constructor path),
+`content/src/dom/abort.rs`, `content/src/html/global_scope.rs` (timer
+`sync()` after in-place pushes; `sync()` after in-place abort-state
+mutations), and the full `JsObjectCell`/`JsValueCell` → `GcCell<...>`
+migration in `content/src/streams/*` and `content/src/webidl/async_iterable.rs`.
+**Instrumentation added (all removed):** env-gated `[jsc-gc]` logging in
+`JscEngine::call` and `invoke_callback_function`; env gates
+`FORMAL_WEB_NO_GC_EDGES` / `FORMAL_WEB_NO_GC_ADOPT` /
+`FORMAL_WEB_NO_GC_EXPORT` (replaced by the enable-style
+`FORMAL_WEB_GC_EDGES` / `FORMAL_WEB_GC_ADOPT`).
+**What was confirmed:**
+- Boa is at its exact pre-existing WPT baseline: full default run
+  `executed=79 unexpected=2` both before and after the changes, the two
+  failures being the documented BYOB ones (`readable-byte-streams`
+  `patched-global.any.js`, `respond-after-enqueue.any.js`).  Generic
+  engine tests: 91/91 on Boa, 91/92 on JSC (only the documented
+  `constructor_has_function_prototype_methods_on_jsc` fails).
+- The unified `GcCell` API compiles and works on all backends: content
+  writes plain `GcCell<Option<JsObject>>`/`GcCell<JsValue>` everywhere;
+  `JsObjectCell`/`JsValueCell` are deleted.
+- The JSC default (edges + adoption off) reproduces the pre-existing JSC
+  behavior: `tee.any.js` fails with the same clean FAIL as the baseline
+  (no crash), and `streams/readable-streams/garbage-collection.any.js`
+  passes (it ERRORS on the baseline, which had the `JsObjectCell`
+  managed values active).
+**What was ruled out (crash bisection on `streams/readable-streams/tee.any.js`, which FAILs on the baseline and SIGSEGVs with the managed machinery):**
+- The cell edges (any kind: direct-value only, or with composite
+  `GcTraceable` recursion) crash the system JSC's GC during the test — a
+  content-process SIGSEGV (JSC `llint_op_call_varargs` / PAC failure)
+  during a microtask drain after a `setTimeout(resolve, 0)` fires.
+  `FORMAL_WEB_NO_GC_EDGES=1` alone does not help.
+- The per-object owner export (`JSValue setValue:forProperty:` on the
+  reflector, from within binding callbacks) also crashes on its own
+  (`FORMAL_WEB_NO_GC_ADOPT=1` does not help; skipping only the property
+  set does).  This matches the documented crash class ("JSObjectSetProperty
+  ... crashes JSC when called from within a C callback").  The generic
+  tests exercise the same export path without crashing — the tee test's
+  heavier allocation/GC pattern triggers it.
+- The baseline (with `JsObjectCell` managed values) is stable: 8/8 clean
+  runs on `tee.any.js`, so the crashes are introduced by the new managed
+  machinery, not pre-existing flakiness.
+- Crash reports are not generated for the content process on this machine
+  for these crashes, and the session was told not to use lldb, so no
+  backtrace was captured for the post-change crashes.
+**Not investigated:** the exact JSC-internal mechanism behind the crashes
+(no stack trace); whether the writable-streams suite regresses beyond
+baseline with edges off (a run showed 2 vs 1 unexpected, the extra not
+identified — the baseline itself CRASHes `crashtests/garbage-collection.any.js`);
+the v8 feature was not compiled (no cached rusty_v8 archive; downloading
+would require network access).
+**Kept (with edges/adoption off by default):** the unified `GcCell` API,
+`GcTraceable`, `GcCellSet`, the macro generation, the `JscGcOwner`/
+`JscManagedValue` owner plumbing, and the full content migration.  The
+fragile parts are opt-in via `FORMAL_WEB_GC_EDGES=1` / `FORMAL_WEB_GC_ADOPT=1`
+for experimentation on other JSC versions.

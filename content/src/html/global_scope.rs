@@ -14,7 +14,7 @@ use ipc_messages::content::{
     Event as ContentEvent, NavigableId, WindowTimerClearRequest, WindowTimerKey, WindowTimerRequest,
 };
 use ipc_messages::media::VideoPaintId;
-use js_engine::gc::{GcCell, gc_cell_new};
+use js_engine::gc::{GcCell, GcCellSet, gc_cell_new};
 use js_engine::{JsTypes, gc_struct};
 use log::{debug, error};
 
@@ -331,7 +331,8 @@ impl GlobalScope {
     }
 
     pub(crate) fn store_document_object(&self, object: JsObject) {
-        self.document_object.borrow_mut().replace(object);
+        // JSC: `set` re-registers the managed reference for the new value.
+        self.document_object.set(Some(object));
     }
 
     pub(crate) fn location_object(&self) -> Option<JsObject> {
@@ -339,7 +340,8 @@ impl GlobalScope {
     }
 
     pub(crate) fn store_location_object(&self, object: JsObject) {
-        self.location_object.borrow_mut().replace(object);
+        // JSC: `set` re-registers the managed reference for the new value.
+        self.location_object.set(Some(object));
     }
 
     pub(crate) fn cached_node_object(&self, node_id: usize) -> Option<JsObject> {
@@ -441,18 +443,24 @@ impl GlobalScope {
             })?;
 
         // Step 12: "Set global's map of setTimeout and setInterval IDs[id] to uniqueHandle."
-        let mut timers = self.window_timers.borrow_mut();
-        if let Some(index) = timers.iter().position(|entry| entry.id == timer_id) {
-            timers.remove(index);
+        {
+            let mut timers = self.window_timers.borrow_mut();
+            if let Some(index) = timers.iter().position(|entry| entry.id == timer_id) {
+                timers.remove(index);
+            }
+            timers.push(WindowTimer {
+                id: timer_id,
+                timer_key,
+                handler,
+                arguments,
+                repeat,
+                timeout_ms,
+            });
         }
-        timers.push(WindowTimer {
-            id: timer_id,
-            timer_key,
-            handler,
-            arguments,
-            repeat,
-            timeout_ms,
-        });
+        // JSC: the push mutated the cell in place; re-register the managed
+        // edges so the new timer's callback and arguments stay alive until
+        // the timer fires (in-place Vec mutation does not update them).
+        self.window_timers.sync();
 
         // Step 13: "Return id."
         Ok(timer_id)

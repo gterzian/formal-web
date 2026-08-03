@@ -1,4 +1,5 @@
 use js_engine::gc::GcCell;
+use js_engine::gc::GcCellSet;
 use js_engine::gc::gc_cell_new;
 use js_engine::gc_struct;
 use js_engine::{Completion, ExecutionContext, JsTypes};
@@ -345,10 +346,10 @@ impl WritableStreamDefaultController {
     }
 
     fn clear_algorithms(&self) {
-        *self.write_algorithm.borrow_mut() = None;
-        *self.close_algorithm.borrow_mut() = None;
-        *self.abort_algorithm.borrow_mut() = None;
-        *self.strategy_size_algorithm.borrow_mut() = None;
+        self.write_algorithm.set(None);
+        self.close_algorithm.set(None);
+        self.abort_algorithm.set(None);
+        self.strategy_size_algorithm.set(None);
     }
 
     fn error_controller(
@@ -647,19 +648,19 @@ pub(crate) fn set_up_writable_stream_default_controller(
     controller.set_started(false);
 
     // Step 8: "Set controller.[[strategySizeAlgorithm]] to sizeAlgorithm."
-    *controller.strategy_size_algorithm.borrow_mut() = Some(size_algorithm);
+    controller.strategy_size_algorithm.set(Some(size_algorithm));
 
     // Step 9: "Set controller.[[strategyHWM]] to highWaterMark."
     controller.strategy_high_water_mark.set(high_water_mark);
 
     // Step 10: "Set controller.[[writeAlgorithm]] to writeAlgorithm."
-    *controller.write_algorithm.borrow_mut() = Some(write_algorithm);
+    controller.write_algorithm.set(Some(write_algorithm));
 
     // Step 11: "Set controller.[[closeAlgorithm]] to closeAlgorithm."
-    *controller.close_algorithm.borrow_mut() = Some(close_algorithm);
+    controller.close_algorithm.set(Some(close_algorithm));
 
     // Step 12: "Set controller.[[abortAlgorithm]] to abortAlgorithm."
-    *controller.abort_algorithm.borrow_mut() = Some(abort_algorithm);
+    controller.abort_algorithm.set(Some(abort_algorithm));
 
     // Step 13: "Let backpressure be ! WritableStreamDefaultControllerGetBackpressure(controller)."
     let backpressure = controller.get_backpressure(ec)?;

@@ -3,7 +3,7 @@ use js_engine::{Completion, ExecutionContext, JsTypes, PromiseResolvers};
 use crate::js::Types;
 use crate::webidl::bindings::create_interface_instance;
 use js_engine::gc::GcCell;
-use js_engine::gc::JsObjectCell;
+use js_engine::gc::GcCellSet;
 use js_engine::gc::gc_cell_new;
 use js_engine::gc_struct;
 
@@ -20,7 +20,7 @@ type JsObject = <Types as JsTypes>::JsObject;
 #[gc_struct]
 pub struct ReadableStreamBYOBReader {
     stream: GcCell<Option<ReadableStream>>,
-    closed_promise: JsObjectCell,
+    closed_promise: GcCell<Option<JsObject>>,
     closed_resolvers: GcCell<Option<PromiseResolvers<Types>>>,
 }
 
@@ -28,7 +28,7 @@ impl ReadableStreamBYOBReader {
     pub(crate) fn new() -> Self {
         Self {
             stream: gc_cell_new(None),
-            closed_promise: JsObjectCell::new(None),
+            closed_promise: gc_cell_new(None),
             closed_resolvers: gc_cell_new(None),
         }
     }
@@ -144,8 +144,7 @@ impl ReadableStreamGenericReader for ReadableStreamBYOBReader {
     }
 
     fn set_closed_promise_slot_value(&self, promise: Option<JsObject>) {
-        // JsObjectCell keeps the promise alive via a managed reference;
-        // replacing it removes the reference for the previous value.
+        // JSC: `set` re-registers the managed reference for the new value.
         self.closed_promise.set(promise);
     }
 
@@ -154,7 +153,8 @@ impl ReadableStreamGenericReader for ReadableStreamBYOBReader {
     }
 
     fn set_closed_resolvers_slot_value(&self, resolvers: Option<PromiseResolvers<Types>>) {
-        *self.closed_resolvers.borrow_mut() = resolvers;
+        // JSC: `set` registers managed edges for the resolve/reject callables.
+        self.closed_resolvers.set(resolvers);
     }
 
     fn as_reader_slot(&self) -> ReadableStreamReader {
