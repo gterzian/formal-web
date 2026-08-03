@@ -370,15 +370,32 @@ function objects is the leading hypothesis, unverified); whether the
 flake predates `d88c9f36e` on JSC (needs a full pre-commit workspace
 build).
 
-### 2026-08-03 — piping flakiness: stale records, collected callbacks, promise_state re-entrancy; JSC deemed unviable
+### 2026-08-03 — piping flakiness: stale records, promise_state re-entrancy; JSC deemed unviable
 
 **Files changed (kept):** `js_engine/src/jsc/engine.rs` —
 `PromiseSettlement` now roots its promise (`_promise_root` managed
 value); `promise_state` has an `in_promise_state_eval` re-entrancy guard
 with the eval fallback extracted to the free function
-`promise_state_eval_fallback`.  `content/src/webidl/callback.rs` —
-`Callback::from_object` roots the callback object via `create_root`
-(managed reference; no-op on Boa).
+`promise_state_eval_fallback`.  These are backend-only changes; nothing
+in `content/` was added to accommodate JSC.
+**Files changed (reverted after the decision):** every content-side
+change from the JSC work is gone.  `content/` is back at `8f7b04ee4`
+except for the three reader/writer files
+(`readablestreambyobreader.rs`, `readablestreamdefaultreader.rs`,
+`writablestreamdefaultwriter.rs`), whose `#[cfg(feature = "jsc")]`
+`JSValueProtect`/`JSValueUnprotect` blocks were removed — the values
+those blocks protected are now held in the backend's managed-reference
+cells (`JsObjectCell`), which is the proper GC integration this branch is
+about.  Reverted along with everything else: the pipe `write_in_progress`
+tracking and the `ShuttingDownPendingAction` "action promise still being
+created" wait (`0f171bf24`), the `pull_steps` chunk-before-
+`CallPullIfNeeded` reorder (`57e774a74`), the `[stream-debug][pipe]`
+logging (`4595a4eb7`), the timer `callback_root`/`argument_roots`
+rooting, the `Callback` `JsObjectCell`/root changes, and the added GC
+tests in `generic_js_test.rs`.  Boa is unaffected and fully clean
+(`tee.any.js`, the piping suite, and the default WPT run at its
+pre-existing baseline); JSC WPT results regress as expected since the
+engine's microtask/GC model is the problem, not the content.
 **Instrumentation added (all removed):** env-gated `[stream-debug][jsc]`
 logs (EngineGuard drain points, `run_jobs`, eval `void 0`,
 `perform_promise_then` attaches, settlement-reaction fires, resolver
@@ -416,9 +433,10 @@ occur until the final write completes; preventAbort = true"),
   raw, unrooted `JsObject`; a sink method (e.g. `write`) referenced only
   from Rust was collected by JSC's automatic GC, and
   `invoke_callback_function`'s `IsCallable` check dereferenced the
-  dangling pointer.  Fixed by rooting the callback object in
-  `Callback::from_object`.  `abort.any.js` and `close-propagation-*`
-  stopped crashing in suite runs.
+  dangling pointer.  A content-side root on `Callback` reduced the
+  crashes but was reverted with the rest of the content changes: the
+  proper fix belongs in the backend's managed-reference cells
+  (`JsObjectCell`), not in per-struct root fields in content.
 - **Stack-overflow SIGSEGV = re-entrant `promise_state` eval fallback.**
   With the debug logs on, failing runs showed a repeating cycle:
   `promise_state: no settled record` → eval `void 0` → `settlement

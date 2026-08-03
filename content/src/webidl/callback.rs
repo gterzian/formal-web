@@ -12,25 +12,11 @@ type JsObject = <Types as JsTypes>::JsObject;
 #[gc_struct]
 pub(crate) struct Callback {
     object: JsObject,
-
-    /// Root keeping the callback's function object alive on backends whose
-    /// GC cannot trace through Rust structures (JSC).  On Boa this is a
-    /// no-op (the GC traces through `Callback`).  Without this, a callback
-    /// stored only in Rust (e.g. a stream sink's `write` method) can be
-    /// collected by JSC's automatic GC while the reference is not on the
-    /// conservative-scanned stack, and a later invocation dereferences a
-    /// dangling pointer.
-    callback_root: Option<js_engine::gc::GcRootHandle<Types>>,
 }
 
 impl Callback {
-    pub(crate) fn from_object(object: JsObject, ec: &mut dyn ExecutionContext<Types>) -> Self {
-        let value = Types::value_from_object(object.clone());
-        let callback_root = ec.create_root(&value);
-        Self {
-            object,
-            callback_root: Some(callback_root),
-        }
+    pub(crate) fn from_object(object: JsObject, _ec: &mut dyn ExecutionContext<Types>) -> Self {
+        Self { object }
     }
 
     pub(crate) fn equals(&self, other: &Self) -> bool {
@@ -40,12 +26,7 @@ impl Callback {
     /// <https://webidl.spec.whatwg.org/#callback-function-to-js>
     // Note: The callback interface type conversion back to JavaScript yields the same referenced object in the implementation, so this helper serves both representations.
     pub(crate) fn to_js_value(&self) -> JsValue {
-        // Read through the root (which holds the same object) so the RAII
-        // root is observably used and keeps the value alive for the caller.
-        self.callback_root
-            .as_ref()
-            .map(|root| root.value.clone())
-            .unwrap_or_else(|| Types::value_from_object(self.object.clone()))
+        Types::value_from_object(self.object.clone())
     }
 }
 

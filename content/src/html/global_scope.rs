@@ -14,8 +14,8 @@ use ipc_messages::content::{
     Event as ContentEvent, NavigableId, WindowTimerClearRequest, WindowTimerKey, WindowTimerRequest,
 };
 use ipc_messages::media::VideoPaintId;
-use js_engine::gc::{GcCell, GcRootHandle, gc_cell_new};
-use js_engine::{ExecutionContext, JsTypes, gc_struct};
+use js_engine::gc::{GcCell, gc_cell_new};
+use js_engine::{JsTypes, gc_struct};
 use log::{debug, error};
 
 use crate::js::{Engine, Types};
@@ -90,17 +90,8 @@ pub struct WindowTimer {
     /// <https://html.spec.whatwg.org/#timerhandler>
     pub handler: TimerHandler,
 
-    /// Root keeping the timer handler's function object alive across GC
-    /// cycles until the timer fires or is cleared.
-    /// On Boa this is a no-op (the GC traces through `window_timers`); on
-    /// JSC it is a managed reference that JSC's collector cannot see
-    /// through the `GcCell<Vec<WindowTimer>>` storage otherwise.
-    pub callback_root: Option<GcRootHandle<Types>>,
-
-    /// Roots keeping the timer handler's arguments alive across GC cycles
-    /// until the timer fires or is cleared.  Same backend split as
-    /// `callback_root`.
-    pub argument_roots: Vec<GcRootHandle<Types>>,
+    /// <https://html.spec.whatwg.org/#timers>
+    pub arguments: Vec<JsValue>,
 
     /// <https://html.spec.whatwg.org/#timers>
     #[ignore_trace]
@@ -218,19 +209,6 @@ pub struct GlobalScope {
     /// Consolidated wasm state (pending requests, resolvers, counter).
     #[cfg(all(boa_backend, feature = "wasm"))]
     wasm_state: GcCell<Option<crate::wasm::WasmState>>,
-}
-
-/// Input bundle for `GlobalScope::timer_initialization_steps`.
-/// Carries the pieces the spec's `timer initialization steps` algorithm
-/// needs from the `WindowOrWorkerGlobalScope` mixin (timeout conversion,
-/// clamping, and nesting-level adjustment already applied).
-pub(crate) struct TimerRegistration {
-    pub(crate) previous_id: Option<u32>,
-    pub(crate) handler: TimerHandler,
-    pub(crate) arguments: Vec<JsValue>,
-    pub(crate) repeat: bool,
-    pub(crate) timeout_ms: u32,
-    pub(crate) nesting_level: u32,
 }
 
 impl GlobalScope {
@@ -430,17 +408,13 @@ impl GlobalScope {
     /// <https://html.spec.whatwg.org/#timer-initialisation-steps>
     pub(crate) fn timer_initialization_steps(
         &self,
-        registration: TimerRegistration,
-        ec: &mut dyn ExecutionContext<Types>,
+        previous_id: Option<u32>,
+        handler: TimerHandler,
+        arguments: Vec<JsValue>,
+        repeat: bool,
+        timeout_ms: u32,
+        nesting_level: u32,
     ) -> Result<u32, String> {
-        let TimerRegistration {
-            previous_id,
-            handler,
-            arguments,
-            repeat,
-            timeout_ms,
-            nesting_level,
-        } = registration;
         // Note: This helper continues the `timer initialization steps` algorithm at the `GlobalScope`-owned pieces. The mixin implementation already handled the preliminary timeout conversion, clamping, and task setup.
 
         // Step 2: "If previousId was given, let id be previousId; otherwise, let id be an implementation-defined integer that is greater than zero and does not already exist in global's map of setTimeout and setInterval IDs."
@@ -471,20 +445,11 @@ impl GlobalScope {
         if let Some(index) = timers.iter().position(|entry| entry.id == timer_id) {
             timers.remove(index);
         }
-        // Root the handler's function object and the arguments so they
-        // survive until the timer fires or is cleared on backends whose GC
-        // cannot see them through the `window_timers` storage (JSC).
-        let callback_root = match &handler {
-            TimerHandler::Function { callback } => Some(ec.protect_value(&callback.to_js_value())),
-            TimerHandler::String { .. } => None,
-        };
-        let argument_roots = arguments.iter().map(|arg| ec.protect_value(arg)).collect();
         timers.push(WindowTimer {
             id: timer_id,
             timer_key,
             handler,
-            callback_root,
-            argument_roots,
+            arguments,
             repeat,
             timeout_ms,
         });

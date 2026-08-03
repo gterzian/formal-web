@@ -12,7 +12,6 @@ use crate::js::platform_objects::with_global_scope;
 use crate::js::{
     Engine, Types, install_console_namespace, install_css_namespace, install_document_property,
 };
-use crate::webidl::Callback;
 use crate::webidl::bindings::get_registry_prototype;
 use js_engine::{EcmascriptHost, ExecutionContext, JsTypes};
 
@@ -325,49 +324,18 @@ impl EnvironmentSettingsObject {
         };
 
         match &timer.handler {
-            TimerHandler::Function { .. } => {
+            TimerHandler::Function { callback } => {
                 log_timer_debug(format!(
                     "invoke timer callback id={} key={} function",
                     timer_id, timer_key
                 ));
-                // Invoke through the rooted values: the managed references
-                // keep the function object and the arguments alive until
-                // this timer fires, even on backends (JSC) whose GC cannot
-                // see them through the `window_timers` storage.
-                let callback_value = match &timer.callback_root {
-                    Some(root) => root.value.clone(),
-                    None => {
-                        error!(
-                            "timer id={} key={} missing callback root",
-                            timer_id, timer_key
-                        );
-                        return Ok(());
-                    }
-                };
-                let Some(callback_object) = Types::value_as_object(&callback_value) else {
-                    error!(
-                        "timer id={} key={} callback root is not an object",
-                        timer_id, timer_key
-                    );
-                    return Ok(());
-                };
-                let callback = Callback::from_object(
-                    callback_object,
-                    &mut self.realm_execution_context
-                        as &mut dyn ExecutionContext<crate::js::Types>,
-                );
-                let argument_values: Vec<JsValue> = timer
-                    .argument_roots
-                    .iter()
-                    .map(|root| root.value.clone())
-                    .collect();
                 let global = <Types as JsTypes>::value_from_object(
                     self.realm_execution_context.realm_global_object(),
                 );
                 if let Err(error) = crate::webidl::invoke_callback_function(
                     &mut self.realm_execution_context as &mut dyn EcmascriptHost<crate::js::Types>,
-                    &callback,
-                    &argument_values,
+                    callback,
+                    &timer.arguments,
                     crate::webidl::ExceptionBehavior::Report,
                     Some(&global),
                 ) {

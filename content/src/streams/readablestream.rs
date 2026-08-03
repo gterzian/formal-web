@@ -1,4 +1,4 @@
-use log::{debug, error};
+use log::error;
 use std::{
     cell::{Cell, RefCell},
     collections::VecDeque,
@@ -3036,7 +3036,6 @@ fn readable_stream_pipe_to(
         shutdown_action_promise: None,
         resolvers: Some(pipe_resolvers),
         shutting_down: false,
-        write_in_progress: false,
     });
 
     // Step 14: "If signal is not undefined,"
@@ -3090,20 +3089,6 @@ fn readable_stream_pipe_to(
 #[gc_struct]
 pub(crate) struct PipeToState(GcCell<PipeToStateInner>);
 
-fn pipe_debug_enabled() -> bool {
-    std::env::var_os("FORMAL_WEB_DEBUG_STREAMS").is_some()
-}
-
-fn log_pipe_debug(message: impl AsRef<str>) {
-    if pipe_debug_enabled() {
-        let millis = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map(|d| d.as_millis())
-            .unwrap_or(0);
-        debug!("[stream-debug][pipe] {} @{}ms", message.as_ref(), millis);
-    }
-}
-
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum PipePumpState {
     Starting,
@@ -3148,13 +3133,6 @@ pub(crate) struct PipeToStateInner {
 
     #[ignore_trace]
     shutting_down: bool,
-
-    /// True while `write_chunk` is inside `writer.write`: the write promise
-    /// has not yet been pushed to `pending_writes`, so a nested reaction
-    /// (JSC drains microtasks at JS call boundaries) would otherwise see an
-    /// empty `pending_writes` and finalize before the write is registered.
-    #[ignore_trace]
-    write_in_progress: bool,
 }
 
 impl PipeToState {
@@ -3281,7 +3259,6 @@ impl PipeToState {
         result: JsValue,
         ec: &mut dyn ExecutionContext<crate::js::Types>,
     ) -> Completion<bool, crate::js::Types> {
-        log_pipe_debug("write_chunk entered");
         let Some(result_object) = result.as_object() else {
             return Ok(false);
         };
@@ -3300,29 +3277,11 @@ impl PipeToState {
             let state = self.0.borrow();
             state.writer.clone()
         };
-        // Note: `writer.write` runs the sink's write algorithm, which can
-        // synchronously trigger nested promise reactions (JSC drains
-        // microtasks when a JS call returns).  Mark the write as in progress
-        // so a nested shutdown waits for this write instead of finalizing
-        // before it is registered in `pending_writes`.
-        self.0.borrow_mut().write_in_progress = true;
         let write_promise = writer.write(value, ec)?;
-        let mut state = self.0.borrow_mut();
-        state
+        self.0
+            .borrow_mut()
             .pending_writes
-            .push_back(JsObjectCell::new(Some(write_promise.clone())));
-        state.write_in_progress = false;
-        log_pipe_debug(format!(
-            "write_chunk: registered write, pending_writes={}",
-            state.pending_writes.len()
-        ));
-        // If a nested reaction (during `writer.write`) already initiated
-        // shutdown, resume it from this write's settlement reaction.
-        if state.shutting_down {
-            log_pipe_debug("write_chunk: shutdown already initiated during write, waiting on it");
-            drop(state);
-            self.wait_on_pending_write(write_promise, ec)?;
-        }
+            .push_back(JsObjectCell::new(Some(write_promise)));
         Ok(true)
     }
 
@@ -3496,11 +3455,9 @@ impl PipeToState {
         action: Option<PipeShutdownAction>,
         ec: &mut dyn ExecutionContext<crate::js::Types>,
     ) -> Completion<(), crate::js::Types> {
-        log_pipe_debug(format!("shutdown entered action={action:?}"));
-        let (pending_write, should_wait) = {
+        let pending_write = {
             let mut state = self.0.borrow_mut();
             if state.shutting_down {
-                log_pipe_debug("shutdown: already shutting down, returning");
                 return Ok(());
             }
 
@@ -3509,44 +3466,24 @@ impl PipeToState {
             let should_wait = state.writer.stream_slot_value().is_some_and(|dest| {
                 dest.state() == super::WritableStreamState::Writable
                     && !dest.close_queued_or_in_flight()
-                    && (!state.pending_writes.is_empty() || state.write_in_progress)
+                    && !state.pending_writes.is_empty()
             });
-            log_pipe_debug(format!(
-                "shutdown: should_wait={should_wait} pending_writes={} write_in_progress={}",
-                state.pending_writes.len(),
-                state.write_in_progress
-            ));
             if should_wait {
                 state.state = PipePumpState::ShuttingDownWithPendingWrites(action);
-                (
-                    state
-                        .pending_writes
-                        .front()
-                        .and_then(|cell| cell.borrow().clone()),
-                    true,
-                )
+                state
+                    .pending_writes
+                    .front()
+                    .and_then(|cell| cell.borrow().clone())
             } else {
-                (None, false)
+                None
             }
         };
 
         if let Some(pending_write) = pending_write {
-            log_pipe_debug("shutdown: waiting on front pending write");
             return self.wait_on_pending_write(pending_write, ec);
         }
 
-        // A write is being registered (`write_chunk` is inside `writer.write`)
-        // and the destination is still writable, so the write must complete
-        // before the shutdown proceeds.  The write promise will be pushed to
-        // `pending_writes` before control returns, and its settlement
-        // reaction will drive the shutdown.
-        if should_wait {
-            log_pipe_debug("shutdown: write_in_progress, deferring to write registration");
-            return Ok(());
-        }
-
         if let Some(action) = action {
-            log_pipe_debug(format!("shutdown: performing action {action:?}"));
             // If the action throws synchronously (e.g. cancel() throws),
             // treat it as rejection of the action promise: finalize with
             // the thrown error instead of the original shutdown_error.
@@ -3557,7 +3494,6 @@ impl PipeToState {
             return Ok(());
         }
 
-        log_pipe_debug("shutdown: no action, finalizing");
         self.finalize(ec)
     }
 
@@ -3636,7 +3572,6 @@ impl PipeToState {
             }
         };
 
-        log_pipe_debug(format!("perform_action: action={action:?} recorded"));
         self.0.borrow_mut().shutdown_action_promise =
             Some(JsObjectCell::new(Some(action_promise.clone())));
         self.append_reaction(action_promise, ec)
@@ -3648,10 +3583,8 @@ impl PipeToState {
         ec: &mut dyn ExecutionContext<crate::js::Types>,
     ) -> Completion<(), crate::js::Types> {
         if self.current_state() == PipePumpState::Finalized {
-            log_pipe_debug("finalize: already finalized");
             return Ok(());
         }
-        log_pipe_debug("finalize entered");
 
         let (writer, reader, signal, mut error, resolvers) = {
             let mut state = self.0.borrow_mut();
@@ -3687,30 +3620,18 @@ impl PipeToState {
 
         if let Some(resolvers) = resolvers {
             let undefined = ec.value_undefined();
-            let has_error = error.is_some();
-            let settle_result = match error {
+            match error {
                 Some(error) => {
                     let reject: <crate::js::Types as JsTypes>::JsObject =
                         resolvers.reject.clone().into();
-                    ec.call(&reject, &undefined, &[error])
+                    ec.call(&reject, &undefined, &[error])?;
                 }
                 None => {
                     let resolve: <crate::js::Types as JsTypes>::JsObject =
                         resolvers.resolve.clone().into();
-                    ec.call(&resolve, &undefined, &[undefined.clone()])
-                }
-            };
-            match settle_result {
-                Ok(_) => log_pipe_debug(format!(
-                    "finalize: pipe promise settled with error={has_error}"
-                )),
-                Err(settle_error) => {
-                    log_pipe_debug("finalize: FAILED to settle pipe promise");
-                    return Err(settle_error);
+                    ec.call(&resolve, &undefined, &[undefined.clone()])?;
                 }
             }
-        } else {
-            log_pipe_debug("finalize: no resolvers, pipe promise never settled");
         }
 
         Ok(())
@@ -3835,15 +3756,9 @@ impl PipeToState {
             });
         }
 
-        let pruned_count = handled.len();
-        let total_count = pruned_count + self.0.borrow().pending_writes.len();
         for promise in handled {
             crate::webidl::mark_promise_as_handled(&promise, ec)?;
         }
-
-        log_pipe_debug(format!(
-            "prune_settled_pending_writes: pruned {pruned_count} of {total_count} tracked writes"
-        ));
 
         Ok(())
     }
@@ -3910,9 +3825,6 @@ fn pipe_to_on_promise_settled(
     state.prune_settled_pending_writes(ec)?;
 
     let state_before_checks = state.current_state();
-    log_pipe_debug(format!(
-        "on_promise_settled entered, state_before={state_before_checks:?}"
-    ));
 
     if state_before_checks == PipePumpState::PendingRead {
         let (source, dest) = {
@@ -3949,12 +3861,8 @@ fn pipe_to_on_promise_settled(
 
     let current_state = state.current_state();
     if current_state != state_before_checks {
-        log_pipe_debug(format!(
-            "on_promise_settled: state changed by checks {state_before_checks:?} -> {current_state:?}"
-        ));
         return Ok(());
     }
-    log_pipe_debug(format!("on_promise_settled: dispatching state {current_state:?}"));
 
     match current_state {
         PipePumpState::Starting => {
@@ -3982,11 +3890,6 @@ fn pipe_to_on_promise_settled(
 
             if let Some(pending_write) = state.pending_write_front() {
                 state.wait_on_pending_write(pending_write, ec)?;
-            } else if state.0.borrow().write_in_progress {
-                // The shutdown raced a write registration: `write_chunk` is
-                // still inside `writer.write`, so the write promise is not in
-                // `pending_writes` yet.  Its settlement reaction will resume
-                // the shutdown.
             } else if let Some(action) = action {
                 state.perform_action(action, ec)?;
             } else {
@@ -4004,15 +3907,7 @@ fn pipe_to_on_promise_settled(
                         state.set_shutdown_error(Some(value));
                     }
                 }
-                None => {
-                    // The action promise is still being created inside
-                    // `perform_action` — a nested reaction (JSC drains
-                    // microtasks when a JS call returns) fired before
-                    // `shutdown_action_promise` was recorded.  Wait for the
-                    // action promise's own settlement reaction, which is
-                    // attached right after `perform_action` finishes.
-                    return Ok(());
-                }
+                None => {}
             }
 
             state.finalize(ec)?;

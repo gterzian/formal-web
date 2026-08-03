@@ -372,24 +372,13 @@ impl ReadableStreamDefaultController {
 
                 // Step 2.2.2: "Perform ! ReadableStreamClose(stream)."
                 readable_stream_close(stream, ec)?;
-            }
-
-            // Step 2.4: "Perform readRequest's chunk steps, given chunk."
-            // Note: The chunk steps run before `CallPullIfNeeded` (Step
-            // 2.3).  When the pull algorithm throws, the stream errors
-            // synchronously (`call_pull_if_needed`), so running the chunk
-            // steps first guarantees any job they queue (e.g. a tee's
-            // chunk-delivery microtask) is queued before the error
-            // reaction reaches the stream's consumers — matching the
-            // observable behavior of browsers where the pull rejection
-            // reaction is a microtask that runs after the chunk job.
-            read_request.chunk_steps(chunk, ec)?;
-
-            if !should_close_stream {
+            } else {
                 // Step 2.3: "Otherwise, perform ! ReadableStreamDefaultControllerCallPullIfNeeded(this)."
                 self.call_pull_if_needed(ec)?;
             }
-            return Ok(());
+
+            // Step 2.4: "Perform readRequest's chunk steps, given chunk."
+            return read_request.chunk_steps(chunk, ec);
         }
 
         // Step 3.1: "Perform ! ReadableStreamAddReadRequest(stream, readRequest)."
@@ -444,10 +433,9 @@ impl ReadableStreamDefaultController {
                 Ok(promise) => promise,
                 Err(error) => {
                     // Step 6 (throw -> rejection): "If pullAlgorithm throws, treat it as a
-                    // rejected promise."  The stream is errored synchronously so that
-                    // subsequent reads see the errored state; the chunk steps for the
-                    // current read already ran (see `pull_steps`), so the chunk is
-                    // delivered before the error takes effect.
+                    // rejected promise. Error the stream immediately (synchronously) rather
+                    // than deferring to microtask, so that subsequent reads see the errored
+                    // state."
                     self.error_steps(error.clone(), ec)?;
                     rejected_promise(error, ec)?
                 }
