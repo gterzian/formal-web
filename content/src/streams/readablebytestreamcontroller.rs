@@ -10,6 +10,7 @@ use js_engine::{Completion, ExecutionContext, JsTypes, SharedMemoryOrder, TypedA
 use crate::webidl::bindings::create_interface_instance;
 use crate::webidl::{rejected_promise, resolved_promise};
 use js_engine::gc::GcCell;
+use js_engine::gc::GcCellSet;
 use js_engine::gc::gc_cell_new;
 use js_engine::gc_struct;
 
@@ -396,7 +397,8 @@ impl ReadableStreamBYOBRequest {
     }
 
     pub(crate) fn set_view_slot(&self, view: Option<JsObject>) {
-        *self.view.borrow_mut() = view;
+        // JSC: `set` re-registers the managed reference for the new value.
+        self.view.set(view);
     }
 
     /// <https://streams.spec.whatwg.org/#rs-byob-request-respond>
@@ -504,8 +506,8 @@ impl ReadableByteStreamController {
 
     /// <https://streams.spec.whatwg.org/#readable-byte-stream-controller-clear-algorithms>
     fn clear_algorithms(&self) {
-        *self.pull_algorithm.borrow_mut() = None;
-        *self.cancel_algorithm.borrow_mut() = None;
+        self.pull_algorithm.set(None);
+        self.cancel_algorithm.set(None);
     }
 
     /// <https://streams.spec.whatwg.org/#reset-queue>
@@ -598,7 +600,7 @@ impl ReadableByteStreamController {
         let object: JsObject =
             create_interface_instance::<crate::js::Types, ReadableStreamBYOBRequest>(request, ec)?
                 .into();
-        *self.byob_request_object.borrow_mut() = Some(object.clone());
+        self.byob_request_object.set(Some(object.clone()));
         self.update_byob_request_view(ec)?;
         Ok(Some(object))
     }
@@ -1407,8 +1409,10 @@ pub(crate) fn set_up_readable_byte_stream_controller(
     controller
         .auto_allocate_chunk_size
         .set(auto_allocate_chunk_size);
-    *controller.pull_algorithm.borrow_mut() = Some(pull_algorithm.clone());
-    *controller.cancel_algorithm.borrow_mut() = Some(cancel_algorithm.clone());
+    controller.pull_algorithm.set(Some(pull_algorithm.clone()));
+    controller
+        .cancel_algorithm
+        .set(Some(cancel_algorithm.clone()));
     controller.pending_pull_intos.borrow_mut().clear();
     let start_result = start_algorithm.call(controller_object, ec)?;
     let start_promise = resolved_promise(start_result, ec)?;

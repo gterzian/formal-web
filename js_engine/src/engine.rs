@@ -599,7 +599,7 @@ pub trait ExecutionContext<T: JsTypes + JsTypesWithRealm>: EcmascriptHost<T> {
     ) -> Completion<crate::enums::PromiseState<T>, T>;
 
     /// Protect a value from garbage collection until the returned handle is dropped.
-    /// On JSC this calls `JSValueProtect`, on Boa it is a no-op.
+    /// On JSC this uses a managed reference, on Boa it is a no-op.
     /// Use this when a JsValue needs to survive across GC cycles (e.g., captured
     /// in a closure for `enqueue_job_with_realm`).
     fn protect_value(&mut self, value: &T::JsValue) -> crate::gc::GcRootHandle<T> {
@@ -696,6 +696,20 @@ pub trait ExecutionContext<T: JsTypes + JsTypesWithRealm>: EcmascriptHost<T> {
     /// `set_onload`, `play()`, `pause()`, `set_src()` where the mutation
     /// needs to call back into ECMA-262 operations.
     fn with_object_any_mut_with(&mut self, object: &T::JsObject, f: ObjectDataMutation<'_, T>);
+
+    /// (JSC) Create a per-object GC owner for `object`, export it on the
+    /// object (making it reachable from the JS runtime exactly while the
+    /// object is), and adopt the platform object's managed-reference cells
+    /// onto it — so a struct's JS-value fields stay alive exactly while
+    /// its JS object is reachable.  Called by `create_interface_instance`
+    /// right after the reflector exists.  No-op on Boa and V8.
+    #[cfg(not(feature = "boa"))]
+    fn adopt_platform_gc_owner(
+        &mut self,
+        _object: &T::JsObject,
+        _data: &mut dyn crate::gc::GcOwner,
+    ) {
+    }
 
     // ── Error Construction ──────────────────────────────────────────────
 
@@ -813,7 +827,7 @@ pub trait ExecutionContext<T: JsTypes + JsTypesWithRealm>: EcmascriptHost<T> {
     /// returned handle.  When the handle is dropped, the protection is released.
     ///
     /// Boa: no-op (the GC traces through `#[derive(Trace)]` automatically).
-    /// JSC: calls `JSValueProtect` / `JSValueUnprotect`.
+    /// JSC: uses JSManagedValue + addManagedReference / removeManagedReference.
     fn create_root(&mut self, value: &T::JsValue) -> crate::gc::GcRootHandle<T> {
         crate::gc::GcRootHandle::new(value.clone(), None)
     }

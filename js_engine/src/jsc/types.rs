@@ -199,7 +199,7 @@ impl Eq for JscValue {}
 // Note: JscValue intentionally does NOT implement `Trace`.
 // JSC's GC handles JS values natively.  If a Rust struct needs to hold
 // a JscValue across GC boundaries, use `JsValueCell` (which wraps the
-// value with JSValueProtect/JSValueUnprotect) instead of storing a raw
+// value through a JscManagedValue) instead of storing a raw
 // JscValue.  See `js_engine/src/gc.rs` for details.
 
 impl Default for JscValue {

@@ -21,6 +21,7 @@ use super::writablestreamdefaultcontroller::{
 };
 use super::{ReadableStream, WritableStream, type_error_value};
 use js_engine::gc::GcCell;
+use js_engine::gc::GcCellSet;
 use js_engine::gc::gc_cell_new;
 use js_engine::gc_struct;
 
@@ -604,7 +605,7 @@ fn initialize_transform_stream(
         ec,
     )?;
     *stream.writable.borrow_mut() = Some(writable);
-    *stream.writable_object.borrow_mut() = Some(writable_object);
+    stream.writable_object.set(Some(writable_object));
 
     // Step 6: "Let pullAlgorithm be the following steps:"
     let pull_algorithm = PullAlgorithm::TransformStreamDefaultSourcePull(stream.clone());
@@ -622,7 +623,7 @@ fn initialize_transform_stream(
         ec,
     )?;
     *stream.readable.borrow_mut() = Some(readable);
-    *stream.readable_object.borrow_mut() = Some(readable_object);
+    stream.readable_object.set(Some(readable_object));
 
     // Step 9: "Set stream.[[backpressure]] and stream.[[backpressureChangePromise]] to undefined."
     // Note: The implementation initializes [[backpressure]] with a boolean field and then immediately assigns the spec-visible initial state via TransformStreamSetBackpressure.
@@ -631,7 +632,7 @@ fn initialize_transform_stream(
 
     // Step 11: "Set stream.[[controller]] to undefined."
     *stream.controller.borrow_mut() = None;
-    *stream.controller_object.borrow_mut() = None;
+    stream.controller_object.set(None);
 
     Ok(())
 }
@@ -697,8 +698,8 @@ fn transform_stream_set_backpressure(
     let (promise, resolvers) = ec.new_promise_pending()?;
     let promise_obj = Types::value_as_object(&promise)
         .ok_or_else(|| ec.new_type_error("new_promise_pending did not return an object"))?;
-    *stream.backpressure_change_promise.borrow_mut() = Some(promise_obj);
-    *stream.backpressure_change_resolvers.borrow_mut() = Some(resolvers);
+    stream.backpressure_change_promise.set(Some(promise_obj));
+    stream.backpressure_change_resolvers.set(Some(resolvers));
 
     // Step 4: "Set stream.[[backpressure]] to backpressure."
     stream.backpressure.set(backpressure);
@@ -739,16 +740,20 @@ fn set_up_transform_stream_default_controller(
 
     // Step 4: "Set stream.[[controller]] to controller."
     *stream.controller.borrow_mut() = Some(controller.clone());
-    *stream.controller_object.borrow_mut() = Some(controller_object.clone());
+    stream
+        .controller_object
+        .set(Some(controller_object.clone()));
 
     // Step 5: "Set controller.[[transformAlgorithm]] to transformAlgorithm."
-    *controller.transform_algorithm.borrow_mut() = Some(transform_algorithm);
+    controller
+        .transform_algorithm
+        .set(Some(transform_algorithm));
 
     // Step 6: "Set controller.[[flushAlgorithm]] to flushAlgorithm."
-    *controller.flush_algorithm.borrow_mut() = Some(flush_algorithm);
+    controller.flush_algorithm.set(Some(flush_algorithm));
 
     // Step 7: "Set controller.[[cancelAlgorithm]] to cancelAlgorithm."
-    *controller.cancel_algorithm.borrow_mut() = Some(cancel_algorithm);
+    controller.cancel_algorithm.set(Some(cancel_algorithm));
 }
 
 /// <https://streams.spec.whatwg.org/#set-up-transform-stream-default-controller-from-transformer>
@@ -813,10 +818,10 @@ fn transform_stream_default_controller_clear_algorithms(
     controller: &TransformStreamDefaultController,
 ) {
     // Step 1: "Set controller.[[transformAlgorithm]] to undefined."
-    *controller.transform_algorithm.borrow_mut() = None;
+    controller.transform_algorithm.set(None);
 
     // Step 2: "Set controller.[[flushAlgorithm]] to undefined."
-    *controller.flush_algorithm.borrow_mut() = None;
+    controller.flush_algorithm.set(None);
 
     // Step 3: "Set controller.[[cancelAlgorithm]] to undefined."
     *controller.cancel_algorithm.borrow_mut() = None;

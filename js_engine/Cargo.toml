@@ -22,3 +22,9 @@ boa_engine = { git = "https://github.com/boa-dev/boa", rev = "7ce9cae84ac9bf54fe
 boa_gc = { git = "https://github.com/boa-dev/boa", rev = "7ce9cae84ac9bf54fe528bb05b997ac24af808a4", features = ["thin-vec", "boa_string"], optional = true }
 js_engine_macros = { path = "../js_engine_macros" }
 rusty_v8 = { package = "v8", version = "=150.1.0", optional = true }
+
+# Objective-C bridge for JSC's JSManagedValue / addManagedReference GC
+# integration (macOS/iOS only).  Used by the `jsc` backend.
+[target.'cfg(any(target_os = "macos", target_os = "ios"))'.dependencies]
+objc2 = "0.6.4"
+objc2-foundation = "0.3.2"

@@ -16,6 +16,7 @@ use std::collections::HashMap;
 use std::ffi::c_char;
 use std::sync::LazyLock;
 
+use super::objc_gc::{JscGcOwner, JscManagedValue};
 use super::types::*;
 
 // ── Current engine (thread-local) ────────────────────────────────────
@@ -180,15 +181,15 @@ struct BuiltinFunctionData {
     behaviour: StoredBehaviour,
     name: String,
     length: u32,
-    /// Context pointer for JSValueProtect/JSValueUnprotect.
-    ctx: *mut JSContextRef,
     /// Cached function properties (toString, bind, call, apply).
     /// Stored as private data to avoid JSC's private property map.
-    /// Protected with JSValueProtect when set.
-    to_string_val: Option<*mut JSValueRef>,
-    bind_val: Option<*mut JSValueRef>,
-    call_val: Option<*mut JSValueRef>,
-    apply_val: Option<*mut JSValueRef>,
+    /// Kept alive via managed references (JSManagedValue +
+    /// addManagedReference) — dropped when the function object is
+    /// finalized, removing the reference.
+    to_string_val: Option<JscManagedValue>,
+    bind_val: Option<JscManagedValue>,
+    call_val: Option<JscManagedValue>,
+    apply_val: Option<JscManagedValue>,
 }
 
 /// Wrapper around `*mut JSClassRef` that implements `Sync` + `Send` so it
@@ -314,6 +315,10 @@ struct Intrinsics {
     bigint_fn: Option<JscObject>,
     promise_resolve_fn: Option<JscObject>,
     promise_ctor: Option<JscObject>,
+    // %Promise.prototype.then%, captured at engine construction before user
+    // code can patch Promise.prototype.then.  `perform_promise_then` uses
+    // it so internal promise reactions never observe patched `then`.
+    promise_prototype_then: Option<JscObject>,
     dataview_ctor: Option<JscObject>,
     proxy_ctor: Option<JscObject>,
     shared_array_buffer_ctor: Option<JscObject>,
@@ -327,6 +332,11 @@ struct Intrinsics {
     type_error_ctor: Option<JscObject>,
     range_error_ctor: Option<JscObject>,
     syntax_error_ctor: Option<JscObject>,
+    // %AsyncIteratorPrototype% (computed via eval; JSC exposes no direct
+    // C API for it, but it is reachable through the async generator
+    // prototype chain: Object.getPrototypeOf(Object.getPrototypeOf(
+    // async function* () {}).prototype)).
+    async_iterator_prototype: Option<JscObject>,
     // Integrity operations
     object_freeze: Option<JscObject>,
     object_seal: Option<JscObject>,
@@ -378,6 +388,49 @@ macro_rules! cached_intrinsic_ctor {
     }};
 }
 
+/// Resolve JSC's %AsyncIteratorPrototype% through the async generator
+/// prototype chain: `Object.getPrototypeOf(Object.getPrototypeOf(
+/// async function* () {}).prototype)`.  JSC exposes no direct C API for
+/// this intrinsic; the eval is cached in `Intrinsics`.  Falls back to the
+/// global object if the eval fails.
+fn resolve_async_iterator_prototype(context: &JscContext) -> JscObject {
+    let script = JscString::from_rust(
+        "Object.getPrototypeOf(Object.getPrototypeOf(async function* () {}).prototype)",
+    );
+    let mut exception: *mut JSValueRef = std::ptr::null_mut();
+    let result = unsafe {
+        JSEvaluateScript(
+            context.as_context_ref(),
+            script.raw,
+            std::ptr::null_mut(),
+            std::ptr::null_mut(),
+            1,
+            &mut exception,
+        )
+    };
+    if !exception.is_null() || result.is_null() {
+        return context.global_object();
+    }
+    JscObject {
+        raw: result as *mut JSObjectRef,
+        ctx: context.as_context_ref(),
+    }
+}
+
+/// Resolve the intrinsic %Promise.prototype.then% before any user code can
+/// patch `Promise.prototype.then`.  `perform_promise_then` calls this
+/// function so internal promise reactions never observe a patched `then`.
+fn resolve_promise_prototype_then(context: &JscContext) -> Option<JscObject> {
+    let raw = resolve_global_path(context.as_context_ref(), &["Promise", "prototype", "then"]);
+    if raw.is_null() {
+        return None;
+    }
+    Some(JscObject {
+        raw,
+        ctx: context.as_context_ref(),
+    })
+}
+
 /// JSClass for plain objects (no callbacks).  Uses JSObjectMake to
 /// avoid eval_script_raw (which causes nested JSEvaluateScript crashes).
 static PLAIN_OBJECT_CLASS: LazyLock<JscClass> = LazyLock::new(|| {
@@ -397,6 +450,83 @@ static PLAIN_OBJECT_CLASS: LazyLock<JscClass> = LazyLock::new(|| {
             deleteProperty: None,
             getPropertyNames: None,
             callAsFunction: None,
+            callAsConstructor: None,
+            hasInstance: None,
+            convertToType: None,
+        })
+    })
+});
+
+/// Private data for `JOB_CLASS` function objects: the Rust job to run when
+/// the queued microtask fires.
+struct JobData {
+    job: Option<Box<dyn FnOnce(&mut JscEngine)>>,
+}
+
+/// `callAsFunction` for `JOB_CLASS` objects.  Runs the stored job when the
+/// microtask queued via `enqueue_job_*` fires.
+extern "C" fn job_call_as_function(
+    ctx: *mut JSContextRef,
+    function: *mut JSObjectRef,
+    _this_object: *mut JSObjectRef,
+    _argument_count: usize,
+    _arguments: *const *mut JSValueRef,
+    _exception: *mut *mut JSValueRef,
+) -> *mut JSValueRef {
+    // Copy the engine pointer out of the thread-local first so the
+    // RefCell borrow is released before the job runs; jobs call back into
+    // the engine (e.g. `EngineGuard::new` in `perform_promise_then`),
+    // which would otherwise re-borrow the already-borrowed cell.
+    let engine_ptr: Option<*mut JscEngine> = CURRENT_ENGINE.with(|current| *current.borrow());
+    let data_ptr = unsafe { JSObjectGetPrivate(function) } as *mut JobData;
+    if !data_ptr.is_null() {
+        if let Some(ptr) = engine_ptr {
+            let engine = unsafe { &mut *ptr };
+            if let Some(job) = unsafe { (*data_ptr).job.take() } {
+                if std::env::var_os("FORMAL_WEB_DEBUG_STREAMS").is_some() {
+                    log::debug!("[stream-debug][jsc] job_call_as_function: running job");
+                }
+                job(engine);
+            }
+        } else {
+            log::error!("job_call_as_function: CURRENT_ENGINE not set");
+        }
+    }
+    unsafe { JSValueMakeUndefined(ctx) }
+}
+
+/// `finalize` for `JOB_CLASS` objects: drops the stored job (its captured
+/// domain state) if the microtask never ran.
+extern "C" fn job_finalize(object: *mut JSObjectRef) {
+    unsafe {
+        let data_ptr = JSObjectGetPrivate(object) as *mut JobData;
+        if !data_ptr.is_null() {
+            drop(Box::from_raw(data_ptr));
+        }
+    }
+}
+
+/// JSClass for the microtask job function objects created by
+/// `enqueue_job_*`.  The job closure is stored as private data; the
+/// function's `callAsFunction` runs it when JSC executes the queued
+/// microtask.
+static JOB_CLASS: LazyLock<JscClass> = LazyLock::new(|| {
+    JscClass(unsafe {
+        JSClassCreate(&JSClassDefinition {
+            version: 0,
+            attributes: kJSClassAttributeNone,
+            className: b"FormalWebJob\0".as_ptr() as *const c_char,
+            parentClass: std::ptr::null_mut(),
+            staticValues: std::ptr::null(),
+            staticFunctions: std::ptr::null(),
+            initialize: None,
+            finalize: Some(job_finalize),
+            hasProperty: None,
+            getProperty: None,
+            setProperty: None,
+            deleteProperty: None,
+            getPropertyNames: None,
+            callAsFunction: Some(job_call_as_function),
             callAsConstructor: None,
             hasInstance: None,
             convertToType: None,
@@ -615,7 +745,6 @@ fn make_builtin_function(
         behaviour,
         name: name_str.clone(),
         length,
-        ctx,
         to_string_val: None,
         bind_val: None,
         call_val: None,
@@ -838,27 +967,10 @@ fn set_builtin_to_string(ctx: *mut JSContextRef, target: *mut JSObjectRef, name:
 /// freeing the captured closure.
 impl Drop for BuiltinFunctionData {
     fn drop(&mut self) {
-        // Unprotect any stored function values before freeing.
-        if let Some(val) = self.to_string_val {
-            unsafe {
-                JSValueUnprotect(self.ctx, val);
-            }
-        }
-        if let Some(val) = self.bind_val {
-            unsafe {
-                JSValueUnprotect(self.ctx, val);
-            }
-        }
-        if let Some(val) = self.call_val {
-            unsafe {
-                JSValueUnprotect(self.ctx, val);
-            }
-        }
-        if let Some(val) = self.apply_val {
-            unsafe {
-                JSValueUnprotect(self.ctx, val);
-            }
-        }
+        // The cached property managed values (to_string/bind/call/apply)
+        // drop here, removing their managed references.  The context is
+        // still alive while finalization runs (the engine outlives its
+        // function objects).
     }
 }
 
@@ -911,13 +1023,25 @@ unsafe extern "C" fn builtin_get_property(
             JSValueMakeNumber(ctx, length as f64)
         } else if JSStringIsEqual(property_name, to_string_key.raw) {
             // Return the stored toString function (not the result of calling it)
-            (*data_ptr).to_string_val.unwrap_or(std::ptr::null_mut())
+            (*data_ptr)
+                .to_string_val
+                .as_ref()
+                .map_or(std::ptr::null_mut(), |managed| managed.value_ref())
         } else if JSStringIsEqual(property_name, bind_key.raw) {
-            (*data_ptr).bind_val.unwrap_or(std::ptr::null_mut())
+            (*data_ptr)
+                .bind_val
+                .as_ref()
+                .map_or(std::ptr::null_mut(), |managed| managed.value_ref())
         } else if JSStringIsEqual(property_name, call_key.raw) {
-            (*data_ptr).call_val.unwrap_or(std::ptr::null_mut())
+            (*data_ptr)
+                .call_val
+                .as_ref()
+                .map_or(std::ptr::null_mut(), |managed| managed.value_ref())
         } else if JSStringIsEqual(property_name, apply_key.raw) {
-            (*data_ptr).apply_val.unwrap_or(std::ptr::null_mut())
+            (*data_ptr)
+                .apply_val
+                .as_ref()
+                .map_or(std::ptr::null_mut(), |managed| managed.value_ref())
         } else {
             // Return NULL to signal "property not found, check prototype chain"
             std::ptr::null_mut()
@@ -947,6 +1071,7 @@ unsafe extern "C" fn builtin_set_property(
         let bind_jsc = JscString::from_rust("bind");
         let call_jsc = JscString::from_rust("call");
         let apply_jsc = JscString::from_rust("apply");
+        let anchor = JscGcOwner::anchor(ctx);
         if JSStringIsEqual(property_name, name_jsc.raw) {
             let str_ref = JSValueToStringCopy(ctx, value, std::ptr::null_mut());
             if !str_ref.is_null() {
@@ -961,29 +1086,18 @@ unsafe extern "C" fn builtin_set_property(
             }
             true
         } else if JSStringIsEqual(property_name, to_string_jsc.raw) {
-            // Protect and store.
-            if let Some(old) = (*data_ptr).to_string_val.replace(value) {
-                JSValueUnprotect(ctx, old);
-            }
-            JSValueProtect(ctx, value);
+            // Store through a managed reference (replaces the old one,
+            // which drops its managed reference).
+            (*data_ptr).to_string_val = JscManagedValue::new(ctx, value, &anchor);
             true
         } else if JSStringIsEqual(property_name, bind_jsc.raw) {
-            if let Some(old) = (*data_ptr).bind_val.replace(value) {
-                JSValueUnprotect(ctx, old);
-            }
-            JSValueProtect(ctx, value);
+            (*data_ptr).bind_val = JscManagedValue::new(ctx, value, &anchor);
             true
         } else if JSStringIsEqual(property_name, call_jsc.raw) {
-            if let Some(old) = (*data_ptr).call_val.replace(value) {
-                JSValueUnprotect(ctx, old);
-            }
-            JSValueProtect(ctx, value);
+            (*data_ptr).call_val = JscManagedValue::new(ctx, value, &anchor);
             true
         } else if JSStringIsEqual(property_name, apply_jsc.raw) {
-            if let Some(old) = (*data_ptr).apply_val.replace(value) {
-                JSValueUnprotect(ctx, old);
-            }
-            JSValueProtect(ctx, value);
+            (*data_ptr).apply_val = JscManagedValue::new(ctx, value, &anchor);
             true
         } else {
             // Reject writes to unknown properties.
@@ -1445,6 +1559,28 @@ impl JsTypesWithRealm for JscTypes {
     type Realm = JscRealm;
 }
 
+/// Settlement record for a promise whose reaction was attached through
+/// [`JscEngine::perform_promise_then`]: the (fulfilled, value) pair
+/// observed when the reaction fired.  Lets `promise_state` answer
+/// synchronously even inside a nested reaction callback, where JSC's
+/// eval-based microtask drain is a re-entrancy no-op.
+///
+/// The record roots the promise itself (managed reference).  While a
+/// record exists the promise cannot be collected, so its address cannot be
+/// recycled by a newer promise; `promise_state` can therefore trust that a
+/// record found at an address describes the promise currently at that
+/// address.  Without the root, a collected promise's address could be
+/// reused, and a stale record would misreport a genuinely-pending promise
+/// as settled (observed as premature pipe shutdown in the piping tests).
+struct PromiseSettlement {
+    fulfilled: bool,
+    value: JscValue,
+    /// Root keeping the promise alive while the record exists.  Dropping
+    /// the record (perform_promise_then, new_promise_capability, gc,
+    /// engine drop) releases the promise.
+    _promise_root: Option<JscManagedValue>,
+}
+
 /// JSC engine wrapper.  Owns a `JSGlobalContextRef` and implements
 /// `JsEngine<JscTypes>`, `ExecutionContext<JscTypes>`, and
 /// `EcmascriptHost<JscTypes>`.
@@ -1457,53 +1593,146 @@ pub struct JscEngine {
     host_data: HashMap<std::any::TypeId, Box<dyn std::any::Any>>,
     #[allow(dead_code)]
     next_root_id: u64,
-    /// Tracks objects protected via `JSValueProtect` so they can be
-    /// unprotected when the engine is dropped.
-    protected_objects: Vec<*mut JSValueRef>,
-    queued_jobs: Vec<Box<dyn FnOnce(&mut JscEngine)>>,
+    /// Tracks platform-object wrapper values kept alive via managed
+    /// references (JSManagedValue + addManagedReference); the references
+    /// are removed when the engine is dropped.
+    managed_objects: Vec<JscManagedValue>,
+    /// Microtask jobs enqueued while no JS call is active (nesting depth
+    /// 0).  JSC drains microtasks as soon as the outermost C API call
+    /// returns, so a depth-0 enqueue would run the job synchronously;
+    /// deferring here lets `run_jobs`/`perform_a_microtask_checkpoint`
+    /// flush them at the next checkpoint instead.  Jobs enqueued while a
+    /// JS call is active go straight into JSC's microtask queue via
+    /// `enqueue_js_microtask`.
+    pending_jobs: Vec<Box<dyn FnOnce(&mut JscEngine)>>,
     /// Cached `Function.prototype.call` for correct this-binding when
     /// calling JS functions with non-object `this` values.
     fn_call: Option<JscObject>,
     /// Cached global intrinsic function/constructor references, replacing
     /// per-call JSEvaluateScript with one-time native property walks.
     intrinsics: Intrinsics,
+    /// Promise settlements observed by the wrapped reactions created in
+    /// `perform_promise_then`, keyed by promise object pointer.  Consulted
+    /// by `promise_state` so it can answer synchronously inside nested
+    /// reaction callbacks (where JSC's microtask drain is re-entrancy
+    /// guarded).  Cleared in `gc()` — records are only needed within a
+    /// single callback.
+    settled_promises: HashMap<usize, PromiseSettlement>,
+    /// Promise resolver functions created by `new_promise_capability`,
+    /// keyed by resolver object pointer: (promise pointer, is_reject).
+    /// `call` consults this so invoking a resolver records the promise's
+    /// settlement synchronously, making `promise_state` reliable inside
+    /// nested reaction callbacks.
+    promise_resolvers: HashMap<usize, (usize, bool)>,
+    /// Re-entrancy guard for the eval-based `promise_state` fallback.  The
+    /// fallback runs JSEvaluateScript, and JSC drains its microtask queue
+    /// at every JSEvaluateScript boundary; a drained reaction can re-enter
+    /// `promise_state`, which would eval again and drain again — unbounded
+    /// recursion (observed as a stack-overflow SIGSEGV in the piping
+    /// tests).  While set, nested `promise_state` calls return `Pending`
+    /// without touching the globals or evaluating.
+    in_promise_state_eval: bool,
 }
 
 /// Drop `host_data` (which contains `GcRootHandle` unroot closures) and
-/// `queued_jobs` before `context` (which releases `JSGlobalContextRef`),
+/// `pending_jobs` before `context` (which releases `JSGlobalContextRef`),
 /// ensuring cleanup closures can still access the JS context.
 impl Drop for JscEngine {
     fn drop(&mut self) {
-        // Drop host_data and queued_jobs first, before context is dropped.
+        // Drop host_data and pending_jobs first, before context is dropped.
         // Rust drops fields in declaration order; by taking these early we
         // ensure unroot actions run while the JSGlobalContextRef is still valid.
         self.host_data.clear();
-        self.queued_jobs.clear();
-        let ctx_ptr = self.context.as_context_ref();
-        // Unprotect any objects protected via create_object_with_any.
-        for protected in self.protected_objects.drain(..) {
-            if !protected.is_null() {
-                unsafe {
-                    JSValueUnprotect(ctx_ptr, protected);
-                }
-            }
-        }
+        self.pending_jobs.clear();
+        // Remove the managed references created via create_object_with_any
+        // (each drop removes its addManagedReference edge) while the
+        // context is still valid.
+        self.managed_objects.clear();
     }
 }
 
 impl JscEngine {
+    /// Queue a job for execution as a JSC microtask.  Called from the
+    /// `ExecutionContext::enqueue_job` / `enqueue_job_with_realm`
+    /// implementations; kept as an inherent method so jobs enqueued while
+    /// a JS call is active (depth ≥ 1) are interleaved with JSC's own
+    /// microtask queue in FIFO order.
+    pub(crate) fn enqueue_js_microtask(&mut self, job: Box<dyn FnOnce(&mut JscEngine)>) {
+        if std::env::var_os("FORMAL_WEB_DEBUG_STREAMS").is_some() {
+            log::debug!("[stream-debug][jsc] enqueue_js_microtask: queueing job");
+        }
+        // Store the job as private data on a JOB_CLASS function object and
+        // queue the function as a microtask via a resolved promise's
+        // `%Promise.prototype.then%` reaction.  JSC executes queued
+        // microtasks (including this reaction) at its next microtask
+        // drain, interleaved correctly with all other microtasks.
+        let ctx = self.ctx_ptr();
+        let data = Box::new(JobData { job: Some(job) });
+        let job_fn = unsafe {
+            JSObjectMake(
+                ctx,
+                JOB_CLASS.0,
+                Box::into_raw(data) as *mut std::ffi::c_void,
+            )
+        };
+        if job_fn.is_null() {
+            log::error!("enqueue_js_microtask: could not create the job function");
+            return;
+        }
+
+        // %Promise%.resolve(undefined)
+        let realm = self.current_realm();
+        let constructor = self.realm_intrinsics(&realm).promise;
+        let undefined = self.value_undefined();
+        let resolved = match self.promise_resolve(constructor, undefined) {
+            Ok(promise) => promise,
+            Err(error) => {
+                log::error!("enqueue_js_microtask: Promise.resolve failed: {error:?}");
+                return;
+            }
+        };
+
+        // %Promise.prototype.then%(resolvedPromise, jobFn)
+        let Some(then_fn) = self.intrinsics.promise_prototype_then else {
+            log::error!("enqueue_js_microtask: %Promise.prototype.then% not resolved");
+            return;
+        };
+        let undefined = unsafe { JSValueMakeUndefined(ctx) };
+        let args = [job_fn as *mut JSValueRef, undefined];
+        let mut exc: *mut JSValueRef = std::ptr::null_mut();
+        unsafe {
+            JSObjectCallAsFunction(
+                ctx,
+                then_fn.raw,
+                resolved.raw,
+                args.len(),
+                args.as_ptr(),
+                &mut exc,
+            );
+        }
+        if !exc.is_null() {
+            log::error!("enqueue_js_microtask: %Promise.prototype.then% raised an exception");
+        }
+    }
+
     pub fn new() -> Self {
         let context = JscContext::new();
         let realm_global = context.global_object();
+        let mut intrinsics = Intrinsics::default();
+        intrinsics.async_iterator_prototype = Some(resolve_async_iterator_prototype(&context));
+        intrinsics.promise_prototype_then = resolve_promise_prototype_then(&context);
         Self {
             context,
             realm_global,
             host_data: HashMap::new(),
             next_root_id: 0,
-            protected_objects: Vec::new(),
-            queued_jobs: Vec::new(),
+            managed_objects: Vec::new(),
+            pending_jobs: Vec::new(),
             fn_call: None,
-            intrinsics: Intrinsics::default(),
+            intrinsics,
+            settled_promises: HashMap::new(),
+            promise_resolvers: HashMap::new(),
+            in_promise_state_eval: false,
         }
     }
 
@@ -1527,15 +1756,20 @@ impl JscEngine {
             raw: raw_obj,
             ctx: ctx_ptr,
         };
+        let mut intrinsics = Intrinsics::default();
+        intrinsics.async_iterator_prototype = Some(resolve_async_iterator_prototype(&self.context));
         Self {
             context: self.context.clone(),
             realm_global,
             host_data: HashMap::new(),
             next_root_id: 0,
-            protected_objects: Vec::new(),
-            queued_jobs: Vec::new(),
+            managed_objects: Vec::new(),
+            pending_jobs: Vec::new(),
             fn_call: None,
-            intrinsics: Intrinsics::default(),
+            intrinsics,
+            settled_promises: HashMap::new(),
+            promise_resolvers: HashMap::new(),
+            in_promise_state_eval: false,
         }
     }
 
@@ -1549,15 +1783,21 @@ impl JscEngine {
             raw: raw_obj,
             ctx: ctx_ptr,
         };
+        let mut intrinsics = Intrinsics::default();
+        intrinsics.async_iterator_prototype = Some(resolve_async_iterator_prototype(&context));
+        intrinsics.promise_prototype_then = resolve_promise_prototype_then(&context);
         Self {
             context,
             realm_global,
             host_data: HashMap::new(),
             next_root_id: 0,
-            protected_objects: Vec::new(),
-            queued_jobs: Vec::new(),
+            managed_objects: Vec::new(),
+            pending_jobs: Vec::new(),
             fn_call: None,
-            intrinsics: Intrinsics::default(),
+            intrinsics,
+            settled_promises: HashMap::new(),
+            promise_resolvers: HashMap::new(),
+            in_promise_state_eval: false,
         }
     }
     pub fn context(&self) -> &JscContext {
@@ -1566,6 +1806,56 @@ impl JscEngine {
     /// The raw `JSContextRef` pointer used for constructing `JscValue` / `JscObject`.
     fn ctx_ptr(&self) -> *mut JSContextRef {
         self.context.as_context_ref()
+    }
+
+    /// Wrap a `.then` reaction so the promise's settlement is recorded in
+    /// `settled_promises` before the original handler runs.  The record is
+    /// keyed by the promise object pointer, matching `promise_state`'s key.
+    fn wrap_settlement_reaction(
+        &mut self,
+        promise_ptr: usize,
+        fulfilled: bool,
+        original: JscValue,
+    ) -> JscFunction {
+        let ctx = self.ctx_ptr();
+        let name = JscPropertyKey::from_rust("settlement_reaction");
+        // The promise roots the wrapper, not the original handler; the
+        // original lives only in the wrapper's private data (invisible to
+        // JSC's GC).  Root it through a managed reference owned by the
+        // wrapper closure so it survives until the wrapper is finalized.
+        let original_root =
+            JscManagedValue::new(ctx, original.raw, &JscGcOwner::anchor(ctx)).map(std::rc::Rc::new);
+        let behaviour: StoredBehaviour = Box::new(move |args, this, ec| {
+            // Keep the root alive for this closure's lifetime (shared via
+            // Rc because the closure is `Fn`).
+            let _root_guard = original_root.clone();
+            let value = args
+                .first()
+                .cloned()
+                .unwrap_or_else(|| ec.value_undefined());
+            if let Some(engine) = ec.as_any_mut().downcast_mut::<JscEngine>() {
+                // Root the promise while the record exists so its address
+                // cannot be recycled; see `PromiseSettlement`.
+                let promise_raw = promise_ptr as *mut JSValueRef;
+                let promise_root = JscManagedValue::new(ctx, promise_raw, &JscGcOwner::anchor(ctx));
+                engine.settled_promises.insert(
+                    promise_ptr,
+                    PromiseSettlement {
+                        fulfilled,
+                        value,
+                        _promise_root: promise_root,
+                    },
+                );
+            }
+            // Delegate to the original reaction handler with the same
+            // arguments; its result feeds the chained promise.
+            let handler = match JscTypes::value_as_object(&original) {
+                Some(handler) => handler,
+                None => return Ok(ec.value_undefined()),
+            };
+            EcmascriptHost::call(ec, &handler, &this, args)
+        });
+        make_builtin_function(ctx, behaviour, &name, 0, false)
     }
 
     #[allow(dead_code)]
@@ -1591,13 +1881,6 @@ impl JscEngine {
         JscValue {
             raw: unsafe { JSValueMakeBoolean(ctx_ptr, b) },
             ctx: ctx_ptr,
-        }
-    }
-
-    fn property_key_to_jsstring(&self, key: &JscPropertyKey) -> Option<JscString> {
-        match key {
-            JscPropertyKey::String(s) => Some(s.clone()),
-            JscPropertyKey::Symbol(_) => None,
         }
     }
 
@@ -2102,6 +2385,110 @@ pub fn create_builtin_fn_with_captures_impl<C: 'static>(
     func
 }
 
+/// Eval-based `promise_state` fallback: attach a `.then` reaction via the
+/// promise's own `then`, drain with `void 0`, and read the result from the
+/// `__fw_ps_*` globals.  JSEvaluateScript drains JSC's microtask queue on
+/// return even at nested depth, so this can observe a settled promise from
+/// inside a nested reaction — at the cost of running any other queued
+/// reactions re-entrantly.  Callers must hold `in_promise_state_eval` to
+/// prevent unbounded recursion.
+fn promise_state_eval_fallback(
+    engine: &mut JscEngine,
+    promise: &JscObject,
+) -> Completion<crate::enums::PromiseState<JscTypes>, JscTypes> {
+    let _guard = EngineGuard::new(engine as *mut JscEngine);
+    let global = engine.context.global_object();
+    let mut exc: *mut JSValueRef = std::ptr::null_mut();
+
+    let p_key = JscString::from_rust("__fw_ps_promise");
+    unsafe {
+        JSObjectSetProperty(
+            engine.context.as_context_ref(),
+            global.raw,
+            p_key.raw,
+            promise.as_value_ref(),
+            kJSPropertyAttributeNone,
+            &mut exc,
+        )
+    };
+    if !exc.is_null() {
+        return Err(JscValue {
+            raw: exc,
+            ctx: engine.ctx_ptr(),
+        });
+    }
+
+    let setup_script = r#"
+            __fw_ps_state = "pending";
+            __fw_ps_value = undefined;
+            __fw_ps_promise.then(
+                function(v) { __fw_ps_state = "fulfilled"; __fw_ps_value = v; },
+                function(r) { __fw_ps_state = "rejected"; __fw_ps_value = r; }
+            );
+        "#;
+    engine.eval_script_raw(setup_script);
+    engine.eval_script_raw("void 0");
+
+    let state_key = JscString::from_rust("__fw_ps_state");
+    let state_val = unsafe {
+        JSObjectGetProperty(
+            engine.context.as_context_ref(),
+            global.raw,
+            state_key.raw,
+            &mut exc,
+        )
+    };
+    let value_key = JscString::from_rust("__fw_ps_value");
+    let value_val = unsafe {
+        JSObjectGetProperty(
+            engine.context.as_context_ref(),
+            global.raw,
+            value_key.raw,
+            &mut exc,
+        )
+    };
+
+    unsafe {
+        let cleanup_keys = [
+            JscString::from_rust("__fw_ps_promise"),
+            JscString::from_rust("__fw_ps_state"),
+            JscString::from_rust("__fw_ps_value"),
+        ];
+        for key in &cleanup_keys {
+            JSObjectDeleteProperty(
+                engine.context.as_context_ref(),
+                global.raw,
+                key.raw,
+                std::ptr::null_mut(),
+            );
+        }
+    }
+
+    let ctx_ptr = engine.ctx_ptr();
+    if !state_val.is_null() && unsafe { JSValueIsString(ctx_ptr, state_val) } {
+        let str_exc: *mut JSValueRef = std::ptr::null_mut();
+        let state_raw = unsafe { JSValueToStringCopy(ctx_ptr, state_val, str_exc as *mut _) };
+        if !state_raw.is_null() {
+            let state_str = unsafe { JscString::from_raw(state_raw) }.to_rust();
+            match state_str.as_str() {
+                "fulfilled" => Ok(crate::enums::PromiseState::Fulfilled(JscValue {
+                    raw: value_val,
+                    ctx: ctx_ptr,
+                })),
+                "rejected" => Ok(crate::enums::PromiseState::Rejected(JscValue {
+                    raw: value_val,
+                    ctx: ctx_ptr,
+                })),
+                _ => Ok(crate::enums::PromiseState::Pending),
+            }
+        } else {
+            Ok(crate::enums::PromiseState::Pending)
+        }
+    } else {
+        Ok(crate::enums::PromiseState::Pending)
+    }
+}
+
 impl ExecutionContext<JscTypes> for JscEngine {
     fn as_any_mut(&mut self) -> &mut dyn core::any::Any {
         self
@@ -2301,10 +2688,25 @@ impl ExecutionContext<JscTypes> for JscEngine {
                 // <https://tc39.es/ecma262/#sec-toobject>
                 Err(self.new_type_error("Cannot convert undefined or null to object"))
             }
-            _ => Ok(JscObject {
-                raw: value.raw as *mut JSObjectRef,
-                ctx: self.ctx_ptr(),
-            }),
+            _ => {
+                // <https://tc39.es/ecma262/#sec-toobject>
+                // Box the primitive (string, number, boolean, symbol, bigint)
+                // into its wrapper object.
+                let mut exception: *mut JSValueRef = std::ptr::null_mut();
+                let raw = unsafe {
+                    JSValueToObject(self.context.as_context_ref(), value.raw, &mut exception)
+                };
+                if !exception.is_null() {
+                    return Err(JscValue {
+                        raw: exception,
+                        ctx: self.ctx_ptr(),
+                    });
+                }
+                Ok(JscObject {
+                    raw,
+                    ctx: self.ctx_ptr(),
+                })
+            }
         }
     }
     fn to_property_key(&mut self, value: JscValue) -> Completion<JscPropertyKey, JscTypes> {
@@ -2549,57 +2951,24 @@ impl ExecutionContext<JscTypes> for JscEngine {
                 })
             }
             JscPropertyKey::Symbol(sym) => {
-                // JSC's C API `JSObjectGetProperty` only takes a JSStringRef,
-                // not a symbol.  Fall back to eval: `obj[sym]`.
-                let global = self.context.global_object();
-                let ctx_ptr = self.ctx_ptr();
-                let obj_key = JscString::from_rust("__fw_get_obj");
-                let sym_key = JscString::from_rust("__fw_get_sym");
-                let mut exc: *mut JSValueRef = std::ptr::null_mut();
-                unsafe {
-                    JSObjectSetProperty(
-                        ctx_ptr,
-                        global.raw,
-                        obj_key.raw,
-                        object.as_value_ref(),
-                        kJSPropertyAttributeNone,
-                        &mut exc,
-                    );
-                    if exc.is_null() {
-                        JSObjectSetProperty(
-                            ctx_ptr,
-                            global.raw,
-                            sym_key.raw,
-                            sym.value.raw,
-                            kJSPropertyAttributeNone,
-                            &mut exc,
-                        );
-                    }
-                }
-                if !exc.is_null() {
-                    unsafe {
-                        JSObjectDeleteProperty(ctx_ptr, global.raw, obj_key.raw, &mut exc);
-                    }
-                    return Err(JscValue {
-                        raw: exc,
-                        ctx: ctx_ptr,
-                    });
-                }
-                let (result, exception) = self.eval_script_raw("__fw_get_obj[__fw_get_sym]");
-                // Cleanup temporary globals.
-                unsafe {
-                    JSObjectDeleteProperty(ctx_ptr, global.raw, obj_key.raw, &mut exc);
-                    JSObjectDeleteProperty(ctx_ptr, global.raw, sym_key.raw, &mut exc);
-                }
+                let mut exception: *mut JSValueRef = std::ptr::null_mut();
+                let result = unsafe {
+                    JSObjectGetPropertyForKey(
+                        self.context.as_context_ref(),
+                        object.raw,
+                        sym.value.raw,
+                        &mut exception,
+                    )
+                };
                 if !exception.is_null() {
                     return Err(JscValue {
                         raw: exception,
-                        ctx: ctx_ptr,
+                        ctx: self.ctx_ptr(),
                     });
                 }
                 Ok(JscValue {
                     raw: result,
-                    ctx: ctx_ptr,
+                    ctx: self.ctx_ptr(),
                 })
             }
         }
@@ -2623,19 +2992,26 @@ impl ExecutionContext<JscTypes> for JscEngine {
         _throw: bool,
     ) -> Completion<(), JscTypes> {
         let _guard = EngineGuard::new(self as *mut JscEngine);
-        let Some(prop_str) = self.property_key_to_jsstring(&property_key) else {
-            return Ok(());
-        };
         let mut exception: *mut JSValueRef = std::ptr::null_mut();
         unsafe {
-            JSObjectSetProperty(
-                self.context.as_context_ref(),
-                object.raw,
-                prop_str.raw,
-                value.raw,
-                kJSPropertyAttributeNone,
-                &mut exception,
-            )
+            match &property_key {
+                JscPropertyKey::String(prop_str) => JSObjectSetProperty(
+                    self.context.as_context_ref(),
+                    object.raw,
+                    prop_str.raw,
+                    value.raw,
+                    kJSPropertyAttributeNone,
+                    &mut exception,
+                ),
+                JscPropertyKey::Symbol(sym) => JSObjectSetPropertyForKey(
+                    self.context.as_context_ref(),
+                    object.raw,
+                    sym.value.raw,
+                    value.raw,
+                    kJSPropertyAttributeNone,
+                    &mut exception,
+                ),
+            }
         };
         if !exception.is_null() {
             return Err(JscValue {
@@ -2661,12 +3037,10 @@ impl ExecutionContext<JscTypes> for JscEngine {
         descriptor: PropertyDescriptor<JscTypes>,
     ) -> Completion<(), JscTypes> {
         let _guard = EngineGuard::new(self as *mut JscEngine);
-        let Some(prop_str) = self.property_key_to_jsstring(&property_key) else {
-            return Ok(());
-        };
 
         // Build a descriptor object natively (no eval, no temp globals)
-        // then call cached Object.defineProperty.
+        // then call cached Object.defineProperty.  The key is passed as a
+        // value so symbol keys (e.g. @@asyncIterator) work too.
         let define_prop =
             cached_intrinsic!(self, object_define_property, ["Object", "defineProperty"]);
         let ctx = self.ctx_ptr();
@@ -2721,8 +3095,8 @@ impl ExecutionContext<JscTypes> for JscEngine {
             return Err(JscValue { raw: exc, ctx });
         }
 
-        let name_val = unsafe { JSValueMakeString(ctx, prop_str.raw) };
-        let args = [object.as_value_ref(), name_val, desc_obj.as_value_ref()];
+        let name_val = self.property_key_to_value(&property_key);
+        let args = [object.as_value_ref(), name_val.raw, desc_obj.as_value_ref()];
         let undef = unsafe { JSValueMakeUndefined(ctx) };
         let mut call_exc: *mut JSValueRef = std::ptr::null_mut();
         unsafe {
@@ -2843,17 +3217,22 @@ impl ExecutionContext<JscTypes> for JscEngine {
         object: JscObject,
         property_key: JscPropertyKey,
     ) -> Completion<(), JscTypes> {
-        let Some(prop_str) = self.property_key_to_jsstring(&property_key) else {
-            return Ok(());
-        };
         let mut exception: *mut JSValueRef = std::ptr::null_mut();
         unsafe {
-            JSObjectDeleteProperty(
-                self.context.as_context_ref(),
-                object.raw,
-                prop_str.raw,
-                &mut exception,
-            )
+            match &property_key {
+                JscPropertyKey::String(prop_str) => JSObjectDeleteProperty(
+                    self.context.as_context_ref(),
+                    object.raw,
+                    prop_str.raw,
+                    &mut exception,
+                ),
+                JscPropertyKey::Symbol(sym) => JSObjectDeletePropertyForKey(
+                    self.context.as_context_ref(),
+                    object.raw,
+                    sym.value.raw,
+                    &mut exception,
+                ),
+            }
         };
         if !exception.is_null() {
             return Err(JscValue {
@@ -2927,10 +3306,27 @@ impl ExecutionContext<JscTypes> for JscEngine {
         object: JscObject,
         property_key: JscPropertyKey,
     ) -> Completion<bool, JscTypes> {
-        let Some(prop_str) = self.property_key_to_jsstring(&property_key) else {
-            return Ok(false);
+        let mut exception: *mut JSValueRef = std::ptr::null_mut();
+        let result = unsafe {
+            match &property_key {
+                JscPropertyKey::String(prop_str) => {
+                    JSObjectHasProperty(self.context.as_context_ref(), object.raw, prop_str.raw)
+                }
+                JscPropertyKey::Symbol(sym) => JSObjectHasPropertyForKey(
+                    self.context.as_context_ref(),
+                    object.raw,
+                    sym.value.raw,
+                    &mut exception,
+                ),
+            }
         };
-        Ok(unsafe { JSObjectHasProperty(self.context.as_context_ref(), object.raw, prop_str.raw) })
+        if !exception.is_null() {
+            return Err(JscValue {
+                raw: exception,
+                ctx: self.ctx_ptr(),
+            });
+        }
+        Ok(result)
     }
     fn has_own_property(
         &mut self,
@@ -3495,7 +3891,10 @@ impl ExecutionContext<JscTypes> for JscEngine {
         let uri_error_prototype = fetch_proto(uri_error);
         let eval_error_prototype = fetch_proto(eval_error);
 
-        let async_iterator_prototype = object_prototype;
+        let async_iterator_prototype = self
+            .intrinsics
+            .async_iterator_prototype
+            .unwrap_or(object_prototype);
 
         RealmIntrinsics {
             array_buffer,
@@ -3570,33 +3969,55 @@ impl ExecutionContext<JscTypes> for JscEngine {
 
     // ── §9.6 Jobs ─────────────────────────────────────────────────────────
     fn enqueue_job(&mut self, job: Box<dyn FnOnce()>) {
-        self.queued_jobs.push(Box::new(move |_: &mut JscEngine| {
+        let wrapped: Box<dyn FnOnce(&mut JscEngine)> = Box::new(move |_: &mut JscEngine| {
             job();
-        }));
+        });
+        if nesting_depth() == 0 {
+            // No JS call is active: JSC would drain microtasks as soon as
+            // the queueing call returns, running the job synchronously.
+            // Defer to the next checkpoint instead.
+            self.pending_jobs.push(wrapped);
+        } else {
+            self.enqueue_js_microtask(wrapped);
+        }
     }
     fn enqueue_job_with_realm(
         &mut self,
         _realm: JscRealm,
         job: Box<dyn FnOnce(&mut dyn ExecutionContext<JscTypes>)>,
     ) {
-        self.queued_jobs
-            .push(Box::new(move |engine: &mut JscEngine| {
-                job(engine);
-            }));
+        let wrapped: Box<dyn FnOnce(&mut JscEngine)> = Box::new(move |engine: &mut JscEngine| {
+            job(engine);
+        });
+        if nesting_depth() == 0 {
+            // See `enqueue_job`: defer depth-0 enqueues to the checkpoint.
+            self.pending_jobs.push(wrapped);
+        } else {
+            self.enqueue_js_microtask(wrapped);
+        }
     }
     fn run_jobs(&mut self) {
-        // JSC drains its microtask queue automatically every time control
-        // returns from the outermost JS call on the stack.  Since any Rust
-        // code that queues JSC microtasks does so through the JSC C API,
-        // the drain happens on that call's return — no explicit drain needed.
-        if self.queued_jobs.is_empty() {
+        // Jobs enqueued while a JS call is active (depth ≥ 1) are already
+        // JSC microtasks; they run at the next microtask drain (when the
+        // outermost C API call returns), interleaved with all other
+        // microtasks.  At depth 0 there is no outer call to return from,
+        // so flush the deferred `pending_jobs` and force a drain.  The
+        // `EngineGuard` keeps CURRENT_ENGINE set while the queueing calls
+        // below drain synchronously, so the job callbacks can find the
+        // engine.
+        if nesting_depth() > 0 {
             return;
         }
-        let _guard = EngineGuard::new(self as *mut JscEngine);
-        let jobs = std::mem::take(&mut self.queued_jobs);
-        for job in jobs {
-            job(self);
+        if !self.pending_jobs.is_empty() {
+            let _guard = EngineGuard::new(self as *mut JscEngine);
+            let pending = std::mem::take(&mut self.pending_jobs);
+            for job in pending {
+                self.enqueue_js_microtask(job);
+            }
         }
+        // Force JSC to drain any microtasks queued by the flush above (or
+        // by prior JS execution) at this checkpoint.
+        self.eval_script_raw("void 0");
     }
 
     // ── §25 ArrayBuffer — runtime queries ─────────────────────────────────
@@ -4439,6 +4860,19 @@ impl ExecutionContext<JscTypes> for JscEngine {
             None => return Err(self.make_string("Promise executor did not receive reject")),
         };
 
+        // Register the resolvers so `call` can record the promise's
+        // settlement synchronously when they are invoked.  This makes
+        // `promise_state` reliable for these promises even inside nested
+        // reaction callbacks, where JSC's eval-based drain is a no-op.
+        let promise_ptr = promise_raw as usize;
+        // The new promise cannot be settled yet; any record at its address
+        // belongs to a previous promise that was collected (address reused).
+        self.settled_promises.remove(&promise_ptr);
+        self.promise_resolvers
+            .insert(resolve_obj.raw as usize, (promise_ptr, false));
+        self.promise_resolvers
+            .insert(reject_obj.raw as usize, (promise_ptr, true));
+
         Ok(PromiseCapability {
             promise: JscValue {
                 raw: promise_raw as *mut JSValueRef,
@@ -4478,29 +4912,50 @@ impl ExecutionContext<JscTypes> for JscEngine {
         let ctx = self.context.as_context_ref();
         let mut exc: *mut JSValueRef = std::ptr::null_mut();
 
-        // Get the "then" method from the promise via C API to avoid
-        // JSEvaluateScript compilation overhead.
-        let then_str = JscString::from_rust("then");
-        let then_method = unsafe { JSObjectGetProperty(ctx, promise.raw, then_str.raw, &mut exc) };
-        if then_method.is_null() || !exc.is_null() {
-            return Err(JscValue { raw: exc, ctx });
-        }
+        // Wrap the reactions so their settlement is recorded Rust-side.
+        // JSC only drains its microtask queue when control returns from the
+        // outermost C API call, so inside a reaction callback `promise_state`
+        // cannot observe a settled promise through eval-based draining; the
+        // record lets it answer synchronously.
+        let promise_ptr = promise.as_raw() as usize;
+        // Drop any settlement record at this promise's address before
+        // attaching a reaction: the promise may be a new allocation at an
+        // address previously occupied by a collected promise, so an old
+        // record would mislead `promise_state` until this reaction fires
+        // and records the true settlement.
+        self.settled_promises.remove(&promise_ptr);
+        let wrapped_fulfilled =
+            on_fulfilled.map(|f| self.wrap_settlement_reaction(promise_ptr, true, f.as_value()));
+        let wrapped_rejected =
+            on_rejected.map(|f| self.wrap_settlement_reaction(promise_ptr, false, f.as_value()));
+
+        // Use the intrinsic %Promise.prototype.then% (captured at engine
+        // construction, before user code can patch it) so internal promise
+        // reactions are unaffected by modifications to the public `then`
+        // property.
+        let then_method = match self.intrinsics.promise_prototype_then {
+            Some(then_fn) => then_fn,
+            None => {
+                log::error!("perform_promise_then: %Promise.prototype.then% not resolved");
+                return Err(self.new_type_error("missing %Promise.prototype.then%"));
+            }
+        };
 
         // Build args: promise.then(onFulfilled, onRejected)
-        let onf_raw = on_fulfilled
+        let onf_raw = wrapped_fulfilled
             .as_ref()
-            .map(|f| f.as_value_ref())
+            .map(|f: &JscFunction| f.as_value_ref())
             .unwrap_or_else(|| unsafe { JSValueMakeUndefined(ctx) });
-        let onr_raw = on_rejected
+        let onr_raw = wrapped_rejected
             .as_ref()
-            .map(|f| f.as_value_ref())
+            .map(|f: &JscFunction| f.as_value_ref())
             .unwrap_or_else(|| unsafe { JSValueMakeUndefined(ctx) });
         let then_args = [onf_raw, onr_raw];
 
         let result = unsafe {
             JSObjectCallAsFunction(
                 ctx,
-                then_method as *mut JSObjectRef,
+                then_method.raw,
                 promise.raw,
                 then_args.len(),
                 then_args.as_ptr(),
@@ -4514,17 +4969,18 @@ impl ExecutionContext<JscTypes> for JscEngine {
         // If a result_capability is provided, chain a second .then() to
         // pipe the capability's resolve/reject into the result promise.
         if let Some(ref cap) = result_capability {
-            let then_method2 = unsafe {
-                JSObjectGetProperty(ctx, result as *mut JSObjectRef, then_str.raw, &mut exc)
+            let then_method2 = match self.intrinsics.promise_prototype_then {
+                Some(then_fn) => then_fn,
+                None => {
+                    log::error!("perform_promise_then: %Promise.prototype.then% not resolved");
+                    return Err(self.new_type_error("missing %Promise.prototype.then%"));
+                }
             };
-            if then_method2.is_null() || !exc.is_null() {
-                return Err(JscValue { raw: exc, ctx });
-            }
             let chain_args = [cap.resolve.as_value_ref(), cap.reject.as_value_ref()];
             let _ = unsafe {
                 JSObjectCallAsFunction(
                     ctx,
-                    then_method2 as *mut JSObjectRef,
+                    then_method2.raw,
                     result as *mut JSObjectRef,
                     chain_args.len(),
                     chain_args.as_ptr(),
@@ -4550,110 +5006,33 @@ impl ExecutionContext<JscTypes> for JscEngine {
         &mut self,
         promise: &JscObject,
     ) -> Completion<crate::enums::PromiseState<JscTypes>, JscTypes> {
-        // Note: There is no way to observe a promise's state synchronously
-        // through JSC's C API when inside a nested JS call (microtasks don't
-        // drain).  This function uses eval-based .then() handlers + void 0
-        // to attempt draining, which only works at the outermost C API level.
-        // Inside nested calls, this always returns Pending.
-        //
-        // Attempted fix (2026-07-12): tracked promise states via
-        // Rust-side RefCell updated by wrapped resolve/reject functions.
-        // Failed because .then() chaining creates NEW JSC-internal promises
-        // (via Promise.prototype.then) that are not tracked.  Only promises
-        // created directly by new_promise_capability were tracked, which
-        // didn't help for the chained promises that the stream algorithm
-        // actually polls.
-        let _guard = EngineGuard::new(self as *mut JscEngine);
-        let global = self.context.global_object();
-        let mut exc: *mut JSValueRef = std::ptr::null_mut();
-
-        let p_key = JscString::from_rust("__fw_ps_promise");
-        unsafe {
-            JSObjectSetProperty(
-                self.context.as_context_ref(),
-                global.raw,
-                p_key.raw,
-                promise.as_value_ref(),
-                kJSPropertyAttributeNone,
-                &mut exc,
-            )
-        };
-        if !exc.is_null() {
-            return Err(JscValue {
-                raw: exc,
-                ctx: self.ctx_ptr(),
+        // If a reaction for this promise was attached through
+        // `perform_promise_then` and has already fired, its settlement was
+        // recorded Rust-side — answer synchronously.  This is reliable
+        // inside nested reaction callbacks, where the eval-based fallback
+        // below would run queued reactions re-entrantly (JSC drains at
+        // every JSEvaluateScript boundary, not just the outermost call).
+        if let Some(record) = self.settled_promises.get(&(promise.as_raw() as usize)) {
+            return Ok(if record.fulfilled {
+                crate::enums::PromiseState::Fulfilled(record.value)
+            } else {
+                crate::enums::PromiseState::Rejected(record.value)
             });
         }
 
-        let setup_script = r#"
-            __fw_ps_state = "pending";
-            __fw_ps_value = undefined;
-            __fw_ps_promise.then(
-                function(v) { __fw_ps_state = "fulfilled"; __fw_ps_value = v; },
-                function(r) { __fw_ps_state = "rejected"; __fw_ps_value = r; }
-            );
-        "#;
-        self.eval_script_raw(setup_script);
-        self.eval_script_raw("void 0");
-
-        let state_key = JscString::from_rust("__fw_ps_state");
-        let state_val = unsafe {
-            JSObjectGetProperty(
-                self.context.as_context_ref(),
-                global.raw,
-                state_key.raw,
-                &mut exc,
-            )
-        };
-        let value_key = JscString::from_rust("__fw_ps_value");
-        let value_val = unsafe {
-            JSObjectGetProperty(
-                self.context.as_context_ref(),
-                global.raw,
-                value_key.raw,
-                &mut exc,
-            )
-        };
-
-        unsafe {
-            let cleanup_keys = [
-                JscString::from_rust("__fw_ps_promise"),
-                JscString::from_rust("__fw_ps_state"),
-                JscString::from_rust("__fw_ps_value"),
-            ];
-            for key in &cleanup_keys {
-                JSObjectDeleteProperty(
-                    self.context.as_context_ref(),
-                    global.raw,
-                    key.raw,
-                    std::ptr::null_mut(),
-                );
-            }
+        // Re-entrancy guard: the eval fallback runs JSEvaluateScript, whose
+        // return drains JSC's microtask queue even at nested depth.  A
+        // drained reaction can re-enter `promise_state`; without this guard
+        // the recursion is unbounded (each nested promise_state evals and
+        // drains again), observed as a stack-overflow SIGSEGV in the piping
+        // tests.  Re-entrant calls answer Pending without evaluating.
+        if self.in_promise_state_eval {
+            return Ok(crate::enums::PromiseState::Pending);
         }
-
-        let ctx_ptr = self.ctx_ptr();
-        if !state_val.is_null() && unsafe { JSValueIsString(ctx_ptr, state_val) } {
-            let str_exc: *mut JSValueRef = std::ptr::null_mut();
-            let state_raw = unsafe { JSValueToStringCopy(ctx_ptr, state_val, str_exc as *mut _) };
-            if !state_raw.is_null() {
-                let state_str = unsafe { JscString::from_raw(state_raw) }.to_rust();
-                match state_str.as_str() {
-                    "fulfilled" => Ok(crate::enums::PromiseState::Fulfilled(JscValue {
-                        raw: value_val,
-                        ctx: ctx_ptr,
-                    })),
-                    "rejected" => Ok(crate::enums::PromiseState::Rejected(JscValue {
-                        raw: value_val,
-                        ctx: ctx_ptr,
-                    })),
-                    _ => Ok(crate::enums::PromiseState::Pending),
-                }
-            } else {
-                Ok(crate::enums::PromiseState::Pending)
-            }
-        } else {
-            Ok(crate::enums::PromiseState::Pending)
-        }
+        self.in_promise_state_eval = true;
+        let result = promise_state_eval_fallback(self, promise);
+        self.in_promise_state_eval = false;
+        result
     }
 
     // ── §27.5 Generator ───────────────────────────────────────────────────
@@ -4707,14 +5086,15 @@ impl ExecutionContext<JscTypes> for JscEngine {
         map.insert(obj_ptr, data);
         self.store_host_any(map_type_id, Box::new(map));
 
-        // Protect the object with JSValueProtect so JSC's GC does not
-        // collect it while Rust still holds the pointer (via host_data).
-        // Cleanup happens in JscEngine::drop.
+        // Keep the wrapper alive through a managed reference while Rust
+        // still holds its pointer (via host_data).  Cleanup happens in
+        // JscEngine::drop (which drops each managed value, removing its
+        // addManagedReference edge).
         let ctx_ptr = self.ctx_ptr();
-        unsafe {
-            JSValueProtect(ctx_ptr, obj.as_value_ref());
+        let anchor = JscGcOwner::anchor(ctx_ptr);
+        if let Some(managed) = JscManagedValue::new(ctx_ptr, obj.as_value_ref(), &anchor) {
+            self.managed_objects.push(managed);
         }
-        self.protected_objects.push(obj.as_value_ref());
 
         obj
     }
@@ -4773,6 +5153,29 @@ impl ExecutionContext<JscTypes> for JscEngine {
             // fields), so no aliasing occurs.
             f(unsafe { &mut *data_ptr }, ec);
         }
+    }
+
+    fn adopt_platform_gc_owner(&mut self, object: &JscObject, data: &mut dyn crate::gc::GcOwner) {
+        // Create the per-object owner, export it on the reflector, and
+        // re-point the platform object's cell edges onto it.  The owner is
+        // reachable from the JS runtime exactly while the reflector is, so
+        // the struct's JS-value fields stay alive exactly while its JS
+        // object is reachable.
+        //
+        // Disabled by default: exporting the owner via `JSValue
+        // setValue:forProperty:` crashes the system JavaScriptCore's GC
+        // when called from within binding callbacks (see the JSC README).
+        // `FORMAL_WEB_GC_ADOPT=1` enables it for experimentation.
+        if std::env::var_os("FORMAL_WEB_GC_ADOPT").is_none() {
+            return;
+        }
+        let owner = crate::jsc::JscGcOwner::exported_on(
+            self.ctx_ptr(),
+            object.as_value_ref(),
+            crate::jsc::PLATFORM_GC_OWNER_PROPERTY,
+        );
+        let owner_ref = crate::gc::GcOwnerRef::jsc(owner);
+        data.adopt_gc_owner(&owner_ref);
     }
 
     fn new_type_error(&mut self, msg: &str) -> JscValue {
@@ -5025,35 +5428,33 @@ impl ExecutionContext<JscTypes> for JscEngine {
     }
 
     fn create_root(&mut self, value: &JscValue) -> crate::gc::GcRootHandle<JscTypes> {
-        // Use JSValueProtect to keep the value alive in JSC's GC graph.
-        // JSValueProtect/JSValueUnprotect maintain an internal reference
-        // count so the value survives GC cycles until unprotected.
+        // Keep the value alive through a managed reference (JSManagedValue
+        // + addManagedReference) instead of JSValueProtect.  When the last
+        // handle clone drops, the unroot action drops the managed value,
+        // which removes the reference so the GC can collect the value.
         let ctx_ptr = self.ctx_ptr();
         let value_raw = value.raw;
-        unsafe {
-            JSValueProtect(ctx_ptr, value_raw);
+        let anchor = JscGcOwner::anchor(ctx_ptr);
+        match JscManagedValue::new(ctx_ptr, value_raw, &anchor) {
+            Some(managed) => {
+                crate::gc::GcRootHandle::new(*value, Some(Box::new(move |_val| drop(managed))))
+            }
+            // Primitives are not GC-managed; nothing to protect.
+            None => crate::gc::GcRootHandle::new(*value, None),
         }
-        crate::gc::GcRootHandle::new(
-            *value,
-            Some(Box::new(move |_val| unsafe {
-                JSValueUnprotect(ctx_ptr, value_raw);
-            })),
-        )
     }
 
     fn protect_value(&mut self, value: &JscValue) -> crate::gc::GcRootHandle<JscTypes> {
-        // Same as create_root: JSValueProtect + unprotect on drop.
+        // Same as create_root: managed reference + removal on drop.
         let ctx_ptr = self.ctx_ptr();
         let value_raw = value.raw;
-        unsafe {
-            JSValueProtect(ctx_ptr, value_raw);
+        let anchor = JscGcOwner::anchor(ctx_ptr);
+        match JscManagedValue::new(ctx_ptr, value_raw, &anchor) {
+            Some(managed) => {
+                crate::gc::GcRootHandle::new(*value, Some(Box::new(move |_val| drop(managed))))
+            }
+            None => crate::gc::GcRootHandle::new(*value, None),
         }
-        crate::gc::GcRootHandle::new(
-            *value,
-            Some(Box::new(move |_val| unsafe {
-                JSValueUnprotect(ctx_ptr, value_raw);
-            })),
-        )
     }
 
     fn evaluate_script(&mut self, source: &str) -> Completion<JscValue, JscTypes> {
@@ -5134,6 +5535,18 @@ impl EcmascriptHost<JscTypes> for JscEngine {
         // panic-safe).
         let _guard = EngineGuard::new(self as *mut JscEngine);
 
+        // If the callable is a promise resolver created by
+        // `new_promise_capability`, record the promise's settlement as soon
+        // as it is invoked, so `promise_state` can answer synchronously
+        // inside nested reaction callbacks.  (Promise resolution with a
+        // promise value is asynchronous via assimilation; such records are
+        // only consulted for promises the stream algorithms poll, which
+        // resolve with plain values.)
+        let resolver_record = self
+            .promise_resolvers
+            .get(&(callable.as_raw() as usize))
+            .copied();
+
         let this_type = unsafe { JSValueGetType(self.context.as_context_ref(), this_arg.raw) };
         let mut exception: *mut JSValueRef = std::ptr::null_mut();
         let result = if this_type == JSType::kJSTypeObject {
@@ -5182,12 +5595,24 @@ impl EcmascriptHost<JscTypes> for JscEngine {
             });
         }
 
-        // Drain JSC's internal microtask queue by evaluating a no-op.
-        // JSEvaluateScript drains microtasks at the end of script evaluation.
-        // CURRENT_ENGINE is still set here (via _guard) so that any builtin
-        // function callbacks triggered by microtasks (e.g. promise reaction
-        // handlers) can find the engine.
-        let _ = self.eval_script_raw("void 0");
+        if let (Some((promise_ptr, is_reject)), Some(value)) = (resolver_record, args.first()) {
+            // Root the promise while the record exists so its address
+            // cannot be recycled; see `PromiseSettlement`.
+            let promise_raw = promise_ptr as *mut JSValueRef;
+            let promise_root = JscManagedValue::new(
+                self.ctx_ptr(),
+                promise_raw,
+                &JscGcOwner::anchor(self.ctx_ptr()),
+            );
+            self.settled_promises.insert(
+                promise_ptr,
+                PromiseSettlement {
+                    fulfilled: !is_reject,
+                    value: *value,
+                    _promise_root: promise_root,
+                },
+            );
+        }
 
         Ok(JscValue {
             raw: result,
@@ -5199,13 +5624,25 @@ impl EcmascriptHost<JscTypes> for JscEngine {
         Ok(())
     }
     fn report_exception(&mut self, error: JscValue) {
-        log::error!("uncaught callback error: {}", error.display());
+        let backtrace = std::backtrace::Backtrace::force_capture();
+        log::error!("uncaught callback error: {}\n{backtrace}", error.display());
     }
 
     fn gc(&mut self) {
+        // Settlement records are only needed within the callback that wrote
+        // them; drop them so the map stays bounded.
+        self.settled_promises.clear();
         let ctx_ptr = self.ctx_ptr();
         unsafe {
-            crate::jsc_sys::JSGarbageCollect(ctx_ptr);
+            // JSSynchronousGarbageCollectForDebugging (the collector used by
+            // WebKit's own ObjC API test suite) is the only collector that
+            // processes removed managed references: with the public
+            // JSGarbageCollect, removeManagedReference edges linger and the
+            // value stays alive.  The run-loop pump is additionally required
+            // for sweeping/finalization/FinalizationRegistry cleanup, which
+            // JSC defers to the thread's run loop.
+            crate::jsc_sys::JSSynchronousGarbageCollectForDebugging(ctx_ptr);
+            crate::jsc_sys::CFRunLoopRunInMode(crate::jsc_sys::kCFRunLoopDefaultMode, 0.0, false);
         }
     }
 
@@ -5254,6 +5691,21 @@ impl EcmascriptHost<JscTypes> for JscEngine {
 mod tests {
     use super::*;
     use crate::{EcmascriptHost, ExecutionContext, JsEngine, JsTypes};
+
+    #[test]
+    fn anchor_probe() {
+        let mut engine = JscEngine::new();
+        let realm = engine.current_realm();
+        let v = JsEngine::evaluate_script(&mut engine, "({ a: 1 })", &realm).unwrap();
+        let root = engine.create_root(&v);
+        eprintln!("ANCHOR probe: root created ok");
+        let v2 = JsEngine::evaluate_script(&mut engine, "({ b: 2 })", &realm).unwrap();
+        let root2 = engine.create_root(&v2);
+        eprintln!("ANCHOR probe: second root ok");
+        drop(root);
+        drop(root2);
+        eprintln!("ANCHOR probe: drops ok");
+    }
 
     #[test]
     fn value_construction_and_downcasts() {

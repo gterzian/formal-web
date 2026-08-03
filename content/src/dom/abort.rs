@@ -4,7 +4,7 @@ use crate::js::Types;
 use crate::streams::PipeToState;
 use crate::webidl::Callback;
 use crate::webidl::bindings::create_interface_instance;
-use js_engine::gc::{GcCell, gc_cell_new, gc_cell_ptr_eq};
+use js_engine::gc::{GcCell, GcCellSet, gc_cell_new, gc_cell_ptr_eq};
 use js_engine::gc_struct;
 use js_engine::{Completion, ExecutionContext, JsTypes};
 
@@ -147,6 +147,8 @@ impl AbortSignal {
 
     pub(crate) fn set_reflector(&self, reflector: JsObject) {
         self.shared.borrow_mut().reflector = Some(reflector);
+        // JSC: re-register edges for the new reflector (in-place mutation).
+        self.shared.sync();
     }
 
     pub(crate) fn object(&self) -> Option<JsObject> {
@@ -175,13 +177,20 @@ impl AbortSignal {
 
     /// <https://dom.spec.whatwg.org/#dom-abortsignal-onabort>
     pub(crate) fn replace_onabort(&self, callback: Option<Callback>) -> Option<Callback> {
-        let mut state = self.shared.borrow_mut();
-        mem::replace(&mut state.onabort, callback)
+        let result = {
+            let mut state = self.shared.borrow_mut();
+            mem::replace(&mut state.onabort, callback)
+        };
+        // JSC: re-register edges for the new callback (in-place mutation).
+        self.shared.sync();
+        result
     }
 
     /// <https://dom.spec.whatwg.org/#abortsignal-add>
     pub(crate) fn add_abort_algorithm(&self, algorithm: AbortAlgorithm) {
         self.shared.borrow_mut().abort_algorithms.push(algorithm);
+        // JSC: re-register edges for the new algorithm (in-place mutation).
+        self.shared.sync();
     }
 
     /// <https://dom.spec.whatwg.org/#abortsignal-remove>
@@ -231,14 +240,19 @@ impl AbortSignal {
     }
 
     fn begin_dependent_abort(&self, reason: JsValue) -> bool {
-        let mut state = self.shared.borrow_mut();
-        if state.aborted {
-            return false;
-        }
+        let result = {
+            let mut state = self.shared.borrow_mut();
+            if state.aborted {
+                return false;
+            }
 
-        state.aborted = true;
-        state.abort_reason = reason;
-        true
+            state.aborted = true;
+            state.abort_reason = reason;
+            true
+        };
+        // JSC: re-register edges for the new abort reason (in-place mutation).
+        self.shared.sync();
+        result
     }
 
     /// <https://dom.spec.whatwg.org/#run-the-abort-steps>
@@ -276,9 +290,10 @@ impl AbortSignal {
 
     /// <https://dom.spec.whatwg.org/#abortsignal-abort-reason>
     pub(crate) fn set_aborted_reason(&self, reason: JsValue) {
-        let mut state = self.shared.borrow_mut();
-        state.aborted = true;
-        state.abort_reason = reason;
+        self.shared.borrow_mut().aborted = true;
+        self.shared.borrow_mut().abort_reason = reason;
+        // JSC: re-register edges for the new abort reason (in-place mutation).
+        self.shared.sync();
     }
 }
 

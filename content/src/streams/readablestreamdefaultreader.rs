@@ -6,6 +6,7 @@ use crate::js::Types;
 use crate::webidl::bindings::create_interface_instance;
 use crate::webidl::{mark_promise_as_handled, rejected_promise, resolved_promise};
 use js_engine::gc::GcCell;
+use js_engine::gc::GcCellSet;
 use js_engine::gc::gc_cell_new;
 use js_engine::gc_struct;
 
@@ -354,22 +355,9 @@ impl ReadableStreamGenericReader for ReadableStreamDefaultReader {
     }
 
     fn set_closed_promise_slot_value(&self, promise: Option<JsObject>) {
-        // JSC: protect new value from GC, unprotect old value
-        #[cfg(feature = "jsc")]
-        {
-            let old = self.closed_promise.borrow().clone();
-            if let Some(ref old_obj) = old {
-                unsafe {
-                    js_engine::jsc_sys::JSValueUnprotect(old_obj.ctx(), old_obj.as_value_ref());
-                }
-            }
-            if let Some(ref new_obj) = promise {
-                unsafe {
-                    js_engine::jsc_sys::JSValueProtect(new_obj.ctx(), new_obj.as_value_ref());
-                }
-            }
-        }
-        *self.closed_promise.borrow_mut() = promise;
+        // JSC: `set` re-registers the managed reference for the new value;
+        // replacing it removes the reference for the previous value.
+        self.closed_promise.set(promise);
     }
 
     fn closed_resolvers_slot_value(&self) -> Option<PromiseResolvers<Types>> {
@@ -377,7 +365,8 @@ impl ReadableStreamGenericReader for ReadableStreamDefaultReader {
     }
 
     fn set_closed_resolvers_slot_value(&self, resolvers: Option<PromiseResolvers<Types>>) {
-        *self.closed_resolvers.borrow_mut() = resolvers;
+        // JSC: `set` registers managed edges for the resolve/reject callables.
+        self.closed_resolvers.set(resolvers);
     }
 
     fn as_reader_slot(&self) -> ReadableStreamReader {

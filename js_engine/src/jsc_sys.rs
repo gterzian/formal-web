@@ -26,6 +26,39 @@ pub enum JSStringRef {}
 pub enum JSClassRef {}
 pub enum JSPropertyNameAccumulatorRef {}
 
+// ── Objective-C type encodings for the opaque pointer types ────────────────
+//
+// The ObjC GC integration (see `jsc::objc_gc`) passes these C-API pointers
+// as arguments to / returns from ObjC API methods via objc2, which requires
+// every FFI type to carry its `@encode` type.  Each type is an opaque C
+// struct, so its reference encoding is `^{OpaqueX=}`.
+
+mod objc_encode {
+    use super::*;
+    use objc2::encode::{Encoding, RefEncode};
+
+    macro_rules! impl_ref_encode {
+        ($ty:ty, $name:literal) => {
+            // SAFETY: The type is a ZST representing an opaque C struct whose
+            // reference encoding is `^{$name=}` (a pointer to the struct).
+            unsafe impl RefEncode for $ty {
+                const ENCODING_REF: Encoding = Encoding::Pointer(&Encoding::Struct($name, &[]));
+            }
+        };
+    }
+
+    impl_ref_encode!(JSValueRef, "OpaqueJSValue");
+    impl_ref_encode!(JSContextRef, "OpaqueJSContext");
+    impl_ref_encode!(JSGlobalContextRef, "OpaqueJSContext");
+    impl_ref_encode!(JSObjectRef, "OpaqueJSObject");
+    impl_ref_encode!(JSStringRef, "OpaqueJSString");
+    impl_ref_encode!(JSClassRef, "OpaqueJSClass");
+    impl_ref_encode!(
+        JSPropertyNameAccumulatorRef,
+        "OpaqueJSPropertyNameAccumulator"
+    );
+}
+
 // ── Enums ─────────────────────────────────────────────────────────────────
 
 #[repr(C)]
@@ -103,6 +136,11 @@ unsafe extern "C" {
         description: *mut JSStringRef,
     ) -> *mut JSValueRef;
     pub fn JSValueIsDate(ctx: *mut JSContextRef, value: *mut JSValueRef) -> bool;
+    pub fn JSValueToObject(
+        ctx: *mut JSContextRef,
+        value: *mut JSValueRef,
+        exception: *mut *mut JSValueRef,
+    ) -> *mut JSObjectRef;
 }
 
 // ── Object functions ──────────────────────────────────────────────────────
@@ -148,6 +186,32 @@ unsafe extern "C" {
         ctx: *mut JSContextRef,
         object: *mut JSObjectRef,
         propertyName: *mut JSStringRef,
+        exception: *mut *mut JSValueRef,
+    ) -> bool;
+    pub fn JSObjectHasPropertyForKey(
+        ctx: *mut JSContextRef,
+        object: *mut JSObjectRef,
+        propertyKey: *mut JSValueRef,
+        exception: *mut *mut JSValueRef,
+    ) -> bool;
+    pub fn JSObjectGetPropertyForKey(
+        ctx: *mut JSContextRef,
+        object: *mut JSObjectRef,
+        propertyKey: *mut JSValueRef,
+        exception: *mut *mut JSValueRef,
+    ) -> *mut JSValueRef;
+    pub fn JSObjectSetPropertyForKey(
+        ctx: *mut JSContextRef,
+        object: *mut JSObjectRef,
+        propertyKey: *mut JSValueRef,
+        value: *mut JSValueRef,
+        attributes: JSPropertyAttributes,
+        exception: *mut *mut JSValueRef,
+    );
+    pub fn JSObjectDeletePropertyForKey(
+        ctx: *mut JSContextRef,
+        object: *mut JSObjectRef,
+        propertyKey: *mut JSValueRef,
         exception: *mut *mut JSValueRef,
     ) -> bool;
     pub fn JSObjectGetPrototype(
@@ -201,11 +265,55 @@ unsafe extern "C" {
         deallocatorContext: *mut c_void,
         exception: *mut *mut JSValueRef,
     ) -> *mut JSObjectRef;
+}
 
-    // ── GC protection (not in public headers; available on macOS) ────────
-    pub fn JSValueProtect(ctx: *mut JSContextRef, value: *mut JSValueRef);
-    pub fn JSValueUnprotect(ctx: *mut JSContextRef, value: *mut JSValueRef);
+unsafe extern "C" {
+    /// <https://developer.apple.com/documentation/javascriptcore/jsvalueprotect>
     pub fn JSGarbageCollect(ctx: *mut JSContextRef);
+
+    /// Truly synchronous full garbage collection.  Used by WebKit's own
+    /// ObjC API test suite (`testObjectiveCAPI.mm`); unlike the public
+    /// `JSGarbageCollect`, it does not defer sweeping/finalization to the
+    /// run loop, so a synchronous `gc()` actually reclaims objects.
+    pub fn JSSynchronousGarbageCollectForDebugging(ctx: *mut JSContextRef);
+    pub fn JSSynchronousEdenCollectForDebugging(ctx: *mut JSContextRef);
+}
+
+// ── Objective-C runtime: associated objects ──────────────────────────────
+//
+// The per-context GC anchor is attached to the (cached) `JSContext` ObjC
+// wrapper via associated objects, so it can be found from a bare
+// `JSContextRef` without a global registry.
+
+pub const OBJC_ASSOCIATION_RETAIN_NONATOMIC: usize = 1;
+
+unsafe extern "C" {
+    pub fn objc_setAssociatedObject(
+        object: *mut c_void,
+        key: *const c_void,
+        value: *mut c_void,
+        policy: usize,
+    );
+    pub fn objc_getAssociatedObject(object: *mut c_void, key: *const c_void) -> *mut c_void;
+}
+
+// ── CoreFoundation run loop (JSC defers GC work to the run loop) ────────
+//
+// Modern JSC (macOS 14+) schedules sweeping, finalization, and
+// FinalizationRegistry cleanup as deferred tasks on the thread's run
+// loop.  The engine's `gc()` uses the synchronous collector above; these
+// bindings are kept for code paths that rely on the run-loop pump.
+
+unsafe extern "C" {
+    /// <https://developer.apple.com/documentation/corefoundation/1543585-cfrunloopruninmode>
+    pub fn CFRunLoopRunInMode(
+        mode: *const c_void,
+        seconds: f64,
+        returnAfterSourceHandled: bool,
+    ) -> i32;
+
+    /// The default run-loop mode string (`CFSTR("kCFRunLoopDefaultMode")`).
+    pub static kCFRunLoopDefaultMode: *const c_void;
 }
 
 // ── Function construction ─────────────────────────────────────────────────
@@ -262,7 +370,6 @@ pub type JSClassAttributes = c_uint;
 pub const kJSClassAttributeNone: JSClassAttributes = 0;
 pub const kJSClassAttributeNoAutomaticPrototype: JSClassAttributes = 1 << 1;
 
-#[repr(C)]
 #[repr(C)]
 #[derive(Debug, Clone, Copy)]
 pub struct JSStaticValue {
