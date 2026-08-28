@@ -355,7 +355,7 @@ mod tests {
     fn click_events_invoke_listener_in_child_realm() {
         let creation_url = Url::parse("about:blank").expect("parse creation URL");
         let mut parent_settings =
-            EnvironmentSettingsObject::new(new_document(), creation_url.clone(), None, None, None)
+            EnvironmentSettingsObject::new(new_document(), creation_url.clone())
                 .expect("build parent settings object");
         let child_document = new_document();
         let scripts = parse_html_into_document(
@@ -372,8 +372,6 @@ mod tests {
             Some(&mut parent_settings.realm_execution_context),
             Rc::clone(&child_document),
             creation_url,
-            None,
-            None,
             None,
             None,
         )

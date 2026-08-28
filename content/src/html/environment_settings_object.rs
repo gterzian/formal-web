@@ -6,6 +6,7 @@ use ipc::IpcSender;
 use ipc_messages::content::{DocumentId, Event as ContentEvent, NavigableId, WindowTimerKey};
 use url::Url;
 
+use crate::html::event_loop::EventLoopTaskSources;
 use crate::html::{TimerHandler, Window};
 use crate::js::bindings::dom::document::create_document_platform_object;
 use crate::js::build_context::{build_context, build_realm};
@@ -44,6 +45,19 @@ pub enum ReferrerPolicy {
     NoReferrerWhenDowngrade,
 }
 
+/// The content process connections a new realm is built with: the channel it
+/// sends events to the user agent on, the navigable and document it hosts, and
+/// the task sources of its event loop.
+pub(crate) struct RealmWiring {
+    /// <https://html.spec.whatwg.org/#concept-navigable>
+    pub source_navigable_id: NavigableId,
+    /// <https://html.spec.whatwg.org/#concept-document>
+    pub document_id: DocumentId,
+    pub event_sender: IpcSender<ContentEvent>,
+    /// <https://html.spec.whatwg.org/#task-source>
+    pub task_sources: EventLoopTaskSources,
+}
+
 /// <https://html.spec.whatwg.org/#environment-settings-object>
 pub struct EnvironmentSettingsObject {
     /// <https://html.spec.whatwg.org/#realm-execution-context>
@@ -66,34 +80,25 @@ pub struct EnvironmentSettingsObject {
 }
 
 impl EnvironmentSettingsObject {
-    pub fn new(
+    /// Note: Only unit tests create an environment settings object outside a
+    /// realm hierarchy; the content process always goes through
+    /// `new_in_realm` so every realm shares one engine heap.
+    #[cfg(test)]
+    pub(crate) fn new(
         document: Rc<RefCell<BaseDocument>>,
         creation_url: Url,
-        event_sender: Option<IpcSender<ContentEvent>>,
-        source_navigable_id: Option<NavigableId>,
-        document_id: Option<DocumentId>,
     ) -> Result<Self, String> {
-        Self::new_in_realm(
-            None,
-            document,
-            creation_url,
-            event_sender,
-            source_navigable_id,
-            document_id,
-            None,
-        )
+        Self::new_in_realm(None, document, creation_url, None, None)
     }
 
     /// Like `new`, but creates the realm within an existing engine (sharing
     /// the same engine heap). Used by `window.open`.
-    pub fn new_in_realm(
+    pub(crate) fn new_in_realm(
         parent: Option<&mut Engine>,
         document: Rc<RefCell<BaseDocument>>,
         creation_url: Url,
-        event_sender: Option<IpcSender<ContentEvent>>,
-        source_navigable_id: Option<NavigableId>,
-        document_id: Option<DocumentId>,
         creator_origin: Option<Origin>,
+        wiring: Option<RealmWiring>,
     ) -> Result<Self, String> {
         // Build the engine (fresh or child realm).
         let mut engine = match parent {
@@ -101,11 +106,14 @@ impl EnvironmentSettingsObject {
             None => build_context(Rc::clone(&document))?,
         };
 
-        // Set up timer host and navigation info on the GlobalScope through
+        // Connect the new realm's GlobalScope to the content process through
         // the EC trait's realm_global_object + with_object_any.
-        if let (Some(event_sender), Some(document_id)) = (&event_sender, document_id) {
+        if let Some(wiring) = &wiring {
             with_global_scope(&mut engine, |global_scope, _ec| {
-                global_scope.set_timer_host(document_id, event_sender.clone());
+                global_scope.set_task_sources(wiring.document_id, wiring.task_sources.clone());
+                global_scope
+                    .set_navigation_info(wiring.source_navigable_id, wiring.event_sender.clone());
+                global_scope.set_creation_url(creation_url.clone());
                 Ok(())
             })
             .map_err(|error| {
@@ -114,32 +122,14 @@ impl EnvironmentSettingsObject {
                     .unwrap_or_else(|_| "unknown error".to_string())
             })?;
         }
-        if let Some(navigable_id) = source_navigable_id {
-            if let Some(event_sender) = &event_sender {
-                with_global_scope(&mut engine, |global_scope, _ec| {
-                    global_scope.set_navigation_info(navigable_id, event_sender.clone());
-                    global_scope.set_creation_url(creation_url.clone());
-                    Ok(())
-                })
+
+        let (document_object, document) =
+            create_document_platform_object(document.clone(), creation_url.clone(), &mut engine)
                 .map_err(|error| {
                     engine
                         .to_rust_string(error)
                         .unwrap_or_else(|_| "unknown error".to_string())
                 })?;
-            }
-        }
-
-        let (document_object, document) =
-            crate::js::bindings::dom::document::create_document_platform_object(
-                document.clone(),
-                creation_url.clone(),
-                &mut engine,
-            )
-            .map_err(|error| {
-                engine
-                    .to_rust_string(error)
-                    .unwrap_or_else(|_| "unknown error".to_string())
-            })?;
 
         with_global_scope(&mut engine, |global_scope, ec| {
             global_scope.store_document_object(document_object, ec);
@@ -221,7 +211,6 @@ impl EnvironmentSettingsObject {
         document: Rc<RefCell<BaseDocument>>,
         creation_url: Url,
         document_id: DocumentId,
-        event_sender: &IpcSender<ContentEvent>,
     ) -> Result<(), String> {
         // The platform Document object is created in the reused realm; its JS handle replaces
         // the old document's in the global scope and the global `document` property.
@@ -236,7 +225,6 @@ impl EnvironmentSettingsObject {
                 Rc::clone(&document),
                 document_object,
                 document_id,
-                event_sender.clone(),
                 creation_url.clone(),
                 ec,
             );

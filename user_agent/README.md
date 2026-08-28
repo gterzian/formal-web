@@ -1,18 +1,35 @@
 # user_agent crate
 
-The `user_agent` crate owns all browser-global coordination: navigables and traversables, navigation and session history, event loops, timers, content-process lifecycle, and requests coming from the embedder and webview layers.
+The `user_agent` crate owns all browser-global coordination: navigables and traversables, navigation and session history, event-loop handles, content-process lifecycle, and requests coming from the embedder and webview layers.
 
-- `user_agent.rs` owns the top-level user-agent state and command loop (uses `select!` to also process net, graphics, and media responses directly).
-- `event_loop.rs` owns content event loops and manages the content process.
-- `timer.rs` owns the timer worker.
+- `user_agent.rs` owns the top-level user-agent state and command loop.  A single thread selects over the user-agent command channel, the net channel, the graphics channel, and every content event loop's event channel.
+- `event_loop.rs` defines `EventLoopState`, the per-event-loop handle owned by the user-agent thread.  It holds the content process IPC sender, the content event receiver, the content child process, and the script/click waiters keyed by request id.
 - `fetch.rs` provides `NetConnection` — owns the IPC connection to the net extension,
   tracks pending navigation fetches, and routes responses back to the user agent.
 - `ui_event.rs` provides UI event serialization for routing across process boundaries.
 - The UA and content processes send requests directly to the net, graphics, and media extensions;
-  there are no intermediary fetch or media worker threads.
+  there are no intermediary worker threads.
+- Task queues and window timers belong to the content process's event loop
+  (`content/src/html/event_loop.rs`), not to this crate.
 - Key cross-worker ownership with UUID newtypes such as `EventLoopId`, `NavigableId`, and related ids from `ipc_messages`.
 - Keep spec-facing algorithms and continuations as named worker methods on the owning type instead of as transport-oriented helper functions.
 - Route browser, embedder, automation, and webview requests through this crate instead of through synchronous cross-thread bridges.
+
+## IPC blocking and deadlock
+
+Sending on an IPC channel can block when the system buffer is full, and the
+user-agent thread sends content commands directly.  A content process blocked
+sending an event to the user agent while the user agent blocks sending a command
+to that same content process, with both channel buffers full, would deadlock the
+two threads.
+
+This is **not** a risk in practice: every content process re-routes its
+incoming IPC through the ipc-channel router proxy (`ipc::crossbeam_proxy`) into
+a crossbeam channel.  That proxy runs on a thread that is always ready to drain
+content's command channel (the ipc-channel ROUTER thread), so a user-agent send
+to content never blocks regardless of what the content process is doing.  The
+content process can therefore block on its own crossbeam receive without
+creating a feedback loop back to the user-agent thread.
 
 ## Graphics process routing
 

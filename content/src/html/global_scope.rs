@@ -14,14 +14,14 @@ use super::{
 use blitz_dom::BaseDocument;
 use ipc::IpcSender;
 use ipc_messages::content::DocumentId;
-use ipc_messages::content::{
-    Event as ContentEvent, NavigableId, WindowTimerClearRequest, WindowTimerKey, WindowTimerRequest,
-};
+use ipc_messages::content::{Event as ContentEvent, NavigableId, WindowTimerKey};
 use ipc_messages::media::VideoPaintId;
 use js_engine::gc::{GcCell, gc_cell_new};
 use js_engine::{Completion, ExecutionContext, JsTypes, gc_struct};
-use log::{debug, error};
+use log::debug;
 
+use super::environment_settings_object::RealmWiring;
+use super::event_loop::EventLoopTaskSources;
 use crate::js::{Engine, Types};
 use crate::webidl::Callback;
 
@@ -141,12 +141,6 @@ pub struct WindowTimer {
     pub timeout_ms: u32,
 }
 
-#[derive(Clone)]
-struct TimerHost {
-    document_id: DocumentId,
-    event_sender: IpcSender<ContentEvent>,
-}
-
 /// <https://html.spec.whatwg.org/#global-object>
 #[gc_struct]
 pub struct GlobalScope {
@@ -194,8 +188,9 @@ pub struct GlobalScope {
     #[ignore_trace]
     current_timer_nesting_level: Cell<Option<u32>>,
 
+    /// <https://html.spec.whatwg.org/#task-source>
     #[ignore_trace]
-    timer_host: Rc<RefCell<Option<TimerHost>>>,
+    task_sources: Rc<RefCell<Option<EventLoopTaskSources>>>,
 
     /// <https://html.spec.whatwg.org/#concept-navigable>
     #[ignore_trace]
@@ -295,7 +290,7 @@ impl GlobalScope {
             timer_callback_identifier: Cell::new(0),
             window_timers: gc_cell_new(Vec::new(), ec),
             current_timer_nesting_level: Cell::new(None),
-            timer_host: Rc::new(RefCell::new(None)),
+            task_sources: Rc::new(RefCell::new(None)),
             source_navigable_id: Rc::new(Cell::new(None)),
             event_loop_id: Rc::new(Cell::new(None)),
             channel_messaging: gc_cell_new(None, ec),
@@ -338,11 +333,11 @@ impl GlobalScope {
         Ok(WindowTimerKey::new())
     }
 
-    fn timer_host(&self) -> Result<TimerHost, String> {
-        self.timer_host
+    fn task_sources(&self) -> Result<EventLoopTaskSources, String> {
+        self.task_sources
             .borrow()
             .clone()
-            .ok_or_else(|| String::from("window timer host is not installed"))
+            .ok_or_else(|| String::from("event loop task sources are not installed"))
     }
 
     pub(crate) fn document(&self) -> Rc<RefCell<BaseDocument>> {
@@ -353,7 +348,7 @@ impl GlobalScope {
     /// Re-point this realm's associated Document, origin and creation URL at a
     /// new document that is taking over the (reused) Window: the DOM document
     /// the global scope resolves nodes against, the stored platform Document
-    /// object, the document-scoped bookkeeping (timer host, creation URL), and
+    /// object, the document-scoped bookkeeping (document id, creation URL), and
     /// the per-document caches (node wrappers, location) so the new document's
     /// nodes resolve to fresh wrappers and `location` reflects the new URL.
     pub(crate) fn repoint_document(
@@ -361,7 +356,6 @@ impl GlobalScope {
         document: Rc<RefCell<BaseDocument>>,
         document_object: JsObject,
         document_id: DocumentId,
-        event_sender: IpcSender<ContentEvent>,
         creation_url: url::Url,
         ec: &mut dyn ExecutionContext<Types>,
     ) {
@@ -370,10 +364,6 @@ impl GlobalScope {
         self.node_objects.borrow_mut(ec).clear();
         self.location_object.borrow_mut(ec).take();
         self.document_id.borrow_mut().replace(document_id);
-        self.timer_host.borrow_mut().replace(TimerHost {
-            document_id,
-            event_sender,
-        });
         self.creation_url.borrow_mut().replace(creation_url);
     }
 
@@ -435,9 +425,24 @@ impl GlobalScope {
         if let Some(existing) = existing {
             return Some(existing);
         }
-        let created = ChannelMessaging::new(event_loop_id, self.trace_sender(), ec);
+        let created = ChannelMessaging::new(
+            event_loop_id,
+            self.trace_sender(),
+            self.task_sources().ok()?,
+            ec,
+        );
         self.channel_messaging.set(Some(created.clone()), ec);
         Some(created)
+    }
+
+    /// <https://html.spec.whatwg.org/#task-source>
+    pub(crate) fn set_task_sources(
+        &self,
+        document_id: DocumentId,
+        task_sources: EventLoopTaskSources,
+    ) {
+        self.document_id.borrow_mut().replace(document_id);
+        *self.task_sources.borrow_mut() = Some(task_sources);
     }
 
     pub(crate) fn document_id(&self) -> Option<DocumentId> {
@@ -446,18 +451,6 @@ impl GlobalScope {
 
     pub(crate) fn event_sender(&self) -> Option<IpcSender<ContentEvent>> {
         self.event_sender.borrow().clone()
-    }
-
-    pub(crate) fn set_timer_host(
-        &self,
-        document_id: DocumentId,
-        event_sender: IpcSender<ContentEvent>,
-    ) {
-        self.document_id.borrow_mut().replace(document_id);
-        self.timer_host.borrow_mut().replace(TimerHost {
-            document_id,
-            event_sender,
-        });
     }
 
     pub(crate) fn document_object(&self, ec: &mut dyn ExecutionContext<Types>) -> Option<JsObject> {
@@ -790,24 +783,23 @@ impl GlobalScope {
         let timer_id = previous_id.unwrap_or_else(|| self.next_timer_id(ec));
 
         // Step 11: "Set uniqueHandle to the result of running steps after a timeout given global, \"setTimeout/setInterval\", timeout, and completionStep."
-        // Note: The content/embedder boundary forwards this request into the dedicated timer worker, which models `run steps after a timeout`.
+        // Note: The content process main thread runs the in-parallel steps of "run steps
+        // after a timeout"; recording the expiry time here is what its main loop waits on.
         let timer_key = self.next_timer_key()?;
         log_timer_debug(format!(
             "schedule timer id={} key={} timeout_ms={} nesting={} repeat={} previous_id={:?}",
             timer_id, timer_key, timeout_ms, nesting_level, repeat, previous_id
         ));
-        let host = self.timer_host()?;
-        host.event_sender
-            .send(ContentEvent::WindowTimerRequested(WindowTimerRequest {
-                document_id: host.document_id,
-                timer_id,
-                timer_key,
-                timeout_ms,
-                nesting_level,
-            }))
-            .map_err(|error| {
-                format!("failed to send window timer request to the embedder: {error}")
-            })?;
+        let document_id = self
+            .document_id()
+            .ok_or_else(|| String::from("window timer scheduled without an associated document"))?;
+        self.task_sources()?.run_steps_after_a_timeout(
+            document_id,
+            timer_key,
+            timeout_ms,
+            timer_id,
+            nesting_level,
+        );
 
         // Step 12: "Set global's map of setTimeout and setInterval IDs[id] to uniqueHandle."
         let mut timers = self.window_timers.borrow_mut(ec);
@@ -846,20 +838,10 @@ impl GlobalScope {
             "clear timer id={} key={}",
             removed_timer.id, removed_timer.timer_key
         ));
-        let Ok(host) = self.timer_host() else {
+        let Ok(task_sources) = self.task_sources() else {
             return;
         };
-
-        // Note: The embedder-facing clear mirrors the map removal into the timer worker's active-timer state.
-        if let Err(error) =
-            host.event_sender
-                .send(ContentEvent::WindowTimerCleared(WindowTimerClearRequest {
-                    document_id: host.document_id,
-                    timer_key: removed_timer.timer_key,
-                }))
-        {
-            error!("failed to send window timer clear to the embedder: {error}");
-        }
+        task_sources.remove_active_timer(removed_timer.timer_key);
     }
 
     /// <https://html.spec.whatwg.org/#timer-initialisation-steps>
@@ -912,23 +894,22 @@ impl GlobalScope {
             .current_timer_nesting_level()
             .unwrap_or(0)
             .saturating_add(1);
-        let host = self.timer_host()?;
+        let task_sources = self.task_sources()?;
+        let document_id = self.document_id().ok_or_else(|| {
+            String::from("window timer rescheduled without an associated document")
+        })?;
         let next_timer_key = self.next_timer_key()?;
         log_timer_debug(format!(
             "reschedule interval id={} old_key={} new_key={} timeout_ms={} nesting={}",
             timer_id, timer_key, next_timer_key, timer.timeout_ms, next_nesting_level
         ));
-        host.event_sender
-            .send(ContentEvent::WindowTimerRequested(WindowTimerRequest {
-                document_id: host.document_id,
-                timer_id,
-                timer_key: next_timer_key,
-                timeout_ms: timer.timeout_ms,
-                nesting_level: next_nesting_level,
-            }))
-            .map_err(|error| {
-                format!("failed to reschedule window timer with the embedder: {error}")
-            })?;
+        task_sources.run_steps_after_a_timeout(
+            document_id,
+            next_timer_key,
+            timer.timeout_ms,
+            timer_id,
+            next_nesting_level,
+        );
 
         let mut timers = self.window_timers.borrow_mut(ec);
         let Some(entry) = timers
@@ -946,20 +927,11 @@ impl GlobalScope {
             let mut timers = self.window_timers.borrow_mut(ec);
             std::mem::take(&mut *timers)
         };
-        let Ok(host) = self.timer_host() else {
+        let Ok(task_sources) = self.task_sources() else {
             return;
         };
         for timer in cleared_timers {
-            if let Err(error) =
-                host.event_sender
-                    .send(ContentEvent::WindowTimerCleared(WindowTimerClearRequest {
-                        document_id: host.document_id,
-                        timer_key: timer.timer_key,
-                    }))
-            {
-                error!("failed to clear window timer during teardown: {error}");
-                break;
-            }
+            task_sources.remove_active_timer(timer.timer_key);
         }
     }
 
@@ -978,9 +950,8 @@ impl GlobalScope {
         ),
         String,
     > {
-        let event_sender = self.event_sender();
-        let event_sender = event_sender
-            .as_ref()
+        let event_sender = self
+            .event_sender()
             .ok_or_else(|| String::from("GlobalScope has no event sender"))?;
         // Step 7 of "creating a new browsing context and document": "Let origin be the
         // result of determining the origin given about:blank, sandboxFlags, and
@@ -1008,10 +979,13 @@ impl GlobalScope {
         // (see `UserAgent::creating_a_new_top_level_traversable`).
         create_a_new_browsing_context_and_document(
             parent_engine,
-            event_sender,
-            new_traversable_id,
-            new_document_id,
             creator_origin,
+            RealmWiring {
+                source_navigable_id: new_traversable_id,
+                document_id: new_document_id,
+                event_sender,
+                task_sources: self.task_sources()?,
+            },
         )
     }
 

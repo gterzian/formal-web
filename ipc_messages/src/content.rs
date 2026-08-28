@@ -275,21 +275,6 @@ pub struct RegisterMediaPipeline {
     pub video_paint_id: crate::media::VideoPaintId,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct WindowTimerRequest {
-    pub document_id: DocumentId,
-    pub timer_id: u32,
-    pub timer_key: WindowTimerKey,
-    pub timeout_ms: u32,
-    pub nesting_level: u32,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct WindowTimerClearRequest {
-    pub document_id: DocumentId,
-    pub timer_key: WindowTimerKey,
-}
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(transparent)]
 pub struct EmbedSiteId(pub u64);
@@ -823,6 +808,9 @@ pub enum WebviewProviderMessage {
     },
 }
 
+/// A task the content process's event loop runs: the commands the user agent
+/// sends it, plus the tasks the content process queues on its own event loop
+/// (`RunWindowTimer`, `RunPortMessageTask`).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum Command {
     SetViewport(ViewportSnapshot),
@@ -876,6 +864,11 @@ pub enum Command {
         /// time").
         frame_timestamp_epoch_ms: f64,
     },
+    /// The task that runs one expired window timer's steps (step 9 of the
+    /// <https://html.spec.whatwg.org/#timer-initialisation-steps>), queued by
+    /// the content process on the
+    /// <https://html.spec.whatwg.org/#timer-task-source> when the timer's
+    /// expiry time in the global's map of active timers passes.
     RunWindowTimer {
         document_id: DocumentId,
         timer_id: u32,
@@ -973,8 +966,6 @@ pub enum TransferState {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum Event {
-    WindowTimerRequested(WindowTimerRequest),
-    WindowTimerCleared(WindowTimerClearRequest),
     NavigationRequested(NavigateRequest),
     BeforeUnloadCompleted(BeforeUnloadResult),
     FinalizeNavigation(FinalizeNavigation),
@@ -984,7 +975,6 @@ pub enum Event {
     /// A request from content to write text to the system clipboard.
     /// This is fire-and-forget — no reply is sent.
     ClipboardWriteRequested(ClipboardWriteRequested),
-    CommandCompleted,
     /// Content requests a rendering opportunity, e.g. after a network fetch completes.
     RenderingOpRequested(NavigableId),
     RegisterMediaPipeline(RegisterMediaPipeline),
@@ -1039,13 +1029,6 @@ pub enum Event {
     /// transfer at the user agent.
     PortTransferCompleted {
         tgt: PortId,
-    },
-    /// A message was queued on an enabled port message queue and needs a
-    /// task slot to fire its message event; the event loop bridge replies
-    /// with a `RunPortMessageTask` command.
-    /// <https://html.spec.whatwg.org/#port-message-queue>
-    PortMessageTaskPending {
-        port: PortId,
     },
     /// The parsed title of a top-level document, reported after parsing so
     /// the embedder can label the corresponding tab and window.

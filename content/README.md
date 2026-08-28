@@ -62,6 +62,19 @@ Types that currently use `&mut self` for mutation but could use `GcCell` + `&sel
 - **Streams** (`content/src/streams`) — writable/readable stream state machines use `Cell<bool>`/`RefCell`; some could use GcCell for GC-traced callback fields.
 - **AbortSignal** (`content/src/dom`) — already uses `GcCell<AbortSignalState>` at the top level; internal fields like `onabort` could move to GcCell if needed.
 
+## The event loop's task queue
+
+The HTML event loop processing model runs on the content process main thread
+(`run_content_message_loop` in `content/src/main.rs`), and every task source
+feeds one queue of `ipc_messages::content::Command`.  Content-initiated work
+(window timer expiry, port message tasks) must therefore be **queued as a
+`Command`**, never run by calling its handler directly: the dispatcher wraps
+each task with the bookkeeping the model requires (marking the task's document
+dirty, the microtask checkpoint after the task's steps), and an inline call
+silently skips it.  `content/src/html/event_loop.rs` owns both the queue handle
+handed to global scopes (`EventLoopTaskSources`) and the map of active timers
+the main loop waits on.
+
 ## Known issues
 
 - **Clippy warning backlog.** The content crate has a backlog of pre-existing

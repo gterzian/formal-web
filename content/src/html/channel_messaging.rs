@@ -17,7 +17,7 @@ use std::collections::VecDeque;
 
 use ipc::IpcSender;
 use ipc_messages::content::{
-    Event as ContentEvent, EventLoopId, PortId, PortTaskKind, TransferState,
+    Command, Event as ContentEvent, EventLoopId, PortId, PortTaskKind, TransferState,
 };
 use ipc_messages::safe_passing_of_structured_data::PortMessagePayload;
 use js_engine::ExecutionContext;
@@ -25,6 +25,7 @@ use js_engine::gc::{GcCell, gc_cell_new};
 use js_engine::gc_struct;
 use log::warn;
 
+use crate::html::event_loop::EventLoopTaskSources;
 use crate::html::messageport::MessagePort;
 use crate::js::Types;
 
@@ -102,6 +103,10 @@ pub(crate) struct ChannelMessaging {
 
     /// The records of the ports managed by this event loop.
     ports: GcCell<Vec<PortRecord>>,
+
+    /// <https://html.spec.whatwg.org/#task-source>
+    #[ignore_trace]
+    task_sources: EventLoopTaskSources,
 }
 
 impl ChannelMessaging {
@@ -109,11 +114,13 @@ impl ChannelMessaging {
     pub(crate) fn new(
         event_loop_id: EventLoopId,
         trace_sender: Option<TraceSender>,
+        task_sources: EventLoopTaskSources,
         ec: &mut dyn ExecutionContext<Types>,
     ) -> Self {
         Self {
             event_loop_id,
             trace_sender,
+            task_sources,
             ports: gc_cell_new(Vec::new(), ec),
         }
     }
@@ -332,7 +339,7 @@ impl ChannelMessaging {
             };
             ports[target_index].queue.push_back(msg);
             drop(ports);
-            self.request_message_tasks(target_id, event_sender, ec)?;
+            self.request_message_tasks(target_id, ec)?;
         } else {
             // `MessagePortExtraFG.tla`'s `PostMessage` routed branch: append a "Single"
             // item to the user agent's routing queue.
@@ -353,12 +360,7 @@ impl ChannelMessaging {
     }
 
     /// <https://html.spec.whatwg.org/#dom-messageport-start>
-    pub(crate) fn start(
-        &self,
-        port_id: PortId,
-        event_sender: &IpcSender<ContentEvent>,
-        ec: &mut dyn ExecutionContext<Types>,
-    ) {
+    pub(crate) fn start(&self, port_id: PortId, ec: &mut dyn ExecutionContext<Types>) {
         // Step 1: The start() method steps are to enable this's port
         //         message queue, if it is not already enabled.
         // Note: Enabling the queue makes the event loop use it as a task
@@ -373,7 +375,7 @@ impl ChannelMessaging {
             ports[index].enabled = true;
             was_enabled
         };
-        if !was_enabled && let Err(error) = self.request_message_tasks(port_id, event_sender, ec) {
+        if !was_enabled && let Err(error) = self.request_message_tasks(port_id, ec) {
             warn!("failed to request port message tasks after start: {error}");
         }
     }
@@ -404,12 +406,7 @@ impl ChannelMessaging {
 
     /// Enable a port's message queue (once enabled it stays enabled) and
     /// request message tasks for its pending messages.
-    pub(crate) fn enable_queue(
-        &self,
-        port_id: PortId,
-        event_sender: &IpcSender<ContentEvent>,
-        ec: &mut dyn ExecutionContext<Types>,
-    ) {
+    pub(crate) fn enable_queue(&self, port_id: PortId, ec: &mut dyn ExecutionContext<Types>) {
         let was_enabled = {
             let mut ports = self.ports.borrow_mut(ec);
             let Some(index) = ports.iter().position(|record| record.port_id == port_id) else {
@@ -419,7 +416,7 @@ impl ChannelMessaging {
             ports[index].enabled = true;
             was_enabled
         };
-        if !was_enabled && let Err(error) = self.request_message_tasks(port_id, event_sender, ec) {
+        if !was_enabled && let Err(error) = self.request_message_tasks(port_id, ec) {
             warn!("failed to request port message tasks after enabling: {error}");
         }
     }
@@ -590,7 +587,6 @@ impl ChannelMessaging {
     pub(crate) fn pop_queued_message(
         &self,
         port_id: PortId,
-        event_sender: &IpcSender<ContentEvent>,
         ec: &mut dyn ExecutionContext<Types>,
     ) -> Result<Option<PortMessagePayload>, String> {
         // Step 7: Add a task that runs the following steps to the port
@@ -624,7 +620,7 @@ impl ChannelMessaging {
                 ],
             );
             // The queue may hold further messages; each fires in its own task.
-            self.request_message_tasks(port_id, event_sender, ec)?;
+            self.request_message_tasks(port_id, ec)?;
         }
         Ok(popped)
     }
@@ -663,12 +659,10 @@ impl ChannelMessaging {
             .any(|record| record.port_id == port_id)
     }
 
-    /// Ask the user agent to queue a message task for a port whose queue
-    /// is enabled and non-empty.
+    /// <https://html.spec.whatwg.org/#port-message-queue>
     fn request_message_tasks(
         &self,
         port_id: PortId,
-        event_sender: &IpcSender<ContentEvent>,
         ec: &mut dyn ExecutionContext<Types>,
     ) -> Result<(), String> {
         let pending = {
@@ -682,8 +676,7 @@ impl ChannelMessaging {
         if !pending {
             return Ok(());
         }
-        event_sender
-            .send(ContentEvent::PortMessageTaskPending { port: port_id })
-            .map_err(|error| format!("failed to request port message task: {error}"))
+        self.task_sources
+            .queue_a_task(Command::RunPortMessageTask { port: port_id })
     }
 }

@@ -19,6 +19,8 @@ pub mod wasm;
 pub mod webidl;
 
 use crate::dom::{EventTargetAccess, dispatch_with_path, fire_event, simple_path};
+use crate::html::environment_settings_object::RealmWiring;
+use crate::html::event_loop::{EventLoopTaskSources, MapOfActiveTimers};
 use crate::html::ui_events::{dispatch_trusted_click_event, dispatch_ui_event};
 use crate::html::{
     EnvironmentSettingsObject, JsHtmlParserProvider, MessageEvent, PendingParserScript, Window,
@@ -67,14 +69,14 @@ use ipc_messages::safe_passing_of_structured_data::PostMessageRequest;
 use log::{debug, error, info, warn};
 use std::{
     cell::RefCell,
-    collections::{HashMap, HashSet},
+    collections::{HashMap, HashSet, VecDeque},
     env,
     rc::Rc,
     sync::{
         Arc, Mutex,
         atomic::{AtomicBool, Ordering},
     },
-    time::{Instant, SystemTime, UNIX_EPOCH},
+    time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 use url::Url;
 use verification::{TLATracer, TraceSender};
@@ -457,6 +459,14 @@ pub(crate) struct ContentProcess {
     /// MessagePort spec trace (the Navigation tracer above is separate).
     trace_sender: Option<TraceSender>,
     realm_parent: Engine,
+    /// <https://html.spec.whatwg.org/#map-of-active-timers>
+    active_timers: Rc<RefCell<MapOfActiveTimers>>,
+    /// <https://html.spec.whatwg.org/#task-queue>
+    task_queue: VecDeque<Command>,
+    /// <https://html.spec.whatwg.org/#queue-a-task>
+    task_sender: crossbeam_channel::Sender<Command>,
+    /// <https://html.spec.whatwg.org/#queue-a-task>
+    task_receiver: crossbeam_channel::Receiver<Command>,
 }
 
 impl ContentProcess {
@@ -470,6 +480,7 @@ impl ContentProcess {
         trace_sender: Option<TraceSender>,
     ) -> Self {
         let clipboard_cache = new_clipboard_cache();
+        let (task_sender, task_receiver) = crossbeam_channel::unbounded();
         // HR Time "estimated monotonic time of the Unix epoch": simultaneous
         // wall-clock and monotonic readings at process start, so epoch
         // timestamps sent by the user agent (e.g. the rendering opportunity
@@ -505,6 +516,10 @@ impl ContentProcess {
             epoch_anchor_wall_ms,
             trace_sender,
             realm_parent: Engine::new(),
+            active_timers: Rc::new(RefCell::new(MapOfActiveTimers::default())),
+            task_queue: VecDeque::new(),
+            task_sender,
+            task_receiver,
         }
     }
 
@@ -516,14 +531,18 @@ impl ContentProcess {
         document_id: DocumentId,
     ) -> Result<EnvironmentSettingsObject, String> {
         let event_sender = self.event_sender.clone();
+        let task_sources = self.event_loop_task_sources();
         let mut settings = EnvironmentSettingsObject::new_in_realm(
             Some(&mut self.realm_parent),
             document,
             creation_url,
-            Some(event_sender),
-            Some(traversable_id),
-            Some(document_id),
             None,
+            Some(RealmWiring {
+                source_navigable_id: traversable_id,
+                document_id,
+                event_sender,
+                task_sources,
+            }),
         )?;
         // The realm belongs to this content process's event loop; the global
         // scope needs the id for channel messaging (per-event-loop port
@@ -1257,12 +1276,7 @@ impl ContentProcess {
         // created, and `repoint_document` re-points that realm at the new document.
         let mut settings = match reused_settings {
             Some(mut reused) => {
-                reused.repoint_document(
-                    Rc::clone(&document),
-                    creation_url,
-                    document_id,
-                    &self.event_sender,
-                )?;
+                reused.repoint_document(Rc::clone(&document), creation_url, document_id)?;
                 reused
             }
             None => self.create_environment_settings_object(
@@ -2730,12 +2744,6 @@ impl ContentProcess {
         Ok(())
     }
 
-    fn note_command_completed(&self) -> Result<(), String> {
-        self.event_sender
-            .send(ContentEvent::CommandCompleted)
-            .map_err(|error| format!("failed to send content command completion: {error}"))
-    }
-
     fn note_shutdown_completed(&self) -> Result<(), String> {
         self.event_sender
             .send(ContentEvent::ShutdownCompleted)
@@ -2922,7 +2930,6 @@ impl ContentProcess {
         }
     }
 
-    /// <https://html.spec.whatwg.org/#event-loop-processing-model>
     fn handle_command(&mut self, command: Command) -> Result<bool, String> {
         let result = self.handle_command_inner(command);
 
@@ -2935,6 +2942,31 @@ impl ContentProcess {
         }
 
         result
+    }
+
+    fn event_loop_task_sources(&self) -> EventLoopTaskSources {
+        EventLoopTaskSources::new(self.task_sender.clone(), Rc::clone(&self.active_timers))
+    }
+
+    fn earliest_timer_expiry_wait(&self) -> Option<Duration> {
+        self.active_timers.borrow().earliest_expiry_wait()
+    }
+
+    /// <https://html.spec.whatwg.org/#run-steps-after-a-timeout>
+    fn queue_expired_timer_tasks(&mut self) {
+        // Step 4.4: "Perform completionSteps."
+        // Note: The completion step of the timer initialization steps queues a
+        // global task on the timer task source to run the timer's task, so an
+        // expired timer becomes a queued task rather than running here.
+        let expired = self.active_timers.borrow_mut().take_expired_timers();
+        for timer in expired {
+            self.task_queue.push_back(Command::RunWindowTimer {
+                document_id: timer.document_id,
+                timer_id: timer.timer_id,
+                timer_key: timer.timer_key,
+                nesting_level: timer.nesting_level,
+            });
+        }
     }
 
     /// <https://html.spec.whatwg.org/#perform-a-microtask-checkpoint>
@@ -3210,8 +3242,6 @@ pub fn run_content_process(token: String) -> Result<(), String> {
             }
         };
 
-        let _ = event_sender.send(ContentEvent::CommandCompleted);
-
         let mut process = {
             ContentProcess::new(
                 event_sender.clone(),
@@ -3228,52 +3258,74 @@ pub fn run_content_process(token: String) -> Result<(), String> {
     })
 }
 
+/// <https://html.spec.whatwg.org/#event-loop-processing-model>
 fn run_content_message_loop(
     cmd_rx: &crossbeam_channel::Receiver<ipc::IpcIncoming<Command>>,
     wasm_rx: &crossbeam_channel::Receiver<()>,
     process: &mut ContentProcess,
 ) -> Result<(), String> {
     loop {
+        // Step 1: "Let oldestTask and taskStartTime be null."
+        // Step 2: "If the event loop has a task queue with at least one runnable task:"
+        // Step 2.1: "Let taskQueue be one such task queue, chosen in an
+        // implementation-defined manner."
+        // Note: Tasks from every task source share one queue, so there is
+        // nothing to choose between.
+        // Step 2.2: "Set taskStartTime to the unsafe shared current time."
+        // Note: Not implemented: task start time is not recorded.
+        // Step 2.3: "Set oldestTask to the first runnable task in taskQueue, and
+        // remove it from taskQueue."
+        if let Some(oldest_task) = process.task_queue.pop_front() {
+            // Step 2.4: "If oldestTask's document is not null, then record task
+            // start time given taskStartTime and oldestTask's document."
+            // Step 2.5: "Set the event loop's currently running task to oldestTask."
+            // Note: Not implemented: task timing is not recorded and the
+            // currently running task is not tracked.
+            // Step 2.6: "Perform oldestTask's steps."
+            match process.handle_command(oldest_task) {
+                Ok(true) => {
+                    // Step 2.7: "Set the event loop's currently running task back to null."
+                    // Note: Not implemented, as for step 2.5.
+                    // Step 2.8: "Perform a microtask checkpoint."
+                    if let Err(error) = process.perform_microtask_checkpoint() {
+                        error!("microtask checkpoint after task failed: {error}");
+                    }
+                }
+                Ok(false) => return Ok(()),
+                Err(error) => {
+                    error!("content error: {error}");
+                }
+            }
+            continue;
+        }
+
+        // Step 3: "Let taskEndTime be the unsafe shared current time."
+        // Step 4: "If oldestTask is not null:"
+        // Step 5: "If this is a window event loop that has no runnable task in
+        // this event loop's task queues:"
+        // Step 6: "If this is a worker event loop:"
+        // Note: Steps 3-4 (long task reporting) and step 5 (idle periods) are
+        // not implemented, and step 6 does not apply: this event loop is a
+        // window event loop.  With no runnable task the loop instead waits for
+        // the next task-bearing input: a command from the user agent, a task
+        // queued by this process's own global scopes, a WebAssembly result, or
+        // the earliest expiry time in the map of active timers.
+        let timer_expiry = match process.earliest_timer_expiry_wait() {
+            Some(wait) => crossbeam_channel::after(wait),
+            None => crossbeam_channel::never(),
+        };
         crossbeam_channel::select! {
             recv(cmd_rx) -> cmd => {
                 match cmd {
                     Ok(incoming) => {
-                        let command = incoming.payload;
-                        let notify = matches!(
-                            &command,
-                            CreateEmptyDocument { .. }
-                                | CreateLoadedDocument { .. }
-                                | DestroyDocument { .. }
-                                | DispatchEvent { .. }
-                                | Command::RunBeforeUnload { .. }
-                                | UpdateTheRendering { .. }
-                                | RunWindowTimer { .. }
-                                | CompleteDocumentFetch { .. }
-                                | FailDocumentFetch { .. }
-                                | Command::PostMessage { .. }
-                                | Command::PortTask { .. }
-                                | Command::RunPortMessageTask { .. }
-                        );
-                        match process.handle_command(command) {
-                            Ok(true) => {
-                                if notify {
-                                    let _ = process.note_command_completed();
-                                    // <https://html.spec.whatwg.org/#event-loop-processing-model>
-                                    // Step 2.8: Perform a microtask checkpoint.
-                                    if let Err(error) = process.perform_microtask_checkpoint() {
-                                        error!("microtask checkpoint after task failed: {error}");
-                                    }
-                                }
-                            }
-                            Ok(false) => return Ok(()),
-                            Err(error) => {
-                                error!("content error: {error}");
-                                if notify {
-                                    let _ = process.note_command_completed();
-                                }
-                            }
-                        }
+                        process.task_queue.push_back(incoming.payload);
                     }
+                    Err(_) => return Ok(()),
+                }
+            }
+            recv(&process.task_receiver) -> task => {
+                match task {
+                    Ok(command) => process.task_queue.push_back(command),
                     Err(_) => return Ok(()),
                 }
             }
@@ -3287,6 +3339,9 @@ fn run_content_message_loop(
                 if let Err(error) = process.perform_microtask_checkpoint() {
                     error!("microtask checkpoint after wasm failed: {error}");
                 }
+            }
+            recv(timer_expiry) -> _ => {
+                process.queue_expired_timer_tasks();
             }
         }
     }

@@ -4,6 +4,9 @@
 
 - Keep DOM-tree entry points under `content/src/html/html_dom_tree.rs`, and route per-element hooks from there into element modules.
 - Keep iframe bindings and iframe processing algorithms together in `content/src/html/html_iframe_element.rs` as free functions over content-process state (`ContentProcess`).
+  `contentDocument` is unimplemented: the getter returns null even for a
+  same-origin child navigable whose document lives in this content process
+  (`contentWindow` resolves and the iframe `load` event does fire).
 - Keep helper names aligned with the corresponding HTML algorithm anchors, and prefer explicit error returns or `debug_assert!` plus safe early returns over sentinel ids.
 - Trigger parser-discovered iframe work from document-load parsing completion.
 - Use the `web_standards` extension (`spec_lookup`) with `https://html.spec.whatwg.org/` to read the HTML spec.
@@ -142,6 +145,18 @@ Each binding function downcasts the receiver, resolves the local Window
 (`local_window_domain` / `window_domain_from`), calls the domain method, and
 wraps the result.  The cross-content fallbacks in the WindowProxy bindings
 return placeholder values for state that lives in another content process.
+
+### `window.open` deviation: an empty url navigates an existing navigable
+
+`window_open_steps` navigates the chosen navigable to about:blank when `url` is
+the empty string.  Step 16.1 navigates only when urlRecord is non-null, so
+`window.open("", "_self")` must leave the current document in place; instead it
+replaces it with about:blank.  This is why `formal/window-open-basic.html` (not
+in the default WPT selection) times out: the test navigates itself away and the
+testharness never reports.  Note that its test 4 asserts a page-destroying
+result of its own (`w.open("about:blank", "_self")` resolves `_self` against the
+entry global, i.e. the test window), so the test needs rewriting alongside the
+fix.
 
 ## WindowProxy (`windowproxy.rs`)
 

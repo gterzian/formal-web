@@ -437,14 +437,12 @@ mod tests {
     fn realm_script_resolves_document_global() {
         let creation_url = Url::parse("about:blank").expect("parse creation URL");
         let mut parent_settings =
-            EnvironmentSettingsObject::new(new_document(), creation_url.clone(), None, None, None)
+            EnvironmentSettingsObject::new(new_document(), creation_url.clone())
                 .expect("build parent settings object");
         let mut child_settings = EnvironmentSettingsObject::new_in_realm(
             Some(&mut parent_settings.realm_execution_context),
             new_document(),
             creation_url,
-            None,
-            None,
             None,
             None,
         )
