@@ -26,6 +26,7 @@ mod location;
 pub(crate) mod message_event;
 pub(crate) mod messageport;
 pub(crate) mod structured_data;
+pub(crate) mod timers;
 pub(crate) mod ui_events;
 mod window;
 mod window_or_worker_global_scope;

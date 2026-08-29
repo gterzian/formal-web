@@ -16,7 +16,7 @@ use crate::html::Window;
 use crate::js::create_builtin_fn_with_traced_captures;
 use crate::js::platform_objects::with_global_scope;
 use crate::webidl::bindings::create_interface_instance;
-use crate::webidl::is_array_index_key;
+use crate::webidl::{is_array_index_key, relevant_realm_global_this_value};
 use ipc_messages::content::NavigableId;
 use js_engine::gc::{GcCell, gc_cell_new};
 use js_engine::gc_struct;
@@ -672,6 +672,12 @@ fn wrap_callable_result(
     receiver: JsObject,
     ec: &mut dyn ExecutionContext<Types>,
 ) -> Option<JsValue> {
+    // A constructor is handed back untouched: interface objects (`w.DOMException`)
+    // and script functions must keep their identity, and neither downcasts a
+    // Window receiver the way a Web IDL operation does.
+    if ec.is_constructor(result) {
+        return None;
+    }
     if let Some(func_obj) = <Types as JsTypes>::value_as_object(result)
         && ec.is_callable(result)
     {
@@ -693,17 +699,23 @@ fn wrap_callable_result(
     None
 }
 
-/// Create (or fetch from the realm's cache) the WindowProxy for a navigable:
-/// an ECMAScript Proxy wrapping the cached [`WindowProxy`] platform object
-/// for the navigable.  `local_window` seeds the same-content-process backing
-/// when the proxy does not exist yet; navigation commit later re-points it.
-///
 /// <https://html.spec.whatwg.org/#the-windowproxy-exotic-object>
 pub(crate) fn create_window_proxy(
     navigable_id: NavigableId,
     local_window: Option<(Window, JsObject)>,
     ec: &mut dyn ExecutionContext<Types>,
 ) -> Completion<JsValue, Types> {
+    // Note: The realm's global object is the identity JavaScript holds for
+    // the realm's own navigable (the [[GlobalThisValue]] of a Window realm is
+    // that navigable's WindowProxy), so that navigable resolves to the global
+    // object rather than to a second proxy — `window.top === window` and
+    // `window.open("", "_self") === window`.
+    let own_navigable_id =
+        with_global_scope(ec, |global_scope, _| Ok(global_scope.source_navigable_id()))?;
+    if own_navigable_id == Some(navigable_id) {
+        return Ok(relevant_realm_global_this_value(ec));
+    }
+
     let (cached_proxy, cached_object) = with_global_scope(ec, |global_scope, ec| {
         Ok(global_scope.cached_window_proxy_state(navigable_id, ec))
     })?;

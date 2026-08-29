@@ -146,17 +146,14 @@ Each binding function downcasts the receiver, resolves the local Window
 wraps the result.  The cross-content fallbacks in the WindowProxy bindings
 return placeholder values for state that lives in another content process.
 
-### `window.open` deviation: an empty url navigates an existing navigable
+### `window.open` cannot reach a cross-origin destination
 
-`window_open_steps` navigates the chosen navigable to about:blank when `url` is
-the empty string.  Step 16.1 navigates only when urlRecord is non-null, so
-`window.open("", "_self")` must leave the current document in place; instead it
-replaces it with about:blank.  This is why `formal/window-open-basic.html` (not
-in the default WPT selection) times out: the test navigates itself away and the
-testharness never reports.  Note that its test 4 asserts a page-destroying
-result of its own (`w.open("about:blank", "_self")` resolves `_self` against the
-entry global, i.e. the test window), so the test needs rewriting alongside the
-fix.
+The navigate algorithm's "allowed by sandboxing to navigate" check is
+approximated in `window_open_steps` by comparing the destination's origin
+with the source document's, throwing a "SecurityError" DOMException when they
+differ, so a cross-origin popup (`window.open("https://other.example/")`)
+throws instead of opening.  Lifting this needs the sandboxing flag set and
+the target snapshot params the check is defined over.
 
 ## WindowProxy (`windowproxy.rs`)
 
@@ -207,7 +204,10 @@ Callable results of the [[Get]] trap are wrapped so they are invoked with
 `this` set to the resolved receiver — the Window for a same-content-process
 window, the proxy's platform object for a cross-content-process window —
 because the Call expression uses the Proxy itself as `this` and the member
-functions downcast their receiver.
+functions downcast their receiver.  Constructors are handed back unwrapped:
+interface objects reached through the proxy (`w.DOMException`) must keep
+their identity, and a script function called through the proxy gets the
+proxy as `this` like in browsers.
 
 Cross-realm property access in V8 is gated by the context security token;
 the engine installs a shared token on every context so same-origin windows
@@ -327,16 +327,20 @@ WindowProxy to expose child browsing contexts by numeric index (`window[0]`,
 `window[1]`) and by name.  This requires tracking the document-tree child
 navigables on the Document, which is not yet implemented.
 
-**4. `top`/`parent` resolve the WindowProxy per realm, without a local
-backing.**  The domain `Window::top_value`/`parent_value` consult the
+**4. WindowProxy identity is per realm.**  `create_window_proxy` resolves
+the current realm's own navigable to the realm's global object (the spec's
+[[GlobalThisValue]] of a Window realm is that navigable's WindowProxy), so
+`window.top === window`, `window.parent === window`, and
+`window.open("", "_self") === window` hold.  Every other navigable gets a
+proxy cached per (realm, navigable), which means the same navigable seen
+from two realms is two objects: `iframe.contentWindow.top === window` does
+not hold like in browsers.  `Window::top_value`/`parent_value` consult the
 navigable hierarchy (`top_level_traversable_id`/`parent_traversable_id`) and
-create the resolved navigable's WindowProxy via `create_window_proxy` with
-no local window, so the proxy's backing is `CrossContentProcess` (its
-members resolve through the platform object's member set, and its
-cross-origin `top`/`parent`/`self` return the proxy itself).  The top-level
-window's own `top`/`parent` return the realm's global object (preserving
-`window.top === window`), which means `iframe.contentWindow.top === window`
-does not hold like in browsers (per-realm WindowProxy identity).
+create the resolved navigable's WindowProxy with no local window, so the
+proxy's backing is `CrossContentProcess` (its members resolve through the
+platform object's member set, and its cross-origin `top`/`parent`/`self`
+return the proxy itself) even when that navigable's window lives in this
+process.
 
 **5. `name`, `opener`, `closed` are stubs.**  The navigable target name is
 tracked by the user agent (`traversable_target_names` in

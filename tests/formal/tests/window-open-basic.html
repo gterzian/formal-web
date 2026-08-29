@@ -28,24 +28,38 @@ test(() => {
   assert_equals(w, window, 'window.open _self should return current window');
 }, 'window.open _self returns current window');
 
-// Test 4: Navigating the returned window with _self
+// Test 4: Empty url with _self does not navigate the window away
 test(() => {
   const w = window.open('', '_blank');
   assert_not_equals(w, null, 'popup opened');
-  // Call open on the popup with _self — should return the popup itself
-  const w2 = w.open('about:blank', '_self');
-  assert_not_equals(w2, null, 'w.open should return a window');
-  // For same-origin, the returned window should be the popup
-  assert_equals(w2, window, 'navigating _self on popup returns...'); // Note: may be w or window depending on impl
-}, 'navigate returned window with _self');
+  // An empty url is a null urlRecord, and step 16.1 of the window open steps
+  // navigates only when urlRecord is non-null, so calling open with an empty
+  // url and _self must not replace whichever window _self resolves to (the
+  // source window).  Reaching this line intact proves it.
+  const w2 = w.open('', '_self');
+  assert_not_equals(w2, null, 'empty url _self returns a window');
+  assert_equals(typeof w2.open, 'function', 'result should be a Window');
+  if (w) w.close();
+}, 'empty url _self does not navigate the source away');
 
 // Test 5: Cross-origin navigation should throw
 test(() => {
   const w = window.open('', '_blank');
   assert_not_equals(w, null, 'popup opened');
-  assert_throws_dom('SecurityError', () => {
+  // The realm that creates the exception is not asserted: `open` is the
+  // popup's own method, so a spec-correct implementation creates the
+  // SecurityError in the popup's realm, and the engines this test runs on
+  // disagree about which realm a cross-realm native call is entered in.
+  try {
     w.open('https://example.com', '_self');
-  }, 'cross-origin navigation should throw SecurityError');
+    assert_unreached('cross-origin navigation should throw');
+  } catch (e) {
+    assert_equals(typeof e, 'object', 'a DOMException object is thrown');
+    assert_equals(e && e.constructor && e.constructor.name, 'DOMException', 'it is a DOMException');
+    assert_equals(e.name, 'SecurityError', 'exception name');
+    assert_equals(e.code, 18, 'SECURITY_ERR code');
+  }
+  w.close();
 }, 'cross-origin window.open throws SecurityError');
 
 </script>

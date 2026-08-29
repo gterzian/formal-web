@@ -71,9 +71,19 @@ feeds one queue of `ipc_messages::content::Command`.  Content-initiated work
 `Command`**, never run by calling its handler directly: the dispatcher wraps
 each task with the bookkeeping the model requires (marking the task's document
 dirty, the microtask checkpoint after the task's steps), and an inline call
-silently skips it.  `content/src/html/event_loop.rs` owns both the queue handle
-handed to global scopes (`EventLoopTaskSources`) and the map of active timers
-the main loop waits on.
+silently skips it.  `content/src/html/event_loop.rs` owns the queue handle
+handed to global scopes (`EventLoopTaskSources`); the map of active timers the
+main loop waits on (`MapOfActiveTimers`) lives in
+`content/src/html/timers.rs`, exposed to the event loop through
+`EventLoopTaskSources`.
+
+Not every `Command` the user agent sends is an event-loop task.  The command
+channel carries both tasks (timers, message ports, render opportunities,
+script/event automation, beforeunload) and control messages (viewport,
+document lifecycle, navigation fetch completion, shutdown).  `run_content_message_loop`
+queues only event-loop tasks on the task queue; control messages are handled
+directly, outside the task-queue ceremony, via `command_is_event_loop_task`
+in `content/src/html/event_loop.rs`.
 
 ## Known issues
 

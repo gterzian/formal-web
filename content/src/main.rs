@@ -20,7 +20,8 @@ pub mod webidl;
 
 use crate::dom::{EventTargetAccess, dispatch_with_path, fire_event, simple_path};
 use crate::html::environment_settings_object::RealmWiring;
-use crate::html::event_loop::{EventLoopTaskSources, MapOfActiveTimers};
+use crate::html::event_loop::{EventLoopTaskSources, command_is_event_loop_task};
+use crate::html::timers::MapOfActiveTimers;
 use crate::html::ui_events::{dispatch_trusted_click_event, dispatch_ui_event};
 use crate::html::{
     EnvironmentSettingsObject, JsHtmlParserProvider, MessageEvent, PendingParserScript, Window,
@@ -2953,12 +2954,36 @@ impl ContentProcess {
     }
 
     /// <https://html.spec.whatwg.org/#run-steps-after-a-timeout>
-    fn queue_expired_timer_tasks(&mut self) {
+    fn run_steps_after_a_timeout(&mut self) {
+        // Step 1: "Let timerKey be a new unique internal value."
+        // Step 2: "Let startTime be the current high resolution time given global."
+        // Step 3: "Set global's map of active timers[timerKey] to startTime plus milliseconds."
+        // Note: Steps 1-3 and 5 ran in `MapOfActiveTimers::run_steps_after_a_timeout`
+        // when the timer was scheduled; only the in-parallel steps remain.
+
+        // Step 4: "Run the following steps in parallel:"
+        // Note: Runs on the content process main loop once the `select!` wait on
+        // `earliest_timer_expiry_wait` fires.  One iteration per expired timer.
+        //
+        // Step 4.1: "If global is a Window object, wait until global's associated
+        // Document has been fully active for a further milliseconds milliseconds
+        // (not necessarily consecutively)."
+        // Note: Realized by the `select!` wait on `earliest_timer_expiry_wait`.
+        //
+        // Step 4.2: "Wait until any invocations of this algorithm that had the
+        // same global and orderingIdentifier, that started before this one, and
+        // whose milliseconds is less than or equal to this one's, have completed."
+        // Note: `take_expired_timers` returns the expired timers ordered by
+        // expiry time, then start order, so completion steps queue in that order.
+        //
+        // Step 4.3: "Optionally, wait a further implementation-defined length of time."
+        // Note: Not implemented: expiry times are exact.
+        let expired = self.active_timers.borrow_mut().take_expired_timers();
+
         // Step 4.4: "Perform completionSteps."
         // Note: The completion step of the timer initialization steps queues a
         // global task on the timer task source to run the timer's task, so an
         // expired timer becomes a queued task rather than running here.
-        let expired = self.active_timers.borrow_mut().take_expired_timers();
         for timer in expired {
             self.task_queue.push_back(Command::RunWindowTimer {
                 document_id: timer.document_id,
@@ -2967,6 +2992,14 @@ impl ContentProcess {
                 nesting_level: timer.nesting_level,
             });
         }
+
+        // Step 4.5: "Remove global's map of active timers[timerKey]."
+        // Note: `take_expired_timers` removed each expired entry as it collected
+        // the timers.
+        //
+        // Step 5: "Return timerKey."
+        // Note: Nothing to return: the id was already handed back when the timer
+        // was scheduled.
     }
 
     /// <https://html.spec.whatwg.org/#perform-a-microtask-checkpoint>
@@ -3309,7 +3342,12 @@ fn run_content_message_loop(
         // window event loop.  With no runnable task the loop instead waits for
         // the next task-bearing input: a command from the user agent, a task
         // queued by this process's own global scopes, a WebAssembly result, or
-        // the earliest expiry time in the map of active timers.
+        // the earliest expiry time in the map of active timers.  The user agent
+        // command channel carries both event-loop tasks (timers, message ports,
+        // render opportunities, script/event automation, beforeunload) and
+        // control messages (viewport, document lifecycle, navigation fetch
+        // completion, shutdown); only tasks are appended to the task queue, and
+        // control messages are handled directly below.
         let timer_expiry = match process.earliest_timer_expiry_wait() {
             Some(wait) => crossbeam_channel::after(wait),
             None => crossbeam_channel::never(),
@@ -3318,7 +3356,24 @@ fn run_content_message_loop(
             recv(cmd_rx) -> cmd => {
                 match cmd {
                     Ok(incoming) => {
-                        process.task_queue.push_back(incoming.payload);
+                        if command_is_event_loop_task(&incoming.payload) {
+                            // An HTML event-loop task from a task source: append it
+                            // to the task queue, where step 2.3-2.8 of the processing
+                            // model picks it up as oldestTask.
+                            process.task_queue.push_back(incoming.payload);
+                        } else {
+                            // Not an event-loop task: a control message driving the
+                            // content process (viewport, document lifecycle, fetch
+                            // completion, shutdown).  Handle it directly rather than
+                            // queueing it as a task.  These handlers run their own
+                            // script-cleanup microtask checkpoints where they run
+                            // script, so no task-path checkpoint is needed here.
+                            match process.handle_command(incoming.payload) {
+                                Ok(true) => {}
+                                Ok(false) => return Ok(()),
+                                Err(error) => error!("content error: {error}"),
+                            }
+                        }
                     }
                     Err(_) => return Ok(()),
                 }
@@ -3341,7 +3396,7 @@ fn run_content_message_loop(
                 }
             }
             recv(timer_expiry) -> _ => {
-                process.queue_expired_timer_tasks();
+                process.run_steps_after_a_timeout();
             }
         }
     }

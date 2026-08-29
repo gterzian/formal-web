@@ -18,6 +18,17 @@ rustup run 1.94.0 cargo build --release --no-default-features --features boa,med
 rustup run 1.94.0 cargo run --release --no-default-features --features boa,media -- wpt dom/nodes/Element-hasAttribute.html
 ```
 
+## Known issues
+
+**A cross-realm native call is entered in the caller's realm.**  When script
+in realm A calls a native function belonging to realm B (e.g.
+`popup.open(...)` through a WindowProxy), the platform objects the call
+creates come from realm A's interface registry: a SecurityError thrown by
+`popup.open` has realm A's `DOMException` as its constructor, where the V8
+backend (and browsers) give realm B's.  Observed through
+`e.constructor === window.DOMException` on the caller side; the callee-realm
+switch performed by the V8 callback machinery has no Boa counterpart.
+
 ## WPT results
 
 Last recorded: `executed=79 unexpected=2` — the same two BYOB failures as
