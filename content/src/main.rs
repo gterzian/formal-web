@@ -20,7 +20,7 @@ pub mod webidl;
 
 use crate::dom::{EventTargetAccess, dispatch_with_path, fire_event, simple_path};
 use crate::html::environment_settings_object::RealmWiring;
-use crate::html::event_loop::{EventLoopTaskSources, command_is_event_loop_task};
+use crate::html::event_loop::{EventLoopTaskSources, Task, TaskQueue};
 use crate::html::timers::MapOfActiveTimers;
 use crate::html::ui_events::{dispatch_trusted_click_event, dispatch_ui_event};
 use crate::html::{
@@ -52,8 +52,7 @@ use js_engine::{EcmascriptHost, ExecutionContext, JsTypes};
 use ipc_messages::content::Command::{
     ClickElement, CompleteDocumentFetch, ContentBootstrap, CreateEmptyDocument,
     CreateLoadedDocument, DestroyDocument, DispatchEvent, EvaluateScript, FailDocumentFetch,
-    NotifyVideoEnded, RunWindowTimer, SetTraversableViewport, SetViewport, Shutdown,
-    UpdateTheRendering,
+    NotifyVideoEnded, SetTraversableViewport, SetViewport, Shutdown, UpdateTheRendering,
 };
 use ipc_messages::content::{
     BeforeUnloadCheckId, ClipboardWriteRequested, ColorScheme as MessageColorScheme, Command,
@@ -463,12 +462,7 @@ pub(crate) struct ContentProcess {
     /// <https://html.spec.whatwg.org/#map-of-active-timers>
     active_timers: Rc<RefCell<MapOfActiveTimers>>,
     /// <https://html.spec.whatwg.org/#task-queue>
-    /// Note: Every task source shares this one queue: `queue_a_task` appends
-    /// to it through `task_sender`, and the event loop processing model's step
-    /// 2.3 takes the oldest task from `task_receiver`.
-    task_sender: crossbeam_channel::Sender<Command>,
-    /// <https://html.spec.whatwg.org/#task-queue>
-    task_receiver: crossbeam_channel::Receiver<Command>,
+    task_queue: TaskQueue,
 }
 
 impl ContentProcess {
@@ -482,7 +476,6 @@ impl ContentProcess {
         trace_sender: Option<TraceSender>,
     ) -> Self {
         let clipboard_cache = new_clipboard_cache();
-        let (task_sender, task_receiver) = crossbeam_channel::unbounded();
         // HR Time "estimated monotonic time of the Unix epoch": simultaneous
         // wall-clock and monotonic readings at process start, so epoch
         // timestamps sent by the user agent (e.g. the rendering opportunity
@@ -519,8 +512,7 @@ impl ContentProcess {
             trace_sender,
             realm_parent: Engine::new(),
             active_timers: Rc::new(RefCell::new(MapOfActiveTimers::default())),
-            task_sender,
-            task_receiver,
+            task_queue: TaskQueue::new(),
         }
     }
 
@@ -1568,6 +1560,53 @@ impl ContentProcess {
         .ok_or_else(|| format!("no element matched selector `{selector}`"))?;
 
         dispatch_trusted_click_event(&mut document.settings, target_node_id)
+    }
+
+    fn evaluate_script_and_send_result(
+        &mut self,
+        traversable_id: NavigableId,
+        request_id: u64,
+        source: String,
+    ) -> Result<(), String> {
+        let (value_json, error) = match self.evaluate_script(traversable_id, source) {
+            Ok(value) => {
+                let value_json = match serde_json::to_string(&value) {
+                    Ok(json) => json,
+                    Err(error) => {
+                        error!("failed to encode script evaluation result: {error}");
+                        return Ok(());
+                    }
+                };
+                (value_json, None)
+            }
+            Err(error) => (String::from("null"), Some(error)),
+        };
+        if let Err(error) =
+            self.event_sender
+                .send(ContentEvent::ScriptEvaluated(ScriptEvaluationResult {
+                    request_id,
+                    value_json,
+                    error,
+                }))
+        {
+            error!("failed to send script evaluation result: {error}");
+        }
+        Ok(())
+    }
+
+    fn click_element_and_send_result(
+        &mut self,
+        traversable_id: NavigableId,
+        request_id: u64,
+        selector: String,
+    ) -> Result<(), String> {
+        let error = self.click_element(traversable_id, selector).err();
+        self.event_sender
+            .send(ContentEvent::ElementClicked(ElementClickResult {
+                request_id,
+                error,
+            }))
+            .map_err(|error| format!("failed to send element click result: {error}"))
     }
 
     fn destroy_document(&mut self, document_id: DocumentId) -> Result<(), String> {
@@ -2945,8 +2984,81 @@ impl ContentProcess {
         result
     }
 
+    /// <https://html.spec.whatwg.org/#event-loop-processing-model>
+    fn run_task(&mut self, oldest_task: Task) -> Result<(), String> {
+        // Step 1: "Let oldestTask and taskStartTime be null."
+        // Step 2: "If the event loop has a task queue with at least one runnable task:"
+        // Step 2.1: "Let taskQueue be one such task queue, chosen in an
+        // implementation-defined manner."
+        // Note: Tasks from every task source share one queue, so there is
+        // nothing to choose between.
+        // Step 2.2: "Set taskStartTime to the unsafe shared current time."
+        // Note: Not implemented: task start time is not recorded.
+        // Step 2.3: "Set oldestTask to the first runnable task in taskQueue, and
+        // remove it from taskQueue."
+        // Note: The receive in `run_content_message_loop` took the task off the
+        // queue and passed it here; runnability is not tracked, so the oldest
+        // task is the oldest queued one.
+        // Step 2.4: "If oldestTask's document is not null, then record task
+        // start time given taskStartTime and oldestTask's document."
+        // Step 2.5: "Set the event loop's currently running task to oldestTask."
+        // Note: Not implemented: task timing is not recorded and the currently
+        // running task is not tracked.
+        // Step 2.6: "Perform oldestTask's steps."
+        let steps = match oldest_task {
+            Task::RunWindowTimer {
+                document_id,
+                timer_id,
+                timer_key,
+                nesting_level,
+            } => {
+                // The timer callback may mutate the document.
+                self.mark_document_dirty(document_id);
+                self.run_window_timer(document_id, timer_id, timer_key, nesting_level)
+            }
+            Task::RunPortMessage { port } => self.handle_run_port_message_task(port),
+            Task::PortRouting { port, kind } => self.handle_port_task(port, kind),
+            Task::PostMessage(request) => self.dispatch_post_message(request),
+            Task::UpdateTheRendering {
+                traversable_id,
+                document_id,
+                frame_timestamp_epoch_ms,
+            } => self.update_the_rendering(traversable_id, document_id, frame_timestamp_epoch_ms),
+            Task::EvaluateScript {
+                traversable_id,
+                request_id,
+                source,
+            } => self.evaluate_script_and_send_result(traversable_id, request_id, source),
+            Task::ClickElement {
+                traversable_id,
+                request_id,
+                selector,
+            } => self.click_element_and_send_result(traversable_id, request_id, selector),
+            Task::DispatchEvent { events } => self.dispatch_events(events),
+            Task::RunBeforeUnload {
+                document_id,
+                check_id,
+                navigation_id,
+            } => self.run_before_unload(document_id, check_id, navigation_id),
+        };
+
+        #[cfg(all(boa_backend, feature = "wasm"))]
+        {
+            // After the task's steps, drain any pending WebAssembly requests and
+            // process completed results from the shared queue.
+            self.drain_all_pending_wasm_requests();
+            self.drain_wasm_results();
+        }
+        steps?;
+
+        // Step 2.7: "Set the event loop's currently running task back to null."
+        // Note: Not implemented, as for step 2.5.
+        // Step 2.8: "Perform a microtask checkpoint."
+        self.perform_microtask_checkpoint()
+    }
+
     fn event_loop_task_sources(&self) -> EventLoopTaskSources {
-        EventLoopTaskSources::new(self.task_sender.clone(), Rc::clone(&self.active_timers))
+        EventLoopTaskSources::new(self.task_queue.clone(), Rc::clone(&self.active_timers))
     }
 
     fn earliest_timer_expiry_wait(&self) -> Option<Duration> {
@@ -2983,17 +3095,15 @@ impl ContentProcess {
         // Step 4.4: "Perform completionSteps."
         // Note: The completion step of the timer initialization steps queues a
         // global task on the timer task source to run the timer's task, so an
-        // expired timer becomes a queued task rather than running here.
-        let task_sources = self.event_loop_task_sources();
+        // expired timer becomes a queued task rather than running here; the
+        // channel the event loop waits on only wakes it for the earliest expiry.
         for timer in expired {
-            if let Err(error) = task_sources.queue_a_task(Command::RunWindowTimer {
+            self.task_queue.queue_a_task(Task::RunWindowTimer {
                 document_id: timer.document_id,
                 timer_id: timer.timer_id,
                 timer_key: timer.timer_key,
                 nesting_level: timer.nesting_level,
-            }) {
-                error!("expired timer {}: {error}", timer.timer_id);
-            }
+            });
         }
 
         // Step 4.5: "Remove global's map of active timers[timerKey]."
@@ -3088,29 +3198,11 @@ impl ContentProcess {
                 request_id,
                 source,
             } => {
-                let (value_json, error) = match self.evaluate_script(traversable_id, source) {
-                    Ok(value) => {
-                        let value_json = match serde_json::to_string(&value) {
-                            Ok(json) => json,
-                            Err(error) => {
-                                error!("failed to encode script evaluation result: {error}");
-                                return Ok(true);
-                            }
-                        };
-                        (value_json, None)
-                    }
-                    Err(error) => (String::from("null"), Some(error)),
-                };
-                if let Err(error) =
-                    self.event_sender
-                        .send(ContentEvent::ScriptEvaluated(ScriptEvaluationResult {
-                            request_id,
-                            value_json,
-                            error,
-                        }))
-                {
-                    error!("failed to send script evaluation result: {error}");
-                }
+                self.task_queue.queue_a_task(Task::EvaluateScript {
+                    traversable_id,
+                    request_id,
+                    source,
+                });
                 Ok(true)
             }
             ClickElement {
@@ -3118,33 +3210,24 @@ impl ContentProcess {
                 request_id,
                 selector,
             } => {
-                let error = self.click_element(traversable_id, selector).err();
-                self.event_sender
-                    .send(ContentEvent::ElementClicked(ElementClickResult {
-                        request_id,
-                        error,
-                    }))
-                    .map_err(|error| format!("failed to send element click result: {error}"))?;
+                self.task_queue.queue_a_task(Task::ClickElement {
+                    traversable_id,
+                    request_id,
+                    selector,
+                });
                 Ok(true)
             }
             DispatchEvent { events } => {
-                self.dispatch_events(events)?;
-                // Flush any traversable documents created during event dispatch.
-                // (The last involved traversable is unknown at this level, so
-                // we skip flushing here — EventTarget dispatch happens through
-                // the DOM and doesn't directly create traversable documents.)
+                self.task_queue.queue_a_task(Task::DispatchEvent { events });
                 Ok(true)
             }
             Command::PostMessage(request) => {
-                self.dispatch_post_message(request)?;
+                self.task_queue.queue_a_task(Task::PostMessage(request));
                 Ok(true)
             }
             Command::PortTask { port, task } => {
-                self.handle_port_task(port, task)?;
-                Ok(true)
-            }
-            Command::RunPortMessageTask { port } => {
-                self.handle_run_port_message_task(port)?;
+                self.task_queue
+                    .queue_a_task(Task::PortRouting { port, kind: task });
                 Ok(true)
             }
             Command::RunBeforeUnload {
@@ -3152,7 +3235,11 @@ impl ContentProcess {
                 check_id,
                 navigation_id,
             } => {
-                self.run_before_unload(document_id, check_id, navigation_id)?;
+                self.task_queue.queue_a_task(Task::RunBeforeUnload {
+                    document_id,
+                    check_id,
+                    navigation_id,
+                });
                 Ok(true)
             }
             UpdateTheRendering {
@@ -3160,18 +3247,11 @@ impl ContentProcess {
                 document_id,
                 frame_timestamp_epoch_ms,
             } => {
-                self.update_the_rendering(traversable_id, document_id, frame_timestamp_epoch_ms)?;
-                Ok(true)
-            }
-            RunWindowTimer {
-                document_id,
-                timer_id,
-                timer_key,
-                nesting_level,
-            } => {
-                // The timer callback may mutate the document.
-                self.mark_document_dirty(document_id);
-                self.run_window_timer(document_id, timer_id, timer_key, nesting_level)?;
+                self.task_queue.queue_a_task(Task::UpdateTheRendering {
+                    traversable_id,
+                    document_id,
+                    frame_timestamp_epoch_ms,
+                });
                 Ok(true)
             }
             CompleteDocumentFetch {
@@ -3301,23 +3381,6 @@ fn run_content_message_loop(
     process: &mut ContentProcess,
 ) -> Result<(), String> {
     loop {
-        // Step 1: "Let oldestTask and taskStartTime be null."
-        // Step 2: "If the event loop has a task queue with at least one runnable task:"
-        // Step 2.1: "Let taskQueue be one such task queue, chosen in an
-        // implementation-defined manner."
-        // Note: Tasks from every task source share one queue — the channel
-        // `queue_a_task` appends to — so there is nothing to choose between.
-        // Step 2.2: "Set taskStartTime to the unsafe shared current time."
-        // Note: Not implemented: task start time is not recorded.
-        // Step 2.3: "Set oldestTask to the first runnable task in taskQueue, and
-        // remove it from taskQueue."
-        // Note: Receiving from the task queue removes the task from it, and
-        // runnability is not tracked, so the oldest task is the oldest queued
-        // one.  A command from the user agent is a task only when it comes from
-        // a task source (`command_is_event_loop_task`); the rest are control
-        // messages driving the content process (viewport, document lifecycle,
-        // fetch completion, shutdown), which are handled where they arrive
-        // because no task source queued them.
         // Step 3: "Let taskEndTime be the unsafe shared current time."
         // Step 4: "If oldestTask is not null:"
         // Step 5: "If this is a window event loop that has no runnable task in
@@ -3325,80 +3388,68 @@ fn run_content_message_loop(
         // Step 6: "If this is a worker event loop:"
         // Note: Steps 3-4 (long task reporting) and step 5 (idle periods) are
         // not implemented, and step 6 does not apply: this event loop is a
-        // window event loop.  With no queued task the receive below is where the
-        // loop waits for the next task-bearing input: a task on the task queue,
-        // a command from the user agent, a WebAssembly result, or the earliest
-        // expiry time in the map of active timers.
+        // window event loop.  The loop waits here for the next input: the oldest
+        // task on the task queue, a command from the user agent, a WebAssembly
+        // result, or the earliest expiry time in the map of active timers.  One
+        // task runs per iteration, so a task that queues another task (a message
+        // event handler posting a message) does not starve the other inputs.
         let timer_expiry = match process.earliest_timer_expiry_wait() {
             Some(wait) => crossbeam_channel::after(wait),
             None => crossbeam_channel::never(),
         };
-        let oldest_task = crossbeam_channel::select! {
-            recv(&process.task_receiver) -> task => match task {
-                Ok(task) => Some(task),
-                Err(_) => return Ok(()),
-            },
-            recv(cmd_rx) -> cmd => {
-                match cmd {
-                    Ok(incoming) => {
-                        if command_is_event_loop_task(&incoming.payload) {
-                            Some(incoming.payload)
-                        } else {
-                            // These handlers run their own script-cleanup
-                            // microtask checkpoints where they run script, so no
-                            // task-path checkpoint (step 2.8) follows.
-                            match process.handle_command(incoming.payload) {
-                                Ok(true) => None,
-                                Ok(false) => return Ok(()),
-                                Err(error) => {
-                                    error!("content error: {error}");
-                                    None
-                                }
-                            }
-                        }
+        let task_queue = process.task_queue.receiver();
+
+        let mut select = crossbeam_channel::Select::new();
+        let task_arm = select.recv(&task_queue);
+        let wasm_arm = select.recv(wasm_rx);
+        let timer_arm = select.recv(&timer_expiry);
+        // Note: The command channel joins the wait only while no task is
+        // queued.  A command's steps run as soon as it is read, so reading one
+        // with tasks already queued would run those steps ahead of them.
+        let command_arm = if process.task_queue.is_empty() {
+            Some(select.recv(cmd_rx))
+        } else {
+            None
+        };
+
+        let operation = select.select();
+        let arm = operation.index();
+        if arm == task_arm {
+            match operation.recv(&task_queue) {
+                Ok(oldest_task) => {
+                    if let Err(error) = process.run_task(oldest_task) {
+                        error!("content error: {error}");
                     }
-                    Err(_) => return Ok(()),
                 }
-            },
-            recv(wasm_rx) -> _ => {
-                process.drain_all_pending_wasm_requests();
-                process.drain_wasm_results();
-
-                // <https://html.spec.whatwg.org/#perform-a-microtask-checkpoint>
-                // Wasm compilation results resolve promises, so run a microtask
-                // checkpoint after they are processed.
-                if let Err(error) = process.perform_microtask_checkpoint() {
-                    error!("microtask checkpoint after wasm failed: {error}");
-                }
-                None
-            },
-            recv(timer_expiry) -> _ => {
-                process.run_steps_after_a_timeout();
-                None
-            },
-        };
-        let Some(oldest_task) = oldest_task else {
-            continue;
-        };
-
-        // Step 2.4: "If oldestTask's document is not null, then record task
-        // start time given taskStartTime and oldestTask's document."
-        // Step 2.5: "Set the event loop's currently running task to oldestTask."
-        // Note: Not implemented: task timing is not recorded and the currently
-        // running task is not tracked.
-        // Step 2.6: "Perform oldestTask's steps."
-        match process.handle_command(oldest_task) {
-            Ok(true) => {
-                // Step 2.7: "Set the event loop's currently running task back to null."
-                // Note: Not implemented, as for step 2.5.
-                // Step 2.8: "Perform a microtask checkpoint."
-                if let Err(error) = process.perform_microtask_checkpoint() {
-                    error!("microtask checkpoint after task failed: {error}");
-                }
+                Err(_) => return Ok(()),
             }
-            Ok(false) => return Ok(()),
-            Err(error) => {
-                error!("content error: {error}");
+        } else if arm == wasm_arm {
+            match operation.recv(wasm_rx) {
+                Ok(()) => {
+                    process.drain_all_pending_wasm_requests();
+                    process.drain_wasm_results();
+
+                    // <https://html.spec.whatwg.org/#perform-a-microtask-checkpoint>
+                    // Wasm compilation results resolve promises, so run a
+                    // microtask checkpoint after they are processed.
+                    if let Err(error) = process.perform_microtask_checkpoint() {
+                        error!("microtask checkpoint after wasm failed: {error}");
+                    }
+                }
+                Err(_) => return Ok(()),
+            }
+        } else if arm == timer_arm {
+            if operation.recv(&timer_expiry).is_ok() {
+                process.run_steps_after_a_timeout();
+            }
+        } else if Some(arm) == command_arm {
+            match operation.recv(cmd_rx) {
+                Ok(incoming) => match process.handle_command(incoming.payload) {
+                    Ok(true) => {}
+                    Ok(false) => return Ok(()),
+                    Err(error) => error!("content error: {error}"),
+                },
+                Err(_) => return Ok(()),
             }
         }
     }

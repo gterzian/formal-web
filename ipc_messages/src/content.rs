@@ -808,9 +808,11 @@ pub enum WebviewProviderMessage {
     },
 }
 
-/// A task the content process's event loop runs: the commands the user agent
-/// sends it, plus the tasks the content process queues on its own event loop
-/// (`RunWindowTimer`, `RunPortMessageTask`).
+/// A message the user agent (or the net process) sends the content process to
+/// drive it.  A command is not an event-loop task: when the spec step behind a
+/// command says to queue a task on the content process's event loop, the
+/// content process queues the corresponding `Task` while handling the command
+/// (see `content/src/html/event_loop.rs`).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum Command {
     SetViewport(ViewportSnapshot),
@@ -864,17 +866,6 @@ pub enum Command {
         /// time").
         frame_timestamp_epoch_ms: f64,
     },
-    /// The task that runs one expired window timer's steps (step 9 of the
-    /// <https://html.spec.whatwg.org/#timer-initialisation-steps>), queued by
-    /// the content process on the
-    /// <https://html.spec.whatwg.org/#timer-task-source> when the timer's
-    /// expiry time in the global's map of active timers passes.
-    RunWindowTimer {
-        document_id: DocumentId,
-        timer_id: u32,
-        timer_key: WindowTimerKey,
-        nesting_level: u32,
-    },
     CompleteDocumentFetch {
         handler_id: DocumentFetchId,
         response: FetchResponse,
@@ -911,23 +902,15 @@ pub enum Command {
     /// <https://html.spec.whatwg.org/#window-post-message-steps>
     PostMessage(PostMessageRequest),
     /// The user-agent half of the port message routing (RouteMessage in the
-    /// MessagePortExtraFG TLA model): a routing item processed by the user
-    /// agent is delivered to the port's owning event loop as a queued task.
-    /// `NewTask` is the message task for a routed "Single" item; `Buffer` is
-    /// the transfer-completion task carrying the messages that were buffered
-    /// while the port was in transit.
+    /// MessagePortExtraFG TLA model): the routing item the user agent
+    /// processed, sent to the port's owning event loop, which queues it as a
+    /// task.  `NewTask` is the message task for a routed "Single" item;
+    /// `Buffer` is the transfer-completion task carrying the messages that
+    /// were buffered while the port was in transit.
     /// <https://html.spec.whatwg.org/#message-port-post-message-steps>
     PortTask {
         port: PortId,
         task: PortTaskKind,
-    },
-    /// The task slot for firing one queued message event on a port whose
-    /// message queue is enabled (the message task of the
-    /// <https://html.spec.whatwg.org/#port-message-queue>).  Each queued
-    /// message fires in its own task, so the event loop can interleave other
-    /// tasks between messages.
-    RunPortMessageTask {
-        port: PortId,
     },
     Shutdown,
 }

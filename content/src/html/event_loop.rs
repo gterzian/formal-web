@@ -1,75 +1,160 @@
-//! The content process's half of the HTML event loop: the task queue sender
-//! handed to global scopes, plus the facade over the map of active timers
-//! owned by `super::timers`.  The queue itself is the channel behind that
-//! sender: `queue_a_task` appends to it and the content main loop takes the
-//! oldest task from it.
+//! The content process's half of the HTML event loop: the task queue every
+//! task source appends to, the tasks it holds, and the facade over the map of
+//! active timers owned by `super::timers`.
+//!
+//! The user agent reaches this event loop over IPC with a
+//! `ipc_messages::content::Command`, which is an ad hoc message and not a task.
+//! Where the spec step behind a command says to queue a task on this event
+//! loop, the content process queues the matching [`Task`] while handling the
+//! command, so everything that runs as a task — whether it originated here or
+//! in the user agent — goes through one queue and one set of processing-model
+//! steps (`ContentProcess::run_task`).
 
 use std::cell::RefCell;
 use std::rc::Rc;
 
-use crossbeam_channel::Sender;
-use ipc_messages::content::{Command, DocumentId, WindowTimerKey};
+use crossbeam_channel::{Receiver, Sender, unbounded};
+use ipc_messages::content::{
+    BeforeUnloadCheckId, DispatchEventEntry, DocumentId, NavigableId, NavigationId, PortId,
+    PortTaskKind, WindowTimerKey,
+};
+use ipc_messages::safe_passing_of_structured_data::PostMessageRequest;
+use log::error;
 
 use super::timers::MapOfActiveTimers;
 
-/// Whether this command should be run as an HTML event-loop task: taken from
-/// the task queue as oldestTask and run via step 2 of the event loop
-/// processing model ("perform a task", then a microtask checkpoint).  These are
-/// commands that execute page work — timers, message ports, render
-/// opportunities, script/event automation, beforeunload.  Anything else is a
-/// control message that drives the content process directly (viewport, document
-/// lifecycle, navigation fetch completion, shutdown) and is handled without the
-/// task-queue ceremony.
-/// <https://html.spec.whatwg.org/#event-loop-processing-model>
-pub(crate) fn command_is_event_loop_task(command: &Command) -> bool {
-    matches!(
-        command,
-        Command::RunWindowTimer { .. }
-            | Command::RunPortMessageTask { .. }
-            | Command::PortTask { .. }
-            | Command::PostMessage(_)
-            | Command::UpdateTheRendering { .. }
-            | Command::EvaluateScript { .. }
-            | Command::ClickElement { .. }
-            | Command::DispatchEvent { .. }
-            | Command::RunBeforeUnload { .. }
-    )
+/// <https://html.spec.whatwg.org/#concept-task>
+pub(crate) enum Task {
+    /// The task that runs one expired window timer's steps (step 9 of the
+    /// <https://html.spec.whatwg.org/#timer-initialisation-steps>), queued on
+    /// the <https://html.spec.whatwg.org/#timer-task-source> when the timer's
+    /// expiry time in the global's map of active timers passes.
+    RunWindowTimer {
+        document_id: DocumentId,
+        timer_id: u32,
+        timer_key: WindowTimerKey,
+        nesting_level: u32,
+    },
+
+    /// The message task for one message on a port whose message queue is
+    /// enabled.  Each queued message fires in its own task, so the event loop
+    /// can interleave other tasks between messages.
+    /// <https://html.spec.whatwg.org/#port-message-queue>
+    RunPortMessage { port: PortId },
+
+    /// The task the user agent's port message routing hands to the port's
+    /// owning event loop: `NewTask` runs the message task for a routed
+    /// "Single" item, `Buffer` appends the messages that were buffered while
+    /// the port was in transit.
+    /// <https://html.spec.whatwg.org/#message-port-post-message-steps>
+    PortRouting { port: PortId, kind: PortTaskKind },
+
+    /// The task that fires the message event at the target window (step 8 and
+    /// its substeps), queued once the source content process has run steps
+    /// 1-7 and the user agent has routed the message here.
+    /// <https://html.spec.whatwg.org/#window-post-message-steps>
+    PostMessage(PostMessageRequest),
+
+    /// <https://html.spec.whatwg.org/#update-the-rendering>
+    UpdateTheRendering {
+        traversable_id: NavigableId,
+        document_id: DocumentId,
+        /// Milliseconds since the Unix epoch on the browser-wide monotonic
+        /// clock, captured when the user agent noted the rendering
+        /// opportunity (the HTML event loop's "last render opportunity
+        /// time").
+        frame_timestamp_epoch_ms: f64,
+    },
+
+    /// The script a WebDriver or CDP client asked to evaluate in the
+    /// traversable's active document.
+    EvaluateScript {
+        traversable_id: NavigableId,
+        request_id: u64,
+        source: String,
+    },
+
+    /// The click a WebDriver or CDP client asked to perform on the element
+    /// matching `selector`.
+    ClickElement {
+        traversable_id: NavigableId,
+        request_id: u64,
+        selector: String,
+    },
+
+    /// The input events the embedder delivered for this document, dispatched
+    /// as trusted events.
+    DispatchEvent { events: Vec<DispatchEventEntry> },
+
+    /// <https://html.spec.whatwg.org/#steps-to-fire-beforeunload>
+    RunBeforeUnload {
+        document_id: DocumentId,
+        check_id: BeforeUnloadCheckId,
+        navigation_id: NavigationId,
+    },
+}
+
+/// <https://html.spec.whatwg.org/#task-queue>
+/// Note: This one queue is shared by every task source: the handle the event
+/// loop waits on and the handles global scopes hold through
+/// [`EventLoopTaskSources`] are clones of the same channel.
+#[derive(Clone)]
+pub(crate) struct TaskQueue {
+    sender: Sender<Task>,
+    receiver: Receiver<Task>,
+}
+
+impl TaskQueue {
+    pub(crate) fn new() -> Self {
+        let (sender, receiver) = unbounded();
+        Self { sender, receiver }
+    }
+
+    /// <https://html.spec.whatwg.org/#queue-a-task>
+    pub(crate) fn queue_a_task(&self, task: Task) {
+        // Steps 1-7: "If event loop was not given, set event loop to the implied
+        // event loop." ... "Set task's script evaluation environment settings
+        // object set to an empty set."
+        // Note: The caller builds the task as the [`Task`] whose `run_task` arm
+        // is the task's steps; the event loop is this content process's, and the
+        // task's source, document and script evaluation environment settings
+        // object set are not tracked.
+        // Step 8: "Let queue be the task queue to which source is associated on event loop."
+        // Step 9: "Append task to queue."
+        if let Err(error) = self.sender.send(task) {
+            error!("failed to queue a task on the event loop: {error}");
+        }
+    }
+
+    pub(crate) fn receiver(&self) -> Receiver<Task> {
+        self.receiver.clone()
+    }
+
+    pub(crate) fn is_empty(&self) -> bool {
+        self.receiver.is_empty()
+    }
 }
 
 /// <https://html.spec.whatwg.org/#task-source>
 #[derive(Clone)]
 pub(crate) struct EventLoopTaskSources {
-    task_sender: Sender<Command>,
+    task_queue: TaskQueue,
     active_timers: Rc<RefCell<MapOfActiveTimers>>,
 }
 
 impl EventLoopTaskSources {
     pub(crate) fn new(
-        task_sender: Sender<Command>,
+        task_queue: TaskQueue,
         active_timers: Rc<RefCell<MapOfActiveTimers>>,
     ) -> Self {
         Self {
-            task_sender,
+            task_queue,
             active_timers,
         }
     }
 
-    /// <https://html.spec.whatwg.org/#queue-a-task>
-    pub(crate) fn queue_a_task(&self, task: Command) -> Result<(), String> {
-        // Steps 1-7: "If event loop was not given, set event loop to the implied
-        // event loop." ... "Set task's script evaluation environment settings
-        // object set to an empty set."
-        // Note: The caller builds the task as the `Command` whose
-        // `handle_command_inner` arm is the task's steps; the event loop is this
-        // content process's, and the task's source, document and script
-        // evaluation environment settings object set are not tracked.
-        // Step 8: "Let queue be the task queue to which source is associated on event loop."
-        // Step 9: "Append task to queue."
-        // Note: Every task source shares one queue, the channel this sender
-        // appends to, from which the content main loop takes the oldest task.
-        self.task_sender
-            .send(task)
-            .map_err(|error| format!("failed to queue a task on the event loop: {error}"))
+    pub(crate) fn task_queue(&self) -> TaskQueue {
+        self.task_queue.clone()
     }
 
     /// <https://html.spec.whatwg.org/#run-steps-after-a-timeout>

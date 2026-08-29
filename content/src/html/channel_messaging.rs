@@ -17,7 +17,7 @@ use std::collections::VecDeque;
 
 use ipc::IpcSender;
 use ipc_messages::content::{
-    Command, Event as ContentEvent, EventLoopId, PortId, PortTaskKind, TransferState,
+    Event as ContentEvent, EventLoopId, PortId, PortTaskKind, TransferState,
 };
 use ipc_messages::safe_passing_of_structured_data::PortMessagePayload;
 use js_engine::ExecutionContext;
@@ -25,7 +25,7 @@ use js_engine::gc::{GcCell, gc_cell_new};
 use js_engine::gc_struct;
 use log::warn;
 
-use crate::html::event_loop::EventLoopTaskSources;
+use crate::html::event_loop::{Task, TaskQueue};
 use crate::html::messageport::MessagePort;
 use crate::js::Types;
 
@@ -104,9 +104,9 @@ pub(crate) struct ChannelMessaging {
     /// The records of the ports managed by this event loop.
     ports: GcCell<Vec<PortRecord>>,
 
-    /// <https://html.spec.whatwg.org/#task-source>
+    /// <https://html.spec.whatwg.org/#task-queue>
     #[ignore_trace]
-    task_sources: EventLoopTaskSources,
+    task_queue: TaskQueue,
 }
 
 impl ChannelMessaging {
@@ -114,13 +114,13 @@ impl ChannelMessaging {
     pub(crate) fn new(
         event_loop_id: EventLoopId,
         trace_sender: Option<TraceSender>,
-        task_sources: EventLoopTaskSources,
+        task_queue: TaskQueue,
         ec: &mut dyn ExecutionContext<Types>,
     ) -> Self {
         Self {
             event_loop_id,
             trace_sender,
-            task_sources,
+            task_queue,
             ports: gc_cell_new(Vec::new(), ec),
         }
     }
@@ -676,7 +676,8 @@ impl ChannelMessaging {
         if !pending {
             return Ok(());
         }
-        self.task_sources
-            .queue_a_task(Command::RunPortMessageTask { port: port_id })
+        self.task_queue
+            .queue_a_task(Task::RunPortMessage { port: port_id });
+        Ok(())
     }
 }

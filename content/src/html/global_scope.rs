@@ -428,7 +428,7 @@ impl GlobalScope {
         let created = ChannelMessaging::new(
             event_loop_id,
             self.trace_sender(),
-            self.task_sources().ok()?,
+            self.task_sources().ok()?.task_queue(),
             ec,
         );
         self.channel_messaging.set(Some(created.clone()), ec);
