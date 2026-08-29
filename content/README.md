@@ -66,24 +66,26 @@ Types that currently use `&mut self` for mutation but could use `GcCell` + `&sel
 
 The HTML event loop processing model runs on the content process main thread
 (`run_content_message_loop` in `content/src/main.rs`), and every task source
-feeds one queue of `ipc_messages::content::Command`.  Content-initiated work
-(window timer expiry, port message tasks) must therefore be **queued as a
-`Command`**, never run by calling its handler directly: the dispatcher wraps
-each task with the bookkeeping the model requires (marking the task's document
-dirty, the microtask checkpoint after the task's steps), and an inline call
-silently skips it.  `content/src/html/event_loop.rs` owns the queue handle
-handed to global scopes (`EventLoopTaskSources`); the map of active timers the
-main loop waits on (`MapOfActiveTimers`) lives in
-`content/src/html/timers.rs`, exposed to the event loop through
-`EventLoopTaskSources`.
+feeds one queue of `ipc_messages::content::Command` — the channel that
+`EventLoopTaskSources::queue_a_task` appends to and the main loop takes the
+oldest task from.  Content-initiated work (window timer expiry, port message
+tasks) must therefore be **queued as a `Command`**, never run by calling its
+handler directly: the dispatcher wraps each task with the bookkeeping the model
+requires (marking the task's document dirty, the microtask checkpoint after the
+task's steps), and an inline call silently skips it.
+`content/src/html/event_loop.rs` owns the queue's sender handed to global
+scopes (`EventLoopTaskSources`); the map of active timers the main loop waits on
+(`MapOfActiveTimers`) lives in `content/src/html/timers.rs`, exposed to the
+event loop through `EventLoopTaskSources`.
 
 Not every `Command` the user agent sends is an event-loop task.  The command
 channel carries both tasks (timers, message ports, render opportunities,
 script/event automation, beforeunload) and control messages (viewport,
-document lifecycle, navigation fetch completion, shutdown).  `run_content_message_loop`
-queues only event-loop tasks on the task queue; control messages are handled
-directly, outside the task-queue ceremony, via `command_is_event_loop_task`
-in `content/src/html/event_loop.rs`.
+document lifecycle, navigation fetch completion, shutdown).  A task runs
+through the processing model's step 2 (perform the task's steps, then a
+microtask checkpoint); a control message is handled directly, outside that
+ceremony.  `command_is_event_loop_task` in `content/src/html/event_loop.rs`
+is what tells the two apart.
 
 ## Known issues
 

@@ -1,6 +1,8 @@
 //! The content process's half of the HTML event loop: the task queue sender
 //! handed to global scopes, plus the facade over the map of active timers
-//! owned by `super::timers`.
+//! owned by `super::timers`.  The queue itself is the channel behind that
+//! sender: `queue_a_task` appends to it and the content main loop takes the
+//! oldest task from it.
 
 use std::cell::RefCell;
 use std::rc::Rc;
@@ -10,7 +12,7 @@ use ipc_messages::content::{Command, DocumentId, WindowTimerKey};
 
 use super::timers::MapOfActiveTimers;
 
-/// Whether this command should be run as an HTML event-loop task: popped from
+/// Whether this command should be run as an HTML event-loop task: taken from
 /// the task queue as oldestTask and run via step 2 of the event loop
 /// processing model ("perform a task", then a microtask checkpoint).  These are
 /// commands that execute page work — timers, message ports, render
@@ -63,8 +65,8 @@ impl EventLoopTaskSources {
         // evaluation environment settings object set are not tracked.
         // Step 8: "Let queue be the task queue to which source is associated on event loop."
         // Step 9: "Append task to queue."
-        // Note: Every task source shares one queue, owned by the content main
-        // loop, which appends what it receives here.
+        // Note: Every task source shares one queue, the channel this sender
+        // appends to, from which the content main loop takes the oldest task.
         self.task_sender
             .send(task)
             .map_err(|error| format!("failed to queue a task on the event loop: {error}"))

@@ -70,7 +70,7 @@ use ipc_messages::safe_passing_of_structured_data::PostMessageRequest;
 use log::{debug, error, info, warn};
 use std::{
     cell::RefCell,
-    collections::{HashMap, HashSet, VecDeque},
+    collections::{HashMap, HashSet},
     env,
     rc::Rc,
     sync::{
@@ -463,10 +463,11 @@ pub(crate) struct ContentProcess {
     /// <https://html.spec.whatwg.org/#map-of-active-timers>
     active_timers: Rc<RefCell<MapOfActiveTimers>>,
     /// <https://html.spec.whatwg.org/#task-queue>
-    task_queue: VecDeque<Command>,
-    /// <https://html.spec.whatwg.org/#queue-a-task>
+    /// Note: Every task source shares this one queue: `queue_a_task` appends
+    /// to it through `task_sender`, and the event loop processing model's step
+    /// 2.3 takes the oldest task from `task_receiver`.
     task_sender: crossbeam_channel::Sender<Command>,
-    /// <https://html.spec.whatwg.org/#queue-a-task>
+    /// <https://html.spec.whatwg.org/#task-queue>
     task_receiver: crossbeam_channel::Receiver<Command>,
 }
 
@@ -518,7 +519,6 @@ impl ContentProcess {
             trace_sender,
             realm_parent: Engine::new(),
             active_timers: Rc::new(RefCell::new(MapOfActiveTimers::default())),
-            task_queue: VecDeque::new(),
             task_sender,
             task_receiver,
         }
@@ -2984,13 +2984,16 @@ impl ContentProcess {
         // Note: The completion step of the timer initialization steps queues a
         // global task on the timer task source to run the timer's task, so an
         // expired timer becomes a queued task rather than running here.
+        let task_sources = self.event_loop_task_sources();
         for timer in expired {
-            self.task_queue.push_back(Command::RunWindowTimer {
+            if let Err(error) = task_sources.queue_a_task(Command::RunWindowTimer {
                 document_id: timer.document_id,
                 timer_id: timer.timer_id,
                 timer_key: timer.timer_key,
                 nesting_level: timer.nesting_level,
-            });
+            }) {
+                error!("expired timer {}: {error}", timer.timer_id);
+            }
         }
 
         // Step 4.5: "Remove global's map of active timers[timerKey]."
@@ -3302,36 +3305,19 @@ fn run_content_message_loop(
         // Step 2: "If the event loop has a task queue with at least one runnable task:"
         // Step 2.1: "Let taskQueue be one such task queue, chosen in an
         // implementation-defined manner."
-        // Note: Tasks from every task source share one queue, so there is
-        // nothing to choose between.
+        // Note: Tasks from every task source share one queue — the channel
+        // `queue_a_task` appends to — so there is nothing to choose between.
         // Step 2.2: "Set taskStartTime to the unsafe shared current time."
         // Note: Not implemented: task start time is not recorded.
         // Step 2.3: "Set oldestTask to the first runnable task in taskQueue, and
         // remove it from taskQueue."
-        if let Some(oldest_task) = process.task_queue.pop_front() {
-            // Step 2.4: "If oldestTask's document is not null, then record task
-            // start time given taskStartTime and oldestTask's document."
-            // Step 2.5: "Set the event loop's currently running task to oldestTask."
-            // Note: Not implemented: task timing is not recorded and the
-            // currently running task is not tracked.
-            // Step 2.6: "Perform oldestTask's steps."
-            match process.handle_command(oldest_task) {
-                Ok(true) => {
-                    // Step 2.7: "Set the event loop's currently running task back to null."
-                    // Note: Not implemented, as for step 2.5.
-                    // Step 2.8: "Perform a microtask checkpoint."
-                    if let Err(error) = process.perform_microtask_checkpoint() {
-                        error!("microtask checkpoint after task failed: {error}");
-                    }
-                }
-                Ok(false) => return Ok(()),
-                Err(error) => {
-                    error!("content error: {error}");
-                }
-            }
-            continue;
-        }
-
+        // Note: Receiving from the task queue removes the task from it, and
+        // runnability is not tracked, so the oldest task is the oldest queued
+        // one.  A command from the user agent is a task only when it comes from
+        // a task source (`command_is_event_loop_task`); the rest are control
+        // messages driving the content process (viewport, document lifecycle,
+        // fetch completion, shutdown), which are handled where they arrive
+        // because no task source queued them.
         // Step 3: "Let taskEndTime be the unsafe shared current time."
         // Step 4: "If oldestTask is not null:"
         // Step 5: "If this is a window event loop that has no runnable task in
@@ -3339,51 +3325,41 @@ fn run_content_message_loop(
         // Step 6: "If this is a worker event loop:"
         // Note: Steps 3-4 (long task reporting) and step 5 (idle periods) are
         // not implemented, and step 6 does not apply: this event loop is a
-        // window event loop.  With no runnable task the loop instead waits for
-        // the next task-bearing input: a command from the user agent, a task
-        // queued by this process's own global scopes, a WebAssembly result, or
-        // the earliest expiry time in the map of active timers.  The user agent
-        // command channel carries both event-loop tasks (timers, message ports,
-        // render opportunities, script/event automation, beforeunload) and
-        // control messages (viewport, document lifecycle, navigation fetch
-        // completion, shutdown); only tasks are appended to the task queue, and
-        // control messages are handled directly below.
+        // window event loop.  With no queued task the receive below is where the
+        // loop waits for the next task-bearing input: a task on the task queue,
+        // a command from the user agent, a WebAssembly result, or the earliest
+        // expiry time in the map of active timers.
         let timer_expiry = match process.earliest_timer_expiry_wait() {
             Some(wait) => crossbeam_channel::after(wait),
             None => crossbeam_channel::never(),
         };
-        crossbeam_channel::select! {
+        let oldest_task = crossbeam_channel::select! {
+            recv(&process.task_receiver) -> task => match task {
+                Ok(task) => Some(task),
+                Err(_) => return Ok(()),
+            },
             recv(cmd_rx) -> cmd => {
                 match cmd {
                     Ok(incoming) => {
                         if command_is_event_loop_task(&incoming.payload) {
-                            // An HTML event-loop task from a task source: append it
-                            // to the task queue, where step 2.3-2.8 of the processing
-                            // model picks it up as oldestTask.
-                            process.task_queue.push_back(incoming.payload);
+                            Some(incoming.payload)
                         } else {
-                            // Not an event-loop task: a control message driving the
-                            // content process (viewport, document lifecycle, fetch
-                            // completion, shutdown).  Handle it directly rather than
-                            // queueing it as a task.  These handlers run their own
-                            // script-cleanup microtask checkpoints where they run
-                            // script, so no task-path checkpoint is needed here.
+                            // These handlers run their own script-cleanup
+                            // microtask checkpoints where they run script, so no
+                            // task-path checkpoint (step 2.8) follows.
                             match process.handle_command(incoming.payload) {
-                                Ok(true) => {}
+                                Ok(true) => None,
                                 Ok(false) => return Ok(()),
-                                Err(error) => error!("content error: {error}"),
+                                Err(error) => {
+                                    error!("content error: {error}");
+                                    None
+                                }
                             }
                         }
                     }
                     Err(_) => return Ok(()),
                 }
-            }
-            recv(&process.task_receiver) -> task => {
-                match task {
-                    Ok(command) => process.task_queue.push_back(command),
-                    Err(_) => return Ok(()),
-                }
-            }
+            },
             recv(wasm_rx) -> _ => {
                 process.drain_all_pending_wasm_requests();
                 process.drain_wasm_results();
@@ -3394,9 +3370,35 @@ fn run_content_message_loop(
                 if let Err(error) = process.perform_microtask_checkpoint() {
                     error!("microtask checkpoint after wasm failed: {error}");
                 }
-            }
+                None
+            },
             recv(timer_expiry) -> _ => {
                 process.run_steps_after_a_timeout();
+                None
+            },
+        };
+        let Some(oldest_task) = oldest_task else {
+            continue;
+        };
+
+        // Step 2.4: "If oldestTask's document is not null, then record task
+        // start time given taskStartTime and oldestTask's document."
+        // Step 2.5: "Set the event loop's currently running task to oldestTask."
+        // Note: Not implemented: task timing is not recorded and the currently
+        // running task is not tracked.
+        // Step 2.6: "Perform oldestTask's steps."
+        match process.handle_command(oldest_task) {
+            Ok(true) => {
+                // Step 2.7: "Set the event loop's currently running task back to null."
+                // Note: Not implemented, as for step 2.5.
+                // Step 2.8: "Perform a microtask checkpoint."
+                if let Err(error) = process.perform_microtask_checkpoint() {
+                    error!("microtask checkpoint after task failed: {error}");
+                }
+            }
+            Ok(false) => return Ok(()),
+            Err(error) => {
+                error!("content error: {error}");
             }
         }
     }
