@@ -275,21 +275,6 @@ pub struct RegisterMediaPipeline {
     pub video_paint_id: crate::media::VideoPaintId,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct WindowTimerRequest {
-    pub document_id: DocumentId,
-    pub timer_id: u32,
-    pub timer_key: WindowTimerKey,
-    pub timeout_ms: u32,
-    pub nesting_level: u32,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct WindowTimerClearRequest {
-    pub document_id: DocumentId,
-    pub timer_key: WindowTimerKey,
-}
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(transparent)]
 pub struct EmbedSiteId(pub u64);
@@ -823,6 +808,11 @@ pub enum WebviewProviderMessage {
     },
 }
 
+/// A message the user agent (or the net process) sends the content process to
+/// drive it.  A command is not an event-loop task: when the spec step behind a
+/// command says to queue a task on the content process's event loop, the
+/// content process queues the corresponding `Task` while handling the command
+/// (see `content/src/html/event_loop.rs`).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum Command {
     SetViewport(ViewportSnapshot),
@@ -876,12 +866,6 @@ pub enum Command {
         /// time").
         frame_timestamp_epoch_ms: f64,
     },
-    RunWindowTimer {
-        document_id: DocumentId,
-        timer_id: u32,
-        timer_key: WindowTimerKey,
-        nesting_level: u32,
-    },
     CompleteDocumentFetch {
         handler_id: DocumentFetchId,
         response: FetchResponse,
@@ -918,23 +902,15 @@ pub enum Command {
     /// <https://html.spec.whatwg.org/#window-post-message-steps>
     PostMessage(PostMessageRequest),
     /// The user-agent half of the port message routing (RouteMessage in the
-    /// MessagePortExtraFG TLA model): a routing item processed by the user
-    /// agent is delivered to the port's owning event loop as a queued task.
-    /// `NewTask` is the message task for a routed "Single" item; `Buffer` is
-    /// the transfer-completion task carrying the messages that were buffered
-    /// while the port was in transit.
+    /// MessagePortExtraFG TLA model): the routing item the user agent
+    /// processed, sent to the port's owning event loop, which queues it as a
+    /// task.  `NewTask` is the message task for a routed "Single" item;
+    /// `Buffer` is the transfer-completion task carrying the messages that
+    /// were buffered while the port was in transit.
     /// <https://html.spec.whatwg.org/#message-port-post-message-steps>
     PortTask {
         port: PortId,
         task: PortTaskKind,
-    },
-    /// The task slot for firing one queued message event on a port whose
-    /// message queue is enabled (the message task of the
-    /// <https://html.spec.whatwg.org/#port-message-queue>).  Each queued
-    /// message fires in its own task, so the event loop can interleave other
-    /// tasks between messages.
-    RunPortMessageTask {
-        port: PortId,
     },
     Shutdown,
 }
@@ -973,8 +949,6 @@ pub enum TransferState {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum Event {
-    WindowTimerRequested(WindowTimerRequest),
-    WindowTimerCleared(WindowTimerClearRequest),
     NavigationRequested(NavigateRequest),
     BeforeUnloadCompleted(BeforeUnloadResult),
     FinalizeNavigation(FinalizeNavigation),
@@ -984,7 +958,6 @@ pub enum Event {
     /// A request from content to write text to the system clipboard.
     /// This is fire-and-forget — no reply is sent.
     ClipboardWriteRequested(ClipboardWriteRequested),
-    CommandCompleted,
     /// Content requests a rendering opportunity, e.g. after a network fetch completes.
     RenderingOpRequested(NavigableId),
     RegisterMediaPipeline(RegisterMediaPipeline),
@@ -1039,13 +1012,6 @@ pub enum Event {
     /// transfer at the user agent.
     PortTransferCompleted {
         tgt: PortId,
-    },
-    /// A message was queued on an enabled port message queue and needs a
-    /// task slot to fire its message event; the event loop bridge replies
-    /// with a `RunPortMessageTask` command.
-    /// <https://html.spec.whatwg.org/#port-message-queue>
-    PortMessageTaskPending {
-        port: PortId,
     },
     /// The parsed title of a top-level document, reported after parsing so
     /// the embedder can label the corresponding tab and window.

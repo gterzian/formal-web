@@ -17,7 +17,8 @@ use url::Url;
 use crate::{
     ContentDocument, ContentProcess, EMPTY_HTML_DOCUMENT, NavigableContainerState,
     dom::event::EventTargetAccess, dom::fire_event, html::HTMLElement,
-    html::create_a_new_browsing_context_and_document, html::navigate, js::Types, webidl::Callback,
+    html::create_a_new_browsing_context_and_document,
+    html::environment_settings_object::RealmWiring, html::navigate, js::Types, webidl::Callback,
 };
 
 /// <https://html.spec.whatwg.org/#htmliframeelement>
@@ -416,6 +417,7 @@ fn create_a_new_child_navigable(
         .map(|doc| doc.settings.origin.clone());
     let content_frame_id = process.allocate_child_frame_id();
     let event_sender = process.event_sender.clone();
+    let task_sources = process.event_loop_task_sources();
     let parent_engine = &mut process
         .documents
         .get_mut(&parent_document_id)
@@ -425,10 +427,13 @@ fn create_a_new_child_navigable(
     let (global_object, window, settings, new_document) =
         create_a_new_browsing_context_and_document(
             Some(parent_engine),
-            &event_sender,
-            content_navigable,
-            new_document_id,
             parent_origin,
+            RealmWiring {
+                source_navigable_id: content_navigable,
+                document_id: new_document_id,
+                event_sender: event_sender.clone(),
+                task_sources,
+            },
         )?;
 
     // Register the document in ContentProcess immediately. A fresh dirty

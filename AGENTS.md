@@ -507,6 +507,14 @@ your responsibility until it passes.  Dismissing failures as "not yet
 implemented" is a form of speculation: you are guessing that the
 feature never worked, instead of checking whether it did.
 
+Git writes are forbidden here, so "revert and re-run" is not available.
+Establish the baseline instead by (1) reading the committed version of
+the exact code path the test exercises — `git show HEAD:<path>` is a
+read of history and is allowed — and confirming whether the changeset
+touched it, and (2) reproducing the failing behavior directly through
+the CDP browser tools on a minimal page, so the observed cause is a
+fact rather than an inference from the test result.  Report both.
+
 # Spec Fidelity
 
 - Describe current architecture and behavior; keep task history out of repository docs.

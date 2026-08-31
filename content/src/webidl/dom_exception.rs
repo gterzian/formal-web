@@ -27,6 +27,11 @@ pub(crate) fn syntax_error_value(ec: &mut dyn ExecutionContext<Types>) -> JsValu
     dom_exception_value(String::new(), String::from("SyntaxError"), ec)
 }
 
+/// <https://webidl.spec.whatwg.org/#securityerror>
+pub(crate) fn security_error_value(ec: &mut dyn ExecutionContext<Types>) -> JsValue {
+    dom_exception_value(String::new(), String::from("SecurityError"), ec)
+}
+
 /// <https://webidl.spec.whatwg.org/#datacloneerror>
 pub(crate) fn data_clone_error_value(ec: &mut dyn ExecutionContext<Types>) -> JsValue {
     dom_exception_value(

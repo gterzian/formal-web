@@ -2,17 +2,17 @@ mod channel_messaging;
 mod event_loop;
 mod fetch;
 pub(crate) mod ipc_manifest;
-mod timer;
 pub(crate) mod ui_event;
 
 use blitz_traits::shell::ColorScheme;
-use crossbeam_channel::{Receiver, Sender, bounded, select, unbounded};
+use crossbeam_channel::{Receiver, Sender, bounded, unbounded};
 use ipc_messages::content::{
     AgentClusterId, AgentId, BeforeUnloadCheckId, BeforeUnloadResult, BrowsingContextGroupId,
-    BrowsingContextId, Command as ContentCommand, DispatchEventEntry, DocumentId, EventLoopId,
-    FetchResponse as ContentFetchResponse, FinalizeNavigation as ContentFinalizeNavigation,
-    FrameId, LoadedDocumentResponse, NavigableId, NavigateRequest, NavigationFetchId, NavigationId,
-    NewTraversableInfo, UserNavigationInvolvement, WebviewId, WindowTimerKey, iframe_target_name,
+    BrowsingContextId, Command as ContentCommand, DispatchEventEntry, DocumentId,
+    Event as ContentEvent, EventLoopId, FetchResponse as ContentFetchResponse,
+    FinalizeNavigation as ContentFinalizeNavigation, FrameId, LoadedDocumentResponse, NavigableId,
+    NavigateRequest, NavigationFetchId, NavigationId, NewTraversableInfo,
+    UserNavigationInvolvement, WebviewId, iframe_target_name,
 };
 use ipc_messages::safe_passing_of_structured_data::PostMessageRequest;
 use log::{debug, error, info, trace};
@@ -28,10 +28,7 @@ fn startup_debug_enabled() -> bool {
     std::env::var_os("FORMAL_WEB_DEBUG_STARTUP").is_some()
 }
 
-use crate::event_loop::{
-    EventLoopCommand, spawn_event_loop_entry, stop_event_loop_entry, traversable_viewport_command,
-};
-use crate::timer::{TimerCommand, run_timer_thread};
+use crate::event_loop::{EventLoopState, spawn_event_loop, traversable_viewport_command};
 
 pub(crate) fn sidecar_executable_path(binary_name: &str) -> Result<PathBuf, String> {
     let current_executable = std::env::current_exe()
@@ -183,11 +180,9 @@ pub struct Agent {
     pub can_block: bool,
     /// <https://html.spec.whatwg.org/multipage/#concept-agent-event-loop>
     pub event_loop_id: EventLoopId,
-    /// Implementation of the agent's event loop: command routing into the
-    /// dedicated event-loop thread that runs the agent's tasks.
-    pub command_sender: Sender<EventLoopCommand>,
-    /// Join handle for the dedicated event-loop thread.
-    pub join_handle: JoinHandle<()>,
+    /// The agent's event loop and its dedicated content process, owned
+    /// directly by the user-agent thread.
+    pub event_loop: EventLoopState,
     /// the traversables whose active documents run on this agent's event loop.
     pub traversable_ids: HashSet<NavigableId>,
 }
@@ -950,13 +945,6 @@ pub enum UserAgentCommand {
     NavigationFetchFailed {
         fetch_id: NavigationFetchId,
     },
-    WindowTimerTask {
-        event_loop_id: EventLoopId,
-        document_id: DocumentId,
-        timer_id: u32,
-        timer_key: WindowTimerKey,
-        nesting_level: u32,
-    },
 
     SendUiEvent {
         webview_id: WebviewId,
@@ -966,7 +954,6 @@ pub enum UserAgentCommand {
         parent_traversable_id: NavigableId,
         content_navigable_id: NavigableId,
         content_frame_id: FrameId,
-        reply: Sender<Result<(), String>>,
     },
     Shutdown {
         reply: Sender<Result<(), String>>,
@@ -1307,6 +1294,15 @@ fn find_navigable_by_target_name(state: &UserAgentState, target_name: &str) -> O
         })
 }
 
+/// An inbound event on one of the user-agent worker's channels.
+enum Inbound {
+    Command(UserAgentCommand),
+    Net(ipc_messages::network::Response),
+    Graphics(ipc::IpcIncoming<ipc_messages::graphics::GraphicsEvent>),
+    Content(EventLoopId, ipc::IpcIncoming<ContentEvent>),
+    ContentDisconnected(EventLoopId),
+}
+
 /// user-agent thread coordinates.
 struct UserAgentWorker {
     state: UserAgentState,
@@ -1314,8 +1310,6 @@ struct UserAgentWorker {
     command_receiver: Receiver<UserAgentCommand>,
     /// Owns the IPC connection to the net extension and tracks pending navigation fetches.
     net_connection: crate::fetch::NetConnection,
-    timer_command_sender: Sender<TimerCommand>,
-    timer_join_handle: Option<JoinHandle<()>>,
 
     /// IPC sender to the graphics process.
     graphics_extension_sender: Option<ipc::IpcSender<ipc_messages::graphics::GraphicsCommand>>,
@@ -1363,7 +1357,7 @@ struct UserAgentWorker {
 }
 
 impl UserAgentWorker {
-    /// starting the fetch and timer workers owned by the user-agent thread.
+    /// starting the fetch worker owned by the user-agent thread.
     fn new(
         user_agent_command_sender: Sender<UserAgentCommand>,
         command_receiver: Receiver<UserAgentCommand>,
@@ -1372,14 +1366,6 @@ impl UserAgentWorker {
     ) -> Self {
         let net_connection = crate::fetch::NetConnection::new(trace_sender.clone())
             .unwrap_or_else(|error| panic!("failed to start net extension: {error}"));
-        let (timer_command_sender, timer_command_receiver) = unbounded();
-        let timer_user_agent_command_sender = user_agent_command_sender.clone();
-        let timer_join_handle = thread::Builder::new()
-            .name(String::from("formal-web:timer"))
-            .spawn(move || {
-                run_timer_thread(timer_command_receiver, timer_user_agent_command_sender)
-            })
-            .unwrap_or_else(|error| panic!("failed to spawn formal-web-timer thread: {error}"));
 
         // Start the graphics process (handles composition + media playback).
         let (graphics_extension_sender, graphics_event_receiver, graphics_child) = {
@@ -1426,8 +1412,6 @@ impl UserAgentWorker {
             command_sender: user_agent_command_sender.clone(),
             command_receiver,
             net_connection,
-            timer_command_sender,
-            timer_join_handle: Some(timer_join_handle),
 
             graphics_extension_sender,
             graphics_event_receiver,
@@ -1448,136 +1432,205 @@ impl UserAgentWorker {
     }
 
     /// the top-level command loop that owns browser-global coordination.
-    /// Also processes net responses (navigation fetch results) via `select!`.
+    /// Also processes net responses, graphics events, and content events from
+    /// every owned event loop, selected over directly by this thread.
     fn run(&mut self) {
         loop {
-            select! {
-                    recv(self.command_receiver) -> command => {
-                        let Ok(command) = command else { break; };
-                        match command {
-                    UserAgentCommand::CreateFreshTopLevelTraversable { destination_url } => {
-                        self.create_a_fresh_top_level_traversable(destination_url);
-                    }
-                    UserAgentCommand::Navigate {
-                        event_loop_id,
-                        request,
-                    } => {
-                        self.handle_navigate(event_loop_id, request);
-                    }
-                    UserAgentCommand::PostMessage { request } => {
-                        self.handle_post_message(request);
-                    }
-                    UserAgentCommand::PortEvent { event } => {
-                        self.handle_port_event(event);
-                    }
-                    UserAgentCommand::CompleteBeforeUnload { result } => {
-                        self.handle_complete_before_unload(result);
-                    }
-                    UserAgentCommand::FinalizeCrossDocumentNavigation { finalized } => {
-                        self.handle_finalize_cross_document_navigation(finalized);
-                    }
-                    UserAgentCommand::ClickElement {
-                        traversable_id,
-                        selector,
-                        reply,
-                    } => {
-                        self.handle_click_element(traversable_id, selector, reply);
-                    }
-                    UserAgentCommand::EvaluateScript {
-                        traversable_id,
-                        source,
-                        timeout,
-                        reply,
-                    } => {
-                        self.handle_evaluate_script(traversable_id, source, timeout, reply);
-                    }
-                    UserAgentCommand::BroadcastViewport { snapshot } => {
-                        self.handle_set_default_viewport(snapshot);
-                    }
-                    UserAgentCommand::SetTraversableViewport {
-                        traversable_id,
-                        snapshot,
-                        offset_x,
-                        offset_y,
-                    } => {
-                        self.handle_set_traversable_viewport(
-                            traversable_id,
-                            snapshot,
-                            offset_x,
-                            offset_y,
-                        );
-                    }
-                    UserAgentCommand::FrameNeeded { webview_id } => {
-                        self.handle_frame_needed(webview_id);
-                    }
-                    UserAgentCommand::SendUiEvent {
-                        webview_id,
-                        event_message,
-                    } => {
-                        self.handle_send_ui_event(webview_id, event_message);
-                    }
-                    UserAgentCommand::DispatchEventFor {
-                        traversable_id,
-                        event,
-                    } => {
-                        self.handle_dispatch_event_for(traversable_id, event);
-                    }
-                    UserAgentCommand::RenderingOpportunityFor { navigable_id } => {
-                        self.note_rendering_opportunity(navigable_id);
-                    }
-                    UserAgentCommand::NavigationFetchCompleted { fetch_id, response } => {
-                        self.handle_navigation_fetch_completed(fetch_id, response);
-                    }
-                    UserAgentCommand::NavigationFetchFailed { fetch_id } => {
-                        self.handle_navigation_fetch_failed(fetch_id);
-                    }
-                    UserAgentCommand::WindowTimerTask {
-                        event_loop_id,
-                        document_id,
-                        timer_id,
-                        timer_key,
-                        nesting_level,
-                    } => {
-                        self.handle_window_timer_task(
-                            event_loop_id,
-                            document_id,
-                            timer_id,
-                            timer_key,
-                            nesting_level,
-                        );
-                    }
-
-
-                    UserAgentCommand::IframeTraversableRemoved {
-                        parent_traversable_id,
-                        content_navigable_id,
-                        content_frame_id,
-                        reply,
-                    } => {
-                        self.handle_iframe_traversable_removed(
-                            parent_traversable_id,
-                            content_navigable_id,
-                            content_frame_id,
-                            reply,
-                        );
-                    }
-                    UserAgentCommand::Shutdown { reply } => {
-                        self.handle_shutdown(reply);
+            match self.select_any() {
+                Some(Inbound::Command(command)) => {
+                    if !self.handle_ua_command(command) {
                         break;
                     }
                 }
-            }
-                    recv(self.net_connection.receiver()) -> response => {
-                        let Ok(incoming) = response else { break; };
-                        self.handle_net_navigation_response(incoming.payload);
-                    }
-                    recv(self.graphics_event_receiver) -> event => {
-                        let Ok(mut incoming) = event else { break; };
-                        self.handle_graphics_event(&mut incoming);
-                    }
-
+                Some(Inbound::Net(response)) => {
+                    self.handle_net_navigation_response(response);
                 }
+                Some(Inbound::Graphics(mut incoming)) => {
+                    self.handle_graphics_event(&mut incoming);
+                }
+                Some(Inbound::Content(event_loop_id, incoming)) => {
+                    match self.handle_content_event(event_loop_id, incoming) {
+                        Ok(true) => {}
+                        Ok(false) => self.forget_exited_event_loop(event_loop_id),
+                        Err(error) => {
+                            error!("content event handling error: {error}");
+                        }
+                    }
+                }
+                Some(Inbound::ContentDisconnected(event_loop_id)) => {
+                    self.forget_exited_event_loop(event_loop_id);
+                }
+                None => break,
+            }
         }
+    }
+
+    /// dropping one agent whose content process has exited, together with the
+    /// traversables it owned.
+    fn forget_exited_event_loop(&mut self, event_loop_id: EventLoopId) {
+        if let Some(mut entry) = self.remove_event_loop_entry(event_loop_id) {
+            entry.event_loop.reap_exited_child();
+        }
+    }
+
+    /// Block until one of the user-agent, net, graphics, or content channels
+    /// delivers an event.  Returns the kind of event plus its payload.
+    fn select_any(&self) -> Option<Inbound> {
+        let mut select = crossbeam_channel::Select::new();
+        let cmd_handle = select.recv(&self.command_receiver);
+        let net_handle = select.recv(self.net_connection.receiver());
+        let gfx_handle = select.recv(&self.graphics_event_receiver);
+        let mut content_handles: Vec<(usize, EventLoopId)> = Vec::new();
+        for agent in self.state.agents.values() {
+            let handle = select.recv(&agent.event_loop.event_receiver);
+            content_handles.push((handle, agent.event_loop.event_loop_id));
+        }
+        let oper = select.select();
+        let idx = oper.index();
+        if idx == cmd_handle {
+            match oper.recv(&self.command_receiver) {
+                Ok(command) => Some(Inbound::Command(command)),
+                Err(_) => None,
+            }
+        } else if idx == net_handle {
+            match oper.recv(self.net_connection.receiver()) {
+                Ok(incoming) => Some(Inbound::Net(incoming.payload)),
+                Err(_) => None,
+            }
+        } else if idx == gfx_handle {
+            match oper.recv(&self.graphics_event_receiver) {
+                Ok(incoming) => Some(Inbound::Graphics(incoming)),
+                Err(_) => None,
+            }
+        } else {
+            let (_, event_loop_id) = content_handles.iter().find(|(handle, _)| *handle == idx)?;
+            let agent = self
+                .state
+                .agents
+                .values()
+                .find(|agent| agent.event_loop.event_loop_id == *event_loop_id)?;
+            match oper.recv(&agent.event_loop.event_receiver) {
+                Ok(incoming) => Some(Inbound::Content(*event_loop_id, incoming)),
+                Err(_) => Some(Inbound::ContentDisconnected(*event_loop_id)),
+            }
+        }
+    }
+
+    /// Dispatch one user-agent command.  Returns `false` when the worker has
+    /// been asked to shut down.
+    fn handle_ua_command(&mut self, command: UserAgentCommand) -> bool {
+        match command {
+            UserAgentCommand::CreateFreshTopLevelTraversable { destination_url } => {
+                self.create_a_fresh_top_level_traversable(destination_url);
+            }
+            UserAgentCommand::Navigate {
+                event_loop_id,
+                request,
+            } => {
+                self.handle_navigate(event_loop_id, request);
+            }
+            UserAgentCommand::PostMessage { request } => {
+                self.handle_post_message(request);
+            }
+            UserAgentCommand::PortEvent { event } => {
+                self.handle_port_event(event);
+            }
+            UserAgentCommand::CompleteBeforeUnload { result } => {
+                self.handle_complete_before_unload(result);
+            }
+            UserAgentCommand::FinalizeCrossDocumentNavigation { finalized } => {
+                self.handle_finalize_cross_document_navigation(finalized);
+            }
+            UserAgentCommand::ClickElement {
+                traversable_id,
+                selector,
+                reply,
+            } => {
+                self.handle_click_element(traversable_id, selector, reply);
+            }
+            UserAgentCommand::EvaluateScript {
+                traversable_id,
+                source,
+                timeout,
+                reply,
+            } => {
+                self.handle_evaluate_script(traversable_id, source, timeout, reply);
+            }
+            UserAgentCommand::BroadcastViewport { snapshot } => {
+                self.handle_set_default_viewport(snapshot);
+            }
+            UserAgentCommand::SetTraversableViewport {
+                traversable_id,
+                snapshot,
+                offset_x,
+                offset_y,
+            } => {
+                self.handle_set_traversable_viewport(traversable_id, snapshot, offset_x, offset_y);
+            }
+            UserAgentCommand::FrameNeeded { webview_id } => {
+                self.handle_frame_needed(webview_id);
+            }
+            UserAgentCommand::SendUiEvent {
+                webview_id,
+                event_message,
+            } => {
+                self.handle_send_ui_event(webview_id, event_message);
+            }
+            UserAgentCommand::DispatchEventFor {
+                traversable_id,
+                event,
+            } => {
+                self.handle_dispatch_event_for(traversable_id, event);
+            }
+            UserAgentCommand::RenderingOpportunityFor { navigable_id } => {
+                self.note_rendering_opportunity(navigable_id);
+            }
+            UserAgentCommand::NavigationFetchCompleted { fetch_id, response } => {
+                self.handle_navigation_fetch_completed(fetch_id, response);
+            }
+            UserAgentCommand::NavigationFetchFailed { fetch_id } => {
+                self.handle_navigation_fetch_failed(fetch_id);
+            }
+            UserAgentCommand::IframeTraversableRemoved {
+                parent_traversable_id,
+                content_navigable_id,
+                content_frame_id,
+            } => {
+                self.handle_iframe_traversable_removed(
+                    parent_traversable_id,
+                    content_navigable_id,
+                    content_frame_id,
+                );
+            }
+            UserAgentCommand::Shutdown { reply } => {
+                self.handle_shutdown(reply);
+                return false;
+            }
+        }
+        true
+    }
+
+    /// Handle one content-originated event from the event loop that owns
+    /// `event_loop_id`.  The event is routed to the owning event loop's state,
+    /// which re-sends user-agent commands for navigation and channel-messaging
+    /// work.  Returns `Ok(false)` when the content process has shut down.
+    fn handle_content_event(
+        &mut self,
+        event_loop_id: EventLoopId,
+        incoming: ipc::IpcIncoming<ContentEvent>,
+    ) -> Result<bool, String> {
+        let Some(agent) = self
+            .state
+            .agents
+            .values_mut()
+            .find(|agent| agent.event_loop_id == event_loop_id)
+        else {
+            // A stale event for an event loop that was already removed.
+            return Ok(true);
+        };
+        agent
+            .event_loop
+            .handle_event(incoming, &self.command_sender, &self.host)
     }
 
     /// Handle a navigation fetch response received directly from the net process.
@@ -1599,30 +1652,22 @@ impl UserAgentWorker {
 }
 
 impl UserAgentWorker {
-    /// the request/reply path that sends one command through the owning
-    /// event loop and waits for the content-side reply.
+    /// Sending one command directly to a content process's event loop.
     fn send_event_loop_command(
         &self,
-        command_sender: &Sender<EventLoopCommand>,
+        command_sender: &ipc::IpcSender<ContentCommand>,
         command: ContentCommand,
-    ) -> Result<Option<NavigableId>, String> {
-        let (reply_sender, reply_receiver) = bounded(1);
+    ) -> Result<(), String> {
         command_sender
-            .send(EventLoopCommand::SendCommand {
-                command,
-                reply: reply_sender,
-            })
-            .map_err(|error| format!("failed to send event-loop command: {error}"))?;
-        reply_receiver
-            .recv()
-            .map_err(|error| format!("event-loop command reply channel closed: {error}"))?
+            .send(command)
+            .map_err(|error| format!("failed to send event-loop command: {error}"))
     }
 
-    /// resolving the event-loop command channel that owns one traversable.
+    /// resolving the content command sender that owns one traversable.
     fn command_sender_for_traversable(
         &self,
         traversable_id: NavigableId,
-    ) -> Result<Sender<EventLoopCommand>, String> {
+    ) -> Result<ipc::IpcSender<ContentCommand>, String> {
         let event_loop_id = self
             .state
             .traversable_handles
@@ -1633,19 +1678,19 @@ impl UserAgentWorker {
             .agents
             .values()
             .find(|agent| agent.event_loop_id == event_loop_id)
-            .map(|agent| agent.command_sender.clone())
+            .map(|agent| agent.event_loop.command_sender.clone())
             .ok_or_else(|| format!("missing agent for event loop id {event_loop_id}"))
     }
 
-    /// Resolve the command sender for the event loop that owns a document.
-    /// After a cross-process navigation the traversable has moved to a new
-    /// event loop while the outgoing document is still owned by the old one;
-    /// document-routed commands (e.g. DestroyDocument) must reach the process
-    /// that actually holds the document so its teardown can run there.
+    /// Resolve the content command sender for the event loop that owns a
+    /// document.  After a cross-process navigation the traversable has moved
+    /// to a new event loop while the outgoing document is still owned by the
+    /// old one; document-routed commands (e.g. DestroyDocument) must reach the
+    /// process that actually holds the document so its teardown can run there.
     fn command_sender_for_document(
         &self,
         document_id: DocumentId,
-    ) -> Result<Sender<EventLoopCommand>, String> {
+    ) -> Result<ipc::IpcSender<ContentCommand>, String> {
         let event_loop_id = self
             .state
             .documents
@@ -1656,7 +1701,7 @@ impl UserAgentWorker {
             .agents
             .values()
             .find(|agent| agent.event_loop_id == event_loop_id)
-            .map(|agent| agent.command_sender.clone())
+            .map(|agent| agent.event_loop.command_sender.clone())
             .ok_or_else(|| format!("missing agent for event loop id {event_loop_id}"))
     }
 
@@ -1666,14 +1711,12 @@ impl UserAgentWorker {
         let agent_id = AgentId::new();
         // Step 2: Let candidateExecution be a new candidate execution.
         // The Rust model does not surface a separate candidate-execution object because the
-        // dedicated event-loop thread owns the scheduling state that HTML leaves implementation-defined.
+        // user-agent thread owns the scheduling state that HTML leaves implementation-defined.
         // Step 4: Set agent's event loop to a new event loop.
         let event_loop_id = EventLoopId::new();
-        let (command_sender, join_handle) = spawn_event_loop_entry(
+        let event_loop = spawn_event_loop(
             event_loop_id,
             process_label,
-            self.command_sender.clone(),
-            self.timer_command_sender.clone(),
             self.host.clone(),
             self.trace_sender.clone(),
             self.net_connection.sender(),
@@ -1682,8 +1725,8 @@ impl UserAgentWorker {
         // Step 3: Let agent be a new agent whose [[CanBlock]] is canBlock, [[Signifier]] is
         // signifier, [[CandidateExecution]] is candidateExecution, and [[IsLockFree1]],
         // [[IsLockFree2]], and [[LittleEndian]] are set at the implementation's discretion.
-        // Note: The agent's event loop (the dedicated event-loop thread) is the
-        // implementation running inside the agent; the lock-free details remain implicit.
+        // Note: The agent's event loop (its content process) is owned directly by the
+        // user-agent thread; the lock-free details remain implicit.
         // Step 5: Return agent.
         // Note: The caller registers the returned agent in `state.agents` and, for
         // window-opening, in the browsing context group's agent cluster.
@@ -1691,8 +1734,7 @@ impl UserAgentWorker {
             id: agent_id,
             can_block,
             event_loop_id,
-            command_sender,
-            join_handle,
+            event_loop,
             traversable_ids: HashSet::new(),
         })
     }
@@ -1723,7 +1765,7 @@ impl UserAgentWorker {
         let agent = self.create_agent(false, String::from("about:blank"))?;
         let agent_event_loop_id = agent.event_loop_id;
         let agent_id = agent.id;
-        let command_sender = agent.command_sender.clone();
+        let command_sender = agent.event_loop.command_sender.clone();
         let document_id = DocumentId::new();
         self.state.agents.insert(agent_id, agent);
 
@@ -2484,12 +2526,10 @@ impl UserAgentWorker {
 
         for (document_id, candidate_traversable_id) in beforeunload_targets {
             let command_sender = self.command_sender_for_traversable(candidate_traversable_id)?;
-            if let Err(error) = command_sender.send(EventLoopCommand::FireAndForget {
-                command: ContentCommand::RunBeforeUnload {
-                    document_id,
-                    check_id,
-                    navigation_id,
-                },
+            if let Err(error) = command_sender.send(ContentCommand::RunBeforeUnload {
+                document_id,
+                check_id,
+                navigation_id,
             }) {
                 self.state
                     .pending_before_unload_navigations
@@ -2644,10 +2684,9 @@ impl UserAgentWorker {
     }
 
     /// stopping one owned agent's event loop by its Rust handle.
-    fn stop_event_loop_handle(&mut self, event_loop_id: EventLoopId) -> Result<(), String> {
-        match self.remove_event_loop_entry(event_loop_id) {
-            Some(entry) => stop_event_loop_entry(entry),
-            None => Ok(()),
+    fn stop_event_loop_handle(&mut self, event_loop_id: EventLoopId) {
+        if let Some(mut entry) = self.remove_event_loop_entry(event_loop_id) {
+            entry.event_loop.shutdown();
         }
     }
 
@@ -3215,7 +3254,7 @@ impl UserAgentWorker {
             self.handle_set_traversable_viewport(traversable_id, snapshot, offset_x, offset_y);
         }
         if let Some(old_event_loop_id) = old_event_loop_to_stop {
-            self.stop_event_loop_handle(old_event_loop_id)?;
+            self.stop_event_loop_handle(old_event_loop_id);
         }
         // Step 8: "Let loadTimingInfo be a new document load timing info with its navigation
         // start time set to navigationParams's response's timing info's start time."
@@ -3511,20 +3550,21 @@ impl UserAgentWorker {
             Some(event_loop_id) => match self
                 .state
                 .agents
-                .values()
+                .values_mut()
                 .find(|agent| agent.event_loop_id == event_loop_id)
             {
                 Some(agent) => {
                     let request_id = self.next_automation_request_id;
                     self.next_automation_request_id =
                         self.next_automation_request_id.wrapping_add(1);
+                    agent.event_loop.script_waiters.insert(request_id, reply);
                     agent
+                        .event_loop
                         .command_sender
-                        .send(EventLoopCommand::EvaluateScript {
+                        .send(ContentCommand::EvaluateScript {
                             traversable_id,
                             request_id,
                             source,
-                            reply,
                         })
                         .map_err(|error| {
                             format!(
@@ -3566,20 +3606,21 @@ impl UserAgentWorker {
             Some(event_loop_id) => match self
                 .state
                 .agents
-                .values()
+                .values_mut()
                 .find(|agent| agent.event_loop_id == event_loop_id)
             {
                 Some(agent) => {
                     let request_id = self.next_automation_request_id;
                     self.next_automation_request_id =
                         self.next_automation_request_id.wrapping_add(1);
+                    agent.event_loop.click_waiters.insert(request_id, reply);
                     agent
+                        .event_loop
                         .command_sender
-                        .send(EventLoopCommand::ClickElement {
+                        .send(ContentCommand::ClickElement {
                             traversable_id,
                             request_id,
                             selector,
-                            reply,
                         })
                         .map_err(|error| {
                             format!(
@@ -3660,9 +3701,7 @@ impl UserAgentWorker {
             return false;
         };
         let command = traversable_viewport_command(traversable_id, snapshot, offset_x, offset_y);
-        let _ = agent
-            .command_sender
-            .send(EventLoopCommand::FireAndForget { command });
+        let _ = agent.event_loop.command_sender.send(command);
         // The UA notes a rendering opportunity so the content process will
         // receive UpdateTheRendering and repaint with the new viewport.
         self.note_rendering_opportunity(traversable_id);
@@ -3967,9 +4006,7 @@ impl UserAgentWorker {
                 prefetched_clipboard_text: None,
             }],
         };
-        let _ = agent
-            .command_sender
-            .send(EventLoopCommand::FireAndForget { command });
+        let _ = agent.event_loop.command_sender.send(command);
     }
 
     /// <https://html.spec.whatwg.org/#window-post-message-steps> step 8:
@@ -3986,9 +4023,7 @@ impl UserAgentWorker {
             );
             return;
         };
-        if let Err(error) = command_sender.send(EventLoopCommand::FireAndForget {
-            command: ContentCommand::PostMessage(request),
-        }) {
+        if let Err(error) = command_sender.send(ContentCommand::PostMessage(request)) {
             error!("postMessage: failed to queue message task: {error}");
         }
     }
@@ -4004,10 +4039,7 @@ impl UserAgentWorker {
             .find(|agent| agent.event_loop_id == event_loop_id)
         {
             Some(agent) => {
-                if let Err(error) = agent
-                    .command_sender
-                    .send(EventLoopCommand::FireAndForget { command })
-                {
+                if let Err(error) = agent.event_loop.command_sender.send(command) {
                     error!("port routing: failed to queue task: {error}");
                 }
             }
@@ -4170,9 +4202,7 @@ impl UserAgentWorker {
             document_id: *document_id,
             frame_timestamp_epoch_ms,
         };
-        let _ = agent
-            .command_sender
-            .send(EventLoopCommand::FireAndForget { command });
+        let _ = agent.event_loop.command_sender.send(command);
 
         // When a child navigable queues update the rendering, also queue
         // the top-level traversable so the graphics process composes the
@@ -4368,35 +4398,6 @@ impl UserAgentWorker {
         }
     }
 
-    /// the document-fetch watchdog fired by the timer worker.
-    /// <https://html.spec.whatwg.org/multipage/#timers>
-    fn handle_window_timer_task(
-        &mut self,
-        event_loop_id: EventLoopId,
-        document_id: DocumentId,
-        timer_id: u32,
-        timer_key: WindowTimerKey,
-        nesting_level: u32,
-    ) {
-        let Some(agent) = self
-            .state
-            .agents
-            .values()
-            .find(|agent| agent.event_loop_id == event_loop_id)
-        else {
-            return;
-        };
-        let command = ContentCommand::RunWindowTimer {
-            document_id,
-            timer_id,
-            timer_key,
-            nesting_level,
-        };
-        let _ = agent
-            .command_sender
-            .send(EventLoopCommand::FireAndForget { command });
-    }
-
     /// removing a child-navigable mapping and stopping any synthetic
     /// traversable that represented that iframe in the user-agent registry.
     fn handle_iframe_traversable_removed(
@@ -4404,7 +4405,6 @@ impl UserAgentWorker {
         parent_traversable_id: NavigableId,
         content_navigable_id: NavigableId,
         content_frame_id: FrameId,
-        reply: Sender<Result<(), String>>,
     ) {
         info!(
             "[nav] iframe traversable removed parent={} child={} frame={}",
@@ -4499,7 +4499,6 @@ impl UserAgentWorker {
             }
         }
 
-        let mut result = Ok(());
         for event_loop_id in event_loops_to_maybe_stop {
             let should_stop = self
                 .state
@@ -4510,13 +4509,8 @@ impl UserAgentWorker {
             if !should_stop {
                 continue;
             }
-            if let Err(error) = self.stop_event_loop_handle(event_loop_id) {
-                result = Err(error);
-                break;
-            }
+            self.stop_event_loop_handle(event_loop_id);
         }
-
-        let _ = reply.send(result);
     }
 
     /// shutting down the user-agent thread and every worker it owns.
@@ -4542,12 +4536,8 @@ impl UserAgentWorker {
             .pending_navigation_finalization_ids_by_navigation_id
             .clear();
 
-        let mut shutdown_result = Ok(());
-        for entry in entries {
-            if let Err(error) = stop_event_loop_entry(entry) {
-                shutdown_result = Err(error);
-                break;
-            }
+        for mut entry in entries {
+            entry.event_loop.shutdown();
         }
 
         // Shut down the graphics process: send Shutdown, wait for
@@ -4574,22 +4564,7 @@ impl UserAgentWorker {
 
         self.net_connection.shutdown();
 
-        let (timer_reply_sender, timer_reply_receiver) = bounded(1);
-        if let Err(error) = self.timer_command_sender.send(TimerCommand::Shutdown {
-            reply: timer_reply_sender,
-        }) {
-            shutdown_result = Err(format!("failed to request timer shutdown: {error}"));
-        } else if let Err(error) = timer_reply_receiver.recv() {
-            shutdown_result = Err(format!("timer shutdown reply channel closed: {error}"));
-        }
-
-        if let Some(timer_join_handle) = self.timer_join_handle.take()
-            && timer_join_handle.join().is_err()
-        {
-            shutdown_result = Err(String::from("timer thread panicked"));
-        }
-
-        let _ = reply.send(shutdown_result);
+        let _ = reply.send(Ok(()));
     }
 
     /// Handle a GraphicsEvent (composed scene) from the graphics process.
@@ -4784,11 +4759,12 @@ impl UserAgentWorker {
                             .find(|agent| agent.event_loop_id == *handle)
                     })
                     .map(|agent| {
-                        agent.command_sender.send(EventLoopCommand::FireAndForget {
-                            command: ContentCommand::NotifyVideoEnded {
+                        agent
+                            .event_loop
+                            .command_sender
+                            .send(ContentCommand::NotifyVideoEnded {
                                 video_paint_id: *video_paint_id,
-                            },
-                        })
+                            })
                     });
             }
             GraphicsEvent::CompositionChanged { webview_id } => {

@@ -198,9 +198,7 @@ impl MessagePort {
         let Some(messaging) = Self::messaging(ec) else {
             return;
         };
-        if let Some(event_sender) = Self::event_sender(ec) {
-            messaging.start(self.port_id, &event_sender, ec);
-        }
+        messaging.start(self.port_id, ec);
     }
 
     /// <https://html.spec.whatwg.org/#dom-messageport-close>
@@ -230,9 +228,7 @@ impl MessagePort {
         let Some(messaging) = Self::messaging(ec) else {
             return;
         };
-        if let Some(event_sender) = Self::event_sender(ec) {
-            messaging.enable_queue(self.port_id, &event_sender, ec);
-        }
+        messaging.enable_queue(self.port_id, ec);
     }
 
     /// <https://html.spec.whatwg.org/#message-port-post-message-steps>
@@ -244,10 +240,7 @@ impl MessagePort {
         let Some(messaging) = Self::messaging(ec) else {
             return Ok(());
         };
-        let Some(event_sender) = Self::event_sender(ec) else {
-            return Ok(());
-        };
-        let payload = match messaging.pop_queued_message(self.port_id, &event_sender, ec) {
+        let payload = match messaging.pop_queued_message(self.port_id, ec) {
             Ok(Some(payload)) => payload,
             Ok(None) => return Ok(()),
             Err(error) => return Err(ec.new_type_error(&format!("port message task: {error}"))),

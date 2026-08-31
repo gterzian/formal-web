@@ -9,8 +9,9 @@ mod activation_behavior;
 pub(crate) mod channel_messaging;
 pub(crate) use channel_messaging::ChannelMessaging;
 pub(crate) mod dispatch;
-mod environment_settings_object;
+pub(crate) mod environment_settings_object;
 pub(crate) mod event_handler;
+pub(crate) mod event_loop;
 mod global_scope;
 mod html_anchor_element;
 mod html_dom_tree;
@@ -25,6 +26,7 @@ mod location;
 pub(crate) mod message_event;
 pub(crate) mod messageport;
 pub(crate) mod structured_data;
+pub(crate) mod timers;
 pub(crate) mod ui_events;
 mod window;
 mod window_or_worker_global_scope;
@@ -35,6 +37,8 @@ use ipc_messages::content::{
     DocumentId, Event as ContentEvent, NavigableId, NavigateRequest, NavigationId,
     NewChildNavigableInfo, NewTraversableInfo, UserNavigationInvolvement,
 };
+
+use environment_settings_object::RealmWiring;
 
 pub(crate) use activation_behavior::ActivationBehavior;
 pub use environment_settings_object::EnvironmentSettingsObject;
@@ -124,10 +128,8 @@ pub fn await_a_stable_state<F>(
 /// <https://html.spec.whatwg.org/#creating-a-new-browsing-context>
 pub(crate) fn create_a_new_browsing_context_and_document(
     parent_engine: Option<&mut Engine>,
-    event_sender: &IpcSender<ContentEvent>,
-    traversable_id: NavigableId,
-    document_id: DocumentId,
     creator_origin: Option<environment_settings_object::Origin>,
+    wiring: RealmWiring,
 ) -> Result<
     (
         JsObject,
@@ -210,14 +212,8 @@ pub(crate) fn create_a_new_browsing_context_and_document(
     // cross-origin isolated capability.
     // Note: Steps 11-12 and 14 are not implemented: top-level creation
     // URL/origin and load timing info are not tracked.
-    let (global_object, window, settings) = create_a_new_realm(
-        parent_engine,
-        event_sender,
-        traversable_id,
-        document_id,
-        Rc::clone(&document),
-        creator_origin,
-    )?;
+    let (global_object, window, settings) =
+        create_a_new_realm(parent_engine, Rc::clone(&document), creator_origin, wiring)?;
 
     // Step 16: Let iframeReferrerPolicy be the result of determining the iframe
     //          element referrer policy given embedder.
@@ -264,11 +260,9 @@ pub(crate) fn create_a_new_browsing_context_and_document(
 /// <https://html.spec.whatwg.org/#creating-a-new-javascript-realm>
 pub(crate) fn create_a_new_realm(
     parent_engine: Option<&mut Engine>,
-    event_sender: &IpcSender<ContentEvent>,
-    traversable_id: NavigableId,
-    document_id: DocumentId,
     document: Rc<RefCell<BaseDocument>>,
     creator_origin: Option<environment_settings_object::Origin>,
+    wiring: RealmWiring,
 ) -> Result<(JsObject, Window, EnvironmentSettingsObject), String> {
     // Step 1: Perform InitializeHostDefinedRealm() with the provided
     // customizations for creating the global object and the global this binding.
@@ -305,10 +299,8 @@ pub(crate) fn create_a_new_realm(
         parent_engine,
         document,
         Url::parse("about:blank").map_err(|error| error.to_string())?,
-        Some(event_sender.clone()),
-        Some(traversable_id),
-        Some(document_id),
         creator_origin,
+        Some(wiring),
     )?;
 
     // Note: The Window platform object for the step 10 customization (for the

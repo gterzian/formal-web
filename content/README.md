@@ -62,7 +62,55 @@ Types that currently use `&mut self` for mutation but could use `GcCell` + `&sel
 - **Streams** (`content/src/streams`) — writable/readable stream state machines use `Cell<bool>`/`RefCell`; some could use GcCell for GC-traced callback fields.
 - **AbortSignal** (`content/src/dom`) — already uses `GcCell<AbortSignalState>` at the top level; internal fields like `onabort` could move to GcCell if needed.
 
+## The event loop's task queue
+
+The HTML event loop processing model runs on the content process main thread
+(`run_content_message_loop` in `content/src/main.rs`).  Every task source feeds
+one queue of `Task` (`content/src/html/event_loop.rs`), and
+`ContentProcess::run_task` is the only place that runs one: it takes the oldest
+task, performs its steps, and performs the microtask checkpoint that ends them.
+Content-initiated work (window timer expiry, port message tasks) must therefore
+be **queued as a `Task`**, never run by calling its handler directly: an inline
+call skips the bookkeeping the model requires (marking the task's document
+dirty, the microtask checkpoint after the task's steps).
+
+An `ipc_messages::content::Command` is an ad hoc message the user agent (or the
+net process) sends this process — not a task.  Where the spec step behind a
+command says to queue a task on this event loop (the target half of
+`postMessage`, a routed port message, `update the rendering`, beforeunload,
+WebDriver/CDP script evaluation and event dispatch), handling the command
+queues the matching `Task`, so it runs through the same processing-model steps
+as a task queued here.  The rest (viewport, document lifecycle, navigation
+fetch completion, shutdown) `ContentProcess::handle_command` runs directly.
+
+The loop waits for the oldest task on the queue, a command, a WebAssembly
+result, or the earliest expiry time in the map of active timers
+(`MapOfActiveTimers` in `content/src/html/timers.rs`, reached through
+`EventLoopTaskSources`).  It runs one task per iteration, so a task that queues
+another task — a message event handler posting a message, a timer callback
+scheduling a timer — does not starve the other inputs.  The timer channel is
+only a wake-up: expiry queues the expired timers' tasks, it does not run them.
+
+**The command channel is only read while the task queue is empty.**  A
+command's steps run as soon as it is read, so reading one with tasks already
+queued runs those steps ahead of them.  The rendering pipeline depends on this:
+a child navigable's `update the rendering` task must run before the top-level
+traversable's frame composes (their frames compose together), and letting a
+command overtake it makes the `RenderingOpportunity` TLA+ trace validation fail
+intermittently (`verification/verify-specs.sh`, roughly one run in five).
+
 ## Known issues
+
+- **Document lifecycle commands run outside the task queue.**
+  `CreateEmptyDocument`, `CreateLoadedDocument`, `CompleteDocumentFetch`,
+  `FailDocumentFetch` and `DestroyDocument` parse documents and run script
+  (inline scripts, unload handlers) directly in `handle_command`, while the
+  spec runs those steps in tasks queued on the networking and
+  navigation-and-traversal task sources.  Running a script does end with a
+  microtask checkpoint (`EnvironmentSettingsObject::evaluate_script`), so
+  promise reactions are not deferred; what is missing is the task boundary
+  itself, and with it the task-level checkpoint and the document bookkeeping
+  `run_task` performs.
 
 - **Clippy warning backlog.** The content crate has a backlog of pre-existing
   clippy warnings (e.g. "useless conversion to the same type: V8Object").
