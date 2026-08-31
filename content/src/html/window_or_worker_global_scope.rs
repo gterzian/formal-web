@@ -4,7 +4,7 @@ use crate::js::Types;
 
 type JsValue = <Types as JsTypes>::JsValue;
 
-use crate::html::{GlobalScope, TimerHandler, Window};
+use crate::html::{GlobalScope, TimerHandler, Window, WorkerGlobalScope};
 use crate::webidl::Callback;
 
 use crate::html::structured_data::safe_passing_of_structured_data::{self, StructuredCloneOptions};
@@ -105,6 +105,12 @@ pub(crate) trait WindowOrWorkerGlobalScope {
 }
 
 impl WindowOrWorkerGlobalScope for Window {
+    fn global_scope(&self) -> &GlobalScope {
+        &self.global_scope
+    }
+}
+
+impl WindowOrWorkerGlobalScope for WorkerGlobalScope {
     fn global_scope(&self) -> &GlobalScope {
         &self.global_scope
     }

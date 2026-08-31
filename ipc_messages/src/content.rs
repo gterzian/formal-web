@@ -55,6 +55,7 @@ uuid_id!(FrameId);
 uuid_id!(NavigationId);
 uuid_id!(PortId);
 uuid_id!(MessageId);
+uuid_id!(WorkerId);
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize)]
 pub enum ColorScheme {
@@ -808,6 +809,47 @@ pub enum WebviewProviderMessage {
     },
 }
 
+/// A request to create (or, for shared workers, obtain) a worker, sent by
+/// the content process hosting the owner realm to the user agent.  The user
+/// agent routes it back to the owning event loop as `Command::StartWorker`;
+/// a future shared-worker implementation would look up an existing shared
+/// worker by (origin, name) here instead of always starting a fresh one.
+/// <https://html.spec.whatwg.org/#run-a-worker>
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct WorkerRequest {
+    /// The id of the worker being created, shared with the content process's
+    /// worker table and the `Worker` platform object in the owner realm.
+    pub worker_id: WorkerId,
+    /// The absolute URL of the worker script, resolved by the constructor
+    /// steps before the request is sent.
+    /// <https://html.spec.whatwg.org/#dedicated-workers-and-the-worker-interface>
+    pub script_url: String,
+    /// <https://html.spec.whatwg.org/#dom-workeroptions-name>
+    pub name: String,
+    /// The worker type: "classic" or "module".
+    /// <https://html.spec.whatwg.org/#dom-workeroptions-type>
+    pub worker_type: String,
+    /// The realm that created the worker: the owner document, or the
+    /// worker global scope when a worker creates a nested worker.
+    /// <https://html.spec.whatwg.org/#the-worker-s-lifetime>
+    pub owner: WorkerOwner,
+    /// The constructor-created outside port, entangled with the worker's
+    /// inside port once run-a-worker creates it.
+    /// <https://html.spec.whatwg.org/#dedicated-workers-and-the-worker-interface>
+    pub outside_port: PortId,
+}
+
+/// The realm that created a worker (its relevant owner to add).
+/// <https://html.spec.whatwg.org/#the-worker-s-lifetime>
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum WorkerOwner {
+    /// The worker was created by a window; its owner is that window's
+    /// associated Document.
+    Document(DocumentId),
+    /// The worker was created by another worker global scope.
+    Worker(WorkerId),
+}
+
 /// A message the user agent (or the net process) sends the content process to
 /// drive it.  A command is not an event-loop task: when the spec step behind a
 /// command says to queue a task on the content process's event loop, the
@@ -911,6 +953,17 @@ pub enum Command {
     PortTask {
         port: PortId,
         task: PortTaskKind,
+    },
+    /// The user-agent half of worker creation: the request forwarded by the
+    /// content process hosting the owner realm.  The content process fetches
+    /// the worker script and, on completion, runs the content-side steps of
+    /// <https://html.spec.whatwg.org/#run-a-worker>.
+    StartWorker(WorkerRequest),
+    /// Terminate a worker: set its closing flag, discard its queued tasks,
+    /// and tear down its realm.
+    /// <https://html.spec.whatwg.org/#terminate-a-worker>
+    TerminateWorker {
+        worker_id: WorkerId,
     },
     Shutdown,
 }
@@ -1017,6 +1070,18 @@ pub enum Event {
     /// the embedder can label the corresponding tab and window.
     /// <https://html.spec.whatwg.org/#the-title-element>
     TitleChanged(TitleChanged),
+    /// The source-process half of worker creation: the `Worker` constructor
+    /// steps (steps 1-9 of
+    /// <https://html.spec.whatwg.org/#dedicated-workers-and-the-worker-interface>)
+    /// ran in the sending content process; the user agent routes the request
+    /// back as `Command::StartWorker` to run a worker.
+    WorkerRequested(WorkerRequest),
+    /// A worker's `terminate()` method ran in the owner realm; the user agent
+    /// routes it back as `Command::TerminateWorker`.
+    /// <https://html.spec.whatwg.org/#terminate-a-worker>
+    WorkerTerminated {
+        worker_id: WorkerId,
+    },
     ShutdownCompleted,
 }
 

@@ -16,12 +16,12 @@ use std::rc::Rc;
 use crossbeam_channel::{Receiver, Sender, unbounded};
 use ipc_messages::content::{
     BeforeUnloadCheckId, DispatchEventEntry, DocumentId, NavigableId, NavigationId, PortId,
-    PortTaskKind, WindowTimerKey,
+    PortTaskKind, WindowTimerKey, WorkerId,
 };
 use ipc_messages::safe_passing_of_structured_data::PostMessageRequest;
 use log::error;
 
-use super::timers::MapOfActiveTimers;
+use super::timers::{MapOfActiveTimers, TimerRealm};
 
 /// <https://html.spec.whatwg.org/#concept-task>
 pub(crate) enum Task {
@@ -31,6 +31,18 @@ pub(crate) enum Task {
     /// expiry time in the global's map of active timers passes.
     RunWindowTimer {
         document_id: DocumentId,
+        timer_id: u32,
+        timer_key: WindowTimerKey,
+        nesting_level: u32,
+    },
+
+    /// The task that runs one expired worker timer's steps, queued on the
+    /// timer task source when the worker global scope's map of active timers
+    /// entry expires.  The timer machinery shares the content process's map
+    /// of active timers, so the worker realm is identified by worker id.
+    /// <https://html.spec.whatwg.org/#timer-initialisation-steps>
+    RunWorkerTimer {
+        worker_id: WorkerId,
         timer_id: u32,
         timer_key: WindowTimerKey,
         nesting_level: u32,
@@ -160,14 +172,14 @@ impl EventLoopTaskSources {
     /// <https://html.spec.whatwg.org/#run-steps-after-a-timeout>
     pub(crate) fn run_steps_after_a_timeout(
         &self,
-        document_id: DocumentId,
+        realm: TimerRealm,
         timer_key: WindowTimerKey,
         milliseconds: u32,
         timer_id: u32,
         nesting_level: u32,
     ) {
         self.active_timers.borrow_mut().run_steps_after_a_timeout(
-            document_id,
+            realm,
             timer_key,
             milliseconds,
             timer_id,

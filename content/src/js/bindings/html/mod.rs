@@ -11,5 +11,9 @@ pub(crate) mod message_event;
 pub(crate) mod messageport;
 pub(crate) mod window;
 pub(crate) mod windowproxy;
+pub(crate) mod worker;
+pub(crate) mod worker_global_scope;
+pub(crate) mod worker_location;
+pub(crate) mod worker_navigator;
 
 pub(crate) use html_element::style_declaration_object;

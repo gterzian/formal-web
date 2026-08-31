@@ -31,6 +31,7 @@ pub(crate) mod ui_events;
 mod window;
 mod window_or_worker_global_scope;
 pub(crate) mod windowproxy;
+pub(crate) mod worker;
 
 use ipc::IpcSender;
 use ipc_messages::content::{
@@ -74,6 +75,10 @@ pub(crate) use window::window_computed_style_properties_for_element;
 pub(crate) use window::{PostMessageOptions, window_post_message_steps};
 pub(crate) use window_or_worker_global_scope::WindowOrWorkerGlobalScope;
 pub(crate) use windowproxy::WindowProxy;
+pub(crate) use worker::{
+    DedicatedWorkerGlobalScope, Worker, WorkerGlobalScope, WorkerLocation, WorkerNavigator,
+    WorkerType,
+};
 
 use blitz_dom::{BaseDocument, DocumentConfig};
 use std::{cell::RefCell, rc::Rc};

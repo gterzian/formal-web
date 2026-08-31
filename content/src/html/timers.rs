@@ -4,7 +4,19 @@
 use std::collections::HashMap;
 use std::time::{Duration, Instant};
 
-use ipc_messages::content::{DocumentId, WindowTimerKey};
+use ipc_messages::content::{DocumentId, WindowTimerKey, WorkerId};
+
+/// The realm a timer belongs to: a window's associated Document, or a worker
+/// global scope.  The map of active timers is shared by every realm of the
+/// content process's event loop, so the expiry reaper needs to know which
+/// realm's task to queue.
+#[derive(Debug, Clone, Copy)]
+pub(crate) enum TimerRealm {
+    /// <https://html.spec.whatwg.org/#concept-document>
+    Document(DocumentId),
+    /// <https://html.spec.whatwg.org/#the-workerglobalscope-common-interface>
+    Worker(WorkerId),
+}
 
 /// <https://html.spec.whatwg.org/#map-of-active-timers>
 #[derive(Clone)]
@@ -16,8 +28,8 @@ pub(crate) struct ActiveTimer {
     /// ones with an equal or larger `milliseconds`; this counter records the
     /// start order so equal expiry times keep it.
     pub start_order: u64,
-    /// <https://html.spec.whatwg.org/#concept-document>
-    pub document_id: DocumentId,
+    /// <https://html.spec.whatwg.org/#map-of-active-timers>
+    pub realm: TimerRealm,
     /// <https://html.spec.whatwg.org/#map-of-active-timers>
     pub timer_key: WindowTimerKey,
     /// <https://html.spec.whatwg.org/#map-of-settimeout-and-setinterval-ids>
@@ -37,7 +49,7 @@ impl MapOfActiveTimers {
     /// <https://html.spec.whatwg.org/#run-steps-after-a-timeout>
     pub(crate) fn run_steps_after_a_timeout(
         &mut self,
-        document_id: DocumentId,
+        realm: TimerRealm,
         timer_key: WindowTimerKey,
         milliseconds: u32,
         timer_id: u32,
@@ -57,7 +69,7 @@ impl MapOfActiveTimers {
             ActiveTimer {
                 expiry_time: start_time + Duration::from_millis(u64::from(milliseconds)),
                 start_order: self.next_start_order,
-                document_id,
+                realm,
                 timer_key,
                 timer_id,
                 nesting_level,

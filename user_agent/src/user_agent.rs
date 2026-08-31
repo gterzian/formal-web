@@ -12,7 +12,7 @@ use ipc_messages::content::{
     Event as ContentEvent, EventLoopId, FetchResponse as ContentFetchResponse,
     FinalizeNavigation as ContentFinalizeNavigation, FrameId, LoadedDocumentResponse, NavigableId,
     NavigateRequest, NavigationFetchId, NavigationId, NewTraversableInfo,
-    UserNavigationInvolvement, WebviewId, iframe_target_name,
+    UserNavigationInvolvement, WebviewId, WorkerId, WorkerRequest, iframe_target_name,
 };
 use ipc_messages::safe_passing_of_structured_data::PostMessageRequest;
 use log::{debug, error, info, trace};
@@ -900,6 +900,22 @@ pub enum UserAgentCommand {
     PortEvent {
         event: crate::channel_messaging::PortEvent,
     },
+    /// A Worker constructor's request, forwarded from the content process
+    /// hosting the owner realm; routed back to that event loop as
+    /// `ContentCommand::StartWorker`.
+    /// <https://html.spec.whatwg.org/#run-a-worker>
+    StartWorker {
+        event_loop_id: EventLoopId,
+        request: WorkerRequest,
+    },
+    /// A worker's terminate() or close(), forwarded from the content process;
+    /// routed back to the owning event loop as
+    /// `ContentCommand::TerminateWorker`.
+    /// <https://html.spec.whatwg.org/#terminate-a-worker>
+    TerminateWorker {
+        event_loop_id: EventLoopId,
+        worker_id: WorkerId,
+    },
     CompleteBeforeUnload {
         result: BeforeUnloadResult,
     },
@@ -1534,6 +1550,18 @@ impl UserAgentWorker {
             }
             UserAgentCommand::PortEvent { event } => {
                 self.handle_port_event(event);
+            }
+            UserAgentCommand::StartWorker {
+                event_loop_id,
+                request,
+            } => {
+                self.handle_start_worker(event_loop_id, request);
+            }
+            UserAgentCommand::TerminateWorker {
+                event_loop_id,
+                worker_id,
+            } => {
+                self.handle_terminate_worker(event_loop_id, worker_id);
             }
             UserAgentCommand::CompleteBeforeUnload { result } => {
                 self.handle_complete_before_unload(result);
@@ -4052,6 +4080,49 @@ impl UserAgentWorker {
             event,
             &mut send_task,
         );
+    }
+
+    /// The user-agent half of worker creation: route the Worker
+    /// constructor's request back to the event loop that sent it, which runs
+    /// the content-side steps of run a worker.
+    /// <https://html.spec.whatwg.org/#run-a-worker>
+    fn handle_start_worker(&mut self, event_loop_id: EventLoopId, request: WorkerRequest) {
+        // Note: A shared-worker implementation would look up an existing
+        // shared worker by (origin, name) here and connect the outside port
+        // instead of starting a fresh worker; dedicated workers always start
+        // fresh.
+        let Some(command_sender) = self.command_sender_for_event_loop(event_loop_id) else {
+            error!("start worker: missing agent for event loop {event_loop_id}");
+            return;
+        };
+        if let Err(error) = command_sender.send(ContentCommand::StartWorker(request)) {
+            error!("start worker: failed to queue command: {error}");
+        }
+    }
+
+    /// The user-agent half of terminate a worker: route the termination back
+    /// to the event loop that owns the worker's realm.
+    /// <https://html.spec.whatwg.org/#terminate-a-worker>
+    fn handle_terminate_worker(&mut self, event_loop_id: EventLoopId, worker_id: WorkerId) {
+        let Some(command_sender) = self.command_sender_for_event_loop(event_loop_id) else {
+            error!("terminate worker: missing agent for event loop {event_loop_id}");
+            return;
+        };
+        if let Err(error) = command_sender.send(ContentCommand::TerminateWorker { worker_id }) {
+            error!("terminate worker: failed to queue command: {error}");
+        }
+    }
+
+    /// The command sender of the content process hosting an event loop.
+    fn command_sender_for_event_loop(
+        &self,
+        event_loop_id: EventLoopId,
+    ) -> Option<ipc::IpcSender<ContentCommand>> {
+        self.state
+            .agents
+            .values()
+            .find(|agent| agent.event_loop_id == event_loop_id)
+            .map(|agent| agent.event_loop.command_sender.clone())
     }
 
     /// Milliseconds since the Unix epoch of `instant`, measured on the

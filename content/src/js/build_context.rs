@@ -25,6 +25,52 @@ pub(crate) fn build_realm(
     build_realm_inner(engine, document)
 }
 
+/// <https://html.spec.whatwg.org/#creating-a-new-javascript-realm>
+pub(crate) fn build_worker_realm(
+    engine: &mut Engine,
+    document: Rc<RefCell<BaseDocument>>,
+    worker_id: ipc_messages::content::WorkerId,
+    name: String,
+    worker_type: crate::html::WorkerType,
+) -> Result<Engine, String> {
+    // The Boa backend builds the realm's global object through its host hooks
+    // and needs a factory that constructs the WorkerGlobalScope platform
+    // object once the execution context exists. JSC/V8 create it in
+    // `setup_worker_realm` and associate it with the global object there.
+    #[cfg(boa_backend)]
+    let mut engine = {
+        use crate::html::{GlobalScope, WorkerGlobalScope};
+
+        let factory_name = name.clone();
+        let document = Rc::clone(&document);
+        let factory = move |ec: &mut dyn js_engine::ExecutionContext<crate::js::Types>| {
+            let global_scope = GlobalScope::new(
+                crate::html::GlobalScopeKind::Worker,
+                Rc::clone(&document),
+                ec,
+            );
+            WorkerGlobalScope::new(
+                global_scope,
+                worker_id,
+                factory_name.clone(),
+                worker_type,
+                ec,
+            )
+        };
+        js_engine::create_engine(factory)?
+    };
+    #[cfg(v8_backend)]
+    let mut engine = engine.new_child_realm();
+    #[cfg(jsc_backend)]
+    let mut engine = js_engine::create_engine()?;
+    // JSC/V8 create the worker global object and register the realm's
+    // interfaces here; the Boa backend's factory already built the global
+    // object during realm creation.
+    #[cfg(not(boa_backend))]
+    setup_worker_realm(&mut engine, document, worker_id, name, worker_type)?;
+    Ok(engine)
+}
+
 fn build_context_inner(document: Rc<RefCell<BaseDocument>>) -> Result<Engine, String> {
     // The Boa backend builds the realm's global object through its host hooks
     // and needs a factory that constructs the Window platform object once the
@@ -93,6 +139,7 @@ fn setup_realm(engine: &mut Engine, _document: Rc<RefCell<BaseDocument>>) -> Res
     use crate::html::{
         HTMLAnchorElement, HTMLElement, HTMLIFrameElement, HTMLInputElement, HTMLMediaElement,
         HTMLVideoElement, Location, MessageChannel, MessageEvent, MessagePort, Window, WindowProxy,
+        Worker,
     };
     use crate::streams::{
         ByteLengthQueuingStrategy, CountQueuingStrategy, ReadableByteStreamController,
@@ -180,6 +227,7 @@ fn setup_realm(engine: &mut Engine, _document: Rc<RefCell<BaseDocument>>) -> Res
     reg!(HTMLVideoElement);
     reg!(Window);
     reg!(WindowProxy);
+    reg!(Worker);
     reg!(Location);
     reg!(ByteLengthQueuingStrategy);
     reg!(CountQueuingStrategy);
@@ -211,6 +259,7 @@ fn setup_realm(engine: &mut Engine, _document: Rc<RefCell<BaseDocument>>) -> Res
     wire_registry_prototype::<crate::js::Types, HTMLVideoElement, HTMLMediaElement>(engine);
     wire_registry_prototype::<crate::js::Types, HTMLInputElement, HTMLElement>(engine);
     wire_registry_prototype::<crate::js::Types, Window, EventTarget>(engine);
+    wire_registry_prototype::<crate::js::Types, Worker, EventTarget>(engine);
 
     // Step 6b: Wire constructor prototype chains so subclass constructors
     // inherit from their parent interface object (WebIDL "create an interface
@@ -231,6 +280,7 @@ fn setup_realm(engine: &mut Engine, _document: Rc<RefCell<BaseDocument>>) -> Res
     );
     wire_registry_constructor_prototype::<crate::js::Types, HTMLInputElement, HTMLElement>(engine);
     wire_registry_constructor_prototype::<crate::js::Types, Window, EventTarget>(engine);
+    wire_registry_constructor_prototype::<crate::js::Types, Worker, EventTarget>(engine);
 
     // Step 6c: DOMException inherits from the realm's Error constructor.
     if let Some(de_proto) = get_registry_prototype::<crate::js::Types, DOMException>(engine) {
@@ -415,6 +465,213 @@ fn setup_realm(engine: &mut Engine, _document: Rc<RefCell<BaseDocument>>) -> Res
             }
         }
     }
+
+    Ok(())
+}
+
+fn setup_worker_realm(
+    engine: &mut Engine,
+    document: Rc<RefCell<BaseDocument>>,
+    worker_id: ipc_messages::content::WorkerId,
+    name: String,
+    worker_type: crate::html::WorkerType,
+) -> Result<(), String> {
+    use crate::dom::{
+        AbortController, AbortSignal, DOMException, Document, Element, Event, EventTarget, Node,
+    };
+    use crate::html::{
+        DedicatedWorkerGlobalScope, GlobalScope, MessageChannel, MessageEvent, MessagePort, Worker,
+        WorkerGlobalScope, WorkerLocation, WorkerNavigator,
+    };
+    use crate::streams::{
+        ByteLengthQueuingStrategy, CountQueuingStrategy, ReadableByteStreamController,
+        ReadableStream, ReadableStreamBYOBReader, ReadableStreamBYOBRequest,
+        ReadableStreamDefaultController, ReadableStreamDefaultReader, TransformStream,
+        TransformStreamDefaultController, WritableStream, WritableStreamDefaultController,
+        WritableStreamDefaultWriter,
+    };
+    use crate::webidl::bindings::{
+        get_registry_prototype, initialize_registry, register_interface_spec,
+        wire_registry_constructor_prototype, wire_registry_prototype,
+    };
+    use js_engine::ExecutionContext as _;
+
+    // Step 1: Create the worker global scope and associate it with the
+    // realm's global object.  The Boa backend constructs it through its host
+    // hooks during realm creation, so only JSC/V8 create it here.
+    #[cfg(not(boa_backend))]
+    let global_obj = {
+        let global_scope = GlobalScope::new(
+            crate::html::GlobalScopeKind::Worker,
+            Rc::clone(&document),
+            engine,
+        );
+        let worker_global_scope =
+            WorkerGlobalScope::new(global_scope, worker_id, name, worker_type, engine);
+        let global_obj = engine.realm_global_object();
+        js_engine::associate_existing_object(engine, &global_obj, worker_global_scope);
+        global_obj
+    };
+    #[cfg(boa_backend)]
+    let global_obj = engine.realm_global_object();
+    // Set the EventTarget reflector for the worker global scope.
+    let global_value =
+        <crate::js::Types as js_engine::JsTypes>::value_from_object(global_obj.clone());
+    crate::js::try_set_event_target_reflector(&global_value, engine);
+
+    // Step 2: Store the global object in host_any.
+    crate::js::platform_objects::init_global_object_slot(engine, global_obj.clone());
+
+    #[cfg(feature = "wasm")]
+    if let Err(error) = crate::js::bindings::install_wasm_namespace(engine) {
+        error!("[content] failed to install WebAssembly namespace: {error}");
+    }
+
+    // Step 3: Initialize the interface registry.
+    initialize_registry::<crate::js::Types>(engine);
+
+    // Step 4: Install console namespace.
+    crate::js::install_console_namespace(engine)
+        .map_err(|error| format!("failed to install console: {:?}", error))?;
+
+    // Step 5: Register the interfaces a worker realm exposes: the base
+    // interfaces, the DOM/node interfaces the environment settings object
+    // still builds a document platform object for, and the worker
+    // interfaces.  Window-only interfaces (Window, Location, HTML elements,
+    // UI events) are not registered.
+    macro_rules! reg {
+        ($ty:ty) => {
+            register_interface_spec::<crate::js::Types, $ty, _>(engine).map_err(|error| {
+                format!(
+                    "failed to register {}: {:?}",
+                    stringify!($ty),
+                    error.display()
+                )
+            })?;
+        };
+    }
+
+    reg!(EventTarget);
+    reg!(DOMException);
+    reg!(Event);
+    reg!(MessageEvent);
+    reg!(MessageChannel);
+    reg!(MessagePort);
+    reg!(AbortSignal);
+    reg!(AbortController);
+    reg!(Node);
+    reg!(Document);
+    reg!(Element);
+    reg!(Worker);
+    reg!(WorkerGlobalScope);
+    reg!(DedicatedWorkerGlobalScope);
+    reg!(WorkerLocation);
+    reg!(WorkerNavigator);
+    reg!(ByteLengthQueuingStrategy);
+    reg!(CountQueuingStrategy);
+    reg!(ReadableStream);
+    reg!(ReadableStreamDefaultController);
+    reg!(ReadableByteStreamController);
+    reg!(ReadableStreamDefaultReader);
+    reg!(ReadableStreamBYOBReader);
+    reg!(ReadableStreamBYOBRequest);
+    reg!(WritableStream);
+    reg!(WritableStreamDefaultController);
+    reg!(WritableStreamDefaultWriter);
+    reg!(TransformStream);
+    reg!(TransformStreamDefaultController);
+
+    // Step 6: Wire prototype chains.
+    wire_registry_prototype::<crate::js::Types, MessageEvent, Event>(engine);
+    wire_registry_prototype::<crate::js::Types, MessagePort, EventTarget>(engine);
+    wire_registry_prototype::<crate::js::Types, AbortSignal, EventTarget>(engine);
+    wire_registry_prototype::<crate::js::Types, Node, EventTarget>(engine);
+    wire_registry_prototype::<crate::js::Types, Document, Node>(engine);
+    wire_registry_prototype::<crate::js::Types, Element, Node>(engine);
+    wire_registry_prototype::<crate::js::Types, Worker, EventTarget>(engine);
+    wire_registry_prototype::<crate::js::Types, WorkerGlobalScope, EventTarget>(engine);
+    wire_registry_prototype::<crate::js::Types, DedicatedWorkerGlobalScope, WorkerGlobalScope>(
+        engine,
+    );
+
+    // Step 6b: Wire constructor prototype chains.
+    wire_registry_constructor_prototype::<crate::js::Types, MessagePort, EventTarget>(engine);
+    wire_registry_constructor_prototype::<crate::js::Types, AbortSignal, EventTarget>(engine);
+    wire_registry_constructor_prototype::<crate::js::Types, Node, EventTarget>(engine);
+    wire_registry_constructor_prototype::<crate::js::Types, Document, Node>(engine);
+    wire_registry_constructor_prototype::<crate::js::Types, Element, Node>(engine);
+    wire_registry_constructor_prototype::<crate::js::Types, Worker, EventTarget>(engine);
+    wire_registry_constructor_prototype::<crate::js::Types, WorkerGlobalScope, EventTarget>(engine);
+    wire_registry_constructor_prototype::<
+        crate::js::Types,
+        DedicatedWorkerGlobalScope,
+        WorkerGlobalScope,
+    >(engine);
+
+    // Step 6c: DOMException inherits from the realm's Error constructor.
+    if let Some(de_proto) = get_registry_prototype::<crate::js::Types, DOMException>(engine) {
+        let realm = engine.current_realm();
+        let intrinsics = engine.realm_intrinsics(&realm);
+        if let Err(error) = engine.set_prototype(de_proto, Some(intrinsics.error_prototype.clone()))
+        {
+            error!("failed to wire DOMException to Error.prototype: {error:?}");
+        }
+    }
+
+    // Step 7: Set the global object's prototype to
+    // DedicatedWorkerGlobalScope.prototype so `instanceof` and the global
+    // members (self, postMessage, name, ...) resolve through the worker
+    // prototype chain.
+    if let Some(dedicated_proto) =
+        get_registry_prototype::<crate::js::Types, DedicatedWorkerGlobalScope>(engine)
+    {
+        let proto_set = engine.set_prototype(global_obj.clone(), Some(dedicated_proto.clone()));
+        let immutable_global_proto = match proto_set {
+            Ok(true) => false,
+            Ok(false) | Err(_) => true,
+        };
+
+        // Step 7b: Engines with an immutable global object [[Prototype]]
+        // (e.g. JSC) fall back to copying the worker prototype properties
+        // onto the global object.
+        if immutable_global_proto {
+            let prototypes = [
+                get_registry_prototype::<crate::js::Types, EventTarget>(engine),
+                get_registry_prototype::<crate::js::Types, WorkerGlobalScope>(engine),
+                Some(dedicated_proto),
+            ];
+            for proto in prototypes.iter().flatten() {
+                if let Ok(keys) = engine.own_property_keys(proto.clone()) {
+                    for key in keys {
+                        let key_str = engine.property_key_to_rust_string(&key);
+                        if key_str == "constructor" || key_str == "__proto__" {
+                            continue;
+                        }
+                        match engine.get_own_property(proto.clone(), key.clone()) {
+                            Ok(Some(descriptor))
+                                if descriptor.value.is_some() || descriptor.get.is_some() =>
+                            {
+                                if let Err(error) = engine.define_property_or_throw(
+                                    global_obj.clone(),
+                                    key,
+                                    descriptor,
+                                ) {
+                                    error!(
+                                        "failed to copy a worker prototype property to the global object: {error:?}"
+                                    );
+                                }
+                            }
+                            _ => {}
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    // Step X: Install TestUtils namespace (gc() method).
+    crate::js::bindings::testutils::install_testutils_namespace(engine)
+        .map_err(|error| format!("failed to install TestUtils namespace: {:?}", error))?;
 
     Ok(())
 }

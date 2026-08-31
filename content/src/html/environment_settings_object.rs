@@ -1,16 +1,18 @@
 use log::{debug, error};
 use std::{cell::RefCell, rc::Rc, time::Instant};
 
-use blitz_dom::BaseDocument;
+use blitz_dom::{BaseDocument, DocumentConfig};
 use ipc::IpcSender;
-use ipc_messages::content::{DocumentId, Event as ContentEvent, NavigableId, WindowTimerKey};
+use ipc_messages::content::{
+    DocumentId, Event as ContentEvent, NavigableId, WindowTimerKey, WorkerId,
+};
 use url::Url;
 
 use crate::html::event_loop::EventLoopTaskSources;
 use crate::html::{TimerHandler, Window};
 use crate::js::bindings::dom::document::create_document_platform_object;
 use crate::js::build_context::{build_context, build_realm};
-use crate::js::platform_objects::with_global_scope;
+use crate::js::platform_objects::{with_global_scope, with_worker_global_scope};
 use crate::js::{
     Engine, Types, install_console_namespace, install_css_namespace, install_document_property,
 };
@@ -53,6 +55,16 @@ pub(crate) struct RealmWiring {
     pub source_navigable_id: NavigableId,
     /// <https://html.spec.whatwg.org/#concept-document>
     pub document_id: DocumentId,
+    pub event_sender: IpcSender<ContentEvent>,
+    /// <https://html.spec.whatwg.org/#task-source>
+    pub task_sources: EventLoopTaskSources,
+}
+
+/// The content process connections a new worker realm is built with: the
+/// channel it sends events to the user agent on and the task sources of its
+/// event loop (a worker has no navigable or document).
+/// <https://html.spec.whatwg.org/#run-a-worker>
+pub(crate) struct WorkerRealmWiring {
     pub event_sender: IpcSender<ContentEvent>,
     /// <https://html.spec.whatwg.org/#task-source>
     pub task_sources: EventLoopTaskSources,
@@ -194,6 +206,103 @@ impl EnvironmentSettingsObject {
             referrer_policy: ReferrerPolicy::NoReferrerWhenDowngrade,
             time_origin: Instant::now(),
         })
+    }
+
+    /// <https://html.spec.whatwg.org/#set-up-a-worker-environment-settings-object>
+    pub(crate) fn new_worker_in_realm(
+        parent: &mut Engine,
+        creation_url: Url,
+        worker_id: WorkerId,
+        name: String,
+        worker_type: crate::html::WorkerType,
+        wiring: WorkerRealmWiring,
+    ) -> Result<(Self, crate::html::WorkerGlobalScope), String> {
+        // Step 5: "For the global object ... create a new
+        // DedicatedWorkerGlobalScope object."
+        // Note: The realm (steps 4-6 of run a worker) is built by
+        // `build_worker_realm`, which creates the DedicatedWorkerGlobalScope
+        // platform object as the realm's global object and registers the
+        // worker interfaces.
+        let mut engine = crate::js::build_context::build_worker_realm(
+            parent,
+            Rc::new(RefCell::new(BaseDocument::new(DocumentConfig::default()))),
+            worker_id,
+            name,
+            worker_type,
+        )?;
+
+        // Connect the new realm's GlobalScope to the content process through
+        // the EC trait's realm_global_object + with_object_any.
+        with_worker_global_scope(&mut engine, |worker_global_scope, _ec| {
+            worker_global_scope
+                .global_scope
+                .set_worker_task_sources(worker_id, wiring.task_sources.clone());
+            worker_global_scope
+                .global_scope
+                .set_event_sender(wiring.event_sender.clone());
+            worker_global_scope
+                .global_scope
+                .set_creation_url(creation_url.clone());
+            Ok(())
+        })
+        .map_err(|error| {
+            engine
+                .to_rust_string(error)
+                .unwrap_or_else(|_| "unknown error".to_string())
+        })?;
+
+        // The environment settings object holds a platform Document for the
+        // worker's (unused) base document; the `document` global property is
+        // not installed for workers.
+        let document = Rc::new(RefCell::new(BaseDocument::new(DocumentConfig::default())));
+        let (document_object, platform_document) =
+            create_document_platform_object(document, creation_url.clone(), &mut engine).map_err(
+                |error| {
+                    engine
+                        .to_rust_string(error)
+                        .unwrap_or_else(|_| "unknown error".to_string())
+                },
+            )?;
+        with_global_scope(&mut engine, |global_scope, ec| {
+            global_scope.store_document_object(document_object, ec);
+            Ok(())
+        })
+        .map_err(|error| {
+            engine
+                .to_rust_string(error)
+                .unwrap_or_else(|_| "unknown error".to_string())
+        })?;
+        install_console_namespace(&mut engine)
+            .map_err(|error| format!("failed to install console: {error:?}"))?;
+
+        // Step 7: "Set up a worker environment settings object with realm
+        // execution context, outside settings, and unsafeWorkerCreationTime."
+        // Note: The origin is the creation URL's origin (a data: URL worker
+        // has an opaque origin, which url crate represents as opaque);
+        // unsafeWorkerCreationTime is not tracked.
+        let worker_global_scope =
+            with_worker_global_scope(&mut engine, |worker_global_scope, _ec| {
+                Ok(worker_global_scope.clone())
+            })
+            .map_err(|error| {
+                engine
+                    .to_rust_string(error)
+                    .unwrap_or_else(|_| "unknown error".to_string())
+            })?;
+
+        Ok((
+            Self {
+                realm_execution_context: engine,
+                document: platform_document,
+                origin: Origin {
+                    serialized: creation_url.origin().unicode_serialization(),
+                },
+                creation_url,
+                referrer_policy: ReferrerPolicy::NoReferrerWhenDowngrade,
+                time_origin: Instant::now(),
+            },
+            worker_global_scope,
+        ))
     }
 
     /// Access the execution context for generic ECMA-262 operations.

@@ -178,6 +178,30 @@ impl EventLoopState {
                     })
                     .map_err(|error| format!("failed to forward transfer completion: {error}"))?;
             }
+            ContentEvent::WorkerRequested(request) => {
+                // The constructor steps (steps 1-9 of the Worker constructor)
+                // ran in the sending content process; the user agent routes
+                // the request back to the same event loop to run a worker.
+                // <https://html.spec.whatwg.org/#run-a-worker>
+                user_agent_command_sender
+                    .send(UserAgentCommand::StartWorker {
+                        event_loop_id: self.event_loop_id,
+                        request,
+                    })
+                    .map_err(|error| format!("failed to forward worker request: {error}"))?;
+            }
+            ContentEvent::WorkerTerminated { worker_id } => {
+                // A worker's terminate() or close() ran in its realm; the
+                // user agent routes the termination back to the owning event
+                // loop.
+                // <https://html.spec.whatwg.org/#terminate-a-worker>
+                user_agent_command_sender
+                    .send(UserAgentCommand::TerminateWorker {
+                        event_loop_id: self.event_loop_id,
+                        worker_id,
+                    })
+                    .map_err(|error| format!("failed to forward worker termination: {error}"))?;
+            }
             ContentEvent::BeforeUnloadCompleted(result) => {
                 user_agent_command_sender
                     .send(UserAgentCommand::CompleteBeforeUnload { result })

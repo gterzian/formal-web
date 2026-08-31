@@ -8,7 +8,7 @@ use crate::dom::{
 };
 use crate::html::{
     HTMLAnchorElement, HTMLElement, HTMLIFrameElement, HTMLInputElement, HTMLMediaElement,
-    HTMLVideoElement, MessageEvent, MessagePort, Window,
+    HTMLVideoElement, MessageEvent, MessagePort, Window, WorkerGlobalScope,
 };
 use crate::js::Types;
 use crate::ui_events::{MouseEvent, UIEvent};
@@ -153,6 +153,8 @@ pub(crate) fn try_set_event_target_reflector(
                     ec.store_js_object(&mut target.reflector, reflector);
                 } else if let Some(port) = data.downcast_mut::<MessagePort>() {
                     ec.store_js_object(&mut port.event_target.reflector, reflector);
+                } else if let Some(worker_global_scope) = data.downcast_mut::<WorkerGlobalScope>() {
+                    ec.store_js_object(&mut worker_global_scope.event_target.reflector, reflector);
                 } else if let Some(signal) = data.downcast_mut::<AbortSignal>() {
                     // AbortSignal exposes its EventTarget through a shared
                     // cell, so its setter borrows the cell (the clone shares
@@ -213,6 +215,8 @@ pub(crate) fn event_target_from_js_object(
             Some(node.event_target.clone())
         } else if let Some(port) = data.downcast_ref::<MessagePort>() {
             Some(port.event_target.clone())
+        } else if let Some(worker_global_scope) = data.downcast_ref::<WorkerGlobalScope>() {
+            Some(worker_global_scope.event_target.clone())
         } else if let Some(event_target) = data.downcast_ref::<EventTarget>() {
             Some(event_target.clone())
         } else {

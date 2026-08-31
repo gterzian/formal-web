@@ -11,10 +11,13 @@ use super::{
     environment_settings_object::EnvironmentSettingsObject,
 };
 
+use super::timers::TimerRealm;
+
 use blitz_dom::BaseDocument;
 use ipc::IpcSender;
-use ipc_messages::content::DocumentId;
-use ipc_messages::content::{Event as ContentEvent, NavigableId, WindowTimerKey};
+use ipc_messages::content::{
+    DocumentId, Event as ContentEvent, NavigableId, WindowTimerKey, WorkerId,
+};
 use ipc_messages::media::VideoPaintId;
 use js_engine::gc::{GcCell, gc_cell_new};
 use js_engine::{Completion, ExecutionContext, JsTypes, gc_struct};
@@ -41,7 +44,10 @@ fn log_timer_debug(message: impl AsRef<str>) {
 /// <https://html.spec.whatwg.org/#global-object>
 #[derive(Debug, Clone, Copy)]
 pub enum GlobalScopeKind {
+    /// <https://html.spec.whatwg.org/#window>
     Window,
+    /// <https://html.spec.whatwg.org/#the-workerglobalscope-common-interface>
+    Worker,
 }
 
 /// <https://html.spec.whatwg.org/#global-object>
@@ -202,6 +208,13 @@ pub struct GlobalScope {
     #[ignore_trace]
     event_loop_id: Rc<Cell<Option<ipc_messages::content::EventLoopId>>>,
 
+    /// The id of the worker this global scope belongs to, when the global
+    /// object is a worker global scope.  The timer machinery uses it to
+    /// schedule and route the realm's timers (a worker realm has no
+    /// document).
+    #[ignore_trace]
+    worker_id: Rc<Cell<Option<WorkerId>>>,
+
     /// Per-realm channel messaging state (ports, message queues, transfer
     /// state), created lazily on first port use.
     channel_messaging: GcCell<Option<ChannelMessaging>>,
@@ -293,6 +306,7 @@ impl GlobalScope {
             task_sources: Rc::new(RefCell::new(None)),
             source_navigable_id: Rc::new(Cell::new(None)),
             event_loop_id: Rc::new(Cell::new(None)),
+            worker_id: Rc::new(Cell::new(None)),
             channel_messaging: gc_cell_new(None, ec),
             trace_sender: Rc::new(RefCell::new(None)),
             parent_traversable_id: Rc::new(Cell::new(None)),
@@ -376,6 +390,12 @@ impl GlobalScope {
         self.event_sender.borrow_mut().replace(event_sender);
     }
 
+    /// Set the content-to-user-agent event sender of a worker realm's global
+    /// scope (a worker has no navigable, so no source navigable id).
+    pub(crate) fn set_event_sender(&self, event_sender: IpcSender<ContentEvent>) {
+        self.event_sender.borrow_mut().replace(event_sender);
+    }
+
     pub(crate) fn set_navigable_hierarchy(
         &self,
         parent_traversable_id: Option<NavigableId>,
@@ -404,6 +424,10 @@ impl GlobalScope {
 
     pub(crate) fn event_loop_id(&self) -> Option<ipc_messages::content::EventLoopId> {
         self.event_loop_id.get()
+    }
+
+    pub(crate) fn worker_id(&self) -> Option<WorkerId> {
+        self.worker_id.get()
     }
 
     /// Set the TLA trace sender for the MessagePort spec.
@@ -442,6 +466,19 @@ impl GlobalScope {
         task_sources: EventLoopTaskSources,
     ) {
         self.document_id.borrow_mut().replace(document_id);
+        *self.task_sources.borrow_mut() = Some(task_sources);
+    }
+
+    /// Wire a worker realm's global scope to the content process's event
+    /// loop: its task sources and worker id (a worker realm has no
+    /// document).
+    /// <https://html.spec.whatwg.org/#task-source>
+    pub(crate) fn set_worker_task_sources(
+        &self,
+        worker_id: WorkerId,
+        task_sources: EventLoopTaskSources,
+    ) {
+        self.worker_id.set(Some(worker_id));
         *self.task_sources.borrow_mut() = Some(task_sources);
     }
 
@@ -790,11 +827,14 @@ impl GlobalScope {
             "schedule timer id={} key={} timeout_ms={} nesting={} repeat={} previous_id={:?}",
             timer_id, timer_key, timeout_ms, nesting_level, repeat, previous_id
         ));
-        let document_id = self
-            .document_id()
-            .ok_or_else(|| String::from("window timer scheduled without an associated document"))?;
+        let realm = match self.worker_id() {
+            Some(worker_id) => TimerRealm::Worker(worker_id),
+            None => TimerRealm::Document(self.document_id().ok_or_else(|| {
+                String::from("window timer scheduled without an associated document")
+            })?),
+        };
         self.task_sources()?.run_steps_after_a_timeout(
-            document_id,
+            realm,
             timer_key,
             timeout_ms,
             timer_id,
@@ -895,16 +935,19 @@ impl GlobalScope {
             .unwrap_or(0)
             .saturating_add(1);
         let task_sources = self.task_sources()?;
-        let document_id = self.document_id().ok_or_else(|| {
-            String::from("window timer rescheduled without an associated document")
-        })?;
+        let realm = match self.worker_id() {
+            Some(worker_id) => TimerRealm::Worker(worker_id),
+            None => TimerRealm::Document(self.document_id().ok_or_else(|| {
+                String::from("window timer rescheduled without an associated document")
+            })?),
+        };
         let next_timer_key = self.next_timer_key()?;
         log_timer_debug(format!(
             "reschedule interval id={} old_key={} new_key={} timeout_ms={} nesting={}",
             timer_id, timer_key, next_timer_key, timer.timeout_ms, next_nesting_level
         ));
         task_sources.run_steps_after_a_timeout(
-            document_id,
+            realm,
             next_timer_key,
             timer.timeout_ms,
             timer_id,

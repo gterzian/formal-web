@@ -78,6 +78,20 @@ impl MessagePort {
             .ok_or_else(|| ec.new_type_error("MessagePort instance is not a MessagePort"))
     }
 
+    /// Create a MessagePort domain object without a platform object, sharing
+    /// the given event target as its message event target.  Used for the
+    /// unexposed ports of the worker channel (the Worker constructor's
+    /// outside port and run-a-worker's inside port): the port is never
+    /// handed to script, and its message events fire at the shared event
+    /// target (the Worker object, or the worker global scope).
+    /// <https://html.spec.whatwg.org/#message-event-target>
+    pub(crate) fn new_unwrapped(port_id: PortId, event_target: EventTarget) -> Self {
+        Self {
+            event_target,
+            port_id,
+        }
+    }
+
     /// The current realm's ChannelMessaging, created on first use; `None`
     /// when the realm has no event loop yet.  Port operations all run in
     /// the port's own realm (the bindings run in the creation realm, and a

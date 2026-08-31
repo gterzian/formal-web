@@ -19,13 +19,15 @@ pub mod wasm;
 pub mod webidl;
 
 use crate::dom::{EventTargetAccess, dispatch_with_path, fire_event, simple_path};
-use crate::html::environment_settings_object::RealmWiring;
+use crate::html::environment_settings_object::{RealmWiring, WorkerRealmWiring};
 use crate::html::event_loop::{EventLoopTaskSources, Task, TaskQueue};
+use crate::html::messageport::MessagePort;
 use crate::html::timers::MapOfActiveTimers;
+use crate::html::timers::TimerRealm;
 use crate::html::ui_events::{dispatch_trusted_click_event, dispatch_ui_event};
 use crate::html::{
     EnvironmentSettingsObject, JsHtmlParserProvider, MessageEvent, PendingParserScript, Window,
-    attach_same_origin_child_document_for_traversable, execute_parser_scripts,
+    WorkerType, attach_same_origin_child_document_for_traversable, execute_parser_scripts,
     parse_html_into_document, run_dom_post_connection_steps_for_document,
     run_dom_removing_steps_for_document, run_iframe_load_event_steps_for_traversable,
     structured_data::safe_passing_of_structured_data::{
@@ -35,8 +37,9 @@ use crate::html::{
 };
 use crate::infra::strip_and_collapse_ascii_whitespace;
 use crate::js::Engine;
+use crate::js::Types;
 use crate::js::downcast::try_with_event_target_mut;
-use crate::js::platform_objects::with_global_scope;
+use crate::js::platform_objects::{with_global_scope, with_worker_global_scope};
 use crate::ui_event::deserialize_ui_event;
 #[cfg(all(boa_backend, feature = "wasm"))]
 use crate::wasm::{WasmResult, compile_continuation, compile_rejection, instantiate_continuation};
@@ -52,7 +55,8 @@ use js_engine::{EcmascriptHost, ExecutionContext, JsTypes};
 use ipc_messages::content::Command::{
     ClickElement, CompleteDocumentFetch, ContentBootstrap, CreateEmptyDocument,
     CreateLoadedDocument, DestroyDocument, DispatchEvent, EvaluateScript, FailDocumentFetch,
-    NotifyVideoEnded, SetTraversableViewport, SetViewport, Shutdown, UpdateTheRendering,
+    NotifyVideoEnded, SetTraversableViewport, SetViewport, Shutdown, StartWorker, TerminateWorker,
+    UpdateTheRendering,
 };
 use ipc_messages::content::{
     BeforeUnloadCheckId, ClipboardWriteRequested, ColorScheme as MessageColorScheme, Command,
@@ -62,7 +66,7 @@ use ipc_messages::content::{
     FontTransportSender, FrameCompositionMetadata, FrameId, IframeEmbedSite,
     LoadedDocumentResponse, NavigableId, NavigationId, PaintFrame, PortId, PortTaskKind,
     PreparedScene, RecordedScene, ScriptEvaluationResult, TitleChanged, TraversableViewport,
-    ViewportSnapshot, WebviewId, WindowTimerKey,
+    ViewportSnapshot, WebviewId, WindowTimerKey, WorkerId, WorkerOwner, WorkerRequest,
 };
 use ipc_messages::media::{VideoEmbedData, VideoPaintId};
 use ipc_messages::safe_passing_of_structured_data::PostMessageRequest;
@@ -147,6 +151,21 @@ enum PendingNetworkHandler {
         document_id: DocumentId,
         script_index: usize,
     },
+    /// A worker script fetch (run-a-worker step 12's "fetch a classic worker
+    /// script"), routed through the net process like the deferred parser
+    /// scripts.
+    /// <https://html.spec.whatwg.org/#run-a-worker>
+    WorkerScript { worker_id: WorkerId },
+}
+
+/// The realm of this content process that manages a port: a document's or a
+/// worker's channel messaging.
+/// <https://html.spec.whatwg.org/#message-ports>
+enum PortOwner {
+    /// <https://html.spec.whatwg.org/#concept-document>
+    Document(DocumentId),
+    /// <https://html.spec.whatwg.org/#the-workerglobalscope-common-interface>
+    Worker(WorkerId),
 }
 
 struct LocalContentState {
@@ -410,6 +429,25 @@ struct DocumentViewportState {
     offset_y: f32,
 }
 
+/// The content-process state of one dedicated worker: its realm (the worker
+/// environment settings object), its global scope, and the two ports of the
+/// worker channel.  The worker runs on this content process's event loop, so
+/// its tasks (timers, port messages) are queued on the same task queue and
+/// routed by the same user agent as the documents'.
+/// <https://html.spec.whatwg.org/#run-a-worker>
+pub(crate) struct ContentWorker {
+    /// <https://html.spec.whatwg.org/#concept-settings-object>
+    pub(crate) settings: EnvironmentSettingsObject,
+    /// <https://html.spec.whatwg.org/#dedicated-workers-and-the-worker-interface>
+    pub(crate) outside_port_id: PortId,
+    /// <https://html.spec.whatwg.org/#the-worker-s-lifetime>
+    pub(crate) owner: WorkerOwner,
+    /// <https://html.spec.whatwg.org/#the-worker-s-lifetime>
+    /// The closing flag, shared with the worker global scope so task handlers
+    /// can discard the worker's further tasks without touching the realm.
+    pub(crate) closing_flag: std::rc::Rc<std::cell::Cell<bool>>,
+}
+
 pub(crate) struct ContentProcess {
     event_sender: ipc::IpcSender<ContentEvent>,
     event_loop_id: EventLoopId,
@@ -417,6 +455,14 @@ pub(crate) struct ContentProcess {
     default_viewport: Option<ViewportSnapshot>,
     traversable_viewports: HashMap<NavigableId, DocumentViewportState>,
     documents: HashMap<DocumentId, ContentDocument>,
+    /// <https://html.spec.whatwg.org/#run-a-worker>
+    /// The dedicated workers running in this content process, keyed by worker
+    /// id.
+    workers: HashMap<WorkerId, ContentWorker>,
+    /// Worker creation requests whose script fetch is in flight; consumed by
+    /// the fetch completion handler.
+    /// <https://html.spec.whatwg.org/#run-a-worker>
+    pending_worker_requests: HashMap<WorkerId, WorkerRequest>,
     active_documents_by_traversable: HashMap<NavigableId, DocumentId>,
     font_namespace: u64,
     font_sender: FontTransportSender,
@@ -494,6 +540,8 @@ impl ContentProcess {
             default_viewport: None,
             traversable_viewports: HashMap::new(),
             documents: HashMap::new(),
+            workers: HashMap::new(),
+            pending_worker_requests: HashMap::new(),
             active_documents_by_traversable: HashMap::new(),
             font_namespace: new_font_namespace(),
             font_sender: FontTransportSender::default(),
@@ -1611,6 +1659,22 @@ impl ContentProcess {
 
     fn destroy_document(&mut self, document_id: DocumentId) -> Result<(), String> {
         run_dom_removing_steps_for_document(self, document_id)?;
+        // Terminate the dedicated workers this document owns: the document is
+        // going away, so its workers are no longer actively needed.
+        // <https://html.spec.whatwg.org/#the-worker-s-lifetime>
+        let owned_workers: Vec<WorkerId> = self
+            .workers
+            .iter()
+            .filter(|(_, worker)| matches!(worker.owner, WorkerOwner::Document(owner_id) if owner_id == document_id))
+            .map(|(worker_id, _)| *worker_id)
+            .collect();
+        for worker_id in owned_workers {
+            if let Err(error) = self.terminate_worker(worker_id) {
+                error!(
+                    "failed to terminate worker {worker_id} owned by destroyed document: {error}"
+                );
+            }
+        }
         if let Some(mut content_document) = self.documents.remove(&document_id) {
             let traversable_id = content_document.traversable_id;
             // Release every event listener and event handler callback on the
@@ -1679,6 +1743,16 @@ impl ContentProcess {
             .local_state
             .lock()
             .expect("local content state mutex poisoned");
+        // Drop the worker creation requests whose owner document is being
+        // destroyed first, then drop their in-flight script fetches: a
+        // completion arriving for a dropped request is discarded.
+        // <https://html.spec.whatwg.org/#run-a-worker>
+        self.pending_worker_requests.retain(|_, request| {
+            !matches!(
+                request.owner,
+                WorkerOwner::Document(owner_id) if owner_id == document_id
+            )
+        });
         local_state
             .pending_handlers
             .retain(|_, pending_handler| match pending_handler {
@@ -1690,6 +1764,9 @@ impl ContentProcess {
                     document_id: pending_document_id,
                     ..
                 } => *pending_document_id != document_id,
+                PendingNetworkHandler::WorkerScript { worker_id } => {
+                    self.pending_worker_requests.contains_key(worker_id)
+                }
             });
         drop(local_state);
 
@@ -2015,8 +2092,9 @@ impl ContentProcess {
     }
 
     /// Find the document whose realm manages a port record.
-    fn find_port_document(&mut self, port_id: PortId) -> Option<DocumentId> {
-        let mut found = None;
+    /// The realm of this event loop that manages a port record, if any: a
+    /// document's or a worker's channel messaging.
+    fn find_port_owner(&mut self, port_id: PortId) -> Option<PortOwner> {
         for (document_id, document) in self.documents.iter_mut() {
             let result = with_global_scope(document.settings.ec(), |global_scope, ec| {
                 Ok(global_scope
@@ -2025,11 +2103,23 @@ impl ContentProcess {
                     .unwrap_or(false))
             });
             if matches!(result, Ok(true)) {
-                found = Some(*document_id);
-                break;
+                return Some(PortOwner::Document(*document_id));
             }
         }
-        found
+        for (worker_id, worker) in self.workers.iter_mut() {
+            let result =
+                with_worker_global_scope(worker.settings.ec(), |worker_global_scope, ec| {
+                    Ok(worker_global_scope
+                        .global_scope
+                        .channel_messaging(ec)
+                        .map(|messaging| messaging.has_port(port_id, ec))
+                        .unwrap_or(false))
+                });
+            if matches!(result, Ok(true)) {
+                return Some(PortOwner::Worker(*worker_id));
+            }
+        }
+        None
     }
 
     /// The channel messaging of the first realm in this process, used to
@@ -2054,7 +2144,7 @@ impl ContentProcess {
     /// request a task.
     fn handle_port_task(&mut self, port_id: PortId, task: PortTaskKind) -> Result<(), String> {
         let event_sender = self.event_sender.clone();
-        let Some(document_id) = self.find_port_document(port_id) else {
+        let Some(port_owner) = self.find_port_owner(port_id) else {
             // The port is no longer managed by this event loop; return the
             // task to the user agent's routing queue.
             let messaging = self.any_channel_messaging().ok_or_else(|| {
@@ -2065,20 +2155,41 @@ impl ContentProcess {
                 .map_err(|error| format!("port task return failed: {error}"))?;
             return Ok(());
         };
-        let fire = {
-            let content_document = self
-                .documents
-                .get_mut(&document_id)
-                .ok_or_else(|| format!("port task: unknown document {document_id}"))?;
-            with_global_scope(content_document.settings.ec(), |global_scope, ec| {
-                let Some(messaging) = global_scope.channel_messaging(ec) else {
-                    return Ok(false);
-                };
-                messaging
-                    .handle_port_task(port_id, task, &event_sender, ec)
-                    .map_err(|error| ec.new_type_error(&format!("port task: {error}")))
-            })
-            .map_err(|error| format!("port task failed: {}", error.display()))?
+        let fire = match port_owner {
+            PortOwner::Document(document_id) => {
+                let content_document = self
+                    .documents
+                    .get_mut(&document_id)
+                    .ok_or_else(|| format!("port task: unknown document {document_id}"))?;
+                with_global_scope(content_document.settings.ec(), |global_scope, ec| {
+                    let Some(messaging) = global_scope.channel_messaging(ec) else {
+                        return Ok(false);
+                    };
+                    messaging
+                        .handle_port_task(port_id, task, &event_sender, ec)
+                        .map_err(|error| ec.new_type_error(&format!("port task: {error}")))
+                })
+                .map_err(|error| format!("port task failed: {}", error.display()))?
+            }
+            PortOwner::Worker(worker_id) => {
+                let content_worker = self
+                    .workers
+                    .get_mut(&worker_id)
+                    .ok_or_else(|| format!("port task: unknown worker {worker_id}"))?;
+                if content_worker.closing_flag.get() {
+                    return Ok(());
+                }
+                with_worker_global_scope(content_worker.settings.ec(), |worker_global_scope, ec| {
+                    let Some(messaging) = worker_global_scope.global_scope.channel_messaging(ec)
+                    else {
+                        return Ok(false);
+                    };
+                    messaging
+                        .handle_port_task(port_id, task, &event_sender, ec)
+                        .map_err(|error| ec.new_type_error(&format!("port task: {error}")))
+                })
+                .map_err(|error| format!("port task failed: {}", error.display()))?
+            }
         };
         if fire {
             // The delivery task runs the message task itself (the message
@@ -2091,44 +2202,77 @@ impl ContentProcess {
     /// Fire one queued message event on a port (the message task of the
     /// message port post message steps).
     fn handle_run_port_message_task(&mut self, port_id: PortId) -> Result<(), String> {
-        let Some(document_id) = self.find_port_document(port_id) else {
+        let Some(port_owner) = self.find_port_owner(port_id) else {
             return Ok(());
         };
-        let traversable_id = self
-            .documents
-            .get(&document_id)
-            .map(|document| document.traversable_id);
-        let time_millis = self
-            .documents
-            .get(&document_id)
-            .map(|document| document.settings.current_time_millis())
-            .unwrap_or(0.0);
-        let content_document = self
-            .documents
-            .get_mut(&document_id)
-            .ok_or_else(|| format!("port message task: unknown document {document_id}"))?;
-        with_global_scope(content_document.settings.ec(), |global_scope, ec| {
-            let Some(messaging) = global_scope.channel_messaging(ec) else {
-                return Ok(());
-            };
-            let Some(port) = messaging.port_object(port_id, ec) else {
-                return Ok(());
-            };
-            port.run_message_task(time_millis, ec)
-        })
-        .map_err(|error| format!("port message task failed: {}", error.display()))?;
+        let time_millis = match port_owner {
+            PortOwner::Document(document_id) => self
+                .documents
+                .get(&document_id)
+                .map(|document| document.settings.current_time_millis())
+                .unwrap_or(0.0),
+            PortOwner::Worker(worker_id) => self
+                .workers
+                .get(&worker_id)
+                .map(|worker| worker.settings.current_time_millis())
+                .unwrap_or(0.0),
+        };
+        match port_owner {
+            PortOwner::Document(document_id) => {
+                let content_document = self
+                    .documents
+                    .get_mut(&document_id)
+                    .ok_or_else(|| format!("port message task: unknown document {document_id}"))?;
+                with_global_scope(content_document.settings.ec(), |global_scope, ec| {
+                    let Some(messaging) = global_scope.channel_messaging(ec) else {
+                        return Ok(());
+                    };
+                    let Some(port) = messaging.port_object(port_id, ec) else {
+                        return Ok(());
+                    };
+                    port.run_message_task(time_millis, ec)
+                })
+                .map_err(|error| format!("port message task failed: {}", error.display()))?;
 
-        // The message task's handler may have mutated the target document; mark
-        // it dirty and request a rendering opportunity from the UA so the
-        // target's render cycle is driven, instead of the change waiting for an
-        // unrelated input event to come through.
-        self.mark_document_dirty(document_id);
-        if let Some(traversable_id) = traversable_id
-            && let Err(error) = self
-                .event_sender
-                .send(ContentEvent::RenderingOpRequested(traversable_id))
-        {
-            error!("failed to request rendering op for port message task: {error}");
+                // The message task's handler may have mutated the target
+                // document; mark it dirty and request a rendering opportunity
+                // from the UA so the target's render cycle is driven, instead
+                // of the change waiting for an unrelated input event to come
+                // through.
+                self.mark_document_dirty(document_id);
+                let traversable_id = self
+                    .documents
+                    .get(&document_id)
+                    .map(|document| document.traversable_id);
+                if let Some(traversable_id) = traversable_id
+                    && let Err(error) = self
+                        .event_sender
+                        .send(ContentEvent::RenderingOpRequested(traversable_id))
+                {
+                    error!("failed to request rendering op for port message task: {error}");
+                }
+            }
+            PortOwner::Worker(worker_id) => {
+                let content_worker = self
+                    .workers
+                    .get_mut(&worker_id)
+                    .ok_or_else(|| format!("port message task: unknown worker {worker_id}"))?;
+                with_worker_global_scope(
+                    content_worker.settings.ec(),
+                    |worker_global_scope, ec| {
+                        let Some(messaging) =
+                            worker_global_scope.global_scope.channel_messaging(ec)
+                        else {
+                            return Ok(());
+                        };
+                        let Some(port) = messaging.port_object(port_id, ec) else {
+                            return Ok(());
+                        };
+                        port.run_message_task(time_millis, ec)
+                    },
+                )
+                .map_err(|error| format!("port message task failed: {}", error.display()))?;
+            }
         }
         Ok(())
     }
@@ -2684,6 +2828,19 @@ impl ContentProcess {
                     })?;
                 Ok(())
             }
+            PendingNetworkHandler::WorkerScript { worker_id } => {
+                log_render_state_debug(format!(
+                    "complete worker-script fetch handler={} worker={} status={} type={} url={}",
+                    handler_id, worker_id, response_status, response_type, response_url,
+                ));
+                let Some(request) = self.pending_worker_requests.remove(&worker_id) else {
+                    error!(
+                        "complete worker-script fetch: unknown worker request {worker_id}; dropping"
+                    );
+                    return Ok(());
+                };
+                self.complete_worker_script_fetch(request, response)
+            }
         }
     }
 
@@ -2748,7 +2905,417 @@ impl ContentProcess {
                     .map_err(|error| format!("failed to request rendering op for deferred script fetch failure: {error}"))?;
                 Ok(())
             }
+            PendingNetworkHandler::WorkerScript { worker_id } => {
+                log_render_state_debug(format!(
+                    "fail worker-script fetch handler={} worker={}",
+                    handler_id, worker_id,
+                ));
+                let Some(request) = self.pending_worker_requests.remove(&worker_id) else {
+                    error!(
+                        "fail worker-script fetch: unknown worker request {worker_id}; dropping"
+                    );
+                    return Ok(());
+                };
+                self.fail_worker_script_fetch(request)
+            }
         }
+    }
+
+    /// <https://html.spec.whatwg.org/#run-a-worker>
+    fn start_worker(&mut self, request: WorkerRequest) -> Result<(), String> {
+        // The command half of worker creation: fetch the worker script (the
+        // fetch of run-a-worker step 12), routing the request through the net
+        // process like the deferred parser scripts.  On completion the content
+        // process runs the remaining content-side steps (steps 5-15).
+        let resolved_url = Url::parse(&request.script_url)
+            .map_err(|error| format!("invalid worker script URL: {error}"))?;
+        if resolved_url.scheme() == "data" {
+            // data: worker scripts are decoded locally, mirroring the
+            // deferred script path (the net process does not fetch data:).
+            let (bytes, _fragment) = DataUrl::process(&request.script_url)
+                .map_err(|error| format!("failed to decode data: worker script: {error}"))?
+                .decode_to_vec()
+                .map_err(|error| format!("failed to read data: worker script body: {error}"))?;
+            let response = ContentFetchResponse {
+                final_url: request.script_url.clone(),
+                status: 200,
+                content_type: String::from("text/javascript"),
+                body: bytes,
+            };
+            return self.complete_worker_script_fetch(request, response);
+        }
+        self.pending_worker_requests
+            .insert(request.worker_id, request.clone());
+        let handler_id = self.register_pending_handler(PendingNetworkHandler::WorkerScript {
+            worker_id: request.worker_id,
+        })?;
+        self.request_remote_fetch(handler_id, Request::get(resolved_url))
+    }
+
+    /// <https://html.spec.whatwg.org/#run-a-worker>
+    fn complete_worker_script_fetch(
+        &mut self,
+        request: WorkerRequest,
+        response: ContentFetchResponse,
+    ) -> Result<(), String> {
+        // The content-side steps of run a worker once the worker script has
+        // been obtained (step 12.3.10's processCustomFetchResponse
+        // continuation): create the worker realm and inside port, entangle
+        // the channel, run the script, and enable the queues.
+        // Step 12.4: "If script is null or if script's error to rethrow is
+        // non-null:"
+        // Note: The executable check (status + JavaScript MIME type) stands
+        // in for a null script; parse failures are handled after evaluation.
+        if !deferred_script_response_is_executable(&response) {
+            return self.fail_worker_script_fetch(request);
+        }
+        let worker_id = request.worker_id;
+        let outside_port_id = request.outside_port;
+        let owner = request.owner;
+        let final_url = response.final_url.clone();
+        // Step 5: "Let realm execution context be the result of creating a
+        // new realm ... For the global object ... create a new
+        // DedicatedWorkerGlobalScope object."
+        // Step 6: "Let worker global scope be the global object of realm
+        // execution context's Realm component."
+        // Step 7: "Set up a worker environment settings object ..."
+        // Step 8: "Set worker global scope's name to options["name"]."
+        // Step 9: "Append owner to worker global scope's owner set."
+        // Note: The realm is created here, after the fetch (the spec creates
+        // it before step 12); the creation URL is the response URL
+        // (step 12.3.2's assignment), and the owner is stored on the worker
+        // global scope and in the ContentWorker entry below.
+        let wiring = WorkerRealmWiring {
+            event_sender: self.event_sender.clone(),
+            task_sources: self.event_loop_task_sources(),
+        };
+        let (mut settings, worker_global_scope) = EnvironmentSettingsObject::new_worker_in_realm(
+            &mut self.realm_parent,
+            Url::parse(&final_url)
+                .map_err(|error| format!("invalid worker script URL: {error}"))?,
+            worker_id,
+            request.name.clone(),
+            WorkerType::from_idl(&request.worker_type),
+            wiring,
+        )?;
+        // The worker realm belongs to this content process's event loop; the
+        // global scope needs the id for channel messaging (per-event-loop
+        // port management) and the trace sender for the MessagePort TLA spec.
+        let trace_sender = self.trace_sender.clone();
+        with_worker_global_scope(settings.ec(), |worker_global_scope, _ec| {
+            worker_global_scope
+                .global_scope
+                .set_event_loop_id(self.event_loop_id);
+            worker_global_scope
+                .global_scope
+                .set_trace_sender(trace_sender.clone());
+            Ok(())
+        })
+        .map_err(|error| format!("failed to set worker event loop id: {}", error.display()))?;
+        // Step 12.3.1: "Set worker global scope's url to response's URL."
+        worker_global_scope.set_url(
+            Url::parse(&final_url).map_err(|error| format!("invalid worker URL: {error}"))?,
+        );
+        // Step 12.6: "Let inside port be a new MessagePort object in inside
+        // settings's realm."
+        // Step 12.7.1: "Set inside port's message event target to worker
+        // global scope."
+        // Step 12.7.2: "Set worker global scope's inside port to inside port."
+        let inside_port =
+            MessagePort::new_unwrapped(PortId::new(), worker_global_scope.event_target.clone());
+        worker_global_scope.set_inside_port(inside_port.clone(), settings.ec());
+        // Step 12.8: "Entangle outside port and inside port."
+        // Note: The outside port's record was registered by the Worker
+        // constructor in the owner realm's channel messaging; its
+        // entanglement is set here, and the inside port's record is created
+        // in the worker realm's channel messaging.
+        self.with_owner_realm(owner, |ec| {
+            with_global_scope(ec, |global_scope, ec| {
+                let messaging = global_scope.channel_messaging(ec).ok_or_else(|| {
+                    ec.new_type_error("worker entangle: owner realm has no channel messaging")
+                })?;
+                messaging.set_entanglement(outside_port_id, inside_port.port_id, ec);
+                Ok(())
+            })
+            .map_err(|error| error.display().to_string())
+        })?;
+        with_worker_global_scope(settings.ec(), |worker_global_scope, ec| {
+            let messaging = worker_global_scope
+                .global_scope
+                .channel_messaging(ec)
+                .ok_or_else(|| {
+                    ec.new_type_error("worker entangle: worker realm has no channel messaging")
+                })?;
+            messaging.entangle_remote(inside_port.clone(), outside_port_id, ec);
+            Ok(())
+        })
+        .map_err(|error| format!("worker entangle: {}", error.display()))?;
+        // The user agent must know both ports to route messages to either
+        // one's owning event loop (`MessagePortExtraFG.tla`'s `NewChannel`).
+        self.event_sender
+            .send(ContentEvent::PortChannelCreated {
+                port1: outside_port_id,
+                port2: inside_port.port_id,
+            })
+            .map_err(|error| format!("failed to register worker channel: {error}"))?;
+        // Step 12.5: "Associate worker with worker global scope."
+        // Note: The association is the ContentWorker entry below; the Worker
+        // platform object's own slot is not filled (terminate and close route
+        // through the user agent to the content process, which holds the
+        // association).
+        // Step 12.9: "Create a new WorkerLocation object and associate it
+        // with worker global scope."
+        // Note: The WorkerLocation is created lazily on first access
+        // (self.location_value), so there is no eager creation here.
+        // Step 12.12: "Set inside settings's execution ready flag."
+        // Note: Not implemented: the execution ready flag is not tracked.
+        let closing_flag = worker_global_scope.closing_flag.clone();
+        let source = String::from_utf8_lossy(&response.body).into_owned();
+        self.workers.insert(
+            worker_id,
+            ContentWorker {
+                settings,
+                outside_port_id,
+                owner,
+                closing_flag,
+            },
+        );
+        // Step 12.13: "If script is a classic script, then run the classic
+        // script script. Otherwise, it is a module script; run the module
+        // script script."
+        // Note: Module workers are not implemented yet (fetch a module worker
+        // script graph); a "module" worker is evaluated as a classic script.
+        let eval_result = match self.workers.get_mut(&worker_id) {
+            Some(worker) => worker.settings.evaluate_script(&source),
+            None => return Err(format!("worker {worker_id} missing after creation")),
+        };
+        if let Err(error) = eval_result {
+            error!("worker script {worker_id} failed to evaluate: {error}");
+            // Step 12.4.1: "Queue a global task on the DOM manipulation task
+            // source given worker's relevant global object to fire an event
+            // named error at worker."
+            // Note: Fired directly, outside a task (the document lifecycle
+            // commands share this deviation; see the content README).
+            if let Err(fire_error) = self.fire_worker_error(owner, outside_port_id) {
+                error!("failed to fire error event at worker: {fire_error}");
+            }
+        }
+        // Step 12.14: "Enable outside port's port message queue."
+        // Step 12.15: "If is shared is false, enable the port message queue
+        // of the worker's implicit port."
+        self.with_owner_realm(owner, |ec| {
+            with_global_scope(ec, |global_scope, ec| {
+                if let Some(messaging) = global_scope.channel_messaging(ec) {
+                    messaging.start(outside_port_id, ec);
+                }
+                Ok(())
+            })
+            .map_err(|error| error.display().to_string())
+        })?;
+        let inside_port_id = inside_port.port_id;
+        with_worker_global_scope(
+            self.workers
+                .get_mut(&worker_id)
+                .ok_or_else(|| format!("worker {worker_id} missing after creation"))?
+                .settings
+                .ec(),
+            |worker_global_scope, ec| {
+                if let Some(messaging) = worker_global_scope.global_scope.channel_messaging(ec) {
+                    messaging.start(inside_port_id, ec);
+                }
+                Ok(())
+            },
+        )
+        .map_err(|error| format!("worker enable inside port: {}", error.display()))?;
+        Ok(())
+    }
+
+    /// <https://html.spec.whatwg.org/#run-a-worker>
+    fn fail_worker_script_fetch(&mut self, request: WorkerRequest) -> Result<(), String> {
+        // Step 12.4's failure branch: the worker script could not be obtained.
+        // Step 12.4.1: "Queue a global task on the DOM manipulation task
+        // source given worker's relevant global object to fire an event named
+        // error at worker."
+        // Note: Fired directly, outside a task (see complete_worker_script_fetch).
+        // Step 12.4.2: "Run the environment discarding steps for inside
+        // settings."
+        // Step 12.4.3: "Abort these steps."
+        // Note: Steps 12.4.2-12.4.3 are implicit: no realm was created for a
+        // failed fetch.
+        self.fire_worker_error(request.owner, request.outside_port)
+    }
+
+    /// <https://html.spec.whatwg.org/#terminate-a-worker>
+    fn terminate_worker(&mut self, worker_id: WorkerId) -> Result<(), String> {
+        // The command half of terminate a worker: tear down the worker realm
+        // and sever the channel.
+        let Some(mut worker) = self.workers.remove(&worker_id) else {
+            // The worker was terminated (or closed) before its script fetch
+            // completed: drop the pending request and its in-flight fetch so
+            // the completion is discarded without creating the realm.
+            self.pending_worker_requests.remove(&worker_id);
+            let handler_ids: Vec<ipc_messages::content::DocumentFetchId> = {
+                let local_state = self
+                    .local_state
+                    .lock()
+                    .expect("local content state mutex poisoned");
+                local_state
+                    .pending_handlers
+                    .iter()
+                    .filter(|(_, handler)| {
+                        matches!(
+                            handler,
+                            PendingNetworkHandler::WorkerScript {
+                                worker_id: pending_id
+                            } if *pending_id == worker_id
+                        )
+                    })
+                    .map(|(handler_id, _)| *handler_id)
+                    .collect()
+            };
+            let mut local_state = self
+                .local_state
+                .lock()
+                .expect("local content state mutex poisoned");
+            for handler_id in handler_ids {
+                local_state.pending_handlers.remove(&handler_id);
+            }
+            return Ok(());
+        };
+        // Step 1: "Set the worker's WorkerGlobalScope object's closing flag to
+        // true."
+        worker.closing_flag.set(true);
+        // Step 2: "If there are any tasks queued in the WorkerGlobalScope
+        // object's relevant agent's event loop's task queues, discard them
+        // without processing them."
+        // Note: The closing flag discards the worker's further tasks: timer
+        // tasks and port message tasks check it before running.
+        // Step 3: "Abort the script currently running in the worker."
+        // Note: Not applicable: terminate arrives as a command between tasks,
+        // so no worker script is running when it is processed.
+        // Step 4: "If the worker's WorkerGlobalScope object is actually a
+        // DedicatedWorkerGlobalScope object ..., then empty the port message
+        // queue of the port that the worker's implicit port is entangled
+        // with."
+        // Note: Disentangling the outside port (below) severs the channel;
+        // the inside port's queue drops with the realm.
+        // Note: Step 12.19 of run a worker (clear the map of active timers)
+        // runs here: the worker's timers are removed from the shared map.
+        if let Err(error) = worker.settings.clear_all_window_timers() {
+            error!("failed to clear worker timers during termination: {error}");
+        }
+        let owner = worker.owner;
+        let outside_port_id = worker.outside_port_id;
+        let _ = worker.settings.perform_a_microtask_checkpoint();
+        drop(worker);
+        // Disentangle the outside port in the owner realm (the inside port
+        // record drops with the realm).
+        self.with_owner_realm(owner, |ec| {
+            with_global_scope(ec, |global_scope, ec| {
+                if let Some(messaging) = global_scope.channel_messaging(ec) {
+                    let _ = messaging.close(outside_port_id, ec);
+                }
+                Ok(())
+            })
+            .map_err(|error| error.display().to_string())
+        })?;
+        Ok(())
+    }
+
+    /// <https://html.spec.whatwg.org/#run-a-worker>
+    fn fire_worker_error(
+        &mut self,
+        owner: WorkerOwner,
+        outside_port: PortId,
+    ) -> Result<(), String> {
+        // Fire an event named error at the Worker object of a failed or
+        // failed-to-evaluate worker, through the owner realm (the realm that
+        // created the Worker platform object).
+        let time_millis = self.owner_settings_time_millis(owner);
+        self.with_owner_realm(owner, |ec| {
+            with_global_scope(ec, |global_scope, ec| {
+                let Some(messaging) = global_scope.channel_messaging(ec) else {
+                    return Ok(());
+                };
+                let Some(port) = messaging.port_object(outside_port, ec) else {
+                    return Ok(());
+                };
+                // The outside port's message event target is the Worker
+                // object, so firing at the port's event target fires at the
+                // Worker.
+                fire_event(ec, &port.event_target, "error", time_millis, true)
+                    .map(|_| ())
+                    .map_err(|error| {
+                        ec.new_type_error(&format!("failed to fire worker error event: {error:?}"))
+                    })
+            })
+            .map_err(|error| error.display().to_string())
+        })
+    }
+
+    /// The current time of the realm that owns a worker, for events fired at
+    /// the Worker object.
+    fn owner_settings_time_millis(&mut self, owner: WorkerOwner) -> f64 {
+        match owner {
+            WorkerOwner::Document(document_id) => self
+                .documents
+                .get(&document_id)
+                .map(|document| document.settings.current_time_millis())
+                .unwrap_or(0.0),
+            WorkerOwner::Worker(worker_id) => self
+                .workers
+                .get(&worker_id)
+                .map(|worker| worker.settings.current_time_millis())
+                .unwrap_or(0.0),
+        }
+    }
+
+    fn with_owner_realm<R>(
+        &mut self,
+        owner: WorkerOwner,
+        f: impl FnOnce(&mut dyn ExecutionContext<Types>) -> Result<R, String>,
+    ) -> Result<R, String> {
+        // Run a closure in the realm that created a worker (the owner
+        // document's or the owner worker's execution context).
+        match owner {
+            WorkerOwner::Document(document_id) => {
+                let document = self
+                    .documents
+                    .get_mut(&document_id)
+                    .ok_or_else(|| format!("unknown owner document {document_id}"))?;
+                f(document.settings.ec())
+            }
+            WorkerOwner::Worker(parent_worker_id) => {
+                let worker = self
+                    .workers
+                    .get_mut(&parent_worker_id)
+                    .ok_or_else(|| format!("unknown owner worker {parent_worker_id}"))?;
+                f(worker.settings.ec())
+            }
+        }
+    }
+
+    /// <https://html.spec.whatwg.org/#timers>
+    fn run_worker_timer(
+        &mut self,
+        worker_id: WorkerId,
+        timer_id: u32,
+        timer_key: WindowTimerKey,
+        nesting_level: u32,
+    ) -> Result<(), String> {
+        // Run an expired worker timer task (the worker-realm arm of the timer
+        // initialization steps' queued task).
+        let Some(worker) = self.workers.get_mut(&worker_id) else {
+            return Ok(());
+        };
+        // Terminate-a-worker step 2 discards the queued tasks of a closing
+        // worker; the closing flag is checked here, at the task's start.
+        if worker.closing_flag.get() {
+            return Ok(());
+        }
+        worker
+            .settings
+            .run_window_timer(timer_id, timer_key, nesting_level)
     }
 
     fn run_window_timer(
@@ -3016,6 +3583,12 @@ impl ContentProcess {
                 self.mark_document_dirty(document_id);
                 self.run_window_timer(document_id, timer_id, timer_key, nesting_level)
             }
+            Task::RunWorkerTimer {
+                worker_id,
+                timer_id,
+                timer_key,
+                nesting_level,
+            } => self.run_worker_timer(worker_id, timer_id, timer_key, nesting_level),
             Task::RunPortMessage { port } => self.handle_run_port_message_task(port),
             Task::PortRouting { port, kind } => self.handle_port_task(port, kind),
             Task::PostMessage(request) => self.dispatch_post_message(request),
@@ -3098,12 +3671,24 @@ impl ContentProcess {
         // expired timer becomes a queued task rather than running here; the
         // channel the event loop waits on only wakes it for the earliest expiry.
         for timer in expired {
-            self.task_queue.queue_a_task(Task::RunWindowTimer {
-                document_id: timer.document_id,
-                timer_id: timer.timer_id,
-                timer_key: timer.timer_key,
-                nesting_level: timer.nesting_level,
-            });
+            match timer.realm {
+                TimerRealm::Document(document_id) => {
+                    self.task_queue.queue_a_task(Task::RunWindowTimer {
+                        document_id,
+                        timer_id: timer.timer_id,
+                        timer_key: timer.timer_key,
+                        nesting_level: timer.nesting_level,
+                    });
+                }
+                TimerRealm::Worker(worker_id) => {
+                    self.task_queue.queue_a_task(Task::RunWorkerTimer {
+                        worker_id,
+                        timer_id: timer.timer_id,
+                        timer_key: timer.timer_key,
+                        nesting_level: timer.nesting_level,
+                    });
+                }
+            }
         }
 
         // Step 4.5: "Remove global's map of active timers[timerKey]."
@@ -3122,6 +3707,12 @@ impl ContentProcess {
                 .settings
                 .perform_a_microtask_checkpoint()
                 .map_err(|error| format!("microtask checkpoint failed: {error}"))?;
+        }
+        for worker in self.workers.values_mut() {
+            worker
+                .settings
+                .perform_a_microtask_checkpoint()
+                .map_err(|error| format!("worker microtask checkpoint failed: {error}"))?;
         }
         Ok(())
     }
@@ -3228,6 +3819,14 @@ impl ContentProcess {
             Command::PortTask { port, task } => {
                 self.task_queue
                     .queue_a_task(Task::PortRouting { port, kind: task });
+                Ok(true)
+            }
+            StartWorker(request) => {
+                self.start_worker(request)?;
+                Ok(true)
+            }
+            TerminateWorker { worker_id } => {
+                self.terminate_worker(worker_id)?;
                 Ok(true)
             }
             Command::RunBeforeUnload {

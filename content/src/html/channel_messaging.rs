@@ -136,6 +136,70 @@ impl ChannelMessaging {
     }
 
     /// <https://html.spec.whatwg.org/#entangle>
+    /// Entangle a port managed by this event loop with a port managed by
+    /// another of this process's realms (the worker channel: the outside
+    /// port lives in the owner realm, the inside port in the worker realm).
+    /// The record for the remote port lives in the other realm's
+    /// ChannelMessaging, created by its own call to this method; the user
+    /// agent is told about the pair separately (`PortChannelCreated`), so
+    /// its routing can deliver messages to either event loop.
+    pub(crate) fn entangle_remote(
+        &self,
+        port: MessagePort,
+        remote_id: PortId,
+        ec: &mut dyn ExecutionContext<Types>,
+    ) {
+        let mut ports = self.ports.borrow_mut(ec);
+        ports.push(PortRecord {
+            port_id: port.port_id,
+            object: Some(port),
+            ts: TransferState::Managed,
+            entangled: Some(remote_id),
+            queue: VecDeque::new(),
+            enabled: false,
+            detached: false,
+            in_flight: 0,
+        });
+    }
+
+    /// <https://html.spec.whatwg.org/#entangle>
+    /// Register a port managed by this event loop without an entanglement
+    /// yet.  Used by the Worker constructor for the outside port, whose
+    /// entanglement is set by run a worker's step 12.8 once the inside port
+    /// exists.
+    pub(crate) fn register_port(&self, port: MessagePort, ec: &mut dyn ExecutionContext<Types>) {
+        let mut ports = self.ports.borrow_mut(ec);
+        if ports.iter().any(|record| record.port_id == port.port_id) {
+            return;
+        }
+        ports.push(PortRecord {
+            port_id: port.port_id,
+            object: Some(port),
+            ts: TransferState::Managed,
+            entangled: None,
+            queue: VecDeque::new(),
+            enabled: false,
+            detached: false,
+            in_flight: 0,
+        });
+    }
+
+    /// <https://html.spec.whatwg.org/#entangle>
+    /// Set the entanglement of a port managed by this event loop to a port
+    /// managed by another of this process's realms.
+    pub(crate) fn set_entanglement(
+        &self,
+        port_id: PortId,
+        remote_id: PortId,
+        ec: &mut dyn ExecutionContext<Types>,
+    ) {
+        let mut ports = self.ports.borrow_mut(ec);
+        if let Some(record) = ports.iter_mut().find(|record| record.port_id == port_id) {
+            record.entangled = Some(remote_id);
+        }
+    }
+
+    /// <https://html.spec.whatwg.org/#entangle>
     pub(crate) fn entangle_pair(
         &self,
         port1: MessagePort,
