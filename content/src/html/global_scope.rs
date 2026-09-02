@@ -13,6 +13,8 @@ use super::{
 
 use super::timers::TimerRealm;
 
+use super::worker_thread::{PortOwnerReporter, WorkerContentRequest};
+
 use blitz_dom::BaseDocument;
 use ipc::IpcSender;
 use ipc_messages::content::{
@@ -244,6 +246,20 @@ pub struct GlobalScope {
     #[ignore_trace]
     event_sender: Rc<RefCell<Option<IpcSender<ContentEvent>>>>,
 
+    /// Channel to the content process's worker manager: the `Worker`
+    /// constructor reports its creation request here, and `terminate()` its
+    /// termination request.  Dedicated workers are entirely
+    /// content-process-nested, so worker creation and termination never
+    /// involve the user agent.
+    #[ignore_trace]
+    worker_creator: Rc<RefCell<Option<crossbeam_channel::Sender<WorkerContentRequest>>>>,
+
+    /// Worker realms report the ports their channel messaging manages here,
+    /// so the content process main thread can route user-agent port tasks
+    /// to the owning worker thread.  `None` for window realms.
+    #[ignore_trace]
+    port_owner_reporter: Rc<RefCell<Option<PortOwnerReporter>>>,
+
     /// Shared registry for newly-created traversable documents (window.open).
     /// Set by `ContentProcess` before running JS that may trigger
     /// `the_rules_for_choosing_a_navigable`. Both GlobalScope (to insert)
@@ -313,6 +329,8 @@ impl GlobalScope {
             top_level_traversable_id: Rc::new(Cell::new(None)),
             document_id: Rc::new(RefCell::new(None)),
             event_sender: Rc::new(RefCell::new(None)),
+            worker_creator: Rc::new(RefCell::new(None)),
+            port_owner_reporter: Rc::new(RefCell::new(None)),
 
             new_document_registry: Rc::new(RefCell::new(None)),
             video_paint_registry: Rc::new(RefCell::new(None)),
@@ -453,6 +471,7 @@ impl GlobalScope {
             event_loop_id,
             self.trace_sender(),
             self.task_sources().ok()?.task_queue(),
+            self.port_owner_reporter(),
             ec,
         );
         self.channel_messaging.set(Some(created.clone()), ec);
@@ -469,9 +488,9 @@ impl GlobalScope {
         *self.task_sources.borrow_mut() = Some(task_sources);
     }
 
-    /// Wire a worker realm's global scope to the content process's event
-    /// loop: its task sources and worker id (a worker realm has no
-    /// document).
+    /// Wire a worker realm's global scope to its own agent's event loop:
+    /// its task sources (the worker's own task queue and timer map) and
+    /// worker id (a worker realm has no document).
     /// <https://html.spec.whatwg.org/#task-source>
     pub(crate) fn set_worker_task_sources(
         &self,
@@ -488,6 +507,29 @@ impl GlobalScope {
 
     pub(crate) fn event_sender(&self) -> Option<IpcSender<ContentEvent>> {
         self.event_sender.borrow().clone()
+    }
+
+    /// Set the channel to the content process's worker manager.
+    pub(crate) fn set_worker_creator(
+        &self,
+        sender: crossbeam_channel::Sender<WorkerContentRequest>,
+    ) {
+        *self.worker_creator.borrow_mut() = Some(sender);
+    }
+
+    /// The channel to the content process's worker manager, if set.
+    pub(crate) fn worker_creator(&self) -> Option<crossbeam_channel::Sender<WorkerContentRequest>> {
+        self.worker_creator.borrow().clone()
+    }
+
+    /// Set the worker-port reporter (worker realms only).
+    pub(crate) fn set_port_owner_reporter(&self, reporter: Option<PortOwnerReporter>) {
+        *self.port_owner_reporter.borrow_mut() = reporter;
+    }
+
+    /// The worker-port reporter of this realm, if it is a worker realm.
+    pub(crate) fn port_owner_reporter(&self) -> Option<PortOwnerReporter> {
+        self.port_owner_reporter.borrow().clone()
     }
 
     pub(crate) fn document_object(&self, ec: &mut dyn ExecutionContext<Types>) -> Option<JsObject> {

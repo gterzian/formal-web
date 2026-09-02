@@ -27,9 +27,7 @@ pub(crate) fn build_realm(
 
 /// <https://html.spec.whatwg.org/#creating-a-new-javascript-realm>
 pub(crate) fn build_worker_realm(
-    engine: &mut Engine,
     document: Rc<RefCell<BaseDocument>>,
-    worker_id: ipc_messages::content::WorkerId,
     name: String,
     worker_type: crate::html::WorkerType,
 ) -> Result<Engine, String> {
@@ -49,25 +47,17 @@ pub(crate) fn build_worker_realm(
                 Rc::clone(&document),
                 ec,
             );
-            WorkerGlobalScope::new(
-                global_scope,
-                worker_id,
-                factory_name.clone(),
-                worker_type,
-                ec,
-            )
+            WorkerGlobalScope::new(global_scope, factory_name.clone(), worker_type, ec)
         };
         js_engine::create_engine(factory)?
     };
-    #[cfg(v8_backend)]
-    let mut engine = engine.new_child_realm();
-    #[cfg(jsc_backend)]
+    #[cfg(not(boa_backend))]
     let mut engine = js_engine::create_engine()?;
     // JSC/V8 create the worker global object and register the realm's
     // interfaces here; the Boa backend's factory already built the global
     // object during realm creation.
     #[cfg(not(boa_backend))]
-    setup_worker_realm(&mut engine, document, worker_id, name, worker_type)?;
+    setup_worker_realm(&mut engine, document, name, worker_type)?;
     Ok(engine)
 }
 
@@ -472,7 +462,6 @@ fn setup_realm(engine: &mut Engine, _document: Rc<RefCell<BaseDocument>>) -> Res
 fn setup_worker_realm(
     engine: &mut Engine,
     document: Rc<RefCell<BaseDocument>>,
-    worker_id: ipc_messages::content::WorkerId,
     name: String,
     worker_type: crate::html::WorkerType,
 ) -> Result<(), String> {
@@ -506,8 +495,7 @@ fn setup_worker_realm(
             Rc::clone(&document),
             engine,
         );
-        let worker_global_scope =
-            WorkerGlobalScope::new(global_scope, worker_id, name, worker_type, engine);
+        let worker_global_scope = WorkerGlobalScope::new(global_scope, name, worker_type, engine);
         let global_obj = engine.realm_global_object();
         js_engine::associate_existing_object(engine, &global_obj, worker_global_scope);
         global_obj

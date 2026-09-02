@@ -64,11 +64,17 @@ Types that currently use `&mut self` for mutation but could use `GcCell` + `&sel
 
 ## The event loop's task queue
 
-The HTML event loop processing model runs on the content process main thread
+The window agent's HTML event loop runs on the content process main thread
 (`run_content_message_loop` in `content/src/main.rs`).  Every task source feeds
 one queue of `Task` (`content/src/html/event_loop.rs`), and
 `ContentProcess::run_task` is the only place that runs one: it takes the oldest
 task, performs its steps, and performs the microtask checkpoint that ends them.
+
+Each dedicated worker agent runs its own event loop on its own native thread
+nested to the content process (see `content/src/html/worker_thread.rs`): its
+own task queue, timer map, and realm, driven from the main thread over a
+crossbeam command channel and from the net process over its own IPC channel,
+both joined into one select like the window loop's.
 Content-initiated work (window timer expiry, port message tasks) must therefore
 be **queued as a `Task`**, never run by calling its handler directly: an inline
 call skips the bookkeeping the model requires (marking the task's document

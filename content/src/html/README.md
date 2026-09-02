@@ -350,49 +350,58 @@ process yet; the domain methods (`Window::name_value`, `opener_value`,
 `closed_value`, `close`) return placeholder values with `// Note:`
 annotations until that state is sent to the content process or forwarded.
 
-## Workers (`worker.rs`)
+## Workers (`worker.rs`, `worker_thread.rs`)
 
-Dedicated workers run on the content process hosting their owner realm, on the
-same event loop (one event loop per content process, like the documents).
-The worker channel uses the existing cross-process MessagePort machinery: the
-`Worker` constructor creates the outside port in the owner realm, the user
-agent routes the creation request back as `Command::StartWorker`, and once the
-script fetch completes the content process creates the worker realm and inside
-port, entangles the pair, and runs the script.  See `worker.rs` for the
+Each dedicated worker runs on its own native thread nested to the content
+process hosting its owner realm: the dedicated worker agent is always part of
+the same agent cluster as the window that created it, so the agent lives in
+that window agent's process (obtain a dedicated/shared worker agent with
+`isShared` false; create an agent is the native thread, whose event loop is
+run by `worker_thread.rs`).  Worker creation and termination never involve
+the user agent: the `Worker` constructor reports the request to the content
+process's worker manager through its realm's GlobalScope, which spawns the
+thread and stores its command channel and join handle (joined on teardown and
+shutdown).
+
+The worker thread runs run-a-worker against its own realm and event loop: it
+builds its own engine (its own V8 isolate), fetches its script over its own
+IPC channel to the net process (the reply comes back on that channel, bridged
+over crossbeam into the worker's event-loop select, like the content
+process's own loop), and is driven from the content process main thread
+through a crossbeam command channel that also joins the select.  The worker
+channel uses the existing MessagePort machinery: the constructor creates the
+outside port in the owner realm, the worker thread creates the inside port in
+its realm and entangles the pair once the script fetch completes (run-a-worker
+steps 12.6-12.8, in the fetch's onComplete steps), and the user agent routes
+messages between the two ports as usual (the content process forwards port
+tasks for worker-owned ports to the worker thread).  See `worker.rs` for the
 spec-annotated algorithms (constructor steps, run a worker, terminate a
 worker, close a worker, import scripts).
 
 Known gaps:
 
-- **Messages posted before the worker's script fetch completes are dropped.**
-  The message port post message steps return when the target port is null, and
-  the inside port only exists once the worker realm is created (run-a-worker
+- **Messages posted before the entanglement are dropped.**  The message port
+  post message steps return when the target port is null, and the inside port
+  is only created and entangled once the script fetch completes (run-a-worker
   steps 12.6-12.8), so `new Worker(url); worker.postMessage(x)` in the same
-  task is dropped.  Browsers buffer these; WPT may require buffering before
-  the worker tests are enabled.
+  task is dropped, per the spec.
 - **importScripts only supports data: URLs.**  Fetches of other URL schemes
   are asynchronous in this architecture (through the net process), and
   importScripts is synchronous; non-data URLs throw a NotSupportedError.
 - **Module workers are evaluated as classic scripts.**  "Fetch a module worker
   script graph" (run-a-worker step 12's module branch) is not implemented;
   `type: "module"` workers run their source as a classic script.
-- **The worker event loop is the content process's event loop.**  The spec
-  gives each worker its own agent/event loop; here a worker shares the
-  process's task queue, timer map, and event loop id with its owner (the same
-  deviation the documents already make by sharing one loop per process).
-  Timers and port messages therefore interleave with the window's tasks.
 - **`error` events are fired directly, not as queued global tasks**, matching
   the document lifecycle commands' existing deviation (see
   `content/README.md`).
 - **Owner-set lifetime management is minimal.**  Terminate-on-owner-document-
-destroy is wired (`destroy_document` terminates its workers); the spec's
+destroy is wired (`destroy_document` terminates its workers, as does a
+closing owner worker for its nested workers); the spec's
 protected/permissible/suspendable monitoring is not.
-- **Shared workers are not implemented.**  The infra that supports them is in
-  place: the user-agent-routed `WorkerRequest` (whose owner is the creating
-  document or worker), the worker global scope platform type, and the port
-  machinery.  `WorkerGlobalScopeKind` was folded into the dedicated-only
-  implementation; a shared-worker implementation reintroduces the kind and
-  the UA-side instance lookup by (origin, name).
+- **Shared workers are not implemented.**  They need new-agent-cluster
+  allocation (which must happen in the user agent) and the UA-side instance
+  lookup by (origin, name); the dedicated-only implementation folds
+  `WorkerGlobalScopeKind` into the dedicated global scope.
 
 ## Related documentation
 

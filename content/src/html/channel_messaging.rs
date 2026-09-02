@@ -27,6 +27,7 @@ use log::warn;
 
 use crate::html::event_loop::{Task, TaskQueue};
 use crate::html::messageport::MessagePort;
+use crate::html::worker_thread::PortOwnerReporter;
 use crate::js::Types;
 
 use verification::{TLATracer, TraceSender};
@@ -107,6 +108,14 @@ pub(crate) struct ChannelMessaging {
     /// <https://html.spec.whatwg.org/#task-queue>
     #[ignore_trace]
     task_queue: TaskQueue,
+
+    /// Worker realms report every port their channel messaging manages to
+    /// the content process main thread through this reporter, so the main
+    /// thread can route user-agent port tasks to the owning worker thread.
+    /// `None` for window realms, whose ports the main thread finds by
+    /// iterating its documents.
+    #[ignore_trace]
+    port_owner_reporter: Option<PortOwnerReporter>,
 }
 
 impl ChannelMessaging {
@@ -115,13 +124,24 @@ impl ChannelMessaging {
         event_loop_id: EventLoopId,
         trace_sender: Option<TraceSender>,
         task_queue: TaskQueue,
+        port_owner_reporter: Option<PortOwnerReporter>,
         ec: &mut dyn ExecutionContext<Types>,
     ) -> Self {
         Self {
             event_loop_id,
             trace_sender,
             task_queue,
+            port_owner_reporter,
             ports: gc_cell_new(Vec::new(), ec),
+        }
+    }
+
+    /// Report a port as managed (or no longer managed) by this event loop to
+    /// the content process main thread, when this messaging belongs to a
+    /// worker realm.
+    fn report_port(&self, port_id: PortId, registered: bool) {
+        if let Some(reporter) = &self.port_owner_reporter {
+            reporter.report(port_id, registered);
         }
     }
 
@@ -149,9 +169,10 @@ impl ChannelMessaging {
         remote_id: PortId,
         ec: &mut dyn ExecutionContext<Types>,
     ) {
+        let port_id = port.port_id;
         let mut ports = self.ports.borrow_mut(ec);
         ports.push(PortRecord {
-            port_id: port.port_id,
+            port_id,
             object: Some(port),
             ts: TransferState::Managed,
             entangled: Some(remote_id),
@@ -160,6 +181,8 @@ impl ChannelMessaging {
             detached: false,
             in_flight: 0,
         });
+        drop(ports);
+        self.report_port(port_id, true);
     }
 
     /// <https://html.spec.whatwg.org/#entangle>
@@ -168,12 +191,13 @@ impl ChannelMessaging {
     /// entanglement is set by run a worker's step 12.8 once the inside port
     /// exists.
     pub(crate) fn register_port(&self, port: MessagePort, ec: &mut dyn ExecutionContext<Types>) {
+        let port_id = port.port_id;
         let mut ports = self.ports.borrow_mut(ec);
-        if ports.iter().any(|record| record.port_id == port.port_id) {
+        if ports.iter().any(|record| record.port_id == port_id) {
             return;
         }
         ports.push(PortRecord {
-            port_id: port.port_id,
+            port_id,
             object: Some(port),
             ts: TransferState::Managed,
             entangled: None,
@@ -182,6 +206,8 @@ impl ChannelMessaging {
             detached: false,
             in_flight: 0,
         });
+        drop(ports);
+        self.report_port(port_id, true);
     }
 
     /// <https://html.spec.whatwg.org/#entangle>
@@ -235,6 +261,8 @@ impl ChannelMessaging {
             in_flight: 0,
         });
         drop(ports);
+        self.report_port(port1.port_id, true);
+        self.report_port(port2.port_id, true);
         self.trace(
             "NewChannel",
             vec![
@@ -290,6 +318,7 @@ impl ChannelMessaging {
             in_flight,
         });
         drop(ports);
+        self.report_port(port.port_id, true);
         self.trace(
             "TransferReceive",
             vec![port.port_id.to_string(), self.event_loop_id.to_string()],
@@ -340,6 +369,7 @@ impl ChannelMessaging {
             "Transfer",
             vec![port_id.to_string(), self.event_loop_id.to_string()],
         );
+        self.report_port(port_id, false);
         event_sender
             .send(ContentEvent::PortTransferStarted { port: port_id })
             .map_err(|error| {
@@ -466,6 +496,32 @@ impl ChannelMessaging {
             ports[other_index].entangled = None;
         }
         other
+    }
+
+    /// <https://html.spec.whatwg.org/#disentangle>
+    /// Empty a port's message queue and sever its entanglement (both sides),
+    /// without detaching the port.  Runs on the owner side when a worker is
+    /// terminated or closes: terminate-a-worker step 4 (empty the port
+    /// message queue of the port that the worker's implicit port is
+    /// entangled with) and run-a-worker step 12.20 (disentangle all the
+    /// ports in the list of the worker's ports); the inside port's record
+    /// drops with the worker realm.
+    pub(crate) fn empty_and_disentangle(
+        &self,
+        port_id: PortId,
+        ec: &mut dyn ExecutionContext<Types>,
+    ) {
+        let mut ports = self.ports.borrow_mut(ec);
+        let Some(index) = ports.iter().position(|record| record.port_id == port_id) else {
+            return;
+        };
+        ports[index].queue.clear();
+        let other = ports[index].entangled.take();
+        if let Some(other) = other
+            && let Some(other_index) = ports.iter().position(|record| record.port_id == other)
+        {
+            ports[other_index].entangled = None;
+        }
     }
 
     /// Enable a port's message queue (once enabled it stays enabled) and

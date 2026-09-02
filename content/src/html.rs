@@ -32,6 +32,7 @@ mod window;
 mod window_or_worker_global_scope;
 pub(crate) mod windowproxy;
 pub(crate) mod worker;
+pub(crate) mod worker_thread;
 
 use ipc::IpcSender;
 use ipc_messages::content::{

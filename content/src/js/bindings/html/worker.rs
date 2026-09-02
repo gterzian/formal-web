@@ -47,7 +47,7 @@ impl WebIdlInterface<Types> for Worker {
         let undefined = ec.value_undefined();
         let script_url = ec.to_rust_string(args.first().cloned().unwrap_or(undefined))?;
         let (name, worker_type) = parse_worker_options(args.get(1), ec);
-        Worker::create(&script_url, name, WorkerType::from_idl(&worker_type), ec)
+        Worker::constructor(&script_url, name, WorkerType::from_idl(&worker_type), ec)
     }
 
     fn define_members(def: &mut InterfaceDefinition<Types>) {

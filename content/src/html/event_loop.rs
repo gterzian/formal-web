@@ -1,8 +1,11 @@
-//! The content process's half of the HTML event loop: the task queue every
-//! task source appends to, the tasks it holds, and the facade over the map of
-//! active timers owned by `super::timers`.
+//! The event loop's task queue and tasks: the task queue every task source
+//! appends to, the tasks it holds, and the facade over the map of active
+//! timers owned by `super::timers`.  The window agent (the content process
+//! main thread) runs one loop over this queue; each dedicated worker agent
+//! (worker_thread.rs) runs its own loop over its own [`TaskQueue`] of the
+//! same [`Task`] type (only the worker-relevant variants ever reach it).
 //!
-//! The user agent reaches this event loop over IPC with a
+//! The user agent reaches the window agent's event loop over IPC with a
 //! `ipc_messages::content::Command`, which is an ad hoc message and not a task.
 //! Where the spec step behind a command says to queue a task on this event
 //! loop, the content process queues the matching [`Task`] while handling the
@@ -37,9 +40,9 @@ pub(crate) enum Task {
     },
 
     /// The task that runs one expired worker timer's steps, queued on the
-    /// timer task source when the worker global scope's map of active timers
-    /// entry expires.  The timer machinery shares the content process's map
-    /// of active timers, so the worker realm is identified by worker id.
+    /// worker agent thread's own task queue when its event loop reaps an
+    /// expired entry from the worker's own map of active timers (see
+    /// `worker_thread.rs`).  The worker realm is identified by worker id.
     /// <https://html.spec.whatwg.org/#timer-initialisation-steps>
     RunWorkerTimer {
         worker_id: WorkerId,

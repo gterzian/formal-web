@@ -1,5 +1,8 @@
-//! The content process's map of active window timers: the per-timer records
-//! and the algorithms that schedule, cancel, and reap them.
+//! The map of active timers: the per-timer records and the algorithms that
+//! schedule, cancel, and reap them.  The window agent (the content process
+//! main thread) owns one map for its documents; each dedicated worker agent
+//! (worker_thread.rs) owns its own map for its realm, reaped by its own
+//! event loop.
 
 use std::collections::HashMap;
 use std::time::{Duration, Instant};
@@ -7,9 +10,9 @@ use std::time::{Duration, Instant};
 use ipc_messages::content::{DocumentId, WindowTimerKey, WorkerId};
 
 /// The realm a timer belongs to: a window's associated Document, or a worker
-/// global scope.  The map of active timers is shared by every realm of the
-/// content process's event loop, so the expiry reaper needs to know which
-/// realm's task to queue.
+/// global scope.  Each event loop's map holds the timers of the realms that
+/// event loop runs, and the expiry reaper uses the realm to know whose task
+/// to queue.
 #[derive(Debug, Clone, Copy)]
 pub(crate) enum TimerRealm {
     /// <https://html.spec.whatwg.org/#concept-document>
@@ -79,8 +82,10 @@ impl MapOfActiveTimers {
 
         // Step 4: "Run the following steps in parallel:"
         // Step 5: "Return timerKey."
-        // Note: Steps 4.1-4.5 run on the content process main loop, which waits
-        // on `earliest_expiry_wait` and then takes the expired entries with
+        // Note: Steps 4.1-4.5 run on the event loop that owns the map (the
+        // content process main loop for document timers, the worker agent
+        // thread's loop for worker timers), which waits on
+        // `earliest_expiry_wait` and then takes the expired entries with
         // `take_expired_timers`.  timerKey is this algorithm's argument, so
         // there is nothing to return.
     }
@@ -92,7 +97,7 @@ impl MapOfActiveTimers {
         // the id from the map of setTimeout and setInterval IDs, leaving the
         // active timer to expire and abort at step 9.2 of the timer
         // initialization steps.  Removing the entry here instead keeps the
-        // content main loop from waking for a timer that can no longer run.
+        // owning event loop from waking for a timer that can no longer run.
         self.entries.remove(&timer_key);
     }
 

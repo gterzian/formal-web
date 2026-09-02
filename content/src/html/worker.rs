@@ -2,7 +2,7 @@ use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 
 use data_url::DataUrl;
-use ipc_messages::content::{Event as ContentEvent, PortId, WorkerId, WorkerOwner};
+use ipc_messages::content::{WorkerId, WorkerOwner, WorkerRequest};
 use js_engine::gc::{GcCell, gc_cell_new};
 use js_engine::gc_struct;
 use js_engine::{Completion, ExecutionContext, JsTypes};
@@ -11,6 +11,7 @@ use url::Url;
 
 use crate::dom::event::{EventTarget, EventTargetAccess};
 use crate::html::messageport::MessagePort;
+use crate::html::worker_thread::WorkerContentRequest;
 use crate::js::Types;
 use crate::js::platform_objects::with_global_scope;
 use crate::webidl::syntax_error_value;
@@ -53,20 +54,17 @@ pub(crate) struct Worker {
     pub(crate) event_target: EventTarget,
 
     /// The id under which the content process's worker table knows this
-    /// worker, and the user agent routes its creation and termination.
+    /// worker (terminate() reports it to the content process's worker
+    /// manager).
     #[ignore_trace]
     pub(crate) worker_id: WorkerId,
 
     /// <https://html.spec.whatwg.org/#dedicated-workers-and-the-worker-interface>
     /// The constructor-created outside port: part of the channel set up when
-    /// the worker is created, entangled with the worker's inside port.  Its
-    /// message event target is this Worker object.
+    /// the worker is created, entangled with the worker's inside port once
+    /// run-a-worker reaches step 12.8.  Its message event target is this
+    /// Worker object.
     pub(crate) outside_port: GcCell<Option<MessagePort>>,
-
-    /// <https://html.spec.whatwg.org/#run-a-worker>
-    /// The worker global scope, associated with this Worker when run a
-    /// worker reaches step 12.5.
-    pub(crate) worker_global_scope: GcCell<Option<WorkerGlobalScope>>,
 }
 
 impl EventTargetAccess for Worker {
@@ -76,8 +74,8 @@ impl EventTargetAccess for Worker {
 }
 
 impl Worker {
-    /// <https://html.spec.whatwg.org/#dedicated-workers-and-the-worker-interface>
-    pub(crate) fn create(
+    /// <https://html.spec.whatwg.org/#dom-worker>
+    pub(crate) fn constructor(
         script_url: &str,
         name: String,
         worker_type: WorkerType,
@@ -90,15 +88,15 @@ impl Worker {
         // Note: Trusted Types are not implemented; scriptURL is used as-is.
         // Step 2: Let outsideSettings be this's relevant settings object.
         // Note: The current realm's settings object backs the constructor
-        // call; its event sender and creation URL are read from the current
-        // realm's GlobalScope below.
+        // call; its worker creator channel and creation URL are read from the
+        // current realm's GlobalScope below.
         let global_scope = with_global_scope(ec, |global_scope, _ec| Ok(global_scope.clone()))
             .map_err(|error| {
                 ec.new_type_error(&format!("worker constructor: {}", error.display()))
             })?;
-        let event_sender = global_scope
-            .event_sender()
-            .ok_or_else(|| ec.new_type_error("worker constructor: no event sender"))?;
+        let worker_creator = global_scope
+            .worker_creator()
+            .ok_or_else(|| ec.new_type_error("worker constructor: no worker creator channel"))?;
         let creation_url = global_scope
             .creation_url()
             .ok_or_else(|| ec.new_type_error("worker constructor: no creation URL"))?;
@@ -112,42 +110,35 @@ impl Worker {
 
         // Step 5: Let outsidePort be a new MessagePort in outsideSettings's
         //         realm.
-        // Step 6: Set outsidePort's message event target to this.
-        // Note: The outside port is created without a platform object (it is
-        // never exposed to script) sharing this Worker's event target, so the
-        // port's message events fire at the Worker object.
         let worker = Worker {
             event_target: EventTarget::new(ec),
             worker_id: WorkerId::new(),
             outside_port: gc_cell_new(None, ec),
-            worker_global_scope: gc_cell_new(None, ec),
         };
-        let outside_port = MessagePort::new_unwrapped(PortId::new(), worker.event_target.clone());
+        let mut outside_port = MessagePort::new_port(ec)?;
+        // Step 6: Set outsidePort's message event target to this.
+        outside_port.set_message_event_target(worker.event_target.clone());
         // Step 7: Set this's outside port to outsidePort.
         worker.outside_port.set(Some(outside_port.clone()), ec);
-        // Register the outside port's record in this realm's channel
-        // messaging, so the content process can resolve the port (and through
-        // it the Worker object) when the worker's script fetch completes.
-        // Note: The port is not entangled yet; run a worker's step 12.8 sets
-        // the entanglement once the inside port exists.
-        with_global_scope(ec, |global_scope, ec| {
-            if let Some(messaging) = global_scope.channel_messaging(ec) {
-                messaging.register_port(outside_port.clone(), ec);
-            }
-            Ok(())
-        })?;
 
         // Step 8: Let worker be this.
         // Note: `worker` above is this.
         // Step 9: Run this step in parallel:
         // Step 9.1: Run a worker given worker, workerURL, outsideSettings,
         //           outsidePort, and options.
-        // Note: The user agent runs the content-side steps of run a worker:
-        // the constructor reports the request to the user agent, which sends
-        // `Command::StartWorker` back to this event loop; the content process
-        // then fetches the script and creates the worker realm.  The owner is
-        // the realm that created the worker: the document of a window realm,
-        // or the worker global scope itself for a nested worker.
+        // Note: Dedicated workers are entirely content-process-nested: the
+        // constructor reports the request to the content process's worker
+        // manager (through the current realm's worker creator channel), which
+        // starts the worker's dedicated worker agent (a native thread; see
+        // worker_thread.rs).  The user agent is not involved.  The outside
+        // port's record is registered unentangled here; run-a-worker step
+        // 12.8 entangles it with the inside port once the worker realm
+        // exists.  Messages posted before that entanglement are dropped by
+        // the message port post message steps (targetPort is null), per the
+        // spec.
+        if let Some(messaging) = global_scope.channel_messaging(ec) {
+            messaging.register_port(outside_port.clone(), ec);
+        }
         let owner = match global_scope.worker_id() {
             Some(parent_worker_id) => WorkerOwner::Worker(parent_worker_id),
             None => WorkerOwner::Document(
@@ -156,16 +147,14 @@ impl Worker {
                     .ok_or_else(|| ec.new_type_error("worker constructor: no owner document"))?,
             ),
         };
-        if let Err(send_error) = event_sender.send(ContentEvent::WorkerRequested(
-            ipc_messages::content::WorkerRequest {
-                worker_id: worker.worker_id,
-                script_url: worker_url.to_string(),
-                name,
-                worker_type: worker_type.as_str().to_owned(),
-                owner,
-                outside_port: outside_port.port_id,
-            },
-        )) {
+        if let Err(send_error) = worker_creator.send(WorkerContentRequest::Create(WorkerRequest {
+            worker_id: worker.worker_id,
+            script_url: worker_url.to_string(),
+            name,
+            worker_type: worker_type.as_str().to_owned(),
+            owner,
+            outside_port: outside_port.port_id,
+        })) {
             error!("worker constructor: failed to request worker: {send_error}");
         }
         Ok(worker)
@@ -175,28 +164,26 @@ impl Worker {
     pub(crate) fn terminate(&self, ec: &mut dyn ExecutionContext<Types>) {
         // The terminate() method steps are to terminate a worker given this's
         // worker.
-        // Note: The user agent runs the terminate-a-worker steps: the method
-        // reports the worker id to the user agent, which sends
-        // `Command::TerminateWorker` back to the owning event loop; the
-        // content process then sets the closing flag, discards the worker's
-        // queued tasks, and tears down the worker realm.
-        if let Err(send_error) = self.notify_termination(ec) {
-            error!("worker terminate: failed to request termination: {send_error}");
+        // Note: The content process runs the terminate-a-worker steps: the
+        // method reports the worker id to the content process's worker
+        // manager, which sends the worker's agent thread a `Terminate`
+        // command; the thread sets the closing flag, discards its queued
+        // tasks, and tears down the worker realm.
+        if let Err(error) = self.notify_termination(ec) {
+            error!("worker terminate: failed to request termination: {error}");
         }
     }
 
-    /// Report the worker's termination to the user agent through the current
-    /// realm's event sender.
+    /// Report the worker's termination to the content process through the
+    /// current realm's worker creator channel.
     fn notify_termination(&self, ec: &mut dyn ExecutionContext<Types>) -> Result<(), String> {
         let global_scope = with_global_scope(ec, |global_scope, _ec| Ok(global_scope.clone()))
             .map_err(|error| format!("worker terminate: {}", error.display()))?;
-        let event_sender = global_scope
-            .event_sender()
-            .ok_or_else(|| String::from("worker terminate: no event sender"))?;
-        event_sender
-            .send(ContentEvent::WorkerTerminated {
-                worker_id: self.worker_id,
-            })
+        let worker_creator = global_scope
+            .worker_creator()
+            .ok_or_else(|| String::from("worker terminate: no worker creator channel"))?;
+        worker_creator
+            .send(WorkerContentRequest::Terminate(self.worker_id))
             .map_err(|error| format!("worker terminate: {error}"))
     }
 
@@ -242,11 +229,6 @@ pub(crate) struct WorkerGlobalScope {
     /// <https://html.spec.whatwg.org/#global-object>
     pub(crate) global_scope: GlobalScope,
 
-    /// The id under which the content process's worker table knows this
-    /// worker.
-    #[ignore_trace]
-    pub(crate) worker_id: WorkerId,
-
     /// <https://html.spec.whatwg.org/#dom-worker-name>
     #[ignore_trace]
     pub(crate) name: String,
@@ -286,7 +268,6 @@ impl EventTargetAccess for WorkerGlobalScope {
 impl WorkerGlobalScope {
     pub(crate) fn new(
         global_scope: GlobalScope,
-        worker_id: WorkerId,
         name: String,
         worker_type: WorkerType,
         ec: &mut dyn ExecutionContext<Types>,
@@ -294,7 +275,6 @@ impl WorkerGlobalScope {
         Self {
             event_target: EventTarget::new(ec),
             global_scope,
-            worker_id,
             name,
             worker_type,
             url: Rc::new(RefCell::new(None)),
@@ -452,18 +432,11 @@ fn close_a_worker(worker_global_scope: &WorkerGlobalScope) {
     //         relevant agent's event loop's task queues.
     // Step 2: Set workerGlobal's closing flag to true. (This prevents any
     //         further tasks from being queued.)
-    // Note: The closing flag makes the event loop discard the worker's
-    // further tasks (its timers are cleared and its ports disentangled); the
-    // teardown of the worker realm runs in the content process once the user
-    // agent routes `Command::TerminateWorker` back.
+    // Note: The closing flag makes the worker's agent-thread event loop exit
+    // (see worker_thread.rs), dropping the tasks queued on its task queue;
+    // the thread then reports its teardown to the content process, which
+    // empties and disentangles the outside port in the owner realm.
     worker_global_scope.closing_flag.set(true);
-    if let Some(event_sender) = worker_global_scope.global_scope.event_sender()
-        && let Err(send_error) = event_sender.send(ContentEvent::WorkerTerminated {
-            worker_id: worker_global_scope.worker_id,
-        })
-    {
-        error!("close a worker: failed to report termination: {send_error}");
-    }
 }
 
 /// <https://html.spec.whatwg.org/#import-scripts-into-worker-global-scope>

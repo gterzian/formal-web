@@ -210,7 +210,6 @@ impl EnvironmentSettingsObject {
 
     /// <https://html.spec.whatwg.org/#set-up-a-worker-environment-settings-object>
     pub(crate) fn new_worker_in_realm(
-        parent: &mut Engine,
         creation_url: Url,
         worker_id: WorkerId,
         name: String,
@@ -222,11 +221,11 @@ impl EnvironmentSettingsObject {
         // Note: The realm (steps 4-6 of run a worker) is built by
         // `build_worker_realm`, which creates the DedicatedWorkerGlobalScope
         // platform object as the realm's global object and registers the
-        // worker interfaces.
+        // worker interfaces.  A dedicated worker agent runs on its own native
+        // thread with its own engine (its own V8 isolate), so the realm is
+        // always built fresh here.
         let mut engine = crate::js::build_context::build_worker_realm(
-            parent,
             Rc::new(RefCell::new(BaseDocument::new(DocumentConfig::default()))),
-            worker_id,
             name,
             worker_type,
         )?;
