@@ -27,10 +27,8 @@
 //!
 //! The content process main thread (the similar-origin window agent) stores
 //! each dedicated worker agent's thread data (its command channel and join
-//! handle, joined on shutdown), routes user-agent port tasks for
-//! MessagePorts managed by worker realms to the agent's thread, and runs
-//! owner-side steps (the owner realm's queue enablement, error events) in
-//! the realm that created the worker.
+//! handle, joined on shutdown), and runs owner-side steps (the owner realm's
+//! queue enablement, error events) in the realm that created the worker.
 
 use std::cell::RefCell;
 use std::collections::{HashMap, VecDeque};
@@ -40,8 +38,8 @@ use data_url::DataUrl;
 use ipc::IpcSender;
 use ipc_messages::content::{
     Command, DocumentFetchId, Event as ContentEvent, EventLoopId,
-    FetchRequest as ContentFetchRequest, FetchResponse as ContentFetchResponse, PortId,
-    PortTaskKind, WorkerId, WorkerOwner, WorkerRequest,
+    FetchRequest as ContentFetchRequest, FetchResponse as ContentFetchResponse, PortId, WorkerId,
+    WorkerOwner, WorkerRequest,
 };
 use ipc_messages::network::{Request as NetworkRequest, ResponseRecipient};
 use log::error;
@@ -70,7 +68,7 @@ pub(crate) type WorkerChannelMessage = SerializeWithTransferResult;
 /// that arrive while the queue is disabled wait here until it is enabled (a
 /// port message queue can be enabled, and is initially disabled).
 /// <https://html.spec.whatwg.org/#port-message-queue>
-#[derive(Clone, Default)]
+#[derive(Default)]
 pub(crate) struct WorkerMessageQueue {
     pub(crate) enabled: bool,
     pub(crate) pending: VecDeque<WorkerChannelMessage>,
@@ -99,7 +97,7 @@ pub(crate) struct OwnedWorkerChannel {
     /// the messages the worker posts may fire as message events, and the
     /// messages that arrived before the queue was enabled.
     #[ignore_trace]
-    pub(crate) queue: WorkerMessageQueue,
+    pub(crate) queue: Rc<RefCell<WorkerMessageQueue>>,
 }
 
 /// A request from a realm's GlobalScope to the content process's worker
@@ -140,9 +138,6 @@ pub(crate) enum WorkerCommand {
     /// Set the closing flag and discard the queued tasks; the event loop
     /// then exits and the thread reports its teardown.
     Terminate,
-    /// A routed message task for a port managed by this worker's event loop.
-    /// <https://html.spec.whatwg.org/#message-port-post-message-steps>
-    PortTask { port: PortId, kind: PortTaskKind },
     /// An owner-side operation to run in this worker's realm (this worker is
     /// the owner of another worker).
     OwnerOperation(OwnerOperation),
@@ -184,48 +179,11 @@ pub(crate) enum OwnerOperation {
 pub(crate) enum WorkerEvent {
     /// The dedicated worker agent is exiting (its realm was torn down).
     Closed { worker_id: WorkerId },
-    /// The worker's channel messaging now manages a port (the main thread
-    /// routes user-agent port tasks for it to the worker thread).
-    PortRegistered { worker_id: WorkerId, port: PortId },
-    /// The worker's channel messaging no longer manages a port.
-    PortUnregistered { worker_id: WorkerId, port: PortId },
     /// The worker needs an operation run in its owner realm.
     OwnerOperation {
         owner: WorkerOwner,
         operation: OwnerOperation,
     },
-}
-
-/// A reporter that tells the content process main thread about the ports a
-/// worker realm's channel messaging manages, so the main thread can route
-/// user-agent port tasks to the owning worker thread.
-#[derive(Clone)]
-pub(crate) struct PortOwnerReporter {
-    worker_id: WorkerId,
-    sender: crossbeam_channel::Sender<WorkerEvent>,
-}
-
-impl PortOwnerReporter {
-    pub(crate) fn new(worker_id: WorkerId, sender: crossbeam_channel::Sender<WorkerEvent>) -> Self {
-        Self { worker_id, sender }
-    }
-
-    pub(crate) fn report(&self, port_id: PortId, registered: bool) {
-        let event = if registered {
-            WorkerEvent::PortRegistered {
-                worker_id: self.worker_id,
-                port: port_id,
-            }
-        } else {
-            WorkerEvent::PortUnregistered {
-                worker_id: self.worker_id,
-                port: port_id,
-            }
-        };
-        // A closed receiver means the content process is shutting down, the
-        // same expected condition as a reply channel send.
-        let _ = self.sender.send(event);
-    }
 }
 
 /// Everything the content process main thread hands a new dedicated worker
@@ -239,17 +197,17 @@ pub(crate) struct DedicatedWorkerAgentConfig {
     /// The sender end of the worker→owner channel, stored on the worker
     /// global scope for the worker's `postMessage`.
     pub(crate) worker_to_owner: crossbeam_channel::Sender<WorkerChannelMessage>,
-    /// The content process's event loop id, shared by the worker's channel
-    /// messaging: the user agent routes port tasks to this content process,
-    /// which forwards them to the worker thread.
+    /// The content process's event loop id, shared by the worker realm's
+    /// channel messaging (a worker realm has no event loop of its own on the
+    /// user-agent side).
     pub(crate) event_loop_id: EventLoopId,
-    /// The worker thread reports its teardown, its ports, and owner-side
-    /// operations on this channel.
+    /// The worker thread reports its teardown and owner-side operations on
+    /// this channel.
     pub(crate) worker_events: crossbeam_channel::Sender<WorkerEvent>,
     /// Commands from the content process main thread.
     pub(crate) worker_commands: crossbeam_channel::Receiver<WorkerCommand>,
-    /// The content-to-user-agent event sender, for the worker's channel
-    /// messaging (MessagePort routing).
+    /// The content-to-user-agent event sender, wired into the worker realm's
+    /// global scope for its channel messaging.
     pub(crate) event_sender: IpcSender<ContentEvent>,
     /// The worker's own channel to the net process, for script fetches.
     pub(crate) network_extension_sender: IpcSender<ipc_messages::network::Request>,
@@ -278,7 +236,6 @@ pub(crate) struct DedicatedWorkerAgentState {
     /// event loop).
     pub(crate) task_queue: TaskQueue,
     pub(crate) active_timers: Rc<RefCell<MapOfActiveTimers>>,
-    pub(crate) event_sender: IpcSender<ContentEvent>,
     pub(crate) worker_events: crossbeam_channel::Sender<WorkerEvent>,
     pub(crate) event_loop_id: EventLoopId,
     pub(crate) network_extension_sender: IpcSender<ipc_messages::network::Request>,
@@ -353,12 +310,10 @@ fn run_a_worker_inner(config: DedicatedWorkerAgentConfig) -> Result<(), String> 
         wiring,
     )?;
     // The worker realm's global scope shares the content process's event
-    // loop id for port routing, gets the trace sender for the MessagePort
-    // specs, the worker creator channel (a nested worker's constructor runs
-    // on this thread), and the port-owner reporter that tells the main
-    // thread which MessagePorts this worker's event loop manages.  It also
-    // gets the worker→owner end of the worker's channel, so the worker's
-    // postMessage can reach its owner.
+    // loop id, gets the trace sender, and the worker creator channel (a
+    // nested worker's constructor runs on this thread).  It also gets the
+    // worker→owner end of the worker's channel, so the worker's postMessage
+    // can reach its owner.
     with_worker_global_scope(settings.ec(), |worker_global_scope, _ec| {
         worker_global_scope
             .global_scope
@@ -369,12 +324,6 @@ fn run_a_worker_inner(config: DedicatedWorkerAgentConfig) -> Result<(), String> 
         worker_global_scope
             .global_scope
             .set_worker_creator(config.worker_creator.clone());
-        worker_global_scope
-            .global_scope
-            .set_port_owner_reporter(Some(PortOwnerReporter::new(
-                worker_id,
-                config.worker_events.clone(),
-            )));
         worker_global_scope.set_worker_to_owner(config.worker_to_owner);
         Ok(())
     })
@@ -398,7 +347,6 @@ fn run_a_worker_inner(config: DedicatedWorkerAgentConfig) -> Result<(), String> 
         nested_workers: HashMap::new(),
         task_queue,
         active_timers,
-        event_sender: config.event_sender,
         worker_events: config.worker_events,
         event_loop_id: config.event_loop_id,
         network_extension_sender: config.network_extension_sender,
@@ -825,7 +773,6 @@ impl DedicatedWorkerAgentState {
                 .map_err(|error| format!("worker terminate: {}", error.display()))?;
                 Ok(())
             }
-            WorkerCommand::PortTask { port, kind } => self.handle_port_task(port, kind),
             WorkerCommand::OwnerOperation(operation) => {
                 // This worker is the owner of another worker; run the
                 // operation in this worker's realm.
@@ -847,6 +794,23 @@ impl DedicatedWorkerAgentState {
                 Ok(())
             }
         }
+    }
+
+    /// Fire one queued message event on a port of this worker's event loop
+    /// (the message task of the message port post message steps).
+    fn handle_run_port_message_task(&mut self, port_id: PortId) -> Result<(), String> {
+        let time_millis = self.settings.current_time_millis();
+        with_worker_global_scope(self.settings.ec(), |worker_global_scope, ec| {
+            let Some(messaging) = worker_global_scope.global_scope.channel_messaging(ec) else {
+                return Ok(());
+            };
+            let Some(port) = messaging.port_object(port_id, ec) else {
+                return Ok(());
+            };
+            port.run_message_task(time_millis, ec)
+        })
+        .map_err(|error| format!("port message task failed: {}", error.display()))?;
+        Ok(())
     }
 
     /// Handle a net command on the worker's own channel to the net process:
@@ -878,50 +842,6 @@ impl DedicatedWorkerAgentState {
                 Ok(())
             }
         }
-    }
-
-    /// Handle a port task queued by the user agent's routing for a port this
-    /// worker's event loop manages: land the routed message in the port's
-    /// queue (or return the task to the routing queue when the port left the
-    /// loop), and fire the message task inline when the port is enabled.
-    /// <https://html.spec.whatwg.org/#message-port-post-message-steps>
-    fn handle_port_task(&mut self, port_id: PortId, kind: PortTaskKind) -> Result<(), String> {
-        if self.closing_flag() {
-            return Ok(());
-        }
-        let event_sender = self.event_sender.clone();
-        let fire = with_worker_global_scope(self.settings.ec(), |worker_global_scope, ec| {
-            let Some(messaging) = worker_global_scope.global_scope.channel_messaging(ec) else {
-                return Ok(false);
-            };
-            messaging
-                .handle_port_task(port_id, kind, &event_sender, ec)
-                .map_err(|error| ec.new_type_error(&format!("port task: {error}")))
-        })
-        .map_err(|error| format!("port task failed: {}", error.display()))?;
-        if fire {
-            // The delivering task runs the message task itself (the message
-            // event fires within this task's slot).
-            self.handle_run_port_message_task(port_id)?;
-        }
-        Ok(())
-    }
-
-    /// Fire one queued message event on a port of this worker's event loop
-    /// (the message task of the message port post message steps).
-    fn handle_run_port_message_task(&mut self, port_id: PortId) -> Result<(), String> {
-        let time_millis = self.settings.current_time_millis();
-        with_worker_global_scope(self.settings.ec(), |worker_global_scope, ec| {
-            let Some(messaging) = worker_global_scope.global_scope.channel_messaging(ec) else {
-                return Ok(());
-            };
-            let Some(port) = messaging.port_object(port_id, ec) else {
-                return Ok(());
-            };
-            port.run_message_task(time_millis, ec)
-        })
-        .map_err(|error| format!("port message task failed: {}", error.display()))?;
-        Ok(())
     }
 }
 

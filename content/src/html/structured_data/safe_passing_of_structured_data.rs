@@ -827,7 +827,6 @@ pub fn structured_serialize_for_storage(
 // StructuredSerializeWithTransfer
 
 /// Represents the result of [`structured_serialize_with_transfer`].
-#[derive(Clone)]
 pub struct SerializeWithTransferResult {
     pub serialized: SerializedRecord,
     pub transfer_data_holders: Vec<TransferDataHolder>,

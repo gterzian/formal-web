@@ -25,7 +25,6 @@ use js_engine::gc::{GcCell, gc_cell_new};
 use js_engine::gc_struct;
 use log::warn;
 
-use crate::html::dedicated_worker_agent::PortOwnerReporter;
 use crate::html::event_loop::{Task, TaskQueue};
 use crate::html::messageport::MessagePort;
 use crate::js::Types;
@@ -108,14 +107,6 @@ pub(crate) struct ChannelMessaging {
     /// <https://html.spec.whatwg.org/#task-queue>
     #[ignore_trace]
     task_queue: TaskQueue,
-
-    /// Worker realms report every port their channel messaging manages to
-    /// the content process main thread through this reporter, so the main
-    /// thread can route user-agent port tasks to the owning worker thread.
-    /// `None` for window realms, whose ports the main thread finds by
-    /// iterating its documents.
-    #[ignore_trace]
-    port_owner_reporter: Option<PortOwnerReporter>,
 }
 
 impl ChannelMessaging {
@@ -124,24 +115,13 @@ impl ChannelMessaging {
         event_loop_id: EventLoopId,
         trace_sender: Option<TraceSender>,
         task_queue: TaskQueue,
-        port_owner_reporter: Option<PortOwnerReporter>,
         ec: &mut dyn ExecutionContext<Types>,
     ) -> Self {
         Self {
             event_loop_id,
             trace_sender,
             task_queue,
-            port_owner_reporter,
             ports: gc_cell_new(Vec::new(), ec),
-        }
-    }
-
-    /// Report a port as managed (or no longer managed) by this event loop to
-    /// the content process main thread, when this messaging belongs to a
-    /// worker realm.
-    fn report_port(&self, port_id: PortId, registered: bool) {
-        if let Some(reporter) = &self.port_owner_reporter {
-            reporter.report(port_id, registered);
         }
     }
 
@@ -191,8 +171,6 @@ impl ChannelMessaging {
             in_flight: 0,
         });
         drop(ports);
-        self.report_port(port1.port_id, true);
-        self.report_port(port2.port_id, true);
         self.trace(
             "NewChannel",
             vec![
@@ -248,7 +226,6 @@ impl ChannelMessaging {
             in_flight,
         });
         drop(ports);
-        self.report_port(port.port_id, true);
         self.trace(
             "TransferReceive",
             vec![port.port_id.to_string(), self.event_loop_id.to_string()],
@@ -299,7 +276,6 @@ impl ChannelMessaging {
             "Transfer",
             vec![port_id.to_string(), self.event_loop_id.to_string()],
         );
-        self.report_port(port_id, false);
         event_sender
             .send(ContentEvent::PortTransferStarted { port: port_id })
             .map_err(|error| {

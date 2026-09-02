@@ -64,15 +64,22 @@ pub(crate) struct Worker {
     #[ignore_trace]
     pub(crate) worker_id: WorkerId,
 
-    /// <https://html.spec.whatwg.org/#dedicated-workers-and-the-worker-interface>
-    /// The owner→worker end of the worker's channel: `postMessage` on this
-    /// Worker sends the serialized messages here, and the dedicated worker
-    /// agent's event loop delivers them as message events at the worker
-    /// global scope.  This replaces the constructor-created outside port of
-    /// the port-based model (the worker's implicit port is bypassed; see
-    /// dedicated_worker_agent.rs).
+    /// <https://html.spec.whatwg.org/#outside-port>
+    /// This Worker's outside port: the constructor creates it as its
+    /// outsidePort (constructor steps 5-7) with its message event target set
+    /// to this Worker, so `postMessage` on this Worker sends through it, and
+    /// the messages the worker posts back fire as message events at this
+    /// Worker.
+    /// Note: Implemented as the owner→worker end of a direct crossbeam
+    /// channel instead of a MessagePort (the worker's implicit port is
+    /// bypassed; see dedicated_worker_agent.rs): the constructor creates the
+    /// channel in the owner realm, the dedicated worker agent's event loop
+    /// delivers each message as a message event at the worker global scope
+    /// (the inside port's role, run-a-worker steps 12.6-12.8), and the
+    /// messages the worker posts back land in the owner realm's registered
+    /// worker channel (see `GlobalScope::register_owned_worker`).
     #[ignore_trace]
-    pub(crate) owner_to_worker: crossbeam_channel::Sender<WorkerChannelMessage>,
+    pub(crate) outside_port: crossbeam_channel::Sender<WorkerChannelMessage>,
 }
 
 impl EventTargetAccess for Worker {
@@ -137,7 +144,7 @@ impl Worker {
         let worker = Worker {
             event_target: EventTarget::new(ec),
             worker_id,
-            owner_to_worker: owner_to_worker_tx,
+            outside_port: owner_to_worker_tx,
         };
         global_scope.register_owned_worker(worker_id, worker.event_target.clone(), ec);
 
@@ -236,7 +243,7 @@ impl Worker {
         // A closed worker (its agent exited and dropped its channel end, or
         // the owner document went away) drops the message, the same expected
         // condition as a reply channel send.
-        let _ = self.owner_to_worker.send(serialize_result);
+        let _ = self.outside_port.send(serialize_result);
         Ok(())
     }
 

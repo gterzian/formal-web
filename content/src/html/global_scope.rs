@@ -14,8 +14,7 @@ use super::{
 use super::timers::TimerRealm;
 
 use super::dedicated_worker_agent::{
-    OwnedWorkerChannel, PortOwnerReporter, WorkerChannelMessage, WorkerContentRequest,
-    WorkerMessageQueue,
+    OwnedWorkerChannel, WorkerChannelMessage, WorkerContentRequest, WorkerMessageQueue,
 };
 
 use blitz_dom::BaseDocument;
@@ -258,12 +257,6 @@ pub struct GlobalScope {
     #[ignore_trace]
     worker_creator: Rc<RefCell<Option<crossbeam_channel::Sender<WorkerContentRequest>>>>,
 
-    /// Worker realms report the ports their channel messaging manages here,
-    /// so the content process main thread can route user-agent port tasks
-    /// to the owning worker thread.  `None` for window realms.
-    #[ignore_trace]
-    port_owner_reporter: Rc<RefCell<Option<PortOwnerReporter>>>,
-
     /// The dedicated workers this realm owns (it created their Worker
     /// platform objects): the owner-side delivery state of each worker's
     /// channel (its Worker object's event target and the message queue the
@@ -343,7 +336,6 @@ impl GlobalScope {
             document_id: Rc::new(RefCell::new(None)),
             event_sender: Rc::new(RefCell::new(None)),
             worker_creator: Rc::new(RefCell::new(None)),
-            port_owner_reporter: Rc::new(RefCell::new(None)),
             owned_workers: gc_cell_new(Vec::new(), ec),
 
             new_document_registry: Rc::new(RefCell::new(None)),
@@ -478,7 +470,6 @@ impl GlobalScope {
             event_loop_id,
             self.trace_sender(),
             self.task_sources().ok()?.task_queue(),
-            self.port_owner_reporter(),
             ec,
         );
         self.channel_messaging.set(Some(created.clone()), ec);
@@ -529,30 +520,6 @@ impl GlobalScope {
         self.worker_creator.borrow().clone()
     }
 
-    /// Set the worker-port reporter (worker realms only).
-    pub(crate) fn set_port_owner_reporter(&self, reporter: Option<PortOwnerReporter>) {
-        *self.port_owner_reporter.borrow_mut() = reporter;
-    }
-
-    /// The worker-port reporter of this realm, if it is a worker realm.
-    pub(crate) fn port_owner_reporter(&self) -> Option<PortOwnerReporter> {
-        self.port_owner_reporter.borrow().clone()
-    }
-
-    /// The worker channel registry entry of the given worker this realm
-    /// owns, if any.
-    fn owned_worker_channel(
-        &self,
-        worker_id: WorkerId,
-        ec: &mut dyn ExecutionContext<Types>,
-    ) -> Option<OwnedWorkerChannel> {
-        self.owned_workers
-            .borrow(ec)
-            .iter()
-            .find(|record| record.worker_id == worker_id)
-            .cloned()
-    }
-
     /// <https://html.spec.whatwg.org/#dedicated-workers-and-the-worker-interface>
     /// The Worker constructor registers the worker this realm owns: its
     /// Worker object's event target is the target of the message events the
@@ -575,7 +542,7 @@ impl GlobalScope {
         owned_workers.push(OwnedWorkerChannel {
             worker_target,
             worker_id,
-            queue: WorkerMessageQueue::default(),
+            queue: Rc::new(RefCell::new(WorkerMessageQueue::default())),
         });
     }
 
@@ -586,8 +553,11 @@ impl GlobalScope {
         worker_id: WorkerId,
         ec: &mut dyn ExecutionContext<Types>,
     ) -> Option<EventTarget> {
-        self.owned_worker_channel(worker_id, ec)
-            .map(|record| record.worker_target)
+        self.owned_workers
+            .borrow(ec)
+            .iter()
+            .find(|record| record.worker_id == worker_id)
+            .map(|record| record.worker_target.clone())
     }
 
     /// <https://html.spec.whatwg.org/#message-port-post-message-steps>
@@ -612,10 +582,11 @@ impl GlobalScope {
             else {
                 return;
             };
-            if record.queue.enabled {
+            let mut queue = record.queue.borrow_mut();
+            if queue.enabled {
                 Some(payload)
             } else {
-                record.queue.pending.push_back(payload);
+                queue.pending.push_back(payload);
                 None
             }
         };
@@ -642,8 +613,9 @@ impl GlobalScope {
             else {
                 return;
             };
-            record.queue.enabled = true;
-            record.queue.pending.drain(..).collect()
+            let mut queue = record.queue.borrow_mut();
+            queue.enabled = true;
+            queue.pending.drain(..).collect()
         };
         for payload in pending {
             self.queue_worker_message_task(worker_id, payload);

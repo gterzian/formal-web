@@ -419,8 +419,7 @@ struct DocumentViewportState {
 /// worker: the worker runs on its own dedicated worker agent (a native thread
 /// nested to this content process; see `content/src/html/dedicated_worker_agent.rs`),
 /// so this entry stores only the thread-safe handles the main thread needs:
-/// its command channel, its join handle, the ownership data used to route
-/// port tasks and owner-side operations, and (when the owner is a document
+/// its command channel, its join handle, and (when the owner is a document
 /// in this process) the receiver end of the worker's outbound channel, whose
 /// messages the main event loop fires as message events at the worker's
 /// Worker object.  When the owner is another worker, that receiver was
@@ -455,18 +454,13 @@ pub(crate) struct ContentProcess {
     /// worker agent (a native thread); this map holds the agent's thread
     /// handle and the routing data.
     workers: HashMap<WorkerId, ContentWorker>,
-    /// The ports managed by worker realms, keyed by port id: the main thread
-    /// routes user-agent port tasks for these ports to the owning worker
-    /// thread.  Populated from the dedicated worker agents' PortRegistered/
-    /// PortUnregistered reports (and cleared when a worker closes).
-    worker_ports: HashMap<PortId, WorkerId>,
     /// The channel the Worker constructor (and terminate()) reports to: the
     /// sender is cloned into every realm's GlobalScope (the worker creator
     /// channel), the receiver feeds the main loop.
     worker_request_sender: crossbeam_channel::Sender<WorkerContentRequest>,
     worker_request_receiver: crossbeam_channel::Receiver<WorkerContentRequest>,
-    /// The channel the dedicated worker agents report to (teardown, port
-    /// ownership, owner-side operations).
+    /// The channel the dedicated worker agents report to (teardown and
+    /// owner-side operations).
     worker_event_sender: crossbeam_channel::Sender<WorkerEvent>,
     worker_event_receiver: crossbeam_channel::Receiver<WorkerEvent>,
     active_documents_by_traversable: HashMap<NavigableId, DocumentId>,
@@ -549,7 +543,6 @@ impl ContentProcess {
             traversable_viewports: HashMap::new(),
             documents: HashMap::new(),
             workers: HashMap::new(),
-            worker_ports: HashMap::new(),
             worker_request_sender,
             worker_request_receiver,
             worker_event_sender,
@@ -599,8 +592,8 @@ impl ContentProcess {
         )?;
         // The realm belongs to this content process's event loop; the global
         // scope needs the id for channel messaging (per-event-loop port
-        // management), the trace sender for the MessagePort TLA spec, and the
-        // worker creator channel for the Worker constructor.
+        // management), the trace sender, and the worker creator channel for
+        // the Worker constructor.
         let trace_sender = self.trace_sender.clone();
         let worker_creator = self.worker_request_sender.clone();
         with_global_scope(
@@ -2097,10 +2090,8 @@ impl ContentProcess {
     }
 
     /// Find the document whose realm manages a port record.
-    /// The document whose realm manages a port record, if any.  Worker-managed
-    /// ports are looked up in `worker_ports` first (their records live on the
-    /// dedicated worker agent's thread).
-    fn find_document_port_owner(&mut self, port_id: PortId) -> Option<DocumentId> {
+    fn find_port_document(&mut self, port_id: PortId) -> Option<DocumentId> {
+        let mut found = None;
         for (document_id, document) in self.documents.iter_mut() {
             let result = with_global_scope(document.settings.ec(), |global_scope, ec| {
                 Ok(global_scope
@@ -2109,10 +2100,11 @@ impl ContentProcess {
                     .unwrap_or(false))
             });
             if matches!(result, Ok(true)) {
-                return Some(*document_id);
+                found = Some(*document_id);
+                break;
             }
         }
-        None
+        found
     }
 
     /// The channel messaging of the first realm in this process, used to
@@ -2129,9 +2121,7 @@ impl ContentProcess {
     }
 
     /// Run a task queued on this event loop by the user agent's routing
-    /// (`MessagePortExtraFG.tla`'s `RunTask`).  A port managed by a worker
-    /// realm is handed to the dedicated worker agent, which runs the task on
-    /// its own event loop; otherwise the task is appended to the document
+    /// (`MessagePortExtraFG.tla`'s `RunTask`).  The task is appended to the
     /// port's queue or returned to the routing queue when the port left this
     /// event loop.  When the port is enabled, the message task (the substeps
     /// 7.1-7.7 of the message port post message steps) runs here, within the
@@ -2139,22 +2129,7 @@ impl ContentProcess {
     /// round-trip to request a task.
     fn handle_port_task(&mut self, port_id: PortId, task: PortTaskKind) -> Result<(), String> {
         let event_sender = self.event_sender.clone();
-        if let Some(worker_id) = self.worker_ports.get(&port_id).copied() {
-            let content_worker = self
-                .workers
-                .get(&worker_id)
-                .ok_or_else(|| format!("port task: unknown worker {worker_id}"))?;
-            return content_worker
-                .command_sender
-                .send(WorkerCommand::PortTask {
-                    port: port_id,
-                    kind: task,
-                })
-                .map_err(|error| {
-                    format!("port task: failed to forward to worker {worker_id}: {error}")
-                });
-        }
-        let Some(document_id) = self.find_document_port_owner(port_id) else {
+        let Some(document_id) = self.find_port_document(port_id) else {
             // The port is no longer managed by this event loop; return the
             // task to the user agent's routing queue.
             let messaging = self.any_channel_messaging().ok_or_else(|| {
@@ -2187,18 +2162,9 @@ impl ContentProcess {
     }
 
     /// Fire one queued message event on a port (the message task of the
-    /// message port post message steps).  A worker-managed port's message
-    /// task runs on the dedicated worker agent: the main thread never queues
-    /// one for a worker port (the worker's own messaging does), so reaching
-    /// this for a worker port is a routing bug.
+    /// message port post message steps).
     fn handle_run_port_message_task(&mut self, port_id: PortId) -> Result<(), String> {
-        if let Some(worker_id) = self.worker_ports.get(&port_id).copied() {
-            error!(
-                "port message task: worker-managed port {port_id} (worker {worker_id}) was routed to the window event loop"
-            );
-            return Ok(());
-        }
-        let Some(document_id) = self.find_document_port_owner(port_id) else {
+        let Some(document_id) = self.find_port_document(port_id) else {
             return Ok(());
         };
         let time_millis = self
@@ -2992,11 +2958,9 @@ impl ContentProcess {
                 {
                     error!("worker {worker_id} thread panicked: {error:?}");
                 }
-                // The worker's MessagePorts leave the routing table with its
-                // realm (including those of the workers this worker owned,
-                // whose records lived in this worker's channel messaging).
-                self.worker_ports
-                    .retain(|_, owner_id| *owner_id != worker_id);
+                // The worker's thread is joined; the owner-side cleanup
+                // (dropping the owner end of the channel, terminating the
+                // workers this worker owned) follows below.
                 let owner = worker.owner;
                 // A document-owned worker's outbound-channel receiver dropped
                 // with this entry; tell the owner worker (when the owner is a
@@ -3004,9 +2968,9 @@ impl ContentProcess {
                 // its event-loop select.
                 if let WorkerOwner::Worker(owner_worker_id) = owner
                     && let Some(owner_worker) = self.workers.get(&owner_worker_id)
-                    && let Err(error) = owner_worker.command_sender.send(
-                        WorkerCommand::RemoveNestedWorkerChannel { worker_id },
-                    )
+                    && let Err(error) = owner_worker
+                        .command_sender
+                        .send(WorkerCommand::RemoveNestedWorkerChannel { worker_id })
                 {
                     error!(
                         "failed to remove worker {worker_id} channel from owner worker {owner_worker_id}: {error}"
@@ -3057,16 +3021,6 @@ impl ContentProcess {
                 } else {
                     Ok(())
                 }
-            }
-            WorkerEvent::PortRegistered { worker_id, port } => {
-                self.worker_ports.insert(port, worker_id);
-                Ok(())
-            }
-            WorkerEvent::PortUnregistered { worker_id, port } => {
-                if self.worker_ports.get(&port) == Some(&worker_id) {
-                    self.worker_ports.remove(&port);
-                }
-                Ok(())
             }
             WorkerEvent::OwnerOperation { owner, operation } => {
                 self.run_owner_operation(owner, operation)
@@ -3124,7 +3078,6 @@ impl ContentProcess {
                 error!("worker {worker_id} thread panicked during shutdown: {error:?}");
             }
         }
-        self.worker_ports.clear();
         Ok(())
     }
 
@@ -3405,9 +3358,7 @@ impl ContentProcess {
                 // An inbound worker message task fires at the worker global
                 // scope on the worker's own event loop; it should never reach
                 // the window event loop.
-                error!(
-                    "window event loop received an inbound message task for worker {worker_id}"
-                );
+                error!("window event loop received an inbound message task for worker {worker_id}");
                 Ok(())
             }
             Task::RunWorkerOutboundMessage { worker_id, payload } => {
@@ -3889,20 +3840,18 @@ fn run_content_message_loop(
         // task source, so these channels join the wait always, like the task
         // queue itself).  Worker-owned workers' outbound channels were
         // forwarded to the owner worker agent's event loop.
-        let worker_outbound: Vec<(
-            WorkerId,
-            crossbeam_channel::Receiver<WorkerChannelMessage>,
-        )> = process
-            .workers
-            .iter()
-            .filter(|(_, worker)| matches!(worker.owner, WorkerOwner::Document(_)))
-            .filter_map(|(worker_id, worker)| {
-                worker
-                    .worker_to_owner
-                    .clone()
-                    .map(|receiver| (*worker_id, receiver))
-            })
-            .collect();
+        let worker_outbound: Vec<(WorkerId, crossbeam_channel::Receiver<WorkerChannelMessage>)> =
+            process
+                .workers
+                .iter()
+                .filter(|(_, worker)| matches!(worker.owner, WorkerOwner::Document(_)))
+                .filter_map(|(worker_id, worker)| {
+                    worker
+                        .worker_to_owner
+                        .clone()
+                        .map(|receiver| (*worker_id, receiver))
+                })
+                .collect();
         let worker_outbound_arms: Vec<(WorkerId, usize)> = worker_outbound
             .iter()
             .map(|(worker_id, receiver)| (*worker_id, select.recv(receiver)))
@@ -3962,9 +3911,8 @@ fn run_content_message_loop(
                 }
                 Err(_) => return Ok(()),
             }
-        } else if let Some((worker_id, _)) = worker_outbound_arms
-            .iter()
-            .find(|(_, index)| arm == *index)
+        } else if let Some((worker_id, _)) =
+            worker_outbound_arms.iter().find(|(_, index)| arm == *index)
         {
             if let Some(receiver) = worker_outbound
                 .iter()
