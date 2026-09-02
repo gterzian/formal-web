@@ -93,7 +93,8 @@ pub(crate) enum WorkerContentRequest {
 /// that travel here are handed to the dedicated worker agent's event loop
 /// and to the owner's event loop.
 pub(crate) struct WorkerStartRequest {
-    /// <https://html.spec.whatwg.org/#run-a-worker>
+    /// The Worker constructor's run-a-worker request: the script url, name,
+    /// type and owner the agent starts the worker with.
     pub(crate) request: WorkerRequest,
     /// The receiver end of the owner→worker channel (the messages
     /// `worker.postMessage` sends): the dedicated worker agent's event loop
@@ -111,9 +112,10 @@ pub(crate) struct WorkerStartRequest {
 /// A command from the content process main thread to a dedicated worker
 /// agent.
 pub(crate) enum WorkerCommand {
-    /// <https://html.spec.whatwg.org/#terminate-a-worker>
-    /// Set the closing flag and discard the queued tasks; the event loop
-    /// then exits and the thread reports its teardown.
+    /// A terminate() call on this worker: terminate the worker (the
+    /// terminate-a-worker steps run in handle_worker_command: set the
+    /// closing flag and discard the queued tasks; the event loop then exits
+    /// and the thread reports its teardown).
     Terminate,
     /// An owner-side operation to run in this worker's realm (this worker is
     /// the owner of another worker).
@@ -138,16 +140,13 @@ pub(crate) enum OwnerOperation {
     /// run-a-worker step 12.14, owner half: enable the delivery of the
     /// messages the worker posts (the owner end of the worker's channel), so
     /// messages that arrived while the queue was disabled fire as tasks.
-    /// <https://html.spec.whatwg.org/#run-a-worker>
     EnableWorkerMessages { worker_id: WorkerId },
     /// run-a-worker step 12.4.1: fire an event named error at the Worker
     /// object of a failed or failed-to-evaluate worker.
-    /// <https://html.spec.whatwg.org/#run-a-worker>
     FireWorkerError { worker_id: WorkerId },
     /// terminate-a-worker step 4 and run-a-worker step 12.20: the worker is
     /// gone, so empty the owner end of its channel (its pending messages) and
     /// drop its delivery state.
-    /// <https://html.spec.whatwg.org/#terminate-a-worker>
     DiscardWorkerMessages { worker_id: WorkerId },
 }
 
@@ -373,8 +372,16 @@ impl DedicatedWorkerAgentState {
         .unwrap_or(true)
     }
 
-    /// <https://html.spec.whatwg.org/#run-a-worker>
+    /// <https://html.spec.whatwg.org/#fetch-a-classic-worker-script>
     fn start_script_fetch(&mut self, script_url: String) -> Result<(), String> {
+        // Note: Partial implementation of fetch a classic worker script (the
+        // fetch run-a-worker step 12's "classic" branch performs): only the
+        // URL is resolved and the fetch dispatched — a data: URL decodes
+        // locally and completes inline, any other scheme goes through the
+        // net process.  The request itself (destination, mode, credentials)
+        // and the algorithm's response steps are not modeled; the
+        // implemented response handling runs in
+        // complete_worker_script_fetch once the script response arrives.
         let resolved_url = Url::parse(&script_url)
             .map_err(|error| format!("invalid worker script URL: {error}"))?;
         if resolved_url.scheme() == "data" {
@@ -420,7 +427,11 @@ impl DedicatedWorkerAgentState {
         Ok(())
     }
 
-    /// <https://html.spec.whatwg.org/#run-a-worker>
+    /// The completion of the worker's script fetch: the run-a-worker
+    /// step-12 steps that are implemented (12.3.1-12.15) run here once the
+    /// script response has been obtained — inline for a data: URL, or when
+    /// the net process replies on this worker's net command channel
+    /// (handle_net_command).
     fn complete_worker_script_fetch(
         &mut self,
         response: ContentFetchResponse,
@@ -543,7 +554,12 @@ impl DedicatedWorkerAgentState {
         Ok(())
     }
 
-    /// <https://html.spec.whatwg.org/#run-a-worker>
+    /// The failure branch of the worker's script fetch: run-a-worker step
+    /// 12.4's steps run here when the script could not be obtained — a
+    /// failed fetch, or a response that fails the executable check in
+    /// complete_worker_script_fetch — firing an event named error at the
+    /// Worker object (12.4.1) and discarding the worker's environment
+    /// (12.4.2-12.4.3).
     fn fail_worker_script_fetch(&mut self) -> Result<(), String> {
         // Step 12.4's failure branch: the worker script could not be obtained.
         // Step 12.4.1: "Queue a global task on the DOM manipulation task
@@ -606,8 +622,10 @@ impl DedicatedWorkerAgentState {
         }
     }
 
-    /// Run one task off the worker's event-loop task queue.
-    /// <https://html.spec.whatwg.org/#event-loop-processing-model>
+    /// Run one task off the worker's event-loop task queue, then perform
+    /// the microtask checkpoint of the event loop processing model (step
+    /// 2.8), mirroring the content process's run_task for the worker
+    /// agent's loop.
     fn run_task(&mut self, task: Task) -> Result<(), String> {
         let steps = match task {
             Task::RunPortMessage { port } => {
@@ -962,8 +980,9 @@ fn run_worker_event_loop(
 /// owner: fire a message event at the worker's Worker platform object, in
 /// the realm of the given settings (the realm that created the worker: the
 /// owner window document, or the owner worker global scope).  A worker this
-/// realm no longer owns (it closed) drops the message.
-/// <https://html.spec.whatwg.org/#message-port-post-message-steps>
+/// realm no longer owns (it closed) drops the message.  The delivery steps
+/// themselves (message port post message steps 7.4-7.7) run in
+/// deliver_serialized_message (messageport.rs).
 pub(crate) fn fire_worker_posted_message(
     settings: &mut EnvironmentSettingsObject,
     worker_id: WorkerId,

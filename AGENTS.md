@@ -161,11 +161,25 @@ for the definitive spec-annotation reference with examples and common mistakes.
    beforeunload" becomes `steps_to_fire_beforeunload`, not `fire_global_event`.
    The spec→code mapping must be discoverable by name alone.
 
+   The anchor is a claim that the item **is** that algorithm.  It must name
+   the algorithm the item implements, never an algorithm that merely calls
+   it or contains the step it runs: a function carrying `#run-a-worker`
+   must be run-a-worker.  A helper that stands in for a named sub-algorithm
+   the spec calls into (e.g. the fetch that run-a-worker performs) is a
+   partial implementation of that sub-algorithm: it gets the sub-algorithm's
+   anchor (`#fetch-a-classic-worker-script`), with what is missing
+   documented in body `// Note:`s — never the calling algorithm's anchor.
+   Code that is not a spec algorithm (IPC commands, enum variants, async
+   continuations of a split algorithm, state fields, bindings glue) carries
+   no algorithm anchor; its doc comment says what it does and names the
+   exact step it serves.
+
    | ❌ Wrong | ✅ Right |
    |---|---|
    | `/// <…>\n/// Queues a microtask via Boa's enqueue_job API.` | `/// <https://html.spec.whatwg.org/#queue-a-microtask>` |
    | `/// <…>\n/// Content-process portion of the algorithm. …` | `/// <https://html.spec.whatwg.org/#creating-a-new-browsing-context>` |
    | `/// <…>\n/// Result of the rules for choosing a navigable. …` | `/// <https://html.spec.whatwg.org/#the-rules-for-choosing-a-navigable>` |
+   | `/// <https://html.spec.whatwg.org/#run-a-worker>` on `start_script_fetch`, a fetch helper that run-a-worker only calls | The sub-algorithm the helper stands in for (`#fetch-a-classic-worker-script`), with the missing parts in body `// Note:`s |
 
    Constants like `NETWORK_EMPTY`, `HAVE_NOTHING`, and
    `MEDIA_ERR_ABORTED` are spec-defined IDL enum values and must carry their
@@ -672,6 +686,11 @@ At the end of each task, run the following steps **in order**:
      Constants (`NETWORK_EMPTY`, `HAVE_NOTHING`, `MEDIA_ERR_ABORTED`)
      are spec IDL values and must carry their anchor just like any
      method.
+   - Is every anchor a claim that the item **is** that algorithm — never
+     the anchor of an algorithm that merely calls the item or contains
+     the step it runs?  Partial stand-ins for a sub-algorithm the spec
+     calls into carry the sub-algorithm's own anchor with the missing
+     parts in body `// Note:`s; plumbing carries no algorithm anchor.
    - Are binding function bodies free of fully qualified paths like
      `crate::wasm::namespace::fn_name(...)`?  Import with `use` at the
      top and call unqualified.
