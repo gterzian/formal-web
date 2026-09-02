@@ -13,7 +13,10 @@ use super::{
 
 use super::timers::TimerRealm;
 
-use super::dedicated_worker_agent::{PortOwnerReporter, WorkerContentRequest};
+use super::dedicated_worker_agent::{
+    OwnedWorkerChannel, PortOwnerReporter, WorkerChannelMessage, WorkerContentRequest,
+    WorkerMessageQueue,
+};
 
 use blitz_dom::BaseDocument;
 use ipc::IpcSender;
@@ -23,10 +26,11 @@ use ipc_messages::content::{
 use ipc_messages::media::VideoPaintId;
 use js_engine::gc::{GcCell, gc_cell_new};
 use js_engine::{Completion, ExecutionContext, JsTypes, gc_struct};
-use log::debug;
+use log::{debug, error};
 
 use super::environment_settings_object::RealmWiring;
-use super::event_loop::EventLoopTaskSources;
+use super::event_loop::{EventLoopTaskSources, Task};
+use crate::dom::event::EventTarget;
 use crate::js::{Engine, Types};
 use crate::webidl::Callback;
 
@@ -260,6 +264,15 @@ pub struct GlobalScope {
     #[ignore_trace]
     port_owner_reporter: Rc<RefCell<Option<PortOwnerReporter>>>,
 
+    /// The dedicated workers this realm owns (it created their Worker
+    /// platform objects): the owner-side delivery state of each worker's
+    /// channel (its Worker object's event target and the message queue the
+    /// worker's posts flow through).  This replaces the outside port
+    /// records of the port-based model (the worker's implicit port is
+    /// bypassed; see dedicated_worker_agent.rs).  A GcCell of a Vec, not a
+    /// HashMap, because the GC trace impls cover Vec but not HashMap.
+    owned_workers: GcCell<Vec<OwnedWorkerChannel>>,
+
     /// Shared registry for newly-created traversable documents (window.open).
     /// Set by `ContentProcess` before running JS that may trigger
     /// `the_rules_for_choosing_a_navigable`. Both GlobalScope (to insert)
@@ -331,6 +344,7 @@ impl GlobalScope {
             event_sender: Rc::new(RefCell::new(None)),
             worker_creator: Rc::new(RefCell::new(None)),
             port_owner_reporter: Rc::new(RefCell::new(None)),
+            owned_workers: gc_cell_new(Vec::new(), ec),
 
             new_document_registry: Rc::new(RefCell::new(None)),
             video_paint_registry: Rc::new(RefCell::new(None)),
@@ -363,13 +377,6 @@ impl GlobalScope {
 
     fn next_timer_key(&self) -> Result<WindowTimerKey, String> {
         Ok(WindowTimerKey::new())
-    }
-
-    fn task_sources(&self) -> Result<EventLoopTaskSources, String> {
-        self.task_sources
-            .borrow()
-            .clone()
-            .ok_or_else(|| String::from("event loop task sources are not installed"))
     }
 
     pub(crate) fn document(&self) -> Rc<RefCell<BaseDocument>> {
@@ -530,6 +537,153 @@ impl GlobalScope {
     /// The worker-port reporter of this realm, if it is a worker realm.
     pub(crate) fn port_owner_reporter(&self) -> Option<PortOwnerReporter> {
         self.port_owner_reporter.borrow().clone()
+    }
+
+    /// The worker channel registry entry of the given worker this realm
+    /// owns, if any.
+    fn owned_worker_channel(
+        &self,
+        worker_id: WorkerId,
+        ec: &mut dyn ExecutionContext<Types>,
+    ) -> Option<OwnedWorkerChannel> {
+        self.owned_workers
+            .borrow(ec)
+            .iter()
+            .find(|record| record.worker_id == worker_id)
+            .cloned()
+    }
+
+    /// <https://html.spec.whatwg.org/#dedicated-workers-and-the-worker-interface>
+    /// The Worker constructor registers the worker this realm owns: its
+    /// Worker object's event target is the target of the message events the
+    /// messages the worker posts back fire at, and its message queue starts
+    /// disabled (a port message queue can be enabled, and is initially
+    /// disabled).
+    pub(crate) fn register_owned_worker(
+        &self,
+        worker_id: WorkerId,
+        worker_target: EventTarget,
+        ec: &mut dyn ExecutionContext<Types>,
+    ) {
+        let mut owned_workers = self.owned_workers.borrow_mut(ec);
+        if owned_workers
+            .iter()
+            .any(|record| record.worker_id == worker_id)
+        {
+            return;
+        }
+        owned_workers.push(OwnedWorkerChannel {
+            worker_target,
+            worker_id,
+            queue: WorkerMessageQueue::default(),
+        });
+    }
+
+    /// The Worker object's event target of a worker this realm owns, if
+    /// any: the target the message and error events of that worker fire at.
+    pub(crate) fn owned_worker_event_target(
+        &self,
+        worker_id: WorkerId,
+        ec: &mut dyn ExecutionContext<Types>,
+    ) -> Option<EventTarget> {
+        self.owned_worker_channel(worker_id, ec)
+            .map(|record| record.worker_target)
+    }
+
+    /// <https://html.spec.whatwg.org/#message-port-post-message-steps>
+    /// The owner's event loop received a message a worker this realm owns
+    /// posted: when the worker's message queue is enabled the message is
+    /// queued as a message task (firing a message event at the worker's
+    /// Worker object); otherwise it waits in the queue until the queue is
+    /// enabled (run-a-worker step 12.14, or the first onmessage handler on
+    /// the Worker object).  A worker this realm no longer owns drops the
+    /// message.
+    pub(crate) fn handle_worker_posted_message(
+        &self,
+        worker_id: WorkerId,
+        payload: WorkerChannelMessage,
+        ec: &mut dyn ExecutionContext<Types>,
+    ) {
+        let queue_task = {
+            let mut owned_workers = self.owned_workers.borrow_mut(ec);
+            let Some(record) = owned_workers
+                .iter_mut()
+                .find(|record| record.worker_id == worker_id)
+            else {
+                return;
+            };
+            if record.queue.enabled {
+                Some(payload)
+            } else {
+                record.queue.pending.push_back(payload);
+                None
+            }
+        };
+        if let Some(payload) = queue_task {
+            self.queue_worker_message_task(worker_id, payload);
+        }
+    }
+
+    /// <https://html.spec.whatwg.org/#messageeventtarget>
+    /// Enable the message queue of a worker this realm owns (run-a-worker
+    /// step 12.14, or the first onmessage handler on its Worker object): the
+    /// messages the worker posted while the queue was disabled now fire as
+    /// message tasks, in order.
+    pub(crate) fn enable_owned_worker_messages(
+        &self,
+        worker_id: WorkerId,
+        ec: &mut dyn ExecutionContext<Types>,
+    ) {
+        let pending: Vec<WorkerChannelMessage> = {
+            let mut owned_workers = self.owned_workers.borrow_mut(ec);
+            let Some(record) = owned_workers
+                .iter_mut()
+                .find(|record| record.worker_id == worker_id)
+            else {
+                return;
+            };
+            record.queue.enabled = true;
+            record.queue.pending.drain(..).collect()
+        };
+        for payload in pending {
+            self.queue_worker_message_task(worker_id, payload);
+        }
+    }
+
+    /// Queue one message a worker this realm owns posted as a message task
+    /// on this realm's event loop, firing a message event at the worker's
+    /// Worker object.
+    fn queue_worker_message_task(&self, worker_id: WorkerId, payload: WorkerChannelMessage) {
+        let Ok(task_sources) = self.task_sources() else {
+            error!("realm has no task sources; dropping worker message");
+            return;
+        };
+        task_sources
+            .task_queue()
+            .queue_a_task(Task::RunWorkerOutboundMessage { worker_id, payload });
+    }
+
+    /// <https://html.spec.whatwg.org/#terminate-a-worker>
+    /// A worker this realm owns closed: drop its channel registry entry,
+    /// discarding the messages that had not yet fired (terminate-a-worker
+    /// step 4 empties the queue of the port the worker's implicit port is
+    /// entangled with; run-a-worker step 12.20 disentangles the worker's
+    /// ports).
+    pub(crate) fn discard_owned_worker(
+        &self,
+        worker_id: WorkerId,
+        ec: &mut dyn ExecutionContext<Types>,
+    ) {
+        let mut owned_workers = self.owned_workers.borrow_mut(ec);
+        owned_workers.retain(|record| record.worker_id != worker_id);
+    }
+
+    /// <https://html.spec.whatwg.org/#event-loop-processing-model>
+    pub(crate) fn task_sources(&self) -> Result<EventLoopTaskSources, String> {
+        self.task_sources
+            .borrow()
+            .clone()
+            .ok_or_else(|| String::from("event loop task sources are not installed"))
     }
 
     pub(crate) fn document_object(&self, ec: &mut dyn ExecutionContext<Types>) -> Option<JsObject> {

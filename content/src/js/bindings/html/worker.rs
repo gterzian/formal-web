@@ -270,7 +270,7 @@ fn event_handler_setter(
         // The outside port's message queue is enabled as if start() had been
         // called, so messages the worker posts before run-a-worker enables the
         // queue can be delivered.
-        worker.enable_outside_port_queue(ec);
+        worker.enable_message_delivery(ec);
     }
     Ok(ec.value_undefined())
 }

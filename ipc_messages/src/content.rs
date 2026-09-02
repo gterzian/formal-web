@@ -834,10 +834,6 @@ pub struct WorkerRequest {
     /// worker global scope when a worker creates a nested worker.
     /// <https://html.spec.whatwg.org/#the-worker-s-lifetime>
     pub owner: WorkerOwner,
-    /// The constructor-created outside port, entangled with the worker's
-    /// inside port by run-a-worker step 12.8.
-    /// <https://html.spec.whatwg.org/#dedicated-workers-and-the-worker-interface>
-    pub outside_port: PortId,
 }
 
 /// The realm that created a worker (its relevant owner to add).

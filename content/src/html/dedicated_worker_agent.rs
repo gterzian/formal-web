@@ -15,14 +15,25 @@
 //! content process main thread through a crossbeam command channel that also
 //! joins the select.
 //!
+//! The worker's owner (the window document, or the worker global scope, that
+//! created the Worker object) talks to the worker over two plain crossbeam
+//! channels instead of the MessagePort machinery: the owner→worker end of
+//! the worker's channel (what `worker.postMessage` sends) joins this
+//! agent's event-loop select, and the worker→owner end (what the worker
+//! posts back with `self.postMessage`) is owned by the worker global scope.
+//! Message events fire as queued tasks on the receiving event loop, gated by
+//! the implicit port's port-message-queue enabled flag (run-a-worker steps
+//! 12.14 and 12.15) exactly as the port-based model did.
+//!
 //! The content process main thread (the similar-origin window agent) stores
 //! each dedicated worker agent's thread data (its command channel and join
 //! handle, joined on shutdown), routes user-agent port tasks for
-//! worker-owned ports to the agent's thread, and runs owner-side steps (the
-//! owner realm's entanglement, queue enablement, error events) in the realm
-//! that created the worker.
+//! MessagePorts managed by worker realms to the agent's thread, and runs
+//! owner-side steps (the owner realm's queue enablement, error events) in
+//! the realm that created the worker.
 
 use std::cell::RefCell;
+use std::collections::{HashMap, VecDeque};
 use std::rc::Rc;
 
 use data_url::DataUrl;
@@ -36,24 +47,90 @@ use ipc_messages::network::{Request as NetworkRequest, ResponseRecipient};
 use log::error;
 use url::Url;
 
+use crate::dom::event::EventTarget;
 use crate::dom::fire_event;
 use crate::html::environment_settings_object::{EnvironmentSettingsObject, WorkerRealmWiring};
 use crate::html::event_loop::{EventLoopTaskSources, Task, TaskQueue};
-use crate::html::messageport::MessagePort;
+use crate::html::messageport::deliver_serialized_message;
+use crate::html::structured_data::safe_passing_of_structured_data::SerializeWithTransferResult;
 use crate::html::timers::{MapOfActiveTimers, TimerRealm};
 use crate::html::worker::WorkerType;
 use crate::js::platform_objects::{with_global_scope, with_worker_global_scope};
+use js_engine::gc_struct;
 
 use verification::TraceSender;
+
+/// One message on a dedicated worker's channel: the message serialized in
+/// the sending realm (structured serialize with transfer), deserialized in
+/// the receiving realm when the message event fires.
+/// <https://html.spec.whatwg.org/#structuredserializewithtransfer>
+pub(crate) type WorkerChannelMessage = SerializeWithTransferResult;
+
+/// The message queue of one end of a dedicated worker's channel: messages
+/// that arrive while the queue is disabled wait here until it is enabled (a
+/// port message queue can be enabled, and is initially disabled).
+/// <https://html.spec.whatwg.org/#port-message-queue>
+#[derive(Clone, Default)]
+pub(crate) struct WorkerMessageQueue {
+    pub(crate) enabled: bool,
+    pub(crate) pending: VecDeque<WorkerChannelMessage>,
+}
+
+/// The owner-side delivery state of one dedicated worker this realm owns
+/// (the realm's global scope created the Worker platform object): the target
+/// of the message events the messages the worker posts back fire at, and the
+/// message queue gating their delivery.  This replaces the outside port's
+/// record of the port-based model (the worker's implicit port is bypassed;
+/// see the module doc).  Registered by the Worker constructor, emptied and
+/// dropped when the worker closes.
+/// <https://html.spec.whatwg.org/#the-worker-s-lifetime>
+#[gc_struct]
+pub(crate) struct OwnedWorkerChannel {
+    /// The Worker platform object's event target: the message event target
+    /// of the messages the worker posts (the role the outside port's message
+    /// event target played).
+    pub(crate) worker_target: EventTarget,
+
+    /// The worker this channel belongs to.
+    #[ignore_trace]
+    pub(crate) worker_id: WorkerId,
+
+    /// The message queue of the owner end of the worker's channel: whether
+    /// the messages the worker posts may fire as message events, and the
+    /// messages that arrived before the queue was enabled.
+    #[ignore_trace]
+    pub(crate) queue: WorkerMessageQueue,
+}
 
 /// A request from a realm's GlobalScope to the content process's worker
 /// manager.  Dedicated workers are entirely content-process-nested: worker
 /// creation and termination never involve the user agent.
 pub(crate) enum WorkerContentRequest {
     /// The Worker constructor's run-a-worker request.
-    Create(WorkerRequest),
+    Create(WorkerStartRequest),
     /// A Worker object's terminate().
     Terminate(WorkerId),
+}
+
+/// The Worker constructor's run-a-worker request plus the ends of the
+/// worker's direct channels the constructor created in the owner realm.  The
+/// sender ends stay with the platform objects in the owner realm; the ends
+/// that travel here are handed to the dedicated worker agent's event loop
+/// and to the owner's event loop.
+pub(crate) struct WorkerStartRequest {
+    /// <https://html.spec.whatwg.org/#run-a-worker>
+    pub(crate) request: WorkerRequest,
+    /// The receiver end of the owner→worker channel (the messages
+    /// `worker.postMessage` sends): the dedicated worker agent's event loop
+    /// selects on it.
+    pub(crate) owner_to_worker: crossbeam_channel::Receiver<WorkerChannelMessage>,
+    /// The sender end of the worker→owner channel: handed to the worker
+    /// global scope for the worker's `postMessage`.
+    pub(crate) worker_to_owner: crossbeam_channel::Sender<WorkerChannelMessage>,
+    /// The receiver end of the worker→owner channel: kept by the owner's
+    /// event loop (the content process main loop for a document owner, or
+    /// forwarded to the owner worker agent's event loop).
+    pub(crate) worker_to_owner_rx: crossbeam_channel::Receiver<WorkerChannelMessage>,
 }
 
 /// A command from the content process main thread to a dedicated worker
@@ -69,32 +146,37 @@ pub(crate) enum WorkerCommand {
     /// An owner-side operation to run in this worker's realm (this worker is
     /// the owner of another worker).
     OwnerOperation(OwnerOperation),
+    /// This worker (the owner of a nested worker) receives the receiver end
+    /// of the nested worker's outbound channel; it joins this agent's
+    /// event-loop select so messages the nested worker posts back fire as
+    /// message events at the nested worker's Worker object in this realm.
+    AddNestedWorkerChannel {
+        worker_id: WorkerId,
+        receiver: crossbeam_channel::Receiver<WorkerChannelMessage>,
+    },
+    /// A nested worker this realm owns closed; drop its outbound channel's
+    /// receiver from this agent's event-loop select.
+    RemoveNestedWorkerChannel { worker_id: WorkerId },
 }
 
 /// An operation to run in the realm that owns a worker (the owner document,
 /// or the owner worker global scope).
 #[derive(Clone, Copy, Debug)]
 pub(crate) enum OwnerOperation {
-    /// run-a-worker step 12.8, owner half: entangle the outside port with the
-    /// worker's inside port in the owner realm's channel messaging.
+    /// run-a-worker step 12.14, owner half: enable the delivery of the
+    /// messages the worker posts (the owner end of the worker's channel), so
+    /// messages that arrived while the queue was disabled fire as tasks.
     /// <https://html.spec.whatwg.org/#run-a-worker>
-    EntangleOutsidePort {
-        outside_port: PortId,
-        inside_port: PortId,
-    },
-    /// run-a-worker step 12.14: enable the outside port's port message queue.
-    /// <https://html.spec.whatwg.org/#run-a-worker>
-    EnableOutsidePortQueue { outside_port: PortId },
+    EnableWorkerMessages { worker_id: WorkerId },
     /// run-a-worker step 12.4.1: fire an event named error at the Worker
-    /// object (the outside port's message event target).
+    /// object of a failed or failed-to-evaluate worker.
     /// <https://html.spec.whatwg.org/#run-a-worker>
-    FireWorkerError { outside_port: PortId },
-    /// terminate-a-worker step 4 (empty the port message queue of the port
-    /// the worker's implicit port is entangled with) and run-a-worker step
-    /// 12.20 (disentangle all the ports in the list of the worker's ports):
-    /// empty the outside port's queue and sever its entanglement.
+    FireWorkerError { worker_id: WorkerId },
+    /// terminate-a-worker step 4 and run-a-worker step 12.20: the worker is
+    /// gone, so empty the owner end of its channel (its pending messages) and
+    /// drop its delivery state.
     /// <https://html.spec.whatwg.org/#terminate-a-worker>
-    EmptyAndDisentangleOutsidePort { outside_port: PortId },
+    DiscardWorkerMessages { worker_id: WorkerId },
 }
 
 /// A notification from a dedicated worker agent to the content process main
@@ -150,6 +232,13 @@ impl PortOwnerReporter {
 /// agent's thread.
 pub(crate) struct DedicatedWorkerAgentConfig {
     pub(crate) request: WorkerRequest,
+    /// The receiver end of the owner→worker channel (the messages
+    /// `worker.postMessage` sends): the agent's event loop selects on it and
+    /// delivers each message as a message event at the worker global scope.
+    pub(crate) owner_to_worker: crossbeam_channel::Receiver<WorkerChannelMessage>,
+    /// The sender end of the worker→owner channel, stored on the worker
+    /// global scope for the worker's `postMessage`.
+    pub(crate) worker_to_owner: crossbeam_channel::Sender<WorkerChannelMessage>,
     /// The content process's event loop id, shared by the worker's channel
     /// messaging: the user agent routes port tasks to this content process,
     /// which forwards them to the worker thread.
@@ -160,7 +249,7 @@ pub(crate) struct DedicatedWorkerAgentConfig {
     /// Commands from the content process main thread.
     pub(crate) worker_commands: crossbeam_channel::Receiver<WorkerCommand>,
     /// The content-to-user-agent event sender, for the worker's channel
-    /// messaging (port routing) and the worker channel registration.
+    /// messaging (MessagePort routing).
     pub(crate) event_sender: IpcSender<ContentEvent>,
     /// The worker's own channel to the net process, for script fetches.
     pub(crate) network_extension_sender: IpcSender<ipc_messages::network::Request>,
@@ -175,7 +264,15 @@ pub(crate) struct DedicatedWorkerAgentState {
     pub(crate) worker_id: WorkerId,
     pub(crate) settings: EnvironmentSettingsObject,
     pub(crate) owner: WorkerOwner,
-    pub(crate) outside_port_id: PortId,
+    /// The owner→worker end of the worker's channel: the messages
+    /// `worker.postMessage` sends, delivered as message events at the worker
+    /// global scope once its message queue is enabled.
+    pub(crate) owner_to_worker: crossbeam_channel::Receiver<WorkerChannelMessage>,
+    /// The receiver ends of the outbound channels of the workers this
+    /// worker owns (nested workers), keyed by worker id: the messages each
+    /// nested worker posts back fire as message events at its Worker
+    /// object in this worker's realm.
+    pub(crate) nested_workers: HashMap<WorkerId, crossbeam_channel::Receiver<WorkerChannelMessage>>,
     /// The worker's own task queue and timer map: the dedicated worker
     /// agent's event loop task sources (a dedicated worker agent has its own
     /// event loop).
@@ -208,7 +305,6 @@ pub(crate) fn run_a_worker(config: DedicatedWorkerAgentConfig) -> Result<(), Str
 fn run_a_worker_inner(config: DedicatedWorkerAgentConfig) -> Result<(), String> {
     let request = config.request;
     let worker_id = request.worker_id;
-    let outside_port_id = request.outside_port;
     let owner = request.owner;
 
     // Step 1: "Let is shared be true if worker is a SharedWorker object, and
@@ -260,7 +356,9 @@ fn run_a_worker_inner(config: DedicatedWorkerAgentConfig) -> Result<(), String> 
     // loop id for port routing, gets the trace sender for the MessagePort
     // specs, the worker creator channel (a nested worker's constructor runs
     // on this thread), and the port-owner reporter that tells the main
-    // thread which ports this worker's event loop manages.
+    // thread which MessagePorts this worker's event loop manages.  It also
+    // gets the worker→owner end of the worker's channel, so the worker's
+    // postMessage can reach its owner.
     with_worker_global_scope(settings.ec(), |worker_global_scope, _ec| {
         worker_global_scope
             .global_scope
@@ -277,6 +375,7 @@ fn run_a_worker_inner(config: DedicatedWorkerAgentConfig) -> Result<(), String> 
                 worker_id,
                 config.worker_events.clone(),
             )));
+        worker_global_scope.set_worker_to_owner(config.worker_to_owner);
         Ok(())
     })
     .map_err(|error| format!("failed to wire worker realm: {}", error.display()))?;
@@ -295,7 +394,8 @@ fn run_a_worker_inner(config: DedicatedWorkerAgentConfig) -> Result<(), String> 
         worker_id,
         settings,
         owner,
-        outside_port_id,
+        owner_to_worker: config.owner_to_worker,
+        nested_workers: HashMap::new(),
         task_queue,
         active_timers,
         event_sender: config.event_sender,
@@ -324,11 +424,11 @@ fn run_a_worker_inner(config: DedicatedWorkerAgentConfig) -> Result<(), String> 
     // Step 12.20: "Disentangle all the ports in the list of the worker's
     // ports."
     // Step 12.21: "Empty worker global scope's owner set."
-    // Note: The timer map and the inside port's record drop with the realm
-    // (the settings object is dropped when this function returns); the
-    // owner-side cleanup (empty and disentangle the outside port, terminate
-    // a worker step 4) runs in the content process when it handles the
-    // Closed report.
+    // Note: The timer map, the worker's inbound channel receiver and the
+    // realm drop with this state when the function returns; the owner-side
+    // cleanup (empty the owner end of the worker's channel, terminate a
+    // worker step 4) runs in the content process when it handles the Closed
+    // report.
     Ok(())
 }
 
@@ -428,64 +528,19 @@ impl DedicatedWorkerAgentState {
         // holds the association).
         // Step 12.6: "Let inside port be a new MessagePort object in inside
         // settings's realm."
-        let mut inside_port = MessagePort::new_port_with_id(PortId::new(), self.settings.ec())
-            .map_err(|error| format!("failed to create inside port: {}", error.display()))?;
         // Step 12.7.1: "Set inside port's message event target to worker
         // global scope."
-        let event_target =
-            with_worker_global_scope(self.settings.ec(), |worker_global_scope, _ec| {
-                Ok(worker_global_scope.event_target.clone())
-            })
-            .map_err(|error| format!("failed to read worker event target: {}", error.display()))?;
-        inside_port.set_message_event_target(event_target);
         // Step 12.7.2: "Set worker global scope's inside port to inside
         // port."
-        let inside_port_id = inside_port.port_id;
-        with_worker_global_scope(self.settings.ec(), |worker_global_scope, ec| {
-            worker_global_scope.set_inside_port(inside_port.clone(), ec);
-            Ok(())
-        })
-        .map_err(|error| format!("failed to set worker inside port: {}", error.display()))?;
         // Step 12.8: "Entangle outside port and inside port."
-        // Note: The worker half creates the inside port's record entangled
-        // with the outside port; the owner half (the outside port's record,
-        // in the owner realm) runs in the content process, which forwards it
-        // to the owner's dedicated worker agent when the owner is a worker.
-        with_worker_global_scope(self.settings.ec(), |worker_global_scope, ec| {
-            let messaging = worker_global_scope
-                .global_scope
-                .channel_messaging(ec)
-                .ok_or_else(|| {
-                    ec.new_type_error("worker entangle: worker realm has no channel messaging")
-                })?;
-            messaging.entangle_remote(inside_port.clone(), self.outside_port_id, ec);
-            Ok(())
-        })
-        .map_err(|error| format!("worker entangle: {}", error.display()))?;
-        let owner_operation = WorkerEvent::OwnerOperation {
-            owner: self.owner,
-            operation: OwnerOperation::EntangleOutsidePort {
-                outside_port: self.outside_port_id,
-                inside_port: inside_port_id,
-            },
-        };
-        if let Err(error) = self.worker_events.send(owner_operation) {
-            error!(
-                "worker {}: failed to report entanglement: {error}",
-                self.worker_id
-            );
-        }
-        // The user agent must know both ports to route messages to either
-        // one's owning event loop (`MessagePortExtraFG.tla`'s `NewChannel`).
-        if let Err(error) = self.event_sender.send(ContentEvent::PortChannelCreated {
-            port1: self.outside_port_id,
-            port2: inside_port_id,
-        }) {
-            error!(
-                "worker {}: failed to register worker channel: {error}",
-                self.worker_id
-            );
-        }
+        // Note: The worker's implicit port is bypassed: the constructor
+        // created the two ends of the worker's direct channel in the owner
+        // realm, this agent's event loop selects on the owner→worker end
+        // (its receiver is in the agent state), and the worker global scope
+        // holds the worker→owner end.  There is no inside port, no
+        // entanglement, and no channel to register with the user agent; the
+        // owner-side delivery state was registered by the constructor in the
+        // owner realm's global scope.
         // Step 12.9: "Create a new WorkerLocation object and associate it
         // with worker global scope."
         // Note: The WorkerLocation is created lazily on first access
@@ -522,29 +577,31 @@ impl DedicatedWorkerAgentState {
             }
         }
         // Step 12.14: "Enable outside port's port message queue."
-        // Note: The outside port's record lives in the owner realm; the
-        // content process enables it there (forwarding to the owner worker
-        // thread when the owner is a worker).
+        // Note: The owner end of the worker's channel lives in the owner
+        // realm; the content process enables it there (forwarding to the
+        // owner worker thread when the owner is a worker), flushing the
+        // messages the worker posted before the queue was enabled.
         if let Err(error) = self.worker_events.send(WorkerEvent::OwnerOperation {
             owner: self.owner,
-            operation: OwnerOperation::EnableOutsidePortQueue {
-                outside_port: self.outside_port_id,
+            operation: OwnerOperation::EnableWorkerMessages {
+                worker_id: self.worker_id,
             },
         }) {
             error!(
-                "worker {}: failed to report outside queue enable: {error}",
+                "worker {}: failed to report queue enable: {error}",
                 self.worker_id
             );
         }
         // Step 12.15: "If is shared is false, enable the port message queue
         // of the worker's implicit port."
-        with_worker_global_scope(self.settings.ec(), |worker_global_scope, ec| {
-            if let Some(messaging) = worker_global_scope.global_scope.channel_messaging(ec) {
-                messaging.start(inside_port_id, ec);
-            }
+        // Note: Enables the worker end of the channel (its inbound message
+        // queue), flushing the messages the owner posted before the queue
+        // was enabled.
+        with_worker_global_scope(self.settings.ec(), |worker_global_scope, _ec| {
+            worker_global_scope.enable_inbound_messages();
             Ok(())
         })
-        .map_err(|error| format!("worker enable inside port: {}", error.display()))?;
+        .map_err(|error| format!("worker enable inbound messages: {}", error.display()))?;
         Ok(())
     }
 
@@ -578,7 +635,7 @@ impl DedicatedWorkerAgentState {
             .send(WorkerEvent::OwnerOperation {
                 owner: self.owner,
                 operation: OwnerOperation::FireWorkerError {
-                    outside_port: self.outside_port_id,
+                    worker_id: self.worker_id,
                 },
             })
             .map_err(|error| format!("failed to report worker error event: {error}"))
@@ -636,11 +693,104 @@ impl DedicatedWorkerAgentState {
                 self.settings
                     .run_window_timer(timer_id, timer_key, nesting_level)
             }
+            Task::RunWorkerInboundMessage { worker_id, payload } => {
+                // The message task of the worker's inbound channel: a
+                // message the owner posted, fired as a message event at the
+                // worker global scope (its implicit port's message event
+                // target).
+                if self.closing_flag() {
+                    return Ok(());
+                }
+                if worker_id != self.worker_id {
+                    return Err(format!(
+                        "worker event loop received an inbound message for worker {worker_id}"
+                    ));
+                }
+                self.fire_inbound_worker_message(payload)
+            }
+            Task::RunWorkerOutboundMessage { worker_id, payload } => {
+                // A message a worker this realm owns posted back: fire it as
+                // a message event at the worker's Worker object (in this
+                // realm, which is the owner of that worker).
+                if self.closing_flag() {
+                    return Ok(());
+                }
+                self.deliver_worker_outbound_message(worker_id, payload)
+            }
             _ => Err(format!(
                 "worker {} event loop received a document task",
                 self.worker_id
             )),
         }
+    }
+
+    /// The message task of one message the owner posted to this worker: run
+    /// the delivery steps (deserialize, fire a message event at the worker
+    /// global scope) for the message.
+    fn fire_inbound_worker_message(&mut self, payload: WorkerChannelMessage) -> Result<(), String> {
+        let time_millis = self.settings.current_time_millis();
+        with_worker_global_scope(self.settings.ec(), |worker_global_scope, ec| {
+            // The message event target of the worker's implicit port is the
+            // worker global scope itself.
+            let target = worker_global_scope.event_target.clone();
+            deliver_serialized_message(&target, &payload, time_millis, ec)
+        })
+        .map_err(|error| format!("worker inbound message task failed: {}", error.display()))
+    }
+
+    /// The message task of one message a dedicated worker this realm owns
+    /// posted back: run the delivery steps at the worker's Worker platform
+    /// object (this realm is the owner).
+    fn deliver_worker_outbound_message(
+        &mut self,
+        worker_id: WorkerId,
+        payload: WorkerChannelMessage,
+    ) -> Result<(), String> {
+        fire_worker_posted_message(&mut self.settings, worker_id, payload)
+    }
+
+    /// Receive a message the owner posted to this worker over the owner→
+    /// worker channel: the owner's message is either queued as a message
+    /// task (the worker's message queue is enabled) or waits in the queue
+    /// until the queue is enabled (run-a-worker step 12.15, or the first
+    /// onmessage handler).  Runs on the agent's event-loop select.
+    fn handle_owner_to_worker_message(
+        &mut self,
+        payload: WorkerChannelMessage,
+    ) -> Result<(), String> {
+        if self.closing_flag() {
+            return Ok(());
+        }
+        with_worker_global_scope(self.settings.ec(), |worker_global_scope, _ec| {
+            worker_global_scope.enqueue_inbound_message(payload);
+            Ok(())
+        })
+        .map_err(|error| format!("worker inbound message failed: {}", error.display()))
+    }
+
+    /// Receive a message a nested worker this realm owns posted back over
+    /// its outbound channel: queue it as a message task at the worker's
+    /// Worker object (or buffer it until that worker's queue is enabled).
+    /// Runs on the agent's event-loop select.
+    fn handle_nested_worker_message(
+        &mut self,
+        worker_id: WorkerId,
+        payload: WorkerChannelMessage,
+    ) -> Result<(), String> {
+        if self.closing_flag() {
+            return Ok(());
+        }
+        with_global_scope(self.settings.ec(), |global_scope, ec| {
+            global_scope.handle_worker_posted_message(worker_id, payload, ec);
+            Ok(())
+        })
+        .map_err(|error| {
+            format!(
+                "nested worker {} message failed: {}",
+                worker_id,
+                error.display()
+            )
+        })
     }
 
     /// Handle a command from the content process main thread.
@@ -666,7 +816,8 @@ impl DedicatedWorkerAgentState {
                 // empty the port message queue of the port that the worker's
                 // implicit port is entangled with."
                 // Note: Runs in the content process when it handles the
-                // Closed report (`EmptyAndDisentangleOutsidePort`).
+                // Closed report (`DiscardWorkerMessages`, which drops the
+                // owner end of the worker's channel).
                 with_worker_global_scope(self.settings.ec(), |worker_global_scope, _ec| {
                     worker_global_scope.closing_flag.set(true);
                     Ok(())
@@ -679,6 +830,21 @@ impl DedicatedWorkerAgentState {
                 // This worker is the owner of another worker; run the
                 // operation in this worker's realm.
                 execute_owner_operation(&mut self.settings, operation)
+            }
+            WorkerCommand::AddNestedWorkerChannel {
+                worker_id,
+                receiver,
+            } => {
+                // A worker this realm owns was spawned; its outbound
+                // channel's receiver joins this agent's event-loop select.
+                self.nested_workers.insert(worker_id, receiver);
+                Ok(())
+            }
+            WorkerCommand::RemoveNestedWorkerChannel { worker_id } => {
+                // A worker this realm owns closed; drop its outbound
+                // channel's receiver from the select.
+                self.nested_workers.remove(&worker_id);
+                Ok(())
             }
         }
     }
@@ -769,9 +935,11 @@ fn run_worker_event_loop(
     // inside settings, running until it is destroyed (the closing flag is
     // set).  The loop waits here for the next input: the oldest task on the
     // worker's task queue, a command from the content process main thread, a
-    // net command (the script fetch completion), or the earliest expiry time
-    // in the worker's map of active timers.  One task runs per iteration,
-    // so a task that queues another task does not starve the other inputs.
+    // net command (the script fetch completion), a message the owner posted
+    // over the worker's inbound channel, a message a nested worker posted
+    // over its outbound channel, or the earliest expiry time in the worker's
+    // map of active timers.  One task runs per iteration, so a task that
+    // queues another task does not starve the other inputs.
     loop {
         // A script that ran before the loop (e.g. a data: worker's script,
         // evaluated while the fetch completed) may already have set the
@@ -784,12 +952,28 @@ fn run_worker_event_loop(
             None => crossbeam_channel::never(),
         };
         let task_queue = state.task_queue.receiver();
+        // The channel ends that join the select: the owner→worker end of
+        // this worker's channel, and the outbound-channel ends of the
+        // workers this worker owns (each message identifies its worker by
+        // the receiver it arrived on).
+        let owner_to_worker = state.owner_to_worker.clone();
+        let nested_workers: Vec<(WorkerId, crossbeam_channel::Receiver<WorkerChannelMessage>)> =
+            state
+                .nested_workers
+                .iter()
+                .map(|(worker_id, receiver)| (*worker_id, receiver.clone()))
+                .collect();
 
         let mut select = crossbeam_channel::Select::new();
         let task_arm = select.recv(&task_queue);
         let worker_command_arm = select.recv(worker_command_rx);
         let net_arm = select.recv(net_command_rx);
         let timer_arm = select.recv(&timer_expiry);
+        let owner_arm = select.recv(&owner_to_worker);
+        let nested_arms: Vec<(WorkerId, usize)> = nested_workers
+            .iter()
+            .map(|(worker_id, receiver)| (*worker_id, select.recv(receiver)))
+            .collect();
 
         let operation = select.select();
         let arm = operation.index();
@@ -819,6 +1003,25 @@ fn run_worker_event_loop(
             {
                 error!("worker {} net command error: {error}", state.worker_id);
             }
+        } else if arm == owner_arm {
+            if let Ok(payload) = operation.recv(&owner_to_worker)
+                && let Err(error) = state.handle_owner_to_worker_message(payload)
+            {
+                error!("worker {} inbound message error: {error}", state.worker_id);
+            }
+        } else if let Some((worker_id, _)) = nested_arms.iter().find(|(_, index)| arm == *index) {
+            if let Some(receiver) = nested_workers
+                .iter()
+                .find(|(nested_id, _)| nested_id == worker_id)
+                .map(|(_, receiver)| receiver)
+                && let Ok(payload) = operation.recv(receiver)
+                && let Err(error) = state.handle_nested_worker_message(*worker_id, payload)
+            {
+                error!(
+                    "worker {} nested worker {} message error: {error}",
+                    state.worker_id, worker_id
+                );
+            }
         } else if arm == timer_arm && operation.recv(&timer_expiry).is_ok() {
             state.run_steps_after_a_timeout();
         }
@@ -827,6 +1030,27 @@ fn run_worker_event_loop(
             return Ok(());
         }
     }
+}
+
+/// The message task of one message a dedicated worker posted back to its
+/// owner: fire a message event at the worker's Worker platform object, in
+/// the realm of the given settings (the realm that created the worker: the
+/// owner window document, or the owner worker global scope).  A worker this
+/// realm no longer owns (it closed) drops the message.
+/// <https://html.spec.whatwg.org/#message-port-post-message-steps>
+pub(crate) fn fire_worker_posted_message(
+    settings: &mut EnvironmentSettingsObject,
+    worker_id: WorkerId,
+    payload: WorkerChannelMessage,
+) -> Result<(), String> {
+    let time_millis = settings.current_time_millis();
+    with_global_scope(settings.ec(), |global_scope, ec| {
+        let Some(target) = global_scope.owned_worker_event_target(worker_id, ec) else {
+            return Ok(());
+        };
+        deliver_serialized_message(&target, &payload, time_millis, ec)
+    })
+    .map_err(|error| format!("worker outbound message task failed: {}", error.display()))
 }
 
 /// Run an owner-side operation in the given realm (the realm that created a
@@ -838,46 +1062,32 @@ pub(crate) fn execute_owner_operation(
     let time_millis = settings.current_time_millis();
     with_global_scope(settings.ec(), |global_scope, ec| {
         match operation {
-            OwnerOperation::EntangleOutsidePort {
-                outside_port,
-                inside_port,
-            } => {
-                // Step 12.8, owner half: the outside port's record was
-                // registered by the Worker constructor; its entanglement is
-                // set here.
-                if let Some(messaging) = global_scope.channel_messaging(ec) {
-                    messaging.set_entanglement(outside_port, inside_port, ec);
-                }
+            OwnerOperation::EnableWorkerMessages { worker_id } => {
+                // Step 12.14, owner half: enable the delivery of the
+                // messages the worker posts, so the messages that arrived
+                // while the queue was disabled fire as message tasks.
+                global_scope.enable_owned_worker_messages(worker_id, ec);
             }
-            OwnerOperation::EnableOutsidePortQueue { outside_port } => {
-                // Step 12.14: enable the outside port's port message queue.
-                if let Some(messaging) = global_scope.channel_messaging(ec) {
-                    messaging.start(outside_port, ec);
-                }
-            }
-            OwnerOperation::FireWorkerError { outside_port } => {
-                let Some(messaging) = global_scope.channel_messaging(ec) else {
+            OwnerOperation::FireWorkerError { worker_id } => {
+                let Some(target) = global_scope.owned_worker_event_target(worker_id, ec) else {
                     return Ok(());
                 };
-                let Some(port) = messaging.port_object(outside_port, ec) else {
-                    return Ok(());
-                };
-                // The outside port's message event target is the Worker
-                // object, so firing at the port's event target fires at the
-                // Worker.
-                fire_event(ec, &port.event_target, "error", time_millis, true)
+                // The Worker object is the message event target of the
+                // messages its worker posts (the owner end of the channel);
+                // firing at it fires at the Worker.
+                fire_event(ec, &target, "error", time_millis, true)
                     .map(|_| ())
                     .map_err(|error| {
                         ec.new_type_error(&format!("failed to fire worker error event: {error:?}"))
                     })?;
             }
-            OwnerOperation::EmptyAndDisentangleOutsidePort { outside_port } => {
-                // terminate-a-worker step 4 (empty the outside port's queue)
-                // and run-a-worker step 12.20 (disentangle the worker's
-                // ports).
-                if let Some(messaging) = global_scope.channel_messaging(ec) {
-                    messaging.empty_and_disentangle(outside_port, ec);
-                }
+            OwnerOperation::DiscardWorkerMessages { worker_id } => {
+                // terminate-a-worker step 4 (empty the queue of the port the
+                // worker's implicit port is entangled with) and run-a-worker
+                // step 12.20 (disentangle the worker's ports): the owner end
+                // of the worker's channel is dropped, discarding its
+                // pending messages.
+                global_scope.discard_owned_worker(worker_id, ec);
             }
         }
         Ok(())

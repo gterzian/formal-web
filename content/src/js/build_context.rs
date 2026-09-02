@@ -25,7 +25,12 @@ pub(crate) fn build_realm(
     build_realm_inner(engine, document)
 }
 
-/// <https://html.spec.whatwg.org/#creating-a-new-javascript-realm>
+/// Build a fresh JavaScript engine context for a worker realm, whose global
+/// object is a worker global scope.
+///
+/// A dedicated worker runs in its own agent, so its realm is always built in
+/// a fresh engine (its own JS heap); it is never a child realm of the owner's
+/// engine the way `build_realm` creates window realms.
 pub(crate) fn build_worker_realm(
     document: Rc<RefCell<BaseDocument>>,
     name: String,

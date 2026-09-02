@@ -367,7 +367,14 @@ fn event_handler_setter(
         .event_target
         .set_event_handler_value(event_type, callback, ec);
     if enable_inside_port_queue {
-        worker_global_scope.enable_inside_port_queue(ec);
+        // <https://html.spec.whatwg.org/#messageeventtarget>
+        // The first time a MessagePort object's onmessage IDL attribute is
+        // set, the port's port message queue must be enabled.  For the
+        // worker's implicit port (bypassed; see dedicated_worker_agent.rs),
+        // the message event target is the worker global scope, so setting
+        // onmessage on the global scope enables the worker's inbound message
+        // queue.
+        worker_global_scope.enable_inbound_messages();
     }
     Ok(ec.value_undefined())
 }

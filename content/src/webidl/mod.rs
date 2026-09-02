@@ -5,7 +5,6 @@ mod buffer_source;
 mod callback;
 pub(crate) mod dictionary;
 pub(crate) mod dom_exception;
-pub(crate) mod navigator;
 pub(crate) mod promise;
 mod realm;
 
@@ -22,7 +21,6 @@ pub(crate) use callback::{
 pub(crate) use dom_exception::{
     data_clone_error_value, not_supported_error_value, security_error_value, syntax_error_value,
 };
-pub(crate) use navigator::{navigator_language, navigator_platform, navigator_user_agent};
 pub(crate) use promise::{
     mark_promise_as_handled, promise_from_value, rejected_promise, rejected_promise_from_error,
     resolved_promise, transform_promise_to_undefined, upon_settlement,

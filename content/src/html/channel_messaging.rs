@@ -156,76 +156,6 @@ impl ChannelMessaging {
     }
 
     /// <https://html.spec.whatwg.org/#entangle>
-    /// Entangle a port managed by this event loop with a port managed by
-    /// another of this process's realms (the worker channel: the outside
-    /// port lives in the owner realm, the inside port in the worker realm).
-    /// The record for the remote port lives in the other realm's
-    /// ChannelMessaging, created by its own call to this method; the user
-    /// agent is told about the pair separately (`PortChannelCreated`), so
-    /// its routing can deliver messages to either event loop.
-    pub(crate) fn entangle_remote(
-        &self,
-        port: MessagePort,
-        remote_id: PortId,
-        ec: &mut dyn ExecutionContext<Types>,
-    ) {
-        let port_id = port.port_id;
-        let mut ports = self.ports.borrow_mut(ec);
-        ports.push(PortRecord {
-            port_id,
-            object: Some(port),
-            ts: TransferState::Managed,
-            entangled: Some(remote_id),
-            queue: VecDeque::new(),
-            enabled: false,
-            detached: false,
-            in_flight: 0,
-        });
-        drop(ports);
-        self.report_port(port_id, true);
-    }
-
-    /// <https://html.spec.whatwg.org/#entangle>
-    /// Register a port managed by this event loop without an entanglement
-    /// yet.  Used by the Worker constructor for the outside port, whose
-    /// entanglement is set by run a worker's step 12.8 once the inside port
-    /// exists.
-    pub(crate) fn register_port(&self, port: MessagePort, ec: &mut dyn ExecutionContext<Types>) {
-        let port_id = port.port_id;
-        let mut ports = self.ports.borrow_mut(ec);
-        if ports.iter().any(|record| record.port_id == port_id) {
-            return;
-        }
-        ports.push(PortRecord {
-            port_id,
-            object: Some(port),
-            ts: TransferState::Managed,
-            entangled: None,
-            queue: VecDeque::new(),
-            enabled: false,
-            detached: false,
-            in_flight: 0,
-        });
-        drop(ports);
-        self.report_port(port_id, true);
-    }
-
-    /// <https://html.spec.whatwg.org/#entangle>
-    /// Set the entanglement of a port managed by this event loop to a port
-    /// managed by another of this process's realms.
-    pub(crate) fn set_entanglement(
-        &self,
-        port_id: PortId,
-        remote_id: PortId,
-        ec: &mut dyn ExecutionContext<Types>,
-    ) {
-        let mut ports = self.ports.borrow_mut(ec);
-        if let Some(record) = ports.iter_mut().find(|record| record.port_id == port_id) {
-            record.entangled = Some(remote_id);
-        }
-    }
-
-    /// <https://html.spec.whatwg.org/#entangle>
     pub(crate) fn entangle_pair(
         &self,
         port1: MessagePort,
@@ -496,32 +426,6 @@ impl ChannelMessaging {
             ports[other_index].entangled = None;
         }
         other
-    }
-
-    /// <https://html.spec.whatwg.org/#disentangle>
-    /// Empty a port's message queue and sever its entanglement (both sides),
-    /// without detaching the port.  Runs on the owner side when a worker is
-    /// terminated or closes: terminate-a-worker step 4 (empty the port
-    /// message queue of the port that the worker's implicit port is
-    /// entangled with) and run-a-worker step 12.20 (disentangle all the
-    /// ports in the list of the worker's ports); the inside port's record
-    /// drops with the worker realm.
-    pub(crate) fn empty_and_disentangle(
-        &self,
-        port_id: PortId,
-        ec: &mut dyn ExecutionContext<Types>,
-    ) {
-        let mut ports = self.ports.borrow_mut(ec);
-        let Some(index) = ports.iter().position(|record| record.port_id == port_id) else {
-            return;
-        };
-        ports[index].queue.clear();
-        let other = ports[index].entangled.take();
-        if let Some(other) = other
-            && let Some(other_index) = ports.iter().position(|record| record.port_id == other)
-        {
-            ports[other_index].entangled = None;
-        }
     }
 
     /// Enable a port's message queue (once enabled it stays enabled) and

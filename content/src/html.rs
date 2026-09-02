@@ -26,6 +26,7 @@ mod hyperlink_element_utils;
 mod location;
 pub(crate) mod message_event;
 pub(crate) mod messageport;
+mod navigator;
 pub(crate) mod structured_data;
 pub(crate) mod timers;
 pub(crate) mod ui_events;
@@ -33,6 +34,8 @@ mod window;
 mod window_or_worker_global_scope;
 pub(crate) mod windowproxy;
 pub(crate) mod worker;
+mod worker_location;
+mod worker_navigator;
 
 use ipc::IpcSender;
 use ipc_messages::content::{
@@ -76,10 +79,9 @@ pub(crate) use window::window_computed_style_properties_for_element;
 pub(crate) use window::{PostMessageOptions, window_post_message_steps};
 pub(crate) use window_or_worker_global_scope::WindowOrWorkerGlobalScope;
 pub(crate) use windowproxy::WindowProxy;
-pub(crate) use worker::{
-    DedicatedWorkerGlobalScope, Worker, WorkerGlobalScope, WorkerLocation, WorkerNavigator,
-    WorkerType,
-};
+pub(crate) use worker::{DedicatedWorkerGlobalScope, Worker, WorkerGlobalScope, WorkerType};
+pub(crate) use worker_location::WorkerLocation;
+pub(crate) use worker_navigator::WorkerNavigator;
 
 use blitz_dom::{BaseDocument, DocumentConfig};
 use std::{cell::RefCell, rc::Rc};
