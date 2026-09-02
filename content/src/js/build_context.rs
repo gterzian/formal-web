@@ -464,6 +464,22 @@ fn setup_realm(engine: &mut Engine, _document: Rc<RefCell<BaseDocument>>) -> Res
     Ok(())
 }
 
+/// Finish building the realm of a dedicated worker agent (the JSC/V8 half
+/// of `build_worker_realm`): create the realm's global object — the
+/// DedicatedWorkerGlobalScope that run a worker's step 5 creates for the
+/// global object, carrying the worker's name and type — and run the same
+/// realm bootstrap `setup_realm` runs for window realms (interface
+/// registry, prototype wiring, global-object prototype).  The Boa backend
+/// performs the global-object construction through its realm-creation host
+/// hooks, so only JSC/V8 run this helper.  The run-a-worker step
+/// annotations for the realm and the worker environment settings object
+/// live on `EnvironmentSettingsObject::new_worker_in_realm`
+/// (<https://html.spec.whatwg.org/#set-up-a-worker-environment-settings-object>),
+/// which calls `build_worker_realm`.
+///
+/// The numbered phases in the body are this helper's own bootstrap order
+/// (mirroring `setup_realm`), not steps of a spec algorithm.
+#[cfg(not(boa_backend))]
 fn setup_worker_realm(
     engine: &mut Engine,
     document: Rc<RefCell<BaseDocument>>,
@@ -490,10 +506,13 @@ fn setup_worker_realm(
     };
     use js_engine::ExecutionContext as _;
 
-    // Step 1: Create the worker global scope and associate it with the
-    // realm's global object.  The Boa backend constructs it through its host
-    // hooks during realm creation, so only JSC/V8 create it here.
-    #[cfg(not(boa_backend))]
+    // Step 5 of run a worker: "For the global object, if is shared is true,
+    // create a new SharedWorkerGlobalScope object. Otherwise, create a new
+    // DedicatedWorkerGlobalScope object."  Step 6: "Let worker global scope
+    // be the global object of realm execution context's Realm component."
+    // The Boa backend constructs the platform object through its host hooks
+    // during realm creation, so only JSC/V8 create it here and associate it
+    // with the realm's global object.
     let global_obj = {
         let global_scope = GlobalScope::new(
             crate::html::GlobalScopeKind::Worker,
@@ -505,8 +524,6 @@ fn setup_worker_realm(
         js_engine::associate_existing_object(engine, &global_obj, worker_global_scope);
         global_obj
     };
-    #[cfg(boa_backend)]
-    let global_obj = engine.realm_global_object();
     // Set the EventTarget reflector for the worker global scope.
     let global_value =
         <crate::js::Types as js_engine::JsTypes>::value_from_object(global_obj.clone());

@@ -282,7 +282,7 @@ pub(crate) struct WorkerGlobalScope {
     /// <https://html.spec.whatwg.org/#global-object>
     pub(crate) global_scope: GlobalScope,
 
-    /// <https://html.spec.whatwg.org/#dom-worker-name>
+    /// <https://html.spec.whatwg.org/#concept-workerglobalscope-name>
     #[ignore_trace]
     pub(crate) name: String,
 
@@ -297,7 +297,7 @@ pub(crate) struct WorkerGlobalScope {
     #[ignore_trace]
     pub(crate) url: Rc<RefCell<Option<Url>>>,
 
-    /// <https://html.spec.whatwg.org/#the-worker-s-lifetime>
+    /// <https://html.spec.whatwg.org/#dom-workerglobalscope-closing>
     #[ignore_trace]
     pub(crate) closing_flag: Rc<Cell<bool>>,
 
@@ -408,7 +408,7 @@ impl WorkerGlobalScope {
         Ok(location)
     }
 
-    /// <https://html.spec.whatwg.org/#dom-workerglobalscope-navigator>
+    /// <https://html.spec.whatwg.org/#workernavigator>
     pub(crate) fn navigator_value(
         &self,
         ec: &mut dyn ExecutionContext<Types>,
@@ -449,7 +449,7 @@ impl WorkerGlobalScope {
         import_scripts_into_worker_global_scope(self, urls, ec)
     }
 
-    /// <https://html.spec.whatwg.org/#dedicated-workerglobalscope>
+    /// <https://html.spec.whatwg.org/#dom-dedicatedworkerglobalscope-name>
     pub(crate) fn name_value(&self) -> String {
         // The name getter steps are to return this's name.
         self.name.clone()

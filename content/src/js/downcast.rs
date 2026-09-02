@@ -8,11 +8,13 @@ use crate::dom::{
 };
 use crate::html::{
     HTMLAnchorElement, HTMLElement, HTMLIFrameElement, HTMLInputElement, HTMLMediaElement,
-    HTMLVideoElement, MessageEvent, MessagePort, Window, WorkerGlobalScope,
+    HTMLVideoElement, MessageEvent, MessagePort, Window, Worker, WorkerGlobalScope,
 };
 use crate::js::Types;
+use crate::js::platform_objects::with_global_scope;
 use crate::ui_events::{MouseEvent, UIEvent};
 use js_engine::{Completion, ExecutionContext, JsTypes};
+use log::error;
 
 /// Downcasts a JS platform object to its embedded `Event` (the base `Event`
 /// itself, or the `event` field of an Event subclass). Event subclasses must
@@ -153,6 +155,23 @@ pub(crate) fn try_set_event_target_reflector(
                     ec.store_js_object(&mut target.reflector, reflector);
                 } else if let Some(port) = data.downcast_mut::<MessagePort>() {
                     ec.store_js_object(&mut port.event_target.reflector, reflector);
+                } else if let Some(worker) = data.downcast_mut::<Worker>() {
+                    ec.store_js_object(&mut worker.event_target.reflector, reflector.clone());
+                    // The owner realm's GlobalScope registered a clone of
+                    // this event target (the target the worker's message and
+                    // error events fire at); EventTarget clones share their
+                    // listener state but not their reflector slot, so mirror
+                    // the reflector onto the registered copy.
+                    let worker_id = worker.worker_id;
+                    if let Err(error) = with_global_scope(ec, move |global_scope, ec| {
+                        global_scope.sync_owned_worker_reflector(worker_id, reflector, ec);
+                        Ok(())
+                    }) {
+                        error!(
+                            "failed to sync the reflector of owned worker {worker_id}: {}",
+                            error.display()
+                        );
+                    }
                 } else if let Some(worker_global_scope) = data.downcast_mut::<WorkerGlobalScope>() {
                     ec.store_js_object(&mut worker_global_scope.event_target.reflector, reflector);
                 } else if let Some(signal) = data.downcast_mut::<AbortSignal>() {
@@ -215,6 +234,8 @@ pub(crate) fn event_target_from_js_object(
             Some(node.event_target.clone())
         } else if let Some(port) = data.downcast_ref::<MessagePort>() {
             Some(port.event_target.clone())
+        } else if let Some(worker) = data.downcast_ref::<Worker>() {
+            Some(worker.event_target.clone())
         } else if let Some(worker_global_scope) = data.downcast_ref::<WorkerGlobalScope>() {
             Some(worker_global_scope.event_target.clone())
         } else if let Some(event_target) = data.downcast_ref::<EventTarget>() {
@@ -270,6 +291,10 @@ pub(crate) fn try_with_event_target_mut<R>(
                 result = Ok(f(target, ec));
             } else if let Some(port) = data.downcast_mut::<MessagePort>() {
                 result = Ok(f(&mut port.event_target, ec));
+            } else if let Some(worker) = data.downcast_mut::<Worker>() {
+                result = Ok(f(&mut worker.event_target, ec));
+            } else if let Some(worker_global_scope) = data.downcast_mut::<WorkerGlobalScope>() {
+                result = Ok(f(&mut worker_global_scope.event_target, ec));
             } else if let Some(signal) = data.downcast_mut::<AbortSignal>() {
                 // The closure receives the execution context that
                 // `with_event_target_mut` passes alongside the borrowed

@@ -372,9 +372,24 @@ Known gaps:
 - **Module workers are evaluated as classic scripts.**  "Fetch a module worker
   script graph" (run-a-worker step 12's module branch) is not implemented;
   `type: "module"` workers run their source as a classic script.
-- **`error` events are fired directly, not as queued global tasks**, matching
-  the document lifecycle commands' existing deviation (see
-  `content/README.md`).
+- **`error` events on the Worker object are fired directly, not as queued
+  global tasks**, matching the document lifecycle commands' existing
+  deviation (see `content/README.md`).
+- **Worker runtime errors are conflated with fetch/parse failures, and
+  ErrorEvent is missing.**  A top-level exception in the worker script
+  (evaluated at run-a-worker step 12.13) fires an error event at the
+  Worker object; per report an exception (runtime script errors) it should
+  first fire an error event at the worker global scope (self.onerror) and
+  only reach the Worker object when unhandled, and the event must be an
+  ErrorEvent.  A script parse failure should abort the worker at step 12.4,
+  but the engine's evaluate combines parse and run, so the two are not
+  distinguished.  (Worker tests asserting `onerror` arguments, e.g.
+  `dedicated-worker-parse-error-failure.html`, fail on this.)
+- **Dedicated workers are not covered by the default WPT selection.**  The
+  runner cannot run worker-global tests (`.worker.` files and
+  `fetch_tests_from_worker` need worker-side testharness, which imports
+  testharness.js over http — see the importScripts gap above;
+  `webmessaging/without-ports/025.html` is disabled for that reason).
 - **Owner-set lifetime management is minimal.**  Terminate-on-owner-document-
 destroy is wired (`destroy_document` terminates its workers, as does a
 closing owner worker for its nested workers); the spec's

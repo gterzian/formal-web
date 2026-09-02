@@ -185,7 +185,7 @@ fn get_location(
     Ok(Types::value_from_object(location_object))
 }
 
-/// <https://html.spec.whatwg.org/#dom-workerglobalscope-navigator>
+/// <https://html.spec.whatwg.org/#workernavigator>
 fn get_navigator(
     this: &JsValue,
     _args: &[JsValue],

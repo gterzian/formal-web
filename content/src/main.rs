@@ -426,7 +426,7 @@ struct DocumentViewportState {
 /// forwarded to the owner worker agent's event loop instead.
 /// <https://html.spec.whatwg.org/#run-a-worker>
 pub(crate) struct ContentWorker {
-    /// <https://html.spec.whatwg.org/#the-worker-s-lifetime>
+    /// <https://html.spec.whatwg.org/#concept-WorkerGlobalScope-owner-set>
     pub(crate) owner: WorkerOwner,
     /// The receiver end of the worker's outbound channel (the messages
     /// `self.postMessage` in the worker sends), selected on by the main
@@ -1672,7 +1672,7 @@ impl ContentProcess {
         run_dom_removing_steps_for_document(self, document_id)?;
         // Terminate the dedicated workers this document owns: the document is
         // going away, so its workers are no longer actively needed.
-        // <https://html.spec.whatwg.org/#the-worker-s-lifetime>
+        // <https://html.spec.whatwg.org/#the-worker's-lifetime>
         let owned_workers: Vec<WorkerId> = self
             .workers
             .iter()

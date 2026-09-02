@@ -546,6 +546,30 @@ impl GlobalScope {
         });
     }
 
+    /// <https://html.spec.whatwg.org/#dedicated-workers-and-the-worker-interface>
+    /// Mirror a Worker platform object's reflector onto the event target
+    /// this realm registered for it (see `register_owned_worker`).  The
+    /// message and error events of the worker fire at that registered event
+    /// target, which was cloned from the Worker before its wrapper existed;
+    /// EventTarget clones share their listener state but not their reflector
+    /// slot, so without this the events' `target` would not resolve to the
+    /// Worker object.  Called when the Worker wrapper's reflector is set
+    /// (`try_set_event_target_reflector`).
+    pub(crate) fn sync_owned_worker_reflector(
+        &self,
+        worker_id: WorkerId,
+        reflector: JsObject,
+        ec: &mut dyn ExecutionContext<Types>,
+    ) {
+        let mut owned_workers = self.owned_workers.borrow_mut(ec);
+        if let Some(record) = owned_workers
+            .iter_mut()
+            .find(|record| record.worker_id == worker_id)
+        {
+            record.worker_target.reflector = Some(reflector);
+        }
+    }
+
     /// The Worker object's event target of a worker this realm owns, if
     /// any: the target the message and error events of that worker fire at.
     pub(crate) fn owned_worker_event_target(

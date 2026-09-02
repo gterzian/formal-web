@@ -274,6 +274,11 @@ fn run_a_worker_inner(config: DedicatedWorkerAgentConfig) -> Result<(), String> 
     // Note: The realm is built on this thread with a fresh engine (its own
     // JS heap), and `new_worker_in_realm` creates the worker environment
     // settings object with the worker's own task sources.
+    // Step 10: (shared-worker fields) — Not applicable: is shared is false.
+    // Step 11: Let destination be "sharedworker" if is shared is true, and
+    //          "worker" otherwise.
+    // Note: destination is "worker"; the fetch request sent to the net
+    // process carries no destination.
     let wiring = WorkerRealmWiring {
         event_sender: config.event_sender.clone(),
         task_sources: EventLoopTaskSources::new(task_queue.clone(), Rc::clone(&active_timers)),
@@ -492,11 +497,19 @@ impl DedicatedWorkerAgentState {
                 "worker script {} failed to evaluate: {error}",
                 self.worker_id
             );
-            // Step 12.4.1: "Queue a global task on the DOM manipulation task
-            // source given worker's relevant global object to fire an event
-            // named error at worker."
-            // Note: Fired directly, outside a task (the document lifecycle
-            // commands share this deviation; see the content README).
+            // Note: An uncaught top-level exception is a runtime script
+            // error, not the step 12.4 fetch/parse-failure branch: per
+            // report an exception (runtime script errors) it first fires an
+            // error event at the worker global scope, and only when that is
+            // unhandled fires an error event at the Worker object (step
+            // 7.2), while the worker keeps running.  The worker-global error
+            // event and ErrorEvent are not implemented; the Worker-object
+            // event, fired directly (outside a task, as for step 12.4.1),
+            // stands in for both, and the worker continues, matching
+            // report-an-exception's non-aborting semantics.  A script parse
+            // failure (the classic script's error to rethrow) should instead
+            // have aborted the worker at step 12.4; the engine evaluation
+            // combines parse and run, so the two are not distinguished here.
             if let Err(fire_error) = self.fire_worker_error() {
                 error!("failed to fire error event at worker: {fire_error}");
             }
@@ -596,8 +609,16 @@ impl DedicatedWorkerAgentState {
     /// Run one task off the worker's event-loop task queue.
     /// <https://html.spec.whatwg.org/#event-loop-processing-model>
     fn run_task(&mut self, task: Task) -> Result<(), String> {
-        match task {
-            Task::RunPortMessage { port } => self.handle_run_port_message_task(port),
+        let steps = match task {
+            Task::RunPortMessage { port } => {
+                // close-a-worker step 1 and terminate-a-worker step 2
+                // discard the queued tasks of a closing worker; the closing
+                // flag is checked here, at the task's start.
+                if self.closing_flag() {
+                    return Ok(());
+                }
+                self.handle_run_port_message_task(port)
+            }
             Task::RunWorkerTimer {
                 worker_id,
                 timer_id,
@@ -646,7 +667,14 @@ impl DedicatedWorkerAgentState {
                 "worker {} event loop received a document task",
                 self.worker_id
             )),
-        }
+        };
+        steps?;
+        // Step 2.8 of the event loop processing model: "Perform a microtask
+        // checkpoint."
+        // Note: `run_window_timer` performs its own checkpoint, so timer
+        // tasks checkpoint twice; the extra checkpoint after an empty
+        // microtask queue is a no-op.
+        self.settings.perform_a_microtask_checkpoint()
     }
 
     /// The message task of one message the owner posted to this worker: run
@@ -733,9 +761,10 @@ impl DedicatedWorkerAgentState {
                 // follows.
                 // Step 3: "Abort the script currently running in the
                 // worker."
-                // Note: Not applicable: terminate arrives as a command
-                // between tasks, so no worker script is running when it is
-                // processed.
+                // Note: Terminate is processed by the agent's event loop
+                // between tasks, so it does not abort a script mid-
+                // evaluation: a worker stuck in an unbounded top-level or
+                // handler script cannot be terminated until it yields.
                 // Step 4: "If the worker's WorkerGlobalScope object is
                 // actually a DedicatedWorkerGlobalScope object ..., then
                 // empty the port message queue of the port that the worker's
