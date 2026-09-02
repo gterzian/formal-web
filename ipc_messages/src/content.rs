@@ -812,7 +812,7 @@ pub enum WebviewProviderMessage {
 /// A request to create (or, for shared workers, obtain) a worker, sent by
 /// the `Worker` constructor to the content process hosting the owner realm
 /// (dedicated workers are entirely content-process-nested; see
-/// `content/src/html/worker_thread.rs`).  A future shared-worker
+/// `content/src/html/dedicated_worker_agent.rs`).  A future shared-worker
 /// implementation would involve the user agent to look up an existing shared
 /// worker by (origin, name) instead of always starting a fresh one.
 /// <https://html.spec.whatwg.org/#run-a-worker>

@@ -25,9 +25,9 @@ use js_engine::gc::{GcCell, gc_cell_new};
 use js_engine::gc_struct;
 use log::warn;
 
+use crate::html::dedicated_worker_agent::PortOwnerReporter;
 use crate::html::event_loop::{Task, TaskQueue};
 use crate::html::messageport::MessagePort;
-use crate::html::worker_thread::PortOwnerReporter;
 use crate::js::Types;
 
 use verification::{TLATracer, TraceSender};

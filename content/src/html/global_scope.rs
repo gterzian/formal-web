@@ -13,7 +13,7 @@ use super::{
 
 use super::timers::TimerRealm;
 
-use super::worker_thread::{PortOwnerReporter, WorkerContentRequest};
+use super::dedicated_worker_agent::{PortOwnerReporter, WorkerContentRequest};
 
 use blitz_dom::BaseDocument;
 use ipc::IpcSender;

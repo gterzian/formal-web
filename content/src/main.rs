@@ -19,14 +19,14 @@ pub mod wasm;
 pub mod webidl;
 
 use crate::dom::{EventTargetAccess, dispatch_with_path, fire_event, simple_path};
+use crate::html::dedicated_worker_agent::{
+    OwnerOperation, WorkerCommand, WorkerContentRequest, WorkerEvent,
+};
 use crate::html::environment_settings_object::RealmWiring;
 use crate::html::event_loop::{EventLoopTaskSources, Task, TaskQueue};
 use crate::html::timers::MapOfActiveTimers;
 use crate::html::timers::TimerRealm;
 use crate::html::ui_events::{dispatch_trusted_click_event, dispatch_ui_event};
-use crate::html::worker_thread::{
-    OwnerOperation, WorkerCommand, WorkerContentRequest, WorkerEvent,
-};
 use crate::html::{
     EnvironmentSettingsObject, JsHtmlParserProvider, MessageEvent, PendingParserScript, Window,
     attach_same_origin_child_document_for_traversable, execute_parser_scripts,
@@ -415,12 +415,11 @@ struct DocumentViewportState {
 }
 
 /// The content-process (similar-origin window agent) state of one dedicated
-/// worker: the worker runs on its own native thread (its own dedicated
-/// worker agent, nested to this content process; see
-/// `content/src/html/worker_thread.rs`), so this entry stores only the
-/// thread-safe handles the main thread needs: its command channel, its join
-/// handle, and the ownership data used to route port tasks and owner-side
-/// operations.
+/// worker: the worker runs on its own dedicated worker agent (a native thread
+/// nested to this content process; see `content/src/html/dedicated_worker_agent.rs`),
+/// so this entry stores only the thread-safe handles the main thread needs:
+/// its command channel, its join handle, and the ownership data used to route
+/// port tasks and owner-side operations.
 /// <https://html.spec.whatwg.org/#run-a-worker>
 pub(crate) struct ContentWorker {
     /// <https://html.spec.whatwg.org/#the-worker-s-lifetime>
@@ -429,10 +428,10 @@ pub(crate) struct ContentWorker {
     /// inside port by run-a-worker step 12.8.
     /// <https://html.spec.whatwg.org/#dedicated-workers-and-the-worker-interface>
     pub(crate) outside_port_id: PortId,
-    /// Commands sent to the worker's agent thread.
+    /// Commands sent to the dedicated worker agent (its native thread).
     pub(crate) command_sender: crossbeam_channel::Sender<WorkerCommand>,
-    /// The worker's agent thread, joined when the worker reports its
-    /// teardown and when the content process shuts down.
+    /// The dedicated worker agent's thread, joined when the worker reports
+    /// its teardown and when the content process shuts down.
     pub(crate) join_handle: Option<std::thread::JoinHandle<()>>,
 }
 
@@ -445,12 +444,13 @@ pub(crate) struct ContentProcess {
     documents: HashMap<DocumentId, ContentDocument>,
     /// <https://html.spec.whatwg.org/#run-a-worker>
     /// The dedicated workers running in this content process, keyed by worker
-    /// id.  Each worker's realm and event loop live on its own agent thread;
-    /// this map holds the thread handles and the routing data.
+    /// id.  Each worker's realm and event loop live on its own dedicated
+    /// worker agent (a native thread); this map holds the agent's thread
+    /// handle and the routing data.
     workers: HashMap<WorkerId, ContentWorker>,
     /// The ports managed by worker realms, keyed by port id: the main thread
     /// routes user-agent port tasks for these ports to the owning worker
-    /// thread.  Populated from the worker threads' PortRegistered/
+    /// thread.  Populated from the dedicated worker agents' PortRegistered/
     /// PortUnregistered reports (and cleared when a worker closes).
     worker_ports: HashMap<PortId, WorkerId>,
     /// The channel the Worker constructor (and terminate()) reports to: the
@@ -458,7 +458,7 @@ pub(crate) struct ContentProcess {
     /// channel), the receiver feeds the main loop.
     worker_request_sender: crossbeam_channel::Sender<WorkerContentRequest>,
     worker_request_receiver: crossbeam_channel::Receiver<WorkerContentRequest>,
-    /// The channel the worker agent threads report to (teardown, port
+    /// The channel the dedicated worker agents report to (teardown, port
     /// ownership, owner-side operations).
     worker_event_sender: crossbeam_channel::Sender<WorkerEvent>,
     worker_event_receiver: crossbeam_channel::Receiver<WorkerEvent>,
@@ -2092,7 +2092,7 @@ impl ContentProcess {
     /// Find the document whose realm manages a port record.
     /// The document whose realm manages a port record, if any.  Worker-managed
     /// ports are looked up in `worker_ports` first (their records live on the
-    /// worker's agent thread).
+    /// dedicated worker agent's thread).
     fn find_document_port_owner(&mut self, port_id: PortId) -> Option<DocumentId> {
         for (document_id, document) in self.documents.iter_mut() {
             let result = with_global_scope(document.settings.ec(), |global_scope, ec| {
@@ -2123,7 +2123,7 @@ impl ContentProcess {
 
     /// Run a task queued on this event loop by the user agent's routing
     /// (`MessagePortExtraFG.tla`'s `RunTask`).  A port managed by a worker
-    /// realm is handed to the worker's agent thread, which runs the task on
+    /// realm is handed to the dedicated worker agent, which runs the task on
     /// its own event loop; otherwise the task is appended to the document
     /// port's queue or returned to the routing queue when the port left this
     /// event loop.  When the port is enabled, the message task (the substeps
@@ -2181,7 +2181,7 @@ impl ContentProcess {
 
     /// Fire one queued message event on a port (the message task of the
     /// message port post message steps).  A worker-managed port's message
-    /// task runs on the worker's agent thread: the main thread never queues
+    /// task runs on the dedicated worker agent: the main thread never queues
     /// one for a worker port (the worker's own messaging does), so reaching
     /// this for a worker port is a routing bug.
     fn handle_run_port_message_task(&mut self, port_id: PortId) -> Result<(), String> {
@@ -2857,11 +2857,12 @@ impl ContentProcess {
         // The constructor's run-a-worker request (Worker constructor step 9,
         // "run this step in parallel"): start the worker's dedicated worker
         // agent (a native thread nested to this content process; see
-        // worker_thread.rs) and record the thread handles the main thread
-        // needs.  The worker thread itself runs the rest of run a worker:
-        // the realm (steps 5-9), the script fetch (step 12, over its own net
-        // channel), and the onComplete steps (12.3-12.15) including the
-        // inside port creation and the entanglement (12.6-12.8).
+        // dedicated_worker_agent.rs) and record the thread handles the main
+        // thread needs.  The dedicated worker agent itself runs the rest of
+        // run a worker: the realm (steps 5-9), the script fetch (step 12,
+        // over its own net channel), and the onComplete steps (12.3-12.15)
+        // including the inside port creation and the entanglement
+        // (12.6-12.8).
         let worker_id = request.worker_id;
         let owner = request.owner;
         let outside_port_id = request.outside_port;
@@ -2880,7 +2881,7 @@ impl ContentProcess {
             .name(format!("formal-web:worker-{worker_id}"))
             .spawn({
                 let worker_events = self.worker_event_sender.clone();
-                let config = crate::html::worker_thread::WorkerThreadConfig {
+                let config = crate::html::dedicated_worker_agent::DedicatedWorkerAgentConfig {
                     request,
                     event_loop_id: self.event_loop_id,
                     worker_events: self.worker_event_sender.clone(),
@@ -2892,16 +2893,16 @@ impl ContentProcess {
                 };
                 move || {
                     let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                        crate::html::worker_thread::run_worker_thread(config)
+                        crate::html::dedicated_worker_agent::run_a_worker(config)
                     }));
                     match result {
                         Ok(Err(error)) => error!("worker thread {worker_id} failed: {error}"),
                         Ok(Ok(())) => {}
                         Err(panic) => {
                             error!("worker thread {worker_id} panicked: {panic:?}");
-                            // The panic skipped run_worker_thread's teardown
+                            // The panic skipped run_a_worker's teardown
                             // report; report it so the main thread joins the
-                            // thread and runs the owner-side cleanup.
+                            // agent's thread and runs the owner-side cleanup.
                             let _ = worker_events.send(WorkerEvent::Closed { worker_id });
                         }
                     }
@@ -2922,10 +2923,10 @@ impl ContentProcess {
 
     /// <https://html.spec.whatwg.org/#terminate-a-worker>
     fn terminate_worker(&mut self, worker_id: WorkerId) -> Result<(), String> {
-        // The command half of terminate a worker: tell the worker's agent
-        // thread to set its closing flag and discard its queued tasks.  The
-        // thread exits its event loop and reports its teardown (Closed); the
-        // content process then joins the thread and runs the owner-side
+        // The command half of terminate a worker: tell the dedicated worker
+        // agent to set its closing flag and discard its queued tasks.  The
+        // agent exits its event loop and reports its teardown (Closed); the
+        // content process then joins its thread and runs the owner-side
         // cleanup (terminate-a-worker step 4 and run-a-worker steps
         // 12.19-12.21).
         let Some(worker) = self.workers.get(&worker_id) else {
@@ -2938,15 +2939,15 @@ impl ContentProcess {
             .map_err(|error| format!("failed to terminate worker {worker_id}: {error}"))
     }
 
-    /// Handle a notification from a worker's agent thread.
+    /// Handle a notification from a dedicated worker agent.
     fn handle_worker_event(&mut self, event: WorkerEvent) -> Result<(), String> {
         match event {
             WorkerEvent::Closed { worker_id } => {
                 let Some(mut worker) = self.workers.remove(&worker_id) else {
                     return Ok(());
                 };
-                // Join the worker's agent thread (it reported Closed as its
-                // last act, so the join returns promptly).
+                // Join the dedicated worker agent's thread (it reported
+                // Closed as its last act, so the join returns promptly).
                 if let Some(join_handle) = worker.join_handle.take()
                     && let Err(error) = join_handle.join()
                 {
@@ -3024,8 +3025,8 @@ impl ContentProcess {
     }
 
     /// Run an operation in the realm that owns a worker: the owner document's
-    /// realm here, or the owner worker's agent thread (forwarded as a
-    /// command).
+    /// realm here, or the owner's dedicated worker agent (forwarded as a
+    /// command to its thread).
     fn run_owner_operation(
         &mut self,
         owner: WorkerOwner,
@@ -3036,7 +3037,7 @@ impl ContentProcess {
                 let document = self.documents.get_mut(&document_id).ok_or_else(|| {
                     format!("owner operation: unknown owner document {document_id}")
                 })?;
-                crate::html::worker_thread::execute_owner_operation(
+                crate::html::dedicated_worker_agent::execute_owner_operation(
                     &mut document.settings,
                     operation,
                 )
@@ -3057,8 +3058,8 @@ impl ContentProcess {
         }
     }
 
-    /// Terminate and join every worker agent thread, used at shutdown so the
-    /// process does not exit with live worker threads.
+    /// Terminate and join every dedicated worker agent (its thread), used at
+    /// shutdown so the process does not exit with live worker agents.
     fn shutdown_workers(&mut self) -> Result<(), String> {
         let worker_ids: Vec<WorkerId> = self.workers.keys().copied().collect();
         for worker_id in worker_ids {
@@ -3625,7 +3626,7 @@ impl ContentProcess {
                 Ok(true)
             }
             Shutdown => {
-                // Terminate and join the worker agent threads before the
+                // Terminate and join the dedicated worker agents before the
                 // process exits.
                 self.shutdown_workers()?;
                 self.note_shutdown_completed()?;

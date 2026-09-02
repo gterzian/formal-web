@@ -1,7 +1,7 @@
 //! The map of active timers: the per-timer records and the algorithms that
 //! schedule, cancel, and reap them.  The window agent (the content process
 //! main thread) owns one map for its documents; each dedicated worker agent
-//! (worker_thread.rs) owns its own map for its realm, reaped by its own
+//! (dedicated_worker_agent.rs) owns its own map for its realm, reaped by its own
 //! event loop.
 
 use std::collections::HashMap;

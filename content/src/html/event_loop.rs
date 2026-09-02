@@ -2,7 +2,8 @@
 //! appends to, the tasks it holds, and the facade over the map of active
 //! timers owned by `super::timers`.  The window agent (the content process
 //! main thread) runs one loop over this queue; each dedicated worker agent
-//! (worker_thread.rs) runs its own loop over its own [`TaskQueue`] of the
+//! (dedicated_worker_agent.rs) runs its own loop over its own [`TaskQueue`]
+//! of the
 //! same [`Task`] type (only the worker-relevant variants ever reach it).
 //!
 //! The user agent reaches the window agent's event loop over IPC with a
@@ -40,9 +41,10 @@ pub(crate) enum Task {
     },
 
     /// The task that runs one expired worker timer's steps, queued on the
-    /// worker agent thread's own task queue when its event loop reaps an
+    /// dedicated worker agent's own task queue when its event loop reaps an
     /// expired entry from the worker's own map of active timers (see
-    /// `worker_thread.rs`).  The worker realm is identified by worker id.
+    /// `dedicated_worker_agent.rs`).  The worker realm is identified by worker
+    /// id.
     /// <https://html.spec.whatwg.org/#timer-initialisation-steps>
     RunWorkerTimer {
         worker_id: WorkerId,

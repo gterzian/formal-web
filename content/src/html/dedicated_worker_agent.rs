@@ -1,25 +1,26 @@
-//! The dedicated worker agent: each dedicated worker runs on its own native
-//! thread (its own agent and event loop) nested to the content process — the
-//! dedicated worker agent is always part of the same agent cluster as the
-//! window that created it, so its thread lives inside that window agent's
-//! process (obtain a dedicated/shared worker agent with `isShared` false;
-//! create an agent is realized by the native thread, whose event loop is the
-//! worker's).
+//! A dedicated worker agent runs on its own native thread nested to the
+//! content process hosting its owner realm: the dedicated worker agent is
+//! always part of the same agent cluster as the window that created it
+//! (obtain a dedicated/shared worker agent with `isShared` false never
+//! creates a new agent cluster), so its thread lives inside that window
+//! agent's process.  Create an agent (canBlock true) is realized by the
+//! native thread, whose event loop is the worker's.
 //!
-//! The worker thread runs run-a-worker
+//! The dedicated worker agent runs run-a-worker
 //! (<https://html.spec.whatwg.org/#run-a-worker>) against its own realm and
 //! event loop: it builds its own engine (its own V8 isolate), fetches its
 //! script over its own IPC channel to the net process (the reply comes back
-//! on that channel, bridged over crossbeam into the worker's event-loop
+//! on that channel, bridged over crossbeam into the agent's event-loop
 //! select, like the content process's own loop), and is driven from the
 //! content process main thread through a crossbeam command channel that also
 //! joins the select.
 //!
 //! The content process main thread (the similar-origin window agent) stores
-//! each worker's thread data (its command channel and join handle, joined on
-//! shutdown), routes user-agent port tasks for worker-owned ports to the
-//! worker thread, and runs owner-side steps (the owner realm's entanglement,
-//! queue enablement, error events) in the realm that created the worker.
+//! each dedicated worker agent's thread data (its command channel and join
+//! handle, joined on shutdown), routes user-agent port tasks for
+//! worker-owned ports to the agent's thread, and runs owner-side steps (the
+//! owner realm's entanglement, queue enablement, error events) in the realm
+//! that created the worker.
 
 use std::cell::RefCell;
 use std::rc::Rc;
@@ -55,8 +56,8 @@ pub(crate) enum WorkerContentRequest {
     Terminate(WorkerId),
 }
 
-/// A command from the content process main thread to a worker's agent
-/// thread.
+/// A command from the content process main thread to a dedicated worker
+/// agent.
 pub(crate) enum WorkerCommand {
     /// <https://html.spec.whatwg.org/#terminate-a-worker>
     /// Set the closing flag and discard the queued tasks; the event loop
@@ -96,10 +97,10 @@ pub(crate) enum OwnerOperation {
     EmptyAndDisentangleOutsidePort { outside_port: PortId },
 }
 
-/// A notification from a worker's agent thread to the content process main
+/// A notification from a dedicated worker agent to the content process main
 /// thread.
 pub(crate) enum WorkerEvent {
-    /// The worker's agent thread is exiting (its realm was torn down).
+    /// The dedicated worker agent is exiting (its realm was torn down).
     Closed { worker_id: WorkerId },
     /// The worker's channel messaging now manages a port (the main thread
     /// routes user-agent port tasks for it to the worker thread).
@@ -145,9 +146,9 @@ impl PortOwnerReporter {
     }
 }
 
-/// Everything the content process main thread hands a new worker's agent
-/// thread.
-pub(crate) struct WorkerThreadConfig {
+/// Everything the content process main thread hands a new dedicated worker
+/// agent's thread.
+pub(crate) struct DedicatedWorkerAgentConfig {
     pub(crate) request: WorkerRequest,
     /// The content process's event loop id, shared by the worker's channel
     /// messaging: the user agent routes port tasks to this content process,
@@ -168,14 +169,16 @@ pub(crate) struct WorkerThreadConfig {
     pub(crate) trace_sender: Option<TraceSender>,
 }
 
-/// The run-a-worker state owned by a worker's agent thread.
-pub(crate) struct WorkerThreadState {
+/// The run-a-worker state owned by a dedicated worker agent (running on its
+/// native thread).
+pub(crate) struct DedicatedWorkerAgentState {
     pub(crate) worker_id: WorkerId,
     pub(crate) settings: EnvironmentSettingsObject,
     pub(crate) owner: WorkerOwner,
     pub(crate) outside_port_id: PortId,
-    /// The worker's own task queue and timer map: the worker event loop's
-    /// task sources (a worker agent has its own event loop).
+    /// The worker's own task queue and timer map: the dedicated worker
+    /// agent's event loop task sources (a dedicated worker agent has its own
+    /// event loop).
     pub(crate) task_queue: TaskQueue,
     pub(crate) active_timers: Rc<RefCell<MapOfActiveTimers>>,
     pub(crate) event_sender: IpcSender<ContentEvent>,
@@ -191,17 +194,18 @@ pub(crate) struct WorkerThreadState {
 }
 
 /// <https://html.spec.whatwg.org/#run-a-worker>
-pub(crate) fn run_worker_thread(config: WorkerThreadConfig) -> Result<(), String> {
+pub(crate) fn run_a_worker(config: DedicatedWorkerAgentConfig) -> Result<(), String> {
     let worker_id = config.request.worker_id;
     let worker_events = config.worker_events.clone();
-    let result = run_worker_thread_inner(config);
-    // The thread always reports its teardown (also on early failure, so the
-    // content process can join it and run the owner-side cleanup).
+    let result = run_a_worker_inner(config);
+    // The dedicated worker agent always reports its teardown (also on early
+    // failure, so the content process can join its thread and run the
+    // owner-side cleanup).
     let _ = worker_events.send(WorkerEvent::Closed { worker_id });
     result
 }
 
-fn run_worker_thread_inner(config: WorkerThreadConfig) -> Result<(), String> {
+fn run_a_worker_inner(config: DedicatedWorkerAgentConfig) -> Result<(), String> {
     let request = config.request;
     let worker_id = request.worker_id;
     let outside_port_id = request.outside_port;
@@ -287,7 +291,7 @@ fn run_worker_thread_inner(config: WorkerThreadConfig) -> Result<(), String> {
         .map_err(|error| format!("worker {worker_id}: failed to create net channel: {error}"))?;
     let net_command_rx = ipc::crossbeam_proxy(net_command_receiver);
 
-    let mut state = WorkerThreadState {
+    let mut state = DedicatedWorkerAgentState {
         worker_id,
         settings,
         owner,
@@ -328,7 +332,7 @@ fn run_worker_thread_inner(config: WorkerThreadConfig) -> Result<(), String> {
     Ok(())
 }
 
-impl WorkerThreadState {
+impl DedicatedWorkerAgentState {
     /// Whether the worker's closing flag is set (close-a-worker, terminate-a
     /// -worker step 1): the event loop exits once it is.
     fn closing_flag(&mut self) -> bool {
@@ -418,10 +422,10 @@ impl WorkerThreadState {
         }
         // Step 12.5: "Associate worker with worker global scope."
         // Note: The association is the ContentWorker entry in the content
-        // process (created when the worker's agent thread was spawned); the
-        // Worker platform object's own slot is not filled (terminate and
-        // close route through the content process, which holds the
-        // association).
+        // process (created when the dedicated worker agent's thread was
+        // spawned); the Worker platform object's own slot is not filled
+        // (terminate and close route through the content process, which
+        // holds the association).
         // Step 12.6: "Let inside port be a new MessagePort object in inside
         // settings's realm."
         let mut inside_port = MessagePort::new_port_with_id(PortId::new(), self.settings.ec())
@@ -446,7 +450,7 @@ impl WorkerThreadState {
         // Note: The worker half creates the inside port's record entangled
         // with the outside port; the owner half (the outside port's record,
         // in the owner realm) runs in the content process, which forwards it
-        // to the owner worker thread when the owner is a worker.
+        // to the owner's dedicated worker agent when the owner is a worker.
         with_worker_global_scope(self.settings.ec(), |worker_global_scope, ec| {
             let messaging = worker_global_scope
                 .global_scope
@@ -757,7 +761,7 @@ impl WorkerThreadState {
 
 /// <https://html.spec.whatwg.org/#event-loop-processing-model>
 fn run_worker_event_loop(
-    state: &mut WorkerThreadState,
+    state: &mut DedicatedWorkerAgentState,
     net_command_rx: &crossbeam_channel::Receiver<ipc::IpcIncoming<Command>>,
     worker_command_rx: &crossbeam_channel::Receiver<WorkerCommand>,
 ) -> Result<(), String> {

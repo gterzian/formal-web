@@ -8,6 +8,7 @@ use log::error;
 mod activation_behavior;
 pub(crate) mod channel_messaging;
 pub(crate) use channel_messaging::ChannelMessaging;
+pub(crate) mod dedicated_worker_agent;
 pub(crate) mod dispatch;
 pub(crate) mod environment_settings_object;
 pub(crate) mod event_handler;
@@ -32,7 +33,6 @@ mod window;
 mod window_or_worker_global_scope;
 pub(crate) mod windowproxy;
 pub(crate) mod worker;
-pub(crate) mod worker_thread;
 
 use ipc::IpcSender;
 use ipc_messages::content::{

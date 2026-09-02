@@ -10,8 +10,8 @@ use log::error;
 use url::Url;
 
 use crate::dom::event::{EventTarget, EventTargetAccess};
+use crate::html::dedicated_worker_agent::WorkerContentRequest;
 use crate::html::messageport::MessagePort;
-use crate::html::worker_thread::WorkerContentRequest;
 use crate::js::Types;
 use crate::js::platform_objects::with_global_scope;
 use crate::webidl::syntax_error_value;
@@ -130,9 +130,9 @@ impl Worker {
         // constructor reports the request to the content process's worker
         // manager (through the current realm's worker creator channel), which
         // starts the worker's dedicated worker agent (a native thread; see
-        // worker_thread.rs).  The user agent is not involved.  The outside
-        // port's record is registered unentangled here; run-a-worker step
-        // 12.8 entangles it with the inside port once the worker realm
+        // dedicated_worker_agent.rs).  The user agent is not involved.  The
+        // outside port's record is registered unentangled here; run-a-worker
+        // step 12.8 entangles it with the inside port once the worker realm
         // exists.  Messages posted before that entanglement are dropped by
         // the message port post message steps (targetPort is null), per the
         // spec.
@@ -166,8 +166,8 @@ impl Worker {
         // worker.
         // Note: The content process runs the terminate-a-worker steps: the
         // method reports the worker id to the content process's worker
-        // manager, which sends the worker's agent thread a `Terminate`
-        // command; the thread sets the closing flag, discards its queued
+        // manager, which sends the dedicated worker agent a `Terminate`
+        // command; the agent sets the closing flag, discards its queued
         // tasks, and tears down the worker realm.
         if let Err(error) = self.notify_termination(ec) {
             error!("worker terminate: failed to request termination: {error}");
@@ -432,10 +432,10 @@ fn close_a_worker(worker_global_scope: &WorkerGlobalScope) {
     //         relevant agent's event loop's task queues.
     // Step 2: Set workerGlobal's closing flag to true. (This prevents any
     //         further tasks from being queued.)
-    // Note: The closing flag makes the worker's agent-thread event loop exit
-    // (see worker_thread.rs), dropping the tasks queued on its task queue;
-    // the thread then reports its teardown to the content process, which
-    // empties and disentangles the outside port in the owner realm.
+    // Note: The closing flag makes the dedicated worker agent's event loop
+    // exit (see dedicated_worker_agent.rs), dropping the tasks queued on its
+    // task queue; the agent then reports its teardown to the content process,
+    // which empties and disentangles the outside port in the owner realm.
     worker_global_scope.closing_flag.set(true);
 }
 
