@@ -1,3 +1,4 @@
+pub(crate) mod dedicated_worker_global_scope;
 pub(crate) mod global_event_handlers;
 mod html_anchor_element;
 mod html_element;

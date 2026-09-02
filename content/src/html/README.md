@@ -350,19 +350,25 @@ process yet; the domain methods (`Window::name_value`, `opener_value`,
 `closed_value`, `close`) return placeholder values with `// Note:`
 annotations until that state is sent to the content process or forwarded.
 
-## Workers (`worker.rs`, `dedicated_worker_agent.rs`)
+## Workers (`worker.rs`, `worker_global_scope.rs`, `dedicated_worker_global_scope.rs`, `dedicated_worker_agent.rs`)
 
 Dedicated workers run on a native thread nested to the content process
 hosting the owner realm, and talk to their owner over direct crossbeam
 channels that bypass the MessagePort machinery (the spec's implicit
-outside/inside port pair is documented per-field in `worker.rs`).  Worker
+outside/inside port pair is documented per-field on `Worker` in `worker.rs`
+and on `WorkerGlobalScope` in `worker_global_scope.rs`).  Worker
 creation and termination never involve the user agent: the `Worker`
 constructor reports to the content process's worker manager through its
 realm's GlobalScope, which spawns the thread and stores its command channel
 and join handle (joined on teardown and shutdown).  The spec-annotated
-algorithms live in `worker.rs` (constructor steps, terminate a worker,
-close a worker, import scripts) and `dedicated_worker_agent.rs` (run-a-worker
-and the agent's event loop).
+algorithms live in `worker.rs` (constructor steps, terminate a worker),
+`worker_global_scope.rs` (the `WorkerGlobalScope` common interface, whose
+methods also carry the dedicated members — name, postMessage, close, the
+inbound message queue — since the dedicated realm's platform object is a
+`WorkerGlobalScope` domain struct, and the close-a-worker and
+import-scripts algorithms), `dedicated_worker_global_scope.rs` (the
+`DedicatedWorkerGlobalScope` interface's registry marker struct), and
+`dedicated_worker_agent.rs` (run-a-worker and the agent's event loop).
 
 Known gaps:
 
