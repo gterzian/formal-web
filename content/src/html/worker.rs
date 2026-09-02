@@ -286,11 +286,14 @@ pub(crate) struct WorkerGlobalScope {
     #[ignore_trace]
     pub(crate) name: String,
 
-    /// <https://html.spec.whatwg.org/#the-workerglobalscope-common-interface>
+    /// The worker's type, from the WorkerOptions the constructor was given
+    /// (options["type"]): "classic" or "module".  Only "classic" script
+    /// evaluation is implemented.
+    /// <https://html.spec.whatwg.org/#enumdef-workertype>
     #[ignore_trace]
     pub(crate) worker_type: WorkerType,
 
-    /// <https://html.spec.whatwg.org/#the-workerglobalscope-common-interface>
+    /// <https://html.spec.whatwg.org/#concept-workerglobalscope-url>
     #[ignore_trace]
     pub(crate) url: Rc<RefCell<Option<Url>>>,
 
@@ -298,22 +301,29 @@ pub(crate) struct WorkerGlobalScope {
     #[ignore_trace]
     pub(crate) closing_flag: Rc<Cell<bool>>,
 
-    /// <https://html.spec.whatwg.org/#dedicated-workerglobalscope>
-    /// The worker→owner end of the worker's channel: `postMessage` on this
-    /// global scope sends the messages the owner fires as message events at
-    /// the worker's Worker object.  This replaces the inside port of the
-    /// port-based model (the worker's implicit port is bypassed; see
-    /// dedicated_worker_agent.rs).  Set once the agent's event loop is
+    /// <https://html.spec.whatwg.org/#inside-port>
+    /// This global scope's inside port: the channel the Worker constructor
+    /// set up at creation entangles it with the Worker object's outside
+    /// port, and `postMessage` on this global scope acts on it, sending the
+    /// messages the owner fires as message events at the worker's Worker
+    /// object.  This global scope is also the inside port's message event
+    /// target (run-a-worker step 12.7.1): the messages the owner posts are
+    /// the inside port's arrivals (see `inbound`).
+    /// Note: The inside port is implemented as a direct crossbeam channel
+    /// end instead of a MessagePort (the worker's implicit port is bypassed;
+    /// see dedicated_worker_agent.rs): this field is the worker→owner sender
+    /// the global scope posts on.  Set once the agent's event loop is
     /// running, before the worker script is fetched.
     #[ignore_trace]
-    pub(crate) worker_to_owner:
-        Rc<RefCell<Option<crossbeam_channel::Sender<WorkerChannelMessage>>>>,
+    pub(crate) inside_port: Rc<RefCell<Option<crossbeam_channel::Sender<WorkerChannelMessage>>>>,
 
-    /// <https://html.spec.whatwg.org/#dedicated-workerglobalscope>
-    /// The worker end of the worker's channel: the messages the owner
-    /// posted.  Each is delivered as a message event at this global scope
-    /// (its implicit port's message event target) once its message queue is
-    /// enabled; messages that arrive before that wait in the queue.
+    /// <https://html.spec.whatwg.org/#inside-port>
+    /// The messages the owner posted to this worker, waiting here until the
+    /// inside port's message queue is enabled: each is then delivered as a
+    /// message event at this global scope (its inside port's message event
+    /// target, run-a-worker step 12.7.1).  Messages that arrive before the
+    /// queue is enabled wait here (a port message queue, as when start() is
+    /// called or the first onmessage handler is set).
     #[ignore_trace]
     pub(crate) inbound: Rc<RefCell<WorkerMessageQueue>>,
 
@@ -346,24 +356,24 @@ impl WorkerGlobalScope {
             worker_type,
             url: Rc::new(RefCell::new(None)),
             closing_flag: Rc::new(Cell::new(false)),
-            worker_to_owner: Rc::new(RefCell::new(None)),
+            inside_port: Rc::new(RefCell::new(None)),
             inbound: Rc::new(RefCell::new(WorkerMessageQueue::default())),
             location_object: gc_cell_new(None, ec),
             navigator_object: gc_cell_new(None, ec),
         }
     }
 
-    /// <https://html.spec.whatwg.org/#the-workerglobalscope-common-interface>
+    /// <https://html.spec.whatwg.org/#concept-workerglobalscope-url>
     pub(crate) fn set_url(&self, url: Url) {
         *self.url.borrow_mut() = Some(url);
     }
 
-    /// <https://html.spec.whatwg.org/#the-workerglobalscope-common-interface>
+    /// <https://html.spec.whatwg.org/#concept-workerglobalscope-url>
     pub(crate) fn url(&self) -> Option<Url> {
         self.url.borrow().clone()
     }
 
-    /// <https://html.spec.whatwg.org/#the-workerglobalscope-common-interface>
+    /// <https://html.spec.whatwg.org/#dom-workerglobalscope-self>
     pub(crate) fn self_value(&self, ec: &mut dyn ExecutionContext<Types>) -> JsValue {
         // The self attribute must return the WorkerGlobalScope object itself.
         // Note: As for the Window getters, the global object is the relevant
@@ -465,7 +475,7 @@ impl WorkerGlobalScope {
         // There is no target port to consult (steps 1-4 and 6): a message
         // sent to an owner that is gone (its document destroyed or its realm
         // closed) is dropped, like the target-port-null return of step 6.
-        let Some(worker_to_owner) = self.worker_to_owner.borrow().clone() else {
+        let Some(inside_port) = self.inside_port.borrow().clone() else {
             return Ok(());
         };
         // Step 5: Let serializeWithTransferResult be
@@ -475,17 +485,17 @@ impl WorkerGlobalScope {
         // A gone owner (its document destroyed or its event loop closed)
         // drops the message, the same expected condition as a reply channel
         // send.
-        let _ = worker_to_owner.send(serialize_result);
+        let _ = inside_port.send(serialize_result);
         Ok(())
     }
 
     /// Set the worker→owner end of the worker's channel, once the agent's
     /// event loop is running (before the worker script is fetched).
-    pub(crate) fn set_worker_to_owner(
+    pub(crate) fn set_inside_port(
         &self,
-        worker_to_owner: crossbeam_channel::Sender<WorkerChannelMessage>,
+        inside_port: crossbeam_channel::Sender<WorkerChannelMessage>,
     ) {
-        *self.worker_to_owner.borrow_mut() = Some(worker_to_owner);
+        *self.inside_port.borrow_mut() = Some(inside_port);
     }
 
     /// The worker end of the worker's channel received a message the owner

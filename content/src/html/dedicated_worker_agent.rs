@@ -1,34 +1,11 @@
-//! A dedicated worker agent runs on its own native thread nested to the
-//! content process hosting its owner realm: the dedicated worker agent is
-//! always part of the same agent cluster as the window that created it
-//! (obtain a dedicated/shared worker agent with `isShared` false never
-//! creates a new agent cluster), so its thread lives inside that window
-//! agent's process.  Create an agent (canBlock true) is realized by the
-//! native thread, whose event loop is the worker's.
-//!
-//! The dedicated worker agent runs run-a-worker
-//! (<https://html.spec.whatwg.org/#run-a-worker>) against its own realm and
-//! event loop: it builds its own engine (its own V8 isolate), fetches its
-//! script over its own IPC channel to the net process (the reply comes back
-//! on that channel, bridged over crossbeam into the agent's event-loop
-//! select, like the content process's own loop), and is driven from the
-//! content process main thread through a crossbeam command channel that also
-//! joins the select.
-//!
-//! The worker's owner (the window document, or the worker global scope, that
-//! created the Worker object) talks to the worker over two plain crossbeam
-//! channels instead of the MessagePort machinery: the owner→worker end of
-//! the worker's channel (what `worker.postMessage` sends) joins this
-//! agent's event-loop select, and the worker→owner end (what the worker
-//! posts back with `self.postMessage`) is owned by the worker global scope.
-//! Message events fire as queued tasks on the receiving event loop, gated by
-//! the implicit port's port-message-queue enabled flag (run-a-worker steps
-//! 12.14 and 12.15) exactly as the port-based model did.
-//!
-//! The content process main thread (the similar-origin window agent) stores
-//! each dedicated worker agent's thread data (its command channel and join
-//! handle, joined on shutdown), and runs owner-side steps (the owner realm's
-//! queue enablement, error events) in the realm that created the worker.
+//! Runs run-a-worker
+//! (<https://html.spec.whatwg.org/#run-a-worker>) for one dedicated worker
+//! on its own native thread: its own realm (engine), event loop, task queue,
+//! and timer map, driven from the content process main thread over a command
+//! channel.  The worker's channel to its owner is two direct crossbeam
+//! channel ends that replace the spec's implicit MessagePort pair — see the
+//! platform objects in `worker.rs` and the `// Note:` comments on the
+//! channel types below.
 
 use std::cell::RefCell;
 use std::collections::{HashMap, VecDeque};
@@ -74,14 +51,14 @@ pub(crate) struct WorkerMessageQueue {
     pub(crate) pending: VecDeque<WorkerChannelMessage>,
 }
 
-/// The owner-side delivery state of one dedicated worker this realm owns
-/// (the realm's global scope created the Worker platform object): the target
-/// of the message events the messages the worker posts back fire at, and the
-/// message queue gating their delivery.  This replaces the outside port's
-/// record of the port-based model (the worker's implicit port is bypassed;
-/// see the module doc).  Registered by the Worker constructor, emptied and
-/// dropped when the worker closes.
-/// <https://html.spec.whatwg.org/#the-worker-s-lifetime>
+/// The owner end of one dedicated worker's channel, registered on the owner
+/// realm's global scope by the Worker constructor (and dropped when the
+/// worker closes): the message event target the messages the worker posts
+/// back fire at — the worker's Worker object, the role the outside port's
+/// message event target plays in the spec — and the owner-side message queue
+/// gating their delivery.
+/// Note: The worker's implicit port pair is bypassed (see `worker.rs`); this
+/// record replaces the outside port's record of the port-based model.
 #[gc_struct]
 pub(crate) struct OwnedWorkerChannel {
     /// The Worker platform object's event target: the message event target
@@ -324,7 +301,7 @@ fn run_a_worker_inner(config: DedicatedWorkerAgentConfig) -> Result<(), String> 
         worker_global_scope
             .global_scope
             .set_worker_creator(config.worker_creator.clone());
-        worker_global_scope.set_worker_to_owner(config.worker_to_owner);
+        worker_global_scope.set_inside_port(config.worker_to_owner);
         Ok(())
     })
     .map_err(|error| format!("failed to wire worker realm: {}", error.display()))?;

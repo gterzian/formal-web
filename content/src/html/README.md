@@ -352,39 +352,20 @@ annotations until that state is sent to the content process or forwarded.
 
 ## Workers (`worker.rs`, `dedicated_worker_agent.rs`)
 
-Each dedicated worker runs on its own native thread nested to the content
-process hosting its owner realm: the dedicated worker agent is always part of
-the same agent cluster as the window that created it, so the agent lives in
-that window agent's process (obtain a dedicated/shared worker agent with
-`isShared` false; create an agent is the native thread, whose event loop is
-run by `dedicated_worker_agent.rs`).  Worker creation and termination never involve
-the user agent: the `Worker` constructor reports the request to the content
-process's worker manager through its realm's GlobalScope, which spawns the
-thread and stores its command channel and join handle (joined on teardown and
-shutdown).
-
-The dedicated worker agent runs run-a-worker against its own realm and event
-loop: it builds its own engine (its own V8 isolate), fetches its script over
-its own IPC channel to the net process (the reply comes back on that channel,
-bridged over crossbeam into the agent's event-loop select, like the content
-process's own loop), and is driven from the content process main thread
-through a crossbeam command channel that also joins the select.  The worker
-channel uses the existing MessagePort machinery: the constructor creates the
-outside port in the owner realm, the agent's thread creates the inside port in
-its realm and entangles the pair once the script fetch completes (run-a-worker
-steps 12.6-12.8, in the fetch's onComplete steps), and the user agent routes
-messages between the two ports as usual (the content process forwards port
-tasks for worker-owned ports to the agent's thread).  See `worker.rs` for the
-spec-annotated algorithms (constructor steps, run a worker, terminate a
-worker, close a worker, import scripts).
+Dedicated workers run on a native thread nested to the content process
+hosting the owner realm, and talk to their owner over direct crossbeam
+channels that bypass the MessagePort machinery (the spec's implicit
+outside/inside port pair is documented per-field in `worker.rs`).  Worker
+creation and termination never involve the user agent: the `Worker`
+constructor reports to the content process's worker manager through its
+realm's GlobalScope, which spawns the thread and stores its command channel
+and join handle (joined on teardown and shutdown).  The spec-annotated
+algorithms live in `worker.rs` (constructor steps, terminate a worker,
+close a worker, import scripts) and `dedicated_worker_agent.rs` (run-a-worker
+and the agent's event loop).
 
 Known gaps:
 
-- **Messages posted before the entanglement are dropped.**  The message port
-  post message steps return when the target port is null, and the inside port
-  is only created and entangled once the script fetch completes (run-a-worker
-  steps 12.6-12.8), so `new Worker(url); worker.postMessage(x)` in the same
-  task is dropped, per the spec.
 - **importScripts only supports data: URLs.**  Fetches of other URL schemes
   are asynchronous in this architecture (through the net process), and
   importScripts is synchronous; non-data URLs throw a NotSupportedError.
