@@ -1,12 +1,3 @@
-//! Runs run-a-worker
-//! (<https://html.spec.whatwg.org/#run-a-worker>) for one dedicated worker
-//! on its own native thread: its own realm (engine), event loop, task queue,
-//! and timer map, driven from the content process main thread over a command
-//! channel.  The worker's channel to its owner is two direct crossbeam
-//! channel ends that replace the spec's implicit MessagePort pair — see the
-//! platform objects in `worker.rs` and the `// Note:` comments on the
-//! channel types below.
-
 use std::cell::RefCell;
 use std::collections::{HashMap, VecDeque};
 use std::rc::Rc;
@@ -150,8 +141,11 @@ pub(crate) enum OwnerOperation {
     DiscardWorkerMessages { worker_id: WorkerId },
 }
 
-/// A notification from a dedicated worker agent to the content process main
-/// thread.
+/// A notification from a dedicated worker agent to the content process,
+/// whose main event loop joins the agent on Closed and runs the owner-side
+/// operation in the realm that owns the worker — the owner document's realm
+/// in this process, or the owner worker's agent (the operation is forwarded
+/// over its command channel) when the owner is itself a worker.
 pub(crate) enum WorkerEvent {
     /// The dedicated worker agent is exiting (its realm was torn down).
     Closed { worker_id: WorkerId },
@@ -225,17 +219,6 @@ pub(crate) struct DedicatedWorkerAgentState {
 
 /// <https://html.spec.whatwg.org/#run-a-worker>
 pub(crate) fn run_a_worker(config: DedicatedWorkerAgentConfig) -> Result<(), String> {
-    let worker_id = config.request.worker_id;
-    let worker_events = config.worker_events.clone();
-    let result = run_a_worker_inner(config);
-    // The dedicated worker agent always reports its teardown (also on early
-    // failure, so the content process can join its thread and run the
-    // owner-side cleanup).
-    let _ = worker_events.send(WorkerEvent::Closed { worker_id });
-    result
-}
-
-fn run_a_worker_inner(config: DedicatedWorkerAgentConfig) -> Result<(), String> {
     let request = config.request;
     let worker_id = request.worker_id;
     let owner = request.owner;
@@ -252,11 +235,15 @@ fn run_a_worker_inner(config: DedicatedWorkerAgentConfig) -> Result<(), String> 
     // Step 4: "Let agent be the result of obtaining a dedicated/shared worker
     // agent given outside settings and is shared. Run the rest of these
     // steps in that agent."
-    // Note: This thread IS the dedicated worker agent: with is shared false,
-    // obtaining the agent never creates a new agent cluster, so the agent is
-    // nested to the content process hosting the owner realm (the same agent
-    // cluster as its owner's similar-origin window agent).  Create an agent
-    // (canBlock true) is realized by the native thread, whose event loop
+    // Note: The two halves of step 4 map onto the two sides of the
+    // dedicated-worker-agent split.  Obtaining the agent — creating this
+    // native thread — ran in the content process: `ContentProcess::run_a_worker`
+    // (main.rs) spawned this thread when it handled the Worker constructor's
+    // request.  This function body is the second half of the step, "run the
+    // rest of these steps in that agent": with is shared false, obtaining
+    // the agent never creates a new agent cluster, so the agent is nested to
+    // the content process hosting the owner realm (the same agent cluster as
+    // its owner's similar-origin window agent), and the thread's event loop
     // below is the agent's event loop.
     let task_queue = TaskQueue::new();
     let active_timers = Rc::new(RefCell::new(MapOfActiveTimers::default()));

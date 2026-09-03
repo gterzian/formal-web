@@ -1,19 +1,3 @@
-//! The event loop's task queue and tasks: the task queue every task source
-//! appends to, the tasks it holds, and the facade over the map of active
-//! timers owned by `super::timers`.  The window agent (the content process
-//! main thread) runs one loop over this queue; each dedicated worker agent
-//! (dedicated_worker_agent.rs) runs its own loop over its own [`TaskQueue`]
-//! of the
-//! same [`Task`] type (only the worker-relevant variants ever reach it).
-//!
-//! The user agent reaches the window agent's event loop over IPC with a
-//! `ipc_messages::content::Command`, which is an ad hoc message and not a task.
-//! Where the spec step behind a command says to queue a task on this event
-//! loop, the content process queues the matching [`Task`] while handling the
-//! command, so everything that runs as a task — whether it originated here or
-//! in the user agent — goes through one queue and one set of processing-model
-//! steps (`ContentProcess::run_task`).
-
 use std::cell::RefCell;
 use std::rc::Rc;
 

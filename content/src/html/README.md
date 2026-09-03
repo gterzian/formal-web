@@ -352,23 +352,34 @@ annotations until that state is sent to the content process or forwarded.
 
 ## Workers (`worker.rs`, `worker_global_scope.rs`, `dedicated_worker_global_scope.rs`, `dedicated_worker_agent.rs`)
 
-Dedicated workers run on a native thread nested to the content process
-hosting the owner realm, and talk to their owner over direct crossbeam
-channels that bypass the MessagePort machinery (the spec's implicit
-outside/inside port pair is documented per-field on `Worker` in `worker.rs`
-and on `WorkerGlobalScope` in `worker_global_scope.rs`).  Worker
-creation and termination never involve the user agent: the `Worker`
-constructor reports to the content process's worker manager through its
-realm's GlobalScope, which spawns the thread and stores its command channel
-and join handle (joined on teardown and shutdown).  The spec-annotated
-algorithms live in `worker.rs` (constructor steps, terminate a worker),
-`worker_global_scope.rs` (the `WorkerGlobalScope` common interface, whose
-methods also carry the dedicated members — name, postMessage, close, the
-inbound message queue — since the dedicated realm's platform object is a
-`WorkerGlobalScope` domain struct, and the close-a-worker and
-import-scripts algorithms), `dedicated_worker_global_scope.rs` (the
-`DedicatedWorkerGlobalScope` interface's registry marker struct), and
-`dedicated_worker_agent.rs` (run-a-worker and the agent's event loop).
+Dedicated-worker code is split across these modules by the spec section
+that specifies each interface or algorithm (workers.html §10.2.1): the
+`Worker` platform object and its constructor steps are in `worker.rs`; the
+`WorkerGlobalScope` common interface in `worker_global_scope.rs` — since the
+dedicated realm's platform object is a `WorkerGlobalScope` domain struct,
+its methods also carry the dedicated members (name, postMessage, close, the
+inbound message queue) and the close-a-worker and import-scripts
+algorithms; the `DedicatedWorkerGlobalScope` interface's registry marker in
+`dedicated_worker_global_scope.rs`; and run-a-worker with the agent's event
+loop in `dedicated_worker_agent.rs`.  Add new worker algorithms to the
+module that owns their spec section, quoting each spec step verbatim in
+`// Step N:` comments and annotating deviations inline at the step they
+diverge from (see `AGENTS.md`, "Algorithm Implementation").
+
+Two design decisions change how the spec's worker channel and lifecycle are
+realized, and each is documented where it diverges — per-field on the
+channel types and platform objects, per-step in the run-a-worker and
+terminate-a-worker bodies — rather than summarized here.  Read those notes
+before extending either mechanism:
+
+- The worker's implicit outside/inside MessagePort pair is not created:
+  owner and worker communicate over two direct crossbeam channel ends, and
+  the port role each end replaces is mapped on `Worker::outside_port`, the
+  `WorkerStartRequest` fields and `DedicatedWorkerAgentState`.
+- Worker creation and termination are content-process-local: the `Worker`
+  constructor reports to the content process's worker manager through its
+  realm's GlobalScope, and the manager spawns the agent thread.  Do not
+  route worker lifecycle through the user agent.
 
 Known gaps:
 

@@ -2875,14 +2875,12 @@ impl ContentProcess {
                     match result {
                         Ok(Err(error)) => error!("worker thread {worker_id} failed: {error}"),
                         Ok(Ok(())) => {}
-                        Err(panic) => {
-                            error!("worker thread {worker_id} panicked: {panic:?}");
-                            // The panic skipped run_a_worker's teardown
-                            // report; report it so the main thread joins the
-                            // agent's thread and runs the owner-side cleanup.
-                            let _ = worker_events.send(WorkerEvent::Closed { worker_id });
-                        }
+                        Err(panic) => error!("worker thread {worker_id} panicked: {panic:?}"),
                     }
+                    // The agent thread reports its teardown on every path
+                    // (also on failure or panic), so the main thread joins
+                    // the agent's thread and runs the owner-side cleanup.
+                    let _ = worker_events.send(WorkerEvent::Closed { worker_id });
                 }
             })
             .map_err(|error| format!("failed to spawn worker thread: {error}"))?;
