@@ -224,11 +224,13 @@ impl EnvironmentSettingsObject {
         // worker interfaces.  A dedicated worker agent runs on its own native
         // thread with its own engine (its own V8 isolate), so the realm is
         // always built fresh here.
-        let mut engine = crate::js::build_context::build_worker_realm(
-            Rc::new(RefCell::new(BaseDocument::new(DocumentConfig::default()))),
-            name,
-            worker_type,
-        )?;
+        // The worker realm's (unused) base document: the realm's global
+        // scope and the settings object's platform Document below wrap the
+        // same document, as for window realms (the `document` global
+        // property is not installed for workers).
+        let document = Rc::new(RefCell::new(BaseDocument::new(DocumentConfig::default())));
+        let mut engine =
+            crate::js::build_context::build_worker_realm(Rc::clone(&document), name, worker_type)?;
 
         // Connect the new realm's GlobalScope to the content process through
         // the EC trait's realm_global_object + with_object_any.
@@ -250,18 +252,16 @@ impl EnvironmentSettingsObject {
                 .unwrap_or_else(|_| "unknown error".to_string())
         })?;
 
-        // The environment settings object holds a platform Document for the
-        // worker's (unused) base document; the `document` global property is
-        // not installed for workers.
-        let document = Rc::new(RefCell::new(BaseDocument::new(DocumentConfig::default())));
-        let (document_object, platform_document) =
-            create_document_platform_object(document, creation_url.clone(), &mut engine).map_err(
-                |error| {
-                    engine
-                        .to_rust_string(error)
-                        .unwrap_or_else(|_| "unknown error".to_string())
-                },
-            )?;
+        let (document_object, platform_document) = create_document_platform_object(
+            Rc::clone(&document),
+            creation_url.clone(),
+            &mut engine,
+        )
+        .map_err(|error| {
+            engine
+                .to_rust_string(error)
+                .unwrap_or_else(|_| "unknown error".to_string())
+        })?;
         with_global_scope(&mut engine, |global_scope, ec| {
             global_scope.store_document_object(document_object, ec);
             Ok(())

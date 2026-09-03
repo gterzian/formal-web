@@ -556,12 +556,27 @@ impl GlobalScope {
         reflector: JsObject,
         ec: &mut dyn ExecutionContext<Types>,
     ) {
+        // The record's target lives in the cell; the reflector slot is
+        // written through `store_js_object` (it converts the rooted handle
+        // into a cppgc edge and may allocate), so the target is cloned out,
+        // updated with no cell borrow live, and written back under a borrow
+        // held only for the assignment.
+        let Some(mut worker_target) = self
+            .owned_workers
+            .borrow(ec)
+            .iter()
+            .find(|record| record.worker_id == worker_id)
+            .map(|record| record.worker_target.clone())
+        else {
+            return;
+        };
+        ec.store_js_object(&mut worker_target.reflector, reflector);
         let mut owned_workers = self.owned_workers.borrow_mut(ec);
         if let Some(record) = owned_workers
             .iter_mut()
             .find(|record| record.worker_id == worker_id)
         {
-            record.worker_target.reflector = Some(reflector);
+            record.worker_target = worker_target;
         }
     }
 

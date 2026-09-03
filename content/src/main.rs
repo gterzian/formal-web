@@ -577,6 +577,23 @@ impl WorkerRegistry {
             .map(|workers| workers.keys().copied().collect())
             .unwrap_or_default()
     }
+
+    /// The command channels to every registered worker agent: the main
+    /// thread forwards a user-agent port task that no document realm owns to
+    /// every worker agent, and the agent whose realm holds the port delivers
+    /// it.
+    pub(crate) fn all_command_senders(&self) -> Vec<crossbeam_channel::Sender<WorkerCommand>> {
+        self.workers
+            .lock()
+            .ok()
+            .map(|workers| {
+                workers
+                    .values()
+                    .map(|worker| worker.command_sender.clone())
+                    .collect()
+            })
+            .unwrap_or_default()
+    }
 }
 
 /// The resources a realm uses to create a dedicated worker's agent
@@ -2414,14 +2431,31 @@ impl ContentProcess {
     fn handle_port_task(&mut self, port_id: PortId, task: PortTaskKind) -> Result<(), String> {
         let event_sender = self.event_sender.clone();
         let Some(document_id) = self.find_port_document(port_id) else {
-            // The port is no longer managed by this event loop; return the
-            // task to the user agent's routing queue.
-            let messaging = self.any_channel_messaging().ok_or_else(|| {
-                format!("port task: no realm to return the task for port {port_id}")
-            })?;
-            messaging
-                .return_task_to_ua(port_id, task, &event_sender, &mut self.realm_parent)
-                .map_err(|error| format!("port task return failed: {error}"))?;
+            // The port is not owned by any document realm of this process.
+            // It may be held by one of the process's worker agents (a port
+            // transferred into a worker realm): forward the task to every
+            // worker agent, and the agent whose realm holds the port
+            // delivers it (the others ignore it).  With no worker agent
+            // registered the port is no longer managed by this event loop;
+            // return the task to the user agent's routing queue.
+            let worker_senders = self.workers.all_command_senders();
+            if worker_senders.is_empty() {
+                let messaging = self.any_channel_messaging().ok_or_else(|| {
+                    format!("port task: no realm to return the task for port {port_id}")
+                })?;
+                messaging
+                    .return_task_to_ua(port_id, task, &event_sender, &mut self.realm_parent)
+                    .map_err(|error| format!("port task return failed: {error}"))?;
+                return Ok(());
+            }
+            for worker_command_sender in worker_senders {
+                if let Err(error) = worker_command_sender.send(WorkerCommand::PortTask {
+                    port: port_id,
+                    task: task.clone(),
+                }) {
+                    error!("failed to forward port task for {port_id} to a worker agent: {error}");
+                }
+            }
             return Ok(());
         };
         let content_document = self

@@ -39,11 +39,10 @@ impl WebIdlInterface<Types> for Worker {
         args: &[JsValue],
         ec: &mut dyn ExecutionContext<Types>,
     ) -> Completion<Self, Types> {
-        // <https://html.spec.whatwg.org/#dom-worker>
-        // Step 1: "Let compliantScriptURL be the result of invoking the get
-        //          trusted type compliant string algorithm ..."
-        // Note: Trusted Types are not implemented; the USVString conversion
-        // below is the argument conversion the overload requires.
+        // The constructor steps (including the trusted-type and URL parsing
+        // steps) run in `Worker::constructor`; this binding only performs the
+        // Web IDL argument conversion (scriptURL as USVString, and the
+        // WorkerOptions dictionary).
         let undefined = ec.value_undefined();
         let script_url = ec.to_rust_string(args.first().cloned().unwrap_or(undefined))?;
         let (name, worker_type) = parse_worker_options(args.get(1), ec);

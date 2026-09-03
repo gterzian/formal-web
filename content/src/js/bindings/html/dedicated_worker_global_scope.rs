@@ -123,7 +123,7 @@ fn close(
     ec: &mut dyn ExecutionContext<Types>,
 ) -> Completion<JsValue, Types> {
     let worker_global_scope = worker_global_scope_domain_from(this, ec)?;
-    worker_global_scope.close(ec);
+    worker_global_scope.close();
     Ok(ec.value_undefined())
 }
 

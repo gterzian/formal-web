@@ -302,9 +302,8 @@ impl WorkerGlobalScope {
     }
 
     /// <https://html.spec.whatwg.org/#dom-dedicatedworkerglobalscope-close>
-    pub(crate) fn close(&self, ec: &mut dyn ExecutionContext<Types>) {
+    pub(crate) fn close(&self) {
         // The close() method steps are to close a worker given this.
-        let _ = ec;
         close_a_worker(self);
     }
 }

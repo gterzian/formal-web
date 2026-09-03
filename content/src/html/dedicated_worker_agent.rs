@@ -6,8 +6,8 @@ use data_url::DataUrl;
 use ipc::IpcSender;
 use ipc_messages::content::{
     Command, DocumentFetchId, Event as ContentEvent, EventLoopId,
-    FetchRequest as ContentFetchRequest, FetchResponse as ContentFetchResponse, PortId, WorkerId,
-    WorkerOwner, WorkerRequest,
+    FetchRequest as ContentFetchRequest, FetchResponse as ContentFetchResponse, PortId,
+    PortTaskKind, WorkerId, WorkerOwner, WorkerRequest,
 };
 use ipc_messages::network::{Request as NetworkRequest, ResponseRecipient};
 use log::error;
@@ -109,6 +109,14 @@ pub(crate) enum WorkerCommand {
     /// A nested worker this realm owns closed; drop its outbound channel's
     /// receiver from this agent's event-loop select.
     RemoveNestedWorkerChannel { worker_id: WorkerId },
+    /// A port task the user agent routed to a port this realm may own (a
+    /// MessagePort transferred into the worker): the content process main
+    /// thread forwards every user-agent port task no document realm owns to
+    /// all worker agents; this agent delivers the task when its realm holds
+    /// the port and ignores it otherwise.  Queued as a routing task on this
+    /// agent's own task queue so it runs through the same processing-model
+    /// steps as a locally queued port message task.
+    PortTask { port: PortId, task: PortTaskKind },
 }
 
 /// An operation to run in the realm that owns a worker (the owner document,
@@ -658,6 +666,16 @@ impl DedicatedWorkerAgentState {
                 }
                 self.deliver_worker_outbound_message(worker_id, payload)
             }
+            Task::PortRouting { port, kind } => {
+                // A user-agent port task forwarded from the content process
+                // main thread; the closing flag is checked here, at the
+                // task's start, as for the other task arms.
+                if self.closing_flag() {
+                    return Ok(());
+                }
+                self.handle_worker_port_task(port, kind)
+            }
+
             _ => Err(format!(
                 "worker {} event loop received a document task",
                 self.worker_id
@@ -794,7 +812,49 @@ impl DedicatedWorkerAgentState {
                 self.nested_workers.remove(&worker_id);
                 Ok(())
             }
+            WorkerCommand::PortTask { port, task } => {
+                // A user-agent port task no document realm owns: queue it as
+                // a task on this agent's event loop, mirroring how the main
+                // loop handles Command::PortTask (Task::PortRouting), so the
+                // delivery runs through the processing-model steps (task +
+                // microtask checkpoint).  When this realm does not hold the
+                // port the routing task is a no-op.
+                self.task_queue
+                    .queue_a_task(Task::PortRouting { port, kind: task });
+                Ok(())
+            }
         }
+    }
+
+    /// Deliver a port task the user agent routed to a port of this realm's
+    /// event loop, forwarded by the content process main thread (which only
+    /// resolves the ports owned by document realms; see
+    /// `ContentProcess::handle_port_task`).  Mirrors the main loop's handling
+    /// for this realm: the task is appended to the port's queue, or the
+    /// message task (the message port post message steps 7.4-7.7) fires in
+    /// this task's slot when the port's queue is enabled.  A port this realm
+    /// does not hold is ignored.
+    fn handle_worker_port_task(
+        &mut self,
+        port_id: PortId,
+        task: PortTaskKind,
+    ) -> Result<(), String> {
+        let fire = with_worker_global_scope(self.settings.ec(), |worker_global_scope, ec| {
+            let Some(messaging) = worker_global_scope.global_scope.channel_messaging(ec) else {
+                return Ok(false);
+            };
+            let Some(event_sender) = worker_global_scope.global_scope.event_sender() else {
+                return Ok(false);
+            };
+            messaging
+                .handle_port_task(port_id, task, &event_sender, ec)
+                .map_err(|error| ec.new_type_error(&format!("port task: {error}")))
+        })
+        .map_err(|error| format!("port task failed: {}", error.display()))?;
+        if fire {
+            self.handle_run_port_message_task(port_id)?;
+        }
+        Ok(())
     }
 
     /// Fire one queued message event on a port of this worker's event loop
