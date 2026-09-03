@@ -68,22 +68,9 @@ pub(crate) struct OwnedWorkerChannel {
     pub(crate) queue: Rc<RefCell<WorkerMessageQueue>>,
 }
 
-/// A request from a realm's GlobalScope to the content process's worker
-/// manager.  Dedicated workers are entirely content-process-nested: worker
-/// creation and termination never involve the user agent.
-pub(crate) enum WorkerContentRequest {
-    /// The Worker constructor's run-a-worker request.
-    Create(WorkerStartRequest),
-    /// A Worker object's terminate().
-    Terminate(WorkerId),
-}
-
-/// The Worker constructor's run-a-worker request plus the ends of the
-/// worker's direct channels the constructor created in the owner realm.  The
-/// sender ends stay with the platform objects in the owner realm; the ends
-/// that travel here are handed to the dedicated worker agent's event loop
-/// and to the owner's event loop.
-pub(crate) struct WorkerStartRequest {
+/// The Worker constructor's request to run a dedicated worker, with the
+/// ends of the worker's channels it created in the owner realm.
+pub(crate) struct WorkerBootstrap {
     /// The Worker constructor's run-a-worker request: the script url, name,
     /// type and owner the agent starts the worker with.
     pub(crate) request: WorkerRequest,
@@ -181,8 +168,9 @@ pub(crate) struct DedicatedWorkerAgentConfig {
     pub(crate) event_sender: IpcSender<ContentEvent>,
     /// The worker's own channel to the net process, for script fetches.
     pub(crate) network_extension_sender: IpcSender<ipc_messages::network::Request>,
-    /// The channel to the content process's worker manager (nested workers).
-    pub(crate) worker_creator: crossbeam_channel::Sender<WorkerContentRequest>,
+    /// The realm-side launcher the worker's own constructors use to create
+    /// further (nested) dedicated worker agents synchronously.
+    pub(crate) worker_launcher: crate::WorkerLauncher,
     pub(crate) trace_sender: Option<TraceSender>,
 }
 
@@ -237,14 +225,16 @@ pub(crate) fn run_a_worker(config: DedicatedWorkerAgentConfig) -> Result<(), Str
     // steps in that agent."
     // Note: The two halves of step 4 map onto the two sides of the
     // dedicated-worker-agent split.  Obtaining the agent — creating this
-    // native thread — ran in the content process: `ContentProcess::run_a_worker`
-    // (main.rs) spawned this thread when it handled the Worker constructor's
-    // request.  This function body is the second half of the step, "run the
-    // rest of these steps in that agent": with is shared false, obtaining
-    // the agent never creates a new agent cluster, so the agent is nested to
-    // the content process hosting the owner realm (the same agent cluster as
-    // its owner's similar-origin window agent), and the thread's event loop
-    // below is the agent's event loop.
+    // native thread — ran in the Worker constructor: it ran the dedicated
+    // start of run a worker (steps 1-3 and this step) synchronously in the
+    // owner realm, creating this thread through the realm's
+    // `WorkerLauncher::run_a_worker` (see worker.rs).  This function body is
+    // the second half of the step, "run the rest of these steps in that
+    // agent": with is shared false, obtaining the agent never creates a new
+    // agent cluster, so the agent is nested to the content process hosting
+    // the owner realm (the same agent cluster as its owner's similar-origin
+    // window agent), and the thread's event loop below is the agent's event
+    // loop.
     let task_queue = TaskQueue::new();
     let active_timers = Rc::new(RefCell::new(MapOfActiveTimers::default()));
     // Step 5: "Let realm execution context be the result of creating a new
@@ -278,8 +268,8 @@ pub(crate) fn run_a_worker(config: DedicatedWorkerAgentConfig) -> Result<(), Str
         wiring,
     )?;
     // The worker realm's global scope shares the content process's event
-    // loop id, gets the trace sender, and the worker creator channel (a
-    // nested worker's constructor runs on this thread).  It also gets the
+    // loop id, gets the trace sender, and the worker launcher (nested
+    // workers' constructors run on this thread).  It also gets the
     // worker→owner end of the worker's channel, so the worker's postMessage
     // can reach its owner.
     with_worker_global_scope(settings.ec(), |worker_global_scope, _ec| {
@@ -291,7 +281,7 @@ pub(crate) fn run_a_worker(config: DedicatedWorkerAgentConfig) -> Result<(), Str
             .set_trace_sender(config.trace_sender.clone());
         worker_global_scope
             .global_scope
-            .set_worker_creator(config.worker_creator.clone());
+            .set_worker_launcher(config.worker_launcher.clone());
         worker_global_scope.set_inside_port(config.worker_to_owner);
         Ok(())
     })

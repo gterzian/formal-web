@@ -20,8 +20,8 @@ pub mod webidl;
 
 use crate::dom::{EventTargetAccess, dispatch_with_path, fire_event, simple_path};
 use crate::html::dedicated_worker_agent::{
-    OwnerOperation, WorkerChannelMessage, WorkerCommand, WorkerContentRequest, WorkerEvent,
-    WorkerStartRequest, fire_worker_posted_message,
+    OwnerOperation, WorkerBootstrap, WorkerChannelMessage, WorkerCommand, WorkerEvent,
+    fire_worker_posted_message,
 };
 use crate::html::environment_settings_object::RealmWiring;
 use crate::html::event_loop::{EventLoopTaskSources, Task, TaskQueue};
@@ -441,6 +441,289 @@ pub(crate) struct ContentWorker {
     pub(crate) join_handle: Option<std::thread::JoinHandle<()>>,
 }
 
+/// The dedicated workers running in this content process, keyed by worker
+/// id, shared between the content process's main loop and the
+/// [`WorkerLauncher`] every realm holds (a document's realm on the main
+/// thread, a dedicated worker agent's realm on its native thread).  Each
+/// worker's realm and event loop live on its own dedicated worker agent (a
+/// native thread); the record holds the agent's thread handle and the
+/// routing data the main loop needs.
+/// <https://html.spec.whatwg.org/#run-a-worker>
+#[derive(Clone, Default)]
+pub(crate) struct WorkerRegistry {
+    workers: std::sync::Arc<std::sync::Mutex<HashMap<WorkerId, ContentWorker>>>,
+}
+
+impl WorkerRegistry {
+    /// Record a dedicated worker.  The Worker constructor registers each
+    /// worker synchronously when it creates the worker's agent (see
+    /// `WorkerLauncher::run_a_worker`), on whichever thread the constructor
+    /// ran on.
+    pub(crate) fn register(&self, worker_id: WorkerId, worker: ContentWorker) {
+        if let Ok(mut workers) = self.workers.lock() {
+            workers.insert(worker_id, worker);
+        }
+    }
+
+    /// Remove a worker's record: the content process's Closed handling joins
+    /// its agent's thread and runs the owner-side cleanup.
+    pub(crate) fn remove(&self, worker_id: &WorkerId) -> Option<ContentWorker> {
+        self.workers
+            .lock()
+            .ok()
+            .and_then(|mut workers| workers.remove(worker_id))
+    }
+
+    /// The command channel to a worker's dedicated worker agent, if the
+    /// worker is still registered.
+    pub(crate) fn command_sender(
+        &self,
+        worker_id: WorkerId,
+    ) -> Option<crossbeam_channel::Sender<WorkerCommand>> {
+        self.workers.lock().ok().and_then(|workers| {
+            workers
+                .get(&worker_id)
+                .map(|worker| worker.command_sender.clone())
+        })
+    }
+
+    /// The owner of a registered worker, if it is still registered.
+    pub(crate) fn owner(&self, worker_id: WorkerId) -> Option<WorkerOwner> {
+        self.workers
+            .lock()
+            .ok()
+            .and_then(|workers| workers.get(&worker_id).map(|worker| worker.owner))
+    }
+
+    /// The receiver ends of the outbound channels of the registered workers
+    /// owned by a document: selected on by the main event loop, which
+    /// delivers each message the worker posts in the owner document's realm.
+    /// (The outbound channels of worker-owned workers were forwarded to the
+    /// owner worker agent's event loop.)
+    pub(crate) fn document_owned_receivers(
+        &self,
+    ) -> Vec<(WorkerId, crossbeam_channel::Receiver<WorkerChannelMessage>)> {
+        let Ok(workers) = self.workers.lock() else {
+            return Vec::new();
+        };
+        workers
+            .iter()
+            .filter(|(_, worker)| matches!(worker.owner, WorkerOwner::Document(_)))
+            .filter_map(|(worker_id, worker)| {
+                worker
+                    .worker_to_owner
+                    .clone()
+                    .map(|receiver| (*worker_id, receiver))
+            })
+            .collect()
+    }
+
+    /// The registered workers a worker owns: when the owner's agent closes,
+    /// they are terminated (their owner realm is gone).
+    pub(crate) fn owned_worker_ids(&self, owner_worker_id: WorkerId) -> Vec<WorkerId> {
+        let Ok(workers) = self.workers.lock() else {
+            return Vec::new();
+        };
+        workers
+            .iter()
+            .filter(|(_, worker)| {
+                matches!(
+                    worker.owner,
+                    WorkerOwner::Worker(owner_id) if owner_id == owner_worker_id
+                )
+            })
+            .map(|(worker_id, _)| *worker_id)
+            .collect()
+    }
+
+    /// The registered workers a document owns: when the document is
+    /// destroyed, they are terminated.
+    pub(crate) fn document_owned_worker_ids(&self, document_id: DocumentId) -> Vec<WorkerId> {
+        let Ok(workers) = self.workers.lock() else {
+            return Vec::new();
+        };
+        workers
+            .iter()
+            .filter(|(_, worker)| {
+                matches!(worker.owner, WorkerOwner::Document(owner_id) if owner_id == document_id)
+            })
+            .map(|(worker_id, _)| *worker_id)
+            .collect()
+    }
+
+    /// Whether a worker is still registered.
+    pub(crate) fn contains(&self, worker_id: WorkerId) -> bool {
+        self.workers
+            .lock()
+            .map(|workers| workers.contains_key(&worker_id))
+            .unwrap_or(false)
+    }
+
+    /// Take every registered worker (shutdown): each agent is terminated
+    /// first, then the entries' threads are joined.
+    pub(crate) fn take_all(&self) -> Vec<(WorkerId, ContentWorker)> {
+        self.workers
+            .lock()
+            .ok()
+            .map(|mut workers| workers.drain().collect())
+            .unwrap_or_default()
+    }
+
+    /// The registered worker ids (shutdown terminates each agent).
+    pub(crate) fn worker_ids(&self) -> Vec<WorkerId> {
+        self.workers
+            .lock()
+            .ok()
+            .map(|workers| workers.keys().copied().collect())
+            .unwrap_or_default()
+    }
+}
+
+/// The resources a realm uses to create a dedicated worker's agent
+/// synchronously.  The Worker constructor runs the dedicated start of run a
+/// worker then and there in the owner realm — the spec's "in parallel" hop
+/// (constructor step 9) only exists for shared workers — creating the agent
+/// (a native thread) here and registering the worker with the content
+/// process's [`WorkerRegistry`] for the main loop's lifecycle handling.  The
+/// agent thread then runs the rest of run a worker (steps 5-12.21; see
+/// dedicated_worker_agent.rs).  One launcher is shared by every realm of
+/// this content process — cloned onto window global scopes at document
+/// creation and onto worker global scopes when their agent is created — so
+/// nested workers are created the same way from a worker agent's thread.
+#[derive(Clone)]
+pub(crate) struct WorkerLauncher {
+    event_loop_id: EventLoopId,
+    event_sender: ipc::IpcSender<ContentEvent>,
+    network_extension_sender: ipc::IpcSender<ipc_messages::network::Request>,
+    trace_sender: Option<TraceSender>,
+    worker_event_sender: crossbeam_channel::Sender<WorkerEvent>,
+    registry: WorkerRegistry,
+}
+
+impl WorkerLauncher {
+    pub(crate) fn new(
+        event_loop_id: EventLoopId,
+        event_sender: ipc::IpcSender<ContentEvent>,
+        network_extension_sender: ipc::IpcSender<ipc_messages::network::Request>,
+        trace_sender: Option<TraceSender>,
+        worker_event_sender: crossbeam_channel::Sender<WorkerEvent>,
+        registry: WorkerRegistry,
+    ) -> Self {
+        Self {
+            event_loop_id,
+            event_sender,
+            network_extension_sender,
+            trace_sender,
+            worker_event_sender,
+            registry,
+        }
+    }
+
+    /// Run-a-worker step 4's dedicated path, run synchronously by the Worker
+    /// constructor in the owner realm: create the worker's dedicated worker
+    /// agent (a native thread nested to this content process; see
+    /// dedicated_worker_agent.rs), register the worker, and hand the
+    /// owner-side end of its channel to the event loop that owns it.  The
+    /// agent itself runs the rest of run a worker: the realm (steps 5-9),
+    /// the script fetch (step 12, over its own net channel), and the
+    /// onComplete steps (12.3-12.15).
+    pub(crate) fn run_a_worker(&self, start: WorkerBootstrap) -> Result<(), String> {
+        let WorkerBootstrap {
+            request,
+            owner_to_worker,
+            worker_to_owner,
+            worker_to_owner_rx,
+        } = start;
+        let worker_id = request.worker_id;
+        let owner = request.owner;
+        let (worker_command_tx, worker_command_rx) = crossbeam_channel::unbounded();
+        let launcher = self.clone();
+        let join_handle = std::thread::Builder::new()
+            .name(format!("formal-web:worker-{worker_id}"))
+            .spawn(move || {
+                let config = crate::html::dedicated_worker_agent::DedicatedWorkerAgentConfig {
+                    request,
+                    owner_to_worker,
+                    worker_to_owner,
+                    event_loop_id: launcher.event_loop_id,
+                    worker_events: launcher.worker_event_sender.clone(),
+                    worker_commands: worker_command_rx,
+                    event_sender: launcher.event_sender.clone(),
+                    network_extension_sender: launcher.network_extension_sender.clone(),
+                    worker_launcher: launcher.clone(),
+                    trace_sender: launcher.trace_sender.clone(),
+                };
+                let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                    crate::html::dedicated_worker_agent::run_a_worker(config)
+                }));
+                match result {
+                    Ok(Err(error)) => error!("worker thread {worker_id} failed: {error}"),
+                    Ok(Ok(())) => {}
+                    Err(panic) => error!("worker thread {worker_id} panicked: {panic:?}"),
+                }
+                // The agent thread reports its teardown on every path (also
+                // on failure or panic), so the main thread joins the agent's
+                // thread and runs the owner-side cleanup.
+                let _ = launcher
+                    .worker_event_sender
+                    .send(WorkerEvent::Closed { worker_id });
+            })
+            .map_err(|error| format!("failed to spawn worker thread: {error}"))?;
+        // The receiver end of the worker's outbound channel joins the event
+        // loop that owns the worker: the main loop when the owner is a
+        // document in this process (the messages fire as message events at
+        // the worker's Worker object in the owner document's realm), or the
+        // owner worker agent's event loop (forwarded as a command) when the
+        // owner is a worker.
+        let worker_to_owner_rx = match owner {
+            WorkerOwner::Document(_) => Some(worker_to_owner_rx),
+            WorkerOwner::Worker(owner_worker_id) => {
+                let owner_command_sender = self
+                    .registry
+                    .command_sender(owner_worker_id)
+                    .ok_or_else(|| {
+                        format!(
+                            "run a worker: owner worker {owner_worker_id} closed before the worker {worker_id} could start"
+                        )
+                    })?;
+                owner_command_sender
+                    .send(WorkerCommand::AddNestedWorkerChannel {
+                        worker_id,
+                        receiver: worker_to_owner_rx,
+                    })
+                    .map_err(|error| {
+                        format!(
+                            "run a worker: failed to route worker {worker_id} channel to owner worker {owner_worker_id}: {error}"
+                        )
+                    })?;
+                None
+            }
+        };
+        self.registry.register(
+            worker_id,
+            ContentWorker {
+                owner,
+                worker_to_owner: worker_to_owner_rx,
+                command_sender: worker_command_tx,
+                join_handle: Some(join_handle),
+            },
+        );
+        Ok(())
+    }
+
+    /// Send a dedicated worker agent the terminate command (the command
+    /// half of terminate a worker), looked up in the shared registry.
+    pub(crate) fn terminate(&self, worker_id: WorkerId) -> Result<(), String> {
+        let Some(command_sender) = self.registry.command_sender(worker_id) else {
+            // The worker already closed (its Closed report is queued).
+            return Ok(());
+        };
+        command_sender
+            .send(WorkerCommand::Terminate)
+            .map_err(|error| format!("failed to terminate worker {worker_id}: {error}"))
+    }
+}
+
 pub(crate) struct ContentProcess {
     event_sender: ipc::IpcSender<ContentEvent>,
     event_loop_id: EventLoopId,
@@ -451,17 +734,17 @@ pub(crate) struct ContentProcess {
     /// <https://html.spec.whatwg.org/#run-a-worker>
     /// The dedicated workers running in this content process, keyed by worker
     /// id.  Each worker's realm and event loop live on its own dedicated
-    /// worker agent (a native thread); this map holds the agent's thread
-    /// handle and the routing data.
-    workers: HashMap<WorkerId, ContentWorker>,
-    /// The channel the Worker constructor (and terminate()) reports to: the
-    /// sender is cloned into every realm's GlobalScope (the worker creator
-    /// channel), the receiver feeds the main loop.
-    worker_request_sender: crossbeam_channel::Sender<WorkerContentRequest>,
-    worker_request_receiver: crossbeam_channel::Receiver<WorkerContentRequest>,
+    /// worker agent (a native thread); the registry holds the agent's thread
+    /// handle and the routing data, shared with every realm's
+    /// [`WorkerLauncher`] so the Worker constructor can register a new
+    /// worker synchronously.
+    workers: WorkerRegistry,
+    /// How the Worker constructor creates dedicated worker agents
+    /// synchronously, and how terminate() reaches them: cloned onto every
+    /// realm's GlobalScope (see GlobalScope::set_worker_launcher).
+    worker_launcher: WorkerLauncher,
     /// The channel the dedicated worker agents report to (teardown and
     /// owner-side operations).
-    worker_event_sender: crossbeam_channel::Sender<WorkerEvent>,
     worker_event_receiver: crossbeam_channel::Receiver<WorkerEvent>,
     active_documents_by_traversable: HashMap<NavigableId, DocumentId>,
     font_namespace: u64,
@@ -531,8 +814,16 @@ impl ContentProcess {
             .duration_since(UNIX_EPOCH)
             .map(|duration| duration.as_secs_f64() * 1000.0)
             .unwrap_or(0.0);
-        let (worker_request_sender, worker_request_receiver) = crossbeam_channel::unbounded();
         let (worker_event_sender, worker_event_receiver) = crossbeam_channel::unbounded();
+        let workers = WorkerRegistry::default();
+        let worker_launcher = WorkerLauncher::new(
+            event_loop_id,
+            event_sender.clone(),
+            network_extension_sender.clone(),
+            trace_sender.clone(),
+            worker_event_sender,
+            workers.clone(),
+        );
         Self {
             event_sender,
             event_loop_id,
@@ -542,10 +833,8 @@ impl ContentProcess {
             default_viewport: None,
             traversable_viewports: HashMap::new(),
             documents: HashMap::new(),
-            workers: HashMap::new(),
-            worker_request_sender,
-            worker_request_receiver,
-            worker_event_sender,
+            workers,
+            worker_launcher,
             worker_event_receiver,
             active_documents_by_traversable: HashMap::new(),
             font_namespace: new_font_namespace(),
@@ -592,16 +881,16 @@ impl ContentProcess {
         )?;
         // The realm belongs to this content process's event loop; the global
         // scope needs the id for channel messaging (per-event-loop port
-        // management), the trace sender, and the worker creator channel for
-        // the Worker constructor.
+        // management), the trace sender, and the worker launcher for the
+        // Worker constructor.
         let trace_sender = self.trace_sender.clone();
-        let worker_creator = self.worker_request_sender.clone();
+        let worker_launcher = self.worker_launcher.clone();
         with_global_scope(
             &mut settings.realm_execution_context,
             |global_scope, _ec| {
                 global_scope.set_event_loop_id(self.event_loop_id);
                 global_scope.set_trace_sender(trace_sender.clone());
-                global_scope.set_worker_creator(worker_creator.clone());
+                global_scope.set_worker_launcher(worker_launcher.clone());
                 Ok(())
             },
         )
@@ -922,14 +1211,14 @@ impl ContentProcess {
             .map_err(|error| format!("failed to read new traversable id: {}", error.display()))?
             .unwrap_or_else(NavigableId::new);
             // The new realm shares this process's event loop and trace
-            // sender (channel messaging needs both), and the worker creator
-            // channel (the Worker constructor).
+            // sender (channel messaging needs both), and the worker launcher
+            // (the Worker constructor).
             let trace_sender = self.trace_sender.clone();
-            let worker_creator = self.worker_request_sender.clone();
+            let worker_launcher = self.worker_launcher.clone();
             with_global_scope(settings.ec(), |global_scope, _ec| {
                 global_scope.set_event_loop_id(self.event_loop_id);
                 global_scope.set_trace_sender(trace_sender.clone());
-                global_scope.set_worker_creator(worker_creator.clone());
+                global_scope.set_worker_launcher(worker_launcher.clone());
                 Ok(())
             })
             .map_err(|error| format!("failed to set event loop id: {}", error.display()))?;
@@ -1673,12 +1962,7 @@ impl ContentProcess {
         // Terminate the dedicated workers this document owns: the document is
         // going away, so its workers are no longer actively needed.
         // <https://html.spec.whatwg.org/#the-worker's-lifetime>
-        let owned_workers: Vec<WorkerId> = self
-            .workers
-            .iter()
-            .filter(|(_, worker)| matches!(worker.owner, WorkerOwner::Document(owner_id) if owner_id == document_id))
-            .map(|(worker_id, _)| *worker_id)
-            .collect();
+        let owned_workers = self.workers.document_owned_worker_ids(document_id);
         for worker_id in owned_workers {
             if let Err(error) = self.terminate_worker(worker_id) {
                 error!(
@@ -2825,105 +3109,6 @@ impl ContentProcess {
         }
     }
 
-    /// <https://html.spec.whatwg.org/#run-a-worker>
-    fn run_a_worker(&mut self, start: WorkerStartRequest) -> Result<(), String> {
-        // The constructor's run-a-worker request (Worker constructor step 9,
-        // "run this step in parallel"): start the worker's dedicated worker
-        // agent (a native thread nested to this content process; see
-        // dedicated_worker_agent.rs) and record the thread handles the main
-        // thread needs.  The dedicated worker agent itself runs the rest of
-        // run a worker: the realm (steps 5-9), the script fetch (step 12,
-        // over its own net channel), and the onComplete steps (12.3-12.15).
-        let WorkerStartRequest {
-            request,
-            owner_to_worker,
-            worker_to_owner,
-            worker_to_owner_rx,
-        } = start;
-        let worker_id = request.worker_id;
-        let owner = request.owner;
-        // The owner document may have been destroyed before the request was
-        // processed; drop the request (the Worker object dies with the owner
-        // realm, and its channel state with the realm's global scope).
-        if let WorkerOwner::Document(document_id) = owner
-            && !self.documents.contains_key(&document_id)
-        {
-            error!("run a worker: owner document {document_id} destroyed; dropping request");
-            return Ok(());
-        }
-        let (worker_command_tx, worker_command_rx) = crossbeam_channel::unbounded();
-        let join_handle = std::thread::Builder::new()
-            .name(format!("formal-web:worker-{worker_id}"))
-            .spawn({
-                let worker_events = self.worker_event_sender.clone();
-                let config = crate::html::dedicated_worker_agent::DedicatedWorkerAgentConfig {
-                    request,
-                    owner_to_worker,
-                    worker_to_owner,
-                    event_loop_id: self.event_loop_id,
-                    worker_events: self.worker_event_sender.clone(),
-                    worker_commands: worker_command_rx,
-                    event_sender: self.event_sender.clone(),
-                    network_extension_sender: self.network_extension_sender.clone(),
-                    worker_creator: self.worker_request_sender.clone(),
-                    trace_sender: self.trace_sender.clone(),
-                };
-                move || {
-                    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                        crate::html::dedicated_worker_agent::run_a_worker(config)
-                    }));
-                    match result {
-                        Ok(Err(error)) => error!("worker thread {worker_id} failed: {error}"),
-                        Ok(Ok(())) => {}
-                        Err(panic) => error!("worker thread {worker_id} panicked: {panic:?}"),
-                    }
-                    // The agent thread reports its teardown on every path
-                    // (also on failure or panic), so the main thread joins
-                    // the agent's thread and runs the owner-side cleanup.
-                    let _ = worker_events.send(WorkerEvent::Closed { worker_id });
-                }
-            })
-            .map_err(|error| format!("failed to spawn worker thread: {error}"))?;
-        // The receiver end of the worker's outbound channel joins the event
-        // loop that owns the worker: this main loop when the owner is a
-        // document in this process (the messages fire as message events at
-        // the worker's Worker object in the owner document's realm), or the
-        // owner worker agent's event loop (forwarded as a command) when the
-        // owner is a worker.
-        let worker_to_owner_rx = match owner {
-            WorkerOwner::Document(_) => Some(worker_to_owner_rx),
-            WorkerOwner::Worker(owner_worker_id) => {
-                let owner_worker = self.workers.get(&owner_worker_id).ok_or_else(|| {
-                    format!(
-                        "run a worker: owner worker {owner_worker_id} closed before the worker {worker_id} could start"
-                    )
-                })?;
-                owner_worker
-                    .command_sender
-                    .send(WorkerCommand::AddNestedWorkerChannel {
-                        worker_id,
-                        receiver: worker_to_owner_rx,
-                    })
-                    .map_err(|error| {
-                        format!(
-                            "run a worker: failed to route worker {worker_id} channel to owner worker {owner_worker_id}: {error}"
-                        )
-                    })?;
-                None
-            }
-        };
-        self.workers.insert(
-            worker_id,
-            ContentWorker {
-                owner,
-                worker_to_owner: worker_to_owner_rx,
-                command_sender: worker_command_tx,
-                join_handle: Some(join_handle),
-            },
-        );
-        Ok(())
-    }
-
     /// <https://html.spec.whatwg.org/#terminate-a-worker>
     fn terminate_worker(&mut self, worker_id: WorkerId) -> Result<(), String> {
         // The command half of terminate a worker: tell the dedicated worker
@@ -2932,14 +3117,7 @@ impl ContentProcess {
         // content process then joins its thread and runs the owner-side
         // cleanup (terminate-a-worker step 4 and run-a-worker steps
         // 12.19-12.21).
-        let Some(worker) = self.workers.get(&worker_id) else {
-            // The worker already closed (its Closed report is queued).
-            return Ok(());
-        };
-        worker
-            .command_sender
-            .send(WorkerCommand::Terminate)
-            .map_err(|error| format!("failed to terminate worker {worker_id}: {error}"))
+        self.worker_launcher.terminate(worker_id)
     }
 
     /// Handle a notification from a dedicated worker agent.
@@ -2965,9 +3143,8 @@ impl ContentProcess {
                 // worker) to drop the closed worker's outbound channel from
                 // its event-loop select.
                 if let WorkerOwner::Worker(owner_worker_id) = owner
-                    && let Some(owner_worker) = self.workers.get(&owner_worker_id)
-                    && let Err(error) = owner_worker
-                        .command_sender
+                    && let Some(owner_command_sender) = self.workers.command_sender(owner_worker_id)
+                    && let Err(error) = owner_command_sender
                         .send(WorkerCommand::RemoveNestedWorkerChannel { worker_id })
                 {
                     error!(
@@ -2978,17 +3155,7 @@ impl ContentProcess {
                 // Terminate the workers this worker owned: their owner realm
                 // is gone, so their outbound channels can no longer be
                 // routed to it.
-                let owned_workers: Vec<WorkerId> = self
-                    .workers
-                    .iter()
-                    .filter(|(_, owned)| {
-                        matches!(
-                            owned.owner,
-                            WorkerOwner::Worker(owner_id) if owner_id == worker_id
-                        )
-                    })
-                    .map(|(owned_id, _)| *owned_id)
-                    .collect();
+                let owned_workers = self.workers.owned_worker_ids(worker_id);
                 for owned_id in owned_workers {
                     if let Err(error) = self.terminate_worker(owned_id) {
                         error!(
@@ -3007,9 +3174,7 @@ impl ContentProcess {
                     WorkerOwner::Document(document_id) => {
                         !self.documents.contains_key(&document_id)
                     }
-                    WorkerOwner::Worker(owner_worker_id) => {
-                        !self.workers.contains_key(&owner_worker_id)
-                    }
+                    WorkerOwner::Worker(owner_worker_id) => !self.workers.contains(owner_worker_id),
                 };
                 if !owner_gone {
                     self.run_owner_operation(
@@ -3045,11 +3210,13 @@ impl ContentProcess {
                 )
             }
             WorkerOwner::Worker(parent_worker_id) => {
-                let worker = self.workers.get(&parent_worker_id).ok_or_else(|| {
-                    format!("owner operation: unknown owner worker {parent_worker_id}")
-                })?;
-                worker
-                    .command_sender
+                let parent_command_sender = self
+                    .workers
+                    .command_sender(parent_worker_id)
+                    .ok_or_else(|| {
+                        format!("owner operation: unknown owner worker {parent_worker_id}")
+                    })?;
+                parent_command_sender
                     .send(WorkerCommand::OwnerOperation(operation))
                     .map_err(|error| {
                         format!(
@@ -3063,13 +3230,12 @@ impl ContentProcess {
     /// Terminate and join every dedicated worker agent (its thread), used at
     /// shutdown so the process does not exit with live worker agents.
     fn shutdown_workers(&mut self) -> Result<(), String> {
-        let worker_ids: Vec<WorkerId> = self.workers.keys().copied().collect();
-        for worker_id in worker_ids {
+        for worker_id in self.workers.worker_ids() {
             if let Err(error) = self.terminate_worker(worker_id) {
                 error!("shutdown: failed to terminate worker {worker_id}: {error}");
             }
         }
-        for (worker_id, worker) in self.workers.drain() {
+        for (worker_id, worker) in self.workers.take_all() {
             if let Some(join_handle) = worker.join_handle
                 && let Err(error) = join_handle.join()
             {
@@ -3416,11 +3582,11 @@ impl ContentProcess {
         worker_id: WorkerId,
         payload: WorkerChannelMessage,
     ) -> Result<(), String> {
-        let Some(worker) = self.workers.get(&worker_id) else {
+        let Some(owner) = self.workers.owner(worker_id) else {
             // The worker closed; its channel state was discarded.
             return Ok(());
         };
-        let WorkerOwner::Document(document_id) = worker.owner else {
+        let WorkerOwner::Document(document_id) = owner else {
             return Err(format!(
                 "worker channel message: worker {worker_id} is not owned by a document"
             ));
@@ -3444,12 +3610,12 @@ impl ContentProcess {
         worker_id: WorkerId,
         payload: WorkerChannelMessage,
     ) -> Result<(), String> {
-        let Some(worker) = self.workers.get(&worker_id) else {
+        let Some(owner) = self.workers.owner(worker_id) else {
             // The worker closed before the task ran; its channel state was
             // discarded, so there is nothing to deliver.
             return Ok(());
         };
-        let WorkerOwner::Document(document_id) = worker.owner else {
+        let WorkerOwner::Document(document_id) = owner else {
             return Err(format!(
                 "worker outbound message task: worker {worker_id} is not owned by a document"
             ));
@@ -3814,17 +3980,12 @@ fn run_content_message_loop(
         let task_arm = select.recv(&task_queue);
         let wasm_arm = select.recv(wasm_rx);
         let timer_arm = select.recv(&timer_expiry);
-        // Note: The command, worker-request and worker-event channels join
-        // the wait only while no task is queued.  Their steps run as soon as
-        // they are read, so reading one with tasks already queued would run
-        // those steps ahead of them.
+        // Note: The command and worker-event channels join the wait only
+        // while no task is queued.  Their steps run as soon as they are
+        // read, so reading one with tasks already queued would run those
+        // steps ahead of them.
         let command_arm = if process.task_queue.is_empty() {
             Some(select.recv(cmd_rx))
-        } else {
-            None
-        };
-        let worker_request_arm = if process.task_queue.is_empty() {
-            Some(select.recv(&process.worker_request_receiver))
         } else {
             None
         };
@@ -3839,17 +4000,7 @@ fn run_content_message_loop(
         // queue itself).  Worker-owned workers' outbound channels were
         // forwarded to the owner worker agent's event loop.
         let worker_outbound: Vec<(WorkerId, crossbeam_channel::Receiver<WorkerChannelMessage>)> =
-            process
-                .workers
-                .iter()
-                .filter(|(_, worker)| matches!(worker.owner, WorkerOwner::Document(_)))
-                .filter_map(|(worker_id, worker)| {
-                    worker
-                        .worker_to_owner
-                        .clone()
-                        .map(|receiver| (*worker_id, receiver))
-                })
-                .collect();
+            process.workers.document_owned_receivers();
         let worker_outbound_arms: Vec<(WorkerId, usize)> = worker_outbound
             .iter()
             .map(|(worker_id, receiver)| (*worker_id, select.recv(receiver)))
@@ -3892,21 +4043,6 @@ fn run_content_message_loop(
                     Ok(false) => return Ok(()),
                     Err(error) => error!("content error: {error}"),
                 },
-                Err(_) => return Ok(()),
-            }
-        } else if Some(arm) == worker_request_arm {
-            match operation.recv(&process.worker_request_receiver) {
-                Ok(request) => {
-                    let result = match request {
-                        WorkerContentRequest::Create(start) => process.run_a_worker(start),
-                        WorkerContentRequest::Terminate(worker_id) => {
-                            process.terminate_worker(worker_id)
-                        }
-                    };
-                    if let Err(error) = result {
-                        error!("worker request error: {error}");
-                    }
-                }
                 Err(_) => return Ok(()),
             }
         } else if let Some((worker_id, _)) =

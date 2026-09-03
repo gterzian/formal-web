@@ -13,9 +13,7 @@ use super::{
 
 use super::timers::TimerRealm;
 
-use super::dedicated_worker_agent::{
-    OwnedWorkerChannel, WorkerChannelMessage, WorkerContentRequest, WorkerMessageQueue,
-};
+use super::dedicated_worker_agent::{OwnedWorkerChannel, WorkerChannelMessage, WorkerMessageQueue};
 
 use blitz_dom::BaseDocument;
 use ipc::IpcSender;
@@ -249,13 +247,11 @@ pub struct GlobalScope {
     #[ignore_trace]
     event_sender: Rc<RefCell<Option<IpcSender<ContentEvent>>>>,
 
-    /// Channel to the content process's worker manager: the `Worker`
-    /// constructor reports its creation request here, and `terminate()` its
-    /// termination request.  Dedicated workers are entirely
-    /// content-process-nested, so worker creation and termination never
-    /// involve the user agent.
+    /// The launcher the `Worker` constructor uses to create a dedicated
+    /// worker agent synchronously in this realm (run-a-worker step 4's
+    /// dedicated path; see `crate::WorkerLauncher`).
     #[ignore_trace]
-    worker_creator: Rc<RefCell<Option<crossbeam_channel::Sender<WorkerContentRequest>>>>,
+    worker_launcher: Rc<RefCell<Option<crate::WorkerLauncher>>>,
 
     /// The dedicated workers this realm owns (it created their Worker
     /// platform objects): the owner-side delivery state of each worker's
@@ -335,7 +331,7 @@ impl GlobalScope {
             top_level_traversable_id: Rc::new(Cell::new(None)),
             document_id: Rc::new(RefCell::new(None)),
             event_sender: Rc::new(RefCell::new(None)),
-            worker_creator: Rc::new(RefCell::new(None)),
+            worker_launcher: Rc::new(RefCell::new(None)),
             owned_workers: gc_cell_new(Vec::new(), ec),
 
             new_document_registry: Rc::new(RefCell::new(None)),
@@ -507,17 +503,16 @@ impl GlobalScope {
         self.event_sender.borrow().clone()
     }
 
-    /// Set the channel to the content process's worker manager.
-    pub(crate) fn set_worker_creator(
-        &self,
-        sender: crossbeam_channel::Sender<WorkerContentRequest>,
-    ) {
-        *self.worker_creator.borrow_mut() = Some(sender);
+    /// Set the launcher the `Worker` constructor uses to create dedicated
+    /// worker agents in this realm.
+    pub(crate) fn set_worker_launcher(&self, launcher: crate::WorkerLauncher) {
+        *self.worker_launcher.borrow_mut() = Some(launcher);
     }
 
-    /// The channel to the content process's worker manager, if set.
-    pub(crate) fn worker_creator(&self) -> Option<crossbeam_channel::Sender<WorkerContentRequest>> {
-        self.worker_creator.borrow().clone()
+    /// The launcher the `Worker` constructor uses to create dedicated
+    /// worker agents in this realm, if set.
+    pub(crate) fn worker_launcher(&self) -> Option<crate::WorkerLauncher> {
+        self.worker_launcher.borrow().clone()
     }
 
     /// <https://html.spec.whatwg.org/#dedicated-workers-and-the-worker-interface>

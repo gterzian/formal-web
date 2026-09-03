@@ -4,9 +4,7 @@ use js_engine::{Completion, ExecutionContext, JsTypes};
 use log::error;
 
 use crate::dom::event::{EventTarget, EventTargetAccess};
-use crate::html::dedicated_worker_agent::{
-    WorkerChannelMessage, WorkerContentRequest, WorkerStartRequest,
-};
+use crate::html::dedicated_worker_agent::{WorkerBootstrap, WorkerChannelMessage};
 use crate::html::structured_data::safe_passing_of_structured_data::structured_serialize_with_transfer;
 use crate::js::Types;
 use crate::js::platform_objects::with_global_scope;
@@ -91,15 +89,15 @@ impl Worker {
         // Note: Trusted Types are not implemented; scriptURL is used as-is.
         // Step 2: Let outsideSettings be this's relevant settings object.
         // Note: The current realm's settings object backs the constructor
-        // call; its worker creator channel and creation URL are read from the
+        // call; its worker launcher and creation URL are read from the
         // current realm's GlobalScope below.
         let global_scope = with_global_scope(ec, |global_scope, _ec| Ok(global_scope.clone()))
             .map_err(|error| {
                 ec.new_type_error(&format!("worker constructor: {}", error.display()))
             })?;
-        let worker_creator = global_scope
-            .worker_creator()
-            .ok_or_else(|| ec.new_type_error("worker constructor: no worker creator channel"))?;
+        let worker_launcher = global_scope
+            .worker_launcher()
+            .ok_or_else(|| ec.new_type_error("worker constructor: no worker launcher"))?;
         let creation_url = global_scope
             .creation_url()
             .ok_or_else(|| ec.new_type_error("worker constructor: no creation URL"))?;
@@ -141,15 +139,22 @@ impl Worker {
         // Step 9: Run this step in parallel:
         // Step 9.1: Run a worker given worker, workerURL, outsideSettings,
         //           outsidePort, and options.
-        // Note: Dedicated workers are entirely content-process-nested: the
-        // constructor reports the request to the content process's worker
-        // manager (through the current realm's worker creator channel), which
-        // starts the worker's dedicated worker agent (a native thread; see
-        // dedicated_worker_agent.rs).  The user agent is not involved.  The
-        // owner end of the worker's channel is registered above; the messages
-        // the owner posts before the worker realm exists wait in the
-        // owner→worker channel (unbounded) and are delivered once the worker
-        // enables its message queue.
+        // Note: The "in parallel" hop is for shared workers (which run over
+        // the user agent); for a dedicated worker the start of run a worker
+        // runs here, on the event loop that will own the worker.  The
+        // dedicated start runs synchronously below: run-a-worker steps 1-3
+        // (is shared is false; owner is the relevant owner, computed next;
+        // unsafeWorkerCreationTime is not implemented), then step 4's
+        // "obtain a dedicated/shared worker agent" — the dedicated path,
+        // creating the agent right here via the realm's launcher (see
+        // `WorkerLauncher::run_a_worker`), which registers the worker with
+        // the content process and starts the agent's native thread.  The
+        // agent then runs the rest of run a worker (steps 5-12.21; see
+        // dedicated_worker_agent.rs::run_a_worker).  The owner end of the
+        // worker's channel is registered above; the messages the owner posts
+        // before the worker realm exists wait in the owner→worker channel
+        // (unbounded) and are delivered once the worker enables its message
+        // queue.
         let owner = match global_scope.worker_id() {
             Some(parent_worker_id) => WorkerOwner::Worker(parent_worker_id),
             None => WorkerOwner::Document(
@@ -158,21 +163,19 @@ impl Worker {
                     .ok_or_else(|| ec.new_type_error("worker constructor: no owner document"))?,
             ),
         };
-        if let Err(send_error) =
-            worker_creator.send(WorkerContentRequest::Create(WorkerStartRequest {
-                request: WorkerRequest {
-                    worker_id,
-                    script_url: worker_url.to_string(),
-                    name,
-                    worker_type: worker_type.as_str().to_owned(),
-                    owner,
-                },
-                owner_to_worker: owner_to_worker_rx,
-                worker_to_owner: worker_to_owner_tx,
-                worker_to_owner_rx,
-            }))
-        {
-            error!("worker constructor: failed to request worker: {send_error}");
+        if let Err(start_error) = worker_launcher.run_a_worker(WorkerBootstrap {
+            request: WorkerRequest {
+                worker_id,
+                script_url: worker_url.to_string(),
+                name,
+                worker_type: worker_type.as_str().to_owned(),
+                owner,
+            },
+            owner_to_worker: owner_to_worker_rx,
+            worker_to_owner: worker_to_owner_tx,
+            worker_to_owner_rx,
+        }) {
+            error!("worker constructor: failed to start worker: {start_error}");
         }
         Ok(worker)
     }
@@ -181,26 +184,27 @@ impl Worker {
     pub(crate) fn terminate(&self, ec: &mut dyn ExecutionContext<Types>) {
         // The terminate() method steps are to terminate a worker given this's
         // worker.
-        // Note: The content process runs the terminate-a-worker steps: the
-        // method reports the worker id to the content process's worker
-        // manager, which sends the dedicated worker agent a `Terminate`
-        // command; the agent sets the closing flag, discards its queued
-        // tasks, and tears down the worker realm.
+        // Note: The terminate-a-worker command half runs here, through the
+        // current realm's launcher: it sends the dedicated worker agent a
+        // `Terminate` command; the agent sets the closing flag, discards its
+        // queued tasks, and tears down the worker realm.  The agent's
+        // teardown report (Closed) then reaches the content process, which
+        // joins its thread and runs the owner-side cleanup.
         if let Err(error) = self.notify_termination(ec) {
             error!("worker terminate: failed to request termination: {error}");
         }
     }
 
-    /// Report the worker's termination to the content process through the
-    /// current realm's worker creator channel.
+    /// Terminate the worker through the current realm's launcher, which
+    /// sends its dedicated worker agent the terminate command.
     fn notify_termination(&self, ec: &mut dyn ExecutionContext<Types>) -> Result<(), String> {
         let global_scope = with_global_scope(ec, |global_scope, _ec| Ok(global_scope.clone()))
             .map_err(|error| format!("worker terminate: {}", error.display()))?;
-        let worker_creator = global_scope
-            .worker_creator()
-            .ok_or_else(|| String::from("worker terminate: no worker creator channel"))?;
-        worker_creator
-            .send(WorkerContentRequest::Terminate(self.worker_id))
+        let worker_launcher = global_scope
+            .worker_launcher()
+            .ok_or_else(|| String::from("worker terminate: no worker launcher"))?;
+        worker_launcher
+            .terminate(self.worker_id)
             .map_err(|error| format!("worker terminate: {error}"))
     }
 

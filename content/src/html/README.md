@@ -375,11 +375,15 @@ before extending either mechanism:
 - The worker's implicit outside/inside MessagePort pair is not created:
   owner and worker communicate over two direct crossbeam channel ends, and
   the port role each end replaces is mapped on `Worker::outside_port`, the
-  `WorkerStartRequest` fields and `DedicatedWorkerAgentState`.
-- Worker creation and termination are content-process-local: the `Worker`
-  constructor reports to the content process's worker manager through its
-  realm's GlobalScope, and the manager spawns the agent thread.  Do not
-  route worker lifecycle through the user agent.
+  `WorkerBootstrap` fields and `DedicatedWorkerAgentState`.
+- The dedicated start of run a worker runs synchronously in the `Worker`
+  constructor: the "in parallel" hop of constructor step 9 is the shared
+  worker path.  The constructor creates the agent (a native thread) right
+  there through the realm's `WorkerLauncher` (content crate root), which
+  registers the worker in the content process's `WorkerRegistry` for the
+  main loop's lifecycle handling; the agent thread then runs the rest of
+  run a worker.  `terminate()` sends the agent the terminate command
+  through the same launcher.
 
 Known gaps:
 
