@@ -37,12 +37,12 @@ pub(crate) fn build_worker_realm(
     worker_type: crate::html::WorkerType,
 ) -> Result<Engine, String> {
     // The Boa backend builds the realm's global object through its host hooks
-    // and needs a factory that constructs the WorkerGlobalScope platform
-    // object once the execution context exists. JSC/V8 create it in
+    // and needs a factory that constructs the DedicatedWorkerGlobalScope
+    // platform object once the execution context exists. JSC/V8 create it in
     // `setup_worker_realm` and associate it with the global object there.
     #[cfg(boa_backend)]
     let mut engine = {
-        use crate::html::{GlobalScope, WorkerGlobalScope};
+        use crate::html::{DedicatedWorkerGlobalScope, GlobalScope};
 
         let factory_name = name.clone();
         let document = Rc::clone(&document);
@@ -52,7 +52,7 @@ pub(crate) fn build_worker_realm(
                 Rc::clone(&document),
                 ec,
             );
-            WorkerGlobalScope::new(global_scope, factory_name.clone(), worker_type, ec)
+            DedicatedWorkerGlobalScope::new(global_scope, factory_name.clone(), worker_type, ec)
         };
         js_engine::create_engine(factory)?
     };
@@ -526,10 +526,10 @@ fn setup_worker_realm(
                 Rc::clone(&_document),
                 engine,
             );
-            let worker_global_scope =
-                WorkerGlobalScope::new(global_scope, _name, _worker_type, engine);
+            let dedicated_worker_global_scope =
+                DedicatedWorkerGlobalScope::new(global_scope, _name, _worker_type, engine);
             let global_obj = engine.realm_global_object();
-            js_engine::associate_existing_object(engine, &global_obj, worker_global_scope);
+            js_engine::associate_existing_object(engine, &global_obj, dedicated_worker_global_scope);
             global_obj
         }
         #[cfg(boa_backend)]

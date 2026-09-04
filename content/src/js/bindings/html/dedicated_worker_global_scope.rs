@@ -1,12 +1,38 @@
-use crate::html::{DedicatedWorkerGlobalScope, WindowOrWorkerGlobalScope};
+use crate::html::DedicatedWorkerGlobalScope;
 use crate::js::Types;
 use crate::js::bindings::html::worker_global_scope::{
-    event_handler_getter, event_handler_setter, worker_global_scope_domain_from,
+    event_handler_getter, event_handler_setter,
 };
 use crate::webidl::bindings::{AttributeDef, InterfaceDefinition, OperationDef, WebIdlInterface};
 use js_engine::{Completion, ExecutionContext, JsTypes};
 
 type JsValue = <Types as JsTypes>::JsValue;
+
+/// Resolve the DedicatedWorkerGlobalScope receiver of a dedicated member:
+/// the member is called on the worker global object (the realm's global
+/// object, whose platform data is the DedicatedWorkerGlobalScope
+/// run-a-worker step 5 created), or, when called bare, on the realm's
+/// global object.
+fn with_dedicated_scope_ref(
+    this: &JsValue,
+    ec: &mut dyn ExecutionContext<Types>,
+    f: impl FnOnce(
+        &DedicatedWorkerGlobalScope,
+        &mut dyn ExecutionContext<Types>,
+    ) -> Completion<JsValue, Types>,
+) -> Completion<JsValue, Types> {
+    let object = match Types::value_as_object(this) {
+        Some(object) => object,
+        None => ec.global_object(),
+    };
+    let dedicated_scope = ec
+        .with_object_any(&object)
+        .and_then(|data| data.downcast_ref::<DedicatedWorkerGlobalScope>().cloned());
+    let Some(dedicated_scope) = dedicated_scope else {
+        return Err(ec.new_type_error("receiver is not a DedicatedWorkerGlobalScope"));
+    };
+    f(&dedicated_scope, ec)
+}
 
 impl WebIdlInterface<Types> for DedicatedWorkerGlobalScope {
     const NAME: &'static str = "DedicatedWorkerGlobalScope";
@@ -77,18 +103,18 @@ impl WebIdlInterface<Types> for DedicatedWorkerGlobalScope {
             legacy_lenient_setter: false,
             exposed: None,
         });
-        // <https://html.spec.whatwg.org/#windoworworkerglobalscope>
-        define_window_or_worker_global_scope_members(def);
     }
 }
 
+/// <https://html.spec.whatwg.org/#dom-dedicatedworkerglobalscope-name>
 fn get_name(
     this: &JsValue,
     _args: &[JsValue],
     ec: &mut dyn ExecutionContext<Types>,
 ) -> Completion<JsValue, Types> {
-    let worker_global_scope = worker_global_scope_domain_from(this, ec)?;
-    Ok(ec.value_from_string(ec.js_string_from_str(&worker_global_scope.name_value())))
+    with_dedicated_scope_ref(this, ec, |dedicated_scope, ec| {
+        Ok(ec.value_from_string(ec.js_string_from_str(&dedicated_scope.name_value())))
+    })
 }
 
 /// <https://html.spec.whatwg.org/#dom-dedicatedworkerglobalscope-postmessage>
@@ -111,9 +137,10 @@ fn post_message(
     } else {
         options_dict_transfer(args.get(1), ec)?
     };
-    let worker_global_scope = worker_global_scope_domain_from(this, ec)?;
-    worker_global_scope.post_message(message, transfer, ec)?;
-    Ok(ec.value_undefined())
+    with_dedicated_scope_ref(this, ec, |dedicated_scope, ec| {
+        dedicated_scope.post_message(message, transfer, ec)?;
+        Ok(ec.value_undefined())
+    })
 }
 
 /// <https://html.spec.whatwg.org/#dom-dedicatedworkerglobalscope-close>
@@ -122,9 +149,10 @@ fn close(
     _args: &[JsValue],
     ec: &mut dyn ExecutionContext<Types>,
 ) -> Completion<JsValue, Types> {
-    let worker_global_scope = worker_global_scope_domain_from(this, ec)?;
-    worker_global_scope.close();
-    Ok(ec.value_undefined())
+    with_dedicated_scope_ref(this, ec, |dedicated_scope, ec| {
+        dedicated_scope.close();
+        Ok(ec.value_undefined())
+    })
 }
 
 fn get_onmessage(
@@ -142,9 +170,9 @@ fn set_onmessage(
 ) -> Completion<JsValue, Types> {
     // <https://html.spec.whatwg.org/#messageeventtarget>
     // The first time a MessagePort object's onmessage IDL attribute is set,
-    // the port's port message queue must be enabled.  For the worker's inside
-    // port, the message event target is the worker global scope, so setting
-    // onmessage on the global scope enables the inside port's queue.
+    // the port's port message queue must be enabled.  For the worker's
+    // inside port, the message event target is the worker global scope, so
+    // setting onmessage on the global scope enables the inside port's queue.
     event_handler_setter(this, args, ec, "message", true)
 }
 
@@ -162,121 +190,6 @@ fn set_onmessageerror(
     ec: &mut dyn ExecutionContext<Types>,
 ) -> Completion<JsValue, Types> {
     event_handler_setter(this, args, ec, "messageerror", false)
-}
-
-fn define_window_or_worker_global_scope_members(def: &mut InterfaceDefinition<Types>) {
-    def.add_operation(OperationDef {
-        id: "setTimeout",
-        length: 1,
-        method: set_timeout_method,
-        static_: false,
-        unforgeable: false,
-        promise_type: false,
-        exposed: None,
-    });
-    def.add_operation(OperationDef {
-        id: "clearTimeout",
-        length: 1,
-        method: clear_timeout_method,
-        static_: false,
-        unforgeable: false,
-        promise_type: false,
-        exposed: None,
-    });
-    def.add_operation(OperationDef {
-        id: "setInterval",
-        length: 1,
-        method: set_interval_method,
-        static_: false,
-        unforgeable: false,
-        promise_type: false,
-        exposed: None,
-    });
-    def.add_operation(OperationDef {
-        id: "clearInterval",
-        length: 1,
-        method: clear_interval_method,
-        static_: false,
-        unforgeable: false,
-        promise_type: false,
-        exposed: None,
-    });
-    def.add_operation(OperationDef {
-        id: "structuredClone",
-        length: 1,
-        method: structured_clone_method,
-        static_: false,
-        unforgeable: false,
-        promise_type: false,
-        exposed: None,
-    });
-}
-
-/// <https://html.spec.whatwg.org/#dom-settimeout>
-fn set_timeout_method(
-    this: &JsValue,
-    args: &[JsValue],
-    ec: &mut dyn ExecutionContext<Types>,
-) -> Completion<JsValue, Types> {
-    let undefined = ec.value_undefined();
-    let handler = args.first().cloned().unwrap_or_else(|| undefined.clone());
-    let timeout = args.get(1).cloned().unwrap_or(undefined);
-    let worker_global_scope = worker_global_scope_domain_from(this, ec)?;
-    let timer_id = worker_global_scope.set_timeout(&handler, &timeout, Vec::new(), ec)?;
-    Ok(ec.value_from_number(f64::from(timer_id)))
-}
-
-/// <https://html.spec.whatwg.org/#dom-cleartimeout>
-fn clear_timeout_method(
-    this: &JsValue,
-    args: &[JsValue],
-    ec: &mut dyn ExecutionContext<Types>,
-) -> Completion<JsValue, Types> {
-    let undefined = ec.value_undefined();
-    let timer_id = ec.to_number(args.first().cloned().unwrap_or(undefined))?;
-    let worker_global_scope = worker_global_scope_domain_from(this, ec)?;
-    worker_global_scope.clear_timeout(timer_id as u32, ec);
-    Ok(ec.value_undefined())
-}
-
-/// <https://html.spec.whatwg.org/#dom-setinterval>
-fn set_interval_method(
-    this: &JsValue,
-    args: &[JsValue],
-    ec: &mut dyn ExecutionContext<Types>,
-) -> Completion<JsValue, Types> {
-    let undefined = ec.value_undefined();
-    let handler = args.first().cloned().unwrap_or_else(|| undefined.clone());
-    let timeout = args.get(1).cloned().unwrap_or(undefined);
-    let worker_global_scope = worker_global_scope_domain_from(this, ec)?;
-    let timer_id = worker_global_scope.set_interval(&handler, &timeout, Vec::new(), ec)?;
-    Ok(ec.value_from_number(f64::from(timer_id)))
-}
-
-/// <https://html.spec.whatwg.org/#dom-clearinterval>
-fn clear_interval_method(
-    this: &JsValue,
-    args: &[JsValue],
-    ec: &mut dyn ExecutionContext<Types>,
-) -> Completion<JsValue, Types> {
-    let undefined = ec.value_undefined();
-    let timer_id = ec.to_number(args.first().cloned().unwrap_or(undefined))?;
-    let worker_global_scope = worker_global_scope_domain_from(this, ec)?;
-    worker_global_scope.clear_interval(timer_id as u32, ec);
-    Ok(ec.value_undefined())
-}
-
-/// <https://html.spec.whatwg.org/#dom-structuredclone>
-fn structured_clone_method(
-    this: &JsValue,
-    args: &[JsValue],
-    ec: &mut dyn ExecutionContext<Types>,
-) -> Completion<JsValue, Types> {
-    let undefined = ec.value_undefined();
-    let value = args.first().cloned().unwrap_or_else(|| undefined.clone());
-    let worker_global_scope = worker_global_scope_domain_from(this, ec)?;
-    let result = worker_global_scope.structured_clone(value, None, ec)?;
-    Ok(result)
 }
 
 /// Read the `transfer` member (a `sequence<object>`) from the

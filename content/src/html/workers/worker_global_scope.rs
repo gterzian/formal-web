@@ -5,20 +5,16 @@ use data_url::DataUrl;
 use js_engine::gc::{GcCell, gc_cell_new};
 use js_engine::gc_struct;
 use js_engine::{Completion, ExecutionContext, JsTypes};
-use log::error;
 use url::Url;
 
-use super::dedicated_worker_agent::{WorkerChannelMessage, WorkerMessageQueue};
 use crate::dom::event::{EventTarget, EventTargetAccess};
-use crate::html::event_loop::Task;
-use crate::html::structured_data::safe_passing_of_structured_data::structured_serialize_with_transfer;
+use crate::html::GlobalScope;
 use crate::js::Types;
 use crate::webidl::syntax_error_value;
 
 use super::worker::WorkerType;
 use super::worker_location::WorkerLocation;
 use super::worker_navigator::WorkerNavigator;
-use crate::html::GlobalScope;
 
 type JsValue = <Types as JsTypes>::JsValue;
 type JsObject = <Types as JsTypes>::JsObject;
@@ -51,32 +47,6 @@ pub(crate) struct WorkerGlobalScope {
     #[ignore_trace]
     pub(crate) closing_flag: Rc<Cell<bool>>,
 
-    /// <https://html.spec.whatwg.org/#inside-port>
-    /// This global scope's inside port: the channel the Worker constructor
-    /// set up at creation entangles it with the Worker object's outside
-    /// port, and `postMessage` on this global scope acts on it, sending the
-    /// messages the owner fires as message events at the worker's Worker
-    /// object.  This global scope is also the inside port's message event
-    /// target (run-a-worker step 12.7.1): the messages the owner posts are
-    /// the inside port's arrivals (see `inbound`).
-    /// Note: The inside port is implemented as a direct crossbeam channel
-    /// end instead of a MessagePort (the worker's implicit port is bypassed;
-    /// see dedicated_worker_agent.rs): this field is the worker→owner sender
-    /// the global scope posts on.  Set once the agent's event loop is
-    /// running, before the worker script is fetched.
-    #[ignore_trace]
-    pub(crate) inside_port: Rc<RefCell<Option<crossbeam_channel::Sender<WorkerChannelMessage>>>>,
-
-    /// <https://html.spec.whatwg.org/#inside-port>
-    /// The messages the owner posted to this worker, waiting here until the
-    /// inside port's message queue is enabled: each is then delivered as a
-    /// message event at this global scope (its inside port's message event
-    /// target, run-a-worker step 12.7.1).  Messages that arrive before the
-    /// queue is enabled wait here (a port message queue, as when start() is
-    /// called or the first onmessage handler is set).
-    #[ignore_trace]
-    pub(crate) inbound: Rc<RefCell<WorkerMessageQueue>>,
-
     /// <https://html.spec.whatwg.org/#workerlocation>
     /// The cached WorkerLocation JS object, created on first access.
     pub(crate) location_object: GcCell<Option<JsObject>>,
@@ -106,8 +76,6 @@ impl WorkerGlobalScope {
             worker_type,
             url: Rc::new(RefCell::new(None)),
             closing_flag: Rc::new(Cell::new(false)),
-            inside_port: Rc::new(RefCell::new(None)),
-            inbound: Rc::new(RefCell::new(WorkerMessageQueue::default())),
             location_object: gc_cell_new(None, ec),
             navigator_object: gc_cell_new(None, ec),
         }
@@ -198,127 +166,6 @@ impl WorkerGlobalScope {
         // used as-is, so urlStrings is urls.
         import_scripts_into_worker_global_scope(self, urls, ec)
     }
-
-    /// <https://html.spec.whatwg.org/#dom-dedicatedworkerglobalscope-name>
-    pub(crate) fn name_value(&self) -> String {
-        // The name getter steps are to return this's name.
-        self.name.clone()
-    }
-
-    /// <https://html.spec.whatwg.org/#dom-dedicatedworkerglobalscope-postmessage>
-    pub(crate) fn post_message(
-        &self,
-        message: JsValue,
-        transfer: Vec<JsValue>,
-        ec: &mut dyn ExecutionContext<Types>,
-    ) -> Completion<(), Types> {
-        // The postMessage(message, transfer) and postMessage(message, options)
-        // methods on DedicatedWorkerGlobalScope objects act as if, when
-        // invoked, they immediately invoked the respective postMessage(message,
-        // transfer) and postMessage(message, options) on the port, with the
-        // same arguments, and returned the same return value.
-        // Note: The worker's implicit port is bypassed (dedicated worker
-        // channels are direct crossbeam channels; see dedicated_worker_agent.rs):
-        // step 5 of the message port post message steps serializes the
-        // message here, in the worker realm, and the owner's event loop runs
-        // the message task (steps 7.1-7.7) at this worker's Worker object.
-        // There is no target port to consult (steps 1-4 and 6): a message
-        // sent to an owner that is gone (its document destroyed or its realm
-        // closed) is dropped, like the target-port-null return of step 6.
-        let Some(inside_port) = self.inside_port.borrow().clone() else {
-            return Ok(());
-        };
-        // Step 5: Let serializeWithTransferResult be
-        //         StructuredSerializeWithTransfer(message, transfer). Rethrow
-        //         any exceptions.
-        let serialize_result = structured_serialize_with_transfer(&message, transfer, ec)?;
-        // A gone owner (its document destroyed or its event loop closed)
-        // drops the message, the same expected condition as a reply channel
-        // send.
-        let _ = inside_port.send(serialize_result);
-        Ok(())
-    }
-
-    /// Set the worker→owner end of the worker's channel, once the agent's
-    /// event loop is running (before the worker script is fetched).
-    pub(crate) fn set_inside_port(
-        &self,
-        inside_port: crossbeam_channel::Sender<WorkerChannelMessage>,
-    ) {
-        *self.inside_port.borrow_mut() = Some(inside_port);
-    }
-
-    /// The worker end of the worker's channel received a message the owner
-    /// posted: queue the message as a message task (the worker's message
-    /// queue is enabled), or let it wait in the queue until the queue is
-    /// enabled (run-a-worker step 12.15, or the first onmessage handler).
-    /// Runs on the agent's event-loop select when the owner→worker channel
-    /// fires.
-    pub(crate) fn enqueue_inbound_message(&self, payload: WorkerChannelMessage) {
-        let queue_task = {
-            let mut inbound = self.inbound.borrow_mut();
-            if !inbound.enabled {
-                inbound.pending.push_back(payload);
-                None
-            } else {
-                Some(payload)
-            }
-        };
-        if let Some(payload) = queue_task {
-            self.queue_inbound_message_task(payload);
-        }
-    }
-
-    /// <https://html.spec.whatwg.org/#messageeventtarget>
-    pub(crate) fn enable_inbound_messages(&self) {
-        // Enable the worker's message queue, as when start() is called, the
-        // first onmessage handler is set on this global scope, or run-a-worker
-        // step 12.15 runs: the messages that arrived while the queue was
-        // disabled now fire as message tasks, in order.
-        let pending: Vec<WorkerChannelMessage> = {
-            let mut inbound = self.inbound.borrow_mut();
-            inbound.enabled = true;
-            inbound.pending.drain(..).collect()
-        };
-        for payload in pending {
-            self.queue_inbound_message_task(payload);
-        }
-    }
-
-    /// Queue one inbound message as a message task on this worker's event
-    /// loop, firing a message event at this global scope.
-    fn queue_inbound_message_task(&self, payload: WorkerChannelMessage) {
-        let Some(worker_id) = self.global_scope.worker_id() else {
-            error!("worker global scope has no worker id; dropping inbound message");
-            return;
-        };
-        let Ok(task_sources) = self.global_scope.task_sources() else {
-            error!("worker global scope has no task sources; dropping inbound message");
-            return;
-        };
-        task_sources
-            .task_queue()
-            .queue_a_task(Task::RunWorkerInboundMessage { worker_id, payload });
-    }
-
-    /// <https://html.spec.whatwg.org/#dom-dedicatedworkerglobalscope-close>
-    pub(crate) fn close(&self) {
-        // The close() method steps are to close a worker given this.
-        close_a_worker(self);
-    }
-}
-
-/// <https://html.spec.whatwg.org/#close-a-worker>
-fn close_a_worker(worker_global_scope: &WorkerGlobalScope) {
-    // Step 1: Discard any tasks that have been added to workerGlobal's
-    //         relevant agent's event loop's task queues.
-    // Step 2: Set workerGlobal's closing flag to true. (This prevents any
-    //         further tasks from being queued.)
-    // Note: The closing flag makes the dedicated worker agent's event loop
-    // exit (see dedicated_worker_agent.rs), dropping the tasks queued on its
-    // task queue; the agent then reports its teardown to the content process,
-    // which drops the owner end of the worker's channel in the owner realm.
-    worker_global_scope.closing_flag.set(true);
 }
 
 /// <https://html.spec.whatwg.org/#import-scripts-into-worker-global-scope>

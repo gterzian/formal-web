@@ -13,16 +13,16 @@ use super::{
 
 use super::timers::TimerRealm;
 
-use super::workers::WorkerLauncher;
 use super::workers::dedicated_worker_agent::{
-    OwnedWorkerChannel, WorkerChannelMessage, WorkerMessageQueue,
+    OwnedWorkerChannel, WorkerChannelMessage, WorkerEvent, WorkerMessageQueue,
 };
 
 use blitz_dom::BaseDocument;
 use ipc::IpcSender;
 use ipc_messages::content::{
-    DocumentId, Event as ContentEvent, NavigableId, WindowTimerKey, WorkerId,
+    DocumentId, Event as ContentEvent, EventLoopId, NavigableId, WindowTimerKey, WorkerId,
 };
+use ipc_messages::network::Request as NetworkRequest;
 use ipc_messages::media::VideoPaintId;
 use js_engine::gc::{GcCell, gc_cell_new};
 use js_engine::{Completion, ExecutionContext, JsTypes, gc_struct};
@@ -250,11 +250,29 @@ pub struct GlobalScope {
     #[ignore_trace]
     event_sender: Rc<RefCell<Option<IpcSender<ContentEvent>>>>,
 
-    /// The launcher the `Worker` constructor uses to create a dedicated
-    /// worker agent synchronously in this realm (run-a-worker step 4's
-    /// dedicated path; see `WorkerLauncher`).
+    /// The channel to this realm's own event loop's worker inbox: the
+    /// channel the workers this realm spawns register on and report their
+    /// posted messages and lifecycle over.  A window realm's inbox is the
+    /// window agent's (the content process main loop's); a worker realm's
+    /// inbox is its own agent's, created when the agent starts.  Set by the
+    /// event loop that runs this realm before any of its scripts can spawn a
+    /// worker.
+    /// <https://html.spec.whatwg.org/#run-a-worker>
     #[ignore_trace]
-    worker_launcher: Rc<RefCell<Option<WorkerLauncher>>>,
+    worker_inbox: Rc<RefCell<Option<crossbeam_channel::Sender<WorkerEvent>>>>,
+
+    /// The network partition key of the fetches this realm's workers make:
+    /// the event loop id of the similar-origin window agent of this realm's
+    /// agent cluster (a dedicated worker shares the network partition of its
+    /// owner's window event loop).
+    /// <https://html.spec.whatwg.org/#run-a-worker>
+    #[ignore_trace]
+    network_partition_event_loop_id: Rc<Cell<Option<EventLoopId>>>,
+
+    /// The direct sender to the net extension, used by the script fetches of
+    /// the workers this realm spawns.
+    #[ignore_trace]
+    network_extension_sender: Rc<RefCell<Option<IpcSender<NetworkRequest>>>>,
 
     /// The dedicated workers this realm owns (it created their Worker
     /// platform objects): the owner-side delivery state of each worker's
@@ -334,7 +352,9 @@ impl GlobalScope {
             top_level_traversable_id: Rc::new(Cell::new(None)),
             document_id: Rc::new(RefCell::new(None)),
             event_sender: Rc::new(RefCell::new(None)),
-            worker_launcher: Rc::new(RefCell::new(None)),
+            worker_inbox: Rc::new(RefCell::new(None)),
+            network_partition_event_loop_id: Rc::new(Cell::new(None)),
+            network_extension_sender: Rc::new(RefCell::new(None)),
             owned_workers: gc_cell_new(Vec::new(), ec),
 
             new_document_registry: Rc::new(RefCell::new(None)),
@@ -506,16 +526,39 @@ impl GlobalScope {
         self.event_sender.borrow().clone()
     }
 
-    /// Set the launcher the `Worker` constructor uses to create dedicated
-    /// worker agents in this realm.
-    pub(crate) fn set_worker_launcher(&self, launcher: WorkerLauncher) {
-        *self.worker_launcher.borrow_mut() = Some(launcher);
+    /// Set the channel to this realm's own event loop's worker inbox: where
+    /// the workers this realm spawns register and report.
+    pub(crate) fn set_worker_inbox(&self, worker_inbox: crossbeam_channel::Sender<WorkerEvent>) {
+        *self.worker_inbox.borrow_mut() = Some(worker_inbox);
     }
 
-    /// The launcher the `Worker` constructor uses to create dedicated
-    /// worker agents in this realm, if set.
-    pub(crate) fn worker_launcher(&self) -> Option<WorkerLauncher> {
-        self.worker_launcher.borrow().clone()
+    /// The channel to this realm's own event loop's worker inbox, if set.
+    pub(crate) fn worker_inbox(&self) -> Option<crossbeam_channel::Sender<WorkerEvent>> {
+        self.worker_inbox.borrow().clone()
+    }
+
+    /// Set the network partition key of the fetches this realm's workers
+    /// make (the event loop id of the agent cluster's similar-origin window
+    /// agent).
+    pub(crate) fn set_network_partition_event_loop_id(&self, event_loop_id: EventLoopId) {
+        self.network_partition_event_loop_id.set(Some(event_loop_id));
+    }
+
+    /// The network partition key of the fetches this realm's workers make,
+    /// if set.
+    pub(crate) fn network_partition_event_loop_id(&self) -> Option<EventLoopId> {
+        self.network_partition_event_loop_id.get()
+    }
+
+    /// Set the direct sender to the net extension, used by the script
+    /// fetches of the workers this realm spawns.
+    pub(crate) fn set_network_extension_sender(&self, sender: IpcSender<NetworkRequest>) {
+        self.network_extension_sender.borrow_mut().replace(sender);
+    }
+
+    /// The direct sender to the net extension, if set.
+    pub(crate) fn network_extension_sender(&self) -> Option<IpcSender<NetworkRequest>> {
+        self.network_extension_sender.borrow().clone()
     }
 
     /// <https://html.spec.whatwg.org/#dedicated-workers-and-the-worker-interface>

@@ -1,9 +1,11 @@
-use ipc_messages::content::{WorkerId, WorkerOwner, WorkerRequest};
+use ipc_messages::content::{Event as ContentEvent, WorkerId, WorkerOwner, WorkerRequest};
 use js_engine::gc_struct;
 use js_engine::{Completion, ExecutionContext, JsTypes};
 use log::error;
 
-use super::dedicated_worker_agent::{WorkerBootstrap, WorkerChannelMessage};
+use super::dedicated_worker_agent::{
+    DedicatedWorkerAgentConfig, WorkerEvent, WorkerInbound, run_a_worker,
+};
 use crate::dom::event::{EventTarget, EventTargetAccess};
 use crate::html::structured_data::safe_passing_of_structured_data::structured_serialize_with_transfer;
 use crate::js::Types;
@@ -44,28 +46,30 @@ pub(crate) struct Worker {
     /// <https://dom.spec.whatwg.org/#interface-eventtarget>
     pub(crate) event_target: EventTarget,
 
-    /// The id under which the content process's worker table knows this
-    /// worker (terminate() reports it to the content process's worker
-    /// manager).
+    /// The id under which the worker is known to its owner event loop (the
+    /// handle the owner keeps, and the association the worker reports its
+    /// posted messages under).
     #[ignore_trace]
     pub(crate) worker_id: WorkerId,
 
     /// <https://html.spec.whatwg.org/#outside-port>
-    /// This Worker's outside port: the constructor creates it as its
-    /// outsidePort (constructor steps 5-7) with its message event target set
-    /// to this Worker, so `postMessage` on this Worker sends through it, and
-    /// the messages the worker posts back fire as message events at this
-    /// Worker.
+    /// The owner→worker end of this Worker's channel: the constructor
+    /// creates it as its outsidePort (constructor steps 5-7) with its
+    /// message event target set to this Worker, so `postMessage` on this
+    /// Worker sends through it, and the messages the worker posts back fire
+    /// as message events at this Worker.
     /// Note: Implemented as the owner→worker end of a direct crossbeam
     /// channel instead of a MessagePort (the worker's implicit port is
     /// bypassed; see dedicated_worker_agent.rs): the constructor creates the
     /// channel in the owner realm, the dedicated worker agent's event loop
     /// delivers each message as a message event at the worker global scope
     /// (the inside port's role, run-a-worker steps 12.6-12.8), and the
-    /// messages the worker posts back land in the owner realm's registered
-    /// worker channel (see `GlobalScope::register_owned_worker`).
+    /// messages the worker posts back travel over the owner's worker inbox
+    /// to the owner realm's registered worker channel (see
+    /// `GlobalScope::register_owned_worker`).  The same channel end carries
+    /// the terminate-a-worker command.
     #[ignore_trace]
-    pub(crate) outside_port: crossbeam_channel::Sender<WorkerChannelMessage>,
+    pub(crate) outside_port: crossbeam_channel::Sender<WorkerInbound>,
 }
 
 impl EventTargetAccess for Worker {
@@ -89,15 +93,27 @@ impl Worker {
         // Note: Trusted Types are not implemented; scriptURL is used as-is.
         // Step 2: Let outsideSettings be this's relevant settings object.
         // Note: The current realm's settings object backs the constructor
-        // call; its worker launcher and creation URL are read from the
-        // current realm's GlobalScope below.
+        // call; its global scope holds the ambient channels the agent thread
+        // needs (its owner's worker inbox, the content process's event and
+        // network senders and the network partition key) and the creation
+        // URL the script URL resolves against.
         let global_scope = with_global_scope(ec, |global_scope, _ec| Ok(global_scope.clone()))
             .map_err(|error| {
                 ec.new_type_error(&format!("worker constructor: {}", error.display()))
             })?;
-        let worker_launcher = global_scope
-            .worker_launcher()
-            .ok_or_else(|| ec.new_type_error("worker constructor: no worker launcher"))?;
+        let worker_inbox = global_scope
+            .worker_inbox()
+            .ok_or_else(|| ec.new_type_error("worker constructor: no owner worker inbox"))?;
+        let event_sender = global_scope
+            .event_sender()
+            .ok_or_else(|| ec.new_type_error("worker constructor: no event sender"))?;
+        let network_extension_sender = global_scope
+            .network_extension_sender()
+            .ok_or_else(|| ec.new_type_error("worker constructor: no network sender"))?;
+        let network_partition_event_loop_id = global_scope
+            .network_partition_event_loop_id()
+            .ok_or_else(|| ec.new_type_error("worker constructor: no network partition key"))?;
+        let trace_sender = global_scope.trace_sender();
         let creation_url = global_scope
             .creation_url()
             .ok_or_else(|| ec.new_type_error("worker constructor: no creation URL"))?;
@@ -115,22 +131,18 @@ impl Worker {
         // Step 7: Set this's outside port to outsidePort.
         // Note: The worker's implicit port is bypassed (dedicated worker
         // channels are direct crossbeam channels; see dedicated_worker_agent.rs):
-        // the constructor creates the two channels of the worker here, in the
-        // owner realm, and registers this Worker object's event target with
-        // its worker id in the owner realm's global scope, as the target of
-        // the message events the messages the worker posts back fire at (the
-        // role the outside port's record played).  The channel ends that
-        // travel with the run-a-worker request are handed to the worker
-        // agent's event loop and to the owner's event loop.
+        // the constructor creates the owner→worker channel of the worker
+        // here, in the owner realm, and registers this Worker object's event
+        // target with its worker id in the owner realm's global scope, as the
+        // target of the message events the messages the worker posts back
+        // fire at (the role the outside port's record played).
         let worker_id = WorkerId::new();
         let (owner_to_worker_tx, owner_to_worker_rx) =
-            crossbeam_channel::unbounded::<WorkerChannelMessage>();
-        let (worker_to_owner_tx, worker_to_owner_rx) =
-            crossbeam_channel::unbounded::<WorkerChannelMessage>();
+            crossbeam_channel::unbounded::<WorkerInbound>();
         let worker = Worker {
             event_target: EventTarget::new(ec),
             worker_id,
-            outside_port: owner_to_worker_tx,
+            outside_port: owner_to_worker_tx.clone(),
         };
         global_scope.register_owned_worker(worker_id, worker.event_target.clone(), ec);
 
@@ -146,15 +158,13 @@ impl Worker {
         // (is shared is false; owner is the relevant owner, computed next;
         // unsafeWorkerCreationTime is not implemented), then step 4's
         // "obtain a dedicated/shared worker agent" — the dedicated path,
-        // creating the agent right here via the realm's launcher (see
-        // `WorkerLauncher::run_a_worker`), which registers the worker with
-        // the content process and starts the agent's native thread.  The
-        // agent then runs the rest of run a worker (steps 5-12.21; see
-        // dedicated_worker_agent.rs::run_a_worker).  The owner end of the
-        // worker's channel is registered above; the messages the owner posts
-        // before the worker realm exists wait in the owner→worker channel
-        // (unbounded) and are delivered once the worker enables its message
-        // queue.
+        // creating the agent right here (the agent's native thread and its
+        // worker event loop).  The agent then runs the rest of run a worker
+        // (steps 5-12.21; see dedicated_worker_agent.rs::run_a_worker).
+        // The owner end of the worker's channel is registered above; the
+        // messages the owner posts before the worker realm exists wait in
+        // the owner→worker channel (unbounded) and are delivered once the
+        // worker enables its message queue.
         let owner = match global_scope.worker_id() {
             Some(parent_worker_id) => WorkerOwner::Worker(parent_worker_id),
             None => WorkerOwner::Document(
@@ -163,49 +173,88 @@ impl Worker {
                     .ok_or_else(|| ec.new_type_error("worker constructor: no owner document"))?,
             ),
         };
-        if let Err(start_error) = worker_launcher.run_a_worker(WorkerBootstrap {
-            request: WorkerRequest {
-                worker_id,
-                script_url: worker_url.to_string(),
-                name,
-                worker_type: worker_type.as_str().to_owned(),
-                owner,
-            },
+        let request = WorkerRequest {
+            worker_id,
+            script_url: worker_url.to_string(),
+            name,
+            worker_type: worker_type.as_str().to_owned(),
+            owner,
+        };
+        // The dedicated worker agent's thread.  The agent reports itself to
+        // the user agent (DedicatedWorkerAgentObtained, with its own worker
+        // event loop id and UA command channel) as its first act and runs the
+        // rest of run a worker; when it exits — also on failure or panic — it
+        // reports its close to the user agent and its owner event loop, so
+        // the owner joins the thread.
+        // <https://html.spec.whatwg.org/#run-a-worker>
+        let config = DedicatedWorkerAgentConfig {
+            request,
             owner_to_worker: owner_to_worker_rx,
-            worker_to_owner: worker_to_owner_tx,
-            worker_to_owner_rx,
+            owner_inbox: worker_inbox.clone(),
+            event_loop_id: network_partition_event_loop_id,
+            event_sender: event_sender.clone(),
+            network_extension_sender,
+            trace_sender,
+        };
+        let thread_event_sender = event_sender;
+        let thread_inbox = worker_inbox.clone();
+        let thread_worker_id = worker_id;
+        let join_handle = match std::thread::Builder::new()
+            .name(format!("formal-web:worker-{worker_id}"))
+            .spawn(move || {
+                let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                    run_a_worker(config)
+                }));
+                match result {
+                    Ok(Err(error)) => error!("worker thread {worker_id} failed: {error}"),
+                    Ok(Ok(())) => {}
+                    Err(panic) => error!("worker thread {worker_id} panicked: {panic:?}"),
+                }
+                // The agent thread reports its teardown on every path: the
+                // user agent drops the agent record it created on
+                // DedicatedWorkerAgentObtained, and the owner event loop
+                // joins the thread and runs the owner-side cleanup.
+                let _ = thread_event_sender
+                    .send(ContentEvent::DedicatedWorkerAgentClosed {
+                        worker_id: thread_worker_id,
+                    });
+                let _ = thread_inbox.send(WorkerEvent::Closed {
+                    worker_id: thread_worker_id,
+                });
+            }) {
+            Ok(join_handle) => join_handle,
+            Err(spawn_error) => {
+                error!("worker constructor: failed to spawn worker thread: {spawn_error}");
+                return Ok(worker);
+            }
+        };
+        // Register the worker with its owner event loop (the loop that
+        // delivers its posted messages and joins its thread): the owner
+        // keeps the worker's handle (the owner→worker channel end, used to
+        // terminate the worker when its owner goes away) and the thread.
+        if let Err(error) = worker_inbox.send(WorkerEvent::NewWorker {
+            worker_id,
+            owner,
+            owner_to_worker: owner_to_worker_tx,
+            join_handle,
         }) {
-            error!("worker constructor: failed to start worker: {start_error}");
+            error!("worker constructor: failed to register worker {worker_id}: {error}");
         }
         Ok(worker)
     }
 
     /// <https://html.spec.whatwg.org/#dom-worker-terminate>
-    pub(crate) fn terminate(&self, ec: &mut dyn ExecutionContext<Types>) {
+    pub(crate) fn terminate(&self) {
         // The terminate() method steps are to terminate a worker given this's
         // worker.
-        // Note: The terminate-a-worker command half runs here, through the
-        // current realm's launcher: it sends the dedicated worker agent a
-        // `Terminate` command; the agent sets the closing flag, discards its
-        // queued tasks, and tears down the worker realm.  The agent's
-        // teardown report (Closed) then reaches the content process, which
-        // joins its thread and runs the owner-side cleanup.
-        if let Err(error) = self.notify_termination(ec) {
-            error!("worker terminate: failed to request termination: {error}");
-        }
-    }
-
-    /// Terminate the worker through the current realm's launcher, which
-    /// sends its dedicated worker agent the terminate command.
-    fn notify_termination(&self, ec: &mut dyn ExecutionContext<Types>) -> Result<(), String> {
-        let global_scope = with_global_scope(ec, |global_scope, _ec| Ok(global_scope.clone()))
-            .map_err(|error| format!("worker terminate: {}", error.display()))?;
-        let worker_launcher = global_scope
-            .worker_launcher()
-            .ok_or_else(|| String::from("worker terminate: no worker launcher"))?;
-        worker_launcher
-            .terminate(self.worker_id)
-            .map_err(|error| format!("worker terminate: {error}"))
+        // Note: The terminate-a-worker command travels over the worker's
+        // owner→worker channel (the same channel its postMessage uses): the
+        // agent sets its closing flag and discards its queued tasks, then
+        // tears down the worker realm and its own nested workers.  The
+        // worker's teardown report then reaches its owner event loop, which
+        // joins its thread and runs the owner-side cleanup.  A worker whose
+        // agent already exited drops the command (its channel end is gone).
+        let _ = self.outside_port.send(WorkerInbound::Terminate);
     }
 
     /// <https://html.spec.whatwg.org/#dom-worker-postmessage>
@@ -235,7 +284,7 @@ impl Worker {
         // A closed worker (its agent exited and dropped its channel end, or
         // the owner document went away) drops the message, the same expected
         // condition as a reply channel send.
-        let _ = self.outside_port.send(serialize_result);
+        let _ = self.outside_port.send(WorkerInbound::Message(serialize_result));
         Ok(())
     }
 

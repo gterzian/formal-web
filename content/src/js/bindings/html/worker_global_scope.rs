@@ -1,4 +1,4 @@
-use crate::html::WorkerGlobalScope;
+use crate::html::{DedicatedWorkerGlobalScope, WorkerGlobalScope, WindowOrWorkerGlobalScope};
 use crate::js::Types;
 use crate::js::downcast::event_target_from_js_object;
 use crate::js::platform_objects::with_worker_global_scope;
@@ -8,6 +8,11 @@ use js_engine::{Completion, ExecutionContext, JsTypes};
 
 type JsValue = <Types as JsTypes>::JsValue;
 
+/// The common interface of the realm's worker global scope: a dedicated
+/// worker realm's global object is a DedicatedWorkerGlobalScope
+/// (run-a-worker step 5) embedding its WorkerGlobalScope common interface,
+/// so resolving a WorkerGlobalScope member returns the embedded common
+/// interface.
 pub(crate) fn worker_global_scope_domain_from(
     this: &JsValue,
     ec: &mut dyn ExecutionContext<Types>,
@@ -22,9 +27,12 @@ pub(crate) fn worker_global_scope_domain_from(
         Some(object) => object,
         None => ec.global_object(),
     };
-    ec.with_object_any(&object)
-        .and_then(|data| data.downcast_ref::<WorkerGlobalScope>().cloned())
-        .ok_or_else(|| ec.new_type_error("receiver is not a WorkerGlobalScope"))
+    let worker_global_scope = ec.with_object_any(&object).and_then(|data| {
+        data.downcast_ref::<DedicatedWorkerGlobalScope>()
+            .map(|scope| scope.worker_global_scope.clone())
+            .or_else(|| data.downcast_ref::<WorkerGlobalScope>().cloned())
+    });
+    worker_global_scope.ok_or_else(|| ec.new_type_error("receiver is not a WorkerGlobalScope"))
 }
 
 impl WebIdlInterface<Types> for WorkerGlobalScope {
@@ -87,6 +95,10 @@ impl WebIdlInterface<Types> for WorkerGlobalScope {
             promise_type: false,
             exposed: None,
         });
+        // <https://html.spec.whatwg.org/#windoworworkerglobalscope>
+        // The WindowOrWorkerGlobalScope mixin members, included by the
+        // WorkerGlobalScope interface (as by the Window interface).
+        define_window_or_worker_global_scope_members(def);
         define_worker_global_scope_event_handlers(def);
     }
 }
@@ -186,12 +198,25 @@ pub(crate) fn event_handler_setter(
         ec,
         callback_function_value,
     )?;
-    let worker_global_scope = ec
+    // Resolve the worker global scope (its common interface) from the
+    // receiver: the realm's global object is a DedicatedWorkerGlobalScope
+    // embedding the common interface.
+    let (worker_global_scope, dedicated_scope) = ec
         .with_object_any(&object)
-        .and_then(|data| data.downcast_ref::<WorkerGlobalScope>().cloned());
-    let Some(worker_global_scope) = worker_global_scope else {
-        return Err(ec.new_type_error("receiver is not a WorkerGlobalScope"));
-    };
+        .and_then(|data| {
+            data.downcast_ref::<DedicatedWorkerGlobalScope>()
+                .map(|scope| {
+                    (
+                        scope.worker_global_scope.clone(),
+                        Some(scope.clone()),
+                    )
+                })
+                .or_else(|| {
+                    data.downcast_ref::<WorkerGlobalScope>()
+                        .map(|scope| (scope.clone(), None))
+                })
+        })
+        .ok_or_else(|| ec.new_type_error("receiver is not a WorkerGlobalScope"))?;
     let previous = worker_global_scope
         .event_target
         .event_handler_value(event_type, ec);
@@ -223,9 +248,131 @@ pub(crate) fn event_handler_setter(
         // the message event target is the worker global scope, so setting
         // onmessage on the global scope enables the worker's inbound message
         // queue.
-        worker_global_scope.enable_inbound_messages();
+        let dedicated_scope = dedicated_scope.ok_or_else(|| {
+            ec.new_type_error("onmessage is only enabled on a DedicatedWorkerGlobalScope")
+        })?;
+        dedicated_scope.enable_inbound_messages();
     }
     Ok(ec.value_undefined())
+}
+
+/// The WindowOrWorkerGlobalScope mixin members: the timer methods and
+/// structuredClone, included by both the Window and WorkerGlobalScope
+/// interfaces.
+/// <https://html.spec.whatwg.org/#windoworworkerglobalscope>
+fn define_window_or_worker_global_scope_members(def: &mut InterfaceDefinition<Types>) {
+    def.add_operation(OperationDef {
+        id: "setTimeout",
+        length: 1,
+        method: set_timeout_method,
+        static_: false,
+        unforgeable: false,
+        promise_type: false,
+        exposed: None,
+    });
+    def.add_operation(OperationDef {
+        id: "clearTimeout",
+        length: 1,
+        method: clear_timeout_method,
+        static_: false,
+        unforgeable: false,
+        promise_type: false,
+        exposed: None,
+    });
+    def.add_operation(OperationDef {
+        id: "setInterval",
+        length: 1,
+        method: set_interval_method,
+        static_: false,
+        unforgeable: false,
+        promise_type: false,
+        exposed: None,
+    });
+    def.add_operation(OperationDef {
+        id: "clearInterval",
+        length: 1,
+        method: clear_interval_method,
+        static_: false,
+        unforgeable: false,
+        promise_type: false,
+        exposed: None,
+    });
+    def.add_operation(OperationDef {
+        id: "structuredClone",
+        length: 1,
+        method: structured_clone_method,
+        static_: false,
+        unforgeable: false,
+        promise_type: false,
+        exposed: None,
+    });
+}
+
+/// <https://html.spec.whatwg.org/#dom-settimeout>
+fn set_timeout_method(
+    this: &JsValue,
+    args: &[JsValue],
+    ec: &mut dyn ExecutionContext<Types>,
+) -> Completion<JsValue, Types> {
+    let undefined = ec.value_undefined();
+    let handler = args.first().cloned().unwrap_or_else(|| undefined.clone());
+    let timeout = args.get(1).cloned().unwrap_or(undefined);
+    let worker_global_scope = worker_global_scope_domain_from(this, ec)?;
+    let timer_id = worker_global_scope.set_timeout(&handler, &timeout, Vec::new(), ec)?;
+    Ok(ec.value_from_number(f64::from(timer_id)))
+}
+
+/// <https://html.spec.whatwg.org/#dom-cleartimeout>
+fn clear_timeout_method(
+    this: &JsValue,
+    args: &[JsValue],
+    ec: &mut dyn ExecutionContext<Types>,
+) -> Completion<JsValue, Types> {
+    let undefined = ec.value_undefined();
+    let timer_id = ec.to_number(args.first().cloned().unwrap_or(undefined))?;
+    let worker_global_scope = worker_global_scope_domain_from(this, ec)?;
+    worker_global_scope.clear_timeout(timer_id as u32, ec);
+    Ok(ec.value_undefined())
+}
+
+/// <https://html.spec.whatwg.org/#dom-setinterval>
+fn set_interval_method(
+    this: &JsValue,
+    args: &[JsValue],
+    ec: &mut dyn ExecutionContext<Types>,
+) -> Completion<JsValue, Types> {
+    let undefined = ec.value_undefined();
+    let handler = args.first().cloned().unwrap_or_else(|| undefined.clone());
+    let timeout = args.get(1).cloned().unwrap_or(undefined);
+    let worker_global_scope = worker_global_scope_domain_from(this, ec)?;
+    let timer_id = worker_global_scope.set_interval(&handler, &timeout, Vec::new(), ec)?;
+    Ok(ec.value_from_number(f64::from(timer_id)))
+}
+
+/// <https://html.spec.whatwg.org/#dom-clearinterval>
+fn clear_interval_method(
+    this: &JsValue,
+    args: &[JsValue],
+    ec: &mut dyn ExecutionContext<Types>,
+) -> Completion<JsValue, Types> {
+    let undefined = ec.value_undefined();
+    let timer_id = ec.to_number(args.first().cloned().unwrap_or(undefined))?;
+    let worker_global_scope = worker_global_scope_domain_from(this, ec)?;
+    worker_global_scope.clear_interval(timer_id as u32, ec);
+    Ok(ec.value_undefined())
+}
+
+/// <https://html.spec.whatwg.org/#dom-structuredclone>
+fn structured_clone_method(
+    this: &JsValue,
+    args: &[JsValue],
+    ec: &mut dyn ExecutionContext<Types>,
+) -> Completion<JsValue, Types> {
+    let undefined = ec.value_undefined();
+    let value = args.first().cloned().unwrap_or_else(|| undefined.clone());
+    let worker_global_scope = worker_global_scope_domain_from(this, ec)?;
+    let result = worker_global_scope.structured_clone(value, None, ec)?;
+    Ok(result)
 }
 
 /// The event handler IDL attributes of the WorkerGlobalScope interface

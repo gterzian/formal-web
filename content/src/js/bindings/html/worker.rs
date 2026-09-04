@@ -144,7 +144,7 @@ fn terminate(
     ec: &mut dyn ExecutionContext<Types>,
 ) -> Completion<JsValue, Types> {
     with_worker_ref(this, ec, |worker, ec| {
-        worker.terminate(ec);
+        worker.terminate();
         Ok(ec.value_undefined())
     })
 }

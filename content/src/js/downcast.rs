@@ -7,8 +7,9 @@ use crate::dom::{
     AbortController, AbortSignal, Document, Element, Event, EventTarget, HasEvent, Node,
 };
 use crate::html::{
-    HTMLAnchorElement, HTMLElement, HTMLIFrameElement, HTMLInputElement, HTMLMediaElement,
-    HTMLVideoElement, MessageEvent, MessagePort, Window, Worker, WorkerGlobalScope,
+    DedicatedWorkerGlobalScope, HTMLAnchorElement, HTMLElement, HTMLIFrameElement,
+    HTMLInputElement, HTMLMediaElement, HTMLVideoElement, MessageEvent, MessagePort, Window,
+    Worker, WorkerGlobalScope,
 };
 use crate::js::Types;
 use crate::js::platform_objects::with_global_scope;
@@ -172,6 +173,11 @@ pub(crate) fn try_set_event_target_reflector(
                             error.display()
                         );
                     }
+                } else if let Some(dedicated_scope) = data.downcast_mut::<DedicatedWorkerGlobalScope>() {
+                    ec.store_js_object(
+                        &mut dedicated_scope.worker_global_scope.event_target.reflector,
+                        reflector,
+                    );
                 } else if let Some(worker_global_scope) = data.downcast_mut::<WorkerGlobalScope>() {
                     ec.store_js_object(&mut worker_global_scope.event_target.reflector, reflector);
                 } else if let Some(signal) = data.downcast_mut::<AbortSignal>() {
@@ -236,6 +242,8 @@ pub(crate) fn event_target_from_js_object(
             Some(port.event_target.clone())
         } else if let Some(worker) = data.downcast_ref::<Worker>() {
             Some(worker.event_target.clone())
+        } else if let Some(dedicated_scope) = data.downcast_ref::<DedicatedWorkerGlobalScope>() {
+            Some(dedicated_scope.worker_global_scope.event_target.clone())
         } else if let Some(worker_global_scope) = data.downcast_ref::<WorkerGlobalScope>() {
             Some(worker_global_scope.event_target.clone())
         } else if let Some(event_target) = data.downcast_ref::<EventTarget>() {
@@ -293,6 +301,8 @@ pub(crate) fn try_with_event_target_mut<R>(
                 result = Ok(f(&mut port.event_target, ec));
             } else if let Some(worker) = data.downcast_mut::<Worker>() {
                 result = Ok(f(&mut worker.event_target, ec));
+            } else if let Some(dedicated_scope) = data.downcast_mut::<DedicatedWorkerGlobalScope>() {
+                result = Ok(f(&mut dedicated_scope.worker_global_scope.event_target, ec));
             } else if let Some(worker_global_scope) = data.downcast_mut::<WorkerGlobalScope>() {
                 result = Ok(f(&mut worker_global_scope.event_target, ec));
             } else if let Some(signal) = data.downcast_mut::<AbortSignal>() {
