@@ -71,7 +71,7 @@ one queue of `Task` (`content/src/html/event_loop.rs`), and
 task, performs its steps, and performs the microtask checkpoint that ends them.
 
 Each dedicated worker agent runs its own event loop on its own native thread
-nested to the content process (see `content/src/html/dedicated_worker_agent.rs`): its
+nested to the content process (see `content/src/html/workers/dedicated_worker_agent.rs`): its
 own task queue, timer map, and realm, driven from the main thread over a
 crossbeam command channel and from the net process over its own IPC channel,
 both joined into one select like the window loop's.

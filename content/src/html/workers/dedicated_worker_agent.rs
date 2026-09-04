@@ -13,6 +13,7 @@ use ipc_messages::network::{Request as NetworkRequest, ResponseRecipient};
 use log::error;
 use url::Url;
 
+use super::worker::WorkerType;
 use crate::dom::event::EventTarget;
 use crate::dom::fire_event;
 use crate::html::environment_settings_object::{EnvironmentSettingsObject, WorkerRealmWiring};
@@ -20,7 +21,6 @@ use crate::html::event_loop::{EventLoopTaskSources, Task, TaskQueue};
 use crate::html::messageport::deliver_serialized_message;
 use crate::html::structured_data::safe_passing_of_structured_data::SerializeWithTransferResult;
 use crate::html::timers::{MapOfActiveTimers, TimerRealm};
-use crate::html::worker::WorkerType;
 use crate::js::platform_objects::{with_global_scope, with_worker_global_scope};
 use js_engine::gc_struct;
 
@@ -178,7 +178,7 @@ pub(crate) struct DedicatedWorkerAgentConfig {
     pub(crate) network_extension_sender: IpcSender<ipc_messages::network::Request>,
     /// The realm-side launcher the worker's own constructors use to create
     /// further (nested) dedicated worker agents synchronously.
-    pub(crate) worker_launcher: crate::WorkerLauncher,
+    pub(crate) worker_launcher: super::worker_launcher::WorkerLauncher,
     pub(crate) trace_sender: Option<TraceSender>,
 }
 

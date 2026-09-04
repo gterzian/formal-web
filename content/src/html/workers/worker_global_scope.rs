@@ -8,17 +8,17 @@ use js_engine::{Completion, ExecutionContext, JsTypes};
 use log::error;
 use url::Url;
 
+use super::dedicated_worker_agent::{WorkerChannelMessage, WorkerMessageQueue};
 use crate::dom::event::{EventTarget, EventTargetAccess};
-use crate::html::dedicated_worker_agent::{WorkerChannelMessage, WorkerMessageQueue};
 use crate::html::event_loop::Task;
 use crate::html::structured_data::safe_passing_of_structured_data::structured_serialize_with_transfer;
 use crate::js::Types;
 use crate::webidl::syntax_error_value;
 
-use super::GlobalScope;
 use super::worker::WorkerType;
 use super::worker_location::WorkerLocation;
 use super::worker_navigator::WorkerNavigator;
+use crate::html::GlobalScope;
 
 type JsValue = <Types as JsTypes>::JsValue;
 type JsObject = <Types as JsTypes>::JsObject;

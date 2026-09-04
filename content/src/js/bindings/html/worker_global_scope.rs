@@ -211,7 +211,7 @@ pub(crate) fn event_handler_setter(
         // <https://html.spec.whatwg.org/#messageeventtarget>
         // The first time a MessagePort object's onmessage IDL attribute is
         // set, the port's port message queue must be enabled.  For the
-        // worker's implicit port (bypassed; see dedicated_worker_agent.rs),
+        // worker's implicit port (bypassed; see workers/dedicated_worker_agent.rs),
         // the message event target is the worker global scope, so setting
         // onmessage on the global scope enables the worker's inbound message
         // queue.

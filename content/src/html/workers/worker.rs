@@ -3,8 +3,8 @@ use js_engine::gc_struct;
 use js_engine::{Completion, ExecutionContext, JsTypes};
 use log::error;
 
+use super::dedicated_worker_agent::{WorkerBootstrap, WorkerChannelMessage};
 use crate::dom::event::{EventTarget, EventTargetAccess};
-use crate::html::dedicated_worker_agent::{WorkerBootstrap, WorkerChannelMessage};
 use crate::html::structured_data::safe_passing_of_structured_data::structured_serialize_with_transfer;
 use crate::js::Types;
 use crate::js::platform_objects::with_global_scope;

@@ -13,7 +13,10 @@ use super::{
 
 use super::timers::TimerRealm;
 
-use super::dedicated_worker_agent::{OwnedWorkerChannel, WorkerChannelMessage, WorkerMessageQueue};
+use super::workers::WorkerLauncher;
+use super::workers::dedicated_worker_agent::{
+    OwnedWorkerChannel, WorkerChannelMessage, WorkerMessageQueue,
+};
 
 use blitz_dom::BaseDocument;
 use ipc::IpcSender;
@@ -249,9 +252,9 @@ pub struct GlobalScope {
 
     /// The launcher the `Worker` constructor uses to create a dedicated
     /// worker agent synchronously in this realm (run-a-worker step 4's
-    /// dedicated path; see `crate::WorkerLauncher`).
+    /// dedicated path; see `WorkerLauncher`).
     #[ignore_trace]
-    worker_launcher: Rc<RefCell<Option<crate::WorkerLauncher>>>,
+    worker_launcher: Rc<RefCell<Option<WorkerLauncher>>>,
 
     /// The dedicated workers this realm owns (it created their Worker
     /// platform objects): the owner-side delivery state of each worker's
@@ -505,13 +508,13 @@ impl GlobalScope {
 
     /// Set the launcher the `Worker` constructor uses to create dedicated
     /// worker agents in this realm.
-    pub(crate) fn set_worker_launcher(&self, launcher: crate::WorkerLauncher) {
+    pub(crate) fn set_worker_launcher(&self, launcher: WorkerLauncher) {
         *self.worker_launcher.borrow_mut() = Some(launcher);
     }
 
     /// The launcher the `Worker` constructor uses to create dedicated
     /// worker agents in this realm, if set.
-    pub(crate) fn worker_launcher(&self) -> Option<crate::WorkerLauncher> {
+    pub(crate) fn worker_launcher(&self) -> Option<WorkerLauncher> {
         self.worker_launcher.borrow().clone()
     }
 

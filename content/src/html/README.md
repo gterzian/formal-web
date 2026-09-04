@@ -350,21 +350,27 @@ process yet; the domain methods (`Window::name_value`, `opener_value`,
 `closed_value`, `close`) return placeholder values with `// Note:`
 annotations until that state is sent to the content process or forwarded.
 
-## Workers (`worker.rs`, `worker_global_scope.rs`, `dedicated_worker_global_scope.rs`, `dedicated_worker_agent.rs`)
+## Workers (`workers/`)
 
-Dedicated-worker code is split across these modules by the spec section
-that specifies each interface or algorithm (workers.html §10.2.1): the
-`Worker` platform object and its constructor steps are in `worker.rs`; the
-`WorkerGlobalScope` common interface in `worker_global_scope.rs` — since the
-dedicated realm's platform object is a `WorkerGlobalScope` domain struct,
-its methods also carry the dedicated members (name, postMessage, close, the
-inbound message queue) and the close-a-worker and import-scripts
-algorithms; the `DedicatedWorkerGlobalScope` interface's registry marker in
-`dedicated_worker_global_scope.rs`; and run-a-worker with the agent's event
-loop in `dedicated_worker_agent.rs`.  Add new worker algorithms to the
-module that owns their spec section, quoting each spec step verbatim in
-`// Step N:` comments and annotating deviations inline at the step they
-diverge from (see `AGENTS.md`, "Algorithm Implementation").
+Dedicated-worker code lives under `workers/`, split across modules by the
+spec section that specifies each interface or algorithm (workers.html
+§10.2.1): the `Worker` platform object and its constructor steps are in
+`workers/worker.rs`; the `WorkerGlobalScope` common interface in
+`workers/worker_global_scope.rs` — since the dedicated realm's platform
+object is a `WorkerGlobalScope` domain struct, its methods also carry the
+dedicated members (name, postMessage, close, the inbound message queue) and
+the close-a-worker and import-scripts algorithms; the
+`DedicatedWorkerGlobalScope` interface's registry marker in
+`workers/dedicated_worker_global_scope.rs`; run-a-worker with the agent's
+event loop in `workers/dedicated_worker_agent.rs`; and the worker launcher
+(the `WorkerLauncher`, its `WorkerRegistry` and the registered `ContentWorker`
+records, moved out of `content/src/main.rs`) in `workers/worker_launcher.rs`.
+`WorkerLocation` and `WorkerNavigator` are in
+`workers/worker_location.rs` and `workers/worker_navigator.rs`.  Add new
+worker algorithms to the module that owns their spec section, quoting each
+spec step verbatim in `// Step N:` comments and annotating deviations
+inline at the step they diverge from (see `AGENTS.md`, "Algorithm
+Implementation").
 
 Two design decisions change how the spec's worker channel and lifecycle are
 realized, and each is documented where it diverges — per-field on the
@@ -379,9 +385,9 @@ before extending either mechanism:
 - The dedicated start of run a worker runs synchronously in the `Worker`
   constructor: the "in parallel" hop of constructor step 9 is the shared
   worker path.  The constructor creates the agent (a native thread) right
-  there through the realm's `WorkerLauncher` (content crate root), which
-  registers the worker in the content process's `WorkerRegistry` for the
-  main loop's lifecycle handling; the agent thread then runs the rest of
+  there through the realm's `WorkerLauncher` (`workers/worker_launcher.rs`),
+  which registers the worker in the content process's `WorkerRegistry` for
+  the main loop's lifecycle handling; the agent thread then runs the rest of
   run a worker.  `terminate()` sends the agent the terminate command
   through the same launcher.
 

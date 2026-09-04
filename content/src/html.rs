@@ -8,8 +8,6 @@ use log::error;
 mod activation_behavior;
 pub(crate) mod channel_messaging;
 pub(crate) use channel_messaging::ChannelMessaging;
-pub(crate) mod dedicated_worker_agent;
-pub(crate) mod dedicated_worker_global_scope;
 pub(crate) mod dispatch;
 pub(crate) mod environment_settings_object;
 pub(crate) mod event_handler;
@@ -34,10 +32,7 @@ pub(crate) mod ui_events;
 mod window;
 mod window_or_worker_global_scope;
 pub(crate) mod windowproxy;
-pub(crate) mod worker;
-pub(crate) mod worker_global_scope;
-mod worker_location;
-mod worker_navigator;
+pub(crate) mod workers;
 
 use ipc::IpcSender;
 use ipc_messages::content::{
@@ -53,7 +48,6 @@ pub use global_scope::GlobalScope;
 pub use global_scope::GlobalScopeKind;
 pub(crate) use global_scope::TimerHandler;
 
-pub(crate) use dedicated_worker_global_scope::DedicatedWorkerGlobalScope;
 pub use html_anchor_element::HTMLAnchorElement;
 pub(crate) use html_dom_tree::{
     run_dom_post_connection_steps_for_document, run_dom_removing_steps_for_document,
@@ -82,10 +76,10 @@ pub(crate) use window::window_computed_style_properties_for_element;
 pub(crate) use window::{PostMessageOptions, window_post_message_steps};
 pub(crate) use window_or_worker_global_scope::WindowOrWorkerGlobalScope;
 pub(crate) use windowproxy::WindowProxy;
-pub(crate) use worker::{Worker, WorkerType};
-pub(crate) use worker_global_scope::WorkerGlobalScope;
-pub(crate) use worker_location::WorkerLocation;
-pub(crate) use worker_navigator::WorkerNavigator;
+pub(crate) use workers::{
+    DedicatedWorkerGlobalScope, Worker, WorkerGlobalScope, WorkerLocation, WorkerNavigator,
+    WorkerType,
+};
 
 use blitz_dom::{BaseDocument, DocumentConfig};
 use std::{cell::RefCell, rc::Rc};

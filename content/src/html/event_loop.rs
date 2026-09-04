@@ -29,7 +29,7 @@ pub(crate) enum Task {
     /// The task that runs one expired worker timer's steps, queued on the
     /// dedicated worker agent's own task queue when its event loop reaps an
     /// expired entry from the worker's own map of active timers (see
-    /// `dedicated_worker_agent.rs`).  The worker realm is identified by worker
+    /// `workers/dedicated_worker_agent.rs`).  The worker realm is identified by worker
     /// id.
     /// <https://html.spec.whatwg.org/#timer-initialisation-steps>
     RunWorkerTimer {

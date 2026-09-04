@@ -1,6 +1,6 @@
 use js_engine::gc_struct;
 
-use super::navigator::{navigator_language, navigator_platform, navigator_user_agent};
+use crate::html::navigator::{navigator_language, navigator_platform, navigator_user_agent};
 
 /// <https://html.spec.whatwg.org/#the-workernavigator-object>
 #[gc_struct]
