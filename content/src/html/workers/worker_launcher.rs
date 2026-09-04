@@ -1,6 +1,6 @@
 use ipc::IpcSender;
 use ipc_messages::content::{
-    DocumentId, Event as ContentEvent, EventLoopId, WorkerId, WorkerOwner,
+    Command, DocumentId, Event as ContentEvent, EventLoopId, WorkerId, WorkerOwner,
 };
 use ipc_messages::network::Request as NetworkRequest;
 use log::error;
@@ -14,16 +14,16 @@ use super::dedicated_worker_agent::{
     run_a_worker,
 };
 
-/// The content-process (similar-origin window agent) state of one dedicated
-/// worker: the worker runs on its own dedicated worker agent (a native thread
-/// nested to this content process; see
+/// The content-process (agent cluster) state of one dedicated worker agent:
+/// the worker runs its own worker event loop on its own dedicated worker
+/// agent (a native thread nested to this content process; see
 /// `content/src/html/workers/dedicated_worker_agent.rs`), so this entry
-/// stores only the thread-safe handles the main thread needs: its command
+/// stores only the thread-safe handles the cluster needs: its command
 /// channel, its join handle, and (when the owner is a document in this
-/// process) the receiver end of the worker's outbound channel, whose messages
-/// the main event loop fires as message events at the worker's Worker object.
-/// When the owner is another worker, that receiver was forwarded to the owner
-/// worker agent's event loop instead.
+/// process) the receiver end of the worker's outbound channel, whose
+/// messages the main event loop fires as message events at the worker's
+/// Worker object.  When the owner is another worker, that receiver was
+/// forwarded to the owner worker agent's event loop instead.
 /// <https://html.spec.whatwg.org/#run-a-worker>
 pub(crate) struct ContentWorker {
     /// <https://html.spec.whatwg.org/#concept-WorkerGlobalScope-owner-set>
@@ -41,13 +41,17 @@ pub(crate) struct ContentWorker {
     pub(crate) join_handle: Option<std::thread::JoinHandle<()>>,
 }
 
-/// The dedicated workers running in this content process, keyed by worker
-/// id, shared between the content process's main loop and the
+/// The dedicated worker agents running in this content process, keyed by
+/// worker id, shared between the content process's main loop and the
 /// [`WorkerLauncher`] every realm holds (a document's realm on the main
-/// thread, a dedicated worker agent's realm on its native thread).  Each
-/// worker's realm and event loop live on its own dedicated worker agent (a
-/// native thread); the record holds the agent's thread handle and the
-/// routing data the main loop needs.
+/// thread, a dedicated worker agent's realm on its native thread).  This is
+/// the agent cluster's table of its worker agents: the content process (one
+/// agent cluster) hosts the similar-origin window agent on its main thread
+/// and one dedicated worker agent per worker, each with its own worker event
+/// loop.  The record holds the agent's thread handle and the lifecycle data
+/// the cluster needs; the user agent holds each agent's own command channel
+/// (see `ContentEvent::DedicatedWorkerAgentObtained`), so cluster-side
+/// forwarding of user-agent commands is not needed.
 /// <https://html.spec.whatwg.org/#run-a-worker>
 #[derive(Clone, Default)]
 pub(crate) struct WorkerRegistry {
@@ -55,18 +59,18 @@ pub(crate) struct WorkerRegistry {
 }
 
 impl WorkerRegistry {
-    /// Record a dedicated worker.  The Worker constructor registers each
-    /// worker synchronously when it creates the worker's agent (see
+    /// Record a dedicated worker agent.  The Worker constructor registers
+    /// each agent synchronously when it creates the agent (see
     /// `WorkerLauncher::run_a_worker`), on whichever thread the constructor
-    /// ran on.
+    /// ran on, so the cluster can manage its lifecycle.
     pub(crate) fn register(&self, worker_id: WorkerId, worker: ContentWorker) {
         if let Ok(mut workers) = self.workers.lock() {
             workers.insert(worker_id, worker);
         }
     }
 
-    /// Remove a worker's record: the content process's Closed handling joins
-    /// its agent's thread and runs the owner-side cleanup.
+    /// Remove a worker agent's record: the content process's Closed handling
+    /// joins its agent's thread and runs the owner-side cleanup.
     pub(crate) fn remove(&self, worker_id: &WorkerId) -> Option<ContentWorker> {
         self.workers
             .lock()
@@ -177,39 +181,37 @@ impl WorkerRegistry {
             .map(|workers| workers.keys().copied().collect())
             .unwrap_or_default()
     }
-
-    /// The command channels to every registered worker agent: the main
-    /// thread forwards a user-agent port task that no document realm owns to
-    /// every worker agent, and the agent whose realm holds the port delivers
-    /// it.
-    pub(crate) fn all_command_senders(&self) -> Vec<crossbeam_channel::Sender<WorkerCommand>> {
-        self.workers
-            .lock()
-            .ok()
-            .map(|workers| {
-                workers
-                    .values()
-                    .map(|worker| worker.command_sender.clone())
-                    .collect()
-            })
-            .unwrap_or_default()
-    }
 }
 
-/// The resources a realm uses to create a dedicated worker's agent
+/// The resources a realm uses to create a dedicated worker agent
 /// synchronously.  The Worker constructor runs the dedicated start of run a
 /// worker then and there in the owner realm — the spec's "in parallel" hop
 /// (constructor step 9) only exists for shared workers — creating the agent
-/// (a native thread) here and registering the worker with the content
-/// process's [`WorkerRegistry`] for the main loop's lifecycle handling.  The
+/// (a native thread) here and registering the agent with the content
+/// process's [`WorkerRegistry`] (the agent cluster's table of its worker
+/// agents) for the cluster's lifecycle handling and message forwarding.  The
 /// agent thread then runs the rest of run a worker (steps 5-12.21; see
 /// dedicated_worker_agent.rs).  One launcher is shared by every realm of
 /// this content process — cloned onto window global scopes at document
 /// creation and onto worker global scopes when their agent is created — so
 /// nested workers are created the same way from a worker agent's thread.
+///
+/// Every realm's launcher reports to the user agent over the content
+/// process's own event channel: the content process (one agent cluster)
+/// owns the channel's receiver, and its sender is cloned to every agent of
+/// the cluster, window and worker alike.  A user-agent event therefore
+/// carries the sending agent's event loop id in its payload where the
+/// receiver needs to attribute it to an agent rather than to the cluster.
 #[derive(Clone)]
 pub(crate) struct WorkerLauncher {
+    /// The event loop id of the similar-origin window agent whose content
+    /// process hosts this launcher's workers (the agent cluster): the
+    /// network partition key of the workers' script fetches.
     event_loop_id: EventLoopId,
+    /// The content process's event channel to the user agent: the cluster's
+    /// UA event sender, cloned to every agent of the cluster.  The new
+    /// agent's thread reports the agent to the user agent on it (see
+    /// `run_a_worker`).
     event_sender: IpcSender<ContentEvent>,
     network_extension_sender: IpcSender<NetworkRequest>,
     trace_sender: Option<TraceSender>,
@@ -237,13 +239,29 @@ impl WorkerLauncher {
     }
 
     /// Run-a-worker step 4's dedicated path, run synchronously by the Worker
-    /// constructor in the owner realm: create the worker's dedicated worker
-    /// agent (a native thread nested to this content process; see
-    /// dedicated_worker_agent.rs), register the worker, and hand the
-    /// owner-side end of its channel to the event loop that owns it.  The
-    /// agent itself runs the rest of run a worker: the realm (steps 5-9),
-    /// the script fetch (step 12, over its own net channel), and the
-    /// onComplete steps (12.3-12.15).
+    /// constructor in the owner realm: create the dedicated worker agent (a
+    /// native thread nested to this content process; see
+    /// dedicated_worker_agent.rs), register the agent with the agent cluster
+    /// (this content process's worker registry), and hand the owner-side end
+    /// of its channel to the event loop that owns it.  The agent itself runs
+    /// the rest of run a worker: the realm (steps 5-9), the script fetch
+    /// (step 12, over its own net channel), and the onComplete steps
+    /// (12.3-12.15).
+    ///
+    /// The dedicated start of run a worker is split across the processes
+    /// like the navigation algorithms: step 4's "obtain a dedicated/shared
+    /// worker agent" is realized locally here (the agent's thread — the
+    /// agent and its worker event loop — is created in this content
+    /// process), and the agent's thread reports the obtained agent to the
+    /// user agent as its first act
+    /// (`ContentEvent::DedicatedWorkerAgentObtained`, carrying the agent's
+    /// own worker event loop id and the user-agent end of the agent's own
+    /// command channel), so the user agent can run its half of the step:
+    /// recording the dedicated worker agent and its worker event loop, for
+    /// routing port tasks over the agent's own command channel directly (no
+    /// cluster-side forwarding).  The worker's event loop id is its own,
+    /// distinct from the similar-origin window agent's: the worker is its
+    /// own agent with its own event loop.
     pub(crate) fn run_a_worker(&self, start: WorkerBootstrap) -> Result<(), String> {
         let WorkerBootstrap {
             request,
@@ -253,18 +271,53 @@ impl WorkerLauncher {
         } = start;
         let worker_id = request.worker_id;
         let owner = request.owner;
+        // The new dedicated worker agent's own worker event loop id: the
+        // address under which the user agent routes port tasks to this
+        // agent, and the event loop id of the agent's realm channel
+        // messaging.
+        // <https://html.spec.whatwg.org/#worker-event-loop-2>
+        let worker_event_loop_id = EventLoopId::new();
+        // The agent's own command channel to the user agent: the user agent
+        // sends commands addressed to this agent's event loop (port tasks)
+        // over `ua_command_sender`, whose receiver end is proxied into the
+        // agent's event-loop select below.  Only the content process owns
+        // this channel's receiver; the sender travels to the user agent in
+        // the DedicatedWorkerAgentObtained report.
+        let (ua_command_sender, ua_command_receiver) = ipc::channel::<Command>()
+            .map_err(|error| format!("worker {worker_id}: failed to create UA channel: {error}"))?;
+        let ua_command_rx = ipc::crossbeam_proxy(ua_command_receiver);
         let (worker_command_tx, worker_command_rx) = crossbeam_channel::unbounded();
         let launcher = self.clone();
         let join_handle = std::thread::Builder::new()
             .name(format!("formal-web:worker-{worker_id}"))
             .spawn(move || {
+                // Run-a-worker step 4, user-agent half: report the obtained
+                // dedicated worker agent before anything the agent does can
+                // reach the user agent (the realm's channel-messaging events
+                // are sent on the same content-process channel from this
+                // same thread, so they arrive after this report).  The user
+                // agent records the agent and its worker event loop, and
+                // keeps the agent's own command channel for routing.
+                // <https://html.spec.whatwg.org/#dedicated-worker-agent>
+                if let Err(error) =
+                    launcher.event_sender.send(ContentEvent::DedicatedWorkerAgentObtained {
+                        worker_id,
+                        event_loop_id: worker_event_loop_id,
+                        owner,
+                        ua_command_sender: ua_command_sender.clone(),
+                    })
+                {
+                    error!("failed to report dedicated worker agent {worker_id} to the user agent: {error}");
+                }
                 let config = DedicatedWorkerAgentConfig {
                     request,
                     owner_to_worker,
                     worker_to_owner,
+                    worker_event_loop_id,
                     event_loop_id: launcher.event_loop_id,
                     worker_events: launcher.worker_event_sender.clone(),
                     worker_commands: worker_command_rx,
+                    ua_command_rx,
                     event_sender: launcher.event_sender.clone(),
                     network_extension_sender: launcher.network_extension_sender.clone(),
                     worker_launcher: launcher.clone(),

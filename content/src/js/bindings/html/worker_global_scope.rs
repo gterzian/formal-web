@@ -12,8 +12,16 @@ pub(crate) fn worker_global_scope_domain_from(
     this: &JsValue,
     ec: &mut dyn ExecutionContext<Types>,
 ) -> Completion<WorkerGlobalScope, Types> {
-    let object = Types::value_as_object(this)
-        .ok_or_else(|| ec.new_type_error("WorkerGlobalScope receiver is not an object"))?;
+    // The worker global scope's members are global members: calling one bare
+    // (postMessage(...)) or accessing it on the global object resolves the
+    // realm's worker global scope.  The Web IDL receiver is then undefined on
+    // some backends (Boa passes undefined to a bare-call this) or the global
+    // object on others (V8), so mirror `resolve_window`: resolve the receiver
+    // to the realm's global object when it is not an object.
+    let object = match Types::value_as_object(this) {
+        Some(object) => object,
+        None => ec.global_object(),
+    };
     ec.with_object_any(&object)
         .and_then(|data| data.downcast_ref::<WorkerGlobalScope>().cloned())
         .ok_or_else(|| ec.new_type_error("receiver is not a WorkerGlobalScope"))

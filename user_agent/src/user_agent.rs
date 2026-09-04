@@ -5,6 +5,7 @@ pub(crate) mod ipc_manifest;
 pub(crate) mod ui_event;
 
 use blitz_traits::shell::ColorScheme;
+use channel_messaging::PortEvent;
 use crossbeam_channel::{Receiver, Sender, bounded, unbounded};
 use ipc_messages::content::{
     AgentClusterId, AgentId, BeforeUnloadCheckId, BeforeUnloadResult, BrowsingContextGroupId,
@@ -12,7 +13,7 @@ use ipc_messages::content::{
     Event as ContentEvent, EventLoopId, FetchResponse as ContentFetchResponse,
     FinalizeNavigation as ContentFinalizeNavigation, FrameId, LoadedDocumentResponse, NavigableId,
     NavigateRequest, NavigationFetchId, NavigationId, NewTraversableInfo,
-    UserNavigationInvolvement, WebviewId, iframe_target_name,
+    UserNavigationInvolvement, WebviewId, WorkerId, WorkerOwner, iframe_target_name,
 };
 use ipc_messages::safe_passing_of_structured_data::PostMessageRequest;
 use log::{debug, error, info, trace};
@@ -27,6 +28,9 @@ use verification::{TLATracer, TraceSender};
 fn startup_debug_enabled() -> bool {
     std::env::var_os("FORMAL_WEB_DEBUG_STARTUP").is_some()
 }
+
+/// clipboard requests that cross the content/embedder boundary.
+const CONTENT_CLIPBOARD_TIMEOUT: Duration = Duration::from_secs(2);
 
 use crate::event_loop::{EventLoopState, spawn_event_loop, traversable_viewport_command};
 
@@ -171,6 +175,12 @@ pub enum AgentClusterKey {
 }
 
 /// <https://tc39.es/ecma262/#sec-agents>
+/// The similar-origin window agent
+/// (<https://html.spec.whatwg.org/multipage/webappapis.html#similar-origin-window-agent>)
+/// of one agent cluster (one content process): its window event loop runs on
+/// the content process main thread, and the dedicated worker agents of the
+/// workers that content process hosts nest under this record (they are part
+/// of the same agent cluster).
 #[derive(Debug)]
 pub struct Agent {
     /// identifier standing in for the signifier created by
@@ -179,12 +189,78 @@ pub struct Agent {
     /// <https://tc39.es/ecma262/#sec-agents>
     pub can_block: bool,
     /// <https://html.spec.whatwg.org/multipage/#concept-agent-event-loop>
+    /// The window event loop of this similar-origin window agent: the event
+    /// loop that runs on the content process main thread (the window kind of
+    /// the two agent event-loop kinds; the worker kind is a dedicated
+    /// worker agent's [`WorkerEventLoop`]).
     pub event_loop_id: EventLoopId,
-    /// The agent's event loop and its dedicated content process, owned
-    /// directly by the user-agent thread.
+    /// The agent's window event loop and its dedicated content process,
+    /// owned directly by the user-agent thread.
     pub event_loop: EventLoopState,
     /// the traversables whose active documents run on this agent's event loop.
     pub traversable_ids: HashSet<NavigableId>,
+    /// The dedicated worker agents of this agent cluster
+    /// (<https://html.spec.whatwg.org/multipage/webappapis.html#dedicated-worker-agent>),
+    /// keyed by worker id: each runs its own worker event loop
+    /// (<https://html.spec.whatwg.org/multipage/webappapis.html#worker-event-loop-2>)
+    /// on its own native thread nested in this agent's content process.  A
+    /// record is inserted when the content process reports the obtained
+    /// agent (`ContentEvent::DedicatedWorkerAgentObtained`) and removed when
+    /// the worker agent closes; the records die with this record, since the
+    /// content process exit takes its worker threads down.
+    pub dedicated_worker_agents: HashMap<WorkerId, DedicatedWorkerAgent>,
+}
+
+/// <https://html.spec.whatwg.org/multipage/webappapis.html#worker-event-loop-2>
+/// The user-agent side of one dedicated worker agent's worker event loop:
+/// the agent's own event loop (its own event loop id, distinct from the
+/// window event loop of the similar-origin window agent that hosts the
+/// agent's thread) together with the agent's own user-agent command channel.
+/// The event loop itself runs in the content process, on the worker agent's
+/// native thread; this record is what the user agent needs to address it:
+/// port tasks routed to a port of this event loop are sent over the agent's
+/// own command channel, straight to the worker.
+#[derive(Debug)]
+pub struct WorkerEventLoop {
+    /// The event loop id under which ports of this agent's realm are
+    /// registered with the user agent, and the destination of port tasks
+    /// routed to them.
+    pub event_loop_id: EventLoopId,
+    /// The agent's own command channel to the user agent: commands
+    /// addressed to this agent's event loop (e.g. the port tasks of
+    /// `Command::PortTask`) are sent directly over it, bypassing the
+    /// hosting content process's main-thread forwarding.
+    pub command_sender: ipc::IpcSender<ContentCommand>,
+}
+
+/// The user-agent side of one
+/// <https://html.spec.whatwg.org/multipage/webappapis.html#dedicated-worker-agent>:
+/// a dedicated worker agent whose worker event loop
+/// (<https://html.spec.whatwg.org/multipage/webappapis.html#worker-event-loop-2>)
+/// is implemented by a native thread nested in the content process that also
+/// implements the similar-origin window agent of its agent cluster.
+///
+/// The agent runs its realm and event loop in the content process; this
+/// record is the user agent's half of "obtain a dedicated worker agent"
+/// (run-a-worker step 4), mirroring the window-agent [`Agent`] records.  It
+/// is created when the content process reports the obtained agent
+/// (`ContentEvent::DedicatedWorkerAgentObtained`), is stored under the
+/// similar-origin window agent of the worker's agent cluster (see
+/// `Agent::dedicated_worker_agents`), and holds the agent's worker event
+/// loop — its own event loop id and its own command channel, so the user
+/// agent can send commands addressed to the agent's event loop (e.g. the
+/// port tasks of `Command::PortTask`) directly to the worker.
+#[derive(Debug)]
+pub struct DedicatedWorkerAgent {
+    /// identifier for the worker whose global scope this agent runs.
+    pub worker_id: WorkerId,
+    /// <https://html.spec.whatwg.org/multipage/webappapis.html#concept-agent-event-loop>
+    /// The agent's own worker event loop, distinct from the similar-origin
+    /// window agent's event loop.
+    pub event_loop: WorkerEventLoop,
+    /// <https://html.spec.whatwg.org/multipage/webappapis.html#concept-WorkerGlobalScope-owner-set>
+    /// The realm that created the worker.
+    pub owner: WorkerOwner,
 }
 
 /// <https://html.spec.whatwg.org/multipage/#agent-cluster-cross-origin-isolation>
@@ -431,6 +507,11 @@ impl NavigationRequest {
     }
 }
 
+/// One traversable's last-published viewport — the viewport snapshot
+/// (`width`, `height`, `scale`, color scheme) and scroll offset — replayed
+/// when the traversable moves to a new content event loop.
+pub type TraversableViewportSnapshot = ((u32, u32, f32, ColorScheme), f32, f32);
+
 /// Top-level state for the Rust user-agent thread.
 ///
 /// This mirrors the role of `FormalWeb.UserAgent`: spec-facing global sets,
@@ -444,16 +525,20 @@ pub struct UserAgentState {
     /// <https://html.spec.whatwg.org/multipage/#tlbc-group>
     pub top_level_browsing_context_group_ids: HashMap<BrowsingContextId, BrowsingContextGroupId>,
     /// <https://html.spec.whatwg.org/multipage/#obtain-a-similar-origin-window-agent>
-    /// The agents created by the user agent, keyed by their signifier; each agent
-    /// owns its event loop (see the `event_loop_id` field, mapped to
-    /// <https://html.spec.whatwg.org/multipage/#concept-agent-event-loop>).  Lookups
-    /// from an event-loop routing address resolve the agent by its `event_loop_id`.
+    /// The similar-origin window agents created by the user agent, keyed by
+    /// their signifier; each agent is the window agent of one agent cluster
+    /// (one content process), owns its window event loop (see the
+    /// `event_loop_id` field, mapped to
+    /// <https://html.spec.whatwg.org/multipage/#concept-agent-event-loop>),
+    /// and nests the dedicated worker agents of the workers that content
+    /// process hosts (`Agent::dedicated_worker_agents`).  Lookups from an
+    /// event-loop routing address resolve the agent by its `event_loop_id`.
     pub agents: HashMap<AgentId, Agent>,
     /// reverse index from top-level traversable ids to the owning event-loop id.
     pub traversable_handles: HashMap<NavigableId, EventLoopId>,
     /// last published viewport per traversable; replayed when ownership moves to a new
     /// content event loop (for example cross-origin child navigations).
-    pub traversable_viewports: HashMap<NavigableId, ((u32, u32, f32, ColorScheme), f32, f32)>,
+    pub traversable_viewports: HashMap<NavigableId, TraversableViewportSnapshot>,
     /// cache of each traversable's active target name derived from
     /// `traversable_set`.
     pub traversable_target_names: HashMap<NavigableId, String>,
@@ -875,8 +960,9 @@ impl UserAgentState {
     }
 }
 
-/// Commands that enter the user-agent thread from the embedder, event-loop workers, fetch worker,
-/// and timer worker.
+/// Commands that enter the user-agent thread from the embedder and webview
+/// layers: each is dispatched directly on the user-agent thread, which owns
+/// all browser-global state.
 pub enum UserAgentCommand {
     CreateFreshTopLevelTraversable {
         destination_url: String,
@@ -888,23 +974,6 @@ pub enum UserAgentCommand {
     Navigate {
         event_loop_id: Option<EventLoopId>,
         request: NavigateRequest,
-    },
-    /// <https://html.spec.whatwg.org/#window-post-message-steps> step 8: the
-    /// user agent queues a global task on the posted message task source given
-    /// targetWindow and routes the message to the target window's event loop.
-    PostMessage {
-        request: PostMessageRequest,
-    },
-    /// A port event forwarded from a content process's event loop (the
-    /// MessagePortExtraFG model actions as observed at the user agent).
-    PortEvent {
-        event: crate::channel_messaging::PortEvent,
-    },
-    CompleteBeforeUnload {
-        result: BeforeUnloadResult,
-    },
-    FinalizeCrossDocumentNavigation {
-        finalized: ContentFinalizeNavigation,
     },
     ClickElement {
         traversable_id: NavigableId,
@@ -938,22 +1007,9 @@ pub enum UserAgentCommand {
     RenderingOpportunityFor {
         navigable_id: NavigableId,
     },
-    NavigationFetchCompleted {
-        fetch_id: NavigationFetchId,
-        response: ContentFetchResponse,
-    },
-    NavigationFetchFailed {
-        fetch_id: NavigationFetchId,
-    },
-
     SendUiEvent {
         webview_id: WebviewId,
         event_message: Vec<u8>,
-    },
-    IframeTraversableRemoved {
-        parent_traversable_id: NavigableId,
-        content_navigable_id: NavigableId,
-        content_frame_id: FrameId,
     },
     Shutdown {
         reply: Sender<Result<(), String>>,
@@ -974,8 +1030,7 @@ impl UserAgent {
         trace_sender: Option<TraceSender>,
     ) -> Result<Self, String> {
         let (command_sender, command_receiver) = unbounded();
-        let mut worker =
-            UserAgentWorker::new(command_sender.clone(), command_receiver, host, trace_sender);
+        let mut worker = UserAgentWorker::new(command_receiver, host, trace_sender);
         let join_handle = thread::Builder::new()
             .name(String::from("formal-web:user-agent"))
             .spawn(move || worker.run())
@@ -1027,13 +1082,12 @@ impl UserAgent {
                 reply: reply_sender,
             })
             .map_err(|error| format!("failed to send script evaluation request: {error}"))?;
-        let result = reply_receiver.recv_timeout(timeout).map_err(|error| {
+        reply_receiver.recv_timeout(timeout).map_err(|error| {
             format!(
                 "timed out after {} ms waiting for script evaluation reply: {error}",
                 timeout.as_millis()
             )
-        })?;
-        result
+        })?
     }
 }
 
@@ -1278,6 +1332,40 @@ fn descendant_navigable_ids_matching(
     descendants
 }
 
+/// Resolve the content command channel for one event loop: a similar-origin
+/// window agent's window event loop delivers over its content process's
+/// command channel; a dedicated worker agent's worker event loop delivers
+/// over the agent's own command channel (recorded under its cluster's window
+/// agent when the worker agent was obtained).  Returns `None` for an event
+/// loop the user agent no longer owns (a removed window agent or a closed
+/// worker agent).
+fn event_loop_command_sender(
+    state: &UserAgentState,
+    event_loop_id: EventLoopId,
+) -> Option<ipc::IpcSender<ContentCommand>> {
+    // A similar-origin window agent's event loop (its content process's
+    // command channel).
+    if let Some(agent) = state
+        .agents
+        .values()
+        .find(|agent| agent.event_loop_id == event_loop_id)
+    {
+        return Some(agent.event_loop.command_sender.clone());
+    }
+    // A dedicated worker agent's worker event loop: the agent's own command
+    // channel, so the task is delivered straight to the worker.
+    // <https://html.spec.whatwg.org/multipage/webappapis.html#dedicated-worker-agent>
+    if let Some(worker) = state.agents.values().find_map(|agent| {
+        agent
+            .dedicated_worker_agents
+            .values()
+            .find(|worker| worker.event_loop.event_loop_id == event_loop_id)
+    }) {
+        return Some(worker.event_loop.command_sender.clone());
+    }
+    None
+}
+
 fn descendant_navigable_ids(state: &UserAgentState, navigable_id: NavigableId) -> Vec<NavigableId> {
     let children_by_parent = child_navigable_ids_by_parent(state);
     descendant_navigable_ids_matching(state, navigable_id, &children_by_parent, |_| true)
@@ -1306,7 +1394,6 @@ enum Inbound {
 /// user-agent thread coordinates.
 struct UserAgentWorker {
     state: UserAgentState,
-    command_sender: Sender<UserAgentCommand>,
     command_receiver: Receiver<UserAgentCommand>,
     /// Owns the IPC connection to the net extension and tracks pending navigation fetches.
     net_connection: crate::fetch::NetConnection,
@@ -1359,7 +1446,6 @@ struct UserAgentWorker {
 impl UserAgentWorker {
     /// starting the fetch worker owned by the user-agent thread.
     fn new(
-        user_agent_command_sender: Sender<UserAgentCommand>,
         command_receiver: Receiver<UserAgentCommand>,
         host: Arc<dyn Embedder>,
         trace_sender: Option<TraceSender>,
@@ -1409,7 +1495,6 @@ impl UserAgentWorker {
 
         Self {
             state: UserAgentState::default(),
-            command_sender: user_agent_command_sender.clone(),
             command_receiver,
             net_connection,
 
@@ -1529,18 +1614,6 @@ impl UserAgentWorker {
             } => {
                 self.handle_navigate(event_loop_id, request);
             }
-            UserAgentCommand::PostMessage { request } => {
-                self.handle_post_message(request);
-            }
-            UserAgentCommand::PortEvent { event } => {
-                self.handle_port_event(event);
-            }
-            UserAgentCommand::CompleteBeforeUnload { result } => {
-                self.handle_complete_before_unload(result);
-            }
-            UserAgentCommand::FinalizeCrossDocumentNavigation { finalized } => {
-                self.handle_finalize_cross_document_navigation(finalized);
-            }
             UserAgentCommand::ClickElement {
                 traversable_id,
                 selector,
@@ -1585,23 +1658,6 @@ impl UserAgentWorker {
             UserAgentCommand::RenderingOpportunityFor { navigable_id } => {
                 self.note_rendering_opportunity(navigable_id);
             }
-            UserAgentCommand::NavigationFetchCompleted { fetch_id, response } => {
-                self.handle_navigation_fetch_completed(fetch_id, response);
-            }
-            UserAgentCommand::NavigationFetchFailed { fetch_id } => {
-                self.handle_navigation_fetch_failed(fetch_id);
-            }
-            UserAgentCommand::IframeTraversableRemoved {
-                parent_traversable_id,
-                content_navigable_id,
-                content_frame_id,
-            } => {
-                self.handle_iframe_traversable_removed(
-                    parent_traversable_id,
-                    content_navigable_id,
-                    content_frame_id,
-                );
-            }
             UserAgentCommand::Shutdown { reply } => {
                 self.handle_shutdown(reply);
                 return false;
@@ -1610,27 +1666,229 @@ impl UserAgentWorker {
         true
     }
 
-    /// Handle one content-originated event from the event loop that owns
-    /// `event_loop_id`.  The event is routed to the owning event loop's state,
-    /// which re-sends user-agent commands for navigation and channel-messaging
-    /// work.  Returns `Ok(false)` when the content process has shut down.
+    /// Handle one content-originated event from an event loop of one of this
+    /// user agent's content processes.  The events are handled directly on
+    /// the user-agent thread — there is no re-queue over the command channel:
+    /// an event loop's state is a struct owned by this thread, and the
+    /// handling for navigation, channel messaging and rendering work runs in
+    /// the methods below, which mirror the spec steps the events stand for.
+    ///
+    /// `event_loop_id` is the event loop the event arrived on: the channel
+    /// of a content process belongs to its similar-origin window agent's
+    /// event loop, and every agent of the cluster (window and worker alike)
+    /// sends its events over that same channel.  Events whose semantics
+    /// depend on the sending agent therefore carry the agent's event loop id
+    /// in their payload (the port-registration events), while events only a
+    /// window agent's event loop emits (navigation, rendering, automation)
+    /// are attributed to `event_loop_id` itself.
+    ///
+    /// Returns `Ok(false)` when the content process has shut down.
     fn handle_content_event(
         &mut self,
         event_loop_id: EventLoopId,
         incoming: ipc::IpcIncoming<ContentEvent>,
     ) -> Result<bool, String> {
+        // A stale event for an event loop that was already removed is
+        // dropped; its payload was superseded by the loop's teardown.
+        let known_window_loop = self
+            .state
+            .agents
+            .values()
+            .any(|agent| agent.event_loop_id == event_loop_id);
+        if !known_window_loop {
+            return Ok(true);
+        }
+        match incoming.payload {
+            ContentEvent::NavigationRequested(request) => {
+                // Navigation start leaves the window event loop and reenters
+                // the user-agent navigation algorithm immediately.
+                self.handle_navigate(Some(event_loop_id), request);
+            }
+            ContentEvent::PostMessageRequested(request) => {
+                self.handle_post_message(request);
+            }
+            ContentEvent::PortChannelCreated {
+                event_loop,
+                port1,
+                port2,
+            } => {
+                // The channel was created in the realm of `event_loop` (the
+                // window event loop or a dedicated worker agent's event loop
+                // of this cluster); register both ports with that loop as
+                // their owner.
+                self.handle_port_event(PortEvent::ChannelCreated {
+                    port1,
+                    port2,
+                    event_loop,
+                });
+            }
+            ContentEvent::PortTransferStarted { port } => {
+                self.handle_port_event(PortEvent::TransferStarted { port });
+            }
+            ContentEvent::PortTransferReceived { event_loop, port } => {
+                // The port was received in the realm of `event_loop` (the
+                // window event loop or a dedicated worker agent's event loop
+                // of this cluster); the transfer completes there.
+                self.handle_port_event(PortEvent::TransferReceived { port, event_loop });
+            }
+            ContentEvent::PortMessageRouted { tgt, msg } => {
+                self.handle_port_event(PortEvent::MessageRouted { tgt, msg });
+            }
+            ContentEvent::PortBufferReturned { tgt, buf } => {
+                self.handle_port_event(PortEvent::BufferReturned { tgt, buf });
+            }
+            ContentEvent::PortTransferCompleted { tgt } => {
+                self.handle_port_event(PortEvent::TransferCompleted { tgt });
+            }
+            ContentEvent::BeforeUnloadCompleted(result) => {
+                self.handle_complete_before_unload(result);
+            }
+            ContentEvent::FinalizeNavigation(finalized) => {
+                self.handle_finalize_cross_document_navigation(finalized);
+            }
+            ContentEvent::IframeTraversableRemoved(removal) => {
+                self.handle_iframe_traversable_removed(
+                    removal.parent_traversable_id,
+                    removal.content_navigable_id,
+                    removal.content_frame_id,
+                );
+            }
+            ContentEvent::ScriptEvaluated(result) => {
+                self.resolve_script_evaluation(event_loop_id, result);
+            }
+            ContentEvent::ElementClicked(result) => {
+                self.resolve_click_evaluation(event_loop_id, result);
+            }
+            ContentEvent::ClipboardWriteRequested(
+                ipc_messages::content::ClipboardWriteRequested { text },
+            ) => {
+                // Fire-and-forget: write to system clipboard, no reply expected.
+                if let Err(error) = self
+                    .host
+                    .clipboard_set_text(text, CONTENT_CLIPBOARD_TIMEOUT)
+                {
+                    error!("clipboard write failed: {error}");
+                }
+            }
+            ContentEvent::TitleChanged(ipc_messages::content::TitleChanged {
+                traversable_id,
+                title,
+            }) => {
+                // The content process reports the parsed title of the
+                // top-level document; forward it to the embedder.
+                if let Err(error) = self.host.title_changed(WebviewId(traversable_id), title) {
+                    error!("failed to forward document title: {error}");
+                }
+            }
+            ContentEvent::RegisterMediaPipeline(_) => {
+                // Content sends CreateMediaPipeline directly to the graphics process.
+                // No UA bookkeeping needed.
+            }
+            ContentEvent::RenderingOpRequested(navigable_id) => {
+                self.note_rendering_opportunity(navigable_id);
+            }
+            ContentEvent::DedicatedWorkerAgentObtained {
+                worker_id,
+                event_loop_id: worker_event_loop_id,
+                owner,
+                ua_command_sender,
+            } => {
+                // Run-a-worker step 4's user-agent half: a dedicated worker
+                // agent of this cluster was obtained (its thread and worker
+                // event loop were created in the content process).  Record
+                // the agent under its cluster's similar-origin window agent
+                // (the agent `event_loop_id` of this cluster's window event
+                // loop; the worker runs in this content process) — its
+                // worker event loop id and its own command channel — so
+                // port tasks routed to a port of the agent's event loop are
+                // sent directly to the worker.
+                // <https://html.spec.whatwg.org/multipage/webappapis.html#dedicated-worker-agent>
+                let Some(host_agent) = self
+                    .state
+                    .agents
+                    .values_mut()
+                    .find(|agent| agent.event_loop_id == event_loop_id)
+                else {
+                    error!(
+                        "dedicated worker agent {worker_id} reported for unknown window agent {event_loop_id}"
+                    );
+                    return Ok(true);
+                };
+                host_agent.dedicated_worker_agents.insert(
+                    worker_id,
+                    DedicatedWorkerAgent {
+                        worker_id,
+                        event_loop: WorkerEventLoop {
+                            event_loop_id: worker_event_loop_id,
+                            command_sender: ua_command_sender,
+                        },
+                        owner,
+                    },
+                );
+            }
+            ContentEvent::DedicatedWorkerAgentClosed { worker_id } => {
+                // The worker agent's event loop was destroyed (run-a-worker
+                // steps 12.19-12.21 ran in the content process); drop the
+                // agent record from its cluster's window agent, so its event
+                // loop is no longer a port-task destination.
+                if let Some(host_agent) = self
+                    .state
+                    .agents
+                    .values_mut()
+                    .find(|agent| agent.event_loop_id == event_loop_id)
+                {
+                    host_agent.dedicated_worker_agents.remove(&worker_id);
+                }
+            }
+            ContentEvent::ShutdownCompleted => return Ok(false),
+        }
+        Ok(true)
+    }
+
+    /// Resolve the automation waiter of a content script-evaluation reply
+    /// (the agent owning `event_loop_id` stores it).
+    fn resolve_script_evaluation(
+        &mut self,
+        event_loop_id: EventLoopId,
+        result: ipc_messages::content::ScriptEvaluationResult,
+    ) {
         let Some(agent) = self
             .state
             .agents
             .values_mut()
             .find(|agent| agent.event_loop_id == event_loop_id)
         else {
-            // A stale event for an event loop that was already removed.
-            return Ok(true);
+            return;
         };
-        agent
-            .event_loop
-            .handle_event(incoming, &self.command_sender, &self.host)
+        if let Some(waiter) = agent.event_loop.script_waiters.remove(&result.request_id) {
+            let send_result = match result.error {
+                Some(error) => Err(error),
+                None => serde_json::from_str(&result.value_json).map_err(|error| {
+                    format!("failed to decode content script evaluation result: {error}")
+                }),
+            };
+            let _ = waiter.send(send_result);
+        }
+    }
+
+    /// Resolve the automation waiter of a content click reply (the agent
+    /// owning `event_loop_id` stores it).
+    fn resolve_click_evaluation(
+        &mut self,
+        event_loop_id: EventLoopId,
+        result: ipc_messages::content::ElementClickResult,
+    ) {
+        let Some(agent) = self
+            .state
+            .agents
+            .values_mut()
+            .find(|agent| agent.event_loop_id == event_loop_id)
+        else {
+            return;
+        };
+        if let Some(waiter) = agent.event_loop.click_waiters.remove(&result.request_id) {
+            let _ = waiter.send(result.error.map_or(Ok(()), Err));
+        }
     }
 
     /// Handle a navigation fetch response received directly from the net process.
@@ -1736,6 +1994,7 @@ impl UserAgentWorker {
             event_loop_id,
             event_loop,
             traversable_ids: HashSet::new(),
+            dedicated_worker_agents: HashMap::new(),
         })
     }
 
@@ -1904,14 +2163,13 @@ impl UserAgentWorker {
         self.host
             .new_webview(WebviewId(traversable_id), target_name.clone())?;
         // Register the webview with the graphics process.
-        if let Some(graphics_sender) = &self.graphics_extension_sender {
-            if let Err(error) =
+        if let Some(graphics_sender) = &self.graphics_extension_sender
+            && let Err(error) =
                 graphics_sender.send(ipc_messages::graphics::GraphicsCommand::RegisterWebview {
                     webview_id: WebviewId(traversable_id),
                 })
-            {
-                error!("failed to register webview with graphics process: {error}");
-            }
+        {
+            error!("failed to register webview with graphics process: {error}");
         }
         // Step 12: Return traversable.
         Ok(traversable_id)
@@ -2595,12 +2853,12 @@ impl UserAgentWorker {
         // Step 7: "Otherwise, if name is not an ASCII case-insensitive match for '_blank'
         //          and noopener is false, then set chosen to the result of finding a navigable
         //          by target name given name and currentNavigable."
-        if !normalized_target_name.eq_ignore_ascii_case("_blank") && !noopener {
-            if let Some(chosen) =
+        if !normalized_target_name.eq_ignore_ascii_case("_blank")
+            && !noopener
+            && let Some(chosen) =
                 find_navigable_by_target_name(&self.state, &normalized_target_name)
-            {
-                return Ok((chosen, String::from("existing or none")));
-            }
+        {
+            return Ok((chosen, String::from("existing or none")));
         }
 
         // Step 8: "If chosen is null, then a new top-level traversable is being requested."
@@ -2680,6 +2938,12 @@ impl UserAgentWorker {
                 .pending_before_unload_navigations
                 .remove(&check_id);
         }
+        // Note: The removed record is the similar-origin window agent of an
+        // agent cluster whose content process has exited; its nested
+        // `dedicated_worker_agents` records die with it (the process exit
+        // takes the worker threads down), so their event loops are no
+        // longer port-task destinations.
+        // <https://html.spec.whatwg.org/multipage/webappapis.html#dedicated-worker-agent>
         Some(entry)
     }
 
@@ -2928,14 +3192,13 @@ impl UserAgentWorker {
                 .new_webview(WebviewId(navigable_id), navigable.target_name.clone())?;
 
             // Register the webview with the graphics process.
-            if let Some(graphics_sender) = &self.graphics_extension_sender {
-                if let Err(error) =
+            if let Some(graphics_sender) = &self.graphics_extension_sender
+                && let Err(error) =
                     graphics_sender.send(ipc_messages::graphics::GraphicsCommand::RegisterWebview {
                         webview_id: WebviewId(navigable_id),
                     })
-                {
-                    error!("failed to register webview with graphics process: {error}");
-                }
+            {
+                error!("failed to register webview with graphics process: {error}");
             }
         }
         Ok(())
@@ -3467,14 +3730,14 @@ impl UserAgentWorker {
         // Notify the graphics process that a top-level navigation finalized.
         // This sets replace_root_on_next_paint so the next PaintFrame replaces
         // the old about:blank scene with the new page's scene.
-        if let Some(graphics_sender) = &self.graphics_extension_sender {
-            if let Err(error) = graphics_sender.send(
+        if let Some(graphics_sender) = &self.graphics_extension_sender
+            && let Err(error) = graphics_sender.send(
                 ipc_messages::graphics::GraphicsCommand::NavigationFinalized {
                     webview_id: WebviewId(pending.traversable_id),
                 },
-            ) {
-                log::error!("failed to notify graphics of navigation finalization: {error}");
-            }
+            )
+        {
+            log::error!("failed to notify graphics of navigation finalization: {error}");
         }
         let notify_result = self.report_navigation_completed(
             pending.traversable_id,
@@ -3513,17 +3776,16 @@ impl UserAgentWorker {
                 .navigables
                 .get(&pending.traversable_id)
                 .is_some_and(|navigable| navigable.parent_navigable_id.is_none());
-            if is_top_level {
-                if let Some(previous_browsing_context_id) = previous_browsing_context_id
-                    && previous_browsing_context_id != new_browsing_context_id
-                {
-                    self.state
-                        .top_level_browsing_context_group_ids
-                        .remove(&previous_browsing_context_id);
-                    self.state
-                        .browsing_context_group_set
-                        .remove_browsing_context(previous_browsing_context_id);
-                }
+            if is_top_level
+                && let Some(previous_browsing_context_id) = previous_browsing_context_id
+                && previous_browsing_context_id != new_browsing_context_id
+            {
+                self.state
+                    .top_level_browsing_context_group_ids
+                    .remove(&previous_browsing_context_id);
+                self.state
+                    .browsing_context_group_set
+                    .remove_browsing_context(previous_browsing_context_id);
             }
         }
 
@@ -3908,12 +4170,10 @@ impl UserAgentWorker {
                 .unwrap_or_default();
 
             if let Some(Some(focused_frame_id)) = self.state.focused_frame_id.get(&root_webview_id)
+                && let Some(map) = self.state.child_frame_to_webview.get(&root_webview_id)
+                && let Some(&focused_wv) = map.get(focused_frame_id)
             {
-                if let Some(map) = self.state.child_frame_to_webview.get(&root_webview_id) {
-                    if let Some(&focused_wv) = map.get(focused_frame_id) {
-                        return (focused_wv, event, ids);
-                    }
-                }
+                return (focused_wv, event, ids);
             }
             return (root_webview_id, event, ids);
         };
@@ -3955,10 +4215,10 @@ impl UserAgentWorker {
                 let routed_event = set_event_local_coords(&event, routed_css_x, routed_css_y);
 
                 // Route to child webview if this frame belongs to an iframe.
-                if let Some(map) = self.state.child_frame_to_webview.get(&root_webview_id) {
-                    if let Some(&child_wv) = map.get(&info.frame_id) {
-                        return (child_wv, routed_event, composed_frame_ids);
-                    }
+                if let Some(map) = self.state.child_frame_to_webview.get(&root_webview_id)
+                    && let Some(&child_wv) = map.get(&info.frame_id)
+                {
+                    return (child_wv, routed_event, composed_frame_ids);
                 }
 
                 return (root_webview_id, routed_event, composed_frame_ids);
@@ -4030,21 +4290,21 @@ impl UserAgentWorker {
 
     /// The user-agent half of the port workflow: register channels and
     /// transfers and process the routing queue (the model's `NewChannel`,
-    /// `Transfer`, `TransferReceive`, and `RouteMessage` actions).
+    /// `Transfer`, `TransferReceive`, and `RouteMessage` actions).  A task
+    /// routed to a port's owning event loop is delivered over that event
+    /// loop's own user-agent channel: the similar-origin window agent's
+    /// channel (its content process's command channel) for the window event
+    /// loop, or the dedicated worker agent's own command channel (held in
+    /// `DedicatedWorkerAgent::event_loop`) for a worker event loop.
     fn handle_port_event(&mut self, event: crate::channel_messaging::PortEvent) {
         let state = &self.state;
-        let mut send_task = |event_loop_id: EventLoopId, command: ContentCommand| match state
-            .agents
-            .values()
-            .find(|agent| agent.event_loop_id == event_loop_id)
-        {
-            Some(agent) => {
-                if let Err(error) = agent.event_loop.command_sender.send(command) {
-                    error!("port routing: failed to queue task: {error}");
-                }
-            }
-            None => {
-                error!("port routing: missing agent for event loop {event_loop_id}");
+        let mut send_task = |event_loop_id: EventLoopId, command: ContentCommand| {
+            let Some(command_sender) = event_loop_command_sender(state, event_loop_id) else {
+                error!("port routing: missing event loop {event_loop_id}");
+                return;
+            };
+            if let Err(error) = command_sender.send(command) {
+                error!("port routing: failed to queue task: {error}");
             }
         };
         crate::channel_messaging::handle_port_event(
@@ -4542,10 +4802,10 @@ impl UserAgentWorker {
 
         // Shut down the graphics process: send Shutdown, wait for
         // ShutdownComplete, then join the child process.
-        if let Some(sender) = &self.graphics_extension_sender {
-            if let Err(error) = sender.send(ipc_messages::graphics::GraphicsCommand::Shutdown) {
-                log::error!("failed to send shutdown to graphics process: {error}");
-            }
+        if let Some(sender) = &self.graphics_extension_sender
+            && let Err(error) = sender.send(ipc_messages::graphics::GraphicsCommand::Shutdown)
+        {
+            log::error!("failed to send shutdown to graphics process: {error}");
         }
         // Drain events until ShutdownComplete arrives.
         while let Ok(incoming) = self.graphics_event_receiver.recv() {
@@ -4556,10 +4816,10 @@ impl UserAgentWorker {
                 break;
             }
         }
-        if let Some(mut child) = self.graphics_child.take() {
-            if let Err(error) = child.wait() {
-                log::error!("failed to wait for graphics process exit: {error}");
-            }
+        if let Some(mut child) = self.graphics_child.take()
+            && let Err(error) = child.wait()
+        {
+            log::error!("failed to wait for graphics process exit: {error}");
         }
 
         self.net_connection.shutdown();
@@ -4735,7 +4995,7 @@ impl UserAgentWorker {
                         // dimensions until something changes the key (a resize).
                         if self.handle_set_traversable_viewport(
                             child_traversable_id,
-                            (cw.max(1), ch.max(1), scale, cs.clone()),
+                            (cw.max(1), ch.max(1), scale, *cs),
                             offset_x,
                             offset_y,
                         ) {

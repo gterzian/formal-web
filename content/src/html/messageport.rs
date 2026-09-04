@@ -370,6 +370,7 @@ impl MessageChannel {
         // one's owning event loop (`MessagePortExtraFG.tla`'s `NewChannel`).
         if let Some(event_sender) = MessagePort::event_sender(ec)
             && let Err(error) = event_sender.send(ContentEvent::PortChannelCreated {
+                event_loop: messaging.event_loop_id(),
                 port1: port1.port_id,
                 port2: port2.port_id,
             })
@@ -464,8 +465,10 @@ impl Transferable for MessagePort {
             ec,
         );
         if let Some(event_sender) = event_sender
-            && let Err(error) =
-                event_sender.send(ContentEvent::PortTransferReceived { port: self.port_id })
+            && let Err(error) = event_sender.send(ContentEvent::PortTransferReceived {
+                event_loop: messaging.event_loop_id(),
+                port: self.port_id,
+            })
         {
             log::error!("failed to notify the user agent of port receive: {error}");
         }

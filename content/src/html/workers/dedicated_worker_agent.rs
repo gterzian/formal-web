@@ -109,14 +109,6 @@ pub(crate) enum WorkerCommand {
     /// A nested worker this realm owns closed; drop its outbound channel's
     /// receiver from this agent's event-loop select.
     RemoveNestedWorkerChannel { worker_id: WorkerId },
-    /// A port task the user agent routed to a port this realm may own (a
-    /// MessagePort transferred into the worker): the content process main
-    /// thread forwards every user-agent port task no document realm owns to
-    /// all worker agents; this agent delivers the task when its realm holds
-    /// the port and ignores it otherwise.  Queued as a routing task on this
-    /// agent's own task queue so it runs through the same processing-model
-    /// steps as a locally queued port message task.
-    PortTask { port: PortId, task: PortTaskKind },
 }
 
 /// An operation to run in the realm that owns a worker (the owner document,
@@ -162,17 +154,37 @@ pub(crate) struct DedicatedWorkerAgentConfig {
     /// The sender end of the worker→owner channel, stored on the worker
     /// global scope for the worker's `postMessage`.
     pub(crate) worker_to_owner: crossbeam_channel::Sender<WorkerChannelMessage>,
-    /// The content process's event loop id, shared by the worker realm's
-    /// channel messaging (a worker realm has no event loop of its own on the
-    /// user-agent side).
+    /// <https://html.spec.whatwg.org/#worker-event-loop-2>
+    /// The worker event loop this dedicated worker agent runs: the event
+    /// loop id under which the worker realm's channel messaging registers
+    /// its ports with the user agent, and the id the user agent's port-task
+    /// routing addresses when a port of this event loop is the target.
+    /// The similar-origin window agent's event loop id is *not* shared: the
+    /// worker is its own agent with its own event loop.
+    pub(crate) worker_event_loop_id: EventLoopId,
+    /// The event loop id of the similar-origin window agent whose content
+    /// process hosts this worker's thread (the agent cluster the worker
+    /// agent belongs to): the id carried in the worker's net fetch requests
+    /// as the network partition key, so the worker shares the network
+    /// partition of its owner's window event loop.
     pub(crate) event_loop_id: EventLoopId,
     /// The worker thread reports its teardown and owner-side operations on
     /// this channel.
     pub(crate) worker_events: crossbeam_channel::Sender<WorkerEvent>,
-    /// Commands from the content process main thread.
+    /// Commands from the content process main thread: content-internal
+    /// lifecycle commands (terminate, owner operations, nested-worker
+    /// channel routing).
     pub(crate) worker_commands: crossbeam_channel::Receiver<WorkerCommand>,
+    /// The user-agent end of the agent's own command channel, proxied over
+    /// crossbeam into the agent's event-loop select: the user agent sends
+    /// commands addressed to this agent's event loop (the port tasks of
+    /// `Command::PortTask`) directly over it — the direct UA-to-worker
+    /// channel; no cluster-side forwarding.
+    pub(crate) ua_command_rx: crossbeam_channel::Receiver<ipc::IpcIncoming<Command>>,
     /// The content-to-user-agent event sender, wired into the worker realm's
-    /// global scope for its channel messaging.
+    /// global scope for its channel messaging.  Worker realms send their
+    /// user-agent events over this shared content-process channel, carrying
+    /// the sending agent's event loop id in the payload.
     pub(crate) event_sender: IpcSender<ContentEvent>,
     /// The worker's own channel to the net process, for script fetches.
     pub(crate) network_extension_sender: IpcSender<ipc_messages::network::Request>,
@@ -203,6 +215,10 @@ pub(crate) struct DedicatedWorkerAgentState {
     pub(crate) task_queue: TaskQueue,
     pub(crate) active_timers: Rc<RefCell<MapOfActiveTimers>>,
     pub(crate) worker_events: crossbeam_channel::Sender<WorkerEvent>,
+    /// The event loop id of the similar-origin window agent whose content
+    /// process hosts this worker's thread: the id carried in the worker's
+    /// net script-fetch request as the network partition key (the worker
+    /// shares its owner window's network partition).
     pub(crate) event_loop_id: EventLoopId,
     pub(crate) network_extension_sender: IpcSender<ipc_messages::network::Request>,
     /// The worker's own command channel to the net process; the net process
@@ -242,7 +258,14 @@ pub(crate) fn run_a_worker(config: DedicatedWorkerAgentConfig) -> Result<(), Str
     // agent cluster, so the agent is nested to the content process hosting
     // the owner realm (the same agent cluster as its owner's similar-origin
     // window agent), and the thread's event loop below is the agent's event
-    // loop.
+    // loop — its own worker event loop, with its own event loop id set on
+    // the worker realm below (a dedicated worker agent is never the window
+    // agent).  The user-agent half of obtaining the agent ran when this
+    // thread reported the obtained agent (see
+    // `WorkerLauncher::run_a_worker`): `DedicatedWorkerAgentObtained` told
+    // the user agent the agent's worker event loop id and gave it the
+    // agent's own command channel, so port tasks for ports of this event
+    // loop are routed directly to this thread.
     let task_queue = TaskQueue::new();
     let active_timers = Rc::new(RefCell::new(MapOfActiveTimers::default()));
     // Step 5: "Let realm execution context be the result of creating a new
@@ -275,15 +298,15 @@ pub(crate) fn run_a_worker(config: DedicatedWorkerAgentConfig) -> Result<(), Str
         WorkerType::from_idl(&request.worker_type),
         wiring,
     )?;
-    // The worker realm's global scope shares the content process's event
-    // loop id, gets the trace sender, and the worker launcher (nested
-    // workers' constructors run on this thread).  It also gets the
-    // worker→owner end of the worker's channel, so the worker's postMessage
-    // can reach its owner.
+    // The worker realm's global scope gets its own event loop id (this
+    // dedicated worker agent's worker event loop), the trace sender, and the
+    // worker launcher (nested workers' constructors run on this thread).  It
+    // also gets the worker→owner end of the worker's channel, so the
+    // worker's postMessage can reach its owner.
     with_worker_global_scope(settings.ec(), |worker_global_scope, _ec| {
         worker_global_scope
             .global_scope
-            .set_event_loop_id(config.event_loop_id);
+            .set_event_loop_id(config.worker_event_loop_id);
         worker_global_scope
             .global_scope
             .set_trace_sender(config.trace_sender.clone());
@@ -304,6 +327,7 @@ pub(crate) fn run_a_worker(config: DedicatedWorkerAgentConfig) -> Result<(), Str
     let (net_command_sender, net_command_receiver) = ipc::channel::<Command>()
         .map_err(|error| format!("worker {worker_id}: failed to create net channel: {error}"))?;
     let net_command_rx = ipc::crossbeam_proxy(net_command_receiver);
+    let ua_command_rx = config.ua_command_rx;
 
     let mut state = DedicatedWorkerAgentState {
         worker_id,
@@ -332,7 +356,12 @@ pub(crate) fn run_a_worker(config: DedicatedWorkerAgentConfig) -> Result<(), Str
 
     // Step 12.18: "Event loop: Run the responsible event loop specified by
     // inside settings until it is destroyed."
-    run_worker_event_loop(&mut state, &net_command_rx, &config.worker_commands)?;
+    run_worker_event_loop(
+        &mut state,
+        &net_command_rx,
+        &ua_command_rx,
+        &config.worker_commands,
+    )?;
 
     // Step 12.19: "Clear the worker global scope's map of active timers."
     // Step 12.20: "Disentangle all the ports in the list of the worker's
@@ -812,28 +841,47 @@ impl DedicatedWorkerAgentState {
                 self.nested_workers.remove(&worker_id);
                 Ok(())
             }
-            WorkerCommand::PortTask { port, task } => {
-                // A user-agent port task no document realm owns: queue it as
-                // a task on this agent's event loop, mirroring how the main
-                // loop handles Command::PortTask (Task::PortRouting), so the
-                // delivery runs through the processing-model steps (task +
-                // microtask checkpoint).  When this realm does not hold the
-                // port the routing task is a no-op.
+        }
+    }
+
+    /// Handle a command the user agent sent this dedicated worker agent
+    /// directly, over the agent's own UA channel (its worker event loop's
+    /// channel; the direct UA-to-worker channel, with no cluster-side
+    /// forwarding).
+    fn handle_ua_command(&mut self, command: Command) -> Result<(), String> {
+        match command {
+            Command::PortTask { port, task } => {
+                // A user-agent port task routed to a port of this realm's
+                // event loop: queue it as a routing task on this agent's
+                // event loop, mirroring how the main loop handles
+                // Command::PortTask (Task::PortRouting), so the delivery runs
+                // through the processing-model steps (task + microtask
+                // checkpoint).  When this realm does not hold the port the
+                // routing task is a no-op.
                 self.task_queue
                     .queue_a_task(Task::PortRouting { port, kind: task });
+                Ok(())
+            }
+            other => {
+                // The window-agent commands (document lifecycle, viewport,
+                // rendering) have no counterpart on a worker event loop; a
+                // worker command channel receives only the commands the
+                // user agent routes to a worker agent's event loop.
+                error!(
+                    "worker {} received unexpected UA command: {other:?}",
+                    self.worker_id
+                );
                 Ok(())
             }
         }
     }
 
     /// Deliver a port task the user agent routed to a port of this realm's
-    /// event loop, forwarded by the content process main thread (which only
-    /// resolves the ports owned by document realms; see
-    /// `ContentProcess::handle_port_task`).  Mirrors the main loop's handling
-    /// for this realm: the task is appended to the port's queue, or the
-    /// message task (the message port post message steps 7.4-7.7) fires in
-    /// this task's slot when the port's queue is enabled.  A port this realm
-    /// does not hold is ignored.
+    /// event loop, sent over the agent's own UA command channel.  Mirrors
+    /// the main loop's handling for this realm: the task is appended to the
+    /// port's queue, or the message task (the message port post message
+    /// steps 7.4-7.7) fires in this task's slot when the port's queue is
+    /// enabled.  A port this realm does not hold is ignored.
     fn handle_worker_port_task(
         &mut self,
         port_id: PortId,
@@ -910,17 +958,19 @@ impl DedicatedWorkerAgentState {
 fn run_worker_event_loop(
     state: &mut DedicatedWorkerAgentState,
     net_command_rx: &crossbeam_channel::Receiver<ipc::IpcIncoming<Command>>,
+    ua_command_rx: &crossbeam_channel::Receiver<ipc::IpcIncoming<Command>>,
     worker_command_rx: &crossbeam_channel::Receiver<WorkerCommand>,
 ) -> Result<(), String> {
     // Step 12.18 of run a worker: the responsible event loop specified by
     // inside settings, running until it is destroyed (the closing flag is
     // set).  The loop waits here for the next input: the oldest task on the
-    // worker's task queue, a command from the content process main thread, a
-    // net command (the script fetch completion), a message the owner posted
-    // over the worker's inbound channel, a message a nested worker posted
-    // over its outbound channel, or the earliest expiry time in the worker's
-    // map of active timers.  One task runs per iteration, so a task that
-    // queues another task does not starve the other inputs.
+    // worker's task queue, a command from the user agent (over the agent's
+    // own direct UA channel), a command from the content process main
+    // thread, a net command (the script fetch completion), a message the
+    // owner posted over the worker's inbound channel, a message a nested
+    // worker posted over its outbound channel, or the earliest expiry time
+    // in the worker's map of active timers.  One task runs per iteration, so
+    // a task that queues another task does not starve the other inputs.
     loop {
         // A script that ran before the loop (e.g. a data: worker's script,
         // evaluated while the fetch completed) may already have set the
@@ -949,6 +999,7 @@ fn run_worker_event_loop(
         let task_arm = select.recv(&task_queue);
         let worker_command_arm = select.recv(worker_command_rx);
         let net_arm = select.recv(net_command_rx);
+        let ua_arm = select.recv(ua_command_rx);
         let timer_arm = select.recv(&timer_expiry);
         let owner_arm = select.recv(&owner_to_worker);
         let nested_arms: Vec<(WorkerId, usize)> = nested_workers
@@ -983,6 +1034,12 @@ fn run_worker_event_loop(
                 && let Err(error) = state.handle_net_command(incoming.payload)
             {
                 error!("worker {} net command error: {error}", state.worker_id);
+            }
+        } else if arm == ua_arm {
+            if let Ok(incoming) = operation.recv(ua_command_rx)
+                && let Err(error) = state.handle_ua_command(incoming.payload)
+            {
+                error!("worker {} UA command error: {error}", state.worker_id);
             }
         } else if arm == owner_arm {
             if let Ok(payload) = operation.recv(&owner_to_worker)

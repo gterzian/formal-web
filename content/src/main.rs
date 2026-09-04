@@ -416,6 +416,25 @@ struct DocumentViewportState {
     offset_y: f32,
 }
 
+/// The content process: the top-level ad hoc process that implements the
+/// physical `formal-web-content` process and the agent cluster
+/// (<https://html.spec.whatwg.org/multipage/webappapis.html#agent-cluster>)
+/// it hosts.  Its main thread additionally runs the similar-origin window
+/// agent (<https://html.spec.whatwg.org/multipage/webappapis.html#similar-origin-window-agent>)
+/// of the cluster: the window event loop (its task queue, timers, and
+/// documents) is the state below, driven by `run_content_message_loop`, and
+/// the dedicated workers the cluster's realms spawn each run their own
+/// dedicated worker agent
+/// (<https://html.spec.whatwg.org/multipage/webappapis.html#dedicated-worker-agent>)
+/// with its own worker event loop
+/// (<https://html.spec.whatwg.org/multipage/webappapis.html#worker-event-loop-2>)
+/// on their own native thread (see `content/src/html/workers/dedicated_worker_agent.rs`).
+/// The cluster tracks its worker agents in the `workers` registry and, when
+/// an agent is obtained, reports it to the user agent
+/// (`ContentEvent::DedicatedWorkerAgentObtained`, carrying the agent's own
+/// worker event loop id and the user-agent end of the agent's own command
+/// channel) so the user agent can address commands to the worker agent's
+/// event loop directly instead of through this process's main thread.
 pub(crate) struct ContentProcess {
     event_sender: ipc::IpcSender<ContentEvent>,
     event_loop_id: EventLoopId,
@@ -2106,31 +2125,23 @@ impl ContentProcess {
     fn handle_port_task(&mut self, port_id: PortId, task: PortTaskKind) -> Result<(), String> {
         let event_sender = self.event_sender.clone();
         let Some(document_id) = self.find_port_document(port_id) else {
-            // The port is not owned by any document realm of this process.
-            // It may be held by one of the process's worker agents (a port
-            // transferred into a worker realm): forward the task to every
-            // worker agent, and the agent whose realm holds the port
-            // delivers it (the others ignore it).  With no worker agent
-            // registered the port is no longer managed by this event loop;
-            // return the task to the user agent's routing queue.
-            let worker_senders = self.workers.all_command_senders();
-            if worker_senders.is_empty() {
-                let messaging = self.any_channel_messaging().ok_or_else(|| {
-                    format!("port task: no realm to return the task for port {port_id}")
-                })?;
-                messaging
-                    .return_task_to_ua(port_id, task, &event_sender, &mut self.realm_parent)
-                    .map_err(|error| format!("port task return failed: {error}"))?;
-                return Ok(());
-            }
-            for worker_command_sender in worker_senders {
-                if let Err(error) = worker_command_sender.send(WorkerCommand::PortTask {
-                    port: port_id,
-                    task: task.clone(),
-                }) {
-                    error!("failed to forward port task for {port_id} to a worker agent: {error}");
-                }
-            }
+            // The port is not owned by any document realm of this event
+            // loop: it left the event loop (transferred away or closed)
+            // before the routed task ran.  Return the task to the user
+            // agent's routing queue, which re-routes it to the port's
+            // current owner or drops it once the port is gone.
+            // Note: A port owned by one of this process's dedicated worker
+            // agents never reaches this handler: the user agent addresses
+            // the task to the worker agent's own event loop, and the
+            // command handling forwards it directly to that agent (see
+            // `Command::PortTask`); there is no broadcast over the
+            // cluster's worker agents.
+            let messaging = self.any_channel_messaging().ok_or_else(|| {
+                format!("port task: no realm to return the task for port {port_id}")
+            })?;
+            messaging
+                .return_task_to_ua(port_id, task, &event_sender, &mut self.realm_parent)
+                .map_err(|error| format!("port task return failed: {error}"))?;
             return Ok(());
         };
         let content_document = self
@@ -2889,10 +2900,21 @@ impl ContentProcess {
                     self.run_owner_operation(
                         owner,
                         OwnerOperation::DiscardWorkerMessages { worker_id },
-                    )
-                } else {
-                    Ok(())
+                    )?;
                 }
+                // The agent's thread is joined and its worker event loop
+                // destroyed (run-a-worker steps 12.19-12.21 ran); the user
+                // agent drops the dedicated worker agent record it created
+                // on `DedicatedWorkerAgentObtained`, so port tasks can no
+                // longer be addressed to the closed agent's event loop.
+                // <https://html.spec.whatwg.org/#run-a-worker>
+                if let Err(error) = self
+                    .event_sender
+                    .send(ContentEvent::DedicatedWorkerAgentClosed { worker_id })
+                {
+                    error!("failed to report dedicated worker agent {worker_id} close: {error}");
+                }
+                Ok(())
             }
             WorkerEvent::OwnerOperation { owner, operation } => {
                 self.run_owner_operation(owner, operation)

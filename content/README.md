@@ -72,9 +72,16 @@ task, performs its steps, and performs the microtask checkpoint that ends them.
 
 Each dedicated worker agent runs its own event loop on its own native thread
 nested to the content process (see `content/src/html/workers/dedicated_worker_agent.rs`): its
-own task queue, timer map, and realm, driven from the main thread over a
-crossbeam command channel and from the net process over its own IPC channel,
-both joined into one select like the window loop's.
+own task queue, timer map, and realm, driven from the content process main
+thread over a crossbeam command channel, from the net process over its own IPC
+channel, and from the user agent over the agent's own command channel — each
+joined into one select like the window loop's.  Every dedicated worker agent
+is its own agent with its own worker event loop (its own event loop id, never
+the window agent's): when the agent is created, the content process reports
+`ContentEvent::DedicatedWorkerAgentObtained` (the worker's event loop id and
+the agent's own command channel) so the user agent can route port tasks for
+ports of that event loop directly to the worker over that channel, instead of
+broadcasting them through the content process main thread.
 Content-initiated work (window timer expiry, port message tasks) must therefore
 be **queued as a `Task`**, never run by calling its handler directly: an inline
 call skips the bookkeeping the model requires (marking the task's document
@@ -88,6 +95,9 @@ WebDriver/CDP script evaluation and event dispatch), handling the command
 queues the matching `Task`, so it runs through the same processing-model steps
 as a task queued here.  The rest (viewport, document lifecycle, navigation
 fetch completion, shutdown) `ContentProcess::handle_command` runs directly.
+A `Command::PortTask` arrives here only for ports of the window event loop;
+ports owned by a dedicated worker agent's event loop are delivered over that
+agent's own user-agent command channel (see `dedicated_worker_agent.rs`).
 
 The loop waits for the oldest task on the queue, a command, a WebAssembly
 result, or the earliest expiry time in the map of active timers

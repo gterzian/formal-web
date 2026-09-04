@@ -2,8 +2,8 @@
 
 The `user_agent` crate owns all browser-global coordination: navigables and traversables, navigation and session history, event-loop handles, content-process lifecycle, and requests coming from the embedder and webview layers.
 
-- `user_agent.rs` owns the top-level user-agent state and command loop.  A single thread selects over the user-agent command channel, the net channel, the graphics channel, and every content event loop's event channel.
-- `event_loop.rs` defines `EventLoopState`, the per-event-loop handle owned by the user-agent thread.  It holds the content process IPC sender, the content event receiver, the content child process, and the script/click waiters keyed by request id.
+- `user_agent.rs` owns the top-level user-agent state and command loop.  A single thread selects over the user-agent command channel, the net channel, the graphics channel, and every content process's event channel.  Each content process is one agent cluster: its main thread runs the similar-origin window agent's window event loop, its dedicated worker agents run their own worker event loops on nested threads, and every agent of the cluster reports over the same event channel.
+- `event_loop.rs` defines `EventLoopState`, the user-agent-side handle to one similar-origin window agent's window event loop and its dedicated content process (the content process IPC sender, the content event receiver, the content child process, and the script/click waiters keyed by request id).  Dedicated worker agents are the other agent kind: recorded in `user_agent.rs` under the window agent of their cluster (`Agent::dedicated_worker_agents`), each holding a `WorkerEventLoop` (its own event loop id and its own user-agent command channel) so commands addressed to a worker event loop — the port tasks of `Command::PortTask` — go straight to the worker, with no main-thread forwarding.
 - `fetch.rs` provides `NetConnection` — owns the IPC connection to the net extension,
   tracks pending navigation fetches, and routes responses back to the user agent.
 - `ui_event.rs` provides UI event serialization for routing across process boundaries.

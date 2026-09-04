@@ -1,9 +1,8 @@
 use blitz_traits::shell::ColorScheme;
 use crossbeam_channel::Sender;
 use ipc_messages::content::{
-    ClipboardWriteRequested, ColorScheme as MessageColorScheme, Command as ContentCommand,
-    ElementClickResult, Event as ContentEvent, EventLoopId, NavigableId, TitleChanged,
-    TraversableViewport, ViewportSnapshot, WebviewId,
+    ColorScheme as MessageColorScheme, Command as ContentCommand, Event as ContentEvent,
+    EventLoopId, NavigableId, TraversableViewport, ViewportSnapshot,
 };
 use ipc_messages::graphics::GraphicsCommand;
 use log::error;
@@ -13,15 +12,11 @@ use std::sync::Arc;
 use std::time::Duration;
 use verification::TraceSender;
 
-use crate::channel_messaging::PortEvent;
+use crate::Embedder;
 use crate::ipc_manifest::ContentExtensionManifest;
-use crate::{Embedder, UserAgentCommand};
 
 /// graceful shutdown of the content process owned by one HTML event loop.
 const CONTENT_SHUTDOWN_GRACE_TIMEOUT: Duration = Duration::from_millis(150);
-
-/// clipboard requests that cross the content/embedder boundary.
-const CONTENT_CLIPBOARD_TIMEOUT: Duration = Duration::from_secs(2);
 
 /// translating embedder color-scheme state into content IPC messages.
 fn content_color_scheme(color_scheme: ColorScheme) -> MessageColorScheme {
@@ -63,11 +58,26 @@ pub fn traversable_viewport_command(
     })
 }
 
-/// Stateful handle to one HTML event loop and its dedicated content process,
-/// owned directly by the user-agent thread.
+/// Stateful handle to the window event loop of one similar-origin window
+/// agent
+/// (<https://html.spec.whatwg.org/multipage/webappapis.html#similar-origin-window-agent>)
+/// and its dedicated content process, owned directly by the user-agent
+/// thread.  This is the window kind of the two agent event-loop kinds of
+/// this implementation: the window event loop runs on the content process
+/// main thread (the loop and its tasks live in `ContentProcess`), while a
+/// dedicated worker agent's [`crate::WorkerEventLoop`] runs on its own
+/// native thread in the same content process.
+///
+/// The content process is the agent cluster
+/// (<https://html.spec.whatwg.org/multipage/webappapis.html#agent-cluster>)
+/// of the worker agents it hosts, and its command channel is the cluster's
+/// user-agent channel: the commands the user agent addresses to this
+/// window event loop are sent over it, and the events of every agent of the
+/// cluster (window and worker alike) arrive on its event channel.
 #[derive(Debug)]
 pub struct EventLoopState {
-    /// <https://html.spec.whatwg.org/multipage/#event-loop>
+    /// <https://html.spec.whatwg.org/multipage/#concept-agent-event-loop>
+    /// The window event loop id of this similar-origin window agent.
     pub event_loop_id: EventLoopId,
     /// IPC sender for commands routed into the dedicated content process.
     pub command_sender: ipc::IpcSender<ContentCommand>,
@@ -103,147 +113,6 @@ impl EventLoopState {
             error!("failed to wait for content process exit: {error}");
         }
         self.fail_pending_waiters("content process exited");
-    }
-
-    /// Routing one content-originated event to the appropriate user-agent
-    /// behavior.  Returns `Ok(false)` when the content process has shut down.
-    pub(crate) fn handle_event(
-        &mut self,
-        incoming: ipc::IpcIncoming<ContentEvent>,
-        user_agent_command_sender: &Sender<UserAgentCommand>,
-        host: &Arc<dyn Embedder>,
-    ) -> Result<bool, String> {
-        match incoming.payload {
-            ContentEvent::NavigationRequested(request) => {
-                // Navigation start leaves the content event loop and reenters the
-                // user-agent navigation algorithm immediately.
-                user_agent_command_sender
-                    .send(UserAgentCommand::Navigate {
-                        event_loop_id: Some(self.event_loop_id),
-                        request,
-                    })
-                    .map_err(|error| format!("failed to send navigation request: {error}"))?;
-            }
-            ContentEvent::PostMessageRequested(request) => {
-                user_agent_command_sender
-                    .send(UserAgentCommand::PostMessage { request })
-                    .map_err(|error| format!("failed to send postMessage request: {error}"))?;
-            }
-            ContentEvent::PortChannelCreated { port1, port2 } => {
-                user_agent_command_sender
-                    .send(UserAgentCommand::PortEvent {
-                        event: PortEvent::ChannelCreated {
-                            port1,
-                            port2,
-                            event_loop: self.event_loop_id,
-                        },
-                    })
-                    .map_err(|error| format!("failed to forward port channel: {error}"))?;
-            }
-            ContentEvent::PortTransferStarted { port } => {
-                user_agent_command_sender
-                    .send(UserAgentCommand::PortEvent {
-                        event: PortEvent::TransferStarted { port },
-                    })
-                    .map_err(|error| format!("failed to forward port transfer: {error}"))?;
-            }
-            ContentEvent::PortTransferReceived { port } => {
-                user_agent_command_sender
-                    .send(UserAgentCommand::PortEvent {
-                        event: PortEvent::TransferReceived {
-                            port,
-                            event_loop: self.event_loop_id,
-                        },
-                    })
-                    .map_err(|error| format!("failed to forward port receive: {error}"))?;
-            }
-            ContentEvent::PortMessageRouted { tgt, msg } => {
-                user_agent_command_sender
-                    .send(UserAgentCommand::PortEvent {
-                        event: PortEvent::MessageRouted { tgt, msg },
-                    })
-                    .map_err(|error| format!("failed to forward port message: {error}"))?;
-            }
-            ContentEvent::PortBufferReturned { tgt, buf } => {
-                user_agent_command_sender
-                    .send(UserAgentCommand::PortEvent {
-                        event: PortEvent::BufferReturned { tgt, buf },
-                    })
-                    .map_err(|error| format!("failed to forward returned buffer: {error}"))?;
-            }
-            ContentEvent::PortTransferCompleted { tgt } => {
-                user_agent_command_sender
-                    .send(UserAgentCommand::PortEvent {
-                        event: PortEvent::TransferCompleted { tgt },
-                    })
-                    .map_err(|error| format!("failed to forward transfer completion: {error}"))?;
-            }
-            ContentEvent::BeforeUnloadCompleted(result) => {
-                user_agent_command_sender
-                    .send(UserAgentCommand::CompleteBeforeUnload { result })
-                    .map_err(|error| format!("failed to send beforeunload completion: {error}"))?;
-            }
-            ContentEvent::FinalizeNavigation(finalized) => {
-                user_agent_command_sender
-                    .send(UserAgentCommand::FinalizeCrossDocumentNavigation { finalized })
-                    .map_err(|error| format!("failed to send finalize navigation: {error}"))?;
-            }
-            ContentEvent::IframeTraversableRemoved(removal) => {
-                user_agent_command_sender
-                    .send(UserAgentCommand::IframeTraversableRemoved {
-                        parent_traversable_id: removal.parent_traversable_id,
-                        content_navigable_id: removal.content_navigable_id,
-                        content_frame_id: removal.content_frame_id,
-                    })
-                    .map_err(|error| {
-                        format!("failed to send iframe traversable removal: {error}")
-                    })?;
-            }
-            ContentEvent::ScriptEvaluated(result) => {
-                if let Some(waiter) = self.script_waiters.remove(&result.request_id) {
-                    let send_result = match result.error {
-                        Some(error) => Err(error),
-                        None => serde_json::from_str(&result.value_json).map_err(|error| {
-                            format!("failed to decode content script evaluation result: {error}")
-                        }),
-                    };
-                    let _ = waiter.send(send_result);
-                }
-            }
-            ContentEvent::ElementClicked(ElementClickResult { request_id, error }) => {
-                if let Some(waiter) = self.click_waiters.remove(&request_id) {
-                    let _ = waiter.send(error.map_or(Ok(()), Err));
-                }
-            }
-            ContentEvent::ClipboardWriteRequested(ClipboardWriteRequested { text }) => {
-                // Fire-and-forget: write to system clipboard, no reply expected.
-                if let Err(error) = host.clipboard_set_text(text, CONTENT_CLIPBOARD_TIMEOUT) {
-                    error!("clipboard write failed: {error}");
-                }
-            }
-            ContentEvent::TitleChanged(TitleChanged {
-                traversable_id,
-                title,
-            }) => {
-                // The content process reports the parsed title of the
-                // top-level document; forward it to the embedder.
-                if let Err(error) = host.title_changed(WebviewId(traversable_id), title) {
-                    error!("failed to forward document title: {error}");
-                }
-            }
-            ContentEvent::RegisterMediaPipeline(_) => {
-                // Content sends CreateMediaPipeline directly to the graphics process.
-                // No UA bookkeeping needed.
-            }
-            ContentEvent::RenderingOpRequested(navigable_id) => {
-                user_agent_command_sender
-                    .send(UserAgentCommand::RenderingOpportunityFor { navigable_id })
-                    .map_err(|error| format!("failed to forward rendering op request: {error}"))?;
-            }
-            ContentEvent::ShutdownCompleted => return Ok(false),
-        }
-
-        Ok(true)
     }
 
     /// Gracefully shutting down the content process owned by this event loop.

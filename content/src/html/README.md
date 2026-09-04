@@ -386,10 +386,23 @@ before extending either mechanism:
   constructor: the "in parallel" hop of constructor step 9 is the shared
   worker path.  The constructor creates the agent (a native thread) right
   there through the realm's `WorkerLauncher` (`workers/worker_launcher.rs`),
-  which registers the worker in the content process's `WorkerRegistry` for
-  the main loop's lifecycle handling; the agent thread then runs the rest of
-  run a worker.  `terminate()` sends the agent the terminate command
-  through the same launcher.
+  which registers the worker in the content process's `WorkerRegistry` (the
+  agent cluster's table of its worker agents) for the cluster's lifecycle
+  handling; the agent thread then runs the rest of run a worker.
+  `terminate()` sends the agent the terminate command through the same
+  launcher.
+- The dedicated worker agent is its own agent with its own worker event
+  loop, split across the processes like the navigation algorithms:
+  run-a-worker step 4's "obtain a dedicated/shared worker agent" is realized
+  locally (the agent's thread and its worker event loop are created in the
+  content process), and the agent's thread reports the obtained agent to the
+  user agent (`ContentEvent::DedicatedWorkerAgentObtained`, carrying its own
+  event loop id — distinct from the window agent's — and its own UA command
+  channel) as its first act, so the user agent can route port tasks for
+  ports of that event loop directly to the worker over that channel.  A
+  worker realm's channel messaging therefore registers its ports under its
+  own event loop id, and its channel-messaging events carry that id in their
+  payload (worker realms share the content process's event channel).
 
 Known gaps:
 
