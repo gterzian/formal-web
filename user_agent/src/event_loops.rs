@@ -1,3 +1,26 @@
+//! User-agent-side records of the two event-loop kinds of this
+//! implementation — the window event loop of a similar-origin window agent
+//! and the worker event loop of a dedicated worker agent — together with the
+//! content-process bootstrap that runs a window event loop inside a content
+//! process.  The event loops themselves run in the content process; these
+//! records are what the user agent needs to address them.
+//!
+//! A content process is one agent cluster: it hosts exactly one
+//! similar-origin window agent, whose window event loop runs on the
+//! process's main thread, plus the dedicated worker agents of the workers
+//! the cluster's realms create, each running its own worker event loop on
+//! its own native thread inside the same process.  The user agent owns the
+//! window agent's process directly, so the window event loop's record also
+//! carries the process resources: its command channel doubles as the
+//! cluster's channel (bootstrap, viewport, document lifecycle, shutdown)
+//! and as the window event loop's queue-task channel; its event channel
+//! carries the events of every agent of the cluster (window and worker
+//! alike — worker events carry their own event loop id in the payload when
+//! the sender cannot be inferred); and it owns the child process.  A
+//! dedicated worker agent's event loop is additionally addressed over the
+//! agent's own user-agent command channel, because its thread runs inside
+//! the window agent's process.
+
 use blitz_traits::shell::ColorScheme;
 use crossbeam_channel::Sender;
 use ipc_messages::content::{
@@ -15,10 +38,10 @@ use verification::TraceSender;
 use crate::Embedder;
 use crate::ipc_manifest::ContentExtensionManifest;
 
-/// graceful shutdown of the content process owned by one HTML event loop.
+/// Graceful shutdown of the content process owned by one window event loop.
 const CONTENT_SHUTDOWN_GRACE_TIMEOUT: Duration = Duration::from_millis(150);
 
-/// translating embedder color-scheme state into content IPC messages.
+/// Translating embedder color-scheme state into content IPC messages.
 fn content_color_scheme(color_scheme: ColorScheme) -> MessageColorScheme {
     match color_scheme {
         ColorScheme::Light => MessageColorScheme::Light,
@@ -26,7 +49,7 @@ fn content_color_scheme(color_scheme: ColorScheme) -> MessageColorScheme {
     }
 }
 
-/// viewport state delivered to content outside the HTML task queue.
+/// Viewport state delivered to content outside the HTML task queue.
 pub fn viewport_command(snapshot: (u32, u32, f32, ColorScheme)) -> ContentCommand {
     let (width, height, scale, color_scheme) = snapshot;
     ContentCommand::SetViewport(ViewportSnapshot {
@@ -37,7 +60,7 @@ pub fn viewport_command(snapshot: (u32, u32, f32, ColorScheme)) -> ContentComman
     })
 }
 
-/// per-traversable viewport state delivered to content.
+/// Per-traversable viewport state delivered to content.
 pub fn traversable_viewport_command(
     traversable_id: NavigableId,
     snapshot: (u32, u32, f32, ColorScheme),
@@ -58,26 +81,14 @@ pub fn traversable_viewport_command(
     })
 }
 
-/// Stateful handle to the window event loop of one similar-origin window
-/// agent
-/// (<https://html.spec.whatwg.org/multipage/webappapis.html#similar-origin-window-agent>)
-/// and its dedicated content process, owned directly by the user-agent
-/// thread.  This is the window kind of the two agent event-loop kinds of
-/// this implementation: the window event loop runs on the content process
-/// main thread (the loop and its tasks live in `ContentProcess`), while a
-/// dedicated worker agent's [`crate::WorkerEventLoop`] runs on its own
-/// native thread in the same content process.
+/// <https://html.spec.whatwg.org/multipage/#window-event-loop>
 ///
-/// The content process is the agent cluster
-/// (<https://html.spec.whatwg.org/multipage/webappapis.html#agent-cluster>)
-/// of the worker agents it hosts, and its command channel is the cluster's
-/// user-agent channel: the commands the user agent addresses to this
-/// window event loop are sent over it, and the events of every agent of the
-/// cluster (window and worker alike) arrive on its event channel.
+/// The user-agent-side record of one similar-origin window agent's window
+/// event loop, which runs on the main thread of the content process (the
+/// agent cluster) this record owns.
 #[derive(Debug)]
-pub struct EventLoopState {
-    /// <https://html.spec.whatwg.org/multipage/#concept-agent-event-loop>
-    /// The window event loop id of this similar-origin window agent.
+pub struct WindowEventLoop {
+    /// The event loop id of this window event loop.
     pub event_loop_id: EventLoopId,
     /// IPC sender for commands routed into the dedicated content process.
     pub command_sender: ipc::IpcSender<ContentCommand>,
@@ -92,7 +103,7 @@ pub struct EventLoopState {
     pub click_waiters: HashMap<u64, Sender<Result<(), String>>>,
 }
 
-impl EventLoopState {
+impl WindowEventLoop {
     /// Failing the outstanding automation waiters when the content process
     /// exits before replying.
     fn fail_pending_waiters(&mut self, message: &str) {
@@ -143,16 +154,40 @@ impl EventLoopState {
     }
 }
 
-/// bootstrapping a dedicated content process owned by one
-/// <https://html.spec.whatwg.org/multipage/#event-loop>.
-pub fn spawn_event_loop(
+/// <https://html.spec.whatwg.org/multipage/webappapis.html#worker-event-loop-2>
+/// The user-agent side of one dedicated worker agent's worker event loop:
+/// the agent's own event loop id and its own user-agent command channel, so
+/// the user agent can send commands addressed to the agent's event loop
+/// (e.g. the port tasks of `Command::PortTask`) directly to the worker.
+#[derive(Debug)]
+pub struct WorkerEventLoop {
+    /// The event loop id under which ports of this agent's realm are
+    /// registered with the user agent, and the destination of port tasks
+    /// routed to them.
+    pub event_loop_id: EventLoopId,
+    /// The agent's own command channel to the user agent: commands
+    /// addressed to this agent's event loop are sent directly over it,
+    /// bypassing the hosting content process's main-thread forwarding.
+    pub command_sender: ipc::IpcSender<ContentCommand>,
+}
+
+/// Creating the agent cluster of a similar-origin window agent: spawning a
+/// content process and bootstrapping the agent's window event loop inside
+/// it.  The content process is this implementation's realization of the
+/// agent cluster (<https://html.spec.whatwg.org/multipage/#agent-cluster>);
+/// its main thread runs the window event loop of the window agent the
+/// cluster hosts, and the dedicated worker agents of the workers the
+/// documents of that cluster create run their worker event loops on nested
+/// threads of the same process.  The returned record is the user-agent-side
+/// handle to the window event loop created inside the process.
+pub fn spawn_window_event_loop(
     event_loop_id: EventLoopId,
     process_label: String,
     host: Arc<dyn Embedder>,
     trace_sender: Option<TraceSender>,
     network_extension_sender: ipc::IpcSender<ipc_messages::network::Request>,
     graphics_sender_for_bootstrap: Option<ipc::IpcSender<GraphicsCommand>>,
-) -> Result<EventLoopState, String> {
+) -> Result<WindowEventLoop, String> {
     let manifest = ContentExtensionManifest::new(process_label);
     let (mut handle, connection) =
         ipc::ExtensionHandle::launch::<ContentExtensionManifest, ContentCommand, ContentEvent>(
@@ -168,7 +203,7 @@ pub fn spawn_event_loop(
     let content_command_sender = connection.sender.clone();
     // Clone senders for forwarding before they're moved into the state.
     let network_extension_sender_fwd = network_extension_sender.clone();
-    let state = EventLoopState {
+    let state = WindowEventLoop {
         event_loop_id,
         command_sender,
         event_receiver,
@@ -198,7 +233,7 @@ pub fn spawn_event_loop(
     Ok(state)
 }
 
-/// waiting on the owned content process during shutdown.
+/// Waiting on the owned content process during shutdown.
 fn wait_for_child_exit(child: &mut Child, timeout: Duration) -> Result<bool, String> {
     let deadline = std::time::Instant::now() + timeout;
     loop {

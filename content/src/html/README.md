@@ -355,16 +355,14 @@ annotations until that state is sent to the content process or forwarded.
 Dedicated-worker code lives under `workers/`, split across modules by the
 spec section that specifies each interface or algorithm (workers.html
 §10.2.1): the `Worker` platform object and its constructor steps are in
-`workers/worker.rs`; the `WorkerGlobalScope` common interface in
-`workers/worker_global_scope.rs` — since the dedicated realm's platform
-object is a `WorkerGlobalScope` domain struct, its methods also carry the
-dedicated members (name, postMessage, close, the inbound message queue) and
-the close-a-worker and import-scripts algorithms; the
-`DedicatedWorkerGlobalScope` interface's registry marker in
-`workers/dedicated_worker_global_scope.rs`; run-a-worker with the agent's
-event loop in `workers/dedicated_worker_agent.rs`; and the worker launcher
-(the `WorkerLauncher`, its `WorkerRegistry` and the registered `ContentWorker`
-records, moved out of `content/src/main.rs`) in `workers/worker_launcher.rs`.
+`workers/worker.rs`; the `WorkerGlobalScope` common interface — its event
+target, global scope, name, url, type and closing flag, plus the
+WindowOrWorkerGlobalScope mixin members — in `workers/worker_global_scope.rs`;
+the `DedicatedWorkerGlobalScope` interface, which embeds that base (the
+repo's subclass pattern) and carries the dedicated members (name,
+postMessage, close, the inside port and its inbound queue), in
+`workers/dedicated_worker_global_scope.rs`; and run-a-worker with the
+agent's event loop in `workers/dedicated_worker_agent.rs`.
 `WorkerLocation` and `WorkerNavigator` are in
 `workers/worker_location.rs` and `workers/worker_navigator.rs`.  Add new
 worker algorithms to the module that owns their spec section, quoting each
@@ -385,12 +383,18 @@ before extending either mechanism:
 - The dedicated start of run a worker runs synchronously in the `Worker`
   constructor: the "in parallel" hop of constructor step 9 is the shared
   worker path.  The constructor creates the agent (a native thread) right
-  there through the realm's `WorkerLauncher` (`workers/worker_launcher.rs`),
-  which registers the worker in the content process's `WorkerRegistry` (the
-  agent cluster's table of its worker agents) for the cluster's lifecycle
-  handling; the agent thread then runs the rest of run a worker.
-  `terminate()` sends the agent the terminate command through the same
-  launcher.
+  there and registers the worker's handle (the owner→worker channel end
+  used to terminate it, and its agent's thread) with its *owner* event
+  loop's worker inbox (`WorkerEvent::NewWorker`): the window agent's
+  main-loop inbox for a document-owned worker, the owner worker agent's
+  own inbox for a nested worker.  There is no shared worker registry —
+  each agent owns the workers its realm creates, and a worker's teardown
+  cascades down the owner chain (each agent terminates and joins its
+  nested workers before its thread returns).  The agent thread reports the
+  obtained agent to the user agent
+  (`ContentEvent::DedicatedWorkerAgentObtained`) as its first act, then
+  runs the rest of run a worker.  `terminate()` sends the agent the
+  terminate command over the worker's owner→worker channel.
 - The dedicated worker agent is its own agent with its own worker event
   loop, split across the processes like the navigation algorithms:
   run-a-worker step 4's "obtain a dedicated/shared worker agent" is realized

@@ -1,5 +1,6 @@
+mod agent;
 mod channel_messaging;
-mod event_loop;
+mod event_loops;
 mod fetch;
 pub(crate) mod ipc_manifest;
 pub(crate) mod ui_event;
@@ -13,7 +14,7 @@ use ipc_messages::content::{
     Event as ContentEvent, EventLoopId, FetchResponse as ContentFetchResponse,
     FinalizeNavigation as ContentFinalizeNavigation, FrameId, LoadedDocumentResponse, NavigableId,
     NavigateRequest, NavigationFetchId, NavigationId, NewTraversableInfo,
-    UserNavigationInvolvement, WebviewId, WorkerId, WorkerOwner, iframe_target_name,
+    UserNavigationInvolvement, WebviewId, WorkerId, iframe_target_name,
 };
 use ipc_messages::safe_passing_of_structured_data::PostMessageRequest;
 use log::{debug, error, info, trace};
@@ -32,7 +33,11 @@ fn startup_debug_enabled() -> bool {
 /// clipboard requests that cross the content/embedder boundary.
 const CONTENT_CLIPBOARD_TIMEOUT: Duration = Duration::from_secs(2);
 
-use crate::event_loop::{EventLoopState, spawn_event_loop, traversable_viewport_command};
+use crate::agent::{
+    AgentCluster, AgentClusterKey, CrossOriginIsolationMode, DedicatedWorkerAgent,
+    SimilarOriginWindowAgent,
+};
+use crate::event_loops::{WorkerEventLoop, spawn_window_event_loop, traversable_viewport_command};
 
 pub(crate) fn sidecar_executable_path(binary_name: &str) -> Result<PathBuf, String> {
     let current_executable = std::env::current_exe()
@@ -153,130 +158,6 @@ pub trait Embedder: Send + Sync {
         layers: Vec<ipc_messages::graphics::LayerFrame>,
         animating: bool,
     ) -> Result<(), String>;
-}
-
-/// <https://html.spec.whatwg.org/multipage/#cross-origin-isolation-mode>
-#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
-pub enum CrossOriginIsolationMode {
-    #[default]
-    None,
-    Logical,
-    Concrete,
-}
-
-/// <https://html.spec.whatwg.org/multipage/#agent-cluster-key>
-///
-/// The implementation stores origins as serialized strings here until the dedicated origin model is
-/// shared across all browser components.
-#[derive(Clone, Debug, Eq, Hash, PartialEq)]
-pub enum AgentClusterKey {
-    Site(String),
-    Origin(String),
-}
-
-/// <https://tc39.es/ecma262/#sec-agents>
-/// The similar-origin window agent
-/// (<https://html.spec.whatwg.org/multipage/webappapis.html#similar-origin-window-agent>)
-/// of one agent cluster (one content process): its window event loop runs on
-/// the content process main thread, and the dedicated worker agents of the
-/// workers that content process hosts nest under this record (they are part
-/// of the same agent cluster).
-#[derive(Debug)]
-pub struct Agent {
-    /// identifier standing in for the signifier created by
-    /// <https://html.spec.whatwg.org/multipage/#create-an-agent>
-    pub id: AgentId,
-    /// <https://tc39.es/ecma262/#sec-agents>
-    pub can_block: bool,
-    /// <https://html.spec.whatwg.org/multipage/#concept-agent-event-loop>
-    /// The window event loop of this similar-origin window agent: the event
-    /// loop that runs on the content process main thread (the window kind of
-    /// the two agent event-loop kinds; the worker kind is a dedicated
-    /// worker agent's [`WorkerEventLoop`]).
-    pub event_loop_id: EventLoopId,
-    /// The agent's window event loop and its dedicated content process,
-    /// owned directly by the user-agent thread.
-    pub event_loop: EventLoopState,
-    /// the traversables whose active documents run on this agent's event loop.
-    pub traversable_ids: HashSet<NavigableId>,
-    /// The dedicated worker agents of this agent cluster
-    /// (<https://html.spec.whatwg.org/multipage/webappapis.html#dedicated-worker-agent>),
-    /// keyed by worker id: each runs its own worker event loop
-    /// (<https://html.spec.whatwg.org/multipage/webappapis.html#worker-event-loop-2>)
-    /// on its own native thread nested in this agent's content process.  A
-    /// record is inserted when the content process reports the obtained
-    /// agent (`ContentEvent::DedicatedWorkerAgentObtained`) and removed when
-    /// the worker agent closes; the records die with this record, since the
-    /// content process exit takes its worker threads down.
-    pub dedicated_worker_agents: HashMap<WorkerId, DedicatedWorkerAgent>,
-}
-
-/// <https://html.spec.whatwg.org/multipage/webappapis.html#worker-event-loop-2>
-/// The user-agent side of one dedicated worker agent's worker event loop:
-/// the agent's own event loop (its own event loop id, distinct from the
-/// window event loop of the similar-origin window agent that hosts the
-/// agent's thread) together with the agent's own user-agent command channel.
-/// The event loop itself runs in the content process, on the worker agent's
-/// native thread; this record is what the user agent needs to address it:
-/// port tasks routed to a port of this event loop are sent over the agent's
-/// own command channel, straight to the worker.
-#[derive(Debug)]
-pub struct WorkerEventLoop {
-    /// The event loop id under which ports of this agent's realm are
-    /// registered with the user agent, and the destination of port tasks
-    /// routed to them.
-    pub event_loop_id: EventLoopId,
-    /// The agent's own command channel to the user agent: commands
-    /// addressed to this agent's event loop (e.g. the port tasks of
-    /// `Command::PortTask`) are sent directly over it, bypassing the
-    /// hosting content process's main-thread forwarding.
-    pub command_sender: ipc::IpcSender<ContentCommand>,
-}
-
-/// The user-agent side of one
-/// <https://html.spec.whatwg.org/multipage/webappapis.html#dedicated-worker-agent>:
-/// a dedicated worker agent whose worker event loop
-/// (<https://html.spec.whatwg.org/multipage/webappapis.html#worker-event-loop-2>)
-/// is implemented by a native thread nested in the content process that also
-/// implements the similar-origin window agent of its agent cluster.
-///
-/// The agent runs its realm and event loop in the content process; this
-/// record is the user agent's half of "obtain a dedicated worker agent"
-/// (run-a-worker step 4), mirroring the window-agent [`Agent`] records.  It
-/// is created when the content process reports the obtained agent
-/// (`ContentEvent::DedicatedWorkerAgentObtained`), is stored under the
-/// similar-origin window agent of the worker's agent cluster (see
-/// `Agent::dedicated_worker_agents`), and holds the agent's worker event
-/// loop — its own event loop id and its own command channel, so the user
-/// agent can send commands addressed to the agent's event loop (e.g. the
-/// port tasks of `Command::PortTask`) directly to the worker.
-#[derive(Debug)]
-pub struct DedicatedWorkerAgent {
-    /// identifier for the worker whose global scope this agent runs.
-    pub worker_id: WorkerId,
-    /// <https://html.spec.whatwg.org/multipage/webappapis.html#concept-agent-event-loop>
-    /// The agent's own worker event loop, distinct from the similar-origin
-    /// window agent's event loop.
-    pub event_loop: WorkerEventLoop,
-    /// <https://html.spec.whatwg.org/multipage/webappapis.html#concept-WorkerGlobalScope-owner-set>
-    /// The realm that created the worker.
-    pub owner: WorkerOwner,
-}
-
-/// <https://html.spec.whatwg.org/multipage/#agent-cluster-cross-origin-isolation>
-#[derive(Clone, Debug)]
-pub struct AgentCluster {
-    /// identifier for <https://html.spec.whatwg.org/multipage/#agent-cluster>
-    pub id: AgentClusterId,
-    /// <https://html.spec.whatwg.org/multipage/#agent-cluster-cross-origin-isolation>
-    pub cross_origin_isolation_mode: CrossOriginIsolationMode,
-    /// <https://html.spec.whatwg.org/multipage/#is-origin-keyed>
-    pub is_origin_keyed: bool,
-    /// The single
-    /// <https://html.spec.whatwg.org/multipage/#similar-origin-window-agent> associated with the
-    /// current top-level traversable in the implementation, referenced by signifier into
-    /// `UserAgentState::agents`.
-    pub similar_origin_window_agent: AgentId,
 }
 
 /// <https://html.spec.whatwg.org/multipage/#top-level-browsing-context>
@@ -524,16 +405,28 @@ pub struct UserAgentState {
     pub navigables: HashMap<NavigableId, Navigable>,
     /// <https://html.spec.whatwg.org/multipage/#tlbc-group>
     pub top_level_browsing_context_group_ids: HashMap<BrowsingContextId, BrowsingContextGroupId>,
-    /// <https://html.spec.whatwg.org/multipage/#obtain-a-similar-origin-window-agent>
-    /// The similar-origin window agents created by the user agent, keyed by
-    /// their signifier; each agent is the window agent of one agent cluster
-    /// (one content process), owns its window event loop (see the
-    /// `event_loop_id` field, mapped to
-    /// <https://html.spec.whatwg.org/multipage/#concept-agent-event-loop>),
-    /// and nests the dedicated worker agents of the workers that content
-    /// process hosts (`Agent::dedicated_worker_agents`).  Lookups from an
-    /// event-loop routing address resolve the agent by its `event_loop_id`.
-    pub agents: HashMap<AgentId, Agent>,
+    /// <https://html.spec.whatwg.org/multipage/#similar-origin-window-agent>
+    /// The similar-origin window agents obtained by the user agent, keyed
+    /// by their signifier: each window agent is the single similar-origin
+    /// window agent of one agent cluster (one content process, see the
+    /// browsing context group's agent cluster map), and owns its window
+    /// event loop (the `event_loop_id` field, mapped to
+    /// <https://html.spec.whatwg.org/multipage/#concept-agent-event-loop>).
+    pub agents: HashMap<AgentId, SimilarOriginWindowAgent>,
+    /// <https://html.spec.whatwg.org/multipage/webappapis.html#dedicated-worker-agent>
+    /// The dedicated worker agents the content processes have reported as
+    /// obtained (`ContentEvent::DedicatedWorkerAgentObtained`), keyed by
+    /// worker id.  A worker agent is created and destroyed while the
+    /// similar-origin window agent of its agent cluster lives on (the
+    /// worker thread reports the agent to the user agent and reports its
+    /// own close), so the records are not nested under the window agent;
+    /// each holds the worker agent's own event loop (its own worker event
+    /// loop id and its own user-agent command channel), so port tasks
+    /// routed to a port of that event loop are sent straight to the
+    /// worker.  The record dies when the worker agent closes
+    /// (`ContentEvent::DedicatedWorkerAgentClosed`) or when the hosting
+    /// content process exits.
+    pub worker_agents: HashMap<WorkerId, DedicatedWorkerAgent>,
     /// reverse index from top-level traversable ids to the owning event-loop id.
     pub traversable_handles: HashMap<NavigableId, EventLoopId>,
     /// last published viewport per traversable; replayed when ownership moves to a new
@@ -672,6 +565,7 @@ impl Default for UserAgentState {
             navigables: HashMap::new(),
             top_level_browsing_context_group_ids: HashMap::new(),
             agents: HashMap::new(),
+            worker_agents: HashMap::new(),
             traversable_handles: HashMap::new(),
             traversable_viewports: HashMap::new(),
             traversable_target_names: HashMap::new(),
@@ -1335,10 +1229,9 @@ fn descendant_navigable_ids_matching(
 /// Resolve the content command channel for one event loop: a similar-origin
 /// window agent's window event loop delivers over its content process's
 /// command channel; a dedicated worker agent's worker event loop delivers
-/// over the agent's own command channel (recorded under its cluster's window
-/// agent when the worker agent was obtained).  Returns `None` for an event
-/// loop the user agent no longer owns (a removed window agent or a closed
-/// worker agent).
+/// over the agent's own command channel (see `worker_agents`).  Returns
+/// `None` for an event loop the user agent no longer owns (a removed
+/// window agent or a closed worker agent).
 fn event_loop_command_sender(
     state: &UserAgentState,
     event_loop_id: EventLoopId,
@@ -1355,15 +1248,11 @@ fn event_loop_command_sender(
     // A dedicated worker agent's worker event loop: the agent's own command
     // channel, so the task is delivered straight to the worker.
     // <https://html.spec.whatwg.org/multipage/webappapis.html#dedicated-worker-agent>
-    if let Some(worker) = state.agents.values().find_map(|agent| {
-        agent
-            .dedicated_worker_agents
-            .values()
-            .find(|worker| worker.event_loop.event_loop_id == event_loop_id)
-    }) {
-        return Some(worker.event_loop.command_sender.clone());
-    }
-    None
+    state
+        .worker_agents
+        .values()
+        .find(|worker| worker.event_loop.event_loop_id == event_loop_id)
+        .map(|worker| worker.event_loop.command_sender.clone())
 }
 
 fn descendant_navigable_ids(state: &UserAgentState, navigable_id: NavigableId) -> Vec<NavigableId> {
@@ -1796,49 +1685,47 @@ impl UserAgentWorker {
                 // Run-a-worker step 4's user-agent half: a dedicated worker
                 // agent of this cluster was obtained (its thread and worker
                 // event loop were created in the content process).  Record
-                // the agent under its cluster's similar-origin window agent
-                // (the agent `event_loop_id` of this cluster's window event
-                // loop; the worker runs in this content process) — its
-                // worker event loop id and its own command channel — so
-                // port tasks routed to a port of the agent's event loop are
-                // sent directly to the worker.
+                // the agent — its worker event loop id and its own command
+                // channel — under `worker_agents`, keyed by worker id and
+                // independent of the cluster's similar-origin window agent,
+                // so port tasks routed to a port of the agent's event loop
+                // are sent directly to the worker.  The event arrived on
+                // the event channel of the window agent hosting the worker's
+                // thread (the cluster's content process); that window agent
+                // is recorded as the worker agent's host, so the record can
+                // be dropped when the process exits.
                 // <https://html.spec.whatwg.org/multipage/webappapis.html#dedicated-worker-agent>
-                let Some(host_agent) = self
+                let Some(host_agent_id) = self
                     .state
                     .agents
-                    .values_mut()
+                    .values()
                     .find(|agent| agent.event_loop_id == event_loop_id)
+                    .map(|agent| agent.id)
                 else {
                     error!(
                         "dedicated worker agent {worker_id} reported for unknown window agent {event_loop_id}"
                     );
                     return Ok(true);
                 };
-                host_agent.dedicated_worker_agents.insert(
+                self.state.worker_agents.insert(
                     worker_id,
                     DedicatedWorkerAgent {
                         worker_id,
+                        owner,
+                        host_agent_id,
                         event_loop: WorkerEventLoop {
                             event_loop_id: worker_event_loop_id,
                             command_sender: ua_command_sender,
                         },
-                        owner,
                     },
                 );
             }
             ContentEvent::DedicatedWorkerAgentClosed { worker_id } => {
                 // The worker agent's event loop was destroyed (run-a-worker
                 // steps 12.19-12.21 ran in the content process); drop the
-                // agent record from its cluster's window agent, so its event
-                // loop is no longer a port-task destination.
-                if let Some(host_agent) = self
-                    .state
-                    .agents
-                    .values_mut()
-                    .find(|agent| agent.event_loop_id == event_loop_id)
-                {
-                    host_agent.dedicated_worker_agents.remove(&worker_id);
-                }
+                // agent record, so its event loop is no longer a port-task
+                // destination.
+                self.state.worker_agents.remove(&worker_id);
             }
             ContentEvent::ShutdownCompleted => return Ok(false),
         }
@@ -1964,15 +1851,25 @@ impl UserAgentWorker {
     }
 
     /// <https://html.spec.whatwg.org/multipage/#create-an-agent>
-    fn create_agent(&mut self, can_block: bool, process_label: String) -> Result<Agent, String> {
+    fn create_an_agent(
+        &mut self,
+        can_block: bool,
+        process_label: String,
+    ) -> Result<SimilarOriginWindowAgent, String> {
         // Step 1: Let signifier be a new unique internal value.
         let agent_id = AgentId::new();
         // Step 2: Let candidateExecution be a new candidate execution.
-        // The Rust model does not surface a separate candidate-execution object because the
+        // Note: The Rust model does not surface a separate candidate-execution object because the
         // user-agent thread owns the scheduling state that HTML leaves implementation-defined.
         // Step 4: Set agent's event loop to a new event loop.
+        // Note: The event loop of a similar-origin window agent is a window
+        // event loop; it runs on the main thread of the agent cluster's
+        // content process, so creating it here spawns that process (the
+        // agent cluster the agent is added to) and bootstraps the loop
+        // inside it via ContentBootstrap.  The returned record is owned
+        // directly by the user-agent thread.
         let event_loop_id = EventLoopId::new();
-        let event_loop = spawn_event_loop(
+        let event_loop = spawn_window_event_loop(
             event_loop_id,
             process_label,
             self.host.clone(),
@@ -1983,19 +1880,90 @@ impl UserAgentWorker {
         // Step 3: Let agent be a new agent whose [[CanBlock]] is canBlock, [[Signifier]] is
         // signifier, [[CandidateExecution]] is candidateExecution, and [[IsLockFree1]],
         // [[IsLockFree2]], and [[LittleEndian]] are set at the implementation's discretion.
-        // Note: The agent's event loop (its content process) is owned directly by the
-        // user-agent thread; the lock-free details remain implicit.
+        // Note: The lock-free details remain implicit.
         // Step 5: Return agent.
-        // Note: The caller registers the returned agent in `state.agents` and, for
-        // window-opening, in the browsing context group's agent cluster.
-        Ok(Agent {
+        Ok(SimilarOriginWindowAgent {
             id: agent_id,
             can_block,
             event_loop_id,
             event_loop,
             traversable_ids: HashSet::new(),
-            dedicated_worker_agents: HashMap::new(),
         })
+    }
+
+    /// <https://html.spec.whatwg.org/multipage/#obtain-similar-origin-window-agent>
+    fn obtain_similar_origin_window_agent(
+        &mut self,
+        origin_site: &str,
+        browsing_context_group_id: BrowsingContextGroupId,
+        process_label: String,
+    ) -> Result<AgentId, String> {
+        // Step 1: Let site be the result of obtaining a site with origin.
+        // Step 2: Let key be site.
+        // Step 3: If group's cross-origin isolation mode is not "none", then
+        // set key to origin.
+        // Step 4: Otherwise, if group's historical agent cluster key
+        // map[origin] exists, then set key to group's historical agent
+        // cluster key map[origin].
+        // Step 5: Otherwise, if requestsOAC is true, then set key to origin.
+        // Note: Steps 1-5 resolve the agent cluster key.  Only site keys are
+        // reached: the paths that obtain a window agent pass a site and run
+        // with requestsOAC false, the group's cross-origin isolation mode is
+        // always "none", and the historical agent cluster key map is not
+        // modeled.
+        let key = AgentClusterKey::Site(origin_site.to_owned());
+        // Step 6: If group's agent cluster map[key] does not exist:
+        // Note: A cluster whose content process was stopped is not reusable:
+        // its recorded window agent is gone, so the record counts as a miss
+        // and is replaced below.
+        let recorded_agent_id = self
+            .state
+            .browsing_context_group_set
+            .members
+            .get(&browsing_context_group_id)
+            .and_then(|group| group.agent_cluster_map.get(&key))
+            .map(|cluster| cluster.similar_origin_window_agent)
+            .filter(|agent_id| self.state.agents.contains_key(agent_id));
+        let agent_id = if let Some(agent_id) = recorded_agent_id {
+            agent_id
+        } else {
+            // Step 6.1: Let agentCluster be a new agent cluster.
+            // Step 6.2: Set agentCluster's cross-origin isolation mode to
+            // group's cross-origin isolation mode.
+            // Step 6.3: If key is an origin, ... (not reached: key is a
+            // site, so the cluster is not origin-keyed).
+            // Step 6.4: Add the result of creating an agent, given false, to
+            // agentCluster.
+            // Note: Creating the agent realizes its window event loop by
+            // spawning the agent cluster's content process (see
+            // `create_an_agent`); inserting the agent into `state.agents` is
+            // the user-agent-side "adding the agent to the cluster".
+            let agent = self.create_an_agent(false, process_label)?;
+            let agent_id = agent.id;
+            self.state.agents.insert(agent_id, agent);
+            // Step 6.5: Set group's agent cluster map[key] to agentCluster.
+            let group = self
+                .state
+                .browsing_context_group_set
+                .members
+                .get_mut(&browsing_context_group_id)
+                .ok_or_else(|| {
+                    format!("missing browsing context group {browsing_context_group_id}")
+                })?;
+            group.agent_cluster_map.insert(
+                key,
+                AgentCluster {
+                    id: AgentClusterId::new(),
+                    cross_origin_isolation_mode: group.cross_origin_isolation_mode,
+                    is_origin_keyed: false,
+                    similar_origin_window_agent: agent_id,
+                },
+            );
+            agent_id
+        };
+        // Step 7: Return the single similar-origin window agent contained in
+        // group's agent cluster map[key].
+        Ok(agent_id)
     }
 
     /// <https://html.spec.whatwg.org/multipage/#creating-a-new-top-level-traversable>
@@ -2020,13 +1988,45 @@ impl UserAgentWorker {
         // finish loading") runs there too.
         let browsing_context_group_id = self.state.browsing_context_group_set.next_group_id();
         let browsing_context_id = BrowsingContextId::new();
-        let agent_cluster_id = AgentClusterId::new();
-        let agent = self.create_agent(false, String::from("about:blank"))?;
-        let agent_event_loop_id = agent.event_loop_id;
-        let agent_id = agent.id;
-        let command_sender = agent.event_loop.command_sender.clone();
         let document_id = DocumentId::new();
-        self.state.agents.insert(agent_id, agent);
+        // Step 9 (of "creating a new browsing context and document"): Let
+        // agent be the result of obtaining a similar-origin window agent
+        // given origin, group, and false.
+        // Note: The fresh browsing context group is created empty below; it
+        // has no agent cluster for the about:blank site key, so obtaining
+        // the agent creates the cluster — spawning the content process — and
+        // creates the window agent inside it, recording the cluster in the
+        // group's agent cluster map (see
+        // `obtain_similar_origin_window_agent`).
+        self.state.browsing_context_group_set.members.insert(
+            browsing_context_group_id,
+            BrowsingContextGroup {
+                id: browsing_context_group_id,
+                browsing_context_set: HashMap::new(),
+                agent_cluster_map: HashMap::new(),
+                historical_agent_cluster_key_map: HashMap::new(),
+                cross_origin_isolation_mode: CrossOriginIsolationMode::None,
+            },
+        );
+        let agent_id = self.obtain_similar_origin_window_agent(
+            "about:blank",
+            browsing_context_group_id,
+            String::from("about:blank"),
+        )?;
+        let agent_event_loop_id = self
+            .state
+            .agents
+            .get(&agent_id)
+            .expect("obtained window agent missing from state")
+            .event_loop_id;
+        let command_sender = self
+            .state
+            .agents
+            .get(&agent_id)
+            .expect("obtained window agent missing from state")
+            .event_loop
+            .command_sender
+            .clone();
 
         if startup_debug_enabled() {
             trace!(
@@ -2076,24 +2076,6 @@ impl UserAgentWorker {
         self.state
             .top_level_browsing_context_group_ids
             .insert(browsing_context_id, browsing_context_group_id);
-        self.state.browsing_context_group_set.members.insert(
-            browsing_context_group_id,
-            BrowsingContextGroup {
-                id: browsing_context_group_id,
-                browsing_context_set: HashMap::new(),
-                agent_cluster_map: HashMap::from([(
-                    AgentClusterKey::Site(String::from("about:blank")),
-                    AgentCluster {
-                        id: agent_cluster_id,
-                        cross_origin_isolation_mode: CrossOriginIsolationMode::None,
-                        is_origin_keyed: false,
-                        similar_origin_window_agent: agent_id,
-                    },
-                )]),
-                historical_agent_cluster_key_map: HashMap::new(),
-                cross_origin_isolation_mode: CrossOriginIsolationMode::None,
-            },
-        );
         self.create_a_new_browsing_context(
             traversable_id,
             document_id,
@@ -2895,9 +2877,14 @@ impl UserAgentWorker {
         }
     }
 
-    /// removing an agent (with its event-loop worker) and every derived index
-    /// owned by it.
-    fn remove_event_loop_entry(&mut self, event_loop_id: EventLoopId) -> Option<Agent> {
+    /// Removing one window agent (its event-loop worker) and every derived
+    /// index owned by it: its traversables, and the dedicated worker agents
+    /// of the workers its content process hosted (the process exit takes
+    /// their threads down).
+    fn remove_event_loop_entry(
+        &mut self,
+        event_loop_id: EventLoopId,
+    ) -> Option<SimilarOriginWindowAgent> {
         let agent_id = self
             .state
             .agents
@@ -2939,11 +2926,13 @@ impl UserAgentWorker {
                 .remove(&check_id);
         }
         // Note: The removed record is the similar-origin window agent of an
-        // agent cluster whose content process has exited; its nested
-        // `dedicated_worker_agents` records die with it (the process exit
-        // takes the worker threads down), so their event loops are no
-        // longer port-task destinations.
-        // <https://html.spec.whatwg.org/multipage/webappapis.html#dedicated-worker-agent>
+        // agent cluster whose content process has exited; the worker agents
+        // of the workers that process hosted (see
+        // `DedicatedWorkerAgent::host_agent_id`) are dropped with it, so
+        // their event loops are no longer port-task destinations.
+        self.state
+            .worker_agents
+            .retain(|_, worker| worker.host_agent_id != agent_id);
         Some(entry)
     }
 
@@ -3059,9 +3048,17 @@ impl UserAgentWorker {
         // Step 9: Let agent be the result of obtaining a similar-origin window
         // agent given origin, group, and false.
         // Note: The new traversable runs on the opener's event loop — the
-        // content process that created the document; the agent already exists
-        // in `state.agents`, and the cluster records its signifier.
-        let agent_id = AgentId::new();
+        // content process that created its document — so obtaining the agent
+        // resolves the existing window agent of that event loop (it is not
+        // re-created); the fresh browsing context group's cluster records
+        // that agent's signifier below.
+        let agent_id = self
+            .state
+            .agents
+            .values()
+            .find(|agent| agent.event_loop_id == event_loop_id)
+            .map(|agent| agent.id)
+            .ok_or_else(|| format!("missing window agent for event loop {event_loop_id}"))?;
 
         // Step 3: Let documentState be a new document state, with document,
         // initiator origin, origin, navigable target name, and about base URL.
@@ -3466,15 +3463,44 @@ impl UserAgentWorker {
         // Note: Steps 7.1-7.3 are not implemented: Origin-Agent-Cluster is not tracked.
         // Step 7.4: "Let agent be the result of obtaining a similar-origin window agent given
         // navigationParams's origin, browsingContext's group, and requestsOAC."
-        // Note: Runs here: a fresh agent means spawning a new content process and reassigning
-        // the traversable to its event loop before `CreateLoadedDocument` is dispatched.
-        // Steps 7.5-7.10 (realm, Window and environment settings object) run in the content
-        // process (`ContentProcess::initialise_the_document_object`).
+        // Note: Runs here: obtaining the agent creates the agent cluster (a
+        // content process) when the traversable's browsing context group has
+        // no cluster for the destination site yet, or reuses the group's
+        // existing cluster for that site, then reassigns the traversable to
+        // the agent's event loop before `CreateLoadedDocument` is dispatched.
+        // Steps 7.5-7.10 (realm, Window and environment settings object) run
+        // in the content process
+        // (`ContentProcess::initialise_the_document_object`).
+        let destination_site = content_process_label_from_url(final_url);
+        let process_label = destination_site.clone();
+        let browsing_context_group_id = {
+            let top_level_browsing_context_id = self
+                .state
+                .top_level_browsing_context_id(browsing_context_selection.browsing_context_id)
+                .unwrap_or(browsing_context_selection.browsing_context_id);
+            self.state
+                .top_level_browsing_context_group_ids
+                .get(&top_level_browsing_context_id)
+                .copied()
+                .ok_or_else(|| {
+                    format!(
+                        "missing browsing context group for browsing context {}",
+                        browsing_context_selection.browsing_context_id
+                    )
+                })?
+        };
         let old_event_loop_id = self.state.traversable_handles.get(&traversable_id).copied();
-        let agent = self.create_agent(false, content_process_label_from_url(final_url))?;
-        let new_agent_id = agent.id;
-        let new_event_loop_id = agent.event_loop_id;
-        self.state.agents.insert(new_agent_id, agent);
+        let new_agent_id = self.obtain_similar_origin_window_agent(
+            &destination_site,
+            browsing_context_group_id,
+            process_label,
+        )?;
+        let new_event_loop_id = self
+            .state
+            .agents
+            .get(&new_agent_id)
+            .expect("obtained window agent missing from state")
+            .event_loop_id;
         let mut old_event_loop_to_stop = None;
         if let Some(old_event_loop_id) = old_event_loop_id {
             if let Some(old_agent) = self
@@ -4783,6 +4809,9 @@ impl UserAgentWorker {
             .collect::<Vec<_>>();
         self.state.browsing_context_group_set.members.clear();
         self.state.navigables.clear();
+        // The worker agents' threads die with their content processes,
+        // which are shut down below.
+        self.state.worker_agents.clear();
         self.state.top_level_browsing_context_group_ids.clear();
         self.state.traversable_handles.clear();
         self.state.traversable_target_names.clear();

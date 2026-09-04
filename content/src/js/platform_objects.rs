@@ -49,9 +49,7 @@ fn global_scope_or_error(ec: &dyn ExecutionContext<crate::js::Types>) -> Option<
 /// DedicatedWorkerGlobalScope (run-a-worker step 5), which embeds its
 /// WorkerGlobalScope common interface.
 /// <https://html.spec.whatwg.org/#global-object>
-fn worker_global_scope_from(
-    data: &dyn std::any::Any,
-) -> Option<&WorkerGlobalScope> {
+fn worker_global_scope_from(data: &dyn std::any::Any) -> Option<&WorkerGlobalScope> {
     data.downcast_ref::<DedicatedWorkerGlobalScope>()
         .map(|scope| &scope.worker_global_scope)
         .or_else(|| data.downcast_ref::<WorkerGlobalScope>())

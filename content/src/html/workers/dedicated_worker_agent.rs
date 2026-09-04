@@ -183,8 +183,10 @@ pub(crate) struct DedicatedWorkerAgentConfig {
     /// process hosts this worker's thread (the agent cluster the worker
     /// agent belongs to): the id carried in the worker's net fetch requests
     /// as the network partition key, so the worker shares the network
-    /// partition of its owner's window event loop.
-    pub(crate) event_loop_id: EventLoopId,
+    /// partition of its owner's window event loop.  Not the worker agent's
+    /// own event loop id, which the worker allocates for itself when it
+    /// starts.
+    pub(crate) network_partition_event_loop_id: EventLoopId,
     /// The content-to-user-agent event sender, wired into the worker realm's
     /// global scope for its channel messaging, and used to report the
     /// obtained agent (and its close) to the user agent.
@@ -223,8 +225,9 @@ pub(crate) struct DedicatedWorkerAgentState {
     /// The event loop id of the similar-origin window agent whose content
     /// process hosts this worker's thread: the id carried in the worker's
     /// net script-fetch request as the network partition key (the worker
-    /// shares its owner window's network partition).
-    pub(crate) event_loop_id: EventLoopId,
+    /// shares its owner window's network partition).  Not the worker
+    /// agent's own event loop id.
+    pub(crate) network_partition_event_loop_id: EventLoopId,
     pub(crate) network_extension_sender: IpcSender<ipc_messages::network::Request>,
     /// The worker's own command channel to the net process; the net process
     /// sends the script fetch completion commands here.
@@ -275,12 +278,15 @@ pub(crate) fn run_a_worker(config: DedicatedWorkerAgentConfig) -> Result<(), Str
     let ua_command_rx = ipc::crossbeam_proxy(ua_command_receiver);
     // <https://html.spec.whatwg.org/#worker-event-loop-2>
     let worker_event_loop_id = EventLoopId::new();
-    if let Err(error) = config.event_sender.send(ContentEvent::DedicatedWorkerAgentObtained {
-        worker_id,
-        event_loop_id: worker_event_loop_id,
-        owner,
-        ua_command_sender: ua_command_sender.clone(),
-    }) {
+    if let Err(error) = config
+        .event_sender
+        .send(ContentEvent::DedicatedWorkerAgentObtained {
+            worker_id,
+            event_loop_id: worker_event_loop_id,
+            owner,
+            ua_command_sender: ua_command_sender.clone(),
+        })
+    {
         error!("failed to report dedicated worker agent {worker_id} to the user agent: {error}");
     }
     // This agent's own worker inbox: the channel the workers its realm
@@ -338,7 +344,7 @@ pub(crate) fn run_a_worker(config: DedicatedWorkerAgentConfig) -> Result<(), Str
         dedicated_scope
             .worker_global_scope
             .global_scope
-            .set_network_partition_event_loop_id(config.event_loop_id);
+            .set_network_partition_event_loop_id(config.network_partition_event_loop_id);
         dedicated_scope
             .worker_global_scope
             .global_scope
@@ -371,7 +377,7 @@ pub(crate) fn run_a_worker(config: DedicatedWorkerAgentConfig) -> Result<(), Str
         owner_inbox: config.owner_inbox,
         task_queue,
         active_timers,
-        event_loop_id: config.event_loop_id,
+        network_partition_event_loop_id: config.network_partition_event_loop_id,
         network_extension_sender: config.network_extension_sender,
         net_command_sender,
         pending_script_fetch: None,
@@ -494,7 +500,9 @@ impl DedicatedWorkerAgentState {
             body: String::new(),
         };
         let network_request = NetworkRequest::Fetch {
-            event_loop_id: self.event_loop_id,
+            // The network partition key: the host window agent's event loop
+            // id, never the worker agent's own event loop id.
+            event_loop_id: self.network_partition_event_loop_id,
             request_id: uuid::Uuid::new_v4(),
             request: fetch_request,
             reply_to: ResponseRecipient::ContentProcess {
@@ -921,8 +929,7 @@ impl DedicatedWorkerAgentState {
                 // nested worker's Worker object in this realm.
                 let time_millis = self.settings.current_time_millis();
                 with_global_scope(self.settings.ec(), |global_scope, ec| {
-                    let Some(target) = global_scope.owned_worker_event_target(worker_id, ec)
-                    else {
+                    let Some(target) = global_scope.owned_worker_event_target(worker_id, ec) else {
                         return Ok(());
                     };
                     fire_event(ec, &target, "error", time_millis, true)
@@ -935,7 +942,10 @@ impl DedicatedWorkerAgentState {
                     Ok(())
                 })
                 .map_err(|error| {
-                    format!("failed to fire nested worker {worker_id} error: {}", error.display())
+                    format!(
+                        "failed to fire nested worker {worker_id} error: {}",
+                        error.display()
+                    )
                 })
             }
             WorkerEvent::Closed { worker_id } => {

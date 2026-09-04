@@ -64,6 +64,26 @@ Types that currently use `&mut self` for mutation but could use `GcCell` + `&sel
 
 ## The event loop's task queue
 
+A content process is this implementation's agent cluster: it hosts exactly
+one similar-origin window agent and the dedicated worker agents of the
+workers the cluster's realms create (a worker's realm can create further
+workers, whose agents join the same cluster, so workers nest arbitrarily
+inside one process).  The process's main thread doubles as the agent
+cluster's command endpoint and as the window event loop of its
+similar-origin window agent.  As the command endpoint it consumes every
+`ipc_messages::content::Command` the user agent and net process send into
+the process (bootstrap, viewport, document lifecycle, navigation-fetch
+completions, shutdown); as the window event loop it runs the window
+agent's tasks.  A command whose spec step says to queue a task on the
+window event loop is turned into a `Task` and runs through the processing
+model; a command that is cluster-level work the implementation runs
+directly is handled immediately by `ContentProcess::handle_command` (see
+the "Known issues" note on document lifecycle commands below).  The
+cluster's dedicated worker agents do not use this main thread for their
+event loops: each runs its own worker event loop on its own native
+thread, and the user agent addresses each over the agent's own command
+channel.
+
 The window agent's HTML event loop runs on the content process main thread
 (`run_content_message_loop` in `content/src/main.rs`).  Every task source feeds
 one queue of `Task` (`content/src/html/event_loop.rs`), and

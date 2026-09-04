@@ -529,7 +529,11 @@ fn setup_worker_realm(
             let dedicated_worker_global_scope =
                 DedicatedWorkerGlobalScope::new(global_scope, _name, _worker_type, engine);
             let global_obj = engine.realm_global_object();
-            js_engine::associate_existing_object(engine, &global_obj, dedicated_worker_global_scope);
+            js_engine::associate_existing_object(
+                engine,
+                &global_obj,
+                dedicated_worker_global_scope,
+            );
             global_obj
         }
         #[cfg(boa_backend)]

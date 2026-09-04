@@ -173,7 +173,9 @@ pub(crate) fn try_set_event_target_reflector(
                             error.display()
                         );
                     }
-                } else if let Some(dedicated_scope) = data.downcast_mut::<DedicatedWorkerGlobalScope>() {
+                } else if let Some(dedicated_scope) =
+                    data.downcast_mut::<DedicatedWorkerGlobalScope>()
+                {
                     ec.store_js_object(
                         &mut dedicated_scope.worker_global_scope.event_target.reflector,
                         reflector,
@@ -301,7 +303,8 @@ pub(crate) fn try_with_event_target_mut<R>(
                 result = Ok(f(&mut port.event_target, ec));
             } else if let Some(worker) = data.downcast_mut::<Worker>() {
                 result = Ok(f(&mut worker.event_target, ec));
-            } else if let Some(dedicated_scope) = data.downcast_mut::<DedicatedWorkerGlobalScope>() {
+            } else if let Some(dedicated_scope) = data.downcast_mut::<DedicatedWorkerGlobalScope>()
+            {
                 result = Ok(f(&mut dedicated_scope.worker_global_scope.event_target, ec));
             } else if let Some(worker_global_scope) = data.downcast_mut::<WorkerGlobalScope>() {
                 result = Ok(f(&mut worker_global_scope.event_target, ec));

@@ -847,11 +847,21 @@ pub enum WorkerOwner {
     Worker(WorkerId),
 }
 
-/// A message the user agent (or the net process) sends the content process to
-/// drive it.  A command is not an event-loop task: when the spec step behind a
-/// command says to queue a task on the content process's event loop, the
-/// content process queues the corresponding `Task` while handling the command
-/// (see `content/src/html/event_loop.rs`).
+/// A message the user agent (or the net process) sends into a content
+/// process to drive it.  A content process is one agent cluster; most
+/// commands are addressed to the cluster's single similar-origin window
+/// agent and arrive on the process's main command channel, whose receiver —
+/// the content process main thread — both handles the cluster's work
+/// (bootstrap, viewport, document lifecycle, navigation-fetch completions,
+/// shutdown) and runs the window agent's event loop.  A command is not an
+/// event-loop task: when the spec step behind a command says to queue a
+/// task on the window event loop, the content process queues the
+/// corresponding `Task` while handling the command (see
+/// `content/src/html/event_loop.rs`); the cluster-level commands it runs
+/// directly.  A dedicated worker agent of the cluster is addressed over its
+/// own user-agent command channel (see
+/// `ContentEvent::DedicatedWorkerAgentObtained`) rather than the process's
+/// main channel.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum Command {
     SetViewport(ViewportSnapshot),
@@ -918,7 +928,11 @@ pub enum Command {
     /// direct net→content response routing), the TLA trace sender, and initial
     /// configuration.
     ContentBootstrap {
-        /// The event loop this content process hosts.
+        /// The event loop id of the similar-origin window agent whose window
+        /// event loop this content process (its agent cluster) will run on
+        /// its main thread.  The id doubles as the cluster's network
+        /// partition key: every realm of the cluster — the window agent's
+        /// and its dedicated worker agents' alike — keys its fetches by it.
         event_loop_id: EventLoopId,
         net_sender: ipc::IpcSender<crate::network::Request>,
         /// Direct sender to the graphics process.
@@ -1084,13 +1098,14 @@ pub enum Event {
     /// The dedicated worker agent of one of this content process's workers
     /// was obtained: the run-a-worker step 4 split of "obtain a dedicated/
     /// shared worker agent" (dedicated path, is shared false).  The content
-    /// process ran the local half of the step — creating the agent's native
-    /// thread that implements the agent and its worker event loop, and
-    /// registering the agent with its agent cluster (the content process's
-    /// worker registry) so the cluster can manage its lifecycle — and the
-    /// user agent runs its half here: recording the dedicated worker agent
-    /// and its worker event loop, so port tasks routed to the agent's event
-    /// loop can be sent over the agent's own user-agent channel.
+    /// side ran the local half of the step — creating the agent's native
+    /// thread that implements the agent and its worker event loop — and the
+    /// Worker constructor registered the worker's handle with its owner
+    /// event loop (the window agent's main-loop worker inbox, or the owner
+    /// worker agent's own inbox for a nested worker); the user agent runs
+    /// its half here: recording the dedicated worker agent and its worker
+    /// event loop, so port tasks routed to the agent's event loop can be
+    /// sent over the agent's own user-agent channel.
     ///
     /// The event is sent over the content process's event channel, which
     /// identifies the agent cluster (the similar-origin window agent's

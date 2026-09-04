@@ -414,26 +414,40 @@ struct DocumentViewportState {
     offset_y: f32,
 }
 
-/// The content process: the top-level ad hoc process that implements the
-/// physical `formal-web-content` process and the agent cluster
-/// (<https://html.spec.whatwg.org/multipage/webappapis.html#agent-cluster>)
-/// it hosts.  Its main thread additionally runs the similar-origin window
-/// agent (<https://html.spec.whatwg.org/multipage/webappapis.html#similar-origin-window-agent>)
-/// of the cluster: the window event loop (its task queue, timers, and
-/// documents) is the state below, driven by `run_content_message_loop`, and
-/// the dedicated workers the cluster's realms spawn each run their own
-/// dedicated worker agent
+/// The content process: this implementation's realization of one agent
+/// cluster (<https://html.spec.whatwg.org/multipage/webappapis.html#agent-cluster>)
+/// as the physical `formal-web-content` process.  The process hosts exactly
+/// one similar-origin window agent
+/// (<https://html.spec.whatwg.org/multipage/webappapis.html#similar-origin-window-agent>)
+/// plus the dedicated worker agents
 /// (<https://html.spec.whatwg.org/multipage/webappapis.html#dedicated-worker-agent>)
-/// with its own worker event loop
+/// of the workers the cluster's realms create.
+///
+/// The main thread doubles as the agent cluster's command endpoint and as
+/// the window event loop
+/// (<https://html.spec.whatwg.org/multipage/webappapis.html#window-event-loop>)
+/// of the cluster's similar-origin window agent.  As the cluster's command
+/// endpoint it consumes every `ipc_messages::content::Command` sent to the
+/// process's main command channel — the user agent's commands, and the net
+/// process's document-fetch completions routed back over
+/// `ResponseRecipient::ContentProcess` — (`run_content_message_loop`
+/// selects on the command channel): the commands whose spec steps say to
+/// queue a task on the window event loop are queued as `Task`s, and the
+/// cluster-level commands (bootstrap, viewport, document lifecycle,
+/// navigation-fetch completions, shutdown) run directly on this thread.  As
+/// the window event loop it runs those tasks — its task queue, timers, and
+/// documents are the state below.  The dedicated worker agents each run
+/// their own worker event loop
 /// (<https://html.spec.whatwg.org/multipage/webappapis.html#worker-event-loop-2>)
-/// on their own native thread (see `content/src/html/workers/dedicated_worker_agent.rs`).
-/// The window agent keeps the [`WorkerHandle`] of each worker its documents
-/// own (`ContentProcess::workers`); each worker agent owns its nested
-/// workers the same way, and each worker reports itself to the user agent
-/// (`ContentEvent::DedicatedWorkerAgentObtained`, carrying the agent's own
-/// worker event loop id and the user-agent end of the agent's own command
-/// channel) so the user agent can address commands to the worker agent's
-/// event loop directly instead of through this process's main thread.
+/// on their own native thread (see
+/// `content/src/html/workers/dedicated_worker_agent.rs`), addressed by the
+/// user agent over the agent's own command channel instead of this process's
+/// main thread.  The window agent keeps the [`WorkerHandle`] of each worker
+/// its documents own (`ContentProcess::workers`); each worker agent owns its
+/// nested workers the same way, and each worker reports itself to the user
+/// agent (`ContentEvent::DedicatedWorkerAgentObtained`, carrying the agent's
+/// own worker event loop id and the user-agent end of the agent's own
+/// command channel).
 pub(crate) struct ContentProcess {
     event_sender: ipc::IpcSender<ContentEvent>,
     event_loop_id: EventLoopId,
@@ -3056,9 +3070,7 @@ impl ContentProcess {
             fire_event(ec, &target, "error", time_millis, true)
                 .map(|_| ())
                 .map_err(|error| {
-                    ec.new_type_error(&format!(
-                        "failed to fire worker error event: {error:?}"
-                    ))
+                    ec.new_type_error(&format!("failed to fire worker error event: {error:?}"))
                 })?;
             Ok(())
         })
@@ -3079,7 +3091,10 @@ impl ContentProcess {
             if let Some(join_handle) = handle.join_handle
                 && let Err(panic) = join_handle.join()
             {
-                error!("worker {} thread panicked during shutdown: {panic:?}", handle.worker_id);
+                error!(
+                    "worker {} thread panicked during shutdown: {panic:?}",
+                    handle.worker_id
+                );
             }
         }
         Ok(())

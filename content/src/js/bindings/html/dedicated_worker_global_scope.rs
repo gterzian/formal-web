@@ -1,8 +1,6 @@
 use crate::html::DedicatedWorkerGlobalScope;
 use crate::js::Types;
-use crate::js::bindings::html::worker_global_scope::{
-    event_handler_getter, event_handler_setter,
-};
+use crate::js::bindings::html::worker_global_scope::{event_handler_getter, event_handler_setter};
 use crate::webidl::bindings::{AttributeDef, InterfaceDefinition, OperationDef, WebIdlInterface};
 use js_engine::{Completion, ExecutionContext, JsTypes};
 

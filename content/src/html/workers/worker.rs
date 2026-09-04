@@ -191,7 +191,7 @@ impl Worker {
             request,
             owner_to_worker: owner_to_worker_rx,
             owner_inbox: worker_inbox.clone(),
-            event_loop_id: network_partition_event_loop_id,
+            network_partition_event_loop_id,
             event_sender: event_sender.clone(),
             network_extension_sender,
             trace_sender,
@@ -202,9 +202,8 @@ impl Worker {
         let join_handle = match std::thread::Builder::new()
             .name(format!("formal-web:worker-{worker_id}"))
             .spawn(move || {
-                let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                    run_a_worker(config)
-                }));
+                let result =
+                    std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| run_a_worker(config)));
                 match result {
                     Ok(Err(error)) => error!("worker thread {worker_id} failed: {error}"),
                     Ok(Ok(())) => {}
@@ -214,10 +213,9 @@ impl Worker {
                 // user agent drops the agent record it created on
                 // DedicatedWorkerAgentObtained, and the owner event loop
                 // joins the thread and runs the owner-side cleanup.
-                let _ = thread_event_sender
-                    .send(ContentEvent::DedicatedWorkerAgentClosed {
-                        worker_id: thread_worker_id,
-                    });
+                let _ = thread_event_sender.send(ContentEvent::DedicatedWorkerAgentClosed {
+                    worker_id: thread_worker_id,
+                });
                 let _ = thread_inbox.send(WorkerEvent::Closed {
                     worker_id: thread_worker_id,
                 });
@@ -284,7 +282,9 @@ impl Worker {
         // A closed worker (its agent exited and dropped its channel end, or
         // the owner document went away) drops the message, the same expected
         // condition as a reply channel send.
-        let _ = self.outside_port.send(WorkerInbound::Message(serialize_result));
+        let _ = self
+            .outside_port
+            .send(WorkerInbound::Message(serialize_result));
         Ok(())
     }
 

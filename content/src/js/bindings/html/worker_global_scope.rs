@@ -1,4 +1,4 @@
-use crate::html::{DedicatedWorkerGlobalScope, WorkerGlobalScope, WindowOrWorkerGlobalScope};
+use crate::html::{DedicatedWorkerGlobalScope, WindowOrWorkerGlobalScope, WorkerGlobalScope};
 use crate::js::Types;
 use crate::js::downcast::event_target_from_js_object;
 use crate::js::platform_objects::with_worker_global_scope;
@@ -205,12 +205,7 @@ pub(crate) fn event_handler_setter(
         .with_object_any(&object)
         .and_then(|data| {
             data.downcast_ref::<DedicatedWorkerGlobalScope>()
-                .map(|scope| {
-                    (
-                        scope.worker_global_scope.clone(),
-                        Some(scope.clone()),
-                    )
-                })
+                .map(|scope| (scope.worker_global_scope.clone(), Some(scope.clone())))
                 .or_else(|| {
                     data.downcast_ref::<WorkerGlobalScope>()
                         .map(|scope| (scope.clone(), None))

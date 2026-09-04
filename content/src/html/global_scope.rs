@@ -22,8 +22,8 @@ use ipc::IpcSender;
 use ipc_messages::content::{
     DocumentId, Event as ContentEvent, EventLoopId, NavigableId, WindowTimerKey, WorkerId,
 };
-use ipc_messages::network::Request as NetworkRequest;
 use ipc_messages::media::VideoPaintId;
+use ipc_messages::network::Request as NetworkRequest;
 use js_engine::gc::{GcCell, gc_cell_new};
 use js_engine::{Completion, ExecutionContext, JsTypes, gc_struct};
 use log::{debug, error};
@@ -541,7 +541,8 @@ impl GlobalScope {
     /// make (the event loop id of the agent cluster's similar-origin window
     /// agent).
     pub(crate) fn set_network_partition_event_loop_id(&self, event_loop_id: EventLoopId) {
-        self.network_partition_event_loop_id.set(Some(event_loop_id));
+        self.network_partition_event_loop_id
+            .set(Some(event_loop_id));
     }
 
     /// The network partition key of the fetches this realm's workers make,
