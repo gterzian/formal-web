@@ -43,9 +43,8 @@ pub enum AgentClusterKey {
 /// owns: every agent has exactly one event loop (see
 /// <https://html.spec.whatwg.org/multipage/webappapis.html#concept-agent-event-loop>),
 /// and its id is how content addresses the agent, so the loop id is the
-/// registry key.  Worker agents are recorded flat, not nested under the
-/// window agent of their cluster: a worker agent is created and destroyed
-/// while its host window agent lives on.
+/// registry key.  Worker agents are recorded flat, created and destroyed while
+/// their host window agent lives on.
 #[derive(Debug)]
 pub enum Agent {
     /// <https://html.spec.whatwg.org/multipage/webappapis.html#similar-origin-window-agent>

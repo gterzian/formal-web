@@ -387,10 +387,10 @@ before extending either mechanism:
   used to terminate it, and its agent's thread) with its *owner* event
   loop's worker inbox (`WorkerEvent::NewWorker`): the window agent's
   main-loop inbox for a document-owned worker, the owner worker agent's
-  own inbox for a nested worker.  There is no shared worker registry —
-  each agent owns the workers its realm creates, and a worker's teardown
-  cascades down the owner chain (each agent terminates and joins its
-  nested workers before its thread returns).  The agent thread reports the
+  own inbox for a nested worker.  Each agent owns the workers its realm
+  creates, and a worker's teardown cascades down the owner chain (each
+  agent terminates and joins its nested workers before its thread
+  returns).  The agent thread reports the
   obtained agent to the user agent
   (`ContentEvent::DedicatedWorkerAgentObtained`) as its first act, then
   runs the rest of run a worker.  `terminate()` sends the agent the

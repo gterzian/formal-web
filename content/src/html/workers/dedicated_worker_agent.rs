@@ -97,8 +97,7 @@ pub(crate) enum WorkerInbound {
 /// The window agent's inbox is the content process main loop's; each
 /// dedicated worker agent has its own inbox for the workers its realm
 /// spawns (nested workers), so a worker always reports straight to its
-/// owner's event loop — there is no shared registry and no main-thread
-/// forwarding for nested workers.
+/// owner's event loop.
 /// <https://html.spec.whatwg.org/#run-a-worker>
 pub(crate) enum WorkerEvent {
     /// A worker this loop's realm owns was spawned: the Worker constructor
@@ -151,8 +150,8 @@ pub(crate) enum WorkerEvent {
 /// the owner needs beyond the Worker platform object in its realm: the
 /// owner→worker channel end used to terminate the worker, and the agent's
 /// thread, joined when the worker closes.  Each owner keeps only the handles
-/// of its own workers (shutdown and termination travel down the owner
-/// chain); there is no shared worker registry.
+/// of its own workers, and shutdown and termination travel down the owner
+/// chain.
 /// <https://html.spec.whatwg.org/#run-a-worker>
 pub(crate) struct WorkerHandle {
     /// <https://html.spec.whatwg.org/#concept-WorkerGlobalScope-owner-set>
@@ -269,9 +268,8 @@ pub(crate) fn run_a_worker(config: DedicatedWorkerAgentConfig) -> Result<(), Str
     // here first: this thread creates its own UA command channel and reports
     // the obtained agent (`DedicatedWorkerAgentObtained`, carrying the
     // agent's own worker event loop id and the user-agent end of its own
-    // command channel), so the user agent can route port tasks for ports of
-    // this event loop directly to this thread over that channel — no
-    // cluster-side forwarding and no worker registry in the content process.
+    // command channel), so the user agent routes port tasks for ports of
+    // this event loop directly to this thread over that channel.
     // <https://html.spec.whatwg.org/#dedicated-worker-agent>
     let (ua_command_sender, ua_command_receiver) = ipc::channel::<Command>()
         .map_err(|error| format!("worker {worker_id}: failed to create UA channel: {error}"))?;
@@ -430,11 +428,10 @@ impl DedicatedWorkerAgentState {
     }
 
     /// Terminate the workers this realm owns (nested workers) and join their
-    /// threads: their owner realm is going away, so they are no longer
-    /// protected.  Runs when this agent's event loop exits (its closing flag
-    /// was set by close(), terminate-a-worker, or the failure of its own
-    /// script fetch), before this thread returns, so shutdown travels down
-    /// the owner chain without a shared worker registry.
+    /// threads: their owner realm is going away.  Runs when this agent's
+    /// event loop exits (its closing flag was set by close(),
+    /// terminate-a-worker, or the failure of its own script fetch), before
+    /// this thread returns, so shutdown travels down the owner chain.
     fn terminate_and_join_nested_workers(&mut self) {
         let nested: Vec<WorkerHandle> = self
             .nested_workers
@@ -977,8 +974,7 @@ impl DedicatedWorkerAgentState {
 
     /// Handle a command the user agent sent this dedicated worker agent
     /// directly, over the agent's own UA channel (its worker event loop's
-    /// channel; the direct UA-to-worker channel, with no cluster-side
-    /// forwarding).
+    /// channel).
     fn handle_ua_command(&mut self, command: Command) -> Result<(), String> {
         match command {
             Command::PortTask { port, task } => {

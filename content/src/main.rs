@@ -461,9 +461,9 @@ pub(crate) struct ContentProcess {
     /// channel end used to terminate a worker whose owner document is
     /// destroyed (and at shutdown) and its agent's thread, joined when the
     /// worker closes.  The handles are plain state of the main thread (the
-    /// window agent's event loop) — each worker reports straight to this
+    /// window agent's event loop): each worker reports straight to this
     /// agent's worker inbox, and each worker agent owns its own nested
-    /// workers, so there is no shared worker registry.
+    /// workers.
     workers: Vec<WorkerHandle>,
     /// The window agent's worker inbox: the channel the workers its
     /// documents own register on and report their posted messages and
