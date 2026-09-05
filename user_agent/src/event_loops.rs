@@ -95,11 +95,7 @@ pub struct WindowEventLoop {
     /// IPC receiver for content-originated events: navigation requests and
     /// continuations, clipboard writes, rendering-opportunity requests,
     /// postMessage and message-port events, title reports, and
-    /// dedicated-worker-agent obtained/closed reports.  Content fetches do
-    /// not transit the user agent: subresource fetches go content→net over
-    /// the content process's own net channel, and the user agent runs
-    /// navigation fetches itself against the net process over its own
-    /// connection, forwarding the response to content as a command.
+    /// dedicated-worker-agent obtained/closed reports.
     pub event_receiver: crossbeam_channel::Receiver<ipc::IpcIncoming<ContentEvent>>,
     /// Child process handle for the content process.
     pub child: Option<Child>,
@@ -171,21 +167,15 @@ pub struct WorkerEventLoop {
     /// registered with the user agent, and the destination of port tasks
     /// routed to them.
     pub event_loop_id: EventLoopId,
-    /// The agent's own command channel to the user agent: commands
-    /// addressed to this agent's event loop are sent directly over it,
-    /// bypassing the hosting content process's main-thread forwarding.
+    /// The agent's own command channel to the user agent, carried in
+    /// `ContentEvent::DedicatedWorkerAgentObtained`.
     pub command_sender: ipc::IpcSender<ContentCommand>,
 }
 
-/// Creating the agent cluster of a similar-origin window agent: spawning a
-/// content process and bootstrapping the agent's window event loop inside
-/// it.  The content process is this implementation's realization of the
-/// agent cluster (<https://html.spec.whatwg.org/multipage/#agent-cluster>);
-/// its main thread runs the window event loop of the window agent the
-/// cluster hosts, and the dedicated worker agents of the workers the
-/// documents of that cluster create run their worker event loops on nested
-/// threads of the same process.  The returned record is the user-agent-side
-/// handle to the window event loop created inside the process.
+/// Launch the content process that is a new similar-origin window agent's
+/// cluster and bootstrap the agent's window event loop inside it; returns
+/// the user-agent-side handle to that event loop (see `agent.rs`, the
+/// obtain-similar-origin-window-agent caller).
 pub fn spawn_window_event_loop(
     event_loop_id: EventLoopId,
     process_label: String,

@@ -370,43 +370,15 @@ spec step verbatim in `// Step N:` comments and annotating deviations
 inline at the step they diverge from (see `AGENTS.md`, "Algorithm
 Implementation").
 
-Two design decisions change how the spec's worker channel and lifecycle are
-realized, and each is documented where it diverges — per-field on the
-channel types and platform objects, per-step in the run-a-worker and
-terminate-a-worker bodies — rather than summarized here.  Read those notes
-before extending either mechanism:
-
-- The worker's implicit outside/inside MessagePort pair is not created:
-  owner and worker communicate over two direct crossbeam channel ends, and
-  the port role each end replaces is mapped on `Worker::outside_port`, the
-  `WorkerBootstrap` fields and `DedicatedWorkerAgentState`.
-- The dedicated start of run a worker runs synchronously in the `Worker`
-  constructor: the "in parallel" hop of constructor step 9 is the shared
-  worker path.  The constructor creates the agent (a native thread) right
-  there and registers the worker's handle (the owner→worker channel end
-  used to terminate it, and its agent's thread) with its *owner* event
-  loop's worker inbox (`WorkerEvent::NewWorker`): the window agent's
-  main-loop inbox for a document-owned worker, the owner worker agent's
-  own inbox for a nested worker.  Each agent owns the workers its realm
-  creates, and a worker's teardown cascades down the owner chain (each
-  agent terminates and joins its nested workers before its thread
-  returns).  The agent thread reports the
-  obtained agent to the user agent
-  (`ContentEvent::DedicatedWorkerAgentObtained`) as its first act, then
-  runs the rest of run a worker.  `terminate()` sends the agent the
-  terminate command over the worker's owner→worker channel.
-- The dedicated worker agent is its own agent with its own worker event
-  loop, split across the processes like the navigation algorithms:
-  run-a-worker step 4's "obtain a dedicated/shared worker agent" is realized
-  locally (the agent's thread and its worker event loop are created in the
-  content process), and the agent's thread reports the obtained agent to the
-  user agent (`ContentEvent::DedicatedWorkerAgentObtained`, carrying its own
-  event loop id — distinct from the window agent's — and its own UA command
-  channel) as its first act, so the user agent can route port tasks for
-  ports of that event loop directly to the worker over that channel.  A
-  worker realm's channel messaging therefore registers its ports under its
-  own event loop id, and its channel-messaging events carry that id in their
-  payload (worker realms share the content process's event channel).
+Design decisions that change how the spec's worker channel and lifecycle
+are realized are annotated where they diverge — per-field on the channel
+types and platform objects, per-step in the run-a-worker and
+terminate-a-worker bodies — not summarized here.  Read those notes before
+extending either mechanism.  The one cross-cutting deviation: the worker's
+implicit outside/inside MessagePort pair is not created.  Owner and worker
+communicate over two direct crossbeam channel ends, with the port role
+each end replaces mapped on `Worker::outside_port`, the `WorkerBootstrap`
+fields and `DedicatedWorkerAgentState`.
 
 Known gaps:
 

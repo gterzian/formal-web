@@ -25,12 +25,11 @@ pub(crate) fn build_realm(
     build_realm_inner(engine, document)
 }
 
-/// Build a fresh JavaScript engine context for a worker realm, whose global
-/// object is a worker global scope.
+/// Build a fresh JavaScript engine for a dedicated worker agent's realm,
+/// whose global object is a worker global scope.
 ///
-/// A dedicated worker runs in its own agent, so its realm is always built in
-/// a fresh engine (its own JS heap); it is never a child realm of the owner's
-/// engine the way `build_realm` creates window realms.
+/// A dedicated worker runs in its own agent, so its realm is always built
+/// in a fresh engine (its own JS heap).
 pub(crate) fn build_worker_realm(
     document: Rc<RefCell<BaseDocument>>,
     name: String,
@@ -465,17 +464,12 @@ fn setup_realm(engine: &mut Engine, _document: Rc<RefCell<BaseDocument>>) -> Res
     Ok(())
 }
 
-/// Finish building the realm of a dedicated worker agent: create the
-/// realm's global object — the DedicatedWorkerGlobalScope that run a
-/// worker's step 5 creates for the global object, carrying the worker's
-/// name and type — and run the same realm bootstrap `setup_realm` runs for
-/// window realms (interface registry, prototype wiring, global-object
-/// prototype).  The Boa backend performs the global-object construction
-/// through its realm-creation host hooks (the factory passed to
-/// `build_worker_realm`), so only JSC/V8 create it here and associate it
-/// with the realm's global object; the bootstrap below runs on every
-/// backend.  The run-a-worker step annotations for the realm and the
-/// worker environment settings object live on
+/// Finish building a dedicated worker agent's realm: create the realm's
+/// global object — the DedicatedWorkerGlobalScope that run-a-worker step 5
+/// creates for the global object, carrying the worker's name and type — and
+/// run the realm bootstrap `setup_realm` runs for window realms.  The
+/// run-a-worker step annotations for the realm and its worker environment
+/// settings object live on
 /// `EnvironmentSettingsObject::new_worker_in_realm`
 /// (<https://html.spec.whatwg.org/#set-up-a-worker-environment-settings-object>),
 /// which calls `build_worker_realm`.

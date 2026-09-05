@@ -36,15 +36,9 @@ pub enum AgentClusterKey {
     Origin(String),
 }
 
-/// The HTML agents this user agent records — the similar-origin window
+/// The HTML agents this user agent records: the similar-origin window
 /// agent of every agent cluster it spawns and the dedicated worker agents
-/// the clusters' content processes report as obtained — registered side by
-/// side in `UserAgentState::agents`, keyed by the event loop each agent
-/// owns: every agent has exactly one event loop (see
-/// <https://html.spec.whatwg.org/multipage/webappapis.html#concept-agent-event-loop>),
-/// and its id is how content addresses the agent, so the loop id is the
-/// registry key.  Worker agents are recorded flat, created and destroyed while
-/// their host window agent lives on.
+/// the clusters' content processes report as obtained.
 #[derive(Debug)]
 pub enum Agent {
     /// <https://html.spec.whatwg.org/multipage/webappapis.html#similar-origin-window-agent>

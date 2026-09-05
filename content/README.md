@@ -64,25 +64,13 @@ Types that currently use `&mut self` for mutation but could use `GcCell` + `&sel
 
 ## The event loop's task queue
 
-A content process is this implementation's agent cluster: it hosts exactly
-one similar-origin window agent and the dedicated worker agents of the
-workers the cluster's realms create (a worker's realm can create further
-workers, whose agents join the same cluster, so workers nest arbitrarily
-inside one process).  The process's main thread doubles as the agent
-cluster's command endpoint and as the window event loop of its
-similar-origin window agent.  As the command endpoint it consumes every
-`ipc_messages::content::Command` the user agent and net process send into
-the process (bootstrap, viewport, document lifecycle, navigation-fetch
-completions, shutdown); as the window event loop it runs the window
-agent's tasks.  A command whose spec step says to queue a task on the
-window event loop is turned into a `Task` and runs through the processing
-model; a command that is cluster-level work the implementation runs
-directly is handled immediately by `ContentProcess::handle_command` (see
-the "Known issues" note on document lifecycle commands below).  The
-cluster's dedicated worker agents do not use this main thread for their
-event loops: each runs its own worker event loop on its own native
-thread, and the user agent addresses each over the agent's own command
-channel.
+A content process is one agent cluster: it hosts the similar-origin window
+agent of the cluster and the dedicated worker agents of the workers the
+cluster's realms create (a worker's realm can create further workers, whose
+agents join the same cluster).  The event loop below is the window agent's;
+each dedicated worker agent runs its own worker event loop on its own native
+thread, with its own task queue, timer map and realm (see
+`content/src/html/workers/dedicated_worker_agent.rs`).
 
 The window agent's HTML event loop runs on the content process main thread
 (`run_content_message_loop` in `content/src/main.rs`).  Every task source feeds
@@ -90,18 +78,6 @@ one queue of `Task` (`content/src/html/event_loop.rs`), and
 `ContentProcess::run_task` is the only place that runs one: it takes the oldest
 task, performs its steps, and performs the microtask checkpoint that ends them.
 
-Each dedicated worker agent runs its own event loop on its own native thread
-nested to the content process (see `content/src/html/workers/dedicated_worker_agent.rs`): its
-own task queue, timer map, and realm, driven from the content process main
-thread over a crossbeam command channel, from the net process over its own IPC
-channel, and from the user agent over the agent's own command channel — each
-joined into one select like the window loop's.  Every dedicated worker agent
-is its own agent with its own worker event loop (its own event loop id, never
-the window agent's): when the agent is created, the content process reports
-`ContentEvent::DedicatedWorkerAgentObtained` (the worker's event loop id and
-the agent's own command channel) so the user agent can route port tasks for
-ports of that event loop directly to the worker over that channel, instead of
-broadcasting them through the content process main thread.
 Content-initiated work (window timer expiry, port message tasks) must therefore
 be **queued as a `Task`**, never run by calling its handler directly: an inline
 call skips the bookkeeping the model requires (marking the task's document

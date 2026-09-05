@@ -40,10 +40,9 @@ pub(crate) enum Task {
     },
 
     /// The message task of one message a dedicated worker's owner posted to
-    /// it (a message `worker.postMessage` sent over the worker's direct
-    /// channel): it fires a message event at the worker global scope (the
-    /// worker's implicit port's message event target).  Only ever queued on
-    /// the dedicated worker agent's own task queue.
+    /// it: fires a message event at the worker global scope (its role as the
+    /// inside port's message event target).  Only ever queued on the
+    /// dedicated worker agent's own task queue.
     /// <https://html.spec.whatwg.org/#message-event-target>
     RunWorkerInboundMessage {
         worker_id: WorkerId,
@@ -51,11 +50,8 @@ pub(crate) enum Task {
     },
 
     /// The message task of one message a dedicated worker posted back to its
-    /// owner (a message `self.postMessage` sent over the worker's direct
-    /// channel): it fires a message event at the worker's Worker platform
-    /// object.  Queued on the owner's event loop (the content process main
-    /// loop when the owner is a document, the owner worker agent's loop when
-    /// the owner is a worker).
+    /// owner: fires a message event at the worker's Worker platform object.
+    /// Queued on the owner's event loop.
     /// <https://html.spec.whatwg.org/#message-event-target>
     RunWorkerOutboundMessage {
         worker_id: WorkerId,

@@ -22,31 +22,23 @@ pub(crate) struct DedicatedWorkerGlobalScope {
     pub(crate) worker_global_scope: WorkerGlobalScope,
 
     /// <https://html.spec.whatwg.org/#dedicatedworkerglobalscope>
-    /// The inside port of this global scope: the channel the Worker
-    /// constructor set up at creation entangles it with the Worker object's
-    /// outside port, and `postMessage` on this global scope acts on it,
-    /// sending the messages the owner fires as message events at the
-    /// worker's Worker object.  This global scope is also the inside port's
-    /// message event target (run-a-worker step 12.7.1): the messages the
-    /// owner posts are the inside port's arrivals (see `inbound`).
+    /// The inside port of this global scope: what `postMessage` on this
+    /// global scope sends over, and the message event target the owner's
+    /// posted messages fire at (run-a-worker step 12.7.1).
     /// Note: The inside port is implemented as a direct channel end instead
     /// of a MessagePort (the worker's implicit port is bypassed; see
-    /// dedicated_worker_agent.rs): the worker posts the messages it sends
-    /// back, and its lifecycle reports, over its owner's worker inbox — this
-    /// field is the owner-inbox sender, set once the agent's event loop is
-    /// running, before the worker script is fetched.
+    /// dedicated_worker_agent.rs): this field is the owner-inbox sender the
+    /// worker posts its messages back and its lifecycle reports over, set
+    /// once the agent's event loop is running, before the worker script is
+    /// fetched.
     #[ignore_trace]
     pub(crate) inside_port: Rc<RefCell<Option<crossbeam_channel::Sender<WorkerEvent>>>>,
 
     /// <https://html.spec.whatwg.org/#port-message-queue>
-    /// The inside port's message queue: the messages the owner posted to
-    /// this worker wait here until the queue is enabled (run-a-worker step
-    /// 12.15, or the first onmessage handler on this global scope); each is
-    /// then delivered as a message event at this global scope (the inside
-    /// port's message event target, run-a-worker step 12.7.1).  Messages
-    /// that arrive before the queue is enabled wait here (a port message
-    /// queue, as when start() is called or the first onmessage handler is
-    /// set).
+    /// The queue of messages the owner posted: they wait here until the
+    /// queue is enabled (run-a-worker step 12.15 or the first onmessage
+    /// handler on this global scope), then fire as message events at this
+    /// global scope (run-a-worker step 12.7.1).
     #[ignore_trace]
     pub(crate) inbound: Rc<RefCell<WorkerMessageQueue>>,
 }

@@ -45,28 +45,24 @@ pub(crate) struct WorkerMessageQueue {
     pub(crate) pending: VecDeque<WorkerChannelMessage>,
 }
 
-/// The owner end of one dedicated worker's channel, registered on the owner
-/// realm's global scope by the Worker constructor (and dropped when the
-/// worker closes): the message event target the messages the worker posts
-/// back fire at — the worker's Worker object, the role the outside port's
-/// message event target plays in the spec — and the owner-side message queue
-/// gating their delivery.
+/// The owner-side record of one dedicated worker's channel, registered on
+/// the owner realm's global scope by the Worker constructor and dropped
+/// when the worker closes: the message event target the worker's posted
+/// messages fire at, and the owner-side message queue gating their delivery.
 /// Note: The worker's implicit port pair is bypassed (see `worker.rs`); this
 /// record replaces the outside port's record of the port-based model.
 #[gc_struct]
 pub(crate) struct OwnedWorkerChannel {
     /// The Worker platform object's event target: the message event target
-    /// of the messages the worker posts (the role the outside port's message
-    /// event target played).
+    /// the worker's posted messages fire at (the outside port's role).
     pub(crate) worker_target: EventTarget,
 
     /// The worker this channel belongs to.
     #[ignore_trace]
     pub(crate) worker_id: WorkerId,
 
-    /// The message queue of the owner end of the worker's channel: whether
-    /// the messages the worker posts may fire as message events, and the
-    /// messages that arrived before the queue was enabled.
+    /// The owner end's message queue: whether posted messages may fire, and
+    /// the messages that arrived while the queue was disabled.
     #[ignore_trace]
     pub(crate) queue: Rc<RefCell<WorkerMessageQueue>>,
 }
@@ -76,11 +72,10 @@ pub(crate) struct OwnedWorkerChannel {
 /// terminate command.
 /// <https://html.spec.whatwg.org/#run-a-worker>
 pub(crate) enum WorkerInbound {
-    /// A message the owner posted (`Worker.postMessage`): the message port
-    /// post message steps serialize it in the owner realm (see `worker.rs`);
-    /// the agent's event loop delivers it as a message event at the worker
-    /// global scope (the inside port's message event target) once its
-    /// message queue is enabled.
+    /// A message the owner posted (`Worker.postMessage`), serialized in the
+    /// owner realm (message port post message steps; see `worker.rs`): the
+    /// agent's event loop delivers it as a message event at the worker
+    /// global scope once its message queue is enabled.
     /// <https://html.spec.whatwg.org/#dom-worker-postmessage>
     Message(WorkerChannelMessage),
     /// The terminate-a-worker command: `terminate()` on the Worker object,
@@ -93,11 +88,7 @@ pub(crate) enum WorkerInbound {
 
 /// An event on an owner event loop's worker inbox: sent by a worker this
 /// loop's realm owns (its posted messages and lifecycle reports) and by the
-/// realm itself when it spawns the worker (the registration of its handle).
-/// The window agent's inbox is the content process main loop's; each
-/// dedicated worker agent has its own inbox for the workers its realm
-/// spawns (nested workers), so a worker always reports straight to its
-/// owner's event loop.
+/// realm itself when it spawns a worker (the registration of its handle).
 /// <https://html.spec.whatwg.org/#run-a-worker>
 pub(crate) enum WorkerEvent {
     /// A worker this loop's realm owns was spawned: the Worker constructor
@@ -144,14 +135,10 @@ pub(crate) enum WorkerEvent {
     Closed { worker_id: WorkerId },
 }
 
-/// The record an owner event loop keeps for one worker it owns: a document's
-/// worker on the window agent's loop (the content process main thread), or a
-/// nested worker on its owner worker agent's loop.  It holds the two things
-/// the owner needs beyond the Worker platform object in its realm: the
+/// The record an owner event loop keeps for one worker it owns: what the
+/// loop needs beyond the Worker platform object in its realm — the
 /// owner→worker channel end used to terminate the worker, and the agent's
-/// thread, joined when the worker closes.  Each owner keeps only the handles
-/// of its own workers, and shutdown and termination travel down the owner
-/// chain.
+/// thread, joined when the worker closes.
 /// <https://html.spec.whatwg.org/#run-a-worker>
 pub(crate) struct WorkerHandle {
     /// <https://html.spec.whatwg.org/#concept-WorkerGlobalScope-owner-set>
@@ -1168,12 +1155,10 @@ fn run_worker_event_loop(
 }
 
 /// The message task of one message a dedicated worker posted back to its
-/// owner: fire a message event at the worker's Worker platform object, in
-/// the realm of the given settings (the realm that created the worker: the
-/// owner window document, or the owner worker global scope).  A worker this
-/// realm no longer owns (it closed) drops the message.  The delivery steps
-/// themselves (message port post message steps 7.4-7.7) run in
-/// deliver_serialized_message (messageport.rs).
+/// owner: fire a message event at the worker's Worker platform object in
+/// the realm that created the worker (the owner window document, or the
+/// owner worker global scope).  The delivery steps (message port post
+/// message steps 7.4-7.7) run in deliver_serialized_message (messageport.rs).
 pub(crate) fn fire_worker_posted_message(
     settings: &mut EnvironmentSettingsObject,
     worker_id: WorkerId,

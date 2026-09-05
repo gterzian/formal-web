@@ -3,10 +3,6 @@ use std::time::{Duration, Instant};
 
 use ipc_messages::content::{DocumentId, WindowTimerKey, WorkerId};
 
-/// The realm a timer belongs to: a window's associated Document, or a worker
-/// global scope.  Each event loop's map holds the timers of the realms that
-/// event loop runs, and the expiry reaper uses the realm to know whose task
-/// to queue.
 #[derive(Debug, Clone, Copy)]
 pub(crate) enum TimerRealm {
     /// <https://html.spec.whatwg.org/#concept-document>

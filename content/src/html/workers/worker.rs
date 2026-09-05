@@ -53,21 +53,17 @@ pub(crate) struct Worker {
     pub(crate) worker_id: WorkerId,
 
     /// <https://html.spec.whatwg.org/#outside-port>
-    /// The owner→worker end of this Worker's channel: the constructor
-    /// creates it as its outsidePort (constructor steps 5-7) with its
-    /// message event target set to this Worker, so `postMessage` on this
-    /// Worker sends through it, and the messages the worker posts back fire
-    /// as message events at this Worker.
+    /// The owner→worker end of this Worker's channel, created as its
+    /// outsidePort (constructor steps 5-7).
     /// Note: Implemented as the owner→worker end of a direct crossbeam
     /// channel instead of a MessagePort (the worker's implicit port is
-    /// bypassed; see dedicated_worker_agent.rs): the constructor creates the
-    /// channel in the owner realm, the dedicated worker agent's event loop
-    /// delivers each message as a message event at the worker global scope
-    /// (the inside port's role, run-a-worker steps 12.6-12.8), and the
-    /// messages the worker posts back travel over the owner's worker inbox
-    /// to the owner realm's registered worker channel (see
-    /// `GlobalScope::register_owned_worker`).  The same channel end carries
-    /// the terminate-a-worker command.
+    /// bypassed; see dedicated_worker_agent.rs): the dedicated worker
+    /// agent's event loop delivers each message as a message event at the
+    /// worker global scope (the inside port's role, run-a-worker steps
+    /// 12.6-12.8), the messages the worker posts back travel over the
+    /// owner's worker inbox to this realm's registered worker channel (see
+    /// `GlobalScope::register_owned_worker`), and the same channel end
+    /// carries the terminate-a-worker command.
     #[ignore_trace]
     pub(crate) outside_port: crossbeam_channel::Sender<WorkerInbound>,
 }

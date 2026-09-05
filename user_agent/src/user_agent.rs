@@ -406,19 +406,11 @@ pub struct UserAgentState {
     /// <https://html.spec.whatwg.org/multipage/webappapis.html#dedicated-worker-agent>
     /// The agents the user agent has obtained — the similar-origin window
     /// agents it creates as the single window agent of each agent cluster
-    /// (one content process, see the browsing context group's agent cluster
-    /// map), and the dedicated worker agents the clusters' content
-    /// processes report as obtained
+    /// (one content process), and the dedicated worker agents the clusters'
+    /// content processes report as obtained
     /// (`ContentEvent::DedicatedWorkerAgentObtained`) — keyed by the event
-    /// loop each agent owns: its window event loop for a window agent, its
-    /// own worker event loop for a worker agent.  The event loop id is how
-    /// an agent is addressed (every event loop belongs to exactly one
-    /// agent, and content identifies realms by the loop they run on), so
-    /// the registry lookup from an event loop id is direct.  A worker
-    /// agent is created and destroyed while the window agent of its
-    /// cluster lives on; its record is registered flat, holding the
-    /// signifier of its hosting window agent so it is dropped when the
-    /// hosting content process exits.
+    /// loop each agent owns (every event loop belongs to exactly one agent,
+    /// and content addresses realms by the loop they run on).
     pub agents: HashMap<EventLoopId, Agent>,
     /// reverse index from top-level traversable ids to the owning event-loop id.
     pub traversable_handles: HashMap<NavigableId, EventLoopId>,

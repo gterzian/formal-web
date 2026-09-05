@@ -252,11 +252,8 @@ pub struct GlobalScope {
 
     /// The channel to this realm's own event loop's worker inbox: the
     /// channel the workers this realm spawns register on and report their
-    /// posted messages and lifecycle over.  A window realm's inbox is the
-    /// window agent's (the content process main loop's); a worker realm's
-    /// inbox is its own agent's, created when the agent starts.  Set by the
-    /// event loop that runs this realm before any of its scripts can spawn a
-    /// worker.
+    /// posted messages and lifecycle over.  Set by the event loop that runs
+    /// this realm before any of its scripts can spawn a worker.
     /// <https://html.spec.whatwg.org/#run-a-worker>
     #[ignore_trace]
     worker_inbox: Rc<RefCell<Option<crossbeam_channel::Sender<WorkerEvent>>>>,
@@ -275,12 +272,11 @@ pub struct GlobalScope {
     network_extension_sender: Rc<RefCell<Option<IpcSender<NetworkRequest>>>>,
 
     /// The dedicated workers this realm owns (it created their Worker
-    /// platform objects): the owner-side delivery state of each worker's
-    /// channel (its Worker object's event target and the message queue the
-    /// worker's posts flow through).  This replaces the outside port
-    /// records of the port-based model (the worker's implicit port is
-    /// bypassed; see dedicated_worker_agent.rs).  A GcCell of a Vec, not a
-    /// HashMap, because the GC trace impls cover Vec but not HashMap.
+    /// platform objects): each worker's owner-side delivery state — its
+    /// Worker object's event target and the message queue its posted
+    /// messages flow through (see `OwnedWorkerChannel`).  A GcCell of a
+    /// Vec, not a HashMap, because the GC trace impls cover Vec but not
+    /// HashMap.
     owned_workers: GcCell<Vec<OwnedWorkerChannel>>,
 
     /// Shared registry for newly-created traversable documents (window.open).
@@ -563,11 +559,9 @@ impl GlobalScope {
     }
 
     /// <https://html.spec.whatwg.org/#dedicated-workers-and-the-worker-interface>
-    /// The Worker constructor registers the worker this realm owns: its
-    /// Worker object's event target is the target of the message events the
-    /// messages the worker posts back fire at, and its message queue starts
-    /// disabled (a port message queue can be enabled, and is initially
-    /// disabled).
+    /// The Worker constructor registers the worker this realm owns: the
+    /// record holds the event target the messages the worker posts back
+    /// fire at, and a message queue that starts disabled.
     pub(crate) fn register_owned_worker(
         &self,
         worker_id: WorkerId,

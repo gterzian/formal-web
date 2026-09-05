@@ -99,6 +99,32 @@ happens easily as guidance gets elaborated locally after being introduced
 briefly at a higher level. If so, collapse to one copy at the correct level
 per the placement invariant above.
 
+## Rules are stated once and stated sharply
+
+A rule that earns its way into the chain reads clearly at exactly one
+level, in exactly one place — the pruning that produced it is part of the
+rule.  When tightening a rule after a violation, treat these as symptoms
+that it has gone soft, and fix them in the chain before restating it
+anywhere:
+
+- **The rule already exists elsewhere, vaguer.**  Duplicate and partial
+  restatements drift and read as negotiable.  Collapse to the sharpest
+  statement at the level that covers every subject of the rule (the
+  placement invariant), then cross-reference it by name from the other
+  places that used to state it.
+- **The rule is phrased with adjectives, not a test.**  "Be clear", "stay
+  current", "keep it concise" say nothing about how to tell a violation
+  from the allowed case.  Give the operational test — the current-state
+  rule's is the deletion test: if deleting a clause leaves the sentence
+  complete and accurate, the clause was decoration.
+- **The rule's own examples break it.**  A rule against history narration
+  must not lean on "no longer", and a rule about current state must not be
+  illustrated with the discarded design.  Write examples in the voice the
+  rule demands.
+- **Rationale wanders or lands on the wrong bullet.**  Cut it; a rationale
+  that contradicts the rule (e.g. one that uses a word the rule bans) is
+  scruff, not justification.
+
 ### readme-chain extension
 
 The `.pi/extensions/readme-chain/` extension provides:
@@ -571,6 +597,19 @@ fact rather than an inference from the test result.  Report both.
   trait bound).  Rewrite or delete comments that are out of date.  The
   one comparison a comment may draw is a `// Note:` spec-discrepancy
   annotation: code against spec text, never against an earlier design.
+- **The code speaks for itself — comments add what the code can't show.**  A
+  comment earns its place by carrying the spec mapping (anchor URL, `// Step
+  N:`, a `// Note:` discrepancy), a reason the code does not make visible (why
+  this shape, what external constraint forces it), or the cross-process
+  context of a step.  It never paraphrases the lines it sits on: a doc comment
+  that restates the item it documents — an enum essay re-listing what the
+  variants below already show, a field doc re-describing the field it sits on
+  — is vacuous; cut it.  The `// Step N:` quotes and `// Note:` annotations
+  that map the code to the spec are the mapping, not paraphrase, and stay.
+  README prose is held to the same standard (see README Documentation
+  Policy): no architecture essays at the top of a module or in a README when
+  the code and its annotations already show the shape — say where things live
+  and what is non-obvious, and let the code carry the rest.
 - **No state-change framing or counterfactual prose.**  Name entities as they
   are at the point of the code — "the outgoing document", not "the previous
   document" — and state behavior without justifying it by what would happen if
@@ -614,7 +653,10 @@ fixes, design iterations, session logs — and never frame the current design
 against an earlier one.  The "describe the code as it is now" rule for
 comments (under Dead Code and Comments) governs README prose as well: say
 what exists, affirmatively; no "no X registry", "no cluster-side
-forwarding", "no longer ...", "previously ..." contrasts.
+forwarding", "no longer ...", "previously ..." contrasts.  The code speaks
+for itself here too: READMEs point at what is non-obvious — where things
+live, why a decision was made — and do not replay wiring the code shows on
+sight.
 
 A README tracks only:
 - Things that **still need to be fixed** (unfixed bugs, pre-existing issues)
