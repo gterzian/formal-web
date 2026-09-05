@@ -13,9 +13,7 @@
 
 use std::collections::HashSet;
 
-use ipc_messages::content::{
-    AgentClusterId, AgentId, EventLoopId, NavigableId, WorkerId, WorkerOwner,
-};
+use ipc_messages::content::{AgentClusterId, AgentId, NavigableId, WorkerId, WorkerOwner};
 
 use crate::event_loops::{WindowEventLoop, WorkerEventLoop};
 
@@ -38,6 +36,24 @@ pub enum AgentClusterKey {
     Origin(String),
 }
 
+/// The HTML agents this user agent records — the similar-origin window
+/// agent of every agent cluster it spawns and the dedicated worker agents
+/// the clusters' content processes report as obtained — registered side by
+/// side in `UserAgentState::agents`, keyed by the event loop each agent
+/// owns: every agent has exactly one event loop (see
+/// <https://html.spec.whatwg.org/multipage/webappapis.html#concept-agent-event-loop>),
+/// and its id is how content addresses the agent, so the loop id is the
+/// registry key.  Worker agents are recorded flat, not nested under the
+/// window agent of their cluster: a worker agent is created and destroyed
+/// while its host window agent lives on.
+#[derive(Debug)]
+pub enum Agent {
+    /// <https://html.spec.whatwg.org/multipage/webappapis.html#similar-origin-window-agent>
+    Window(SimilarOriginWindowAgent),
+    /// <https://html.spec.whatwg.org/multipage/webappapis.html#dedicated-worker-agent>
+    DedicatedWorker(DedicatedWorkerAgent),
+}
+
 /// <https://html.spec.whatwg.org/multipage/webappapis.html#similar-origin-window-agent>
 #[derive(Debug)]
 pub struct SimilarOriginWindowAgent {
@@ -47,11 +63,10 @@ pub struct SimilarOriginWindowAgent {
     pub can_block: bool,
     /// <https://html.spec.whatwg.org/multipage/#concept-agent-event-loop>
     /// The agent's window event loop, which runs on the main thread of the
-    /// agent cluster's content process.
-    pub event_loop_id: EventLoopId,
-    /// The user-agent-side record of that window event loop: the event loop
-    /// id, the content process's command channel, its event channel, and
-    /// the content process itself.
+    /// agent cluster's content process.  Its id is the key the agent is
+    /// registered under in `UserAgentState::agents`, and the record holds
+    /// the event loop's user-agent-side handle: the content process's
+    /// command channel, its event channel, and the content process itself.
     pub event_loop: WindowEventLoop,
     /// The traversables whose active documents run on this agent's event loop.
     pub traversable_ids: HashSet<NavigableId>,
@@ -66,13 +81,17 @@ pub struct DedicatedWorkerAgent {
     /// The realm that created the worker.
     pub owner: WorkerOwner,
     /// The similar-origin window agent of the agent cluster (the content
-    /// process) hosting this agent's thread; the record is dropped when
-    /// that process exits, since the process exit takes the worker threads
-    /// down.
+    /// process) hosting this agent's thread, referenced by its signifier;
+    /// the record is dropped when that process exits, since the process
+    /// exit takes the worker threads down.
     pub host_agent_id: AgentId,
     /// <https://html.spec.whatwg.org/multipage/#concept-agent-event-loop>
     /// The agent's own worker event loop, distinct from the window event
-    /// loop of the similar-origin window agent hosting its thread.
+    /// loop of the similar-origin window agent hosting its thread.  Its id
+    /// is the key the agent is registered under in `UserAgentState::agents`,
+    /// and the record holds the user-agent end of the loop's own command
+    /// channel, so port tasks routed to a port of the loop go straight to
+    /// the worker.
     pub event_loop: WorkerEventLoop,
 }
 
@@ -86,7 +105,8 @@ pub struct AgentCluster {
     /// <https://html.spec.whatwg.org/multipage/#is-origin-keyed>
     pub is_origin_keyed: bool,
     /// The single similar-origin window agent contained in the agent
-    /// cluster, referenced by signifier into `UserAgentState::agents`.
+    /// cluster, referenced by the signifier of the window agent recorded in
+    /// `UserAgentState::agents` (registered under its event loop id).
     /// <https://html.spec.whatwg.org/multipage/#similar-origin-window-agent>
     pub similar_origin_window_agent: AgentId,
 }

@@ -7,7 +7,6 @@ use ipc_messages::content::WebviewId;
 use log::error;
 use std::collections::HashMap;
 use std::sync::{Arc, LazyLock, Mutex, mpsc};
-use std::time::Duration;
 use webview::{ColorScheme, Embedder, NavigationCompleted};
 use winit::event_loop::EventLoopProxy;
 
@@ -168,12 +167,12 @@ impl Embedder for EventLoopEmbedder {
         window_viewport_snapshot()
     }
 
-    fn clipboard_get_text(&self, timeout: Duration) -> Result<String, String> {
-        clipboard_get_text(timeout)
+    fn clipboard_get_text(&self) -> Result<String, String> {
+        clipboard_get_text()
     }
 
-    fn clipboard_set_text(&self, text: String, timeout: Duration) -> Result<(), String> {
-        clipboard_set_text(text, timeout)
+    fn clipboard_set_text(&self, text: String) -> Result<(), String> {
+        clipboard_set_text(text)
     }
 
     fn title_changed(&self, webview_id: WebviewId, title: String) -> Result<(), String> {

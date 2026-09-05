@@ -92,8 +92,14 @@ pub struct WindowEventLoop {
     pub event_loop_id: EventLoopId,
     /// IPC sender for commands routed into the dedicated content process.
     pub command_sender: ipc::IpcSender<ContentCommand>,
-    /// IPC receiver for content-originated events, including fetch requests,
-    /// navigation continuations, and clipboards.
+    /// IPC receiver for content-originated events: navigation requests and
+    /// continuations, clipboard writes, rendering-opportunity requests,
+    /// postMessage and message-port events, title reports, and
+    /// dedicated-worker-agent obtained/closed reports.  Content fetches do
+    /// not transit the user agent: subresource fetches go content→net over
+    /// the content process's own net channel, and the user agent runs
+    /// navigation fetches itself against the net process over its own
+    /// connection, forwarding the response to content as a command.
     pub event_receiver: crossbeam_channel::Receiver<ipc::IpcIncoming<ContentEvent>>,
     /// Child process handle for the content process.
     pub child: Option<Child>,
