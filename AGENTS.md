@@ -99,6 +99,32 @@ happens easily as guidance gets elaborated locally after being introduced
 briefly at a higher level. If so, collapse to one copy at the correct level
 per the placement invariant above.
 
+## Rules are stated once and stated sharply
+
+A rule that earns its way into the chain reads clearly at exactly one
+level, in exactly one place — the pruning that produced it is part of the
+rule.  When tightening a rule after a violation, treat these as symptoms
+that it has gone soft, and fix them in the chain before restating it
+anywhere:
+
+- **The rule already exists elsewhere, vaguer.**  Duplicate and partial
+  restatements drift and read as negotiable.  Collapse to the sharpest
+  statement at the level that covers every subject of the rule (the
+  placement invariant), then cross-reference it by name from the other
+  places that used to state it.
+- **The rule is phrased with adjectives, not a test.**  "Be clear", "stay
+  current", "keep it concise" say nothing about how to tell a violation
+  from the allowed case.  Give the operational test — the current-state
+  rule's is the deletion test: if deleting a clause leaves the sentence
+  complete and accurate, the clause was decoration.
+- **The rule's own examples break it.**  A rule against history narration
+  must not lean on "no longer", and a rule about current state must not be
+  illustrated with the discarded design.  Write examples in the voice the
+  rule demands.
+- **Rationale wanders or lands on the wrong bullet.**  Cut it; a rationale
+  that contradicts the rule (e.g. one that uses a word the rule bans) is
+  scruff, not justification.
+
 ### readme-chain extension
 
 The `.pi/extensions/readme-chain/` extension provides:
@@ -161,11 +187,25 @@ for the definitive spec-annotation reference with examples and common mistakes.
    beforeunload" becomes `steps_to_fire_beforeunload`, not `fire_global_event`.
    The spec→code mapping must be discoverable by name alone.
 
+   The anchor is a claim that the item **is** that algorithm.  It must name
+   the algorithm the item implements, never an algorithm that merely calls
+   it or contains the step it runs: a function carrying `#run-a-worker`
+   must be run-a-worker.  A helper that stands in for a named sub-algorithm
+   the spec calls into (e.g. the fetch that run-a-worker performs) is a
+   partial implementation of that sub-algorithm: it gets the sub-algorithm's
+   anchor (`#fetch-a-classic-worker-script`), with what is missing
+   documented in body `// Note:`s — never the calling algorithm's anchor.
+   Code that is not a spec algorithm (IPC commands, enum variants, async
+   continuations of a split algorithm, state fields, bindings glue) carries
+   no algorithm anchor; its doc comment says what it does and names the
+   exact step it serves.
+
    | ❌ Wrong | ✅ Right |
    |---|---|
    | `/// <…>\n/// Queues a microtask via Boa's enqueue_job API.` | `/// <https://html.spec.whatwg.org/#queue-a-microtask>` |
    | `/// <…>\n/// Content-process portion of the algorithm. …` | `/// <https://html.spec.whatwg.org/#creating-a-new-browsing-context>` |
    | `/// <…>\n/// Result of the rules for choosing a navigable. …` | `/// <https://html.spec.whatwg.org/#the-rules-for-choosing-a-navigable>` |
+   | `/// <https://html.spec.whatwg.org/#run-a-worker>` on `start_script_fetch`, a fetch helper that run-a-worker only calls | The sub-algorithm the helper stands in for (`#fetch-a-classic-worker-script`), with the missing parts in body `// Note:`s |
 
    Constants like `NETWORK_EMPTY`, `HAVE_NOTHING`, and
    `MEDIA_ERR_ABORTED` are spec-defined IDL enum values and must carry their
@@ -517,14 +557,13 @@ fact rather than an inference from the test result.  Report both.
 
 # Spec Fidelity
 
-- Describe current architecture and behavior; keep task history out of repository docs.
 - Keep README guidance general and durable; one-off implementation details belong in source or tests, not in repository docs.
 - Use neutral, factual language.
 - Use the `web_standards` extension tools (`spec_lookup`, `spec_ref_links`, `spec_search_id`) to read spec content instead of reading local copies or fetching directly. This is not a one-shot lookup — consult the spec **iteratively** as you write code: start by reading the algorithm to understand the structure, implement the corresponding code, then re-read the spec and compare each step against what you wrote. The spec is the source of truth for both the algorithm logic and the documentation annotations (`// Step N:`, anchor URLs, `// Note:` for discrepancies) that code must carry. The end-of-task spec-mapping review (step 4 below) is the final checkpoint that every algorithm in the changeset is consistently implemented and properly annotated.
 - **Reference URLs vs canonical URLs.** In web standards, every definition (`#dfn-foo`) has corresponding reference links (`#ref-for-dfn-foo`, `#ref-for-dfn-foo①`, …) at each usage site. When documenting code that implements a specific algorithm step, prefer the *reference URL* over the canonical concept URL — your code implements "the thing as used in a particular algorithm", not the thing itself. Use `spec_ref_links` to find all reference URLs for a concept.
 - Treat `vendor/` and vendored WPT resources as read-only unless the task explicitly requires vendor changes.
 - The words "runtime", "sidecar", "carrier", "root", and "domain document" (or "domain_document") are forbidden in this repo.
-- **Method doc comments:** A method that implements a spec algorithm has only the spec link as its doc comment — no `/// Note:` continuation above the method. All explanation, step references, and context belong in `//` comments inside the method body, as notes below the relevant steps. Why? Because the entire thing is a runtime, one that implements the Web, and so neither concept should ever be used to model or document some component of what is basically one big integrated system. No component is more or less of a "sidecar" than any other — each plays a specific role. Instead of reaching for these forbidden words, think about what the thing you want to name does, what its role in the system is, and come up with something descriptive.
+- **Method doc comments:** A method that implements a spec algorithm has only the spec link as its doc comment — no `/// Note:` continuation above the method. All explanation, step references, and context belong in `//` comments inside the method body, as notes below the relevant steps.
 - **Document only verified facts.** Never speculate about root causes, fixes, or
   explanations for observed behavior unless you have confirmed them through
   instrumentation, debugging, or testing.  When documenting an issue, state
@@ -545,17 +584,37 @@ fact rather than an inference from the test result.  Report both.
   and remove any code that existed only to consume it. An unused binding kept alive as
   `_foo`, `_bar` or `let _ = ...` is dead code that silently accumulates — the warning
   is a request to delete the binding, not to rename it.
-- **Comments describe what the code DOES, not what it USED TO DO.** Never write
-  comments like "now comes from X instead of Y" or "previously maintained by Z."
-  Those document a migration that is already complete. Delete stale comments and
-  the dead code paths they reference.
-- **No state-change framing or counterfactual prose in comments.** Name runtime
-  entities as they are at the point of the code ("the outgoing document", not
-  "the previous document"), and state the behavior directly without justifying it
-  by what would happen if the code did something else ("reporting a child id
-  would make the embedder request a redraw..."). The comment documents what the
-  code does; why-not reasoning and design rationale belong in the README chain,
-  not in comments.
+- **In code and doc comments, describe the code as it is now — never as it was,
+  never against an earlier design.**  No migration or design-history narration:
+  no "now comes from X instead of Y", "previously maintained by Z", "no
+  cluster-side forwarding and no worker registry in the content process", "no
+  longer protected".  Test a clause: if deleting it leaves the sentence
+  complete and accurate, it only contrasts with history — delete it, and say
+  what the code does: "the user agent routes port tasks directly to this thread
+  over the agent's own channel" needs no tail.  Keep clauses that carry live
+  state ("a worker this realm no longer owns — it closed — drops the message")
+  or name the real external constraint they exist for (a spec requirement, a
+  trait bound).  Rewrite or delete comments that are out of date.  The
+  one comparison a comment may draw is a `// Note:` spec-discrepancy
+  annotation: code against spec text, never against an earlier design.
+- **The code speaks for itself — comments add what the code can't show.**  A
+  comment earns its place by carrying the spec mapping (anchor URL, `// Step
+  N:`, a `// Note:` discrepancy), a reason the code does not make visible (why
+  this shape, what external constraint forces it), or the cross-process
+  context of a step.  It never paraphrases the lines it sits on: a doc comment
+  that restates the item it documents — an enum essay re-listing what the
+  variants below already show, a field doc re-describing the field it sits on
+  — is vacuous; cut it.  The `// Step N:` quotes and `// Note:` annotations
+  that map the code to the spec are the mapping, not paraphrase, and stay.
+  README prose is held to the same standard (see README Documentation
+  Policy): no architecture essays at the top of a module or in a README when
+  the code and its annotations already show the shape — say where things live
+  and what is non-obvious, and let the code carry the rest.
+- **No state-change framing or counterfactual prose.**  Name entities as they
+  are at the point of the code — "the outgoing document", not "the previous
+  document" — and state behavior without justifying it by what would happen if
+  the code did something else ("reporting a child id would make the embedder
+  request a redraw...").
 
 # Error Logging
 
@@ -588,18 +647,25 @@ The project uses the standard `log` crate with `env_logger` for structured loggi
 
 # README Documentation Policy
 
-Repository READMEs track only the current state of the code: architecture,
-conventions, and things that still need fixing. They must never contain
-session logs, histories of what was done, or descriptions of past changes.
+READMEs document the code as it is now: architecture, conventions, and work
+still to be done.  They never document its history — past changes, completed
+fixes, design iterations, session logs — and never frame the current design
+against an earlier one.  The "describe the code as it is now" rule for
+comments (under Dead Code and Comments) governs README prose as well: say
+what exists, affirmatively; no "no X registry", "no cluster-side
+forwarding", "no longer ...", "previously ..." contrasts.  The code speaks
+for itself here too: READMEs point at what is non-obvious — where things
+live, why a decision was made — and do not replay wiring the code shows on
+sight.
 
 A README tracks only:
 - Things that **still need to be fixed** (unfixed bugs, pre-existing issues)
-- **Dead-end investigations** for currently-unfixed issues (so future sessions
-  know what was already tried and ruled out)
+- **Dead-end investigations** for currently-unfixed issues, so future
+  sessions know what was already tried and ruled out
 
 Do NOT document:
-- Completed fixes (they're in the code and git history)
-- Architecture design notes or historical session logs for fixed issues
+- Completed fixes, design iterations, or session logs — they live in the
+  code and git history
 - Infrastructure descriptions for things that already work
 - Anything already obvious from the code and its comments.  In particular,
   the step-by-step split of a spec algorithm across processes (which steps
@@ -607,12 +673,9 @@ Do NOT document:
   comments and notes on each side — the README must not duplicate it.
 
 The only past-tense content allowed is a note about a failed fix attempt for
-a still-unfixed issue — the symptom, what was tried, and what was ruled out —
-so a future session knows what not to retry. Once an issue is fixed, its
-notes are removed. "Document only verified facts" applies throughout.  The
-goal is concise, actionable documentation: a future session should be able
-to read the README and know exactly what remains to be done, and what
-approaches have already failed for each remaining issue.
+a still-unfixed issue — the symptom, what was tried, and what was ruled out.
+Once an issue is fixed, its notes are removed.  "Document only verified
+facts" applies throughout.
 
 # End-of-Task Flow
 
@@ -672,6 +735,11 @@ At the end of each task, run the following steps **in order**:
      Constants (`NETWORK_EMPTY`, `HAVE_NOTHING`, `MEDIA_ERR_ABORTED`)
      are spec IDL values and must carry their anchor just like any
      method.
+   - Is every anchor a claim that the item **is** that algorithm — never
+     the anchor of an algorithm that merely calls the item or contains
+     the step it runs?  Partial stand-ins for a sub-algorithm the spec
+     calls into carry the sub-algorithm's own anchor with the missing
+     parts in body `// Note:`s; plumbing carries no algorithm anchor.
    - Are binding function bodies free of fully qualified paths like
      `crate::wasm::namespace::fn_name(...)`?  Import with `use` at the
      top and call unqualified.

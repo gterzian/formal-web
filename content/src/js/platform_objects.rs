@@ -7,8 +7,9 @@ use html5ever::{local_name, ns};
 
 use crate::dom::{Document, Element, EventPathItem, Node};
 use crate::html::{
-    ActivationBehavior, GlobalScope, HTMLAnchorElement, HTMLElement, HTMLIFrameElement,
-    HTMLInputElement, HTMLMediaElement, HTMLVideoElement, Window,
+    ActivationBehavior, DedicatedWorkerGlobalScope, GlobalScope, HTMLAnchorElement, HTMLElement,
+    HTMLIFrameElement, HTMLInputElement, HTMLMediaElement, HTMLVideoElement, Window,
+    WorkerGlobalScope,
 };
 use crate::js::downcast::event_target_from_js_object;
 use crate::webidl::bindings::create_interface_instance;
@@ -32,9 +33,73 @@ pub(crate) fn init_global_object_slot(
 /// <https://html.spec.whatwg.org/#global-object>
 fn global_scope_or_error(ec: &dyn ExecutionContext<crate::js::Types>) -> Option<&GlobalScope> {
     let global_obj = ec.realm_global_object();
+    ec.with_object_any(&global_obj).and_then(|data| {
+        if let Some(window) = data.downcast_ref::<Window>() {
+            Some(&window.global_scope)
+        } else if let Some(worker_global_scope) = worker_global_scope_from(data) {
+            Some(&worker_global_scope.global_scope)
+        } else {
+            None
+        }
+    })
+}
+
+/// The worker global scope (its common interface) stored on a platform
+/// object: a dedicated worker realm's global object is a
+/// DedicatedWorkerGlobalScope (run-a-worker step 5), which embeds its
+/// WorkerGlobalScope common interface.
+/// <https://html.spec.whatwg.org/#global-object>
+fn worker_global_scope_from(data: &dyn std::any::Any) -> Option<&WorkerGlobalScope> {
+    data.downcast_ref::<DedicatedWorkerGlobalScope>()
+        .map(|scope| &scope.worker_global_scope)
+        .or_else(|| data.downcast_ref::<WorkerGlobalScope>())
+}
+
+/// <https://html.spec.whatwg.org/#global-object>
+fn worker_global_scope_or_error(
+    ec: &dyn ExecutionContext<crate::js::Types>,
+) -> Option<&WorkerGlobalScope> {
+    let global_obj = ec.realm_global_object();
     ec.with_object_any(&global_obj)
-        .and_then(|data| data.downcast_ref::<Window>())
-        .map(|window| &window.global_scope)
+        .and_then(|data| worker_global_scope_from(data))
+}
+
+/// Access the realm's worker global scope, when the global object is a
+/// worker global scope.
+/// <https://html.spec.whatwg.org/#global-object>
+pub(crate) fn with_worker_global_scope<R>(
+    ec: &mut dyn ExecutionContext<crate::js::Types>,
+    f: impl FnOnce(
+        &WorkerGlobalScope,
+        &mut dyn ExecutionContext<crate::js::Types>,
+    ) -> Completion<R, crate::js::Types>,
+) -> Completion<R, crate::js::Types> {
+    let Some(worker_global_scope) = worker_global_scope_or_error(ec) else {
+        return Err(ec.new_type_error("global object is not a WorkerGlobalScope"));
+    };
+    let worker_global_scope = worker_global_scope.clone();
+    f(&worker_global_scope, ec)
+}
+
+/// Access the realm's dedicated worker global scope (the global object of a
+/// dedicated worker realm, run-a-worker step 5), for its dedicated members
+/// (its associated inside port and the port message queue that gates the
+/// messages the owner posts).
+/// <https://html.spec.whatwg.org/#global-object>
+pub(crate) fn with_dedicated_worker_global_scope<R>(
+    ec: &mut dyn ExecutionContext<crate::js::Types>,
+    f: impl FnOnce(
+        &DedicatedWorkerGlobalScope,
+        &mut dyn ExecutionContext<crate::js::Types>,
+    ) -> Completion<R, crate::js::Types>,
+) -> Completion<R, crate::js::Types> {
+    let Some(dedicated_scope) = ec
+        .with_object_any(&ec.realm_global_object())
+        .and_then(|data| data.downcast_ref::<DedicatedWorkerGlobalScope>().cloned())
+    else {
+        return Err(ec.new_type_error("global object is not a DedicatedWorkerGlobalScope"));
+    };
+    f(&dedicated_scope, ec)
 }
 
 /// <https://html.spec.whatwg.org/#global-object>
@@ -49,7 +114,7 @@ pub(crate) fn with_global_scope<R>(
     // mutably; the clone shares all GC-managed state with the registered
     // platform object.
     let Some(gs) = global_scope_or_error(ec) else {
-        return Err(ec.new_type_error("global object is not a Window"));
+        return Err(ec.new_type_error("global object is not a Window or WorkerGlobalScope"));
     };
     let gs = gs.clone();
     f(&gs, ec)

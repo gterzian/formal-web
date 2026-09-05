@@ -259,68 +259,87 @@ impl MessagePort {
             serialized: payload.serialized,
             transfer_data_holders: payload.transfer_data_holders,
         };
-        // Step 7.4: Let deserializeRecord be
-        //           StructuredDeserializeWithTransfer(serializeWithTransferResult,
-        //           targetRealm).
-        let deserialize_outcome =
-            structured_deserialize_with_transfer(&serialize_result, &ec.value_undefined(), ec);
-        let deserialize_result = match deserialize_outcome {
-            Ok(result) => result,
-            Err(_) => {
-                // If this throws an exception, catch it, fire an event named
-                // messageerror at messageEventTarget, using MessageEvent, and
-                // then return.
-                let message_event = MessageEvent::new(
-                    String::from("messageerror"),
-                    MessageEventInit {
-                        bubbles: false,
-                        cancelable: false,
-                        composed: false,
-                        data: ec.value_null(),
-                        origin: String::new(),
-                        last_event_id: String::new(),
-                        source: None,
-                        ports: Vec::new(),
-                    },
-                    ec,
-                );
-                fire_message_event(&self.event_target, message_event, time_millis, ec)?;
-                return Ok(());
-            }
-        };
-
-        // Step 7.5: Let messageClone be deserializeRecord.[[Deserialized]].
-        let message_clone = deserialize_result.deserialized;
-
-        // Step 7.6: Let newPorts be a new frozen array consisting of all
-        //           MessagePort objects in deserializeRecord.[[TransferredValues]],
-        //           if any, maintaining their relative order.
-        let new_ports: Vec<JsObject> = deserialize_result
-            .transferred_values
-            .iter()
-            .filter_map(Types::value_as_object)
-            .collect();
-
-        // Step 7.7: Fire an event named message at messageEventTarget, using
-        //           MessageEvent, with the data attribute initialized to
-        //           messageClone and the ports attribute initialized to
-        //           newPorts.
-        let message_event = MessageEvent::new(
-            String::from("message"),
-            MessageEventInit {
-                bubbles: false,
-                cancelable: false,
-                composed: false,
-                data: message_clone,
-                origin: String::new(),
-                last_event_id: String::new(),
-                source: None,
-                ports: new_ports,
-            },
-            ec,
-        );
-        fire_message_event(&self.event_target, message_event, time_millis, ec)
+        // Steps 7.4-7.7: deserialize the message and fire it at the message
+        // event target (the port, or the target the port's message event
+        // target was set to).
+        deliver_serialized_message(&self.event_target, &serialize_result, time_millis, ec)
     }
+}
+
+/// The delivery steps of the message port post message steps' message task
+/// (steps 7.4-7.7): deserialize the message and fire a `message` event (or
+/// a `messageerror` event when the deserialization throws) at the given
+/// message event target.  Shared by the port machinery and the dedicated
+/// worker channels, whose implicit ports are bypassed (direct channels) but
+/// whose message delivery follows the same steps.
+/// <https://html.spec.whatwg.org/#message-port-post-message-steps>
+pub(crate) fn deliver_serialized_message(
+    target: &EventTarget,
+    serialize_result: &SerializeWithTransferResult,
+    time_millis: f64,
+    ec: &mut dyn ExecutionContext<Types>,
+) -> Completion<(), Types> {
+    // Step 7.4: Let deserializeRecord be
+    //           StructuredDeserializeWithTransfer(serializeWithTransferResult,
+    //           targetRealm).
+    let deserialize_outcome =
+        structured_deserialize_with_transfer(serialize_result, &ec.value_undefined(), ec);
+    let deserialize_result = match deserialize_outcome {
+        Ok(result) => result,
+        Err(_) => {
+            // If this throws an exception, catch it, fire an event named
+            // messageerror at messageEventTarget, using MessageEvent, and
+            // then return.
+            let message_event = MessageEvent::new(
+                String::from("messageerror"),
+                MessageEventInit {
+                    bubbles: false,
+                    cancelable: false,
+                    composed: false,
+                    data: ec.value_null(),
+                    origin: String::new(),
+                    last_event_id: String::new(),
+                    source: None,
+                    ports: Vec::new(),
+                },
+                ec,
+            );
+            fire_message_event(target, message_event, time_millis, ec)?;
+            return Ok(());
+        }
+    };
+
+    // Step 7.5: Let messageClone be deserializeRecord.[[Deserialized]].
+    let message_clone = deserialize_result.deserialized;
+
+    // Step 7.6: Let newPorts be a new frozen array consisting of all
+    //           MessagePort objects in deserializeRecord.[[TransferredValues]],
+    //           if any, maintaining their relative order.
+    let new_ports: Vec<JsObject> = deserialize_result
+        .transferred_values
+        .iter()
+        .filter_map(Types::value_as_object)
+        .collect();
+
+    // Step 7.7: Fire an event named message at messageEventTarget, using
+    //           MessageEvent, with the data attribute initialized to
+    //           messageClone and the ports attribute initialized to
+    //           newPorts.
+    let message_event = MessageEvent::new(
+        String::from("message"),
+        MessageEventInit {
+            bubbles: false,
+            cancelable: false,
+            composed: false,
+            data: message_clone,
+            origin: String::new(),
+            last_event_id: String::new(),
+            source: None,
+            ports: new_ports,
+        },
+        ec,
+    );
+    fire_message_event(target, message_event, time_millis, ec)
 }
 
 /// <https://html.spec.whatwg.org/#messagechannel>
@@ -351,6 +370,7 @@ impl MessageChannel {
         // one's owning event loop (`MessagePortExtraFG.tla`'s `NewChannel`).
         if let Some(event_sender) = MessagePort::event_sender(ec)
             && let Err(error) = event_sender.send(ContentEvent::PortChannelCreated {
+                event_loop: messaging.event_loop_id(),
                 port1: port1.port_id,
                 port2: port2.port_id,
             })
@@ -445,8 +465,10 @@ impl Transferable for MessagePort {
             ec,
         );
         if let Some(event_sender) = event_sender
-            && let Err(error) =
-                event_sender.send(ContentEvent::PortTransferReceived { port: self.port_id })
+            && let Err(error) = event_sender.send(ContentEvent::PortTransferReceived {
+                event_loop: messaging.event_loop_id(),
+                port: self.port_id,
+            })
         {
             log::error!("failed to notify the user agent of port receive: {error}");
         }

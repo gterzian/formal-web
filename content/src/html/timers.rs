@@ -1,10 +1,15 @@
-//! The content process's map of active window timers: the per-timer records
-//! and the algorithms that schedule, cancel, and reap them.
-
 use std::collections::HashMap;
 use std::time::{Duration, Instant};
 
-use ipc_messages::content::{DocumentId, WindowTimerKey};
+use ipc_messages::content::{DocumentId, WindowTimerKey, WorkerId};
+
+#[derive(Debug, Clone, Copy)]
+pub(crate) enum TimerRealm {
+    /// <https://html.spec.whatwg.org/#concept-document>
+    Document(DocumentId),
+    /// <https://html.spec.whatwg.org/#the-workerglobalscope-common-interface>
+    Worker(WorkerId),
+}
 
 /// <https://html.spec.whatwg.org/#map-of-active-timers>
 #[derive(Clone)]
@@ -16,8 +21,8 @@ pub(crate) struct ActiveTimer {
     /// ones with an equal or larger `milliseconds`; this counter records the
     /// start order so equal expiry times keep it.
     pub start_order: u64,
-    /// <https://html.spec.whatwg.org/#concept-document>
-    pub document_id: DocumentId,
+    /// <https://html.spec.whatwg.org/#map-of-active-timers>
+    pub realm: TimerRealm,
     /// <https://html.spec.whatwg.org/#map-of-active-timers>
     pub timer_key: WindowTimerKey,
     /// <https://html.spec.whatwg.org/#map-of-settimeout-and-setinterval-ids>
@@ -37,7 +42,7 @@ impl MapOfActiveTimers {
     /// <https://html.spec.whatwg.org/#run-steps-after-a-timeout>
     pub(crate) fn run_steps_after_a_timeout(
         &mut self,
-        document_id: DocumentId,
+        realm: TimerRealm,
         timer_key: WindowTimerKey,
         milliseconds: u32,
         timer_id: u32,
@@ -57,7 +62,7 @@ impl MapOfActiveTimers {
             ActiveTimer {
                 expiry_time: start_time + Duration::from_millis(u64::from(milliseconds)),
                 start_order: self.next_start_order,
-                document_id,
+                realm,
                 timer_key,
                 timer_id,
                 nesting_level,
@@ -67,8 +72,10 @@ impl MapOfActiveTimers {
 
         // Step 4: "Run the following steps in parallel:"
         // Step 5: "Return timerKey."
-        // Note: Steps 4.1-4.5 run on the content process main loop, which waits
-        // on `earliest_expiry_wait` and then takes the expired entries with
+        // Note: Steps 4.1-4.5 run on the event loop that owns the map (the
+        // content process main loop for document timers, the worker agent
+        // thread's loop for worker timers), which waits on
+        // `earliest_expiry_wait` and then takes the expired entries with
         // `take_expired_timers`.  timerKey is this algorithm's argument, so
         // there is nothing to return.
     }
@@ -80,7 +87,7 @@ impl MapOfActiveTimers {
         // the id from the map of setTimeout and setInterval IDs, leaving the
         // active timer to expire and abort at step 9.2 of the timer
         // initialization steps.  Removing the entry here instead keeps the
-        // content main loop from waking for a timer that can no longer run.
+        // owning event loop from waking for a timer that can no longer run.
         self.entries.remove(&timer_key);
     }
 

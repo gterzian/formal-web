@@ -40,3 +40,11 @@ pub(crate) fn data_clone_error_value(ec: &mut dyn ExecutionContext<Types>) -> Js
         ec,
     )
 }
+
+/// <https://webidl.spec.whatwg.org/#notsupportederror>
+pub(crate) fn not_supported_error_value(
+    message: String,
+    ec: &mut dyn ExecutionContext<Types>,
+) -> JsValue {
+    dom_exception_value(message, String::from("NotSupportedError"), ec)
+}

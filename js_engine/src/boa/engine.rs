@@ -2280,8 +2280,20 @@ impl ExecutionContext<BoaTypes> for BoaContext {
     // ── Object Construction ──────────────────────────────────────────
 
     fn create_plain_object(&mut self, prototype: Option<&JsObject>) -> JsObject {
-        let proto = prototype.cloned();
-        JsObject::from_proto_and_data(proto, ())
+        // `None` means an ordinary object inheriting from the realm's
+        // %Object.prototype%, matching the V8 backend (v8::Object::new); a
+        // Boa object with no prototype at all would lack the Object.prototype
+        // methods callers rely on (hasOwnProperty, etc.).
+        match prototype {
+            Some(prototype) => JsObject::from_proto_and_data(Some(prototype.clone()), ()),
+            None => {
+                let intrinsics = self.context.intrinsics();
+                JsObject::from_proto_and_data(
+                    Some(intrinsics.constructors().object().prototype()),
+                    (),
+                )
+            }
+        }
     }
 
     fn json_stringify(&mut self, value: JsValue) -> Completion<String, BoaTypes> {

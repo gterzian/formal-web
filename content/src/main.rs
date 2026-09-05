@@ -22,7 +22,11 @@ use crate::dom::{EventTargetAccess, dispatch_with_path, fire_event, simple_path}
 use crate::html::environment_settings_object::RealmWiring;
 use crate::html::event_loop::{EventLoopTaskSources, Task, TaskQueue};
 use crate::html::timers::MapOfActiveTimers;
+use crate::html::timers::TimerRealm;
 use crate::html::ui_events::{dispatch_trusted_click_event, dispatch_ui_event};
+use crate::html::workers::dedicated_worker_agent::{
+    WorkerChannelMessage, WorkerEvent, WorkerHandle, WorkerInbound, fire_worker_posted_message,
+};
 use crate::html::{
     EnvironmentSettingsObject, JsHtmlParserProvider, MessageEvent, PendingParserScript, Window,
     attach_same_origin_child_document_for_traversable, execute_parser_scripts,
@@ -62,7 +66,7 @@ use ipc_messages::content::{
     FontTransportSender, FrameCompositionMetadata, FrameId, IframeEmbedSite,
     LoadedDocumentResponse, NavigableId, NavigationId, PaintFrame, PortId, PortTaskKind,
     PreparedScene, RecordedScene, ScriptEvaluationResult, TitleChanged, TraversableViewport,
-    ViewportSnapshot, WebviewId, WindowTimerKey,
+    ViewportSnapshot, WebviewId, WindowTimerKey, WorkerId, WorkerOwner,
 };
 use ipc_messages::media::{VideoEmbedData, VideoPaintId};
 use ipc_messages::safe_passing_of_structured_data::PostMessageRequest;
@@ -109,7 +113,7 @@ fn is_javascript_mime_essence(essence: &str) -> bool {
     )
 }
 
-fn deferred_script_response_is_executable(response: &ContentFetchResponse) -> bool {
+pub(crate) fn deferred_script_response_is_executable(response: &ContentFetchResponse) -> bool {
     if !(200..=299).contains(&response.status) {
         return false;
     }
@@ -410,6 +414,40 @@ struct DocumentViewportState {
     offset_y: f32,
 }
 
+/// The content process: this implementation's realization of one agent
+/// cluster (<https://html.spec.whatwg.org/multipage/webappapis.html#agent-cluster>)
+/// as the physical `formal-web-content` process.  The process hosts exactly
+/// one similar-origin window agent
+/// (<https://html.spec.whatwg.org/multipage/webappapis.html#similar-origin-window-agent>)
+/// plus the dedicated worker agents
+/// (<https://html.spec.whatwg.org/multipage/webappapis.html#dedicated-worker-agent>)
+/// of the workers the cluster's realms create.
+///
+/// The main thread doubles as the agent cluster's command endpoint and as
+/// the window event loop
+/// (<https://html.spec.whatwg.org/multipage/webappapis.html#window-event-loop>)
+/// of the cluster's similar-origin window agent.  As the cluster's command
+/// endpoint it consumes every `ipc_messages::content::Command` sent to the
+/// process's main command channel — the user agent's commands, and the net
+/// process's document-fetch completions routed back over
+/// `ResponseRecipient::ContentProcess` — (`run_content_message_loop`
+/// selects on the command channel): the commands whose spec steps say to
+/// queue a task on the window event loop are queued as `Task`s, and the
+/// cluster-level commands (bootstrap, viewport, document lifecycle,
+/// navigation-fetch completions, shutdown) run directly on this thread.  As
+/// the window event loop it runs those tasks — its task queue, timers, and
+/// documents are the state below.  The dedicated worker agents each run
+/// their own worker event loop
+/// (<https://html.spec.whatwg.org/multipage/webappapis.html#worker-event-loop-2>)
+/// on their own native thread (see
+/// `content/src/html/workers/dedicated_worker_agent.rs`), addressed by the
+/// user agent over the agent's own command channel instead of this process's
+/// main thread.  The window agent keeps the [`WorkerHandle`] of each worker
+/// its documents own (`ContentProcess::workers`); each worker agent owns its
+/// nested workers the same way, and each worker reports itself to the user
+/// agent (`ContentEvent::DedicatedWorkerAgentObtained`, carrying the agent's
+/// own worker event loop id and the user-agent end of the agent's own
+/// command channel).
 pub(crate) struct ContentProcess {
     event_sender: ipc::IpcSender<ContentEvent>,
     event_loop_id: EventLoopId,
@@ -417,6 +455,24 @@ pub(crate) struct ContentProcess {
     default_viewport: Option<ViewportSnapshot>,
     traversable_viewports: HashMap<NavigableId, DocumentViewportState>,
     documents: HashMap<DocumentId, ContentDocument>,
+    /// <https://html.spec.whatwg.org/#run-a-worker>
+    /// The dedicated workers this window agent owns (the workers its
+    /// documents created), each with its [`WorkerHandle`]: the owner→worker
+    /// channel end used to terminate a worker whose owner document is
+    /// destroyed (and at shutdown) and its agent's thread, joined when the
+    /// worker closes.
+    workers: Vec<WorkerHandle>,
+    /// The window agent's worker inbox: the channel the workers its
+    /// documents own register on and report their posted messages and
+    /// lifecycle over.  The sender is cloned onto every window realm's
+    /// GlobalScope (see GlobalScope::set_worker_inbox) so their Worker
+    /// constructors can register the workers they spawn; the main loop
+    /// selects on the receiver.
+    worker_event_sender: crossbeam_channel::Sender<WorkerEvent>,
+    /// The window agent's worker inbox receiver: the dedicated worker events
+    /// (registration, posted messages and lifecycle reports of the workers
+    /// the documents of this process own).
+    worker_event_receiver: crossbeam_channel::Receiver<WorkerEvent>,
     active_documents_by_traversable: HashMap<NavigableId, DocumentId>,
     font_namespace: u64,
     font_sender: FontTransportSender,
@@ -485,6 +541,8 @@ impl ContentProcess {
             .duration_since(UNIX_EPOCH)
             .map(|duration| duration.as_secs_f64() * 1000.0)
             .unwrap_or(0.0);
+        let (worker_event_sender, worker_event_receiver) = crossbeam_channel::unbounded();
+        let workers = Vec::new();
         Self {
             event_sender,
             event_loop_id,
@@ -494,6 +552,9 @@ impl ContentProcess {
             default_viewport: None,
             traversable_viewports: HashMap::new(),
             documents: HashMap::new(),
+            workers,
+            worker_event_sender,
+            worker_event_receiver,
             active_documents_by_traversable: HashMap::new(),
             font_namespace: new_font_namespace(),
             font_sender: FontTransportSender::default(),
@@ -539,13 +600,21 @@ impl ContentProcess {
         )?;
         // The realm belongs to this content process's event loop; the global
         // scope needs the id for channel messaging (per-event-loop port
-        // management) and the trace sender for the MessagePort TLA spec.
+        // management), the trace sender, the window agent's worker inbox (so
+        // the Worker constructor can register the workers this realm spawns),
+        // the network partition key and the net extension sender (the script
+        // fetches of those workers).
         let trace_sender = self.trace_sender.clone();
+        let worker_event_sender = self.worker_event_sender.clone();
+        let network_extension_sender = self.network_extension_sender.clone();
         with_global_scope(
             &mut settings.realm_execution_context,
             |global_scope, _ec| {
                 global_scope.set_event_loop_id(self.event_loop_id);
                 global_scope.set_trace_sender(trace_sender.clone());
+                global_scope.set_worker_inbox(worker_event_sender.clone());
+                global_scope.set_network_partition_event_loop_id(self.event_loop_id);
+                global_scope.set_network_extension_sender(network_extension_sender.clone());
                 Ok(())
             },
         )
@@ -866,11 +935,18 @@ impl ContentProcess {
             .map_err(|error| format!("failed to read new traversable id: {}", error.display()))?
             .unwrap_or_else(NavigableId::new);
             // The new realm shares this process's event loop and trace
-            // sender (channel messaging needs both).
+            // sender (channel messaging needs both), the window agent's worker
+            // inbox, the network partition key and the net extension sender
+            // (the Worker constructor).
             let trace_sender = self.trace_sender.clone();
+            let worker_event_sender = self.worker_event_sender.clone();
+            let network_extension_sender = self.network_extension_sender.clone();
             with_global_scope(settings.ec(), |global_scope, _ec| {
                 global_scope.set_event_loop_id(self.event_loop_id);
                 global_scope.set_trace_sender(trace_sender.clone());
+                global_scope.set_worker_inbox(worker_event_sender.clone());
+                global_scope.set_network_partition_event_loop_id(self.event_loop_id);
+                global_scope.set_network_extension_sender(network_extension_sender.clone());
                 Ok(())
             })
             .map_err(|error| format!("failed to set event loop id: {}", error.display()))?;
@@ -1611,6 +1687,30 @@ impl ContentProcess {
 
     fn destroy_document(&mut self, document_id: DocumentId) -> Result<(), String> {
         run_dom_removing_steps_for_document(self, document_id)?;
+        // Terminate the dedicated workers this document owns: the document is
+        // going away, so its workers are no longer actively needed.  Their
+        // handles stay registered until the workers' closed reports arrive
+        // (joining their threads); the owner-side discard in the destroyed
+        // document's realm is skipped then, since the realm is gone.
+        // <https://html.spec.whatwg.org/#the-worker's-lifetime>
+        let owned_worker_ids: Vec<WorkerId> = self
+            .workers
+            .iter()
+            .filter(|handle| {
+                matches!(
+                    handle.owner,
+                    WorkerOwner::Document(owner_id) if owner_id == document_id
+                )
+            })
+            .map(|handle| handle.worker_id)
+            .collect();
+        for worker_id in owned_worker_ids {
+            if let Err(error) = self.terminate_worker(worker_id) {
+                error!(
+                    "failed to terminate worker {worker_id} owned by destroyed document: {error}"
+                );
+            }
+        }
         if let Some(mut content_document) = self.documents.remove(&document_id) {
             let traversable_id = content_document.traversable_id;
             // Release every event listener and event handler callback on the
@@ -2046,17 +2146,26 @@ impl ContentProcess {
     }
 
     /// Run a task queued on this event loop by the user agent's routing
-    /// (`MessagePortExtraFG.tla`'s `RunTask`).  The task is appended to the port's queue or
-    /// returned to the routing queue when the port left this event loop.
-    /// When the port is enabled, the message task (the substeps 7.1-7.7 of
-    /// the message port post message steps) runs here, within the delivering
-    /// task's slot: the message event fires without a further round-trip to
-    /// request a task.
+    /// (`MessagePortExtraFG.tla`'s `RunTask`).  The task is appended to the
+    /// port's queue or returned to the routing queue when the port left this
+    /// event loop.  When the port is enabled, the message task (the substeps
+    /// 7.1-7.7 of the message port post message steps) runs here, within the
+    /// delivering task's slot: the message event fires without a further
+    /// round-trip to request a task.
     fn handle_port_task(&mut self, port_id: PortId, task: PortTaskKind) -> Result<(), String> {
         let event_sender = self.event_sender.clone();
         let Some(document_id) = self.find_port_document(port_id) else {
-            // The port is no longer managed by this event loop; return the
-            // task to the user agent's routing queue.
+            // The port is not owned by any document realm of this event
+            // loop: it left the event loop (transferred away or closed)
+            // before the routed task ran.  Return the task to the user
+            // agent's routing queue, which re-routes it to the port's
+            // current owner or drops it once the port is gone.
+            // Note: A port owned by one of this process's dedicated worker
+            // agents never reaches this handler: the user agent addresses
+            // the task to the worker agent's own event loop, and the
+            // command handling forwards it directly to that agent (see
+            // `Command::PortTask`); there is no broadcast over the
+            // cluster's worker agents.
             let messaging = self.any_channel_messaging().ok_or_else(|| {
                 format!("port task: no realm to return the task for port {port_id}")
             })?;
@@ -2065,21 +2174,19 @@ impl ContentProcess {
                 .map_err(|error| format!("port task return failed: {error}"))?;
             return Ok(());
         };
-        let fire = {
-            let content_document = self
-                .documents
-                .get_mut(&document_id)
-                .ok_or_else(|| format!("port task: unknown document {document_id}"))?;
-            with_global_scope(content_document.settings.ec(), |global_scope, ec| {
-                let Some(messaging) = global_scope.channel_messaging(ec) else {
-                    return Ok(false);
-                };
-                messaging
-                    .handle_port_task(port_id, task, &event_sender, ec)
-                    .map_err(|error| ec.new_type_error(&format!("port task: {error}")))
-            })
-            .map_err(|error| format!("port task failed: {}", error.display()))?
-        };
+        let content_document = self
+            .documents
+            .get_mut(&document_id)
+            .ok_or_else(|| format!("port task: unknown document {document_id}"))?;
+        let fire = with_global_scope(content_document.settings.ec(), |global_scope, ec| {
+            let Some(messaging) = global_scope.channel_messaging(ec) else {
+                return Ok(false);
+            };
+            messaging
+                .handle_port_task(port_id, task, &event_sender, ec)
+                .map_err(|error| ec.new_type_error(&format!("port task: {error}")))
+        })
+        .map_err(|error| format!("port task failed: {}", error.display()))?;
         if fire {
             // The delivery task runs the message task itself (the message
             // event fires within this task's slot).
@@ -2094,10 +2201,6 @@ impl ContentProcess {
         let Some(document_id) = self.find_port_document(port_id) else {
             return Ok(());
         };
-        let traversable_id = self
-            .documents
-            .get(&document_id)
-            .map(|document| document.traversable_id);
         let time_millis = self
             .documents
             .get(&document_id)
@@ -2118,11 +2221,16 @@ impl ContentProcess {
         })
         .map_err(|error| format!("port message task failed: {}", error.display()))?;
 
-        // The message task's handler may have mutated the target document; mark
-        // it dirty and request a rendering opportunity from the UA so the
-        // target's render cycle is driven, instead of the change waiting for an
-        // unrelated input event to come through.
+        // The message task's handler may have mutated the target
+        // document; mark it dirty and request a rendering opportunity
+        // from the UA so the target's render cycle is driven, instead
+        // of the change waiting for an unrelated input event to come
+        // through.
         self.mark_document_dirty(document_id);
+        let traversable_id = self
+            .documents
+            .get(&document_id)
+            .map(|document| document.traversable_id);
         if let Some(traversable_id) = traversable_id
             && let Err(error) = self
                 .event_sender
@@ -2751,6 +2859,244 @@ impl ContentProcess {
         }
     }
 
+    /// <https://html.spec.whatwg.org/#terminate-a-worker>
+    fn terminate_worker(&mut self, worker_id: WorkerId) -> Result<(), String> {
+        // The command half of terminate a worker: send the terminate command
+        // over the worker's owner→worker channel (its agent sets its closing
+        // flag and discards its queued tasks, then tears down its realm and
+        // its own nested workers).  The worker's closed report then reaches
+        // this agent's worker inbox; the content process joins its thread and
+        // runs the owner-side cleanup (terminate-a-worker step 4 and
+        // run-a-worker steps 12.19-12.21).
+        let Some(worker) = self
+            .workers
+            .iter()
+            .find(|handle| handle.worker_id == worker_id)
+        else {
+            // The worker already closed (its closed report is queued).
+            return Ok(());
+        };
+        worker
+            .owner_to_worker
+            .send(WorkerInbound::Terminate)
+            .map_err(|error| format!("failed to terminate worker {worker_id}: {error}"))
+    }
+
+    /// Handle an event on the window agent's worker inbox: registration,
+    /// posted messages and lifecycle reports of the workers the documents of
+    /// this process own.  Each dedicated worker agent owns its own nested
+    /// workers (their events go to the agent's own inbox), so the events
+    /// here are always for document-owned workers.
+    fn handle_worker_event(&mut self, event: WorkerEvent) -> Result<(), String> {
+        match event {
+            WorkerEvent::NewWorker {
+                worker_id,
+                owner,
+                owner_to_worker,
+                join_handle,
+            } => {
+                // The Worker constructor registered a worker this window
+                // agent owns: keep its handle (the owner→worker channel end
+                // used to terminate it when its owner document is destroyed,
+                // and its agent's thread, joined when the worker closes).
+                let WorkerOwner::Document(owner_document_id) = owner else {
+                    return Err(format!(
+                        "worker inbox received a NewWorker for owner {owner:?}"
+                    ));
+                };
+                if !self.documents.contains_key(&owner_document_id) {
+                    // The owner document was destroyed before the inbox
+                    // processed the registration; terminate the worker
+                    // immediately and join its thread.
+                    let _ = owner_to_worker.send(WorkerInbound::Terminate);
+                    let _ = join_handle.join();
+                    return Ok(());
+                }
+                self.workers.push(WorkerHandle {
+                    worker_id,
+                    owner,
+                    owner_to_worker,
+                    join_handle: Some(join_handle),
+                });
+                Ok(())
+            }
+            WorkerEvent::Message { worker_id, payload } => {
+                // A worker this agent owns posted a message back: queue it as
+                // a message task at the worker's Worker object (or buffer it
+                // until that worker's queue is enabled), in its owner
+                // document's realm.
+                let Some(document_id) = self.worker_owner_document(worker_id) else {
+                    return Ok(());
+                };
+                self.handle_worker_posted_message(document_id, worker_id, payload)
+            }
+            WorkerEvent::EnableQueue { worker_id } => {
+                // run-a-worker step 12.14, owner half: enable the delivery of
+                // the worker's posted messages in its owner document's realm.
+                let Some(document_id) = self.worker_owner_document(worker_id) else {
+                    return Ok(());
+                };
+                self.enable_worker_messages(document_id, worker_id)
+            }
+            WorkerEvent::FireError { worker_id } => {
+                // run-a-worker step 12.4.1: fire an event named error at the
+                // worker's Worker object in its owner document's realm.
+                let Some(document_id) = self.worker_owner_document(worker_id) else {
+                    return Ok(());
+                };
+                self.fire_worker_error(document_id, worker_id)
+            }
+            WorkerEvent::Closed { worker_id } => {
+                // The worker's agent exited: join its thread (its handle was
+                // registered when the worker was spawned) and drop the owner
+                // end of its channel in the owner document's realm
+                // (terminate-a-worker step 4 and run-a-worker step 12.20).
+                let Some(mut handle) = self
+                    .workers
+                    .iter()
+                    .position(|handle| handle.worker_id == worker_id)
+                    .map(|index| self.workers.remove(index))
+                else {
+                    return Ok(());
+                };
+                if let Some(join_handle) = handle.join_handle.take()
+                    && let Err(panic) = join_handle.join()
+                {
+                    error!("worker {worker_id} thread panicked: {panic:?}");
+                }
+                // The owner document may already be gone (destroyed); its
+                // channel state dropped with the realm, so there is nothing
+                // to clean up.
+                if let WorkerOwner::Document(document_id) = handle.owner
+                    && self.documents.contains_key(&document_id)
+                {
+                    if let Some(document) = self.documents.get_mut(&document_id) {
+                        with_global_scope(document.settings.ec(), |global_scope, ec| {
+                            global_scope.discard_owned_worker(worker_id, ec);
+                            Ok(())
+                        })
+                        .map_err(|error| {
+                            format!(
+                                "failed to discard closed worker {worker_id}: {}",
+                                error.display()
+                            )
+                        })?;
+                    }
+                }
+                Ok(())
+            }
+        }
+    }
+
+    /// The owner document of a worker this window agent owns, if the worker
+    /// is still registered.
+    fn worker_owner_document(&mut self, worker_id: WorkerId) -> Option<DocumentId> {
+        self.workers.iter().find_map(|handle| {
+            if handle.worker_id == worker_id {
+                match handle.owner {
+                    WorkerOwner::Document(document_id) => Some(document_id),
+                    WorkerOwner::Worker(worker_id) => {
+                        error!("window agent owns worker {worker_id}?");
+                        None
+                    }
+                }
+            } else {
+                None
+            }
+        })
+    }
+
+    /// The main event loop received a message a document-owned worker
+    /// posted back over the worker inbox: queue it as a message task at the
+    /// worker's Worker object (or buffer it until that worker's queue is
+    /// enabled), in the owner document's realm.
+    fn handle_worker_posted_message(
+        &mut self,
+        document_id: DocumentId,
+        worker_id: WorkerId,
+        payload: WorkerChannelMessage,
+    ) -> Result<(), String> {
+        let Some(document) = self.documents.get_mut(&document_id) else {
+            return Ok(());
+        };
+        with_global_scope(document.settings.ec(), |global_scope, ec| {
+            global_scope.handle_worker_posted_message(worker_id, payload, ec);
+            Ok(())
+        })
+        .map_err(|error| format!("worker channel message failed: {}", error.display()))
+    }
+
+    /// run-a-worker step 12.14, owner half, for a document-owned worker:
+    /// enable the delivery of its posted messages in its owner document's
+    /// realm.
+    fn enable_worker_messages(
+        &mut self,
+        document_id: DocumentId,
+        worker_id: WorkerId,
+    ) -> Result<(), String> {
+        let Some(document) = self.documents.get_mut(&document_id) else {
+            return Ok(());
+        };
+        with_global_scope(document.settings.ec(), |global_scope, ec| {
+            global_scope.enable_owned_worker_messages(worker_id, ec);
+            Ok(())
+        })
+        .map_err(|error| {
+            format!(
+                "failed to enable worker {worker_id} messages: {}",
+                error.display()
+            )
+        })
+    }
+
+    /// run-a-worker step 12.4.1, for a document-owned worker: fire an event
+    /// named error at its Worker object in its owner document's realm.
+    fn fire_worker_error(
+        &mut self,
+        document_id: DocumentId,
+        worker_id: WorkerId,
+    ) -> Result<(), String> {
+        let Some(document) = self.documents.get_mut(&document_id) else {
+            return Ok(());
+        };
+        let time_millis = document.settings.current_time_millis();
+        with_global_scope(document.settings.ec(), |global_scope, ec| {
+            let Some(target) = global_scope.owned_worker_event_target(worker_id, ec) else {
+                return Ok(());
+            };
+            fire_event(ec, &target, "error", time_millis, true)
+                .map(|_| ())
+                .map_err(|error| {
+                    ec.new_type_error(&format!("failed to fire worker error event: {error:?}"))
+                })?;
+            Ok(())
+        })
+        .map_err(|error| format!("worker error event failed: {}", error.display()))
+    }
+
+    /// Terminate and join every dedicated worker agent (its thread), used at
+    /// shutdown so the process does not exit with live worker agents.  Each
+    /// worker agent terminates and joins its own nested workers before its
+    /// thread returns, so shutting down the window agent's workers shuts the
+    /// whole chain down.
+    fn shutdown_workers(&mut self) -> Result<(), String> {
+        let workers = std::mem::take(&mut self.workers);
+        for handle in &workers {
+            let _ = handle.owner_to_worker.send(WorkerInbound::Terminate);
+        }
+        for handle in workers {
+            if let Some(join_handle) = handle.join_handle
+                && let Err(panic) = join_handle.join()
+            {
+                error!(
+                    "worker {} thread panicked during shutdown: {panic:?}",
+                    handle.worker_id
+                );
+            }
+        }
+        Ok(())
+    }
+
     fn run_window_timer(
         &mut self,
         document_id: DocumentId,
@@ -3017,6 +3363,26 @@ impl ContentProcess {
                 self.run_window_timer(document_id, timer_id, timer_key, nesting_level)
             }
             Task::RunPortMessage { port } => self.handle_run_port_message_task(port),
+            Task::RunWorkerTimer { worker_id, .. } => {
+                // A worker timer task should never reach the window event
+                // loop: worker timers are reaped by the worker's own event
+                // loop.
+                error!("window event loop received a timer task for worker {worker_id}");
+                Ok(())
+            }
+            Task::RunWorkerInboundMessage { worker_id, .. } => {
+                // An inbound worker message task fires at the worker global
+                // scope on the worker's own event loop; it should never reach
+                // the window event loop.
+                error!("window event loop received an inbound message task for worker {worker_id}");
+                Ok(())
+            }
+            Task::RunWorkerOutboundMessage { worker_id, payload } => {
+                // The message task of one message a dedicated worker posted
+                // back to its owner document: fire it at the worker's Worker
+                // object in the owner document's realm.
+                self.handle_worker_outbound_message(worker_id, payload)
+            }
             Task::PortRouting { port, kind } => self.handle_port_task(port, kind),
             Task::PostMessage(request) => self.dispatch_post_message(request),
             Task::UpdateTheRendering {
@@ -3055,6 +3421,26 @@ impl ContentProcess {
         // Note: Not implemented, as for step 2.5.
         // Step 2.8: "Perform a microtask checkpoint."
         self.perform_microtask_checkpoint()
+    }
+
+    /// The message task of one message a dedicated worker posted back to its
+    /// owner document: run the delivery steps at the worker's Worker platform
+    /// object, in the owner document's realm (the messages of worker-owned
+    /// workers run on the owner worker's own event loop).
+    fn handle_worker_outbound_message(
+        &mut self,
+        worker_id: WorkerId,
+        payload: WorkerChannelMessage,
+    ) -> Result<(), String> {
+        let Some(document_id) = self.worker_owner_document(worker_id) else {
+            // The worker closed before the task ran; its channel state was
+            // discarded, so there is nothing to deliver.
+            return Ok(());
+        };
+        let Some(document) = self.documents.get_mut(&document_id) else {
+            return Ok(());
+        };
+        fire_worker_posted_message(&mut document.settings, worker_id, payload)
     }
 
     fn event_loop_task_sources(&self) -> EventLoopTaskSources {
@@ -3098,12 +3484,17 @@ impl ContentProcess {
         // expired timer becomes a queued task rather than running here; the
         // channel the event loop waits on only wakes it for the earliest expiry.
         for timer in expired {
-            self.task_queue.queue_a_task(Task::RunWindowTimer {
-                document_id: timer.document_id,
-                timer_id: timer.timer_id,
-                timer_key: timer.timer_key,
-                nesting_level: timer.nesting_level,
-            });
+            // The window agent's timer map only ever holds document timers:
+            // worker timers live in each worker's own map, reaped by the
+            // worker's event loop.
+            if let TimerRealm::Document(document_id) = timer.realm {
+                self.task_queue.queue_a_task(Task::RunWindowTimer {
+                    document_id,
+                    timer_id: timer.timer_id,
+                    timer_key: timer.timer_key,
+                    nesting_level: timer.nesting_level,
+                });
+            }
         }
 
         // Step 4.5: "Remove global's map of active timers[timerKey]."
@@ -3287,6 +3678,9 @@ impl ContentProcess {
                 Ok(true)
             }
             Shutdown => {
+                // Terminate and join the dedicated worker agents before the
+                // process exits.
+                self.shutdown_workers()?;
                 self.note_shutdown_completed()?;
                 Ok(false)
             }
@@ -3403,14 +3797,23 @@ fn run_content_message_loop(
         let task_arm = select.recv(&task_queue);
         let wasm_arm = select.recv(wasm_rx);
         let timer_arm = select.recv(&timer_expiry);
-        // Note: The command channel joins the wait only while no task is
-        // queued.  A command's steps run as soon as it is read, so reading one
-        // with tasks already queued would run those steps ahead of them.
+        // The command and worker-event channels join the wait only
+        // while no task is queued.  Their steps run as soon as they are
+        // read, so reading one with tasks already queued would run those
+        // steps ahead of them.
         let command_arm = if process.task_queue.is_empty() {
             Some(select.recv(cmd_rx))
         } else {
             None
         };
+        // The window agent's worker inbox: the registration, posted messages
+        // and lifecycle reports of the workers its documents own.  A posted
+        // message queues a message task at the worker's Worker object (a
+        // task source, so the inbox joins the wait always, like the task
+        // queue itself); its handling runs through the owner document's
+        // realm.  Worker-owned (nested) workers report to their owner
+        // worker agent's own inbox instead.
+        let worker_event_arm = select.recv(&process.worker_event_receiver);
 
         let operation = select.select();
         let arm = operation.index();
@@ -3449,6 +3852,15 @@ fn run_content_message_loop(
                     Ok(false) => return Ok(()),
                     Err(error) => error!("content error: {error}"),
                 },
+                Err(_) => return Ok(()),
+            }
+        } else if arm == worker_event_arm {
+            match operation.recv(&process.worker_event_receiver) {
+                Ok(event) => {
+                    if let Err(error) = process.handle_worker_event(event) {
+                        error!("worker event error: {error}");
+                    }
+                }
                 Err(_) => return Ok(()),
             }
         }

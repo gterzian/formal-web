@@ -11,17 +11,26 @@ use super::{
     environment_settings_object::EnvironmentSettingsObject,
 };
 
+use super::timers::TimerRealm;
+
+use super::workers::dedicated_worker_agent::{
+    OwnedWorkerChannel, WorkerChannelMessage, WorkerEvent, WorkerMessageQueue,
+};
+
 use blitz_dom::BaseDocument;
 use ipc::IpcSender;
-use ipc_messages::content::DocumentId;
-use ipc_messages::content::{Event as ContentEvent, NavigableId, WindowTimerKey};
+use ipc_messages::content::{
+    DocumentId, Event as ContentEvent, EventLoopId, NavigableId, WindowTimerKey, WorkerId,
+};
 use ipc_messages::media::VideoPaintId;
+use ipc_messages::network::Request as NetworkRequest;
 use js_engine::gc::{GcCell, gc_cell_new};
 use js_engine::{Completion, ExecutionContext, JsTypes, gc_struct};
-use log::debug;
+use log::{debug, error};
 
 use super::environment_settings_object::RealmWiring;
-use super::event_loop::EventLoopTaskSources;
+use super::event_loop::{EventLoopTaskSources, Task};
+use crate::dom::event::EventTarget;
 use crate::js::{Engine, Types};
 use crate::webidl::Callback;
 
@@ -41,7 +50,10 @@ fn log_timer_debug(message: impl AsRef<str>) {
 /// <https://html.spec.whatwg.org/#global-object>
 #[derive(Debug, Clone, Copy)]
 pub enum GlobalScopeKind {
+    /// <https://html.spec.whatwg.org/#window>
     Window,
+    /// <https://html.spec.whatwg.org/#the-workerglobalscope-common-interface>
+    Worker,
 }
 
 /// <https://html.spec.whatwg.org/#global-object>
@@ -202,6 +214,13 @@ pub struct GlobalScope {
     #[ignore_trace]
     event_loop_id: Rc<Cell<Option<ipc_messages::content::EventLoopId>>>,
 
+    /// The id of the worker this global scope belongs to, when the global
+    /// object is a worker global scope.  The timer machinery uses it to
+    /// schedule and route the realm's timers (a worker realm has no
+    /// document).
+    #[ignore_trace]
+    worker_id: Rc<Cell<Option<WorkerId>>>,
+
     /// Per-realm channel messaging state (ports, message queues, transfer
     /// state), created lazily on first port use.
     channel_messaging: GcCell<Option<ChannelMessaging>>,
@@ -230,6 +249,35 @@ pub struct GlobalScope {
     /// Sender for content-to-user-agent IPC events (e.g. navigation requests).
     #[ignore_trace]
     event_sender: Rc<RefCell<Option<IpcSender<ContentEvent>>>>,
+
+    /// The channel to this realm's own event loop's worker inbox: the
+    /// channel the workers this realm spawns register on and report their
+    /// posted messages and lifecycle over.  Set by the event loop that runs
+    /// this realm before any of its scripts can spawn a worker.
+    /// <https://html.spec.whatwg.org/#run-a-worker>
+    #[ignore_trace]
+    worker_inbox: Rc<RefCell<Option<crossbeam_channel::Sender<WorkerEvent>>>>,
+
+    /// The network partition key of the fetches this realm's workers make:
+    /// the event loop id of the similar-origin window agent of this realm's
+    /// agent cluster (a dedicated worker shares the network partition of its
+    /// owner's window event loop).
+    /// <https://html.spec.whatwg.org/#run-a-worker>
+    #[ignore_trace]
+    network_partition_event_loop_id: Rc<Cell<Option<EventLoopId>>>,
+
+    /// The direct sender to the net extension, used by the script fetches of
+    /// the workers this realm spawns.
+    #[ignore_trace]
+    network_extension_sender: Rc<RefCell<Option<IpcSender<NetworkRequest>>>>,
+
+    /// The dedicated workers this realm owns (it created their Worker
+    /// platform objects): each worker's owner-side delivery state — its
+    /// Worker object's event target and the message queue its posted
+    /// messages flow through (see `OwnedWorkerChannel`).  A GcCell of a
+    /// Vec, not a HashMap, because the GC trace impls cover Vec but not
+    /// HashMap.
+    owned_workers: GcCell<Vec<OwnedWorkerChannel>>,
 
     /// Shared registry for newly-created traversable documents (window.open).
     /// Set by `ContentProcess` before running JS that may trigger
@@ -293,12 +341,17 @@ impl GlobalScope {
             task_sources: Rc::new(RefCell::new(None)),
             source_navigable_id: Rc::new(Cell::new(None)),
             event_loop_id: Rc::new(Cell::new(None)),
+            worker_id: Rc::new(Cell::new(None)),
             channel_messaging: gc_cell_new(None, ec),
             trace_sender: Rc::new(RefCell::new(None)),
             parent_traversable_id: Rc::new(Cell::new(None)),
             top_level_traversable_id: Rc::new(Cell::new(None)),
             document_id: Rc::new(RefCell::new(None)),
             event_sender: Rc::new(RefCell::new(None)),
+            worker_inbox: Rc::new(RefCell::new(None)),
+            network_partition_event_loop_id: Rc::new(Cell::new(None)),
+            network_extension_sender: Rc::new(RefCell::new(None)),
+            owned_workers: gc_cell_new(Vec::new(), ec),
 
             new_document_registry: Rc::new(RefCell::new(None)),
             video_paint_registry: Rc::new(RefCell::new(None)),
@@ -331,13 +384,6 @@ impl GlobalScope {
 
     fn next_timer_key(&self) -> Result<WindowTimerKey, String> {
         Ok(WindowTimerKey::new())
-    }
-
-    fn task_sources(&self) -> Result<EventLoopTaskSources, String> {
-        self.task_sources
-            .borrow()
-            .clone()
-            .ok_or_else(|| String::from("event loop task sources are not installed"))
     }
 
     pub(crate) fn document(&self) -> Rc<RefCell<BaseDocument>> {
@@ -376,6 +422,12 @@ impl GlobalScope {
         self.event_sender.borrow_mut().replace(event_sender);
     }
 
+    /// Set the content-to-user-agent event sender of a worker realm's global
+    /// scope (a worker has no navigable, so no source navigable id).
+    pub(crate) fn set_event_sender(&self, event_sender: IpcSender<ContentEvent>) {
+        self.event_sender.borrow_mut().replace(event_sender);
+    }
+
     pub(crate) fn set_navigable_hierarchy(
         &self,
         parent_traversable_id: Option<NavigableId>,
@@ -404,6 +456,10 @@ impl GlobalScope {
 
     pub(crate) fn event_loop_id(&self) -> Option<ipc_messages::content::EventLoopId> {
         self.event_loop_id.get()
+    }
+
+    pub(crate) fn worker_id(&self) -> Option<WorkerId> {
+        self.worker_id.get()
     }
 
     /// Set the TLA trace sender for the MessagePort spec.
@@ -445,12 +501,236 @@ impl GlobalScope {
         *self.task_sources.borrow_mut() = Some(task_sources);
     }
 
+    /// Wire a worker realm's global scope to its own agent's event loop:
+    /// its task sources (the worker's own task queue and timer map) and
+    /// worker id (a worker realm has no document).
+    /// <https://html.spec.whatwg.org/#task-source>
+    pub(crate) fn set_worker_task_sources(
+        &self,
+        worker_id: WorkerId,
+        task_sources: EventLoopTaskSources,
+    ) {
+        self.worker_id.set(Some(worker_id));
+        *self.task_sources.borrow_mut() = Some(task_sources);
+    }
+
     pub(crate) fn document_id(&self) -> Option<DocumentId> {
         *self.document_id.borrow()
     }
 
     pub(crate) fn event_sender(&self) -> Option<IpcSender<ContentEvent>> {
         self.event_sender.borrow().clone()
+    }
+
+    /// Set the channel to this realm's own event loop's worker inbox: where
+    /// the workers this realm spawns register and report.
+    pub(crate) fn set_worker_inbox(&self, worker_inbox: crossbeam_channel::Sender<WorkerEvent>) {
+        *self.worker_inbox.borrow_mut() = Some(worker_inbox);
+    }
+
+    /// The channel to this realm's own event loop's worker inbox, if set.
+    pub(crate) fn worker_inbox(&self) -> Option<crossbeam_channel::Sender<WorkerEvent>> {
+        self.worker_inbox.borrow().clone()
+    }
+
+    /// Set the network partition key of the fetches this realm's workers
+    /// make (the event loop id of the agent cluster's similar-origin window
+    /// agent).
+    pub(crate) fn set_network_partition_event_loop_id(&self, event_loop_id: EventLoopId) {
+        self.network_partition_event_loop_id
+            .set(Some(event_loop_id));
+    }
+
+    /// The network partition key of the fetches this realm's workers make,
+    /// if set.
+    pub(crate) fn network_partition_event_loop_id(&self) -> Option<EventLoopId> {
+        self.network_partition_event_loop_id.get()
+    }
+
+    /// Set the direct sender to the net extension, used by the script
+    /// fetches of the workers this realm spawns.
+    pub(crate) fn set_network_extension_sender(&self, sender: IpcSender<NetworkRequest>) {
+        self.network_extension_sender.borrow_mut().replace(sender);
+    }
+
+    /// The direct sender to the net extension, if set.
+    pub(crate) fn network_extension_sender(&self) -> Option<IpcSender<NetworkRequest>> {
+        self.network_extension_sender.borrow().clone()
+    }
+
+    /// <https://html.spec.whatwg.org/#dedicated-workers-and-the-worker-interface>
+    /// The Worker constructor registers the worker this realm owns: the
+    /// record holds the event target the messages the worker posts back
+    /// fire at, and a message queue that starts disabled.
+    pub(crate) fn register_owned_worker(
+        &self,
+        worker_id: WorkerId,
+        worker_target: EventTarget,
+        ec: &mut dyn ExecutionContext<Types>,
+    ) {
+        let mut owned_workers = self.owned_workers.borrow_mut(ec);
+        if owned_workers
+            .iter()
+            .any(|record| record.worker_id == worker_id)
+        {
+            return;
+        }
+        owned_workers.push(OwnedWorkerChannel {
+            worker_target,
+            worker_id,
+            queue: Rc::new(RefCell::new(WorkerMessageQueue::default())),
+        });
+    }
+
+    /// <https://html.spec.whatwg.org/#dedicated-workers-and-the-worker-interface>
+    /// Mirror a Worker platform object's reflector onto the event target
+    /// this realm registered for it (see `register_owned_worker`).  The
+    /// message and error events of the worker fire at that registered event
+    /// target, which was cloned from the Worker before its wrapper existed;
+    /// EventTarget clones share their listener state but not their reflector
+    /// slot, so without this the events' `target` would not resolve to the
+    /// Worker object.  Called when the Worker wrapper's reflector is set
+    /// (`try_set_event_target_reflector`).
+    pub(crate) fn sync_owned_worker_reflector(
+        &self,
+        worker_id: WorkerId,
+        reflector: JsObject,
+        ec: &mut dyn ExecutionContext<Types>,
+    ) {
+        // The record's target lives in the cell; the reflector slot is
+        // written through `store_js_object` (it converts the rooted handle
+        // into a cppgc edge and may allocate), so the target is cloned out,
+        // updated with no cell borrow live, and written back under a borrow
+        // held only for the assignment.
+        let Some(mut worker_target) = self
+            .owned_workers
+            .borrow(ec)
+            .iter()
+            .find(|record| record.worker_id == worker_id)
+            .map(|record| record.worker_target.clone())
+        else {
+            return;
+        };
+        ec.store_js_object(&mut worker_target.reflector, reflector);
+        let mut owned_workers = self.owned_workers.borrow_mut(ec);
+        if let Some(record) = owned_workers
+            .iter_mut()
+            .find(|record| record.worker_id == worker_id)
+        {
+            record.worker_target = worker_target;
+        }
+    }
+
+    /// The Worker object's event target of a worker this realm owns, if
+    /// any: the target the message and error events of that worker fire at.
+    pub(crate) fn owned_worker_event_target(
+        &self,
+        worker_id: WorkerId,
+        ec: &mut dyn ExecutionContext<Types>,
+    ) -> Option<EventTarget> {
+        self.owned_workers
+            .borrow(ec)
+            .iter()
+            .find(|record| record.worker_id == worker_id)
+            .map(|record| record.worker_target.clone())
+    }
+
+    /// <https://html.spec.whatwg.org/#message-port-post-message-steps>
+    /// The owner's event loop received a message a worker this realm owns
+    /// posted: when the worker's message queue is enabled the message is
+    /// queued as a message task (firing a message event at the worker's
+    /// Worker object); otherwise it waits in the queue until the queue is
+    /// enabled (run-a-worker step 12.14, or the first onmessage handler on
+    /// the Worker object).  A worker this realm no longer owns drops the
+    /// message.
+    pub(crate) fn handle_worker_posted_message(
+        &self,
+        worker_id: WorkerId,
+        payload: WorkerChannelMessage,
+        ec: &mut dyn ExecutionContext<Types>,
+    ) {
+        let queue_task = {
+            let mut owned_workers = self.owned_workers.borrow_mut(ec);
+            let Some(record) = owned_workers
+                .iter_mut()
+                .find(|record| record.worker_id == worker_id)
+            else {
+                return;
+            };
+            let mut queue = record.queue.borrow_mut();
+            if queue.enabled {
+                Some(payload)
+            } else {
+                queue.pending.push_back(payload);
+                None
+            }
+        };
+        if let Some(payload) = queue_task {
+            self.queue_worker_message_task(worker_id, payload);
+        }
+    }
+
+    /// <https://html.spec.whatwg.org/#messageeventtarget>
+    /// Enable the message queue of a worker this realm owns (run-a-worker
+    /// step 12.14, or the first onmessage handler on its Worker object): the
+    /// messages the worker posted while the queue was disabled now fire as
+    /// message tasks, in order.
+    pub(crate) fn enable_owned_worker_messages(
+        &self,
+        worker_id: WorkerId,
+        ec: &mut dyn ExecutionContext<Types>,
+    ) {
+        let pending: Vec<WorkerChannelMessage> = {
+            let mut owned_workers = self.owned_workers.borrow_mut(ec);
+            let Some(record) = owned_workers
+                .iter_mut()
+                .find(|record| record.worker_id == worker_id)
+            else {
+                return;
+            };
+            let mut queue = record.queue.borrow_mut();
+            queue.enabled = true;
+            queue.pending.drain(..).collect()
+        };
+        for payload in pending {
+            self.queue_worker_message_task(worker_id, payload);
+        }
+    }
+
+    /// Queue one message a worker this realm owns posted as a message task
+    /// on this realm's event loop, firing a message event at the worker's
+    /// Worker object.
+    fn queue_worker_message_task(&self, worker_id: WorkerId, payload: WorkerChannelMessage) {
+        let Ok(task_sources) = self.task_sources() else {
+            error!("realm has no task sources; dropping worker message");
+            return;
+        };
+        task_sources
+            .task_queue()
+            .queue_a_task(Task::RunWorkerOutboundMessage { worker_id, payload });
+    }
+
+    /// <https://html.spec.whatwg.org/#terminate-a-worker>
+    /// A worker this realm owns closed: drop its channel registry entry,
+    /// discarding the messages that had not yet fired (terminate-a-worker
+    /// step 4 empties the queue of the port the worker's implicit port is
+    /// entangled with; run-a-worker step 12.20 disentangles the worker's
+    /// ports).
+    pub(crate) fn discard_owned_worker(
+        &self,
+        worker_id: WorkerId,
+        ec: &mut dyn ExecutionContext<Types>,
+    ) {
+        let mut owned_workers = self.owned_workers.borrow_mut(ec);
+        owned_workers.retain(|record| record.worker_id != worker_id);
+    }
+
+    /// <https://html.spec.whatwg.org/#event-loop-processing-model>
+    pub(crate) fn task_sources(&self) -> Result<EventLoopTaskSources, String> {
+        self.task_sources
+            .borrow()
+            .clone()
+            .ok_or_else(|| String::from("event loop task sources are not installed"))
     }
 
     pub(crate) fn document_object(&self, ec: &mut dyn ExecutionContext<Types>) -> Option<JsObject> {
@@ -790,11 +1070,14 @@ impl GlobalScope {
             "schedule timer id={} key={} timeout_ms={} nesting={} repeat={} previous_id={:?}",
             timer_id, timer_key, timeout_ms, nesting_level, repeat, previous_id
         ));
-        let document_id = self
-            .document_id()
-            .ok_or_else(|| String::from("window timer scheduled without an associated document"))?;
+        let realm = match self.worker_id() {
+            Some(worker_id) => TimerRealm::Worker(worker_id),
+            None => TimerRealm::Document(self.document_id().ok_or_else(|| {
+                String::from("window timer scheduled without an associated document")
+            })?),
+        };
         self.task_sources()?.run_steps_after_a_timeout(
-            document_id,
+            realm,
             timer_key,
             timeout_ms,
             timer_id,
@@ -895,16 +1178,19 @@ impl GlobalScope {
             .unwrap_or(0)
             .saturating_add(1);
         let task_sources = self.task_sources()?;
-        let document_id = self.document_id().ok_or_else(|| {
-            String::from("window timer rescheduled without an associated document")
-        })?;
+        let realm = match self.worker_id() {
+            Some(worker_id) => TimerRealm::Worker(worker_id),
+            None => TimerRealm::Document(self.document_id().ok_or_else(|| {
+                String::from("window timer rescheduled without an associated document")
+            })?),
+        };
         let next_timer_key = self.next_timer_key()?;
         log_timer_debug(format!(
             "reschedule interval id={} old_key={} new_key={} timeout_ms={} nesting={}",
             timer_id, timer_key, next_timer_key, timer.timeout_ms, next_nesting_level
         ));
         task_sources.run_steps_after_a_timeout(
-            document_id,
+            realm,
             next_timer_key,
             timer.timeout_ms,
             timer_id,
