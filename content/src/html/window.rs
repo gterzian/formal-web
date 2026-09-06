@@ -2,7 +2,9 @@ use log::error;
 use std::collections::{BTreeMap, HashMap};
 
 use ipc::IpcSender;
-use ipc_messages::content::{Event as ContentEvent, NavigableId, UserNavigationInvolvement};
+use ipc_messages::content::{
+    Event as ContentEvent, HostMessageRequested, NavigableId, UserNavigationInvolvement,
+};
 use ipc_messages::safe_passing_of_structured_data::PostMessageRequest;
 
 use js_engine::{Completion, ExecutionContext, JsTypes};
@@ -59,6 +61,37 @@ impl Window {
             return Ok(ec.value_null());
         };
         window_open_steps(ec, url, target, features, &self.global_scope, &event_sender)
+    }
+
+    /// Send `body` to the embedder, with the document's URL, over the
+    /// content process's event channel.
+    ///
+    /// The embedder decides what the string means; the user agent only
+    /// routes it, and nothing is sent back through this path — an embedder
+    /// answers by evaluating a script in the same navigable.
+    pub(crate) fn post_host_message(&self, body: String) {
+        let Some(event_sender) = self.global_scope.event_sender() else {
+            error!("host message dropped: the global scope has no event sender");
+            return;
+        };
+        let Some(navigable_id) = self.global_scope.source_navigable_id() else {
+            error!("host message dropped: the global scope has no navigable");
+            return;
+        };
+        let url = self
+            .global_scope
+            .creation_url()
+            .map(|url| url.to_string())
+            .unwrap_or_default();
+        if let Err(error) = event_sender.send(ContentEvent::HostMessageRequested(
+            HostMessageRequested {
+                navigable_id,
+                url,
+                body,
+            },
+        )) {
+            error!("failed to send a host message to the user agent: {error}");
+        }
     }
 
     /// <https://html.spec.whatwg.org/#dom-window>

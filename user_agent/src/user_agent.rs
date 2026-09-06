@@ -12,9 +12,9 @@ use ipc_messages::content::{
     AgentClusterId, AgentId, BeforeUnloadCheckId, BeforeUnloadResult, BrowsingContextGroupId,
     BrowsingContextId, Command as ContentCommand, DispatchEventEntry, DocumentId,
     Event as ContentEvent, EventLoopId, FetchResponse as ContentFetchResponse,
-    FinalizeNavigation as ContentFinalizeNavigation, FrameId, LoadedDocumentResponse, NavigableId,
-    NavigateRequest, NavigationFetchId, NavigationId, NewTraversableInfo,
-    UserNavigationInvolvement, UserScript, WebviewId, iframe_target_name,
+    FinalizeNavigation as ContentFinalizeNavigation, FrameId, HostMessageRequested,
+    LoadedDocumentResponse, NavigableId, NavigateRequest, NavigationFetchId, NavigationId,
+    NewTraversableInfo, UserNavigationInvolvement, UserScript, WebviewId, iframe_target_name,
 };
 use ipc_messages::safe_passing_of_structured_data::PostMessageRequest;
 use log::{debug, error, info, trace};
@@ -150,6 +150,10 @@ pub trait UserAgentHost: Send + Sync {
     fn window_viewport_snapshot(&self) -> Option<(u32, u32, f32, ColorScheme)>;
     fn clipboard_get_text(&self) -> Result<String, String>;
     fn clipboard_set_text(&self, text: String) -> Result<(), String>;
+    /// A message a document sent through the host-message binding on its
+    /// Window, with the sending document's URL.
+    fn host_message(&self, webview_id: WebviewId, url: String, body: String)
+    -> Result<(), String>;
     /// The parsed title of a top-level document, reported by the content
     /// process after parsing; the embedder labels the tab and window with it.
     /// <https://html.spec.whatwg.org/#the-title-element>
@@ -1767,6 +1771,22 @@ impl UserAgentWorker {
                 // Fire-and-forget: write to system clipboard, no reply expected.
                 if let Err(error) = self.host.clipboard_set_text(text) {
                     error!("clipboard write failed: {error}");
+                }
+            }
+            ContentEvent::HostMessageRequested(HostMessageRequested {
+                navigable_id,
+                url,
+                body,
+            }) => {
+                let Some(traversable_id) = self.state.top_level_traversable_id(navigable_id) else {
+                    error!("a host message arrived for the unknown navigable {navigable_id}");
+                    return Ok(true);
+                };
+                if let Err(error) =
+                    self.host
+                        .host_message(WebviewId(traversable_id), url, body)
+                {
+                    error!("host message failed: {error}");
                 }
             }
             ContentEvent::TitleChanged(ipc_messages::content::TitleChanged {

@@ -49,6 +49,12 @@ pub trait Embedder: Send + Sync {
     fn window_viewport_snapshot(&self) -> Option<(u32, u32, f32, ColorScheme)>;
     fn clipboard_get_text(&self) -> Result<String, String>;
     fn clipboard_set_text(&self, text: String) -> Result<(), String>;
+    /// A message a document sent with
+    /// `window.__formalWebPostHostMessage(body)`, with the sending
+    /// document's URL. The embedder answers, when it answers at all, by
+    /// evaluating a script in the same webview.
+    fn host_message(&self, webview_id: WebviewId, url: String, body: String)
+    -> Result<(), String>;
     /// The parsed title of a top-level document, reported by the content
     /// process after parsing; the embedder labels the tab and window with it.
     /// <https://html.spec.whatwg.org/#the-title-element>
@@ -119,6 +125,15 @@ impl UserAgentHost for UserAgentHostAdapter {
 
     fn clipboard_set_text(&self, text: String) -> Result<(), String> {
         self.embedder.clipboard_set_text(text)
+    }
+
+    fn host_message(
+        &self,
+        webview_id: WebviewId,
+        url: String,
+        body: String,
+    ) -> Result<(), String> {
+        self.embedder.host_message(webview_id, url, body)
     }
 
     fn title_changed(&self, webview_id: WebviewId, title: String) -> Result<(), String> {

@@ -247,6 +247,18 @@ pub struct ClipboardWriteRequested {
     pub text: String,
 }
 
+/// A message a document sent to the embedder through the host-message
+/// binding on its Window. Fire and forget: the embedder answers, when it
+/// answers at all, by evaluating a script in the same navigable.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct HostMessageRequested {
+    /// The navigable whose document sent the message.
+    pub navigable_id: NavigableId,
+    /// The sending document's URL.
+    pub url: String,
+    pub body: String,
+}
+
 /// The parsed title of a top-level document. The content process sends
 /// this after parsing a document whose navigable is the top-level
 /// traversable; the embedder uses it to label the tab and window.
@@ -1036,6 +1048,9 @@ pub enum Event {
     /// A request from content to write text to the system clipboard.
     /// This is fire-and-forget — no reply is sent.
     ClipboardWriteRequested(ClipboardWriteRequested),
+    /// A message a document sent to the embedder through the host-message
+    /// binding on its Window. This is fire-and-forget — no reply is sent.
+    HostMessageRequested(HostMessageRequested),
     /// Content requests a rendering opportunity, e.g. after a network fetch completes.
     RenderingOpRequested(NavigableId),
     RegisterMediaPipeline(RegisterMediaPipeline),

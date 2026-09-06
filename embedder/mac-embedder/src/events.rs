@@ -139,6 +139,11 @@ impl Embedder for EventLoopEmbedder {
             .send(FormalWebUserEvent::TitleChanged { webview_id, title })
     }
 
+    fn host_message(&self, webview_id: WebviewId, url: String, body: String) -> Result<(), String> {
+        log::debug!("[embedder] host message from {url} in webview {webview_id:?}: {body}");
+        Ok(())
+    }
+
     fn new_web_content_scene(
         &self,
         _webview_id: WebviewId,
