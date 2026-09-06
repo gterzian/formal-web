@@ -10,7 +10,6 @@ use ::winit::window::WindowId;
 use automation::{
     AutomationController, AutomationHost, AutomationSnapshot, AutomationVisibleFrameViewport,
 };
-use ipc_messages::content::{FontTransportReceiver, RecordedScene, WebviewId};
 use keyboard_types::Modifiers as KeyboardModifiers;
 use log::{debug, error};
 use serde_json::Value;
@@ -19,8 +18,8 @@ use std::time::Duration;
 use webview::WebviewProvider;
 use webview::{
     BlitzPointerEvent, BlitzPointerId, BlitzWheelDelta, BlitzWheelEvent, ColorScheme,
-    MouseEventButton, MouseEventButtons, NavigationCompleted, NavigationCompletion, PointerCoords,
-    PointerDetails, UiEvent,
+    FontTransportReceiver, MouseEventButton, MouseEventButtons, NavigationCompleted,
+    NavigationCompletion, PointerCoords, PointerDetails, RecordedScene, UiEvent, WebviewId,
 };
 
 const HEADLESS_VIEWPORT_WIDTH: u32 = 800;
@@ -349,7 +348,7 @@ impl ApplicationHandler<FormalWebUserEvent> for HeadlessEmbedderApp {
                 self.scene_font_receiver
                     .register_fonts(font_registrations, &font_data);
                 // Deserialize and store the composed scene.
-                match ipc_messages::content::deserialize_scene_from_slice(&scene_bytes) {
+                match webview::deserialize_scene_from_slice(&scene_bytes) {
                     Ok(scene) => {
                         self.composed_scenes.insert(webview_id, scene);
                     }

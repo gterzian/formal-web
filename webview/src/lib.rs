@@ -7,21 +7,142 @@ pub use blitz_traits::events::{
     UiEvent,
 };
 pub use blitz_traits::shell::ColorScheme;
-use ipc_messages::content::{NavigableId, NavigateRequest, UserNavigationInvolvement, WebviewId};
+
+// The embedder-facing type vocabulary: the IDs, payloads, and helpers whose
+// definitions live in the ipc crates (the wire types of the content and
+// graphics processes) are re-exported here so embedder crates depend on
+// `webview` alone and never name the ipc crates directly.
+#[cfg(target_os = "macos")]
+pub use ipc_channel::platform::deallocate_mach_port;
+pub use ipc_messages::content::deserialize_scene_from_slice;
+pub use ipc_messages::content::{FontTransportReceiver, RecordedScene, RegisteredFont, WebviewId};
+pub use ipc_messages::graphics::{CompositingLayerId, LayerFrame, SurfaceFrame};
+
+use ipc_messages::content::{NavigateRequest, UserNavigationInvolvement};
 use log::{debug, error, trace};
 use std::collections::HashMap;
 use std::env;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
-use user_agent::UserAgent;
+use user_agent::{UserAgent, UserAgentHost};
 use verification::TraceSender;
 
-pub use user_agent::{Embedder, NavigationCompleted, NavigationCompletion};
+pub use user_agent::{NavigationCompleted, NavigationCompletion};
 
-#[derive(Clone)]
-pub struct WebviewState {
-    pub current_navigable_id: Option<NavigableId>,
+/// The embedder host interface: the callbacks the user agent makes into the
+/// embedder (navigation, paint, clipboard, viewport, window title). The
+/// embedder crates implement this trait; the webview crate adapts it to the
+/// user agent's own host interface (`user_agent::UserAgentHost`).
+pub trait Embedder: Send + Sync {
+    fn navigation_requested(
+        &self,
+        webview_id: WebviewId,
+        destination_url: String,
+    ) -> Result<(), String>;
+    fn navigation_completed(&self, completed: NavigationCompleted) -> Result<(), String>;
+    fn new_webview(&self, webview_id: WebviewId, target_name: String) -> Result<(), String>;
+    fn request_redraw(&self, webview_id: WebviewId);
+    fn viewport_scale_factor(&self) -> f32;
+    fn window_viewport_snapshot(&self) -> Option<(u32, u32, f32, ColorScheme)>;
+    fn clipboard_get_text(&self) -> Result<String, String>;
+    fn clipboard_set_text(&self, text: String) -> Result<(), String>;
+    /// The parsed title of a top-level document, reported by the content
+    /// process after parsing; the embedder labels the tab and window with it.
+    /// <https://html.spec.whatwg.org/#the-title-element>
+    fn title_changed(&self, webview_id: WebviewId, title: String) -> Result<(), String>;
+    /// Forward a composed web content scene from the graphics process to the
+    /// embedder for rendering.
+    fn new_web_content_scene(
+        &self,
+        webview_id: WebviewId,
+        scene_bytes: Vec<u8>,
+        font_registrations: Vec<RegisteredFont>,
+        font_data: HashMap<usize, Vec<u8>>,
+    ) -> Result<(), String>;
+    /// Forward the per-layer rendered frame from the graphics process. Each
+    /// layer carries its wire `topology` (transform, clip, z-order) plus the
+    /// actual `frame` only when the layer was re-rendered this cycle; a clean
+    /// layer keeps its last surface and carries `frame: None`. `animating`
+    /// reports whether the composed scene contains animated content (video,
+    /// CSS animations) that needs the next frame at display cadence.
+    fn new_web_content_layers(
+        &self,
+        webview_id: WebviewId,
+        layers: Vec<LayerFrame>,
+        animating: bool,
+    ) -> Result<(), String>;
+}
+
+/// Bridges the user agent's host interface to the embedder-facing
+/// [`Embedder`] trait: the user agent is started with an adapter that
+/// forwards every host call to the embedder's implementation.
+struct UserAgentHostAdapter {
+    embedder: Arc<dyn Embedder>,
+}
+
+impl UserAgentHost for UserAgentHostAdapter {
+    fn navigation_requested(
+        &self,
+        webview_id: WebviewId,
+        destination_url: String,
+    ) -> Result<(), String> {
+        self.embedder
+            .navigation_requested(webview_id, destination_url)
+    }
+
+    fn navigation_completed(&self, completed: NavigationCompleted) -> Result<(), String> {
+        self.embedder.navigation_completed(completed)
+    }
+
+    fn new_webview(&self, webview_id: WebviewId, target_name: String) -> Result<(), String> {
+        self.embedder.new_webview(webview_id, target_name)
+    }
+
+    fn request_redraw(&self, webview_id: WebviewId) {
+        self.embedder.request_redraw(webview_id);
+    }
+
+    fn viewport_scale_factor(&self) -> f32 {
+        self.embedder.viewport_scale_factor()
+    }
+
+    fn window_viewport_snapshot(&self) -> Option<(u32, u32, f32, ColorScheme)> {
+        self.embedder.window_viewport_snapshot()
+    }
+
+    fn clipboard_get_text(&self) -> Result<String, String> {
+        self.embedder.clipboard_get_text()
+    }
+
+    fn clipboard_set_text(&self, text: String) -> Result<(), String> {
+        self.embedder.clipboard_set_text(text)
+    }
+
+    fn title_changed(&self, webview_id: WebviewId, title: String) -> Result<(), String> {
+        self.embedder.title_changed(webview_id, title)
+    }
+
+    fn new_web_content_scene(
+        &self,
+        webview_id: WebviewId,
+        scene_bytes: Vec<u8>,
+        font_registrations: Vec<RegisteredFont>,
+        font_data: HashMap<usize, Vec<u8>>,
+    ) -> Result<(), String> {
+        self.embedder
+            .new_web_content_scene(webview_id, scene_bytes, font_registrations, font_data)
+    }
+
+    fn new_web_content_layers(
+        &self,
+        webview_id: WebviewId,
+        layers: Vec<LayerFrame>,
+        animating: bool,
+    ) -> Result<(), String> {
+        self.embedder
+            .new_web_content_layers(webview_id, layers, animating)
+    }
 }
 
 fn startup_destination_url(startup_url: Option<&str>) -> Result<String, String> {
@@ -47,7 +168,6 @@ fn input_debug_enabled() -> bool {
 }
 
 pub struct WebviewProvider {
-    webviews: HashMap<WebviewId, WebviewState>,
     embedder: Arc<dyn Embedder>,
     user_agent: UserAgent,
 }
@@ -57,10 +177,14 @@ impl WebviewProvider {
         embedder: Arc<dyn Embedder>,
         trace_sender: Option<TraceSender>,
     ) -> Result<Self, String> {
-        let user_agent = UserAgent::start(embedder.clone(), trace_sender)?;
+        let user_agent = UserAgent::start(
+            Arc::new(UserAgentHostAdapter {
+                embedder: embedder.clone(),
+            }),
+            trace_sender,
+        )?;
 
         Ok(Self {
-            webviews: HashMap::new(),
             embedder,
             user_agent,
         })
@@ -161,12 +285,6 @@ impl WebviewProvider {
         self.user_agent.click_element(traversable_id.0, selector)
     }
 
-    pub fn current_navigable_id(&self, webview_id: WebviewId) -> Option<NavigableId> {
-        self.webviews
-            .get(&webview_id)
-            .and_then(|state| state.current_navigable_id)
-    }
-
     pub fn on_navigation_committed(&mut self, webview_id: WebviewId) {
         if input_debug_enabled() {
             trace!(
@@ -175,9 +293,5 @@ impl WebviewProvider {
             );
         }
         self.embedder.request_redraw(webview_id);
-    }
-
-    pub fn embedder(&self) -> &Arc<dyn Embedder> {
-        &self.embedder
     }
 }

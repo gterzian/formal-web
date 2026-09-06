@@ -23,9 +23,6 @@ use blitz_traits::events::{
     MouseEventButtons, PointerCoords, PointerDetails, UiEvent,
 };
 use blitz_traits::shell::ShellProvider;
-#[cfg(target_os = "macos")]
-use ipc_channel::platform::deallocate_mach_port;
-use ipc_messages::content::WebviewId;
 use kurbo::Affine;
 use serde_json::Value;
 use std::collections::{HashMap, HashSet};
@@ -33,7 +30,9 @@ use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 use uuid::Uuid;
-use webview::{NavigationCompletion, WebviewProvider};
+#[cfg(target_os = "macos")]
+use webview::deallocate_mach_port;
+use webview::{NavigationCompletion, SurfaceFrame, WebviewId, WebviewProvider};
 use winit::application::ApplicationHandler;
 use winit::dpi::{LogicalPosition, PhysicalPosition};
 use winit::event::{
@@ -1444,7 +1443,7 @@ impl ApplicationHandler<FormalWebUserEvent> for WindowedApp {
                 };
 
                 match frame {
-                    ipc_messages::graphics::SurfaceFrame::CpuShmem(surface) => {
+                    SurfaceFrame::CpuShmem(surface) => {
                         let total_pixels = (width * height * 4) as usize;
                         let pixels = surface.as_slice();
                         info!(
@@ -1523,7 +1522,7 @@ impl ApplicationHandler<FormalWebUserEvent> for WindowedApp {
                         }
                     }
                     #[cfg(target_os = "macos")]
-                    ipc_messages::graphics::SurfaceFrame::SharedTexture {
+                    SurfaceFrame::SharedTexture {
                         texture_id,
                         surface_id,
                         port,

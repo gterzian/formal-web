@@ -22,9 +22,6 @@ use crate::platform::{
 use crate::window::{new_layer_hosted_view, present_shared_surface};
 use automation::AutomationController;
 use block2::RcBlock;
-use ipc_channel::platform::deallocate_mach_port;
-use ipc_messages::content::WebviewId;
-use ipc_messages::graphics::SurfaceFrame;
 use keyboard_types::Modifiers as KeyboardModifiers;
 use log::{debug, error, info};
 use objc2::define_class;
@@ -62,8 +59,9 @@ use uuid::Uuid;
 use verification::TraceSender;
 use webview::WebviewProvider;
 use webview::{
-    BlitzPointerEvent, BlitzPointerId, BlitzWheelEvent, ColorScheme, MouseEventButtons,
-    NavigationCompleted, NavigationCompletion, PointerCoords, UiEvent,
+    BlitzPointerEvent, BlitzPointerId, BlitzWheelEvent, ColorScheme, CompositingLayerId,
+    LayerFrame, MouseEventButtons, NavigationCompleted, NavigationCompletion, PointerCoords,
+    SurfaceFrame, UiEvent, WebviewId, deallocate_mach_port,
 };
 
 const INITIAL_WINDOW_WIDTH: f64 = 1200.0;
@@ -481,8 +479,7 @@ struct MacWindow {
     /// layer of the active webview's composition: cross-origin iframe
     /// navigables and `<video>` embed sites. The root navigable itself is
     /// presented on `web_layer`, not as one of these.
-    sublayers:
-        HashMap<ipc_messages::graphics::CompositingLayerId, Retained<objc2_quartz_core::CALayer>>,
+    sublayers: HashMap<CompositingLayerId, Retained<objc2_quartz_core::CALayer>>,
     keyboard_modifiers: KeyboardModifiers,
     buttons: MouseEventButtons,
     /// Content view size in points (the window's content area).
@@ -2775,7 +2772,7 @@ impl MacApp {
     fn handle_new_layers(
         &mut self,
         webview_id: WebviewId,
-        layers: Vec<ipc_messages::graphics::LayerFrame>,
+        layers: Vec<LayerFrame>,
         animating: bool,
     ) {
         let Some(window_id) = self.window_for_webview(webview_id) else {
