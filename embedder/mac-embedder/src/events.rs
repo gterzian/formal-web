@@ -3,11 +3,10 @@
 
 use crate::platform::{clipboard_get_text, clipboard_set_text, window_viewport_snapshot};
 use automation::AutomationCommand;
-use ipc_messages::content::WebviewId;
 use log::error;
 use std::collections::HashMap;
 use std::sync::{Arc, mpsc};
-use webview::{ColorScheme, Embedder, NavigationCompleted};
+use webview::{ColorScheme, Embedder, LayerFrame, NavigationCompleted, RegisteredFont, WebviewId};
 
 use crate::app::MainThreadHandle;
 
@@ -40,7 +39,7 @@ pub enum FormalWebUserEvent {
         webview_id: WebviewId,
         /// The per-layer frames: topology always, surface only for the
         /// layers re-rendered this cycle.
-        layers: Vec<ipc_messages::graphics::LayerFrame>,
+        layers: Vec<LayerFrame>,
         /// Whether the composed scene contains animated content (video, CSS
         /// animations) that needs the next frame at display cadence.
         animating: bool,
@@ -144,7 +143,7 @@ impl Embedder for EventLoopEmbedder {
         &self,
         _webview_id: WebviewId,
         _scene_bytes: Vec<u8>,
-        _font_registrations: Vec<ipc_messages::content::RegisteredFont>,
+        _font_registrations: Vec<RegisteredFont>,
         _font_data: HashMap<usize, Vec<u8>>,
     ) -> Result<(), String> {
         // The scene is presented via the IOSurface surface path
@@ -155,7 +154,7 @@ impl Embedder for EventLoopEmbedder {
     fn new_web_content_layers(
         &self,
         webview_id: WebviewId,
-        layers: Vec<ipc_messages::graphics::LayerFrame>,
+        layers: Vec<LayerFrame>,
         animating: bool,
     ) -> Result<(), String> {
         self.sink

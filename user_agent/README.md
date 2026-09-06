@@ -34,13 +34,15 @@ creating a feedback loop back to the user-agent thread.
 
 ## Graphics process routing
 
-The user agent starts the `formal-web-graphics` process alongside net and media on startup.
-Paint frames from content processes are forwarded to the graphics process via
-`GraphicsCommand::PaintFrame`. The graphics process composes scenes (iframe embed
-sites + video frames) and sends the final composed scene back via
-`GraphicsEvent::ComposedSceneReady`. The UA stores the accompanying
-`FrameHitInfo` for hit-testing and forwards the scene to the embedder host
-via `Embedder::new_web_content_scene`.
+The user agent starts the `formal-web-graphics` process on startup. The
+content processes render each traversable and send its `PaintFrame` directly
+to the graphics process; the graphics process composes the webview's scene
+(iframe embed sites + video frames) and sends the result as
+`GraphicsEvent::PixelFrameReady`: one `LayerTopology` per live layer plus
+the rendered surface for the layers re-rasterized that cycle. The UA stores
+the accompanying `FrameHitInfo` for hit-testing and forwards the layers to
+the host (the webview crate's `webview::Embedder` adapter) via
+`UserAgentHost::new_web_content_layers`.
 
 Hit-testing info (`FrameHitInfo`) from each composed scene is stored in
 `UserAgentState::frame_hit_info`, keyed by webview id. This data enables

@@ -4,6 +4,10 @@ The embedder layer owns the top-level application lifecycle, window management,
 browser chrome, and the redraw loop. It delegates to content and net
 processes through the `webview` and `user_agent` crates.
 
+The embedder crates never depend on the ipc crates (`ipc`, `ipc-channel`,
+`ipc_messages`); the `webview` crate re-exports every browser-facing type and
+interface they need.
+
 ## Crate layout
 
 Three crates, sharing nothing but the `webview` crate API:

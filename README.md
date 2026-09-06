@@ -8,96 +8,96 @@ The project has only been run on macOS; all build commands assume macOS. The
 Rust toolchain is pinned to 1.94.0 (`rustup toolchain install 1.94.0`); if it
 is not your default toolchain, prefix the commands below with `rustup run 1.94.0`.
 
-Just build and run:
+### JS engine
+
+Exactly one of the engines below is enabled at a time; enabling none or more
+than one fails the build.
 
 ```bash
+# V8 (default)
 cargo build --release
 cargo run --release
-```
 
-This is the default configuration: **V8** as the JS engine and **AVFoundation**
-(via the `media` feature) for video/audio playback. The WPT suite runs with
-`cargo run --release -- wpt`.
-
-For other configurations, the feature flags configure:
-
-- **JS engine** — exactly one of `v8` (default), `boa`, or `jsc` must be
-  enabled; enabling none (`--no-default-features` alone) or more than one
-  fails the build.
-- **Media** — the `media` feature (on by default) enables video/audio
-  playback through a platform media backend; drop it to build without media.
-- **WebAssembly** — the `wasm` feature is the Wasmtime-based WebAssembly
-  implementation for the Boa engine (which has no native WebAssembly).
-  V8 and JSC implement WebAssembly natively, so no feature is needed
-  there.
-
-### No media (no video/audio)
-
-```bash
-cargo build --release --no-default-features --features v8
-cargo run --release --no-default-features --features v8
-```
-
-### Boa engine
-
-```bash
+# Boa
 cargo build --release --no-default-features --features boa,media
 cargo run --release --no-default-features --features boa,media
-```
 
-### Boa + WebAssembly
-
-```bash
+# Boa + WebAssembly (`wasm` is Boa-only: V8 and JSC implement WebAssembly natively)
 cargo build --release --no-default-features --features boa,wasm,media
-```
+cargo run --release --no-default-features --features boa,wasm,media
 
-Wasmtime-based WebAssembly for the Boa engine (V8 and JSC have native
-WebAssembly — no feature needed).
-
-### JSC engine (experimental, macOS only)
-
-```bash
+# JSC (experimental, macOS only)
 cargo build --release --no-default-features --features jsc,media
 cargo run --release --no-default-features --features jsc,media
 ```
 
-### GStreamer media backend instead of AVFoundation
+Run the WPT suite:
 
 ```bash
-cargo build --release --features backend-gstreamer
+cargo run --release -- wpt
 ```
 
-The media backend is independent of the JS engine. AVFoundation (the macOS
-default) keeps decoded video frames on the GPU; GStreamer delivers CPU bytes
-and is the only backend on non-Apple platforms. To pair GStreamer with a
-different engine, add the engine flags, e.g.
-`cargo build --release --no-default-features --features boa,media,backend-gstreamer`.
+### Media
 
-### Windowed embedder (browser chrome)
-
-The headed app's window and browser chrome come from one of two independent
-embedder crates, selected at compile time:
-
-- **macOS**: the AppKit backend (`mac-embedder`) is the default. It runs an
-  `NSApplication` with native chrome (menu bar, toolbar, address field, tab
-  strip) and zero-copy IOSurface presentation, and has no winit, Blitz, or
-  GPU dependencies.
-- **Other platforms**: the winit backend (`winit-embedder`, winit windows
-  with a Blitz-rendered chrome) is the only option.
-
-The winit windowed backend is **not compiled on macOS by default**; pass the
-`winit_embedder` feature to build and select it there:
+Video/audio playback is provided by a platform media backend that runs inside
+the graphics process, so backend selection is a feature of the `graphics`
+build.
 
 ```bash
+# AVFoundation media backend (macOS default)
+cargo build --release
+cargo run --release
+
+# GStreamer media backend (macOS opt-in; on other platforms GStreamer is
+# the only media backend)
+cargo build --release -p graphics --features backend-gstreamer,cpu_readback
+cargo run --release
+
+# Without media
+cargo build --release --no-default-features --features v8
+cargo run --release --no-default-features --features v8
+```
+
+### Graphics
+
+The surface backend is selected on the `graphics` build: the embedder spawns
+the `formal-web-graphics` binary it finds next to its own executable, so
+rebuild that sidecar with the chosen backend and then run normally.
+
+```bash
+# Zero-copy IOSurface (macOS default)
+cargo build --release
+cargo run --release
+
+# CPU readback (macOS opt-in; on other platforms the only backend)
+cargo build --release -p graphics --features cpu_readback
+cargo run --release
+```
+
+### Embedder
+
+The headed app's window and browser chrome come from one of two independent
+embedder crates, selected at compile time.
+
+```bash
+# macOS: AppKit embedder (default; native chrome, zero-copy IOSurface
+# presentation, no winit/Blitz/GPU dependencies)
+cargo build --release
+cargo run --release
+
+# macOS: winit windowed embedder (Blitz-rendered chrome)
 cargo build --release --features winit_embedder
 cargo run --release --features winit_embedder
+
+# Other platforms: the winit windowed embedder is the only option
+cargo build --release
+cargo run --release
 ```
 
 The `winit-embedder` crate also provides the **headless** app (no window, no
 chrome) used by WebDriver/CDP/WPT; on macOS it builds headless-only by
-default, so the AppKit app never pulls winit graphics code. The headless
-build has no graphics dependencies at all — WPT and the automation servers
-compile without wgpu/Blitz. See `embedder/README.md` for the crate layout.
+default, so the AppKit app never pulls winit graphics code. See
+`embedder/README.md` for the crate layout.
 
 ## Project architecture
 

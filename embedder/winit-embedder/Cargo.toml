@@ -35,9 +35,6 @@ blitz-html = { workspace = true, optional = true }
 blitz-paint = { workspace = true, features = ["svg"], optional = true }
 blitz-traits = { workspace = true, optional = true }
 cursor-icon = { version = "1", optional = true }
-ipc = { path = "../../ipc" }
-ipc-channel = { git = "https://github.com/gterzian/ipc-channel", rev = "169da83" }
-ipc_messages = { path = "../../ipc_messages" }
 keyboard-types = "0.7"
 kurbo = { version = "0.13", optional = true }
 log = "0.4"

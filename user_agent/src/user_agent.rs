@@ -117,7 +117,10 @@ pub struct NavigationCompleted {
     pub status: NavigationCompletion,
 }
 
-pub trait Embedder: Send + Sync {
+/// The host interface the user-agent thread calls into (implemented by the
+/// webview crate, which adapts the embedder-facing `webview::Embedder`
+/// trait).
+pub trait UserAgentHost: Send + Sync {
     fn navigation_requested(
         &self,
         webview_id: WebviewId,
@@ -904,7 +907,7 @@ pub struct UserAgent {
 impl UserAgent {
     /// spawning the dedicated user-agent thread owned by the webview layer.
     pub fn start(
-        host: Arc<dyn Embedder>,
+        host: Arc<dyn UserAgentHost>,
         trace_sender: Option<TraceSender>,
     ) -> Result<Self, String> {
         let (command_sender, command_receiver) = unbounded();
@@ -1298,7 +1301,7 @@ struct UserAgentWorker {
     graphics_child: Option<std::process::Child>,
 
     /// Host integration used to surface navigation, paint, clipboard, and viewport state.
-    host: Arc<dyn Embedder>,
+    host: Arc<dyn UserAgentHost>,
     /// Trace logger for the Navigation TLA+ spec.
     tla_tracer: TLATracer,
     /// Monotonic-clock reading captured at the same moment as
@@ -1336,7 +1339,7 @@ impl UserAgentWorker {
     /// starting the fetch worker owned by the user-agent thread.
     fn new(
         command_receiver: Receiver<UserAgentCommand>,
-        host: Arc<dyn Embedder>,
+        host: Arc<dyn UserAgentHost>,
         trace_sender: Option<TraceSender>,
     ) -> Self {
         let net_connection = crate::fetch::NetConnection::new(trace_sender.clone())
