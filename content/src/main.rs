@@ -293,6 +293,32 @@ fn request_body_string(body: &Body) -> String {
     }
 }
 
+/// <https://fetch.spec.whatwg.org/#concept-request-header-list>
+fn request_header_list(request: &Request) -> Vec<(String, String)> {
+    let mut header_list: Vec<(String, String)> = request
+        .headers
+        .iter()
+        .filter_map(|(name, value)| {
+            value
+                .to_str()
+                .ok()
+                .map(|value| (name.as_str().to_owned(), value.to_owned()))
+        })
+        .collect();
+    // <https://fetch.spec.whatwg.org/#concept-request-header-list>
+    // Note: blitz carries the content type of a request body outside the
+    // header list; the net process and the embedder see one list, so it is
+    // appended here.
+    if let Some(content_type) = &request.content_type
+        && !header_list
+            .iter()
+            .any(|(name, _)| name.eq_ignore_ascii_case("content-type"))
+    {
+        header_list.push((String::from("content-type"), content_type.clone()));
+    }
+    header_list
+}
+
 fn viewport_of_snapshot(snapshot: &ViewportSnapshot) -> Viewport {
     let color_scheme = match snapshot.color_scheme {
         MessageColorScheme::Light => ColorScheme::Light,
@@ -357,6 +383,7 @@ impl NetProvider for ContentNetProvider {
                     handler_id,
                     url: request.url.to_string(),
                     method: request.method.to_string(),
+                    header_list: request_header_list(&request),
                     body: request_body_string(&request.body),
                 };
                 let network_request = ipc_messages::network::Request::Fetch {
@@ -763,6 +790,7 @@ impl ContentProcess {
             handler_id,
             url: request.url.to_string(),
             method: request.method.to_string(),
+            header_list: request_header_list(&request),
             body: request_body_string(&request.body),
         };
         let network_request = ipc_messages::network::Request::Fetch {

@@ -84,6 +84,8 @@ pub struct FetchRequest {
     pub handler_id: DocumentFetchId,
     pub url: String,
     pub method: String,
+    /// <https://fetch.spec.whatwg.org/#concept-request-header-list>
+    pub header_list: Vec<(String, String)>,
     pub body: String,
 }
 

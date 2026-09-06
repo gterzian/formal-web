@@ -358,6 +358,8 @@ pub struct NavigationRequest {
     pub url: String,
     /// <https://fetch.spec.whatwg.org/#concept-request-method>
     pub method: String,
+    /// <https://fetch.spec.whatwg.org/#concept-request-header-list>
+    pub header_list: Vec<(String, String)>,
     /// <https://fetch.spec.whatwg.org/#concept-request-referrer>
     pub referrer: String,
     /// <https://fetch.spec.whatwg.org/#concept-request-referrer-policy>
@@ -386,6 +388,7 @@ impl NavigationRequest {
         Self {
             url: destination_url,
             method: String::from("GET"),
+            header_list: Vec::new(),
             referrer,
             referrer_policy: String::new(),
             policy_container: None,
@@ -398,6 +401,7 @@ impl NavigationRequest {
         ipc_messages::network::NavigationFetchRequest {
             url: self.url.clone(),
             method: self.method.clone(),
+            header_list: self.header_list.clone(),
             body: self.body.clone(),
             referrer: self.referrer.clone(),
             referrer_policy: self.referrer_policy.clone(),
