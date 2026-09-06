@@ -14,7 +14,7 @@ use ipc_messages::content::{
     Event as ContentEvent, EventLoopId, FetchResponse as ContentFetchResponse,
     FinalizeNavigation as ContentFinalizeNavigation, FrameId, LoadedDocumentResponse, NavigableId,
     NavigateRequest, NavigationFetchId, NavigationId, NewTraversableInfo,
-    UserNavigationInvolvement, WebviewId, iframe_target_name,
+    UserNavigationInvolvement, UserScript, WebviewId, iframe_target_name,
 };
 use ipc_messages::safe_passing_of_structured_data::PostMessageRequest;
 use log::{debug, error, info, trace};
@@ -482,6 +482,12 @@ pub struct UserAgentState {
     /// reverse index from <https://html.spec.whatwg.org/multipage/#navigation-params-id>
     /// to pending finalization document ids.
     pub pending_navigation_finalization_ids_by_navigation_id: HashMap<NavigationId, DocumentId>,
+    /// the embedder's scripts per top-level traversable, run in each of its
+    /// documents before the document is populated.
+    pub user_scripts: HashMap<NavigableId, Vec<UserScript>>,
+    /// the scripts a top-level traversable starts with, published by the
+    /// embedder before it asks for one.
+    pub default_user_scripts: Vec<UserScript>,
 }
 
 /// cache of the active document state held by the user agent.
@@ -588,6 +594,8 @@ impl Default for UserAgentState {
             child_frame_to_webview: HashMap::new(),
             focused_frame_id: HashMap::new(),
             published_child_viewports: HashMap::new(),
+            user_scripts: HashMap::new(),
+            default_user_scripts: Vec::new(),
         }
     }
 }
@@ -850,6 +858,7 @@ impl UserAgentState {
         self.traversable_viewports.remove(&traversable_id);
         self.traversable_target_names.remove(&traversable_id);
         self.active_documents_by_traversable.remove(&traversable_id);
+        self.user_scripts.remove(&traversable_id);
 
         if let Some(browsing_context_id) = browsing_context_id {
             self.browsing_context_group_set
@@ -859,6 +868,29 @@ impl UserAgentState {
             self.top_level_browsing_context_group_ids
                 .remove(&top_level_browsing_context_id);
         }
+    }
+
+    /// The embedder's scripts for a document of `navigable_id`: the scripts
+    /// its top-level traversable carries, minus the main-frame-only ones
+    /// when the navigable is a child.
+    ///
+    /// A traversable the embedder has not named yet — one a script opened,
+    /// or one whose first document is being created — carries the default
+    /// scripts.
+    fn user_scripts_for_navigable(&self, navigable_id: NavigableId) -> Vec<UserScript> {
+        let traversable_id = self
+            .top_level_traversable_id(navigable_id)
+            .unwrap_or(navigable_id);
+        let scripts = self
+            .user_scripts
+            .get(&traversable_id)
+            .unwrap_or(&self.default_user_scripts);
+        let is_traversable = traversable_id == navigable_id;
+        scripts
+            .iter()
+            .filter(|script| is_traversable || !script.main_frame_only)
+            .cloned()
+            .collect()
     }
 }
 
@@ -912,6 +944,15 @@ pub enum UserAgentCommand {
     SendUiEvent {
         webview_id: WebviewId,
         event_message: Vec<u8>,
+    },
+    /// The scripts every top-level traversable created from now on starts
+    /// with.
+    SetDefaultUserScripts {
+        scripts: Vec<UserScript>,
+    },
+    SetUserScripts {
+        traversable_id: NavigableId,
+        scripts: Vec<UserScript>,
     },
     Shutdown {
         reply: Sender<Result<(), String>>,
@@ -1105,6 +1146,30 @@ impl UserAgent {
                 offset_y,
             })
             .map_err(|error| format!("failed to set traversable viewport: {error}"))
+    }
+
+    /// The scripts every top-level traversable created from now on starts
+    /// with, so they are in place before the traversable's first navigation
+    /// creates a document.
+    pub fn set_default_user_scripts(&self, scripts: Vec<UserScript>) -> Result<(), String> {
+        self.command_sender
+            .send(UserAgentCommand::SetDefaultUserScripts { scripts })
+            .map_err(|error| format!("failed to set the default user scripts: {error}"))
+    }
+
+    /// The scripts run in each document of `traversable_id` before the
+    /// document is populated. The list replaces the previous one.
+    pub fn set_user_scripts(
+        &self,
+        traversable_id: NavigableId,
+        scripts: Vec<UserScript>,
+    ) -> Result<(), String> {
+        self.command_sender
+            .send(UserAgentCommand::SetUserScripts {
+                traversable_id,
+                scripts,
+            })
+            .map_err(|error| format!("failed to set the user scripts: {error}"))
     }
 
     /// the automation-only selector-click bridge into content.
@@ -1586,6 +1651,15 @@ impl UserAgentWorker {
             }
             UserAgentCommand::RenderingOpportunityFor { navigable_id } => {
                 self.note_rendering_opportunity(navigable_id);
+            }
+            UserAgentCommand::SetDefaultUserScripts { scripts } => {
+                self.state.default_user_scripts = scripts;
+            }
+            UserAgentCommand::SetUserScripts {
+                traversable_id,
+                scripts,
+            } => {
+                self.state.user_scripts.insert(traversable_id, scripts);
             }
             UserAgentCommand::Shutdown { reply } => {
                 self.handle_shutdown(reply);
@@ -2088,6 +2162,7 @@ impl UserAgentWorker {
                 frame_id: None,
                 parent_traversable_id: None,
                 top_level_traversable_id: traversable_id,
+                user_scripts: self.state.user_scripts_for_navigable(traversable_id),
             },
         )?;
 
@@ -4625,6 +4700,9 @@ impl UserAgentWorker {
                 response: loaded_response,
                 parent_traversable_id,
                 top_level_traversable_id,
+                user_scripts: self
+                    .state
+                    .user_scripts_for_navigable(pending.traversable_id),
             },
         ) {
             Ok(_) => {

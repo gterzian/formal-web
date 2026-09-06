@@ -66,7 +66,7 @@ use ipc_messages::content::{
     FontTransportSender, FrameCompositionMetadata, FrameId, IframeEmbedSite,
     LoadedDocumentResponse, NavigableId, NavigationId, PaintFrame, PortId, PortTaskKind,
     PreparedScene, RecordedScene, ScriptEvaluationResult, TitleChanged, TraversableViewport,
-    ViewportSnapshot, WebviewId, WindowTimerKey, WorkerId, WorkerOwner,
+    UserScript, ViewportSnapshot, WebviewId, WindowTimerKey, WorkerId, WorkerOwner,
 };
 use ipc_messages::media::{VideoEmbedData, VideoPaintId};
 use ipc_messages::safe_passing_of_structured_data::PostMessageRequest;
@@ -290,6 +290,19 @@ fn request_body_string(body: &Body) -> String {
         Body::Bytes(bytes) => String::from_utf8_lossy(bytes).into_owned(),
         Body::Form(form) => serde_json::to_string(form).unwrap_or_default(),
         Body::Empty => String::new(),
+    }
+}
+
+/// Run the embedder's scripts in a new document's realm, before the
+/// document is populated, so a page's own scripts see whatever they set up.
+///
+/// The user agent has already dropped the scripts a child navigable must
+/// not run.
+fn run_user_scripts(settings: &mut EnvironmentSettingsObject, user_scripts: &[UserScript]) {
+    for script in user_scripts {
+        if let Err(error) = settings.evaluate_script(&script.source) {
+            error!("failed to run an embedder script: {error}");
+        }
     }
 }
 
@@ -1164,6 +1177,7 @@ impl ContentProcess {
         frame_id: Option<FrameId>,
         parent_traversable_id: Option<NavigableId>,
         top_level_traversable_id: NavigableId,
+        user_scripts: Vec<UserScript>,
     ) -> Result<(), String> {
         let viewport_state = self.document_viewport_state(traversable_id);
         let frame_id = frame_id.unwrap_or_else(FrameId::new);
@@ -1195,6 +1209,8 @@ impl ContentProcess {
                 error.display()
             );
         }
+
+        run_user_scripts(&mut settings, &user_scripts);
 
         // This block continues <https://html.spec.whatwg.org/#creating-a-new-browsing-context>.
         // Step 21: "Mark document as ready for post-load tasks."
@@ -1448,6 +1464,7 @@ impl ContentProcess {
         response: LoadedDocumentResponse,
         parent_traversable_id: Option<NavigableId>,
         top_level_traversable_id: NavigableId,
+        user_scripts: Vec<UserScript>,
     ) -> Result<(), String> {
         let LoadedDocumentResponse {
             final_url,
@@ -1464,8 +1481,10 @@ impl ContentProcess {
         // `Self::initialise_the_document_object`; the user-agent-side steps (browsing context
         // and agent selection) ran in `UserAgent::initialise_the_document_object` before this
         // command was dispatched.
-        let (document, settings, needs_paint) =
+        let (document, mut settings, needs_paint) =
             self.initialise_the_document_object(traversable_id, document_id, &final_url)?;
+
+        run_user_scripts(&mut settings, &user_scripts);
 
         let parser_scripts = {
             let mut document_guard = document.borrow_mut();
@@ -3580,6 +3599,7 @@ impl ContentProcess {
                 frame_id,
                 parent_traversable_id,
                 top_level_traversable_id,
+                user_scripts,
             } => {
                 self.create_empty_document(
                     traversable_id,
@@ -3587,6 +3607,7 @@ impl ContentProcess {
                     frame_id,
                     parent_traversable_id,
                     top_level_traversable_id,
+                    user_scripts,
                 )?;
                 Ok(true)
             }
@@ -3597,6 +3618,7 @@ impl ContentProcess {
                 response,
                 parent_traversable_id,
                 top_level_traversable_id,
+                user_scripts,
             } => {
                 self.create_loaded_document(
                     traversable_id,
@@ -3605,6 +3627,7 @@ impl ContentProcess {
                     response,
                     parent_traversable_id,
                     top_level_traversable_id,
+                    user_scripts,
                 )?;
                 Ok(true)
             }

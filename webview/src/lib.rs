@@ -15,7 +15,9 @@ pub use blitz_traits::shell::ColorScheme;
 #[cfg(target_os = "macos")]
 pub use ipc_channel::platform::deallocate_mach_port;
 pub use ipc_messages::content::deserialize_scene_from_slice;
-pub use ipc_messages::content::{FontTransportReceiver, RecordedScene, RegisteredFont, WebviewId};
+pub use ipc_messages::content::{
+    FontTransportReceiver, RecordedScene, RegisteredFont, UserScript, WebviewId,
+};
 pub use ipc_messages::graphics::{CompositingLayerId, LayerFrame, SurfaceFrame};
 
 use ipc_messages::content::{NavigateRequest, UserNavigationInvolvement};
@@ -240,6 +242,25 @@ impl WebviewProvider {
         snapshot: Option<(u32, u32, f32, ColorScheme)>,
     ) -> Result<(), String> {
         self.user_agent.set_default_viewport(snapshot)
+    }
+
+    /// The scripts every webview created from now on starts with.
+    ///
+    /// Publish them before asking for a webview: the traversable's first
+    /// document is created as part of that call, and only scripts already
+    /// published run in it.
+    pub fn set_default_user_scripts(&self, scripts: Vec<UserScript>) -> Result<(), String> {
+        self.user_agent.set_default_user_scripts(scripts)
+    }
+
+    /// The scripts run in each of a webview's documents before the document
+    /// is populated. The list replaces the previous one.
+    pub fn set_user_scripts(
+        &self,
+        webview_id: WebviewId,
+        scripts: Vec<UserScript>,
+    ) -> Result<(), String> {
+        self.user_agent.set_user_scripts(webview_id.0, scripts)
     }
 
     pub fn set_traversable_viewport(
