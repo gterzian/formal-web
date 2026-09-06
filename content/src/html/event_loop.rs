@@ -1,27 +1,17 @@
-//! The content process's half of the HTML event loop: the task queue every
-//! task source appends to, the tasks it holds, and the facade over the map of
-//! active timers owned by `super::timers`.
-//!
-//! The user agent reaches this event loop over IPC with a
-//! `ipc_messages::content::Command`, which is an ad hoc message and not a task.
-//! Where the spec step behind a command says to queue a task on this event
-//! loop, the content process queues the matching [`Task`] while handling the
-//! command, so everything that runs as a task — whether it originated here or
-//! in the user agent — goes through one queue and one set of processing-model
-//! steps (`ContentProcess::run_task`).
-
 use std::cell::RefCell;
 use std::rc::Rc;
 
 use crossbeam_channel::{Receiver, Sender, unbounded};
 use ipc_messages::content::{
     BeforeUnloadCheckId, DispatchEventEntry, DocumentId, NavigableId, NavigationId, PortId,
-    PortTaskKind, WindowTimerKey,
+    PortTaskKind, WindowTimerKey, WorkerId,
 };
 use ipc_messages::safe_passing_of_structured_data::PostMessageRequest;
 use log::error;
 
-use super::timers::MapOfActiveTimers;
+use crate::html::structured_data::safe_passing_of_structured_data::SerializeWithTransferResult;
+
+use super::timers::{MapOfActiveTimers, TimerRealm};
 
 /// <https://html.spec.whatwg.org/#concept-task>
 pub(crate) enum Task {
@@ -34,6 +24,38 @@ pub(crate) enum Task {
         timer_id: u32,
         timer_key: WindowTimerKey,
         nesting_level: u32,
+    },
+
+    /// The task that runs one expired worker timer's steps, queued on the
+    /// dedicated worker agent's own task queue when its event loop reaps an
+    /// expired entry from the worker's own map of active timers (see
+    /// `workers/dedicated_worker_agent.rs`).  The worker realm is identified by worker
+    /// id.
+    /// <https://html.spec.whatwg.org/#timer-initialisation-steps>
+    RunWorkerTimer {
+        worker_id: WorkerId,
+        timer_id: u32,
+        timer_key: WindowTimerKey,
+        nesting_level: u32,
+    },
+
+    /// The message task of one message a dedicated worker's owner posted to
+    /// it: fires a message event at the worker global scope (its role as the
+    /// inside port's message event target).  Only ever queued on the
+    /// dedicated worker agent's own task queue.
+    /// <https://html.spec.whatwg.org/#message-event-target>
+    RunWorkerInboundMessage {
+        worker_id: WorkerId,
+        payload: SerializeWithTransferResult,
+    },
+
+    /// The message task of one message a dedicated worker posted back to its
+    /// owner: fires a message event at the worker's Worker platform object.
+    /// Queued on the owner's event loop.
+    /// <https://html.spec.whatwg.org/#message-event-target>
+    RunWorkerOutboundMessage {
+        worker_id: WorkerId,
+        payload: SerializeWithTransferResult,
     },
 
     /// The message task for one message on a port whose message queue is
@@ -160,14 +182,14 @@ impl EventLoopTaskSources {
     /// <https://html.spec.whatwg.org/#run-steps-after-a-timeout>
     pub(crate) fn run_steps_after_a_timeout(
         &self,
-        document_id: DocumentId,
+        realm: TimerRealm,
         timer_key: WindowTimerKey,
         milliseconds: u32,
         timer_id: u32,
         nesting_level: u32,
     ) {
         self.active_timers.borrow_mut().run_steps_after_a_timeout(
-            document_id,
+            realm,
             timer_key,
             milliseconds,
             timer_id,

@@ -117,7 +117,7 @@ Besides this, a modular approach is followed by making the following components 
 The following processes are used:
 
 - **Main** (`src/main.rs`): runs the `embedder`, `webview`, and `user_agent` crates.
-- **Content** (`user_agent/src/event_loop.rs`): runs the `content` crate. Multiple processes: one per [similar origin window agent](https://html.spec.whatwg.org/#similar-origin-window-agent).
+- **Content** (`user_agent/src/event_loops.rs`): runs the `content` crate. Multiple processes: one per [similar origin window agent](https://html.spec.whatwg.org/#similar-origin-window-agent).
 - **Graphics** (`graphics/src/bin/graphics_process.rs`): runs the `graphics` and `media` crates.
 - **Net** (`user_agent/src/fetch.rs`): runs the `net` crate.
 

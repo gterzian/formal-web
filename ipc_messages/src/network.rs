@@ -40,14 +40,20 @@ pub enum ResponseRecipient {
 pub enum Request {
     SetTraceSender(Option<TraceSender>),
     Fetch {
-        /// The event loop (content process) that initiated the fetch.
+        /// The network partition key of the fetch: the event loop id of
+        /// the similar-origin window agent of the agent cluster (content
+        /// process) that initiated it.  A dedicated worker shares its
+        /// owner cluster's partition, so the id is the host window agent's
+        /// event loop, never the worker agent's own.
         event_loop_id: EventLoopId,
         request_id: Uuid,
         request: FetchRequest,
         reply_to: ResponseRecipient,
     },
     NavigationFetch {
-        /// The event loop that owns the navigable being navigated.
+        /// The network partition key of the navigation fetch: the event
+        /// loop id of the similar-origin window agent of the agent cluster
+        /// (content process) that owns the navigable being navigated.
         event_loop_id: EventLoopId,
         request_id: Uuid,
         request: NavigationFetchRequest,

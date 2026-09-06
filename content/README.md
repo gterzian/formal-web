@@ -64,11 +64,20 @@ Types that currently use `&mut self` for mutation but could use `GcCell` + `&sel
 
 ## The event loop's task queue
 
-The HTML event loop processing model runs on the content process main thread
+A content process is one agent cluster: it hosts the similar-origin window
+agent of the cluster and the dedicated worker agents of the workers the
+cluster's realms create (a worker's realm can create further workers, whose
+agents join the same cluster).  The event loop below is the window agent's;
+each dedicated worker agent runs its own worker event loop on its own native
+thread, with its own task queue, timer map and realm (see
+`content/src/html/workers/dedicated_worker_agent.rs`).
+
+The window agent's HTML event loop runs on the content process main thread
 (`run_content_message_loop` in `content/src/main.rs`).  Every task source feeds
 one queue of `Task` (`content/src/html/event_loop.rs`), and
 `ContentProcess::run_task` is the only place that runs one: it takes the oldest
 task, performs its steps, and performs the microtask checkpoint that ends them.
+
 Content-initiated work (window timer expiry, port message tasks) must therefore
 be **queued as a `Task`**, never run by calling its handler directly: an inline
 call skips the bookkeeping the model requires (marking the task's document
@@ -82,6 +91,9 @@ WebDriver/CDP script evaluation and event dispatch), handling the command
 queues the matching `Task`, so it runs through the same processing-model steps
 as a task queued here.  The rest (viewport, document lifecycle, navigation
 fetch completion, shutdown) `ContentProcess::handle_command` runs directly.
+A `Command::PortTask` arrives here only for ports of the window event loop;
+ports owned by a dedicated worker agent's event loop are delivered over that
+agent's own user-agent command channel (see `dedicated_worker_agent.rs`).
 
 The loop waits for the oldest task on the queue, a command, a WebAssembly
 result, or the earliest expiry time in the map of active timers

@@ -55,6 +55,7 @@ uuid_id!(FrameId);
 uuid_id!(NavigationId);
 uuid_id!(PortId);
 uuid_id!(MessageId);
+uuid_id!(WorkerId);
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize)]
 pub enum ColorScheme {
@@ -808,11 +809,59 @@ pub enum WebviewProviderMessage {
     },
 }
 
-/// A message the user agent (or the net process) sends the content process to
-/// drive it.  A command is not an event-loop task: when the spec step behind a
-/// command says to queue a task on the content process's event loop, the
-/// content process queues the corresponding `Task` while handling the command
-/// (see `content/src/html/event_loop.rs`).
+/// A request to create (or, for shared workers, obtain) a worker, sent by
+/// the `Worker` constructor to the content process hosting the owner realm
+/// (dedicated workers are entirely content-process-nested; see
+/// `content/src/html/workers/dedicated_worker_agent.rs`).  A future shared-worker
+/// implementation would involve the user agent to look up an existing shared
+/// worker by (origin, name) instead of always starting a fresh one.
+/// <https://html.spec.whatwg.org/#run-a-worker>
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct WorkerRequest {
+    /// The id of the worker being created, shared with the content process's
+    /// worker table and the `Worker` platform object in the owner realm.
+    pub worker_id: WorkerId,
+    /// The absolute URL of the worker script, resolved by the constructor
+    /// steps before the request is sent.
+    /// <https://html.spec.whatwg.org/#dedicated-workers-and-the-worker-interface>
+    pub script_url: String,
+    /// <https://html.spec.whatwg.org/#dom-workeroptions-name>
+    pub name: String,
+    /// The worker type: "classic" or "module".
+    /// <https://html.spec.whatwg.org/#dom-workeroptions-type>
+    pub worker_type: String,
+    /// The realm that created the worker: the owner document, or the
+    /// worker global scope when a worker creates a nested worker.
+    /// <https://html.spec.whatwg.org/#the-worker-s-lifetime>
+    pub owner: WorkerOwner,
+}
+
+/// The realm that created a worker (its relevant owner to add).
+/// <https://html.spec.whatwg.org/#the-worker-s-lifetime>
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum WorkerOwner {
+    /// The worker was created by a window; its owner is that window's
+    /// associated Document.
+    Document(DocumentId),
+    /// The worker was created by another worker global scope.
+    Worker(WorkerId),
+}
+
+/// A message the user agent (or the net process) sends into a content
+/// process to drive it.  A content process is one agent cluster; most
+/// commands are addressed to the cluster's single similar-origin window
+/// agent and arrive on the process's main command channel, whose receiver —
+/// the content process main thread — both handles the cluster's work
+/// (bootstrap, viewport, document lifecycle, navigation-fetch completions,
+/// shutdown) and runs the window agent's event loop.  A command is not an
+/// event-loop task: when the spec step behind a command says to queue a
+/// task on the window event loop, the content process queues the
+/// corresponding `Task` while handling the command (see
+/// `content/src/html/event_loop.rs`); the cluster-level commands it runs
+/// directly.  A dedicated worker agent of the cluster is addressed over its
+/// own user-agent command channel (see
+/// `ContentEvent::DedicatedWorkerAgentObtained`) rather than the process's
+/// main channel.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum Command {
     SetViewport(ViewportSnapshot),
@@ -879,7 +928,11 @@ pub enum Command {
     /// direct net→content response routing), the TLA trace sender, and initial
     /// configuration.
     ContentBootstrap {
-        /// The event loop this content process hosts.
+        /// The event loop id of the similar-origin window agent whose window
+        /// event loop this content process (its agent cluster) will run on
+        /// its main thread.  The id doubles as the cluster's network
+        /// partition key: every realm of the cluster — the window agent's
+        /// and its dedicated worker agents' alike — keys its fetches by it.
         event_loop_id: EventLoopId,
         net_sender: ipc::IpcSender<crate::network::Request>,
         /// Direct sender to the graphics process.
@@ -907,6 +960,13 @@ pub enum Command {
     /// task.  `NewTask` is the message task for a routed "Single" item;
     /// `Buffer` is the transfer-completion task carrying the messages that
     /// were buffered while the port was in transit.
+    ///
+    /// The command is sent over the event loop's own user-agent channel: the
+    /// similar-origin window agent's channel (the content process's command
+    /// channel) for the window event loop, or the dedicated worker agent's
+    /// own user-agent channel (carried in
+    /// `ContentEvent::DedicatedWorkerAgentObtained`) for a worker event
+    /// loop.
     /// <https://html.spec.whatwg.org/#message-port-post-message-steps>
     PortTask {
         port: PortId,
@@ -972,8 +1032,17 @@ pub enum Event {
     /// user agent so its routing can deliver messages to either port's
     /// owning event loop (the `NewChannel` action of the MessagePortExtraFG
     /// TLA model).
+    ///
+    /// The owning event loop is carried in the payload: worker realms send
+    /// their channel-messaging events over the same content-process channel
+    /// as the window event loop, so the user agent cannot infer the owning
+    /// event loop from the transport channel.
     /// <https://html.spec.whatwg.org/#dom-messagechannel>
     PortChannelCreated {
+        /// The event loop whose realm created the channel: the window event
+        /// loop of the sending content process, or the worker event loop of
+        /// one of its dedicated worker agents.
+        event_loop: EventLoopId,
         port1: PortId,
         port2: PortId,
     },
@@ -987,8 +1056,17 @@ pub enum Event {
     /// A transferred port was received in an event loop during structured
     /// deserialization (the `TransferReceive` action of the MessagePortExtraFG
     /// TLA model).
+    ///
+    /// The receiving event loop is carried in the payload: worker realms
+    /// send their channel-messaging events over the same content-process
+    /// channel as the window event loop, so the user agent cannot infer the
+    /// receiving event loop from the transport channel.
     /// <https://html.spec.whatwg.org/#message-ports:transfer-receiving-steps>
     PortTransferReceived {
+        /// The event loop that received the transferred port: the window
+        /// event loop of the sending content process, or the worker event
+        /// loop of one of its dedicated worker agents.
+        event_loop: EventLoopId,
         port: PortId,
     },
     /// The message port post message steps could not deliver a message
@@ -1017,6 +1095,46 @@ pub enum Event {
     /// the embedder can label the corresponding tab and window.
     /// <https://html.spec.whatwg.org/#the-title-element>
     TitleChanged(TitleChanged),
+    /// The dedicated worker agent of one of this content process's workers
+    /// was obtained: the run-a-worker step 4 split of "obtain a dedicated/
+    /// shared worker agent" (dedicated path, is shared false).  The content
+    /// side ran the local half of the step — creating the agent's native
+    /// thread that implements the agent and its worker event loop — and the
+    /// Worker constructor registered the worker's handle with its owner
+    /// event loop (the window agent's main-loop worker inbox, or the owner
+    /// worker agent's own inbox for a nested worker); the user agent runs
+    /// its half here: recording the dedicated worker agent and its worker
+    /// event loop, so port tasks routed to the agent's event loop can be
+    /// sent over the agent's own user-agent channel.
+    ///
+    /// The event is sent over the content process's event channel, which
+    /// identifies the agent cluster (the similar-origin window agent's
+    /// event loop) hosting the worker.
+    /// <https://html.spec.whatwg.org/#dedicated-worker-agent>
+    DedicatedWorkerAgentObtained {
+        worker_id: WorkerId,
+        /// <https://html.spec.whatwg.org/#worker-event-loop-2>
+        /// The worker event loop of the new dedicated worker agent.
+        event_loop_id: EventLoopId,
+        /// The realm that created the worker.
+        /// <https://html.spec.whatwg.org/#the-worker-s-lifetime>
+        owner: WorkerOwner,
+        /// The user-agent end of the dedicated worker agent's own command
+        /// channel: the user agent sends commands addressed to this agent's
+        /// event loop (e.g. the port tasks of `Command::PortTask`) directly
+        /// over it, bypassing the content process's main-thread forwarding.
+        ua_command_sender: ipc::IpcSender<Command>,
+    },
+    /// A dedicated worker agent of one of this content process's workers
+    /// closed: its realm was torn down and its worker event loop destroyed
+    /// (run-a-worker steps 12.19-12.21 ran in the content process).  The
+    /// user agent drops the agent record it created on
+    /// `DedicatedWorkerAgentObtained`; ports the closed agent's event loop
+    /// owned are no longer addressable.
+    /// <https://html.spec.whatwg.org/#run-a-worker>
+    DedicatedWorkerAgentClosed {
+        worker_id: WorkerId,
+    },
     ShutdownCompleted,
 }
 

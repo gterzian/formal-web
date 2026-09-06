@@ -350,6 +350,105 @@ process yet; the domain methods (`Window::name_value`, `opener_value`,
 `closed_value`, `close`) return placeholder values with `// Note:`
 annotations until that state is sent to the content process or forwarded.
 
+## Workers (`workers/`)
+
+Dedicated-worker code lives under `workers/`, split across modules by the
+spec section that specifies each interface or algorithm (workers.html
+§10.2.1): the `Worker` platform object and its constructor steps are in
+`workers/worker.rs`; the `WorkerGlobalScope` common interface — its event
+target, global scope, name, url, type and closing flag, plus the
+WindowOrWorkerGlobalScope mixin members — in `workers/worker_global_scope.rs`;
+the `DedicatedWorkerGlobalScope` interface, which embeds that base (the
+repo's subclass pattern) and carries the dedicated members (name,
+postMessage, close, the inside port and its inbound queue), in
+`workers/dedicated_worker_global_scope.rs`; and run-a-worker with the
+agent's event loop in `workers/dedicated_worker_agent.rs`.
+`WorkerLocation` and `WorkerNavigator` are in
+`workers/worker_location.rs` and `workers/worker_navigator.rs`.  Add new
+worker algorithms to the module that owns their spec section, quoting each
+spec step verbatim in `// Step N:` comments and annotating deviations
+inline at the step they diverge from (see `AGENTS.md`, "Algorithm
+Implementation").
+
+Design decisions that change how the spec's worker channel and lifecycle
+are realized are annotated where they diverge — per-field on the channel
+types and platform objects, per-step in the run-a-worker and
+terminate-a-worker bodies — not summarized here.  Read those notes before
+extending either mechanism.  The one cross-cutting deviation: the worker's
+implicit outside/inside MessagePort pair is not created.  Owner and worker
+communicate over two direct crossbeam channel ends, with the port role
+each end replaces mapped on `Worker::outside_port`, the `WorkerBootstrap`
+fields and `DedicatedWorkerAgentState`.
+
+Known gaps:
+
+- **importScripts only supports data: URLs.**  Fetches of other URL schemes
+  are asynchronous in this architecture (through the net process), and
+  importScripts is synchronous; non-data URLs throw a NotSupportedError.
+- **Module workers are evaluated as classic scripts.**  "Fetch a module worker
+  script graph" (run-a-worker step 12's module branch) is not implemented;
+  `type: "module"` workers run their source as a classic script.
+- **`error` events on the Worker object are fired directly, not as queued
+  global tasks**, matching the document lifecycle commands' existing
+  deviation (see `content/README.md`).
+- **Worker runtime errors are conflated with fetch/parse failures, and
+  ErrorEvent is missing.**  An evaluation error in the worker script (parse
+  failure or a top-level exception at run-a-worker step 12.13) fires a plain
+  `error` event at the Worker object; per report an exception (runtime script
+  errors) it should first fire an error event at the worker global scope
+  (self.onerror) and only reach the Worker object when unhandled, and the
+  event must be an ErrorEvent with message/error/filename/lineno/colno.
+  Runtime errors thrown inside worker *tasks* (e.g. an onmessage handler
+  throwing) are not reported at all: no error event fires at the worker
+  global scope and nothing reaches the Worker object — the engine swallows
+  the exception.  A script parse failure should abort the worker at step
+  12.4, but the engine's evaluate combines parse and run, so the two are not
+  distinguished.  (`dedicated-worker-parse-error-failure.html` passes: it
+  asserts the error handler receives a single plain-`Event` argument, which
+  the direct event does satisfy.)
+- **The default WPT run covers document-side dedicated-worker tests.**
+  `tests/wpt/include.ini` selects the dedicated-worker tests under `workers/`
+  that run their subtests in the document (Worker construction and
+  messaging, WorkerLocation/WorkerNavigator, timers and close(), data: URL
+  and nested workers, importScripts of data: URLs); tests that fail are
+  selected there and disabled in `tests/wpt/meta` with the specific gap.
+  Still excluded: worker-global tests (`.worker.` files and
+  `fetch_tests_from_worker` need worker-side testharness, which imports
+  testharness.js over http — see the importScripts gap above;
+  `webmessaging/without-ports/025.html` is disabled for that reason), and
+  shared-worker, module-worker, and worker tests that additionally need an
+  unrelated unexposed feature (Blob, URL, fetch/XHR, canvas, SharedArrayBuffer,
+  iframe/session-history navigation, redirects).
+- **The worker realm does not expose `performance`.**  The
+  WindowOrWorkerGlobalScope `performance` member is missing on worker
+  globals, so `self.performance.now` is undefined (`WorkerPerformanceNow.html`
+  is disabled for it).
+- **`terminate()` does not promptly stop delivery of already-queued
+  messages.**  Messages queued on the worker's outside port are still
+  dispatched after `terminate()` returns, so the timing-sensitive
+  `Worker_terminate_event_queue.htm` and `constructors/Worker/terminate.html`
+  fail (the infinite-runner and evaluation-time terminate tests pass).
+- **Worker script URLs are resolved against the document URL, not the
+  document base URL**, so a worker created under a `<base href>` fails to
+  load (`constructors/Worker/use-base-url.html` is disabled for it).
+- **The Worker constructor and `postMessage` do not enforce their required
+  arguments**: `new Worker()` and `worker.postMessage()` with no arguments
+  do not throw a TypeError (`constructors/Worker/Worker-constructor.html`
+  and `Worker-multi-port.html` are disabled for it).
+- **Platform objects report `[object Object]` from `Object.prototype.toString`**
+  (no `@@toStringTag` is exposed; affects every platform object — Worker,
+  MessageEvent, Event, DOMException — on the V8 backend), so tests that
+  assert class strings (`Worker_basic.htm`'s constructor subtest,
+  `message-event.html`, `AbstractWorker.onerror.html`) are disabled.
+- **Owner-set lifetime management is minimal.**  Terminate-on-owner-document-
+destroy is wired (`destroy_document` terminates its workers, as does a
+closing owner worker for its nested workers); the spec's
+protected/permissible/suspendable monitoring is not.
+- **Shared workers are not implemented.**  They need new-agent-cluster
+  allocation (which must happen in the user agent) and the UA-side instance
+  lookup by (origin, name); the dedicated-only implementation folds
+  `WorkerGlobalScopeKind` into the dedicated global scope.
+
 ## Related documentation
 
 - `content/src/webidl/README.md` — Boa platform object integration, exotic object pattern

@@ -110,6 +110,15 @@ pub(crate) struct ChannelMessaging {
 }
 
 impl ChannelMessaging {
+    /// The event loop this channel messaging belongs to: a window event
+    /// loop or a worker event loop.  Reported to the user agent in the
+    /// channel-messaging events that register a port's owner, since worker
+    /// realms share the content process's event channel and the user agent
+    /// cannot infer the event loop from the transport.
+    pub(crate) fn event_loop_id(&self) -> EventLoopId {
+        self.event_loop_id
+    }
+
     /// Create the channel messaging state for an event loop.
     pub(crate) fn new(
         event_loop_id: EventLoopId,
