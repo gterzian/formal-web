@@ -465,9 +465,9 @@ pub(crate) struct ContentProcess {
     /// The window agent's worker inbox: the channel the workers its
     /// documents own register on and report their posted messages and
     /// lifecycle over.  The sender is cloned onto every window realm's
-    /// GlobalScope (see GlobalScope::set_worker_inbox) so their Worker
-    /// constructors can register the workers they spawn; the main loop
-    /// selects on the receiver.
+    /// GlobalScope (see GlobalScope::set_worker_owner_inbox) so their
+    /// Worker constructors can register the workers they spawn; the main
+    /// loop selects on the receiver.
     worker_event_sender: crossbeam_channel::Sender<WorkerEvent>,
     /// The window agent's worker inbox receiver: the dedicated worker events
     /// (registration, posted messages and lifecycle reports of the workers
@@ -600,10 +600,10 @@ impl ContentProcess {
         )?;
         // The realm belongs to this content process's event loop; the global
         // scope needs the id for channel messaging (per-event-loop port
-        // management), the trace sender, the window agent's worker inbox (so
-        // the Worker constructor can register the workers this realm spawns),
-        // the network partition key and the net extension sender (the script
-        // fetches of those workers).
+        // management), the trace sender, its worker-owner inbox — the window
+        // agent's worker inbox, where the workers this realm spawns register
+        // and report — the network partition key and the net extension
+        // sender (the script fetches of those workers).
         let trace_sender = self.trace_sender.clone();
         let worker_event_sender = self.worker_event_sender.clone();
         let network_extension_sender = self.network_extension_sender.clone();
@@ -612,7 +612,7 @@ impl ContentProcess {
             |global_scope, _ec| {
                 global_scope.set_event_loop_id(self.event_loop_id);
                 global_scope.set_trace_sender(trace_sender.clone());
-                global_scope.set_worker_inbox(worker_event_sender.clone());
+                global_scope.set_worker_owner_inbox(worker_event_sender.clone());
                 global_scope.set_network_partition_event_loop_id(self.event_loop_id);
                 global_scope.set_network_extension_sender(network_extension_sender.clone());
                 Ok(())
@@ -936,15 +936,15 @@ impl ContentProcess {
             .unwrap_or_else(NavigableId::new);
             // The new realm shares this process's event loop and trace
             // sender (channel messaging needs both), the window agent's worker
-            // inbox, the network partition key and the net extension sender
-            // (the Worker constructor).
+            // inbox (its worker-owner inbox), the network partition key and
+            // the net extension sender (the Worker constructor).
             let trace_sender = self.trace_sender.clone();
             let worker_event_sender = self.worker_event_sender.clone();
             let network_extension_sender = self.network_extension_sender.clone();
             with_global_scope(settings.ec(), |global_scope, _ec| {
                 global_scope.set_event_loop_id(self.event_loop_id);
                 global_scope.set_trace_sender(trace_sender.clone());
-                global_scope.set_worker_inbox(worker_event_sender.clone());
+                global_scope.set_worker_owner_inbox(worker_event_sender.clone());
                 global_scope.set_network_partition_event_loop_id(self.event_loop_id);
                 global_scope.set_network_extension_sender(network_extension_sender.clone());
                 Ok(())

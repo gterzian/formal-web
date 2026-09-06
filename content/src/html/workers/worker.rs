@@ -97,9 +97,9 @@ impl Worker {
             .map_err(|error| {
                 ec.new_type_error(&format!("worker constructor: {}", error.display()))
             })?;
-        let worker_inbox = global_scope
-            .worker_inbox()
-            .ok_or_else(|| ec.new_type_error("worker constructor: no owner worker inbox"))?;
+        let worker_owner_inbox = global_scope
+            .worker_owner_inbox()
+            .ok_or_else(|| ec.new_type_error("worker constructor: no worker owner inbox"))?;
         let event_sender = global_scope
             .event_sender()
             .ok_or_else(|| ec.new_type_error("worker constructor: no event sender"))?;
@@ -186,14 +186,14 @@ impl Worker {
         let config = DedicatedWorkerAgentConfig {
             request,
             owner_to_worker: owner_to_worker_rx,
-            owner_inbox: worker_inbox.clone(),
+            owner_inbox: worker_owner_inbox.clone(),
             network_partition_event_loop_id,
             event_sender: event_sender.clone(),
             network_extension_sender,
             trace_sender,
         };
         let thread_event_sender = event_sender;
-        let thread_inbox = worker_inbox.clone();
+        let thread_owner_inbox = worker_owner_inbox.clone();
         let thread_worker_id = worker_id;
         let join_handle = match std::thread::Builder::new()
             .name(format!("formal-web:worker-{worker_id}"))
@@ -212,7 +212,7 @@ impl Worker {
                 let _ = thread_event_sender.send(ContentEvent::DedicatedWorkerAgentClosed {
                     worker_id: thread_worker_id,
                 });
-                let _ = thread_inbox.send(WorkerEvent::Closed {
+                let _ = thread_owner_inbox.send(WorkerEvent::Closed {
                     worker_id: thread_worker_id,
                 });
             }) {
@@ -226,7 +226,7 @@ impl Worker {
         // delivers its posted messages and joins its thread): the owner
         // keeps the worker's handle (the owner→worker channel end, used to
         // terminate the worker when its owner goes away) and the thread.
-        if let Err(error) = worker_inbox.send(WorkerEvent::NewWorker {
+        if let Err(error) = worker_owner_inbox.send(WorkerEvent::NewWorker {
             worker_id,
             owner,
             owner_to_worker: owner_to_worker_tx,

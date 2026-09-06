@@ -312,11 +312,13 @@ pub(crate) fn run_a_worker(config: DedicatedWorkerAgentConfig) -> Result<(), Str
         wiring,
     )?;
     // The worker realm's global scope gets its own event loop id (this
-    // dedicated worker agent's worker event loop), its own worker inbox (the
-    // nested workers its realm spawns report on it), the window agent's
-    // event loop id as its network partition key, the trace sender, and the
-    // owner→worker end of the worker's channel as its inside port, so the
-    // worker's postMessage can reach its owner.
+    // dedicated worker agent's worker event loop), its worker-owner inbox —
+    // the channel to the worker inbox of the event loop that owns the
+    // workers this realm spawns, which is this agent's own event loop (the
+    // nested workers this realm spawns register and report on it), the
+    // window agent's event loop id as its network partition key, the trace
+    // sender, and the owner→worker end of the worker's channel as its
+    // inside port, so the worker's postMessage can reach its owner.
     with_dedicated_worker_global_scope(settings.ec(), |dedicated_scope, _ec| {
         dedicated_scope
             .worker_global_scope
@@ -325,7 +327,7 @@ pub(crate) fn run_a_worker(config: DedicatedWorkerAgentConfig) -> Result<(), Str
         dedicated_scope
             .worker_global_scope
             .global_scope
-            .set_worker_inbox(inbox_sender);
+            .set_worker_owner_inbox(inbox_sender);
         dedicated_scope
             .worker_global_scope
             .global_scope

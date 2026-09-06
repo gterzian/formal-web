@@ -250,13 +250,16 @@ pub struct GlobalScope {
     #[ignore_trace]
     event_sender: Rc<RefCell<Option<IpcSender<ContentEvent>>>>,
 
-    /// The channel to this realm's own event loop's worker inbox: the
-    /// channel the workers this realm spawns register on and report their
-    /// posted messages and lifecycle over.  Set by the event loop that runs
-    /// this realm before any of its scripts can spawn a worker.
+    /// The channel to the worker inbox of the event loop that owns the
+    /// workers this realm spawns — that loop runs this realm (the window
+    /// agent's main loop, or a dedicated worker agent's own event loop):
+    /// the Worker constructor registers the worker's handle here, and the
+    /// worker's posted messages and lifecycle reports arrive here.  Set by
+    /// the owner loop before any of this realm's scripts can spawn a
+    /// worker.
     /// <https://html.spec.whatwg.org/#run-a-worker>
     #[ignore_trace]
-    worker_inbox: Rc<RefCell<Option<crossbeam_channel::Sender<WorkerEvent>>>>,
+    worker_owner_inbox: Rc<RefCell<Option<crossbeam_channel::Sender<WorkerEvent>>>>,
 
     /// The network partition key of the fetches this realm's workers make:
     /// the event loop id of the similar-origin window agent of this realm's
@@ -348,7 +351,7 @@ impl GlobalScope {
             top_level_traversable_id: Rc::new(Cell::new(None)),
             document_id: Rc::new(RefCell::new(None)),
             event_sender: Rc::new(RefCell::new(None)),
-            worker_inbox: Rc::new(RefCell::new(None)),
+            worker_owner_inbox: Rc::new(RefCell::new(None)),
             network_partition_event_loop_id: Rc::new(Cell::new(None)),
             network_extension_sender: Rc::new(RefCell::new(None)),
             owned_workers: gc_cell_new(Vec::new(), ec),
@@ -522,15 +525,19 @@ impl GlobalScope {
         self.event_sender.borrow().clone()
     }
 
-    /// Set the channel to this realm's own event loop's worker inbox: where
-    /// the workers this realm spawns register and report.
-    pub(crate) fn set_worker_inbox(&self, worker_inbox: crossbeam_channel::Sender<WorkerEvent>) {
-        *self.worker_inbox.borrow_mut() = Some(worker_inbox);
+    /// Set the channel to the worker inbox of the event loop that owns the
+    /// workers this realm spawns: where they register and report.
+    pub(crate) fn set_worker_owner_inbox(
+        &self,
+        worker_owner_inbox: crossbeam_channel::Sender<WorkerEvent>,
+    ) {
+        *self.worker_owner_inbox.borrow_mut() = Some(worker_owner_inbox);
     }
 
-    /// The channel to this realm's own event loop's worker inbox, if set.
-    pub(crate) fn worker_inbox(&self) -> Option<crossbeam_channel::Sender<WorkerEvent>> {
-        self.worker_inbox.borrow().clone()
+    /// The channel to the worker inbox of the event loop that owns the
+    /// workers this realm spawns, if set.
+    pub(crate) fn worker_owner_inbox(&self) -> Option<crossbeam_channel::Sender<WorkerEvent>> {
+        self.worker_owner_inbox.borrow().clone()
     }
 
     /// Set the network partition key of the fetches this realm's workers
