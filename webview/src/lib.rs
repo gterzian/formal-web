@@ -30,7 +30,10 @@ use std::time::Duration;
 use user_agent::{UserAgent, UserAgentHost};
 use verification::TraceSender;
 
-pub use user_agent::{NavigationCompleted, NavigationCompletion};
+pub use user_agent::{
+    EmbedderSchemeRequest, EmbedderSchemeResponder, EmbedderSchemeResponse, NavigationCompleted,
+    NavigationCompletion,
+};
 
 /// The embedder host interface: the callbacks the user agent makes into the
 /// embedder (navigation, paint, clipboard, viewport, window title). The
@@ -49,6 +52,17 @@ pub trait Embedder: Send + Sync {
     fn window_viewport_snapshot(&self) -> Option<(u32, u32, f32, ColorScheme)>;
     fn clipboard_get_text(&self) -> Result<String, String>;
     fn clipboard_set_text(&self, text: String) -> Result<(), String>;
+    /// A fetch whose URL scheme the embedder registered with
+    /// [`WebviewProvider::set_embedder_schemes`]: the engine serves neither
+    /// the navigation nor the subresource itself and asks here instead. The
+    /// embedder answers through `responder`, from any thread, whenever it
+    /// has the response; dropping the responder fails the fetch.
+    fn embedder_scheme_fetch(
+        &self,
+        webview_id: WebviewId,
+        request: EmbedderSchemeRequest,
+        responder: EmbedderSchemeResponder,
+    );
     /// A message a document sent with
     /// `window.__formalWebPostHostMessage(body)`, with the sending
     /// document's URL. The embedder answers, when it answers at all, by
@@ -125,6 +139,16 @@ impl UserAgentHost for UserAgentHostAdapter {
 
     fn clipboard_set_text(&self, text: String) -> Result<(), String> {
         self.embedder.clipboard_set_text(text)
+    }
+
+    fn embedder_scheme_fetch(
+        &self,
+        webview_id: WebviewId,
+        request: EmbedderSchemeRequest,
+        responder: EmbedderSchemeResponder,
+    ) {
+        self.embedder
+            .embedder_scheme_fetch(webview_id, request, responder);
     }
 
     fn host_message(
@@ -257,6 +281,15 @@ impl WebviewProvider {
         snapshot: Option<(u32, u32, f32, ColorScheme)>,
     ) -> Result<(), String> {
         self.user_agent.set_default_viewport(snapshot)
+    }
+
+    /// The URL schemes the embedder serves itself.
+    ///
+    /// A navigation or subresource fetch for one of these reaches
+    /// [`Embedder::embedder_scheme_fetch`] instead of the network; the list
+    /// replaces the previous one and applies to every webview.
+    pub fn set_embedder_schemes(&self, schemes: Vec<String>) -> Result<(), String> {
+        self.user_agent.set_embedder_schemes(schemes)
     }
 
     /// The scripts every webview created from now on starts with.

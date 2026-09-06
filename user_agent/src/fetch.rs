@@ -94,17 +94,37 @@ impl NetConnection {
         Ok(())
     }
 
-    /// Handle a response from the net extension. Returns the `NavigationFetchId`
-    /// and the response result if a matching pending fetch was found.
+    /// Tell the net extension which URL schemes the embedder serves itself.
+    pub(crate) fn set_embedder_schemes(&self, schemes: Vec<String>) -> Result<(), String> {
+        self.sender
+            .send(NetworkRequest::SetEmbedderSchemes { schemes })
+            .map_err(|error| format!("failed to send the embedder schemes to net: {error}"))
+    }
+
+    /// Hand the embedder's answer for an embedder-scheme fetch back to net,
+    /// which routes it to the recipient the intercepted request named.
+    pub(crate) fn complete_embedder_scheme_fetch(
+        &self,
+        request_id: uuid::Uuid,
+        result: Result<ipc_messages::content::FetchResponse, String>,
+    ) -> Result<(), String> {
+        self.sender
+            .send(NetworkRequest::CompleteEmbedderSchemeFetch { request_id, result })
+            .map_err(|error| format!("failed to complete an embedder-scheme fetch: {error}"))
+    }
+
+    /// Resolve a fetch outcome from the net extension to the navigation
+    /// fetch that started it.
     pub(crate) fn handle_response(
         &mut self,
-        response: NetworkResponse,
+        request_id: uuid::Uuid,
+        result: Result<ipc_messages::content::FetchResponse, String>,
     ) -> Option<(
         NavigationFetchId,
         Result<ipc_messages::content::FetchResponse, String>,
     )> {
-        let fetch_id = self.pending_fetches.remove(&response.request_id)?;
-        Some((fetch_id, response.result))
+        let fetch_id = self.pending_fetches.remove(&request_id)?;
+        Some((fetch_id, result))
     }
 
     /// Shut down the net extension gracefully.

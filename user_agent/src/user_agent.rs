@@ -11,10 +11,11 @@ use crossbeam_channel::{Receiver, Sender, bounded, unbounded};
 use ipc_messages::content::{
     AgentClusterId, AgentId, BeforeUnloadCheckId, BeforeUnloadResult, BrowsingContextGroupId,
     BrowsingContextId, Command as ContentCommand, DispatchEventEntry, DocumentId,
-    Event as ContentEvent, EventLoopId, FetchResponse as ContentFetchResponse,
-    FinalizeNavigation as ContentFinalizeNavigation, FrameId, HostMessageRequested,
-    LoadedDocumentResponse, NavigableId, NavigateRequest, NavigationFetchId, NavigationId,
-    NewTraversableInfo, UserNavigationInvolvement, UserScript, WebviewId, iframe_target_name,
+    Event as ContentEvent, EventLoopId, FetchRequest as ContentFetchRequest,
+    FetchResponse as ContentFetchResponse, FinalizeNavigation as ContentFinalizeNavigation,
+    FrameId, HostMessageRequested, LoadedDocumentResponse, NavigableId, NavigateRequest,
+    NavigationFetchId, NavigationId, NewTraversableInfo, UserNavigationInvolvement, UserScript,
+    WebviewId, iframe_target_name,
 };
 use ipc_messages::safe_passing_of_structured_data::PostMessageRequest;
 use log::{debug, error, info, trace};
@@ -134,6 +135,85 @@ pub struct NavigationCompleted {
     pub status: NavigationCompletion,
 }
 
+/// A fetch whose URL scheme the embedder serves itself, handed to the
+/// embedder instead of to a network backend.
+/// <https://fetch.spec.whatwg.org/#concept-request>
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct EmbedderSchemeRequest {
+    /// <https://fetch.spec.whatwg.org/#concept-request-url>
+    pub url: String,
+    /// <https://fetch.spec.whatwg.org/#concept-request-method>
+    pub method: String,
+    /// <https://fetch.spec.whatwg.org/#concept-request-header-list>
+    pub header_list: Vec<(String, String)>,
+    /// <https://fetch.spec.whatwg.org/#concept-request-body>
+    pub body: String,
+}
+
+/// The embedder's answer to an [`EmbedderSchemeRequest`].
+/// <https://fetch.spec.whatwg.org/#concept-response>
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct EmbedderSchemeResponse {
+    /// <https://fetch.spec.whatwg.org/#concept-response-status>
+    pub status: u16,
+    /// <https://fetch.spec.whatwg.org/#concept-header-list>
+    /// The one response header the fetch layer carries end to end.
+    pub content_type: String,
+    /// <https://fetch.spec.whatwg.org/#concept-response-body>
+    pub body: Vec<u8>,
+}
+
+/// The reply channel for one [`EmbedderSchemeRequest`]. The embedder holds
+/// it for as long as it needs and answers from any thread; dropping it
+/// without answering fails the fetch.
+pub struct EmbedderSchemeResponder {
+    command_sender: Sender<UserAgentCommand>,
+    request_id: uuid::Uuid,
+    url: String,
+    answered: bool,
+}
+
+impl EmbedderSchemeResponder {
+    pub fn respond(mut self, response: Result<EmbedderSchemeResponse, String>) {
+        self.answered = true;
+        let url = std::mem::take(&mut self.url);
+        let result = response.map(|response| ContentFetchResponse {
+            final_url: url,
+            status: response.status,
+            content_type: response.content_type,
+            body: response.body,
+        });
+        if let Err(error) = self
+            .command_sender
+            .send(UserAgentCommand::CompleteEmbedderSchemeFetch {
+                request_id: self.request_id,
+                result,
+            })
+        {
+            error!("failed to deliver an embedder-scheme response: {error}");
+        }
+    }
+}
+
+impl Drop for EmbedderSchemeResponder {
+    /// An embedder that drops the responder never answers, so the fetch is
+    /// failed rather than left pending forever.
+    fn drop(&mut self) {
+        if self.answered {
+            return;
+        }
+        if let Err(error) = self
+            .command_sender
+            .send(UserAgentCommand::CompleteEmbedderSchemeFetch {
+                request_id: self.request_id,
+                result: Err(format!("the embedder did not answer the fetch for {}", self.url)),
+            })
+        {
+            error!("failed to fail an unanswered embedder-scheme fetch: {error}");
+        }
+    }
+}
+
 /// The host interface the user-agent thread calls into (implemented by the
 /// webview crate, which adapts the embedder-facing `webview::Embedder`
 /// trait).
@@ -150,6 +230,15 @@ pub trait UserAgentHost: Send + Sync {
     fn window_viewport_snapshot(&self) -> Option<(u32, u32, f32, ColorScheme)>;
     fn clipboard_get_text(&self) -> Result<String, String>;
     fn clipboard_set_text(&self, text: String) -> Result<(), String>;
+    /// A fetch whose URL scheme the embedder registered with
+    /// `WebviewProvider::set_embedder_schemes`. The embedder answers through
+    /// the responder, from any thread, whenever it has the response.
+    fn embedder_scheme_fetch(
+        &self,
+        webview_id: WebviewId,
+        request: EmbedderSchemeRequest,
+        responder: EmbedderSchemeResponder,
+    );
     /// A message a document sent through the host-message binding on its
     /// Window, with the sending document's URL.
     fn host_message(&self, webview_id: WebviewId, url: String, body: String)
@@ -949,6 +1038,10 @@ pub enum UserAgentCommand {
         webview_id: WebviewId,
         event_message: Vec<u8>,
     },
+    /// The URL schemes the embedder serves itself.
+    SetEmbedderSchemes {
+        schemes: Vec<String>,
+    },
     /// The scripts every top-level traversable created from now on starts
     /// with.
     SetDefaultUserScripts {
@@ -957,6 +1050,12 @@ pub enum UserAgentCommand {
     SetUserScripts {
         traversable_id: NavigableId,
         scripts: Vec<UserScript>,
+    },
+    /// The embedder's answer to an embedder-scheme fetch, sent by the
+    /// responder it was handed.
+    CompleteEmbedderSchemeFetch {
+        request_id: uuid::Uuid,
+        result: Result<ContentFetchResponse, String>,
     },
     Shutdown {
         reply: Sender<Result<(), String>>,
@@ -982,8 +1081,13 @@ impl UserAgent {
         helper_directory: Option<PathBuf>,
     ) -> Result<Self, String> {
         let (command_sender, command_receiver) = unbounded();
-        let mut worker =
-            UserAgentWorker::new(command_receiver, host, trace_sender, helper_directory);
+        let mut worker = UserAgentWorker::new(
+            command_receiver,
+            command_sender.clone(),
+            host,
+            trace_sender,
+            helper_directory,
+        );
         let join_handle = thread::Builder::new()
             .name(String::from("formal-web:user-agent"))
             .spawn(move || worker.run())
@@ -1150,6 +1254,15 @@ impl UserAgent {
                 offset_y,
             })
             .map_err(|error| format!("failed to set traversable viewport: {error}"))
+    }
+
+    /// The URL schemes the embedder serves itself: a fetch for one of them
+    /// reaches `UserAgentHost::embedder_scheme_fetch` instead of a network
+    /// backend. The list replaces the previous one.
+    pub fn set_embedder_schemes(&self, schemes: Vec<String>) -> Result<(), String> {
+        self.command_sender
+            .send(UserAgentCommand::SetEmbedderSchemes { schemes })
+            .map_err(|error| format!("failed to set the embedder schemes: {error}"))
     }
 
     /// The scripts every top-level traversable created from now on starts
@@ -1383,6 +1496,9 @@ enum Inbound {
 struct UserAgentWorker {
     state: UserAgentState,
     command_receiver: Receiver<UserAgentCommand>,
+    /// Cloned into the responder of each embedder-scheme fetch, so the
+    /// embedder's answer re-enters this thread as a command.
+    command_sender: Sender<UserAgentCommand>,
     /// Where the embedder keeps the helper executables, searched before the
     /// directory of the current executable.
     helper_directory: Option<PathBuf>,
@@ -1438,6 +1554,7 @@ impl UserAgentWorker {
     /// starting the fetch worker owned by the user-agent thread.
     fn new(
         command_receiver: Receiver<UserAgentCommand>,
+        command_sender: Sender<UserAgentCommand>,
         host: Arc<dyn UserAgentHost>,
         trace_sender: Option<TraceSender>,
         helper_directory: Option<PathBuf>,
@@ -1490,6 +1607,7 @@ impl UserAgentWorker {
         Self {
             state: UserAgentState::default(),
             command_receiver,
+            command_sender,
             helper_directory,
             net_connection,
 
@@ -1523,7 +1641,7 @@ impl UserAgentWorker {
                     }
                 }
                 Some(Inbound::Net(response)) => {
-                    self.handle_net_navigation_response(response);
+                    self.handle_net_response(response);
                 }
                 Some(Inbound::Graphics(mut incoming)) => {
                     self.handle_graphics_event(&mut incoming);
@@ -1656,6 +1774,11 @@ impl UserAgentWorker {
             UserAgentCommand::RenderingOpportunityFor { navigable_id } => {
                 self.note_rendering_opportunity(navigable_id);
             }
+            UserAgentCommand::SetEmbedderSchemes { schemes } => {
+                if let Err(error) = self.net_connection.set_embedder_schemes(schemes) {
+                    error!("{error}");
+                }
+            }
             UserAgentCommand::SetDefaultUserScripts { scripts } => {
                 self.state.default_user_scripts = scripts;
             }
@@ -1664,6 +1787,14 @@ impl UserAgentWorker {
                 scripts,
             } => {
                 self.state.user_scripts.insert(traversable_id, scripts);
+            }
+            UserAgentCommand::CompleteEmbedderSchemeFetch { request_id, result } => {
+                if let Err(error) = self
+                    .net_connection
+                    .complete_embedder_scheme_fetch(request_id, result)
+                {
+                    error!("{error}");
+                }
             }
             UserAgentCommand::Shutdown { reply } => {
                 self.handle_shutdown(reply);
@@ -1909,21 +2040,89 @@ impl UserAgentWorker {
         }
     }
 
-    /// Handle a navigation fetch response received directly from the net process.
-    fn handle_net_navigation_response(&mut self, response: ipc_messages::network::Response) {
-        let Some((fetch_id, result)) = self.net_connection.handle_response(response) else {
+    /// Handle a message received directly from the net process: a fetch
+    /// outcome for a navigation this user agent started, or a fetch whose
+    /// URL scheme the embedder serves.
+    fn handle_net_response(&mut self, response: ipc_messages::network::Response) {
+        match response {
+            ipc_messages::network::Response::Fetch { request_id, result } => {
+                let Some((fetch_id, result)) =
+                    self.net_connection.handle_response(request_id, result)
+                else {
+                    return;
+                };
+
+                match result {
+                    Ok(fetch_response) => {
+                        self.handle_navigation_fetch_completed(fetch_id, fetch_response);
+                    }
+                    Err(error) => {
+                        log::error!("navigation fetch failed: {error}");
+                        self.handle_navigation_fetch_failed(fetch_id);
+                    }
+                }
+            }
+            ipc_messages::network::Response::EmbedderSchemeFetch {
+                event_loop_id,
+                request_id,
+                request,
+            } => {
+                self.handle_embedder_scheme_fetch(event_loop_id, request_id, request);
+            }
+        }
+    }
+
+    /// Ask the embedder for a fetch whose URL scheme it serves itself.
+    /// <https://fetch.spec.whatwg.org/#scheme-fetch>
+    fn handle_embedder_scheme_fetch(
+        &mut self,
+        event_loop_id: EventLoopId,
+        request_id: uuid::Uuid,
+        request: ContentFetchRequest,
+    ) {
+        let Some(webview_id) = self.webview_for_event_loop(event_loop_id) else {
+            if let Err(error) = self.net_connection.complete_embedder_scheme_fetch(
+                request_id,
+                Err(format!(
+                    "no webview owns event loop {event_loop_id}, which asked for {}",
+                    request.url
+                )),
+            ) {
+                error!("{error}");
+            }
             return;
         };
 
-        match result {
-            Ok(fetch_response) => {
-                self.handle_navigation_fetch_completed(fetch_id, fetch_response);
-            }
-            Err(error) => {
-                log::error!("navigation fetch failed: {error}");
-                self.handle_navigation_fetch_failed(fetch_id);
-            }
-        }
+        let responder = EmbedderSchemeResponder {
+            command_sender: self.command_sender.clone(),
+            request_id,
+            url: request.url.clone(),
+            answered: false,
+        };
+        self.host.embedder_scheme_fetch(
+            webview_id,
+            EmbedderSchemeRequest {
+                url: request.url,
+                method: request.method,
+                header_list: request.header_list,
+                body: request.body,
+            },
+            responder,
+        );
+    }
+
+    /// The webview whose top-level traversable runs on `event_loop_id`.
+    ///
+    /// A traversable moves between event loops on a cross-origin
+    /// navigation, so the lookup goes through the traversable that owns the
+    /// event loop now rather than through a recorded pairing.
+    fn webview_for_event_loop(&self, event_loop_id: EventLoopId) -> Option<WebviewId> {
+        self.state
+            .traversable_handles
+            .iter()
+            .filter(|(_, owner)| **owner == event_loop_id)
+            .find_map(|(navigable_id, _)| self.state.top_level_traversable_id(*navigable_id))
+            .map(WebviewId)
     }
 }
 
