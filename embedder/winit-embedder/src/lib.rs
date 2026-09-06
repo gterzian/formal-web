@@ -108,7 +108,7 @@ where
     install_user_event_sink(sink.clone());
 
     let event_loop_embedder = Arc::new(EventLoopEmbedder::new(sink));
-    let provider = match WebviewProvider::new(event_loop_embedder, trace_sender.clone()) {
+    let provider = match WebviewProvider::new(event_loop_embedder, trace_sender.clone(), None) {
         Ok(provider) => provider,
         Err(error) => {
             clear_user_event_sink();

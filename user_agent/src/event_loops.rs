@@ -183,8 +183,9 @@ pub fn spawn_window_event_loop(
     trace_sender: Option<TraceSender>,
     network_extension_sender: ipc::IpcSender<ipc_messages::network::Request>,
     graphics_sender_for_bootstrap: Option<ipc::IpcSender<GraphicsCommand>>,
+    helper_directory: Option<std::path::PathBuf>,
 ) -> Result<WindowEventLoop, String> {
-    let manifest = ContentExtensionManifest::new(process_label);
+    let manifest = ContentExtensionManifest::new(process_label, helper_directory);
     let (mut handle, connection) =
         ipc::ExtensionHandle::launch::<ContentExtensionManifest, ContentCommand, ContentEvent>(
             &manifest,

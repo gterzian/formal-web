@@ -557,7 +557,7 @@ impl MacApp {
         let cdp_sink = sink.clone();
         let runtime_ready = Arc::new(AtomicBool::new(true));
         let embedder = Arc::new(EventLoopEmbedder::new(sink));
-        let provider = WebviewProvider::new(embedder, trace_sender)?;
+        let provider = WebviewProvider::new(embedder, trace_sender, None)?;
         app.provider = Some(provider);
 
         app.install_event_monitor()?;

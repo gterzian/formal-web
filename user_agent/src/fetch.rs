@@ -31,8 +31,11 @@ pub(crate) struct NetConnection {
 
 impl NetConnection {
     /// Launch the net extension and return a connected handle.
-    pub(crate) fn new(trace_sender: Option<TraceSender>) -> Result<Self, String> {
-        let manifest = NetExtensionManifest;
+    pub(crate) fn new(
+        trace_sender: Option<TraceSender>,
+        helper_directory: Option<std::path::PathBuf>,
+    ) -> Result<Self, String> {
+        let manifest = NetExtensionManifest { helper_directory };
         let (mut handle, connection) =
             ipc::ExtensionHandle::launch::<NetExtensionManifest, NetworkRequest, NetworkResponse>(
                 &manifest,

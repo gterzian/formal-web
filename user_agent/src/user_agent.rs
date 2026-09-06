@@ -36,7 +36,15 @@ use crate::agent::{
 };
 use crate::event_loops::{WorkerEventLoop, spawn_window_event_loop, traversable_viewport_command};
 
-pub(crate) fn sidecar_executable_path(binary_name: &str) -> Result<PathBuf, String> {
+/// Locate one helper executable.
+///
+/// `helper_directory` is the embedder's answer to where the helpers live —
+/// a directory it unpacked them into, say. It is searched first; without it
+/// the search starts next to the current executable.
+pub(crate) fn sidecar_executable_path(
+    binary_name: &str,
+    helper_directory: Option<&Path>,
+) -> Result<PathBuf, String> {
     let current_executable = std::env::current_exe()
         .map_err(|error| format!("failed to resolve current executable: {error}"))?;
     let executable_directory = current_executable
@@ -44,13 +52,22 @@ pub(crate) fn sidecar_executable_path(binary_name: &str) -> Result<PathBuf, Stri
         .ok_or_else(|| String::from("failed to resolve executable directory"))?;
     let executable_name = format!("{binary_name}{}", std::env::consts::EXE_SUFFIX);
 
-    for candidate in sidecar_search_paths(executable_directory, &executable_name) {
+    let search_paths = || {
+        let mut paths = Vec::new();
+        if let Some(helper_directory) = helper_directory {
+            paths.push(helper_directory.join(&executable_name));
+        }
+        paths.extend(sidecar_search_paths(executable_directory, &executable_name));
+        paths
+    };
+
+    for candidate in search_paths() {
         if candidate.is_file() {
             return Ok(candidate);
         }
     }
 
-    let attempted_paths = sidecar_search_paths(executable_directory, &executable_name)
+    let attempted_paths = search_paths()
         .into_iter()
         .map(|path| path.display().to_string())
         .collect::<Vec<_>>()
@@ -906,12 +923,18 @@ pub struct UserAgent {
 
 impl UserAgent {
     /// spawning the dedicated user-agent thread owned by the webview layer.
+    ///
+    /// `helper_directory` is where the embedder keeps the helper
+    /// executables; it is searched before the directory of the current
+    /// executable.
     pub fn start(
         host: Arc<dyn UserAgentHost>,
         trace_sender: Option<TraceSender>,
+        helper_directory: Option<PathBuf>,
     ) -> Result<Self, String> {
         let (command_sender, command_receiver) = unbounded();
-        let mut worker = UserAgentWorker::new(command_receiver, host, trace_sender);
+        let mut worker =
+            UserAgentWorker::new(command_receiver, host, trace_sender, helper_directory);
         let join_handle = thread::Builder::new()
             .name(String::from("formal-web:user-agent"))
             .spawn(move || worker.run())
@@ -1287,6 +1310,9 @@ enum Inbound {
 struct UserAgentWorker {
     state: UserAgentState,
     command_receiver: Receiver<UserAgentCommand>,
+    /// Where the embedder keeps the helper executables, searched before the
+    /// directory of the current executable.
+    helper_directory: Option<PathBuf>,
     /// Owns the IPC connection to the net extension and tracks pending navigation fetches.
     net_connection: crate::fetch::NetConnection,
 
@@ -1341,9 +1367,11 @@ impl UserAgentWorker {
         command_receiver: Receiver<UserAgentCommand>,
         host: Arc<dyn UserAgentHost>,
         trace_sender: Option<TraceSender>,
+        helper_directory: Option<PathBuf>,
     ) -> Self {
-        let net_connection = crate::fetch::NetConnection::new(trace_sender.clone())
-            .unwrap_or_else(|error| panic!("failed to start net extension: {error}"));
+        let net_connection =
+            crate::fetch::NetConnection::new(trace_sender.clone(), helper_directory.clone())
+                .unwrap_or_else(|error| panic!("failed to start net extension: {error}"));
 
         // Start the graphics process (handles composition + media playback).
         let (graphics_extension_sender, graphics_event_receiver, graphics_child) = {
@@ -1352,8 +1380,9 @@ impl UserAgentWorker {
                 GraphicsExtensionManifest,
                 ipc_messages::graphics::GraphicsCommand,
                 ipc_messages::graphics::GraphicsEvent,
-            >(&GraphicsExtensionManifest)
-            {
+            >(&GraphicsExtensionManifest {
+                helper_directory: helper_directory.clone(),
+            }) {
                 Ok((mut handle, connection)) => {
                     let sender = connection.sender.clone();
                     // Forward the trace sender to the graphics process.
@@ -1388,6 +1417,7 @@ impl UserAgentWorker {
         Self {
             state: UserAgentState::default(),
             command_receiver,
+            helper_directory,
             net_connection,
 
             graphics_extension_sender,
@@ -1873,6 +1903,7 @@ impl UserAgentWorker {
             self.trace_sender.clone(),
             self.net_connection.sender(),
             self.graphics_extension_sender.clone(),
+            self.helper_directory.clone(),
         )?;
         // Step 3: Let agent be a new agent whose [[CanBlock]] is canBlock, [[Signifier]] is
         // signifier, [[CandidateExecution]] is candidateExecution, and [[IsLockFree1]],

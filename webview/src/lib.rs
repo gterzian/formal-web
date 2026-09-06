@@ -173,15 +173,21 @@ pub struct WebviewProvider {
 }
 
 impl WebviewProvider {
+    /// `helper_directory` is where the embedder keeps `formal-web-content`,
+    /// `formal-web-net` and `formal-web-graphics`; it is searched before the
+    /// directory of the current executable. `None` leaves the engine's own
+    /// search in charge.
     pub fn new(
         embedder: Arc<dyn Embedder>,
         trace_sender: Option<TraceSender>,
+        helper_directory: Option<PathBuf>,
     ) -> Result<Self, String> {
         let user_agent = UserAgent::start(
             Arc::new(UserAgentHostAdapter {
                 embedder: embedder.clone(),
             }),
             trace_sender,
+            helper_directory,
         )?;
 
         Ok(Self {
