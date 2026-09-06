@@ -35,7 +35,7 @@ impl ExtensionManifest for NetExtensionManifest {
         let mut child_process = ProcessCommand::new(&executable_path);
         #[cfg(unix)]
         child_process.arg0("formal-web-net");
-        child_process.arg("--net-token").arg(&token.to_string());
+        child_process.arg("--net-token").arg(token.to_string());
 
         child_process
             .spawn()
@@ -66,9 +66,7 @@ impl ExtensionManifest for GraphicsExtensionManifest {
         let mut child_process = ProcessCommand::new(&executable_path);
         #[cfg(unix)]
         child_process.arg0("formal-web-graphics");
-        child_process
-            .arg("--graphics-token")
-            .arg(&token.to_string());
+        child_process.arg("--graphics-token").arg(token.to_string());
 
         child_process.spawn().map_err(|error| {
             IpcError::Transport(format!("failed to start graphics process: {error}"))
@@ -122,7 +120,7 @@ impl ExtensionManifest for ContentExtensionManifest {
         let mut child_process = ProcessCommand::new(&executable_path);
         #[cfg(unix)]
         child_process.arg0(format!("formal-web-content:{sanitized_label}"));
-        child_process.arg("--content-token").arg(&token.to_string());
+        child_process.arg("--content-token").arg(token.to_string());
         child_process
             .arg("--content-label")
             .arg(&self.process_label);

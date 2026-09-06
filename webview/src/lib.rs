@@ -67,8 +67,7 @@ pub trait Embedder: Send + Sync {
     /// `window.__formalWebPostHostMessage(body)`, with the sending
     /// document's URL. The embedder answers, when it answers at all, by
     /// evaluating a script in the same webview.
-    fn host_message(&self, webview_id: WebviewId, url: String, body: String)
-    -> Result<(), String>;
+    fn host_message(&self, webview_id: WebviewId, url: String, body: String) -> Result<(), String>;
     /// The parsed title of a top-level document, reported by the content
     /// process after parsing; the embedder labels the tab and window with it.
     /// <https://html.spec.whatwg.org/#the-title-element>
@@ -151,12 +150,7 @@ impl UserAgentHost for UserAgentHostAdapter {
             .embedder_scheme_fetch(webview_id, request, responder);
     }
 
-    fn host_message(
-        &self,
-        webview_id: WebviewId,
-        url: String,
-        body: String,
-    ) -> Result<(), String> {
+    fn host_message(&self, webview_id: WebviewId, url: String, body: String) -> Result<(), String> {
         self.embedder.host_message(webview_id, url, body)
     }
 

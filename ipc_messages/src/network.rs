@@ -44,7 +44,9 @@ pub enum Request {
     /// The URL schemes the embedder serves itself. A fetch whose URL has
     /// one of these schemes is answered by the embedder over the net→UA
     /// channel instead of by a network backend.
-    SetEmbedderSchemes { schemes: Vec<String> },
+    SetEmbedderSchemes {
+        schemes: Vec<String>,
+    },
     Fetch {
         /// The network partition key of the fetch: the event loop id of
         /// the similar-origin window agent of the agent cluster (content

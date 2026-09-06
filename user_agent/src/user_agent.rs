@@ -183,12 +183,12 @@ impl EmbedderSchemeResponder {
             content_type: response.content_type,
             body: response.body,
         });
-        if let Err(error) = self
-            .command_sender
-            .send(UserAgentCommand::CompleteEmbedderSchemeFetch {
-                request_id: self.request_id,
-                result,
-            })
+        if let Err(error) =
+            self.command_sender
+                .send(UserAgentCommand::CompleteEmbedderSchemeFetch {
+                    request_id: self.request_id,
+                    result: Box::new(result),
+                })
         {
             error!("failed to deliver an embedder-scheme response: {error}");
         }
@@ -202,12 +202,15 @@ impl Drop for EmbedderSchemeResponder {
         if self.answered {
             return;
         }
-        if let Err(error) = self
-            .command_sender
-            .send(UserAgentCommand::CompleteEmbedderSchemeFetch {
-                request_id: self.request_id,
-                result: Err(format!("the embedder did not answer the fetch for {}", self.url)),
-            })
+        if let Err(error) =
+            self.command_sender
+                .send(UserAgentCommand::CompleteEmbedderSchemeFetch {
+                    request_id: self.request_id,
+                    result: Box::new(Err(format!(
+                        "the embedder did not answer the fetch for {}",
+                        self.url
+                    ))),
+                })
         {
             error!("failed to fail an unanswered embedder-scheme fetch: {error}");
         }
@@ -241,8 +244,7 @@ pub trait UserAgentHost: Send + Sync {
     );
     /// A message a document sent through the host-message binding on its
     /// Window, with the sending document's URL.
-    fn host_message(&self, webview_id: WebviewId, url: String, body: String)
-    -> Result<(), String>;
+    fn host_message(&self, webview_id: WebviewId, url: String, body: String) -> Result<(), String>;
     /// The parsed title of a top-level document, reported by the content
     /// process after parsing; the embedder labels the tab and window with it.
     /// <https://html.spec.whatwg.org/#the-title-element>
@@ -1055,7 +1057,9 @@ pub enum UserAgentCommand {
     /// responder it was handed.
     CompleteEmbedderSchemeFetch {
         request_id: uuid::Uuid,
-        result: Result<ContentFetchResponse, String>,
+        /// Boxed: a response body travels inline, and every other command
+        /// would pay for it in the size of the channel's item.
+        result: Box<Result<ContentFetchResponse, String>>,
     },
     Shutdown {
         reply: Sender<Result<(), String>>,
@@ -1791,7 +1795,7 @@ impl UserAgentWorker {
             UserAgentCommand::CompleteEmbedderSchemeFetch { request_id, result } => {
                 if let Err(error) = self
                     .net_connection
-                    .complete_embedder_scheme_fetch(request_id, result)
+                    .complete_embedder_scheme_fetch(request_id, *result)
                 {
                     error!("{error}");
                 }
@@ -1913,10 +1917,7 @@ impl UserAgentWorker {
                     error!("a host message arrived for the unknown navigable {navigable_id}");
                     return Ok(true);
                 };
-                if let Err(error) =
-                    self.host
-                        .host_message(WebviewId(traversable_id), url, body)
-                {
+                if let Err(error) = self.host.host_message(WebviewId(traversable_id), url, body) {
                     error!("host message failed: {error}");
                 }
             }

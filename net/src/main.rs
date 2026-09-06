@@ -90,9 +90,7 @@ fn start_a_fetch(
                 request_id,
                 request,
             })
-            .map_err(|error| {
-                format!("failed to route an embedder-scheme fetch to the UA: {error}")
-            })
+            .map_err(|error| format!("failed to route an embedder-scheme fetch to the UA: {error}"))
     } else {
         net_backend.http_network_or_cache_fetch(
             NetworkPartitionKey(event_loop_id),

@@ -83,13 +83,13 @@ impl Window {
             .creation_url()
             .map(|url| url.to_string())
             .unwrap_or_default();
-        if let Err(error) = event_sender.send(ContentEvent::HostMessageRequested(
-            HostMessageRequested {
+        if let Err(error) =
+            event_sender.send(ContentEvent::HostMessageRequested(HostMessageRequested {
                 navigable_id,
                 url,
                 body,
-            },
-        )) {
+            }))
+        {
             error!("failed to send a host message to the user agent: {error}");
         }
     }
