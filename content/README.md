@@ -53,63 +53,38 @@ exception class is the `with_object_any_mut_with` platform-object closure
 pattern (it hands `&mut dyn Any` and `ec` to the operation; see
 `js_engine/src/v8/README.md`, "Remaining work").
 
-## GcCell interior mutability refactor candidates
+## Task queue and commands
 
-Types that currently use `&mut self` for mutation but could use `GcCell` + `&self`:
+The HTML event loop's task queue lives in `content/src/html/event_loop.rs`
+and runs on the content process main thread (`run_content_message_loop` in
+`content/src/main.rs`); dedicated worker agents run their own worker event
+loops on their own threads (see `content/src/html/workers/`).  Guidance for
+adding work to the loop:
 
-- **Node** (`content/src/dom`) — `child_node_ids` is read-only; other mutating methods could use GcCell.
-- **Window** (`content/src/html`) — `setTimeout` callbacks stored behind GcCell.
-- **Streams** (`content/src/streams`) — writable/readable stream state machines use `Cell<bool>`/`RefCell`; some could use GcCell for GC-traced callback fields.
-- **AbortSignal** (`content/src/dom`) — already uses `GcCell<AbortSignalState>` at the top level; internal fields like `onabort` could move to GcCell if needed.
-
-## The event loop's task queue
-
-A content process is one agent cluster: it hosts the similar-origin window
-agent of the cluster and the dedicated worker agents of the workers the
-cluster's realms create (a worker's realm can create further workers, whose
-agents join the same cluster).  The event loop below is the window agent's;
-each dedicated worker agent runs its own worker event loop on its own native
-thread, with its own task queue, timer map and realm (see
-`content/src/html/workers/dedicated_worker_agent.rs`).
-
-The window agent's HTML event loop runs on the content process main thread
-(`run_content_message_loop` in `content/src/main.rs`).  Every task source feeds
-one queue of `Task` (`content/src/html/event_loop.rs`), and
-`ContentProcess::run_task` is the only place that runs one: it takes the oldest
-task, performs its steps, and performs the microtask checkpoint that ends them.
-
-Content-initiated work (window timer expiry, port message tasks) must therefore
-be **queued as a `Task`**, never run by calling its handler directly: an inline
-call skips the bookkeeping the model requires (marking the task's document
-dirty, the microtask checkpoint after the task's steps).
-
-An `ipc_messages::content::Command` is an ad hoc message the user agent (or the
-net process) sends this process — not a task.  Where the spec step behind a
-command says to queue a task on this event loop (the target half of
-`postMessage`, a routed port message, `update the rendering`, beforeunload,
-WebDriver/CDP script evaluation and event dispatch), handling the command
-queues the matching `Task`, so it runs through the same processing-model steps
-as a task queued here.  The rest (viewport, document lifecycle, navigation
-fetch completion, shutdown) `ContentProcess::handle_command` runs directly.
-A `Command::PortTask` arrives here only for ports of the window event loop;
-ports owned by a dedicated worker agent's event loop are delivered over that
-agent's own user-agent command channel (see `dedicated_worker_agent.rs`).
-
-The loop waits for the oldest task on the queue, a command, a WebAssembly
-result, or the earliest expiry time in the map of active timers
-(`MapOfActiveTimers` in `content/src/html/timers.rs`, reached through
-`EventLoopTaskSources`).  It runs one task per iteration, so a task that queues
-another task — a message event handler posting a message, a timer callback
-scheduling a timer — does not starve the other inputs.  The timer channel is
-only a wake-up: expiry queues the expired timers' tasks, it does not run them.
-
-**The command channel is only read while the task queue is empty.**  A
-command's steps run as soon as it is read, so reading one with tasks already
-queued runs those steps ahead of them.  The rendering pipeline depends on this:
-a child navigable's `update the rendering` task must run before the top-level
-traversable's frame composes (their frames compose together), and letting a
-command overtake it makes the `RenderingOpportunity` TLA+ trace validation fail
-intermittently (`verification/verify-specs.sh`, roughly one run in five).
+- Content-initiated work (window timer expiry, port message tasks) must be
+  **queued as a `Task`**, never run by calling its handler directly: an
+  inline call skips the bookkeeping the model requires (marking the task's
+  document dirty, the microtask checkpoint after the task's steps).
+- An `ipc_messages::content::Command` is an ad hoc message the user agent
+  (or the net process) sends this process — not a task.  Where the spec
+  step behind a command says to queue a task on this event loop (the target
+  half of `postMessage`, a routed port message, `update the rendering`,
+  beforeunload, WebDriver/CDP script evaluation and event dispatch),
+  handling the command queues the matching `Task`, so it runs through the
+  same processing-model steps as a task queued here.  The rest (viewport,
+  document lifecycle, navigation fetch completion, shutdown)
+  `ContentProcess::handle_command` runs directly.  A `Command::PortTask`
+  arrives here only for ports of the window event loop; ports owned by a
+  dedicated worker agent's event loop are delivered over that agent's own
+  user-agent command channel (see `dedicated_worker_agent.rs`).
+- **The command channel is only read while the task queue is empty.**  A
+  command's steps run as soon as it is read, so reading one with tasks
+  already queued runs those steps ahead of them.  The rendering pipeline
+  depends on this: a child navigable's `update the rendering` task must run
+  before the top-level traversable's frame composes (their frames compose
+  together), and letting a command overtake it makes the `RenderingOpportunity`
+  TLA+ trace validation fail intermittently (`verification/verify-specs.sh`,
+  roughly one run in five).
 
 ## Known issues
 

@@ -7,51 +7,28 @@ JavaScript-facing wrapper identity separate from DOM and HTML
 [platform object](https://webidl.spec.whatwg.org/#dfn-platform-object)
 state.  Content code only sees the generic traits from the `js_engine` crate.
 
+The three-layer split (domain → Web IDL infra → JS bindings glue) that this
+layer is the outer half of is documented once, in
+`content/src/js/bindings/README.md` — read it before writing bindings.
+
+## Layout
+
 - `content/src/html/environment_settings_object.rs` owns the realm execution
-  context (the selected backend's engine implementing `ExecutionContext<T>` —
-  `V8Engine` on the default V8 build, `BoaContext`/`JscEngine` on opt-in builds),
+  context (the selected backend's engine implementing `ExecutionContext<T>`),
   global-object construction, and the Rust state that corresponds to an HTML
   environment settings object.
 - `content/src/html/global_scope.rs` owns per-global wrapper caches and
   callback state so repeated lookups reuse the same `JsObject` identity.
-- `html_parser.rs` bridges html5ever parsing to Blitz mutations, records
-  parser errors, and collects parser-discovered classic scripts.
-- **`content/src/js/bindings/` is the single home for Web IDL binding
-  definitions** — DOM, HTML, Streams, WebAssembly, CSS, or any other spec.
-  Each binding:
-  - Implements `WebIdlInterface` or `WebIdlNamespace` to define *which
-    members* the interface or namespace exposes.
-  - Provides thin getter/setter/method functions that convert JavaScript
-    arguments and delegate to domain-level implementations.
-  - Uses the Web IDL bindings infrastructure (`WebIdlInterface`,
-    `WebIdlNamespace`, `register_interface_spec`, `register_namespace_spec`,
-    etc.) from `content/src/webidl/bindings/` instead of calling Boa directly.
-  - **Namespaces must use `WebIdlNamespace` + `register_namespace_spec`**,
-    not manual `create_plain_object`/`create_builtin_fn`.  See
-    `content/src/js/bindings/testutils/mod.rs` for a correct example.
-    (`console_generic.rs` and `css_generic.rs` use the manual pattern and
-    should be migrated to `WebIdlNamespace`.)
-- **Domain logic belongs in the domain directory; JS-interop code belongs
-  in the bindings.**  Pure Rust/wasmtime logic goes in the owning domain
-  directory (`content/src/dom/`, `content/src/html/`, `content/src/streams/`,
-  `content/src/wasm/`).  `WebIdlInterface` implementations, promise
-  resolution, object construction, and any code returning `JsValue` goes in
-  `content/src/js/bindings/`.  The binding code converts arguments, checks
-  [inherited
-  interfaces](https://webidl.spec.whatwg.org/#dfn-inherited-interfaces) to
-  identify the platform object's type, and delegates to domain functions.
-  A binding function must **never** implement a spec algorithm itself: every
-  Window IDL member is a `Window` method in `content/src/html/window.rs`
-  (`self_value`, `top_value`, `close`, …), and both bindings files
-  (`bindings/html/window.rs`, `bindings/html/windowproxy.rs`) just downcast,
-  resolve the local Window, and delegate.  JS-side reads the spec performs in
-  place of Web IDL (e.g. the `self` getter's relevant
-  realm.[[GlobalEnv]].[[GlobalThisValue]]) live in
-  `content/src/webidl/realm.rs` — never directly in a binding.
-- **Domain code must not depend on a backing engine crate** (e.g. `boa_engine`
-  or `rusty_v8`) **or return `JsValue`.**
-  The domain layer returns Rust types; the bindings layer converts to JS
-  values as late as possible.
+- `content/src/js/bindings/` holds the `WebIdlInterface` / `WebIdlNamespace`
+  impls and the thin binding functions; see its `README.md`.
+- `console_generic.rs` and `css_generic.rs` still install their namespaces
+  by hand (`create_plain_object` + `create_builtin_fn`) instead of
+  `WebIdlNamespace` + `register_namespace_spec`; migrate them.
+
+## Conventions for the domain/bindings boundary
+
+Rules specific to code living under or touching this crate:
+
 - **Domain code must not store a `GlobalScope` on non-global platform
   objects.**  A gc struct has no memory of the realm it was created in; the
   general accessor is `with_global_scope(ec, ...)`, which resolves the
@@ -73,21 +50,16 @@ state.  Content code only sees the generic traits from the `js_engine` crate.
 
 ## Exotic objects
 
-Some HTML spec objects (WindowProxy, Location) require exotic internal methods
-(they override `[[Get]]`, `[[Set]]`, `[[GetPrototypeOf]]`, …).  The generic
-`ExecutionContext` builds them as proxies: each trap is a function created
-with `ec.create_builtin_fn()`, set as a property on a handler object, and
-handed to `ec.create_proxy(target, handler)`.  See
-`content/src/html/windowproxy.rs` for the concrete pattern — the WindowProxy
-is a proxy over the Window, with each trap delegating to the generic
-`ExecutionContext` operations.
-
-Each backend executes `create_proxy` natively: the V8 backend uses
-`v8::Proxy::new`, the Boa backend goes through the `%Proxy%` constructor.
-Content code only ever calls the generic trait method.
-
-See `content/src/webidl/README.md` for the platform-object integration and
-backend notes.
+Some HTML spec objects (WindowProxy, Location) require exotic internal
+methods (they override `[[Get]]`, `[[Set]]`, `[[GetPrototypeOf]]`, …).  The
+generic `ExecutionContext` builds them as proxies: each trap is a function
+created with `ec.create_builtin_fn()`, set as a property on a handler
+object, and handed to `ec.create_proxy(target, handler)`.  Content code only
+ever calls the generic trait method — each backend executes `create_proxy`
+natively.  The concrete patterns (the WindowProxy traps, the Boa
+`InternalObjectMethods`/`%Proxy%` routes) are documented in
+`content/src/html/windowproxy.rs` and `content/src/webidl/README.md`
+("Exotic objects and custom internal methods").
 
 ### Working with the engine's public API: use spec links, not `pub(crate)` internals
 
@@ -121,19 +93,12 @@ APIs).  Instead, follow this methodology:
    from `boa_engine::object::builtins`, which lets you supply each trap as a
    plain `NativeFunctionPointer` — no captures, no custom handler struct, no
    access to `pub(crate)` internals.
-
 5. When no existing public method covers the exact operation needed (e.g.,
    getting a raw `PropertyDescriptor` for [[GetOwnProperty]]), restructure
    the implementation to use the available public methods, or contribute the
    missing public wrapper upstream (to `rusty_v8` or Boa).
 
 **Never modify the external engine dependency to make internal APIs public.**
-
-The WindowProxy is built with `ec.create_proxy` (see
-`content/src/html/windowproxy.rs`), backed on the Boa backend by
-`JsProxyBuilder` traps over the public `JsObject` methods above — never
-`pub(crate)` access.  When cross-origin support requires additional
-internal-method overrides, follow the same pattern.
 
 ## Adding a new HTML element type
 
@@ -193,5 +158,6 @@ not `content/src/dom/` — spec code is placed by which spec it implements.
 
 ## Related
 
+- `content/src/js/bindings/README.md` — three-layer architecture and spec-annotation rules (definitive)
 - `content/src/webidl/README.md` — platform-object integration and exotic-object backend notes
 - `content/src/html/README.md` — WindowProxy, window.open, navigation split

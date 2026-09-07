@@ -217,10 +217,11 @@ impl Drop for EmbedderSchemeResponder {
     }
 }
 
-/// The host interface the user-agent thread calls into (implemented by the
-/// webview crate, which adapts the embedder-facing `webview::Embedder`
-/// trait).
-pub trait UserAgentHost: Send + Sync {
+/// The embedder host interface: the callbacks the user agent makes into the
+/// embedder (navigation, paint, clipboard, viewport, window title). The
+/// embedder backends implement this trait; the webview crate re-exports it
+/// as part of its embedder-facing API.
+pub trait Embedder: Send + Sync {
     fn navigation_requested(
         &self,
         webview_id: WebviewId,
@@ -1080,7 +1081,7 @@ impl UserAgent {
     /// executables; it is searched before the directory of the current
     /// executable.
     pub fn start(
-        host: Arc<dyn UserAgentHost>,
+        host: Arc<dyn Embedder>,
         trace_sender: Option<TraceSender>,
         helper_directory: Option<PathBuf>,
     ) -> Result<Self, String> {
@@ -1261,7 +1262,7 @@ impl UserAgent {
     }
 
     /// The URL schemes the embedder serves itself: a fetch for one of them
-    /// reaches `UserAgentHost::embedder_scheme_fetch` instead of a network
+    /// reaches `Embedder::embedder_scheme_fetch` instead of a network
     /// backend. The list replaces the previous one.
     pub fn set_embedder_schemes(&self, schemes: Vec<String>) -> Result<(), String> {
         self.command_sender
@@ -1520,7 +1521,7 @@ struct UserAgentWorker {
     graphics_child: Option<std::process::Child>,
 
     /// Host integration used to surface navigation, paint, clipboard, and viewport state.
-    host: Arc<dyn UserAgentHost>,
+    host: Arc<dyn Embedder>,
     /// Trace logger for the Navigation TLA+ spec.
     tla_tracer: TLATracer,
     /// Monotonic-clock reading captured at the same moment as
@@ -1559,7 +1560,7 @@ impl UserAgentWorker {
     fn new(
         command_receiver: Receiver<UserAgentCommand>,
         command_sender: Sender<UserAgentCommand>,
-        host: Arc<dyn UserAgentHost>,
+        host: Arc<dyn Embedder>,
         trace_sender: Option<TraceSender>,
         helper_directory: Option<PathBuf>,
     ) -> Self {

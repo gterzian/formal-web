@@ -35,7 +35,7 @@ use std::sync::Arc;
 use std::time::Duration;
 use verification::TraceSender;
 
-use crate::UserAgentHost;
+use crate::Embedder;
 use crate::ipc_manifest::ContentExtensionManifest;
 
 /// Graceful shutdown of the content process owned by one window event loop.
@@ -179,7 +179,7 @@ pub struct WorkerEventLoop {
 pub fn spawn_window_event_loop(
     event_loop_id: EventLoopId,
     process_label: String,
-    host: Arc<dyn UserAgentHost>,
+    host: Arc<dyn Embedder>,
     trace_sender: Option<TraceSender>,
     network_extension_sender: ipc::IpcSender<ipc_messages::network::Request>,
     graphics_sender_for_bootstrap: Option<ipc::IpcSender<GraphicsCommand>>,
