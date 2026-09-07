@@ -3,7 +3,7 @@ use crate::content::EmbedLayout;
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
-/// Identifies a pipeline within the media or graphics process.
+/// Identifies a pipeline within the graphics process.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct MediaPipelineId(pub Uuid);
 

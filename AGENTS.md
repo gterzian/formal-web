@@ -257,7 +257,7 @@ review checklist.
 
 # Project Structure
 
-The formal-web project implements a web browser from scratch from separate processes coordinated by the user agent. The main `formal-web` binary runs the embedder directly in-process and launches dedicated `formal-web-content` and `formal-web-net` helper processes from the `content` and `net` packages. It delegates to these processes through the `webview` and `user_agent` layers, keeps paint payloads on shared-memory transport, and uses typed IPC messages for metadata and handles. Navigation completion uses explicit content-to-embedder commit signaling.
+The formal-web project implements a web browser from scratch from separate processes coordinated by the user agent. The main `formal-web` binary runs the embedder directly in-process and launches dedicated `formal-web-content`, `formal-web-net`, and `formal-web-graphics` helper processes from the `content`, `net`, and `graphics` packages. It delegates to these processes through the `webview` and `user_agent` layers, keeps paint payloads on shared-memory transport, and uses typed IPC messages for metadata and handles. Navigation completion uses explicit content-to-embedder commit signaling.
 
 TLA+ models under `verification/` verify critical algorithms (e.g. navigation). The TLA+ Toolbox jar is at `/Applications/TLA+ Toolbox.app/Contents/Eclipse/tla2tools.jar`. Verification artifacts go in temporary directories.
 
@@ -291,10 +291,10 @@ shared dependency resolution and incremental compilation.
   backend selection") for which automation entry points dispatch to winit,
   what the `winit_embedder` feature gates, and why the AppKit app never
   pulls winit.
-- **Helper processes** (`formal-web-content`, `formal-web-net`, `formal-web-media`, `formal-web-graphics`): spawned by the embedder.
-  - `formal-web-graphics` owns per-webview compositors and video/audio playback (media backend).
-    It receives `PaintFrame` and `VideoFrame` payloads and sends back composed scenes with
-    `FrameHitInfo` for hit-testing.
+- **Helper processes** (`formal-web-content`, `formal-web-net`, `formal-web-graphics`): spawned by the embedder.
+  - `formal-web-graphics` owns per-webview compositors and runs the media backend (video/audio
+    playback) in-process. It receives `PaintFrame` and media-command payloads and sends back
+    composed scenes with `FrameHitInfo` for hit-testing.
 - **`js_engine` crate**: a generic JS engine trait and ECMA-262 abstract operations. Three backends: V8 (default, runs WPT), Boa (opt-in), and JSC (macOS opt-in). The `wasm` feature is the Wasmtime-based WebAssembly implementation for the Boa engine only (V8 and JSC implement WebAssembly natively). See `js_engine/README.md`.
 - **`js_engine_macros` crate**: proc-macro companion providing `#[gc_struct]` for GC-traced platform objects.
 
@@ -387,23 +387,26 @@ cargo build --release -p net     --bin formal-web-net
 cargo build --release -p embedder --bin formal-web-embedder
 ```
 
-### Media / Graphics binary
+### Graphics binary (composition + media backend)
+
+The media backend (AVFoundation on macOS by default, GStreamer opt-in) and
+the surface backend are both compiled into the `formal-web-graphics` binary;
+there is no separate media process. Backend features are declared on the
+`graphics` package and forwarded into the `media` crate.
 
 ```bash
-# macOS: AVFoundation (default) — no special flags needed
-cargo build --release -p media --bin formal-web-media
+# macOS: AVFoundation media backend (default) + zero-copy IOSurface surface
+# backend (default) — no special flags needed
+cargo build --release -p graphics --bin formal-web-graphics
 
-# macOS: GStreamer (opt-in)
-cargo build --release -p media --bin formal-web-media \
-  --no-default-features --features backend-gstreamer
+# macOS: GStreamer media backend (opt-in) + CPU readback surface backend
+cargo build --release -p graphics --features backend-gstreamer,cpu_readback
 
-# Linux: GStreamer (only backend) — no special flags needed
-cargo build --release -p media --bin formal-web-media
+# macOS: CPU readback surface backend with the AVFoundation media backend
+cargo build --release -p graphics --features cpu_readback
 
-# Graphics process (composition + media backend). The surface backend is
-# zero-copy IOSurface by default on macOS; build with `--features cpu_readback`
-# for the CPU readback backend there. Off macOS the CPU readback backend is
-# the only one.
+# Linux: GStreamer media backend + CPU readback surface backend are the
+# only options — no special flags needed
 cargo build --release -p graphics --bin formal-web-graphics
 ```
 
@@ -421,7 +424,7 @@ respectively).
 ### IPC wire format consistency
 
 The helper processes (`formal-web-content`, `formal-web-net`,
-`formal-web-media`) are separate workspace member binaries, **not** in
+`formal-web-graphics`) are separate workspace member binaries, **not** in
 the root binary's dependency tree.  `cargo run --release` rebuilds only
 the root binary and its transitive library deps — it does **not** rebuild
 the helper binaries.
@@ -439,7 +442,7 @@ wire format is an implicit protocol, not a type-level dependency.
 member packages and rebuild:
 
 ```bash
-cargo clean -p content -p net -p media -p ipc -p user_agent -p embedder
+cargo clean -p content -p net -p graphics -p ipc -p user_agent -p embedder
 cargo build --release
 cargo run --release
 ```
