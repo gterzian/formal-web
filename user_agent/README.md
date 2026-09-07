@@ -39,7 +39,7 @@ The content processes send each traversable's `PaintFrame` directly to the
 embed sites + video frames) and returns `GraphicsEvent::PixelFrameReady`.
 The UA stores the accompanying `FrameHitInfo` in `UserAgentState::frame_hit_info`
 (keyed by webview id) for UI event routing, and forwards the layers to the
-host (`webview::Embedder` via `UserAgentHost::new_web_content_layers`).
+host via `Embedder::new_web_content_layers`.
 
 Gotcha: during a cross-origin navigation the traversable's event loop (and
 content process) switches before the UA-side active document does — the
