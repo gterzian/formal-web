@@ -2,13 +2,11 @@
 
 Implements the [`WebAssembly`](https://www.w3.org/TR/wasm-js-api/) namespace
 exposed to web content.  Uses the `wasmtime` crate (crates.io) as the
-underlying WebAssembly engine.
+underlying WebAssembly engine.  Only compiled on the Boa backend behind the
+`wasm` feature (V8 and JSC implement WebAssembly natively).
 
-## Architecture
+## Module layout
 
-### Module layout
-
-- `mod.rs` — crate-level re-exports.
 - `types.rs` — Rust data types for JS-visible wasm objects (`WasmModule`,
   `WasmInstance`, etc.) with `JsData` implementations.
 - `wasm_state.rs` — `WasmState` (GlobalScope-level wasm state),
@@ -31,100 +29,31 @@ underlying WebAssembly engine.
   `crate::webidl::a_new_promise`, push pending requests onto
   `GlobalScope`, and return the JS promise.
 
-### Domain vs binding separation
+## Domain vs binding separation
 
 The **domain layer** (`content/src/wasm/`) implements the spec algorithms.
-It may import Boa types (`Context`, `JsValue`) when the algorithm
-requires it (e.g., creating promises).  The **bindings layer**
-(`content/src/js/bindings/wasm/`) is the thin outermost wrapper — it
-extracts JS arguments, calls the domain function, and transforms the
-return value into `JsResult<JsValue>`.
-
-| Layer | Location | Responsibility |
-|---|---|---|
-| **Conversions** | `content/src/wasm/conversions.rs` | JS↔wasm value conversion per Core Embedding spec |
-| **Namespace operations** | `content/src/wasm/namespace.rs` | Spec-mapped `compile`, `instantiate` (bytes + module overloads) — promise creation, pending-request push, result-wrapping |
-| **Types** | `content/src/wasm/types.rs` | Rust data types with `JsData` (`WasmModule`, `WasmInstance`, etc.) |
-| **Worker** | `content/src/wasm/worker.rs` | Background compilation worker management |
-| **Bindings** | `content/src/js/bindings/wasm/interfaces.rs` | `WebIdlInterface` impls, promise resolution/rejection, exports-object creation, prototype lookups, error-type registration |
-| **Bindings** | `content/src/js/bindings/wasm/mod.rs` | `WasmNamespace` impl + thin binding functions — arg extraction → domain call → result wrap |
-
-This split keeps spec-mapped algorithm code in the domain layer while
-keeping the binding functions ignorant of the algorithm details.  A
-binding function should consist of little more than:
-
-```rust
-fn binding_fn(_this, args, context) -> JsResult<JsValue> {
-    let arg = args.first().ok_or_else(|| /* TypeError */)?;
-    domain_fn(arg, context)  // returns JsResult<JsValue>
-}
-```
+The **bindings layer** (`content/src/js/bindings/wasm/`) is the thin
+outermost wrapper — it extracts JS arguments, calls the domain function, and
+transforms the return value into `JsResult<JsValue>`.  Domain functions
+receive clean Rust types, never raw `JsValue`; the domain file may create
+promises and return their JS value where the algorithm calls for it.
 
 **Do not put `WebIdlInterface` implementations, `JsObject` construction,
 or `WebIdlNamespace` impls in `content/src/wasm/`.**  Those belong in
-`content/src/js/bindings/wasm/`.
+`content/src/js/bindings/wasm/` (interfaces and error types in
+`interfaces.rs`, the `WasmNamespace` and thin binding functions in
+`mod.rs`), which registers them through the Web IDL infra
+(`register_namespace_spec`, `register_interface_spec`, `legacy_namespace()`)
+rather than calling the engine directly.
 
-### JS bindings (Web IDL → JavaScript engine)
+## Current status
 
-The WebAssembly API's JS-facing registration (namespace, type constructors,
-operations) lives under the common bindings directory:
-
-**`content/src/js/bindings/wasm/`**
-
-This follows the project convention: all Web IDL bindings — whether for DOM,
-HTML, Streams, or WebAssembly — go in `content/src/js/bindings/` and use the
-Web IDL bindings infrastructure (`register_namespace_spec`, `WebIdlNamespace`,
-`WebIdlInterface`, etc.) instead of calling into Boa directly.
-
-- The `WasmNamespace` marker type implements `WebIdlNamespace`, registering
-  operations (`validate`, `compile`, `instantiate`) and the `JSTag` attribute
-  via `register_namespace_spec`.
-- Error types (`CompileError`, `LinkError`, `RuntimeError`) and the
-  `[LegacyNamespace=WebAssembly]` interfaces (`Module`, `Instance`) use
-  the `WebIdlInterface` trait with `legacy_namespace()` and are registered
-  via `register_interface_spec` in `content/src/js/bindings/wasm/interfaces.rs`.
-
-**All JS-interop code goes in `content/src/js/bindings/wasm/`, not in
-`content/src/wasm/`.**  Domain code in `content/src/wasm/` returns Rust
-values (`bool`, `wasmtime::Module`, `WasmModule`).  Bindings code in
-`content/src/js/bindings/wasm/` wraps those in `JsValue`/`JsObject`, resolves
-promises, and implements `WebIdlInterface`.
-
-## Current Status
-
-### Working
-
-- **`WebAssembly` namespace** installed on the global object with `validate`,
-  `compile`, and `instantiate` (bytes + module-object overloads).
-- **`WebAssembly.validate(bytes)`** — synchronous compilation check via
-  `wasmtime::Module::new`.  Returns `true`/`false`.
-- **`WebAssembly.compile(bytes)`** — async compilation (see flow diagram
-  below).  The domain function in `content/src/wasm/namespace.rs` creates
-  the promise, pushes a `PendingRequest` onto the document's `GlobalScope`,
-  and returns the promise.  The bindings layer only extracts the JS argument.
-- **`WebAssembly.instantiate(moduleObject)`** — async instantiation of a
-  previously-compiled module (empty imports).
-- **`WebAssembly.instantiate(bytes)`** — bytes overload: compiles then
-  instantiates.
-- **`WebAssembly.Module`** — constructor that compiles synchronously.
-  Static method `exports(moduleObject)` returns an array of export
-  descriptors `{ name, kind }`.
-- **Error types** — `CompileError`, `LinkError`, `RuntimeError` registered
-  as subclasses of `Error` on the namespace.
-- **Background compilation worker** — lazily started on first compile
-  request.  Uses `crossbeam_channel::unbounded()` for request/result
-  message passing between the content-process main thread and the
-  compiler worker.
-- **WasmState infrastructure** — `WasmState` struct (in `wasm_state.rs`)
-  consolidates all wasm state for `GlobalScope` (pending requests, request
-  ID counter, pending resolvers).  `ContentWasmState` (same file) holds
-  the content-process-level state (background worker + pending request
-  maps).  `PendingState` lifecycle: `Pending → Processing → removed on
-  completion`.
-- **Formal test**: `tests/formal/tests/wasm-compile-instantiate.html` covers
-  compile, instantiate (module + bytes), exports, and validate. It requires
-  the `wasm` feature and is enabled by uncommenting its entry in
-  `tests/formal/include.ini`.
+Compile, instantiate (module-object and bytes overloads), and `validate` are
+implemented and covered by `tests/formal/tests/wasm-compile-instantiate.html`
+(requires the `wasm` feature; enabled by uncommenting its entry in
+`tests/formal/include.ini`).  Background compilation runs on a lazily
+started worker thread (`WasmWorker`), fed by `ContentProcess::handle_command`
+draining pending requests between commands.
 
 ### Scaffolded but not wired
 
@@ -163,44 +92,6 @@ implementations but have no JS-visible constructors or methods yet:
   `WebAssembly.Instance.exports`.
 - **Host Functions** — providing JS functions as wasm imports.
 - **`WebAssembly` JSTag** — the `JSTag` readonly attribute.
-
-### Async compile flow
-
-```
-JS: WebAssembly.compile(buffer)
-  │
-  ├─ [bindings] compile_fn() extracts bytes value from args,
-  │   converts JsValue → Vec<u8> via get_stable_bytes() (webidl)
-  │
-  ├─ [domain] namespace::asynchronously_compile_a_webassembly_module(stable_bytes, ec):
-  │   ├─ create a promise (a_new_promise_boa)
-  │   ├─ store resolvers in WasmState.pending_resolvers
-  │   ├─ push PendingRequest::WasmCompile { bytes, request_id }
-  │   │  onto WasmState.pending_requests
-  │   └─ return promise JsValue
-  └─ returns promise to JS
-
-ContentProcess (before/after each command via handle_command):
-  │
-  ├─ drain_all_pending_wasm_requests()
-  │   └─ iterates documents → take_pending_wasm_batches()
-  │       → submits (request_id, bytes) to WasmWorker
-  │       → stores document_id in pending_wasm_requests map
-  │
-  └─ drain_wasm_results()
-      └─ tries recv() on WasmWorker result channel
-          → consume_wasm_request() looks up resolvers separately
-          → compile_continuation() or compile_rejection() for Compiled/CompileError
-          → instantiate_continuation() or compile_rejection() for Instantiated/InstantiateError
-          → flushes microtasks via perform_a_microtask_checkpoint()
-
-Background worker (WasmWorker):
-  │
-  ├─ receives WasmRequest::Compile { request_id, bytes }
-  ├─ compiles with wasmtime::Module::new(&engine, &bytes)
-  └─ sends back WasmResult::Compiled { request_id, module }
-     or WasmResult::CompileError { request_id, message }
-```
 
 ## Dependencies
 

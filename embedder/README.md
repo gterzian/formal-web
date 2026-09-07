@@ -24,19 +24,6 @@ copy of the shared helpers (clipboard, screenshot encoding, startup URL
 resolution, viewport snapshot). The two embedders are deliberately
 independent so the AppKit app never builds winit/Blitz/GPU code.
 
-## Two app implementations
-
-- **AppKit app** (`mac-embedder/src/app.rs`): headed GUI on macOS, native
-  AppKit chrome. See below.
-
-- **`WindowedApp`** (`winit-embedder/src/windowed.rs`): headed winit GUI
-  with a Blitz-rendered browser chrome, multi-window/multi-tab support.
-  Runs via winit's event loop.
-
-- **`HeadlessEmbedderApp`** (`winit-embedder/src/headless.rs`): headless
-  winit application for automation-only hosting (WebDriver, CDP, WPT). No
-  window, no chrome, just a fixed viewport and event-loop plumbing.
-
 ## Windowed backend selection
 
 The headed app is provided by one of two backends, selected at compile time
@@ -53,44 +40,37 @@ any configuration; headed automation on macOS requires the `winit_embedder`
 feature (without it the winit windowed app is not compiled and the command
 fails with a clear error).
 
-- **`mac-embedder`** (AppKit): the default on macOS. Runs an `NSApplication`
-  with `NSWindow`/`NSView`/`CALayer` display; the web content is presented
-  zero-copy by setting the content layer's `contents` to the shared IOSurface
-  from the graphics process. The chrome is native AppKit controls: a main
-  menu bar (App/File/Edit/View/History/Window/Help), a real `NSToolbar` in a
-  unified (transparent-titlebar, full-size content) window, and a tab strip
-  as its own row below the toolbar. The toolbar hosts a joined
-  back/forward control, a reload item, the editable address field (which
-  shows the active tab's URL) centered between two flexible spaces, and a
-  new-tab button at the trailing edge; focusing the address field draws a
-  tight accent-colored border on the field (instead of the system focus
-  ring) and selects the whole URL on first focus. The tab strip row (a
-  header-view material) hosts pill-styled tabs (rounded, the active tab
-  filled in light grey, the close × always visible, and a hover fill
-  darker than the active pill so the hover stays visible on the active
-  tab) that show the page title, falling back to the truncated URL, and
-  shrink as more tabs open. The window title mirrors the active tab's
-  label. A `CVDisplayLink` paces
-  animated content via `WebviewProvider::frame_needed`.
-
-  Menu key equivalents are executed from the local event monitor via
-  `NSMenu::performKeyEquivalent`, which lets the menu own ⌘T/⌘W/⌘L/⌘R and
-  friends while unbound ⌘-combinations still reach the web content (pages
-  keep their own ⌘-shortcuts). The toolbar allows user customization
-  (drag-to-rearrange the navigation items, Customize Toolbar…) but the
-  address field is immovable. The web viewport is the window's
-  `contentLayoutRect` minus the tab strip row, and mouse events in the
-  titlebar/toolbar/tab-strip region pass through to AppKit. The content
-  process reports a top-level document's parsed `<title>` after parsing
-  (content → user agent → embedder), so tab labels and the window title
-  reflect page titles on load; titles changed later via JS
-  (`document.title = …`) are not yet propagated.
-
+- **`mac-embedder`** (AppKit): the default on macOS. Native AppKit chrome
+  (menu bar, `NSToolbar`, tab strip), zero-copy IOSurface presentation via
+  the content layer's `contents`, and a `CVDisplayLink` pacing animated
+  content via `WebviewProvider::frame_needed`.  Menu key equivalents run
+  through `NSMenu::performKeyEquivalent` so unbound ⌘-combinations still
+  reach the web content.  Mouse events over the titlebar/toolbar/tab-strip
+  region pass through to AppKit; the web viewport is the window's
+  `contentLayoutRect` minus the tab strip row.
 - **`winit-embedder`**: winit windows with a Blitz-rendered chrome. The
   only option on non-macOS platforms; on macOS it is built and used only
-  when the `winit_embedder` feature is enabled.
+  when the `winit_embedder` feature is enabled.  `WindowedApp`
+  (`winit-embedder/src/windowed.rs`) owns a `HashMap<WindowId, WindowState>`
+  of windows, each with a `ChromeUi` instance (address bar + tab strip) and
+  a set of webview-backed tabs; `HeadlessEmbedderApp`
+  (`winit-embedder/src/headless.rs`) is the headless app used by automation.
+  Tabs are created from the user agent's `NewWebview` events and tracked
+  per-tab with `pending_url`/`committed_url` until session history lands;
+  viewport changes propagate to the provider on window/tab/navigation
+  events.
 
-Known gaps in the AppKit backend relative to winit:
+### Multi-window and multi-tab
+
+`WindowedApp` owns a `HashMap<WindowId, WindowState>`; a
+`webview_to_window` mapping routes `WebviewId`-scoped events
+(`NavigationRequested`, `NavigationCompleted`, `NewWebview`, `RequestRedraw`)
+to the correct window.  When tab state changes, the chrome HTML is fully
+regenerated with one tab button per open tab; hit-testing uses the `id`
+attribute from the DOM (not node IDs) to avoid stale references after HTML
+rebuilds.
+
+## Known gaps in the AppKit backend relative to winit
 
 - **IME is not implemented.** The AppKit backend sends `KeyDown`/`KeyUp` events
   only; text composition (CJK and other marked-text input) requires the
@@ -110,111 +90,40 @@ Known gaps in the AppKit backend relative to winit:
   webview-teardown path, so a closed tab's webview keeps living there (the
   same situation as closing a window).
 
-### Multi-window and multi-tab
-
-`WindowedApp` owns a `HashMap<WindowId, WindowState>` where each `WindowState`
-represents one native window (one winit `Window` + one `VelloWindowRenderer`).
-
-Each window has:
-
-- A `ChromeUi` instance — a Blitz-based HTML/CSS chrome with an address bar
-  and a tab strip.
-- A `HashMap<WebviewId, TabState>` of open tabs, ordered by a `Vec<WebviewId>`
-  (`tab_order`).
-- One `active_tab` (`Option<WebviewId>`) — the currently displayed tab.
-- An `AutomationController` for WebDriver/CDP integration.
-- Per-window input state (pointer position, keyboard modifiers, mouse buttons).
-
-A `webview_to_window` mapping routes `WebviewId`-scoped events
-(`NavigationRequested`, `NavigationCompleted`, `NewWebview`, `RequestRedraw`)
-to the correct window.
-
-### Tab lifecycle
-
-1. A tab is created when the user agent dispatches a `NewWebview` event
-   (triggered by `provider.navigate(None, url)` or by the user clicking the
-   `+` button in the chrome).
-2. The `NewWebview` handler calls `add_tab()` which inserts a `TabState` into
-   the window's tab map and pushes the webview ID onto `tab_order`.
-3. Navigation state is tracked per-tab via `pending_url` and `committed_url`.
-4. The chrome tab strip is rebuilt whenever tab count changes (the
-   `ChromeUi` re-generates its HTML template with ordered tab buttons).
-
-### Viewport management
-
-Each window computes its content viewport as
-`(window_width, window_height - chrome_height, scale, color_scheme)` and
-propagates it to the provider via `set_default_viewport` (for new traversables)
-and `set_traversable_viewport` (for the active tab's traversable).
-
-Viewport updates happen on:
-- Window creation (`resumed`)
-- Tab creation (`NewWebview`)
-- Tab switch (`SwitchTab`)
-- Navigation progression (`NavigationRequested`, `NavigationCompleted`)
-- Window resize (`Resized`)
-
-### Chrome
-
-The chrome is rendered as a Blitz HTML document with CSS styling. It contains:
-- An address bar (`<input id="address">`) — shows the active tab's current URL.
-- A tab strip with tab buttons (`<button id="tab-N">`) — one per open tab.
-- A `+` button (`<div id="new-tab-btn">`) — opens a new tab; shift+click
-  opens a new window.
-
-When tab state changes, the entire chrome HTML is regenerated with the correct
-number of tab buttons (each with a unique DOM id like `tab-0`, `tab-1`, etc.).
-Hit-testing uses the `id` attribute from the DOM (not node IDs) to avoid stale
-references after HTML rebuilds.
-
 ## Current implementation status
 
-- [x] Multi-window support (one winit event loop, many windows)
-- [x] Multi-tab support per window (webview-backed tabs)
-- [x] Chrome: address bar with URL display
-- [x] Chrome: tab strip with click-to-switch
-- [x] Chrome: `+` button for new tab / shift+click for new window
-- [x] Tab labels show page URL (truncated) or "New Tab" for blank pages
-- [x] Viewport tracking and propagation to provider
-- [x] Automation (WebDriver/CDP) targets the active tab in the active window
-- [x] Navigating an existing tab to `about:blank` logs a content-process
-  "unknown document id" error (pre-existing); new top-level traversables to
-  `about:blank` (new tabs, new windows, startup) work
-- [ ] Address-bar Enter opens new tab instead of navigating (under investigation)
-- [ ] Tab close button
-- [ ] Tab reordering
+- Multi-window support (one winit event loop, many windows); multi-tab
+  support per window (webview-backed tabs); chrome with address bar, tab
+  strip, and a `+` button (shift+click opens a new window); tab labels show
+  the page URL (truncated) or "New Tab"; viewport tracking per window/tab;
+  automation (WebDriver/CDP) targets the active tab in the active window.
 
-## Possible future work
+Remaining work (roughly in priority order):
 
-- **Tab close button**: Add an `×` button to each tab for closing. Requires
-  a `ChromeAction::CloseTab(usize)` action and cleanup of the tab state,
-  compositor, and webview-to-window mapping.
-- **Tab reordering**: Make tabs draggable to reorder. Requires drag-and-drop
-  in the chrome HTML and updating `tab_order` accordingly.
-- **Tab drag-out to new window**: Dragging a tab out of its window creates a
-  new window with that tab. Requires moving a `TabState` between windows.
-- **URL bar spellcheck/suggestions**: Autocomplete or search-engine integration
-  in the address bar.
-- **Window title update**: Sync the winit window title with the active tab's
-  page title. The content→UA title plumbing exists (parse-time titles); the
-  winit window title is not yet set from it.
-- **CDP multi-target support**: Expose each tab/window as a separate CDP target
-  (`Target.getTargets`, `Target.attachToTarget`) so automation tools can
-  interact with specific pages.
-- **About:blank fix**: Navigating an *existing* tab to `about:blank` (e.g.
-  the address bar) logs a content-process "unknown document id" error during
-  navigation finalization, although the URL still ends up as `about:blank`.
-  New top-level traversables to `about:blank` (new tabs, new windows, CDP
-  startup) work; only the existing-tab path is affected.
-- **Browser history integration**: Remove the per-tab `committed_url` /
+- **Address-bar Enter opens a new tab instead of navigating** (under
+  investigation).
+- **Tab close button** — needs a `ChromeAction::CloseTab(usize)` action and
+  cleanup of the tab state, compositor, and webview-to-window mapping.
+- **Tab reordering** — drag-and-drop in the chrome HTML plus `tab_order`
+  updates; tab drag-out to a new window would follow.
+- **Window title sync** — the content→UA title plumbing exists (parse-time
+  titles); the winit window title is not yet set from it.
+- **About:blank navigation of an existing tab** logs a content-process
+  "unknown document id" error during navigation finalization, although the
+  URL still ends up as `about:blank`.  New top-level traversables to
+  `about:blank` (new tabs, new windows, CDP startup) work; only the
+  existing-tab path is affected.
+- **Browser history integration** — remove the per-tab `committed_url` /
   `pending_url` tracking in favour of the user agent's session history once
   that's implemented.
-- **Performance**: The chrome HTML is fully rebuilt whenever tab count changes.
-  For many tabs this could be slow. A virtual-scrolling tab strip or
-  incremental DOM updates would scale better.
-- **Headless/headed sharing**: Some input-event dispatch helpers are duplicated
-  between `WindowedApp` and `HeadlessEmbedderApp`. These could be extracted
-  into shared utility functions.
+- **CDP multi-target support** — expose each tab/window as a separate CDP
+  target (`Target.getTargets`, `Target.attachToTarget`).
+- **Headless/headed sharing** — some input-event dispatch helpers are
+  duplicated between `WindowedApp` and `HeadlessEmbedderApp` and could be
+  extracted into shared utilities.
+- **Performance** — the chrome HTML is fully rebuilt whenever tab count
+  changes; a virtual-scrolling tab strip or incremental DOM updates would
+  scale better for many tabs.
 
 ## Key files
 

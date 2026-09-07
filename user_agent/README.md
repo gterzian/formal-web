@@ -2,7 +2,7 @@
 
 The `user_agent` crate owns all browser-global coordination: navigables and traversables, navigation and session history, the agents and agent clusters of the HTML agent formalism, content-process lifecycle, and requests coming from the embedder and webview layers.
 
-- `user_agent.rs` owns the top-level user-agent state and command loop.  A single thread selects over the user-agent command channel, the net channel, the graphics channel, and every content process's event channel (each content process is one agent cluster, and every agent it hosts reports over that cluster's event channel).
+- `user_agent.rs` owns the top-level user-agent state and command loop.
 - `agent.rs` defines the HTML agent records: `Agent` — the similar-origin window agent and dedicated worker agent kinds, recorded together in `UserAgentState::agents` and each keyed by the event loop it owns — plus `AgentCluster`/`AgentClusterKey`, the per-group agent cluster records.
 - `event_loops.rs` defines the user-agent-side handles of the event loops the agents own — `WindowEventLoop` and `WorkerEventLoop` — and `spawn_window_event_loop`, which launches the content process that is a new window agent's cluster and bootstraps its window event loop inside it.
 - `fetch.rs` provides `NetConnection` — owns the IPC connection to the net extension,
@@ -34,23 +34,16 @@ creating a feedback loop back to the user-agent thread.
 
 ## Graphics process routing
 
-The user agent starts the `formal-web-graphics` process on startup. The
-content processes render each traversable and send its `PaintFrame` directly
-to the graphics process; the graphics process composes the webview's scene
-(iframe embed sites + video frames) and sends the result as
-`GraphicsEvent::PixelFrameReady`: one `LayerTopology` per live layer plus
-the rendered surface for the layers re-rasterized that cycle. The UA stores
-the accompanying `FrameHitInfo` for hit-testing and forwards the layers to
-the host (the webview crate's `webview::Embedder` adapter) via
-`UserAgentHost::new_web_content_layers`.
+The content processes send each traversable's `PaintFrame` directly to the
+`formal-web-graphics` process, which composes the webview's scene (iframe
+embed sites + video frames) and returns `GraphicsEvent::PixelFrameReady`.
+The UA stores the accompanying `FrameHitInfo` in `UserAgentState::frame_hit_info`
+(keyed by webview id) for UI event routing, and forwards the layers to the
+host (`webview::Embedder` via `UserAgentHost::new_web_content_layers`).
 
-Hit-testing info (`FrameHitInfo`) from each composed scene is stored in
-`UserAgentState::frame_hit_info`, keyed by webview id. This data enables
-UI event routing without the embedder needing access to the compositor tree.
-
-During a cross-origin navigation the traversable's event loop (and content
-process) switches before the UA-side active document does: the active
-document only changes at finalization, so in the migration window
+Gotcha: during a cross-origin navigation the traversable's event loop (and
+content process) switches before the UA-side active document does — the
+active document only changes at finalization, so in the migration window
 `traversable_handles` and `active_documents_by_traversable` disagree.
 Commands pairing those two maps (e.g. `UpdateTheRendering`) must verify the
 active document is owned by the traversable's current event loop and skip
