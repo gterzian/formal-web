@@ -10,7 +10,10 @@ The IPC (Inter-Process Communication) system connects the browser main process
 | `formal-web-embedder` | Browser main process (window, chrome, routing) | `embedder/src/main.rs` |
 | `formal-web-content` | One per webview — HTML rendering, JS, DOM | `content/src/bin/content_process.rs` |
 | `formal-web-net` | Singleton — HTTP networking | `net/src/bin/net_process.rs` |
-| `formal-web-media` | Singleton — GStreamer media playback | `media/src/bin/media_process.rs` |
+| `formal-web-graphics` | Singleton — scene composition + video/audio playback | `graphics/src/bin/graphics_process.rs` |
+
+The media backend (AVFoundation / GStreamer from the `media` crate) runs inside
+the `formal-web-graphics` process — there is no separate media process.
 
 ## Two Backend Architecture
 
@@ -135,7 +138,11 @@ IPC message types live in `ipc_messages/src/`:
 
 - `content.rs` — `Command` and `Event` enums for content-process communication
 - `network.rs` — `Request` and `Response` for net-process HTTP fetching
-- `media.rs` — `MediaCommand` and `MediaEvent` for media-process playback
+- `media.rs` — video types shared between content and the graphics process
+  (`MediaPipelineId`, `VideoPaintId`, `VideoFrame`, `VideoEmbedData`)
+- `graphics.rs` — `GraphicsCommand` and `GraphicsEvent` for the graphics process;
+  playback control (`CreateMediaPipeline`, `MediaPlay`, `MediaPause`, `MediaSeek`,
+  `MediaDestroy`) rides on `GraphicsCommand`
 
 Serialization uses `serde` + `postcard` on both backends.
 

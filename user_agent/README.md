@@ -8,8 +8,10 @@ The `user_agent` crate owns all browser-global coordination: navigables and trav
 - `fetch.rs` provides `NetConnection` — owns the IPC connection to the net extension,
   tracks pending navigation fetches, and routes responses back to the user agent.
 - `ui_event.rs` provides UI event serialization for routing across process boundaries.
-- The UA and content processes send requests directly to the net, graphics, and media extensions;
-  there are no intermediary worker threads.
+- The UA and content processes send requests directly to the net and graphics extensions;
+  there are no intermediary worker threads. Media playback commands go from content to
+  the graphics extension; the media backend (AVFoundation/GStreamer) runs inside the
+  graphics process, not in a separate process.
 - Task queues and window timers belong to the content process's event loop
   (`content/src/html/event_loop.rs`), not to this crate.
 - Key cross-worker ownership with UUID newtypes such as `EventLoopId`, `NavigableId`, and related ids from `ipc_messages`.
