@@ -606,10 +606,8 @@ fact rather than an inference from the test result.  Report both.
   variants below already show, a field doc re-describing the field it sits on
   — is vacuous; cut it.  The `// Step N:` quotes and `// Note:` annotations
   that map the code to the spec are the mapping, not paraphrase, and stay.
-  README prose is held to the same standard (see README Documentation
-  Policy): no architecture essays at the top of a module or in a README when
-  the code and its annotations already show the shape — say where things live
-  and what is non-obvious, and let the code carry the rest.
+  README prose is held to the same standard (see "README Documentation
+  Policy").
 - **No state-change framing or counterfactual prose.**  Name entities as they
   are at the point of the code — "the outgoing document", not "the previous
   document" — and state behavior without justifying it by what would happen if
@@ -647,35 +645,38 @@ The project uses the standard `log` crate with `env_logger` for structured loggi
 
 # README Documentation Policy
 
-READMEs document the code as it is now: architecture, conventions, and work
-still to be done.  They never document its history — past changes, completed
-fixes, design iterations, session logs — and never frame the current design
-against an earlier one.  The "describe the code as it is now" rule for
-comments (under Dead Code and Comments) governs README prose as well: say
-what exists, affirmatively; no "no X registry", "no cluster-side
-forwarding", "no longer ...", "previously ..." contrasts.  The code speaks
-for itself here too: READMEs point at what is non-obvious — where things
-live, why a decision was made — and do not replay wiring the code shows on
-sight.
+The code is the primary documentation.  Spec-implementing code carries its
+anchor URL and verbatim `// Step N:` comments, with `// Note:` only for
+discrepancies; plumbing is documented where it diverges from or serves a
+spec step.  A README in the doc chain is read before code under it is
+touched, so every sentence must earn that place by telling the reader
+something the code does not show on sight:
 
-A README tracks only:
-- Things that **still need to be fixed** (unfixed bugs, pre-existing issues)
-- **Dead-end investigations** for currently-unfixed issues, so future
-  sessions know what was already tried and ruled out
+- **Guidance** — conventions and patterns to follow when extending the code
+  (what to wire where, what NOT to do, pitfalls), and non-obvious decisions
+  whose reason the code cannot show (why a component has the shape it does).
+- **Work still to be done** — unfixed bugs and pre-existing issues, plus
+  **dead-end investigations** for currently-unfixed issues (what was tried
+  and ruled out), so future sessions do not repeat them.
 
-Do NOT document:
-- Completed fixes, design iterations, or session logs — they live in the
-  code and git history
-- Infrastructure descriptions for things that already work
-- Anything already obvious from the code and its comments.  In particular,
-  the step-by-step split of a spec algorithm across processes (which steps
-  run in content, which in the user agent) is carried by the `// Step N:`
-  comments and notes on each side — the README must not duplicate it.
+A README never restates what the annotated code shows: no architecture
+essays, no narration of an algorithm or of a split across processes (the
+per-step comments on each side carry it), no re-printed struct fields,
+signatures, or call flows, no layout trees for a directory structure the
+file tree itself shows, no "status" lists of features that work (the code
+and its tests show them).  And it never documents history — past changes,
+completed fixes, design iterations, session logs — nor frames the current
+design against an earlier one (no "no X registry", "previously ...",
+"no longer ..." contrasts); the one past-tense exception is a dead-end
+note for a still-unfixed issue.  The "describe the code as it is now" rule
+under Dead Code and Comments governs this prose.
 
-The only past-tense content allowed is a note about a failed fix attempt for
-a still-unfixed issue — the symptom, what was tried, and what was ruled out.
-Once an issue is fixed, its notes are removed.  "Document only verified
-facts" applies throughout.
+Operational test: if deleting a sentence leaves the README no less complete
+for the next task that reads it, the sentence did not earn its place — it
+paraphrased the code or a higher README.  When a feature lands, its
+documentation lands in the code's annotations, and the README gains nothing;
+end-of-task step 7 ("Prune READMEs") applies this test to every changed
+subtree.  "Document only verified facts" applies throughout.
 
 # End-of-Task Flow
 
@@ -752,10 +753,12 @@ At the end of each task, run the following steps **in order**:
 
 6. Think very hard about any general lessons learned in the session, and what parts of the documentation chain should be updated to reflect such general lessons, and then also update it. 
 
-7. **Prune READMEs** — Strip completed fixes and historical session logs from
-   the documentation chain. The README should track only remaining work and
-   dead-end investigations for currently-unfixed issues (see "README
-   Documentation Policy" above).
+7. **Prune READMEs** — Apply the README Documentation Policy's deletion test
+   to every subtree the task touched: strip completed fixes, historical
+   session logs, and any architecture or status narration the task's own
+   code annotations now show.  A README tracks only remaining work,
+   dead-end investigations for currently-unfixed issues, and guidance (see
+   "README Documentation Policy" above).
 
 8. **Promote newly-passing WPT tests to the default selection** — When a
    WPT test was previously disabled or unselected and now passes, make that

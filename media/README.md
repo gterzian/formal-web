@@ -5,18 +5,10 @@ spawned lazily by the user agent on the first media request.
 
 The media process is built around a **backend-agnostic** core: the generic
 `run_media_process` function works with any `MediaBackend` implementation,
-selected at compile time via Cargo features.
-
-## Architecture
-
-```
-user agent (MediaHandler)  ──IPC──▶  media process (run_media_process<B: MediaBackend>)
-                                           │
-                                           ├─ B::Pipeline produces VideoFrame
-                                           │   └─ crossbeam channel ──▶ frame forwarding
-                                           │
-                                           └─ VideoFrame (IpcSharedMemory) ──▶ compositor
-```
+selected at compile time via Cargo features.  The generic loop owns the
+`MediaCommand`/`MediaEvent` IPC and forwards decoded `VideoFrame`s
+(`ipc_messages::media`) to the compositor; a backend contributes a pipeline
+implementation, an event source, and frame delivery only.
 
 ## Quick Start
 
@@ -65,83 +57,7 @@ cargo build --release --no-default-features --features v8
 cargo run --release --no-default-features --features v8
 ```
 
-## Module layout
-
-```
-media/
-├── Cargo.toml
-├── src/
-│   ├── lib.rs                       # run_media_process<B>, run_media_process_from_args
-│   ├── backend/
-│   │   ├── mod.rs                   # MediaBackend + PipelineHandle traits, BackendEvent enum
-│   │   ├── gstreamer/
-│   │   │   ├── mod.rs               # GStreamerBackend impl
-│   │   │   └── pipeline.rs          # GstPipeline (uridecodebin → videoconvert → appsink)
-│   │   └── avfoundation/
-│   │       ├── mod.rs               # AvfBackend impl
-│   │       ├── pipeline.rs          # AvfPipeline (AVPlayer + AVPlayerItemVideoOutput)
-│   │       └── av_sys/              # Safe wrappers around AVFoundation FFI
-│   │           ├── mod.rs
-│   │           ├── player.rs        # AvPlayer (wraps AVPlayer)
-│   │           ├── item.rs          # AvPlayerItem (wraps AVPlayerItem)
-│   │           ├── video_output.rs  # AvVideoOutput (wraps AVPlayerItemVideoOutput)
-│   │           ├── pixel_buffer.rs  # PixelBufferLock, pixel_buffer_to_frame
-│   │           ├── time.rs          # host_time_seconds()
-│   │           └── url.rs           # url_from_string()
-│   └── bin/
-│       └── media_process.rs         # binary entrypoint
-```
-
-## Backend traits
-
-### `BackendEvent`
-
-A backend-agnostic event type produced by the backend's notification mechanism
-(GStreamer bus, AVFoundation KVO/notifications) and consumed by the generic
-dispatch loop.
-
-```rust
-pub enum BackendEvent {
-    Eos { pipeline_id: MediaPipelineId },
-    Error { pipeline_id: MediaPipelineId, message: String },
-    DurationChanged { pipeline_id: MediaPipelineId, duration_secs: f64 },
-}
-```
-
-### `PipelineHandle`
-
-Represents one running media pipeline. Each backend provides its own concrete type.
-
-```rust
-pub trait PipelineHandle: Send + 'static {
-    fn play(&self) -> Result<(), String>;
-    fn pause(&self) -> Result<(), String>;
-    fn seek(&self, position_secs: f64) -> Result<(), String>;
-    /// Called at ≈120 Hz by the select loop. Backends pump run loops,
-    /// poll for frames, etc. Default is a no-op.
-    fn sample(&self) {}
-    /// Returns true when the pipeline reached end-of-stream and no
-    /// longer needs sampling.
-    fn is_done(&self) -> bool { false }
-    fn destroy(self) -> Result<(), String>;
-}
-```
-
-### `MediaBackend`
-
-Factory and event source.
-
-```rust
-pub trait MediaBackend: Send + 'static {
-    type Pipeline: PipelineHandle;
-    fn init() -> Result<Self, String>;
-    fn create_pipeline(&mut self, id: MediaPipelineId, url: String,
-                       frame_tx: Sender<MediaEvent>) -> Result<Self::Pipeline, String>;
-    fn event_receiver(&self) -> Receiver<BackendEvent>;
-}
-```
-
-## Cargo Features
+## Backend selection and features
 
 ```toml
 [features]
@@ -163,28 +79,35 @@ There is no compile-time mutual-exclusion guard: the library compiles with 0,
 1, or 2 backends. Backend selection happens at runtime in
 `run_media_process_from_args` via cfg-based priority (see `lib.rs`).
 
+## Backend traits
+
+`backend/mod.rs` defines three pieces a backend supplies; each backend
+provides its own concrete types under `backend/<name>/`:
+
+- `MediaBackend` — factory and event source: `init()`, `create_pipeline(id,
+  url)`, `event_receiver()`.  Decoded frames and lifecycle notifications are
+  delivered as `MediaBackendEvent`s on the receiver, not on a separate
+  frame channel.
+- `PipelineHandle` — one running pipeline: `play`/`pause`/`seek`, a
+  `sample()` hook called at ≈120 Hz by the select loop (backends pump run
+  loops, poll for frames, etc.), `is_done()` for end-of-stream, `destroy()`.
+- `MediaBackendEvent` — the backend-agnostic notification type: decoded
+  frames (`Frame(VideoFrame)` CPU bytes, `PixelBufferFrame` GPU-backed
+  pixel buffer) plus EOS, error, and duration-changed, produced by the
+  backend's notification mechanism (GStreamer bus, AVFoundation
+  KVO/notifications) and consumed by the generic dispatch loop.
+
 ## GStreamer backend
 
-### Pipeline topology
+The pipeline is `uridecodebin → videoconvert → appsink (format=RGBA)`;
+`uridecodebin` creates a video pad dynamically when it detects a video
+stream.  Frames are delivered by push: the appsink `new_sample` callback
+fires on the GStreamer streaming thread for every decoded frame, converts
+bus messages (EOS, error, duration-changed) to `MediaBackendEvent`s in a sync
+handler, and forwards on a crossbeam channel.  No polling, run loop, or
+timing infrastructure is required.
 
-```
-uridecodebin ──▶ videoconvert ──▶ appsink (format=RGBA)
-```
-
-- `uridecodebin` dynamically creates a video pad when it detects a video stream.
-- `videoconvert` converts to a format compatible with the appsink caps.
-- `appsink` is configured with caps `video/x-raw,format=RGBA` and a
-  `new_sample` callback that fires on the GStreamer streaming thread.
-- Bus messages (EOS, error, duration-changed) are converted to `BackendEvent`
-  inside a sync handler and forwarded on a crossbeam channel.
-
-### Frame extraction (push model)
-
-The `new_sample` callback fires for every decoded frame. This is a push model —
-GStreamer calls us when a frame is ready. No polling, run loop, or timing
-infrastructure required.
-
-### Required imports (GStreamer 0.23 / 1.28)
+Required imports (GStreamer 0.23 / 1.28):
 
 ```rust
 use gstreamer as gst;
@@ -195,33 +118,20 @@ use gstreamer_app::prelude::*;
 
 ## AVFoundation backend
 
-### Pipeline topology
+The pipeline is `AVPlayer → AVPlayerItem → AVPlayerItemVideoOutput`, run on
+the select-loop thread (the media process main thread) — no background
+thread, because AVFoundation objects require `MainThreadMarker`.
 
-```
-AVPlayer ──▶ AVPlayerItem ──▶ AVPlayerItemVideoOutput ──▶ sample() poll loop
-```
+`sample()` (≈120 Hz via a timer arm in the `select!` loop) drains the run
+loop (`runUntilDate(8ms)`) so AVFoundation services URL loading, KVO, and
+video output timing; checks item status once (wait for
+`AVPlayerItemStatus::ReadyToPlay` before reporting duration); then polls
+`AVPlayerItemVideoOutput` for frames (`itemTimeForHostTime`, `hasNewPixelBufferForItemTime`)
+and delivers the pixel buffer itself as `PixelBufferFrame` — the graphics
+process wraps it as a Metal texture (zero-copy when GPU-backed) instead of
+the CPU byte conversion.
 
-The pipeline runs **on the select-loop thread** (the main thread of the
-media process).  No background thread is used.
-
-### Frame extraction
-
-Frame polling happens inside `PipelineHandle::sample()`, which is called
-at ≈120 Hz via a timer arm in the `select!` loop.
-
-`sample()` does:
-1. **Drain the run loop** via `NSRunLoop::currentRunLoop().runUntilDate(8ms)`
-   — this lets AVFoundation service URL loading, KVO, and video output
-   timing.
-2. **Check item status** (once) — wait for `AVPlayerItemStatus::ReadyToPlay`
-   before reporting duration.
-3. **Poll for frames** via `AVPlayerItemVideoOutput`:
-   - Convert `CVGetCurrentHostTime()` to item time via `itemTimeForHostTime`
-   - Check `hasNewPixelBufferForItemTime`
-   - Copy pixel buffer and convert to `VideoFrame` (BGRA → RGBA swap)
-   - Send as `BackendEvent::Frame` through the backend event channel
-
-### Key design decisions
+Key design decisions:
 
 | Decision | Why |
 |---|---|
@@ -229,17 +139,10 @@ at ≈120 Hz via a timer arm in the `select!` loop.
   provides the main thread. |
 | Timer-driven `sample()`, not message-driven | Without a timer, `sample()` only runs when a command or event arrives,
   starving AVFoundation of CPU time. |
-| `BackendEvent::Frame` instead of separate `frame_tx` | Frames flow through the same channel as EOS/error/duration. Eliminates
-  the `frame_tx`/`frame_rx` pair from the generic loop. |
-| BGRA pixel buffer with RGBA swap in software | AVFoundation's decoder outputs BGRA natively; the compositor expects
-  RGBA. Requesting RGBA from the decoder fails silently for some files. |
-
-### Pixel format
-
-The video output requests `kCVPixelFormatType_32BGRA` via the pixel-buffer
-attributes dictionary.  The `pixel_buffer_to_frame` function then swaps
-bytes 0 and 2 in each 4-byte pixel to produce RGBA output matching the
-compositor's expectations.
+| Frames flow through the same channel as EOS/error/duration | Eliminates the `frame_tx`/`frame_rx` pair from the generic loop. |
+| Deliver the `CVPixelBuffer` itself (BGRA), not CPU-converted bytes | The graphics process imports it as a Metal texture (zero-copy when
+  GPU-backed); the BGRA→RGBA conversion Vello needs happens there, as a
+  compute blit. |
 
 ### Common pitfalls
 
@@ -249,9 +152,8 @@ compositor's expectations.
 | Using unix wall clock for host time | Item time doesn't match video timeline | Use `CVGetCurrentHostTime()` / `CVGetHostClockFrequency()` |
 | Reading duration before asset loads | `kCMTimeIndefinite`, `seconds()` returns `NaN` | Poll `item.status() == ReadyToPlay` first |
 | `kCVPixelBufferPixelFormatTypeKey` double-ref | Crash during pipeline creation | Use `kCVPixelBufferPixelFormatTypeKey` directly (it's already `&CFString`), not `&kCVPixelBufferPixelFormatTypeKey` |
-| BGRA data sent as RGBA | Blue-tinted video | Swap bytes 0 and 2 in `pixel_buffer_to_frame` |
 
-### What does NOT change
+### What does NOT change when adding a backend
 
 - `MediaCommand` / `MediaEvent` / `MediaPipelineId` / `VideoFrame` in `ipc_messages::media`.
 - The frame forwarding loop (crossbeam → shmem mapping → IPC send).

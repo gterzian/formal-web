@@ -1,85 +1,65 @@
 # Graphics Process — Surface Delivery Pipeline
 
-## Status
+## Surface backends
 
-Composed scenes are delivered to the embedder via **CPU readback + shared
-memory**: the graphics process renders each frame with Vello, reads the pixels
-back to CPU, and ships them through IPC shared memory; the embedder uploads
-those bytes into a persistent per-webview GPU texture and blits it. This path
-works on every platform.
+Composed scenes reach the embedder over one of two surface backends, chosen
+at compile time on the `graphics` build (the embedder spawns the
+`formal-web-graphics` binary it finds next to its own executable, so rebuild
+that binary with the chosen backend before running):
 
-On macOS the **zero-copy** backend is the default (matching the default
-AVFoundation media backend): the graphics process renders directly into a
-shared IOSurface texture and the embedder imports the same surface and
-blits it — no CPU readback, no IPC pixel bytes. The cross-process transport
-problem (shipping the surface's Mach port) is solved by the forked
-`ipc-channel` (a git dependency on <https://github.com/gterzian/ipc-channel>),
-which adds an `OsMachPort` serde-transportable type. The backend is chosen
-at compile time by feature: the zero-copy IOSurface backend is the macOS
-default, the `cpu_readback` feature replaces it with the CPU readback path
-on macOS, and elsewhere (GStreamer media backend) the CPU readback path is
-the only one. The embedder and user agent handle both wire payloads
-regardless of which backend the graphics process was built with.
+- **CPU readback + shared memory** — the graphics process renders each frame
+  with Vello, reads the pixels back to CPU, and ships them through IPC shared
+  memory; the embedder uploads those bytes into a persistent per-webview GPU
+  texture and blits it.  Works on every platform; the only option off macOS
+  and when building with `--features cpu_readback`.
+- **Zero-copy IOSurface** (macOS default, matching the default AVFoundation
+  media backend) — the graphics process renders directly into a shared
+  IOSurface texture and the embedder imports the same surface and blits it:
+  no readback, no IPC pixel bytes, no upload.  The cross-process transport
+  (shipping the surface's Mach port) comes from the forked `ipc-channel`
+  (a git dependency on <https://github.com/gterzian/ipc-channel>), which adds
+  an `OsMachPort` serde-transportable type.
 
-## CPU readback + shared memory pipeline (all platforms)
+Both payloads flow through the same message enum
+(`GraphicsEvent::PixelFrameReady` carries `CpuShmem` or `SharedTexture`),
+and the embedder and user agent handle both regardless of which backend the
+graphics process was built with.  `run_graphics_process` is generic over
+the renderer exactly like the media backend
+(`run_graphics_process<B: MediaBackend, R: SurfaceRenderer>`); the two
+renderers (`renderer/cpu.rs`, `renderer/iosurface.rs`) are the only
+compiled-per-configuration parts.
 
-Each frame travels through the processes as follows:
+## Surface delivery invariants
 
-| Step | Where | What happens |
-|---|---|---|
-| Compose | graphics | `submit_scene` renders into the buffer of a per-webview **2-slot alternating double buffer** that the last render did not use |
-| Render + submit | graphics | the renderer renders the composed scene with Vello (CPU path: into an intermediate texture, then **submits** a GPU → CPU readback (`map_buffer_on_submit`) without blocking); a `PollRequest` goes to a dedicated **poll thread** |
-| Wait | poll thread | blocks on `device.poll(PollType::Wait)` until the submission completes; the map callback fires there and delivers `ReadbackReady` to the main loop |
-| Deliver | graphics | `handle_readback_ready` copies the completed pixels into the pre-selected shared-memory buffer and sends `GraphicsEvent::PixelFrameReady` |
-| Upload | embedder | `NewWebContentSurface` uploads the shared-memory bytes with `queue.write_texture` into the webview's persistent texture |
-| Blit | embedder | `paint_frame` draws the texture at its natural size via a stable Vello resource (`PaintRef::Resource`) |
-| Pace | embedder → UA | just before rendering, the embedder sends `FrameNeeded` (via `WebviewProvider::frame_needed` → UA), paced by vsync (the paint blocks on the drawable); the UA starts the next render cycle only when a frame is needed AND a rendering opportunity was noted |
+The render cycle is modeled and validated by the `RenderingOpportunity` TLA+
+spec (`verification/tla_specs/RenderingOpportunity.tla`): the UA traces
+`NoteRenderingOpportunity`/`FrameNeeded`, content traces
+`UpdateTheRendering`, and the graphics process traces `GraphicsComputed` when
+`PixelFrameReady` is actually sent — i.e. after the poll thread's
+`device.poll(Wait)` confirmed the render completed on the GPU.  A change to
+the cycle must keep the model's checks true (see `verification/README.md`).
+The invariants that keep the pipeline correct:
 
-Key properties:
+- The per-webview buffers **alternate**: each render cycle renders into the
+  buffer the last render did not use.  FrameNeeded pacing allows only one
+  render per cycle, so the chosen buffer holds the frame from two cycles
+  ago — long since consumed by the embedder.  **No ack is sent**; the
+  alternation guarantees the chosen buffer is free.
+- The renderer always produces a frame (sizes are clamped to ≥ 1) so the
+  UA's rendering-opportunity cycle never stalls; the CPU renderer keeps a
+  per-slot staging-buffer pool (one per in-flight frame) and a per-webview
+  device.
+- The graphics event loop only sees the `SurfaceRenderer` trait
+  (`submit_scene`, `handle_render_done`); the double buffer is hidden inside
+  the renderer (`SurfaceBuffers`/`SurfaceRingState` per backend payload).
+  Each renderer's `RenderData` associated type is the per-frame payload
+  produced at submit time and consumed by its `handle_render_done`, which
+  sends `PixelFrameReady`; completed frames arrive on a single channel whose
+  message type is that `RenderData`.
+- Per-frame copies on the CPU path today: GPU → CPU readback, kernel copy in
+  the IPC transport, CPU → GPU upload, and Vello's internal atlas copy.
 
-- The buffers **alternate**: each render cycle renders into the buffer the last
-  render did not use. FrameNeeded pacing allows only one render per cycle, so
-  the chosen buffer holds the frame from two cycles ago — long since consumed
-  by the embedder. **No ack is sent**; the alternation guarantees the chosen
-  buffer is free.
-- The transport ships pixel bytes as Mach **out-of-line descriptors with
-  `MACH_MSG_VIRTUAL_COPY`** — the receiver gets a kernel (copy-on-write)
-  snapshot, not shared pages.
-- The renderer keeps a per-slot staging-buffer pool (one per in-flight
-  frame) and a per-webview device; the renderer always produces a frame (sizes
-  are clamped to ≥ 1) so the UA's rendering-opportunity cycle never stalls.
-- The FrameNeeded-gated render cycle is modeled and validated by the
-  `RenderingOpportunity` TLA+ spec (`verification/tla_specs/RenderingOpportunity.tla`):
-  the UA traces `NoteRenderingOpportunity`/`FrameNeeded`, content traces
-  `UpdateTheRendering`, and the graphics process traces `GraphicsComputed` when
-  `PixelFrameReady` is actually sent — i.e. after the poll thread's
-  `device.poll(Wait)` confirmed the render completed on the GPU. The model
-  checks that a render starts only when the embedder needs a frame AND a
-  rendering opportunity was noted, and that the pipeline never holds more than
-  `BufferCount` (2) renders in flight (one displayed, one being rendered).
-
-Per-frame copies today: GPU → CPU readback, kernel copy in the IPC transport,
-CPU → GPU upload, and Vello's internal atlas copy.
-
-## Design: zero-copy GPU texture sharing (IOSurface route)
-
-### Data flow
-
-```
-[ PRODUCER: graphics process ]          [ CONSUMER: embedder ]
-  IOSurfaceRef::create(...)             receive the surface's ID + Mach port
-  Metal texture from the IOSurface      IOSurfaceLookup(id) / fallback to
-  (objc2-metal newTextureWithDescriptor_iosurface_plane)  lookup_from_mach_port
-  import into wgpu via wgpu-hal         import into wgpu via wgpu-hal
-  (texture_from_raw + create_texture_from_hal)
-  Vello render_to_texture INTO it       try_register_custom_resource (unchanged)
-  send the global ID + Mach port        blit via PaintRef::Resource (unchanged)
-  ... alternate to the other buffer ... ... send FrameNeeded (next cycle) ...
-```
-
-The producer renders directly into one of the two shared textures,
-alternating per render cycle; the consumer imports the shared texture once and
-blits it. No readback, no IPC pixel bytes, no upload, no ack.
+## Zero-copy IOSurface route: constraints and gotchas
 
 ### Verified platform APIs (macOS, as used by this workspace)
 
@@ -114,134 +94,78 @@ blits it. No readback, no IPC pixel bytes, no upload, no ack.
 
 ### Transporting the IOSurface ID and Mach port
 
-The producer creates each shared surface with `kIOSurfaceIsGlobal` (deprecated
-by Apple, but the only mechanism for cross-process IOSurfaceID visibility on
-macOS 13+; the surfaces carry page pixels, not secrets) and ships both the
-surface's global ID and a Mach port in the `PixelFrameReady` message. The
-embedder looks the surface up by ID first (`IOSurfaceLookup`) and falls back
-to the Mach port.
+The producer creates each shared surface with `kIOSurfaceIsGlobal` and ships
+both the surface's global ID and a Mach port in the `PixelFrameReady`
+message; the embedder looks the surface up by ID first (`IOSurfaceLookup`)
+and falls back to the Mach port.  Both handles exist because of how
+CoreAnimation composites layer contents: a surface object imported only from
+its Mach port (`IOSurfaceLookupFromMachPort`) renders empty in a `CALayer`,
+while a by-ID lookup of the same surface composites correctly — and, without
+`kIOSurfaceIsGlobal`, the by-ID lookup fails for a surface created in
+another process (macOS 13+ keeps IOSurfaces process-local by default; the
+deprecated global flag is the only cross-process visibility mechanism, and
+the surfaces carry page pixels, not secrets).  The port remains as a
+fallback for producers that do not mark the surface global.
 
-The two handles exist because of how CoreAnimation composites layer contents:
-a surface object imported only from its Mach port (`IOSurfaceLookupFromMachPort`)
-renders empty in a `CALayer`, while a by-ID lookup of the same surface
-composites correctly — and, without `kIOSurfaceIsGlobal`, the by-ID lookup
-fails for a surface created in another process (macOS 13+ keeps IOSurfaces
-process-local by default). The port remains as a fallback for producers that
-do not mark the surface global.
-
-The forked `ipc-channel` (a git dependency on
-<https://github.com/gterzian/ipc-channel>) provides a serializable `OsMachPort`
-type: the port is pushed into a serialization thread-local (mirroring
-`OS_IPC_CHANNELS_FOR_SERIALIZATION`) and popped on deserialize, traveling as a
-single `MACH_MSG_OOL_PORTS_DESCRIPTOR` (out-of-line ports, `MOVE_SEND`)
-appended after the shared-memory descriptors; the receive path collects them
-into a third descriptor phase. The fork adds
+The forked `ipc-channel` provides the serializable `OsMachPort`: the port is
+pushed into a serialization thread-local and popped on deserialize,
+traveling as a single `MACH_MSG_OOL_PORTS_DESCRIPTOR` (out-of-line ports,
+`MOVE_SEND`) appended after the shared-memory descriptors.  The fork adds
 `OsIpcSender::send_with_mach_ports`; non-macOS platforms are untouched.
 
-## Generic surface backend abstraction
+## Adding or changing a renderer or payload
 
-The double buffer, the alternation, the messages, and the embedder's draw
-path are all transport-agnostic. The per-webview state is a `WebviewState<R>`
-struct holding the compositor (scene assembly, fonts, video frames) and the
-renderer (Vello + surface delivery). The double buffer is hidden entirely
-inside the renderer —
-the graphics event loop only sees the `SurfaceRenderer` trait (`submit_scene`,
-`handle_render_done`). Each renderer owns its `SurfaceBuffers` (the generic
-alternating lifecycle `SurfaceRingState` plus its backend's payloads:
-shared-memory regions or IOSurface textures) and its texture id counter.
-
-`run_graphics_process` is generic over the renderer exactly like the media
-backend: `run_graphics_process<B: MediaBackend, R: SurfaceRenderer>`. The
-graphics process binary selects the concrete renderer at compile time by
-feature (CPU readback off macOS and with `cpu_readback`, zero-copy IOSurface
-on macOS by default) and the loop operates on it only through the trait.
-
-The renderers are two implementations of the `SurfaceRenderer` trait
-(`renderer/cpu.rs` and `renderer/iosurface.rs`): each defines its own
-`RenderData` associated type — the per-frame payload produced at submit time
-and consumed by its `handle_render_done`, which sends `PixelFrameReady`.
-Completed frames arrive on a single channel whose
-message type is the backend's `RenderData` (chosen at compile time), delivered
-by the readback map callbacks (CPU) or the poll thread (zero-copy). The shared
-`GpuContext` holds what every backend needs (the wgpu device, the Vello
-renderer, the video texture machinery, the generation counter).
-
-The renderer's target differs per backend: the CPU path renders to an
-intermediate texture and submits a readback; the zero-copy path renders Vello
-directly into the shared texture and the poll thread delivers the done notice
-once the submission completes.
+The consumer side (embedder) dispatches on the payload:
+`NewWebContentSurface` matches `CpuShmem` → `write_texture` from the bytes
+into the persistent texture; `SharedTexture` → the `WebviewSurfaceTexture`
+is created from the imported shared texture (via the hal-import machinery),
+registered once, then blit.  The draw path (`PaintRef::Resource`) is
+identical for both, so a new backend must produce one of the two payloads
+and keep that registration/blit contract.
 
 The video texture import (macOS AVFoundation `PixelBufferFrame` → Metal
 texture → Vello `override_image`) lives in its own module, `renderer/video.rs`,
 behind the renderer trait's macOS-only `store_video_frame`.
 
-### Consumer side (embedder)
+## Video frames → shared texture (macOS)
 
-`NewWebContentSurface` matches on the payload: `CpuShmem` → `write_texture`
-from the bytes into the persistent texture; `SharedTexture` → the
-`WebviewSurfaceTexture` is created from the imported shared texture (via the
-hal-import machinery), registered once, then blit. The draw path
-(`PaintRef::Resource`) is identical for both.
-
-### Backend selection
-
-Chosen at compile time by the graphics crate's features: the zero-copy
-IOSurface backend is the default on macOS (matching the default AVFoundation
-media backend); building with `--features cpu_readback` selects the CPU
-readback backend on macOS instead. Off macOS the CPU readback backend is the
-only one (`zero_copy` is a compile error there — IOSurface sharing is
-macOS-only; the GStreamer media backend delivers CPU bytes). The two are
-separate implementations of the `SurfaceRenderer` trait (`renderer/cpu.rs`
-and `renderer/iosurface.rs`), so only one is compiled per configuration; the
-payload enum identifies the backend in use on the wire.
-
-### What stays identical
-
-- The embedder's registration + draw path.
-
-## AVFoundation → shared texture
-
-Video frames are composited as GPU textures (macOS): the AVFoundation pipeline
-delivers the decoded `CVPixelBuffer` itself (`MediaBackendEvent::PixelBufferFrame`)
-instead of CPU bytes; the graphics process wraps it as a Metal texture via
-`CVMetalTextureCacheCreateTextureFromImage` (zero-copy when the pixel buffer is
-GPU-backed), does a one-pass BGRA→RGBA compute blit into a per-pipeline RGBA
-texture, and registers that texture with its Vello renderer via
-`Renderer::override_image` (a fake `ImageData` with an empty blob; the scene
-draws it as a plain image brush, so no anyrender changes are needed). The video
-composites into the composed scene — including the shared IOSurface on the
-zero-copy surface backend — without a CPU round-trip. GStreamer keeps the CPU
+The AVFoundation pipeline delivers the decoded `CVPixelBuffer` itself
+(`MediaBackendEvent::PixelBufferFrame`); the graphics process wraps it as a
+Metal texture via `CVMetalTextureCacheCreateTextureFromImage` (zero-copy when
+the pixel buffer is GPU-backed), does a one-pass BGRA→RGBA compute blit into
+a per-pipeline RGBA texture, and registers that texture with its Vello
+renderer via `Renderer::override_image` (a fake `ImageData` with an empty
+blob; the scene draws it as a plain image brush).  GStreamer keeps the CPU
 byte path (`MediaBackendEvent::Frame`).
 
 **The import is deferred from frame arrival to compose time.** The media
 callback (`store_video_frame`) only stores the latest raw frame — the pixel
-buffer, its size, and a generation counter — without touching the GPU. When
+buffer, its size, and a generation counter — without touching the GPU.  When
 `submit_scene` runs, `VideoTextures::record_imports` blits exactly the frames
 whose generation is newer than the last imported one in their own submission,
 right before Vello's render submits (two back-to-back submissions; GPU
 execution order guarantees the blit completes before the render reads it).
 Re-blitted images are marked dirty so Vello recopies them into its atlas;
-unchanged frames reuse their RGBA texture. This makes the import a compose-time
-step on the render cycle's own thread instead of an extra `queue.submit` from
-the media event path — every `queue.submit` on the main thread blocks on the
-gpu poll thread's fence lock until its current `device.poll(Wait)` finishes, so
-the media handler no longer stalls the loop, and frames that are never
-composited are never blitted.
+unchanged frames reuse their RGBA texture.
 
-Caveats: the `CVPixelBuffer` must stay alive while the texture referencing it
-is in use (the stored raw frame keeps it until the next frame replaces it); a
-BGRA→RGBA blit is needed because Vello's `register_texture` requires
-`Rgba8Unorm`. A blit that fails to wrap its source (first import of a paint)
-records a texture clear instead so the frame shows black — like a browser
-shows for a video that fails to decode — and is retried on the next compose;
-a failed re-blit of a previously imported paint leaves the last good frame in
-place.
+Why: every `queue.submit` on the main thread blocks on the gpu poll thread's
+fence lock until its current `device.poll(Wait)` finishes, so an import from
+the media event path would stall the loop — and frames that are never
+composited should never be blitted.  Caveats: the `CVPixelBuffer` must stay
+alive while the texture referencing it is in use (the stored raw frame keeps
+it until the next frame replaces it); a BGRA→RGBA blit is needed because
+Vello's `register_texture` requires `Rgba8Unorm`.  A blit that fails to wrap
+its source (first import of a paint) records a texture clear instead so the
+frame shows black — like a browser shows for a video that fails to decode —
+and is retried on the next compose; a failed re-blit of a previously
+imported paint leaves the last good frame in place.
 
-(Alternative tried and parked: merging the blit and Vello's render into a
-single command encoder + one submit, which needs a record-only vello API that
-0.9 does not expose. The modified vello source with `render_to_texture_into` /
-`run_recording_into` is parked at `../../Projects/vello` for now; the build
-uses stock vello 0.9.0 with the two-submit layout.)
+**Dead end:** merging the blit and Vello's render into a single command
+encoder + one submit was tried and parked — it needs a record-only vello API
+that 0.9 does not expose.  The modified vello source with
+`render_to_texture_into` / `run_recording_into` is parked at
+`../../Projects/vello` for now; the build uses stock vello 0.9.0 with the
+two-submit layout.
 
 ## Open risks and questions
 
@@ -255,7 +179,7 @@ uses stock vello 0.9.0 with the two-submit layout.)
   (see `content/src/main.rs` `update_the_rendering`), and the graphics process
   keeps the content layer clean (the reused scene compares byte-identical).
   The remaining waste is the render cycle itself (compose + forward) running
-  at vsync. Remaining follow-up:
+  at vsync.  Remaining follow-up:
   - Set `animating` only when the document has a **pending rAF callback**
     (script-driven animation) or blitz is genuinely advancing CSS
     animations, and handle video-driven flow separately: a
