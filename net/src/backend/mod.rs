@@ -145,3 +145,106 @@ pub type Backend = tokio::TokioBackend;
     not(any(feature = "tokio", not(target_vendor = "apple")))
 ))]
 compile_error!("net requires at least one network backend: `tokio` or `url_session`");
+
+#[cfg(test)]
+mod tests {
+    use super::{Backend, NetworkBackend, NetworkPartitionKey};
+    use ipc_messages::content::{DocumentFetchId, EventLoopId, FetchRequest};
+    use std::io::{BufRead, BufReader, Write};
+    use std::net::{Ipv4Addr, TcpListener};
+    use std::thread::{self, JoinHandle};
+    use std::time::Duration;
+    use uuid::Uuid;
+
+    /// A one-shot HTTP origin on the loopback interface: serves a single
+    /// request, answers 200 with an empty body, and hands the request head it
+    /// saw back to the test. Returns the URL to fetch and the server thread.
+    fn serve_one_request() -> (String, JoinHandle<String>) {
+        let listener =
+            TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).expect("failed to bind test listener");
+        let port = listener
+            .local_addr()
+            .expect("test listener has no local address")
+            .port();
+        let handle = thread::spawn(move || {
+            let (stream, _) = listener.accept().expect("failed to accept test connection");
+            let mut reader = BufReader::new(stream);
+            let mut head = String::new();
+            loop {
+                let mut line = String::new();
+                let read = reader
+                    .read_line(&mut line)
+                    .expect("failed to read the request head");
+                if read == 0 || line == "\r\n" {
+                    break;
+                }
+                head.push_str(&line);
+            }
+            reader
+                .get_mut()
+                .write_all(
+                    b"HTTP/1.1 200 OK\r\ncontent-type: text/plain\r\ncontent-length: 0\r\n\r\n",
+                )
+                .expect("failed to write the test response");
+            head
+        });
+        (format!("http://127.0.0.1:{port}/"), handle)
+    }
+
+    /// <https://fetch.spec.whatwg.org/#concept-request-header-list>
+    /// The header list a request carries reaches the wire. Runs against the
+    /// backend the build selected, so both the tokio and the URLSession
+    /// backend are covered by it.
+    #[test]
+    fn fetch_sends_the_request_header_list() {
+        let (url, server) = serve_one_request();
+        let request = FetchRequest {
+            handler_id: DocumentFetchId::from_u128(1),
+            url,
+            method: String::from("GET"),
+            header_list: vec![
+                (String::from("x-formal-web"), String::from("carried")),
+                (String::from("accept"), String::from("text/plain")),
+                // A header list is a list, not a map: a repeated name keeps
+                // every value.
+                (String::from("x-repeated"), String::from("first")),
+                (String::from("x-repeated"), String::from("second")),
+            ],
+            body: String::new(),
+        };
+
+        let (reply_sender, reply_receiver) = crossbeam_channel::unbounded();
+        let request_id = Uuid::new_v4();
+        let mut backend = Backend::default();
+        backend
+            .http_network_or_cache_fetch(
+                NetworkPartitionKey(EventLoopId::from_u128(1)),
+                request_id,
+                &request,
+                reply_sender,
+            )
+            .expect("failed to start the fetch");
+
+        // The backends may deliver the reply at any time after the fetch
+        // call returns; the URLSession one delivers it from a background
+        // queue.
+        let (replied_id, result) = reply_receiver
+            .recv_timeout(Duration::from_secs(10))
+            .expect("no fetch reply was delivered");
+        assert_eq!(replied_id, request_id);
+        let response = result.expect("the fetch failed");
+        assert_eq!(response.status, 200);
+
+        let head = server
+            .join()
+            .expect("the test server panicked")
+            .to_ascii_lowercase();
+        assert!(head.contains("x-formal-web: carried"), "head was: {head}");
+        assert!(head.contains("accept: text/plain"), "head was: {head}");
+        // The backends combine a repeated name differently — reqwest sends
+        // one field line per value, URLSession combines them into a single
+        // comma-separated line — so assert on the values alone.
+        assert!(head.contains("first"), "head was: {head}");
+        assert!(head.contains("second"), "head was: {head}");
+    }
+}

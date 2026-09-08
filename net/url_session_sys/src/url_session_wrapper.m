@@ -50,6 +50,9 @@ int fw_url_session_fetch(
     fw_url_session_t handle,
     const char *method,
     const char *url,
+    const char *const *header_names,
+    const char *const *header_values,
+    size_t header_count,
     const uint8_t *body,
     size_t body_length,
     void *context,
@@ -67,6 +70,26 @@ int fw_url_session_fetch(
 
     NSMutableURLRequest *request = [NSMutableURLRequest requestWithURL:nsurl];
     request.HTTPMethod = method ? [NSString stringWithUTF8String:method] : @"GET";
+    for (size_t index = 0; index < header_count; index++) {
+        const char *name = header_names ? header_names[index] : NULL;
+        const char *value = header_values ? header_values[index] : NULL;
+        if (!name || !value) {
+            continue;
+        }
+        NSString *header_name = [NSString stringWithUTF8String:name];
+        NSString *header_value = [NSString stringWithUTF8String:value];
+        if (!header_name || !header_value) {
+            // Not UTF-8; the header is dropped rather than failing the fetch.
+            continue;
+        }
+        // <https://fetch.spec.whatwg.org/#concept-header-list-combine>
+        // Deliberate: `addValue:` combines repeated names with ", ", the way
+        // a header list is combined on the wire; `setValue:` would keep only
+        // the last value of a repeated name. NSURLSession reserves a few
+        // fields (Content-Length, Host, Connection, the authorization pair)
+        // and overwrites whatever is set for them here.
+        [request addValue:header_value forHTTPHeaderField:header_name];
+    }
     if (body && body_length > 0) {
         request.HTTPBody = [NSData dataWithBytes:body length:body_length];
     }

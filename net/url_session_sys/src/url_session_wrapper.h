@@ -28,14 +28,19 @@ fw_url_session_t fw_url_session_create(void);
 // Release a session. NULL-safe.
 void fw_url_session_release(fw_url_session_t session);
 
-// Start a data task on the session. Returns 0 when the task was started
-// (the completion callback will be invoked later, on a background queue),
-// non-zero when the task could not be started (the completion callback is
-// not invoked).
+// Start a data task on the session. `header_names` and `header_values` are
+// parallel arrays of `header_count` NUL-terminated strings, appended to the
+// request in order; entries are only read for the duration of the call.
+// Returns 0 when the task was started (the completion callback will be
+// invoked later, on a background queue), non-zero when the task could not be
+// started (the completion callback is not invoked).
 int fw_url_session_fetch(
     fw_url_session_t session,
     const char *method,
     const char *url,
+    const char *const *header_names,
+    const char *const *header_values,
+    size_t header_count,
     const uint8_t *body,
     size_t body_length,
     void *context,

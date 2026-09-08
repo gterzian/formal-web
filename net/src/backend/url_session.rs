@@ -77,17 +77,23 @@ impl NetworkBackend for UrlSessionBackend {
         let body = request.body.clone();
         let body_bytes = (!body.is_empty()).then_some(body.as_bytes());
         let completion_reply_sender = reply_sender.clone();
-        if let Err(error) = session.fetch(&method, &url, body_bytes, move |result| {
-            let result = result.map(|response| FetchResponse {
-                final_url: response.final_url,
-                status: response.status,
-                content_type: response.content_type,
-                body: response.body,
-            });
-            if let Err(send_error) = completion_reply_sender.send((request_id, result)) {
-                log::error!("failed to route URLSession response: {send_error}");
-            }
-        }) {
+        if let Err(error) = session.fetch(
+            &method,
+            &url,
+            &request.header_list,
+            body_bytes,
+            move |result| {
+                let result = result.map(|response| FetchResponse {
+                    final_url: response.final_url,
+                    status: response.status,
+                    content_type: response.content_type,
+                    body: response.body,
+                });
+                if let Err(send_error) = completion_reply_sender.send((request_id, result)) {
+                    log::error!("failed to route URLSession response: {send_error}");
+                }
+            },
+        ) {
             // The task could not be started; the completion callback was not
             // invoked, so deliver the failure to the caller now.
             let result = Err(format!("failed to start URLSession fetch: {error}"));
