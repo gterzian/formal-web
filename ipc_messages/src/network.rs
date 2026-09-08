@@ -41,12 +41,6 @@ pub enum ResponseRecipient {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum Request {
     SetTraceSender(Option<TraceSender>),
-    /// The URL schemes the embedder serves itself. A fetch whose URL has
-    /// one of these schemes is answered by the embedder over the net→UA
-    /// channel instead of by a network backend.
-    SetEmbedderSchemes {
-        schemes: Vec<String>,
-    },
     Fetch {
         /// The network partition key of the fetch: the event loop id of
         /// the similar-origin window agent of the agent cluster (content
@@ -67,29 +61,11 @@ pub enum Request {
         request: NavigationFetchRequest,
         reply_to: ResponseRecipient,
     },
-    /// The embedder's answer to a [`Response::EmbedderSchemeFetch`]. Net
-    /// routes it to the recipient the intercepted request named.
-    CompleteEmbedderSchemeFetch {
-        request_id: Uuid,
-        result: Result<FetchResponse, String>,
-    },
     Shutdown,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub enum Response {
-    /// The outcome of a fetch the user agent started.
-    Fetch {
-        request_id: Uuid,
-        result: Result<FetchResponse, String>,
-    },
-    /// A fetch whose URL scheme the embedder serves. The user agent asks
-    /// the embedder for the response and sends it back as
-    /// [`Request::CompleteEmbedderSchemeFetch`].
-    EmbedderSchemeFetch {
-        /// The event loop of the agent cluster that initiated the fetch.
-        event_loop_id: EventLoopId,
-        request_id: Uuid,
-        request: FetchRequest,
-    },
+pub struct Response {
+    pub request_id: Uuid,
+    pub result: Result<FetchResponse, String>,
 }

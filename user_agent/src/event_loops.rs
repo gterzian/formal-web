@@ -35,8 +35,8 @@ use std::sync::Arc;
 use std::time::Duration;
 use verification::TraceSender;
 
-use crate::Embedder;
 use crate::ipc_manifest::ContentExtensionManifest;
+use crate::{Embedder, EmbedderConfig};
 
 /// Graceful shutdown of the content process owned by one window event loop.
 const CONTENT_SHUTDOWN_GRACE_TIMEOUT: Duration = Duration::from_millis(150);
@@ -183,9 +183,10 @@ pub fn spawn_window_event_loop(
     trace_sender: Option<TraceSender>,
     network_extension_sender: ipc::IpcSender<ipc_messages::network::Request>,
     graphics_sender_for_bootstrap: Option<ipc::IpcSender<GraphicsCommand>>,
-    helper_directory: Option<std::path::PathBuf>,
+    config: &EmbedderConfig,
 ) -> Result<WindowEventLoop, String> {
-    let manifest = ContentExtensionManifest::new(process_label, helper_directory);
+    let manifest =
+        ContentExtensionManifest::new(process_label, config.extensions_directory.clone());
     let (mut handle, connection) =
         ipc::ExtensionHandle::launch::<ContentExtensionManifest, ContentCommand, ContentEvent>(
             &manifest,
@@ -217,6 +218,7 @@ pub fn spawn_window_event_loop(
             graphics_sender: graphics_sender_for_bootstrap,
             content_command_sender,
             trace_sender,
+            embedder_schemes: config.embedder_schemes.clone(),
         })
         .map_err(|error| format!("failed to send content bootstrap: {error}"))?;
 

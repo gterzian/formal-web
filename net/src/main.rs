@@ -2,12 +2,11 @@ pub mod backend;
 
 use backend::{Backend, FetchReply, NetworkBackend, NetworkPartitionKey};
 use ipc_messages::content::{
-    Command as ContentCommand, DocumentFetchId, EventLoopId, FetchRequest, FetchResponse,
+    Command as ContentCommand, DocumentFetchId, FetchRequest, FetchResponse,
 };
 use ipc_messages::network::{Request, Response, ResponseRecipient};
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::env;
-use url::Url;
 use uuid::Uuid;
 
 fn net_token_from_args() -> Result<Option<String>, String> {
@@ -21,17 +20,6 @@ fn net_token_from_args() -> Result<Option<String>, String> {
         }
     }
     Ok(None)
-}
-
-/// <https://fetch.spec.whatwg.org/#scheme-fetch>
-// Note: the spec's scheme fetch switches on the request's URL scheme; the
-// embedder-served schemes are an extension point ahead of that switch, so a
-// scheme the embedder claims never reaches a network backend.
-fn is_embedder_scheme(embedder_schemes: &HashSet<String>, url: &str) -> bool {
-    if embedder_schemes.is_empty() {
-        return false;
-    }
-    Url::parse(url).is_ok_and(|parsed| embedder_schemes.contains(parsed.scheme()))
 }
 
 /// <https://fetch.spec.whatwg.org/#queue-a-fetch-task>
@@ -60,50 +48,9 @@ fn route_response(
             }
         },
         ResponseRecipient::UserAgent => ua_sender
-            .send(Response::Fetch { request_id, result })
+            .send(Response { request_id, result })
             .map_err(|error| format!("failed to route response to UA: {error}")),
     }
-}
-
-/// Start one fetch: an embedder-served scheme goes to the user agent, which
-/// asks the embedder for the response; everything else goes to the network
-/// backend.
-/// <https://fetch.spec.whatwg.org/#concept-fetch>
-#[allow(clippy::too_many_arguments)]
-fn start_a_fetch(
-    net_backend: &mut Backend,
-    embedder_schemes: &HashSet<String>,
-    pending: &mut HashMap<Uuid, ResponseRecipient>,
-    ua_sender: &ipc::IpcSender<Response>,
-    reply_sender: &backend::FetchReplySender,
-    event_loop_id: EventLoopId,
-    request_id: Uuid,
-    request: FetchRequest,
-    reply_to: ResponseRecipient,
-) -> Result<(), String> {
-    pending.insert(request_id, reply_to);
-
-    let outcome = if is_embedder_scheme(embedder_schemes, &request.url) {
-        ua_sender
-            .send(Response::EmbedderSchemeFetch {
-                event_loop_id,
-                request_id,
-                request,
-            })
-            .map_err(|error| format!("failed to route an embedder-scheme fetch to the UA: {error}"))
-    } else {
-        net_backend.http_network_or_cache_fetch(
-            NetworkPartitionKey(event_loop_id),
-            request_id,
-            &request,
-            reply_sender.clone(),
-        )
-    };
-
-    if outcome.is_err() {
-        pending.remove(&request_id);
-    }
-    outcome
 }
 
 pub fn run_net_process_v2(token: String) -> Result<(), String> {
@@ -117,7 +64,6 @@ pub fn run_net_process_v2(token: String) -> Result<(), String> {
         // The reply_to recipient of each in-flight request, keyed by request
         // id, so a backend reply can be routed to its caller.
         let mut pending: HashMap<Uuid, ResponseRecipient> = HashMap::new();
-        let mut embedder_schemes: HashSet<String> = HashSet::new();
         let mut net_backend = Backend::new();
 
         loop {
@@ -128,9 +74,6 @@ pub fn run_net_process_v2(token: String) -> Result<(), String> {
                             let request = incoming.payload;
                             match request {
                                 Request::SetTraceSender(_) => {}
-                                Request::SetEmbedderSchemes { schemes } => {
-                                    embedder_schemes = schemes.into_iter().collect();
-                                }
                                 Request::Fetch {
                                     event_loop_id,
                                     request_id,
@@ -138,17 +81,15 @@ pub fn run_net_process_v2(token: String) -> Result<(), String> {
                                     reply_to,
                                 } => {
                                     log::debug!("[net] fetch event_loop={event_loop_id} url={}", request.url);
-                                    if let Err(error) = start_a_fetch(
-                                        &mut net_backend,
-                                        &embedder_schemes,
-                                        &mut pending,
-                                        &ua_sender,
-                                        &reply_sender,
-                                        event_loop_id,
+                                    let key = NetworkPartitionKey(event_loop_id);
+                                    pending.insert(request_id, reply_to);
+                                    if let Err(error) = net_backend.http_network_or_cache_fetch(
+                                        key,
                                         request_id,
-                                        request,
-                                        reply_to,
+                                        &request,
+                                        reply_sender.clone(),
                                     ) {
+                                        pending.remove(&request_id);
                                         log::error!("{error}");
                                         break;
                                     }
@@ -171,27 +112,17 @@ pub fn run_net_process_v2(token: String) -> Result<(), String> {
                                         header_list: request.header_list,
                                         body: request.body.unwrap_or_default(),
                                     };
-                                    if let Err(error) = start_a_fetch(
-                                        &mut net_backend,
-                                        &embedder_schemes,
-                                        &mut pending,
-                                        &ua_sender,
-                                        &reply_sender,
-                                        event_loop_id,
+                                    let key = NetworkPartitionKey(event_loop_id);
+                                    pending.insert(request_id, reply_to);
+                                    if let Err(error) = net_backend.http_network_or_cache_fetch(
+                                        key,
                                         request_id,
-                                        fetch_request,
-                                        reply_to,
+                                        &fetch_request,
+                                        reply_sender.clone(),
                                     ) {
+                                        pending.remove(&request_id);
                                         log::error!("{error}");
                                         break;
-                                    }
-                                }
-                                Request::CompleteEmbedderSchemeFetch { request_id, result } => {
-                                    if let Some(reply_to) = pending.remove(&request_id)
-                                        && let Err(error) =
-                                            route_response(request_id, reply_to, result, &ua_sender)
-                                    {
-                                        log::error!("{error}");
                                     }
                                 }
                                 Request::Shutdown => break,
@@ -203,10 +134,10 @@ pub fn run_net_process_v2(token: String) -> Result<(), String> {
                 recv(reply_receiver) -> reply => {
                     match reply {
                         Ok((request_id, result)) => {
-                            if let Some(reply_to) = pending.remove(&request_id)
-                                && let Err(error) =
-                                    route_response(request_id, reply_to, result, &ua_sender)
-                            {
+                            let Some(reply_to) = pending.remove(&request_id) else {
+                                continue;
+                            };
+                            if let Err(error) = route_response(request_id, reply_to, result, &ua_sender) {
                                 log::error!("{error}");
                             }
                         }

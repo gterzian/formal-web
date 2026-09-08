@@ -6,9 +6,7 @@ The `user_agent` crate owns all browser-global coordination: navigables and trav
 - `agent.rs` defines the HTML agent records: `Agent` — the similar-origin window agent and dedicated worker agent kinds, recorded together in `UserAgentState::agents` and each keyed by the event loop it owns — plus `AgentCluster`/`AgentClusterKey`, the per-group agent cluster records.
 - `event_loops.rs` defines the user-agent-side handles of the event loops the agents own — `WindowEventLoop` and `WorkerEventLoop` — and `spawn_window_event_loop`, which launches the content process that is a new window agent's cluster and bootstraps its window event loop inside it.
 - `fetch.rs` provides `NetConnection` — owns the IPC connection to the net extension,
-  tracks pending navigation fetches, routes responses back to the user agent,
-  and carries the URL schemes the embedder serves itself plus the answers it
-  gives for them.
+  tracks pending navigation fetches, and routes responses back to the user agent.
 - `ui_event.rs` provides UI event serialization for routing across process boundaries.
 - The UA and content processes send requests directly to the net, graphics, and media extensions;
   there are no intermediary worker threads.
@@ -36,14 +34,37 @@ creating a feedback loop back to the user-agent thread.
 
 ## Embedder-served URL schemes
 
-A fetch whose URL scheme the embedder registered never reaches a network
-backend: net sends it back over its own UA channel, the UA resolves the
-fetching event loop to a webview and calls `Embedder::embedder_scheme_fetch`,
-and the embedder answers through a responder it may hold across threads. The
-answer re-enters the UA thread as a command and goes back to net, which routes
-it to whoever asked. The webview a fetch is attributed to is the top-level
-traversable whose event loop it came from, so several traversables sharing one
-event loop are not told apart.
+`EmbedderConfig::embedder_schemes` names the URL schemes the embedder serves
+itself. A fetch for one of them is filtered out at the source that starts it —
+here for a navigation, in the content process for a subresource — so it never
+reaches the net process, whose job is networking and caching rather than
+coordinating fetches. Filtering at the source is what keeps a navigation to
+such a scheme from making a round trip through net to come straight back.
+
+Both sources converge on `start_an_embedder_scheme_fetch`, which records a
+`PendingEmbedderSchemeFetch` and calls `Embedder::embedder_scheme_fetch`. The
+pending record names the recipient the way net's `ResponseRecipient` does:
+`UserAgent` for a navigation fetch, resumed by fetch id, or `ContentProcess`
+for a subresource, answered with `Command::CompleteDocumentFetch` on the event
+loop that asked. The embedder answers whenever it has the response, from any
+thread, through `WebviewProvider::complete_embedder_scheme_fetch` or
+`fail_embedder_scheme_fetch`; a fetch that is never answered stays pending.
+
+A content process names the navigable its document belongs to, the way
+`NavigateRequest` names its source navigable, so the webview handed to the
+embedder is that navigable's top-level traversable rather than a guess from
+the event loop, which several traversables can share.
+
+## Embedder user scripts
+
+The scripts a document runs before it is populated travel with the command
+that creates the document (`CreateEmptyDocument`, `CreateLoadedDocument`),
+resolved by `user_scripts_for_navigable`. A traversable the embedder asked for
+by name carries the scripts named in that request, recorded in
+`UserAgentState::user_scripts` before the traversable is created so its first
+document already runs them; one a script opened carries
+`EmbedderConfig::default_user_scripts`. A child navigable drops the
+main-frame-only scripts.
 
 ## Graphics process routing
 

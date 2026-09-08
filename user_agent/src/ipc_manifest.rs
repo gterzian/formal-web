@@ -1,4 +1,4 @@
-//! Extension manifests for formal-web helper processes.
+//! Extension manifests for the formal-web extension processes.
 //!
 //! Defines `ExtensionManifest` implementations for net, media, and content,
 //! wrapping the existing process-spawning logic.
@@ -15,9 +15,9 @@ use crate::sidecar_executable_path;
 // ── Net extension manifest ──────────────────────────────────────────────────
 
 pub struct NetExtensionManifest {
-    /// Where the embedder keeps the helper executables, searched before the
-    /// directory of the current executable.
-    pub helper_directory: Option<PathBuf>,
+    /// Where the embedder keeps the extension executables, searched before
+    /// the directory of the current executable.
+    pub extensions_directory: Option<PathBuf>,
 }
 
 impl ExtensionManifest for NetExtensionManifest {
@@ -29,7 +29,7 @@ impl ExtensionManifest for NetExtensionManifest {
 
     fn spawn(&self, token: &BootstrapToken) -> Result<std::process::Child, IpcError> {
         let executable_path =
-            sidecar_executable_path("formal-web-net", self.helper_directory.as_deref())
+            sidecar_executable_path("formal-web-net", self.extensions_directory.as_deref())
                 .map_err(IpcError::Transport)?;
 
         let mut child_process = ProcessCommand::new(&executable_path);
@@ -46,9 +46,9 @@ impl ExtensionManifest for NetExtensionManifest {
 // ── Graphics extension manifest ─────────────────────────────────────────────
 
 pub struct GraphicsExtensionManifest {
-    /// Where the embedder keeps the helper executables, searched before the
-    /// directory of the current executable.
-    pub helper_directory: Option<PathBuf>,
+    /// Where the embedder keeps the extension executables, searched before
+    /// the directory of the current executable.
+    pub extensions_directory: Option<PathBuf>,
 }
 
 impl ExtensionManifest for GraphicsExtensionManifest {
@@ -60,7 +60,7 @@ impl ExtensionManifest for GraphicsExtensionManifest {
 
     fn spawn(&self, token: &BootstrapToken) -> Result<std::process::Child, IpcError> {
         let executable_path =
-            sidecar_executable_path("formal-web-graphics", self.helper_directory.as_deref())
+            sidecar_executable_path("formal-web-graphics", self.extensions_directory.as_deref())
                 .map_err(IpcError::Transport)?;
 
         let mut child_process = ProcessCommand::new(&executable_path);
@@ -79,16 +79,16 @@ impl ExtensionManifest for GraphicsExtensionManifest {
 /// Manifest for one content process instance.
 pub struct ContentExtensionManifest {
     pub process_label: String,
-    /// Where the embedder keeps the helper executables, searched before the
-    /// directory of the current executable.
-    pub helper_directory: Option<PathBuf>,
+    /// Where the embedder keeps the extension executables, searched before
+    /// the directory of the current executable.
+    pub extensions_directory: Option<PathBuf>,
 }
 
 impl ContentExtensionManifest {
-    pub fn new(process_label: String, helper_directory: Option<PathBuf>) -> Self {
+    pub fn new(process_label: String, extensions_directory: Option<PathBuf>) -> Self {
         Self {
             process_label,
-            helper_directory,
+            extensions_directory,
         }
     }
 }
@@ -102,7 +102,7 @@ impl ExtensionManifest for ContentExtensionManifest {
 
     fn spawn(&self, token: &BootstrapToken) -> Result<std::process::Child, IpcError> {
         let executable_path =
-            sidecar_executable_path("formal-web-content", self.helper_directory.as_deref())
+            sidecar_executable_path("formal-web-content", self.extensions_directory.as_deref())
                 .map_err(IpcError::Transport)?;
 
         let sanitized_label = self

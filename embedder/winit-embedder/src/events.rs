@@ -7,8 +7,8 @@ use log::error;
 use std::collections::HashMap;
 use std::sync::{Arc, LazyLock, Mutex, mpsc};
 use webview::{
-    ColorScheme, Embedder, EmbedderSchemeRequest, EmbedderSchemeResponder, LayerFrame,
-    NavigationCompleted, RegisteredFont, WebviewId,
+    ColorScheme, Embedder, EmbedderSchemeRequest, LayerFrame, NavigationCompleted, RegisteredFont,
+    WebviewId,
 };
 use winit::event_loop::EventLoopProxy;
 
@@ -181,18 +181,13 @@ impl Embedder for EventLoopEmbedder {
         send_user_event(FormalWebUserEvent::TitleChanged { webview_id, title })
     }
 
-    fn embedder_scheme_fetch(
-        &self,
-        _: WebviewId,
-        request: EmbedderSchemeRequest,
-        responder: EmbedderSchemeResponder,
-    ) {
-        // This app registers no URL schemes of its own, so every scheme is
-        // the engine's to serve.
-        responder.respond(Err(format!(
-            "no URL scheme is served by this app, so {} has no response",
+    fn embedder_scheme_fetch(&self, _: WebviewId, request: EmbedderSchemeRequest) {
+        // This app names no URL schemes of its own in `EmbedderConfig`, so
+        // every scheme is the engine's to serve and this is never called.
+        error!(
+            "an embedder-scheme fetch arrived for {}, but this app serves no URL scheme",
             request.url
-        )));
+        );
     }
 
     fn host_message(&self, webview_id: WebviewId, url: String, body: String) -> Result<(), String> {

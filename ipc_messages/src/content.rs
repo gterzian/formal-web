@@ -42,6 +42,7 @@ macro_rules! uuid_id {
 
 uuid_id!(DocumentFetchId);
 uuid_id!(NavigationFetchId);
+uuid_id!(EmbedderSchemeFetchId);
 uuid_id!(WindowTimerKey);
 uuid_id!(EventLoopId);
 uuid_id!(BrowsingContextId);
@@ -245,6 +246,21 @@ pub struct ElementClickResult {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ClipboardWriteRequested {
     pub text: String,
+}
+
+/// A fetch whose URL scheme the embedder serves itself, sent to the user
+/// agent instead of to the net process: the embedder, not the network, is
+/// the source of the response, so the fetch never leaves this path.
+/// <https://fetch.spec.whatwg.org/#scheme-fetch>
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct EmbedderSchemeFetchRequested {
+    /// The navigable whose document started the fetch. The user agent maps
+    /// it to the top-level traversable it hands the embedder.
+    pub navigable_id: NavigableId,
+    /// The content-side handler waiting for the response; the user agent
+    /// names it again in the `CompleteDocumentFetch` it sends back.
+    pub handler_id: DocumentFetchId,
+    pub request: FetchRequest,
 }
 
 /// A message a document sent to the embedder through the host-message
@@ -973,6 +989,10 @@ pub enum Command {
         /// TLA trace sender for logging spec-level events from the content process
         /// (e.g. RunBeforeUnload).
         trace_sender: Option<TraceSender>,
+        /// The URL schemes the embedder serves itself, fixed for the life of
+        /// the user agent. A fetch for one of them goes to the user agent as
+        /// `Event::EmbedderSchemeFetchRequested` and never reaches net.
+        embedder_schemes: Vec<String>,
     },
     /// A video pipeline reached end of stream. Content should unset any
     /// animating flags associated with this pipeline.
@@ -1048,6 +1068,10 @@ pub enum Event {
     /// A request from content to write text to the system clipboard.
     /// This is fire-and-forget — no reply is sent.
     ClipboardWriteRequested(ClipboardWriteRequested),
+    /// A fetch whose URL scheme the embedder serves itself. The user agent
+    /// asks the embedder for the response and sends it back as
+    /// `Command::CompleteDocumentFetch`.
+    EmbedderSchemeFetchRequested(EmbedderSchemeFetchRequested),
     /// A message a document sent to the embedder through the host-message
     /// binding on its Window. This is fire-and-forget — no reply is sent.
     HostMessageRequested(HostMessageRequested),
@@ -1174,7 +1198,8 @@ pub enum Event {
 #[cfg(test)]
 mod tests {
     use super::{
-        Command, DocumentFetchId, DocumentId, FetchResponse, FontTransportReceiver,
+        Command, DocumentFetchId, DocumentId, EmbedderSchemeFetchRequested, Event, FetchRequest,
+        FetchResponse, FontTransportReceiver,
         FontTransportSender, FrameCompositionMetadata, FrameId, LoadedDocumentResponse,
         NavigableId, PaintFrame, PaintTransportSummary, PreparedScene, SceneSummary, UserScript,
         WebviewId,
@@ -1497,6 +1522,39 @@ mod tests {
                 );
             }
             other => panic!("expected CompleteDocumentFetch, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn embedder_scheme_fetch_requested_event_round_trips_the_request() {
+        let encoded = postcard::to_allocvec(&Event::EmbedderSchemeFetchRequested(
+            EmbedderSchemeFetchRequested {
+                navigable_id: NavigableId::from_u128(5),
+                handler_id: DocumentFetchId::from_u128(11),
+                request: FetchRequest {
+                    handler_id: DocumentFetchId::from_u128(11),
+                    url: String::from("app://localhost/main.js"),
+                    method: String::from("GET"),
+                    header_list: vec![(String::from("accept"), String::from("*/*"))],
+                    body: String::new(),
+                },
+            },
+        ))
+        .expect("embedder-scheme-fetch-requested should serialize");
+        let decoded: Event = postcard::from_bytes(&encoded)
+            .expect("embedder-scheme-fetch-requested should deserialize");
+
+        match decoded {
+            Event::EmbedderSchemeFetchRequested(requested) => {
+                assert_eq!(requested.navigable_id, NavigableId::from_u128(5));
+                assert_eq!(requested.handler_id, DocumentFetchId::from_u128(11));
+                assert_eq!(requested.request.url, "app://localhost/main.js");
+                assert_eq!(
+                    requested.request.header_list,
+                    vec![(String::from("accept"), String::from("*/*"))]
+                );
+            }
+            other => panic!("expected EmbedderSchemeFetchRequested, got {other:?}"),
         }
     }
 }

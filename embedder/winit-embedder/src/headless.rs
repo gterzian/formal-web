@@ -82,7 +82,7 @@ impl HeadlessEmbedderApp {
         if let Ok(destination_url) = startup_destination_url(startup_url.as_deref()) {
             self.pending_url = Some(destination_url);
             if let Some(provider) = self.provider.as_ref()
-                && provider.start(startup_url.as_deref()).is_err()
+                && provider.start(startup_url.as_deref(), Vec::new()).is_err()
             {
                 update_window_viewport_snapshot(None);
                 event_loop.exit();

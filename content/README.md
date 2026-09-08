@@ -86,6 +86,22 @@ adding work to the loop:
   TLA+ trace validation fail intermittently (`verification/verify-specs.sh`,
   roughly one run in five).
 
+## Fetch
+
+`content/src/fetch.rs` holds the event-loop side of the Fetch spec, including
+`request_header_list`, the conversion from a blitz `Request` to the header
+list that travels on the wire.
+
+Subresource fetches leave this process by one of two routes, chosen by the
+URL's scheme. A scheme named in `ContentBootstrap::embedder_schemes` is one
+the embedder serves itself: the fetch goes to the user agent as
+`Event::EmbedderSchemeFetchRequested`, naming the navigable that asked, and
+comes back as `Command::CompleteDocumentFetch` like any other. Every other
+scheme goes straight to the net process. Both routes register the same
+pending handler first, so the response side does not know which was taken.
+Filtering here rather than in net is what keeps net a place where networking
+happens rather than a fetch coordinator; see `user_agent/README.md`.
+
 ## Known issues
 
 - **Document lifecycle commands run outside the task queue.**

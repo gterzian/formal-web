@@ -6,7 +6,34 @@
 // algorithms (abort, terminate, fetch-group management) that will be wired
 // into the Fetch API implementation when that work is unblocked.
 
+use blitz_traits::net::Request;
 use serde::{Deserialize, Serialize};
+
+/// The header list a fetch carries to the net process or to the embedder.
+/// <https://fetch.spec.whatwg.org/#concept-request-header-list>
+pub(crate) fn request_header_list(request: &Request) -> Vec<(String, String)> {
+    let mut header_list: Vec<(String, String)> = request
+        .headers
+        .iter()
+        .filter_map(|(name, value)| {
+            value
+                .to_str()
+                .ok()
+                .map(|value| (name.as_str().to_owned(), value.to_owned()))
+        })
+        .collect();
+    // Note: blitz carries the content type of a request body outside the
+    // header list; the net process and the embedder see one list, so it is
+    // appended here.
+    if let Some(content_type) = &request.content_type
+        && !header_list
+            .iter()
+            .any(|(name, _)| name.eq_ignore_ascii_case("content-type"))
+    {
+        header_list.push((String::from("content-type"), content_type.clone()));
+    }
+    header_list
+}
 
 /// <https://fetch.spec.whatwg.org/#concept-header-list>
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]

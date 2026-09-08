@@ -53,11 +53,13 @@ use data_url::DataUrl;
 use html5ever::local_name;
 use js_engine::{EcmascriptHost, ExecutionContext, JsTypes};
 
+use crate::fetch::request_header_list;
 use ipc_messages::content::Command::{
     ClickElement, CompleteDocumentFetch, ContentBootstrap, CreateEmptyDocument,
     CreateLoadedDocument, DestroyDocument, DispatchEvent, EvaluateScript, FailDocumentFetch,
     NotifyVideoEnded, SetTraversableViewport, SetViewport, Shutdown, UpdateTheRendering,
 };
+use ipc_messages::content::EmbedderSchemeFetchRequested;
 use ipc_messages::content::{
     BeforeUnloadCheckId, ClipboardWriteRequested, ColorScheme as MessageColorScheme, Command,
     DispatchEventEntry, DocumentFetchId, DocumentId, ElementClickResult, EmbedBackgroundPolicy,
@@ -306,32 +308,6 @@ fn run_user_scripts(settings: &mut EnvironmentSettingsObject, user_scripts: &[Us
     }
 }
 
-/// <https://fetch.spec.whatwg.org/#concept-request-header-list>
-fn request_header_list(request: &Request) -> Vec<(String, String)> {
-    let mut header_list: Vec<(String, String)> = request
-        .headers
-        .iter()
-        .filter_map(|(name, value)| {
-            value
-                .to_str()
-                .ok()
-                .map(|value| (name.as_str().to_owned(), value.to_owned()))
-        })
-        .collect();
-    // <https://fetch.spec.whatwg.org/#concept-request-header-list>
-    // Note: blitz carries the content type of a request body outside the
-    // header list; the net process and the embedder see one list, so it is
-    // appended here.
-    if let Some(content_type) = &request.content_type
-        && !header_list
-            .iter()
-            .any(|(name, _)| name.eq_ignore_ascii_case("content-type"))
-    {
-        header_list.push((String::from("content-type"), content_type.clone()));
-    }
-    header_list
-}
-
 fn viewport_of_snapshot(snapshot: &ViewportSnapshot) -> Viewport {
     let color_scheme = match snapshot.color_scheme {
         MessageColorScheme::Light => ColorScheme::Light,
@@ -359,9 +335,16 @@ fn log_render_state_debug(message: impl AsRef<str>) {
 struct ContentNetProvider {
     local_state: LocalContentStateRef,
     content_document_id: DocumentId,
+    /// The navigable of the document whose subresources this provider
+    /// fetches; an embedder-scheme fetch names it to the user agent.
+    navigable_id: NavigableId,
     event_loop_id: EventLoopId,
     network_extension_sender: ipc::IpcSender<ipc_messages::network::Request>,
     content_command_sender: ipc::IpcSender<Command>,
+    /// The channel to the user agent, which owns the embedder.
+    event_sender: ipc::IpcSender<ContentEvent>,
+    /// The URL schemes the embedder serves itself.
+    embedder_schemes: Arc<HashSet<String>>,
 }
 
 impl NetProvider for ContentNetProvider {
@@ -399,6 +382,29 @@ impl NetProvider for ContentNetProvider {
                     header_list: request_header_list(&request),
                     body: request_body_string(&request.body),
                 };
+
+                // A scheme the embedder serves is answered by the
+                // embedder, so the fetch goes to the user agent instead of
+                // to net, ahead of
+                // <https://fetch.spec.whatwg.org/#scheme-fetch>
+                if self.embedder_schemes.contains(request.url.scheme()) {
+                    if let Err(error) =
+                        self.event_sender
+                            .send(ContentEvent::EmbedderSchemeFetchRequested(
+                                EmbedderSchemeFetchRequested {
+                                    navigable_id: self.navigable_id,
+                                    handler_id,
+                                    request: fetch_request,
+                                },
+                            ))
+                    {
+                        error!(
+                            "failed to send an embedder-scheme fetch to the user agent: {error}"
+                        );
+                    }
+                    return;
+                }
+
                 let network_request = ipc_messages::network::Request::Fetch {
                     event_loop_id: self.event_loop_id,
                     request_id: uuid::Uuid::new_v4(),
@@ -559,9 +565,14 @@ pub(crate) struct ContentProcess {
     active_timers: Rc<RefCell<MapOfActiveTimers>>,
     /// <https://html.spec.whatwg.org/#task-queue>
     task_queue: TaskQueue,
+    /// The URL schemes the embedder serves itself, received in
+    /// `ContentBootstrap` and fixed for the life of the process. A fetch for
+    /// one of them goes to the user agent instead of to net.
+    embedder_schemes: Arc<HashSet<String>>,
 }
 
 impl ContentProcess {
+    #[allow(clippy::too_many_arguments)]
     fn new(
         event_sender: ipc::IpcSender<ContentEvent>,
         _wasm_signal_sender: crossbeam_channel::Sender<()>,
@@ -570,6 +581,7 @@ impl ContentProcess {
         graphics_sender: Option<ipc::IpcSender<ipc_messages::graphics::GraphicsCommand>>,
         content_command_sender: ipc::IpcSender<Command>,
         trace_sender: Option<TraceSender>,
+        embedder_schemes: Vec<String>,
     ) -> Self {
         let clipboard_cache = new_clipboard_cache();
         // HR Time "estimated monotonic time of the Unix epoch": simultaneous
@@ -614,6 +626,7 @@ impl ContentProcess {
             realm_parent: Engine::new(),
             active_timers: Rc::new(RefCell::new(MapOfActiveTimers::default())),
             task_queue: TaskQueue::new(),
+            embedder_schemes: Arc::new(embedder_schemes.into_iter().collect()),
         }
     }
 
@@ -704,9 +717,12 @@ impl ContentProcess {
             net_provider: Some(Arc::new(ContentNetProvider {
                 local_state: Arc::clone(&self.local_state),
                 content_document_id: document_id,
+                navigable_id: traversable_id,
                 event_loop_id: self.event_loop_id,
                 network_extension_sender: self.network_extension_sender.clone(),
                 content_command_sender: self.content_command_sender.clone(),
+                event_sender: self.event_sender.clone(),
+                embedder_schemes: Arc::clone(&self.embedder_schemes),
             })),
             shell_provider: Some(Arc::new(ContentShellProvider::new(
                 self.event_sender.clone(),
@@ -790,9 +806,12 @@ impl ContentProcess {
         Ok(handler_id)
     }
 
+    /// `navigable_id` is the navigable of the document the fetch is for;
+    /// an embedder-scheme fetch names it to the user agent.
     fn request_remote_fetch(
         &self,
         handler_id: DocumentFetchId,
+        navigable_id: NavigableId,
         request: Request,
     ) -> Result<(), String> {
         log_render_state_debug(format!(
@@ -806,6 +825,25 @@ impl ContentProcess {
             header_list: request_header_list(&request),
             body: request_body_string(&request.body),
         };
+
+        // A scheme the embedder serves is answered by the embedder, so the
+        // fetch goes to the user agent instead of to net, ahead of
+        // <https://fetch.spec.whatwg.org/#scheme-fetch>
+        if self.embedder_schemes.contains(request.url.scheme()) {
+            return self
+                .event_sender
+                .send(ContentEvent::EmbedderSchemeFetchRequested(
+                    EmbedderSchemeFetchRequested {
+                        navigable_id,
+                        handler_id,
+                        request: fetch_request,
+                    },
+                ))
+                .map_err(|error| {
+                    format!("failed to send an embedder-scheme fetch to the user agent: {error}")
+                });
+        }
+
         let network_request = ipc_messages::network::Request::Fetch {
             event_loop_id: self.event_loop_id,
             request_id: uuid::Uuid::new_v4(),
@@ -875,13 +913,12 @@ impl ContentProcess {
         script_index: usize,
         src: &str,
     ) -> Result<(), String> {
-        let creation_url = self
+        let content_document = self
             .documents
             .get(&document_id)
-            .ok_or_else(|| format!("unknown document id: {document_id}"))?
-            .settings
-            .creation_url
-            .clone();
+            .ok_or_else(|| format!("unknown document id: {document_id}"))?;
+        let navigable_id = content_document.traversable_id;
+        let creation_url = content_document.settings.creation_url.clone();
         let resolved_url = creation_url
             .join(src)
             .map_err(|error| format!("failed to resolve deferred script URL `{src}`: {error}"))?;
@@ -899,7 +936,7 @@ impl ContentProcess {
             document_id,
             script_index,
         })?;
-        self.request_remote_fetch(handler_id, Request::get(resolved_url))
+        self.request_remote_fetch(handler_id, navigable_id, Request::get(resolved_url))
     }
 
     fn allocate_navigable_id(&self) -> Result<NavigableId, String> {
@@ -3777,6 +3814,7 @@ pub fn run_content_process(token: String) -> Result<(), String> {
             graphics_sender,
             content_command_sender,
             trace_sender,
+            embedder_schemes,
         ) = {
             match cmd_rx.recv() {
                 Ok(incoming) => match incoming.payload {
@@ -3786,13 +3824,14 @@ pub fn run_content_process(token: String) -> Result<(), String> {
                         graphics_sender,
                         content_command_sender,
                         trace_sender,
-                        ..
+                        embedder_schemes,
                     } => (
                         event_loop_id,
                         net_sender,
                         graphics_sender,
                         content_command_sender,
                         trace_sender,
+                        embedder_schemes,
                     ),
                     other => {
                         error!("first message must be ContentBootstrap, got: {other:?}");
@@ -3812,6 +3851,7 @@ pub fn run_content_process(token: String) -> Result<(), String> {
                 graphics_sender,
                 content_command_sender,
                 trace_sender,
+                embedder_schemes,
             )
         };
 
