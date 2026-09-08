@@ -1,61 +1,19 @@
-# Media crate
+# media crate
 
-Owns the `formal-web-media` process and all media pipeline state. The process is
-spawned lazily by the user agent on the first media request.
+Backend library for video/audio playback. There is no separate media
+process: the `media` crate compiles its media backends into the
+`formal-web-graphics` process, which owns both scene composition and media
+pipeline state. See the root `README.md` for the graphics-process build
+commands that select the backend (AVFoundation is the default on macOS;
+`-p graphics --features backend-gstreamer,cpu_readback` selects GStreamer).
 
-The media process is built around a **backend-agnostic** core: the generic
-`run_media_process` function works with any `MediaBackend` implementation,
-selected at compile time via Cargo features.  The generic loop owns the
-`MediaCommand`/`MediaEvent` IPC and forwards decoded `VideoFrame`s
-(`ipc_messages::media`) to the compositor; a backend contributes a pipeline
+The crate is a **backend-agnostic** core: the backends implement a shared
+`MediaBackend` trait (`backend/mod.rs`) and are selected at compile time via
+Cargo features. The graphics process event loop drives playback — the
+`GraphicsCommand` create/play/pause/seek/destroy variants in
+`ipc_messages::graphics` map onto `MediaBackend`/`PipelineHandle` calls — and
+forwards decoded frames to the compositor; a backend contributes a pipeline
 implementation, an event source, and frame delivery only.
-
-## Quick Start
-
-### macOS / iOS (AVFoundation backend, default)
-
-AVFoundation is the default backend on Apple platforms.  No additional
-libraries required.
-
-```bash
-# Build everything
-cargo build --release
-
-# Run in windowed mode
-cargo run --release
-```
-
-> **Note:** `cargo run --release` only rebuilds the root binary (embedder).
-> The `formal-web-media` process must be built separately when switching
-> between backends.  Use `cargo build --release -p media --bin formal-web-media`
-> after changing the backend feature.
-
-### macOS (GStreamer backend, opt-in)
-
-On macOS, GStreamer can be used instead of AVFoundation by explicitly
-selecting the `backend-gstreamer` feature:
-
-```bash
-cargo build --release -p media --bin formal-web-media \
-  --no-default-features --features backend-gstreamer
-```
-
-### Linux (GStreamer backend)
-
-On Linux, GStreamer is the only available backend and is always compiled.
-Build the full workspace as usual:
-
-```bash
-cargo build --release
-cargo run --release
-```
-
-### Without media (no video playback)
-
-```bash
-cargo build --release --no-default-features --features v8
-cargo run --release --no-default-features --features v8
-```
 
 ## Backend selection and features
 
@@ -76,8 +34,10 @@ Apple (AVFoundation is the default there) and GStreamer is the only backend off
 Apple.
 
 There is no compile-time mutual-exclusion guard: the library compiles with 0,
-1, or 2 backends. Backend selection happens at runtime in
-`run_media_process_from_args` via cfg-based priority (see `lib.rs`).
+1, or 2 backends. The active backend is chosen at compile time in the
+graphics process binary (`graphics/src/bin/graphics_process.rs`) from the
+same feature flags, so the backend compiled into the `media` crate matches
+the one the graphics process instantiates.
 
 ## Backend traits
 
@@ -89,13 +49,13 @@ provides its own concrete types under `backend/<name>/`:
   delivered as `MediaBackendEvent`s on the receiver, not on a separate
   frame channel.
 - `PipelineHandle` — one running pipeline: `play`/`pause`/`seek`, a
-  `sample()` hook called at ≈120 Hz by the select loop (backends pump run
-  loops, poll for frames, etc.), `is_done()` for end-of-stream, `destroy()`.
+  `sample()` hook called by the graphics process select loop (backends pump
+  run loops, poll for frames, etc.), `is_done()` for end-of-stream, `destroy()`.
 - `MediaBackendEvent` — the backend-agnostic notification type: decoded
   frames (`Frame(VideoFrame)` CPU bytes, `PixelBufferFrame` GPU-backed
   pixel buffer) plus EOS, error, and duration-changed, produced by the
   backend's notification mechanism (GStreamer bus, AVFoundation
-  KVO/notifications) and consumed by the generic dispatch loop.
+  KVO/notifications) and consumed by the graphics process dispatch loop.
 
 ## GStreamer backend
 
@@ -119,27 +79,28 @@ use gstreamer_app::prelude::*;
 ## AVFoundation backend
 
 The pipeline is `AVPlayer → AVPlayerItem → AVPlayerItemVideoOutput`, run on
-the select-loop thread (the media process main thread) — no background
-thread, because AVFoundation objects require `MainThreadMarker`.
+the graphics process main thread — no background thread, because
+AVFoundation objects require `MainThreadMarker`.
 
-`sample()` (≈120 Hz via a timer arm in the `select!` loop) drains the run
-loop (`runUntilDate(8ms)`) so AVFoundation services URL loading, KVO, and
-video output timing; checks item status once (wait for
-`AVPlayerItemStatus::ReadyToPlay` before reporting duration); then polls
-`AVPlayerItemVideoOutput` for frames (`itemTimeForHostTime`, `hasNewPixelBufferForItemTime`)
-and delivers the pixel buffer itself as `PixelBufferFrame` — the graphics
-process wraps it as a Metal texture (zero-copy when GPU-backed) instead of
-the CPU byte conversion.
+`sample()` (≈120 Hz via the graphics process's 8ms select-loop tick when at
+least one pipeline is active) drains the run loop (`runUntilDate(8ms)`) so
+AVFoundation services URL loading, KVO, and video output timing; checks item
+status once (wait for `AVPlayerItemStatus::ReadyToPlay` before reporting
+duration); then polls `AVPlayerItemVideoOutput` for frames
+(`itemTimeForHostTime`, `hasNewPixelBufferForItemTime`) and delivers the
+pixel buffer itself as `PixelBufferFrame` — the graphics process wraps it as
+a Metal texture (zero-copy when GPU-backed) instead of the CPU byte
+conversion.
 
 Key design decisions:
 
 | Decision | Why |
 |---|---|
-| No background thread | AVFoundation objects require `MainThreadMarker`. The select loop
-  provides the main thread. |
+| No background thread | AVFoundation objects require `MainThreadMarker`. The graphics
+  process main thread hosts the backend. |
 | Timer-driven `sample()`, not message-driven | Without a timer, `sample()` only runs when a command or event arrives,
   starving AVFoundation of CPU time. |
-| Frames flow through the same channel as EOS/error/duration | Eliminates the `frame_tx`/`frame_rx` pair from the generic loop. |
+| Frames flow through the same channel as EOS/error/duration | Eliminates the `frame_tx`/`frame_rx` pair from the dispatch loop. |
 | Deliver the `CVPixelBuffer` itself (BGRA), not CPU-converted bytes | The graphics process imports it as a Metal texture (zero-copy when
   GPU-backed); the BGRA→RGBA conversion Vello needs happens there, as a
   compute blit. |
@@ -153,17 +114,9 @@ Key design decisions:
 | Reading duration before asset loads | `kCMTimeIndefinite`, `seconds()` returns `NaN` | Poll `item.status() == ReadyToPlay` first |
 | `kCVPixelBufferPixelFormatTypeKey` double-ref | Crash during pipeline creation | Use `kCVPixelBufferPixelFormatTypeKey` directly (it's already `&CFString`), not `&kCVPixelBufferPixelFormatTypeKey` |
 
-### What does NOT change when adding a backend
-
-- `MediaCommand` / `MediaEvent` / `MediaPipelineId` / `VideoFrame` in `ipc_messages::media`.
-- The frame forwarding loop (crossbeam → shmem mapping → IPC send).
-- The crossbeam `select!` loop structure in `run_media_process`.
-- The IPC bootstrap in `run_media_process_from_args`.
-
-## Non-goals (initial cut)
+## Known issues and non-goals
 
 - **Audio output** — Both backends decode audio but it's not yet exposed to the system.
-- **Zero-copy GPU path** — Future IOSurface/DMA-BUF work.
 - **Seek optimization** — Initial single-keyframe seek is fine.
 - **Live streams** — Not tested.
 - **Text tracks** — Not implemented.
