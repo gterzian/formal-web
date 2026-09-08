@@ -270,6 +270,18 @@ impl WebIdlInterface<crate::js::Types> for Window {
             promise_type: false,
             exposed: None,
         });
+        // The embedder host-message channel: not a Web IDL member, so it
+        // carries no spec anchor. `webview::Embedder::host_message` is the
+        // other end.
+        def.add_operation(OperationDef {
+            id: "__formalWebPostHostMessage",
+            length: 1,
+            method: post_host_message_method,
+            static_: false,
+            unforgeable: false,
+            promise_type: false,
+            exposed: None,
+        });
         def.add_operation(OperationDef {
             id: "postMessage",
             length: 1,
@@ -506,6 +518,18 @@ fn open_method(
 
     let window = window_domain_from(this, ec)?;
     window.open(&url, &target, &features, ec)
+}
+
+fn post_host_message_method(
+    this: &JsValue,
+    args: &[JsValue],
+    ec: &mut dyn ExecutionContext<crate::js::Types>,
+) -> Completion<JsValue, crate::js::Types> {
+    let undefined = ec.value_undefined();
+    let body = ec.to_rust_string(args.first().cloned().unwrap_or_else(|| undefined.clone()))?;
+    let window = window_domain_from(this, ec)?;
+    window.post_host_message(body);
+    Ok(undefined)
 }
 
 fn request_animation_frame_method(

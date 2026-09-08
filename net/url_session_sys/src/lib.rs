@@ -10,7 +10,7 @@
 mod ffi;
 
 use std::ffi::{CStr, CString};
-use std::os::raw::c_void;
+use std::os::raw::{c_char, c_void};
 
 /// The callback invoked with the outcome of a fetch.
 pub type FetchCompletion = Box<dyn FnOnce(Result<FetchResponse, String>) + Send>;
@@ -50,11 +50,33 @@ impl UrlSession {
         &self,
         method: &str,
         url: &str,
+        header_list: &[(String, String)],
         body: Option<&[u8]>,
         completion: impl FnOnce(Result<FetchResponse, String>) + Send + 'static,
     ) -> Result<(), String> {
         let method_c = CString::new(method).map_err(|error| format!("invalid method: {error}"))?;
         let url_c = CString::new(url).map_err(|error| format!("invalid URL: {error}"))?;
+
+        // <https://fetch.spec.whatwg.org/#concept-request-header-list>
+        // The C wrapper copies the header strings into the request during
+        // the call, so the owned strings and the pointer arrays they back
+        // only have to outlive it.
+        let mut header_names = Vec::with_capacity(header_list.len());
+        let mut header_values = Vec::with_capacity(header_list.len());
+        for (name, value) in header_list {
+            header_names.push(
+                CString::new(name.as_str())
+                    .map_err(|error| format!("invalid header name: {error}"))?,
+            );
+            header_values.push(
+                CString::new(value.as_str())
+                    .map_err(|error| format!("invalid header value: {error}"))?,
+            );
+        }
+        let header_name_pointers: Vec<*const c_char> =
+            header_names.iter().map(|name| name.as_ptr()).collect();
+        let header_value_pointers: Vec<*const c_char> =
+            header_values.iter().map(|value| value.as_ptr()).collect();
 
         // Double box: the outer box is a thin pointer, so it can be passed
         // through the C callback as a `void *` context and recovered as a
@@ -63,7 +85,8 @@ impl UrlSession {
         let context = Box::into_raw(callback) as *mut c_void;
 
         // SAFETY: the C strings are NUL-terminated and live for the duration
-        // of the call (the C wrapper copies them), the body pointer and
+        // of the call (the C wrapper copies them), the header arrays hold
+        // `header_list.len()` such pointers each, the body pointer and
         // length are consistent, `context` points at the boxed callback
         // which the trampoline reclaims exactly once, and `completion` is
         // invoked exactly once — or not at all when the task cannot be
@@ -73,6 +96,9 @@ impl UrlSession {
                 self.handle,
                 method_c.as_ptr(),
                 url_c.as_ptr(),
+                header_name_pointers.as_ptr(),
+                header_value_pointers.as_ptr(),
+                header_list.len(),
                 body.map_or(std::ptr::null(), |bytes| bytes.as_ptr()),
                 body.map_or(0, |bytes| bytes.len()),
                 context,

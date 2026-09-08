@@ -34,6 +34,40 @@ to content never blocks regardless of what the content process is doing.  The
 content process can therefore block on its own crossbeam receive without
 creating a feedback loop back to the user-agent thread.
 
+## Embedder-served URL schemes
+
+`EmbedderConfig::embedder_schemes` names the URL schemes the embedder serves
+itself. A fetch for one of them is filtered out at the source that starts it —
+here for a navigation, in the content process for a subresource — so it never
+reaches the net process, whose job is networking and caching rather than
+coordinating fetches. Filtering at the source is what keeps a navigation to
+such a scheme from making a round trip through net to come straight back.
+
+Both sources converge on `start_an_embedder_scheme_fetch`, which records a
+`PendingEmbedderSchemeFetch` and calls `Embedder::embedder_scheme_fetch`. The
+pending record names the recipient the way net's `ResponseRecipient` does:
+`UserAgent` for a navigation fetch, resumed by fetch id, or `ContentProcess`
+for a subresource, answered with `Command::CompleteDocumentFetch` on the event
+loop that asked. The embedder answers whenever it has the response, from any
+thread, through `WebviewProvider::complete_embedder_scheme_fetch` or
+`fail_embedder_scheme_fetch`; a fetch that is never answered stays pending.
+
+A content process names the navigable its document belongs to, the way
+`NavigateRequest` names its source navigable, so the webview handed to the
+embedder is that navigable's top-level traversable rather than a guess from
+the event loop, which several traversables can share.
+
+## Embedder user scripts
+
+The scripts a document runs before it is populated travel with the command
+that creates the document (`CreateEmptyDocument`, `CreateLoadedDocument`),
+resolved by `user_scripts_for_navigable`. A traversable the embedder asked for
+by name carries the scripts named in that request, recorded in
+`UserAgentState::user_scripts` before the traversable is created so its first
+document already runs them; one a script opened carries
+`EmbedderConfig::default_user_scripts`. A child navigable drops the
+main-frame-only scripts.
+
 ## Graphics process routing
 
 The content processes send each traversable's `PaintFrame` directly to the

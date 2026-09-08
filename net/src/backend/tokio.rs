@@ -60,6 +60,9 @@ impl TokioBackend {
         let method = Method::from_bytes(request.method.as_bytes())
             .map_err(|error| format!("invalid HTTP method: {error}"))?;
         let mut builder = client.request(method, parsed);
+        for (name, value) in &request.header_list {
+            builder = builder.header(name, value);
+        }
         if !request.body.is_empty() {
             builder = builder.body(request.body.clone());
         }

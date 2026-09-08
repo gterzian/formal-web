@@ -57,12 +57,12 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use uuid::Uuid;
 use verification::TraceSender;
-use webview::WebviewProvider;
 use webview::{
     BlitzPointerEvent, BlitzPointerId, BlitzWheelEvent, ColorScheme, CompositingLayerId,
     LayerFrame, MouseEventButtons, NavigationCompleted, NavigationCompletion, PointerCoords,
     SurfaceFrame, UiEvent, WebviewId, deallocate_mach_port,
 };
+use webview::{EmbedderConfig, WebviewProvider};
 
 const INITIAL_WINDOW_WIDTH: f64 = 1200.0;
 const INITIAL_WINDOW_HEIGHT: f64 = 800.0;
@@ -557,7 +557,7 @@ impl MacApp {
         let cdp_sink = sink.clone();
         let runtime_ready = Arc::new(AtomicBool::new(true));
         let embedder = Arc::new(EventLoopEmbedder::new(sink));
-        let provider = WebviewProvider::new(embedder, trace_sender)?;
+        let provider = WebviewProvider::new(embedder, trace_sender, EmbedderConfig::default())?;
         app.provider = Some(provider);
 
         app.install_event_monitor()?;

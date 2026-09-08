@@ -12,6 +12,8 @@ pub struct NavigationFetchRequest {
     pub url: String,
     /// <https://fetch.spec.whatwg.org/#concept-request-method>
     pub method: String,
+    /// <https://fetch.spec.whatwg.org/#concept-request-header-list>
+    pub header_list: Vec<(String, String)>,
     /// <https://fetch.spec.whatwg.org/#concept-request-body>
     pub body: Option<String>,
     /// <https://fetch.spec.whatwg.org/#concept-request-referrer>

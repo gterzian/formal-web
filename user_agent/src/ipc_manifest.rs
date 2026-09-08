@@ -1,10 +1,11 @@
-//! Extension manifests for formal-web helper processes.
+//! Extension manifests for the formal-web extension processes.
 //!
 //! Defines `ExtensionManifest` implementations for net, media, and content,
 //! wrapping the existing process-spawning logic.
 
 #[cfg(unix)]
 use std::os::unix::process::CommandExt;
+use std::path::PathBuf;
 use std::process::Command as ProcessCommand;
 
 use ipc::{BootstrapToken, ExtensionEndpoint, ExtensionManifest, IpcError};
@@ -13,7 +14,11 @@ use crate::sidecar_executable_path;
 
 // ── Net extension manifest ──────────────────────────────────────────────────
 
-pub struct NetExtensionManifest;
+pub struct NetExtensionManifest {
+    /// Where the embedder keeps the extension executables, searched before
+    /// the directory of the current executable.
+    pub extensions_directory: Option<PathBuf>,
+}
 
 impl ExtensionManifest for NetExtensionManifest {
     fn endpoint(&self) -> ExtensionEndpoint {
@@ -23,13 +28,14 @@ impl ExtensionManifest for NetExtensionManifest {
     }
 
     fn spawn(&self, token: &BootstrapToken) -> Result<std::process::Child, IpcError> {
-        let executable_path = sidecar_executable_path("formal-web-net")
-            .map_err(|error| IpcError::Transport(error))?;
+        let executable_path =
+            sidecar_executable_path("formal-web-net", self.extensions_directory.as_deref())
+                .map_err(IpcError::Transport)?;
 
         let mut child_process = ProcessCommand::new(&executable_path);
         #[cfg(unix)]
         child_process.arg0("formal-web-net");
-        child_process.arg("--net-token").arg(&token.to_string());
+        child_process.arg("--net-token").arg(token.to_string());
 
         child_process
             .spawn()
@@ -39,7 +45,11 @@ impl ExtensionManifest for NetExtensionManifest {
 
 // ── Graphics extension manifest ─────────────────────────────────────────────
 
-pub struct GraphicsExtensionManifest;
+pub struct GraphicsExtensionManifest {
+    /// Where the embedder keeps the extension executables, searched before
+    /// the directory of the current executable.
+    pub extensions_directory: Option<PathBuf>,
+}
 
 impl ExtensionManifest for GraphicsExtensionManifest {
     fn endpoint(&self) -> ExtensionEndpoint {
@@ -49,15 +59,14 @@ impl ExtensionManifest for GraphicsExtensionManifest {
     }
 
     fn spawn(&self, token: &BootstrapToken) -> Result<std::process::Child, IpcError> {
-        let executable_path = sidecar_executable_path("formal-web-graphics")
-            .map_err(|error| IpcError::Transport(error))?;
+        let executable_path =
+            sidecar_executable_path("formal-web-graphics", self.extensions_directory.as_deref())
+                .map_err(IpcError::Transport)?;
 
         let mut child_process = ProcessCommand::new(&executable_path);
         #[cfg(unix)]
         child_process.arg0("formal-web-graphics");
-        child_process
-            .arg("--graphics-token")
-            .arg(&token.to_string());
+        child_process.arg("--graphics-token").arg(token.to_string());
 
         child_process.spawn().map_err(|error| {
             IpcError::Transport(format!("failed to start graphics process: {error}"))
@@ -70,11 +79,17 @@ impl ExtensionManifest for GraphicsExtensionManifest {
 /// Manifest for one content process instance.
 pub struct ContentExtensionManifest {
     pub process_label: String,
+    /// Where the embedder keeps the extension executables, searched before
+    /// the directory of the current executable.
+    pub extensions_directory: Option<PathBuf>,
 }
 
 impl ContentExtensionManifest {
-    pub fn new(process_label: String) -> Self {
-        Self { process_label }
+    pub fn new(process_label: String, extensions_directory: Option<PathBuf>) -> Self {
+        Self {
+            process_label,
+            extensions_directory,
+        }
     }
 }
 
@@ -86,8 +101,9 @@ impl ExtensionManifest for ContentExtensionManifest {
     }
 
     fn spawn(&self, token: &BootstrapToken) -> Result<std::process::Child, IpcError> {
-        let executable_path = sidecar_executable_path("formal-web-content")
-            .map_err(|error| IpcError::Transport(error))?;
+        let executable_path =
+            sidecar_executable_path("formal-web-content", self.extensions_directory.as_deref())
+                .map_err(IpcError::Transport)?;
 
         let sanitized_label = self
             .process_label
@@ -104,7 +120,7 @@ impl ExtensionManifest for ContentExtensionManifest {
         let mut child_process = ProcessCommand::new(&executable_path);
         #[cfg(unix)]
         child_process.arg0(format!("formal-web-content:{sanitized_label}"));
-        child_process.arg("--content-token").arg(&token.to_string());
+        child_process.arg("--content-token").arg(token.to_string());
         child_process
             .arg("--content-label")
             .arg(&self.process_label);

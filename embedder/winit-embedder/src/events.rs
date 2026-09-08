@@ -6,7 +6,10 @@ use automation::AutomationCommand;
 use log::error;
 use std::collections::HashMap;
 use std::sync::{Arc, LazyLock, Mutex, mpsc};
-use webview::{ColorScheme, Embedder, LayerFrame, NavigationCompleted, RegisteredFont, WebviewId};
+use webview::{
+    ColorScheme, Embedder, EmbedderSchemeRequest, LayerFrame, NavigationCompleted, RegisteredFont,
+    WebviewId,
+};
 use winit::event_loop::EventLoopProxy;
 
 /// The user-event bus: how the user agent (any thread) hands events to the
@@ -176,6 +179,20 @@ impl Embedder for EventLoopEmbedder {
 
     fn title_changed(&self, webview_id: WebviewId, title: String) -> Result<(), String> {
         send_user_event(FormalWebUserEvent::TitleChanged { webview_id, title })
+    }
+
+    fn embedder_scheme_fetch(&self, _: WebviewId, request: EmbedderSchemeRequest) {
+        // This app names no URL schemes of its own in `EmbedderConfig`, so
+        // every scheme is the engine's to serve and this is never called.
+        error!(
+            "an embedder-scheme fetch arrived for {}, but this app serves no URL scheme",
+            request.url
+        );
+    }
+
+    fn host_message(&self, webview_id: WebviewId, url: String, body: String) -> Result<(), String> {
+        log::debug!("[embedder] host message from {url} in webview {webview_id:?}: {body}");
+        Ok(())
     }
 
     fn new_web_content_scene(

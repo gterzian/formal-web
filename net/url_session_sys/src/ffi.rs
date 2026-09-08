@@ -26,14 +26,20 @@ unsafe extern "C" {
     /// Release a session. NULL-safe.
     pub fn fw_url_session_release(session: FwUrlSession);
 
-    /// Start a data task on the session. Returns 0 when the task was started
-    /// (the completion callback will be invoked later, on a background
-    /// queue), non-zero when the task could not be started (the completion
-    /// callback is not invoked).
+    /// Start a data task on the session. `header_names` and `header_values`
+    /// are parallel arrays of `header_count` NUL-terminated strings,
+    /// appended to the request in order; entries are only read for the
+    /// duration of the call. Returns 0 when the task was started (the
+    /// completion callback will be invoked later, on a background queue),
+    /// non-zero when the task could not be started (the completion callback
+    /// is not invoked).
     pub fn fw_url_session_fetch(
         session: FwUrlSession,
         method: *const c_char,
         url: *const c_char,
+        header_names: *const *const c_char,
+        header_values: *const *const c_char,
+        header_count: usize,
         body: *const u8,
         body_length: usize,
         context: *mut c_void,

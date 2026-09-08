@@ -31,8 +31,13 @@ pub(crate) struct NetConnection {
 
 impl NetConnection {
     /// Launch the net extension and return a connected handle.
-    pub(crate) fn new(trace_sender: Option<TraceSender>) -> Result<Self, String> {
-        let manifest = NetExtensionManifest;
+    pub(crate) fn new(
+        trace_sender: Option<TraceSender>,
+        extensions_directory: Option<std::path::PathBuf>,
+    ) -> Result<Self, String> {
+        let manifest = NetExtensionManifest {
+            extensions_directory,
+        };
         let (mut handle, connection) =
             ipc::ExtensionHandle::launch::<NetExtensionManifest, NetworkRequest, NetworkResponse>(
                 &manifest,
@@ -91,8 +96,8 @@ impl NetConnection {
         Ok(())
     }
 
-    /// Handle a response from the net extension. Returns the `NavigationFetchId`
-    /// and the response result if a matching pending fetch was found.
+    /// Resolve a fetch outcome from the net extension to the navigation
+    /// fetch that started it.
     pub(crate) fn handle_response(
         &mut self,
         response: NetworkResponse,

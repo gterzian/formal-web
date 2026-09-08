@@ -10,11 +10,12 @@ use channel_messaging::PortEvent;
 use crossbeam_channel::{Receiver, Sender, bounded, unbounded};
 use ipc_messages::content::{
     AgentClusterId, AgentId, BeforeUnloadCheckId, BeforeUnloadResult, BrowsingContextGroupId,
-    BrowsingContextId, Command as ContentCommand, DispatchEventEntry, DocumentId,
-    Event as ContentEvent, EventLoopId, FetchResponse as ContentFetchResponse,
-    FinalizeNavigation as ContentFinalizeNavigation, FrameId, LoadedDocumentResponse, NavigableId,
-    NavigateRequest, NavigationFetchId, NavigationId, NewTraversableInfo,
-    UserNavigationInvolvement, WebviewId, iframe_target_name,
+    BrowsingContextId, Command as ContentCommand, DispatchEventEntry, DocumentFetchId, DocumentId,
+    EmbedderSchemeFetchId, EmbedderSchemeFetchRequested, Event as ContentEvent, EventLoopId,
+    FetchRequest as ContentFetchRequest, FetchResponse as ContentFetchResponse,
+    FinalizeNavigation as ContentFinalizeNavigation, FrameId, HostMessageRequested,
+    LoadedDocumentResponse, NavigableId, NavigateRequest, NavigationFetchId, NavigationId,
+    NewTraversableInfo, UserNavigationInvolvement, UserScript, WebviewId, iframe_target_name,
 };
 use ipc_messages::safe_passing_of_structured_data::PostMessageRequest;
 use log::{debug, error, info, trace};
@@ -36,7 +37,16 @@ use crate::agent::{
 };
 use crate::event_loops::{WorkerEventLoop, spawn_window_event_loop, traversable_viewport_command};
 
-pub(crate) fn sidecar_executable_path(binary_name: &str) -> Result<PathBuf, String> {
+/// Locate one extension executable.
+///
+/// `extensions_directory` is the embedder's answer to where the extension
+/// executables live: an application bundle's resource directory, say, rather
+/// than the directory the host binary itself sits in. It is searched first;
+/// without it the search starts next to the current executable.
+pub(crate) fn sidecar_executable_path(
+    binary_name: &str,
+    extensions_directory: Option<&Path>,
+) -> Result<PathBuf, String> {
     let current_executable = std::env::current_exe()
         .map_err(|error| format!("failed to resolve current executable: {error}"))?;
     let executable_directory = current_executable
@@ -44,13 +54,22 @@ pub(crate) fn sidecar_executable_path(binary_name: &str) -> Result<PathBuf, Stri
         .ok_or_else(|| String::from("failed to resolve executable directory"))?;
     let executable_name = format!("{binary_name}{}", std::env::consts::EXE_SUFFIX);
 
-    for candidate in sidecar_search_paths(executable_directory, &executable_name) {
+    let search_paths = || {
+        let mut paths = Vec::new();
+        if let Some(extensions_directory) = extensions_directory {
+            paths.push(extensions_directory.join(&executable_name));
+        }
+        paths.extend(sidecar_search_paths(executable_directory, &executable_name));
+        paths
+    };
+
+    for candidate in search_paths() {
         if candidate.is_file() {
             return Ok(candidate);
         }
     }
 
-    let attempted_paths = sidecar_search_paths(executable_directory, &executable_name)
+    let attempted_paths = search_paths()
         .into_iter()
         .map(|path| path.display().to_string())
         .collect::<Vec<_>>()
@@ -117,6 +136,68 @@ pub struct NavigationCompleted {
     pub status: NavigationCompletion,
 }
 
+/// What the embedder tells the user agent once, when it starts it.
+///
+/// Everything here is fixed for the life of the user agent, so it is passed
+/// at instantiation rather than published later: a webview created moments
+/// after startup would otherwise race the setup message.
+#[derive(Clone, Debug, Default)]
+pub struct EmbedderConfig {
+    /// Where the embedder keeps the extension executables
+    /// (`formal-web-content`, `formal-web-net`, `formal-web-graphics`).
+    ///
+    /// An embedder that ships them somewhere other than next to its own
+    /// binary — in an application bundle's resource directory, say — names
+    /// that directory here, and it is searched first. `None` leaves the
+    /// engine's own search, which starts next to the current executable, in
+    /// charge.
+    pub extensions_directory: Option<PathBuf>,
+    /// The URL schemes the embedder serves itself.
+    ///
+    /// A navigation or subresource fetch for one of these reaches
+    /// [`Embedder::embedder_scheme_fetch`] and never reaches the net
+    /// process.
+    pub embedder_schemes: Vec<String>,
+    /// The scripts run in the documents of a top-level traversable the
+    /// embedder did not ask for by name: one a script opened through
+    /// `window.open`, or one created by `UserAgent::start_navigation` with
+    /// no source navigable. A traversable the embedder starts itself
+    /// carries the scripts named in that call instead.
+    pub default_user_scripts: Vec<UserScript>,
+}
+
+/// A fetch whose URL scheme the embedder serves itself, handed to the
+/// embedder instead of to a network backend.
+/// <https://fetch.spec.whatwg.org/#concept-request>
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct EmbedderSchemeRequest {
+    /// Names this fetch until it is answered: the embedder passes it back to
+    /// `WebviewProvider::complete_embedder_scheme_fetch` or
+    /// `WebviewProvider::fail_embedder_scheme_fetch`.
+    pub id: EmbedderSchemeFetchId,
+    /// <https://fetch.spec.whatwg.org/#concept-request-url>
+    pub url: String,
+    /// <https://fetch.spec.whatwg.org/#concept-request-method>
+    pub method: String,
+    /// <https://fetch.spec.whatwg.org/#concept-request-header-list>
+    pub header_list: Vec<(String, String)>,
+    /// <https://fetch.spec.whatwg.org/#concept-request-body>
+    pub body: String,
+}
+
+/// The embedder's answer to an [`EmbedderSchemeRequest`].
+/// <https://fetch.spec.whatwg.org/#concept-response>
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct EmbedderSchemeResponse {
+    /// <https://fetch.spec.whatwg.org/#concept-response-status>
+    pub status: u16,
+    /// <https://fetch.spec.whatwg.org/#concept-header-list>
+    /// The one response header the fetch layer carries end to end.
+    pub content_type: String,
+    /// <https://fetch.spec.whatwg.org/#concept-response-body>
+    pub body: Vec<u8>,
+}
+
 /// The embedder host interface: the callbacks the user agent makes into the
 /// embedder (navigation, paint, clipboard, viewport, window title). The
 /// embedder backends implement this trait; the webview crate re-exports it
@@ -134,6 +215,16 @@ pub trait Embedder: Send + Sync {
     fn window_viewport_snapshot(&self) -> Option<(u32, u32, f32, ColorScheme)>;
     fn clipboard_get_text(&self) -> Result<String, String>;
     fn clipboard_set_text(&self, text: String) -> Result<(), String>;
+    /// A fetch whose URL scheme the embedder named in
+    /// [`EmbedderConfig::embedder_schemes`]. Nothing is returned here: the
+    /// embedder answers whenever it has a response, from any thread, by
+    /// calling `WebviewProvider::complete_embedder_scheme_fetch` or
+    /// `WebviewProvider::fail_embedder_scheme_fetch` with `request.id`. A
+    /// fetch that is never answered stays pending.
+    fn embedder_scheme_fetch(&self, webview_id: WebviewId, request: EmbedderSchemeRequest);
+    /// A message a document sent through the host-message binding on its
+    /// Window, with the sending document's URL.
+    fn host_message(&self, webview_id: WebviewId, url: String, body: String) -> Result<(), String>;
     /// The parsed title of a top-level document, reported by the content
     /// process after parsing; the embedder labels the tab and window with it.
     /// <https://html.spec.whatwg.org/#the-title-element>
@@ -342,6 +433,8 @@ pub struct NavigationRequest {
     pub url: String,
     /// <https://fetch.spec.whatwg.org/#concept-request-method>
     pub method: String,
+    /// <https://fetch.spec.whatwg.org/#concept-request-header-list>
+    pub header_list: Vec<(String, String)>,
     /// <https://fetch.spec.whatwg.org/#concept-request-referrer>
     pub referrer: String,
     /// <https://fetch.spec.whatwg.org/#concept-request-referrer-policy>
@@ -370,6 +463,7 @@ impl NavigationRequest {
         Self {
             url: destination_url,
             method: String::from("GET"),
+            header_list: Vec::new(),
             referrer,
             referrer_policy: String::new(),
             policy_container: None,
@@ -382,9 +476,32 @@ impl NavigationRequest {
         ipc_messages::network::NavigationFetchRequest {
             url: self.url.clone(),
             method: self.method.clone(),
+            header_list: self.header_list.clone(),
             body: self.body.clone(),
             referrer: self.referrer.clone(),
             referrer_policy: self.referrer_policy.clone(),
+        }
+    }
+
+    /// Convert to the fetch request type handed to the embedder, which
+    /// carries the referrer in the header list rather than beside it.
+    fn to_embedder_scheme_fetch_request(&self) -> ContentFetchRequest {
+        let mut header_list = self.header_list.clone();
+        if !self.referrer.is_empty()
+            && !header_list
+                .iter()
+                .any(|(name, _)| name.eq_ignore_ascii_case("referer"))
+        {
+            header_list.push((String::from("referer"), self.referrer.clone()));
+        }
+        ContentFetchRequest {
+            // A navigation fetch has no content-side handler waiting on it;
+            // the user agent tracks it by its `NavigationFetchId` instead.
+            handler_id: DocumentFetchId::new(),
+            url: self.url.clone(),
+            method: self.method.clone(),
+            header_list,
+            body: self.body.clone().unwrap_or_default(),
         }
     }
 }
@@ -462,6 +579,38 @@ pub struct UserAgentState {
     /// reverse index from <https://html.spec.whatwg.org/multipage/#navigation-params-id>
     /// to pending finalization document ids.
     pub pending_navigation_finalization_ids_by_navigation_id: HashMap<NavigationId, DocumentId>,
+    /// the embedder's scripts per top-level traversable, named when the
+    /// embedder asked for the traversable and run in each of its documents
+    /// before the document is populated.
+    pub user_scripts: HashMap<NavigableId, Vec<UserScript>>,
+    /// the fetches handed to the embedder and not yet answered.
+    pub pending_embedder_scheme_fetches: HashMap<EmbedderSchemeFetchId, PendingEmbedderSchemeFetch>,
+}
+
+/// pending fetch handed to the embedder, paused at the response wait point.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PendingEmbedderSchemeFetch {
+    /// <https://fetch.spec.whatwg.org/#concept-request-url>
+    /// also the response's final URL: an embedder is asked for one URL and
+    /// answers for it, so there is no redirect to follow.
+    pub url: String,
+    /// where the embedder's answer goes.
+    pub reply_to: EmbedderSchemeFetchRecipient,
+}
+
+/// who is waiting for a [`PendingEmbedderSchemeFetch`]; the counterpart of
+/// the net process's `ResponseRecipient` for the fetches that bypass it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum EmbedderSchemeFetchRecipient {
+    /// a navigation fetch this user agent started; the answer resumes
+    /// <https://html.spec.whatwg.org/multipage/#create-navigation-params-by-fetching>
+    UserAgent { fetch_id: NavigationFetchId },
+    /// a subresource fetch a content process started; the answer reaches it
+    /// as `Command::CompleteDocumentFetch`.
+    ContentProcess {
+        event_loop_id: EventLoopId,
+        handler_id: DocumentFetchId,
+    },
 }
 
 /// cache of the active document state held by the user agent.
@@ -568,6 +717,8 @@ impl Default for UserAgentState {
             child_frame_to_webview: HashMap::new(),
             focused_frame_id: HashMap::new(),
             published_child_viewports: HashMap::new(),
+            user_scripts: HashMap::new(),
+            pending_embedder_scheme_fetches: HashMap::new(),
         }
     }
 }
@@ -830,6 +981,7 @@ impl UserAgentState {
         self.traversable_viewports.remove(&traversable_id);
         self.traversable_target_names.remove(&traversable_id);
         self.active_documents_by_traversable.remove(&traversable_id);
+        self.user_scripts.remove(&traversable_id);
 
         if let Some(browsing_context_id) = browsing_context_id {
             self.browsing_context_group_set
@@ -848,6 +1000,10 @@ impl UserAgentState {
 pub enum UserAgentCommand {
     CreateFreshTopLevelTraversable {
         destination_url: String,
+        /// The scripts run in each of the new traversable's documents. They
+        /// arrive with the request rather than ahead of it, so the first
+        /// document cannot be created before they are in place.
+        user_scripts: Vec<UserScript>,
     },
     /// The event loop the content process belongs to.  Required when
     /// `request.new_traversable_info` is `Some` (window.open creating a new
@@ -893,6 +1049,13 @@ pub enum UserAgentCommand {
         webview_id: WebviewId,
         event_message: Vec<u8>,
     },
+    /// The embedder's answer to an embedder-scheme fetch it was handed.
+    CompleteEmbedderSchemeFetch {
+        request_id: EmbedderSchemeFetchId,
+        /// Boxed: a response body travels inline, and every other command
+        /// would pay for it in the size of the channel's item.
+        result: Box<Result<EmbedderSchemeResponse, String>>,
+    },
     Shutdown {
         reply: Sender<Result<(), String>>,
     },
@@ -907,12 +1070,17 @@ pub struct UserAgent {
 
 impl UserAgent {
     /// spawning the dedicated user-agent thread owned by the webview layer.
+    ///
+    /// `config` is everything the embedder settles once, at startup: where
+    /// the extension executables live, the URL schemes it serves itself, and
+    /// the scripts a traversable it did not ask for by name carries.
     pub fn start(
         host: Arc<dyn Embedder>,
         trace_sender: Option<TraceSender>,
+        config: EmbedderConfig,
     ) -> Result<Self, String> {
         let (command_sender, command_receiver) = unbounded();
-        let mut worker = UserAgentWorker::new(command_receiver, host, trace_sender);
+        let mut worker = UserAgentWorker::new(command_receiver, host, trace_sender, config);
         let join_handle = thread::Builder::new()
             .name(String::from("formal-web:user-agent"))
             .spawn(move || worker.run())
@@ -984,9 +1152,19 @@ impl Drop for UserAgent {
 
 impl UserAgent {
     /// <https://html.spec.whatwg.org/multipage/#create-a-fresh-top-level-traversable>
-    pub fn start_top_level_traversable(&self, destination_url: String) -> Result<(), String> {
+    ///
+    /// `user_scripts` are run in each of the new traversable's documents,
+    /// before the document is populated.
+    pub fn start_top_level_traversable(
+        &self,
+        destination_url: String,
+        user_scripts: Vec<UserScript>,
+    ) -> Result<(), String> {
         self.command_sender
-            .send(UserAgentCommand::CreateFreshTopLevelTraversable { destination_url })
+            .send(UserAgentCommand::CreateFreshTopLevelTraversable {
+                destination_url,
+                user_scripts,
+            })
             .map_err(|error| {
                 format!("failed to start create-a-fresh-top-level-traversable: {error}")
             })
@@ -1079,6 +1257,38 @@ impl UserAgent {
                 offset_y,
             })
             .map_err(|error| format!("failed to set traversable viewport: {error}"))
+    }
+
+    /// The embedder's response to the embedder-scheme fetch named by
+    /// `request_id`, which it was handed as
+    /// [`EmbedderSchemeRequest::id`]. Callable from any thread.
+    pub fn complete_embedder_scheme_fetch(
+        &self,
+        request_id: EmbedderSchemeFetchId,
+        response: EmbedderSchemeResponse,
+    ) -> Result<(), String> {
+        self.command_sender
+            .send(UserAgentCommand::CompleteEmbedderSchemeFetch {
+                request_id,
+                result: Box::new(Ok(response)),
+            })
+            .map_err(|error| format!("failed to complete an embedder-scheme fetch: {error}"))
+    }
+
+    /// Fail the embedder-scheme fetch named by `request_id`: the embedder
+    /// has no response for it. A fetch that is neither completed nor failed
+    /// stays pending, so an embedder that gives up on one says so here.
+    pub fn fail_embedder_scheme_fetch(
+        &self,
+        request_id: EmbedderSchemeFetchId,
+        reason: String,
+    ) -> Result<(), String> {
+        self.command_sender
+            .send(UserAgentCommand::CompleteEmbedderSchemeFetch {
+                request_id,
+                result: Box::new(Err(reason)),
+            })
+            .map_err(|error| format!("failed to fail an embedder-scheme fetch: {error}"))
     }
 
     /// the automation-only selector-click bridge into content.
@@ -1288,6 +1498,9 @@ enum Inbound {
 struct UserAgentWorker {
     state: UserAgentState,
     command_receiver: Receiver<UserAgentCommand>,
+    /// What the embedder settled at startup: the extensions directory, the
+    /// URL schemes it serves itself, and the default user scripts.
+    config: Arc<EmbedderConfig>,
     /// Owns the IPC connection to the net extension and tracks pending navigation fetches.
     net_connection: crate::fetch::NetConnection,
 
@@ -1342,9 +1555,14 @@ impl UserAgentWorker {
         command_receiver: Receiver<UserAgentCommand>,
         host: Arc<dyn Embedder>,
         trace_sender: Option<TraceSender>,
+        config: EmbedderConfig,
     ) -> Self {
-        let net_connection = crate::fetch::NetConnection::new(trace_sender.clone())
-            .unwrap_or_else(|error| panic!("failed to start net extension: {error}"));
+        let config = Arc::new(config);
+        let net_connection = crate::fetch::NetConnection::new(
+            trace_sender.clone(),
+            config.extensions_directory.clone(),
+        )
+        .unwrap_or_else(|error| panic!("failed to start net extension: {error}"));
 
         // Start the graphics process (handles composition + media playback).
         let (graphics_extension_sender, graphics_event_receiver, graphics_child) = {
@@ -1353,8 +1571,9 @@ impl UserAgentWorker {
                 GraphicsExtensionManifest,
                 ipc_messages::graphics::GraphicsCommand,
                 ipc_messages::graphics::GraphicsEvent,
-            >(&GraphicsExtensionManifest)
-            {
+            >(&GraphicsExtensionManifest {
+                extensions_directory: config.extensions_directory.clone(),
+            }) {
                 Ok((mut handle, connection)) => {
                     let sender = connection.sender.clone();
                     // Forward the trace sender to the graphics process.
@@ -1389,6 +1608,7 @@ impl UserAgentWorker {
         Self {
             state: UserAgentState::default(),
             command_receiver,
+            config,
             net_connection,
 
             graphics_extension_sender,
@@ -1501,8 +1721,11 @@ impl UserAgentWorker {
     /// been asked to shut down.
     fn handle_ua_command(&mut self, command: UserAgentCommand) -> bool {
         match command {
-            UserAgentCommand::CreateFreshTopLevelTraversable { destination_url } => {
-                self.create_a_fresh_top_level_traversable(destination_url);
+            UserAgentCommand::CreateFreshTopLevelTraversable {
+                destination_url,
+                user_scripts,
+            } => {
+                self.create_a_fresh_top_level_traversable(destination_url, user_scripts);
             }
             UserAgentCommand::Navigate {
                 event_loop_id,
@@ -1553,6 +1776,9 @@ impl UserAgentWorker {
             }
             UserAgentCommand::RenderingOpportunityFor { navigable_id } => {
                 self.note_rendering_opportunity(navigable_id);
+            }
+            UserAgentCommand::CompleteEmbedderSchemeFetch { request_id, result } => {
+                self.complete_embedder_scheme_fetch(request_id, *result);
             }
             UserAgentCommand::Shutdown { reply } => {
                 self.handle_shutdown(reply);
@@ -1660,6 +1886,48 @@ impl UserAgentWorker {
                 // Fire-and-forget: write to system clipboard, no reply expected.
                 if let Err(error) = self.host.clipboard_set_text(text) {
                     error!("clipboard write failed: {error}");
+                }
+            }
+            ContentEvent::EmbedderSchemeFetchRequested(EmbedderSchemeFetchRequested {
+                navigable_id,
+                handler_id,
+                request,
+            }) => {
+                let Some(traversable_id) = self.state.top_level_traversable_id(navigable_id) else {
+                    error!(
+                        "an embedder-scheme fetch arrived for the unknown navigable {navigable_id}"
+                    );
+                    if let Some(command_sender) =
+                        event_loop_command_sender(&self.state, event_loop_id)
+                        && let Err(error) = self.send_event_loop_command(
+                            &command_sender,
+                            ContentCommand::FailDocumentFetch { handler_id },
+                        )
+                    {
+                        error!("failed to fail an embedder-scheme document fetch: {error}");
+                    }
+                    return Ok(true);
+                };
+                self.start_an_embedder_scheme_fetch(
+                    WebviewId(traversable_id),
+                    request,
+                    EmbedderSchemeFetchRecipient::ContentProcess {
+                        event_loop_id,
+                        handler_id,
+                    },
+                );
+            }
+            ContentEvent::HostMessageRequested(HostMessageRequested {
+                navigable_id,
+                url,
+                body,
+            }) => {
+                let Some(traversable_id) = self.state.top_level_traversable_id(navigable_id) else {
+                    error!("a host message arrived for the unknown navigable {navigable_id}");
+                    return Ok(true);
+                };
+                if let Err(error) = self.host.host_message(WebviewId(traversable_id), url, body) {
+                    error!("host message failed: {error}");
                 }
             }
             ContentEvent::TitleChanged(ipc_messages::content::TitleChanged {
@@ -1798,6 +2066,106 @@ impl UserAgentWorker {
             }
         }
     }
+
+    /// whether the embedder, rather than the network, is the source of the
+    /// response for `url`: the test the fetch sources apply before
+    /// <https://fetch.spec.whatwg.org/#scheme-fetch>
+    fn is_embedder_scheme(&self, url: &str) -> bool {
+        if self.config.embedder_schemes.is_empty() {
+            return false;
+        }
+        Url::parse(url).is_ok_and(|parsed| {
+            self.config
+                .embedder_schemes
+                .iter()
+                .any(|scheme| scheme == parsed.scheme())
+        })
+    }
+
+    /// hand one fetch to the embedder and record who is waiting for it.
+    fn start_an_embedder_scheme_fetch(
+        &mut self,
+        webview_id: WebviewId,
+        request: ContentFetchRequest,
+        reply_to: EmbedderSchemeFetchRecipient,
+    ) {
+        let request_id = EmbedderSchemeFetchId::new();
+        self.state.pending_embedder_scheme_fetches.insert(
+            request_id,
+            PendingEmbedderSchemeFetch {
+                url: request.url.clone(),
+                reply_to,
+            },
+        );
+        self.host.embedder_scheme_fetch(
+            webview_id,
+            EmbedderSchemeRequest {
+                id: request_id,
+                url: request.url,
+                method: request.method,
+                header_list: request.header_list,
+                body: request.body,
+            },
+        );
+    }
+
+    /// route the embedder's answer back to whoever asked for the fetch.
+    fn complete_embedder_scheme_fetch(
+        &mut self,
+        request_id: EmbedderSchemeFetchId,
+        result: Result<EmbedderSchemeResponse, String>,
+    ) {
+        let Some(pending) = self
+            .state
+            .pending_embedder_scheme_fetches
+            .remove(&request_id)
+        else {
+            error!("an embedder answered the unknown embedder-scheme fetch {request_id}");
+            return;
+        };
+        let PendingEmbedderSchemeFetch { url, reply_to } = pending;
+        let result = result.map(|response| ContentFetchResponse {
+            final_url: url,
+            status: response.status,
+            content_type: response.content_type,
+            body: response.body,
+        });
+
+        match reply_to {
+            EmbedderSchemeFetchRecipient::UserAgent { fetch_id } => match result {
+                Ok(response) => self.handle_navigation_fetch_completed(fetch_id, response),
+                Err(error) => {
+                    error!("an embedder-scheme navigation fetch failed: {error}");
+                    self.handle_navigation_fetch_failed(fetch_id);
+                }
+            },
+            EmbedderSchemeFetchRecipient::ContentProcess {
+                event_loop_id,
+                handler_id,
+            } => {
+                let command = match result {
+                    Ok(response) => ContentCommand::CompleteDocumentFetch {
+                        handler_id,
+                        response,
+                    },
+                    Err(error) => {
+                        error!("an embedder-scheme document fetch failed: {error}");
+                        ContentCommand::FailDocumentFetch { handler_id }
+                    }
+                };
+                let Some(command_sender) = event_loop_command_sender(&self.state, event_loop_id)
+                else {
+                    error!(
+                        "no content process owns event loop {event_loop_id}, which asked for an embedder-scheme fetch"
+                    );
+                    return;
+                };
+                if let Err(error) = self.send_event_loop_command(&command_sender, command) {
+                    error!("failed to answer an embedder-scheme document fetch: {error}");
+                }
+            }
+        }
+    }
 }
 
 impl UserAgentWorker {
@@ -1810,6 +2178,28 @@ impl UserAgentWorker {
         command_sender
             .send(command)
             .map_err(|error| format!("failed to send event-loop command: {error}"))
+    }
+
+    /// the embedder's scripts for a document of `navigable_id`: the scripts
+    /// its top-level traversable carries, minus the main-frame-only ones
+    /// when the navigable is a child.  A traversable the embedder did not
+    /// ask for by name carries `EmbedderConfig::default_user_scripts`.
+    fn user_scripts_for_navigable(&self, navigable_id: NavigableId) -> Vec<UserScript> {
+        let traversable_id = self
+            .state
+            .top_level_traversable_id(navigable_id)
+            .unwrap_or(navigable_id);
+        let scripts = self
+            .state
+            .user_scripts
+            .get(&traversable_id)
+            .unwrap_or(&self.config.default_user_scripts);
+        let is_traversable = traversable_id == navigable_id;
+        scripts
+            .iter()
+            .filter(|script| is_traversable || !script.main_frame_only)
+            .cloned()
+            .collect()
     }
 
     /// resolving the content command sender that owns one traversable.
@@ -1874,6 +2264,7 @@ impl UserAgentWorker {
             self.trace_sender.clone(),
             self.net_connection.sender(),
             self.graphics_extension_sender.clone(),
+            &self.config,
         )?;
         // Step 3: Let agent be a new agent whose [[CanBlock]] is canBlock, [[Signifier]] is
         // signifier, [[CandidateExecution]] is candidateExecution, and [[IsLockFree1]],
@@ -1981,9 +2372,9 @@ impl UserAgentWorker {
     /// <https://html.spec.whatwg.org/multipage/#creating-a-new-top-level-traversable>
     fn create_new_top_level_traversable(
         &mut self,
+        traversable_id: NavigableId,
         target_name: String,
     ) -> Result<NavigableId, String> {
-        let traversable_id = NavigableId::new();
         let iframe_parent_traversable_id = None;
         let frame_id = None;
 
@@ -2054,6 +2445,7 @@ impl UserAgentWorker {
                 frame_id: None,
                 parent_traversable_id: None,
                 top_level_traversable_id: traversable_id,
+                user_scripts: self.user_scripts_for_navigable(traversable_id),
             },
         )?;
 
@@ -2633,6 +3025,18 @@ impl UserAgentWorker {
                 allow_post: false,
                 user_involvement: user_involvement.clone(),
             });
+        // A navigation to a scheme the embedder serves is answered by the
+        // embedder, so it goes there instead of to net, ahead of
+        // <https://fetch.spec.whatwg.org/#scheme-fetch>
+        if self.is_embedder_scheme(&request.url) {
+            self.start_an_embedder_scheme_fetch(
+                WebviewId(traversable_id),
+                request.to_embedder_scheme_fetch_request(),
+                EmbedderSchemeFetchRecipient::UserAgent { fetch_id },
+            );
+            return Ok(());
+        }
+
         let navigation_event_loop_id = self
             .state
             .traversable_handles
@@ -2842,8 +3246,10 @@ impl UserAgentWorker {
         }
 
         // Step 8: "If chosen is null, then a new top-level traversable is being requested."
-        let new_traversable_id =
-            self.create_new_top_level_traversable(normalized_target_name.clone())?;
+        // A traversable a script opened carries the default user scripts:
+        // the embedder never named this one, so it has none of its own.
+        let new_traversable_id = self
+            .create_new_top_level_traversable(NavigableId::new(), normalized_target_name.clone())?;
 
         // Step 8 sub-step: "If noopener is true, then set windowType to 'new with no opener'.
         //                   Otherwise, set windowType to 'new and unrestricted'."
@@ -2946,7 +3352,11 @@ impl UserAgentWorker {
     }
 
     /// <https://html.spec.whatwg.org/multipage/#create-a-fresh-top-level-traversable>
-    fn create_a_fresh_top_level_traversable(&mut self, destination_url: String) {
+    fn create_a_fresh_top_level_traversable(
+        &mut self,
+        destination_url: String,
+        user_scripts: Vec<UserScript>,
+    ) {
         if startup_debug_enabled() {
             trace!(
                 "[startup-debug][user-agent] create_fresh_top_level_traversable destination_url={}",
@@ -2960,7 +3370,16 @@ impl UserAgentWorker {
             // new top-level traversable": the new browsing context group, browsing context and
             // traversable state, plus the CreateEmptyDocument IPC that runs the document-owning
             // steps in the content process.
-            let traversable_id = self.create_new_top_level_traversable(String::new())?;
+            // The scripts are recorded against the traversable before it
+            // exists, so its first document — created inside the call below —
+            // already runs them.
+            let traversable_id = NavigableId::new();
+            self.state.user_scripts.insert(traversable_id, user_scripts);
+            let traversable_id = self
+                .create_new_top_level_traversable(traversable_id, String::new())
+                .inspect_err(|_| {
+                    self.state.user_scripts.remove(&traversable_id);
+                })?;
             // Step 2: Navigate traversable to initialNavigationURL using traversable's active
             // document, with documentResource set to initialNavigationPostResource.
             // Note: The navigate call below is the UA-side navigate; the documentResource
@@ -4591,6 +5010,7 @@ impl UserAgentWorker {
                 response: loaded_response,
                 parent_traversable_id,
                 top_level_traversable_id,
+                user_scripts: self.user_scripts_for_navigable(pending.traversable_id),
             },
         ) {
             Ok(_) => {

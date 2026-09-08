@@ -109,6 +109,7 @@ pub fn run_net_process_v2(token: String) -> Result<(), String> {
                                         handler_id: DocumentFetchId::new(),
                                         url: request.url,
                                         method: request.method,
+                                        header_list: request.header_list,
                                         body: request.body.unwrap_or_default(),
                                     };
                                     let key = NetworkPartitionKey(event_loop_id);

@@ -22,7 +22,7 @@ pub use shared::*;
 
 use std::sync::Arc;
 use verification::{TraceSender, VerificationRun};
-use webview::WebviewProvider;
+use webview::{EmbedderConfig, WebviewProvider};
 use winit::application::ApplicationHandler;
 use winit::event_loop::EventLoop;
 
@@ -108,7 +108,11 @@ where
     install_user_event_sink(sink.clone());
 
     let event_loop_embedder = Arc::new(EventLoopEmbedder::new(sink));
-    let provider = match WebviewProvider::new(event_loop_embedder, trace_sender.clone()) {
+    let provider = match WebviewProvider::new(
+        event_loop_embedder,
+        trace_sender.clone(),
+        EmbedderConfig::default(),
+    ) {
         Ok(provider) => provider,
         Err(error) => {
             clear_user_event_sink();

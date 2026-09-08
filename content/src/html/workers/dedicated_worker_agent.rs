@@ -483,6 +483,7 @@ impl DedicatedWorkerAgentState {
             handler_id,
             url: resolved_url.to_string(),
             method: String::from("GET"),
+            header_list: Vec::new(),
             body: String::new(),
         };
         let network_request = NetworkRequest::Fetch {

@@ -15,7 +15,10 @@ pub use blitz_traits::shell::ColorScheme;
 #[cfg(target_os = "macos")]
 pub use ipc_channel::platform::deallocate_mach_port;
 pub use ipc_messages::content::deserialize_scene_from_slice;
-pub use ipc_messages::content::{FontTransportReceiver, RecordedScene, RegisteredFont, WebviewId};
+pub use ipc_messages::content::{
+    EmbedderSchemeFetchId, FontTransportReceiver, RecordedScene, RegisteredFont, UserScript,
+    WebviewId,
+};
 pub use ipc_messages::graphics::{CompositingLayerId, LayerFrame, SurfaceFrame};
 
 use ipc_messages::content::{NavigateRequest, UserNavigationInvolvement};
@@ -27,7 +30,10 @@ use std::time::Duration;
 use user_agent::UserAgent;
 use verification::TraceSender;
 
-pub use user_agent::{Embedder, NavigationCompleted, NavigationCompletion};
+pub use user_agent::{
+    Embedder, EmbedderConfig, EmbedderSchemeRequest, EmbedderSchemeResponse, NavigationCompleted,
+    NavigationCompletion,
+};
 
 fn startup_destination_url(startup_url: Option<&str>) -> Result<String, String> {
     match startup_url {
@@ -57,11 +63,17 @@ pub struct WebviewProvider {
 }
 
 impl WebviewProvider {
+    /// Start the engine. `config` carries what the embedder settles once and
+    /// for all: where the extension executables live, the URL schemes it
+    /// serves itself, and the scripts a webview it did not ask for by name
+    /// carries. None of it changes afterwards, so nothing a webview depends
+    /// on can arrive after the webview does.
     pub fn new(
         embedder: Arc<dyn Embedder>,
         trace_sender: Option<TraceSender>,
+        config: EmbedderConfig,
     ) -> Result<Self, String> {
-        let user_agent = UserAgent::start(embedder.clone(), trace_sender)?;
+        let user_agent = UserAgent::start(embedder.clone(), trace_sender, config)?;
 
         Ok(Self {
             embedder,
@@ -69,9 +81,20 @@ impl WebviewProvider {
         })
     }
 
-    pub fn start(&self, startup_url: Option<&str>) -> Result<(), String> {
+    /// Create the first webview and navigate it to `startup_url`.
+    ///
+    /// `user_scripts` are run in each of this webview's documents before the
+    /// document is populated, the first one included: they travel with the
+    /// request that creates the webview, so there is no window in which a
+    /// document could be created without them.
+    pub fn start(
+        &self,
+        startup_url: Option<&str>,
+        user_scripts: Vec<UserScript>,
+    ) -> Result<(), String> {
         let destination_url = startup_destination_url(startup_url)?;
-        self.user_agent.start_top_level_traversable(destination_url)
+        self.user_agent
+            .start_top_level_traversable(destination_url, user_scripts)
     }
 
     pub fn navigate(&self, webview_id: Option<WebviewId>, url: &str) -> Result<(), String> {
@@ -92,7 +115,11 @@ impl WebviewProvider {
                     new_child_navigable: None,
                 })
             }
-            None => self.user_agent.start_top_level_traversable(url.to_owned()),
+            // A webview created here was not asked for by name, so it
+            // carries `EmbedderConfig::default_user_scripts`.
+            None => self
+                .user_agent
+                .start_top_level_traversable(url.to_owned(), Vec::new()),
         }
     }
 
@@ -113,6 +140,36 @@ impl WebviewProvider {
         snapshot: Option<(u32, u32, f32, ColorScheme)>,
     ) -> Result<(), String> {
         self.user_agent.set_default_viewport(snapshot)
+    }
+
+    /// The response to the embedder-scheme fetch named by `request_id`,
+    /// which reached the embedder as [`EmbedderSchemeRequest::id`].
+    ///
+    /// Callable from any thread and at any time after the request: an
+    /// embedder that has to go away and come back with the bytes keeps the
+    /// id and answers here when it has them.
+    pub fn complete_embedder_scheme_fetch(
+        &self,
+        request_id: EmbedderSchemeFetchId,
+        response: EmbedderSchemeResponse,
+    ) -> Result<(), String> {
+        self.user_agent
+            .complete_embedder_scheme_fetch(request_id, response)
+    }
+
+    /// Fail the embedder-scheme fetch named by `request_id`: the embedder
+    /// has no response for it.
+    ///
+    /// A fetch that is neither completed nor failed stays pending, and the
+    /// document waiting on it never loads, so an embedder that gives up on
+    /// a request says so here.
+    pub fn fail_embedder_scheme_fetch(
+        &self,
+        request_id: EmbedderSchemeFetchId,
+        reason: String,
+    ) -> Result<(), String> {
+        self.user_agent
+            .fail_embedder_scheme_fetch(request_id, reason)
     }
 
     pub fn set_traversable_viewport(

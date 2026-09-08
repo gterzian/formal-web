@@ -21,5 +21,12 @@ it.
   into, and `ColorScheme`.
 - `WebviewProvider` owns the user-agent handle and exposes the embedder entry
   points: top-level traversal startup, navigation, viewport publication, UI
-  event forwarding (serialized in `ui_event`), script evaluation, and the
-  frame-needed pacing signal.
+  event forwarding (serialized in `ui_event`), script evaluation, the
+  frame-needed pacing signal, and the answers to embedder-served fetches.
+- What the embedder settles once is passed at instantiation rather than
+  published afterwards: `EmbedderConfig` carries the directory the extension
+  executables are spawned from, the URL schemes the embedder serves itself,
+  and the user scripts a webview it did not ask for by name carries. Webview
+  creation is non-blocking, so a setting published after startup would race
+  the first document it is meant to apply to; for the same reason the scripts
+  of a named webview are an argument to `start`, the call that creates it.
