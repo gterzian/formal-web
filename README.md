@@ -3,7 +3,7 @@
 formal-web is a Rust web-engine prototype with a modular architecture and support for formal verification.
 
 The modularity is goal orientated: it can be used to either support shipping on a platform with specific constraints (like using extensions for [BrowserEngineKit](https://developer.apple.com/documentation/browserenginekit)), support 
-platform specific performance (like integrating with Core Animation based compositing on Mac), introduce flexibility (like the ability to choose a JS engine), or simply to reduce binary size and build time by re-using what is already on the system.
+platform specific performance (like integrating with Core Animation based compositing on Mac), introduce flexibility (like the ability to choose a JS engine), or simply to reduce binary size by re-using what is already on the system.
 
 ## Getting Started
 
