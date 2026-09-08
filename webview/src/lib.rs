@@ -14,11 +14,7 @@ pub use blitz_traits::shell::ColorScheme;
 // `webview` alone and never name the ipc crates directly.
 #[cfg(target_os = "macos")]
 pub use ipc_channel::platform::deallocate_mach_port;
-pub use ipc_messages::content::deserialize_scene_from_slice;
-pub use ipc_messages::content::{
-    EmbedderSchemeFetchId, FontTransportReceiver, RecordedScene, RegisteredFont, UserScript,
-    WebviewId,
-};
+pub use ipc_messages::content::{EmbedderSchemeFetchId, UserScript, WebviewId};
 pub use ipc_messages::graphics::{CompositingLayerId, LayerFrame, SurfaceFrame};
 
 use ipc_messages::content::{NavigateRequest, UserNavigationInvolvement};
