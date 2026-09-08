@@ -2,8 +2,14 @@
 
 formal-web is a Rust web-engine prototype with a modular architecture and support for formal verification.
 
-The modularity is goal orientated: it can be used to either support shipping on a platform with specific constraints (like using extensions for [BrowserEngineKit](https://developer.apple.com/documentation/browserenginekit)), support 
-platform specific performance (like integrating with Core Animation based compositing on Mac), introduce flexibility (like the ability to choose a JS engine), or simply to reduce binary size by re-using what is already on the system.
+The modularity is goal-oriented: it can be used to support the following:
+
+- **external constraint satisfaction**: shipping on a platform with specific constraints. Example: the ipc layer defaults to Rust multiprocessing, but is also designed to in the future support extensions in the context of [BrowserEngineKit](https://developer.apple.com/documentation/browserenginekit).
+- **performance optimization**: platform specific performance. Example: integrating with Core Animation based compositing on Mac.
+- **engineering flexibility**: subsystem swapping. For example, one can choose a JS engine such as V8 or Boa, and with Boa, one can also choose to add wasm via Wasmtime.
+- **cost reduction**: reduce binary size or build time by re-using what is already on the system. Example: choosing the url-session networking backend on Mac.
+
+Note: current implementation of generic component reflect Mac OS as the current main development platform: high-performance Mac OS paths with lower-performance cross platform paths. For example, there is a relatively high-performance rendering path on Mac OS, with zero copy texture sharing and a modicum of layering using multiple Core Animation layers to minimize re-rendering, and then there is a relatively low-performance cross platform path involving reading back data to the CPU.
 
 ## Getting Started
 
@@ -60,6 +66,29 @@ cargo run --release
 cargo build --release --no-default-features --features v8
 cargo run --release --no-default-features --features v8
 ```
+
+### Networking (selected on the `net` build)
+
+The fetch transport is one of two backends. macOS defaults to the Apple
+URLSession backend, which compiles no reqwest/tokio stack; on other
+platforms the tokio/reqwest backend is the only option and is always
+compiled:
+
+```bash
+# Default (macOS): Apple URLSession — the default build above.
+# Default (other platforms): tokio/reqwest — always compiled there, the
+# default build above.
+
+# macOS: tokio/reqwest backend (opt-in; URLSession is the default and wins
+# if both features are enabled)
+cargo build --release -p net --features tokio
+cargo run --release
+```
+
+A full `cargo build --release` prebuilds `formal-web-net` with the platform
+default backend and overwrites the copy it places next to the embedder
+binary, so build the `net` package after it when switching backends. See
+`net/README.md` for the backends themselves.
 
 ### Embedder
 
