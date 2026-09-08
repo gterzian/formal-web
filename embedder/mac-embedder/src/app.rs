@@ -447,6 +447,28 @@ struct SurfaceState {
     animating: bool,
 }
 
+/// The geometry of one compositing layer of a webview's last reported
+/// composition, cached per webview (see `MacWindow::stored_layers`): the
+/// geometry from the last arrival plus the newest surface the layer
+/// carried. The surface is retained so a tab switch re-presents the layer
+/// (a video's last frame included) without a new frame from the graphics
+/// process.
+struct StoredLayerState {
+    layer_id: CompositingLayerId,
+    parent: Option<CompositingLayerId>,
+    clip_bounds: [f64; 4],
+    corner_radius: f64,
+    z_order: (i32, u32),
+    /// The layer's content size in its own local space.
+    width: u32,
+    height: u32,
+    /// The newest surface received for the layer. None for the root (its
+    /// surface lives in `surfaces`) and for layers that never carried one.
+    surface: Option<CFRetained<IOSurfaceRef>>,
+    /// The global IOSurfaceID of `surface`.
+    surface_id: Option<u32>,
+}
+
 /// Per-window state: the NSWindow, the native chrome views, tabs, and
 /// per-webview surfaces.
 struct MacWindow {
@@ -476,10 +498,19 @@ struct MacWindow {
     active_tab: Option<WebviewId>,
     surfaces: HashMap<WebviewId, SurfaceState>,
     /// Sublayers under `web_layer`, one per child (non-root) compositing
-    /// layer of the active webview's composition: cross-origin iframe
+    /// layer of the **active** webview's composition: cross-origin iframe
     /// navigables and `<video>` embed sites. The root navigable itself is
-    /// presented on `web_layer`, not as one of these.
+    /// presented on `web_layer`, not as one of these. The tree always
+    /// mirrors the active tab's layers (see `stored_layers`); a frame for
+    /// an inactive tab never reaches it.
     sublayers: HashMap<CompositingLayerId, Retained<objc2_quartz_core::CALayer>>,
+    /// The last composition received per webview: every layer's geometry
+    /// plus the newest surface per layer, in the order the compositor
+    /// reported them. `handle_new_layers` refreshes this for every arriving
+    /// frame, active tab or not; switching tabs re-presents the incoming
+    /// tab's layers from here, so a video's last frame survives switching
+    /// away and back without a new frame from the graphics process.
+    stored_layers: HashMap<WebviewId, Vec<StoredLayerState>>,
     keyboard_modifiers: KeyboardModifiers,
     buttons: MouseEventButtons,
     /// Content view size in points (the window's content area).
@@ -683,6 +714,27 @@ impl MacApp {
         });
         if animating {
             self.start_display_link();
+        }
+    }
+
+    /// Recompute the display link from the visible tabs' stored surfaces:
+    /// an animating visible tab (a playing video, a CSS animation) keeps it
+    /// running, otherwise it stops. Called when the active tab changes (tab
+    /// switch, tab close, re-activation), so the link follows the tab on
+    /// screen rather than the last frame that happened to arrive — an
+    /// inactive tab's video must not keep the link running over a static
+    /// visible tab, nor stop it under an animating one.
+    fn sync_display_link(&mut self) {
+        let animating = self.windows.values().any(|window_state| {
+            window_state
+                .active_tab
+                .and_then(|webview_id| window_state.surfaces.get(&webview_id))
+                .is_some_and(|surface| surface.animating)
+        });
+        if animating {
+            self.start_display_link();
+        } else {
+            self.stop_display_link();
         }
     }
 
@@ -2069,12 +2121,22 @@ impl MacApp {
         if let Some(window_state) = self.windows.get_mut(&window_id) {
             window_state.active_tab = Some(webview_id);
             Self::present_active_surface(window_state);
+            // Rebuild the sublayer tree for the incoming tab from its
+            // stored layers, so the outgoing tab's layers (a playing
+            // video's frame included) never stay on screen over the new
+            // tab, and the incoming tab's own last frame is shown
+            // immediately.
+            Self::reconcile_sublayers(window_state, webview_id);
         }
         self.refresh_chrome(window_id);
         self.update_provider_viewport(window_id);
         if let Some(provider) = self.provider.as_ref() {
             let _ = provider.frame_needed(webview_id);
         }
+        // The display link follows the visible tab's stored surface: an
+        // animating tab (a playing video) keeps it running, a static tab
+        // stops it.
+        self.sync_display_link();
     }
 
     fn action_new_tab(&mut self) {
@@ -2199,6 +2261,7 @@ impl MacApp {
                 .position(|candidate| *candidate == webview_id);
             window_state.tabs.remove(&webview_id);
             window_state.surfaces.remove(&webview_id);
+            window_state.stored_layers.remove(&webview_id);
             if let Some(index) = index {
                 window_state.tab_order.remove(index);
             }
@@ -2222,13 +2285,18 @@ impl MacApp {
         if closed_active {
             // Present the new active tab's surface right away and request a
             // frame, so the closed tab's webview does not stay on screen
-            // until the user picks another tab.
+            // until the user picks another tab. The sublayer tree is
+            // rebuilt for the new active tab from its stored layers, so the
+            // closed tab's video/iframe layers do not linger over it.
             let active = self
                 .windows
                 .get(&window_id)
                 .and_then(|window_state| window_state.active_tab);
             if let Some(window_state) = self.windows.get_mut(&window_id) {
                 Self::present_active_surface(window_state);
+                if let Some(active) = active {
+                    Self::reconcile_sublayers(window_state, active);
+                }
             }
             if let Some(provider) = self.provider.as_ref()
                 && let Some(active) = active
@@ -2237,6 +2305,7 @@ impl MacApp {
                 error!("[mac-embedder] frame needed: {error}");
             }
         }
+        self.sync_display_link();
     }
 
     fn action_navigate(&mut self, input: String) {
@@ -2265,16 +2334,40 @@ impl MacApp {
     }
 
     fn add_tab(&mut self, window_id: WindowId, webview_id: WebviewId) {
-        let Some(window_state) = self.windows.get_mut(&window_id) else {
-            return;
+        let was_present = {
+            let Some(window_state) = self.windows.get_mut(&window_id) else {
+                return;
+            };
+            match window_state.tabs.entry(webview_id) {
+                std::collections::hash_map::Entry::Occupied(_) => true,
+                std::collections::hash_map::Entry::Vacant(vacant) => {
+                    vacant.insert(TabState::new());
+                    window_state.tab_order.push(webview_id);
+                    false
+                }
+            }
         };
-        if window_state.tabs.contains_key(&webview_id) {
+        // The incoming traversable becomes the active tab whether it was
+        // newly opened or already present (it has no content of its own
+        // yet when new; the previous tab's layers stay on screen until its
+        // first frame arrives).
+        {
+            let Some(window_state) = self.windows.get_mut(&window_id) else {
+                return;
+            };
             window_state.active_tab = Some(webview_id);
-            return;
         }
-        window_state.tabs.insert(webview_id, TabState::new());
-        window_state.tab_order.push(webview_id);
-        window_state.active_tab = Some(webview_id);
+        if was_present {
+            // Re-activating an existing tab (a navigation targeted at a tab
+            // that is already open): present it like a tab switch, restoring
+            // its stored layers.
+            let Some(window_state) = self.windows.get_mut(&window_id) else {
+                return;
+            };
+            Self::present_active_surface(window_state);
+            Self::reconcile_sublayers(window_state, webview_id);
+            self.sync_display_link();
+        }
     }
 
     /// Present the active tab's stored surface (the latest composited
@@ -2368,6 +2461,7 @@ impl MacApp {
             address_field_focused: false,
             surfaces: HashMap::new(),
             sublayers: HashMap::new(),
+            stored_layers: HashMap::new(),
             keyboard_modifiers: KeyboardModifiers::default(),
             buttons: MouseEventButtons::None,
             content_size: (INITIAL_WINDOW_WIDTH, INITIAL_WINDOW_HEIGHT),
@@ -2513,6 +2607,10 @@ impl MacApp {
     fn window_did_become_key(&mut self, notification: &NSNotification) {
         if let Some(window_id) = self.window_id_for_notification(notification) {
             self.active_window_id = Some(window_id);
+            // The display link follows the front window's active tab (the
+            // tick requests frames for it); re-sync when the front window
+            // changes.
+            self.sync_display_link();
         }
     }
 
@@ -2769,6 +2867,194 @@ impl MacApp {
         }
     }
 
+    /// Record the arriving layer stream as the webview's stored layers:
+    /// every layer's geometry plus the newest surface for the layers that
+    /// were re-rendered this cycle (a clean layer keeps the surface it last
+    /// carried), in the order the compositor reported them. Runs for every
+    /// frame, active tab or not: an inactive tab's stream only updates this
+    /// cache — it never reaches the live sublayer tree — and the cache is
+    /// what a tab switch re-presents (see
+    /// [`reconcile_sublayers`](Self::reconcile_sublayers)).
+    fn store_layers(window_state: &mut MacWindow, webview_id: WebviewId, layers: &[LayerFrame]) {
+        let previous = window_state
+            .stored_layers
+            .remove(&webview_id)
+            .unwrap_or_default();
+        let mut previous_by_id: HashMap<CompositingLayerId, StoredLayerState> = previous
+            .into_iter()
+            .map(|entry| (entry.layer_id, entry))
+            .collect();
+        let mut stored = Vec::with_capacity(layers.len());
+        for layer in layers {
+            let previous_entry = previous_by_id.remove(&layer.topology.layer_id);
+            // The root's surface is tracked in `surfaces` and presented on
+            // the web_layer; sublayers keep their newest surface here so a
+            // tab switch re-presents it. A re-rendered (dirty) layer
+            // imports its new surface; a clean layer keeps the previous
+            // one.
+            let (surface, surface_id) = if layer.topology.parent.is_some() {
+                match layer.frame.as_ref().and_then(import_shared_surface) {
+                    Some((surface, surface_id)) => (Some(surface), Some(surface_id)),
+                    None => (
+                        previous_entry
+                            .as_ref()
+                            .and_then(|entry| entry.surface.clone()),
+                        previous_entry.and_then(|entry| entry.surface_id),
+                    ),
+                }
+            } else {
+                (None, None)
+            };
+            stored.push(StoredLayerState {
+                layer_id: layer.topology.layer_id,
+                parent: layer.topology.parent,
+                clip_bounds: layer.topology.clip_bounds,
+                corner_radius: layer.topology.corner_radius,
+                z_order: layer.topology.z_order,
+                width: layer.topology.width,
+                height: layer.topology.height,
+                surface,
+                surface_id,
+            });
+        }
+        window_state.stored_layers.insert(webview_id, stored);
+    }
+
+    /// Mirror `webview_id`'s stored layers onto the window's live sublayer
+    /// tree: create the sublayers its composition has and the tree lacks,
+    /// refresh their geometry and contents, and remove the live sublayers
+    /// that are no longer part of its composition (the previous tab's
+    /// layers). Called when the active tab changes (`action_switch_tab`,
+    /// `close_tab`, `add_tab`): the tree always shows exactly the visible
+    /// tab's layers, so a tab switched away from loses nothing — its stored
+    /// layers (a video's last frame included) are re-presented on the way
+    /// back without waiting for a new frame from the graphics process. A
+    /// webview that never produced a frame leaves the tree untouched: its
+    /// tab has no content of its own, so the previous tab's layers stay on
+    /// screen until the first frame arrives.
+    fn reconcile_sublayers(window_state: &mut MacWindow, webview_id: WebviewId) {
+        let Some(stored) = window_state.stored_layers.get(&webview_id) else {
+            return;
+        };
+        let scale = window_state.scale;
+        // The compositor reports each layer's clip/transform in the root
+        // navigable's local (pixel) coordinate space — the root surface is
+        // 2400x1448 — while the web_layer and its sublayers live in window
+        // point space (the window content size). Scale sublayer geometry by
+        // (web_layer / root) so sublayers land where the root content is
+        // drawn.
+        let Some((root_w, root_h)) = stored
+            .iter()
+            .find(|entry| entry.parent.is_none())
+            .map(|entry| (f64::from(entry.width), f64::from(entry.height)))
+        else {
+            return;
+        };
+        let web_bounds = window_state.web_layer.bounds();
+        let scale_x = web_bounds.size.width / root_w.max(1.0);
+        let scale_y = web_bounds.size.height / root_h.max(1.0);
+
+        // Remove the live sublayers that are not part of this webview's
+        // composition: the previous active tab's layers on a switch, or
+        // layers the webview itself dropped (e.g. a video element removed
+        // from the document).
+        let desired: HashSet<CompositingLayerId> = stored
+            .iter()
+            .filter(|entry| entry.parent.is_some())
+            .map(|entry| entry.layer_id)
+            .collect();
+        let stale: Vec<_> = window_state
+            .sublayers
+            .keys()
+            .copied()
+            .filter(|layer_id| !desired.contains(layer_id))
+            .collect();
+        for layer_id in stale {
+            if let Some(layer) = window_state.sublayers.remove(&layer_id) {
+                debug!("[mac-embedder] remove sublayer {:?}", layer_id);
+                layer.removeFromSuperlayer();
+            }
+        }
+
+        // Add and refresh the webview's sublayers in the order the
+        // compositor reported them (parent layers before their children).
+        // One transaction disables implicit animations for all
+        // moves/appearances.
+        objc2_quartz_core::CATransaction::begin();
+        objc2_quartz_core::CATransaction::setDisableActions(true);
+        for entry in stored {
+            if entry.parent.is_none() {
+                continue; // the root navigable, presented on the web_layer
+            }
+            let layer_id = entry.layer_id;
+            // Resolve the parent CALayer: another sublayer if present, else
+            // the web_layer (the root navigable). Retained clone ends the
+            // sublayers borrow before the entry below.
+            let parent_layer = entry
+                .parent
+                .and_then(|parent_id| window_state.sublayers.get(&parent_id).cloned())
+                .unwrap_or_else(|| window_state.web_layer.clone());
+
+            let sublayer = window_state.sublayers.entry(layer_id).or_insert_with(|| {
+                let sublayer = CALayer::layer();
+                sublayer.setOpaque(true);
+                sublayer.setContentsScale(scale);
+                parent_layer.addSublayer(&sublayer);
+                sublayer
+            });
+
+            // Geometry: the layer's frame is its visible clip rect in its
+            // parent's space, converted from root-pixel space to web_layer
+            // point space; contents scale to fill (default
+            // contentsGravity = resize), matching the producer's placement.
+            //
+            // The clip is reported in the root navigable's top-down pixel
+            // space, while the web_layer (a layer-hosting view's backing
+            // layer) has a bottom-up (y-up) coordinate space. Mapping the
+            // top-down clip straight into the y-up frame would mirror the
+            // sublayer vertically: it would sit above its element and move
+            // opposite the page on scroll. Flip the y origin so sublayers
+            // land on their element and track the page.
+            let clip = &entry.clip_bounds;
+            let frame_y = web_bounds.size.height - clip[3] * scale_y;
+            sublayer.setFrame(NSRect::new(
+                NSPoint::new(clip[0] * scale_x, frame_y),
+                NSSize::new((clip[2] - clip[0]) * scale_x, (clip[3] - clip[1]) * scale_y),
+            ));
+            sublayer.setCornerRadius(entry.corner_radius);
+            sublayer.setMasksToBounds(entry.corner_radius > 0.0);
+            let (z_index, paint_order) = entry.z_order;
+            sublayer.setZPosition((z_index as f64) * 10000.0 + (paint_order as f64));
+            debug!(
+                "[mac-embedder] sublayer {:?} parent={:?} surface={} clip={:?} z={:?} surface_size={:?} frame_pos={:?} frame_size={:?}",
+                entry.layer_id,
+                entry.parent,
+                entry.surface_id.is_some(),
+                entry.clip_bounds,
+                entry.z_order,
+                (entry.width, entry.height),
+                (clip[0] * scale_x, frame_y),
+                ((clip[2] - clip[0]) * scale_x, (clip[3] - clip[1]) * scale_y),
+            );
+
+            // Contents: the newest surface the layer carried, presented for
+            // the re-presented layer (a clean layer of a frame that never
+            // re-rendered it has no new surface and keeps the old
+            // contents).
+            if let Some(surface) = &entry.surface {
+                let padded_width = padded_surface_width(entry.width);
+                // SAFETY: the sublayer retains the surface; the surface is
+                // a valid Objective-C object (an IOSurface).
+                let _: () = unsafe { msg_send![&**sublayer, setContents: &**surface] };
+                sublayer.setContentsRect(NSRect::new(
+                    NSPoint::new(0.0, 0.0),
+                    NSSize::new(f64::from(entry.width) / f64::from(padded_width.max(1)), 1.0),
+                ));
+            }
+        }
+        objc2_quartz_core::CATransaction::commit();
+    }
+
     fn handle_new_layers(
         &mut self,
         webview_id: WebviewId,
@@ -2784,6 +3070,12 @@ impl MacApp {
         };
         let is_active = window_state.active_tab == Some(webview_id);
         let scale = window_state.scale;
+
+        // Record the arriving stream as the webview's stored layers before
+        // anything is presented: the cache is what a later tab switch
+        // re-presents, and for an inactive tab it is the only place the
+        // frame goes.
+        Self::store_layers(window_state, webview_id, &layers);
 
         // The compositor reports each layer's clip/transform in the root
         // navigable's local (pixel) coordinate space — the root surface is
@@ -2874,128 +3166,137 @@ impl MacApp {
             );
         }
 
-        // Child layers (cross-origin iframe navigables, video embed sites)
-        // become sublayers under web_layer (or their parent's sublayer). One
-        // transaction disables implicit animations for all moves/appearances.
-        objc2_quartz_core::CATransaction::begin();
-        objc2_quartz_core::CATransaction::setDisableActions(true);
-        let mut seen = HashSet::new();
-        for layer in &layers {
-            let layer_id = layer.topology.layer_id;
-            if layer.topology.parent.is_none() {
-                continue; // root handled above
-            }
-            seen.insert(layer_id);
+        // The live sublayer tree always mirrors the **active** tab's
+        // layers. A frame for an inactive tab only updated its stored
+        // state (store_layers above): it must not create, update, or drop
+        // anything in the tree, or a video frame from a background tab
+        // would be drawn over the visible tab (and its stale-drop would
+        // tear down the visible tab's own layers).
+        if is_active {
+            // Child layers (cross-origin iframe navigables, video embed
+            // sites) become sublayers under web_layer (or their parent's
+            // sublayer). One transaction disables implicit animations for
+            // all moves/appearances.
+            objc2_quartz_core::CATransaction::begin();
+            objc2_quartz_core::CATransaction::setDisableActions(true);
+            let mut seen = HashSet::new();
+            for layer in &layers {
+                let layer_id = layer.topology.layer_id;
+                if layer.topology.parent.is_none() {
+                    continue; // root handled above
+                }
+                seen.insert(layer_id);
 
-            // Resolve the parent CALayer: another sublayer if present, else
-            // the web_layer (the root navigable). Retained clone ends the
-            // sublayers borrow before the entry below.
-            let parent_layer = layer
-                .topology
-                .parent
-                .and_then(|parent_id| window_state.sublayers.get(&parent_id).cloned())
-                .unwrap_or_else(|| window_state.web_layer.clone());
+                // Resolve the parent CALayer: another sublayer if present, else
+                // the web_layer (the root navigable). Retained clone ends the
+                // sublayers borrow before the entry below.
+                let parent_layer = layer
+                    .topology
+                    .parent
+                    .and_then(|parent_id| window_state.sublayers.get(&parent_id).cloned())
+                    .unwrap_or_else(|| window_state.web_layer.clone());
 
-            if !window_state.sublayers.contains_key(&layer_id) {
-                let sublayer = CALayer::layer();
-                sublayer.setOpaque(true);
-                sublayer.setContentsScale(scale);
-                parent_layer.addSublayer(&sublayer);
-                window_state.sublayers.insert(layer_id, sublayer);
-            }
-            let Some(sublayer) = window_state.sublayers.get(&layer_id) else {
-                continue;
-            };
-
-            // Geometry: the layer's frame is its visible clip rect in its
-            // parent's space, converted from root-pixel space to web_layer
-            // point space; contents scale to fill (default
-            // contentsGravity = resize), matching the producer's placement.
-            //
-            // The clip is reported in the root navigable's top-down pixel
-            // space, while the web_layer (a layer-hosting view's backing
-            // layer) has a bottom-up (y-up) coordinate space. Mapping the
-            // top-down clip straight into the y-up frame would mirror the
-            // sublayer vertically: it would sit above its element and move
-            // opposite the page on scroll. Flip the y origin so sublayers
-            // land on their element and track the page.
-            let clip = &layer.topology.clip_bounds;
-            let frame_y = web_bounds.size.height - clip[3] * scale_y;
-            sublayer.setFrame(NSRect::new(
-                NSPoint::new(clip[0] * scale_x, frame_y),
-                NSSize::new((clip[2] - clip[0]) * scale_x, (clip[3] - clip[1]) * scale_y),
-            ));
-            sublayer.setCornerRadius(layer.topology.corner_radius);
-            sublayer.setMasksToBounds(layer.topology.corner_radius > 0.0);
-            let (z_index, paint_order) = layer.topology.z_order;
-            sublayer.setZPosition((z_index as f64) * 10000.0 + (paint_order as f64));
-            debug!(
-                "[mac-embedder] sublayer {:?} parent={:?} frame={} clip={:?} z={:?} surface_size={:?} frame_pos={:?} frame_size={:?}",
-                layer.topology.layer_id,
-                layer.topology.parent,
-                layer.frame.is_some(),
-                layer.topology.clip_bounds,
-                layer.topology.z_order,
-                layer
-                    .frame
-                    .as_ref()
-                    .map(|_| (layer.topology.width, layer.topology.height)),
-                (clip[0] * scale_x, frame_y),
-                ((clip[2] - clip[0]) * scale_x, (clip[3] - clip[1]) * scale_y,),
-            );
-
-            // Contents: only when re-rendered; a clean layer (frame: None)
-            // keeps its last surface untouched.
-            if let Some(frame) = &layer.frame {
-                let SurfaceFrame::SharedTexture {
-                    surface_id, port, ..
-                } = frame
-                else {
-                    continue;
-                };
-                let surface = IOSurfaceRef::lookup(*surface_id).or_else(|| {
-                    let port_name = port.clone().into_name();
-                    let surface = IOSurfaceRef::lookup_from_mach_port(port_name);
-                    deallocate_mach_port(port_name);
-                    surface
+                let sublayer = window_state.sublayers.entry(layer_id).or_insert_with(|| {
+                    let sublayer = CALayer::layer();
+                    sublayer.setOpaque(true);
+                    sublayer.setContentsScale(scale);
+                    parent_layer.addSublayer(&sublayer);
+                    sublayer
                 });
-                if let Some(surface) = surface {
-                    let padded_width = padded_surface_width(layer.topology.width);
-                    // SAFETY: the sublayer retains the surface; the surface
-                    // is a valid Objective-C object (an IOSurface).
-                    let _: () = unsafe { msg_send![&**sublayer, setContents: &*surface] };
-                    sublayer.setContentsRect(NSRect::new(
-                        NSPoint::new(0.0, 0.0),
-                        NSSize::new(
-                            f64::from(layer.topology.width) / f64::from(padded_width.max(1)),
-                            1.0,
-                        ),
-                    ));
+
+                // Geometry: the layer's frame is its visible clip rect in its
+                // parent's space, converted from root-pixel space to web_layer
+                // point space; contents scale to fill (default
+                // contentsGravity = resize), matching the producer's placement.
+                //
+                // The clip is reported in the root navigable's top-down pixel
+                // space, while the web_layer (a layer-hosting view's backing
+                // layer) has a bottom-up (y-up) coordinate space. Mapping the
+                // top-down clip straight into the y-up frame would mirror the
+                // sublayer vertically: it would sit above its element and move
+                // opposite the page on scroll. Flip the y origin so sublayers
+                // land on their element and track the page.
+                let clip = &layer.topology.clip_bounds;
+                let frame_y = web_bounds.size.height - clip[3] * scale_y;
+                sublayer.setFrame(NSRect::new(
+                    NSPoint::new(clip[0] * scale_x, frame_y),
+                    NSSize::new((clip[2] - clip[0]) * scale_x, (clip[3] - clip[1]) * scale_y),
+                ));
+                sublayer.setCornerRadius(layer.topology.corner_radius);
+                sublayer.setMasksToBounds(layer.topology.corner_radius > 0.0);
+                let (z_index, paint_order) = layer.topology.z_order;
+                sublayer.setZPosition((z_index as f64) * 10000.0 + (paint_order as f64));
+                debug!(
+                    "[mac-embedder] sublayer {:?} parent={:?} frame={} clip={:?} z={:?} surface_size={:?} frame_pos={:?} frame_size={:?}",
+                    layer.topology.layer_id,
+                    layer.topology.parent,
+                    layer.frame.is_some(),
+                    layer.topology.clip_bounds,
+                    layer.topology.z_order,
+                    layer
+                        .frame
+                        .as_ref()
+                        .map(|_| (layer.topology.width, layer.topology.height)),
+                    (clip[0] * scale_x, frame_y),
+                    ((clip[2] - clip[0]) * scale_x, (clip[3] - clip[1]) * scale_y,),
+                );
+
+                // Contents: only when re-rendered; a clean layer (frame: None)
+                // keeps its last surface untouched.
+                if let Some(frame) = &layer.frame {
+                    let SurfaceFrame::SharedTexture {
+                        surface_id, port, ..
+                    } = frame
+                    else {
+                        continue;
+                    };
+                    let surface = IOSurfaceRef::lookup(*surface_id).or_else(|| {
+                        let port_name = port.clone().into_name();
+                        let surface = IOSurfaceRef::lookup_from_mach_port(port_name);
+                        deallocate_mach_port(port_name);
+                        surface
+                    });
+                    if let Some(surface) = surface {
+                        let padded_width = padded_surface_width(layer.topology.width);
+                        // SAFETY: the sublayer retains the surface; the surface
+                        // is a valid Objective-C object (an IOSurface).
+                        let _: () = unsafe { msg_send![&**sublayer, setContents: &*surface] };
+                        sublayer.setContentsRect(NSRect::new(
+                            NSPoint::new(0.0, 0.0),
+                            NSSize::new(
+                                f64::from(layer.topology.width) / f64::from(padded_width.max(1)),
+                                1.0,
+                            ),
+                        ));
+                    }
                 }
             }
-        }
-        // Drop sublayers whose layer no longer exists this cycle (navigable
-        // torn down, video ended) — mirrors mark_child_frame_removed.
-        let stale: Vec<_> = window_state
-            .sublayers
-            .iter()
-            .filter(|(id, _)| !seen.contains(id))
-            .map(|(id, _)| *id)
-            .collect();
-        for id in stale {
-            if let Some(layer) = window_state.sublayers.remove(&id) {
-                debug!("[mac-embedder] remove sublayer {:?}", id);
-                layer.removeFromSuperlayer();
+            // Drop sublayers whose layer no longer exists this cycle (navigable
+            // torn down, video ended) — mirrors mark_child_frame_removed.
+            let stale: Vec<_> = window_state
+                .sublayers
+                .iter()
+                .filter(|(id, _)| !seen.contains(id))
+                .map(|(id, _)| *id)
+                .collect();
+            for id in stale {
+                if let Some(layer) = window_state.sublayers.remove(&id) {
+                    debug!("[mac-embedder] remove sublayer {:?}", id);
+                    layer.removeFromSuperlayer();
+                }
             }
-        }
-        objc2_quartz_core::CATransaction::commit();
+            objc2_quartz_core::CATransaction::commit();
 
-        // Pacing: animated content runs the display link; a static scene is
-        // presented once and only re-renders on demand.
-        if animating {
-            self.start_display_link();
-        } else {
-            self.stop_display_link();
+            // Pacing: animated content runs the display link; a static
+            // scene is presented once and only re-renders on demand. Only
+            // the active tab's frames drive the link: an inactive tab's
+            // frames must not keep it running over a static visible tab
+            // (or stop it under an animating one).
+            if animating {
+                self.start_display_link();
+            } else {
+                self.stop_display_link();
+            }
         }
     }
 }
@@ -3042,7 +3343,7 @@ fn capture_web_view_png(web_view: &NSView) -> Result<Vec<u8>, String> {
         bitmap.representationUsingType_properties(NSBitmapImageFileType::PNG, &properties)
     }
     .ok_or_else(|| String::from("failed to encode the screenshot as PNG"))?;
-    let mut buffer = vec![0u8; data.length() as usize];
+    let mut buffer = vec![0u8; data.length()];
     // SAFETY: `buffer` is exactly `data.length()` bytes and `getBytes_length`
     // writes exactly that many.
     unsafe {
@@ -3053,6 +3354,28 @@ fn capture_web_view_png(web_view: &NSView) -> Result<Vec<u8>, String> {
         );
     }
     Ok(buffer)
+}
+
+/// Import a shared surface for presentation: look it up by its global ID
+/// first (a surface object imported from its Mach port cannot be composited
+/// by CoreAnimation), falling back to the port when the ID is not
+/// resolvable. Returns the retained surface plus its global IOSurfaceID.
+/// `None` for a CPU frame (unsupported on this embedder) or a failed
+/// lookup.
+fn import_shared_surface(frame: &SurfaceFrame) -> Option<(CFRetained<IOSurfaceRef>, u32)> {
+    let SurfaceFrame::SharedTexture {
+        surface_id, port, ..
+    } = frame
+    else {
+        return None;
+    };
+    let surface = IOSurfaceRef::lookup(*surface_id).or_else(|| {
+        let port_name = port.clone().into_name();
+        let surface = IOSurfaceRef::lookup_from_mach_port(port_name);
+        deallocate_mach_port(port_name);
+        surface
+    });
+    surface.map(|surface| (surface, *surface_id))
 }
 
 /// Round a surface width up to a multiple of 64, the Metal constraint for
