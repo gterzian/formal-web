@@ -4,11 +4,9 @@
 use crate::shared::{clipboard_get_text, clipboard_set_text, window_viewport_snapshot};
 use automation::AutomationCommand;
 use log::error;
-use std::collections::HashMap;
 use std::sync::{Arc, LazyLock, Mutex, mpsc};
 use webview::{
-    ColorScheme, Embedder, EmbedderSchemeRequest, LayerFrame, NavigationCompleted, RegisteredFont,
-    WebviewId,
+    ColorScheme, Embedder, EmbedderSchemeRequest, LayerFrame, NavigationCompleted, WebviewId,
 };
 use winit::event_loop::EventLoopProxy;
 
@@ -72,12 +70,6 @@ pub fn event_loop_is_ready() -> bool {
 
 pub enum FormalWebUserEvent {
     RequestRedraw(WebviewId),
-    NewWebContentScene {
-        webview_id: WebviewId,
-        scene_bytes: Vec<u8>,
-        font_registrations: Vec<RegisteredFont>,
-        font_data: HashMap<usize, Vec<u8>>,
-    },
     NewWebContentLayers {
         webview_id: WebviewId,
         /// The per-layer frames: topology always, surface only for the
@@ -193,21 +185,6 @@ impl Embedder for EventLoopEmbedder {
     fn host_message(&self, webview_id: WebviewId, url: String, body: String) -> Result<(), String> {
         log::debug!("[embedder] host message from {url} in webview {webview_id:?}: {body}");
         Ok(())
-    }
-
-    fn new_web_content_scene(
-        &self,
-        webview_id: WebviewId,
-        scene_bytes: Vec<u8>,
-        font_registrations: Vec<RegisteredFont>,
-        font_data: HashMap<usize, Vec<u8>>,
-    ) -> Result<(), String> {
-        self.sink.send(FormalWebUserEvent::NewWebContentScene {
-            webview_id,
-            scene_bytes,
-            font_registrations,
-            font_data,
-        })
     }
 
     fn new_web_content_layers(

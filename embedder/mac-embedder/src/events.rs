@@ -4,11 +4,9 @@
 use crate::platform::{clipboard_get_text, clipboard_set_text, window_viewport_snapshot};
 use automation::AutomationCommand;
 use log::error;
-use std::collections::HashMap;
 use std::sync::{Arc, mpsc};
 use webview::{
-    ColorScheme, Embedder, EmbedderSchemeRequest, LayerFrame, NavigationCompleted, RegisteredFont,
-    WebviewId,
+    ColorScheme, Embedder, EmbedderSchemeRequest, LayerFrame, NavigationCompleted, WebviewId,
 };
 
 use crate::app::MainThreadHandle;
@@ -153,18 +151,6 @@ impl Embedder for EventLoopEmbedder {
 
     fn host_message(&self, webview_id: WebviewId, url: String, body: String) -> Result<(), String> {
         log::debug!("[embedder] host message from {url} in webview {webview_id:?}: {body}");
-        Ok(())
-    }
-
-    fn new_web_content_scene(
-        &self,
-        _webview_id: WebviewId,
-        _scene_bytes: Vec<u8>,
-        _font_registrations: Vec<RegisteredFont>,
-        _font_data: HashMap<usize, Vec<u8>>,
-    ) -> Result<(), String> {
-        // The scene is presented via the IOSurface surface path
-        // (`new_web_content_layers`); the scene-bytes payload is unused.
         Ok(())
     }
 

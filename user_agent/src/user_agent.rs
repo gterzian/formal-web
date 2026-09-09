@@ -229,15 +229,6 @@ pub trait Embedder: Send + Sync {
     /// process after parsing; the embedder labels the tab and window with it.
     /// <https://html.spec.whatwg.org/#the-title-element>
     fn title_changed(&self, webview_id: WebviewId, title: String) -> Result<(), String>;
-    /// Forward a composed web content scene from the graphics process to the
-    /// embedder for rendering.
-    fn new_web_content_scene(
-        &self,
-        webview_id: WebviewId,
-        scene_bytes: Vec<u8>,
-        font_registrations: Vec<ipc_messages::content::RegisteredFont>,
-        font_data: std::collections::HashMap<usize, Vec<u8>>,
-    ) -> Result<(), String>;
     /// Forward the per-layer rendered frame from the graphics process. Each
     /// layer carries its wire `topology` (transform, clip, z-order) plus the
     /// actual `frame` only when the layer was re-rendered this cycle; a clean

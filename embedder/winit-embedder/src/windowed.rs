@@ -23,7 +23,7 @@ use blitz_traits::events::{
     MouseEventButtons, PointerCoords, PointerDetails, UiEvent,
 };
 use blitz_traits::shell::ShellProvider;
-use kurbo::Affine;
+use kurbo::{Affine, RoundedRect};
 use serde_json::Value;
 use std::collections::{HashMap, HashSet};
 
@@ -32,7 +32,9 @@ use std::time::{Duration, Instant};
 use uuid::Uuid;
 #[cfg(target_os = "macos")]
 use webview::deallocate_mach_port;
-use webview::{NavigationCompletion, SurfaceFrame, WebviewId, WebviewProvider};
+use webview::{
+    CompositingLayerId, LayerFrame, NavigationCompletion, SurfaceFrame, WebviewId, WebviewProvider,
+};
 use winit::application::ApplicationHandler;
 use winit::dpi::{LogicalPosition, PhysicalPosition};
 use winit::event::{
@@ -76,13 +78,14 @@ impl TabState {
     }
 }
 
-/// Persistent GPU texture holding the latest composited surface pixels for
-/// one webview, registered once with the Vello renderer. One variant per
-/// delivery path: the CPU upload path fills the texture from shared-memory
-/// bytes each frame; the zero-copy path (macOS) wraps a shared IOSurface.
-pub(super) enum WebviewSurfaceTexture {
-    /// CPU upload path: the texture is exactly the viewport size and its
-    /// contents are replaced in place via `queue.write_texture`.
+/// A persistent GPU texture holding the latest rendered surface pixels for
+/// one layer of a webview's composition, registered once with the Vello
+/// renderer. One variant per delivery path: the CPU upload path fills the
+/// texture from shared-memory bytes each frame; the zero-copy path (macOS)
+/// wraps a shared IOSurface.
+pub(super) enum LayerSurface {
+    /// CPU upload path: the texture is exactly the layer's content size and
+    /// its contents are replaced in place via `queue.write_texture`.
     CpuUpload {
         texture: wgpu::Texture,
         /// Vello registration id; valid while `registered` is true.
@@ -101,11 +104,11 @@ pub(super) enum WebviewSurfaceTexture {
         texture: wgpu::Texture,
         /// Vello registration id; valid while `registered` is true.
         resource_id: ResourceId,
-        /// Logical (viewport) width/height of the surface content.
+        /// Logical (content) width/height of the surface.
         width: u32,
         height: u32,
         /// Physical width of the texture: the shared IOSurface is padded up
-        /// to a 64-multiple width (Metal constraint); the draw clips to
+        /// to a 64-multiple width (Metal constraint); drawing clips to
         /// `width`.
         texture_width: u32,
         /// False until the texture has been registered with the renderer.
@@ -117,59 +120,59 @@ pub(super) enum WebviewSurfaceTexture {
     },
 }
 
-impl WebviewSurfaceTexture {
+impl LayerSurface {
     fn width(&self) -> u32 {
         match self {
-            WebviewSurfaceTexture::CpuUpload { width, .. } => *width,
+            LayerSurface::CpuUpload { width, .. } => *width,
             #[cfg(target_os = "macos")]
-            WebviewSurfaceTexture::SharedSurface { width, .. } => *width,
+            LayerSurface::SharedSurface { width, .. } => *width,
         }
     }
 
     fn height(&self) -> u32 {
         match self {
-            WebviewSurfaceTexture::CpuUpload { height, .. } => *height,
+            LayerSurface::CpuUpload { height, .. } => *height,
             #[cfg(target_os = "macos")]
-            WebviewSurfaceTexture::SharedSurface { height, .. } => *height,
+            LayerSurface::SharedSurface { height, .. } => *height,
         }
     }
 
     /// Physical texture width; padded for the shared surface variant.
     fn texture_width(&self) -> u32 {
         match self {
-            WebviewSurfaceTexture::CpuUpload { width, .. } => *width,
+            LayerSurface::CpuUpload { width, .. } => *width,
             #[cfg(target_os = "macos")]
-            WebviewSurfaceTexture::SharedSurface { texture_width, .. } => *texture_width,
+            LayerSurface::SharedSurface { texture_width, .. } => *texture_width,
         }
     }
 
     fn texture(&self) -> &wgpu::Texture {
         match self {
-            WebviewSurfaceTexture::CpuUpload { texture, .. } => texture,
+            LayerSurface::CpuUpload { texture, .. } => texture,
             #[cfg(target_os = "macos")]
-            WebviewSurfaceTexture::SharedSurface { texture, .. } => texture,
+            LayerSurface::SharedSurface { texture, .. } => texture,
         }
     }
 
     fn resource_id(&self) -> ResourceId {
         match self {
-            WebviewSurfaceTexture::CpuUpload { resource_id, .. } => *resource_id,
+            LayerSurface::CpuUpload { resource_id, .. } => *resource_id,
             #[cfg(target_os = "macos")]
-            WebviewSurfaceTexture::SharedSurface { resource_id, .. } => *resource_id,
+            LayerSurface::SharedSurface { resource_id, .. } => *resource_id,
         }
     }
 
     fn is_registered(&self) -> bool {
         match self {
-            WebviewSurfaceTexture::CpuUpload { registered, .. } => *registered,
+            LayerSurface::CpuUpload { registered, .. } => *registered,
             #[cfg(target_os = "macos")]
-            WebviewSurfaceTexture::SharedSurface { registered, .. } => *registered,
+            LayerSurface::SharedSurface { registered, .. } => *registered,
         }
     }
 
     fn set_registration(&mut self, resource_id: ResourceId, registered: bool) {
         match self {
-            WebviewSurfaceTexture::CpuUpload {
+            LayerSurface::CpuUpload {
                 resource_id: id,
                 registered: reg,
                 ..
@@ -178,7 +181,7 @@ impl WebviewSurfaceTexture {
                 *reg = registered;
             }
             #[cfg(target_os = "macos")]
-            WebviewSurfaceTexture::SharedSurface {
+            LayerSurface::SharedSurface {
                 resource_id: id,
                 registered: reg,
                 ..
@@ -194,19 +197,76 @@ impl WebviewSurfaceTexture {
     #[cfg(target_os = "macos")]
     fn texture_id(&self) -> Option<u64> {
         match self {
-            WebviewSurfaceTexture::CpuUpload { .. } => None,
-            WebviewSurfaceTexture::SharedSurface { texture_id, .. } => Some(*texture_id),
+            LayerSurface::CpuUpload { .. } => None,
+            LayerSurface::SharedSurface { texture_id, .. } => Some(*texture_id),
         }
     }
+}
+
+/// The stored geometry and newest surface of one layer in a webview's
+/// composition, as last reported by the graphics process. Layers that are
+/// not re-rendered in a cycle arrive clean (with no new frame) and keep
+/// this state, so the layer's last surface stays on screen until the next
+/// time it changes.
+pub(super) struct StoredLayer {
+    pub(super) parent: Option<CompositingLayerId>,
+    /// Affine [a, b, c, d, tx, ty] mapping this layer's local coordinates
+    /// into its parent's local space; identity for the root navigable.
+    pub(super) transform: [f64; 6],
+    /// This layer's visible clip rect in its parent's local space.
+    pub(super) clip_bounds: [f64; 4],
+    pub(super) corner_radius: f64,
+    /// (z_index, paint_order) within the parent, for sibling ordering.
+    pub(super) z_order: (i32, u32),
+    /// The layer's content width: its surface is created at this size, and
+    /// a padded shared surface draws wider and is clipped back to it.
+    pub(super) width: u32,
+    /// The layer's GPU surface; None until the first frame for the layer
+    /// arrives. A clean layer keeps the surface it last carried.
+    pub(super) surface: Option<LayerSurface>,
+}
+
+/// One compositing layer quad scheduled for the next paint: where to draw
+/// the layer's surface and how to clip it, in window (physical pixel)
+/// coordinates.
+struct LayerDrawCommand {
+    /// Maps the layer's local space (its surface content) to the window;
+    /// includes the chrome offset that pushes the content area down.
+    transform: Affine,
+    /// Maps the layer's parent's local space to the window, for the clip
+    /// scope: `clip_bounds` lives in the parent's space.
+    clip_transform: Affine,
+    /// The layer's visible clip region in its parent's space, rounded when
+    /// the layer carries a corner radius.
+    clip: RoundedRect,
+    /// True for the root navigable layer, whose clip bounds are the outer
+    /// clip scope of the whole content area.
+    is_root: bool,
+    /// True when the quad needs its own clip scope: a padded shared
+    /// surface draws wider than its content, and a rounded layer draws
+    /// past its rect corners.
+    needs_clip: bool,
+    /// Vello registration id of the layer's surface texture.
+    resource_id: ResourceId,
+    /// Physical width of the surface texture; padded (wider than the
+    /// content) for shared IOSurfaces.
+    texture_width: u32,
+    height: u32,
 }
 
 /// Per-window state: owns a winit window, a renderer, chrome, and tabs
 pub(super) struct WindowState {
     pub(super) window: Option<Arc<Window>>,
     pub(super) renderer: VelloWindowRenderer,
-    /// Persistent GPU surface textures from the graphics process, keyed by
-    /// webview.
-    pub(super) surface_textures: HashMap<WebviewId, WebviewSurfaceTexture>,
+    /// The stored layer trees from the graphics process, per webview: each
+    /// compositing layer's geometry plus its persistent GPU surface.
+    pub(super) stored_layers: HashMap<WebviewId, HashMap<CompositingLayerId, StoredLayer>>,
+    /// The last `animating` flag the graphics process reported for each
+    /// webview: whether its composed scene contains animated content
+    /// (video, CSS animations) that needs frames at display cadence. A
+    /// visible animating tab keeps the redraw/pacing loop running so each
+    /// paint sends frame_needed to the UA.
+    pub(super) animating: HashMap<WebviewId, bool>,
     pub(super) chrome: Option<ChromeUi>,
     pub(super) tabs: HashMap<WebviewId, TabState>,
     pub(super) tab_order: Vec<WebviewId>,
@@ -224,7 +284,8 @@ impl WindowState {
         Self {
             window: None,
             renderer: VelloWindowRenderer::new(),
-            surface_textures: HashMap::new(),
+            stored_layers: HashMap::new(),
+            animating: HashMap::new(),
             chrome: None,
             tabs: HashMap::new(),
             tab_order: Vec::new(),
@@ -493,11 +554,15 @@ impl WindowedApp {
         }
         window.pre_present_notify();
 
-        // Re-register any surface textures whose Vello registration was
+        // Re-register any layer surfaces whose Vello registration was
         // dropped (e.g. after a renderer suspend).
-        for surface in state.surface_textures.values_mut() {
-            if !surface.is_registered() {
-                Self::register_surface_texture(&mut state.renderer, surface);
+        for stored in state.stored_layers.values_mut() {
+            for layer in stored.values_mut() {
+                if let Some(surface) = layer.surface.as_mut()
+                    && !surface.is_registered()
+                {
+                    Self::register_surface_texture(&mut state.renderer, surface);
+                }
             }
         }
 
@@ -510,63 +575,56 @@ impl WindowedApp {
             error!("[embedder] frame needed: {error}");
         }
 
+        // Build the per-layer quad plan for the active tab before rendering
+        // (it owns no borrow of the renderer). While a resize is in flight a
+        // layer's texture still holds the previous frame's dimensions, so
+        // the newly exposed area shows the surface base color until the
+        // next frame arrives; the quad is drawn at natural size rather than
+        // stretched.
+        let draw_plan = Self::content_draw_plan(state, chrome_height);
+        let quad_count = draw_plan
+            .as_ref()
+            .map_or(0, |(_, _, commands)| commands.len());
+        if quad_count > 0 {
+            info!(
+                "[render-pipe] Embedder paint webview={:?} layers={} at y={}",
+                state.active_tab, quad_count, chrome_height
+            );
+        }
         state.renderer.render(|scene| {
-            // Paint content surface if one is available.
-            let surface_found = state.active_tab.is_some_and(|webview_id| {
-                if let Some(surface) = state.surface_textures.get(&webview_id)
-                    && surface.is_registered()
-                {
-                    // Draw the texture at its natural (padded) size. While
-                    // a resize is in flight the texture still holds the
-                    // previous frame's dimensions, so the newly exposed area
-                    // shows the surface base color until the next frame
-                    // arrives; stretching it would look like the old content
-                    // is being pulled out of shape. The shared IOSurface is
-                    // padded to a 64-multiple width, so the padded region is
-                    // clipped to the logical content rect.
-                    let content_rect = kurbo::Rect::new(
-                        0.0,
-                        0.0,
-                        f64::from(surface.width()),
-                        f64::from(surface.height()),
-                    );
+            // Draw the web content layers. The outer clip scope is the root
+            // layer's clip bounds — the whole content area — so no sublayer
+            // quad can draw over the chrome or spill outside the window.
+            // Each padded or rounded layer clips itself inside it; every
+            // other quad lands exactly on its clip rect under the quad
+            // transform.
+            if let Some((content, outer_clip, commands)) = draw_plan {
+                scene.push_clip_layer(content, &outer_clip);
+                for command in &commands {
+                    if !command.is_root && command.needs_clip {
+                        scene.push_clip_layer(command.clip_transform, &command.clip);
+                    }
                     let texture_rect = kurbo::Rect::new(
                         0.0,
                         0.0,
-                        f64::from(surface.texture_width()),
-                        f64::from(surface.height()),
+                        f64::from(command.texture_width),
+                        f64::from(command.height),
                     );
-                    let content_transform = Affine::translate((0.0, chrome_height));
-                    scene.push_clip_layer(content_transform, &content_rect);
                     scene.fill(
                         peniko::Fill::NonZero,
-                        content_transform,
+                        command.transform,
                         PaintRef::Resource(peniko::ImageBrush {
-                            image: surface.resource_id(),
+                            image: command.resource_id,
                             sampler: Default::default(),
                         }),
                         None,
                         &texture_rect,
                     );
-                    scene.pop_layer();
-                    info!(
-                        "[render-pipe] Embedder paint webview={:?} {}x{} at y={}",
-                        webview_id,
-                        surface.width(),
-                        surface.height(),
-                        chrome_height
-                    );
-                    true
-                } else {
-                    info!(
-                        "[render-pipe] Embedder paint NO SURFACE for active_tab={:?}",
-                        webview_id
-                    );
-                    false
+                    if !command.is_root && command.needs_clip {
+                        scene.pop_layer();
+                    }
                 }
-            });
-            if !surface_found {
-                info!("[render-pipe] Embedder paint chrome-only");
+                scene.pop_layer();
             }
             // Always paint chrome, even when no content surface is available
             // (e.g. chrome-only hover, typing in address bar).
@@ -574,6 +632,331 @@ impl WindowedApp {
                 scene.append_scene(chrome_scene, Affine::IDENTITY);
             }
         });
+        // An animating active tab (video, CSS animations) needs the next
+        // frame at display cadence: keep requesting redraws so each paint
+        // sends frame_needed to the UA, which sustains the render cycle.
+        // (The AppKit embedder paces animated content with its
+        // CVDisplayLink.) The request is a no-op while the window is
+        // hidden or occluded, so the loop pauses there.
+        if state
+            .active_tab
+            .is_some_and(|webview_id| state.animating.get(&webview_id).copied().unwrap_or(false))
+        {
+            Self::request_window_redraw(state);
+        }
+    }
+
+    /// Record an arriving layer stream as the webview's stored layers:
+    /// every layer's geometry, plus a new persistent surface for each layer
+    /// re-rendered this cycle (a clean layer keeps the surface it last
+    /// carried). Layers absent from the stream have left the composition
+    /// (their navigable or video element is gone) and are dropped,
+    /// releasing their GPU textures. Runs for every frame, active tab or
+    /// not: an inactive tab's stream only updates this cache, which is what
+    /// a later tab switch repaints.
+    fn store_webview_layers(
+        state: &mut WindowState,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        webview_id: WebviewId,
+        layers: Vec<LayerFrame>,
+    ) {
+        let incoming: HashSet<CompositingLayerId> =
+            layers.iter().map(|layer| layer.topology.layer_id).collect();
+        if incoming.is_empty() {
+            // An empty stream (e.g. the compositor was reset mid-navigation)
+            // carries nothing to store; keep the last stored layers so the
+            // previous frame stays on screen until the next one arrives.
+            return;
+        }
+        // Take the previous stored layers out of the window state first, so
+        // the renderer can be borrowed freely while surfaces are replaced.
+        let mut previous = state.stored_layers.remove(&webview_id).unwrap_or_default();
+        let mut stored = HashMap::with_capacity(incoming.len());
+        for frame in layers {
+            let topology = frame.topology;
+            // A kept entry keeps its surface (the layer arrived clean); a
+            // fresh entry starts with no surface until the first frame.
+            let mut entry = StoredLayer {
+                parent: topology.parent,
+                transform: topology.transform,
+                clip_bounds: topology.clip_bounds,
+                corner_radius: topology.corner_radius,
+                z_order: topology.z_order,
+                width: topology.width,
+                surface: previous
+                    .remove(&topology.layer_id)
+                    .and_then(|entry| entry.surface),
+            };
+            if let Some(frame) = frame.frame {
+                entry.surface = Self::update_layer_surface(
+                    &mut state.renderer,
+                    device,
+                    queue,
+                    entry.surface.take(),
+                    topology.width,
+                    topology.height,
+                    frame,
+                );
+            }
+            stored.insert(topology.layer_id, entry);
+        }
+        // Release the surfaces of stored layers the stream no longer lists.
+        for (_, entry) in previous {
+            if let Some(surface) = entry.surface
+                && surface.is_registered()
+            {
+                state.renderer.unregister_resource(surface.resource_id());
+            }
+        }
+        state.stored_layers.insert(webview_id, stored);
+    }
+
+    /// Deliver one layer's rendered frame to its persistent surface
+    /// texture: upload the CPU pixels in place into the existing texture
+    /// when the size is unchanged, otherwise (re)create the texture at the
+    /// new size. On macOS the zero-copy frame wraps a shared IOSurface that
+    /// is imported when the surface (or its identity) changes. `existing`
+    /// is the layer's previous surface, kept when the layer arrived clean.
+    fn update_layer_surface(
+        renderer: &mut VelloWindowRenderer,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        existing: Option<LayerSurface>,
+        width: u32,
+        height: u32,
+        frame: SurfaceFrame,
+    ) -> Option<LayerSurface> {
+        match frame {
+            SurfaceFrame::CpuShmem(region) => {
+                let total_pixels = (width as usize) * (height as usize) * 4;
+                let pixels = region.as_slice();
+                if pixels.len() < total_pixels || width == 0 || height == 0 {
+                    info!(
+                        "[render-pipe] Embedder invalid surface {}x{} shmem={}B (expected {}B)",
+                        width,
+                        height,
+                        pixels.len(),
+                        total_pixels
+                    );
+                    return existing;
+                }
+                let surface = match existing {
+                    Some(surface @ LayerSurface::CpuUpload { .. })
+                        if surface.width() == width && surface.height() == height =>
+                    {
+                        surface
+                    }
+                    previous => {
+                        let mut surface = LayerSurface::CpuUpload {
+                            texture: Self::create_surface_texture(device, width, height),
+                            resource_id: ResourceId::new(),
+                            width,
+                            height,
+                            registered: false,
+                        };
+                        Self::register_surface_texture(renderer, &mut surface);
+                        if let Some(previous) = previous
+                            && previous.is_registered()
+                        {
+                            renderer.unregister_resource(previous.resource_id());
+                        }
+                        surface
+                    }
+                };
+                // Upload the new pixels in place into the persistent
+                // texture. `write_texture` copies the shared-memory bytes
+                // into a staging buffer synchronously; no allocation or
+                // Vello re-registration is involved.
+                let LayerSurface::CpuUpload { texture, .. } = &surface else {
+                    error!("[render-pipe] Embedder CPU frame for non-CPU surface layer");
+                    return Some(surface);
+                };
+                queue.write_texture(
+                    wgpu::TexelCopyTextureInfo {
+                        texture,
+                        mip_level: 0,
+                        origin: wgpu::Origin3d::ZERO,
+                        aspect: wgpu::TextureAspect::All,
+                    },
+                    &pixels[..total_pixels],
+                    wgpu::TexelCopyBufferLayout {
+                        offset: 0,
+                        bytes_per_row: Some(width * 4),
+                        rows_per_image: Some(height),
+                    },
+                    wgpu::Extent3d {
+                        width,
+                        height,
+                        depth_or_array_layers: 1,
+                    },
+                );
+                Some(surface)
+            }
+            #[cfg(target_os = "macos")]
+            SurfaceFrame::SharedTexture {
+                texture_id,
+                surface_id,
+                port,
+            } => {
+                // Zero-copy path: the frame was rendered directly into a
+                // shared IOSurface by the graphics process. Import the
+                // surface (once per surface identity) as the layer's
+                // persistent texture; on failure keep the previous surface.
+                let is_new_surface = match &existing {
+                    Some(surface) => {
+                        surface.width() != width
+                            || surface.height() != height
+                            || surface.texture_id() != Some(texture_id)
+                    }
+                    None => true,
+                };
+                if !is_new_surface {
+                    return existing;
+                }
+                // Look the shared surface up by its global ID first; fall
+                // back to the Mach port when the ID is not resolvable.
+                let surface_ref =
+                    objc2_io_surface::IOSurfaceRef::lookup(surface_id).or_else(|| {
+                        let port_name = port.into_name();
+                        let surface =
+                            objc2_io_surface::IOSurfaceRef::lookup_from_mach_port(port_name);
+                        deallocate_mach_port(port_name);
+                        surface
+                    });
+                let Some(surface_ref) = surface_ref else {
+                    error!("[embedder] IOSurfaceLookup failed for webview layer id={surface_id}");
+                    return existing;
+                };
+                let padded_width = Self::padded_surface_width(width);
+                let Some(texture) =
+                    Self::import_shared_surface(device, &surface_ref, padded_width, height)
+                else {
+                    error!("[embedder] failed to import shared surface for webview layer");
+                    return existing;
+                };
+                if let Some(previous) = existing
+                    && previous.is_registered()
+                {
+                    renderer.unregister_resource(previous.resource_id());
+                }
+                let mut surface = LayerSurface::SharedSurface {
+                    texture,
+                    resource_id: ResourceId::new(),
+                    width,
+                    height,
+                    texture_width: padded_width,
+                    registered: false,
+                    texture_id,
+                };
+                Self::register_surface_texture(renderer, &mut surface);
+                Some(surface)
+            }
+        }
+    }
+
+    /// Build the draw plan for the active tab's web content: the outer clip
+    /// (the root layer's clip bounds, i.e. the whole content area) plus the
+    /// ordered per-layer quads for every stored layer that has a registered
+    /// surface. Returns None while the active tab has no stored root layer.
+    fn content_draw_plan(
+        state: &WindowState,
+        chrome_height: f64,
+    ) -> Option<(Affine, RoundedRect, Vec<LayerDrawCommand>)> {
+        let webview_id = state.active_tab?;
+        let stored = state.stored_layers.get(&webview_id)?;
+        let root_id = stored
+            .iter()
+            .find_map(|(layer_id, layer)| layer.parent.is_none().then_some(*layer_id))?;
+        let content = Affine::translate((0.0, chrome_height));
+        let mut ordered: Vec<(CompositingLayerId, Affine, Affine)> = Vec::new();
+        Self::collect_layer_order(
+            stored,
+            root_id,
+            Affine::IDENTITY,
+            Affine::IDENTITY,
+            &mut ordered,
+        );
+        let mut commands = Vec::new();
+        for (layer_id, world, parent_world) in ordered {
+            let Some(layer) = stored.get(&layer_id) else {
+                continue;
+            };
+            let Some(surface) = layer
+                .surface
+                .as_ref()
+                .filter(|surface| surface.is_registered())
+            else {
+                continue;
+            };
+            commands.push(LayerDrawCommand {
+                transform: content * world,
+                clip_transform: content * parent_world,
+                clip: Self::clip_shape(layer),
+                is_root: layer.parent.is_none(),
+                // A padded shared surface draws wider than its content and
+                // a rounded layer draws past its rect corners; both need
+                // their own clip scope. The root's clip is the outer scope.
+                needs_clip: layer.corner_radius > 0.0 || surface.texture_width() != layer.width,
+                resource_id: surface.resource_id(),
+                texture_width: surface.texture_width(),
+                height: surface.height(),
+            });
+        }
+        if commands.is_empty() {
+            return None;
+        }
+        let root = stored.get(&root_id)?;
+        let outer_clip = Self::clip_shape(root);
+        Some((content, outer_clip, commands))
+    }
+
+    /// Collect the painter order of a layer subtree: the layer itself plus
+    /// its sublayers, each visited depth-first with its accumulated world
+    /// transform (layer-local → root-local space) and its parent's world
+    /// transform (for clip placement). Sublayers with a negative z-index
+    /// precede the layer (they paint below its content); the rest follow,
+    /// siblings ordered by ascending (z_index, paint_order) so later quads
+    /// composite on top of earlier ones.
+    fn collect_layer_order(
+        stored: &HashMap<CompositingLayerId, StoredLayer>,
+        layer_id: CompositingLayerId,
+        world: Affine,
+        parent_world: Affine,
+        ordered: &mut Vec<(CompositingLayerId, Affine, Affine)>,
+    ) {
+        let Some(layer) = stored.get(&layer_id) else {
+            return;
+        };
+        let child_world = world * Affine::new(layer.transform);
+        let mut children: Vec<(CompositingLayerId, (i32, u32))> = stored
+            .iter()
+            .filter_map(|(id, child)| {
+                (child.parent == Some(layer_id)).then_some((*id, child.z_order))
+            })
+            .collect();
+        children.sort_by_key(|(_, order)| *order);
+        for (child_id, (z_index, _)) in &children {
+            if *z_index < 0 {
+                Self::collect_layer_order(stored, *child_id, child_world, world, ordered);
+            }
+        }
+        ordered.push((layer_id, world, parent_world));
+        for (child_id, (z_index, _)) in &children {
+            if *z_index >= 0 {
+                Self::collect_layer_order(stored, *child_id, child_world, world, ordered);
+            }
+        }
+    }
+
+    /// The layer's visible clip region as a (possibly rounded) rectangle in
+    /// its parent's local space, as reported by the graphics process.
+    fn clip_shape(layer: &StoredLayer) -> RoundedRect {
+        let [x0, y0, x1, y1] = layer.clip_bounds;
+        let width = (x1 - x0).max(0.0);
+        let height = (y1 - y0).max(0.0);
+        let radius = layer.corner_radius.max(0.0).min(width.min(height) * 0.5);
+        RoundedRect::new(x0, y0, x0 + width, y0 + height, radius)
     }
 
     fn window_for_webview(app: &Self, webview_id: WebviewId) -> Option<WindowId> {
@@ -635,10 +1018,7 @@ impl WindowedApp {
     /// Register a surface texture with the Vello renderer, keeping the
     /// `ResourceId` stable across frames. No-op while the renderer is not
     /// active; `paint_frame` retries for unregistered textures.
-    fn register_surface_texture(
-        renderer: &mut VelloWindowRenderer,
-        surface: &mut WebviewSurfaceTexture,
-    ) {
+    fn register_surface_texture(renderer: &mut VelloWindowRenderer, surface: &mut LayerSurface) {
         if !renderer.is_active() {
             return;
         }
@@ -1392,48 +1772,24 @@ impl ApplicationHandler<FormalWebUserEvent> for WindowedApp {
             FormalWebUserEvent::ClipboardWrite { text, reply } => {
                 let _ = reply.send(write_clipboard_text(text));
             }
-            FormalWebUserEvent::NewWebContentScene { webview_id, .. } => {
-                // Removed: the IOSurface surface path replaces the old scene bytes path.
-                // Trigger a redraw so the surface-based path can render.
-                debug!(
-                    "[embedder] NewWebContentScene (ignored, using surface path) webview={:?}",
-                    webview_id,
-                );
-                if let Some(window) = Self::window_for_webview(self, webview_id)
-                    && let Some(state) = self.windows.get(&window)
-                {
-                    Self::request_window_redraw(state);
-                }
-            }
             FormalWebUserEvent::NewWebContentLayers {
-                webview_id, layers, ..
+                webview_id,
+                layers,
+                animating,
+                ..
             } => {
-                // Temporary: draw only the root navigable layer until the
-                // per-layer quad path lands (step 7).
-                let Some(root) = layers
-                    .into_iter()
-                    .find(|layer| layer.topology.parent.is_none())
-                else {
-                    return;
-                };
-                let Some(frame) = root.frame else {
-                    return;
-                };
-                let width = root.topology.width;
-                let height = root.topology.height;
+                // Store every arriving layer — geometry plus the newest
+                // frame for the layers re-rendered this cycle — then
+                // redraw so the quads repaint. The renderer must be active
+                // (window resumed) to create and register GPU textures; if
+                // not, drop the frame — the next one arrives once the
+                // window is rendering again.
                 let Some(window_id) = Self::window_for_webview(self, webview_id) else {
-                    info!(
-                        "[render-pipe] Embedder no window for webview={:?}",
-                        webview_id
-                    );
                     return;
                 };
                 let Some(state) = self.windows.get_mut(&window_id) else {
                     return;
                 };
-                // The renderer must be active (window resumed) to create and
-                // register GPU textures. If not, drop the frame — the next
-                // one arrives once the window is rendering again.
                 let Some(device_handle) = state.renderer.current_device_handle().cloned() else {
                     info!(
                         "[render-pipe] Embedder renderer inactive, dropping surface webview={:?}",
@@ -1441,173 +1797,22 @@ impl ApplicationHandler<FormalWebUserEvent> for WindowedApp {
                     );
                     return;
                 };
-
-                match frame {
-                    SurfaceFrame::CpuShmem(surface) => {
-                        let total_pixels = (width * height * 4) as usize;
-                        let pixels = surface.as_slice();
-                        info!(
-                            "[render-pipe] Embedder surface webview={:?} {}x{} pixels={}B active_tab={:?}",
-                            webview_id, width, height, total_pixels, state.active_tab
-                        );
-                        if pixels.len() < total_pixels || width == 0 || height == 0 {
-                            info!(
-                                "[render-pipe] Embedder invalid surface webview={:?} {}x{} shmem={}B (expected {}B)",
-                                webview_id,
-                                width,
-                                height,
-                                pixels.len(),
-                                total_pixels
-                            );
-                            return;
-                        }
-
-                        // Recreate the texture only when the viewport size
-                        // changed; otherwise keep the existing GPU resource
-                        // and just update its contents in place.
-                        let needs_new = match state.surface_textures.get(&webview_id) {
-                            Some(surface_tex) => {
-                                surface_tex.width() != width || surface_tex.height() != height
-                            }
-                            None => true,
-                        };
-                        if needs_new {
-                            if let Some(old) = state.surface_textures.remove(&webview_id)
-                                && old.is_registered()
-                            {
-                                state.renderer.unregister_resource(old.resource_id());
-                            }
-                            let texture =
-                                Self::create_surface_texture(&device_handle.device, width, height);
-                            let mut surface_tex = WebviewSurfaceTexture::CpuUpload {
-                                texture,
-                                resource_id: ResourceId::new(),
-                                width,
-                                height,
-                                registered: false,
-                            };
-                            Self::register_surface_texture(&mut state.renderer, &mut surface_tex);
-                            state.surface_textures.insert(webview_id, surface_tex);
-                        }
-
-                        // Upload the new pixels in place into the persistent
-                        // texture. `write_texture` copies the shared-memory
-                        // bytes into a staging buffer synchronously; no
-                        // allocation or Vello re-registration is involved.
-                        if let Some(surface_tex) = state.surface_textures.get_mut(&webview_id) {
-                            device_handle.queue.write_texture(
-                                wgpu::TexelCopyTextureInfo {
-                                    texture: surface_tex.texture(),
-                                    mip_level: 0,
-                                    origin: wgpu::Origin3d::ZERO,
-                                    aspect: wgpu::TextureAspect::All,
-                                },
-                                &pixels[..total_pixels],
-                                wgpu::TexelCopyBufferLayout {
-                                    offset: 0,
-                                    bytes_per_row: Some(width * 4),
-                                    rows_per_image: Some(height),
-                                },
-                                wgpu::Extent3d {
-                                    width,
-                                    height,
-                                    depth_or_array_layers: 1,
-                                },
-                            );
-                        } else {
-                            error!(
-                                "[embedder] missing surface texture for webview={:?} after insert",
-                                webview_id
-                            );
-                        }
-                    }
-                    #[cfg(target_os = "macos")]
-                    SurfaceFrame::SharedTexture {
-                        texture_id,
-                        surface_id,
-                        port,
-                    } => {
-                        // Zero-copy path: the frame was rendered directly
-                        // into a shared IOSurface by the graphics process.
-                        // Import the surface (once per texture id) as the
-                        // webview's persistent texture and blit it.
-                        info!(
-                            "[render-pipe] Embedder shared surface webview={:?} {}x{} texture_id={} active_tab={:?}",
-                            webview_id, width, height, texture_id, state.active_tab
-                        );
-                        let is_new_surface = match state.surface_textures.get(&webview_id) {
-                            Some(surface_tex) => {
-                                surface_tex.width() != width
-                                    || surface_tex.height() != height
-                                    || surface_tex.texture_id() != Some(texture_id)
-                            }
-                            None => true,
-                        };
-                        if is_new_surface {
-                            if let Some(old) = state.surface_textures.remove(&webview_id)
-                                && old.is_registered()
-                            {
-                                state.renderer.unregister_resource(old.resource_id());
-                            }
-                            // Look the shared surface up by its global ID
-                            // first; fall back to the Mach port when the ID
-                            // is not resolvable.
-                            let surface_ref = objc2_io_surface::IOSurfaceRef::lookup(surface_id)
-                                .or_else(|| {
-                                    let port_name = port.into_name();
-                                    let surface =
-                                        objc2_io_surface::IOSurfaceRef::lookup_from_mach_port(
-                                            port_name,
-                                        );
-                                    deallocate_mach_port(port_name);
-                                    surface
-                                });
-                            let Some(surface_ref) = surface_ref else {
-                                error!(
-                                    "[embedder] IOSurfaceLookup failed for webview={:?} id={surface_id}",
-                                    webview_id
-                                );
-                                return;
-                            };
-                            let padded_width = Self::padded_surface_width(width);
-                            let Some(texture) = Self::import_shared_surface(
-                                &device_handle.device,
-                                &surface_ref,
-                                padded_width,
-                                height,
-                            ) else {
-                                error!(
-                                    "[embedder] failed to import shared surface for webview={:?}",
-                                    webview_id
-                                );
-                                return;
-                            };
-                            let mut surface_tex = WebviewSurfaceTexture::SharedSurface {
-                                texture,
-                                resource_id: ResourceId::new(),
-                                width,
-                                height,
-                                texture_width: padded_width,
-                                registered: false,
-                                texture_id,
-                            };
-                            Self::register_surface_texture(&mut state.renderer, &mut surface_tex);
-                            state.surface_textures.insert(webview_id, surface_tex);
-                        }
-                    }
-                }
-                let is_active = state.active_tab == Some(webview_id);
-                info!(
-                    "[render-pipe] Embedder updated surface webview={:?} active={} tabs={:?} active_tab={:?} window={:?}",
-                    webview_id, is_active, state.tab_order, state.active_tab, window_id
+                Self::store_webview_layers(
+                    state,
+                    &device_handle.device,
+                    &device_handle.queue,
+                    webview_id,
+                    layers,
                 );
-                // A new surface frame is available; request a redraw so
-                // the next paint blits it.
+                state.animating.insert(webview_id, animating);
+                info!(
+                    "[render-pipe] Embedder stored layers webview={:?} window={:?}",
+                    webview_id, window_id
+                );
+                // A stored layer stream (a new frame or a geometry-only
+                // update) needs a repaint; request a redraw so the next
+                // paint redraws the quads at their latest positions.
                 Self::request_window_redraw(state);
-                info!(
-                    "[render-pipe] Embedder requested redraw for window={:?}",
-                    window_id
-                );
             }
             FormalWebUserEvent::Exit => event_loop.exit(),
         }
