@@ -19,8 +19,9 @@ the `formal-web-graphics` process — there is no separate media process.
 
 The crate `ipc/` provides an abstract IPC layer with two selectable backends.
 **`ipc-channel` is the default** (`default = ["ipc-channel-backend"]` in
-`ipc/Cargo.toml`). The native XPC backend remains available on macOS when the
-feature is disabled.
+`ipc/Cargo.toml`); **`bek`** (BrowserEngineKit) is the alternative. The two
+flags are independent and non-exclusive; with neither enabled, `ipc` fails to
+compile with a `compile_error` in `backend.rs`.
 
 ### 1. `ipc-channel` backend (default, works everywhere)
 
@@ -39,32 +40,50 @@ Uses Servo's [`ipc-channel`](https://crates.io/crates/ipc-channel) crate for:
   channels on both parent and child sides.
 
 **Selection**: Enabled by `default = ["ipc-channel-backend"]` in `ipc/Cargo.toml`.
-All extensions (content, net, media) use ipc-channel by default.
+All extensions (content, net, graphics) use ipc-channel by default. It is the
+only backend that runs on macOS — `ExtensionManifest::spawn` starts the helper
+binary from the embedder.
 
-### 2. Native XPC backend (macOS-only, experimental)
+### 2. `bek` backend (BrowserEngineKit — iOS/iPadOS only)
 
-Uses Apple's XPC framework directly for:
+Uses Apple's [BrowserEngineKit](https://developer.apple.com/documentation/browserenginekit)
+framework, which launches a browser engine's helper processes as **extensions**
+(`NetworkingProcess` / `WebContentProcess` / `RenderingProcess`) under the OS —
+no launchd plists, no `std::process::Command`:
 
-- **Bootstrap**: Parent connects to a launchd-registered XPC service name.
-  launchd starts the helper process and delivers the peer connection.
-- **Transport**: Postcard-serialized payloads carried as `_p` data fields in XPC
-  dictionaries (`xpc_dictionary_set_data` / `xpc_dictionary_get_data`).
-- **Shared memory**: `xpc_shmem_create` / `xpc_shmem_map` (stub — not yet wired to
-  the message pipeline).
+- **Launch**: The OS starts the extension process. `ExtensionManifest::spawn`
+  is never called; `ExtensionManifest::bek_target` maps the manifest to a BEK
+  extension category plus the bundle ID of the entitled extension target.
+  `Singleton` and `MultiInstance` manifests take the same path — BEK's
+  `WebContentProcess` model is inherently multi-instance.
+- **Transport**: The host calls `makeLibXPCConnection()` on the process object
+  and gets a raw `xpc_connection_t`. Everything downstream of that reuses the
+  libxpc layer (`xpc-sys`) identically to any other XPC connection:
+  postcard-serialized payloads carried as `_p` data fields in XPC dictionaries.
+- **Lifecycle**: `ExtensionHandle::invalidate` asks BEK to stop the process
+  (`bek_sys::invalidate`). `grant_capability`/`CapabilityGrant` request
+  per-task scheduling grants (`ProcessCapability` → BEK `ProcessCapability`)
+  nested inside a still-alive extension handle.
 
-**Selection**: Enabled on `target_vendor = "apple"` when the `ipc-channel-backend`
-feature is disabled (`--no-default-features`).
+**Selection**: Enabled with `--features bek` (or `--no-default-features
+--features bek` to build it without `ipc-channel`). The backend is per-crate
+compile-time today: when both features are on, the `ipc-channel` dispatch arm
+wins and the `bek` module is compiled but inert — runtime backend choice per
+manifest is future work.
 
-**Mixed-mode fallback**: When the feature is disabled, only `net` and `media`
-use XPC. The `content` process always uses ipc-channel (Unix domain sockets)
-because macOS AMFI rejects ad-hoc-signed embedded XPC services — a paid Apple
-Developer certificate would be required.
+**Platform reality**: BrowserEngineKit exists only in the iPhoneOS and
+iPhoneSimulator SDKs. `bek-sys`'s Swift shim compiles only for iOS-family
+targets; off-iOS its functions return transport errors so a macOS build that
+enables `bek` by mistake still compiles (but cannot launch anything). Adopting
+`bek` is a "port formal-web to iOS/iPadOS" project; see the design milestones
+in `ipc/bek-sys`'s documentation for what is validated versus what still needs
+entitlements, extension targets, and on-device integration.
 
 ## Crate Structure
 
 ```
 ipc/                          # Abstract IPC API
-├── Cargo.toml                # default = ["ipc-channel-backend"]
+├── Cargo.toml                # default = ["ipc-channel-backend"]; bek = ["dep:bek-sys"]
 ├── src/
 │   ├── lib.rs                # Re-exports
 │   ├── types.rs              # IpcSender, IpcIncoming, IpcSharedRegion,
@@ -74,63 +93,90 @@ ipc/                          # Abstract IPC API
 │   ├── backend.rs            # Feature-gated backend selection
 │   └── backend/
 │       ├── ipc_channel.rs    # ipc-channel backend: IpcOneShotServer bootstrap
-│       └── xpc.rs            # XPC backend: launchd listener + postcard
+│       └── bek.rs            # bek backend: BEK launch + libxpc transport,
+│                             # anonymous-endpoint primitives
 
-xpc-sys/                      # Minimal XPC FFI bindings (Apple only)
+xpc-sys/                      # Minimal XPC FFI bindings (Apple targets)
 ├── Cargo.toml
 ├── build.rs                  # cc-based C wrapper compilation
 ├── src/
 │   ├── lib.rs                # Conditional: re-exports apple.rs or compile_error
-│   ├── apple.rs              # XpcObject, XpcDictionary, XpcConnection,
-│   │                         # XpcSharedMemory, callback wrappers
+│   ├── apple.rs              # XpcObject, XpcDictionary, XpcEndpoint,
+│   │                         # XpcConnection, XpcSharedMemory, callbacks
 │   └── xpc_wrapper.c         # C shim: block-based XPC → callback-based FFI
 
-xpc-services/                 # Launchd XPC service configuration (XPC backend only)
-├── formal-web.net.plist
-├── formal-web.media.plist
-├── formal-web.content.plist
-├── install.sh
-└── README.md
+bek-sys/                      # BrowserEngineKit FFI (Swift shim, iOS targets)
+├── Cargo.toml
+├── build.rs                  # swiftc against the real framework for iOS targets
+├── src/
+│   ├── lib.rs                # re-exports shim::* (real or off-iOS stub)
+│   └── shim.rs               # extern "C" decls + wrappers (launch_process, ...)
+└── swift-shim/
+    └── BekShim.swift         # @_cdecl wrappers over BrowserEngineKit's
+                              # Swift-only, async API
 ```
+
+`xpc-sys` does not know or care how a connection came to exist: the launchd
+Mach-service constructors in `apple.rs`/`xpc_wrapper.c` are macOS-only (those
+APIs are unavailable on iOS), while `XpcConnection::from_raw`, the anonymous
+listener/endpoint helpers, and the peer-entitlement requirement methods are
+shared. Under `bek`, the connection object arrives from
+`bek_process_make_xpc_connection` and is wrapped with `from_raw` unchanged.
 
 ## Public API
 
 ```rust
-// Parent side: start a helper process
-let client = ipc::start_extension::<NetManifest, NetRequest, NetResponse>(&manifest)?;
-client.tx.send(NetRequest::Fetch { ... })?;       // send to child
-let response = client.rx.recv()?.payload;          // receive from child
-let child: Option<std::process::Child> = client.child;  // process handle
+// Parent side: launch a helper process from its manifest
+let (handle, connection) =
+    ipc::ExtensionHandle::launch::<NetManifest, Request, Response>(&manifest)?;
+connection.sender.send(Request::Fetch { .. })?;        // send to child
+let response = connection.receiver.recv()?.payload;     // receive from child
+handle.invalidate();                                    // stop the child
 
-// Child side: run as a helper process
-let server = ipc::run_extension::<NetManifest, NetRequest, NetResponse>(
-    &manifest, token, service_name)?;
-let request = server.rx.recv()?.payload;           // receive from parent
-server.tx.send(NetResponse { ... })?;              // send to parent
+// Child side: connect to the parent's bootstrap token and run
+ipc::run_extension::<Request, Response>(&token, move |server| {
+    // The child owns one end of the bootstrap connection; bridge its
+    // receiver to a crossbeam channel for select!-driven event loops.
+    let sender = server.connection.sender;
+    let incoming = ipc::crossbeam_proxy(server.connection.receiver);
+    loop {
+        match incoming.recv() {
+            Ok(incoming) => { let request = incoming.payload; /* ... */ }
+            Err(_) => break,
+        }
+    }
+    Ok(())
+})
 ```
+
+Extension manifests (`user_agent/src/ipc_manifest.rs`) implement
+`ExtensionManifest`: `endpoint()` names the topology, `spawn()` starts the
+binary under `ipc-channel`, and `bek_target()` maps net → `Networking`,
+graphics → `Rendering`, content → `WebContent` with the extension bundle IDs
+under the `bek` backend.
 
 ## Feature Selection
 
-The `ipc-channel-backend` feature is defined in `ipc/Cargo.toml` and inherited
-transitively by all crates that depend on `ipc`.
+The `ipc-channel-backend` and `bek` features are defined in `ipc/Cargo.toml`.
+`ipc-channel-backend` is inherited transitively by crates that depend on `ipc`
+(graphics, media, user_agent forward it); `bek` adds `bek-sys` as a
+dependency.
 
 ```bash
 # Default (ipc-channel everywhere — works on all platforms):
 cargo build --release
 cargo run --release
 
-# Mixed: XPC for net/media, ipc-channel for content (macOS only):
-cargo build --release --no-default-features --features media
-# Requires XPC service setup first:
-./ipc/xpc-services/install.sh $(pwd)/target/release
-launchctl load ~/Library/LaunchAgents/formal-web.net.plist
-launchctl load ~/Library/LaunchAgents/formal-web.media.plist
-cargo run --release --no-default-features --features media
+# iOS/iPadOS target validation build (bek backend, no entitlement needed —
+# compiles and links the real BrowserEngineKit Swift shim):
+rustup target add aarch64-apple-ios-sim
+cargo build -p ipc -p bek-sys --target aarch64-apple-ios-sim \
+  --no-default-features --features bek
 ```
 
 | Crate | Default backend | Alternative |
 |---|---|---|
-| All (content, net, media) | ipc-channel (`ipc-channel-backend` feature enabled) | XPC (macOS only, `--no-default-features`)| 
+| All (content, net, graphics) | ipc-channel (`ipc-channel-backend` feature enabled) | bek (iOS only, `--features bek`)| 
 
 ## Message Types
 
@@ -160,56 +206,51 @@ was already shipped in a previous paint frame. Each font is identified by a uniq
 `FontIdentifier`; the sender tracks which fonts have been sent and omits duplicates.
 The receiver caches font data by identifier.
 
-## XPC Backend — Status
+## `bek` Backend — Status
 
-The XPC backend is experimental and requires additional setup (launchd plists,
-ad-hoc code signing). It is disabled by default.
+The `bek` backend is validated at the API/ABI level and not yet runnable:
+launching a real BEK extension requires a code-signed, entitled app on a device
+or Simulator plus the EU/Japan alternative-browser-engine entitlements.
 
-### Requirements (XPC mode only)
+### What is in place
 
-1. Disable the default feature: `--no-default-features --features media`
-2. Build all helper binaries: `cargo build --release --no-default-features --features media`
-3. Install XPC service plists: `./ipc/xpc-services/install.sh $(pwd)/target/release`
-4. Load services: `launchctl load ~/Library/LaunchAgents/formal-web.net.plist`
-                               `~/Library/LaunchAgents/formal-web.media.plist`
-5. Run: `cargo run --release --no-default-features --features media`
+- **Real-API validation**: `bek-sys`'s Swift shim imports the actual
+  `BrowserEngineKit` module from the iPhoneSimulator SDK and wraps the real
+  classes (`NetworkingProcess`/`WebContentProcess`/`RenderingProcess`,
+  `makeLibXPCConnection()`, `grantCapability(_:)`, `invalidate()`). `build.rs`
+  compiles it on every iOS-target build; the `examples/ffi_link` example links
+  Rust's extern declarations against the compiled shim, checking the ABI.
+  `cargo build -p ipc -p bek-sys --target aarch64-apple-ios-sim
+  --no-default-features --features bek` is the green validation build.
+- **Transport reuse**: `IpcTransport::Xpc` + `XpcConnection::from_raw` handle a
+  BEK-supplied connection exactly like a self-created one; postcard-over-`_p`
+  messages are unchanged.
+- **Anonymous endpoints**: `bek::create_endpoint`/`accept_endpoint` + the
+  `xpc-sys` dictionary helpers (`set_endpoint`/`get_endpoint`, `XpcEndpoint`)
+  implement the host-relayed direct-connection pattern. Endpoints travel as
+  dictionary values inside XPC messages, never as byte blobs.
+- **Peer identity**: `XpcConnection::require_entitlement_value` /
+  `require_team_identity` wrap the `xpc_connection_set_peer_*_requirement`
+  family; `bek::launch_extension` asserts the extension-kind entitlement
+  (e.g. `com.apple.developer.web-browser-engine.webcontent`) before resuming
+  the connection.
 
-Check `launchctl list | grep formal-web` for exit codes:
-- `0` = clean exit ✅
-- Non-zero = investigate `log show --predicate 'process == "formal-web-*"'`
+### Remaining work
 
-### Known limitations
-
-- Content process cannot use XPC (macOS AMFI rejects ad-hoc-signed embedded
-  XPC services). Content always uses ipc-channel even in mixed mode.
-- Shared memory via `xpc_shmem_create` / `xpc_shmem_map` is not yet wired to
-  the message pipeline.
-- The anonymous XPC endpoint approach (`xpc_connection_create(NULL, queue)` +
-  `xpc_endpoint_create`) was explored for content multi-instance mode but
-  abandoned for the same AMFI reason. The `start_multi_instance`/`run_multi_instance`
-  code was removed in favour of always using ipc-channel for content.
-
-### macOS 26 XPC quirks
-
-Developers debugging the native XPC backend should be aware of these platform
-behaviours observed on macOS 26:
-
-- **Listener events are `XPC_TYPE_CONNECTION` directly**, not dictionaries.
-  The peer connection is the event object itself — use `fw_xpc_peer_from_event()`
-  and never call `xpc_dictionary_get_string` on a connection object (that
-  triggers `_xpc_api_misuse` → SIGTRAP).
-- **Mach cancel events deliver garbage pointers** (e.g., `0x10d8`, `0x1a0c`)
-  after the connection is closed. Rust callbacks must check pointer validity
-  before dereferencing. An `alive` flag in `SharedContext` prevents
-  use-after-free.
-- **`xpc_main` requires the main thread** — it calls `dispatch_main()`
-  internally and never returns. A C wrapper (`fw_xpc_run_service`) exists
-  but is currently unused; the XPC backend uses `listen()` + `resume()`
-  directly on a dedicated dispatch queue instead.
-- **Error events must never be swallowed.** XPC delivers `XPC_TYPE_ERROR`
-  events on connection invalidation. If these are not forwarded to Rust,
-  the parent process deadlocks waiting for a response from a dead helper.
-  The C wrapper and Rust callbacks both forward all event types.
+- The extension-side bootstrap: extension binaries receive their connection
+  from BEK's `handle(xpcConnection:)` callback (a Swift shell calling into
+  Rust), and reply to the host's anonymous-endpoint requests. `run_extension`
+  returns a transport error under `bek` until that reverse direction exists.
+- `grant_capability` call sites in `user_agent`'s dispatch (wrap sends in a
+  grant under `bek`, no-op otherwise).
+- Shared-memory receive side: `send_with_shmem_map`'s Xpc arm attaches
+  `xpc_shmem_create` regions to the outgoing dictionary, but the receiving
+  handler does not map them back into `IpcIncoming::shmem_regions` yet.
+- Rendering-extension consolidation: BEK has one rendering category; the
+  graphics and media process roles need merging inside it (see the design).
+- JIT entitlements for the JS engine (V8/JSC) on iOS.
+- An iOS host embedder shell + Xcode "iOS Generic Extension" targets + `arm64e`
+  builds, all of which need the EU/Japan entitlements first.
 
 ## Verification Trace Support
 

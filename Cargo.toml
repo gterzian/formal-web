@@ -45,6 +45,7 @@ members = [
     "graphics",
     "ipc",
     "ipc/xpc-sys",
+    "ipc/bek-sys",
     "embedder",
     "embedder/winit-embedder",
     "embedder/mac-embedder",

@@ -5,14 +5,18 @@ edition = "2024"
 publish = false
 
 [features]
+# The two backends are independent, non-exclusive feature flags. `bek` and
+# `ipc-channel-backend` can both be enabled in one binary (the backend is
+# chosen per-extension at runtime); with neither enabled the crate fails to
+# compile on macOS and iOS with a compile_error in `src/backend.rs`.
 default = ["ipc-channel-backend"]
-# When enabled (default), uses ipc-channel for ALL extensions (net, media, content).
-# When disabled, uses a mixed backend:
-#   - Native XPC for net and media (launchd services)
-#   - ipc-channel for content (Unix domain sockets; XPC not usable —
-#     macOS AMFI rejects ad-hoc-signed embedded XPC services).
+# ipc-channel transport for ALL extensions (net, media, content).
 ipc-channel-backend = []
-bek = []
+# BrowserEngineKit backend: the OS launches extension processes via
+# NetworkingProcess/WebContentProcess/RenderingProcess and the transport is
+# libxpc (`IpcTransport::Xpc`). Compiles on any target; launching is only
+# possible on iOS/iPadOS, where BrowserEngineKit exists (see `bek-sys`).
+bek = ["dep:bek-sys"]
 
 [dependencies]
 crossbeam-channel = "0.5"
@@ -24,11 +28,14 @@ postcard = { version = "1", features = ["use-std"] }
 # (see Module docs in backend.rs).
 ipc-channel = { git = "https://github.com/gterzian/ipc-channel", rev = "169da83" }
 
-# xpc-sys is only needed on Apple targets without ipc-channel-backend.
-# Cargo cfg-gated dependencies don't support feature selectors in the
-# target table, so we add it unconditionally for now. The crate is a
-# no-op stub on non-Apple targets.
+# xpc-sys wraps the libxpc layer used by the `bek` backend's `Xpc` transport
+# (and, on macOS, still provides the launchd primitives). The crate is a
+# no-op stub off Apple targets.
 xpc-sys = { path = "xpc-sys" }
+
+# bek-sys links the BrowserEngineKit Swift shim (iOS targets only; off-iOS it
+# is a compile-only stub). Only pulled in when the `bek` feature is enabled.
+bek-sys = { path = "bek-sys", optional = true }
 
 [lib]
 path = "src/lib.rs"

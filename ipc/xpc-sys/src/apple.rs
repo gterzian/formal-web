@@ -21,6 +21,8 @@ unsafe extern "C" {
     static _xpc_type_connection: c_void;
     static _xpc_type_error: c_void;
     static _xpc_type_dictionary: c_void;
+    static _xpc_type_shmem: c_void;
+    static _xpc_type_endpoint: c_void;
 }
 
 pub type XpcListenerEventCallback = unsafe extern "C" fn(event: xpc_object_t, context: *mut c_void);
@@ -28,18 +30,21 @@ pub type XpcPeerMessageCallback =
     unsafe extern "C" fn(dictionary: xpc_object_t, context: *mut c_void);
 
 unsafe extern "C" {
+    #[cfg(target_os = "macos")]
     pub fn fw_xpc_create_listener(
         service_name: *const c_char,
         queue: dispatch_queue_t,
         callback: Option<XpcListenerEventCallback>,
         context: *mut c_void,
     ) -> xpc_connection_t;
+    #[cfg(target_os = "macos")]
     pub fn fw_xpc_create_client(
         service_name: *const c_char,
         queue: dispatch_queue_t,
         callback: Option<XpcPeerMessageCallback>,
         context: *mut c_void,
     ) -> xpc_connection_t;
+    #[cfg(target_os = "macos")]
     pub fn fw_xpc_create_connection(
         service_name: *const c_char,
         queue: dispatch_queue_t,
@@ -61,6 +66,7 @@ unsafe extern "C" {
     pub fn fw_xpc_peer_from_event(event: xpc_object_t) -> xpc_connection_t;
     pub fn fw_xpc_resume(connection: xpc_connection_t);
     pub fn fw_xpc_cancel(connection: xpc_connection_t);
+    #[cfg(target_os = "macos")]
     pub fn fw_xpc_run_service(
         handler: Option<unsafe extern "C" fn(xpc_connection_t, *mut c_void)>,
         context: *mut c_void,
@@ -100,8 +106,11 @@ unsafe extern "C" {
     pub fn xpc_dictionary_set_value(dict: xpc_object_t, key: *const c_char, value: xpc_object_t);
     pub fn xpc_connection_send_message(connection: xpc_connection_t, message: xpc_object_t);
     pub fn xpc_shmem_create(region: *mut c_void, size: usize) -> xpc_object_t;
-    pub fn xpc_shmem_map(shmem: xpc_object_t) -> *mut c_void;
+    // Real signature: `size_t xpc_shmem_map(xpc_object_t, void **region)` —
+    // the mapped region is written to the out-param and the length returned.
+    pub fn xpc_shmem_map(shmem: xpc_object_t, region: *mut *mut c_void) -> usize;
     pub fn xpc_shmem_get_length(shmem: xpc_object_t) -> usize;
+    pub fn xpc_bool_create(value: bool) -> xpc_object_t;
     pub fn xpc_connection_create(
         name: *const c_char,
         targetq: dispatch_queue_t,
@@ -111,6 +120,15 @@ unsafe extern "C" {
         endpoint: xpc_object_t,
         queue: dispatch_queue_t,
     ) -> xpc_connection_t;
+    pub fn xpc_connection_set_peer_team_identity_requirement(
+        connection: xpc_connection_t,
+        signing_identifier: *const c_char,
+    ) -> i32;
+    pub fn xpc_connection_set_peer_entitlement_matches_value_requirement(
+        connection: xpc_connection_t,
+        entitlement: *const c_char,
+        value: xpc_object_t,
+    ) -> i32;
     pub fn dispatch_queue_create(label: *const c_char, attr: dispatch_queue_t) -> dispatch_queue_t;
     pub fn dispatch_retain(object: dispatch_queue_t) -> dispatch_queue_t;
     pub fn dispatch_release(object: dispatch_queue_t);
@@ -120,11 +138,22 @@ pub struct XpcObject {
     inner: xpc_object_t,
 }
 impl XpcObject {
+    /// Wrap a raw retained XPC object.
+    ///
+    /// # Safety
+    ///
+    /// `inner` must be a valid XPC object reference that the caller owns;
+    /// the wrapper releases it on drop.
     pub unsafe fn from_raw(inner: xpc_object_t) -> Self {
         XpcObject { inner }
     }
     pub fn as_raw(&self) -> xpc_object_t {
         self.inner
+    }
+    /// Create a bool object, e.g. as the expected value of a
+    /// peer-entitlement requirement.
+    pub fn new_bool(value: bool) -> Self {
+        unsafe { XpcObject::from_raw(xpc_bool_create(value)) }
     }
     pub fn into_raw(self) -> xpc_object_t {
         let raw = self.inner;
@@ -162,6 +191,19 @@ impl XpcDictionary {
             }
         }
     }
+}
+impl Default for XpcDictionary {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+impl XpcDictionary {
+    /// Wrap an owned XPC dictionary object.
+    ///
+    /// # Safety
+    ///
+    /// `object` must be a valid dictionary object the caller owns; the
+    /// wrapper releases it on drop.
     pub unsafe fn from_object(object: XpcObject) -> Self {
         XpcDictionary { object }
     }
@@ -285,6 +327,89 @@ impl XpcDictionary {
             }
         }
     }
+    /// Set an arbitrary XPC object (e.g. an endpoint or shmem region) under
+    /// `key`. `xpc_dictionary_set_value` retains the object.
+    pub fn set_object(&mut self, key: &str, object: &XpcObject) {
+        let ck = CString::new(key).unwrap();
+        unsafe {
+            xpc_dictionary_set_value(self.object.as_raw(), ck.as_ptr(), object.as_raw());
+        }
+    }
+    /// Get an arbitrary XPC object stored under `key` (retained for the
+    /// caller).
+    pub fn get_object(&self, key: &str) -> Option<XpcObject> {
+        let ck = CString::new(key).unwrap();
+        unsafe {
+            let v = xpc_dictionary_get_value(self.object.as_raw(), ck.as_ptr());
+            if v.is_null() {
+                None
+            } else {
+                Some(XpcObject::from_raw(xpc_retain(v)))
+            }
+        }
+    }
+    /// Set an anonymous-endpoint object under `key`. Endpoints are
+    /// transferable only inside XPC messages, never as byte blobs, so they
+    /// travel as dictionary values.
+    pub fn set_endpoint(&mut self, key: &str, endpoint: &XpcEndpoint) {
+        let ck = CString::new(key).unwrap();
+        unsafe {
+            xpc_dictionary_set_value(self.object.as_raw(), ck.as_ptr(), endpoint.as_raw());
+        }
+    }
+    /// Get an anonymous-endpoint object stored under `key`, if the value
+    /// there is actually an XPC endpoint.
+    pub fn get_endpoint(&self, key: &str) -> Option<XpcEndpoint> {
+        let object = self.get_object(key)?;
+        unsafe {
+            if std::ptr::eq(
+                xpc_get_type(object.as_raw()),
+                &_xpc_type_endpoint as *const c_void,
+            ) {
+                Some(XpcEndpoint { object })
+            } else {
+                None
+            }
+        }
+    }
+    /// Get a shared-memory region stored under `key`, if the value there is
+    /// actually an XPC shmem object.
+    pub fn get_shmem(&self, key: &str) -> Option<XpcSharedMemory> {
+        let object = self.get_object(key)?;
+        unsafe {
+            if std::ptr::eq(
+                xpc_get_type(object.as_raw()),
+                &_xpc_type_shmem as *const c_void,
+            ) {
+                XpcSharedMemory::map_object(object).ok()
+            } else {
+                None
+            }
+        }
+    }
+}
+
+// ── XpcEndpoint ────────────────────────────────────────────────────────────
+
+/// An anonymous XPC endpoint: a transferable reference to an anonymous
+/// listener that another process connects to with
+/// `xpc_connection_create_from_endpoint`. Endpoints travel inside XPC
+/// messages (as dictionary values), never as arbitrary byte blobs.
+pub struct XpcEndpoint {
+    object: XpcObject,
+}
+impl XpcEndpoint {
+    /// Wrap an anonymous listener connection as an endpoint.
+    pub fn from_connection(connection: &XpcConnection) -> Self {
+        unsafe {
+            XpcEndpoint {
+                object: XpcObject::from_raw(xpc_endpoint_create(connection.as_raw())),
+            }
+        }
+    }
+    pub fn as_raw(&self) -> xpc_object_t {
+        self.object.as_raw()
+    }
 }
 
 // ── XpcSharedMemory ─────────────────────────────────────────────────────────
@@ -299,6 +424,24 @@ pub struct XpcSharedMemory {
     needs_munmap: bool,
 }
 impl XpcSharedMemory {
+    /// Wrap an existing writable memory region as an XPC shared-memory
+    /// object for transfer in a message. The caller keeps ownership of the
+    /// region; releasing the object does not unmap it.
+    ///
+    /// # Safety
+    ///
+    /// `ptr` must point to `size` bytes of valid, page-backed memory that
+    /// stays alive until the message carrying this object has been sent.
+    pub unsafe fn wrap(ptr: *mut c_void, size: usize) -> Self {
+        unsafe {
+            XpcSharedMemory {
+                object: XpcObject::from_raw(xpc_shmem_create(ptr, size)),
+                ptr: ptr as *mut u8,
+                size,
+                needs_munmap: false,
+            }
+        }
+    }
     pub fn allocate(size: usize) -> Result<Self, String> {
         unsafe {
             let p = libc::mmap(
@@ -325,16 +468,26 @@ impl XpcSharedMemory {
             })
         }
     }
+    /// Map an XPC shared-memory object into this process's address space.
+    /// The returned region must be unmapped by the caller (the wrapper's
+    /// `Drop` does this via `munmap`).
+    ///
+    /// # Safety
+    ///
+    /// `object` must be a valid XPC shmem object and must outlive the
+    /// returned mapping.
     pub unsafe fn map_object(object: XpcObject) -> Result<Self, String> {
-        let p = unsafe { xpc_shmem_map(object.as_raw()) };
-        if p.is_null() {
+        let mut region: *mut c_void = ptr::null_mut();
+        // xpc_shmem_map writes the mapped region into the out-param and
+        // returns its length.
+        let size = unsafe { xpc_shmem_map(object.as_raw(), &mut region) };
+        if region.is_null() {
             return Err("xpc_shmem_map failed".into());
         }
-        let s = unsafe { xpc_shmem_get_length(object.as_raw()) };
         Ok(XpcSharedMemory {
             object,
-            ptr: p as *mut u8,
-            size: s,
+            ptr: region as *mut u8,
+            size,
             needs_munmap: true,
         })
     }
@@ -365,6 +518,15 @@ struct ContextEntry {
     ptr: *mut c_void,
     cleanup: unsafe fn(*mut c_void),
 }
+
+// SAFETY: the raw pointer is only ever dereferenced while holding the
+// `entries` mutex (or never — late mach-cancel callbacks bail out on the
+// `alive` flag before touching it), and `XpcConnection` itself is already
+// declared `Send + Sync` on the same grounds.
+unsafe impl Send for ContextEntry {}
+unsafe impl Sync for ContextEntry {}
+unsafe impl Send for SharedContext {}
+unsafe impl Sync for SharedContext {}
 
 /// Shared context slot between the C callback and `XpcConnection::drop`.
 /// The Mutex ensures exclusive access: while the callback holds the lock,
@@ -439,7 +601,7 @@ unsafe extern "C" fn xpc_peer_callback(object: xpc_object_t, context: *mut c_voi
 
     let object_type = unsafe { xpc_get_type(object) };
     let is_dictionary =
-        unsafe { object_type == &_xpc_type_dictionary as *const _ as *const c_void };
+        unsafe { std::ptr::eq(object_type, &_xpc_type_dictionary as *const c_void) };
 
     if is_dictionary {
         let dict = unsafe { XpcObject::from_raw(xpc_retain(object)) };
@@ -448,7 +610,7 @@ unsafe extern "C" fn xpc_peer_callback(object: xpc_object_t, context: *mut c_voi
         // Non-dictionary: error or invalidation.
         let error_key = CString::new("XPCErrorDescription").unwrap();
         // Only call dict getters on error objects (not on connection/other types).
-        let error_str = if unsafe { object_type == &_xpc_type_error as *const _ as *const c_void } {
+        let error_str = if unsafe { std::ptr::eq(object_type, &_xpc_type_error as *const c_void) } {
             unsafe { xpc_dictionary_get_string(object, error_key.as_ptr()) }
         } else {
             std::ptr::null()
@@ -499,7 +661,7 @@ unsafe extern "C" fn xpc_listener_callback(event: xpc_object_t, context: *mut c_
 
     let event_type = unsafe { xpc_get_type(event) };
 
-    if unsafe { event_type == &_xpc_type_connection as *const _ as *const c_void } {
+    if unsafe { std::ptr::eq(event_type, &_xpc_type_connection as *const c_void) } {
         // New peer connection.
         let peer_inner = unsafe { fw_xpc_peer_from_event(event) };
         let peer_queue = create_queue("com.formal-web.xpc-peer");
@@ -508,7 +670,7 @@ unsafe extern "C" fn xpc_listener_callback(event: xpc_object_t, context: *mut c_
             _queue: peer_queue,
             context: Arc::new(Mutex::new(None)),
         }));
-    } else if unsafe { event_type == &_xpc_type_error as *const _ as *const c_void } {
+    } else if unsafe { std::ptr::eq(event_type, &_xpc_type_error as *const c_void) } {
         // Error / invalidation.
         let error_key = CString::new("XPCErrorDescription").unwrap();
         let error_str = unsafe { xpc_dictionary_get_string(event, error_key.as_ptr()) };
@@ -520,7 +682,7 @@ unsafe extern "C" fn xpc_listener_callback(event: xpc_object_t, context: *mut c_
             String::from("listener error")
         };
         handler(XpcListenerEvent::Error(msg));
-    } else if unsafe { event_type == &_xpc_type_dictionary as *const _ as *const c_void } {
+    } else if unsafe { std::ptr::eq(event_type, &_xpc_type_dictionary as *const c_void) } {
         // Dictionary (first message) — pass as peer via fw_xpc_peer_from_event
         // which casts to xpc_connection_t.
         let peer_inner = unsafe { fw_xpc_peer_from_event(event) };
@@ -574,22 +736,22 @@ impl Drop for XpcConnection {
         // is intentionally LEAKED so that late-arriving mach cancel
         // events (macOS 26+) can still check the alive flag without
         // accessing freed memory.
-        if let Ok(mut guard) = self.context.lock() {
-            if let Some(entry) = guard.take() {
-                unsafe {
-                    let shared = &*(entry.ptr as *const SharedContext);
-                    shared.invalidate();
-                    // Free the inner double-boxed closure.
-                    if let Ok(mut inner_guard) = shared.entries.lock() {
-                        if let Some(inner_entry) = inner_guard.take() {
-                            (inner_entry.cleanup)(inner_entry.ptr);
-                        }
-                    }
-                    // Leak the outer Box<SharedContext> — it must stay alive
-                    // for late callbacks that check is_alive().
-                    // entry.cleanup is NOT called — it would free the
-                    // Box<SharedContext>, which we need to keep.
+        if let Ok(mut guard) = self.context.lock()
+            && let Some(entry) = guard.take()
+        {
+            unsafe {
+                let shared = &*(entry.ptr as *const SharedContext);
+                shared.invalidate();
+                // Free the inner double-boxed closure.
+                if let Ok(mut inner_guard) = shared.entries.lock()
+                    && let Some(inner_entry) = inner_guard.take()
+                {
+                    (inner_entry.cleanup)(inner_entry.ptr);
                 }
+                // Leak the outer Box<SharedContext> — it must stay alive
+                // for late callbacks that check is_alive().
+                // entry.cleanup is NOT called — it would free the
+                // Box<SharedContext>, which we need to keep.
             }
         }
         unsafe {
@@ -599,8 +761,9 @@ impl Drop for XpcConnection {
 }
 
 impl XpcConnection {
-    // ── connect (launchd Mach service) ───────────────────────────────────
+    // ── connect (launchd Mach service, macOS only) ───────────────────────
 
+    #[cfg(target_os = "macos")]
     pub fn connect<F: Fn(XpcMessageEvent) + Send + 'static>(
         service_name: &str,
         handler: F,
@@ -635,8 +798,9 @@ impl XpcConnection {
         }
     }
 
-    // ── connect_embedded (embedded XPC service, bypasses launchd) ───────
+    // ── connect_embedded (embedded XPC service, macOS only) ─────────────
 
+    #[cfg(target_os = "macos")]
     pub fn connect_embedded<F: Fn(XpcMessageEvent) + Send + 'static>(
         service_name: &str,
         handler: F,
@@ -669,8 +833,9 @@ impl XpcConnection {
         }
     }
 
-    // ── listen ───────────────────────────────────────────────────────────
+    // ── listen (macOS only) ─────────────────────────────────────────────
 
+    #[cfg(target_os = "macos")]
     pub fn listen<F: Fn(XpcListenerEvent) + Send + 'static>(
         service_name: &str,
         handler: F,
@@ -803,6 +968,53 @@ impl XpcConnection {
     }
     pub fn cancel(&self) {
         unsafe { fw_xpc_cancel(self.inner) }
+    }
+
+    // ── peer code-signing requirements ────────────────────────────────────
+    //
+    // Require the peer on the other end of this connection to satisfy a
+    // code-signing/entitlement check before any message is accepted. Only
+    // one of the `xpc_connection_set_peer_*_requirement` family may be set
+    // per connection.
+
+    /// Require the peer to be signed with the same team identifier as the
+    /// current process and, when `signing_identifier` is given, to carry
+    /// that signing identifier.
+    ///
+    /// Returns `Ok(())` when the requirement was installed; a non-zero
+    /// result means the requirement was invalid or already set.
+    pub fn require_team_identity(&self, signing_identifier: Option<&str>) -> Result<(), i32> {
+        let c_identifier = signing_identifier.map(|id| CString::new(id).unwrap());
+        let result = unsafe {
+            xpc_connection_set_peer_team_identity_requirement(
+                self.inner,
+                c_identifier
+                    .as_ref()
+                    .map_or(ptr::null(), |cstring| cstring.as_ptr()),
+            )
+        };
+        if result == 0 { Ok(()) } else { Err(result) }
+    }
+
+    /// Require the peer to hold the given entitlement with the given value
+    /// (e.g. `com.apple.developer.web-browser-engine.webcontent` = `true`).
+    ///
+    /// Returns `Ok(())` when the requirement was installed; a non-zero
+    /// result means the requirement was invalid or already set.
+    pub fn require_entitlement_value(
+        &self,
+        entitlement: &str,
+        expected: &XpcObject,
+    ) -> Result<(), i32> {
+        let c_entitlement = CString::new(entitlement).unwrap();
+        let result = unsafe {
+            xpc_connection_set_peer_entitlement_matches_value_requirement(
+                self.inner,
+                c_entitlement.as_ptr(),
+                expected.as_raw(),
+            )
+        };
+        if result == 0 { Ok(()) } else { Err(result) }
     }
 }
 
