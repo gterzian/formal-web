@@ -200,10 +200,11 @@ fn remove_ignored_tlc_outputs(spec_root: &Path) -> Result<(), String> {
             continue;
         }
 
-        if file_type.is_file() && path.extension() == Some(OsStr::new("out")) {
-            if let Err(error) = fs::remove_file(&path) {
-                errors.push(format!("failed to remove file {}: {error}", path.display()));
-            }
+        if file_type.is_file()
+            && path.extension() == Some(OsStr::new("out"))
+            && let Err(error) = fs::remove_file(&path)
+        {
+            errors.push(format!("failed to remove file {}: {error}", path.display()));
         }
     }
 

@@ -63,11 +63,7 @@ impl TraceLogWriter {
     }
 
     fn run(mut self) -> Result<(), String> {
-        loop {
-            let entry = match self.receiver.recv() {
-                Ok(entry) => entry,
-                Err(_) => break,
-            };
+        while let Ok(entry) = self.receiver.recv() {
             self.write_entry(entry)?;
         }
 

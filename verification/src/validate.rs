@@ -1172,11 +1172,11 @@ fn parse_only_filter(only: Option<&str>) -> Result<Option<BTreeSet<String>>, Str
 fn parse_tlc_diameter(output: &str) -> Option<usize> {
     for line in output.lines().rev() {
         let lower = line.to_ascii_lowercase();
-        if lower.contains("diameter") || lower.contains("depth of the complete state graph search")
+        if (lower.contains("diameter")
+            || lower.contains("depth of the complete state graph search"))
+            && let Some(value) = extract_last_usize(line)
         {
-            if let Some(value) = extract_last_usize(line) {
-                return Some(value);
-            }
+            return Some(value);
         }
     }
     None
@@ -1188,8 +1188,7 @@ fn tlc_accepts_full_trace(trace_length: usize, diameter: Option<usize>) -> bool 
 
 fn extract_last_usize(line: &str) -> Option<usize> {
     line.split(|character: char| !character.is_ascii_digit())
-        .filter(|segment| !segment.is_empty())
-        .next_back()
+        .rfind(|segment| !segment.is_empty())
         .and_then(|segment| segment.parse::<usize>().ok())
 }
 

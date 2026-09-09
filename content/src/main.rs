@@ -3960,8 +3960,9 @@ fn run_content_message_loop(
 
 pub fn run_content_process_from_args() -> Result<(), String> {
     let token = content_token_from_args()?;
-    // If a token was provided (ipc-channel mode), use it.
-    // Otherwise, use the native XPC backend (process launched by launchd).
+    // The embedder passes a bootstrap token via `--content-token` (see
+    // user_agent's ContentExtensionManifest); connect to it to receive the
+    // parent↔content channels.
     run_content_process(token.unwrap_or_default())
 }
 /// Build the MessageEvent for the `message`/`messageerror` event fired by

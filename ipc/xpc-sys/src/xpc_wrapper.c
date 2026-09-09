@@ -7,6 +7,12 @@
 // All events (including XPC_TYPE_ERROR) are forwarded to the callback.
 // The block captures callback and context by value — no malloc needed.
 
+// Named Mach-service bootstrap (launchd listeners, clients, embedded
+// services, and the xpc_main service loop) is macOS-only: those entry
+// points are unavailable on iOS, where libxpc connections come from
+// BrowserEngineKit or from anonymous listeners instead.
+#if TARGET_OS_OSX
+
 xpc_connection_t fw_xpc_create_listener(
     const char* service_name,
     dispatch_queue_t queue,
@@ -64,6 +70,8 @@ xpc_connection_t fw_xpc_create_client(
     return conn;
 }
 
+#endif // TARGET_OS_OSX
+
 // ── Setting handlers on existing connections ────────────────────────────────
 
 void fw_xpc_set_listener_handler(
@@ -106,6 +114,8 @@ void fw_xpc_set_peer_handler(
     });
 }
 
+#if TARGET_OS_OSX
+
 // ── Embedded XPC service connection (bypasses launchd) ────────────────────
 //
 // For embedded XPC services inside XPCServices/, use xpc_connection_create.
@@ -133,6 +143,8 @@ xpc_connection_t fw_xpc_create_connection(
     return conn;
 }
 
+#endif // TARGET_OS_OSX
+
 // ── Utility functions ───────────────────────────────────────────────────────
 
 xpc_connection_t fw_xpc_peer_from_event(xpc_object_t event)
@@ -150,7 +162,9 @@ void fw_xpc_cancel(xpc_connection_t connection)
     xpc_connection_cancel(connection);
 }
 
-// ── XPC service main loop ──────────────────────────────────────────────────
+// ── XPC service main loop (macOS only) ────────────────────────────────────
+
+#if TARGET_OS_OSX
 
 // Thread-local storage for the service handler callback, since xpc_main
 // takes a plain function pointer (not a block) with no context parameter.
@@ -170,3 +184,5 @@ void fw_xpc_run_service(void (*handler)(xpc_connection_t, void*), void* context)
     fw_xpc_service_context = context;
     xpc_main(fw_xpc_service_trampoline);
 }
+
+#endif // TARGET_OS_OSX

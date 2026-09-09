@@ -8,7 +8,7 @@ use std::os::unix::process::CommandExt;
 use std::path::PathBuf;
 use std::process::Command as ProcessCommand;
 
-use ipc::{BootstrapToken, ExtensionEndpoint, ExtensionManifest, IpcError};
+use ipc::{BekProcessKind, BootstrapToken, ExtensionEndpoint, ExtensionManifest, IpcError};
 
 use crate::sidecar_executable_path;
 
@@ -25,6 +25,13 @@ impl ExtensionManifest for NetExtensionManifest {
         ExtensionEndpoint::Singleton {
             service_name: "formal-web.net",
         }
+    }
+
+    fn bek_target(&self) -> Result<(BekProcessKind, String), IpcError> {
+        Ok((
+            BekProcessKind::Networking,
+            "com.formal-web.app.NetworkingExtension".into(),
+        ))
     }
 
     fn spawn(&self, token: &BootstrapToken) -> Result<std::process::Child, IpcError> {
@@ -56,6 +63,13 @@ impl ExtensionManifest for GraphicsExtensionManifest {
         ExtensionEndpoint::Singleton {
             service_name: "formal-web.graphics",
         }
+    }
+
+    fn bek_target(&self) -> Result<(BekProcessKind, String), IpcError> {
+        Ok((
+            BekProcessKind::Rendering,
+            "com.formal-web.app.RenderingExtension".into(),
+        ))
     }
 
     fn spawn(&self, token: &BootstrapToken) -> Result<std::process::Child, IpcError> {
@@ -98,6 +112,16 @@ impl ExtensionManifest for ContentExtensionManifest {
         ExtensionEndpoint::MultiInstance {
             service_name: "com.formal-web.app.content",
         }
+    }
+
+    fn bek_target(&self) -> Result<(BekProcessKind, String), IpcError> {
+        // The per-instance process label is not part of the BEK launch: the
+        // host tracks which BEWebContentProcess handle maps to which tab and
+        // sends the label over the resulting connection during bootstrap.
+        Ok((
+            BekProcessKind::WebContent,
+            "com.formal-web.app.WebContentExtension".into(),
+        ))
     }
 
     fn spawn(&self, token: &BootstrapToken) -> Result<std::process::Child, IpcError> {

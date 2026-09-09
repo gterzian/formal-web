@@ -32,6 +32,12 @@ macro_rules! uuid_id {
             }
         }
 
+        impl Default for $name {
+            fn default() -> Self {
+                Self::new()
+            }
+        }
+
         impl fmt::Display for $name {
             fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
                 self.0.fmt(formatter)
@@ -1199,10 +1205,9 @@ pub enum Event {
 mod tests {
     use super::{
         Command, DocumentFetchId, DocumentId, EmbedderSchemeFetchRequested, Event, FetchRequest,
-        FetchResponse, FontTransportReceiver,
-        FontTransportSender, FrameCompositionMetadata, FrameId, LoadedDocumentResponse,
-        NavigableId, PaintFrame, PaintTransportSummary, PreparedScene, SceneSummary, UserScript,
-        WebviewId,
+        FetchResponse, FontTransportReceiver, FontTransportSender, FrameCompositionMetadata,
+        FrameId, LoadedDocumentResponse, NavigableId, PaintFrame, PaintTransportSummary,
+        PreparedScene, SceneSummary, UserScript, WebviewId,
     };
     use anyrender::{Glyph, PaintScene, Scene, recording::RenderCommand};
     use peniko::{
