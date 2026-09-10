@@ -1,4 +1,5 @@
 type JsValue = <crate::js::Types as JsTypes>::JsValue;
+type Types = crate::js::Types;
 
 use crate::html::HTMLCanvasElement;
 use crate::webidl::bindings::{InterfaceDefinition, OperationDef, WebIdlInterface};
@@ -38,12 +39,12 @@ fn transfer_control_to_offscreen(
     _args: &[JsValue],
     ec: &mut dyn ExecutionContext<crate::js::Types>,
 ) -> Completion<JsValue, crate::js::Types> {
-    let obj = crate::js::Types::value_as_object(this)
+    let obj = Types::value_as_object(this)
         .ok_or_else(|| ec.new_type_error("HTMLCanvasElement receiver is not an object"))?;
     let canvas = ec
         .with_object_any(&obj)
         .and_then(|data| data.downcast_ref::<HTMLCanvasElement>().cloned())
         .ok_or_else(|| ec.new_type_error("receiver is not an HTMLCanvasElement"))?;
     let offscreen = canvas.transfer_control_to_offscreen(ec)?;
-    Ok(crate::js::Types::value_from_object(offscreen))
+    Ok(Types::value_from_object(offscreen))
 }

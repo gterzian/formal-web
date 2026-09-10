@@ -503,6 +503,18 @@ impl Compositor {
         self.composition_pending
     }
 
+    /// Whether an out-of-band embedded layer (canvas or video) changed since
+    /// it was last rendered. These layers are committed by a worker or the
+    /// media backend, independently of the top-level content render, so the
+    /// render-cycle deadline may have to present them without a top-level
+    /// frame. Child frames are excluded: they ride the normal render cycle
+    /// (a dirty child re-notes its parent), so waiting for the top-level
+    /// frame is correct for them.
+    pub fn has_dirty_out_of_band_layer(&self) -> bool {
+        self.canvas_frames.values().any(|frame| frame.dirty)
+            || self.video_frames.values().any(|frame| frame.dirty)
+    }
+
     pub fn top_level_frame_id(&self) -> Option<FrameId> {
         self.root_frame_id
     }

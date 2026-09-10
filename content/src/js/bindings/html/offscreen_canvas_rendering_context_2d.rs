@@ -1,4 +1,5 @@
 type JsValue = <crate::js::Types as JsTypes>::JsValue;
+type Types = crate::js::Types;
 
 use crate::html::OffscreenCanvasRenderingContext2D;
 use crate::webidl::bindings::{AttributeDef, InterfaceDefinition, OperationDef, WebIdlInterface};
@@ -51,7 +52,7 @@ fn try_with_context_ref<R>(
         &mut dyn ExecutionContext<crate::js::Types>,
     ) -> Completion<R, crate::js::Types>,
 ) -> Completion<R, crate::js::Types> {
-    let obj = crate::js::Types::value_as_object(this).ok_or_else(|| {
+    let obj = Types::value_as_object(this).ok_or_else(|| {
         ec.new_type_error("OffscreenCanvasRenderingContext2D receiver is not an object")
     })?;
     let context = ec.with_object_any(&obj).and_then(|data| {

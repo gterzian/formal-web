@@ -1,6 +1,6 @@
 use ipc_messages::content::CanvasId;
 use js_engine::gc::{GcCell, gc_cell_new};
-use js_engine::{ExecutionContext, JsTypes, gc_struct};
+use js_engine::{Completion, ExecutionContext, JsTypes, gc_struct};
 
 use crate::js::Types;
 use crate::webidl::bindings::create_interface_instance;
@@ -64,7 +64,7 @@ impl OffscreenCanvas {
         &self,
         context_id: &str,
         ec: &mut dyn ExecutionContext<Types>,
-    ) -> js_engine::Completion<Option<<Types as JsTypes>::JsObject>, Types> {
+    ) -> Completion<Option<<Types as JsTypes>::JsObject>, Types> {
         // Step 1: "If options is not an object, then set options to null."
         // Step 2: "Set options to the result of converting options to a JavaScript value."
         // TODO: Not yet implemented (options are not passed or used; the

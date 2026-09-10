@@ -15,7 +15,7 @@ use std::collections::{HashMap, HashSet};
 use crate::renderer::{ReadbackChannels, SurfaceRenderer};
 use compositor::{Compositor, CompositorVideoFrame, LayerUpdate};
 use crossbeam_channel::{select, tick};
-use ipc_messages::content::{CanvasId, FrameId, WebviewId};
+use ipc_messages::content::{CanvasId, FrameId, WebviewId, deserialize_scene_from_slice};
 use ipc_messages::graphics::{FrameHitInfo, GraphicsCommand, GraphicsEvent};
 use ipc_messages::media::{MediaPipelineId, VideoPaintId};
 use log::{debug, error, info};
@@ -647,14 +647,13 @@ fn handle_command<B: MediaBackend + 'static, R: SurfaceRenderer>(
                 .get(&scene_shmem_key)
                 .map(|region| region.as_slice())
                 .unwrap_or_default();
-            let recorded_scene =
-                match ipc_messages::content::deserialize_scene_from_slice(scene_bytes) {
-                    Ok(scene) => scene,
-                    Err(error) => {
-                        error!("[graphics] deserialize canvas scene: {error}");
-                        return false;
-                    }
-                };
+            let recorded_scene = match deserialize_scene_from_slice(scene_bytes) {
+                Ok(scene) => scene,
+                Err(error) => {
+                    error!("[graphics] deserialize canvas scene: {error}");
+                    return false;
+                }
+            };
             info!(
                 "[render-pipe] Graphics canvas paint canvas={:?} webview={:?} size={}x{}",
                 canvas_id, webview_id, width, height
@@ -820,14 +819,21 @@ fn compose_expired_deadlines<R: SurfaceRenderer>(
         .collect();
     for webview_id in expired {
         // The deadline stands in for the missing top-level frame: mark the
-        // composition pending so `maybe_compose` proceeds, but only when a
-        // root frame exists to compose against. The very first frame still
-        // has to come from content.
+        // composition pending so `maybe_compose` proceeds. It only composes
+        // when a root frame exists to compose against (the very first frame
+        // still has to come from content) and an out-of-band layer (canvas or
+        // video) actually changed; without that there is nothing to present
+        // early, and a top-level frame will compose the cycle normally.
+        let should_compose = webviews.get(&webview_id).is_some_and(|slot| {
+            slot.compositor.top_level_frame_id().is_some()
+                && slot.compositor.has_dirty_out_of_band_layer()
+        });
+        if !should_compose {
+            continue;
+        }
         if let Some(slot) = webviews.get_mut(&webview_id) {
             slot.cycle_deadline = None;
-            if slot.compositor.top_level_frame_id().is_some() {
-                slot.compositor.mark_composition_pending();
-            }
+            slot.compositor.mark_composition_pending();
         }
         maybe_compose(
             webviews,

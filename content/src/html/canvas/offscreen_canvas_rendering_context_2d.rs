@@ -2,12 +2,15 @@ use std::cell::RefCell;
 use std::rc::Rc;
 
 use anyrender::{PaintScene, Scene};
-use ipc_messages::content::CanvasId;
+use ipc_messages::content::{CanvasId, RecordedScene, serialize_scene_to_vec};
+use ipc_messages::graphics::GraphicsCommand;
 use js_engine::{Completion, ExecutionContext, gc_struct};
 use kurbo::{Affine, Rect, Shape};
+use log::error;
 use peniko::{Color, Fill};
 
 use crate::js::Types;
+use crate::js::platform_objects::with_global_scope;
 
 /// <https://html.spec.whatwg.org/multipage/canvas.html#offscreencanvasrenderingcontext2d>
 #[gc_struct]
@@ -161,25 +164,24 @@ impl OffscreenCanvasRenderingContext2D {
     /// placeholder canvas element's layer re-composes with the latest drawing.
     fn commit(&self, ec: &mut dyn ExecutionContext<Types>) -> Completion<(), Types> {
         let scene = self.scene.borrow().clone();
-        let recorded = ipc_messages::content::RecordedScene::from_scene_without_fonts(scene);
-        let scene_bytes =
-            ipc_messages::content::serialize_scene_to_vec(&recorded).map_err(|error| {
-                ec.new_type_error(&format!("failed to serialize canvas scene: {error}"))
-            })?;
+        let recorded = RecordedScene::from_scene_without_fonts(scene);
+        let scene_bytes = serialize_scene_to_vec(&recorded).map_err(|error| {
+            ec.new_type_error(&format!("failed to serialize canvas scene: {error}"))
+        })?;
         let region = ipc::IpcSharedRegion::from_bytes(&scene_bytes);
         let mut shmem_map = std::collections::HashMap::new();
         shmem_map.insert(0usize, region);
-        let command = ipc_messages::graphics::GraphicsCommand::CanvasPaint {
+        let command = GraphicsCommand::CanvasPaint {
             canvas_id: self.canvas_id,
             width: self.width,
             height: self.height,
             scene_shmem_key: 0,
         };
-        crate::js::platform_objects::with_global_scope(ec, |global_scope, _ec| {
+        with_global_scope(ec, |global_scope, _ec| {
             if let Some(graphics_sender) = global_scope.graphics_sender()
                 && let Err(error) = graphics_sender.send_with_shmem_map(command, shmem_map.clone())
             {
-                log::error!("failed to send canvas paint to graphics: {error}");
+                error!("failed to send canvas paint to graphics: {error}");
             }
             Ok(())
         })

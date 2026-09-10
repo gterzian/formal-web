@@ -1,4 +1,5 @@
 type JsValue = <crate::js::Types as JsTypes>::JsValue;
+type Types = crate::js::Types;
 
 use crate::html::OffscreenCanvas;
 use crate::webidl::bindings::{AttributeDef, InterfaceDefinition, OperationDef, WebIdlInterface};
@@ -56,7 +57,7 @@ fn try_with_offscreen_canvas_ref<R>(
     ec: &mut dyn ExecutionContext<crate::js::Types>,
     f: impl FnOnce(&OffscreenCanvas, &mut dyn ExecutionContext<crate::js::Types>) -> R,
 ) -> Completion<R, crate::js::Types> {
-    let obj = crate::js::Types::value_as_object(this)
+    let obj = Types::value_as_object(this)
         .ok_or_else(|| ec.new_type_error("OffscreenCanvas receiver is not an object"))?;
     let canvas = ec
         .with_object_any(&obj)
@@ -95,7 +96,7 @@ fn get_context(
     let context =
         try_with_offscreen_canvas_ref(this, ec, |canvas, ec| canvas.get_context(&context_id, ec))??;
     Ok(match context {
-        Some(context) => crate::js::Types::value_from_object(context),
+        Some(context) => Types::value_from_object(context),
         None => ec.value_null(),
     })
 }

@@ -205,12 +205,14 @@ two-submit layout.
   cycle. Graphics arms a per-webview deadline. When the top-level `PaintFrame`
   arrives, the deadline is cleared and composition proceeds normally. When it
   is late or never arrives — a content event loop blocked in script — the
-  deadline fires and graphics composes the embedded layers it has (a worker's
-  `OffscreenCanvas` commit, a video frame) against the last committed root, so
-  a worker animation keeps running while the window's main thread is busy. A
-  later top-level frame composes again, so a cycle whose top-level frame was
-  late can produce two compositions. The deadline is skipped when no root
-  frame has been committed yet (the first frame must still come from content).
+  deadline fires and graphics composes against the last committed root, so a
+  worker animation keeps running while the window's main thread is busy. The
+  deadline only fires when a root frame has been committed and an out-of-band
+  layer (a worker's `OffscreenCanvas` commit or a video frame) actually
+  changed; those are committed independently of the top-level content render,
+  while a dirty child frame rides the normal render cycle and is composed with
+  the top-level frame as before. A later top-level frame composes again, so a
+  cycle whose top-level frame was late can produce two compositions.
 - **The composed scene aggregates the animating flag across the composed
   frames.** `PaintFrame.animating` is recorded per stored frame; a
   composition reports `animating = true` when any composed frame animates

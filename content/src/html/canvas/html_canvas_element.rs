@@ -1,11 +1,14 @@
 use std::{cell::RefCell, rc::Rc};
 
 use blitz_dom::BaseDocument;
-use ipc_messages::content::CanvasId;
-use js_engine::{Completion, ExecutionContext, gc_struct};
+use ipc_messages::content::{CanvasId, WebviewId};
+use ipc_messages::graphics::GraphicsCommand;
+use js_engine::{Completion, ExecutionContext, JsTypes, gc_struct};
+use log::error;
 
 use crate::html::HTMLElement;
 use crate::js::Types;
+use crate::js::platform_objects::with_global_scope;
 use crate::webidl::bindings::create_interface_instance;
 
 use super::OffscreenCanvas;
@@ -50,21 +53,20 @@ impl HTMLCanvasElement {
     pub(crate) fn transfer_control_to_offscreen(
         &self,
         ec: &mut dyn ExecutionContext<Types>,
-    ) -> Completion<<Types as js_engine::JsTypes>::JsObject, Types> {
+    ) -> Completion<<Types as JsTypes>::JsObject, Types> {
         // Step 1: "If this canvas element's context mode is not set to none, throw an
         // "InvalidStateError" DOMException."
         // Note: A canvas element is a placeholder once a CanvasId is registered
         // for its node; re-invoking transferControlToOffscreen throws.
         let node_id = self.html_element.element.node.node_id;
-        let already_transferred =
-            crate::js::platform_objects::with_global_scope(ec, |global_scope, _ec| {
-                let Some(document_id) = global_scope.document_id() else {
-                    return Ok(false);
-                };
-                Ok(global_scope.canvas_registry().is_some_and(|registry| {
-                    registry.borrow().contains_key(&(document_id, node_id))
-                }))
-            })?;
+        let already_transferred = with_global_scope(ec, |global_scope, _ec| {
+            let Some(document_id) = global_scope.document_id() else {
+                return Ok(false);
+            };
+            Ok(global_scope
+                .canvas_registry()
+                .is_some_and(|registry| registry.borrow().contains_key(&(document_id, node_id))))
+        })?;
         if already_transferred {
             return Err(ec.new_type_error("InvalidStateError"));
         }
@@ -88,7 +90,7 @@ impl HTMLCanvasElement {
             ec,
         )?;
 
-        crate::js::platform_objects::with_global_scope(ec, |global_scope, ec| {
+        with_global_scope(ec, |global_scope, ec| {
             let document_id = global_scope
                 .document_id()
                 .ok_or_else(|| ec.new_type_error("canvas element has no associated document"))?;
@@ -99,16 +101,15 @@ impl HTMLCanvasElement {
                 .borrow_mut()
                 .insert((document_id, node_id), canvas_id);
             if let Some(graphics_sender) = global_scope.graphics_sender() {
-                let command = ipc_messages::graphics::GraphicsCommand::RegisterCanvas {
-                    webview_id: ipc_messages::content::WebviewId(
-                        global_scope.source_navigable_id().ok_or_else(|| {
-                            ec.new_type_error("canvas element has no navigable id")
-                        })?,
-                    ),
-                    canvas_id,
-                };
+                let command =
+                    GraphicsCommand::RegisterCanvas {
+                        webview_id: WebviewId(global_scope.source_navigable_id().ok_or_else(
+                            || ec.new_type_error("canvas element has no navigable id"),
+                        )?),
+                        canvas_id,
+                    };
                 if let Err(error) = graphics_sender.send(command) {
-                    log::error!("failed to register canvas with graphics: {error}");
+                    error!("failed to register canvas with graphics: {error}");
                 }
             }
             // A canvas embed site appeared without a DOM mutation; mark the
