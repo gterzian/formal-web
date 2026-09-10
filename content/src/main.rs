@@ -57,18 +57,20 @@ use crate::fetch::request_header_list;
 use ipc_messages::content::Command::{
     ClickElement, CompleteDocumentFetch, ContentBootstrap, CreateEmptyDocument,
     CreateLoadedDocument, DestroyDocument, DispatchEvent, EvaluateScript, FailDocumentFetch,
-    NotifyVideoEnded, SetTraversableViewport, SetViewport, Shutdown, UpdateTheRendering,
+    NotifyVideoEnded, RunAnimationFrameCallbacks, SetTraversableViewport, SetViewport, Shutdown,
+    UpdateTheRendering,
 };
 use ipc_messages::content::EmbedderSchemeFetchRequested;
 use ipc_messages::content::{
-    BeforeUnloadCheckId, ClipboardWriteRequested, ColorScheme as MessageColorScheme, Command,
-    DispatchEventEntry, DocumentFetchId, DocumentId, ElementClickResult, EmbedBackgroundPolicy,
-    EmbedLayout, EmbedSite, EmbedSiteId, Event as ContentEvent, EventLoopId,
-    FetchRequest as ContentFetchRequest, FetchResponse as ContentFetchResponse,
-    FontTransportSender, FrameCompositionMetadata, FrameId, IframeEmbedSite,
-    LoadedDocumentResponse, NavigableId, NavigationId, PaintFrame, PortId, PortTaskKind,
-    PreparedScene, RecordedScene, ScriptEvaluationResult, TitleChanged, TraversableViewport,
-    UserScript, ViewportSnapshot, WebviewId, WindowTimerKey, WorkerId, WorkerOwner,
+    BeforeUnloadCheckId, CanvasEmbedSite, CanvasId, ClipboardWriteRequested,
+    ColorScheme as MessageColorScheme, Command, DispatchEventEntry, DocumentFetchId, DocumentId,
+    ElementClickResult, EmbedBackgroundPolicy, EmbedLayout, EmbedSite, EmbedSiteId,
+    Event as ContentEvent, EventLoopId, FetchRequest as ContentFetchRequest,
+    FetchResponse as ContentFetchResponse, FontTransportSender, FrameCompositionMetadata, FrameId,
+    IframeEmbedSite, LoadedDocumentResponse, NavigableId, NavigationId, PaintFrame, PortId,
+    PortTaskKind, PreparedScene, RecordedScene, ScriptEvaluationResult, TitleChanged,
+    TraversableViewport, UserScript, ViewportSnapshot, WebviewId, WindowTimerKey, WorkerId,
+    WorkerOwner,
 };
 use ipc_messages::media::{VideoEmbedData, VideoPaintId};
 use ipc_messages::safe_passing_of_structured_data::PostMessageRequest;
@@ -539,6 +541,10 @@ pub(crate) struct ContentProcess {
     wasm: crate::wasm::ContentWasmState,
 
     video_paint_registry: Rc<RefCell<HashMap<(DocumentId, usize), VideoPaintId>>>,
+    /// Shared registry mapping (document_id, node_id) → CanvasId, set on each
+    /// realm's GlobalScope so `transferControlToOffscreen` can register canvas
+    /// ids and `build_frame_composition_metadata` can read them back.
+    canvas_registry: Rc<RefCell<HashMap<(DocumentId, usize), CanvasId>>>,
     /// (DocumentId, node_id) pairs of video elements that have reached
     /// end-of-stream. Checked alongside the registry to determine whether
     /// the document has active (non-ended) video.
@@ -614,6 +620,7 @@ impl ContentProcess {
             clipboard_cache: clipboard_cache.clone(),
             new_document_registry: Rc::new(RefCell::new(HashMap::new())),
             video_paint_registry: Rc::new(RefCell::new(HashMap::new())),
+            canvas_registry: Rc::new(RefCell::new(HashMap::new())),
             ended_video_nodes: HashSet::new(),
             #[cfg(all(boa_backend, feature = "wasm"))]
             wasm: crate::wasm::ContentWasmState::new(_wasm_signal_sender),
@@ -1236,9 +1243,12 @@ impl ContentProcess {
         // resource_selection_algorithm can register paint IDs.
         if let Err(error) = with_global_scope(settings.ec(), |global_scope, _ec| {
             global_scope.set_video_paint_registry(Rc::clone(&self.video_paint_registry));
+            global_scope.set_canvas_registry(Rc::clone(&self.canvas_registry));
             if let Some(ref sender) = self.graphics_sender {
                 global_scope.set_graphics_sender(sender.clone());
             }
+            global_scope.set_epoch_anchor(self.epoch_anchor, self.epoch_anchor_wall_ms);
+            global_scope.set_needs_paint(needs_paint.clone());
             Ok(())
         }) {
             error!(
@@ -1441,9 +1451,12 @@ impl ContentProcess {
         // steps: they wire the document's GlobalScope to the media and graphics pipelines.
         if let Err(error) = with_global_scope(settings.ec(), |global_scope, _ec| {
             global_scope.set_video_paint_registry(Rc::clone(&self.video_paint_registry));
+            global_scope.set_canvas_registry(Rc::clone(&self.canvas_registry));
             if let Some(ref sender) = self.graphics_sender {
                 global_scope.set_graphics_sender(sender.clone());
             }
+            global_scope.set_epoch_anchor(self.epoch_anchor, self.epoch_anchor_wall_ms);
+            global_scope.set_needs_paint(needs_paint.clone());
             Ok(())
         }) {
             error!(
@@ -2386,6 +2399,7 @@ impl ContentProcess {
             navigable_id, document_id,
         ));
         let video_paint_registry = Rc::clone(&self.video_paint_registry);
+        let canvas_registry = Rc::clone(&self.canvas_registry);
         let (paint_frame, shmem_map) = {
             let document = self
                 .documents
@@ -2508,6 +2522,7 @@ impl ContentProcess {
                         &document.navigable_container_states,
                         viewport.scale_f64(),
                         &mut video_paint_registry.borrow_mut(),
+                        &canvas_registry.borrow(),
                     );
 
                     // Step 22: "For each `doc` of `docs`, update the rendering or user interface of `doc` and its node navigable to reflect the current state."
@@ -2653,6 +2668,7 @@ impl ContentProcess {
         container_states: &HashMap<usize, NavigableContainerState>,
         scale: f64,
         video_paint_registry: &mut HashMap<(DocumentId, usize), VideoPaintId>,
+        canvas_registry: &HashMap<(DocumentId, usize), CanvasId>,
     ) -> FrameCompositionMetadata {
         let mut iframe_node_ids = container_states
             .iter()
@@ -2783,7 +2799,62 @@ impl ContentProcess {
             }));
         }
 
+        // Build canvas embed sites: every canvas element whose node has been
+        // registered by `transferControlToOffscreen` becomes an embed site the
+        // graphics process fills from the OffscreenCanvas's committed scenes.
+        let mut canvas_entries = canvas_registry
+            .iter()
+            .filter(|((registry_document_id, _), _)| *registry_document_id == document_id)
+            .collect::<Vec<_>>();
+        canvas_entries.sort_by_key(|((_, canvas_node_id), _)| *canvas_node_id);
+        for (canvas_offset, ((_, canvas_node_id), canvas_id)) in
+            canvas_entries.into_iter().enumerate()
+        {
+            let Some((x, y, width, height)) = Self::canvas_box(document, *canvas_node_id, scale)
+            else {
+                debug!("[layout] canvas node {canvas_node_id} skipped: no box");
+                continue;
+            };
+            let clip_svg_path = format!("M0,0 L{width},0 L{width},{height} L0,{height} Z");
+            embed_sites.push(EmbedSite::Canvas(CanvasEmbedSite {
+                embed_site_id: EmbedSiteId((*canvas_node_id as u64).wrapping_add(1)),
+                canvas_id: *canvas_id,
+                background_policy: EmbedBackgroundPolicy::Transparent,
+                clip_svg_path,
+                layout: EmbedLayout {
+                    z_index: 0,
+                    paint_order: (iframe_count + video_count + canvas_offset) as u32,
+                    transform: [1.0, 0.0, 0.0, 1.0, x, y],
+                    clip_bounds: [x, y, x + width, y + height],
+                },
+            }));
+        }
+
         FrameCompositionMetadata { embed_sites }
+    }
+
+    fn canvas_box(
+        document: &BaseDocument,
+        node_id: usize,
+        scale: f64,
+    ) -> Option<(f64, f64, f64, f64)> {
+        if let Some(box_) = Self::content_box_for_node(document, node_id, scale) {
+            return Some(box_);
+        }
+        let node = document.get_node(node_id)?;
+        let element = node.element_data()?;
+        let width = element
+            .attr(local_name!("width"))
+            .and_then(|value| value.parse::<f64>().ok())
+            .unwrap_or(300.0)
+            * scale;
+        let height = element
+            .attr(local_name!("height"))
+            .and_then(|value| value.parse::<f64>().ok())
+            .unwrap_or(150.0)
+            * scale;
+        let (x, y) = Self::node_absolute_border_origin(document, node_id, scale)?;
+        Some((x, y, width, height))
     }
 
     fn complete_document_fetch(
@@ -3490,6 +3561,9 @@ impl ContentProcess {
                 check_id,
                 navigation_id,
             } => self.run_before_unload(document_id, check_id, navigation_id),
+            Task::RunAnimationFrameCallbacks { .. } => Err(String::from(
+                "window event loop received a worker animation-frame task",
+            )),
         };
 
         #[cfg(all(boa_backend, feature = "wasm"))]
@@ -3771,6 +3845,14 @@ impl ContentProcess {
                 self.shutdown_workers()?;
                 self.note_shutdown_completed()?;
                 Ok(false)
+            }
+            RunAnimationFrameCallbacks { .. } => {
+                // The worker's animation frame callbacks run on the dedicated
+                // worker agent's own event loop, not the window event loop
+                // this command channel drives; the user agent routes this
+                // command over the worker agent's own command channel.
+                error!("window event loop received a worker animation-frame command");
+                Ok(true)
             }
         }
     }

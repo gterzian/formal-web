@@ -180,6 +180,14 @@ pub(crate) struct DedicatedWorkerAgentConfig {
     /// The worker's own channel to the net process, for script fetches.
     pub(crate) network_extension_sender: IpcSender<ipc_messages::network::Request>,
     pub(crate) trace_sender: Option<TraceSender>,
+    /// Direct sender to the graphics process, so the worker's
+    /// `OffscreenCanvasRenderingContext2D` commits can send canvas scenes.
+    pub(crate) graphics_sender: Option<IpcSender<ipc_messages::graphics::GraphicsCommand>>,
+    /// The content process's monotonic-clock anchor, for converting the user
+    /// agent's epoch-relative animation frame timestamps to the worker
+    /// realm's relative time origin.
+    pub(crate) epoch_anchor: std::time::Instant,
+    pub(crate) epoch_anchor_wall_ms: f64,
 }
 
 /// The run-a-worker state owned by a dedicated worker agent (running on its
@@ -221,6 +229,11 @@ pub(crate) struct DedicatedWorkerAgentState {
     /// The id of the worker's in-flight script fetch, matched against
     /// CompleteDocumentFetch/FailDocumentFetch on its net channel.
     pub(crate) pending_script_fetch: Option<DocumentFetchId>,
+    /// The content process's monotonic-clock anchor, for converting the user
+    /// agent's epoch-relative animation frame timestamps to the worker
+    /// realm's relative time origin.
+    pub(crate) epoch_anchor: std::time::Instant,
+    pub(crate) epoch_anchor_wall_ms: f64,
 }
 
 /// <https://html.spec.whatwg.org/#run-a-worker>
@@ -302,6 +315,7 @@ pub(crate) fn run_a_worker(config: DedicatedWorkerAgentConfig) -> Result<(), Str
     let wiring = WorkerRealmWiring {
         event_sender: config.event_sender.clone(),
         task_sources: EventLoopTaskSources::new(task_queue.clone(), Rc::clone(&active_timers)),
+        graphics_sender: config.graphics_sender.clone(),
     };
     let (mut settings, _worker_global_scope) = EnvironmentSettingsObject::new_worker_in_realm(
         Url::parse(&request.script_url)
@@ -340,6 +354,12 @@ pub(crate) fn run_a_worker(config: DedicatedWorkerAgentConfig) -> Result<(), Str
             .worker_global_scope
             .global_scope
             .set_network_extension_sender(config.network_extension_sender.clone());
+        if let Some(graphics_sender) = config.graphics_sender.clone() {
+            dedicated_scope
+                .worker_global_scope
+                .global_scope
+                .set_graphics_sender(graphics_sender);
+        }
         dedicated_scope.set_inside_port(config.owner_inbox.clone());
         Ok(())
     })
@@ -368,6 +388,8 @@ pub(crate) fn run_a_worker(config: DedicatedWorkerAgentConfig) -> Result<(), Str
         network_extension_sender: config.network_extension_sender,
         net_command_sender,
         pending_script_fetch: None,
+        epoch_anchor: config.epoch_anchor,
+        epoch_anchor_wall_ms: config.epoch_anchor_wall_ms,
     };
 
     // Step 12: "Obtain script by switching on options["type"]: "classic":
@@ -689,6 +711,24 @@ impl DedicatedWorkerAgentState {
         }
     }
 
+    /// Run this worker realm's animation frame callbacks with the user
+    /// agent's epoch-relative frame timestamp converted to the worker
+    /// realm's relative high resolution time (ms since its time origin).
+    fn run_animation_frame_callbacks(
+        &mut self,
+        frame_timestamp_epoch_ms: f64,
+    ) -> Result<(), String> {
+        let epoch_ms = self.epoch_anchor_wall_ms
+            + self
+                .settings
+                .time_origin
+                .saturating_duration_since(self.epoch_anchor)
+                .as_secs_f64()
+                * 1000.0;
+        self.settings
+            .run_animation_frame_callbacks(frame_timestamp_epoch_ms - epoch_ms)
+    }
+
     /// Run one task off the worker's event-loop task queue, then perform
     /// the microtask checkpoint of the event loop processing model (step
     /// 2.8), mirroring the content process's run_task for the worker
@@ -756,6 +796,20 @@ impl DedicatedWorkerAgentState {
                     return Ok(());
                 }
                 self.handle_worker_port_task(port, kind)
+            }
+            Task::RunAnimationFrameCallbacks {
+                worker_id,
+                frame_timestamp_epoch_ms,
+            } => {
+                if self.closing_flag() {
+                    return Ok(());
+                }
+                if worker_id != self.worker_id {
+                    return Err(format!(
+                        "worker event loop received animation frame callbacks for worker {worker_id}"
+                    ));
+                }
+                self.run_animation_frame_callbacks(frame_timestamp_epoch_ms)
             }
 
             _ => Err(format!(
@@ -977,6 +1031,24 @@ impl DedicatedWorkerAgentState {
                 // routing task is a no-op.
                 self.task_queue
                     .queue_a_task(Task::PortRouting { port, kind: task });
+                Ok(())
+            }
+            Command::RunAnimationFrameCallbacks {
+                worker_id,
+                frame_timestamp_epoch_ms,
+            } => {
+                // The worker's owner navigable reached a rendering
+                // opportunity and its update the rendering is queued, so the
+                // user agent dispatches this worker's animation frame
+                // callbacks in the same cycle. Queue them as a task so they
+                // run through the processing-model steps (task + microtask
+                // checkpoint), like update the rendering on the window event
+                // loop.
+                self.task_queue
+                    .queue_a_task(Task::RunAnimationFrameCallbacks {
+                        worker_id,
+                        frame_timestamp_epoch_ms,
+                    });
                 Ok(())
             }
             other => {

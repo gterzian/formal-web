@@ -251,6 +251,64 @@ protected/permissible/suspendable monitoring is not.
   lookup by (origin, name); the dedicated-only implementation folds
   `WorkerGlobalScopeKind` into the dedicated global scope.
 
+## Canvas (offscreen rendering)
+
+The `canvas` element is supported only through `OffscreenCanvas`
+(`content/src/html/canvas/`): it has no `getContext` member, and
+`transferControlToOffscreen()` allocates a `CanvasId` and hands it to a new
+`OffscreenCanvas`.  The placeholder element is composited as its own texture
+layer like a cross-origin iframe.  Wiring a canvas that draws on a worker:
+
+- The `CanvasId` is registered with the graphics process
+  (`GraphicsCommand::RegisterCanvas`, sent by the owner content process when
+  `transferControlToOffscreen` runs) so the worker's `CanvasPaint` — which
+  carries only the id — can be routed to the owning webview.
+- The worker realm gets the content process's `graphics_sender` through
+  `WorkerRealmWiring`, so its `OffscreenCanvasRenderingContext2D` commits can
+  send scenes directly to graphics.
+- A worker `requestAnimationFrame` sends
+  `ContentEvent::WorkerAnimationFrameRequested`; the user agent records the
+  request against the worker's owner navigable. When that navigable's
+  update the rendering is queued — i.e. when the embedder needs a frame —
+  the user agent sends `Command::RunAnimationFrameCallbacks` to the
+  worker's own event loop (the worker's update-the-rendering counterpart).
+  The dispatch must be gated on that frame cadence, never performed when
+  the request arrives: a worker `requestAnimationFrame` loop re-registers
+  on every run, so dispatching immediately spins at the worker event
+  loop's speed rather than the display refresh rate. Because the dispatch
+  rides the owner navigable's cycle, the user agent also arms the graphics
+  process's `RenderStarted` deadline, so a canvas commit keeps compositing
+  against the last committed root when the window's top-level frame is
+  late (see `graphics/README.md`).
+- The canvas registry (`GlobalScope::canvas_registry`, shared with
+  `ContentProcess`) is what lets the owner document's render path discover a
+  newly transferred canvas: `transferControlToOffscreen` inserts into it and
+  marks the document dirty, so the next update-the-rendering rebuilds the
+  frame composition instead of reusing the cached one.
+
+Remaining gaps:
+
+- Only the `"2d"` context exists, with `fillStyle`, `fillRect`, and
+  `clearRect` (a minimal anyrender mapping).  No paths, transforms, images,
+  gradients, or text.
+- `OffscreenCanvas.width`/`height` are read-only (no resize).
+- Canvas embed sites surface only for a top-level document; a canvas inside a
+  same-origin iframe document would not get its own layer (same-origin
+  iframes are baked into their parent's scene).
+- Canvas frames are never unregistered when their document is destroyed (the
+  id is a UUID, so a stale frame is inert, but it leaks until the webview
+  goes away).
+- Worker animation is display-paced on the winit embedder only. The winit
+  windowed app routes `request_redraw` through the OS, so the UA's
+  frame-needed gate lands at display cadence, but the AppKit app services
+  `request_redraw` by calling `frame_needed` immediately and its
+  `CVDisplayLink` only runs while the surface's `animating` flag is set —
+  and a worker-only animation leaves that flag false. A worker
+  `requestAnimationFrame` loop therefore still runs at IPC round-trip speed
+  on the AppKit browser. Closing the gap needs the worker's pending
+  animation frames to mark the document animating and the UA to stop
+  requesting its own redraw while the traversable is animating.
+
 ## Related documentation
 
 - `content/src/webidl/README.md` — Web IDL bindings infrastructure, platform object pattern

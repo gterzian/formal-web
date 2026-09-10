@@ -1,4 +1,4 @@
-use crate::content::{EmbedBackgroundPolicy, FrameId, PaintFrame, WebviewId};
+use crate::content::{CanvasId, EmbedBackgroundPolicy, FrameId, PaintFrame, WebviewId};
 use crate::media::{MediaPipelineId, VideoPaintId};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -24,12 +24,14 @@ impl Default for CompositorSlotId {
 }
 
 /// Identifies one compositable layer within a webview: a cross-origin
-/// navigable (iframe) or a `<video>` embed site. Same-origin iframes are
-/// baked into their parent's recorded scene and get no layer of their own.
+/// navigable (iframe), a `<video>` embed site, or an offscreen canvas. Same-
+/// origin iframes are baked into their parent's recorded scene and get no
+/// layer of their own.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum CompositingLayerId {
     Navigable(FrameId),
     Video(VideoPaintId),
+    Canvas(CanvasId),
 }
 
 // ---------------------------------------------------------------------------
@@ -45,6 +47,36 @@ pub enum GraphicsCommand {
     /// A paint frame (scene + composition metadata) from a content process.
     /// The full PaintFrame with its shmem regions is reconstructed before sending.
     PaintFrame { frame: PaintFrame },
+    /// The user agent started a rendering cycle: the embedder needs a frame
+    /// for `webview_id`. The graphics process arms a composition deadline, so
+    /// a layer that arrives before the top-level frame (a worker's
+    /// `CanvasPaint`, a video frame, a child frame) is composited against the
+    /// last committed root when the deadline expires, even though the
+    /// top-level frame is late or never arrives (a blocked content event
+    /// loop). The deadline is cleared when the top-level frame arrives.
+    RenderStarted {
+        webview_id: WebviewId,
+        /// Milliseconds to wait for the top-level frame before composing with
+        /// the last committed root.
+        deadline_ms: u64,
+    },
+    /// A committed scene for an offscreen canvas, from the worker (or window)
+    /// realm that owns the transferred `OffscreenCanvas`. The scene bytes
+    /// travel in the IPC shared-memory map under `scene_shmem_key`.
+    CanvasPaint {
+        canvas_id: CanvasId,
+        width: u32,
+        height: u32,
+        scene_shmem_key: usize,
+    },
+    /// Register an offscreen canvas with the webview it belongs to. The
+    /// worker that draws the canvas does not know its owner webview id; the
+    /// owner content process sends this when `transferControlToOffscreen`
+    /// runs, and `CanvasPaint` is then routed to the registered webview.
+    RegisterCanvas {
+        webview_id: WebviewId,
+        canvas_id: CanvasId,
+    },
     /// Remove a video frame slot (pipeline destroyed).
     RemoveVideoFrame {
         webview_id: WebviewId,

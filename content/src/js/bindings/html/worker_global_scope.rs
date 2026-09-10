@@ -4,7 +4,9 @@ use crate::js::downcast::event_target_from_js_object;
 use crate::js::platform_objects::with_worker_global_scope;
 use crate::webidl::bindings::{AttributeDef, InterfaceDefinition, OperationDef, WebIdlInterface};
 use crate::webidl::{callback_function_value, nullable_value};
+use ipc_messages::content::Event as ContentEvent;
 use js_engine::{Completion, ExecutionContext, JsTypes};
+use log::error;
 
 type JsValue = <Types as JsTypes>::JsValue;
 
@@ -301,6 +303,24 @@ fn define_window_or_worker_global_scope_members(def: &mut InterfaceDefinition<Ty
         promise_type: false,
         exposed: None,
     });
+    def.add_operation(OperationDef {
+        id: "requestAnimationFrame",
+        length: 1,
+        method: request_animation_frame_method,
+        static_: false,
+        unforgeable: false,
+        promise_type: false,
+        exposed: None,
+    });
+    def.add_operation(OperationDef {
+        id: "cancelAnimationFrame",
+        length: 1,
+        method: cancel_animation_frame_method,
+        static_: false,
+        unforgeable: false,
+        promise_type: false,
+        exposed: None,
+    });
 }
 
 /// <https://html.spec.whatwg.org/#dom-settimeout>
@@ -368,6 +388,48 @@ fn structured_clone_method(
     let worker_global_scope = worker_global_scope_domain_from(this, ec)?;
     let result = worker_global_scope.structured_clone(value, None, ec)?;
     Ok(result)
+}
+
+/// <https://html.spec.whatwg.org/#dom-animationframeprovider-requestanimationframe>
+fn request_animation_frame_method(
+    this: &JsValue,
+    args: &[JsValue],
+    ec: &mut dyn ExecutionContext<Types>,
+) -> Completion<JsValue, Types> {
+    let undefined = ec.value_undefined();
+    let callback = callback_function_value(args.first().unwrap_or(&undefined), ec)?;
+    let worker_global_scope = worker_global_scope_domain_from(this, ec)?;
+    let handle = worker_global_scope
+        .global_scope
+        .request_animation_frame(callback, ec);
+    // A worker has no window event loop to drive update the rendering, so
+    // the request is handed to the user agent: it schedules the callbacks on
+    // the worker's owner navigable's next rendering opportunity and sends
+    // them to this worker's own event loop to run.
+    if let (Some(worker_id), Some(event_sender)) = (
+        worker_global_scope.global_scope.worker_id(),
+        worker_global_scope.global_scope.event_sender(),
+    ) && let Err(send_error) =
+        event_sender.send(ContentEvent::WorkerAnimationFrameRequested { worker_id })
+    {
+        error!("failed to request worker animation frame: {send_error}");
+    }
+    Ok(ec.value_from_number(f64::from(handle)))
+}
+
+/// <https://html.spec.whatwg.org/#dom-animationframeprovider-cancelanimationframe>
+fn cancel_animation_frame_method(
+    this: &JsValue,
+    args: &[JsValue],
+    ec: &mut dyn ExecutionContext<Types>,
+) -> Completion<JsValue, Types> {
+    let undefined = ec.value_undefined();
+    let handle = ec.to_number(args.first().cloned().unwrap_or(undefined))? as u32;
+    let worker_global_scope = worker_global_scope_domain_from(this, ec)?;
+    worker_global_scope
+        .global_scope
+        .cancel_animation_frame(handle, ec);
+    Ok(ec.value_undefined())
 }
 
 /// The event handler IDL attributes of the WorkerGlobalScope interface

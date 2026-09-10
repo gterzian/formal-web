@@ -132,9 +132,9 @@ fn setup_realm(engine: &mut Engine, _document: Rc<RefCell<BaseDocument>>) -> Res
     #[cfg(not(boa_backend))]
     use crate::html::GlobalScope;
     use crate::html::{
-        HTMLAnchorElement, HTMLElement, HTMLIFrameElement, HTMLInputElement, HTMLMediaElement,
-        HTMLVideoElement, Location, MessageChannel, MessageEvent, MessagePort, Window, WindowProxy,
-        Worker,
+        HTMLAnchorElement, HTMLCanvasElement, HTMLElement, HTMLIFrameElement, HTMLInputElement,
+        HTMLMediaElement, HTMLVideoElement, Location, MessageChannel, MessageEvent, MessagePort,
+        OffscreenCanvas, OffscreenCanvasRenderingContext2D, Window, WindowProxy, Worker,
     };
     use crate::streams::{
         ByteLengthQueuingStrategy, CountQueuingStrategy, ReadableByteStreamController,
@@ -216,10 +216,13 @@ fn setup_realm(engine: &mut Engine, _document: Rc<RefCell<BaseDocument>>) -> Res
     reg!(Element);
     reg!(HTMLElement);
     reg!(HTMLAnchorElement);
+    reg!(HTMLCanvasElement);
     reg!(HTMLIFrameElement);
     reg!(HTMLInputElement);
     reg!(HTMLMediaElement);
     reg!(HTMLVideoElement);
+    reg!(OffscreenCanvas);
+    reg!(OffscreenCanvasRenderingContext2D);
     reg!(Window);
     reg!(WindowProxy);
     reg!(Worker);
@@ -249,10 +252,12 @@ fn setup_realm(engine: &mut Engine, _document: Rc<RefCell<BaseDocument>>) -> Res
     wire_registry_prototype::<crate::js::Types, Element, Node>(engine);
     wire_registry_prototype::<crate::js::Types, HTMLElement, Element>(engine);
     wire_registry_prototype::<crate::js::Types, HTMLAnchorElement, HTMLElement>(engine);
+    wire_registry_prototype::<crate::js::Types, HTMLCanvasElement, HTMLElement>(engine);
     wire_registry_prototype::<crate::js::Types, HTMLIFrameElement, HTMLElement>(engine);
     wire_registry_prototype::<crate::js::Types, HTMLMediaElement, HTMLElement>(engine);
     wire_registry_prototype::<crate::js::Types, HTMLVideoElement, HTMLMediaElement>(engine);
     wire_registry_prototype::<crate::js::Types, HTMLInputElement, HTMLElement>(engine);
+    wire_registry_prototype::<crate::js::Types, OffscreenCanvas, EventTarget>(engine);
     wire_registry_prototype::<crate::js::Types, Window, EventTarget>(engine);
     wire_registry_prototype::<crate::js::Types, Worker, EventTarget>(engine);
 
@@ -267,6 +272,8 @@ fn setup_realm(engine: &mut Engine, _document: Rc<RefCell<BaseDocument>>) -> Res
     wire_registry_constructor_prototype::<crate::js::Types, Document, Node>(engine);
     wire_registry_constructor_prototype::<crate::js::Types, Element, Node>(engine);
     wire_registry_constructor_prototype::<crate::js::Types, HTMLElement, Element>(engine);
+    wire_registry_constructor_prototype::<crate::js::Types, HTMLCanvasElement, HTMLElement>(engine);
+    wire_registry_constructor_prototype::<crate::js::Types, OffscreenCanvas, EventTarget>(engine);
     wire_registry_constructor_prototype::<crate::js::Types, HTMLAnchorElement, HTMLElement>(engine);
     wire_registry_constructor_prototype::<crate::js::Types, HTMLIFrameElement, HTMLElement>(engine);
     wire_registry_constructor_prototype::<crate::js::Types, HTMLMediaElement, HTMLElement>(engine);
@@ -488,8 +495,9 @@ fn setup_worker_realm(
     #[cfg(not(boa_backend))]
     use crate::html::GlobalScope;
     use crate::html::{
-        DedicatedWorkerGlobalScope, MessageChannel, MessageEvent, MessagePort, Worker,
-        WorkerGlobalScope, WorkerLocation, WorkerNavigator,
+        DedicatedWorkerGlobalScope, MessageChannel, MessageEvent, MessagePort, OffscreenCanvas,
+        OffscreenCanvasRenderingContext2D, Worker, WorkerGlobalScope, WorkerLocation,
+        WorkerNavigator,
     };
     use crate::streams::{
         ByteLengthQueuingStrategy, CountQueuingStrategy, ReadableByteStreamController,
@@ -586,6 +594,8 @@ fn setup_worker_realm(
     reg!(DedicatedWorkerGlobalScope);
     reg!(WorkerLocation);
     reg!(WorkerNavigator);
+    reg!(OffscreenCanvas);
+    reg!(OffscreenCanvasRenderingContext2D);
     reg!(ByteLengthQueuingStrategy);
     reg!(CountQueuingStrategy);
     reg!(ReadableStream);
@@ -607,6 +617,7 @@ fn setup_worker_realm(
     wire_registry_prototype::<crate::js::Types, Node, EventTarget>(engine);
     wire_registry_prototype::<crate::js::Types, Document, Node>(engine);
     wire_registry_prototype::<crate::js::Types, Element, Node>(engine);
+    wire_registry_prototype::<crate::js::Types, OffscreenCanvas, EventTarget>(engine);
     wire_registry_prototype::<crate::js::Types, Worker, EventTarget>(engine);
     wire_registry_prototype::<crate::js::Types, WorkerGlobalScope, EventTarget>(engine);
     wire_registry_prototype::<crate::js::Types, DedicatedWorkerGlobalScope, WorkerGlobalScope>(
@@ -617,6 +628,7 @@ fn setup_worker_realm(
     wire_registry_constructor_prototype::<crate::js::Types, MessagePort, EventTarget>(engine);
     wire_registry_constructor_prototype::<crate::js::Types, AbortSignal, EventTarget>(engine);
     wire_registry_constructor_prototype::<crate::js::Types, Node, EventTarget>(engine);
+    wire_registry_constructor_prototype::<crate::js::Types, OffscreenCanvas, EventTarget>(engine);
     wire_registry_constructor_prototype::<crate::js::Types, Document, Node>(engine);
     wire_registry_constructor_prototype::<crate::js::Types, Element, Node>(engine);
     wire_registry_constructor_prototype::<crate::js::Types, Worker, EventTarget>(engine);

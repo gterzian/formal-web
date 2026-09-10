@@ -6,6 +6,7 @@ type JsValue = <Types as JsTypes>::JsValue;
 type JsObject = <Types as JsTypes>::JsObject;
 use log::error;
 mod activation_behavior;
+mod canvas;
 pub(crate) mod channel_messaging;
 pub(crate) use channel_messaging::ChannelMessaging;
 pub(crate) mod dispatch;
@@ -43,6 +44,9 @@ use ipc_messages::content::{
 use environment_settings_object::RealmWiring;
 
 pub(crate) use activation_behavior::ActivationBehavior;
+pub use canvas::HTMLCanvasElement;
+pub use canvas::OffscreenCanvas;
+pub use canvas::OffscreenCanvasRenderingContext2D;
 pub use environment_settings_object::EnvironmentSettingsObject;
 pub use global_scope::GlobalScope;
 pub use global_scope::GlobalScopeKind;

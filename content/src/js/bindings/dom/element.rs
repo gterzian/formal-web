@@ -2,8 +2,8 @@ type JsValue = <crate::js::Types as JsTypes>::JsValue;
 
 use crate::dom::{DOMException, Element};
 use crate::html::{
-    HTMLAnchorElement, HTMLElement, HTMLIFrameElement, HTMLInputElement, HTMLMediaElement,
-    HTMLVideoElement,
+    HTMLAnchorElement, HTMLCanvasElement, HTMLElement, HTMLIFrameElement, HTMLInputElement,
+    HTMLMediaElement, HTMLVideoElement,
 };
 use crate::js::bindings::html::global_event_handlers::define_global_event_handlers;
 use crate::js::platform_objects::{invalidate_cached_node_ids, resolve_element_object};
@@ -195,6 +195,9 @@ pub(crate) fn try_with_element_ref<R>(
         }
         if let Some(html_anchor_element) = data.downcast_ref::<HTMLAnchorElement>() {
             return Ok(f(&html_anchor_element.html_element.element));
+        }
+        if let Some(html_canvas_element) = data.downcast_ref::<HTMLCanvasElement>() {
+            return Ok(f(&html_canvas_element.html_element.element));
         }
         if let Some(html_iframe_element) = data.downcast_ref::<HTMLIFrameElement>() {
             return Ok(f(&html_iframe_element.html_element.element));
@@ -445,6 +448,13 @@ fn class_list_value(
             .get_attribute("class")
             .unwrap_or_default());
     }
+    if let Some(canvas) = data.downcast_ref::<HTMLCanvasElement>() {
+        return Ok(canvas
+            .html_element
+            .element
+            .get_attribute("class")
+            .unwrap_or_default());
+    }
     Ok(String::new())
 }
 
@@ -483,6 +493,8 @@ fn class_list_set_value(
             set_class(&input.html_element.element);
         } else if let Some(anc) = data.downcast_ref::<HTMLAnchorElement>() {
             set_class(&anc.html_element.element);
+        } else if let Some(canvas) = data.downcast_ref::<HTMLCanvasElement>() {
+            set_class(&canvas.html_element.element);
         }
     }
     Ok(())

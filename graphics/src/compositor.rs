@@ -5,8 +5,8 @@
 use anyrender::{PaintScene, Scene as RenderScene};
 use ipc::IpcSharedRegion;
 use ipc_messages::content::{
-    EmbedBackgroundPolicy, EmbedSite, FontTransportReceiver, FrameCompositionMetadata, FrameId,
-    IframeEmbedSite, PaintFrame, RecordedScene, serialize_scene_to_vec,
+    CanvasId, EmbedBackgroundPolicy, EmbedSite, FontTransportReceiver, FrameCompositionMetadata,
+    FrameId, IframeEmbedSite, PaintFrame, RecordedScene, serialize_scene_to_vec,
 };
 use ipc_messages::graphics::{CompositingLayerId, FrameHitInfo, LayerTopology, SurfacePayload};
 
@@ -175,6 +175,22 @@ pub struct CompositorVideoFrame {
     pub dirty: bool,
 }
 
+/// The committed scene of an offscreen canvas: the owning worker draws into
+/// an anyrender scene and commits it; the compositor turns it into a canvas
+/// layer on the owner document's next composition. A canvas always has a
+/// backing store (initially blank), so — unlike a video — it never gates
+/// composition; a fresh commit re-notes a composition change instead.
+#[derive(Clone)]
+pub struct CompositorCanvasFrame {
+    pub canvas_id: CanvasId,
+    pub width: u32,
+    pub height: u32,
+    pub scene: RecordedScene,
+    /// Set when a fresh commit arrived; cleared once the canvas's layer has
+    /// been re-rendered. Mirrors CachedFrame::dirty.
+    pub dirty: bool,
+}
+
 /// The per-webview compositor: receives PaintFrames and VideoFrames,
 /// composes them into a single final scene, and publishes the result plus
 /// hit-testing info back to the user agent. Owns the webview's font
@@ -189,6 +205,8 @@ pub struct Compositor {
     resolved_tree_dirty: bool,
     /// Latest frame per video paint id.
     video_frames: HashMap<VideoPaintId, CompositorVideoFrame>,
+    /// Latest committed scene per offscreen canvas id.
+    canvas_frames: HashMap<CanvasId, CompositorCanvasFrame>,
     /// True when the latest top-level frame arrived but its composition is
     /// deferred until every embedded frame it references has arrived.
     composition_pending: bool,
@@ -226,6 +244,12 @@ impl Compositor {
         self.pending_frames.clear();
         self.committed_frames.clear();
         self.video_frames.clear();
+        // Canvas frames are NOT cleared here: a canvas is registered and its
+        // first scene committed by the incoming document's script, which runs
+        // before the navigation is finalized.  A stale canvas frame is keyed
+        // by its own CanvasId (never reused) and is only referenced by a frame
+        // whose embed site carries that id, so it is inert after its document
+        // is gone.
         self.root_frame_id = None;
         self.replace_root_on_next_paint = true;
         self.resolved_tree_dirty = true;
@@ -259,6 +283,19 @@ impl Compositor {
         self.video_frames.remove(&paint_id);
     }
 
+    /// Store a committed offscreen canvas scene, replacing the previous one.
+    /// Returns `true` when this is the first commit for the canvas id (the
+    /// canvas layer has no surface yet).
+    pub fn store_canvas_frame(&mut self, frame: CompositorCanvasFrame) -> bool {
+        let was_absent = !self.canvas_frames.contains_key(&frame.canvas_id);
+        self.canvas_frames.insert(frame.canvas_id, frame);
+        was_absent
+    }
+
+    pub fn remove_canvas_frame(&mut self, canvas_id: CanvasId) {
+        self.canvas_frames.remove(&canvas_id);
+    }
+
     /// Clear the dirty flag for the layers that were actually re-rendered this
     /// cycle. Called by the event loop after `submit_layers` succeeds; a layer
     /// whose content no longer changed keeps its last surface on the next
@@ -273,6 +310,11 @@ impl Compositor {
                 }
                 CompositingLayerId::Video(paint_id) => {
                     if let Some(frame) = self.video_frames.get_mut(paint_id) {
+                        frame.dirty = false;
+                    }
+                }
+                CompositingLayerId::Canvas(canvas_id) => {
+                    if let Some(frame) = self.canvas_frames.get_mut(canvas_id) {
                         frame.dirty = false;
                     }
                 }
@@ -461,6 +503,18 @@ impl Compositor {
         self.composition_pending
     }
 
+    /// Whether an out-of-band embedded layer (canvas or video) changed since
+    /// it was last rendered. These layers are committed by a worker or the
+    /// media backend, independently of the top-level content render, so the
+    /// render-cycle deadline may have to present them without a top-level
+    /// frame. Child frames are excluded: they ride the normal render cycle
+    /// (a dirty child re-notes its parent), so waiting for the top-level
+    /// frame is correct for them.
+    pub fn has_dirty_out_of_band_layer(&self) -> bool {
+        self.canvas_frames.values().any(|frame| frame.dirty)
+            || self.video_frames.values().any(|frame| frame.dirty)
+    }
+
     pub fn top_level_frame_id(&self) -> Option<FrameId> {
         self.root_frame_id
     }
@@ -493,6 +547,7 @@ impl Compositor {
         for site in &top_level_frame.composition.embed_sites {
             match site {
                 EmbedSite::Frame(_iframe_site) => {}
+                EmbedSite::Canvas(_) => {}
                 EmbedSite::Video(video_data) => {
                     if expected_videos.contains(&video_data.paint_id)
                         && !self.video_frames.contains_key(&video_data.paint_id)
@@ -534,6 +589,7 @@ impl Compositor {
                         missing_child_ids.push(iframe_site.child_frame_id);
                     }
                 }
+                EmbedSite::Canvas(_) => {}
                 EmbedSite::Video(video_data) => {
                     if expected_videos.contains(&video_data.paint_id)
                         && !self.video_frames.contains_key(&video_data.paint_id)
@@ -811,6 +867,7 @@ impl Compositor {
             .filter_map(|site| match site {
                 EmbedSite::Frame(f) => Some((f.embed_site_id, f.background_policy)),
                 EmbedSite::Video(_) => None,
+                EmbedSite::Canvas(_) => None,
             })
             .collect();
 
@@ -948,6 +1005,72 @@ impl Compositor {
                         background: None,
                         width: video_frame.width,
                         height: video_frame.height,
+                        render,
+                    });
+                }
+                EmbedSite::Canvas(canvas_site) => {
+                    let Some(canvas_frame) = self.canvas_frames.get(&canvas_site.canvas_id) else {
+                        if input_debug_enabled() {
+                            trace!(
+                                "[input-debug][compositor] canvas {:?} no commit yet",
+                                canvas_site.canvas_id
+                            );
+                        }
+                        continue;
+                    };
+                    if input_debug_enabled() {
+                        trace!(
+                            "[input-debug][compositor] canvas {:?} dirty={}",
+                            canvas_site.canvas_id, canvas_frame.dirty
+                        );
+                    }
+                    let transform = Affine::new(canvas_site.layout.transform);
+                    let tx = transform.as_coeffs()[4];
+                    let ty = transform.as_coeffs()[5];
+                    let clip_rect = Rect::new(
+                        canvas_site.layout.clip_bounds[0] - tx,
+                        canvas_site.layout.clip_bounds[1] - ty,
+                        canvas_site.layout.clip_bounds[2] - tx,
+                        canvas_site.layout.clip_bounds[3] - ty,
+                    );
+                    let local_w = clip_rect.width();
+                    let local_h = clip_rect.height();
+                    let scale_x = if canvas_frame.width > 0 {
+                        local_w / canvas_frame.width as f64
+                    } else {
+                        1.0
+                    };
+                    let scale_y = if canvas_frame.height > 0 {
+                        local_h / canvas_frame.height as f64
+                    } else {
+                        1.0
+                    };
+                    let canvas_transform = Affine::new([scale_x, 0.0, 0.0, scale_y, tx, ty]);
+
+                    // The canvas embed site is its own layer: the worker's
+                    // committed anyrender scene drawn at identity, placed by
+                    // `canvas_transform` (scaled to the clip rect).
+                    let render = if canvas_frame.dirty {
+                        Some(canvas_frame.scene.clone().into_scene(&self.font_receiver))
+                    } else {
+                        None
+                    };
+
+                    layers.push(LayerUpdate {
+                        layer_id: CompositingLayerId::Canvas(canvas_site.canvas_id),
+                        parent: Some(CompositingLayerId::Navigable(frame_id)),
+                        transform: canvas_transform,
+                        clip_bounds: Rect::new(
+                            canvas_site.layout.clip_bounds[0],
+                            canvas_site.layout.clip_bounds[1],
+                            canvas_site.layout.clip_bounds[2],
+                            canvas_site.layout.clip_bounds[3],
+                        ),
+                        corner_radius: 0.0,
+                        z_order: (z, paint_order),
+                        background: None,
+                        width: canvas_frame.width,
+                        height: canvas_frame.height,
                         render,
                     });
                 }
@@ -1147,6 +1270,7 @@ impl Compositor {
             .filter_map(|site| match site {
                 EmbedSite::Frame(f) => Some(f.child_frame_id),
                 EmbedSite::Video(_) => None,
+                EmbedSite::Canvas(_) => None,
             })
             .collect::<Vec<_>>();
         for child_frame_id in child_frame_ids {
