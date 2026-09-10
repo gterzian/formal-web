@@ -26,7 +26,7 @@ cargo build --release
 cargo run --release
 ```
 
-### JS engine
+### Choose a JS engine
 
 Exactly one of the engines below is enabled at a time; enabling none or more
 than one fails the build. V8 is the default and needs no feature flags; the
@@ -48,7 +48,7 @@ cargo build --release --no-default-features --features jsc,media
 cargo run --release --no-default-features --features jsc,media
 ```
 
-### Media and graphics backends (selected on the `graphics` build)
+### Choose a media and graphics backends (selected on the `graphics` build)
 
 ```bash
 # Defaults (macOS): AVFoundation media backend and zero-copy IOSurface
@@ -69,7 +69,7 @@ cargo build --release --no-default-features --features v8
 cargo run --release --no-default-features --features v8
 ```
 
-### Networking (selected on the `net` build)
+### Choose a networking stack(selected on the `net` build)
 
 The fetch transport is one of two backends. macOS defaults to the Apple
 URLSession backend, which compiles no reqwest/tokio stack; on other
@@ -89,7 +89,7 @@ default backend and overwrites the copy it places next to the embedder
 binary, so build the `net` package after it when switching backends. See
 `net/README.md` for the backends themselves.
 
-### Embedder
+### Choose an embedder app
 
 ```bash
 # Default (macOS): AppKit embedder
