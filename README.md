@@ -6,7 +6,7 @@ The modularity is goal-oriented: it can be used to support the following:
 
 - **external constraint satisfaction**: shipping on a platform with specific constraints. Example: the ipc layer defaults to Rust multiprocessing, but is also designed to in the future support extensions in the context of [BrowserEngineKit](https://developer.apple.com/documentation/browserenginekit).
 - **performance optimization**: platform specific performance. Example: integrating with Core Animation based compositing on Mac.
-- **engineering flexibility**: subsystem swapping. For example, one can choose a JS engine such as V8 or Boa, and with Boa, one can also choose to add wasm via Wasmtime.
+- **engineering flexibility**: subsystem swapping. For example, one can choose a JS engine such as V8 or Boa, and with Boa, one can also choose to add wasm via Wasmtime (this wasm layer itself is not generic as of now, but could be).
 - **cost reduction**: reduce binary size or build time by re-using what is already on the system. Example: choosing the url-session networking backend on Mac.
 
 Note: current implementation of generic component reflect Mac OS as the current main development platform: high-performance Mac OS paths with lower-performance cross platform paths. For example, there is a relatively high-performance rendering path on Mac OS, with zero copy texture sharing and a modicum of layering using multiple Core Animation layers to minimize re-rendering, and then there is a relatively low-performance cross platform path involving reading back data to the CPU.
