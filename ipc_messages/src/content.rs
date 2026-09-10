@@ -59,6 +59,7 @@ uuid_id!(AgentId);
 uuid_id!(BeforeUnloadCheckId);
 uuid_id!(NavigableId);
 uuid_id!(FrameId);
+uuid_id!(CanvasId);
 uuid_id!(NavigationId);
 uuid_id!(PortId);
 uuid_id!(MessageId);
@@ -352,13 +353,28 @@ pub struct IframeEmbedSite {
     pub layout: EmbedLayout,
 }
 
+/// A canvas embed site, identified by its offscreen canvas id. The
+/// placeholder `canvas` element's box is the embed site; the graphics
+/// process fills it from the committed scene of the transferred
+/// `OffscreenCanvas`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CanvasEmbedSite {
+    pub embed_site_id: EmbedSiteId,
+    pub canvas_id: CanvasId,
+    pub background_policy: EmbedBackgroundPolicy,
+    pub clip_svg_path: String,
+    pub layout: EmbedLayout,
+}
+
 /// A single embed site within a parent document's composition.
-/// Both iframes and video are [embedded content](https://html.spec.whatwg.org/#embedded-content)
+/// Iframes, video and offscreen canvas are
+/// [embedded content](https://html.spec.whatwg.org/#embedded-content)
 /// and share the same z-order / paint-order space.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum EmbedSite {
     Frame(IframeEmbedSite),
     Video(VideoEmbedData),
+    Canvas(CanvasEmbedSite),
 }
 
 impl EmbedSite {
@@ -366,6 +382,7 @@ impl EmbedSite {
         match self {
             EmbedSite::Frame(s) => &s.layout,
             EmbedSite::Video(s) => &s.layout,
+            EmbedSite::Canvas(s) => &s.layout,
         }
     }
 
@@ -644,6 +661,25 @@ impl SceneSummary {
 }
 
 impl RecordedScene {
+    /// Convert an [`anyrender::Scene`] into a `RecordedScene` that carries no
+    /// fonts. Used by the worker's `OffscreenCanvas` commit, whose drawing
+    /// commands (fills, strokes) reference no glyph runs; a glyph run in the
+    /// scene records a zeroed font identifier and resolves to the empty font
+    /// on the graphics side.
+    pub fn from_scene_without_fonts(scene: anyrender::Scene) -> Self {
+        RecordedScene {
+            tolerance: scene.tolerance,
+            font_ids: Vec::new(),
+            commands: scene
+                .commands
+                .into_iter()
+                .map(|command| {
+                    SerializableRenderCommand::from_render_command(command, |_font_data| 0)
+                })
+                .collect(),
+        }
+    }
+
     pub fn summary(&self) -> SceneSummary {
         let mut summary = SceneSummary {
             commands: self.commands.len(),
@@ -967,6 +1003,18 @@ pub enum Command {
         /// time").
         frame_timestamp_epoch_ms: f64,
     },
+    /// The user-agent half of a dedicated worker's animation frame request:
+    /// run the worker global scope's animation frame callbacks. Sent over the
+    /// worker agent's own user-agent command channel when the UA notes a
+    /// rendering opportunity driven by the worker's `requestAnimationFrame`.
+    /// <https://html.spec.whatwg.org/#run-the-animation-frame-callbacks>
+    RunAnimationFrameCallbacks {
+        worker_id: WorkerId,
+        /// Milliseconds since the Unix epoch on the browser-wide monotonic
+        /// clock, converted to the worker realm's relative time origin before
+        /// the callbacks run.
+        frame_timestamp_epoch_ms: f64,
+    },
     CompleteDocumentFetch {
         handler_id: DocumentFetchId,
         response: FetchResponse,
@@ -1196,6 +1244,18 @@ pub enum Event {
     /// owned are no longer addressable.
     /// <https://html.spec.whatwg.org/#run-a-worker>
     DedicatedWorkerAgentClosed {
+        worker_id: WorkerId,
+    },
+    /// A dedicated worker requested an animation frame
+    /// (`requestAnimationFrame` on its `DedicatedWorkerGlobalScope`, via the
+    /// `WindowOrWorkerGlobalScope` mixin). The user agent records the request
+    /// against the worker's owner navigable and notes a rendering
+    /// opportunity for it; when that navigable's update the rendering is
+    /// queued, the user agent sends `Command::RunAnimationFrameCallbacks` to
+    /// the worker's own event loop, so the callbacks run at the display
+    /// cadence.
+    /// <https://html.spec.whatwg.org/#dom-animationframeprovider-requestanimationframe>
+    WorkerAnimationFrameRequested {
         worker_id: WorkerId,
     },
     ShutdownCompleted,

@@ -15,7 +15,7 @@ use std::collections::{HashMap, HashSet};
 use crate::renderer::{ReadbackChannels, SurfaceRenderer};
 use compositor::{Compositor, CompositorVideoFrame, LayerUpdate};
 use crossbeam_channel::{select, tick};
-use ipc_messages::content::{FrameId, WebviewId};
+use ipc_messages::content::{CanvasId, FrameId, WebviewId};
 use ipc_messages::graphics::{FrameHitInfo, GraphicsCommand, GraphicsEvent};
 use ipc_messages::media::{MediaPipelineId, VideoPaintId};
 use log::{debug, error, info};
@@ -135,6 +135,7 @@ pub fn run_graphics_process<B: MediaBackend + 'static, R: SurfaceRenderer>(
                 &mut HashMap::new(),
                 None::<&mut B>,
                 &mut HashMap::new(),
+                &mut HashMap::new(),
                 &mut finished_videos,
                 &mut tla_tracer,
                 &channels,
@@ -158,6 +159,11 @@ pub fn run_graphics_process<B: MediaBackend + 'static, R: SurfaceRenderer>(
     // Populated by RegisterChildNavigableHost and used in PaintFrame to remap
     // child PaintFrames into the parent's compositor slot.
     let mut child_webview_to_parent: HashMap<WebviewId, (WebviewId, FrameId)> = HashMap::new();
+
+    // Mapping from offscreen canvas id -> owning webview. Populated by
+    // RegisterCanvas; CanvasPaint uses it to route the committed scene to the
+    // owning webview's compositor.
+    let mut canvas_to_webview: HashMap<CanvasId, WebviewId> = HashMap::new();
 
     // Use crossbeam's never() channel when there's no backend so the select! loop
     // has a single uniform structure regardless of whether a backend exists.
@@ -193,6 +199,7 @@ pub fn run_graphics_process<B: MediaBackend + 'static, R: SurfaceRenderer>(
                     &mut pipeline_webview_map,
                     backend.as_mut(),
                     &mut child_webview_to_parent,
+                    &mut canvas_to_webview,
                     &mut finished_videos,
                     &mut tla_tracer,
                     &channels,
@@ -410,6 +417,7 @@ fn handle_command<B: MediaBackend + 'static, R: SurfaceRenderer>(
     pipeline_webview_map: &mut HashMap<MediaPipelineId, (WebviewId, VideoPaintId)>,
     media_backend: Option<&mut B>,
     child_webview_to_parent: &mut HashMap<WebviewId, (WebviewId, FrameId)>,
+    canvas_to_webview: &mut HashMap<CanvasId, WebviewId>,
     finished_videos: &mut HashSet<VideoPaintId>,
     tla_tracer: &mut TLATracer,
     channels: &ReadbackChannels<R::RenderData>,
@@ -564,6 +572,73 @@ fn handle_command<B: MediaBackend + 'static, R: SurfaceRenderer>(
             );
             child_webview_to_parent
                 .insert(child_webview_id, (parent_traversable_id, content_frame_id));
+        }
+        GraphicsCommand::RegisterCanvas {
+            webview_id,
+            canvas_id,
+        } => {
+            info!(
+                "[render-pipe] Graphics register canvas canvas={:?} webview={:?}",
+                canvas_id, webview_id
+            );
+            canvas_to_webview.insert(canvas_id, webview_id);
+        }
+        GraphicsCommand::CanvasPaint {
+            canvas_id,
+            width,
+            height,
+            scene_shmem_key,
+        } => {
+            let Some(&webview_id) = canvas_to_webview.get(&canvas_id) else {
+                error!("[graphics] canvas paint for unregistered canvas {canvas_id:?}");
+                return false;
+            };
+            let scene_bytes = shmem_regions
+                .get(&scene_shmem_key)
+                .map(|region| region.as_slice())
+                .unwrap_or_default();
+            let recorded_scene =
+                match ipc_messages::content::deserialize_scene_from_slice(scene_bytes) {
+                    Ok(scene) => scene,
+                    Err(error) => {
+                        error!("[graphics] deserialize canvas scene: {error}");
+                        return false;
+                    }
+                };
+            info!(
+                "[render-pipe] Graphics canvas paint canvas={:?} webview={:?} size={}x{}",
+                canvas_id, webview_id, width, height
+            );
+            let slot = webviews
+                .entry(webview_id)
+                .or_insert_with(|| WebviewState::new(channels.clone()));
+            slot.compositor
+                .store_canvas_frame(compositor::CompositorCanvasFrame {
+                    canvas_id,
+                    width,
+                    height,
+                    scene: recorded_scene,
+                    dirty: true,
+                });
+            // The canvas layer changed without the top-level content process
+            // driving a render; re-note a rendering opportunity for the owner
+            // traversable so its render cycle re-composes the canvas layer.
+            if let Err(send_error) = composed_scene_sender
+                .send(ipc_messages::graphics::GraphicsEvent::CompositionChanged { webview_id })
+            {
+                error!(
+                    "[graphics] failed to send CompositionChanged for canvas {:?}: {send_error}",
+                    canvas_id
+                );
+            }
+            maybe_compose(
+                webviews,
+                webview_id,
+                &expected_videos(pipeline_webview_map, finished_videos),
+                child_webview_to_parent,
+                composed_scene_sender,
+                tla_tracer,
+            );
         }
         GraphicsCommand::ChildNavigationFinalized {
             parent_traversable_id,

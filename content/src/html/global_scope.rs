@@ -2,6 +2,7 @@ use std::{
     cell::{Cell, RefCell},
     collections::{HashMap, HashSet},
     rc::Rc,
+    sync::Arc,
     vec::Vec,
 };
 
@@ -20,7 +21,7 @@ use super::workers::dedicated_worker_agent::{
 use blitz_dom::BaseDocument;
 use ipc::IpcSender;
 use ipc_messages::content::{
-    DocumentId, Event as ContentEvent, EventLoopId, NavigableId, WindowTimerKey, WorkerId,
+    CanvasId, DocumentId, Event as ContentEvent, EventLoopId, NavigableId, WindowTimerKey, WorkerId,
 };
 use ipc_messages::media::VideoPaintId;
 use ipc_messages::network::Request as NetworkRequest;
@@ -36,6 +37,10 @@ use crate::webidl::Callback;
 
 type JsValue = <Types as JsTypes>::JsValue;
 type JsObject = <Types as JsTypes>::JsObject;
+
+/// The shared (document_id, node_id) → CanvasId registry held by both
+/// GlobalScope and ContentProcess.
+type CanvasRegistry = Rc<RefCell<HashMap<(DocumentId, usize), CanvasId>>>;
 
 fn timer_debug_enabled() -> bool {
     std::env::var_os("FORMAL_WEB_DEBUG_TIMERS").is_some()
@@ -309,9 +314,38 @@ pub struct GlobalScope {
     video_paint_registry:
         Rc<RefCell<Option<Rc<RefCell<HashMap<(DocumentId, usize), VideoPaintId>>>>>>,
 
+    /// Shared registry mapping (document_id, node_id) → CanvasId. Set by
+    /// `ContentProcess` during document creation so that both
+    /// `HTMLCanvasElement.transferControlToOffscreen` (to insert) and
+    /// `ContentProcess::build_frame_composition_metadata` (to read) share
+    /// the same `Rc`.
+    #[ignore_trace]
+    canvas_registry: Rc<RefCell<Option<CanvasRegistry>>>,
+
     /// Direct sender to the graphics process (composition + media).
     #[ignore_trace]
     graphics_sender: Rc<RefCell<Option<IpcSender<ipc_messages::graphics::GraphicsCommand>>>>,
+
+    /// Monotonic-clock reading captured at the same moment as
+    /// `epoch_anchor_wall_ms`; together they convert monotonic readings to
+    /// epoch-relative milliseconds (HR Time "estimated monotonic time of the
+    /// Unix epoch"). Set by `ContentProcess` during document creation so
+    /// worker realms spawned from this realm can convert their animation
+    /// frame timestamps.
+    #[ignore_trace]
+    epoch_anchor: Rc<std::cell::Cell<Option<std::time::Instant>>>,
+    /// Wall-clock milliseconds since the Unix epoch at the moment
+    /// `epoch_anchor` was captured.
+    #[ignore_trace]
+    epoch_anchor_wall_ms: Rc<std::cell::Cell<Option<f64>>>,
+
+    /// The document's repaint flag, shared with `ContentDocument`: a script
+    /// that mutates only canvas/offscreen state (no DOM mutation) marks it
+    /// dirty here so the next update-the-rendering re-runs blitz and rebuilds
+    /// the frame composition (which picks up a newly registered canvas embed
+    /// site).
+    #[ignore_trace]
+    needs_paint: Rc<RefCell<Option<Arc<std::sync::atomic::AtomicBool>>>>,
 
     /// <https://html.spec.whatwg.org/#concept-document-creation-url>
     /// The creation URL of this window's Document.
@@ -358,7 +392,11 @@ impl GlobalScope {
 
             new_document_registry: Rc::new(RefCell::new(None)),
             video_paint_registry: Rc::new(RefCell::new(None)),
+            canvas_registry: Rc::new(RefCell::new(None)),
             graphics_sender: Rc::new(RefCell::new(None)),
+            epoch_anchor: Rc::new(std::cell::Cell::new(None)),
+            epoch_anchor_wall_ms: Rc::new(std::cell::Cell::new(None)),
+            needs_paint: Rc::new(RefCell::new(None)),
 
             creation_url: Rc::new(RefCell::new(None)),
             #[cfg(all(boa_backend, feature = "wasm"))]
@@ -1335,6 +1373,36 @@ impl GlobalScope {
         self.graphics_sender.borrow().clone()
     }
 
+    /// Set the monotonic-clock anchor shared with the content process, so
+    /// worker realms spawned from this realm can convert animation frame
+    /// timestamps.
+    pub(crate) fn set_epoch_anchor(&self, anchor: std::time::Instant, wall_ms: f64) {
+        self.epoch_anchor.set(Some(anchor));
+        self.epoch_anchor_wall_ms.set(Some(wall_ms));
+    }
+
+    pub(crate) fn epoch_anchor(&self) -> Option<(std::time::Instant, f64)> {
+        match (self.epoch_anchor.get(), self.epoch_anchor_wall_ms.get()) {
+            (Some(anchor), Some(wall_ms)) => Some((anchor, wall_ms)),
+            _ => None,
+        }
+    }
+
+    /// Set the shared repaint flag that both GlobalScope and ContentDocument
+    /// access. ContentProcess sets this during document creation.
+    pub(crate) fn set_needs_paint(&self, flag: Arc<std::sync::atomic::AtomicBool>) {
+        *self.needs_paint.borrow_mut() = Some(flag);
+    }
+
+    /// Mark the document dirty without mutating the DOM (e.g. registering an
+    /// offscreen canvas embed site), so the next update-the-rendering re-runs
+    /// blitz and rebuilds the frame composition.
+    pub(crate) fn mark_document_dirty(&self) {
+        if let Some(flag) = self.needs_paint.borrow().as_ref() {
+            flag.store(true, std::sync::atomic::Ordering::Relaxed);
+        }
+    }
+
     pub(crate) fn allocate_media_pipeline_id(&self) -> ipc_messages::media::MediaPipelineId {
         ipc_messages::media::MediaPipelineId(uuid::Uuid::new_v4())
     }
@@ -1374,6 +1442,19 @@ impl GlobalScope {
 
     pub(crate) fn creation_url(&self) -> Option<url::Url> {
         self.creation_url.borrow().clone()
+    }
+
+    /// Set the shared canvas registry that both GlobalScope and
+    /// ContentProcess access. ContentProcess sets this during document
+    /// creation so `transferControlToOffscreen` can register canvas ids and
+    /// `build_frame_composition_metadata` can read them back.
+    pub(crate) fn set_canvas_registry(&self, registry: CanvasRegistry) {
+        *self.canvas_registry.borrow_mut() = Some(registry);
+    }
+
+    /// The shared canvas registry, present once ContentProcess has set it.
+    pub(crate) fn canvas_registry(&self) -> Option<CanvasRegistry> {
+        self.canvas_registry.borrow().clone()
     }
 
     pub(crate) fn cancel_animation_frame(&self, handle: u32, ec: &mut dyn ExecutionContext<Types>) {

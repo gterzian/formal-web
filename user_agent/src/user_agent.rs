@@ -15,7 +15,8 @@ use ipc_messages::content::{
     FetchRequest as ContentFetchRequest, FetchResponse as ContentFetchResponse,
     FinalizeNavigation as ContentFinalizeNavigation, FrameId, HostMessageRequested,
     LoadedDocumentResponse, NavigableId, NavigateRequest, NavigationFetchId, NavigationId,
-    NewTraversableInfo, UserNavigationInvolvement, UserScript, WebviewId, iframe_target_name,
+    NewTraversableInfo, UserNavigationInvolvement, UserScript, WebviewId, WorkerId, WorkerOwner,
+    iframe_target_name,
 };
 use ipc_messages::safe_passing_of_structured_data::PostMessageRequest;
 use log::{debug, error, info, trace};
@@ -1533,6 +1534,14 @@ struct UserAgentWorker {
     /// (FrameNeeded, sent at each paint). Update the rendering is queued
     /// only when a frame is needed AND a rendering opportunity was noted.
     frame_needed: HashSet<NavigableId>,
+    /// Dedicated workers with a pending animation frame request, grouped by
+    /// the navigable whose rendering cycle runs their callbacks (the
+    /// traversable of the worker's owner document, resolved through the
+    /// owner chain for a nested worker). The request is recorded when the
+    /// worker calls `requestAnimationFrame` and drained when that
+    /// navigable's update the rendering is queued, so worker callbacks run
+    /// at the display cadence rather than at the worker event loop's speed.
+    pending_worker_animation_frames: HashMap<NavigableId, HashSet<WorkerId>>,
     /// Sender cloned into child workers and sidecars when TLA tracing is enabled.
     trace_sender: Option<TraceSender>,
     /// request ids for automation round-trips across the user-agent and
@@ -1615,6 +1624,7 @@ impl UserAgentWorker {
             ),
             queued_rendering_opportunities: HashMap::new(),
             frame_needed: HashSet::new(),
+            pending_worker_animation_frames: HashMap::new(),
             trace_sender,
             next_automation_request_id: 1,
         }
@@ -1999,6 +2009,30 @@ impl UserAgentWorker {
                 if let Some(event_loop_id) = closed_worker_loop_id {
                     self.state.agents.remove(&event_loop_id);
                 }
+                for pending in self.pending_worker_animation_frames.values_mut() {
+                    pending.remove(&worker_id);
+                }
+                self.pending_worker_animation_frames
+                    .retain(|_, pending| !pending.is_empty());
+            }
+            ContentEvent::WorkerAnimationFrameRequested { worker_id } => {
+                // Record the request against the navigable whose rendering
+                // cycle runs the worker's callbacks, and note a rendering
+                // opportunity for that navigable. The callbacks must not run
+                // here: a worker rAF loop re-registers on every run, so
+                // dispatching immediately would spin at the worker event
+                // loop's speed instead of the display cadence.
+                // `queue_update_the_rendering` drains the request when the
+                // navigable's update the rendering is queued.
+                let Some(traversable_id) = self.worker_owner_traversable_id(worker_id) else {
+                    error!("animation frame request for worker {worker_id} with no owner document");
+                    return Ok(true);
+                };
+                self.pending_worker_animation_frames
+                    .entry(traversable_id)
+                    .or_default()
+                    .insert(worker_id);
+                self.note_rendering_opportunity(traversable_id);
             }
             ContentEvent::ShutdownCompleted => return Ok(false),
         }
@@ -4805,6 +4839,7 @@ impl UserAgentWorker {
             .state
             .active_documents_by_traversable
             .get(&navigable_id)
+            .copied()
         else {
             info!(
                 "[render-pipe] UA note_rendering_opportunity: no active document for navigable={}",
@@ -4827,7 +4862,7 @@ impl UserAgentWorker {
         let document_owned_by_target_event_loop = self
             .state
             .documents
-            .get(document_id)
+            .get(&document_id)
             .is_some_and(|document| document.event_loop_id == handle);
         if !document_owned_by_target_event_loop {
             info!(
@@ -4845,6 +4880,7 @@ impl UserAgentWorker {
             self.pending_update_the_rendering.remove(&navigable_id);
             return;
         };
+        let command_sender = agent.event_loop.command_sender.clone();
 
         if input_debug_enabled() {
             trace!(
@@ -4853,12 +4889,19 @@ impl UserAgentWorker {
             );
         }
 
+        // Drained before the window's update the rendering command is sent,
+        // so a worker's canvas commit has a chance to reach the graphics
+        // process before the window's PaintFrame. The two content-to-graphics
+        // channels are unordered, so the commit can still land a frame late;
+        // the graphics process's CompositionChanged re-note recovers it.
+        self.dispatch_pending_worker_animation_frames(navigable_id, frame_timestamp_epoch_ms);
+
         let command = ContentCommand::UpdateTheRendering {
             traversable_id: navigable_id,
-            document_id: *document_id,
+            document_id,
             frame_timestamp_epoch_ms,
         };
-        if let Err(error) = agent.event_loop.command_sender.send(command) {
+        if let Err(error) = command_sender.send(command) {
             error!(
                 "[render-pipe] failed to send update-the-rendering to event loop {handle}: {error}"
             );
@@ -4873,6 +4916,65 @@ impl UserAgentWorker {
             && traversable_id != navigable_id
         {
             self.queue_update_the_rendering(traversable_id);
+        }
+    }
+
+    /// The navigable whose rendering cycle runs a dedicated worker's
+    /// animation frame callbacks: the traversable of the worker's owner
+    /// document, resolved through the owner chain for a nested worker.
+    fn worker_owner_traversable_id(&self, worker_id: WorkerId) -> Option<NavigableId> {
+        let mut owner_worker_id = worker_id;
+        loop {
+            let worker_agent = self.state.agents.values().find_map(|agent| match agent {
+                Agent::DedicatedWorker(worker_agent)
+                    if worker_agent.worker_id == owner_worker_id =>
+                {
+                    Some(worker_agent)
+                }
+                _ => None,
+            })?;
+            match worker_agent.owner {
+                WorkerOwner::Document(document_id) => {
+                    return self
+                        .state
+                        .documents
+                        .get(&document_id)
+                        .map(|document| document.traversable_id);
+                }
+                WorkerOwner::Worker(owner_id) => owner_worker_id = owner_id,
+            }
+        }
+    }
+
+    /// Run the pending animation frame callbacks of the workers whose owner
+    /// document lives in `navigable_id`, passing `frame_timestamp_epoch_ms`
+    /// as the rendering opportunity time. Sends `RunAnimationFrameCallbacks`
+    /// to each worker's own event loop, where the callbacks run as a task.
+    fn dispatch_pending_worker_animation_frames(
+        &mut self,
+        navigable_id: NavigableId,
+        frame_timestamp_epoch_ms: f64,
+    ) {
+        let Some(worker_ids) = self.pending_worker_animation_frames.remove(&navigable_id) else {
+            return;
+        };
+        for worker_id in worker_ids {
+            let command_sender = self.state.agents.values().find_map(|agent| match agent {
+                Agent::DedicatedWorker(worker_agent) if worker_agent.worker_id == worker_id => {
+                    Some(worker_agent.event_loop.command_sender.clone())
+                }
+                _ => None,
+            });
+            let Some(command_sender) = command_sender else {
+                error!("animation frame request for unknown worker {worker_id}");
+                continue;
+            };
+            if let Err(error) = command_sender.send(ContentCommand::RunAnimationFrameCallbacks {
+                worker_id,
+                frame_timestamp_epoch_ms,
+            }) {
+                error!("failed to run worker {worker_id} animation frame callbacks: {error}");
+            }
         }
     }
 
@@ -5113,6 +5215,7 @@ impl UserAgentWorker {
             self.state.remove_traversable(*traversable_id);
             self.pending_update_the_rendering.remove(traversable_id);
             self.queued_rendering_opportunities.remove(traversable_id);
+            self.pending_worker_animation_frames.remove(traversable_id);
         }
 
         // Release the graphics-process state for the removed webviews

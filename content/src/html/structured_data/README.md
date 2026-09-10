@@ -21,6 +21,10 @@ transfer/`[Serializable]` handling does not grow the algorithm file:
   `StructuredSerializeWithTransfer` step 2.1), running its transfer steps
   and building its data holder (step 5.2), and rebuilding the port on the
   receiving side (`StructuredDeserializeWithTransfer` step 3.2).
+- `offscreen_canvas.rs` — the OffscreenCanvas-specific parts: recognizing a
+  transferable OffscreenCanvas, running its transfer steps (carrying the
+  canvas id and bitmap dimensions in the data holder), and rebuilding the
+  canvas on the receiving side.
 
 The wire-format data (`SerializedRecord`, `TransferDataHolder`,
 `PortTransferData`, `PortMessagePayload`, `PostMessageRequest`) lives in

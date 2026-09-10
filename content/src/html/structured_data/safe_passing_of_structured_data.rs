@@ -23,6 +23,7 @@ use ipc_messages::safe_passing_of_structured_data::{
 };
 
 use super::messageport;
+use super::offscreen_canvas;
 
 use js_engine::{
     Completion, EcmascriptHost, ExecutionContext, JsTypes, enums::TypedArrayElementType,
@@ -853,7 +854,11 @@ pub fn structured_serialize_with_transfer(
 
         // Step 2.1: If transferable has neither an [[ArrayBufferData]] internal slot nor a
         //             [[Detached]] internal slot, then throw.
-        if !has_ab && !has_sab && !messageport::is_transferable_platform_object(&object, ec) {
+        if !has_ab
+            && !has_sab
+            && !messageport::is_transferable_platform_object(&object, ec)
+            && !offscreen_canvas::is_transferable_platform_object(&object, ec)
+        {
             return Err(crate::webidl::data_clone_error_value(ec));
         }
 
@@ -907,6 +912,11 @@ pub fn structured_serialize_with_transfer(
                 byte_length,
                 max_byte_length: None,
             });
+        } else if offscreen_canvas::is_transferable_platform_object(&object, ec) {
+            // Step 5.2: the OffscreenCanvas transfer steps run in
+            // offscreen_canvas::transfer_steps, which builds the data holder
+            // from the canvas id and bitmap dimensions.
+            transfer_data_holders.push(offscreen_canvas::transfer_steps(&object, ec)?);
         } else {
             // Step 5.2: Otherwise (platform object with a [[Detached]]
             //           internal slot): perform the transfer steps for the
@@ -1402,6 +1412,14 @@ pub fn structured_deserialize_with_transfer(
             // first, then runs the transfer-receiving steps on it.
             TransferDataHolder::MessagePort(holder) => {
                 messageport::transfer_receiving_steps(holder, ec)?
+            }
+            // Step 3.2: If transferDataHolder.[[Type]] is "OffscreenCanvas",
+            //           then run the transfer-receiving steps given
+            //           dataHolder and a new OffscreenCanvas in targetRealm.
+            // Note: The steps run in offscreen_canvas::transfer_receiving_steps,
+            // which creates the new canvas in the current (target) realm.
+            TransferDataHolder::OffscreenCanvas(holder) => {
+                offscreen_canvas::transfer_receiving_steps(holder, ec)?
             }
         };
 

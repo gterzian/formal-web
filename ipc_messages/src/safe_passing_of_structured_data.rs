@@ -15,7 +15,7 @@
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
-use crate::content::{MessageId, PortId};
+use crate::content::{CanvasId, MessageId, PortId};
 
 /// A primitive JavaScript value in a portable, serializable form.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -151,6 +151,27 @@ pub enum TransferDataHolder {
     /// transfer-receiving).
     /// <https://html.spec.whatwg.org/#message-ports:transfer-steps>
     MessagePort(PortTransferData),
+    /// { [[Type]]: "OffscreenCanvas", [[Width]], [[Height]],
+    ///   [[PlaceholderCanvas]] }
+    /// A transferred OffscreenCanvas (see [`OffscreenCanvasTransferData`]):
+    /// the canvas id linking it to its placeholder canvas element's embed
+    /// site, and the bitmap dimensions.  The placeholder reference is the
+    /// canvas id (a weak reference to the DOM element is not serializable).
+    OffscreenCanvas(OffscreenCanvasTransferData),
+}
+
+/// The data holder of the OffscreenCanvas transfer steps (see
+/// <https://html.spec.whatwg.org/multipage/canvas.html#offscreencanvas>),
+/// carried as pure IPC-safe data.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct OffscreenCanvasTransferData {
+    /// The canvas id of the placeholder canvas element (dataHolder's
+    /// placeholder canvas, realized as the shared CanvasId).
+    pub canvas_id: CanvasId,
+    /// dataHolder.[[Width]].
+    pub width: u32,
+    /// dataHolder.[[Height]].
+    pub height: u32,
 }
 
 /// The data holder of the MessagePort transfer steps (the dataHolder of
