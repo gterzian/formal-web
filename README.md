@@ -2,14 +2,14 @@
 
 formal-web is a Rust web-engine prototype with a modular architecture and support for formal verification.
 
-The modularity is goal-oriented: it can be used to support the following:
+The modularity is oriented to support the following goals:
 
 - **external constraint satisfaction**: shipping on a platform with specific constraints. Example: the ipc layer defaults to Rust multiprocessing, but is also designed to in the future support extensions in the context of [BrowserEngineKit](https://developer.apple.com/documentation/browserenginekit).
 - **performance optimization**: platform specific performance. Example: integrating with Core Animation based compositing on Mac.
 - **engineering flexibility**: subsystem swapping. For example, one can choose a JS engine such as V8 or Boa, and with Boa, one can also choose to add wasm via Wasmtime (this wasm layer itself is not generic as of now, but could be).
 - **cost reduction**: reduce binary size or build time by re-using what is already on the system. Example: choosing the url-session networking backend on Mac.
 
-Note: current implementation of generic component reflect Mac OS as the current main development platform: high-performance Mac OS paths with lower-performance cross platform paths. For example, there is a relatively high-performance rendering path on Mac OS, with zero copy texture sharing and a modicum of layering using multiple Core Animation layers to minimize re-rendering, and then there is a relatively low-performance cross platform path involving reading back data to the CPU.
+Note: the current set of implementations of generic components reflect Mac OS being the main development platform: high-performance Mac OS paths and lower-performance cross platform paths. For example, there is a relatively high-performance rendering path on Mac OS, with zero copy texture sharing and a modicum of layering using multiple Core Animation layers to minimize re-rendering, and then there is a relatively low-performance cross platform path involving reading back data to the CPU.
 
 ## Getting Started
 
@@ -17,7 +17,7 @@ The project has only been run on macOS; all build commands assume macOS. The
 Rust toolchain is pinned to 1.94.0 (`rustup toolchain install 1.94.0`); if it
 is not your default toolchain, prefix the commands below with `rustup run 1.94.0`.
 
-### Build and run on Mac OS
+### Build and run with default features on Mac OS
 
 ```bash
 # Default: V8, media on, AppKit embedder, AVFoundation media
@@ -33,6 +33,8 @@ than one fails the build. V8 is the default and needs no feature flags; the
 others replace it:
 
 ```bash
+# Default (macOS): V8
+
 # Boa
 cargo build --release --no-default-features --features boa,media
 cargo run --release --no-default-features --features boa,media
@@ -50,7 +52,7 @@ cargo run --release --no-default-features --features jsc,media
 
 ```bash
 # Defaults (macOS): AVFoundation media backend and zero-copy IOSurface
-# graphics — the default build above
+# graphics.
 
 # GStreamer media backend + CPU readback graphics (macOS opt-in; on other
 # platforms GStreamer and CPU readback are the only backends)
@@ -75,12 +77,9 @@ platforms the tokio/reqwest backend is the only option and is always
 compiled:
 
 ```bash
-# Default (macOS): Apple URLSession — the default build above.
-# Default (other platforms): tokio/reqwest — always compiled there, the
-# default build above.
+# Default (macOS): Apple URLSession.
 
-# macOS: tokio/reqwest backend (opt-in; URLSession is the default and wins
-# if both features are enabled)
+# tokio/reqwest backend
 cargo build --release -p net --features tokio
 cargo run --release
 ```
@@ -93,9 +92,9 @@ binary, so build the `net` package after it when switching backends. See
 ### Embedder
 
 ```bash
-# macOS: AppKit embedder — the default build above
+# Default (macOS): AppKit embedder
 
-# macOS: winit windowed embedder (Blitz-rendered chrome)
+# winit windowed embedder (Blitz-rendered chrome)
 cargo build --release --features winit_embedder
 cargo run --release --features winit_embedder
 ```
