@@ -1037,11 +1037,13 @@ impl DedicatedWorkerAgentState {
                 worker_id,
                 frame_timestamp_epoch_ms,
             } => {
-                // The user agent noted a rendering opportunity driven by this
-                // worker's requestAnimationFrame: queue the animation frame
-                // callbacks as a task so they run through the processing-model
-                // steps (task + microtask checkpoint), like update the
-                // rendering on the window event loop.
+                // The worker's owner navigable reached a rendering
+                // opportunity and its update the rendering is queued, so the
+                // user agent dispatches this worker's animation frame
+                // callbacks in the same cycle. Queue them as a task so they
+                // run through the processing-model steps (task + microtask
+                // checkpoint), like update the rendering on the window event
+                // loop.
                 self.task_queue
                     .queue_a_task(Task::RunAnimationFrameCallbacks {
                         worker_id,

@@ -47,6 +47,19 @@ pub enum GraphicsCommand {
     /// A paint frame (scene + composition metadata) from a content process.
     /// The full PaintFrame with its shmem regions is reconstructed before sending.
     PaintFrame { frame: PaintFrame },
+    /// The user agent started a rendering cycle: the embedder needs a frame
+    /// for `webview_id`. The graphics process arms a composition deadline, so
+    /// a layer that arrives before the top-level frame (a worker's
+    /// `CanvasPaint`, a video frame, a child frame) is composited against the
+    /// last committed root when the deadline expires, even though the
+    /// top-level frame is late or never arrives (a blocked content event
+    /// loop). The deadline is cleared when the top-level frame arrives.
+    RenderStarted {
+        webview_id: WebviewId,
+        /// Milliseconds to wait for the top-level frame before composing with
+        /// the last committed root.
+        deadline_ms: u64,
+    },
     /// A committed scene for an offscreen canvas, from the worker (or window)
     /// realm that owns the transferred `OffscreenCanvas`. The scene bytes
     /// travel in the IPC shared-memory map under `scene_shmem_key`.

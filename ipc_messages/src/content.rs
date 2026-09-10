@@ -1005,8 +1005,10 @@ pub enum Command {
     },
     /// The user-agent half of a dedicated worker's animation frame request:
     /// run the worker global scope's animation frame callbacks. Sent over the
-    /// worker agent's own user-agent command channel when the UA notes a
-    /// rendering opportunity driven by the worker's `requestAnimationFrame`.
+    /// worker agent's own user-agent command channel when the worker's owner
+    /// navigable reaches a rendering opportunity and its update the rendering
+    /// is queued, so the worker's `requestAnimationFrame` callbacks run on the
+    /// frame cadence.
     /// <https://html.spec.whatwg.org/#run-the-animation-frame-callbacks>
     RunAnimationFrameCallbacks {
         worker_id: WorkerId,

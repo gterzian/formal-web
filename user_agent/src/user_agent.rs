@@ -18,8 +18,14 @@ use ipc_messages::content::{
     NewTraversableInfo, UserNavigationInvolvement, UserScript, WebviewId, WorkerId, WorkerOwner,
     iframe_target_name,
 };
+use ipc_messages::graphics::GraphicsCommand;
 use ipc_messages::safe_passing_of_structured_data::PostMessageRequest;
 use log::{debug, error, info, trace};
+
+/// The composition deadline the user agent sends to the graphics process with
+/// `RenderStarted`, assuming a 60 Hz display: how long a rendering cycle's
+/// top-level frame has to arrive before graphics composes without it.
+const FRAME_DEADLINE_MS: u64 = 16;
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -4895,6 +4901,24 @@ impl UserAgentWorker {
         // channels are unordered, so the commit can still land a frame late;
         // the graphics process's CompositionChanged re-note recovers it.
         self.dispatch_pending_worker_animation_frames(navigable_id, frame_timestamp_epoch_ms);
+
+        // Arm the graphics process's composition deadline for the top-level
+        // frame. If that frame is late or never arrives (a blocked content
+        // event loop), graphics composes the layers it has — a worker's
+        // OffscreenCanvas commit — against the last committed root instead of
+        // waiting for it, so a worker animation keeps running while the
+        // window's main thread is busy. A child navigable's cycle recurses to
+        // the top-level below, so the deadline is armed once per cycle.
+        if let Some(top_level_traversable_id) = self.state.top_level_traversable_id(navigable_id)
+            && top_level_traversable_id == navigable_id
+            && let Some(graphics_sender) = &self.graphics_extension_sender
+            && let Err(error) = graphics_sender.send(GraphicsCommand::RenderStarted {
+                webview_id: WebviewId(navigable_id),
+                deadline_ms: FRAME_DEADLINE_MS,
+            })
+        {
+            error!("[render-pipe] failed to send render-started to graphics: {error}");
+        }
 
         let command = ContentCommand::UpdateTheRendering {
             traversable_id: navigable_id,

@@ -275,7 +275,11 @@ layer like a cross-origin iframe.  Wiring a canvas that draws on a worker:
   The dispatch must be gated on that frame cadence, never performed when
   the request arrives: a worker `requestAnimationFrame` loop re-registers
   on every run, so dispatching immediately spins at the worker event
-  loop's speed rather than the display refresh rate.
+  loop's speed rather than the display refresh rate. Because the dispatch
+  rides the owner navigable's cycle, the user agent also arms the graphics
+  process's `RenderStarted` deadline, so a canvas commit keeps compositing
+  against the last committed root when the window's top-level frame is
+  late (see `graphics/README.md`).
 - The canvas registry (`GlobalScope::canvas_registry`, shared with
   `ContentProcess`) is what lets the owner document's render path discover a
   newly transferred canvas: `transferControlToOffscreen` inserts into it and

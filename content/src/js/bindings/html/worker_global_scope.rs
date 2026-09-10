@@ -403,8 +403,9 @@ fn request_animation_frame_method(
         .global_scope
         .request_animation_frame(callback, ec);
     // A worker has no window event loop to drive update the rendering, so
-    // the user agent is asked to note a rendering opportunity and queue the
-    // animation frame callbacks on this worker's own event loop.
+    // the request is handed to the user agent: it schedules the callbacks on
+    // the worker's owner navigable's next rendering opportunity and sends
+    // them to this worker's own event loop to run.
     if let (Some(worker_id), Some(event_sender)) = (
         worker_global_scope.global_scope.worker_id(),
         worker_global_scope.global_scope.event_sender(),

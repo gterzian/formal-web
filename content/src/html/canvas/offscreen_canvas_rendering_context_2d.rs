@@ -1,4 +1,5 @@
 use std::cell::RefCell;
+use std::rc::Rc;
 
 use anyrender::{PaintScene, Scene};
 use ipc_messages::content::CanvasId;
@@ -28,17 +29,19 @@ pub struct OffscreenCanvasRenderingContext2D {
 
     /// The accumulated anyrender drawing commands of this context's output
     /// bitmap. Each draw appends to it and commits the full scene to the
-    /// graphics process.
+    /// graphics process. `Rc<RefCell<..>>` because a binding call clones the
+    /// platform object out of the object registry; a plain `RefCell` would
+    /// be deep-copied and every draw discarded.
     #[ignore_trace]
-    scene: RefCell<Scene>,
+    scene: Rc<RefCell<Scene>>,
 
     /// <https://html.spec.whatwg.org/multipage/canvas.html#dom-context-2d-fillstyle>
     #[ignore_trace]
-    fill_style: RefCell<Color>,
+    fill_style: Rc<RefCell<Color>>,
 
     /// The last-set string form of fillStyle (returned by the getter).
     #[ignore_trace]
-    fill_style_string: RefCell<String>,
+    fill_style_string: Rc<RefCell<String>>,
 }
 
 impl OffscreenCanvasRenderingContext2D {
@@ -52,9 +55,9 @@ impl OffscreenCanvasRenderingContext2D {
             canvas_id,
             width,
             height,
-            scene: RefCell::new(Scene::new()),
-            fill_style: RefCell::new(Color::BLACK),
-            fill_style_string: RefCell::new(String::from("#000000")),
+            scene: Rc::new(RefCell::new(Scene::new())),
+            fill_style: Rc::new(RefCell::new(Color::BLACK)),
+            fill_style_string: Rc::new(RefCell::new(String::from("#000000"))),
         }
     }
 
