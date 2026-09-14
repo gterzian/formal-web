@@ -49,7 +49,7 @@ fn with_canvas_context<R>(
     f(&handle, ec)
 }
 
-/// <https://html.spec.whatwg.org/multipage/canvas.html#canvasstate>
+/// <https://html.spec.whatwg.org/#canvasstate>
 pub(crate) fn define_canvas_state_members(def: &mut InterfaceDefinition<Types>) {
     def.add_operation(OperationDef {
         id: "save",
@@ -131,7 +131,7 @@ fn is_context_lost(
     Ok(ec.value_from_bool(lost))
 }
 
-/// <https://html.spec.whatwg.org/multipage/canvas.html#canvasfillstrokestyles>
+/// <https://html.spec.whatwg.org/#canvasfillstrokestyles>
 pub(crate) fn define_canvas_fill_stroke_styles_members(def: &mut InterfaceDefinition<Types>) {
     def.add_attribute(AttributeDef {
         id: "fillStyle",
@@ -148,7 +148,7 @@ pub(crate) fn define_canvas_fill_stroke_styles_members(def: &mut InterfaceDefini
     });
 }
 
-/// <https://html.spec.whatwg.org/multipage/canvas.html#canvasrect>
+/// <https://html.spec.whatwg.org/#canvasrect>
 pub(crate) fn define_canvas_rect_members(def: &mut InterfaceDefinition<Types>) {
     def.add_operation(OperationDef {
         id: "fillRect",

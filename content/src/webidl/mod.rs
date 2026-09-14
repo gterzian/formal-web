@@ -19,7 +19,8 @@ pub(crate) use callback::{
     callback_interface_type_value, invoke_callback_function, nullable_value,
 };
 pub(crate) use dom_exception::{
-    data_clone_error_value, not_supported_error_value, security_error_value, syntax_error_value,
+    data_clone_error_value, invalid_state_error_value, not_supported_error_value,
+    security_error_value, syntax_error_value,
 };
 pub(crate) use promise::{
     mark_promise_as_handled, promise_from_value, rejected_promise, rejected_promise_from_error,

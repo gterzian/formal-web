@@ -256,8 +256,8 @@ protected/permissible/suspendable monitoring is not.
 Both 2D rendering context interfaces live in `content/src/html/canvas/`:
 `CanvasRenderingContext2D` (the element's `getContext("2d")`) and
 `OffscreenCanvasRenderingContext2D` (the transferred `OffscreenCanvas`).
-They share one `RenderingContext2D` (the output bitmap and drawing state);
-the spec's mixins are domain traits over it (`CanvasState`,
+Each interface struct owns one `RenderingContext2D` (the output bitmap and
+drawing state); the spec's mixins are domain traits over it (`CanvasState`,
 `CanvasFillStrokeStyles`, `CanvasRect`), blanket implemented for every
 accessor.  The binding layer defines each mixin's members once in
 `bindings/html/canvas_context_2d_mixins.rs` for both interfaces.  To add a
@@ -268,14 +268,16 @@ bindings (only `CanvasRenderingContext2D` for `CanvasUserInterface`).
 Both `getContext("2d")` and `transferControlToOffscreen()` register the
 canvas — a `CanvasId` in `GlobalScope::canvas_registry` and
 `GraphicsCommand::RegisterCanvas` to graphics — and mark the document dirty,
-so the element's placeholder layer composites the committed scene.  A drawing
-member serializes the accumulated anyrender scene as
-`GraphicsCommand::CanvasPaint` through the current realm's graphics sender,
-which is why the same commit path serves a window canvas and a worker
-`OffscreenCanvas`.  Registration must happen before the next
-update-the-rendering can include the embed site.  `getContext` also records
-the context mode on the element (a shared cell) so a second call returns the
-same object and `transferControlToOffscreen` after a 2D context throws.
+so the element's layer composites the committed scene (a placeholder layer
+for `transferControlToOffscreen()`).  A drawing member serializes the
+accumulated anyrender scene as `GraphicsCommand::CanvasPaint` through the
+current realm's graphics sender, which is why the same commit path serves a
+window canvas and a worker `OffscreenCanvas`.  Registration must happen
+before the next update-the-rendering can include the embed site.  Both
+`getContext` methods record the context mode (a shared cell) and cache the
+context object, so a second call returns the same object; the mode also
+makes `transferControlToOffscreen()` after a 2D context throw, and makes a
+transferred `OffscreenCanvas` throw from `getContext`.
 
 Wiring a canvas that draws on a worker:
 
@@ -318,6 +320,8 @@ Remaining gaps:
   state, but the default path is not tracked and context loss is never
   signaled.
 - `OffscreenCanvas.width`/`height` are read-only (no resize).
+- The `OffscreenCanvas` transfer steps carry the canvas id and bitmap
+  dimensions but not its inherited language/direction.
 - Canvas embed sites surface only for a top-level document; a canvas inside a
   same-origin iframe document would not get its own layer (same-origin
   iframes are baked into their parent's scene).

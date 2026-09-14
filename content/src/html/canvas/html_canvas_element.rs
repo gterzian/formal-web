@@ -12,12 +12,13 @@ use crate::html::HTMLElement;
 use crate::js::Types;
 use crate::js::platform_objects::with_global_scope;
 use crate::webidl::bindings::create_interface_instance;
+use crate::webidl::invalid_state_error_value;
 
 use super::{CanvasRenderingContext2D, OffscreenCanvas};
 
 type JsObject = <Types as JsTypes>::JsObject;
 
-/// <https://html.spec.whatwg.org/multipage/canvas.html#concept-canvas-context-mode>
+/// <https://html.spec.whatwg.org/#concept-canvas-context-mode>
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub(crate) enum CanvasContextMode {
     None,
@@ -25,14 +26,14 @@ pub(crate) enum CanvasContextMode {
     Placeholder,
 }
 
-/// <https://html.spec.whatwg.org/multipage/canvas.html#htmlcanvaselement>
+/// <https://html.spec.whatwg.org/#htmlcanvaselement>
 #[gc_struct]
 pub struct HTMLCanvasElement {
     /// <https://html.spec.whatwg.org/#htmlelement>
     pub html_element: HTMLElement,
 
-    /// The canvas's canvas context mode, shared across clones of the platform
-    /// object.
+    /// The canvas's canvas context mode; `Rc`-shared because the bindings run a
+    /// member on a clone of the platform object.
     #[ignore_trace]
     context_mode: Rc<Cell<CanvasContextMode>>,
 
@@ -72,7 +73,7 @@ impl HTMLCanvasElement {
             .unwrap_or(150)
     }
 
-    /// <https://html.spec.whatwg.org/multipage/canvas.html#dom-canvas-getcontext>
+    /// <https://html.spec.whatwg.org/#dom-canvas-getcontext>
     pub(crate) fn get_context(
         &self,
         context_id: &str,
@@ -80,34 +81,36 @@ impl HTMLCanvasElement {
     ) -> Completion<Option<JsObject>, Types> {
         // Step 1: "If options is not an object, then set options to null."
         // Step 2: "Set options to the result of converting options to a JavaScript value."
-        // Note: Not yet implemented (options are not passed or used; the "2d"
-        // context ignores them).
+        // Note: options are not passed or modeled.
         // Step 3: "Run the steps in the cell of the following table whose column header matches this
         // canvas element's canvas context mode and whose row header matches contextId:"
         match (self.context_mode.get(), context_id) {
-            // none / "2d": follow the 2D context creation algorithm and return
-            // its result.
+            // none / "2d": follow the 2D context creation algorithm, and return its result.
             (CanvasContextMode::None, "2d") => {
                 let context = self.create_2d_context(ec)?;
+                // The cell leaves the element with a bound 2d context: cache the object and switch
+                // the mode so a later call takes the "2d" row.
+                *self.context_2d.borrow_mut(ec) = Some(context.clone());
+                self.context_mode.set(CanvasContextMode::Context2D);
                 Ok(Some(context))
             }
             // 2d / "2d": return the same object as was returned the last time.
             (CanvasContextMode::Context2D, "2d") => Ok(self.context_2d.borrow(ec).clone()),
             // placeholder / any: throw an "InvalidStateError" DOMException.
-            (CanvasContextMode::Placeholder, _) => Err(ec.new_type_error("InvalidStateError")),
-            // 2d with another contextId, and an unsupported value: return null.
+            (CanvasContextMode::Placeholder, _) => Err(invalid_state_error_value(ec)),
+            // An unsupported value in the "2d" row and every other cell: return null.
             _ => Ok(None),
         }
     }
 
-    /// <https://html.spec.whatwg.org/multipage/canvas.html#2d-context-creation-algorithm>
+    /// <https://html.spec.whatwg.org/#2d-context-creation-algorithm>
     fn create_2d_context(
         &self,
         ec: &mut dyn ExecutionContext<Types>,
     ) -> Completion<JsObject, Types> {
         // Step 1: "Let settings be the result of converting options to the dictionary type
         // CanvasRenderingContext2DSettings. (This can throw an exception.)"
-        // Note: Not yet implemented (options are not modeled).
+        // Note: options are not modeled.
         // Step 2: "Let context be a new CanvasRenderingContext2D object."
         let width = self.width_attribute();
         let height = self.height_attribute();
@@ -127,15 +130,13 @@ impl HTMLCanvasElement {
         // webview's compositor). The bitmap dimensions are the width/height
         // content attributes passed to the context constructor.
         self.register_canvas_with_graphics(canvas_id, ec)?;
-        *self.context_2d.borrow_mut(ec) = Some(context.clone());
-        self.context_mode.set(CanvasContextMode::Context2D);
         // Step 6: "Run the canvas settings output bitmap initialization algorithm, given context and settings."
-        // Note: Not yet implemented.
+        // Note: not implemented.
         // Step 7: "Return context."
         Ok(context)
     }
 
-    /// <https://html.spec.whatwg.org/multipage/canvas.html#dom-canvas-transfercontroltooffscreen>
+    /// <https://html.spec.whatwg.org/#dom-canvas-transfercontroltooffscreen>
     pub(crate) fn transfer_control_to_offscreen(
         &self,
         ec: &mut dyn ExecutionContext<Types>,
@@ -143,7 +144,7 @@ impl HTMLCanvasElement {
         // Step 1: "If this canvas element's context mode is not set to none, throw an
         // "InvalidStateError" DOMException."
         if self.context_mode.get() != CanvasContextMode::None {
-            return Err(ec.new_type_error("InvalidStateError"));
+            return Err(invalid_state_error_value(ec));
         }
 
         // Step 2: "Let offscreenCanvas be a new OffscreenCanvas object with its
@@ -170,7 +171,7 @@ impl HTMLCanvasElement {
         // of this canvas element."
         // Step 6: "Set the offscreenCanvas's inherited direction to the
         // directionality of this canvas element."
-        // TODO: Not yet implemented (no inherited language/direction state).
+        // Note: inherited language and direction are not modeled.
         // Step 7: "Return offscreenCanvas."
         Ok(offscreen_object)
     }

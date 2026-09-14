@@ -5,7 +5,7 @@ use crate::html::HTMLElement;
 
 use super::rendering_context_2d::{CanvasContext2D, RenderingContext2D};
 
-/// <https://html.spec.whatwg.org/multipage/canvas.html#canvasrenderingcontext2d>
+/// <https://html.spec.whatwg.org/#canvasrenderingcontext2d>
 #[gc_struct]
 pub struct CanvasRenderingContext2D {
     /// The output bitmap and drawing state shared with the mixin

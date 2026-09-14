@@ -18,6 +18,10 @@ use crate::js::platform_objects::with_global_scope;
 /// interfaces (the mixins both interfaces include operate on it).  Each
 /// interface struct owns one; the mixin traits below implement the spec's
 /// member algorithms over the [`CanvasContext2D`] accessor.
+///
+/// The bindings take a clone of the platform object out of the engine before
+/// running a member, so the mutable state is `Rc`-shared and every clone
+/// draws into the same output bitmap.
 #[derive(Clone)]
 pub(crate) struct RenderingContext2D {
     /// The canvas id of the associated canvas (its embed site).
@@ -28,11 +32,10 @@ pub(crate) struct RenderingContext2D {
     height: u32,
 
     /// The accumulated anyrender drawing commands of this context's output
-    /// bitmap.  `Rc<RefCell<..>>` so every clone of the platform object shares
-    /// the same scene.
+    /// bitmap.
     scene: Rc<RefCell<Scene>>,
 
-    /// <https://html.spec.whatwg.org/multipage/canvas.html#dom-context-2d-fillstyle>
+    /// <https://html.spec.whatwg.org/#dom-context-2d-fillstyle>
     fill_style: Rc<RefCell<Color>>,
 
     /// The last-set string form of the fill style (returned by the getter).
@@ -66,7 +69,7 @@ impl RenderingContext2D {
         }
     }
 
-    /// <https://html.spec.whatwg.org/multipage/canvas.html#reset-the-rendering-context-to-its-default-state>
+    /// <https://html.spec.whatwg.org/#reset-the-rendering-context-to-its-default-state>
     fn reset_the_rendering_context_to_its_default_state(
         &self,
         ec: &mut dyn ExecutionContext<Types>,
@@ -121,9 +124,9 @@ pub(crate) trait CanvasContext2D {
     fn rendering_context_2d(&self) -> &RenderingContext2D;
 }
 
-/// <https://html.spec.whatwg.org/multipage/canvas.html#canvasfillstrokestyles>
+/// <https://html.spec.whatwg.org/#canvasfillstrokestyles>
 pub(crate) trait CanvasFillStrokeStyles: CanvasContext2D {
-    /// <https://html.spec.whatwg.org/multipage/canvas.html#dom-context-2d-fillstyle>
+    /// <https://html.spec.whatwg.org/#dom-context-2d-fillstyle>
     fn set_fill_style(&self, value: &str) {
         let context = self.rendering_context_2d();
         // Step 1: "If the given value is a string:"
@@ -149,7 +152,7 @@ pub(crate) trait CanvasFillStrokeStyles: CanvasContext2D {
         // do not reach this method).
     }
 
-    /// <https://html.spec.whatwg.org/multipage/canvas.html#dom-context-2d-fillstyle>
+    /// <https://html.spec.whatwg.org/#dom-context-2d-fillstyle>
     fn fill_style_value(&self) -> String {
         let context = self.rendering_context_2d();
         // Step 1: "If this's fill style is a CSS color, then return the serialization of that color with HTML-compatible serialization requested."
@@ -161,9 +164,9 @@ pub(crate) trait CanvasFillStrokeStyles: CanvasContext2D {
 
 impl<T: CanvasContext2D> CanvasFillStrokeStyles for T {}
 
-/// <https://html.spec.whatwg.org/multipage/canvas.html#canvasstate>
+/// <https://html.spec.whatwg.org/#canvasstate>
 pub(crate) trait CanvasState: CanvasContext2D {
-    /// <https://html.spec.whatwg.org/multipage/canvas.html#dom-context-2d-save>
+    /// <https://html.spec.whatwg.org/#dom-context-2d-save>
     fn save(&self) {
         let context = self.rendering_context_2d();
         // "The save() method steps are to push a copy of the current drawing
@@ -175,7 +178,7 @@ pub(crate) trait CanvasState: CanvasContext2D {
         context.drawing_state_stack.borrow_mut().push(state);
     }
 
-    /// <https://html.spec.whatwg.org/multipage/canvas.html#dom-context-2d-restore>
+    /// <https://html.spec.whatwg.org/#dom-context-2d-restore>
     fn restore(&self) {
         let context = self.rendering_context_2d();
         // "The restore() method steps are to pop the top entry in the drawing
@@ -187,7 +190,7 @@ pub(crate) trait CanvasState: CanvasContext2D {
         }
     }
 
-    /// <https://html.spec.whatwg.org/multipage/canvas.html#dom-context-2d-reset>
+    /// <https://html.spec.whatwg.org/#dom-context-2d-reset>
     fn reset(&self, ec: &mut dyn ExecutionContext<Types>) -> Completion<(), Types> {
         // "The reset() method steps are to reset the rendering context to its
         // default state."
@@ -195,7 +198,7 @@ pub(crate) trait CanvasState: CanvasContext2D {
             .reset_the_rendering_context_to_its_default_state(ec)
     }
 
-    /// <https://html.spec.whatwg.org/multipage/canvas.html#dom-context-2d-iscontextlost>
+    /// <https://html.spec.whatwg.org/#dom-context-2d-iscontextlost>
     fn is_context_lost(&self) -> bool {
         // "The isContextLost() method steps are to return this's context lost."
         // Note: The context lost boolean is only ever initialized to false;
@@ -206,9 +209,9 @@ pub(crate) trait CanvasState: CanvasContext2D {
 
 impl<T: CanvasContext2D> CanvasState for T {}
 
-/// <https://html.spec.whatwg.org/multipage/canvas.html#canvasrect>
+/// <https://html.spec.whatwg.org/#canvasrect>
 pub(crate) trait CanvasRect: CanvasContext2D {
-    /// <https://html.spec.whatwg.org/multipage/canvas.html#dom-context-2d-fillrect>
+    /// <https://html.spec.whatwg.org/#dom-context-2d-fillrect>
     fn fill_rect(
         &self,
         x: f64,
@@ -239,7 +242,7 @@ pub(crate) trait CanvasRect: CanvasContext2D {
         context.commit(ec)
     }
 
-    /// <https://html.spec.whatwg.org/multipage/canvas.html#dom-context-2d-clearrect>
+    /// <https://html.spec.whatwg.org/#dom-context-2d-clearrect>
     fn clear_rect(
         &self,
         x: f64,
@@ -259,9 +262,6 @@ pub(crate) trait CanvasRect: CanvasContext2D {
         // any previous image."
         // Note: Clearing is modeled as a transparent fill; the current
         // clipping region is not tracked.
-        if width == 0.0 || height == 0.0 {
-            return Ok(());
-        }
         let rect = Rect::new(x, y, x + width, y + height);
         context.scene.borrow_mut().fill(
             Fill::NonZero,
