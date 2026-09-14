@@ -66,14 +66,35 @@ impl OffscreenCanvas {
         }
     }
 
-    /// The canvas created by the `OffscreenCanvas` constructor: a standalone
-    /// canvas with a fresh canvas id and no placeholder canvas element.
-    pub(crate) fn new_standalone(
-        width: u32,
-        height: u32,
+    /// <https://html.spec.whatwg.org/#dom-offscreencanvas>
+    pub(crate) fn constructor(
+        width: u64,
+        height: u64,
         ec: &mut dyn ExecutionContext<Types>,
-    ) -> Self {
-        Self::new(CanvasId::new(), width, height, ec)
+    ) -> Completion<Self, Types> {
+        // Step 1: "Initialize the bitmap of this to a rectangular array of transparent black pixels of the dimensions specified by width and height."
+        // Step 2: "Initialize the width of this to width."
+        // Step 3: "Initialize the height of this to height."
+        // Note: the bitmap is realized as the graphics-process canvas slot, and
+        // the width and height are stored on the platform object.  A
+        // constructor-created canvas has no placeholder canvas element, so it
+        // has no embed site.  The dimensions are stored as 32-bit values, so a
+        // width or height above `u32::MAX` saturates.
+        let width = u32::try_from(width).unwrap_or(u32::MAX);
+        let height = u32::try_from(height).unwrap_or(u32::MAX);
+        let canvas = Self::new(CanvasId::new(), width, height, ec);
+        canvas.register_canvas_with_graphics(ec)?;
+
+        // Step 4: "Set this's inherited language to explicitly unknown."
+        // Step 5: "Set this's inherited direction to \"ltr\"."
+        // Step 6: "Let global be the relevant global object of this."
+        // Step 7: "If global is a Window object:"
+        // Step 7.1: "Let element be the document element of global's associated Document."
+        // Step 7.2: "If element is not null:"
+        // Step 7.2.1: "Set the inherited language of this to element's language."
+        // Step 7.2.2: "Set the inherited direction of this to element's directionality."
+        // Note: inherited language and direction are not modeled.
+        Ok(canvas)
     }
 
     /// Register the canvas with the graphics process so its committed scenes

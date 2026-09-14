@@ -5,6 +5,7 @@ mod buffer_source;
 mod callback;
 pub(crate) mod dictionary;
 pub(crate) mod dom_exception;
+mod integer;
 pub(crate) mod promise;
 mod realm;
 
@@ -22,6 +23,7 @@ pub(crate) use dom_exception::{
     data_clone_error_value, invalid_state_error_value, not_supported_error_value,
     security_error_value, syntax_error_value,
 };
+pub(crate) use integer::enforce_range_unsigned_long_long;
 pub(crate) use promise::{
     mark_promise_as_handled, promise_from_value, rejected_promise, rejected_promise_from_error,
     resolved_promise, transform_promise_to_undefined, upon_settlement,

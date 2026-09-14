@@ -100,6 +100,15 @@ pub(crate) fn add_event_listener(
 - **No spec logic** — the binding does not implement any part of a spec
   algorithm.  It converts JS args to IDL types, calls a domain method, and
   wraps the return value.
+- **No constructor steps** — a `WebIdlInterface::create_platform_object`
+  override converts the IDL arguments and calls a domain constructor (see
+  `Worker::constructor`, `OffscreenCanvas::constructor`); the constructor
+  steps, with their `// Step N:` comments, live in the domain.
+- **No Web IDL conversion algorithms** — an integer, dictionary, or union
+  conversion is implemented once in `content/src/webidl/` (e.g.
+  `enforce_range_unsigned_long_long` in `content/src/webidl/integer.rs`); the
+  binding calls it.  A `// Step N:` comment under an item in a bindings file
+  is the signal that the item belongs in the domain or in `webidl/`.
 - **No path building** — `dispatchEvent` does not build the event path inline.
 The binding calls `build_path_from_target_js_object` (in the HTML/events bridge)
 and then calls the domain method `EventTarget::dispatch_event()`.
