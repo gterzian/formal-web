@@ -320,6 +320,11 @@ Remaining gaps:
   state, but the default path is not tracked and context loss is never
   signaled.
 - `OffscreenCanvas.width`/`height` are read-only (no resize).
+- `new OffscreenCanvas(width, height)` is not exposed (the interface has no
+  constructor), so an `OffscreenCanvas` can only come from
+  `transferControlToOffscreen()`.  The window variants under
+  `html/canvas/offscreen/` fail at construction until the constructor is
+  wired; the worker variants additionally need worker-side testharness.
 - The `OffscreenCanvas` transfer steps carry the canvas id and bitmap
   dimensions but not its inherited language/direction.
 - Canvas embed sites surface only for a top-level document; a canvas inside a
