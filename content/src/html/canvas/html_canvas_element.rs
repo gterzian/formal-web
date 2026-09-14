@@ -5,7 +5,7 @@ use blitz_dom::BaseDocument;
 use ipc_messages::content::{CanvasId, WebviewId};
 use ipc_messages::graphics::GraphicsCommand;
 use js_engine::gc::{GcCell, gc_cell_new};
-use js_engine::{Completion, ExecutionContext, JsTypes, gc_struct};
+use js_engine::{Completion, ExecutionContext, gc_struct};
 use log::error;
 
 use crate::html::HTMLElement;
@@ -15,8 +15,6 @@ use crate::webidl::bindings::create_interface_instance;
 use crate::webidl::invalid_state_error_value;
 
 use super::{CanvasRenderingContext2D, OffscreenCanvas};
-
-type JsObject = <Types as JsTypes>::JsObject;
 
 /// <https://html.spec.whatwg.org/#concept-canvas-context-mode>
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -39,7 +37,7 @@ pub struct HTMLCanvasElement {
 
     /// The `CanvasRenderingContext2D` returned by a previous
     /// `getContext("2d")` call, so subsequent calls return the same object.
-    context_2d: GcCell<Option<JsObject>>,
+    context_2d: GcCell<Option<CanvasRenderingContext2D>>,
 }
 
 impl HTMLCanvasElement {
@@ -116,7 +114,7 @@ impl HTMLCanvasElement {
         &self,
         context_id: &str,
         ec: &mut dyn ExecutionContext<Types>,
-    ) -> Completion<Option<JsObject>, Types> {
+    ) -> Completion<Option<CanvasRenderingContext2D>, Types> {
         // Step 1: "If options is not an object, then set options to null."
         // Step 2: "Set options to the result of converting options to a JavaScript value."
         // Note: options are not passed or modeled.
@@ -145,7 +143,7 @@ impl HTMLCanvasElement {
     fn create_2d_context(
         &self,
         ec: &mut dyn ExecutionContext<Types>,
-    ) -> Completion<JsObject, Types> {
+    ) -> Completion<CanvasRenderingContext2D, Types> {
         // Step 1: "Let settings be the result of converting options to the dictionary type
         // CanvasRenderingContext2DSettings. (This can throw an exception.)"
         // Note: options are not modeled.
@@ -153,10 +151,20 @@ impl HTMLCanvasElement {
         let width = self.width();
         let height = self.height();
         let canvas_id = CanvasId::new();
-        let context = create_interface_instance::<Types, CanvasRenderingContext2D>(
+        let context_object = create_interface_instance::<Types, CanvasRenderingContext2D>(
             CanvasRenderingContext2D::new(canvas_id, width, height, self.html_element.clone()),
             ec,
         )?;
+        // The platform data is cloned back out of the created object; its
+        // reflector was set by `create_interface_instance`, so the context the
+        // element caches resolves to this same object.
+        let context = ec
+            .with_object_any(&context_object)
+            .and_then(|data| data.downcast_ref::<CanvasRenderingContext2D>().cloned())
+            .ok_or_else(|| {
+                ec.new_type_error("CanvasRenderingContext2D object has no platform data")
+            })?;
+
         // Step 3: "Initialize context's canvas attribute to point to target."
         //   The context holds the target element passed to its constructor.
         // Step 4: "Set context's output bitmap to the same bitmap as target's bitmap (so that they are shared)."
@@ -178,7 +186,7 @@ impl HTMLCanvasElement {
     pub(crate) fn transfer_control_to_offscreen(
         &self,
         ec: &mut dyn ExecutionContext<Types>,
-    ) -> Completion<JsObject, Types> {
+    ) -> Completion<OffscreenCanvas, Types> {
         // Step 1: "If this canvas element's context mode is not set to none, throw an
         // "InvalidStateError" DOMException."
         if self.context_mode.get() != CanvasContextMode::None {
@@ -195,6 +203,12 @@ impl HTMLCanvasElement {
             OffscreenCanvas::new(canvas_id, width, height, ec),
             ec,
         )?;
+        // The platform data is cloned back out of the created object; its
+        // reflector was set by `create_interface_instance`.
+        let offscreen = ec
+            .with_object_any(&offscreen_object)
+            .and_then(|data| data.downcast_ref::<OffscreenCanvas>().cloned())
+            .ok_or_else(|| ec.new_type_error("OffscreenCanvas object has no platform data"))?;
 
         // Step 3: "Set the offscreenCanvas's placeholder canvas element to a
         // weak reference to this canvas element."
@@ -211,7 +225,7 @@ impl HTMLCanvasElement {
         // directionality of this canvas element."
         // Note: inherited language and direction are not modeled.
         // Step 7: "Return offscreenCanvas."
-        Ok(offscreen_object)
+        Ok(offscreen)
     }
 
     fn register_canvas_with_graphics(

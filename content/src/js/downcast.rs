@@ -7,9 +7,10 @@ use crate::dom::{
     AbortController, AbortSignal, Document, Element, Event, EventTarget, HasEvent, Node,
 };
 use crate::html::{
-    DedicatedWorkerGlobalScope, HTMLAnchorElement, HTMLCanvasElement, HTMLElement,
-    HTMLIFrameElement, HTMLInputElement, HTMLMediaElement, HTMLVideoElement, MessageEvent,
-    MessagePort, Window, Worker, WorkerGlobalScope,
+    CanvasRenderingContext2D, DedicatedWorkerGlobalScope, HTMLAnchorElement, HTMLCanvasElement,
+    HTMLElement, HTMLIFrameElement, HTMLInputElement, HTMLMediaElement, HTMLVideoElement,
+    MessageEvent, MessagePort, OffscreenCanvas, OffscreenCanvasRenderingContext2D, Window, Worker,
+    WorkerGlobalScope,
 };
 use crate::js::Types;
 use crate::js::platform_objects::with_global_scope;
@@ -155,6 +156,14 @@ pub(crate) fn try_set_event_target_reflector(
                             .reflector,
                         reflector,
                     );
+                } else if let Some(context) = data.downcast_mut::<CanvasRenderingContext2D>() {
+                    ec.store_js_object(&mut context.reflector, reflector);
+                } else if let Some(context) =
+                    data.downcast_mut::<OffscreenCanvasRenderingContext2D>()
+                {
+                    ec.store_js_object(&mut context.reflector, reflector);
+                } else if let Some(canvas) = data.downcast_mut::<OffscreenCanvas>() {
+                    ec.store_js_object(&mut canvas.reflector, reflector);
                 } else if let Some(node) = data.downcast_mut::<Node>() {
                     ec.store_js_object(&mut node.event_target.reflector, reflector);
                 } else if let Some(target) = data.downcast_mut::<EventTarget>() {

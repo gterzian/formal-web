@@ -128,10 +128,15 @@ fn get_context(
     }
     let context =
         try_with_offscreen_canvas_ref(this, ec, |canvas, ec| canvas.get_context(&context_id, ec))??;
-    Ok(match context {
-        Some(context) => Types::value_from_object(context),
-        None => ec.value_null(),
-    })
+    match context {
+        Some(context) => {
+            let reflector = context.reflector.clone().ok_or_else(|| {
+                ec.new_type_error("OffscreenCanvasRenderingContext2D has no reflector")
+            })?;
+            Ok(Types::value_from_object(reflector))
+        }
+        None => Ok(ec.value_null()),
+    }
 }
 
 /// <https://html.spec.whatwg.org/#offscreenrenderingcontextid>

@@ -125,10 +125,16 @@ fn get_context(
     let context_id = ec.to_rust_string(context_id_value)?;
     let canvas = canvas_from_js_object(this, ec)?;
     let context = canvas.get_context(&context_id, ec)?;
-    Ok(match context {
-        Some(context) => Types::value_from_object(context),
-        None => ec.value_null(),
-    })
+    match context {
+        Some(context) => {
+            let reflector = context
+                .reflector
+                .clone()
+                .ok_or_else(|| ec.new_type_error("CanvasRenderingContext2D has no reflector"))?;
+            Ok(Types::value_from_object(reflector))
+        }
+        None => Ok(ec.value_null()),
+    }
 }
 
 fn transfer_control_to_offscreen(
@@ -138,7 +144,11 @@ fn transfer_control_to_offscreen(
 ) -> Completion<JsValue, Types> {
     let canvas = canvas_from_js_object(this, ec)?;
     let offscreen = canvas.transfer_control_to_offscreen(ec)?;
-    Ok(Types::value_from_object(offscreen))
+    let reflector = offscreen
+        .reflector
+        .clone()
+        .ok_or_else(|| ec.new_type_error("OffscreenCanvas has no reflector"))?;
+    Ok(Types::value_from_object(reflector))
 }
 
 fn canvas_from_js_object(

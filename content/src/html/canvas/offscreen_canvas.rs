@@ -27,6 +27,9 @@ pub(crate) enum OffscreenCanvasContextMode {
 /// <https://html.spec.whatwg.org/#offscreencanvas>
 #[gc_struct]
 pub struct OffscreenCanvas {
+    /// The JS object implementing this interface, set by the Web IDL layer.
+    pub(crate) reflector: Option<JsObject>,
+
     /// The canvas id linking this OffscreenCanvas to its placeholder canvas
     /// element's embed site (see `HTMLCanvasElement.transferControlToOffscreen`).
     #[ignore_trace]
@@ -47,7 +50,7 @@ pub struct OffscreenCanvas {
 
     /// The cached OffscreenCanvasRenderingContext2D object returned by
     /// `getContext("2d")`, so a second call returns the same object.
-    context_2d: GcCell<Option<JsObject>>,
+    context_2d: GcCell<Option<OffscreenCanvasRenderingContext2D>>,
 }
 
 impl OffscreenCanvas {
@@ -58,6 +61,7 @@ impl OffscreenCanvas {
         ec: &mut dyn ExecutionContext<Types>,
     ) -> Self {
         Self {
+            reflector: None,
             canvas_id,
             width,
             height,
@@ -153,7 +157,7 @@ impl OffscreenCanvas {
         &self,
         context_id: &str,
         ec: &mut dyn ExecutionContext<Types>,
-    ) -> Completion<Option<JsObject>, Types> {
+    ) -> Completion<Option<OffscreenCanvasRenderingContext2D>, Types> {
         // Step 1: "If options is not an object, then set options to null."
         // Step 2: "Set options to the result of converting options to a JavaScript value."
         // Note: options are not passed or modeled.
@@ -182,15 +186,28 @@ impl OffscreenCanvas {
     fn create_offscreen_2d_context(
         &self,
         ec: &mut dyn ExecutionContext<Types>,
-    ) -> Completion<JsObject, Types> {
+    ) -> Completion<OffscreenCanvasRenderingContext2D, Types> {
         // Step 1: "If the algorithm was passed some arguments, let arg be the first such argument. Otherwise, let arg be undefined."
         // Step 2: "Let settings be the result of converting arg to the dictionary type CanvasRenderingContext2DSettings. (This can throw an exception.)"
         // Note: options are not passed or modeled.
         // Step 3: "Let context be a new OffscreenCanvasRenderingContext2D object."
-        let context = create_interface_instance::<Types, OffscreenCanvasRenderingContext2D>(
+        let context_object = create_interface_instance::<Types, OffscreenCanvasRenderingContext2D>(
             OffscreenCanvasRenderingContext2D::new(self.canvas_id, self.width, self.height),
             ec,
         )?;
+        // The platform data is cloned back out of the created object; its
+        // reflector was set by `create_interface_instance`, so the context the
+        // OffscreenCanvas caches resolves to this same object.
+        let context = ec
+            .with_object_any(&context_object)
+            .and_then(|data| {
+                data.downcast_ref::<OffscreenCanvasRenderingContext2D>()
+                    .cloned()
+            })
+            .ok_or_else(|| {
+                ec.new_type_error("OffscreenCanvasRenderingContext2D object has no platform data")
+            })?;
+
         // Step 4: "Set context's associated OffscreenCanvas object to target."
         // Note: the context does not hold the OffscreenCanvas object; its canvas member is not exposed.
         // Step 5: "Run the canvas settings output bitmap initialization algorithm, given context and settings."
