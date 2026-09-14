@@ -3,25 +3,18 @@ use js_engine::gc_struct;
 
 use crate::html::HTMLElement;
 
-use super::rendering_context_2d::{CanvasContext2D, RenderingContext2D};
+use super::rendering_context_2d::RenderingContext2D;
 
 /// <https://html.spec.whatwg.org/#canvasrenderingcontext2d>
 #[gc_struct]
 pub struct CanvasRenderingContext2D {
-    /// The output bitmap and drawing state shared with the mixin
-    /// implementations.
+    /// The output bitmap and drawing state the mixin member algorithms run on.
     #[ignore_trace]
     rendering_context: RenderingContext2D,
 
     /// The canvas element this context is permanently bound to (the `canvas`
     /// attribute's value).
     html_element: HTMLElement,
-}
-
-impl CanvasContext2D for CanvasRenderingContext2D {
-    fn rendering_context_2d(&self) -> &RenderingContext2D {
-        &self.rendering_context
-    }
 }
 
 impl CanvasRenderingContext2D {
@@ -35,6 +28,11 @@ impl CanvasRenderingContext2D {
             rendering_context: RenderingContext2D::new(canvas_id, width, height),
             html_element,
         }
+    }
+
+    /// The output bitmap and drawing state the mixin member algorithms run on.
+    pub(crate) fn rendering_context_2d(&self) -> &RenderingContext2D {
+        &self.rendering_context
     }
 
     /// The canvas element this context is permanently bound to.

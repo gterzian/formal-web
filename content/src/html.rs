@@ -48,10 +48,7 @@ pub use canvas::CanvasRenderingContext2D;
 pub use canvas::HTMLCanvasElement;
 pub use canvas::OffscreenCanvas;
 pub use canvas::OffscreenCanvasRenderingContext2D;
-pub(crate) use canvas::{
-    CanvasContext2D, CanvasFillStrokeStyles, CanvasRect, CanvasState, OffscreenCanvasContextMode,
-    RenderingContext2D,
-};
+pub(crate) use canvas::{OffscreenCanvasContextMode, RenderingContext2D};
 pub use environment_settings_object::EnvironmentSettingsObject;
 pub use global_scope::GlobalScope;
 pub use global_scope::GlobalScopeKind;

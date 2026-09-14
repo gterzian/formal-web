@@ -2,51 +2,34 @@ type JsValue = <crate::js::Types as JsTypes>::JsValue;
 type Types = crate::js::Types;
 
 use crate::html::{
-    CanvasContext2D, CanvasFillStrokeStyles, CanvasRect, CanvasRenderingContext2D, CanvasState,
-    OffscreenCanvasRenderingContext2D, RenderingContext2D,
+    CanvasRenderingContext2D, OffscreenCanvasRenderingContext2D, RenderingContext2D,
 };
 use crate::webidl::bindings::{AttributeDef, InterfaceDefinition, OperationDef};
 
 use js_engine::{Completion, ExecutionContext, JsTypes};
 
-// A 2D rendering context receiver, either interface, resolved to its shared
-// RenderingContext2D so the mixin member definitions below are shared by both
-// interfaces' bindings.
-enum CanvasContext2DHandle {
-    Canvas(CanvasRenderingContext2D),
-    Offscreen(OffscreenCanvasRenderingContext2D),
-}
-
-impl CanvasContext2D for CanvasContext2DHandle {
-    fn rendering_context_2d(&self) -> &RenderingContext2D {
-        match self {
-            CanvasContext2DHandle::Canvas(context) => context.rendering_context_2d(),
-            CanvasContext2DHandle::Offscreen(context) => context.rendering_context_2d(),
-        }
-    }
-}
-
-fn with_canvas_context<R>(
+// Resolve a 2D rendering context receiver of either interface to its shared
+// `RenderingContext2D`, so the mixin member definitions below are shared by
+// both interfaces' bindings.
+fn with_rendering_context<R>(
     this: &JsValue,
     ec: &mut dyn ExecutionContext<Types>,
-    f: impl FnOnce(&CanvasContext2DHandle, &mut dyn ExecutionContext<Types>) -> Completion<R, Types>,
+    f: impl FnOnce(&RenderingContext2D, &mut dyn ExecutionContext<Types>) -> Completion<R, Types>,
 ) -> Completion<R, Types> {
     let object = Types::value_as_object(this)
         .ok_or_else(|| ec.new_type_error("2D rendering context receiver is not an object"))?;
-    let handle = ec.with_object_any(&object).and_then(|data| {
+    let rendering_context = ec.with_object_any(&object).and_then(|data| {
         data.downcast_ref::<CanvasRenderingContext2D>()
-            .cloned()
-            .map(CanvasContext2DHandle::Canvas)
+            .map(|context| context.rendering_context_2d().clone())
             .or_else(|| {
                 data.downcast_ref::<OffscreenCanvasRenderingContext2D>()
-                    .cloned()
-                    .map(CanvasContext2DHandle::Offscreen)
+                    .map(|context| context.rendering_context_2d().clone())
             })
     });
-    let Some(handle) = handle else {
+    let Some(rendering_context) = rendering_context else {
         return Err(ec.new_type_error("receiver is not a 2D rendering context"));
     };
-    f(&handle, ec)
+    f(&rendering_context, ec)
 }
 
 /// <https://html.spec.whatwg.org/#canvasstate>
@@ -94,7 +77,7 @@ fn save(
     _args: &[JsValue],
     ec: &mut dyn ExecutionContext<Types>,
 ) -> Completion<JsValue, Types> {
-    with_canvas_context(this, ec, |context, _ec| {
+    with_rendering_context(this, ec, |context, _ec| {
         context.save();
         Ok(())
     })?;
@@ -106,7 +89,7 @@ fn restore(
     _args: &[JsValue],
     ec: &mut dyn ExecutionContext<Types>,
 ) -> Completion<JsValue, Types> {
-    with_canvas_context(this, ec, |context, _ec| {
+    with_rendering_context(this, ec, |context, _ec| {
         context.restore();
         Ok(())
     })?;
@@ -118,7 +101,7 @@ fn reset(
     _args: &[JsValue],
     ec: &mut dyn ExecutionContext<Types>,
 ) -> Completion<JsValue, Types> {
-    with_canvas_context(this, ec, |context, ec| context.reset(ec))?;
+    with_rendering_context(this, ec, |context, ec| context.reset(ec))?;
     Ok(ec.value_undefined())
 }
 
@@ -127,7 +110,7 @@ fn is_context_lost(
     _args: &[JsValue],
     ec: &mut dyn ExecutionContext<Types>,
 ) -> Completion<JsValue, Types> {
-    let lost = with_canvas_context(this, ec, |context, _ec| Ok(context.is_context_lost()))?;
+    let lost = with_rendering_context(this, ec, |context, _ec| Ok(context.is_context_lost()))?;
     Ok(ec.value_from_bool(lost))
 }
 
@@ -175,7 +158,7 @@ fn get_fill_style(
     _args: &[JsValue],
     ec: &mut dyn ExecutionContext<Types>,
 ) -> Completion<JsValue, Types> {
-    let value = with_canvas_context(this, ec, |context, _ec| Ok(context.fill_style_value()))?;
+    let value = with_rendering_context(this, ec, |context, _ec| Ok(context.fill_style_value()))?;
     Ok(ec.value_from_string(ec.js_string_from_str(&value)))
 }
 
@@ -186,7 +169,7 @@ fn set_fill_style(
 ) -> Completion<JsValue, Types> {
     let undefined = ec.value_undefined();
     let value = ec.to_rust_string(args.first().cloned().unwrap_or(undefined))?;
-    with_canvas_context(this, ec, |context, _ec| {
+    with_rendering_context(this, ec, |context, _ec| {
         context.set_fill_style(&value);
         Ok(())
     })?;
@@ -203,7 +186,7 @@ fn fill_rect(
     let y = ec.to_number(args.get(1).cloned().unwrap_or(undefined.clone()))?;
     let width = ec.to_number(args.get(2).cloned().unwrap_or(undefined.clone()))?;
     let height = ec.to_number(args.get(3).cloned().unwrap_or(undefined))?;
-    with_canvas_context(this, ec, |context, ec| {
+    with_rendering_context(this, ec, |context, ec| {
         context.fill_rect(x, y, width, height, ec)
     })?;
     Ok(ec.value_undefined())
@@ -219,7 +202,7 @@ fn clear_rect(
     let y = ec.to_number(args.get(1).cloned().unwrap_or(undefined.clone()))?;
     let width = ec.to_number(args.get(2).cloned().unwrap_or(undefined.clone()))?;
     let height = ec.to_number(args.get(3).cloned().unwrap_or(undefined))?;
-    with_canvas_context(this, ec, |context, ec| {
+    with_rendering_context(this, ec, |context, ec| {
         context.clear_rect(x, y, width, height, ec)
     })?;
     Ok(ec.value_undefined())

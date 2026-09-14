@@ -55,22 +55,60 @@ impl HTMLCanvasElement {
         }
     }
 
-    fn width_attribute(&self) -> u32 {
-        // The width attribute defaults to 300.
+    /// <https://html.spec.whatwg.org/#dom-canvas-width>
+    pub(crate) fn width(&self) -> u32 {
         self.html_element
             .element
             .get_attribute("width")
-            .and_then(|value| value.parse::<u32>().ok())
+            .as_deref()
+            .and_then(parse_non_negative_integer)
             .unwrap_or(300)
     }
 
-    fn height_attribute(&self) -> u32 {
-        // The height attribute defaults to 150.
+    /// <https://html.spec.whatwg.org/#dom-canvas-height>
+    pub(crate) fn height(&self) -> u32 {
         self.html_element
             .element
             .get_attribute("height")
-            .and_then(|value| value.parse::<u32>().ok())
+            .as_deref()
+            .and_then(parse_non_negative_integer)
             .unwrap_or(150)
+    }
+
+    /// <https://html.spec.whatwg.org/#dom-canvas-width>
+    pub(crate) fn set_width(
+        &self,
+        value: u32,
+        ec: &mut dyn ExecutionContext<Types>,
+    ) -> Completion<(), Types> {
+        self.set_dimension("width", value, ec)
+    }
+
+    /// <https://html.spec.whatwg.org/#dom-canvas-height>
+    pub(crate) fn set_height(
+        &self,
+        value: u32,
+        ec: &mut dyn ExecutionContext<Types>,
+    ) -> Completion<(), Types> {
+        self.set_dimension("height", value, ec)
+    }
+
+    fn set_dimension(
+        &self,
+        name: &str,
+        value: u32,
+        ec: &mut dyn ExecutionContext<Types>,
+    ) -> Completion<(), Types> {
+        // "When setting the value of the width or height attribute, if the context mode of the
+        // canvas element is set to placeholder, the user agent must throw an "InvalidStateError"
+        // DOMException and leave the attribute's value unchanged."
+        if self.context_mode.get() == CanvasContextMode::Placeholder {
+            return Err(invalid_state_error_value(ec));
+        }
+        self.html_element
+            .element
+            .set_attribute(name, &value.to_string());
+        Ok(())
     }
 
     /// <https://html.spec.whatwg.org/#dom-canvas-getcontext>
@@ -112,8 +150,8 @@ impl HTMLCanvasElement {
         // CanvasRenderingContext2DSettings. (This can throw an exception.)"
         // Note: options are not modeled.
         // Step 2: "Let context be a new CanvasRenderingContext2D object."
-        let width = self.width_attribute();
-        let height = self.height_attribute();
+        let width = self.width();
+        let height = self.height();
         let canvas_id = CanvasId::new();
         let context = create_interface_instance::<Types, CanvasRenderingContext2D>(
             CanvasRenderingContext2D::new(canvas_id, width, height, self.html_element.clone()),
@@ -150,8 +188,8 @@ impl HTMLCanvasElement {
         // Step 2: "Let offscreenCanvas be a new OffscreenCanvas object with its
         // width and height equal to the values of the width and height content
         // attributes of this canvas element."
-        let width = self.width_attribute();
-        let height = self.height_attribute();
+        let width = self.width();
+        let height = self.height();
         let canvas_id = CanvasId::new();
         let offscreen_object = create_interface_instance::<Types, OffscreenCanvas>(
             OffscreenCanvas::new(canvas_id, width, height, ec),
@@ -217,4 +255,46 @@ impl HTMLCanvasElement {
             Ok(())
         })
     }
+}
+
+/// <https://html.spec.whatwg.org/#rules-for-parsing-non-negative-integers>
+fn parse_non_negative_integer(value: &str) -> Option<u32> {
+    let mut characters = value.chars().peekable();
+    // "Skip ASCII whitespace within input given position."
+    while matches!(characters.peek(), Some(' ' | '\t' | '\n' | '\u{0C}' | '\r')) {
+        characters.next();
+    }
+    // "If the character ... is a U+002B PLUS SIGN ... Otherwise, if the character is a U+002D
+    // HYPHEN-MINUS character (-), then set sign to \"negative\" ..."
+    let negative = match characters.peek() {
+        Some('+') => {
+            characters.next();
+            false
+        }
+        Some('-') => {
+            characters.next();
+            true
+        }
+        _ => false,
+    };
+    // "If the character pointed to by position is not an ASCII digit, then return an error."
+    if !characters.peek().is_some_and(char::is_ascii_digit) {
+        return None;
+    }
+    // "Collect a sequence of characters that are ASCII digits, and interpret the resulting sequence
+    // as a base-ten integer. Let value be that number."
+    let mut parsed = 0u64;
+    while let Some(character) = characters.peek() {
+        let Some(digit) = character.to_digit(10) else {
+            break;
+        };
+        parsed = parsed.saturating_mul(10).saturating_add(u64::from(digit));
+        characters.next();
+    }
+    // "If sign is \"negative\", negate value. ... If value is less than zero, return an error."
+    if negative && parsed != 0 {
+        return None;
+    }
+    // The IDL attributes are `unsigned long`; the parsed integer converts modulo 2^32.
+    Some((parsed % (1 << 32)) as u32)
 }

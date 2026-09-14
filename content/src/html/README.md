@@ -257,13 +257,14 @@ Both 2D rendering context interfaces live in `content/src/html/canvas/`:
 `CanvasRenderingContext2D` (the element's `getContext("2d")`) and
 `OffscreenCanvasRenderingContext2D` (the transferred `OffscreenCanvas`).
 Each interface struct owns one `RenderingContext2D` (the output bitmap and
-drawing state); the spec's mixins are domain traits over it (`CanvasState`,
-`CanvasFillStrokeStyles`, `CanvasRect`), blanket implemented for every
-accessor.  The binding layer defines each mixin's members once in
-`bindings/html/canvas_context_2d_mixins.rs` for both interfaces.  To add a
-mixin: add its trait next to the others, add its members to a
-`define_canvas_*_members` function, and call that from both interfaces'
-bindings (only `CanvasRenderingContext2D` for `CanvasUserInterface`).
+drawing state), which is where the member algorithms of the mixins both
+interfaces include live.  The binding layer defines each mixin's members
+once in `bindings/html/canvas_context_2d_mixins.rs` for both interfaces:
+each member resolves the receiver to its `RenderingContext2D` and calls the
+method there.  To add a mixin: put its algorithms on `RenderingContext2D`,
+add its members to a `define_canvas_*_members` function, and call that from
+both interfaces' bindings (only `CanvasRenderingContext2D` for
+`CanvasUserInterface`).
 
 Both `getContext("2d")` and `transferControlToOffscreen()` register the
 canvas — a `CanvasId` in `GlobalScope::canvas_registry` and
@@ -314,17 +315,16 @@ Remaining gaps:
   gradients, or text.
 - The `CanvasRenderingContext2D.canvas` attribute works; the
   `OffscreenCanvasRenderingContext2D.canvas` attribute is not exposed.
-- The canvas element's `width`/`height` IDL attributes are not exposed, so
-  changing them does not run "set bitmap dimensions" (no resize or clear).
+- The canvas element's `width`/`height` IDL attributes reflect the content
+  attributes (the content-attribute parsing rules and the `placeholder`
+  `InvalidStateError` are implemented), but changing them does not run "set
+  bitmap dimensions", so an existing 2D context is neither reset nor resized.
 - `reset()` clears the accumulated scene and resets the tracked drawing
   state, but the default path is not tracked and context loss is never
   signaled.
-- `OffscreenCanvas.width`/`height` are read-only (no resize).
-- `new OffscreenCanvas(width, height)` is not exposed (the interface has no
-  constructor), so an `OffscreenCanvas` can only come from
-  `transferControlToOffscreen()`.  The window variants under
-  `html/canvas/offscreen/` fail at construction until the constructor is
-  wired; the worker variants additionally need worker-side testharness.
+- `OffscreenCanvas.width`/`height` are read-only (no resize), and the
+  `OffscreenCanvas` constructor does not model the inherited
+  language/direction.
 - The `OffscreenCanvas` transfer steps carry the canvas id and bitmap
   dimensions but not its inherited language/direction.
 - Canvas embed sites surface only for a top-level document; a canvas inside a

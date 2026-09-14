@@ -1,11 +1,14 @@
 use std::cell::Cell;
 use std::rc::Rc;
 
-use ipc_messages::content::CanvasId;
+use ipc_messages::content::{CanvasId, WebviewId};
+use ipc_messages::graphics::GraphicsCommand;
 use js_engine::gc::{GcCell, gc_cell_new};
 use js_engine::{Completion, ExecutionContext, JsTypes, gc_struct};
+use log::error;
 
 use crate::js::Types;
+use crate::js::platform_objects::with_global_scope;
 use crate::webidl::bindings::create_interface_instance;
 use crate::webidl::invalid_state_error_value;
 
@@ -61,6 +64,40 @@ impl OffscreenCanvas {
             context_mode: Rc::new(Cell::new(OffscreenCanvasContextMode::None)),
             context_2d: gc_cell_new(None, ec),
         }
+    }
+
+    /// The canvas created by the `OffscreenCanvas` constructor: a standalone
+    /// canvas with a fresh canvas id and no placeholder canvas element.
+    pub(crate) fn new_standalone(
+        width: u32,
+        height: u32,
+        ec: &mut dyn ExecutionContext<Types>,
+    ) -> Self {
+        Self::new(CanvasId::new(), width, height, ec)
+    }
+
+    /// Register the canvas with the graphics process so its committed scenes
+    /// are accepted.  A constructor-created canvas has no placeholder embed
+    /// site, so it is not added to the document's canvas registry.
+    pub(crate) fn register_canvas_with_graphics(
+        &self,
+        ec: &mut dyn ExecutionContext<Types>,
+    ) -> Completion<(), Types> {
+        with_global_scope(ec, |global_scope, ec| {
+            if let Some(graphics_sender) = global_scope.graphics_sender() {
+                let command =
+                    GraphicsCommand::RegisterCanvas {
+                        webview_id: WebviewId(global_scope.source_navigable_id().ok_or_else(
+                            || ec.new_type_error("OffscreenCanvas has no navigable id"),
+                        )?),
+                        canvas_id: self.canvas_id,
+                    };
+                if let Err(error) = graphics_sender.send(command) {
+                    error!("failed to register canvas with graphics: {error}");
+                }
+            }
+            Ok(())
+        })
     }
 
     /// <https://html.spec.whatwg.org/#dom-offscreencanvas-width>
