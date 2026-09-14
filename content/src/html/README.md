@@ -170,7 +170,8 @@ agent's event loop in `workers/dedicated_worker_agent.rs`.
 worker algorithms to the module that owns their spec section, quoting each
 spec step verbatim in `// Step N:` comments and annotating deviations
 inline at the step they diverge from (see `AGENTS.md`, "Algorithm
-Implementation").
+Implementation").  The WindowOrWorkerGlobalScope mixin members follow the
+general rule in `content/src/js/bindings/README.md`, "Web IDL mixins".
 
 Design decisions that change how the spec's worker channel and lifecycle
 are realized are annotated where they diverge — per-field on the channel
@@ -264,7 +265,8 @@ each member resolves the receiver to its `RenderingContext2D` and calls the
 method there.  To add a mixin: put its algorithms on `RenderingContext2D`,
 add its members to a `define_canvas_*_members` function, and call that from
 both interfaces' bindings (only `CanvasRenderingContext2D` for
-`CanvasUserInterface`).
+`CanvasUserInterface`).  The rule that governs this — and every other Web IDL
+mixin — is in `content/src/js/bindings/README.md`, "Web IDL mixins".
 
 Both `getContext("2d")` and `transferControlToOffscreen()` register the
 canvas — a `CanvasId` in `GlobalScope::canvas_registry` and

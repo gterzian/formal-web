@@ -330,6 +330,66 @@ JS bindings glue                 content/src/js/bindings/wasm/interfaces.rs
   }
 ```
 
+## Web IDL mixins
+
+A Web IDL [mixin](https://webidl.spec.whatwg.org/#idl-mixins) is included by
+several interfaces, so its members must be installed on every including
+interface's prototype while being declared once.  The binding infrastructure
+has no `includes` support, so the sharing is by convention, and the
+convention is the rule: **a mixin's members are declared in exactly one
+function.**
+
+- That function is
+  `pub(crate) fn define_<mixin>_members(def: &mut InterfaceDefinition<Types>)`
+  (e.g. `define_canvas_state_members`, `define_global_event_handlers`).  It
+  adds every operation and attribute of the mixin, and nothing else.
+- Every interface that includes the mixin calls it from its
+  `WebIdlInterface::define_members`; no including interface declares any of
+  the mixin's members inline.  A member that appears in two
+  `define_members` bodies has drifted.
+- The function carries the mixin's own interface anchor (`#canvasstate`,
+  `#globaleventhandlers`), not one of its members' anchors.
+- Keep it in a `<mixin>_mixins.rs` when several interfaces share a domain
+  type (canvas: `bindings/html/canvas_context_2d_mixins.rs`), or in the
+  single including interface's file until a second interface includes it;
+  factor it out at that point.
+
+The member binding functions should be shared too, which needs the mixin's
+algorithms to live on one domain type rather than on each interface.  Three
+shapes are in use:
+
+- **Shared struct, owned by each interface.**  Each interface struct owns one
+  instance of the same domain struct and exposes it (`CanvasRenderingContext2D`
+  and `OffscreenCanvasRenderingContext2D` both own a `RenderingContext2D`; see
+  `content/src/html/canvas/rendering_context_2d.rs`).  One `with_<mixin>`
+  helper downcasts the receiver to either interface and yields the shared
+  struct (`with_rendering_context`), and each binding function is written once
+  against it.  Mutable state on that struct must be `Rc`-shared, or the
+  binding's clone-out writes to a copy (`content/README.md`, "GcCell borrow
+  discipline").
+- **Shared trait, implemented by each interface.**  The interfaces are
+  distinct structs implementing one trait that carries the algorithms —
+  `WindowOrWorkerGlobalScope`
+  (`content/src/html/window_or_worker_global_scope.rs`) is implemented by
+  `Window` and `WorkerGlobalScope`.  Receiver resolution differs, so the
+  member binding functions stay per interface; the member *declarations*
+  still come from the single `define_*_members`.
+- **No domain state needed.**  The helper operates on whatever domain type
+  the receiver already resolves to: `define_global_event_handlers` works on
+  any `EventTarget`.
+
+A mixin whose members are installed by hand-built property descriptors on a
+prototype instead of `InterfaceDefinition` (`HTMLHyperlinkElementUtils` in
+`bindings/html/hyperlink_element_utils.rs`) is not a model for new mixins.
+
+Known drift: `bindings/html/window.rs` declares the
+`WindowOrWorkerGlobalScope` members (`setTimeout`, `clearTimeout`,
+`setInterval`, `clearInterval`, `requestAnimationFrame`,
+`cancelAnimationFrame`, `structuredClone`) inline instead of calling
+`define_window_or_worker_global_scope_members`; collapsing it needs the
+member binding functions to resolve a `Window` and a `WorkerGlobalScope`
+through the shared trait.
+
 ## Related documentation
 
 - `AGENTS.md` — Algorithm Implementation (step comments, anchor URLs, Note conventions)
