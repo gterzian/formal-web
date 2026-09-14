@@ -132,9 +132,10 @@ fn setup_realm(engine: &mut Engine, _document: Rc<RefCell<BaseDocument>>) -> Res
     #[cfg(not(boa_backend))]
     use crate::html::GlobalScope;
     use crate::html::{
-        HTMLAnchorElement, HTMLCanvasElement, HTMLElement, HTMLIFrameElement, HTMLInputElement,
-        HTMLMediaElement, HTMLVideoElement, Location, MessageChannel, MessageEvent, MessagePort,
-        OffscreenCanvas, OffscreenCanvasRenderingContext2D, Window, WindowProxy, Worker,
+        CanvasRenderingContext2D, HTMLAnchorElement, HTMLCanvasElement, HTMLElement,
+        HTMLIFrameElement, HTMLInputElement, HTMLMediaElement, HTMLVideoElement, Location,
+        MessageChannel, MessageEvent, MessagePort, OffscreenCanvas,
+        OffscreenCanvasRenderingContext2D, Window, WindowProxy, Worker,
     };
     use crate::streams::{
         ByteLengthQueuingStrategy, CountQueuingStrategy, ReadableByteStreamController,
@@ -217,6 +218,7 @@ fn setup_realm(engine: &mut Engine, _document: Rc<RefCell<BaseDocument>>) -> Res
     reg!(HTMLElement);
     reg!(HTMLAnchorElement);
     reg!(HTMLCanvasElement);
+    reg!(CanvasRenderingContext2D);
     reg!(HTMLIFrameElement);
     reg!(HTMLInputElement);
     reg!(HTMLMediaElement);

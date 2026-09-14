@@ -251,18 +251,37 @@ protected/permissible/suspendable monitoring is not.
   lookup by (origin, name); the dedicated-only implementation folds
   `WorkerGlobalScopeKind` into the dedicated global scope.
 
-## Canvas (offscreen rendering)
+## Canvas
 
-The `canvas` element is supported only through `OffscreenCanvas`
-(`content/src/html/canvas/`): it has no `getContext` member, and
-`transferControlToOffscreen()` allocates a `CanvasId` and hands it to a new
-`OffscreenCanvas`.  The placeholder element is composited as its own texture
-layer like a cross-origin iframe.  Wiring a canvas that draws on a worker:
+Both 2D rendering context interfaces live in `content/src/html/canvas/`:
+`CanvasRenderingContext2D` (the element's `getContext("2d")`) and
+`OffscreenCanvasRenderingContext2D` (the transferred `OffscreenCanvas`).
+They share one `RenderingContext2D` (the output bitmap and drawing state);
+the spec's mixins are domain traits over it (`CanvasState`,
+`CanvasFillStrokeStyles`, `CanvasRect`), blanket implemented for every
+accessor.  The binding layer defines each mixin's members once in
+`bindings/html/canvas_context_2d_mixins.rs` for both interfaces.  To add a
+mixin: add its trait next to the others, add its members to a
+`define_canvas_*_members` function, and call that from both interfaces'
+bindings (only `CanvasRenderingContext2D` for `CanvasUserInterface`).
 
-- The `CanvasId` is registered with the graphics process
-  (`GraphicsCommand::RegisterCanvas`, sent by the owner content process when
-  `transferControlToOffscreen` runs) so the worker's `CanvasPaint` — which
-  carries only the id — can be routed to the owning webview.
+Both `getContext("2d")` and `transferControlToOffscreen()` register the
+canvas — a `CanvasId` in `GlobalScope::canvas_registry` and
+`GraphicsCommand::RegisterCanvas` to graphics — and mark the document dirty,
+so the element's placeholder layer composites the committed scene.  A drawing
+member serializes the accumulated anyrender scene as
+`GraphicsCommand::CanvasPaint` through the current realm's graphics sender,
+which is why the same commit path serves a window canvas and a worker
+`OffscreenCanvas`.  Registration must happen before the next
+update-the-rendering can include the embed site.  `getContext` also records
+the context mode on the element (a shared cell) so a second call returns the
+same object and `transferControlToOffscreen` after a 2D context throws.
+
+Wiring a canvas that draws on a worker:
+
+- The `CanvasId` is registered with the graphics process by the owner content
+  process when the canvas is bound, so the worker's `CanvasPaint` — which
+  carries only the id — routes to the owning webview.
 - The worker realm gets the content process's `graphics_sender` through
   `WorkerRealmWiring`, so its `OffscreenCanvasRenderingContext2D` commits can
   send scenes directly to graphics.
@@ -280,17 +299,24 @@ layer like a cross-origin iframe.  Wiring a canvas that draws on a worker:
   process's `RenderStarted` deadline, so a canvas commit keeps compositing
   against the last committed root when the window's top-level frame is
   late (see `graphics/README.md`).
-- The canvas registry (`GlobalScope::canvas_registry`, shared with
-  `ContentProcess`) is what lets the owner document's render path discover a
-  newly transferred canvas: `transferControlToOffscreen` inserts into it and
-  marks the document dirty, so the next update-the-rendering rebuilds the
-  frame composition instead of reusing the cached one.
 
 Remaining gaps:
 
-- Only the `"2d"` context exists, with `fillStyle`, `fillRect`, and
-  `clearRect` (a minimal anyrender mapping).  No paths, transforms, images,
+- Only the `CanvasState`, `CanvasFillStrokeStyles` (`fillStyle`) and
+  `CanvasRect` (`fillRect`, `clearRect`) mixins are implemented.
+  `CanvasSettings`, `CanvasTransform`, `CanvasCompositing`,
+  `CanvasImageSmoothing`, `CanvasShadowStyles`, `CanvasFilters`,
+  `CanvasDrawPath`, `CanvasUserInterface`, `CanvasText`, `CanvasDrawImage`,
+  `CanvasImageData`, `CanvasPathDrawingStyles`, `CanvasTextDrawingStyles`
+  and `CanvasPath` are not, so there are no paths, transforms, images,
   gradients, or text.
+- The `CanvasRenderingContext2D.canvas` attribute works; the
+  `OffscreenCanvasRenderingContext2D.canvas` attribute is not exposed.
+- The canvas element's `width`/`height` IDL attributes are not exposed, so
+  changing them does not run "set bitmap dimensions" (no resize or clear).
+- `reset()` clears the accumulated scene and resets the tracked drawing
+  state, but the default path is not tracked and context loss is never
+  signaled.
 - `OffscreenCanvas.width`/`height` are read-only (no resize).
 - Canvas embed sites surface only for a top-level document; a canvas inside a
   same-origin iframe document would not get its own layer (same-origin

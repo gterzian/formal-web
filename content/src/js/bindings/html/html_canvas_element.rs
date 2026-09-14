@@ -6,7 +6,7 @@ use crate::webidl::bindings::{InterfaceDefinition, OperationDef, WebIdlInterface
 
 use js_engine::{Completion, ExecutionContext, JsTypes};
 
-impl WebIdlInterface<crate::js::Types> for HTMLCanvasElement {
+impl WebIdlInterface<Types> for HTMLCanvasElement {
     const NAME: &'static str = "HTMLCanvasElement";
 
     fn parent_name() -> Option<&'static str> {
@@ -16,12 +16,21 @@ impl WebIdlInterface<crate::js::Types> for HTMLCanvasElement {
     fn create_platform_object(
         _new_target: &JsValue,
         _args: &[JsValue],
-        ec: &mut dyn ExecutionContext<crate::js::Types>,
-    ) -> Completion<Self, crate::js::Types> {
+        ec: &mut dyn ExecutionContext<Types>,
+    ) -> Completion<Self, Types> {
         Err(ec.new_type_error("Illegal constructor"))
     }
 
-    fn define_members(def: &mut InterfaceDefinition<crate::js::Types>) {
+    fn define_members(def: &mut InterfaceDefinition<Types>) {
+        def.add_operation(OperationDef {
+            id: "getContext",
+            length: 1,
+            method: get_context,
+            static_: false,
+            unforgeable: false,
+            promise_type: false,
+            exposed: None,
+        });
         def.add_operation(OperationDef {
             id: "transferControlToOffscreen",
             length: 0,
@@ -34,17 +43,43 @@ impl WebIdlInterface<crate::js::Types> for HTMLCanvasElement {
     }
 }
 
+fn get_context(
+    this: &JsValue,
+    args: &[JsValue],
+    ec: &mut dyn ExecutionContext<Types>,
+) -> Completion<JsValue, Types> {
+    // `contextId` is a required argument; Web IDL throws a TypeError when it
+    // is missing.
+    let context_id_value = args
+        .first()
+        .cloned()
+        .ok_or_else(|| ec.new_type_error("getContext requires 1 argument"))?;
+    let context_id = ec.to_rust_string(context_id_value)?;
+    let canvas = canvas_from_js_object(this, ec)?;
+    let context = canvas.get_context(&context_id, ec)?;
+    Ok(match context {
+        Some(context) => Types::value_from_object(context),
+        None => ec.value_null(),
+    })
+}
+
 fn transfer_control_to_offscreen(
     this: &JsValue,
     _args: &[JsValue],
-    ec: &mut dyn ExecutionContext<crate::js::Types>,
-) -> Completion<JsValue, crate::js::Types> {
-    let obj = Types::value_as_object(this)
-        .ok_or_else(|| ec.new_type_error("HTMLCanvasElement receiver is not an object"))?;
-    let canvas = ec
-        .with_object_any(&obj)
-        .and_then(|data| data.downcast_ref::<HTMLCanvasElement>().cloned())
-        .ok_or_else(|| ec.new_type_error("receiver is not an HTMLCanvasElement"))?;
+    ec: &mut dyn ExecutionContext<Types>,
+) -> Completion<JsValue, Types> {
+    let canvas = canvas_from_js_object(this, ec)?;
     let offscreen = canvas.transfer_control_to_offscreen(ec)?;
     Ok(Types::value_from_object(offscreen))
+}
+
+fn canvas_from_js_object(
+    this: &JsValue,
+    ec: &mut dyn ExecutionContext<Types>,
+) -> Completion<HTMLCanvasElement, Types> {
+    let object = Types::value_as_object(this)
+        .ok_or_else(|| ec.new_type_error("HTMLCanvasElement receiver is not an object"))?;
+    ec.with_object_any(&object)
+        .and_then(|data| data.downcast_ref::<HTMLCanvasElement>().cloned())
+        .ok_or_else(|| ec.new_type_error("receiver is not an HTMLCanvasElement"))
 }

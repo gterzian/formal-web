@@ -1,3 +1,5 @@
+mod canvas_context_2d_mixins;
+mod canvas_rendering_context_2d;
 pub(crate) mod dedicated_worker_global_scope;
 pub(crate) mod global_event_handlers;
 mod html_anchor_element;

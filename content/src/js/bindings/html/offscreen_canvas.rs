@@ -91,8 +91,13 @@ fn get_context(
     args: &[JsValue],
     ec: &mut dyn ExecutionContext<crate::js::Types>,
 ) -> Completion<JsValue, crate::js::Types> {
-    let undefined = ec.value_undefined();
-    let context_id = ec.to_rust_string(args.first().cloned().unwrap_or(undefined))?;
+    // `contextId` is a required argument; Web IDL throws a TypeError when it
+    // is missing.
+    let context_id_value = args
+        .first()
+        .cloned()
+        .ok_or_else(|| ec.new_type_error("getContext requires 1 argument"))?;
+    let context_id = ec.to_rust_string(context_id_value)?;
     let context =
         try_with_offscreen_canvas_ref(this, ec, |canvas, ec| canvas.get_context(&context_id, ec))??;
     Ok(match context {

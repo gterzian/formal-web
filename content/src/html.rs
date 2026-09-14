@@ -44,9 +44,13 @@ use ipc_messages::content::{
 use environment_settings_object::RealmWiring;
 
 pub(crate) use activation_behavior::ActivationBehavior;
+pub use canvas::CanvasRenderingContext2D;
 pub use canvas::HTMLCanvasElement;
 pub use canvas::OffscreenCanvas;
 pub use canvas::OffscreenCanvasRenderingContext2D;
+pub(crate) use canvas::{
+    CanvasContext2D, CanvasFillStrokeStyles, CanvasRect, CanvasState, RenderingContext2D,
+};
 pub use environment_settings_object::EnvironmentSettingsObject;
 pub use global_scope::GlobalScope;
 pub use global_scope::GlobalScopeKind;
