@@ -1,7 +1,7 @@
 use crate::events::FormalWebUserEvent;
 use crate::shared::{
-    automation_screenshot_png, read_clipboard_text, startup_destination_url,
-    update_window_viewport_snapshot, write_clipboard_text,
+    automation_screenshot_png, startup_destination_url, update_window_viewport_snapshot,
+    write_clipboard_text,
 };
 use ::winit::application::ApplicationHandler;
 use ::winit::event::WindowEvent;
@@ -327,11 +327,10 @@ impl ApplicationHandler<FormalWebUserEvent> for HeadlessEmbedderApp {
             FormalWebUserEvent::Automation(cmd) => {
                 self.with_automation(|a, app| a.handle_command(app, cmd));
             }
-            FormalWebUserEvent::ClipboardRead { reply } => {
-                let _ = reply.send(read_clipboard_text());
-            }
-            FormalWebUserEvent::ClipboardWrite { text, reply } => {
-                let _ = reply.send(write_clipboard_text(text));
+            FormalWebUserEvent::ClipboardWrite { text } => {
+                if let Err(error) = write_clipboard_text(text) {
+                    error!("clipboard write failed: {error}");
+                }
             }
             FormalWebUserEvent::NewWebContentLayers {
                 webview_id, layers, ..

@@ -911,7 +911,6 @@ name = "content"
 version = "0.1.0"
 dependencies = [
  "anyrender",
- "arboard",
  "blitz-dom",
  "blitz-paint",
  "blitz-traits",

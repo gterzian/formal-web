@@ -1,6 +1,8 @@
 //! NSEvent → input event mapping for the AppKit backend.
 
+use crate::platform::read_clipboard_text;
 use keyboard_types::{Code, Key, Location, Modifiers as KeyboardModifiers};
+use log::error;
 use objc2_app_kit::{NSEvent, NSEventModifierFlags, NSEventType};
 use objc2_foundation::NSInteger;
 use webview::{
@@ -180,6 +182,30 @@ pub(super) fn ns_event_to_key_event(event: &NSEvent) -> BlitzKeyEvent {
             KeyState::Released
         },
         text: characters,
+    }
+}
+
+/// The text to attach when `event` is a paste shortcut (⌘V), read here on the
+/// main thread that owns the system clipboard. Content never reads the system
+/// clipboard itself, so a paste must carry its text with the event.
+pub(super) fn paste_shortcut_clipboard_text(event: &BlitzKeyEvent) -> Option<String> {
+    if !event.state.is_pressed() {
+        return None;
+    }
+    if !event.modifiers.contains(KeyboardModifiers::SUPER) {
+        return None;
+    }
+    match &event.key {
+        Key::Character(character) if character.eq_ignore_ascii_case("v") => {
+            match read_clipboard_text() {
+                Ok(text) => Some(text),
+                Err(error) => {
+                    error!("failed to prefetch clipboard text for paste: {error}");
+                    None
+                }
+            }
+        }
+        _ => None,
     }
 }
 

@@ -1,10 +1,10 @@
 //! The user-event bus for the AppKit embedder: how the user agent (any
 //! thread) hands events to the app's main-thread run loop.
 
-use crate::platform::{clipboard_get_text, clipboard_set_text, window_viewport_snapshot};
+use crate::platform::{clipboard_set_text, window_viewport_snapshot};
 use automation::AutomationCommand;
 use log::error;
-use std::sync::{Arc, mpsc};
+use std::sync::Arc;
 use webview::{
     ColorScheme, Embedder, EmbedderSchemeRequest, LayerFrame, NavigationCompleted, WebviewId,
 };
@@ -52,12 +52,8 @@ pub enum FormalWebUserEvent {
     NavigationCompleted(NavigationCompleted),
     Automation(AutomationCommand),
     NewWebview(WebviewId, String),
-    ClipboardRead {
-        reply: mpsc::Sender<Result<String, String>>,
-    },
     ClipboardWrite {
         text: String,
-        reply: mpsc::Sender<Result<(), String>>,
     },
     /// The parsed title of a top-level document, for tab and window labels.
     TitleChanged {
@@ -127,11 +123,7 @@ impl Embedder for EventLoopEmbedder {
         window_viewport_snapshot()
     }
 
-    fn clipboard_get_text(&self) -> Result<String, String> {
-        clipboard_get_text(self.sink.as_ref())
-    }
-
-    fn clipboard_set_text(&self, text: String) -> Result<(), String> {
+    fn clipboard_set_text(&self, text: String) {
         clipboard_set_text(self.sink.as_ref(), text)
     }
 

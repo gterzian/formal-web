@@ -219,17 +219,15 @@ impl ShellProvider for ContentShellProvider {
     }
 
     fn get_clipboard_text(&self) -> Result<String, ClipboardError> {
-        // First try the prefetched cache (populated by the embedder before
-        // dispatching paste events via DispatchEventEntry.prefetched_clipboard_text).
-        if let Ok(mut cache) = self.clipboard_cache.lock() {
-            if let Some(text) = cache.take() {
-                return Ok(text);
-            }
+        // The embedder prefetches the clipboard text into the cache before
+        // dispatching a paste event (DispatchEventEntry.prefetched_clipboard_text);
+        // content never reads the system clipboard itself.
+        if let Ok(mut cache) = self.clipboard_cache.lock()
+            && let Some(text) = cache.take()
+        {
+            return Ok(text);
         }
-        // Fall back to reading the system clipboard directly.
-        // This avoids a blocking IPC round-trip and works because the
-        // clipboard is a shared system resource accessible from any process.
-        clipboard_direct_read()
+        Ok(String::new())
     }
 
     fn set_clipboard_text(&self, text: String) -> Result<(), ClipboardError> {
@@ -239,27 +237,6 @@ impl ShellProvider for ContentShellProvider {
                 ClipboardWriteRequested { text },
             ))
             .map_err(|_| ClipboardError)
-    }
-}
-
-/// Read the system clipboard directly from this process.
-/// Used as a fallback when the prefetched clipboard cache is empty.
-/// This is a best-effort read; if the clipboard cannot be accessed,
-/// an empty string is returned.
-fn clipboard_direct_read() -> Result<String, ClipboardError> {
-    #[cfg(any(target_os = "macos", target_os = "linux", target_os = "windows"))]
-    {
-        match arboard::Clipboard::new() {
-            Ok(mut clipboard) => match clipboard.get_text() {
-                Ok(text) => Ok(text),
-                Err(_) => Ok(String::new()),
-            },
-            Err(_) => Ok(String::new()),
-        }
-    }
-    #[cfg(not(any(target_os = "macos", target_os = "linux", target_os = "windows")))]
-    {
-        Ok(String::new())
     }
 }
 

@@ -4,18 +4,12 @@
 //! text-editing keybindings.
 
 use crate::events::{FormalWebUserEvent, send_user_event};
-use std::sync::{LazyLock, Mutex, mpsc};
-use std::time::Duration;
+use keyboard_types::{Key, Modifiers as KeyboardModifiers};
+use log::error;
+use std::sync::{LazyLock, Mutex};
 use webview::{BlitzKeyEvent, ColorScheme};
 
 const STARTUP_ARTIFACT_RELATIVE_PATH: &str = "artifacts/StartupExample.html";
-
-/// How long the caller thread waits for the embedder event loop to answer a
-/// clipboard read/write request.  The request is handed to the event loop
-/// (which owns the platform clipboard) over a user event and the reply is
-/// awaited synchronously; the bound keeps a busy or unresponsive event loop
-/// from hanging the calling thread.
-const CLIPBOARD_REPLY_TIMEOUT: Duration = Duration::from_secs(2);
 
 pub fn read_clipboard_text() -> Result<String, String> {
     let mut clipboard = arboard::Clipboard::new()
@@ -33,30 +27,42 @@ pub fn write_clipboard_text(text: String) -> Result<(), String> {
         .map_err(|error| format!("failed to write clipboard text: {error}"))
 }
 
-pub fn clipboard_get_text() -> Result<String, String> {
-    let (reply, receiver) = mpsc::channel();
-    send_user_event(FormalWebUserEvent::ClipboardRead { reply })?;
-    receiver
-        .recv_timeout(CLIPBOARD_REPLY_TIMEOUT)
-        .map_err(|error| {
-            format!(
-                "timed out after {} ms waiting for clipboard text: {error}",
-                CLIPBOARD_REPLY_TIMEOUT.as_millis()
-            )
-        })?
+/// Hands a clipboard write to the event loop, which owns the system
+/// clipboard. Fire-and-forget: the caller does not wait for the write.
+pub fn clipboard_set_text(text: String) {
+    if let Err(error) = send_user_event(FormalWebUserEvent::ClipboardWrite { text }) {
+        error!("failed to send clipboard write event: {error}");
+    }
 }
 
-pub fn clipboard_set_text(text: String) -> Result<(), String> {
-    let (reply, receiver) = mpsc::channel();
-    send_user_event(FormalWebUserEvent::ClipboardWrite { text, reply })?;
-    receiver
-        .recv_timeout(CLIPBOARD_REPLY_TIMEOUT)
-        .map_err(|error| {
-            format!(
-                "timed out after {} ms waiting to write clipboard text: {error}",
-                CLIPBOARD_REPLY_TIMEOUT.as_millis()
-            )
-        })?
+/// The text to attach when `event` is a paste shortcut (⌘V / Ctrl+V),
+/// read here on the event loop thread that owns the system clipboard.
+/// Content never reads the system clipboard itself, so a paste must
+/// carry its text with the event.
+pub fn paste_shortcut_clipboard_text(event: &BlitzKeyEvent) -> Option<String> {
+    if !event.state.is_pressed() {
+        return None;
+    }
+    let action_modifier = if cfg!(target_os = "macos") {
+        KeyboardModifiers::SUPER
+    } else {
+        KeyboardModifiers::CONTROL
+    };
+    if !event.modifiers.contains(action_modifier) {
+        return None;
+    }
+    match &event.key {
+        Key::Character(character) if character.eq_ignore_ascii_case("v") => {
+            match read_clipboard_text() {
+                Ok(text) => Some(text),
+                Err(error) => {
+                    error!("failed to prefetch clipboard text for paste: {error}");
+                    None
+                }
+            }
+        }
+        _ => None,
+    }
 }
 
 type ViewportSnapshot = Option<(u32, u32, f32, ColorScheme)>;

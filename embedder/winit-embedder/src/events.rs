@@ -1,10 +1,10 @@
 //! The user-event bus for the winit embedder: how the user agent (any
 //! thread) hands events to the winit event loop (main thread).
 
-use crate::shared::{clipboard_get_text, clipboard_set_text, window_viewport_snapshot};
+use crate::shared::{clipboard_set_text, window_viewport_snapshot};
 use automation::AutomationCommand;
 use log::error;
-use std::sync::{Arc, LazyLock, Mutex, mpsc};
+use std::sync::{Arc, LazyLock, Mutex};
 use webview::{
     ColorScheme, Embedder, EmbedderSchemeRequest, LayerFrame, NavigationCompleted, WebviewId,
 };
@@ -88,12 +88,8 @@ pub enum FormalWebUserEvent {
     NewWebview(WebviewId, String),
     CreateWindow,
     Automation(AutomationCommand),
-    ClipboardRead {
-        reply: mpsc::Sender<Result<String, String>>,
-    },
     ClipboardWrite {
         text: String,
-        reply: mpsc::Sender<Result<(), String>>,
     },
     /// The parsed title of a top-level document, for tab and window labels.
     TitleChanged {
@@ -161,11 +157,7 @@ impl Embedder for EventLoopEmbedder {
         window_viewport_snapshot()
     }
 
-    fn clipboard_get_text(&self) -> Result<String, String> {
-        clipboard_get_text()
-    }
-
-    fn clipboard_set_text(&self, text: String) -> Result<(), String> {
+    fn clipboard_set_text(&self, text: String) {
         clipboard_set_text(text)
     }
 
