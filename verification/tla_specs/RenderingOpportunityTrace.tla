@@ -89,6 +89,10 @@ UpdateTheRenderingTrace ==
        /\ Base!UpdateTheRendering(f)
        /\ Advance
 
+\* A graphics composition. Normally the top-level content rendered first
+\* (GraphicsComputed); when the render cycle's deadline expired first, the
+\* composition is the Deadline action instead. The two are distinguished by
+\* their guards, not by the event name (both are traced as GraphicsComputed).
 GraphicsComputedTrace ==
     /\ trace_index \in 1..TraceLength
     /\ CurrentEvent = "GraphicsComputed"
@@ -97,6 +101,16 @@ GraphicsComputedTrace ==
        IN
        /\ f \in live
        /\ Base!GraphicsComputed(f)
+       /\ Advance
+
+DeadlineTrace ==
+    /\ trace_index \in 1..TraceLength
+    /\ CurrentEvent = "GraphicsComputed"
+    /\ Len(CurrentArgs) = 1
+    /\ LET f == EventArg(1)
+       IN
+       /\ f \in live
+       /\ Base!Deadline(f)
        /\ Advance
 
 Done ==
@@ -109,6 +123,7 @@ Next ==
     \/ FrameNeededTrace
     \/ UpdateTheRenderingTrace
     \/ GraphicsComputedTrace
+    \/ DeadlineTrace
     \/ Done
 
 TypeOK == Base!TypeOK

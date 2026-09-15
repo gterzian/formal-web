@@ -8,4 +8,5 @@
 //! See `README.md` in this directory for the module structure.
 
 pub(crate) mod messageport;
+pub(crate) mod offscreen_canvas;
 pub(crate) mod safe_passing_of_structured_data;

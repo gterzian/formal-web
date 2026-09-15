@@ -11,6 +11,18 @@
 - Trigger parser-discovered iframe work from document-load parsing completion.
 - Use the `web_standards` extension (`spec_lookup`) with `https://html.spec.whatwg.org/` to read the HTML spec.
 
+## Common microsyntaxes (`common_microsyntaxes/`)
+
+The micro-parsers for the data types HTML content attributes accept (the
+[common microsyntaxes](https://html.spec.whatwg.org/#common-microsyntaxes))
+live in `common_microsyntaxes/`, one module per spec subsection
+(`signed_integers.rs`, `non_negative_integers.rs`, …).  Each parser is a free
+function named for its spec algorithm (`rules_for_parsing_non_negative_integers`)
+carrying that algorithm's anchor and verbatim step comments.  Never inline an
+attribute's parsing rules into the element module that needs them, and never
+fold a sub-algorithm the spec calls into (`rules for parsing integers`) into
+its caller.
+
 ## Structured clone (`structured_data/`)
 
 The safe-passing algorithms live in `structured_data/`, split between the
@@ -170,7 +182,8 @@ agent's event loop in `workers/dedicated_worker_agent.rs`.
 worker algorithms to the module that owns their spec section, quoting each
 spec step verbatim in `// Step N:` comments and annotating deviations
 inline at the step they diverge from (see `AGENTS.md`, "Algorithm
-Implementation").
+Implementation").  The WindowOrWorkerGlobalScope mixin members follow the
+general rule in `content/src/js/bindings/README.md`, "Web IDL mixins".
 
 Design decisions that change how the spec's worker channel and lifecycle
 are realized are annotated where they diverge — per-field on the channel
@@ -250,6 +263,100 @@ protected/permissible/suspendable monitoring is not.
   allocation (which must happen in the user agent) and the UA-side instance
   lookup by (origin, name); the dedicated-only implementation folds
   `WorkerGlobalScopeKind` into the dedicated global scope.
+
+## Canvas
+
+Both 2D rendering context interfaces live in `content/src/html/canvas/`:
+`CanvasRenderingContext2D` (the element's `getContext("2d")`) and
+`OffscreenCanvasRenderingContext2D` (the transferred `OffscreenCanvas`).
+Each interface struct owns one `RenderingContext2D` (the output bitmap and
+drawing state), which is where the member algorithms of the mixins both
+interfaces include live.  The binding layer defines each mixin's members
+once in `bindings/html/canvas_context_2d_mixins.rs` for both interfaces:
+each member resolves the receiver to its `RenderingContext2D` and calls the
+method there.  To add a mixin: put its algorithms on `RenderingContext2D`,
+add its members to a `define_canvas_*_members` function, and call that from
+both interfaces' bindings (only `CanvasRenderingContext2D` for
+`CanvasUserInterface`).  The rule that governs this — and every other Web IDL
+mixin — is in `content/src/js/bindings/README.md`, "Web IDL mixins".
+
+Both `getContext("2d")` and `transferControlToOffscreen()` register the
+canvas — a `CanvasId` in `GlobalScope::canvas_registry` and
+`GraphicsCommand::RegisterCanvas` to graphics — and mark the document dirty,
+so the element's layer composites the committed scene (a placeholder layer
+for `transferControlToOffscreen()`).  A drawing member serializes the
+accumulated anyrender scene as `GraphicsCommand::CanvasPaint` through the
+current realm's graphics sender, which is why the same commit path serves a
+window canvas and a worker `OffscreenCanvas`.  Registration must happen
+before the next update-the-rendering can include the embed site.  Both
+`getContext` methods record the context mode (a shared cell) and cache the
+context object, so a second call returns the same object; the mode also
+makes `transferControlToOffscreen()` after a 2D context throw, and makes a
+transferred `OffscreenCanvas` throw from `getContext`.
+
+Wiring a canvas that draws on a worker:
+
+- The `CanvasId` is registered with the graphics process by the owner content
+  process when the canvas is bound, so the worker's `CanvasPaint` — which
+  carries only the id — routes to the owning webview.
+- The worker realm gets the content process's `graphics_sender` through
+  `WorkerRealmWiring`, so its `OffscreenCanvasRenderingContext2D` commits can
+  send scenes directly to graphics.
+- A worker `requestAnimationFrame` sends
+  `ContentEvent::WorkerAnimationFrameRequested`; the user agent records the
+  request against the worker's owner navigable. When that navigable's
+  update the rendering is queued — i.e. when the embedder needs a frame —
+  the user agent sends `Command::RunAnimationFrameCallbacks` to the
+  worker's own event loop (the worker's update-the-rendering counterpart).
+  The dispatch must be gated on that frame cadence, never performed when
+  the request arrives: a worker `requestAnimationFrame` loop re-registers
+  on every run, so dispatching immediately spins at the worker event
+  loop's speed rather than the display refresh rate. Because the dispatch
+  rides the owner navigable's cycle, the user agent also arms the graphics
+  process's `RenderStarted` deadline, so a canvas commit keeps compositing
+  against the last committed root when the window's top-level frame is
+  late (see `graphics/README.md`).
+
+Remaining gaps:
+
+- Only the `CanvasState`, `CanvasFillStrokeStyles` (`fillStyle`) and
+  `CanvasRect` (`fillRect`, `clearRect`) mixins are implemented.
+  `CanvasSettings`, `CanvasTransform`, `CanvasCompositing`,
+  `CanvasImageSmoothing`, `CanvasShadowStyles`, `CanvasFilters`,
+  `CanvasDrawPath`, `CanvasUserInterface`, `CanvasText`, `CanvasDrawImage`,
+  `CanvasImageData`, `CanvasPathDrawingStyles`, `CanvasTextDrawingStyles`
+  and `CanvasPath` are not, so there are no paths, transforms, images,
+  gradients, or text.
+- The `CanvasRenderingContext2D.canvas` attribute works; the
+  `OffscreenCanvasRenderingContext2D.canvas` attribute is not exposed.
+- The canvas element's `width`/`height` IDL attributes reflect the content
+  attributes (the content-attribute parsing rules and the `placeholder`
+  `InvalidStateError` are implemented), but changing them does not run "set
+  bitmap dimensions", so an existing 2D context is neither reset nor resized.
+- `reset()` clears the accumulated scene and resets the tracked drawing
+  state, but the default path is not tracked and context loss is never
+  signaled.
+- `OffscreenCanvas.width`/`height` are read-only (no resize), and the
+  `OffscreenCanvas` constructor does not model the inherited
+  language/direction.
+- The `OffscreenCanvas` transfer steps carry the canvas id and bitmap
+  dimensions but not its inherited language/direction.
+- Canvas embed sites surface only for a top-level document; a canvas inside a
+  same-origin iframe document would not get its own layer (same-origin
+  iframes are baked into their parent's scene).
+- Canvas frames are never unregistered when their document is destroyed (the
+  id is a UUID, so a stale frame is inert, but it leaks until the webview
+  goes away).
+- Worker animation is display-paced on the winit embedder only. The winit
+  windowed app routes `request_redraw` through the OS, so the UA's
+  frame-needed gate lands at display cadence, but the AppKit app services
+  `request_redraw` by calling `frame_needed` immediately and its
+  `CVDisplayLink` only runs while the surface's `animating` flag is set —
+  and a worker-only animation leaves that flag false. A worker
+  `requestAnimationFrame` loop therefore still runs at IPC round-trip speed
+  on the AppKit browser. Closing the gap needs the worker's pending
+  animation frames to mark the document animating and the UA to stop
+  requesting its own redraw while the traversable is animating.
 
 ## Related documentation
 

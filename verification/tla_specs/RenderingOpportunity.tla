@@ -211,6 +211,49 @@ GraphicsComputed(top) ==
           ELSE op_count[g]]
   /\ UNCHANGED <<rendering_updated, animating, live, parent>>
 
+\* The render cycle's deadline expired with no top-level content update (the
+\* content event loop is blocked, so no UpdateTheRendering ran): graphics
+\* composes the committed hierarchy anyway, presenting a worker's
+\* OffscreenCanvas commit or a video frame against the last committed root.
+\* The deadline completes the cycle without the content update, so
+\* rendering_updated and composed catch up to pending (the queued update is
+\* treated as consumed). This mirrors GraphicsComputed with the "top-level
+\* rendered" precondition replaced by "a top-level update is queued but has
+\* not rendered": the deadline is the render cycle's bounded wait for the
+\* top-level frame, after which the embedded layers are presented.
+Deadline(top) ==
+  /\ top \in live
+  /\ IsTopLevel(top)
+  /\ rendering_updated[top] = composed[top]
+  /\ pending[top] > composed[top]
+  /\ LET hierarchy == TopLevelFrames(top)
+         composed_after == [g \in Frame |->
+              IF g \in hierarchy THEN pending[g] ELSE composed[g]]
+         any_animating == \E g \in hierarchy: animating[g]
+         serviced == IF frame_needed[top]
+                     THEN {g \in hierarchy:
+                             composed_after[g] = pending[g]
+                               /\ (op_count[g] > 0 \/ animating[g])}
+                     ELSE {}
+         any == serviced # {}
+     IN
+     /\ rendering_updated' = [g \in Frame |->
+          IF g \in hierarchy THEN pending[g] ELSE rendering_updated[g]]
+     /\ composed' = composed_after
+     /\ pending' = [g \in Frame |->
+          IF g \in hierarchy
+          THEN composed_after[g]
+               + IF g \in serviced \/ (g = top /\ any) THEN 1 ELSE 0
+          ELSE pending[g]]
+     /\ frame_needed' = [frame_needed EXCEPT ![top] =
+          IF any THEN FALSE ELSE frame_needed[top]]
+     /\ op_count' = [g \in Frame |->
+          IF g \in serviced \/ (g = top /\ any) THEN 0
+          ELSE IF g \in hierarchy /\ animating[g] THEN 1
+          ELSE IF g = top /\ any_animating THEN 1
+          ELSE op_count[g]]
+  /\ UNCHANGED <<animating, live, parent>>
+
 \* ---- Next-state relation ----
 
 Next ==
@@ -219,6 +262,7 @@ Next ==
   \/ \E f \in live: IsTopLevel(f) /\ FrameNeeded(f)
   \/ \E f \in live: UpdateTheRendering(f)
   \/ \E f \in live: IsTopLevel(f) /\ GraphicsComputed(f)
+  \/ \E f \in live: IsTopLevel(f) /\ Deadline(f)
 
 \* ---- Fairness ----
 

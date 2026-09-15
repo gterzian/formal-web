@@ -88,6 +88,16 @@ pub(crate) enum Task {
         frame_timestamp_epoch_ms: f64,
     },
 
+    /// The user-agent half of a dedicated worker's animation frame request:
+    /// run the worker global scope's animation frame callbacks (the worker's
+    /// update-the-rendering counterpart, since the worker has no document to
+    /// render).
+    /// <https://html.spec.whatwg.org/#run-the-animation-frame-callbacks>
+    RunAnimationFrameCallbacks {
+        worker_id: WorkerId,
+        frame_timestamp_epoch_ms: f64,
+    },
+
     /// The script a WebDriver or CDP client asked to evaluate in the
     /// traversable's active document.
     EvaluateScript {

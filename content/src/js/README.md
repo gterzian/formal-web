@@ -38,10 +38,15 @@ Rules specific to code living under or touching this crate:
   so the current realm is the object's realm.  Only `Window` stores its
   `GlobalScope`, because it is the realm's global object.
 - **Domain code returns the platform object struct, not a raw `JsObject`
-  handle, when a record already holds the object.**  The JS handle is only
-  needed at the JS boundary (reflectors, bindings); identity comparisons
-  between platform objects (e.g. "transfer contains targetPort") compare
-  their unique ids instead.
+  handle, when an algorithm creates or holds the object.**  The struct
+  stores its own `reflector`, set by the Web IDL layer on creation
+  (`create_interface_instance` → `PostCreateReflector`), so an algorithm
+  that must hand back the same object across calls (`getContext("2d")`,
+  `transferControlToOffscreen()`) returns the struct and the binding
+  resolves the reflector to the JS object.  A `JsObject` appears in domain
+  code only as that reflector field — never as an argument, return value,
+  or local.  Identity comparisons between platform objects compare unique
+  ids instead.
 - Run microtask checkpoints at task boundaries rather than after every
   Rust-to-JavaScript callback.
 - Document process structs against HTML concepts such as

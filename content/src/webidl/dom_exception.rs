@@ -32,6 +32,11 @@ pub(crate) fn security_error_value(ec: &mut dyn ExecutionContext<Types>) -> JsVa
     dom_exception_value(String::new(), String::from("SecurityError"), ec)
 }
 
+/// <https://webidl.spec.whatwg.org/#invalidstateerror>
+pub(crate) fn invalid_state_error_value(ec: &mut dyn ExecutionContext<Types>) -> JsValue {
+    dom_exception_value(String::new(), String::from("InvalidStateError"), ec)
+}
+
 /// <https://webidl.spec.whatwg.org/#datacloneerror>
 pub(crate) fn data_clone_error_value(ec: &mut dyn ExecutionContext<Types>) -> JsValue {
     dom_exception_value(

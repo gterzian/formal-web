@@ -113,6 +113,10 @@ impl Worker {
         let creation_url = global_scope
             .creation_url()
             .ok_or_else(|| ec.new_type_error("worker constructor: no creation URL"))?;
+        let graphics_sender = global_scope.graphics_sender();
+        let (epoch_anchor, epoch_anchor_wall_ms) = global_scope
+            .epoch_anchor()
+            .unwrap_or_else(|| (std::time::Instant::now(), 0.0));
 
         // Step 3: Let workerURL be the result of encoding-parsing a URL given
         //         compliantScriptURL, relative to outsideSettings.
@@ -191,6 +195,9 @@ impl Worker {
             event_sender: event_sender.clone(),
             network_extension_sender,
             trace_sender,
+            graphics_sender,
+            epoch_anchor,
+            epoch_anchor_wall_ms,
         };
         let thread_event_sender = event_sender;
         let thread_owner_inbox = worker_owner_inbox.clone();

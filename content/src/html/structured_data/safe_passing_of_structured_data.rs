@@ -22,7 +22,10 @@ use ipc_messages::safe_passing_of_structured_data::{
     PrimitiveValue, SerializedRecord, TransferDataHolder,
 };
 
+use crate::html::{MessagePort, OffscreenCanvas};
+
 use super::messageport;
+use super::offscreen_canvas;
 
 use js_engine::{
     Completion, EcmascriptHost, ExecutionContext, JsTypes, enums::TypedArrayElementType,
@@ -832,6 +835,25 @@ pub struct SerializeWithTransferResult {
     pub transfer_data_holders: Vec<TransferDataHolder>,
 }
 
+// The structured-clone algorithm deals in JS values, so the downcast of a
+// transfer-list entry to its platform object lives at this boundary; the
+// OffscreenCanvas transfer steps take the domain object.
+fn offscreen_canvas_from_transferable(
+    object: &JsObject,
+    ec: &dyn ExecutionContext<Types>,
+) -> Option<OffscreenCanvas> {
+    ec.with_object_any(object)
+        .and_then(|data| data.downcast_ref::<OffscreenCanvas>().cloned())
+}
+
+fn message_port_from_transferable(
+    object: &JsObject,
+    ec: &dyn ExecutionContext<Types>,
+) -> Option<MessagePort> {
+    ec.with_object_any(object)
+        .and_then(|data| data.downcast_ref::<MessagePort>().cloned())
+}
+
 /// <https://html.spec.whatwg.org/#structuredserializewithtransfer>
 pub fn structured_serialize_with_transfer(
     value: &JsValue,
@@ -853,7 +875,11 @@ pub fn structured_serialize_with_transfer(
 
         // Step 2.1: If transferable has neither an [[ArrayBufferData]] internal slot nor a
         //             [[Detached]] internal slot, then throw.
-        if !has_ab && !has_sab && !messageport::is_transferable_platform_object(&object, ec) {
+        if !has_ab
+            && !has_sab
+            && message_port_from_transferable(&object, ec).is_none()
+            && offscreen_canvas_from_transferable(&object, ec).is_none()
+        {
             return Err(crate::webidl::data_clone_error_value(ec));
         }
 
@@ -907,16 +933,25 @@ pub fn structured_serialize_with_transfer(
                 byte_length,
                 max_byte_length: None,
             });
-        } else {
+        } else if let Some(canvas) = offscreen_canvas_from_transferable(&object, ec) {
+            // Step 5.2: the OffscreenCanvas transfer steps run in
+            // offscreen_canvas::transfer_steps, which builds the data holder
+            // from the canvas id and bitmap dimensions.
+            transfer_data_holders.push(offscreen_canvas::transfer_steps(&canvas, ec)?);
+        } else if let Some(port) = message_port_from_transferable(&object, ec) {
             // Step 5.2: Otherwise (platform object with a [[Detached]]
             //           internal slot): perform the transfer steps for the
             //           interface identified by interfaceName.
             // Note: Only MessagePort is transferable; the steps run in
-            // messageport::transfer_steps, which reads the port out of its
-            // platform object, builds its data holder, and runs the transfer
-            // steps on it (the port's record leaves this realm there, so the
-            // source object's [[Detached]] state is implicit).
-            transfer_data_holders.push(messageport::transfer_steps(&object, ec)?);
+            // messageport::transfer_steps, which builds its data holder and
+            // runs the transfer steps on it (the port's record leaves this
+            // realm there, so the source object's [[Detached]] state is
+            // implicit).
+            transfer_data_holders.push(messageport::transfer_steps(&port, ec)?);
+        } else {
+            // Step 2.1 rejected every other transfer list entry above, so an
+            // entry reaching here is not a supported transferable.
+            return Err(crate::webidl::data_clone_error_value(ec));
         }
     }
 
@@ -1401,7 +1436,24 @@ pub fn structured_deserialize_with_transfer(
             // which creates the new port in the current (target) realm
             // first, then runs the transfer-receiving steps on it.
             TransferDataHolder::MessagePort(holder) => {
-                messageport::transfer_receiving_steps(holder, ec)?
+                let port = messageport::transfer_receiving_steps(holder, ec)?;
+                let reflector = port
+                    .object()
+                    .ok_or_else(|| crate::webidl::data_clone_error_value(ec))?;
+                Types::value_from_object(reflector)
+            }
+            // Step 3.2: If transferDataHolder.[[Type]] is "OffscreenCanvas",
+            //           then run the transfer-receiving steps given
+            //           dataHolder and a new OffscreenCanvas in targetRealm.
+            // Note: The steps run in offscreen_canvas::transfer_receiving_steps,
+            // which creates the new canvas in the current (target) realm.
+            TransferDataHolder::OffscreenCanvas(holder) => {
+                let canvas = offscreen_canvas::transfer_receiving_steps(holder, ec)?;
+                let reflector = canvas
+                    .reflector
+                    .clone()
+                    .ok_or_else(|| crate::webidl::data_clone_error_value(ec))?;
+                Types::value_from_object(reflector)
             }
         };
 

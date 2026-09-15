@@ -35,6 +35,19 @@ do not restate it here.
 - `callback.rs` implements <https://webidl.spec.whatwg.org/#call-a-user-objects-operation>
   (`call_user_objects_operation`), <https://webidl.spec.whatwg.org/#invoke-a-callback-function>
   (`invoke_callback_function`), and the callback-interface/type conversions.
+- `dom_exception.rs` creates named `DOMException` values (`syntax_error_value`,
+  `security_error_value`, `invalid_state_error_value`, `data_clone_error_value`,
+  `not_supported_error_value`) so domain code never constructs a DOMException
+  platform object directly.  Use these helpers rather than
+  `ExecutionContext::new_type_error` for a spec step that throws a named
+  DOMException: `new_type_error` produces a `TypeError`.  Not every call site
+  follows this yet — `EventTarget.dispatchEvent` and other places still throw
+  `new_type_error("InvalidStateError")`.
+- `integer.rs` implements the Web IDL integer conversions that the engine's
+  `to_uint32`/`to_number` do not cover — currently
+  `enforce_range_unsigned_long_long` (`[EnforceRange] unsigned long long`,
+  <https://webidl.spec.whatwg.org/#js-to-unsigned-long-long>).  Bindings call
+  it; they never re-implement an integer conversion or carry its steps.
 - `realm.rs` hosts HTML's direct-JS-call quirks — reads the HTML spec
   performs directly on realm state in place of a Web IDL step (e.g. the
   `window`/`frames`/`self` getters' "relevant realm.[[GlobalEnv]].

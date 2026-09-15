@@ -100,6 +100,15 @@ pub(crate) fn add_event_listener(
 - **No spec logic** — the binding does not implement any part of a spec
   algorithm.  It converts JS args to IDL types, calls a domain method, and
   wraps the return value.
+- **No constructor steps** — a `WebIdlInterface::create_platform_object`
+  override converts the IDL arguments and calls a domain constructor (see
+  `Worker::constructor`, `OffscreenCanvas::constructor`); the constructor
+  steps, with their `// Step N:` comments, live in the domain.
+- **No Web IDL conversion algorithms** — an integer, dictionary, or union
+  conversion is implemented once in `content/src/webidl/` (e.g.
+  `enforce_range_unsigned_long_long` in `content/src/webidl/integer.rs`); the
+  binding calls it.  A `// Step N:` comment under an item in a bindings file
+  is the signal that the item belongs in the domain or in `webidl/`.
 - **No path building** — `dispatchEvent` does not build the event path inline.
 The binding calls `build_path_from_target_js_object` (in the HTML/events bridge)
 and then calls the domain method `EventTarget::dispatch_event()`.
@@ -251,7 +260,7 @@ fn module_exports_binding<T: JsTypes>(
 | Anchor of the algorithm that merely *calls* the helper (e.g. `#run-a-worker` on `start_script_fetch`, a fetch helper that run-a-worker step 12 invokes) | The anchor must claim what the item **is**. A helper that stands in for a named sub-algorithm the spec calls into is a partial implementation of that sub-algorithm and gets *its* anchor (`#fetch-a-classic-worker-script`), with the missing parts in body `// Note:`s — never the calling algorithm's anchor. Plumbing that implements no algorithm (IPC commands, enum variants, async continuations, state fields) carries no algorithm anchor; its doc comment names the exact step it serves. See `content/src/html/workers/dedicated_worker_agent.rs::start_script_fetch` |
 | Putting a spec algorithm's anchor on a dictionary struct (e.g. `#event-flatten-more` on `AddEventListenerOptions`) | IDL dictionary types use `#dictdef-<name>` (e.g. `#dictdef-addeventlisteneroptions`); algorithms use `#event-`, `#concept-`, or `#dom-` prefixes |
 | Linking a dfn anchor from a function that implements an algorithm's steps (e.g. `#event-handler-content-attributes` on the handler-compilation function) | Anchor to the algorithm being implemented (e.g. `#getting-the-current-value-of-the-event-handler`). The dfn is the *concept*, not the steps. When the algorithm is unnamed in the spec (e.g. the attribute change steps synchronizing event handler content attributes), do NOT quote steps against a section link — no anchor shows those steps. Restructure the code so the named sub-algorithms carry the steps (e.g. `#deactivate-an-event-handler`, `#activate-an-event-handler`), and document the unnamed algorithm's function with body comments naming the algorithm instead of a link |
-| `JsObject` in a domain file (`content/src/dom/`, `content/src/html/`) | JsObject types belong in `content/src/js/` (the JS integration layer). Domain code operates on domain types like `EventTarget`, `Node`, `Event` |
+| `JsObject` in a domain file (`content/src/dom/`, `content/src/html/`) outside a struct's own `reflector` field | JsObject types belong in `content/src/js/` (the JS integration layer). Domain code operates on domain types like `EventTarget`, `Node`, `Event`; the only `JsObject` a domain struct holds is its own `reflector`, set by the Web IDL layer |
 | ASCII art or section-header comments (`// ---- ...`) in source files | No separator comments — let function/item ordering speak for itself |
 | Prose explaining what a function does before its spec anchor | Anchor-only: `/// <url>`. If the mapping to the spec is unclear, add a `// Note:` on the next line, not prose in the doc comment |
 | Function name doesn't match the spec algorithm name (e.g. `fire_global_event` for "steps to fire beforeunload") | Rust function name MUST match the spec algorithm name with `_` separators (e.g. `steps_to_fire_beforeunload`). The spec→code mapping must be discoverable by name alone. |
@@ -259,6 +268,7 @@ fn module_exports_binding<T: JsTypes>(
 | Blank line between `// Step N:` comment and its code, or no blank line between code and the next `// Step` comment | NO blank line between comment and its code. Blank line AFTER the code, before the next step's comment. Also NO blank line between `{` (block opening) and the first step comment. See `dispatch.rs` for the correct pattern. |
 | Vague Note on a partial algorithm implementation (e.g. "this is a helper for X") | When a function partially implements a spec algorithm, annotate with `// Step N:` for ALL steps of the algorithm. Mark missing steps with `// TODO: Not yet implemented.` and sub-algorithm references with the spec anchor. The note should only describe discrepancies between the code and the spec text, not hand-wave about "this is a helper". See `html/dispatch.rs::steps_to_fire_beforeunload` for the correct pattern. |
 | Creating a platform object copy outside `create_interface_instance` then manually syncing its reflector | Create the platform object inside `create_interface_instance` (reflector is set automatically by `PostCreateReflector::set_reflector`), then extract the clone from the JsObject for the ESO/domain struct. Never manually set reflectors. See `environment_settings_object.rs` for the correct pattern. |
+| Cloning a platform object out of the registry (`downcast_ref::<T>().cloned()`) to free `ec`, then mutating a plain struct field | The derived `Clone` deep-copies non-shared fields (`RefCell<T>`, `u32`, ...), so the mutation is discarded when the clone drops and the next call sees the old value. Wrap mutable state in a shared cell (`Rc<RefCell<..>>` or `GcCell`) so every clone shares it — see `OffscreenCanvasRenderingContext2D`, whose `fillStyle`/scene were always the default before that fix |
 | Engine-specific GC wrapper names in content comments (e.g. "wrapped in `V8PlatformData` / `TraceableBox` / stored in the JSC side table") | Platform data is stored via the generic `js_engine::create_platform_object`; comment in backend-neutral terms ("the engine stores the platform data in a GC wrapper so its cells and JS edges are traced from the JS wrapper"). Engine-specific wrapper mechanics are documented in `js_engine/src/gc.rs`, not in content code. |
 | Prefixing spec types with "domain" (e.g. `domain_document`) | Our Document is just `document`. The blitz document is the external dependency and should be labeled as such if disambiguation is needed (e.g. `blitz_document`). The "domain" prefix implies our types are somehow secondary to the "real" spec types, which is backwards.
 
@@ -328,6 +338,66 @@ JS bindings glue                 content/src/js/bindings/wasm/interfaces.rs
       // 3. wrap Vec in JsArray
   }
 ```
+
+## Web IDL mixins
+
+A Web IDL [mixin](https://webidl.spec.whatwg.org/#idl-mixins) is included by
+several interfaces, so its members must be installed on every including
+interface's prototype while being declared once.  The binding infrastructure
+has no `includes` support, so the sharing is by convention, and the
+convention is the rule: **a mixin's members are declared in exactly one
+function.**
+
+- That function is
+  `pub(crate) fn define_<mixin>_members(def: &mut InterfaceDefinition<Types>)`
+  (e.g. `define_canvas_state_members`, `define_global_event_handlers`).  It
+  adds every operation and attribute of the mixin, and nothing else.
+- Every interface that includes the mixin calls it from its
+  `WebIdlInterface::define_members`; no including interface declares any of
+  the mixin's members inline.  A member that appears in two
+  `define_members` bodies has drifted.
+- The function carries the mixin's own interface anchor (`#canvasstate`,
+  `#globaleventhandlers`), not one of its members' anchors.
+- Keep it in a `<mixin>_mixins.rs` when several interfaces share a domain
+  type (canvas: `bindings/html/canvas_context_2d_mixins.rs`), or in the
+  single including interface's file until a second interface includes it;
+  factor it out at that point.
+
+The member binding functions should be shared too, which needs the mixin's
+algorithms to live on one domain type rather than on each interface.  Three
+shapes are in use:
+
+- **Shared struct, owned by each interface.**  Each interface struct owns one
+  instance of the same domain struct and exposes it (`CanvasRenderingContext2D`
+  and `OffscreenCanvasRenderingContext2D` both own a `RenderingContext2D`; see
+  `content/src/html/canvas/rendering_context_2d.rs`).  One `with_<mixin>`
+  helper downcasts the receiver to either interface and yields the shared
+  struct (`with_rendering_context`), and each binding function is written once
+  against it.  Mutable state on that struct must be `Rc`-shared, or the
+  binding's clone-out writes to a copy (`content/README.md`, "GcCell borrow
+  discipline").
+- **Shared trait, implemented by each interface.**  The interfaces are
+  distinct structs implementing one trait that carries the algorithms —
+  `WindowOrWorkerGlobalScope`
+  (`content/src/html/window_or_worker_global_scope.rs`) is implemented by
+  `Window` and `WorkerGlobalScope`.  Receiver resolution differs, so the
+  member binding functions stay per interface; the member *declarations*
+  still come from the single `define_*_members`.
+- **No domain state needed.**  The helper operates on whatever domain type
+  the receiver already resolves to: `define_global_event_handlers` works on
+  any `EventTarget`.
+
+A mixin whose members are installed by hand-built property descriptors on a
+prototype instead of `InterfaceDefinition` (`HTMLHyperlinkElementUtils` in
+`bindings/html/hyperlink_element_utils.rs`) is not a model for new mixins.
+
+Known drift: `bindings/html/window.rs` declares the
+`WindowOrWorkerGlobalScope` members (`setTimeout`, `clearTimeout`,
+`setInterval`, `clearInterval`, `requestAnimationFrame`,
+`cancelAnimationFrame`, `structuredClone`) inline instead of calling
+`define_window_or_worker_global_scope_members`; collapsing it needs the
+member binding functions to resolve a `Window` and a `WorkerGlobalScope`
+through the shared trait.
 
 ## Related documentation
 

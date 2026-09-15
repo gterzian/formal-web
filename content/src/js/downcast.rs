@@ -7,9 +7,10 @@ use crate::dom::{
     AbortController, AbortSignal, Document, Element, Event, EventTarget, HasEvent, Node,
 };
 use crate::html::{
-    DedicatedWorkerGlobalScope, HTMLAnchorElement, HTMLElement, HTMLIFrameElement,
-    HTMLInputElement, HTMLMediaElement, HTMLVideoElement, MessageEvent, MessagePort, Window,
-    Worker, WorkerGlobalScope,
+    CanvasRenderingContext2D, DedicatedWorkerGlobalScope, HTMLAnchorElement, HTMLCanvasElement,
+    HTMLElement, HTMLIFrameElement, HTMLInputElement, HTMLMediaElement, HTMLVideoElement,
+    MessageEvent, MessagePort, OffscreenCanvas, OffscreenCanvasRenderingContext2D, Window, Worker,
+    WorkerGlobalScope,
 };
 use crate::js::Types;
 use crate::js::platform_objects::with_global_scope;
@@ -124,6 +125,11 @@ pub(crate) fn try_set_event_target_reflector(
                         &mut anchor.html_element.element.node.event_target.reflector,
                         reflector,
                     );
+                } else if let Some(canvas) = data.downcast_mut::<HTMLCanvasElement>() {
+                    ec.store_js_object(
+                        &mut canvas.html_element.element.node.event_target.reflector,
+                        reflector,
+                    );
                 } else if let Some(iframe) = data.downcast_mut::<HTMLIFrameElement>() {
                     ec.store_js_object(
                         &mut iframe.html_element.element.node.event_target.reflector,
@@ -150,6 +156,14 @@ pub(crate) fn try_set_event_target_reflector(
                             .reflector,
                         reflector,
                     );
+                } else if let Some(context) = data.downcast_mut::<CanvasRenderingContext2D>() {
+                    ec.store_js_object(&mut context.reflector, reflector);
+                } else if let Some(context) =
+                    data.downcast_mut::<OffscreenCanvasRenderingContext2D>()
+                {
+                    ec.store_js_object(&mut context.reflector, reflector);
+                } else if let Some(canvas) = data.downcast_mut::<OffscreenCanvas>() {
+                    ec.store_js_object(&mut canvas.reflector, reflector);
                 } else if let Some(node) = data.downcast_mut::<Node>() {
                     ec.store_js_object(&mut node.event_target.reflector, reflector);
                 } else if let Some(target) = data.downcast_mut::<EventTarget>() {
@@ -222,6 +236,8 @@ pub(crate) fn event_target_from_js_object(
             Some(html_element.element.node.event_target.clone())
         } else if let Some(anchor) = data.downcast_ref::<HTMLAnchorElement>() {
             Some(anchor.html_element.element.node.event_target.clone())
+        } else if let Some(canvas) = data.downcast_ref::<HTMLCanvasElement>() {
+            Some(canvas.html_element.element.node.event_target.clone())
         } else if let Some(iframe) = data.downcast_ref::<HTMLIFrameElement>() {
             Some(iframe.html_element.element.node.event_target.clone())
         } else if let Some(input) = data.downcast_ref::<HTMLInputElement>() {
@@ -284,6 +300,8 @@ pub(crate) fn try_with_event_target_mut<R>(
                 result = Ok(f(&mut html_element.element.node.event_target, ec));
             } else if let Some(anchor) = data.downcast_mut::<HTMLAnchorElement>() {
                 result = Ok(f(&mut anchor.html_element.element.node.event_target, ec));
+            } else if let Some(canvas) = data.downcast_mut::<HTMLCanvasElement>() {
+                result = Ok(f(&mut canvas.html_element.element.node.event_target, ec));
             } else if let Some(iframe) = data.downcast_mut::<HTMLIFrameElement>() {
                 result = Ok(f(&mut iframe.html_element.element.node.event_target, ec));
             } else if let Some(media) = data.downcast_mut::<HTMLMediaElement>() {

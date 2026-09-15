@@ -197,9 +197,22 @@ two-submit layout.
   so the wait is bounded) and video frames whose pipeline is live and has
   not ended/failed (`expected_videos`). A late child or video frame
   completes the pending composition; the composed scene therefore always
-  includes the latest embedded frames. The RenderingOpportunity TLA model
-  is unchanged: there is still exactly one composition per top-level render
-  cycle.
+  includes the latest embedded frames. For the normal case the render-cycle
+  batching is one composition per top-level frame.
+- **A `RenderStarted` deadline composes without a late top-level frame.**
+  The UA sends `GraphicsCommand::RenderStarted { webview_id, deadline_ms }`
+  (16 ms, a 60 Hz frame) when it queues a top-level update-the-rendering
+  cycle. Graphics arms a per-webview deadline. When the top-level `PaintFrame`
+  arrives, the deadline is cleared and composition proceeds normally. When it
+  is late or never arrives — a content event loop blocked in script — the
+  deadline fires and graphics composes against the last committed root, so a
+  worker animation keeps running while the window's main thread is busy. The
+  deadline only fires when a root frame has been committed and an out-of-band
+  layer (a worker's `OffscreenCanvas` commit or a video frame) actually
+  changed; those are committed independently of the top-level content render,
+  while a dirty child frame rides the normal render cycle and is composed with
+  the top-level frame as before. A later top-level frame composes again, so a
+  cycle whose top-level frame was late can produce two compositions.
 - **The composed scene aggregates the animating flag across the composed
   frames.** `PaintFrame.animating` is recorded per stored frame; a
   composition reports `animating = true` when any composed frame animates

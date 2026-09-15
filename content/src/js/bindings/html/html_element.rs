@@ -6,8 +6,8 @@ type Types = crate::js::Types;
 
 use crate::dom::Element;
 use crate::html::{
-    HTMLAnchorElement, HTMLElement, HTMLIFrameElement, HTMLInputElement, HTMLMediaElement,
-    HTMLVideoElement, inline_style_properties_for_element,
+    HTMLAnchorElement, HTMLCanvasElement, HTMLElement, HTMLIFrameElement, HTMLInputElement,
+    HTMLMediaElement, HTMLVideoElement, inline_style_properties_for_element,
 };
 use crate::webidl::bindings::{AttributeDef, InterfaceDefinition, OperationDef, WebIdlInterface};
 
@@ -115,6 +115,10 @@ fn click_method(
                     .map(|anchor| anchor.html_element.clone())
             })
             .or_else(|| {
+                data.downcast_ref::<HTMLCanvasElement>()
+                    .map(|canvas| canvas.html_element.clone())
+            })
+            .or_else(|| {
                 data.downcast_ref::<HTMLInputElement>()
                     .map(|input| input.html_element.clone())
             })
@@ -144,6 +148,9 @@ fn try_with_html_element_ref<R>(
         }
         if let Some(anchor) = data.downcast_ref::<HTMLAnchorElement>() {
             return Ok(f(&anchor.html_element));
+        }
+        if let Some(canvas) = data.downcast_ref::<HTMLCanvasElement>() {
+            return Ok(f(&canvas.html_element));
         }
         if let Some(input) = data.downcast_ref::<HTMLInputElement>() {
             return Ok(f(&input.html_element));
@@ -411,6 +418,13 @@ fn element_style_attribute(
                 .get_attribute("style")
                 .unwrap_or_default(),
         )
+    } else if let Some(el) = data.downcast_ref::<HTMLCanvasElement>() {
+        Some(
+            el.html_element
+                .element
+                .get_attribute("style")
+                .unwrap_or_default(),
+        )
     } else if let Some(el) = data.downcast_ref::<HTMLIFrameElement>() {
         Some(
             el.html_element
@@ -463,6 +477,13 @@ fn set_element_style_attribute(
             elem.set_attribute("style", value);
         }
     } else if let Some(el) = data.downcast_ref::<HTMLAnchorElement>() {
+        let elem = &el.html_element.element;
+        if value.is_empty() {
+            elem.remove_attribute("style");
+        } else {
+            elem.set_attribute("style", value);
+        }
+    } else if let Some(el) = data.downcast_ref::<HTMLCanvasElement>() {
         let elem = &el.html_element.element;
         if value.is_empty() {
             elem.remove_attribute("style");

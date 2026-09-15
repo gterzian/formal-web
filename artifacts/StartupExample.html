@@ -381,6 +381,31 @@
         </a>
       </section>
 
+      <!-- ──── 8. OffscreenCanvas worker animation ──── -->
+      <section class="section-card">
+        <div class="section-title">
+          <span>OffscreenCanvas Worker Animation</span>
+          <span class="badge working">Working</span>
+        </div>
+        <p class="section-desc">
+          An <code>OffscreenCanvas</code> transferred to a dedicated worker
+          and driven by <code>requestAnimationFrame</code>. Start and stop the
+          loop; the worker draws each frame directly into the placeholder
+          canvas element's own compositing layer.
+        </p>
+        <canvas
+          id="offscreen-canvas"
+          width="300"
+          height="200"
+          style="display:block;width:300px;height:200px;background:#0a0a12;border-radius:0.6rem;border:1px solid #e4e2ec;"
+        ></canvas>
+        <div class="btn-row" style="margin-top:0.8rem;">
+          <button class="btn btn-success" id="oc-start-btn" type="button">Start</button>
+          <button class="btn btn-outline" id="oc-stop-btn" type="button">Stop</button>
+        </div>
+        <div class="output-box" id="oc-output" style="margin-top:0.6rem;">Worker ready</div>
+      </section>
+
       <footer style="text-align:center;padding:1rem 0 0;font-size:0.82rem;color:#a0a0b8;">
         formal-web · built from scratch in Rust
       </footer>
@@ -560,6 +585,68 @@
         xoOutput.textContent = "Received from " + e.origin + ": " + reply;
         xoOutput.className = "output-box success";
       });
+
+      // ──── 8. OffscreenCanvas worker animation ────
+      (function() {
+        var canvas  = document.getElementById("offscreen-canvas");
+        var startBtn = document.getElementById("oc-start-btn");
+        var stopBtn  = document.getElementById("oc-stop-btn");
+        var output   = document.getElementById("oc-output");
+
+        if (!canvas || typeof canvas.transferControlToOffscreen !== "function") {
+          if (output) {
+            output.textContent = "OffscreenCanvas is not available";
+            output.className = "output-box error";
+          }
+          return;
+        }
+
+        var off = canvas.transferControlToOffscreen();
+        var workerCode = [
+          "var ctx = null;",
+          "var animating = false;",
+          "var x = 0;",
+          "onmessage = function(e) {",
+          "  var data = e.data;",
+          "  if (data && data.type === 'start') {",
+          "    animating = true;",
+          "    tick();",
+          "  } else if (data && data.type === 'stop') {",
+          "    animating = false;",
+          "  } else {",
+          "    ctx = data.getContext('2d');",
+          "  }",
+          "};",
+          "function tick() {",
+          "  if (!animating) return;",
+          "  ctx.clearRect(0, 0, 300, 200);",
+          "  ctx.fillStyle = '#4a6cf7';",
+          "  ctx.fillRect(x, 60, 40, 40);",
+          "  x = (x + 2) % 260;",
+          "  requestAnimationFrame(tick);",
+          "}",
+        ].join("\n");
+
+        var worker = new Worker("data:text/javascript," + encodeURIComponent(workerCode));
+        worker.postMessage(off, [off]);
+
+        worker.onerror = function(e) {
+          output.textContent = "Worker error: " + (e && e.message ? e.message : "unknown");
+          output.className = "output-box error";
+        };
+
+        startBtn.addEventListener("click", function() {
+          worker.postMessage({ type: "start" });
+          output.textContent = "Animating — the worker drives each frame with requestAnimationFrame";
+          output.className = "output-box";
+        });
+
+        stopBtn.addEventListener("click", function() {
+          worker.postMessage({ type: "stop" });
+          output.textContent = "Stopped";
+          output.className = "output-box";
+        });
+      })();
     </script>
   </body>
 </html>

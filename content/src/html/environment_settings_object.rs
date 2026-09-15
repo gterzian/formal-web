@@ -68,6 +68,9 @@ pub(crate) struct WorkerRealmWiring {
     pub event_sender: IpcSender<ContentEvent>,
     /// <https://html.spec.whatwg.org/#task-source>
     pub task_sources: EventLoopTaskSources,
+    /// Direct sender to the graphics process, for the worker's
+    /// `OffscreenCanvasRenderingContext2D` commits.
+    pub graphics_sender: Option<IpcSender<ipc_messages::graphics::GraphicsCommand>>,
 }
 
 /// <https://html.spec.whatwg.org/#environment-settings-object>
@@ -241,6 +244,11 @@ impl EnvironmentSettingsObject {
             worker_global_scope
                 .global_scope
                 .set_event_sender(wiring.event_sender.clone());
+            if let Some(graphics_sender) = wiring.graphics_sender.clone() {
+                worker_global_scope
+                    .global_scope
+                    .set_graphics_sender(graphics_sender);
+            }
             worker_global_scope
                 .global_scope
                 .set_creation_url(creation_url.clone());
