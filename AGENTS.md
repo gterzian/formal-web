@@ -455,6 +455,13 @@ cargo build --release   # rebuilds EVERY workspace binary
 cargo run --release     # all processes are in sync
 ```
 
+Rebuilding a helper with a non-default feature set has the same trap even
+without a wire change.  A `formal-web-graphics` built with `--features
+cpu_readback` (or any other non-default backend) stays in `target/{profile}`
+and `cargo run --release` reuses it, so the default AppKit embedder receives
+CPU-readback payloads it rejects.  Run a full `cargo build --release` after
+switching a helper's feature set.
+
 ### Process binary search paths
 
 When the embedder spawns a helper process, it searches the directory

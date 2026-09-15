@@ -467,6 +467,9 @@ fn handle_command<B: MediaBackend + 'static, R: SurfaceRenderer>(
         GraphicsCommand::UnregisterWebview { webview_id } => {
             debug!("[graphics] unregistering webview {:?}", webview_id);
             webviews.remove(&webview_id);
+            // Drop canvas registrations owned by the removed webview so a
+            // canvas id whose owner is gone does not keep routing paints.
+            canvas_to_webview.retain(|_, owner| *owner != webview_id);
             // If the webview is a child navigable, its frames were composed
             // into the parent's compositor. Mark the child frame removed so
             // a deferred composition of the parent never waits for a frame
@@ -898,6 +901,12 @@ fn maybe_compose<R: SurfaceRenderer>(
     match slot.renderer.submit_layers(composed, composed_scene_sender) {
         Ok(rendered) => {
             slot.compositor.mark_layers_rendered(&rendered);
+            // Release surfaces for layers the compositor no longer holds
+            // (a navigated-away frame, a torn-down child): `live` is the
+            // compositor's current layer set, so layers that are merely
+            // offscreen keep their buffers.
+            let live = slot.compositor.live_layer_ids();
+            slot.renderer.retain_layers(&live);
             if rendered.is_empty() {
                 // Every layer stayed clean (no surface re-produced): the
                 // renderer still emits a surface-less PixelFrameReady so the

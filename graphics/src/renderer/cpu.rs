@@ -11,7 +11,7 @@ use super::{
 use ipc_messages::content::WebviewId;
 use ipc_messages::graphics::{CompositingLayerId, GraphicsEvent, LayerTopology, SurfacePayload};
 use log::{debug, error, info};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use wgpu::{
     BufferDescriptor, BufferUsages, CommandEncoderDescriptor, Extent3d, Origin3d,
     TexelCopyBufferInfo, TexelCopyBufferLayout, TexelCopyTextureInfo, TextureAspect,
@@ -131,12 +131,22 @@ impl CpuRenderer {
         Ok([region_zero, region_one])
     }
 
-    /// Drop the in-flight marker for a readback slot (map failure path).
+    /// Drop the in-flight marker for a readback slot and unmap its staging
+    /// buffer. The abort paths (unknown cycle, missing layer buffers, bad
+    /// shmem index, map failure) reach here without going through
+    /// `copy_readback`, which is the only other place the buffer is
+    /// unmapped; a slot freed with its buffer still mapped makes the next
+    /// `copy_texture_to_buffer` into that buffer fail with "buffer is still
+    /// mapped".
     fn release_readback(
         inflight_readbacks: &mut [Option<u64>; READBACK_SLOTS],
+        readback_buffers: &[Option<(wgpu::Buffer, u32, u32)>; READBACK_SLOTS],
         readback_index: usize,
     ) {
         if let Some(generation) = inflight_readbacks[readback_index].take() {
+            if let Some((buffer, _, _)) = &readback_buffers[readback_index] {
+                buffer.unmap();
+            }
             debug!(
                 "[gpu-renderer] released readback slot {} gen={}",
                 readback_index, generation
@@ -483,9 +493,25 @@ impl SurfaceRenderer for CpuRenderer {
                 "[graphics] readback for unknown cycle {:?} gen={}",
                 webview_id, generation
             );
-            Self::release_readback(&mut self.inflight_readbacks, readback_index);
+            Self::release_readback(
+                &mut self.inflight_readbacks,
+                &self.readback_buffers,
+                readback_index,
+            );
             return delivery;
         };
+        if cycle.generation != generation {
+            error!(
+                "[graphics] readback for stale cycle {:?} gen={} (current {})",
+                webview_id, generation, cycle.generation
+            );
+            Self::release_readback(
+                &mut self.inflight_readbacks,
+                &self.readback_buffers,
+                readback_index,
+            );
+            return delivery;
+        }
 
         let mut usable = false;
         if let Err(error) = result {
@@ -493,7 +519,11 @@ impl SurfaceRenderer for CpuRenderer {
                 "[graphics] readback map failed for {:?} gen={}: {error:?}",
                 webview_id, generation
             );
-            Self::release_readback(&mut self.inflight_readbacks, readback_index);
+            Self::release_readback(
+                &mut self.inflight_readbacks,
+                &self.readback_buffers,
+                readback_index,
+            );
         } else if let Some(buffers) = self.buffers.get_mut(&layer_id) {
             if let Some(region) = buffers.payload_mut().get_mut(shmem_index) {
                 // SAFETY: this buffer was reserved at submit time and its
@@ -525,20 +555,26 @@ impl SurfaceRenderer for CpuRenderer {
                     "[graphics] bad shmem index {} for layer {:?} gen={}",
                     shmem_index, layer_id, generation
                 );
-                Self::release_readback(&mut self.inflight_readbacks, readback_index);
+                Self::release_readback(
+                    &mut self.inflight_readbacks,
+                    &self.readback_buffers,
+                    readback_index,
+                );
             }
         } else {
             error!(
                 "[graphics] no surface buffers for layer {:?} gen={}",
                 layer_id, generation
             );
-            Self::release_readback(&mut self.inflight_readbacks, readback_index);
+            Self::release_readback(
+                &mut self.inflight_readbacks,
+                &self.readback_buffers,
+                readback_index,
+            );
         }
 
-        if !usable {
-            if let Some(layer) = cycle.layers.iter_mut().find(|l| l.layer_id == layer_id) {
-                layer.surface = None;
-            }
+        if !usable && let Some(layer) = cycle.layers.iter_mut().find(|l| l.layer_id == layer_id) {
+            layer.surface = None;
         }
         cycle.received += 1;
 
@@ -587,5 +623,28 @@ impl SurfaceRenderer for CpuRenderer {
     ) -> Option<peniko::ImageData> {
         self.gpu
             .store_video_frame(paint_id, pixel_buffer, width, height)
+    }
+
+    fn retain_layers(&mut self, live: &HashSet<CompositingLayerId>) {
+        let before = self.buffers.len();
+        self.buffers.retain(|layer_id, _| live.contains(layer_id));
+        #[cfg(target_os = "macos")]
+        {
+            let live_videos: HashSet<VideoPaintId> = live
+                .iter()
+                .filter_map(|layer_id| match layer_id {
+                    CompositingLayerId::Video(paint_id) => Some(*paint_id),
+                    CompositingLayerId::Navigable(_) | CompositingLayerId::Canvas(_) => None,
+                })
+                .collect();
+            self.gpu.retain_video_paints(&live_videos);
+        }
+        if self.buffers.len() != before {
+            debug!(
+                "[cpu-renderer] released {} layer buffers (live={})",
+                before - self.buffers.len(),
+                self.buffers.len()
+            );
+        }
     }
 }

@@ -16,7 +16,7 @@ use objc2::rc::Retained;
 use objc2::runtime::ProtocolObject;
 use objc2_core_video::CVPixelBuffer;
 use objc2_metal::MTLDevice;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use crate::ComposedScene;
 
@@ -270,5 +270,25 @@ impl SurfaceRenderer for IosurfaceRenderer {
     ) -> Option<peniko::ImageData> {
         self.gpu
             .store_video_frame(paint_id, pixel_buffer, width, height)
+    }
+
+    fn retain_layers(&mut self, live: &HashSet<CompositingLayerId>) {
+        let before = self.buffers.len();
+        self.buffers.retain(|layer_id, _| live.contains(layer_id));
+        let live_videos: HashSet<VideoPaintId> = live
+            .iter()
+            .filter_map(|layer_id| match layer_id {
+                CompositingLayerId::Video(paint_id) => Some(*paint_id),
+                CompositingLayerId::Navigable(_) | CompositingLayerId::Canvas(_) => None,
+            })
+            .collect();
+        self.gpu.retain_video_paints(&live_videos);
+        if self.buffers.len() != before {
+            debug!(
+                "[iosurface] released {} layer buffers (live={})",
+                before - self.buffers.len(),
+                self.buffers.len()
+            );
+        }
     }
 }

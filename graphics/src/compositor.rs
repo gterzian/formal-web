@@ -519,6 +519,25 @@ impl Compositor {
         self.root_frame_id
     }
 
+    /// The compositing layers this compositor currently holds: every
+    /// committed frame plus every video and canvas frame. The renderer keeps
+    /// surfaces only for these layers, so a navigated-away frame, a
+    /// torn-down child, or a removed video or canvas does not leak its
+    /// IOSurface or shared-memory buffers.
+    pub fn live_layer_ids(&self) -> HashSet<CompositingLayerId> {
+        let mut live = HashSet::new();
+        for frame_id in self.committed_frames.keys() {
+            live.insert(CompositingLayerId::Navigable(*frame_id));
+        }
+        for paint_id in self.video_frames.keys() {
+            live.insert(CompositingLayerId::Video(*paint_id));
+        }
+        for canvas_id in self.canvas_frames.keys() {
+            live.insert(CompositingLayerId::Canvas(*canvas_id));
+        }
+        live
+    }
+
     /// The frame ids currently committed (top-level plus embedded children),
     /// for diagnostics.
     pub fn committed_frame_ids(&self) -> Vec<FrameId> {
