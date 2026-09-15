@@ -23,7 +23,7 @@ use objc2_core_video::{
 };
 use objc2_metal::{MTLDevice, MTLPixelFormat, MTLTexture};
 use peniko::ImageData;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use vello::Renderer as VelloRenderer;
 use wgpu::{
     ComputePipelineDescriptor, Extent3d, Texture, TextureDescriptor, TextureDimension,
@@ -351,6 +351,30 @@ impl VideoTextures {
                 Some(image)
             }
         }
+    }
+
+    /// Drop the stored frames, imported RGBA textures, and Vello override
+    /// registrations for the paint ids the compositor no longer holds, so a
+    /// removed video's GPU targets and pixel buffers do not accumulate over
+    /// the renderer's lifetime. The override registration must be removed
+    /// explicitly: the fake image's blob id would otherwise keep sampling a
+    /// texture nobody references.
+    pub(super) fn retain(
+        &mut self,
+        live: &HashSet<VideoPaintId>,
+        vello_renderer: &mut VelloRenderer,
+    ) {
+        self.frames.retain(|paint_id, _| live.contains(paint_id));
+        self.textures.retain(|paint_id, entry| {
+            if live.contains(paint_id) {
+                return true;
+            }
+            vello_renderer.override_image(&entry.image, None);
+            if let Some(stale_image) = entry.stale_image.take() {
+                vello_renderer.override_image(&stale_image, None);
+            }
+            false
+        });
     }
 
     /// Blit every stored raw frame whose generation is newer than the last

@@ -18,7 +18,7 @@ use ipc_messages::content::{FrameId, WebviewId};
 use ipc_messages::graphics::{ChildViewport, CompositingLayerId, FrameHitInfo, GraphicsEvent};
 use ipc_messages::media::VideoPaintId;
 use kurbo::Affine;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 #[cfg(target_os = "macos")]
 use objc2::rc::Retained;
@@ -259,6 +259,15 @@ impl GpuContext {
         self.video
             .store_frame(paint_id, pixel_buffer, width, height)
     }
+
+    /// Drop the video textures, stored frames, and Vello override
+    /// registrations for the paint ids the compositor no longer holds, so a
+    /// removed video's GPU targets and pixel buffers do not accumulate over
+    /// the renderer's lifetime.
+    #[cfg(target_os = "macos")]
+    pub(crate) fn retain_video_paints(&mut self, live: &HashSet<VideoPaintId>) {
+        self.video.retain(live, &mut self.vello_renderer);
+    }
 }
 
 /// The alternating double-buffer lifecycle shared by both backends: each
@@ -421,6 +430,13 @@ pub trait SurfaceRenderer {
         width: u32,
         height: u32,
     ) -> Option<peniko::ImageData>;
+
+    /// Drop the surfaces of layers the compositor no longer holds. `live`
+    /// is the compositor's current layer set; every other layer's buffers
+    /// are released (a navigated-away frame, a torn-down child, a removed
+    /// video or canvas). Layers that are merely offscreen stay in the live
+    /// set and keep their buffers, so scrolling does not reallocate them.
+    fn retain_layers(&mut self, live: &HashSet<CompositingLayerId>);
 }
 
 #[cfg(target_os = "macos")]

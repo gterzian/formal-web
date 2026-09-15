@@ -49,8 +49,18 @@ The invariants that keep the pipeline correct:
   UA's rendering-opportunity cycle never stalls; the CPU renderer keeps a
   per-slot staging-buffer pool (one per in-flight frame) and a per-webview
   device.
+- The renderer holds buffers only for layers the compositor still holds.
+  After each composition the event loop passes the compositor's live layer
+  set (`Compositor::live_layer_ids`) to `SurfaceRenderer::retain_layers`,
+  and the renderer releases every other layer's ring and (macOS) video
+  textures. A navigated-away frame gets a fresh `FrameId` and is dropped
+  from the compositor's committed set, so its two surfaces are released on
+  the next composition. A merely offscreen layer stays in the compositor's
+  committed set, so it stays live and keeps its buffers — scrolling does
+  not reallocate them.
 - The graphics event loop only sees the `SurfaceRenderer` trait
-  (`submit_scene`, `handle_render_done`); the double buffer is hidden inside
+  (`submit_layers`, `handle_render_done`, `retain_layers`); the double
+  buffer is hidden inside
   the renderer (`SurfaceBuffers`/`SurfaceRingState` per backend payload).
   Each renderer's `RenderData` associated type is the per-frame payload
   produced at submit time and consumed by its `handle_render_done`, which
@@ -141,7 +151,7 @@ byte path (`MediaBackendEvent::Frame`).
 **The import is deferred from frame arrival to compose time.** The media
 callback (`store_video_frame`) only stores the latest raw frame — the pixel
 buffer, its size, and a generation counter — without touching the GPU.  When
-`submit_scene` runs, `VideoTextures::record_imports` blits exactly the frames
+`submit_layers` runs, `VideoTextures::record_imports` blits exactly the frames
 whose generation is newer than the last imported one in their own submission,
 right before Vello's render submits (two back-to-back submissions; GPU
 execution order guarantees the blit completes before the render reads it).
@@ -280,3 +290,16 @@ two-submit layout.
   runs `should_render` (blitz resolve + paint) every cycle for the whole
   document. Not fixable in-repo: `is_animating`/`compute_has_canvas` live in the
   pinned blitz git dependency.
+- **A removed `<video>` element or offscreen canvas keeps its compositor
+  frame until navigation.** The compositor's live set
+  (`Compositor::live_layer_ids`) releases a layer's surfaces only once the
+  layer's entry leaves `video_frames`/`canvas_frames`. `note_navigation_finalized`
+  clears `video_frames`, but nothing clears either map when an element is
+  destroyed inside a live document: `Compositor::remove_canvas_frame` has no
+  caller, and `GraphicsCommand::RemoveVideoFrame` is handled but nothing sends
+  it. A long-lived page that creates and destroys many video elements or
+  offscreen canvases therefore keeps each video's last decoded frame (a
+  `CVPixelBuffer` or pixel bytes), each canvas's recorded scene, and the
+  renderer's surface buffers for both. Content's `video_paint_registry` and
+  `canvas_registry` retain the same keys. A fix needs a destroy signal from
+  content for both.
