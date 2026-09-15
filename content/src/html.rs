@@ -9,6 +9,7 @@ mod activation_behavior;
 mod canvas;
 pub(crate) mod channel_messaging;
 pub(crate) use channel_messaging::ChannelMessaging;
+pub(crate) mod common_microsyntaxes;
 pub(crate) mod dispatch;
 pub(crate) mod environment_settings_object;
 pub(crate) mod event_handler;

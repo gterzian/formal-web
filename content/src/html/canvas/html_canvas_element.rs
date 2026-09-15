@@ -9,6 +9,7 @@ use js_engine::{Completion, ExecutionContext, gc_struct};
 use log::error;
 
 use crate::html::HTMLElement;
+use crate::html::common_microsyntaxes::non_negative_integers::rules_for_parsing_non_negative_integers;
 use crate::js::Types;
 use crate::js::platform_objects::with_global_scope;
 use crate::webidl::bindings::create_interface_instance;
@@ -59,7 +60,9 @@ impl HTMLCanvasElement {
             .element
             .get_attribute("width")
             .as_deref()
-            .and_then(parse_non_negative_integer)
+            .and_then(rules_for_parsing_non_negative_integers)
+            // The IDL attribute is `unsigned long`; the conversion wraps modulo 2^32.
+            .map(|value| value as u32)
             .unwrap_or(300)
     }
 
@@ -69,7 +72,9 @@ impl HTMLCanvasElement {
             .element
             .get_attribute("height")
             .as_deref()
-            .and_then(parse_non_negative_integer)
+            .and_then(rules_for_parsing_non_negative_integers)
+            // The IDL attribute is `unsigned long`; the conversion wraps modulo 2^32.
+            .map(|value| value as u32)
             .unwrap_or(150)
     }
 
@@ -269,46 +274,4 @@ impl HTMLCanvasElement {
             Ok(())
         })
     }
-}
-
-/// <https://html.spec.whatwg.org/#rules-for-parsing-non-negative-integers>
-fn parse_non_negative_integer(value: &str) -> Option<u32> {
-    let mut characters = value.chars().peekable();
-    // "Skip ASCII whitespace within input given position."
-    while matches!(characters.peek(), Some(' ' | '\t' | '\n' | '\u{0C}' | '\r')) {
-        characters.next();
-    }
-    // "If the character ... is a U+002B PLUS SIGN ... Otherwise, if the character is a U+002D
-    // HYPHEN-MINUS character (-), then set sign to \"negative\" ..."
-    let negative = match characters.peek() {
-        Some('+') => {
-            characters.next();
-            false
-        }
-        Some('-') => {
-            characters.next();
-            true
-        }
-        _ => false,
-    };
-    // "If the character pointed to by position is not an ASCII digit, then return an error."
-    if !characters.peek().is_some_and(char::is_ascii_digit) {
-        return None;
-    }
-    // "Collect a sequence of characters that are ASCII digits, and interpret the resulting sequence
-    // as a base-ten integer. Let value be that number."
-    let mut parsed = 0u64;
-    while let Some(character) = characters.peek() {
-        let Some(digit) = character.to_digit(10) else {
-            break;
-        };
-        parsed = parsed.saturating_mul(10).saturating_add(u64::from(digit));
-        characters.next();
-    }
-    // "If sign is \"negative\", negate value. ... If value is less than zero, return an error."
-    if negative && parsed != 0 {
-        return None;
-    }
-    // The IDL attributes are `unsigned long`; the parsed integer converts modulo 2^32.
-    Some((parsed % (1 << 32)) as u32)
 }

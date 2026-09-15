@@ -11,6 +11,18 @@
 - Trigger parser-discovered iframe work from document-load parsing completion.
 - Use the `web_standards` extension (`spec_lookup`) with `https://html.spec.whatwg.org/` to read the HTML spec.
 
+## Common microsyntaxes (`common_microsyntaxes/`)
+
+The micro-parsers for the data types HTML content attributes accept (the
+[common microsyntaxes](https://html.spec.whatwg.org/#common-microsyntaxes))
+live in `common_microsyntaxes/`, one module per spec subsection
+(`signed_integers.rs`, `non_negative_integers.rs`, …).  Each parser is a free
+function named for its spec algorithm (`rules_for_parsing_non_negative_integers`)
+carrying that algorithm's anchor and verbatim step comments.  Never inline an
+attribute's parsing rules into the element module that needs them, and never
+fold a sub-algorithm the spec calls into (`rules for parsing integers`) into
+its caller.
+
 ## Structured clone (`structured_data/`)
 
 The safe-passing algorithms live in `structured_data/`, split between the
