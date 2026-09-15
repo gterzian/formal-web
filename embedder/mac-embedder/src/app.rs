@@ -16,8 +16,8 @@ mod automation_host;
 use crate::events::{EventLoopEmbedder, FormalWebUserEvent, UserEventSink};
 use crate::input;
 use crate::platform::{
-    normalize_browser_destination, read_clipboard_text, startup_destination_url,
-    update_window_viewport_snapshot, write_clipboard_text,
+    normalize_browser_destination, startup_destination_url, update_window_viewport_snapshot,
+    write_clipboard_text,
 };
 use crate::window::{new_layer_hosted_view, present_shared_surface};
 use automation::AutomationController;
@@ -1297,12 +1297,13 @@ impl MacApp {
         };
 
         let key = input::ns_event_to_key_event(event);
+        let prefetched_clipboard_text = input::paste_shortcut_clipboard_text(&key);
         let ui_event = if event.r#type() == NSEventType::KeyDown {
             UiEvent::KeyDown(key)
         } else {
             UiEvent::KeyUp(key)
         };
-        self.dispatch_to_content(window_id, ui_event);
+        self.dispatch_to_content(window_id, ui_event, prefetched_clipboard_text);
     }
 
     fn handle_content_mouse_event(
@@ -1377,7 +1378,7 @@ impl MacApp {
             buttons,
             modifiers,
         );
-        self.dispatch_to_content(window_id, ui_event(event_kind, pointer));
+        self.dispatch_to_content(window_id, ui_event(event_kind, pointer), None);
     }
 
     // ── Native chrome ──────────────────────────────────────────────────────
@@ -2660,7 +2661,12 @@ impl MacApp {
         }
     }
 
-    fn dispatch_to_content(&mut self, window_id: WindowId, event: UiEvent) {
+    fn dispatch_to_content(
+        &mut self,
+        window_id: WindowId,
+        event: UiEvent,
+        prefetched_clipboard_text: Option<String>,
+    ) {
         let webview_id = self
             .windows
             .get(&window_id)
@@ -2669,7 +2675,11 @@ impl MacApp {
             return;
         };
         if let Some(provider) = &self.provider
-            && let Err(error) = provider.send_ui_event(webview_id, event)
+            && let Err(error) = provider.send_ui_event_with_prefetched_clipboard_text(
+                webview_id,
+                event,
+                prefetched_clipboard_text,
+            )
         {
             error!("content event error: {error}");
         }
@@ -2765,11 +2775,10 @@ impl MacApp {
                     self.refresh_chrome(window_id);
                 }
             }
-            FormalWebUserEvent::ClipboardRead { reply } => {
-                let _ = reply.send(read_clipboard_text());
-            }
-            FormalWebUserEvent::ClipboardWrite { text, reply } => {
-                let _ = reply.send(write_clipboard_text(text));
+            FormalWebUserEvent::ClipboardWrite { text } => {
+                if let Err(error) = write_clipboard_text(text) {
+                    error!("clipboard write failed: {error}");
+                }
             }
             FormalWebUserEvent::NewWebContentLayers {
                 webview_id,

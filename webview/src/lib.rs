@@ -120,9 +120,27 @@ impl WebviewProvider {
     }
 
     pub fn send_ui_event(&self, webview_id: WebviewId, event: UiEvent) -> Result<(), String> {
+        self.send_ui_event_with_prefetched_clipboard_text(webview_id, event, None)
+    }
+
+    /// Sends a UI event that carries the clipboard text the embedder
+    /// prefetched for a paste shortcut, so content answers the paste from
+    /// its cache instead of reading the system clipboard itself.
+    pub fn send_ui_event_with_prefetched_clipboard_text(
+        &self,
+        webview_id: WebviewId,
+        event: UiEvent,
+        prefetched_clipboard_text: Option<String>,
+    ) -> Result<(), String> {
         match ui_event::serialize_ui_event(&event) {
             Ok(event_message) => {
-                let _ = self.user_agent.send_ui_event(webview_id, event_message);
+                if let Err(error) = self.user_agent.send_ui_event(
+                    webview_id,
+                    event_message,
+                    prefetched_clipboard_text,
+                ) {
+                    error!("failed to send ui event: {error}");
+                }
             }
             Err(error) => {
                 error!("failed to serialize ui event: {error}");

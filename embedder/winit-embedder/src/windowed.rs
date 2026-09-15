@@ -4,7 +4,7 @@ use crate::chrome::{ChromeAction, ChromeTabInfo, ChromeUi, ChromeViewState};
 use crate::events::{FormalWebUserEvent, send_user_event};
 use crate::shared::{
     apple_standard_keybinding_for_key_down, automation_screenshot_png,
-    normalize_browser_destination, read_clipboard_text, startup_destination_url,
+    normalize_browser_destination, paste_shortcut_clipboard_text, startup_destination_url,
     update_window_viewport_snapshot, write_clipboard_text,
 };
 use crate::winit_integration::WinitShellProvider;
@@ -1129,7 +1129,12 @@ impl WindowedApp {
         self.provider.as_mut().map(callback)
     }
 
-    fn dispatch_to_content(&mut self, window_id: WindowId, event: UiEvent) {
+    fn dispatch_to_content(
+        &mut self,
+        window_id: WindowId,
+        event: UiEvent,
+        prefetched_clipboard_text: Option<String>,
+    ) {
         let Some(webview_id) = self
             .windows
             .get(&window_id)
@@ -1138,7 +1143,11 @@ impl WindowedApp {
             return;
         };
         self.with_provider(|provider| {
-            if let Err(error) = provider.send_ui_event(webview_id, event) {
+            if let Err(error) = provider.send_ui_event_with_prefetched_clipboard_text(
+                webview_id,
+                event,
+                prefetched_clipboard_text,
+            ) {
                 error!("content event error: {error}");
             }
         });
@@ -1307,7 +1316,7 @@ impl ApplicationHandler<FormalWebUserEvent> for WindowedApp {
                 if Self::is_chrome_focused(&self.windows, window_id) {
                     Self::chrome_event(self, window_id, ui_event);
                 } else {
-                    self.dispatch_to_content(window_id, ui_event);
+                    self.dispatch_to_content(window_id, ui_event, None);
                 }
             }
             WindowEvent::ModifiersChanged(modifiers) => {
@@ -1325,12 +1334,19 @@ impl ApplicationHandler<FormalWebUserEvent> for WindowedApp {
                     .unwrap_or_default();
                 let key = winit_key_event_to_blitz(&key_event, modifiers);
                 let apple_standard_keybinding = apple_standard_keybinding_for_key_down(&key);
+                let chrome_focused = Self::is_chrome_focused(&self.windows, window_id);
+                // The chrome reads the system clipboard through its own shell
+                // provider, so only content needs the prefetch.
+                let prefetched_clipboard_text = if chrome_focused {
+                    None
+                } else {
+                    paste_shortcut_clipboard_text(&key)
+                };
                 let ui_event = if key_event.state.is_pressed() {
                     UiEvent::KeyDown(key)
                 } else {
                     UiEvent::KeyUp(key)
                 };
-                let chrome_focused = Self::is_chrome_focused(&self.windows, window_id);
                 if chrome_focused {
                     if let Some(command) = apple_standard_keybinding {
                         Self::chrome_event(
@@ -1342,7 +1358,7 @@ impl ApplicationHandler<FormalWebUserEvent> for WindowedApp {
                         Self::chrome_event(self, window_id, ui_event);
                     }
                 } else {
-                    self.dispatch_to_content(window_id, ui_event);
+                    self.dispatch_to_content(window_id, ui_event, prefetched_clipboard_text);
                 }
             }
             WindowEvent::CursorMoved { position, .. } => {
@@ -1381,6 +1397,7 @@ impl ApplicationHandler<FormalWebUserEvent> for WindowedApp {
                             mods: modifiers,
                             details: PointerDetails::default(),
                         }),
+                        None,
                     );
                 }
             }
@@ -1766,11 +1783,10 @@ impl ApplicationHandler<FormalWebUserEvent> for WindowedApp {
             FormalWebUserEvent::Automation(command) => {
                 self.try_run_automation(|automation, app| automation.handle_command(app, command));
             }
-            FormalWebUserEvent::ClipboardRead { reply } => {
-                let _ = reply.send(read_clipboard_text());
-            }
-            FormalWebUserEvent::ClipboardWrite { text, reply } => {
-                let _ = reply.send(write_clipboard_text(text));
+            FormalWebUserEvent::ClipboardWrite { text } => {
+                if let Err(error) = write_clipboard_text(text) {
+                    error!("clipboard write failed: {error}");
+                }
             }
             FormalWebUserEvent::NewWebContentLayers {
                 webview_id,

@@ -102,6 +102,13 @@ pending handler first, so the response side does not know which was taken.
 Filtering here rather than in net is what keeps net a place where networking
 happens rather than a fetch coordinator; see `user_agent/README.md`.
 
+## Clipboard
+
+The content process never accesses the system clipboard: a paste is answered
+from text the embedder prefetched onto the same UI event, and a copy is
+forwarded to the embedder. Do not add a platform clipboard dependency back to
+this crate.
+
 ## Known issues
 
 - **Document lifecycle commands run outside the task queue.**

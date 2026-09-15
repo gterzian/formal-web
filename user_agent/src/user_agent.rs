@@ -220,8 +220,7 @@ pub trait Embedder: Send + Sync {
     fn request_redraw(&self, webview_id: WebviewId);
     fn viewport_scale_factor(&self) -> f32;
     fn window_viewport_snapshot(&self) -> Option<(u32, u32, f32, ColorScheme)>;
-    fn clipboard_get_text(&self) -> Result<String, String>;
-    fn clipboard_set_text(&self, text: String) -> Result<(), String>;
+    fn clipboard_set_text(&self, text: String);
     /// A fetch whose URL scheme the embedder named in
     /// [`EmbedderConfig::embedder_schemes`]. Nothing is returned here: the
     /// embedder answers whenever it has a response, from any thread, by
@@ -1046,6 +1045,10 @@ pub enum UserAgentCommand {
     SendUiEvent {
         webview_id: WebviewId,
         event_message: Vec<u8>,
+        /// Clipboard text the embedder read before forwarding a paste
+        /// shortcut, carried with the event so content never reads the
+        /// system clipboard itself.
+        prefetched_clipboard_text: Option<String>,
     },
     /// The embedder's answer to an embedder-scheme fetch it was handed.
     CompleteEmbedderSchemeFetch {
@@ -1202,11 +1205,13 @@ impl UserAgent {
         &self,
         webview_id: WebviewId,
         event_message: Vec<u8>,
+        prefetched_clipboard_text: Option<String>,
     ) -> Result<(), String> {
         self.command_sender
             .send(UserAgentCommand::SendUiEvent {
                 webview_id,
                 event_message,
+                prefetched_clipboard_text,
             })
             .map_err(|error| format!("failed to send ui event: {error}"))
     }
@@ -1772,14 +1777,15 @@ impl UserAgentWorker {
             UserAgentCommand::SendUiEvent {
                 webview_id,
                 event_message,
+                prefetched_clipboard_text,
             } => {
-                self.handle_send_ui_event(webview_id, event_message);
+                self.handle_send_ui_event(webview_id, event_message, prefetched_clipboard_text);
             }
             UserAgentCommand::DispatchEventFor {
                 traversable_id,
                 event,
             } => {
-                self.handle_dispatch_event_for(traversable_id, event);
+                self.handle_dispatch_event_for(traversable_id, event, None);
             }
             UserAgentCommand::RenderingOpportunityFor { navigable_id } => {
                 self.note_rendering_opportunity(navigable_id);
@@ -1891,9 +1897,7 @@ impl UserAgentWorker {
                 ipc_messages::content::ClipboardWriteRequested { text },
             ) => {
                 // Fire-and-forget: write to system clipboard, no reply expected.
-                if let Err(error) = self.host.clipboard_set_text(text) {
-                    error!("clipboard write failed: {error}");
-                }
+                self.host.clipboard_set_text(text);
             }
             ContentEvent::EmbedderSchemeFetchRequested(EmbedderSchemeFetchRequested {
                 navigable_id,
@@ -4524,7 +4528,12 @@ impl UserAgentWorker {
 
     /// queuing DOM event dispatch on the traversable's owning
     /// <https://html.spec.whatwg.org/multipage/#event-loop>.
-    fn handle_send_ui_event(&mut self, webview_id: WebviewId, event_message: Vec<u8>) {
+    fn handle_send_ui_event(
+        &mut self,
+        webview_id: WebviewId,
+        event_message: Vec<u8>,
+        prefetched_clipboard_text: Option<String>,
+    ) {
         if input_debug_enabled() {
             trace!(
                 "[input-debug][user-agent] send_ui_event webview={:?} bytes={}",
@@ -4557,7 +4566,11 @@ impl UserAgentWorker {
         );
 
         if let Ok(routed_message) = crate::ui_event::serialize_ui_event(&routed_event) {
-            self.handle_dispatch_event_for(target_webview_id.0, routed_message);
+            self.handle_dispatch_event_for(
+                target_webview_id.0,
+                routed_message,
+                prefetched_clipboard_text,
+            );
         }
 
         // Note a rendering opportunity for every frame involved in this
@@ -4673,7 +4686,12 @@ impl UserAgentWorker {
         (root_webview_id, event, composed_frame_ids)
     }
 
-    fn handle_dispatch_event_for(&mut self, traversable_id: NavigableId, event: Vec<u8>) {
+    fn handle_dispatch_event_for(
+        &mut self,
+        traversable_id: NavigableId,
+        event: Vec<u8>,
+        prefetched_clipboard_text: Option<String>,
+    ) {
         let Some(handle) = self.state.traversable_handles.get(&traversable_id).copied() else {
             return;
         };
@@ -4702,7 +4720,7 @@ impl UserAgentWorker {
             events: vec![DispatchEventEntry {
                 document_id: *document_id,
                 event,
-                prefetched_clipboard_text: None,
+                prefetched_clipboard_text,
             }],
         };
         if let Err(error) = agent.event_loop.command_sender.send(command) {
