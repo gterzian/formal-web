@@ -227,6 +227,7 @@ impl ShellProvider for ContentShellProvider {
         {
             return Ok(text);
         }
+        error!("clipboard read requested but no prefetched clipboard text is available");
         Ok(String::new())
     }
 
