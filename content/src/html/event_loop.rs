@@ -58,6 +58,16 @@ pub(crate) enum Task {
         payload: SerializeWithTransferResult,
     },
 
+    /// The owner-side teardown of a dedicated worker whose agent has exited:
+    /// join its thread and discard the owner's channel record (terminate-a
+    /// worker step 4 and run-a-worker step 12.20).  Queued by the event that
+    /// receives the worker's closed report, after the message tasks the
+    /// worker posted before it closed, so those messages keep the channel
+    /// record they resolve their event target through (close a worker does
+    /// not empty the outside port's message queue).
+    /// <https://html.spec.whatwg.org/#terminate-a-worker>
+    FinalizeWorker { worker_id: WorkerId },
+
     /// The message task for one message on a port whose message queue is
     /// enabled.  Each queued message fires in its own task, so the event loop
     /// can interleave other tasks between messages.

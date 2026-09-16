@@ -3080,45 +3080,57 @@ impl ContentProcess {
                 self.fire_worker_error(document_id, worker_id)
             }
             WorkerEvent::Closed { worker_id } => {
-                // The worker's agent exited: join its thread (its handle was
-                // registered when the worker was spawned) and drop the owner
-                // end of its channel in the owner document's realm
-                // (terminate-a-worker step 4 and run-a-worker step 12.20).
-                let Some(mut handle) = self
-                    .workers
-                    .iter()
-                    .position(|handle| handle.worker_id == worker_id)
-                    .map(|index| self.workers.remove(index))
-                else {
-                    return Ok(());
-                };
-                if let Some(join_handle) = handle.join_handle.take()
-                    && let Err(panic) = join_handle.join()
-                {
-                    error!("worker {worker_id} thread panicked: {panic:?}");
-                }
-                // The owner document may already be gone (destroyed); its
-                // channel state dropped with the realm, so there is nothing
-                // to clean up.
-                if let WorkerOwner::Document(document_id) = handle.owner
-                    && self.documents.contains_key(&document_id)
-                {
-                    if let Some(document) = self.documents.get_mut(&document_id) {
-                        with_global_scope(document.settings.ec(), |global_scope, ec| {
-                            global_scope.discard_owned_worker(worker_id, ec);
-                            Ok(())
-                        })
-                        .map_err(|error| {
-                            format!(
-                                "failed to discard closed worker {worker_id}: {}",
-                                error.display()
-                            )
-                        })?;
-                    }
-                }
+                // The worker's agent exited.  Defer the owner-side teardown to
+                // a finalize task: the messages the worker posted before it
+                // closed are already queued as message tasks, and close a
+                // worker does not empty the outside port's message queue, so
+                // the teardown must run after them or it would discard the
+                // channel record those tasks resolve their event target
+                // through.
+                self.task_queue
+                    .queue_a_task(Task::FinalizeWorker { worker_id });
                 Ok(())
             }
         }
+    }
+
+    /// The deferred owner-side teardown of a worker whose agent exited: join
+    /// its thread (its handle was registered when the worker was spawned) and
+    /// drop the owner end of its channel in the owner document's realm
+    /// (terminate-a-worker step 4 and run-a-worker step 12.20).  Runs as the
+    /// [`Task::FinalizeWorker`] task queued by the worker's closed report,
+    /// after the message tasks the worker posted before it closed.
+    fn finalize_worker(&mut self, worker_id: WorkerId) -> Result<(), String> {
+        let Some(mut handle) = self
+            .workers
+            .iter()
+            .position(|handle| handle.worker_id == worker_id)
+            .map(|index| self.workers.remove(index))
+        else {
+            return Ok(());
+        };
+        if let Some(join_handle) = handle.join_handle.take()
+            && let Err(panic) = join_handle.join()
+        {
+            error!("worker {worker_id} thread panicked: {panic:?}");
+        }
+        // The owner document may already be gone (destroyed); its channel
+        // state dropped with the realm, so there is nothing to clean up.
+        if let WorkerOwner::Document(document_id) = handle.owner
+            && let Some(document) = self.documents.get_mut(&document_id)
+        {
+            with_global_scope(document.settings.ec(), |global_scope, ec| {
+                global_scope.discard_owned_worker(worker_id, ec);
+                Ok(())
+            })
+            .map_err(|error| {
+                format!(
+                    "failed to discard closed worker {worker_id}: {}",
+                    error.display()
+                )
+            })?;
+        }
+        Ok(())
     }
 
     /// The owner document of a worker this window agent owns, if the worker
@@ -3516,6 +3528,7 @@ impl ContentProcess {
                 // object in the owner document's realm.
                 self.handle_worker_outbound_message(worker_id, payload)
             }
+            Task::FinalizeWorker { worker_id } => self.finalize_worker(worker_id),
             Task::PortRouting { port, kind } => self.handle_port_task(port, kind),
             Task::PostMessage(request) => self.dispatch_post_message(request),
             Task::UpdateTheRendering {

@@ -129,9 +129,11 @@ pub(crate) enum WorkerEvent {
     /// Worker object in the owner realm.
     /// <https://html.spec.whatwg.org/#run-a-worker>
     FireError { worker_id: WorkerId },
-    /// The worker's agent is exiting: its owner event loop joins its thread
-    /// and drops the owner end of its channel in the owner realm
-    /// (run-a-worker steps 12.19-12.21 and terminate-a-worker step 4).
+    /// The worker's agent is exiting: its owner event loop queues the
+    /// finalize task that joins its thread and drops the owner end of its
+    /// channel in the owner realm (run-a-worker steps 12.19-12.21 and
+    /// terminate-a-worker step 4), after the message tasks the worker posted
+    /// before it closed.
     Closed { worker_id: WorkerId },
 }
 
@@ -466,10 +468,6 @@ impl DedicatedWorkerAgentState {
         }
     }
 
-    /// Report the worker's teardown to its owner event loop (the owner joins
-    /// the agent's thread and drops the owner end of its channel).  Runs as
-    /// the thread's last act, also on failure or panic.
-
     /// <https://html.spec.whatwg.org/#fetch-a-classic-worker-script>
     fn start_script_fetch(&mut self, script_url: String) -> Result<(), String> {
         // Note: Partial implementation of fetch a classic worker script (the
@@ -788,6 +786,16 @@ impl DedicatedWorkerAgentState {
                 }
                 self.deliver_worker_outbound_message(worker_id, payload)
             }
+            Task::FinalizeWorker { worker_id } => {
+                // The owner-side teardown of a nested worker whose agent has
+                // exited; the closing flag is checked here, at the task's
+                // start, as for the other task arms (this agent's own exit
+                // terminates and joins its remaining nested workers).
+                if self.closing_flag() {
+                    return Ok(());
+                }
+                self.finalize_nested_worker(worker_id)
+            }
             Task::PortRouting { port, kind } => {
                 // A user-agent port task forwarded from the content process
                 // main thread; the closing flag is checked here, at the
@@ -990,30 +998,45 @@ impl DedicatedWorkerAgentState {
                 })
             }
             WorkerEvent::Closed { worker_id } => {
-                // A nested worker this realm owns closed: join its thread and
-                // drop the owner end of its channel in this realm
-                // (terminate-a-worker step 4 and run-a-worker step 12.20).
-                let Some(mut handle) = self.nested_workers.remove(&worker_id) else {
-                    return Ok(());
-                };
-                if let Some(join_handle) = handle.join_handle.take()
-                    && let Err(panic) = join_handle.join()
-                {
-                    error!("worker {} thread panicked: {panic:?}", self.worker_id);
-                }
-                with_global_scope(self.settings.ec(), |global_scope, ec| {
-                    global_scope.discard_owned_worker(worker_id, ec);
-                    Ok(())
-                })
-                .map_err(|error| {
-                    format!(
-                        "failed to discard closed nested worker {worker_id}: {}",
-                        error.display()
-                    )
-                })?;
+                // A nested worker this realm owns closed.  Defer the
+                // owner-side teardown to a finalize task: the messages the
+                // worker posted before it closed are already queued as message
+                // tasks, and close a worker does not empty the outside port's
+                // message queue, so the teardown must run after them or it
+                // would discard the channel record those tasks resolve their
+                // event target through.
+                self.task_queue
+                    .queue_a_task(Task::FinalizeWorker { worker_id });
                 Ok(())
             }
         }
+    }
+
+    /// The deferred owner-side teardown of a nested worker whose agent exited:
+    /// join its thread and drop the owner end of its channel in this realm
+    /// (terminate-a-worker step 4 and run-a-worker step 12.20).  Runs as the
+    /// [`Task::FinalizeWorker`] task queued by the worker's closed report,
+    /// after the message tasks the worker posted before it closed.
+    fn finalize_nested_worker(&mut self, worker_id: WorkerId) -> Result<(), String> {
+        let Some(mut handle) = self.nested_workers.remove(&worker_id) else {
+            return Ok(());
+        };
+        if let Some(join_handle) = handle.join_handle.take()
+            && let Err(panic) = join_handle.join()
+        {
+            error!("worker {} thread panicked: {panic:?}", self.worker_id);
+        }
+        with_global_scope(self.settings.ec(), |global_scope, ec| {
+            global_scope.discard_owned_worker(worker_id, ec);
+            Ok(())
+        })
+        .map_err(|error| {
+            format!(
+                "failed to discard closed nested worker {worker_id}: {}",
+                error.display()
+            )
+        })?;
+        Ok(())
     }
 
     /// Handle a command the user agent sent this dedicated worker agent
