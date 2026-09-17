@@ -681,33 +681,27 @@ mod boa_gc_impl {
 #[cfg(feature = "jsc")]
 mod jsc_gc_impl {
     use super::*;
-    use crate::jsc::JscTypes;
+    use crate::jsc::{JscEngine, JscManagedValue, JscTypes};
 
     impl JsTypesGcExt for JscTypes {
-        /// A (raw_object_ptr, context) pair so that `upgrade_reflector` can
-        /// reconstruct a fully-valid `JscObject` with a non-null context.
-        type Reflector = (*mut std::ffi::c_void, *mut crate::jsc_sys::JSContextRef);
-        type Context = crate::jsc::JscEngine;
+        /// A weak `JSManagedValue` reference to the wrapper.  Unlike a raw
+        /// pointer, it reports `None` once the wrapper has been collected
+        /// instead of dangling.
+        type Reflector = JscManagedValue;
+        type Context = JscEngine;
 
-        fn create_reflector(_context: &mut Self::Context, obj: &Self::JsObject) -> Self::Reflector {
-            (obj.as_raw() as *mut std::ffi::c_void, obj.ctx())
+        fn create_reflector(context: &mut Self::Context, obj: &Self::JsObject) -> Self::Reflector {
+            let global = context.global_context();
+            // SAFETY: the engine's context is live and owns the wrapper.
+            unsafe { JscManagedValue::new_weak(global, &obj.as_value()) }
+                .unwrap_or_else(JscManagedValue::empty)
         }
 
         fn upgrade_reflector(
             _context: &mut Self::Context,
             reflector: &Self::Reflector,
         ) -> Option<Self::JsObject> {
-            let (raw_ptr, ctx) = *reflector;
-            if raw_ptr.is_null() || ctx.is_null() {
-                None
-            } else {
-                Some(unsafe {
-                    crate::jsc::JscObject::from_raw(
-                        raw_ptr as *mut crate::jsc_sys::JSObjectRef,
-                        ctx,
-                    )
-                })
-            }
+            reflector.get_object()
         }
     }
 

@@ -16,6 +16,7 @@ use std::collections::HashMap;
 use std::ffi::c_char;
 use std::sync::LazyLock;
 
+use super::gc::{JscGcOwner, JscManagedValue};
 use super::types::*;
 
 // ── Current engine (thread-local) ────────────────────────────────────
@@ -1457,9 +1458,14 @@ pub struct JscEngine {
     host_data: HashMap<std::any::TypeId, Box<dyn std::any::Any>>,
     #[allow(dead_code)]
     next_root_id: u64,
-    /// Tracks objects protected via `JSValueProtect` so they can be
-    /// unprotected when the engine is dropped.
-    protected_objects: Vec<*mut JSValueRef>,
+    /// Strong `JSManagedValue` roots keeping platform wrappers alive for the
+    /// realm's lifetime; the underlying ObjC references are released when the
+    /// engine drops (see the `Drop` impl).
+    protected_objects: Vec<JscManagedValue>,
+    /// Owner object for the managed values this realm roots.  Always `Some`
+    /// after construction; taken in `Drop` so the owner is released while the
+    /// JS context is still alive.
+    gc_owner: Option<JscGcOwner>,
     queued_jobs: Vec<Box<dyn FnOnce(&mut JscEngine)>>,
     /// Cached `Function.prototype.call` for correct this-binding when
     /// calling JS functions with non-object `this` values.
@@ -1479,21 +1485,20 @@ impl Drop for JscEngine {
         // ensure unroot actions run while the JSGlobalContextRef is still valid.
         self.host_data.clear();
         self.queued_jobs.clear();
-        let ctx_ptr = self.context.as_context_ref();
-        // Unprotect any objects protected via create_object_with_any.
-        for protected in self.protected_objects.drain(..) {
-            if !protected.is_null() {
-                unsafe {
-                    JSValueUnprotect(ctx_ptr, protected);
-                }
-            }
-        }
+        // Release the managed roots and the owner while the context is still
+        // alive: releasing an ObjC `JSManagedValue` touches its JS context.
+        self.protected_objects.clear();
+        self.gc_owner = None;
     }
 }
 
 impl JscEngine {
     pub fn new() -> Self {
         let context = JscContext::new();
+        // SAFETY: `context.raw` is a live JSGlobalContextRef owned by `context`.
+        let gc_owner = Some(
+            unsafe { JscGcOwner::new(context.raw) }.expect("failed to create the JSC GC owner"),
+        );
         let realm_global = context.global_object();
         Self {
             context,
@@ -1501,6 +1506,7 @@ impl JscEngine {
             host_data: HashMap::new(),
             next_root_id: 0,
             protected_objects: Vec::new(),
+            gc_owner,
             queued_jobs: Vec::new(),
             fn_call: None,
             intrinsics: Intrinsics::default(),
@@ -1527,12 +1533,17 @@ impl JscEngine {
             raw: raw_obj,
             ctx: ctx_ptr,
         };
+        let gc_owner = Some(
+            unsafe { JscGcOwner::new(self.context.raw) }
+                .expect("failed to create the JSC GC owner"),
+        );
         Self {
             context: self.context.clone(),
             realm_global,
             host_data: HashMap::new(),
             next_root_id: 0,
             protected_objects: Vec::new(),
+            gc_owner,
             queued_jobs: Vec::new(),
             fn_call: None,
             intrinsics: Intrinsics::default(),
@@ -1549,12 +1560,16 @@ impl JscEngine {
             raw: raw_obj,
             ctx: ctx_ptr,
         };
+        let gc_owner = Some(
+            unsafe { JscGcOwner::new(context.raw) }.expect("failed to create the JSC GC owner"),
+        );
         Self {
             context,
             realm_global,
             host_data: HashMap::new(),
             next_root_id: 0,
             protected_objects: Vec::new(),
+            gc_owner,
             queued_jobs: Vec::new(),
             fn_call: None,
             intrinsics: Intrinsics::default(),
@@ -1563,9 +1578,25 @@ impl JscEngine {
     pub fn context(&self) -> &JscContext {
         &self.context
     }
+
+    /// The realm's `JSGlobalContextRef`.
+    pub fn global_context(&self) -> *mut crate::jsc_sys::JSGlobalContextRef {
+        self.context.raw
+    }
     /// The raw `JSContextRef` pointer used for constructing `JscValue` / `JscObject`.
     fn ctx_ptr(&self) -> *mut JSContextRef {
         self.context.as_context_ref()
+    }
+
+    /// Wrap `value` in a strong managed root owned by this realm.  The
+    /// returned value keeps the JS value alive until it is dropped; the owner
+    /// is bridged into the JS runtime so JavaScriptCore tracks the reference.
+    fn managed_root(&self, value: &JscValue) -> JscManagedValue {
+        let owner = self.gc_owner.as_ref().expect("JSC engine has no GC owner");
+        // SAFETY: `self.context` is a live JSGlobalContextRef for the engine's
+        // lifetime, and `value` belongs to it.
+        unsafe { JscManagedValue::new(self.context.raw, value, Some(owner)) }
+            .expect("failed to create a JSC managed value root")
     }
 
     #[allow(dead_code)]
@@ -2893,23 +2924,21 @@ impl ExecutionContext<JscTypes> for JscEngine {
         object: JscObject,
         prototype: Option<JscObject>,
     ) -> Completion<bool, JscTypes> {
-        match prototype {
-            Some(proto) => unsafe {
-                JSObjectSetPrototype(
-                    self.context.as_context_ref(),
-                    object.raw,
-                    proto.as_value_ref(),
-                )
-            },
-            None => unsafe {
-                JSObjectSetPrototype(
-                    self.context.as_context_ref(),
-                    object.raw,
-                    JscNull::get(&self.context).raw,
-                )
-            },
+        let ctx = self.context.as_context_ref();
+        let requested = match &prototype {
+            Some(proto) => proto.as_value_ref(),
+            None => JscNull::get(&self.context).raw,
+        };
+        unsafe {
+            JSObjectSetPrototype(ctx, object.raw, requested);
         }
-        Ok(true)
+        // `JSObjectSetPrototype` returns void and silently ignores the
+        // assignment on an object whose [[Prototype]] is immutable (the global
+        // object), so verify that it took effect.  A `false` result tells the
+        // caller to fall back to copying the interface's members onto the
+        // object.
+        let actual = unsafe { JSObjectGetPrototype(ctx, object.raw) };
+        Ok(unsafe { JSValueIsStrictEqual(ctx, actual, requested) })
     }
     fn get_method(
         &mut self,
@@ -4711,14 +4740,10 @@ impl ExecutionContext<JscTypes> for JscEngine {
         map.insert(obj_ptr, data);
         self.store_host_any(map_type_id, Box::new(map));
 
-        // Protect the object with JSValueProtect so JSC's GC does not
-        // collect it while Rust still holds the pointer (via host_data).
-        // Cleanup happens in JscEngine::drop.
-        let ctx_ptr = self.ctx_ptr();
-        unsafe {
-            JSValueProtect(ctx_ptr, obj.as_value_ref());
-        }
-        self.protected_objects.push(obj.as_value_ref());
+        // Keep the wrapper alive for the realm's lifetime through a strong
+        // `JSManagedValue`; the ObjC reference is released in JscEngine::drop.
+        let root = self.managed_root(&obj.as_value());
+        self.protected_objects.push(root);
 
         obj
     }
@@ -5029,33 +5054,24 @@ impl ExecutionContext<JscTypes> for JscEngine {
     }
 
     fn create_root(&mut self, value: &JscValue) -> crate::gc::GcRootHandle<JscTypes> {
-        // Use JSValueProtect to keep the value alive in JSC's GC graph.
-        // JSValueProtect/JSValueUnprotect maintain an internal reference
-        // count so the value survives GC cycles until unprotected.
-        let ctx_ptr = self.ctx_ptr();
-        let value_raw = value.raw;
-        unsafe {
-            JSValueProtect(ctx_ptr, value_raw);
-        }
+        // A strong `JSManagedValue` owned by the realm keeps the value alive
+        // in JSC's GC graph; dropping the handle releases it.
+        let managed = self.managed_root(value);
         crate::gc::GcRootHandle::new(
             *value,
-            Some(Box::new(move |_val| unsafe {
-                JSValueUnprotect(ctx_ptr, value_raw);
+            Some(Box::new(move |_val| {
+                drop(managed);
             })),
         )
     }
 
     fn protect_value(&mut self, value: &JscValue) -> crate::gc::GcRootHandle<JscTypes> {
-        // Same as create_root: JSValueProtect + unprotect on drop.
-        let ctx_ptr = self.ctx_ptr();
-        let value_raw = value.raw;
-        unsafe {
-            JSValueProtect(ctx_ptr, value_raw);
-        }
+        // Same as create_root: a realm-owned managed value released on drop.
+        let managed = self.managed_root(value);
         crate::gc::GcRootHandle::new(
             *value,
-            Some(Box::new(move |_val| unsafe {
-                JSValueUnprotect(ctx_ptr, value_raw);
+            Some(Box::new(move |_val| {
+                drop(managed);
             })),
         )
     }
@@ -5475,9 +5491,13 @@ mod tests {
         let mut engine = JscEngine::new();
         let obj = engine.create_plain_object(None);
         let proto = engine.create_plain_object(None);
-        engine
+        let applied = engine
             .set_prototype(obj.clone(), Some(proto.clone()))
             .unwrap();
+        assert!(
+            applied,
+            "setting a plain object's prototype must take effect"
+        );
         let retrieved = engine
             .get_prototype_of(obj)
             .unwrap()
@@ -5485,6 +5505,24 @@ mod tests {
         assert_eq!(
             retrieved.raw, proto.raw,
             "get_prototype_of should return the prototype set by set_prototype"
+        );
+    }
+
+    /// The global object's [[Prototype]] is immutable through the C API, so
+    /// `set_prototype` must report that the assignment did not take effect;
+    /// `build_context` uses that signal to copy interface members onto the
+    /// global object.
+    #[test]
+    fn global_object_prototype_assignment_is_reported_as_immutable() {
+        let mut engine = JscEngine::new();
+        let global = engine.global_object();
+        let proto = engine.create_plain_object(None);
+        let applied = engine
+            .set_prototype(global, Some(proto))
+            .expect("set_prototype must not fail on the global object");
+        assert!(
+            !applied,
+            "the global object's immutable [[Prototype]] must be reported"
         );
     }
 
@@ -5512,5 +5550,77 @@ mod tests {
         assert!((n - 42.0).abs() < 0.001);
 
         drop(root);
+    }
+
+    /// A weak managed value follows the reachability of the JS object: as
+    /// long as the object is reachable from the global object it stays alive
+    /// across a collection, and cloning the managed value keeps it usable.
+    #[test]
+    fn weak_managed_value_tracks_reachable_object() {
+        let mut engine = JscEngine::new();
+        let realm = engine.current_realm();
+        JsEngine::evaluate_script(&mut engine, "globalThis.__fw_test_obj = {}", &realm).unwrap();
+        let object_value =
+            JsEngine::evaluate_script(&mut engine, "globalThis.__fw_test_obj", &realm).unwrap();
+        // SAFETY: the engine's context is live and owns the value.
+        let managed = unsafe { JscManagedValue::new_weak(engine.global_context(), &object_value) }
+            .expect("weak managed value creation failed");
+        assert!(managed.is_alive(), "reachable object must be alive");
+        let clone = managed.clone();
+        assert!(clone.is_alive());
+
+        for i in 0..2000 {
+            let throwaway = engine.create_empty_array();
+            let num_val = engine.value_from_number(i as f64);
+            let _ = engine.array_push(&throwaway, num_val);
+        }
+        engine.gc();
+
+        assert!(
+            managed.is_alive(),
+            "an object reachable from the global must survive a collection"
+        );
+        drop(clone);
+        assert!(
+            managed.is_alive(),
+            "releasing a clone must not release the value"
+        );
+        let object = managed
+            .get_object()
+            .expect("managed object must be readable");
+        assert!(!object.raw.is_null());
+    }
+
+    /// A managed value registered against a bridged owner is a strong root:
+    /// dropping the owner-independent JS reference does not collect it, and
+    /// the value stays callable after GC pressure.
+    #[test]
+    fn managed_owner_root_survives_gc() {
+        let mut engine = JscEngine::new();
+        let realm = engine.current_realm();
+        let function_value =
+            JsEngine::evaluate_script(&mut engine, "(function() { return 7; })", &realm).unwrap();
+        // SAFETY: the engine's context is live and owns the value.
+        let owner =
+            unsafe { JscGcOwner::new(engine.global_context()) }.expect("owner creation failed");
+        // SAFETY: the engine's context is live and owns the value.
+        let managed =
+            unsafe { JscManagedValue::new(engine.global_context(), &function_value, Some(&owner)) }
+                .expect("owned managed value creation failed");
+
+        for i in 0..2000 {
+            let throwaway = engine.create_empty_array();
+            let num_val = engine.value_from_number(i as f64);
+            let _ = engine.array_push(&throwaway, num_val);
+        }
+        engine.gc();
+
+        let function_object = managed
+            .get_object()
+            .expect("owned managed function must survive GC");
+        let undef = engine.value_undefined();
+        let result = EcmascriptHost::call(&mut engine, &function_object, &undef, &[]).unwrap();
+        let n = engine.to_number(result).unwrap();
+        assert!((n - 7.0).abs() < 0.001);
     }
 }

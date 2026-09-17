@@ -146,8 +146,8 @@ impl<T: JsTypes> crate::gc::Finalize for PromiseResolvers<T> {}
 
 impl<T: JsTypes> PromiseResolvers<T> {
     /// Create promise resolvers with GC protection.
-    /// On JSC, protects both resolve and reject via JSValueProtect.
-    /// On Boa, this is a no-op (GC traces via Trace derive).
+    /// Roots both resolve and reject through the engine's `create_root`.
+    /// On Boa, `create_root` is a no-op (GC traces via Trace derive).
     #[cfg_attr(feature = "boa", allow(unused_variables))]
     pub fn new(resolve: T::JsObject, reject: T::JsObject, ec: &mut dyn ExecutionContext<T>) -> Self
     where

@@ -621,7 +621,8 @@ pub trait ExecutionContext<T: JsTypes + JsTypesWithRealm>: EcmascriptHost<T> {
     ) -> Completion<crate::enums::PromiseState<T>, T>;
 
     /// Protect a value from garbage collection until the returned handle is dropped.
-    /// On JSC this calls `JSValueProtect`, on Boa it is a no-op.
+    /// On JSC this roots the value through a `JSManagedValue`; on Boa it is a
+    /// no-op (the GC traces through `#[derive(Trace)]` automatically).
     /// Use this when a JsValue needs to survive across GC cycles (e.g., captured
     /// in a closure for `enqueue_job_with_realm`).
     fn protect_value(&mut self, value: &T::JsValue) -> crate::gc::GcRootHandle<T> {
@@ -844,7 +845,7 @@ pub trait ExecutionContext<T: JsTypes + JsTypesWithRealm>: EcmascriptHost<T> {
     /// returned handle.  When the handle is dropped, the protection is released.
     ///
     /// Boa: no-op (the GC traces through `#[derive(Trace)]` automatically).
-    /// JSC: calls `JSValueProtect` / `JSValueUnprotect`.
+    /// JSC: roots the value through a `JSManagedValue` owned by the realm.
     fn create_root(&mut self, value: &T::JsValue) -> crate::gc::GcRootHandle<T> {
         crate::gc::GcRootHandle::new(value.clone(), None)
     }
