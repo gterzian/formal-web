@@ -1,30 +1,46 @@
 //! JavaScriptCore garbage-collection integration built on `JSManagedValue`.
 //!
-//! The JSC backend holds JS values in Rust structures (`GcCell` contents,
-//! platform-object fields, reflectors).  A bare `JSValueRef` in Rust is not a
-//! GC root, so JSC cannot see it.  This module wraps such values in an ObjC
-//! `JSManagedValue` (through the `jsc_gc_wrapper` C shim), which is the public
-//! API for holding a JS value from outside the JS heap:
+//! Platform objects are represented to JavaScriptCore by an exported ObjC
+//! holder (see `src/jsc_gc_wrapper.m`).  The holder owns the Rust platform
+//! data and is the owner for every managed value the platform object holds,
+//! so a managed reference lives exactly as long as the object (or the realm)
+//! that owns it.  This module wraps the shim for Rust:
 //!
-//! - [`JscGcOwner`] is a per-realm owner object bridged into the JS runtime.
-//!   Managed values registered against it are retained while the owner lives.
-//! - [`JscManagedValue`] wraps one JS value.  Created with an owner it is a
-//!   strong, GC-visible root (the public-API replacement for the C API
-//!   protect set); created without one it is a weak reference that reports
+//! - [`JscGcContext`] is the cached ObjC `JSContext` for an engine.
+//! - [`JscGcOwner`] is a realm-lifetime owner used for the handful of roots
+//!   the realm itself owns (Window, Document).
+//! - [`JscManagedValue`] wraps one JS value.  With an owner it is retained
+//!   while the owner is reachable from JS (the public-API replacement for the
+//!   C API protect set); without one it is a weak reference that reports
 //!   `None` once the value is collected.
 //!
 //! Both types release their ObjC reference on drop, so no separate protect
 //! set has to be balanced by hand.
 
+use std::cell::RefCell;
+use std::collections::HashMap;
+use std::os::raw::c_void;
 use std::rc::Rc;
 
-use crate::jsc_sys::{JSContextRef, JSGlobalContextRef, JSValueRef};
+use crate::jsc_sys::{JSContextRef, JSGlobalContextRef, JSObjectRef, JSValueRef};
 
 use super::types::{JscObject, JscValue};
+
+/// Opaque `FwJscContext` handle from the Objective-C shim.
+#[repr(C)]
+pub struct FwJscContextOpaque {
+    _private: [u8; 0],
+}
 
 /// Opaque `FwJscGcOwner` handle from the Objective-C shim.
 #[repr(C)]
 pub struct FwJscGcOwnerOpaque {
+    _private: [u8; 0],
+}
+
+/// Opaque `FwJscPlatformObject` handle from the Objective-C shim.
+#[repr(C)]
+pub struct FwJscPlatformObjectOpaque {
     _private: [u8; 0],
 }
 
@@ -35,12 +51,23 @@ pub struct FwJscManagedValueOpaque {
 }
 
 unsafe extern "C" {
-    fn fw_jsc_gc_owner_create(global: *mut JSGlobalContextRef) -> *mut FwJscGcOwnerOpaque;
+    fn fw_jsc_context_create(global: *mut JSGlobalContextRef) -> *mut FwJscContextOpaque;
+    fn fw_jsc_context_release(context: *mut FwJscContextOpaque);
+    fn fw_jsc_gc_owner_create(context: *mut FwJscContextOpaque) -> *mut FwJscGcOwnerOpaque;
     fn fw_jsc_gc_owner_release(owner: *mut FwJscGcOwnerOpaque);
+    fn fw_jsc_platform_object_create(
+        context: *mut FwJscContextOpaque,
+        data: *mut c_void,
+    ) -> *mut FwJscPlatformObjectOpaque;
+    fn fw_jsc_platform_object_js_object(
+        context: *mut FwJscContextOpaque,
+        holder: *mut FwJscPlatformObjectOpaque,
+    ) -> *mut JSObjectRef;
+    fn fw_jsc_platform_object_release(holder: *mut FwJscPlatformObjectOpaque);
     fn fw_jsc_managed_value_create(
-        global: *mut JSGlobalContextRef,
+        context: *mut FwJscContextOpaque,
         value: *mut JSValueRef,
-        owner: *mut FwJscGcOwnerOpaque,
+        owner: *mut c_void,
     ) -> *mut FwJscManagedValueOpaque;
     fn fw_jsc_managed_value_retain(
         managed: *mut FwJscManagedValueOpaque,
@@ -49,19 +76,199 @@ unsafe extern "C" {
     fn fw_jsc_managed_value_get(managed: *mut FwJscManagedValueOpaque) -> *mut JSValueRef;
 }
 
-/// Per-realm owner object for conditionally-retained managed values.
-///
-/// The owner is bridged into the JS runtime so JavaScriptCore tracks the
-/// managed references registered against it.  Cloning shares the same owner;
-/// the underlying ObjC object is released when the last clone is dropped.
-#[derive(Clone)]
-pub struct JscGcOwner(Rc<JscGcOwnerInner>);
-
-struct JscGcOwnerInner {
-    raw: *mut FwJscGcOwnerOpaque,
+/// One exported platform object: the Rust data it owns and the ObjC holder
+/// that is its managed-reference owner.
+struct PlatformEntry {
+    data: *mut Box<dyn std::any::Any>,
+    holder: *mut FwJscPlatformObjectOpaque,
 }
 
-impl Drop for JscGcOwnerInner {
+thread_local! {
+    /// Lookup table from JS object pointer to platform entry.  The holder owns
+    /// the data and the holder's `dealloc` removes the entry, so this only
+    /// mirrors lifetime; it exists so `with_object_any` never has to round-trip
+    /// through the ObjC bridge (which would enumerate the object's properties).
+    static PLATFORM_OBJECTS: RefCell<HashMap<usize, PlatformEntry>> =
+        RefCell::new(HashMap::new());
+}
+
+/// Called by an exported platform-object holder when its JS object is
+/// collected; drops the Rust data the holder owns and the lookup entry.
+///
+/// # Safety
+///
+/// Called by the Objective-C shim only, with pointers produced by
+/// `create_platform_object` and not freed before.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn fw_jsc_platform_object_drop_data(
+    data: *mut c_void,
+    js_object: *mut c_void,
+) {
+    PLATFORM_OBJECTS.with(|objects| {
+        objects.borrow_mut().remove(&(js_object as usize));
+    });
+    if data.is_null() {
+        return;
+    }
+    // SAFETY: The pointer is a `Box<Box<dyn Any>>` leaked in
+    // `create_platform_object`; this is its only owner.
+    unsafe {
+        drop(Box::from_raw(data as *mut Box<dyn std::any::Any>));
+    }
+}
+
+/// The cached ObjC `JSContext` wrapper for an engine's global context.
+#[derive(Clone)]
+pub struct JscGcContext(Rc<JscGcContextInner>);
+
+struct JscGcContextInner {
+    raw: *mut FwJscContextOpaque,
+    global: *mut JSGlobalContextRef,
+}
+
+impl Drop for JscGcContextInner {
+    fn drop(&mut self) {
+        if !self.raw.is_null() {
+            // SAFETY: `raw` was returned by `fw_jsc_context_create` and is
+            // released exactly once, here.
+            unsafe { fw_jsc_context_release(self.raw) };
+        }
+    }
+}
+
+impl JscGcContext {
+    /// Create the cached context wrapper for `global`.
+    ///
+    /// # Safety
+    ///
+    /// `global` must be a live `JSGlobalContextRef` that outlives the context
+    /// wrapper and every object created through it.
+    pub unsafe fn new(global: *mut JSGlobalContextRef) -> Option<Self> {
+        if global.is_null() {
+            return None;
+        }
+        // SAFETY: The caller guarantees `global` is live.
+        let raw = unsafe { fw_jsc_context_create(global) };
+        if raw.is_null() {
+            return None;
+        }
+        Some(Self(Rc::new(JscGcContextInner { raw, global })))
+    }
+
+    fn as_raw(&self) -> *mut FwJscContextOpaque {
+        self.0.raw
+    }
+
+    /// The `JSGlobalContextRef` this context wraps.
+    pub fn global(&self) -> *mut JSGlobalContextRef {
+        self.0.global
+    }
+
+    /// Export a new platform object owning `data`.
+    ///
+    /// The returned object is the holder's bridge-created JS object; the
+    /// holder frees `data` when that JS object is collected.  Returns `None`
+    /// when the object cannot be created.
+    pub fn create_platform_object(
+        &self,
+        data: Box<dyn std::any::Any + 'static>,
+    ) -> Option<JscObject> {
+        // Keep the `Box<dyn Any>` behind one more `Box` so the shim can hold a
+        // thin pointer; `fw_jsc_platform_object_drop_data` reconstructs it.
+        let data_pointer = Box::into_raw(Box::new(data));
+        // SAFETY: `self` is a live context; the shim takes ownership of
+        // `data_pointer` on success.
+        let holder =
+            unsafe { fw_jsc_platform_object_create(self.as_raw(), data_pointer as *mut c_void) };
+        if holder.is_null() {
+            // Reclaim the data if the shim could not take it.
+            // SAFETY: The pointer has not been handed to the shim.
+            unsafe { drop(Box::from_raw(data_pointer)) };
+            return None;
+        }
+        // SAFETY: `holder` is a live handle.
+        let raw = unsafe { fw_jsc_platform_object_js_object(self.as_raw(), holder) };
+        if raw.is_null() {
+            // SAFETY: `holder` came from `fw_jsc_platform_object_create`.
+            unsafe { fw_jsc_platform_object_release(holder) };
+            return None;
+        }
+        PLATFORM_OBJECTS.with(|objects| {
+            objects.borrow_mut().insert(
+                raw as usize,
+                PlatformEntry {
+                    data: data_pointer,
+                    holder,
+                },
+            );
+        });
+        // The JS wrapper owns the holder from here on; drop the +1 handle.
+        // SAFETY: `holder` came from `fw_jsc_platform_object_create`.
+        unsafe { fw_jsc_platform_object_release(holder) };
+        Some(JscObject {
+            raw,
+            ctx: self.global() as *mut JSContextRef,
+        })
+    }
+
+    /// The Rust platform data owned by the holder of `object`, if `object` is
+    /// an exported platform object.
+    pub fn platform_object_data(&self, object: &JscObject) -> Option<&dyn std::any::Any> {
+        let data = PLATFORM_OBJECTS.with(|objects| {
+            objects
+                .borrow()
+                .get(&(object.raw as usize))
+                .map(|entry| entry.data)
+        });
+        let data = data?;
+        // SAFETY: The holder owns the data and keeps it alive while the JS
+        // object (and therefore this borrow) is alive.
+        Some(unsafe { &**data })
+    }
+
+    /// A raw pointer to the Rust platform data owned by the holder of
+    /// `object`, for callers that need exclusive access.
+    pub fn platform_object_data_raw(
+        &self,
+        object: &JscObject,
+    ) -> Option<*mut dyn std::any::Any> {
+        let data = PLATFORM_OBJECTS.with(|objects| {
+            objects
+                .borrow()
+                .get(&(object.raw as usize))
+                .map(|entry| entry.data)
+        });
+        let data = data?;
+        // SAFETY: The holder owns the data and keeps it alive while the JS
+        // object is alive.
+        Some(unsafe { &mut **data } as *mut dyn std::any::Any)
+    }
+
+    /// The holder of the exported platform object `object`, as a raw owner
+    /// pointer, or null.
+    fn platform_object_owner(&self, object: &JscObject) -> *mut c_void {
+        PLATFORM_OBJECTS.with(|objects| {
+            objects
+                .borrow()
+                .get(&(object.raw as usize))
+                .map(|entry| entry.holder as *mut c_void)
+                .unwrap_or(std::ptr::null_mut())
+        })
+    }
+}
+
+/// A realm-lifetime owner for managed values.
+///
+/// The owner is bridged into the JS runtime so JavaScriptCore tracks the
+/// managed references registered against it.  Used for the handful of
+/// references the realm itself roots (Window, Document); platform objects use
+/// their own holders as owners.
+pub struct JscGcOwner {
+    raw: *mut FwJscGcOwnerOpaque,
+    context: JscGcContext,
+}
+
+impl Drop for JscGcOwner {
     fn drop(&mut self) {
         if !self.raw.is_null() {
             // SAFETY: `raw` was returned by `fw_jsc_gc_owner_create` and is
@@ -72,40 +279,34 @@ impl Drop for JscGcOwnerInner {
 }
 
 impl JscGcOwner {
-    /// Create an owner for `global`.  Failure is fatal to the caller: an
-    /// engine cannot root values without an owner.
-    ///
-    /// # Safety
-    ///
-    /// `global` must be a live `JSGlobalContextRef` that outlives the owner
-    /// and every managed value registered against it.
-    pub unsafe fn new(global: *mut JSGlobalContextRef) -> Option<Self> {
-        if global.is_null() {
-            return None;
-        }
-        // SAFETY: The caller guarantees `global` is a live context; the shim
-        // returns a retained handle or NULL.
-        let raw = unsafe { fw_jsc_gc_owner_create(global) };
+    /// Create a realm owner.
+    pub fn new(context: JscGcContext) -> Option<Self> {
+        // SAFETY: The context is live for the owner's lifetime.
+        let raw = unsafe { fw_jsc_gc_owner_create(context.as_raw()) };
         if raw.is_null() {
             return None;
         }
-        Some(Self(Rc::new(JscGcOwnerInner { raw })))
+        Some(Self { raw, context })
     }
 
     fn as_raw(&self) -> *mut FwJscGcOwnerOpaque {
-        self.0.raw
+        self.raw
+    }
+
+    /// The context this owner belongs to.
+    pub fn context(&self) -> &JscGcContext {
+        &self.context
     }
 }
 
 /// A JS value held outside the JS heap.
 ///
-/// With an owner the value is retained while the managed value lives (a GC
-/// root); without one it is a weak reference.  Cloning retains the ObjC
-/// managed value; the last clone releases it.
+/// With an owner the value is retained while the owner is reachable from JS;
+/// without one it is a weak reference.  Cloning retains the ObjC managed
+/// value; the last clone releases it.
 pub struct JscManagedValue {
     raw: *mut FwJscManagedValueOpaque,
     ctx: *mut JSContextRef,
-    owner: Option<JscGcOwner>,
 }
 
 impl Clone for JscManagedValue {
@@ -118,52 +319,41 @@ impl Clone for JscManagedValue {
         Self {
             raw,
             ctx: self.ctx,
-            owner: self.owner.clone(),
         }
     }
 }
 
 impl JscManagedValue {
-    /// Wrap `value`.  `owner` controls the retention semantics: `Some` makes
-    /// the value a strong root while the owner lives, `None` makes it weak.
-    ///
-    /// # Safety
-    ///
-    /// `global` must be a live `JSGlobalContextRef` and `value` must be a
-    /// value belonging to it.  Both must outlive the returned managed value.
-    pub unsafe fn new(
-        global: *mut JSGlobalContextRef,
-        value: &JscValue,
-        owner: Option<&JscGcOwner>,
-    ) -> Option<Self> {
-        if global.is_null() {
-            return None;
-        }
-        let owner_ptr = owner
-            .map(JscGcOwner::as_raw)
-            .unwrap_or(std::ptr::null_mut());
-        // SAFETY: The caller guarantees `global` and `value` are live; the
-        // shim returns a retained handle or NULL.
-        let raw = unsafe { fw_jsc_managed_value_create(global, value.raw, owner_ptr) };
+    /// Wrap `value`, retained while `owner` is reachable from JS.
+    pub fn new_owned(context: &JscGcContext, value: &JscValue, owner: Owner<'_>) -> Option<Self> {
+        let owner = match owner {
+            Owner::Realm(owner) => owner.as_raw() as *mut c_void,
+            Owner::PlatformObject(object) => context.platform_object_owner(&object),
+        };
+        // SAFETY: The context and value are live; the shim returns a retained
+        // handle or NULL.
+        let raw = unsafe { fw_jsc_managed_value_create(context.as_raw(), value.raw, owner) };
         if raw.is_null() {
             return None;
         }
         Some(Self {
             raw,
-            ctx: global as *mut JSContextRef,
-            owner: owner.cloned(),
+            ctx: context.global() as *mut JSContextRef,
         })
     }
 
     /// A weak reference to `value` (no owner).
-    ///
-    /// # Safety
-    ///
-    /// `global` must be a live `JSGlobalContextRef` and `value` must be a
-    /// value belonging to it.  Both must outlive the returned managed value.
-    pub unsafe fn new_weak(global: *mut JSGlobalContextRef, value: &JscValue) -> Option<Self> {
-        // SAFETY: Forwarded to the caller's guarantee.
-        unsafe { Self::new(global, value, None) }
+    pub fn new_weak(context: &JscGcContext, value: &JscValue) -> Option<Self> {
+        // SAFETY: The context and value are live.
+        let raw =
+            unsafe { fw_jsc_managed_value_create(context.as_raw(), value.raw, std::ptr::null_mut()) };
+        if raw.is_null() {
+            return None;
+        }
+        Some(Self {
+            raw,
+            ctx: context.global() as *mut JSContextRef,
+        })
     }
 
     /// An empty managed value that refers to nothing.  `get` always returns
@@ -172,7 +362,6 @@ impl JscManagedValue {
         Self {
             raw: std::ptr::null_mut(),
             ctx: std::ptr::null_mut(),
-            owner: None,
         }
     }
 
@@ -217,6 +406,14 @@ impl Drop for JscManagedValue {
             unsafe { fw_jsc_managed_value_release(self.raw) };
         }
     }
+}
+
+/// The owner a managed value is registered against.
+pub enum Owner<'a> {
+    /// A realm-lifetime owner.
+    Realm(&'a JscGcOwner),
+    /// An exported platform object (its holder owns the reference).
+    PlatformObject(JscObject),
 }
 
 // `JscManagedValue` is neither `Send` nor `Sync`: the content process is

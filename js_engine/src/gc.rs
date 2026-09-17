@@ -691,9 +691,7 @@ mod jsc_gc_impl {
         type Context = JscEngine;
 
         fn create_reflector(context: &mut Self::Context, obj: &Self::JsObject) -> Self::Reflector {
-            let global = context.global_context();
-            // SAFETY: the engine's context is live and owns the wrapper.
-            unsafe { JscManagedValue::new_weak(global, &obj.as_value()) }
+            JscManagedValue::new_weak(context.gc_context(), &obj.as_value())
                 .unwrap_or_else(JscManagedValue::empty)
         }
 

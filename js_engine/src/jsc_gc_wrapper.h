@@ -1,20 +1,24 @@
 #ifndef FW_JSC_GC_WRAPPER_H
 #define FW_JSC_GC_WRAPPER_H
 
-// Objective-C wrapper around JavaScriptCore's `JSManagedValue` and the
-// `JSVirtualMachine` managed-reference API.
+// Objective-C wrapper around JavaScriptCore's ObjC API.
 //
-// `JSManagedValue` is the public API for holding a JS value from the
-// Objective-C side.  It replaces the undocumented `JSValueProtect` /
-// `JSValueUnprotect` C functions: the value is retained while the managed
-// value object is alive and released with it, so no separate protect set has
-// to be balanced by hand.
+// Two jobs:
 //
-// The managed value is *weak* when created without an owner (`managed_value`
-// returns NULL once the JS value is collected) and *conditionally retained*
-// when created with an owner: the JS value is kept alive while the owner
-// object is alive, and registering the owner with the virtual machine lets
-// JavaScriptCore break cross-language reference cycles.
+// 1. **Export platform objects to JS.**  A `JSManagedValue` only retains its
+//    referent when its owner is an ObjC object that JavaScriptCore has bridged
+//    into the JS graph.  A C-API `JSObjectMake` object has no ObjC identity, so
+//    each platform object is represented by an exported ObjC holder
+//    (`fw_jsc_platform_object_*`).  The holder owns the Rust platform data and
+//    is the owner for every managed value the platform object holds.  The JS
+//    object itself is the holder's bridge-created wrapper, so it can still be
+//    shaped with the C API (prototype, members, descriptors).
+//
+// 2. **Managed references.**  `JSManagedValue` replaces the hand-balanced
+//    `JSValueProtect`/`JSValueUnprotect` protect set.  A managed value created
+//    with a platform-object (or realm) owner is retained while that owner is
+//    reachable from JS, so it lives exactly as long as the object that owns it
+//    and cross-language cycles are collectable.
 
 #include <JavaScriptCore/JavaScriptCore.h>
 
@@ -22,40 +26,57 @@
 extern "C" {
 #endif
 
+typedef struct fw_jsc_context fw_jsc_context_t;
 typedef struct fw_jsc_gc_owner fw_jsc_gc_owner_t;
+typedef struct fw_jsc_platform_object fw_jsc_platform_object_t;
 typedef struct fw_jsc_managed_value fw_jsc_managed_value_t;
 
-// Create an owner object for `global`, bridged into the JS runtime so
-// JavaScriptCore tracks managed references registered against it.  The owner
-// must be released with `fw_jsc_gc_owner_release`; managed values registered
-// with it are only retained while it is alive.  Returns NULL on failure.
-fw_jsc_gc_owner_t *fw_jsc_gc_owner_create(JSGlobalContextRef global);
+// ── Context ───────────────────────────────────────────────────────────────
 
-// Release an owner created by `fw_jsc_gc_owner_create`.  NULL-safe.
+// A cached Objective-C `JSContext` wrapper for `global`.  Held by the Rust
+// engine for the engine's lifetime so the ObjC↔JS association is stable.
+fw_jsc_context_t *fw_jsc_context_create(JSGlobalContextRef global);
+void fw_jsc_context_release(fw_jsc_context_t *context);
+
+// ── Realm owner ───────────────────────────────────────────────────────────
+
+// A realm-lifetime owner, bridged into the JS graph as a property of the
+// context's global object.  Used for the handful of references the realm
+// itself roots (the Window and Document).  NULL-safe release.
+fw_jsc_gc_owner_t *fw_jsc_gc_owner_create(fw_jsc_context_t *context);
 void fw_jsc_gc_owner_release(fw_jsc_gc_owner_t *owner);
 
-// Create a managed value wrapping `value`.
-//
-// With a non-NULL `owner` the value is conditionally retained: it stays alive
-// while `owner` is alive.  With a NULL `owner` it is a weak reference: it
-// survives only while the value is reachable through the JS object graph.
-// The returned handle is retained; release it with
-// `fw_jsc_managed_value_release`.  Returns NULL on failure.
+// ── Platform objects ──────────────────────────────────────────────────────
+
+// Create an exported platform-object holder owning `data`.  The holder frees
+// `data` by calling `fw_jsc_platform_object_drop_data(data, jsObject)` when the
+// JS object is collected.  Returns a retained handle; release it with
+// `fw_jsc_platform_object_release` after reading the JS object.
+fw_jsc_platform_object_t *fw_jsc_platform_object_create(
+    fw_jsc_context_t *context, void *data);
+
+// The JS object for an exported holder.  Valid while the holder (or its JS
+// wrapper) is alive.
+JSObjectRef fw_jsc_platform_object_js_object(
+    fw_jsc_context_t *context, fw_jsc_platform_object_t *holder);
+
+// Release a handle returned by `fw_jsc_platform_object_create`.  The holder
+// stays alive as long as its JS wrapper is reachable.
+void fw_jsc_platform_object_release(fw_jsc_platform_object_t *holder);
+
+// ── Managed values ────────────────────────────────────────────────────────
+
+// Wrap `value`.  `owner` is a platform-object holder or a realm owner, or NULL
+// for a weak reference (retained only while the JS value is reachable from the
+// JS graph).  The returned handle is retained; release it with
+// `fw_jsc_managed_value_release`.
 fw_jsc_managed_value_t *fw_jsc_managed_value_create(
-    JSGlobalContextRef global,
-    JSValueRef value,
-    fw_jsc_gc_owner_t *owner);
+    fw_jsc_context_t *context, JSValueRef value, void *owner);
 
-// Retain `managed` and return the same handle (for cloning a Rust-side
-// reference).  NULL-safe.
 fw_jsc_managed_value_t *fw_jsc_managed_value_retain(fw_jsc_managed_value_t *managed);
-
-// Release a handle from `fw_jsc_managed_value_create`/`_retain`.  NULL-safe.
 void fw_jsc_managed_value_release(fw_jsc_managed_value_t *managed);
 
-// The current value, or NULL if it has been collected.  A value returned for
-// a weak managed value is only guaranteed alive until the next JavaScript
-// execution.
+// The current value, or NULL if it has been collected.
 JSValueRef fw_jsc_managed_value_get(fw_jsc_managed_value_t *managed);
 
 #ifdef __cplusplus

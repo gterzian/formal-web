@@ -16,7 +16,7 @@ use std::collections::HashMap;
 use std::ffi::c_char;
 use std::sync::LazyLock;
 
-use super::gc::{JscGcOwner, JscManagedValue};
+use super::gc::{JscGcContext, JscGcOwner, JscManagedValue, Owner};
 use super::types::*;
 
 // ── Current engine (thread-local) ────────────────────────────────────
@@ -1462,6 +1462,8 @@ pub struct JscEngine {
     /// realm's lifetime; the underlying ObjC references are released when the
     /// engine drops (see the `Drop` impl).
     protected_objects: Vec<JscManagedValue>,
+    /// Cache of the ObjC `JSContext` for this engine's global context.
+    gc_context: JscGcContext,
     /// Owner object for the managed values this realm roots.  Always `Some`
     /// after construction; taken in `Drop` so the owner is released while the
     /// JS context is still alive.
@@ -1496,8 +1498,10 @@ impl JscEngine {
     pub fn new() -> Self {
         let context = JscContext::new();
         // SAFETY: `context.raw` is a live JSGlobalContextRef owned by `context`.
+        let gc_context = unsafe { JscGcContext::new(context.raw) }
+            .expect("failed to create the JSC GC context");
         let gc_owner = Some(
-            unsafe { JscGcOwner::new(context.raw) }.expect("failed to create the JSC GC owner"),
+            JscGcOwner::new(gc_context.clone()).expect("failed to create the JSC GC owner"),
         );
         let realm_global = context.global_object();
         Self {
@@ -1506,6 +1510,7 @@ impl JscEngine {
             host_data: HashMap::new(),
             next_root_id: 0,
             protected_objects: Vec::new(),
+            gc_context,
             gc_owner,
             queued_jobs: Vec::new(),
             fn_call: None,
@@ -1534,7 +1539,7 @@ impl JscEngine {
             ctx: ctx_ptr,
         };
         let gc_owner = Some(
-            unsafe { JscGcOwner::new(self.context.raw) }
+            JscGcOwner::new(self.gc_context.clone())
                 .expect("failed to create the JSC GC owner"),
         );
         Self {
@@ -1543,6 +1548,7 @@ impl JscEngine {
             host_data: HashMap::new(),
             next_root_id: 0,
             protected_objects: Vec::new(),
+            gc_context: self.gc_context.clone(),
             gc_owner,
             queued_jobs: Vec::new(),
             fn_call: None,
@@ -1560,8 +1566,10 @@ impl JscEngine {
             raw: raw_obj,
             ctx: ctx_ptr,
         };
+        let gc_context = unsafe { JscGcContext::new(context.raw) }
+            .expect("failed to create the JSC GC context");
         let gc_owner = Some(
-            unsafe { JscGcOwner::new(context.raw) }.expect("failed to create the JSC GC owner"),
+            JscGcOwner::new(gc_context.clone()).expect("failed to create the JSC GC owner"),
         );
         Self {
             context,
@@ -1569,6 +1577,7 @@ impl JscEngine {
             host_data: HashMap::new(),
             next_root_id: 0,
             protected_objects: Vec::new(),
+            gc_context,
             gc_owner,
             queued_jobs: Vec::new(),
             fn_call: None,
@@ -1593,10 +1602,13 @@ impl JscEngine {
     /// is bridged into the JS runtime so JavaScriptCore tracks the reference.
     fn managed_root(&self, value: &JscValue) -> JscManagedValue {
         let owner = self.gc_owner.as_ref().expect("JSC engine has no GC owner");
-        // SAFETY: `self.context` is a live JSGlobalContextRef for the engine's
-        // lifetime, and `value` belongs to it.
-        unsafe { JscManagedValue::new(self.context.raw, value, Some(owner)) }
+        JscManagedValue::new_owned(&self.gc_context, value, Owner::Realm(owner))
             .expect("failed to create a JSC managed value root")
+    }
+
+    /// The cached ObjC context wrapper for this engine.
+    pub fn gc_context(&self) -> &JscGcContext {
+        &self.gc_context
     }
 
     #[allow(dead_code)]
@@ -4728,20 +4740,21 @@ impl ExecutionContext<JscTypes> for JscEngine {
         prototype: JscObject,
         data: Box<dyn std::any::Any + 'static>,
     ) -> JscObject {
-        let obj = self.create_plain_object(Some(&prototype));
-        let obj_ptr = obj.as_raw() as usize;
-        // Retrieve existing map or create new one, then insert.
-        let map_type_id =
-            std::any::TypeId::of::<std::collections::HashMap<usize, Box<dyn std::any::Any>>>();
-        let mut map: std::collections::HashMap<usize, Box<dyn std::any::Any>> = self
-            .remove_host_any(&map_type_id)
-            .map(|boxed| *boxed.downcast::<_>().unwrap())
-            .unwrap_or_default();
-        map.insert(obj_ptr, data);
-        self.store_host_any(map_type_id, Box::new(map));
+        // The platform object's JS object is the bridge-created wrapper of an
+        // exported ObjC holder that owns `data`; the holder frees `data` when
+        // the JS object is collected.
+        let obj = self
+            .gc_context
+            .create_platform_object(data)
+            .expect("failed to create a JSC platform object");
+        // SAFETY: `obj` and `prototype` are live objects in this context.
+        unsafe {
+            JSObjectSetPrototype(self.ctx_ptr(), obj.raw, prototype.as_value_ref());
+        }
 
-        // Keep the wrapper alive for the realm's lifetime through a strong
-        // `JSManagedValue`; the ObjC reference is released in JscEngine::drop.
+        // Keep the wrapper alive for the realm's lifetime.  This is transitional:
+        // once the reflector slots own managed references, platform objects are
+        // released by the JS collector instead.
         let root = self.managed_root(&obj.as_value());
         self.protected_objects.push(root);
 
@@ -4750,6 +4763,11 @@ impl ExecutionContext<JscTypes> for JscEngine {
 
     /// Retrieve data stored via `create_object_with_any`.
     fn with_object_any(&self, object: &JscObject) -> Option<&dyn std::any::Any> {
+        if let Some(data) = self.gc_context.platform_object_data(object) {
+            return Some(data);
+        }
+        // Fall back to the side table used by `associate_existing_object` for
+        // the realm global object.
         let map_type_id =
             std::any::TypeId::of::<std::collections::HashMap<usize, Box<dyn std::any::Any>>>();
         let map = self
@@ -4762,6 +4780,12 @@ impl ExecutionContext<JscTypes> for JscEngine {
 
     /// Retrieve mutable data stored via `create_object_with_any`.
     fn with_object_any_mut(&mut self, object: &JscObject) -> Option<&mut dyn std::any::Any> {
+        if let Some(data) = self.gc_context.platform_object_data_raw(object) {
+            // SAFETY: the holder exclusively owns `data`; `&mut self` proves no
+            // other borrow of it is live.
+            return Some(unsafe { &mut *data });
+        }
+        // Fall back to the side table used by `associate_existing_object`.
         let map_type_id =
             std::any::TypeId::of::<std::collections::HashMap<usize, Box<dyn std::any::Any>>>();
         let map = self
@@ -4777,6 +4801,14 @@ impl ExecutionContext<JscTypes> for JscEngine {
         object: &JscObject,
         f: Box<dyn FnOnce(&mut dyn std::any::Any, &mut dyn ExecutionContext<JscTypes>) + '_>,
     ) {
+        if let Some(data) = self.gc_context.platform_object_data_raw(object) {
+            let ec: &mut dyn ExecutionContext<JscTypes> = self;
+            // SAFETY: the holder exclusively owns `data`; `&mut self` proves no
+            // other borrow of it is live.
+            f(unsafe { &mut *data }, ec);
+            return;
+        }
+        // Fall back to the side table used by `associate_existing_object`.
         let map_type_id =
             std::any::TypeId::of::<std::collections::HashMap<usize, Box<dyn std::any::Any>>>();
         // Take a raw pointer to the data, then let the HashMap borrow expire
@@ -5563,7 +5595,8 @@ mod tests {
         let object_value =
             JsEngine::evaluate_script(&mut engine, "globalThis.__fw_test_obj", &realm).unwrap();
         // SAFETY: the engine's context is live and owns the value.
-        let managed = unsafe { JscManagedValue::new_weak(engine.global_context(), &object_value) }
+        // SAFETY: the engine's context is live and owns the value.
+        let managed = JscManagedValue::new_weak(engine.gc_context(), &object_value)
             .expect("weak managed value creation failed");
         assert!(managed.is_alive(), "reachable object must be alive");
         let clone = managed.clone();
@@ -5600,13 +5633,13 @@ mod tests {
         let realm = engine.current_realm();
         let function_value =
             JsEngine::evaluate_script(&mut engine, "(function() { return 7; })", &realm).unwrap();
-        // SAFETY: the engine's context is live and owns the value.
-        let owner =
-            unsafe { JscGcOwner::new(engine.global_context()) }.expect("owner creation failed");
-        // SAFETY: the engine's context is live and owns the value.
-        let managed =
-            unsafe { JscManagedValue::new(engine.global_context(), &function_value, Some(&owner)) }
-                .expect("owned managed value creation failed");
+        let owner = JscGcOwner::new(engine.gc_context().clone()).expect("owner creation failed");
+        let managed = JscManagedValue::new_owned(
+            engine.gc_context(),
+            &function_value,
+            Owner::Realm(&owner),
+        )
+        .expect("owned managed value creation failed");
 
         for i in 0..2000 {
             let throwaway = engine.create_empty_array();
