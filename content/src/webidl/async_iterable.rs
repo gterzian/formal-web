@@ -243,6 +243,14 @@ unsafe impl<T: AsyncValueIterable + 'static> js_engine::gc::Trace for DefaultAsy
 #[cfg(feature = "v8")]
 impl<T: AsyncValueIterable + 'static> js_engine::gc::Finalize for DefaultAsyncIterator<T> {}
 
+// JSC: the macro-generated `GcTraceable` impls of the `NextOn*Captures`
+// structs (which embed `DefaultAsyncIterator<T>`) need this impl.  The
+// iterator's own JS value lives in its `GcCell`, which manages its own edges.
+#[cfg(feature = "jsc")]
+impl<T: AsyncValueIterable> js_engine::gc::GcTraceable for DefaultAsyncIterator<T> {
+    fn visit_js_values(&self, _visit: &mut dyn FnMut(&js_engine::jsc::JscValue)) {}
+}
+
 impl<T> DefaultAsyncIterator<T>
 where
     T: AsyncValueIterable,

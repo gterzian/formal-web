@@ -16,7 +16,7 @@ use std::collections::HashMap;
 use std::ffi::c_char;
 use std::sync::LazyLock;
 
-use super::gc::{JscGcContext, JscGcOwner, JscManagedValue, Owner};
+use super::gc::{JscGcContext, JscGcOwner, JscGcOwnerRef, JscManagedValue, Owner};
 use super::types::*;
 
 // ── Current engine (thread-local) ────────────────────────────────────
@@ -1498,11 +1498,10 @@ impl JscEngine {
     pub fn new() -> Self {
         let context = JscContext::new();
         // SAFETY: `context.raw` is a live JSGlobalContextRef owned by `context`.
-        let gc_context = unsafe { JscGcContext::new(context.raw) }
-            .expect("failed to create the JSC GC context");
-        let gc_owner = Some(
-            JscGcOwner::new(gc_context.clone()).expect("failed to create the JSC GC owner"),
-        );
+        let gc_context =
+            unsafe { JscGcContext::new(context.raw) }.expect("failed to create the JSC GC context");
+        let gc_owner =
+            Some(JscGcOwner::new(gc_context.clone()).expect("failed to create the JSC GC owner"));
         let realm_global = context.global_object();
         Self {
             context,
@@ -1539,8 +1538,7 @@ impl JscEngine {
             ctx: ctx_ptr,
         };
         let gc_owner = Some(
-            JscGcOwner::new(self.gc_context.clone())
-                .expect("failed to create the JSC GC owner"),
+            JscGcOwner::new(self.gc_context.clone()).expect("failed to create the JSC GC owner"),
         );
         Self {
             context: self.context.clone(),
@@ -1566,11 +1564,10 @@ impl JscEngine {
             raw: raw_obj,
             ctx: ctx_ptr,
         };
-        let gc_context = unsafe { JscGcContext::new(context.raw) }
-            .expect("failed to create the JSC GC context");
-        let gc_owner = Some(
-            JscGcOwner::new(gc_context.clone()).expect("failed to create the JSC GC owner"),
-        );
+        let gc_context =
+            unsafe { JscGcContext::new(context.raw) }.expect("failed to create the JSC GC context");
+        let gc_owner =
+            Some(JscGcOwner::new(gc_context.clone()).expect("failed to create the JSC GC owner"));
         Self {
             context,
             realm_global,
@@ -1609,6 +1606,13 @@ impl JscEngine {
     /// The cached ObjC context wrapper for this engine.
     pub fn gc_context(&self) -> &JscGcContext {
         &self.gc_context
+    }
+
+    /// The realm-lifetime managed-reference owner, used as the default owner
+    /// for a [`GcCell`](crate::gc::GcCell) until its platform object adopts it
+    /// onto its own holder.
+    pub fn realm_gc_owner_ref(&self) -> Option<JscGcOwnerRef> {
+        self.gc_owner.as_ref().map(JscGcOwnerRef::realm)
     }
 
     #[allow(dead_code)]
@@ -4836,6 +4840,17 @@ impl ExecutionContext<JscTypes> for JscEngine {
         }
     }
 
+    fn adopt_platform_gc_owner(&mut self, object: &JscObject, data: &mut dyn crate::gc::GcOwner) {
+        // The owner is the exported holder that owns the platform object's JS
+        // wrapper, so the managed edges are scanned by the collector exactly
+        // while the wrapper is reachable from JS.
+        let Some(owner) = JscGcOwnerRef::platform(&self.gc_context, object) else {
+            return;
+        };
+        let owner_ref = crate::gc::GcOwnerRef::jsc(owner);
+        data.adopt_gc_owner(&owner_ref);
+    }
+
     fn new_type_error(&mut self, msg: &str) -> JscValue {
         // Use cached TypeError constructor to avoid per-call eval.
         let ctor = cached_intrinsic_ctor!(self, type_error_ctor, ["TypeError"]);
@@ -5634,12 +5649,9 @@ mod tests {
         let function_value =
             JsEngine::evaluate_script(&mut engine, "(function() { return 7; })", &realm).unwrap();
         let owner = JscGcOwner::new(engine.gc_context().clone()).expect("owner creation failed");
-        let managed = JscManagedValue::new_owned(
-            engine.gc_context(),
-            &function_value,
-            Owner::Realm(&owner),
-        )
-        .expect("owned managed value creation failed");
+        let managed =
+            JscManagedValue::new_owned(engine.gc_context(), &function_value, Owner::Realm(&owner))
+                .expect("owned managed value creation failed");
 
         for i in 0..2000 {
             let throwaway = engine.create_empty_array();

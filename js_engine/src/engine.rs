@@ -720,6 +720,18 @@ pub trait ExecutionContext<T: JsTypes + JsTypesWithRealm>: EcmascriptHost<T> {
     /// needs to call back into ECMA-262 operations.
     fn with_object_any_mut_with(&mut self, object: &T::JsObject, f: ObjectDataMutation<'_, T>);
 
+    /// (JSC) Adopt a platform object's [`GcCell`](crate::gc::GcCell) fields onto
+    /// the managed-reference owner of its JS wrapper, so its JS-value fields
+    /// stay alive exactly while its JS object is reachable.  No-op on V8;
+    /// not defined on Boa.
+    #[cfg(not(feature = "boa"))]
+    fn adopt_platform_gc_owner(
+        &mut self,
+        _object: &T::JsObject,
+        _data: &mut dyn crate::gc::GcOwner,
+    ) {
+    }
+
     /// Store a JS object into a traced platform-object slot.
     ///
     /// On V8 the value's rooted handles are converted into cppgc edges before

@@ -236,35 +236,205 @@ mod boa_cells {
     pub type GcRefMut<'a, T> = boa_gc::GcRefMut<'a, T>;
 }
 
-// ── JSC backend ────────────────────────────────────────────────────────────
+// ── JSC backend ────────────────────────────
 //
-// `GcCell<T>` is `Rc<RefCell<T>>`. JSC's GC does not observe Rust-side
-// references; previously JS values were individually protected with
-// JSValueProtect/JSValueUnprotect by dedicated `JsValueCell`/`JsObjectCell`
-// wrappers. Those wrappers have been removed in favour of the unified
-// `GcCell`; JSC does not re-add the protection and relies on the values
-// being reachable through the engine's own tracking.
+// `GcCell<T>` is an `Rc<RefCell<T>>` slot plus managed-reference edges.  JSC's
+// GC does not observe Rust-side references, so every JS value stored in a cell
+// is wrapped in a `JSManagedValue` whose owner is the realm anchor by default
+// and the platform object's exported holder once the object exists (see
+// `GcOwner`).  The holder owns the platform data and therefore the cell, so
+// the edges are removed when the holder (its JS wrapper) dies.
 #[cfg(feature = "jsc")]
 pub use jsc_cells::*;
 
 #[cfg(feature = "jsc")]
 mod jsc_cells {
+    use std::cell::{Ref, RefCell, RefMut};
+    use std::collections::VecDeque;
+    use std::rc::Rc;
+
     use super::*;
-    use crate::jsc::JscTypes;
+    use crate::jsc::{
+        JscBigInt, JscEngine, JscGcOwnerRef, JscManagedValue, JscObject, JscString, JscSymbol,
+        JscTypes, JscValue,
+    };
 
-    /// Unified GC-managed cell providing interior mutability.
-    #[derive(Clone)]
-    pub struct GcCell<T>(pub(crate) std::rc::Rc<std::cell::RefCell<T>>);
-
-    /// Construct a [`GcCell`] with the given value.
-    pub fn gc_cell_new<T>(value: T, _ec: &mut dyn ExecutionContext<JscTypes>) -> GcCell<T> {
-        GcCell(std::rc::Rc::new(std::cell::RefCell::new(value)))
+    /// Enumerates the JS values *directly* held by a type, for
+    /// managed-reference edge registration.
+    ///
+    /// Values inside nested [`GcCell`]s are not enumerated: each cell
+    /// registers (and owns) the edges for its own values, and the value graph
+    /// can be cyclic through cells.
+    pub trait GcTraceable {
+        fn visit_js_values(&self, visit: &mut dyn FnMut(&JscValue));
     }
 
-    impl<T> GcCell<T> {
+    impl GcTraceable for JscValue {
+        fn visit_js_values(&self, visit: &mut dyn FnMut(&JscValue)) {
+            visit(self);
+        }
+    }
+
+    impl GcTraceable for JscObject {
+        fn visit_js_values(&self, visit: &mut dyn FnMut(&JscValue)) {
+            visit(&self.as_value());
+        }
+    }
+
+    impl GcTraceable for JscSymbol {
+        fn visit_js_values(&self, visit: &mut dyn FnMut(&JscValue)) {
+            visit(self.as_value());
+        }
+    }
+
+    impl GcTraceable for JscBigInt {
+        fn visit_js_values(&self, visit: &mut dyn FnMut(&JscValue)) {
+            visit(self.as_value());
+        }
+    }
+
+    impl<T: GcTraceable> GcTraceable for Option<T> {
+        fn visit_js_values(&self, visit: &mut dyn FnMut(&JscValue)) {
+            if let Some(inner) = self {
+                inner.visit_js_values(visit);
+            }
+        }
+    }
+
+    impl<T: GcTraceable> GcTraceable for Vec<T> {
+        fn visit_js_values(&self, visit: &mut dyn FnMut(&JscValue)) {
+            for inner in self {
+                inner.visit_js_values(visit);
+            }
+        }
+    }
+
+    impl<T: GcTraceable> GcTraceable for VecDeque<T> {
+        fn visit_js_values(&self, visit: &mut dyn FnMut(&JscValue)) {
+            for inner in self {
+                inner.visit_js_values(visit);
+            }
+        }
+    }
+
+    impl<T: GcTraceable> GcTraceable for Box<T> {
+        fn visit_js_values(&self, visit: &mut dyn FnMut(&JscValue)) {
+            self.as_ref().visit_js_values(visit);
+        }
+    }
+
+    impl<A: GcTraceable, B: GcTraceable> GcTraceable for (A, B) {
+        fn visit_js_values(&self, visit: &mut dyn FnMut(&JscValue)) {
+            self.0.visit_js_values(visit);
+            self.1.visit_js_values(visit);
+        }
+    }
+
+    impl<A: GcTraceable, B: GcTraceable, C: GcTraceable> GcTraceable for (A, B, C) {
+        fn visit_js_values(&self, visit: &mut dyn FnMut(&JscValue)) {
+            self.0.visit_js_values(visit);
+            self.1.visit_js_values(visit);
+            self.2.visit_js_values(visit);
+        }
+    }
+
+    impl<A: GcTraceable, B: GcTraceable, C: GcTraceable, D: GcTraceable> GcTraceable for (A, B, C, D) {
+        fn visit_js_values(&self, visit: &mut dyn FnMut(&JscValue)) {
+            self.0.visit_js_values(visit);
+            self.1.visit_js_values(visit);
+            self.2.visit_js_values(visit);
+            self.3.visit_js_values(visit);
+        }
+    }
+
+    macro_rules! impl_no_values {
+        ($($t:ty),* $(,)?) => {
+            $(impl GcTraceable for $t {
+                fn visit_js_values(&self, _visit: &mut dyn FnMut(&JscValue)) {}
+            })*
+        };
+    }
+    impl_no_values!(
+        (),
+        bool,
+        u8,
+        u16,
+        u32,
+        u64,
+        usize,
+        i8,
+        i16,
+        i32,
+        i64,
+        isize,
+        f32,
+        f64,
+        char,
+        String,
+        JscString,
+    );
+
+    // Types that hold JS values behind their own fields enumerate them so
+    // cells containing them register edges for those values.
+    impl GcTraceable for super::GcRootHandle<JscTypes> {
+        fn visit_js_values(&self, visit: &mut dyn FnMut(&JscValue)) {
+            self.value.visit_js_values(visit);
+        }
+    }
+
+    impl GcTraceable for crate::records::PromiseResolvers<JscTypes> {
+        fn visit_js_values(&self, visit: &mut dyn FnMut(&JscValue)) {
+            self.resolve.visit_js_values(visit);
+            self.reject.visit_js_values(visit);
+        }
+    }
+
+    /// The unified JSC cell: an `Rc<RefCell<T>>` slot plus managed-reference
+    /// edges for the JS values directly inside `T`.
+    pub struct GcCell<T: GcTraceable> {
+        slot: Rc<RefCell<T>>,
+        edges: Rc<RefCell<Vec<JscManagedValue>>>,
+        owner: Rc<RefCell<Option<JscGcOwnerRef>>>,
+    }
+
+    impl<T: GcTraceable> GcCell<T> {
+        fn with_owner(value: T, owner: Option<JscGcOwnerRef>) -> Self {
+            let cell = Self {
+                slot: Rc::new(RefCell::new(value)),
+                edges: Rc::new(RefCell::new(Vec::new())),
+                owner: Rc::new(RefCell::new(owner)),
+            };
+            cell.rebuild_edges();
+            cell
+        }
+
+        /// Re-register the managed edges for the values currently in the
+        /// slot, dropping the old edges first.
+        fn rebuild_edges(&self) {
+            let mut edges = self.edges.borrow_mut();
+            edges.clear();
+            let owner = self.owner.borrow();
+            let Some(owner) = owner.as_ref() else {
+                return;
+            };
+            let slot = self.slot.borrow();
+            slot.visit_js_values(&mut |value| {
+                if let Some(managed) = owner.create_managed_value(value) {
+                    edges.push(managed);
+                }
+            });
+        }
+
+        /// Re-point the cell's edges to the platform object's holder and
+        /// re-register them.
+        pub(crate) fn adopt(&self, owner: &JscGcOwnerRef) {
+            *self.owner.borrow_mut() = Some(owner.clone());
+            self.rebuild_edges();
+        }
+
         /// Immutably borrow the wrapped value.
         pub fn borrow<'a, 'e>(&'a self, _ec: &'e dyn ExecutionContext<JscTypes>) -> GcRef<'a, T> {
-            self.0.borrow()
+            self.slot.borrow()
         }
 
         /// Mutably borrow the wrapped value.
@@ -272,23 +442,160 @@ mod jsc_cells {
             &'a self,
             _ec: &'e mut dyn ExecutionContext<JscTypes>,
         ) -> GcRefMut<'a, T> {
-            self.0.borrow_mut()
+            self.slot.borrow_mut()
         }
 
-        /// Replace the wrapped value.
+        /// Replace the wrapped value and re-register the managed edges.
         pub fn set<'a, 'e>(&'a self, value: T, _ec: &'e mut dyn ExecutionContext<JscTypes>) {
-            *self.0.borrow_mut() = value;
+            *self.slot.borrow_mut() = value;
+            self.rebuild_edges();
+        }
+
+        /// Re-register the managed edges after in-place mutation of the
+        /// cell's contents through [`borrow_mut`](Self::borrow_mut).
+        pub fn sync(&self) {
+            self.rebuild_edges();
         }
 
         /// Compare two cells for pointer equality.
         pub fn ptr_eq(&self, other: &Self) -> bool {
-            std::rc::Rc::ptr_eq(&self.0, &other.0)
+            Rc::ptr_eq(&self.slot, &other.slot)
         }
     }
 
-    pub type GcRef<'a, T> = std::cell::Ref<'a, T>;
-    pub type GcRefMut<'a, T> = std::cell::RefMut<'a, T>;
+    impl<T: GcTraceable> Clone for GcCell<T> {
+        fn clone(&self) -> Self {
+            Self {
+                slot: self.slot.clone(),
+                edges: self.edges.clone(),
+                owner: self.owner.clone(),
+            }
+        }
+    }
+
+    impl<T: GcTraceable + Default> Default for GcCell<T> {
+        fn default() -> Self {
+            Self::with_owner(T::default(), None)
+        }
+    }
+
+    // A GcCell is opaque to outer cells: it manages its own edges.
+    impl<T: GcTraceable> GcTraceable for GcCell<T> {
+        fn visit_js_values(&self, _visit: &mut dyn FnMut(&JscValue)) {}
+    }
+
+    impl<T: GcTraceable> GcOwner for GcCell<T> {
+        fn adopt_gc_owner(&mut self, owner: &GcOwnerRef) {
+            self.adopt(owner.as_jsc());
+        }
+    }
+
+    /// Construct a [`GcCell`], registering managed edges against the realm
+    /// anchor until the containing platform object adopts the cell onto its
+    /// own holder (see [`GcOwner`]).
+    pub fn gc_cell_new<T: GcTraceable>(
+        value: T,
+        ec: &mut dyn ExecutionContext<JscTypes>,
+    ) -> GcCell<T> {
+        let owner = ec
+            .as_any()
+            .downcast_ref::<JscEngine>()
+            .and_then(JscEngine::realm_gc_owner_ref);
+        GcCell::with_owner(value, owner)
+    }
+
+    pub type GcRef<'a, T> = Ref<'a, T>;
+    pub type GcRefMut<'a, T> = RefMut<'a, T>;
 }
+
+// ── GC owners and platform-object adoption ──────────────────────────────
+
+// On JSC a platform object adopts the cells it owns onto the managed-reference
+// owner of its JS wrapper.  On Boa and V8 there are no managed edges, so every
+// type satisfies the trait through a blanket implementation.
+
+/// Handle to the managed-reference owner a platform object's cells adopt.
+#[cfg(feature = "jsc")]
+#[derive(Clone)]
+pub struct GcOwnerRef {
+    pub(crate) jsc: crate::jsc::JscGcOwnerRef,
+}
+
+#[cfg(feature = "jsc")]
+impl GcOwnerRef {
+    pub(crate) fn jsc(owner: crate::jsc::JscGcOwnerRef) -> Self {
+        Self { jsc: owner }
+    }
+
+    pub(crate) fn as_jsc(&self) -> &crate::jsc::JscGcOwnerRef {
+        &self.jsc
+    }
+}
+
+/// Adopt a platform object's [`GcCell`] fields onto its per-object GC owner.
+///
+/// Implemented by [`GcCell`] (re-points the cell's managed edges) and generated
+/// by `#[gc_struct]` for composite types (delegates to the `GcCell`-typed
+/// fields, skipping `#[ignore_trace]` fields).  Called once the reflector
+/// exists, so a struct's JS-value fields stay alive exactly while the struct's
+/// JS object is reachable.  No-op on V8 (no managed edges exist).
+#[cfg(feature = "jsc")]
+pub trait GcOwner {
+    fn adopt_gc_owner(&mut self, _owner: &GcOwnerRef) {}
+}
+
+#[cfg(feature = "jsc")]
+impl<T: GcOwner> GcOwner for Option<T> {
+    fn adopt_gc_owner(&mut self, owner: &GcOwnerRef) {
+        if let Some(inner) = self {
+            inner.adopt_gc_owner(owner);
+        }
+    }
+}
+
+#[cfg(feature = "jsc")]
+impl<T: GcOwner> GcOwner for Vec<T> {
+    fn adopt_gc_owner(&mut self, owner: &GcOwnerRef) {
+        for inner in self {
+            inner.adopt_gc_owner(owner);
+        }
+    }
+}
+
+#[cfg(feature = "jsc")]
+impl<T: GcOwner> GcOwner for std::collections::VecDeque<T> {
+    fn adopt_gc_owner(&mut self, owner: &GcOwnerRef) {
+        for inner in self {
+            inner.adopt_gc_owner(owner);
+        }
+    }
+}
+
+#[cfg(feature = "jsc")]
+impl<T: GcOwner> GcOwner for Box<T> {
+    fn adopt_gc_owner(&mut self, owner: &GcOwnerRef) {
+        self.as_mut().adopt_gc_owner(owner);
+    }
+}
+
+// Plain `Rc<RefCell<T>>` is not an adoption target (only `GcCell` structs hold
+// managed edges).  No-op.
+#[cfg(feature = "jsc")]
+impl<T> GcOwner for std::rc::Rc<std::cell::RefCell<T>> {}
+
+/// Adopt a platform object's [`GcCell`] fields onto its per-object GC owner.
+/// Boa and V8 have no managed edges, so every type can adopt as a no-op.
+#[cfg(not(feature = "jsc"))]
+pub trait GcOwner {
+    fn adopt_gc_owner(&mut self, _owner: &GcOwnerRef) {}
+}
+
+#[cfg(not(feature = "jsc"))]
+#[derive(Clone)]
+pub struct GcOwnerRef;
+
+#[cfg(not(feature = "jsc"))]
+impl<T> GcOwner for T {}
 
 // ── V8 backend ─────────────────────────────────────────────────────────────
 //
@@ -380,7 +687,7 @@ pub fn gc_cell_new<T: boa_gc::Trace + 'static>(
 
 /// Construct a [`GcCell`] with the given value.
 #[cfg(feature = "jsc")]
-pub fn gc_cell_new<T>(value: T, ec: &mut dyn ExecutionContext<JscTypes>) -> GcCell<T> {
+pub fn gc_cell_new<T: GcTraceable>(value: T, ec: &mut dyn ExecutionContext<JscTypes>) -> GcCell<T> {
     jsc_cells::gc_cell_new(value, ec)
 }
 
@@ -403,7 +710,7 @@ pub fn gc_cell_ptr_eq<T: boa_gc::Trace + 'static>(a: &GcCell<T>, b: &GcCell<T>) 
 
 /// Compare two [`GcCell`] references for pointer equality.
 #[cfg(feature = "jsc")]
-pub fn gc_cell_ptr_eq<T: 'static>(a: &GcCell<T>, b: &GcCell<T>) -> bool {
+pub fn gc_cell_ptr_eq<T: GcTraceable>(a: &GcCell<T>, b: &GcCell<T>) -> bool {
     a.ptr_eq(b)
 }
 
@@ -719,6 +1026,7 @@ mod jsc_gc_impl {
 
 #[cfg(all(not(feature = "boa"), not(feature = "v8")))]
 mod persistent_handle_trace_impls {
+    use super::GcTraceable;
     use super::Trace;
 
     // Blanket Trace impls for common types used as captures with
@@ -737,7 +1045,7 @@ mod persistent_handle_trace_impls {
     // wrappers (they must use GcCell instead).
     unsafe impl<T: Trace> Trace for std::rc::Rc<std::cell::RefCell<T>> {}
     unsafe impl<T: Trace> Trace for std::rc::Rc<std::cell::Cell<T>> {}
-    unsafe impl<T: Trace> Trace for super::GcCell<T> {}
+    unsafe impl<T: Trace + GcTraceable> Trace for super::GcCell<T> {}
     unsafe impl<A: Trace, B: Trace> Trace for (A, B) {}
     unsafe impl<A: Trace, B: Trace, C: Trace> Trace for (A, B, C) {}
     unsafe impl<A: Trace, B: Trace, C: Trace, D: Trace> Trace for (A, B, C, D) {}
