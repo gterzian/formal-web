@@ -33,14 +33,19 @@
 //! | Module | Contents |
 //! |---|---|
 //! | [`types`] | Safe wrapper types (`JscValue`, `JscObject`, `JscString`, etc.) |
+//! | [`gc`] | `JSManagedValue`-based GC integration (`JscManagedValue`, `JscGcOwner`) |
 //! | [`engine`] | `JscTypes`, `JscEngine` — the `JsEngine<JscTypes>` implementation |
 //!
-//! Raw FFI bindings live in [`crate::jsc_sys`].
+//! Raw FFI bindings live in [`crate::jsc_sys`]; the Objective-C shim for
+//! `JSManagedValue` lives in `src/jsc_gc_wrapper.m`.  See `README.md` for the
+//! GC design and remaining work.
 
 mod engine;
+mod gc;
 mod types;
 
 pub use engine::{
     JscEngine, JscTypes, clear_current_engine, create_builtin_fn_with_captures, set_current_engine,
 };
+pub use gc::{JscGcContext, JscGcOwner, JscGcOwnerRef, JscManagedValue, Owner};
 pub use types::*;

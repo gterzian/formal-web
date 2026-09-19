@@ -202,7 +202,11 @@ unsafe extern "C" {
         exception: *mut *mut JSValueRef,
     ) -> *mut JSObjectRef;
 
-    // ── GC protection (not in public headers; available on macOS) ────────
+    // ── GC protection ─────────────────────────────────────────────────────
+    // JSValueProtect/JSValueUnprotect keep a value in the context's protect
+    // set; the JSC engine uses them only for the cached builtin-function
+    // properties held as JSClass private data.  Realm roots go through
+    // `JSManagedValue` instead (see `jsc/gc.rs`).
     pub fn JSValueProtect(ctx: *mut JSContextRef, value: *mut JSValueRef);
     pub fn JSValueUnprotect(ctx: *mut JSContextRef, value: *mut JSValueRef);
     pub fn JSGarbageCollect(ctx: *mut JSContextRef);

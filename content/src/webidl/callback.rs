@@ -12,11 +12,40 @@ type JsObject = <Types as JsTypes>::JsObject;
 #[gc_struct]
 pub(crate) struct Callback {
     object: JsObject,
+    // The callback runs later, after control returns to JavaScript, so the
+    // JS object must stay rooted while this Rust value holds it.  On JSC a
+    // bare `JsObject` is invisible to the collector and there is no traced
+    // Rust→JS edge, so `create_root` registers a managed value whose unroot
+    // action runs when the last clone of this `Callback` drops.  On V8 and
+    // Boa the `object` field is itself a traced edge, so no extra root (which
+    // on V8 would be an untraced persistent handle and could pin cycles) is
+    // stored.
+    #[cfg(feature = "jsc")]
+    #[ignore_trace]
+    root: Option<js_engine::gc::GcRootHandle<Types>>,
+}
+
+#[cfg(feature = "jsc")]
+impl Drop for Callback {
+    fn drop(&mut self) {
+        // Release the managed value (unrooting the JS object) before the
+        // callback's other fields are dropped.
+        drop(self.root.take());
+    }
 }
 
 impl Callback {
-    pub(crate) fn from_object(object: JsObject, _ec: &mut dyn ExecutionContext<Types>) -> Self {
-        Self { object }
+    /// Create a Callback from a JS object, rooting it for the duration of the
+    /// Callback's lifetime (JSC) or tracing it automatically (V8, Boa).
+    #[cfg_attr(not(feature = "jsc"), allow(unused_variables))]
+    pub(crate) fn from_object(object: JsObject, ec: &mut dyn ExecutionContext<Types>) -> Self {
+        #[cfg(feature = "jsc")]
+        let root = Some(ec.create_root(&Types::value_from_object(object.clone())));
+        Self {
+            object,
+            #[cfg(feature = "jsc")]
+            root,
+        }
     }
 
     pub(crate) fn equals(&self, other: &Self, ec: &mut dyn ExecutionContext<Types>) -> bool {

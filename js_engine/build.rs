@@ -11,9 +11,23 @@ fn main() {
         panic!("exactly one of `boa`, `jsc`, or `v8` must be enabled");
     }
 
-    // When the "jsc" feature is enabled, link JavaScriptCore framework
+    // When the "jsc" feature is enabled, link JavaScriptCore framework and
+    // compile the Objective-C `JSManagedValue` wrapper.  The wrapper needs
+    // Foundation and ARC; it is only meaningful on Apple targets.
     if has_jsc {
         println!("cargo::rustc-link-lib=framework=JavaScriptCore");
+        let target_os = std::env::var("CARGO_CFG_TARGET_OS").unwrap_or_default();
+        if target_os == "macos" || target_os == "ios" {
+            cc::Build::new()
+                .file("src/jsc_gc_wrapper.m")
+                .flag("-fobjc-arc")
+                .compile("jsc_gc_wrapper");
+            println!("cargo::rustc-link-lib=framework=Foundation");
+        } else {
+            panic!("the jsc backend requires an Apple target (JSManagedValue is Objective-C)");
+        }
+        println!("cargo::rerun-if-changed=src/jsc_gc_wrapper.m");
+        println!("cargo::rerun-if-changed=src/jsc_gc_wrapper.h");
     }
 
     if has_v8 {
