@@ -19,11 +19,22 @@ extern void fw_jsc_platform_object_drop_data(void *data, void *jsObject);
 @implementation FwJscContext
 @end
 
+// The realm-lifetime owner object, exported to JavaScript so JavaScriptCore's
+// managed-reference scan can resolve it.
+@protocol FwJscRealmOwnerExport <JSExport>
+@end
+
+@interface FwJscRealmOwner : NSObject <FwJscRealmOwnerExport>
+@end
+
+@implementation FwJscRealmOwner
+@end
+
 // A realm-lifetime owner, bridged into the JS graph as a property of the
 // context's global object.
 @interface FwJscGcOwner : NSObject
 @property (nonatomic, strong) JSContext *context;
-@property (nonatomic, strong) id owner;
+@property (nonatomic, strong) FwJscRealmOwner *owner;
 @property (nonatomic, copy) NSString *key;
 - (id)managedOwner;
 @end
@@ -38,7 +49,10 @@ extern void fw_jsc_platform_object_drop_data(void *data, void *jsObject);
 // creates its JS wrapper via the ObjC bridge; that wrapper is the platform
 // object's JS object.  The holder owns the Rust platform data and is the
 // managed-reference owner for every JS value the platform object holds.
-@interface FwJscPlatformObject : NSObject
+@protocol FwJscPlatformObjectExport <JSExport>
+@end
+
+@interface FwJscPlatformObject : NSObject <FwJscPlatformObjectExport>
 @property (nonatomic, assign) void *data;
 @property (nonatomic, assign) JSValueRef jsObject;
 @property (nonatomic, strong) JSContext *context;
@@ -58,14 +72,45 @@ extern void fw_jsc_platform_object_drop_data(void *data, void *jsObject);
 }
 @end
 
-// A retained `JSManagedValue` plus the context it belongs to.
+// A retained `JSManagedValue` plus the context it belongs to.  When `owner`
+// is set the managed value is also registered with the virtual machine as a
+// managed reference; `dealloc` removes that registration, which is what keeps
+// the machine's managed-reference set free of dangling entries.
 @interface FwJscManagedValue : NSObject
 @property (nonatomic, strong) JSManagedValue *managed;
 @property (nonatomic, strong) JSContext *context;
+// Weak: the virtual machine tracks the owner's reachability; retaining it
+// here would keep a collected platform holder alive through its Rust cells.
+@property (nonatomic, weak) id owner;
 @end
 
 @implementation FwJscManagedValue
+- (void)dealloc {
+    if (self.managed && self.owner) {
+        [self.context.virtualMachine removeManagedReference:self.managed
+                                                   withOwner:self.owner];
+    }
+}
 @end
+
+// Build a managed value for `jsValue`.  `owner` (already resolved from a
+// platform holder or realm anchor) is nil for a weak reference.
+static FwJscManagedValue *fw_jsc_make_managed_value(
+    JSContext *context, JSValue *jsValue, id owner)
+{
+    JSManagedValue *managed = [JSManagedValue managedValueWithValue:jsValue];
+    if (!managed) {
+        return nil;
+    }
+    FwJscManagedValue *handle = [[FwJscManagedValue alloc] init];
+    handle.managed = managed;
+    handle.context = context;
+    if (owner) {
+        handle.owner = owner;
+        [context.virtualMachine addManagedReference:managed withOwner:owner];
+    }
+    return handle;
+}
 
 // One counter per process is enough; the content process is single-threaded
 // and the key only has to be unique among the owners alive at one time.
@@ -104,7 +149,7 @@ fw_jsc_gc_owner_t *fw_jsc_gc_owner_create(fw_jsc_context_t *context) {
         FwJscContext *contextHandle = (__bridge FwJscContext *)context;
         FwJscGcOwner *handle = [[FwJscGcOwner alloc] init];
         handle.context = contextHandle.context;
-        handle.owner = [[NSObject alloc] init];
+        handle.owner = [[FwJscRealmOwner alloc] init];
         handle.key = [NSString
             stringWithFormat:@"__formal_web_gc_owner_%llu", (unsigned long long)++g_owner_counter];
         // Bridging the owner into the JS object graph is what lets
@@ -187,22 +232,18 @@ fw_jsc_managed_value_t *fw_jsc_managed_value_create(
         if (!jsValue) {
             return NULL;
         }
-        JSManagedValue *managed;
+        id managedOwner = nil;
         if (owner) {
             id ownerObject = (__bridge id)owner;
-            id managedOwner = [ownerObject respondsToSelector:@selector(managedOwner)]
+            managedOwner = [ownerObject respondsToSelector:@selector(managedOwner)]
                 ? [ownerObject managedOwner]
                 : ownerObject;
-            managed = [JSManagedValue managedValueWithValue:jsValue andOwner:managedOwner];
-        } else {
-            managed = [JSManagedValue managedValueWithValue:jsValue];
         }
-        if (!managed) {
+        FwJscManagedValue *handle =
+            fw_jsc_make_managed_value(contextHandle.context, jsValue, managedOwner);
+        if (!handle) {
             return NULL;
         }
-        FwJscManagedValue *handle = [[FwJscManagedValue alloc] init];
-        handle.managed = managed;
-        handle.context = contextHandle.context;
         return (__bridge_retained fw_jsc_managed_value_t *)handle;
     }
 }
@@ -211,14 +252,21 @@ fw_jsc_managed_value_t *fw_jsc_managed_value_retain(fw_jsc_managed_value_t *mana
     if (!managed) {
         return NULL;
     }
-    // Build a distinct wrapper sharing the same `JSManagedValue`, so that
-    // releasing one handle (which nils its own fields) cannot disturb the
-    // other.
-    FwJscManagedValue *handle = (__bridge FwJscManagedValue *)managed;
-    FwJscManagedValue *copy = [[FwJscManagedValue alloc] init];
-    copy.managed = handle.managed;
-    copy.context = handle.context;
-    return (__bridge_retained fw_jsc_managed_value_t *)copy;
+    @autoreleasepool {
+        FwJscManagedValue *handle = (__bridge FwJscManagedValue *)managed;
+        JSValue *value = handle.managed.value;
+        if (!value) {
+            // The value has already been collected; a clone is an empty
+            // handle that reports `None`.
+            FwJscManagedValue *copy = [[FwJscManagedValue alloc] init];
+            return (__bridge_retained fw_jsc_managed_value_t *)copy;
+        }
+        // Each handle registers (and later removes) its own managed reference,
+        // so add/remove stay balanced under any virtual-machine bookkeeping.
+        FwJscManagedValue *copy =
+            fw_jsc_make_managed_value(handle.context, value, handle.owner);
+        return (__bridge_retained fw_jsc_managed_value_t *)copy;
+    }
 }
 
 void fw_jsc_managed_value_release(fw_jsc_managed_value_t *managed) {
@@ -226,9 +274,9 @@ void fw_jsc_managed_value_release(fw_jsc_managed_value_t *managed) {
         return;
     }
     @autoreleasepool {
-        FwJscManagedValue *handle = (__bridge_transfer FwJscManagedValue *)managed;
-        handle.managed = nil;
-        handle.context = nil;
+        // Dealloc removes the managed reference; let ARC run it rather than
+        // clearing fields here.
+        (void)(__bridge_transfer FwJscManagedValue *)managed;
     }
 }
 

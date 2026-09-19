@@ -61,22 +61,23 @@ engine's lifetime.  Removing that root needs a Rust→wrapper reachability story
 (a Rust-held platform object must keep its wrapper alive, or `upgrade_reflector`
 must recreate it), which the engine does not have.  V8 collects these cycles
 because platform objects and their edges live in the cppgc unified heap, and
-Boa because `boa_gc` traces `#[gc_struct]` fields.
+Boa because `boa_gc` traces `#[gc_struct]` fields.  The removal is blocked by
+the `JSGarbageCollect` corruption below: without `protected_objects` more
+wrappers are collected and the crash is more frequent.
 
-The per-object owner is the bridge holder that `valueWithObject:` already
-creates; no `JSExport` conformance is required for an owner to be scanned, and
-no property is set from within a binding callback.  Do not make the owner a
-separate `NSObject` exported with `JSValue setValue:forProperty:` on the
-reflector: `origin/jsc_objc_2` did so and saw SIGSEGVs in the heavy streams
-tests, a crash class that matching a plain exported holder avoids.
+Each `FwJscManagedValue` registers its own managed reference on creation and
+removes it in `dealloc`; leaving the registration behind makes the virtual
+machine scan a freed entry.  The per-object owner is the bridge holder that
+`valueWithObject:` already creates.  Do not make the owner a separate
+`NSObject` exported with `JSValue setValue:forProperty:` on the reflector:
+`origin/jsc_objc_2` did so and saw SIGSEGVs in the heavy streams tests.
 
 ## WPT results
 
 **PASS:** CSS.supports, DOM Element tests (including
 `dom/nodes/Element-hasAttribute.html`), Node-constants, document.title,
 document-dir, iframe, anchor, basic streams (constructor, default-reader,
-strategies, transform, writable), `formal/gc-protection.html`,
-`formal/callback-gc-protection.html`.
+strategies, transform, writable), `formal/callback-gc-protection.html`.
 
 **TIMEOUT:**  Most piping tests, cancel, read-task-handling.
 
@@ -120,20 +121,34 @@ comparison.
   (`window`, …) against the context's global object, so child-realm scripts
   lose `window`.  It also breaks the main run, since test pages are loaded in
   child realms.
-- **`JSEvaluateScript("void 0")` drains SIGSEGV.** `JscEngine::call` and
-  `construct` end with `eval_script_raw("void 0")` to drain microtasks; a
-  `formal/gc-protection.html` run intermittently SIGSEGVs inside
-  `JSC::ProgramExecutable::initializeGlobalProperties` under that eval,
-  reached from a queued job (`run_jobs → perform_a_microtask_checkpoint`).  The
-  crash reproduces with the managed edges disabled, so it is the eval-drain
-  path, not edge registration.  Reproduce with
-  `FORMAL_WEB_CRASH_TRACE=1 target/release/formal-web wpt tests/formal/tests/gc-protection.html`
-  after re-adding a signal handler that calls `backtrace_symbols_fd` (the
-  `std::backtrace` capture cannot unwind the signal frame).  Not yet
-  investigated: whether the eval is redundant at the outermost call boundary
-  (where JSC already drains on C-API return) and can simply be dropped, and
-  whether the nested-call drains can be replaced by a drain keyed to the
-  outermost return.
+- **`JSGarbageCollect` corrupts the JSC heap while VM managed references
+  exist.** `formal/gc-protection.html` SIGSEGVs (near-deterministic; some runs
+  pass) inside `JSC::ProgramExecutable::initializeGlobalProperties`, reached
+  from a `JSEvaluateScript` that runs after `TestUtils.gc()`.  The faulting
+  instruction (`initializeGlobalProperties+424`, a `casab`) reads a dangling
+  pointer out of the global object.  `JscEngine::call` and `construct` used to
+  end with `eval_script_raw("void 0")` to drain microtasks; that evalu was the
+  first `JSEvaluateScript` after the GC, so it was the reported crash site.
+  Removing it moves the crash to the next evalu (the WPT harness's
+  `evaluate_script_to_json`) without eliminating it.
+  Verified trigger: with the `JSVirtualMachine` managed-reference
+  registrations disabled, `gc-protection` passes 10/10, so the
+  `managedValueWithValue:andOwner:` registrations that back the per-object
+  edges and `protected_objects` are the trigger.  They cannot simply be
+  dropped: without them `.then()` callbacks and stream algorithms are
+  collected and `callback-gc-protection` fails.  `JSValueProtect` as a
+  substitute also crashes (its unprotect runs during GC finalization).  The
+  owners are `JSExport`-conforming, which improves the pass rate but does not
+  eliminate it.  Removing `protected_objects` makes more wrappers collectible
+  and the crash more frequent, so the realm-lifetime root stays until this is
+  resolved.
+  **Dead end:** disabling generational/concurrent GC, the JIT, or
+  `JSC_verifyGC` does not change the outcome, and neither does clearing the
+  engine thread-local `CURRENT_ENGINE` around `JSGarbageCollect`.
+  **Reproduce:** add an env-gated `SIGSEGV` handler calling
+  `backtrace_symbols_fd` (the `std::backtrace` capture cannot unwind the signal
+  frame) and run
+  `target/release/formal-web wpt tests/formal/tests/gc-protection.html`.
 - **JSC microtask drain during nested C API calls.**  JSC only drains its
   microtask queue when control returns from the outermost C API call, so
   inside nested calls (common — stream algorithm code runs inside a JS call)

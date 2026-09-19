@@ -3174,9 +3174,6 @@ impl ExecutionContext<JscTypes> for JscEngine {
             });
         }
 
-        // Drain JSC's internal microtask queue (same rationale as call()).
-        let _ = self.eval_script_raw("void 0");
-
         Ok(JscObject {
             raw: result,
             ctx: self.ctx_ptr(),
@@ -5248,13 +5245,6 @@ impl EcmascriptHost<JscTypes> for JscEngine {
                 ctx: self.ctx_ptr(),
             });
         }
-
-        // Drain JSC's internal microtask queue by evaluating a no-op.
-        // JSEvaluateScript drains microtasks at the end of script evaluation.
-        // CURRENT_ENGINE is still set here (via _guard) so that any builtin
-        // function callbacks triggered by microtasks (e.g. promise reaction
-        // handlers) can find the engine.
-        let _ = self.eval_script_raw("void 0");
 
         Ok(JscValue {
             raw: result,
