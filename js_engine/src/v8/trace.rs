@@ -12,6 +12,7 @@
 //!   the value is stored into traced storage (`gc_cell_new`/`GcCell::set`, or
 //!   a traced platform-object field through the engine's store helpers).
 
+use std::cell::Cell;
 use std::collections::VecDeque;
 use std::rc::Rc;
 
@@ -50,12 +51,33 @@ fn store_optional_handle<T>(
 /// Assert that a handle reached by cppgc tracing is an edge, never a strong
 /// root. A root here means a write into traced storage bypassed `store`; the
 /// marker would silently skip it and the referent would be over-retained
-/// instead of collected with its owner.
+/// instead of collected with its owner. Debug builds panic; release builds
+/// count the root so `V8Engine::gc` can report it instead of staying silent.
 fn debug_assert_stored<T>(handle: &V8Handle<T>) {
-    debug_assert!(
-        matches!(handle, V8Handle::Edge(_)),
-        "a rooted JS handle reached cppgc tracing: the store invariant was bypassed"
-    );
+    if handle.is_root() {
+        record_root_reached_during_trace();
+        debug_assert!(
+            false,
+            "a rooted JS handle reached cppgc tracing: the store invariant was bypassed"
+        );
+    }
+}
+
+thread_local! {
+    /// Strong roots reached by cppgc tracing since the last full collection.
+    /// A nonzero value means a write into traced storage bypassed
+    /// `Trace::store`.
+    static ROOTS_REACHED_DURING_TRACE: Cell<u64> = const { Cell::new(0) };
+}
+
+fn record_root_reached_during_trace() {
+    ROOTS_REACHED_DURING_TRACE.with(|count| count.set(count.get() + 1));
+}
+
+/// Reset and return the count of roots reached by tracing, so a collection
+/// can report whether the store invariant was bypassed.
+pub(crate) fn take_roots_reached_during_trace() -> u64 {
+    ROOTS_REACHED_DURING_TRACE.with(|count| count.replace(0))
 }
 
 /// Assert that every present handle in an optional pair is an edge.
@@ -98,6 +120,9 @@ unsafe impl Trace for V8Value {
     }
 
     fn store(&mut self, ec: &mut dyn ExecutionContext<V8Types>) {
+        if !self.needs_store() {
+            return;
+        }
         let engine = ec
             .as_any_mut()
             .downcast_mut::<V8Engine>()
@@ -129,6 +154,9 @@ unsafe impl Trace for V8Object {
 
     fn store(&mut self, ec: &mut dyn ExecutionContext<V8Types>) {
         self.0.store(ec);
+        if !self.1.is_root() {
+            return;
+        }
         let engine = ec
             .as_any_mut()
             .downcast_mut::<V8Engine>()
@@ -200,6 +228,9 @@ macro_rules! typed_wrapper_trace {
 
                 fn store(&mut self, ec: &mut dyn ExecutionContext<V8Types>) {
                     self.0.store(ec);
+                    if !self.1.is_root() {
+                        return;
+                    }
                     let engine = ec
                         .as_any_mut()
                         .downcast_mut::<V8Engine>()

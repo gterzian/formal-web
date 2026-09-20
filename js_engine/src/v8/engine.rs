@@ -26,6 +26,7 @@ use crate::{
 };
 
 use super::gc::V8PlatformData;
+use super::trace::take_roots_reached_during_trace;
 use super::types::{CachedPrimitive, ObjectProfile, V8ArrayBufferState, V8Handle};
 use super::{
     V8ArrayBuffer, V8BigInt, V8Constructor, V8DataView, V8Function, V8Generator, V8Map, V8Object,
@@ -595,14 +596,17 @@ fn wrap_local_value(
         } else {
             None
         };
-        // ECMA-262 IsConstructor (§7.2.4): callable functions without
-        // [[Construct]] have no `prototype` own property (arrows, async
-        // functions, methods, bound functions). Generator functions are the
-        // exception — V8 gives them a `prototype` property even though they
-        // are not constructible — so the generator/async function kinds are
-        // excluded explicitly. `make_builtin_function` overwrites the cached
-        // bit for native functions, where the constructor behavior is known
-        // exactly.
+        // ECMA-262 IsConstructor (§7.2.4) is approximated here by an own
+        // `prototype` property with generator/async functions excluded. It is
+        // exact for ordinary functions and for arrows, methods, and async
+        // functions (no own `prototype`), but it is wrong for bound functions
+        // (constructible when the target is, with no own `prototype`) and for
+        // arrows given a manual `prototype` assignment. `rusty_v8` 150.1.0
+        // binds only `StackFrame::IsConstructor`; the exact
+        // `v8::Object::IsConstructor` needs an upstream binding. The
+        // `has_own_property` probe can also run a Proxy trap at wrap time.
+        // `make_builtin_function` overwrites the cached bit for native
+        // functions, where the constructor behavior is known exactly.
         let is_constructor = if value.is_function()
             && !value.is_generator_function()
             && !value.is_async_function()
@@ -2090,6 +2094,9 @@ impl EcmascriptHost<V8Types> for V8Engine {
     }
 
     fn gc(&mut self) {
+        // Discard roots seen by allocation-triggered traces: this collection
+        // traces the whole heap again and reports only what it finds.
+        take_roots_reached_during_trace();
         let shared_isolate = Rc::clone(&self.shared_isolate);
         v8_shared_isolate!(isolate, shared_isolate, self.isolate_id, {
             isolate.request_garbage_collection_for_testing(v8::GarbageCollectionType::Full);
@@ -2099,6 +2106,13 @@ impl EcmascriptHost<V8Types> for V8Engine {
         self.with_cpp_heap(|heap| unsafe {
             heap.collect_garbage_for_testing(v8::cppgc::EmbedderStackState::NoHeapPointers);
         });
+        let roots_reached = take_roots_reached_during_trace();
+        if roots_reached > 0 {
+            error!(
+                "{roots_reached} rooted JS handle(s) reached cppgc tracing: the store \
+                 invariant was bypassed and the referents are over-retained"
+            );
+        }
     }
 
     fn value_undefined(&mut self) -> V8Value {
@@ -4223,6 +4237,79 @@ mod tests {
         assert!(
             !matches!(function.1, V8Handle::Edge(_)),
             "fresh values are rooted"
+        );
+    }
+
+    /// The store path converts rooted handles into cppgc edges and then
+    /// makes later stores cheap: `needs_store` is the guard that keeps a
+    /// `borrow_mut` drop over an already-stored container from opening a V8
+    /// value scope per element.
+    #[test]
+    fn store_converts_roots_then_skips_the_value_scope() {
+        let mut engine = V8Engine::new();
+        let mut value = ExecutionContext::evaluate_script(&mut engine, "({ marker: 'payload' })")
+            .expect("the payload object must evaluate");
+        assert!(value.needs_store(), "a fresh value holds rooted handles");
+        Trace::store(&mut value, &mut engine);
+        assert!(!value.needs_store(), "a stored value's handles are edges");
+
+        let fresh_object = ExecutionContext::evaluate_script(&mut engine, "new ArrayBuffer(8)")
+            .expect("the ArrayBuffer must evaluate");
+        let fresh_object =
+            V8Types::value_as_object(&fresh_object).expect("the value must be an object");
+        let mut object = fresh_object;
+        assert!(
+            object.0.needs_store() && object.1.is_root(),
+            "a fresh object holds two rooted handles"
+        );
+        Trace::store(&mut object, &mut engine);
+        assert!(
+            !object.0.needs_store() && !object.1.is_root(),
+            "both object handles must become edges"
+        );
+
+        let fresh_array_buffer =
+            ExecutionContext::evaluate_script(&mut engine, "new ArrayBuffer(8)")
+                .expect("the ArrayBuffer must evaluate");
+        let fresh_array_buffer =
+            V8Types::value_as_object(&fresh_array_buffer).expect("the value must be an object");
+        let mut array_buffer = V8Types::object_as_array_buffer(&fresh_array_buffer)
+            .expect("ArrayBuffer must retain a typed handle");
+        assert!(
+            array_buffer.0.0.needs_store() && array_buffer.1.is_root(),
+            "a fresh typed wrapper holds rooted handles"
+        );
+        Trace::store(&mut array_buffer, &mut engine);
+        assert!(
+            !array_buffer.0.0.needs_store() && !array_buffer.1.is_root(),
+            "a typed wrapper's handles must become edges"
+        );
+    }
+
+    /// Microbenchmark for the store-on-drop path: push a batch of fresh
+    /// rooted values into a cell, then clear it. Each push re-walks the whole
+    /// cell, so the `needs_store` guard is what keeps the already-stored
+    /// elements from opening a V8 value scope each. Not a correctness test.
+    #[test]
+    #[ignore = "microbenchmark; run with --ignored --nocapture"]
+    fn store_on_borrow_mut_drop_throughput() {
+        let mut engine = V8Engine::new();
+        let cell = gc_cell_new(Vec::new(), &mut engine);
+        let value = engine.value_from_number(1.0);
+        let batch = 1000usize;
+        let batches = 100usize;
+        let start = std::time::Instant::now();
+        for _ in 0..batches {
+            for _ in 0..batch {
+                cell.borrow_mut(&mut engine).push(value.clone());
+            }
+            cell.borrow_mut(&mut engine).clear();
+        }
+        let elapsed = start.elapsed();
+        let total = (batch * batches) as u32;
+        println!(
+            "store-on-drop: {total} pushes in {elapsed:?} ({:?}/push)",
+            elapsed / total
         );
     }
 

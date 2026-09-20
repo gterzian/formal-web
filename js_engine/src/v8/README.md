@@ -19,8 +19,12 @@ fields, and JS edges are collected in one pass.
   `gc_cell_new`/`GcCell::set` (via `Trace::store`), when a `GcCell::borrow_mut`
   guard is dropped (so `borrow_mut().push(...)` cannot leave a strong root in
   a cell), and at reflector writes (`ExecutionContext::store_js_object`,
-  `with_object_any_mut_with`). A `debug_assert` in the `Trace` impls rejects a
-  `Root` reached by marking as a store-invariant violation.
+  `with_object_any_mut_with`). `Trace::store` converts only handles that are
+  still `Root`, so storing an already-converted container does not open a V8
+  value scope per element. A `debug_assert` in the `Trace` impls rejects a
+  `Root` reached by marking as a store-invariant violation; release builds
+  count such roots and `V8Engine::gc` logs the count (the invariant is not
+  compiled out under `--release`).
 - Platform objects are allocated on the cppgc heap (`V8PlatformData`, a
   type-erased cppgc object tracing through the concrete type) and linked to
   their JS wrapper with `v8::Object::wrap`, so the unified heap traces
@@ -143,14 +147,21 @@ have appeared and disappeared between runs.
    created, used for a bounded sequence of C calls, and dropped) and the
    underlying memory is C++-owned, but the pattern is not Stacked-Borrows
    clean; a Miri run would flag it.
-4. **`with_object_any_mut_with` vs. cppgc tracing.** The operation receives
-   `&mut dyn Any` into the platform data AND an execution context; if it
-   allocates, a trace pass can read the platform data while the mutable
-   borrow is live — the same aliasing hazard the `HeapCell` writer check
-   closes for `GcCell`. The `with_object_any_mut` variant is
-   compiler-protected (the `&mut` is tied to `&mut ec`, so `ec` cannot be
-   used while the borrow is outstanding); the `_with` variant exists for
-   operations that need both. Not reproduced as a crash; structurally open.
+4. **`with_object_any_mut_with` is an unsound safe API.** The operation
+   receives `&mut dyn Any` into the platform data AND an execution context,
+   so a closure can call an engine method that allocates and triggers a
+   cppgc trace reading the platform data while the mutable borrow is live —
+   the aliasing hazard the `HeapCell` writer check closes for `GcCell`. The
+   `mutably_borrowed_platforms` set only stops re-entrant
+   `with_object_any`/`with_object_any_mut` calls, not a trace. The
+   `with_object_any_mut` variant is compiler-protected (the `&mut` is tied
+   to `&mut ec`, so `ec` cannot be used while the borrow is outstanding).
+   Removal pattern: convert handles to edges before taking the platform
+   borrow (so the write needs no `ec`), or clone the platform's shared state
+   out, run the `ec` work on the owned clone, and write back — the same
+   clone-out/write-back discipline `GcCell` uses. Call sites live in
+   `content/src/js/downcast.rs`, `content/src/js/bindings/dom/abort_signal.rs`,
+   and `content/src/js/bindings/html/`.
 5. **The opaque closure path remains on the concrete engines.**
    `create_builtin_fn` / `create_builtin_function` are no longer `JsEngine`
    trait methods, so generic domain code cannot use them; they survive as
@@ -158,6 +169,22 @@ have appeared and disappeared between runs.
    production caller holding a concrete engine could still pass a closure
    with rooted captures, so the doc-comment rule (capture no strong JS
    handles) still applies.
+6. **The realm-teardown regression net is synthetic.** `js_engine`'s
+   128-iteration soak builds child realms with `Option<V8Object>` captures
+   and `new Promise(() => {})`, and the realm-collection unit tests build
+   realms in-process. The 60-navigation real-content soak referenced in the
+   leak-fix commit message is not scripted. Promote it to a wpt-runner mode
+   that navigates repeatedly and asserts the live realm and callback counts
+   after `gc()`, so teardown changes (e.g. dropping the per-document forced
+   collection noted in `content/README.md`) can be validated.
+7. **Strong roots remain in host-data holders.** `store_host_any` values and
+   `AssociatedPlatform.object` hold strong `V8Object` roots inside the
+   realm's host-data holder, so a dead realm needs one extra collection
+   cycle. This is safe today only because nothing JS-reachable points at the
+   host-data holder; a JS path to it would form a strong cycle none of the
+   current tests catch.
+8. **`is_constructor` has no exact check.** See the IsConstructor gap under
+   "ArrayBuffer / IsConstructor gaps".
 
 ### ArrayBuffer / IsConstructor gaps
 
@@ -170,10 +197,15 @@ have appeared and disappeared between runs.
   `ArrayBuffer.prototype.slice` would run subclass bodies the spec forbids.
 - `is_constructor` (the `ObjectProfile` bit cached at wrap time) is a
   heuristic — own `prototype` property with generator/async functions
-  excluded — not ECMA-262 `IsConstructor` (§7.2.4). It can go stale after
-  `delete Foo.prototype` (false negative) or a `prototype` assignment on an
-  arrow function (false positive). `rusty_v8` 150.1.0 exposes no native
-  predicate; a JS-side probe would be needed.
+  excluded — not ECMA-262 `IsConstructor` (§7.2.4). It is wrong for bound
+  constructors ([[Construct]] mirroring a constructible target, no own
+  `prototype`) and for arrow functions given a manual `prototype`
+  assignment; the `has_own_property` probe can also run a Proxy trap at wrap
+  time. `delete Foo.prototype` cannot produce a false negative — `prototype`
+  is non-configurable on functions. The exact check is
+  `v8::Object::IsConstructor` (`v8-object.h`); `rusty_v8` 150.1.0 binds only
+  `StackFrame::IsConstructor`, so a one-line upstream binding (or a patch to
+  the `v8` crate) is required.
 
 ## WebAssembly
 

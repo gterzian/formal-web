@@ -1868,12 +1868,12 @@ impl ContentProcess {
             });
         drop(local_state);
 
-        // Reclaim the destroyed document's realm: release the behaviour
-        // closures of callbacks whose creation realm died with it (their
-        // captured JS handles would keep rooting the dead realm), drain the
+        // Tear down the destroyed document's realm: prune callback records
+        // whose creation realm has died (housekeeping — the captures are
+        // cppgc edges now, so the realm is collectable without it), drain the
         // shared microtask queue, then run a full V8 + cppgc collection so
-        // the dead context is reclaimed instead of waiting for allocation
-        // pressure that a fresh page may never generate.
+        // the dead context is reclaimed eagerly rather than waiting for
+        // allocation pressure a fresh page may never generate.
         #[cfg(v8_backend)]
         self.realm_parent.prune_dead_realm_callbacks();
         if let Err(error) = self.realm_parent.perform_a_microtask_checkpoint() {

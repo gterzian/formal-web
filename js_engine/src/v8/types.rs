@@ -22,6 +22,11 @@ pub(crate) enum CachedPrimitive {
     Other,
 }
 
+/// Whether an optional handle still needs `store_edge`.
+pub(crate) fn optional_handle_is_root<T>(handle: &Option<V8Handle<T>>) -> bool {
+    handle.as_ref().is_some_and(V8Handle::is_root)
+}
+
 #[derive(Clone, Debug)]
 pub(crate) struct ObjectProfile {
     pub object_handle: V8Handle<v8::Object>,
@@ -54,6 +59,22 @@ pub(crate) struct V8ArrayBufferState {
     pub backing_store: v8::SharedRef<v8::BackingStore>,
     pub detached: std::rc::Rc<Cell<bool>>,
     pub resizable: bool,
+}
+
+impl ObjectProfile {
+    /// Whether any handle in this profile is still a strong root. Used to
+    /// skip opening a V8 value scope when there is nothing to convert.
+    pub(crate) fn needs_store(&self) -> bool {
+        self.object_handle.is_root()
+            || optional_handle_is_root(&self.array_buffer_handle)
+            || optional_handle_is_root(&self.shared_array_buffer_handle)
+            || optional_handle_is_root(&self.typed_array_handle)
+            || optional_handle_is_root(&self.data_view_handle)
+            || optional_handle_is_root(&self.promise_handle)
+            || optional_handle_is_root(&self.function_handle)
+            || optional_handle_is_root(&self.map_handle)
+            || optional_handle_is_root(&self.set_handle)
+    }
 }
 
 impl std::fmt::Debug for V8ArrayBufferState {
@@ -107,6 +128,12 @@ impl<T> V8Handle<T> {
         }
     }
 
+    /// Whether this handle is still a strong `v8::Global` root that must be
+    /// converted to a cppgc edge before it enters traced storage.
+    pub(crate) fn is_root(&self) -> bool {
+        matches!(self, Self::Root(_))
+    }
+
     /// Convert a rooted handle into a cppgc edge. Idempotent for edges.
     pub(crate) fn store_edge(&mut self, scope: &mut v8::PinScope<'_, '_, ()>) {
         if let Self::Root(global) = self {
@@ -154,6 +181,16 @@ pub struct V8Value {
 }
 
 impl V8Value {
+    /// Whether any handle in this value is still a strong root. Used to skip
+    /// opening a V8 value scope when there is nothing to convert.
+    pub(crate) fn needs_store(&self) -> bool {
+        self.handle.is_root()
+            || self
+                .object_profile
+                .as_ref()
+                .is_some_and(|profile| profile.needs_store())
+    }
+
     pub fn is_undefined(&self) -> bool {
         matches!(self.primitive, CachedPrimitive::Undefined)
     }
