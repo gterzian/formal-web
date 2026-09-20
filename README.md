@@ -2,14 +2,14 @@
 
 formal-web is a Rust web-engine prototype with a modular architecture and support for formal verification.
 
-The modularity is oriented to support the following goals:
+The JS engine, media and graphics backends, networking stack, IPC layer, and embedder app are generic components with swappable implementations. The modularity is oriented to support the following goals:
 
 - **external constraint satisfaction**: shipping on a platform with specific constraints. Example: the ipc layer defaults to Rust multiprocessing, but is also designed to in the future support extensions in the context of [BrowserEngineKit](https://developer.apple.com/documentation/browserenginekit).
-- **performance optimization**: platform specific performance. Example: integrating with Core Animation based compositing on Mac.
+- **performance optimization**: platform-specific performance. Example: integrating with Core Animation-based compositing on macOS.
 - **engineering flexibility**: subsystem swapping. For example, one can choose a JS engine such as V8 or Boa, and with Boa, one can also choose to add wasm via Wasmtime (this wasm layer itself is not generic as of now, but could be).
-- **cost reduction**: reduce binary size or build time by re-using what is already on the system. Example: choosing the url-session networking backend on Mac.
+- **cost reduction**: reduce binary size or build time by re-using what is already on the system. Example: choosing the URLSession networking backend on macOS.
 
-Note: the current set of implementations of generic components reflect Mac OS being the main development platform: high-performance Mac OS paths and lower-performance cross platform paths. For example, there is a relatively high-performance rendering path on Mac OS, with zero copy texture sharing and a modicum of layering using multiple Core Animation layers to minimize re-rendering, and then there is a relatively low-performance cross platform path involving reading back data to the CPU.
+Note: the current set of implementations of generic components reflects macOS being the main development platform: high-performance macOS paths and lower-performance cross-platform paths. For example, there is a relatively high-performance rendering path on macOS, with zero-copy texture sharing and a modicum of layering using multiple Core Animation layers to minimize re-rendering, and then there is a relatively low-performance cross-platform path involving reading back data to the CPU—both use the same modular path.
 
 ## Getting Started
 
@@ -17,7 +17,7 @@ The project has only been run on macOS; all build commands assume macOS. The
 Rust toolchain is pinned to 1.94.0 (`rustup toolchain install 1.94.0`); if it
 is not your default toolchain, prefix the commands below with `rustup run 1.94.0`.
 
-### Build and run with default features on Mac OS
+### Build and run with default features on macOS
 
 ```bash
 # Default: V8, media on, AppKit embedder, AVFoundation media
@@ -48,7 +48,7 @@ cargo build --release --no-default-features --features jsc,media
 cargo run --release --no-default-features --features jsc,media
 ```
 
-### Choose a media and graphics backends (selected on the `graphics` build)
+### Choose media and graphics backends (selected on the `graphics` build)
 
 ```bash
 # Defaults (macOS): AVFoundation media backend and zero-copy IOSurface
@@ -69,7 +69,7 @@ cargo build --release --no-default-features --features v8
 cargo run --release --no-default-features --features v8
 ```
 
-### Choose a networking stack(selected on the `net` build)
+### Choose a networking stack (selected on the `net` build)
 
 The fetch transport is one of two backends. macOS defaults to the Apple
 URLSession backend, which compiles no reqwest/tokio stack; on other
@@ -110,4 +110,4 @@ The following components, mapping to processes or extensions, are used:
 
 ## Formal verification
 
-A set of core algorithms will be formalized using TLA+, and their Rust implementation model-checked against those formal specification using the tracing approach described in [Validating Traces of Distributed Programs Against TLA+ Specifications](https://arxiv.org/abs/2404.16075). For further details, see [the verification folder](verification/README.md).
+A set of core algorithms is formalized using TLA+, and their Rust implementation model-checked against those formal specifications using the tracing approach described in [Validating Traces of Distributed Programs Against TLA+ Specifications](https://arxiv.org/abs/2404.16075). For further details, see [the verification folder](verification/README.md).
