@@ -10,6 +10,7 @@ type JsValue = <crate::js::Types as JsTypes>::JsValue;
 
 use crate::html::HTMLMediaElement;
 use crate::html::HTMLVideoElement;
+use crate::js::with_cloned_platform_mut;
 use crate::webidl::bindings::{AttributeDef, InterfaceDefinition, OperationDef, WebIdlInterface};
 
 use js_engine::{Completion, ExecutionContext, JsTypes};
@@ -336,16 +337,17 @@ fn set_src(
     let src = ec.to_rust_string(args.first().cloned().unwrap_or_else(|| undefined))?;
     let obj = crate::js::Types::value_as_object(this)
         .ok_or_else(|| ec.new_type_error("expected object"))?;
-    ec.with_object_any_mut_with(
-        &obj,
-        Box::new(|data, ec2| {
-            if let Some(media) = data.downcast_mut::<HTMLMediaElement>() {
-                media.set_src(&src, ec2);
-            } else if let Some(video) = data.downcast_mut::<HTMLVideoElement>() {
-                video.media_element.set_src(&src, ec2);
-            }
-        }),
-    );
+    // Clone the media element out so `set_src` can call `ec`, then write it
+    // back; the shared cells carry the attribute updates.
+    if with_cloned_platform_mut::<HTMLMediaElement, _>(&obj, ec, |media, ec| {
+        media.set_src(&src, ec)
+    })
+    .is_none()
+    {
+        with_cloned_platform_mut::<HTMLVideoElement, _>(&obj, ec, |video, ec| {
+            video.media_element.set_src(&src, ec)
+        });
+    }
     Ok(ec.value_undefined())
 }
 
@@ -580,18 +582,13 @@ fn play_method(
 ) -> Completion<JsValue, crate::js::Types> {
     let obj = crate::js::Types::value_as_object(this)
         .ok_or_else(|| ec.new_type_error("expected object"))?;
-    let mut result = Err(ec.new_type_error("expected HTMLMediaElement"));
-    ec.with_object_any_mut_with(
-        &obj,
-        Box::new(|data, ec2| {
-            if let Some(media) = data.downcast_mut::<HTMLMediaElement>() {
-                result = media.play(ec2);
-            } else if let Some(video) = data.downcast_mut::<HTMLVideoElement>() {
-                result = video.media_element.play(ec2);
-            }
-        }),
-    );
-    result
+    with_cloned_platform_mut::<HTMLMediaElement, _>(&obj, ec, |media, ec| media.play(ec))
+        .or_else(|| {
+            with_cloned_platform_mut::<HTMLVideoElement, _>(&obj, ec, |video, ec| {
+                video.media_element.play(ec)
+            })
+        })
+        .unwrap_or_else(|| Err(ec.new_type_error("expected HTMLMediaElement")))
 }
 
 fn pause_method(
@@ -601,16 +598,13 @@ fn pause_method(
 ) -> Completion<JsValue, crate::js::Types> {
     let obj = crate::js::Types::value_as_object(this)
         .ok_or_else(|| ec.new_type_error("expected object"))?;
-    ec.with_object_any_mut_with(
-        &obj,
-        Box::new(|data, ec2| {
-            if let Some(media) = data.downcast_mut::<HTMLMediaElement>() {
-                media.pause(ec2);
-            } else if let Some(video) = data.downcast_mut::<HTMLVideoElement>() {
-                video.media_element.pause(ec2);
-            }
-        }),
-    );
+    if with_cloned_platform_mut::<HTMLMediaElement, _>(&obj, ec, |media, ec| media.pause(ec))
+        .is_none()
+    {
+        with_cloned_platform_mut::<HTMLVideoElement, _>(&obj, ec, |video, ec| {
+            video.media_element.pause(ec)
+        });
+    }
     Ok(ec.value_undefined())
 }
 

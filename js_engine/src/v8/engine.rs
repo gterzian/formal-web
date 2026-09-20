@@ -1,6 +1,6 @@
 use std::any::{Any, TypeId};
 use std::cell::{Cell, RefCell, RefMut};
-use std::collections::{HashMap, HashSet, VecDeque};
+use std::collections::{HashMap, VecDeque};
 use std::convert::TryFrom;
 use std::ffi::c_void;
 use std::mem::replace;
@@ -378,24 +378,6 @@ struct CurrentEngineGuard {
     previous: *mut V8Engine,
 }
 
-/// Removes a platform address from the engine's `mutably_borrowed_platforms`
-/// set when dropped, including on panic during the operation.
-struct PlatformBorrowGuard {
-    set: *mut RefCell<HashSet<usize>>,
-    address: usize,
-}
-
-impl Drop for PlatformBorrowGuard {
-    fn drop(&mut self) {
-        // SAFETY: The guard is created and dropped inside
-        // `with_object_any_mut_with`, which owns `&mut self` for the whole
-        // guard lifetime, so the engine outlives the guard.
-        unsafe {
-            (*self.set).borrow_mut().remove(&self.address);
-        }
-    }
-}
-
 struct CurrentCallbackScopeGuard {
     previous_scope: *mut StoredCallbackScope,
     previous_isolate_id: u64,
@@ -439,13 +421,6 @@ pub struct V8Engine {
     realm_state: Rc<V8RealmState>,
     host_hooks: HostHooks<V8Types>,
     shared_isolate: Rc<SharedIsolate>,
-    // Addresses of `V8PlatformData` instances currently handed out as
-    // `&mut dyn Any` through `with_object_any_mut_with`. `with_object_any`
-    // and `with_object_any_mut` panic on a re-entrant access to a platform
-    // that is already mutably borrowed, turning a would-be aliasing
-    // violation (two live references to the same platform data) into a loud
-    // bug report.
-    mutably_borrowed_platforms: RefCell<HashSet<usize>>,
     // Strong references to realm states created through `create_realm`: the
     // shared-isolate registry holds weak refs (pruned when the last owner
     // drops), and the engine keeps the created realms alive so
@@ -1106,7 +1081,6 @@ impl V8Engine {
             realm_state,
             host_hooks: HostHooks::empty(),
             shared_isolate,
-            mutably_borrowed_platforms: RefCell::new(HashSet::new()),
             created_realm_states: RefCell::new(Vec::new()),
         };
         engine.initialize_realm_state(Rc::clone(&engine.realm_state));
@@ -3903,10 +3877,6 @@ impl ExecutionContext<V8Types> for V8Engine {
                 .map(|associated| associated.platform_pointer as usize)
         };
         let address = platform_address?;
-        assert!(
-            !self.mutably_borrowed_platforms.borrow().contains(&address),
-            "re-entrant immutable platform access during a mutable platform borrow"
-        );
         // SAFETY: `host_data_pointer` validates the marker and tag before
         // placing this pointer in a V8Value; the associated records keep
         // their platform alive through a traced cppgc Member. cppgc is
@@ -3926,10 +3896,6 @@ impl ExecutionContext<V8Types> for V8Engine {
                 .map(|associated| associated.platform_pointer as usize)
         };
         let address = platform_address?;
-        assert!(
-            !self.mutably_borrowed_platforms.borrow().contains(&address),
-            "re-entrant mutable platform access during a mutable platform borrow"
-        );
         // SAFETY: The marker and reachability invariants are the same as in
         // `with_object_any`. The `&mut self` receiver makes this the
         // exclusive host-data access path for the duration of the returned
@@ -3937,51 +3903,6 @@ impl ExecutionContext<V8Types> for V8Engine {
         // platform data while it is mutated.
         let platform = unsafe { &mut *(address as *mut V8PlatformData) };
         Some(platform.as_any_mut())
-    }
-
-    fn with_object_any_mut_with(
-        &mut self,
-        object: &V8Object,
-        operation: Box<dyn FnOnce(&mut dyn Any, &mut dyn ExecutionContext<V8Types>) + '_>,
-    ) {
-        let platform_address: Option<usize> = if let Some(pointer) = object.0.host_data {
-            Some(pointer.as_ptr() as usize)
-        } else {
-            self.realm_host_data_mut()
-                .associated_objects
-                .iter_mut()
-                .find(|associated| &associated.object == object)
-                .map(|associated| associated.platform_pointer as usize)
-        };
-        let Some(address) = platform_address else {
-            return;
-        };
-        // Register the platform as mutably borrowed for the duration of the
-        // operation: a re-entrant `with_object_any`/`with_object_any_mut`
-        // access to the same platform through the passed-in execution
-        // context would otherwise create a second live reference to the
-        // same data (an aliasing violation) — this turns it into a panic.
-        assert!(
-            self.mutably_borrowed_platforms.borrow_mut().insert(address),
-            "re-entrant mutable platform access through the execution context"
-        );
-        let set_pointer = &mut self.mutably_borrowed_platforms as *mut RefCell<HashSet<usize>>;
-        let _guard = PlatformBorrowGuard {
-            set: set_pointer,
-            address,
-        };
-        // SAFETY: The address was obtained from the validated host pointer
-        // or the associated platform record, both kept alive by their
-        // tracing owners; the guard prevents any second access to this
-        // platform through the execution context for the duration of the
-        // operation, so the `&mut dyn Any` is the only live reference.
-        let data_pointer =
-            unsafe { (&mut *(address as *mut V8PlatformData)).as_any_mut() } as *mut dyn Any;
-        // SAFETY: `data_pointer` was obtained from storage exclusively
-        // borrowed above and is used only for this call.
-        unsafe {
-            operation(&mut *data_pointer, self);
-        }
     }
 
     fn store_js_object(&mut self, slot: &mut Option<V8Object>, value: V8Object) {
@@ -4116,7 +4037,6 @@ impl ExecutionContext<V8Types> for V8Engine {
 mod tests {
     use std::any::TypeId;
     use std::cell::{Cell, RefCell};
-    use std::panic::{AssertUnwindSafe, catch_unwind};
     use std::ptr::from_ref;
     use std::rc::Rc;
 
@@ -5175,20 +5095,23 @@ mod tests {
 
         // The platform stores an edge back to its own wrapper: the wrapper
         // traces the platform (v8::Object::wrap) and the platform traces the
-        // wrapper (reflector edge) — a cross-heap cycle.
-        engine.with_object_any_mut_with(
-            &wrapper,
-            Box::new(|data, ec| {
-                let platform = data
-                    .downcast_mut::<TestPlatform>()
-                    .expect("wrapper carries test platform data");
-                assert!(
-                    !platform.dropped.0.get(),
-                    "the probe must not fire while the platform is alive"
-                );
-                ec.store_js_object(&mut platform.reflector, wrapper.clone());
-            }),
-        );
+        // wrapper (reflector edge) — a cross-heap cycle. Convert the reflector
+        // to an edge before taking the platform borrow.
+        let mut reflector = None;
+        engine.store_js_object(&mut reflector, wrapper.clone());
+        {
+            let data = engine
+                .with_object_any_mut(&wrapper)
+                .expect("wrapper carries test platform data");
+            let platform = data
+                .downcast_mut::<TestPlatform>()
+                .expect("wrapper carries test platform data");
+            assert!(
+                !platform.dropped.0.get(),
+                "the probe must not fire while the platform is alive"
+            );
+            platform.reflector = reflector;
+        }
 
         let wrapper_collected = Rc::new(Cell::new(false));
         let wrapper_weak =
@@ -5235,32 +5158,36 @@ mod tests {
             })),
         );
 
-        engine.with_object_any_mut_with(
-            &a,
-            Box::new(|data, ec| {
-                let platform = data
-                    .downcast_mut::<TestPlatform>()
-                    .expect("wrapper A carries test platform data");
-                assert!(
-                    !platform.dropped.0.get(),
-                    "the probe must not fire while platform A is alive"
-                );
-                ec.store_js_object(&mut platform.peer, b.clone());
-            }),
-        );
-        engine.with_object_any_mut_with(
-            &b,
-            Box::new(|data, ec| {
-                let platform = data
-                    .downcast_mut::<TestPlatform>()
-                    .expect("wrapper B carries test platform data");
-                assert!(
-                    !platform.dropped.0.get(),
-                    "the probe must not fire while platform B is alive"
-                );
-                ec.store_js_object(&mut platform.peer, a.clone());
-            }),
-        );
+        let mut a_peer = None;
+        engine.store_js_object(&mut a_peer, b.clone());
+        {
+            let data = engine
+                .with_object_any_mut(&a)
+                .expect("wrapper A carries test platform data");
+            let platform = data
+                .downcast_mut::<TestPlatform>()
+                .expect("wrapper A carries test platform data");
+            assert!(
+                !platform.dropped.0.get(),
+                "the probe must not fire while platform A is alive"
+            );
+            platform.peer = a_peer;
+        }
+        let mut b_peer = None;
+        engine.store_js_object(&mut b_peer, a.clone());
+        {
+            let data = engine
+                .with_object_any_mut(&b)
+                .expect("wrapper B carries test platform data");
+            let platform = data
+                .downcast_mut::<TestPlatform>()
+                .expect("wrapper B carries test platform data");
+            assert!(
+                !platform.dropped.0.get(),
+                "the probe must not fire while platform B is alive"
+            );
+            platform.peer = b_peer;
+        }
 
         let a_wrapper_collected = Rc::new(Cell::new(false));
         let b_wrapper_collected = Rc::new(Cell::new(false));
@@ -5758,27 +5685,6 @@ mod tests {
         assert!(
             live_count <= CALLBACK_HANDLE_COMPACTION_THRESHOLD,
             "the registry must compact stale entries (len={live_count})"
-        );
-    }
-
-    #[test]
-    fn reentrant_platform_access_panics() {
-        let mut engine = V8Engine::new();
-        let prototype = engine.create_plain_object(None);
-        let wrapper =
-            engine.create_object_with_any(prototype, Box::new(DropFlag(Rc::new(Cell::new(false)))));
-        let object = wrapper.clone();
-        let result = catch_unwind(AssertUnwindSafe(|| {
-            engine.with_object_any_mut_with(
-                &wrapper,
-                Box::new(move |_data, ec| {
-                    let _ = ec.with_object_any(&object);
-                }),
-            );
-        }));
-        assert!(
-            result.is_err(),
-            "re-entrant platform access must panic instead of aliasing"
         );
     }
 

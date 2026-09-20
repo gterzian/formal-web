@@ -5,7 +5,7 @@ use crate::dom::{
 use crate::html::{Window, WindowOrWorkerGlobalScope};
 use crate::js::{
     create_builtin_fn_with_traced_captures, try_with_abort_signal_mut, try_with_abort_signal_ref,
-    try_with_event_target_mut,
+    try_with_event_target_mut, with_cloned_platform_mut,
 };
 use crate::webidl::bindings::{
     AttributeDef, InterfaceDefinition, OperationDef, WebIdlInterface, create_interface_instance,
@@ -169,20 +169,15 @@ pub(crate) fn timeout_static(
     );
     let ms_val = ec.value_from_number(milliseconds as f64);
 
-    // Get the Window from the global object and schedule the timeout.
-    // Use with_object_any_mut_with to avoid borrow conflict between
-    // the downcast result and the subsequent set_timeout call.
+    // Get the Window from the global object and schedule the timeout. The
+    // window is cloned out so `set_timeout` can use `ec` without holding a
+    // borrow into the platform data; the clone is written back so the direct
+    // timer-counter state persists.
     let global = ec.global_object();
-    let mut set_result: Completion<u32, Types> = Ok(0);
-    ec.with_object_any_mut_with(
-        &global,
-        Box::new(|data, ec2| {
-            set_result = match data.downcast_ref::<Window>() {
-                Some(window) => window.set_timeout(&callback_val, &ms_val, Vec::new(), ec2),
-                None => Err(ec2.new_type_error("AbortSignal.timeout() requires a Window global")),
-            };
-        }),
-    );
+    let set_result = with_cloned_platform_mut::<Window, _>(&global, ec, |window, ec| {
+        window.set_timeout(&callback_val, &ms_val, Vec::new(), ec)
+    })
+    .unwrap_or_else(|| Err(ec.new_type_error("AbortSignal.timeout() requires a Window global")));
     set_result?;
 
     Ok(<Types as JsTypes>::value_from_object(

@@ -18,8 +18,6 @@ use crate::{Numeric, PreferredType, PropertyDescriptor, RootedPromiseCapability}
 pub type Completion<T, Ty> = Result<T, <Ty as JsTypes>::JsValue>;
 pub type RealmJob<T> = Box<dyn FnOnce(&mut dyn ExecutionContext<T>)>;
 pub type MapEntries<T> = Vec<(<T as JsTypes>::JsValue, <T as JsTypes>::JsValue)>;
-pub type ObjectDataMutation<'a, T> =
-    Box<dyn FnOnce(&mut dyn std::any::Any, &mut dyn ExecutionContext<T>) + 'a>;
 pub type BuiltinFunction<T> = fn(
     &[<T as JsTypes>::JsValue],
     <T as JsTypes>::JsValue,
@@ -706,18 +704,13 @@ pub trait ExecutionContext<T: JsTypes + JsTypesWithRealm>: EcmascriptHost<T> {
 
     /// Access data stored via `create_object_with_any` mutably.
     ///
-    /// The returned reference borrows from `ec`, not from the JS object.
-    /// This means no `ec` method can be called while the reference is alive.
-    /// For mutation that needs to call `ec` methods, use
-    /// [`with_object_any_mut_with`](Self::with_object_any_mut_with) instead.
+    /// The returned reference borrows from `ec`, so no engine method can run
+    /// while it is alive. An operation that must call back into the engine
+    /// while mutating the data clones the data out, runs the engine calls on
+    /// the owned clone, then writes the clone back under this method. (On V8
+    /// a trace triggered by such an engine call would otherwise read the
+    /// platform data through a live `&mut`.)
     fn with_object_any_mut(&mut self, object: &T::JsObject) -> Option<&mut dyn std::any::Any>;
-
-    /// Like [`with_object_any_mut`](Self::with_object_any_mut) but receives both the
-    /// mutable native data and `ec` in a closure, enabling `ec` method calls
-    /// during mutation.  This is the canonical API for patterns like
-    /// `set_onload`, `play()`, `pause()`, `set_src()` where the mutation
-    /// needs to call back into ECMA-262 operations.
-    fn with_object_any_mut_with(&mut self, object: &T::JsObject, f: ObjectDataMutation<'_, T>);
 
     /// Store a JS object into a traced platform-object slot.
     ///

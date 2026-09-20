@@ -47,17 +47,21 @@ Writing a rooted handle through a mutable guard is safe: dropping the guard
 runs `Trace::store` over the cell's contents, converting those handles into
 cppgc edges before the borrow ends.
 
-Do not write code that hands `ec` to a closure while a cell borrow is live
-(e.g. `with_..._mut(|data, ec| ...)` patterns). The V8 backend enforces the
-rule as a backstop: `HeapCell::trace` aborts if marking visits a
-mutably-borrowed cell (a Rust panic there would unwind across the C++
-marking visitor, so the failure is a hard abort with a log line), and there
-is deliberately no `Trace` impl for bare `std::cell::RefCell` — a
-`#[gc_struct]` field that needs interior mutability must use `GcCell`, or be
-marked `#[ignore_trace]` when it holds no cppgc edges. The one remaining
-exception class is the `with_object_any_mut_with` platform-object closure
-pattern (it hands `&mut dyn Any` and `ec` to the operation; see
-`js_engine/src/v8/README.md`, "Remaining work").
+Platform-object native data follows the same clone-out/write-back rule:
+`with_object_any_mut` ties its `&mut dyn Any` to `&mut ec`, so an operation
+that must call the engine while mutating a platform object clones it out,
+runs the engine calls on the owned clone, then writes it back
+(`content/src/js/downcast.rs::with_cloned_platform_mut` is the shared
+helper).
+
+Do not write code that hands `ec` to a closure while a cell borrow is live.
+The V8 backend enforces the rule as a backstop: `HeapCell::trace` aborts if
+marking visits a mutably-borrowed cell (a Rust panic there would unwind
+across the C++ marking visitor, so the failure is a hard abort with a log
+line), and there is deliberately no `Trace` impl for bare
+`std::cell::RefCell` — a `#[gc_struct]` field that needs interior mutability
+must use `GcCell`, or be marked `#[ignore_trace]` when it holds no cppgc
+edges.
 
 ## Task queue and commands
 
@@ -123,7 +127,8 @@ this crate.
   store invariant and function-owned native captures make the realm
   collectable without it, so the call is an atomic full-heap pause that can
   be removed once a real-content navigation soak validates natural-GC
-  collection (see `js_engine/src/v8/README.md`, "Remaining work", item 6).
+  collection (see the realm-teardown regression net item in
+  `js_engine/src/v8/README.md`, "Remaining work").
 
 - **Document lifecycle commands run outside the task queue.**
   `CreateEmptyDocument`, `CreateLoadedDocument`, `CompleteDocumentFetch`,

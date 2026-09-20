@@ -1,5 +1,6 @@
 use crate::html::message_event::{MessageEvent, MessageEventInit};
 use crate::js::bindings::initialization::init_flag;
+use crate::js::with_cloned_platform_mut;
 use crate::webidl::bindings::{AttributeDef, InterfaceDefinition, OperationDef, WebIdlInterface};
 use js_engine::{Completion, ExecutionContext, JsTypes};
 
@@ -326,28 +327,25 @@ fn init_message_event_method(
 
     let object = crate::js::Types::value_as_object(this)
         .ok_or_else(|| ec.new_type_error("MessageEvent receiver is not an object"))?;
-    let mut result = Err(ec.new_type_error("receiver is not a MessageEvent"));
-    ec.with_object_any_mut_with(
-        &object,
-        Box::new(|platform_data, ec| {
-            if let Some(message_event) = platform_data.downcast_mut::<MessageEvent>() {
-                // <https://dom.spec.whatwg.org/#dom-event-initevent>
-                // Note: The Event fields are re-initialized directly (initEvent
-                // is not exposed as a separate binding step).
-                message_event.event.type_ = type_;
-                *message_event.event.bubbles.borrow_mut(ec) = bubbles;
-                *message_event.event.cancelable.borrow_mut(ec) = cancelable;
-                message_event.data.set(Some(data), ec);
-                message_event.origin.set(origin, ec);
-                message_event.last_event_id.set(last_event_id, ec);
-                message_event.source.set(source, ec);
-                message_event.ports.set(ports, ec);
-                // Invalidate the cached frozen array so the next `ports`
-                // getter builds one from the new ports sequence.
-                message_event.ports_array.set(None, ec);
-                result = Ok(ec.value_undefined());
-            }
-        }),
-    );
-    result
+    // The platform data is cloned out so the mutation can call `ec` without
+    // holding a borrow into it, then written back; the shared cells carry the
+    // attribute updates.
+    let result = with_cloned_platform_mut::<MessageEvent, _>(&object, ec, |message_event, ec| {
+        // <https://dom.spec.whatwg.org/#dom-event-initevent>
+        // Note: The Event fields are re-initialized directly (initEvent
+        // is not exposed as a separate binding step).
+        message_event.event.type_ = type_;
+        *message_event.event.bubbles.borrow_mut(ec) = bubbles;
+        *message_event.event.cancelable.borrow_mut(ec) = cancelable;
+        message_event.data.set(Some(data), ec);
+        message_event.origin.set(origin, ec);
+        message_event.last_event_id.set(last_event_id, ec);
+        message_event.source.set(source, ec);
+        message_event.ports.set(ports, ec);
+        // Invalidate the cached frozen array so the next `ports`
+        // getter builds one from the new ports sequence.
+        message_event.ports_array.set(None, ec);
+        Ok(ec.value_undefined())
+    });
+    result.unwrap_or_else(|| Err(ec.new_type_error("receiver is not a MessageEvent")))
 }

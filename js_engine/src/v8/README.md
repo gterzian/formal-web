@@ -18,8 +18,9 @@ fields, and JS edges are collected in one pass.
   values, `Edge(Rc<TracedReference>)` once stored. Conversion happens at
   `gc_cell_new`/`GcCell::set` (via `Trace::store`), when a `GcCell::borrow_mut`
   guard is dropped (so `borrow_mut().push(...)` cannot leave a strong root in
-  a cell), and at reflector writes (`ExecutionContext::store_js_object`,
-  `with_object_any_mut_with`). `Trace::store` converts only handles that are
+  a cell), and at reflector writes (`ExecutionContext::store_js_object`
+  converts the handle to an edge, then `with_object_any_mut` assigns the
+  slot). `Trace::store` converts only handles that are
   still `Root`, so storing an already-converted container does not open a V8
   value scope per element. A `debug_assert` in the `Trace` impls rejects a
   `Root` reached by marking as a store-invariant violation; release builds
@@ -147,29 +148,14 @@ have appeared and disappeared between runs.
    created, used for a bounded sequence of C calls, and dropped) and the
    underlying memory is C++-owned, but the pattern is not Stacked-Borrows
    clean; a Miri run would flag it.
-4. **`with_object_any_mut_with` is an unsound safe API.** The operation
-   receives `&mut dyn Any` into the platform data AND an execution context,
-   so a closure can call an engine method that allocates and triggers a
-   cppgc trace reading the platform data while the mutable borrow is live —
-   the aliasing hazard the `HeapCell` writer check closes for `GcCell`. The
-   `mutably_borrowed_platforms` set only stops re-entrant
-   `with_object_any`/`with_object_any_mut` calls, not a trace. The
-   `with_object_any_mut` variant is compiler-protected (the `&mut` is tied
-   to `&mut ec`, so `ec` cannot be used while the borrow is outstanding).
-   Removal pattern: convert handles to edges before taking the platform
-   borrow (so the write needs no `ec`), or clone the platform's shared state
-   out, run the `ec` work on the owned clone, and write back — the same
-   clone-out/write-back discipline `GcCell` uses. Call sites live in
-   `content/src/js/downcast.rs`, `content/src/js/bindings/dom/abort_signal.rs`,
-   and `content/src/js/bindings/html/`.
-5. **The opaque closure path remains on the concrete engines.**
+4. **The opaque closure path remains on the concrete engines.**
    `create_builtin_fn` / `create_builtin_function` are no longer `JsEngine`
    trait methods, so generic domain code cannot use them; they survive as
    inherent methods for the engine tests and the JSC backend. A future
    production caller holding a concrete engine could still pass a closure
    with rooted captures, so the doc-comment rule (capture no strong JS
    handles) still applies.
-6. **The realm-teardown regression net is synthetic.** `js_engine`'s
+5. **The realm-teardown regression net is synthetic.** `js_engine`'s
    128-iteration soak builds child realms with `Option<V8Object>` captures
    and `new Promise(() => {})`, and the realm-collection unit tests build
    realms in-process. The 60-navigation real-content soak referenced in the
@@ -177,13 +163,13 @@ have appeared and disappeared between runs.
    that navigates repeatedly and asserts the live realm and callback counts
    after `gc()`, so teardown changes (e.g. dropping the per-document forced
    collection noted in `content/README.md`) can be validated.
-7. **Strong roots remain in host-data holders.** `store_host_any` values and
+6. **Strong roots remain in host-data holders.** `store_host_any` values and
    `AssociatedPlatform.object` hold strong `V8Object` roots inside the
    realm's host-data holder, so a dead realm needs one extra collection
    cycle. This is safe today only because nothing JS-reachable points at the
    host-data holder; a JS path to it would form a strong cycle none of the
    current tests catch.
-8. **`is_constructor` has no exact check.** See the IsConstructor gap under
+7. **`is_constructor` has no exact check.** See the IsConstructor gap under
    "ArrayBuffer / IsConstructor gaps".
 
 ### ArrayBuffer / IsConstructor gaps
