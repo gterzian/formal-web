@@ -2821,27 +2821,45 @@ mod tests {
         assert!((engine.to_number(result).unwrap() - 7.0).abs() < 0.001);
     }
 
-    /// Validates that `create_builtin_function` works through
-    /// `&mut dyn ExecutionContext<T>` via `ec.create_builtin_function()`.
+    /// Captures for the builtin-capture tests: a Rust counter the behaviour
+    /// mutates. `#[ignore_trace]` because the counter holds no GC edges.
+    #[gc_struct]
+    struct CounterCapture {
+        #[ignore_trace]
+        counter: Rc<std::cell::Cell<f64>>,
+    }
+
+    fn increment_behaviour(
+        args: &[JsValue],
+        _this: JsValue,
+        captures: &CounterCapture,
+        ec: &mut dyn ExecutionContext<TestTypes>,
+    ) -> Completion<JsValue, TestTypes> {
+        let delta = if let Some(arg) = args.first() {
+            ec.to_number(arg.clone()).unwrap_or(1.0)
+        } else {
+            1.0
+        };
+        let old = captures.counter.get();
+        captures.counter.set(old + delta);
+        Ok(ec.value_from_number(old))
+    }
+
+    /// Validates that the traced-captures path works through
+    /// `&mut dyn ExecutionContext<T>` (the supported generic path).
     #[test]
-    fn create_builtin_function_through_ec_trait() {
+    fn create_builtin_fn_with_captures_through_ec_trait() {
         let mut engine = setup();
         let count = Rc::new(std::cell::Cell::new(0.0));
         let pk = engine.property_key_from_str("inc");
-        let count_for_fn = count.clone();
 
         let ec: &mut dyn ExecutionContext<TestTypes> = &mut engine;
-        let func = ec.create_builtin_function(
-            Box::new(move |args, _this, ec| {
-                let delta = if let Some(arg) = args.first() {
-                    ec.to_number(arg.clone()).unwrap_or(1.0)
-                } else {
-                    1.0
-                };
-                let old = count_for_fn.get();
-                count_for_fn.set(old + delta);
-                Ok(ec.value_from_number(old))
-            }),
+        let func = crate::js::create_builtin_fn_with_traced_captures(
+            ec,
+            CounterCapture {
+                counter: Rc::clone(&count),
+            },
+            increment_behaviour,
             0,
             pk,
             false,
@@ -2859,23 +2877,17 @@ mod tests {
     }
 
     #[test]
-    fn create_builtin_function_survives_allocation_pressure() {
+    fn create_builtin_captures_survive_allocation_pressure() {
         let mut engine = setup();
         let count = Rc::new(std::cell::Cell::new(0.0));
         let pk = engine.property_key_from_str("inc");
-        let count_for_fn = count.clone();
         let ec: &mut dyn ExecutionContext<TestTypes> = &mut engine;
-        let func = ec.create_builtin_function(
-            Box::new(move |args, _this, ec| {
-                let delta = if let Some(arg) = args.first() {
-                    ec.to_number(arg.clone()).unwrap_or(1.0)
-                } else {
-                    1.0
-                };
-                let old = count_for_fn.get();
-                count_for_fn.set(old + delta);
-                Ok(ec.value_from_number(old))
-            }),
+        let func = crate::js::create_builtin_fn_with_traced_captures(
+            ec,
+            CounterCapture {
+                counter: Rc::clone(&count),
+            },
+            increment_behaviour,
             0,
             pk,
             false,

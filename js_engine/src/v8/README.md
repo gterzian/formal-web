@@ -16,8 +16,11 @@ fields, and JS edges are collected in one pass.
   owning platform object — no `Persistent` roots.
 - JS references are two-mode `V8Handle`s: `Root(Global)` for ephemeral Rust
   values, `Edge(Rc<TracedReference>)` once stored. Conversion happens at
-  `gc_cell_new`/`GcCell::set` (via `Trace::store`) and at reflector writes
-  (`ExecutionContext::store_js_object`, `with_object_any_mut_with`).
+  `gc_cell_new`/`GcCell::set` (via `Trace::store`), when a `GcCell::borrow_mut`
+  guard is dropped (so `borrow_mut().push(...)` cannot leave a strong root in
+  a cell), and at reflector writes (`ExecutionContext::store_js_object`,
+  `with_object_any_mut_with`). A `debug_assert` in the `Trace` impls rejects a
+  `Root` reached by marking as a store-invariant violation.
 - Platform objects are allocated on the cppgc heap (`V8PlatformData`, a
   type-erased cppgc object tracing through the concrete type) and linked to
   their JS wrapper with `v8::Object::wrap`, so the unified heap traces
@@ -38,38 +41,52 @@ fields, and JS edges are collected in one pass.
 
 Forced-collection coverage lives in the js_engine test module: `engine.gc()`
 (a V8 full collection plus a cppgc sweep with `NoHeapPointers`) reclaims a
-wrapper↔platform reflector cycle, a two-platform mutual cycle, and a JS
-object referenced only through a cell edge in a single pass; platform data
-is finalized at isolate destruction.
+wrapper↔platform reflector cycle, a two-platform mutual cycle, a JS object
+referenced only through a cell edge, and a child realm whose wrapper or
+function is captured by one of its own native callbacks (once the Rust realm
+handle is dropped) in a single pass; platform data is finalized at isolate
+destruction.
 
 ## Native callback records and realm teardown
 
 `make_builtin_function` records live in the shared-isolate callback registry
-until the function is collected. A behaviour closure that captures a strong
-JS handle (interface prototype, promise resolver, bound listener, ...) roots
-that object; if the object transitively references its own realm's wrappers,
-the whole context is pinned: a `v8::Global` held in platform-object cells is
-an isolate root, so V8 can never collect the cycle
-`root → JS object → wrapper → platform → root`. Teardown breaks the cycle
-from both ends: `destroy_document` clears the document's event-listener and
-event-handler callbacks (the largest source of bound-function roots, e.g.
-React's `dispatchEvent.bind` listeners), and `prune_dead_realm_callbacks`
-clears the behaviour of records whose creation realm has been dropped.
+until the function is collected. A record built from a `Box<dyn Fn>` closure
+that captures a strong JS handle roots that object; if the object
+transitively references its own realm's wrappers, the context is pinned,
+because a `v8::Global` is an isolate root. `create_builtin_fn_with_captures`
+and `perform_promise_then` avoid this: the capture payload is a cppgc object,
+its rooted handles are converted to edges by `Trace::store`, the payload is
+wrapped in an API object (the holder), and the holder is attached to the
+function as a private property. The record keeps only a raw pointer into the
+payload, so ownership is
+`function → private property → holder → payload → captured edges` — no Rust
+root, and the captures are released with the function. The holder is required
+because a `v8::Function` is not an API wrapper: `v8::Object::is_api_wrapper()`
+is false for functions (including those built from a `FunctionTemplate` with
+an instance template), so `v8::Object::wrap` on the function stores the
+pointer but V8 never marks it and cppgc would sweep the payload while the
+function is alive
+(`function_object_private_capture_holder_is_traced`).
 
-**Two capture models exist, with a hard limitation on one of them:**
+**Cost.** Every captured callback allocates one cppgc payload plus one
+holder API object (`perform_promise_then` builds two handlers, so two of each
+per `.then()` reaction), where the opaque path allocated only the record and
+its closure. The behaviour stays a `fn` pointer, so call dispatch is
+unchanged; the allocation and tracing volume on the promise-reaction path is
+the thing to watch if `.then()` throughput regresses.
 
-- `create_builtin_fn_with_captures` (the `create_builtin_fn_with_traced_captures`
-  family in content) keeps the captures in a cppgc-traced platform object
-  rooted by the record's behaviour closure. Marking visits the captures, so
-  their `GcCell` members and JS edges stay alive exactly while the function
-  is reachable and are released when the record is freed — proper liveness
-  (see `traced_captures_keep_payload_alive_and_follow_function_lifetime`).
-- `make_builtin_function` with a bare `Box<dyn Fn>` closure is the **opaque
-  closure path**: a Rust closure's captures cannot be walked generically, so
-  they can never be traced. Records built this way must follow the rule that
-  the closure captures **no strong JS handles** — resolve the realm's objects
-  per call instead (the Web IDL constructor fix in `register_interface_spec`
-  is the model). The teardown prune is the safety net for any violation.
+The opaque `Box<dyn Fn>` path (`create_builtin_fn` / `create_builtin_function`)
+is no longer on the `JsEngine` trait — generic domain code cannot reach it,
+and the Web IDL constructor in `register_interface_spec` goes through
+`create_builtin_fn_static`. The concrete engines keep it as an inherent
+method for their own tests and the JSC backend; its closures must capture
+**no strong JS handles** (resolve the realm's objects per call instead).
+
+`destroy_document` still clears the document's event-listener and
+event-handler callbacks, and `prune_dead_realm_callbacks` still clears the
+behaviour of records whose creation realm has been dropped. These are
+housekeeping and defence in depth now, not what makes a dead realm
+collectable (`realm_wrapper_captured_by_a_native_callback_is_collected`).
 
 ## Build
 
@@ -107,18 +124,11 @@ have appeared and disappeared between runs.
 
 ## Remaining work
 
-1. **`borrow_mut` writes of fresh values stay rooted.** `Trace::store`
-   conversion runs only at the cell-construction/`set` boundaries and the
-   reflector writes. Values written into cell contents through
-   `GcCell::borrow_mut` (e.g. streams queue entries, `WriteRequest`
-   resolvers) keep their `Global` roots (over-retention, safe — no UAF).
-   Converting those would need the store operation threaded through the
-   borrow-mut write sites.
-2. **Edge equality approximation.** `V8Object`/`V8Symbol` `PartialEq` uses
+1. **Edge equality approximation.** `V8Object`/`V8Symbol` `PartialEq` uses
    `V8Handle::same_identity`, which is exact for clones of one edge but
    under-approximates two independently created edges to the same object
    (use `ec.same_value` for those — `Callback::equals` already does).
-3. **Wrapper data for Boolean/String/BigInt created by scripts.** The
+2. **Wrapper data for Boolean/String/BigInt created by scripts.** The
    `wrapper_primitive` profile slot is extracted at wrap time only for
    Number wrappers (the native `NumberValue` fast path unboxes
    `[[NumberData]]`). Wrappers created by evaluating `new Boolean(false)`,
@@ -127,13 +137,13 @@ have appeared and disappeared between runs.
    the `construct` path coerces Boolean/String arguments (BigInt has no
    [[Construct]]). Extracting the other wrapper slots needs a per-realm
    captured `%Boolean.prototype.valueOf%`-style intrinsic.
-4. **Scope-macro `&mut PinScope` reborrow.** The `v8_engine_scope_with_*`
+3. **Scope-macro `&mut PinScope` reborrow.** The `v8_engine_scope_with_*`
    macros reborrow the callback scope as `&mut` on each nested engine call
    during a native callback. The references never overlap in use (each is
    created, used for a bounded sequence of C calls, and dropped) and the
    underlying memory is C++-owned, but the pattern is not Stacked-Borrows
    clean; a Miri run would flag it.
-5. **`with_object_any_mut_with` vs. cppgc tracing.** The operation receives
+4. **`with_object_any_mut_with` vs. cppgc tracing.** The operation receives
    `&mut dyn Any` into the platform data AND an execution context; if it
    allocates, a trace pass can read the platform data while the mutable
    borrow is live — the same aliasing hazard the `HeapCell` writer check
@@ -141,6 +151,13 @@ have appeared and disappeared between runs.
    compiler-protected (the `&mut` is tied to `&mut ec`, so `ec` cannot be
    used while the borrow is outstanding); the `_with` variant exists for
    operations that need both. Not reproduced as a crash; structurally open.
+5. **The opaque closure path remains on the concrete engines.**
+   `create_builtin_fn` / `create_builtin_function` are no longer `JsEngine`
+   trait methods, so generic domain code cannot use them; they survive as
+   inherent methods for the engine tests and the JSC backend. A future
+   production caller holding a concrete engine could still pass a closure
+   with rooted captures, so the doc-comment rule (capture no strong JS
+   handles) still applies.
 
 ### ArrayBuffer / IsConstructor gaps
 

@@ -40,8 +40,12 @@ pub(crate) fn install_css_namespace(ec: &mut dyn ExecutionContext<Types>) -> Com
     let css_obj = ec.create_plain_object(None);
 
     // Install the `supports` method.
-    let fn_obj =
-        ec.create_builtin_fn_static(supports_impl, 2, ec.property_key_from_str("supports"));
+    let fn_obj = ec.create_builtin_fn_static(
+        supports_impl,
+        2,
+        ec.property_key_from_str("supports"),
+        false,
+    );
 
     ec.set(
         css_obj.clone(),

@@ -37,6 +37,11 @@ const HOST_OBJECT_TAG: u16 = 1;
 static HOST_OBJECT_MARKER: u8 = 0;
 static NEXT_ISOLATE_ID: AtomicU64 = AtomicU64::new(1);
 
+/// Private-symbol key under which a native function holds the API-object
+/// holder for its cppgc capture payload. `v8::Private` keys are invisible to
+/// JavaScript.
+const CAPTURE_HOLDER_PRIVATE_KEY: &str = "formal-web#callback-captures";
+
 /// The registry of native-function weak handles is compacted opportunistically
 /// once it reaches this many entries (see `make_builtin_function`).
 const CALLBACK_HANDLE_COMPACTION_THRESHOLD: usize = 64;
@@ -109,18 +114,16 @@ struct RealmHostData {
 }
 
 // SAFETY: The trace visits every cppgc edge the host data holds: each
-// associated platform (whose trace walks its cells and JS edges) and each
-// associated JS object handle (edges only; rooted handles have nothing to
-// visit). Host `values` hold strong roots (`store_host_any` never converts
-// them), so they are over-retained rather than traced.
+// associated platform, whose trace walks its cells and JS edges. The
+// associated JS objects themselves are context-rooted realm globals, so they
+// need no cppgc edge. Host `values` hold strong roots (`store_host_any` never
+// converts them), so they are over-retained rather than traced.
 unsafe impl Trace for RealmHostData {
     unsafe fn trace(&self, visitor: &mut crate::v8_gc::Visitor) {
         for associated in &self.associated_objects {
             // SAFETY: Delegated to the cppgc Member trace, which visits the
             // platform object and through it the platform's cells.
             visitor.trace(&associated.member);
-            // SAFETY: Delegated to the object handle's own trace.
-            unsafe { Trace::trace(&associated.object, visitor) }
         }
     }
 
@@ -1022,12 +1025,17 @@ impl V8Engine {
         Self::new_with_shared_isolate(SharedIsolate::new())
     }
 
-    /// Clear the behaviour closures of callback records whose creation realm
-    /// has been dropped. Those closures capture strong JS handles (interface
-    /// prototypes, promise resolvers, ...) that would root the dead realm's
-    /// objects and keep the whole realm alive after navigation; clearing
-    /// them breaks the cycle so the context becomes collectable.
+    /// Drop callback records whose creation realm has been dropped.
+    ///
+    /// This is defensive housekeeping, not a correctness mechanism: a
+    /// capture-holding record keeps only a raw pointer into a cppgc payload
+    /// attached to its function, so it no longer roots the realm (see
+    /// `create_builtin_fn_with_captures`). Pruning still releases the record
+    /// and its behaviour eagerly instead of waiting for the function to be
+    /// collected with the dead realm; the `debug!` count lets a teardown
+    /// investigation tell whether it is still removing anything meaningful.
     pub fn prune_dead_realm_callbacks(&self) {
+        let mut pruned = 0usize;
         let mut callback_handles = self.shared_isolate.callback_handles.borrow_mut();
         callback_handles.retain(|handle| {
             let mut record_slot = handle.record.borrow_mut();
@@ -1036,16 +1044,19 @@ impl V8Engine {
             };
             if record.creation_realm.strong_count() == 0 {
                 // The function's creation realm is gone: no queued job, timer,
-                // or event can invoke it anymore, and any JS handles its
-                // behaviour captured must stop rooting the dead realm.
+                // or event can invoke it anymore.
                 if let Some(behaviour) = record.behaviour.get_mut().take() {
                     drop(behaviour);
                 }
+                pruned += 1;
                 false
             } else {
                 true
             }
         });
+        if pruned > 0 {
+            log::debug!("pruned {pruned} native callback record(s) for dropped realms");
+        }
     }
 
     fn new_with_shared_isolate(shared_isolate: Rc<SharedIsolate>) -> Self {
@@ -1448,6 +1459,58 @@ impl V8Engine {
                 .expect("V8 native function wrapper is not a function")
         })
     }
+
+    /// Attach a capture holder to a native function as a private property, so
+    /// the function's traced reference keeps the cppgc capture payload alive.
+    ///
+    /// A `v8::Function` is not an API wrapper, so `v8::Object::wrap` on the
+    /// function itself stores the pointer without V8 ever marking it (the
+    /// payload would be swept while the function is alive). The holder is an
+    /// API object created by `create_object_with_any`; marking the function
+    /// reaches the private property, the holder, and through the wrapper link
+    /// the payload and its edges.
+    fn attach_capture_holder(&mut self, function: &V8Function, holder: &V8Object) {
+        let isolate_id = self.isolate_id;
+        v8_engine_scope_with_context!(scope, self, &self.realm_state.realm.context, {
+            let function_local = local_typed_object(scope, isolate_id, &function.0, &function.1)
+                .expect("capture holder target is not a live function");
+            let holder_local = local_object(scope, isolate_id, holder)
+                .expect("capture holder is not a live object");
+            let key_name = v8::String::new(scope, CAPTURE_HOLDER_PRIVATE_KEY)
+                .expect("capture holder private-key string allocation failed");
+            let key = v8::Private::for_api(scope, Some(key_name));
+            function_local
+                .set_private(scope, key, holder_local.into())
+                .expect("attaching the native callback capture holder threw");
+        });
+    }
+
+    /// Create a built-in function from a type-erased closure.
+    ///
+    /// This is deliberately **not** a `JsEngine` trait method: a closure's
+    /// captures cannot be walked by cppgc, so generic domain code must use
+    /// `create_builtin_fn_static` or `create_builtin_fn_with_captures`. It
+    /// remains an inherent method for the engine's own tests and the JSC
+    /// backend, whose closures capture only non-JS values.
+    pub fn create_builtin_fn(
+        &mut self,
+        behaviour: StoredBehaviour,
+        length: u32,
+        name: V8PropertyKey,
+    ) -> V8Function {
+        self.make_builtin_function(behaviour, length, name, false)
+    }
+
+    /// Constructable variant of [`Self::create_builtin_fn`].
+    pub fn create_builtin_function(
+        &mut self,
+        behaviour: StoredBehaviour,
+        length: u32,
+        name: V8PropertyKey,
+        is_constructor: bool,
+    ) -> V8Function {
+        self.make_builtin_function(behaviour, length, name, is_constructor)
+    }
 }
 
 impl Default for V8Engine {
@@ -1752,49 +1815,44 @@ where
         destination.assume_init()
     };
 
-    // Move the captures into a cppgc-traced platform object instead of
-    // leaving them as strong roots inside the callback record: the platform
-    // traces the captures during unified-heap marking (keeping their GcCell
-    // members and JS edges alive while the function is reachable), and the
-    // wrapper is rooted by the record's behaviour closure, so the captures
-    // are released exactly when the function dies. Rooted handles inside the
-    // captures are converted to edges first so they participate in cycle
-    // collection.
+    // Move the captures into a cppgc-traced platform object attached to the
+    // function itself: rooted handles are converted to edges, the platform is
+    // wrapped in an API object (the holder), and the holder is attached to the
+    // function as a private property. The callback record therefore holds no
+    // strong root — only a raw pointer into the platform — so the realm cannot
+    // be pinned through the record and the captures die with the function.
     let mut captures = captures;
     Trace::store(&mut captures, engine);
     let intrinsics = engine.realm_intrinsics(&engine.current_realm());
-    let captures_wrapper = engine.create_object_with_any(
+    let captures_holder = engine.create_object_with_any(
         intrinsics.object_prototype,
         Box::new(V8PlatformData::new(captures)),
     );
+    // SAFETY: cppgc is non-moving and the holder is traced from the function
+    // created below, so the payload address is stable for as long as the
+    // function is callable.
+    let captures_ptr = engine
+        .with_object_any(&captures_holder)
+        .and_then(|data| data.downcast_ref::<C>())
+        .expect("captures platform data type mismatch") as *const C;
 
     let stored = Box::new(
         move |arguments: &[V8Value],
               this_value,
               execution_context: &mut dyn ExecutionContext<V8Types>| {
-            // The captures live in a cppgc-traced platform object rooted by
-            // this closure: they are visited during unified-heap marking, so
-            // their cells and JS edges stay alive exactly while the function
-            // is reachable, and are released when the record (and thus this
-            // closure) is freed.
-            let engine = execution_context
-                .as_any_mut()
-                .downcast_mut::<V8Engine>()
-                .expect("native callback execution context is not the V8 engine");
-            // SAFETY: The captures platform is rooted by the wrapper handle
-            // captured in this closure, and cppgc is non-moving, so the
-            // pointer stays valid while the function is callable. The raw
-            // re-borrow avoids aliasing `execution_context` for the callback.
-            let captures_ptr = engine
-                .with_object_any(&captures_wrapper)
-                .and_then(|data| data.downcast_ref::<C>())
-                .expect("captures platform data type mismatch")
-                as *const C;
+            // The captures live in a cppgc-traced platform object attached to
+            // the function as a private property: marking reaches them through
+            // the function, so they stay alive exactly while the function is
+            // reachable and are released when it dies.
+            // SAFETY: the holder keeps the platform alive for the function's
+            // lifetime and cppgc never moves it; V8 invokes this callback only
+            // while the function is alive.
             let captures = unsafe { &*captures_ptr };
             behaviour(arguments, this_value, captures, execution_context)
         },
     );
     let result = engine.make_builtin_function(stored, length, name, is_constructor);
+    engine.attach_capture_holder(&result, &captures_holder);
 
     // SAFETY: In a V8-selected build T::Function is V8Function (asserted
     // above). The result is moved into its associated-type spelling without
@@ -1808,6 +1866,130 @@ where
         );
         std::mem::forget(result);
         destination.assume_init()
+    }
+}
+
+/// Captured state for one promise reaction handler: the user handler and the
+/// result capability's resolve/reject pair.
+struct PromiseReactionCaptures {
+    on_fulfilled: Option<V8Function>,
+    on_rejected: Option<V8Function>,
+    fulfilled_capability: Option<(V8Function, V8Function)>,
+    rejected_capability: Option<(V8Function, V8Function)>,
+}
+
+// SAFETY: visits each captured function edge exactly once.
+unsafe impl Trace for PromiseReactionCaptures {
+    unsafe fn trace(&self, visitor: &mut crate::v8_gc::Visitor) {
+        if let Some(on_fulfilled) = &self.on_fulfilled {
+            // SAFETY: Delegated to the field's own trace.
+            unsafe { Trace::trace(on_fulfilled, visitor) }
+        }
+        if let Some(on_rejected) = &self.on_rejected {
+            // SAFETY: Delegated to the field's own trace.
+            unsafe { Trace::trace(on_rejected, visitor) }
+        }
+        if let Some((resolve, reject)) = &self.fulfilled_capability {
+            // SAFETY: Delegated to the fields' own traces.
+            unsafe {
+                Trace::trace(resolve, visitor);
+                Trace::trace(reject, visitor);
+            }
+        }
+        if let Some((resolve, reject)) = &self.rejected_capability {
+            // SAFETY: Delegated to the fields' own traces.
+            unsafe {
+                Trace::trace(resolve, visitor);
+                Trace::trace(reject, visitor);
+            }
+        }
+    }
+
+    fn store(&mut self, ec: &mut dyn ExecutionContext<V8Types>) {
+        if let Some(on_fulfilled) = &mut self.on_fulfilled {
+            on_fulfilled.store(ec);
+        }
+        if let Some(on_rejected) = &mut self.on_rejected {
+            on_rejected.store(ec);
+        }
+        if let Some((resolve, reject)) = &mut self.fulfilled_capability {
+            resolve.store(ec);
+            reject.store(ec);
+        }
+        if let Some((resolve, reject)) = &mut self.rejected_capability {
+            resolve.store(ec);
+            reject.store(ec);
+        }
+    }
+}
+
+fn promise_reaction_fulfilled_behaviour(
+    arguments: &[V8Value],
+    _this: V8Value,
+    captures: &PromiseReactionCaptures,
+    execution_context: &mut dyn ExecutionContext<V8Types>,
+) -> Completion<V8Value, V8Types> {
+    let value = arguments
+        .first()
+        .cloned()
+        .unwrap_or_else(|| execution_context.value_undefined());
+    let completion = if let Some(on_fulfilled) = &captures.on_fulfilled {
+        let undefined = execution_context.value_undefined();
+        execution_context.call(&on_fulfilled.0, &undefined, &[value])
+    } else {
+        Ok(value)
+    };
+    let Some((resolve, reject)) = &captures.fulfilled_capability else {
+        return completion;
+    };
+    let undefined = execution_context.value_undefined();
+    match completion {
+        Ok(value) => match execution_context.call(&resolve.0, &undefined, &[value]) {
+            Ok(_) => Ok(undefined),
+            Err(exception) => {
+                execution_context.call(&reject.0, &undefined, &[exception])?;
+                Ok(undefined)
+            }
+        },
+        Err(exception) => {
+            execution_context.call(&reject.0, &undefined, &[exception])?;
+            Ok(undefined)
+        }
+    }
+}
+
+fn promise_reaction_rejected_behaviour(
+    arguments: &[V8Value],
+    _this: V8Value,
+    captures: &PromiseReactionCaptures,
+    execution_context: &mut dyn ExecutionContext<V8Types>,
+) -> Completion<V8Value, V8Types> {
+    let reason = arguments
+        .first()
+        .cloned()
+        .unwrap_or_else(|| execution_context.value_undefined());
+    let completion = if let Some(on_rejected) = &captures.on_rejected {
+        let undefined = execution_context.value_undefined();
+        execution_context.call(&on_rejected.0, &undefined, &[reason])
+    } else {
+        Err(reason)
+    };
+    let Some((resolve, reject)) = &captures.rejected_capability else {
+        return completion;
+    };
+    let undefined = execution_context.value_undefined();
+    match completion {
+        Ok(value) => match execution_context.call(&resolve.0, &undefined, &[value]) {
+            Ok(_) => Ok(undefined),
+            Err(exception) => {
+                execution_context.call(&reject.0, &undefined, &[exception])?;
+                Ok(undefined)
+            }
+        },
+        Err(exception) => {
+            execution_context.call(&reject.0, &undefined, &[exception])?;
+            Ok(undefined)
+        }
     }
 }
 
@@ -3481,74 +3663,34 @@ impl ExecutionContext<V8Types> for V8Engine {
             .map(|capability| (capability.resolve.clone(), capability.reject.clone()));
         let empty_name = self.property_key_from_str("");
 
-        let fulfilled_handler = self.make_builtin_function(
-            Box::new(move |arguments, _this, execution_context| {
-                let value = arguments
-                    .first()
-                    .cloned()
-                    .unwrap_or_else(|| execution_context.value_undefined());
-                let completion = if let Some(on_fulfilled) = &on_fulfilled {
-                    let undefined = execution_context.value_undefined();
-                    execution_context.call(&on_fulfilled.0, &undefined, &[value])
-                } else {
-                    Ok(value)
-                };
-                let Some((resolve, reject)) = &fulfilled_capability else {
-                    return completion;
-                };
-                let undefined = execution_context.value_undefined();
-                match completion {
-                    Ok(value) => match execution_context.call(&resolve.0, &undefined, &[value]) {
-                        Ok(_) => Ok(undefined),
-                        Err(exception) => {
-                            execution_context.call(&reject.0, &undefined, &[exception])?;
-                            Ok(undefined)
-                        }
-                    },
-                    Err(exception) => {
-                        execution_context.call(&reject.0, &undefined, &[exception])?;
-                        Ok(undefined)
-                    }
-                }
-            }),
-            1,
-            empty_name.clone(),
-            false,
-        );
-        let rejected_handler = self.make_builtin_function(
-            Box::new(move |arguments, _this, execution_context| {
-                let reason = arguments
-                    .first()
-                    .cloned()
-                    .unwrap_or_else(|| execution_context.value_undefined());
-                let completion = if let Some(on_rejected) = &on_rejected {
-                    let undefined = execution_context.value_undefined();
-                    execution_context.call(&on_rejected.0, &undefined, &[reason])
-                } else {
-                    Err(reason)
-                };
-                let Some((resolve, reject)) = &rejected_capability else {
-                    return completion;
-                };
-                let undefined = execution_context.value_undefined();
-                match completion {
-                    Ok(value) => match execution_context.call(&resolve.0, &undefined, &[value]) {
-                        Ok(_) => Ok(undefined),
-                        Err(exception) => {
-                            execution_context.call(&reject.0, &undefined, &[exception])?;
-                            Ok(undefined)
-                        }
-                    },
-                    Err(exception) => {
-                        execution_context.call(&reject.0, &undefined, &[exception])?;
-                        Ok(undefined)
-                    }
-                }
-            }),
-            1,
-            empty_name,
-            false,
-        );
+        let fulfilled_handler: V8Function =
+            create_builtin_fn_with_captures::<V8Types, PromiseReactionCaptures>(
+                self,
+                PromiseReactionCaptures {
+                    on_fulfilled,
+                    on_rejected: None,
+                    fulfilled_capability,
+                    rejected_capability: None,
+                },
+                promise_reaction_fulfilled_behaviour,
+                1,
+                empty_name.clone(),
+                false,
+            );
+        let rejected_handler: V8Function =
+            create_builtin_fn_with_captures::<V8Types, PromiseReactionCaptures>(
+                self,
+                PromiseReactionCaptures {
+                    on_fulfilled: None,
+                    on_rejected,
+                    fulfilled_capability: None,
+                    rejected_capability,
+                },
+                promise_reaction_rejected_behaviour,
+                1,
+                empty_name,
+                false,
+            );
 
         let _current_engine = CurrentEngineGuard::enter(self);
         let isolate_id = self.isolate_id;
@@ -3950,27 +4092,9 @@ impl ExecutionContext<V8Types> for V8Engine {
         ) -> Completion<V8Value, V8Types>,
         length: u32,
         name: V8PropertyKey,
-    ) -> V8Function {
-        self.make_builtin_function(Box::new(behaviour), length, name, false)
-    }
-
-    fn create_builtin_fn(
-        &mut self,
-        behaviour: StoredBehaviour,
-        length: u32,
-        name: V8PropertyKey,
-    ) -> V8Function {
-        self.make_builtin_function(behaviour, length, name, false)
-    }
-
-    fn create_builtin_function(
-        &mut self,
-        behaviour: StoredBehaviour,
-        length: u32,
-        name: V8PropertyKey,
         is_constructor: bool,
     ) -> V8Function {
-        self.make_builtin_function(behaviour, length, name, is_constructor)
+        self.make_builtin_function(Box::new(behaviour), length, name, is_constructor)
     }
 }
 
@@ -3994,9 +4118,9 @@ mod tests {
     use super::super::{V8AsyncGenerator, V8PlatformData, V8WeakMap, V8WeakRef, V8WeakSet};
     use super::{
         CALLBACK_HANDLE_COMPACTION_THRESHOLD, CURRENT_CALLBACK_ISOLATE_ID, CURRENT_CALLBACK_SCOPE,
-        HOST_OBJECT_TAG, StoredBehaviour, V8ArrayBuffer, V8Constructor, V8DataView, V8Engine,
-        V8Function, V8Generator, V8Map, V8Object, V8Promise, V8Set, V8SharedArrayBuffer,
-        V8TypedArray, V8Types, create_builtin_fn_with_captures, local_object,
+        StoredBehaviour, V8ArrayBuffer, V8Constructor, V8DataView, V8Engine, V8Function,
+        V8Generator, V8Map, V8Object, V8Promise, V8Set, V8SharedArrayBuffer, V8TypedArray, V8Types,
+        create_builtin_fn_with_captures, local_object, local_typed_object,
     };
 
     pub(crate) struct DropFlag(pub(crate) Rc<Cell<bool>>);
@@ -4492,6 +4616,205 @@ mod tests {
         assert!(realm_data_dropped.get());
     }
 
+    /// A child realm whose wrapper is captured by one of its own native
+    /// callbacks must be collectable once the Rust realm handle is dropped:
+    /// the callback record holds only a raw pointer into a cppgc capture
+    /// payload attached to the function (never a `Root`), so the realm reaches
+    /// the callback through the function without the callback rooting the
+    /// realm back.
+    #[test]
+    fn realm_wrapper_captured_by_a_native_callback_is_collected() {
+        let mut parent_engine = V8Engine::new();
+        let mut child_engine = parent_engine.new_child_realm();
+
+        let captured = child_engine.create_plain_object(None);
+        let callback_name = child_engine.property_key_from_str("capturedCallback");
+        let callback: V8Function = create_builtin_fn_with_captures::<V8Types, Option<V8Object>>(
+            &mut child_engine,
+            Some(captured.clone()),
+            |_arguments, _this, _captures, execution_context| {
+                Ok(execution_context.value_undefined())
+            },
+            0,
+            callback_name.clone(),
+            false,
+        );
+        let child_global = child_engine.realm_global_object();
+        let callback_value = V8Types::value_from_object(callback.0.clone());
+        child_engine
+            .create_data_property(child_global.clone(), callback_name, callback_value)
+            .expect("installing the captured callback must succeed");
+
+        let realm_collected = Rc::new(Cell::new(false));
+        let realm_weak = install_guaranteed_finalizer(
+            &mut child_engine,
+            &child_global,
+            Rc::clone(&realm_collected),
+        );
+
+        // Drop every Rust root into the child realm: the only remaining
+        // reference to the global is the realm's own object graph.
+        drop(callback);
+        drop(captured);
+        drop(child_global);
+        drop(child_engine);
+
+        parent_engine.gc();
+        assert!(
+            realm_collected.get(),
+            "a realm whose wrapper is captured by its own native callback must be collectable"
+        );
+        drop(realm_weak);
+    }
+
+    #[test]
+    fn realm_function_captured_by_a_native_callback_is_collected() {
+        let mut parent_engine = V8Engine::new();
+        let mut child_engine = parent_engine.new_child_realm();
+
+        let user_function = {
+            let user_value = ExecutionContext::evaluate_script(&mut child_engine, "(() => 1)")
+                .expect("the child realm must evaluate the function");
+            V8Types::value_as_object(&user_value)
+                .and_then(|object| V8Types::object_as_function(&object))
+                .expect("the evaluated value must be a function")
+        };
+        let callback_name = child_engine.property_key_from_str("capturedFunction");
+        let callback: V8Function = create_builtin_fn_with_captures::<V8Types, Option<V8Function>>(
+            &mut child_engine,
+            Some(user_function.clone()),
+            |_arguments, _this, _captures, execution_context| {
+                Ok(execution_context.value_undefined())
+            },
+            0,
+            callback_name.clone(),
+            false,
+        );
+        let child_global = child_engine.realm_global_object();
+        let callback_value = V8Types::value_from_object(callback.0.clone());
+        child_engine
+            .create_data_property(child_global.clone(), callback_name, callback_value)
+            .expect("installing the captured callback must succeed");
+
+        let realm_collected = Rc::new(Cell::new(false));
+        let realm_weak = install_guaranteed_finalizer(
+            &mut child_engine,
+            &child_global,
+            Rc::clone(&realm_collected),
+        );
+
+        drop(callback);
+        drop(user_function);
+        drop(child_global);
+        drop(child_engine);
+
+        parent_engine.gc();
+        assert!(
+            realm_collected.get(),
+            "a realm function captured by its own native callback must not pin the realm"
+        );
+        drop(realm_weak);
+    }
+
+    /// Soak: repeatedly build a child realm whose native callbacks capture
+    /// realm wrappers (a direct callback and a `.then()` reaction), drop the
+    /// realm, and collect. V8 can keep the most recent realm's functions for
+    /// one more collection cycle, so the invariant asserted is boundedness,
+    /// not zero: the live-callback count must stay flat across many
+    /// iterations and the realm-state list must collapse back to the parent.
+    #[test]
+    fn repeated_realm_teardown_does_not_leak_callbacks_or_realms() {
+        let mut parent_engine = V8Engine::new();
+        let iterations = 128;
+        let baseline = parent_engine
+            .shared_isolate
+            .callback_handles
+            .borrow()
+            .iter()
+            .filter(|handle| !handle.weak.is_empty())
+            .count();
+        let mut max_live_callbacks = baseline;
+        for iteration in 0..iterations {
+            let mut child_engine = parent_engine.new_child_realm();
+
+            // A captured callback installed on the child global.
+            let captured = child_engine.create_plain_object(None);
+            let callback_name = child_engine.property_key_from_str("capturedCallback");
+            let callback: V8Function = create_builtin_fn_with_captures::<V8Types, Option<V8Object>>(
+                &mut child_engine,
+                Some(captured.clone()),
+                |_arguments, _this, _captures, execution_context| {
+                    Ok(execution_context.value_undefined())
+                },
+                0,
+                callback_name.clone(),
+                false,
+            );
+            let child_global = child_engine.realm_global_object();
+            let callback_value = V8Types::value_from_object(callback.0.clone());
+            child_engine
+                .create_data_property(child_global, callback_name, callback_value)
+                .expect("installing the captured callback must succeed");
+
+            // A `.then()` chain whose handlers also capture a realm wrapper.
+            let promise_value =
+                ExecutionContext::evaluate_script(&mut child_engine, "new Promise(() => {})")
+                    .expect("the child realm must create a promise");
+            let promise_object =
+                V8Types::value_as_object(&promise_value).expect("the value must be an object");
+            let promise =
+                V8Types::object_as_promise(&promise_object).expect("the value must be a promise");
+            let empty_name = child_engine.property_key_from_str("");
+            let reaction_handler: V8Function =
+                create_builtin_fn_with_captures::<V8Types, Option<V8Object>>(
+                    &mut child_engine,
+                    Some(captured.clone()),
+                    |_arguments, _this, _captures, execution_context| {
+                        Ok(execution_context.value_undefined())
+                    },
+                    1,
+                    empty_name,
+                    false,
+                );
+            let _ = child_engine
+                .perform_promise_then(promise, Some(reaction_handler), None, None)
+                .expect("registering the reaction must succeed");
+            drop(promise_value);
+
+            drop(captured);
+            drop(child_engine);
+            parent_engine.gc();
+
+            let live_callbacks = parent_engine
+                .shared_isolate
+                .callback_handles
+                .borrow()
+                .iter()
+                .filter(|handle| !handle.weak.is_empty())
+                .count();
+            max_live_callbacks = max_live_callbacks.max(live_callbacks);
+            assert!(
+                live_callbacks <= baseline + 8,
+                "iteration {iteration}: live callback records grew to {live_callbacks}"
+            );
+        }
+
+        parent_engine
+            .shared_isolate
+            .realm_states
+            .borrow_mut()
+            .retain(|state| state.strong_count() != 0);
+        let live_realms = parent_engine.shared_isolate.realm_states.borrow().len();
+        assert_eq!(
+            live_realms, 1,
+            "only the parent realm must remain alive after {iterations} teardowns"
+        );
+        assert!(
+            max_live_callbacks <= baseline + 8,
+            "callback records grew unboundedly (max {max_live_callbacks})"
+        );
+    }
+
     #[test]
     fn native_callback_can_create_a_child_realm() {
         let mut engine = V8Engine::new();
@@ -4682,6 +5005,72 @@ mod tests {
                 .expect("finalizer installation received a reclaimed or cross-isolate object");
             v8::Weak::with_guaranteed_finalizer(scope, local, Box::new(move || flag.set(true)))
         })
+    }
+
+    /// De-risking prototype for function-owned callback captures. A
+    /// `v8::Function` created by the API is **not** an API wrapper
+    /// (`is_api_wrapper()` is false), so `v8::Object::wrap` silently stores
+    /// the cppgc pointer without establishing a traced edge: the payload is
+    /// swept while the function is still alive (observed as a SIGBUS). The
+    /// workable form is a private-symbol property on the function whose
+    /// value is an API object that wraps the payload — V8 marks the private
+    /// property like any other, reaches the API object, and cppgc traces the
+    /// payload through the wrapper link.
+    #[test]
+    fn function_object_private_capture_holder_is_traced() {
+        let mut engine = V8Engine::new();
+        let dropped = Rc::new(Cell::new(false));
+        let prototype = engine.create_plain_object(None);
+        let holder = engine.create_object_with_any(
+            prototype,
+            Box::new(V8PlatformData::new(TestPlatform {
+                dropped: DropFlag(Rc::clone(&dropped)),
+                reflector: None,
+                peer: None,
+                cell: None,
+            })),
+        );
+        let name = engine.property_key_from_str("captured");
+        let function = engine.create_builtin_fn_static(
+            |_arguments, _this, execution_context| Ok(execution_context.value_undefined()),
+            0,
+            name,
+            false,
+        );
+
+        let isolate_id = engine.isolate_id;
+        v8_engine_scope_with_context!(scope, &mut engine, &engine.realm_state.realm.context, {
+            let function_local = local_typed_object(scope, isolate_id, &function.0, &function.1)
+                .expect("the native function handle must materialize");
+            assert!(
+                !function_local.is_api_wrapper(),
+                "an API function is not an API wrapper; the direct wrap link is not traced"
+            );
+            let holder_local = local_object(scope, isolate_id, &holder)
+                .expect("the capture holder handle must materialize");
+            let key_string = v8::String::new(scope, "formal-web#callback-captures")
+                .expect("private-key string allocation failed");
+            let key = v8::Private::for_api(scope, Some(key_string));
+            function_local
+                .set_private(scope, key, holder_local.into())
+                .expect("setting the private capture holder must not throw");
+        });
+
+        assert!(!dropped.get(), "the payload is alive before any collection");
+        // Drop the Rust root: only the function's private property references
+        // the holder now, so a surviving payload proves the function traces it.
+        drop(holder);
+        engine.gc();
+        assert!(
+            !dropped.get(),
+            "the function's private capture holder must be traced across a collection"
+        );
+        drop(function);
+        engine.gc();
+        assert!(
+            dropped.get(),
+            "the payload must be swept with the unreachable function"
+        );
     }
 
     #[test]

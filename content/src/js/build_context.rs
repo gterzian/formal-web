@@ -369,6 +369,7 @@ fn setup_realm(engine: &mut Engine, _document: Rc<RefCell<BaseDocument>>) -> Res
                 },
                 0,
                 engine.property_key_from_str("values"),
+                false,
             )
             .into();
 
@@ -381,6 +382,7 @@ fn setup_realm(engine: &mut Engine, _document: Rc<RefCell<BaseDocument>>) -> Res
                 },
                 2,
                 engine.property_key_from_str("pipeTo"),
+                false,
             )
             .into();
 

@@ -357,7 +357,7 @@ fn sink_abort_on_fulfilled_fn(
     let (controller, readable, reason, reject_finish_on_fulfilled_cancel) = captures;
     if *reject_finish_on_fulfilled_cancel {
         // Step 7.1.1: Reject finishPromise with readable.[[storedError]].
-        if let Some(resolvers) = controller.finish_resolvers.borrow_mut(ec).take() {
+        if let Some(resolvers) = { controller.finish_resolvers.borrow_mut(ec).take() } {
             resolvers.reject(readable.stored_error(ec), ec)?;
         }
     } else {
@@ -370,7 +370,7 @@ fn sink_abort_on_fulfilled_fn(
             .error_steps(reason.clone(), ec)?;
 
         // Step 7.1.2.2: Resolve finishPromise.
-        if let Some(resolvers) = controller.finish_resolvers.borrow_mut(ec).take() {
+        if let Some(resolvers) = { controller.finish_resolvers.borrow_mut(ec).take() } {
             resolvers.resolve(ec.value_undefined(), ec)?;
         }
     }
@@ -395,7 +395,7 @@ fn sink_abort_on_rejected_fn(
         .error_steps(error.clone(), ec)?;
 
     // Step 7.2.2: Reject finishPromise with r.
-    if let Some(resolvers) = controller.finish_resolvers.borrow_mut(ec).take() {
+    if let Some(resolvers) = { controller.finish_resolvers.borrow_mut(ec).take() } {
         resolvers.reject(error, ec)?;
     }
     Ok(ec.value_undefined())
@@ -411,7 +411,7 @@ fn sink_close_on_fulfilled_fn(
     let readable_state = readable.state();
     if readable_state == super::ReadableStreamState::Errored {
         // Step 7.1.1: Reject finishPromise with readable.[[storedError]].
-        if let Some(resolvers) = controller.finish_resolvers.borrow_mut(ec).take() {
+        if let Some(resolvers) = { controller.finish_resolvers.borrow_mut(ec).take() } {
             resolvers.reject(readable.stored_error(ec), ec)?;
         }
     } else {
@@ -424,7 +424,7 @@ fn sink_close_on_fulfilled_fn(
             .close_steps(ec)?;
 
         // Step 7.1.2.2: Resolve finishPromise.
-        if let Some(resolvers) = controller.finish_resolvers.borrow_mut(ec).take() {
+        if let Some(resolvers) = { controller.finish_resolvers.borrow_mut(ec).take() } {
             resolvers.resolve(ec.value_undefined(), ec)?;
         }
     }
@@ -449,7 +449,7 @@ fn sink_close_on_rejected_fn(
         .error_steps(error.clone(), ec)?;
 
     // Step 7.2.2: Reject finishPromise with r.
-    if let Some(resolvers) = controller.finish_resolvers.borrow_mut(ec).take() {
+    if let Some(resolvers) = { controller.finish_resolvers.borrow_mut(ec).take() } {
         resolvers.reject(error, ec)?;
     }
     Ok(ec.value_undefined())
@@ -478,7 +478,7 @@ fn source_cancel_on_fulfilled_fn(
 
     // Step 7.1.1: "If writable.[[state]] is \"errored\", reject controller.[[finishPromise]] with writable.[[storedError]]."
     if *reject_finish_on_fulfilled_cancel {
-        if let Some(resolvers) = controller.finish_resolvers.borrow_mut(ec).take() {
+        if let Some(resolvers) = { controller.finish_resolvers.borrow_mut(ec).take() } {
             resolvers.reject(writable.stored_error(ec), ec)?;
         }
     } else {
@@ -496,7 +496,7 @@ fn source_cancel_on_fulfilled_fn(
         transform_stream_unblock_write(stream, ec)?;
 
         // Step 7.1.2.3: "Resolve controller.[[finishPromise]] with undefined."
-        if let Some(resolvers) = controller.finish_resolvers.borrow_mut(ec).take() {
+        if let Some(resolvers) = { controller.finish_resolvers.borrow_mut(ec).take() } {
             resolvers.resolve(ec.value_undefined(), ec)?;
         }
     }
@@ -530,7 +530,7 @@ fn source_cancel_on_rejected_fn(
     transform_stream_unblock_write(stream, ec)?;
 
     // Step 7.2.3: Reject finishPromise with r.
-    if let Some(resolvers) = controller.finish_resolvers.borrow_mut(ec).take() {
+    if let Some(resolvers) = { controller.finish_resolvers.borrow_mut(ec).take() } {
         resolvers.reject(error, ec)?;
     }
     Ok(ec.value_undefined())
@@ -692,7 +692,7 @@ fn transform_stream_set_backpressure(
     // Step 1: "Assert: stream.[[backpressure]] is not backpressure."
     // Note: On first call during initialization, backpressure is undefined (treated as not-equal).
     // Step 2: "If stream.[[backpressureChangePromise]] is not undefined, resolve stream.[[backpressureChangePromise]] with undefined."
-    if let Some(resolvers) = stream.backpressure_change_resolvers.borrow_mut(ec).take() {
+    if let Some(resolvers) = { stream.backpressure_change_resolvers.borrow_mut(ec).take() } {
         resolvers.resolve(ec.value_undefined(), ec)?;
     }
 

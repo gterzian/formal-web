@@ -25,21 +25,27 @@ patterns.
 ## GcCell borrow discipline
 
 Domain code must **never call an engine method (any `ec` operation) while a
-`GcCell` borrow guard (`borrow`/`borrow_mut`) is live** — shared or mutable.
-The rule is engine-independent: an engine call may allocate, and on the V8
-backend an allocation can trigger a cppgc trace that reads the cell while the
-borrow is live. A *mutable* borrow being traced is an aliasing violation
-(undefined behavior); a *shared* borrow being traced is legal aliasing, but
-the rule still forbids it so content code never has to know which engine
-operations allocate (and a shared-borrow site can silently become a
-mutable-borrow site later). The approved patterns are:
+shared `GcCell` borrow guard (`borrow`) is live**.  A mutable guard
+(`borrow_mut`) holds the execution context for its lifetime, so the compiler
+rejects an `ec` call while it is live; a shared guard does not hold it, so
+the rule is on the author there.  The rule is engine-independent: an engine
+call may allocate, and on the V8 backend an allocation can trigger a cppgc
+trace that reads the cell while the borrow is live. A *mutable* borrow being
+traced is an aliasing violation (undefined behavior); a *shared* borrow being
+traced is legal aliasing, but the rule still forbids it so content code never
+has to know which engine operations allocate (and a shared-borrow site can
+silently become a mutable-borrow site later). The approved patterns are:
 
 - **Clone out, write back** — `let mut value = cell.borrow(ec).clone();` …
   use the owned value (mutably, across `ec` calls) …
   `cell.set(value, ec);`.
 - **Scope the borrow** — hold the guard only for the section that touches
-the cell, and drop it before any `ec` call (an explicit `drop(guard)` where
-the control flow is not obvious).
+the cell, and drop it before any `ec` call (the mutable guard's
+context-holding lifetime makes that drop mandatory).
+
+Writing a rooted handle through a mutable guard is safe: dropping the guard
+runs `Trace::store` over the cell's contents, converting those handles into
+cppgc edges before the borrow ends.
 
 Do not write code that hands `ec` to a closure while a cell borrow is live
 (e.g. `with_..._mut(|data, ec| ...)` patterns). The V8 backend enforces the

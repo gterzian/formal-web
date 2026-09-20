@@ -47,17 +47,45 @@ fn store_optional_handle<T>(
     }
 }
 
+/// Assert that a handle reached by cppgc tracing is an edge, never a strong
+/// root. A root here means a write into traced storage bypassed `store`; the
+/// marker would silently skip it and the referent would be over-retained
+/// instead of collected with its owner.
+fn debug_assert_stored<T>(handle: &V8Handle<T>) {
+    debug_assert!(
+        matches!(handle, V8Handle::Edge(_)),
+        "a rooted JS handle reached cppgc tracing: the store invariant was bypassed"
+    );
+}
+
+/// Assert that every present handle in an optional pair is an edge.
+fn debug_assert_optional_stored<T>(handle: &Option<V8Handle<T>>) {
+    if let Some(handle) = handle {
+        debug_assert_stored(handle);
+    }
+}
+
 // SAFETY: Each impl visits every edge held by the value exactly once, and
 // `store` converts every rooted handle into an edge exactly once.
 unsafe impl Trace for V8Value {
     unsafe fn trace(&self, visitor: &mut Visitor) {
+        debug_assert_stored(&self.handle);
         if let V8Handle::Edge(edge) = &self.handle {
             visitor.trace(&**edge);
         }
         if let Some(profile) = &self.object_profile {
+            debug_assert_stored(&profile.object_handle);
             if let V8Handle::Edge(edge) = &profile.object_handle {
                 visitor.trace(&**edge);
             }
+            debug_assert_optional_stored(&profile.array_buffer_handle);
+            debug_assert_optional_stored(&profile.shared_array_buffer_handle);
+            debug_assert_optional_stored(&profile.typed_array_handle);
+            debug_assert_optional_stored(&profile.data_view_handle);
+            debug_assert_optional_stored(&profile.promise_handle);
+            debug_assert_optional_stored(&profile.function_handle);
+            debug_assert_optional_stored(&profile.map_handle);
+            debug_assert_optional_stored(&profile.set_handle);
             trace_optional_handle(&profile.array_buffer_handle, visitor);
             trace_optional_handle(&profile.shared_array_buffer_handle, visitor);
             trace_optional_handle(&profile.typed_array_handle, visitor);
@@ -94,6 +122,7 @@ unsafe impl Trace for V8Value {
 // SAFETY: See `V8Value`; both handles are edges to the same object.
 unsafe impl Trace for V8Object {
     unsafe fn trace(&self, visitor: &mut Visitor) {
+        debug_assert_stored(&self.1);
         // SAFETY: Delegated to the inner value's trace.
         unsafe { self.0.trace(visitor) }
     }
@@ -158,12 +187,26 @@ macro_rules! typed_wrapper_trace {
             // SAFETY: See `V8Object`.
             unsafe impl Trace for $name {
                 unsafe fn trace(&self, visitor: &mut Visitor) {
-                    // SAFETY: Delegated to the inner object and handle traces.
+                    debug_assert_stored(&self.1);
+                    // SAFETY: Delegated to the inner object's trace.
                     unsafe { self.0.trace(visitor) }
+                    // The typed handle is a distinct edge from the object's
+                    // own handle; it must be visited or its referent could be
+                    // collected while the wrapper still uses it.
+                    if let V8Handle::Edge(edge) = &self.1 {
+                        visitor.trace(&**edge);
+                    }
                 }
 
                 fn store(&mut self, ec: &mut dyn ExecutionContext<V8Types>) {
                     self.0.store(ec);
+                    let engine = ec
+                        .as_any_mut()
+                        .downcast_mut::<V8Engine>()
+                        .expect("V8 typed wrapper stored with a non-V8 execution context");
+                    engine.with_value_scope(|scope| {
+                        self.1.store_edge(scope);
+                    });
                 }
             }
         )*
@@ -180,6 +223,28 @@ typed_wrapper_trace!(
     V8Set,
     V8Function,
     V8Constructor,
+);
+
+/// The `tagged_v8_object!` wrappers hold only the object (no typed handle).
+macro_rules! tagged_wrapper_trace {
+    ($($name:path),* $(,)?) => {
+        $(
+            // SAFETY: See `V8Object`.
+            unsafe impl Trace for $name {
+                unsafe fn trace(&self, visitor: &mut Visitor) {
+                    // SAFETY: Delegated to the inner object's trace.
+                    unsafe { self.0.trace(visitor) }
+                }
+
+                fn store(&mut self, ec: &mut dyn ExecutionContext<V8Types>) {
+                    self.0.store(ec);
+                }
+            }
+        )*
+    };
+}
+
+tagged_wrapper_trace!(
     V8WeakMap,
     V8WeakSet,
     V8WeakRef,

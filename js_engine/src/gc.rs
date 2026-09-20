@@ -299,12 +299,16 @@ mod jsc_cells {
 // borrow counter restores the runtime double-borrow checks of `RefCell`.
 //
 // Borrow discipline: never call engine methods (any `ec` operation) while a
-// borrow guard is live — shared or mutable. An engine call may allocate and
-// trigger a cppgc trace that reads the cell while the borrow is live; a
-// mutable borrow being traced is undefined behavior. Clone the value out
-// instead (`borrow(ec).clone()` … `set(value, ec)`), or scope the borrow to
-// a non-engine section. `HeapCell::trace` aborts on a live mutable borrow as
-// a backstop.
+// shared borrow guard is live. An engine call may allocate and trigger a
+// cppgc trace that reads the cell while the borrow is live, which is legal
+// aliasing for a shared borrow but forbidden so call sites do not have to
+// know which operations allocate. A mutable guard holds the execution
+// context for its lifetime, so the compiler rejects an `ec` call while it is
+// live; clone the value out (`borrow(ec).clone()` … `set(value, ec)`) or
+// scope the mutable borrow to a non-engine section. Dropping a mutable guard
+// runs `store` over the cell contents, converting rooted handles written
+// through it into cppgc edges. `HeapCell::trace` aborts on a live mutable
+// borrow as a backstop.
 #[cfg(feature = "v8")]
 pub use v8_cells::*;
 
@@ -343,7 +347,10 @@ mod v8_cells {
         }
 
         /// Mutably borrow the wrapped value.
-        pub fn borrow_mut<'a>(&'a self, ec: &mut dyn ExecutionContext<V8Types>) -> GcRefMut<'a, T> {
+        pub fn borrow_mut<'a>(
+            &'a self,
+            ec: &'a mut dyn ExecutionContext<V8Types>,
+        ) -> GcRefMut<'a, T> {
             self.0.borrow_mut(ec)
         }
 

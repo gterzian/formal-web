@@ -853,34 +853,11 @@ pub trait ExecutionContext<T: JsTypes + JsTypesWithRealm>: EcmascriptHost<T> {
     ///
     /// Create a built-in function from a stateless function pointer.
     /// The function pointer has no captures, so it is always GC-safe.
+    /// `is_constructor` selects a constructable built-in
+    /// ([[Construct]] allowed, with a `prototype` property).
     fn create_builtin_fn_static(
         &mut self,
         behaviour: BuiltinFunction<T>,
-        length: u32,
-        name: T::PropertyKey,
-    ) -> T::Function;
-
-    /// Create a builtin function from a boxed closure.
-    ///
-    /// This method exists on the trait solely for backend implementations
-    /// (JSC) that need to accept type-erased closures through the trait
-    /// object.  Domain code should use `create_builtin_fn_static` or the
-    /// `create_builtin_fn_with_captures` standalone function instead.
-    #[doc(hidden)]
-    fn create_builtin_fn(
-        &mut self,
-        behaviour: BuiltinClosure<T>,
-        length: u32,
-        name: T::PropertyKey,
-    ) -> T::Function;
-
-    /// Create a builtin constructor from a boxed closure.
-    ///
-    /// See `create_builtin_fn` — this is the constructable variant.
-    #[doc(hidden)]
-    fn create_builtin_function(
-        &mut self,
-        behaviour: BuiltinClosure<T>,
         length: u32,
         name: T::PropertyKey,
         is_constructor: bool,

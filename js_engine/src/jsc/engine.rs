@@ -1492,6 +1492,44 @@ impl Drop for JscEngine {
 }
 
 impl JscEngine {
+    /// Create a built-in function from a type-erased closure.
+    ///
+    /// Deliberately not a `JsEngine` trait method: a closure's captures
+    /// cannot be traced, so generic domain code must use
+    /// `create_builtin_fn_static` or `create_builtin_fn_with_captures`.
+    pub fn create_builtin_fn(
+        &mut self,
+        behaviour: Box<
+            dyn Fn(
+                &[JscValue],
+                JscValue,
+                &mut dyn ExecutionContext<JscTypes>,
+            ) -> Completion<JscValue, JscTypes>,
+        >,
+        length: u32,
+        name: JscPropertyKey,
+    ) -> JscFunction {
+        self.create_builtin_function(behaviour, length, name, false)
+    }
+
+    /// Constructable variant of [`Self::create_builtin_fn`].
+    pub fn create_builtin_function(
+        &mut self,
+        behaviour: Box<
+            dyn Fn(
+                &[JscValue],
+                JscValue,
+                &mut dyn ExecutionContext<JscTypes>,
+            ) -> Completion<JscValue, JscTypes>,
+        >,
+        length: u32,
+        name: JscPropertyKey,
+        is_constructor: bool,
+    ) -> JscFunction {
+        let stored: StoredBehaviour = behaviour;
+        make_builtin_function(self.ctx_ptr(), stored, &name, length, is_constructor)
+    }
+
     pub fn new() -> Self {
         let context = JscContext::new();
         let realm_global = context.global_object();
@@ -2111,39 +2149,6 @@ impl ExecutionContext<JscTypes> for JscEngine {
         self
     }
 
-    fn create_builtin_fn(
-        &mut self,
-        behaviour: Box<
-            dyn Fn(
-                &[JscValue],
-                JscValue,
-                &mut dyn ExecutionContext<JscTypes>,
-            ) -> Completion<JscValue, JscTypes>,
-        >,
-        length: u32,
-        name: JscPropertyKey,
-    ) -> JscFunction {
-        self.create_builtin_function(behaviour, length, name, false)
-    }
-
-    fn create_builtin_function(
-        &mut self,
-        behaviour: Box<
-            dyn Fn(
-                &[JscValue],
-                JscValue,
-                &mut dyn ExecutionContext<JscTypes>,
-            ) -> Completion<JscValue, JscTypes>,
-        >,
-        length: u32,
-        name: JscPropertyKey,
-        is_constructor: bool,
-    ) -> JscFunction {
-        let stored: StoredBehaviour = behaviour;
-        let func = make_builtin_function(self.ctx_ptr(), stored, &name, length, is_constructor);
-        func
-    }
-
     fn create_builtin_fn_static(
         &mut self,
         behaviour: fn(
@@ -2153,9 +2158,10 @@ impl ExecutionContext<JscTypes> for JscEngine {
         ) -> Completion<JscValue, JscTypes>,
         length: u32,
         name: JscPropertyKey,
+        is_constructor: bool,
     ) -> JscFunction {
         let stored: StoredBehaviour = Box::new(move |args, this, ec| behaviour(args, this, ec));
-        let func = make_builtin_function(self.ctx_ptr(), stored, &name, length, false);
+        let func = make_builtin_function(self.ctx_ptr(), stored, &name, length, is_constructor);
         func
     }
 

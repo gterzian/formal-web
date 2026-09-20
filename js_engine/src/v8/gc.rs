@@ -212,16 +212,15 @@ impl<T: Trace + 'static> V8GcCell<T> {
 
     /// Mutably borrow the wrapped value.
     ///
-    /// The guard is not tied to the execution context, so the compiler does
-    /// not prevent calling back into the engine while the borrow is held —
-    /// and the borrow discipline forbids it: an engine call can allocate and
-    /// trigger a cppgc trace that would alias the `&mut T` (undefined
-    /// behavior; `HeapCell::trace` aborts on this as a backstop). Clone the
-    /// value out and write it back with `set` instead, or scope the borrow
-    /// to a non-engine section.
+    /// The returned guard holds the execution context until it is dropped,
+    /// so the compiler prevents calling back into the engine while the
+    /// borrow is held. Dropping the guard runs `Trace::store` over the cell's
+    /// contents: any rooted handle written through the guard is converted to
+    /// a cppgc edge before the borrow ends, so a `borrow_mut().push(...)` or
+    /// field assignment cannot leave a strong root inside traced storage.
     pub(crate) fn borrow_mut<'a>(
         &'a self,
-        _ec: &mut dyn ExecutionContext<V8Types>,
+        ec: &'a mut dyn ExecutionContext<V8Types>,
     ) -> V8GcRefMut<'a, T> {
         let heap_cell = unsafe { self.0.get() }.expect("V8 GcCell edge holds no heap cell");
         if heap_cell.writer.get() || heap_cell.readers.get() > 0 {
@@ -232,6 +231,7 @@ impl<T: Trace + 'static> V8GcCell<T> {
         V8GcRefMut {
             value,
             cell: heap_cell as *const HeapCell<T>,
+            ec,
             _marker: PhantomData,
         }
     }
@@ -292,13 +292,17 @@ impl<T> Drop for V8GcRef<'_, T> {
 }
 
 /// Mutable borrow guard for [`V8GcCell`].
-pub struct V8GcRefMut<'a, T> {
+///
+/// Carries the execution context so dropping the guard can run
+/// `Trace::store` over the mutated contents (see `V8GcCell::borrow_mut`).
+pub struct V8GcRefMut<'a, T: Trace + 'static> {
     value: *mut T,
     cell: *const HeapCell<T>,
+    ec: &'a mut dyn ExecutionContext<V8Types>,
     _marker: PhantomData<&'a mut T>,
 }
 
-impl<T> Deref for V8GcRefMut<'_, T> {
+impl<T: Trace + 'static> Deref for V8GcRefMut<'_, T> {
     type Target = T;
 
     fn deref(&self) -> &T {
@@ -308,7 +312,7 @@ impl<T> Deref for V8GcRefMut<'_, T> {
     }
 }
 
-impl<T> DerefMut for V8GcRefMut<'_, T> {
+impl<T: Trace + 'static> DerefMut for V8GcRefMut<'_, T> {
     fn deref_mut(&mut self) -> &mut T {
         // SAFETY: The guard is the only mutable borrow (checked at creation);
         // no other accessor holds a reference into this cell.
@@ -316,11 +320,20 @@ impl<T> DerefMut for V8GcRefMut<'_, T> {
     }
 }
 
-impl<T> Drop for V8GcRefMut<'_, T> {
+impl<T: Trace + 'static> Drop for V8GcRefMut<'_, T> {
     fn drop(&mut self) {
+        // Clear the writer flag before storing: `store` materializes V8
+        // locals (allocating a `TracedReference` through the engine's value
+        // scope), and a mark must not observe a live mutable borrow.
         // SAFETY: Same liveness argument as `V8GcRef::drop`.
         unsafe {
             (*self.cell).writer.set(false);
+        }
+        // SAFETY: The heap cell is kept alive by the originating edge for the
+        // guard's lifetime, the writer flag is cleared, and `&mut *value` is
+        // the only live reference into the cell.
+        unsafe {
+            Trace::store(&mut *self.value, self.ec);
         }
     }
 }

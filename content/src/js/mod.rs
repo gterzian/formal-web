@@ -34,7 +34,7 @@ pub(crate) fn create_builtin_fn_static(
     name: <Types as JsTypes>::PropertyKey,
 ) -> <Types as JsTypes>::Function {
     // Use the ExecutionContext trait method.
-    ec.create_builtin_fn_static(behaviour, length, name)
+    ec.create_builtin_fn_static(behaviour, length, name, false)
 }
 
 /// Capture for a function pointer following the getter/setter signature.
