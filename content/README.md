@@ -121,15 +121,6 @@ this crate.
 
 ## Known issues
 
-- **`destroy_document` forces a full garbage collection per document.**
-  The `self.realm_parent.gc()` call at the end of teardown reclaims a dead
-  realm eagerly instead of waiting for natural allocation pressure. The
-  store invariant and function-owned native captures make the realm
-  collectable without it, so the call is an atomic full-heap pause that can
-  be removed once a real-content navigation soak validates natural-GC
-  collection (see the realm-teardown regression net item in
-  `js_engine/src/v8/README.md`, "Remaining work").
-
 - **Document lifecycle commands run outside the task queue.**
   `CreateEmptyDocument`, `CreateLoadedDocument`, `CompleteDocumentFetch`,
   `FailDocumentFetch` and `DestroyDocument` parse documents and run script

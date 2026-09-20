@@ -155,21 +155,13 @@ have appeared and disappeared between runs.
    production caller holding a concrete engine could still pass a closure
    with rooted captures, so the doc-comment rule (capture no strong JS
    handles) still applies.
-5. **The realm-teardown regression net is synthetic.** `js_engine`'s
-   128-iteration soak builds child realms with `Option<V8Object>` captures
-   and `new Promise(() => {})`, and the realm-collection unit tests build
-   realms in-process. The 60-navigation real-content soak referenced in the
-   leak-fix commit message is not scripted. Promote it to a wpt-runner mode
-   that navigates repeatedly and asserts the live realm and callback counts
-   after `gc()`, so teardown changes (e.g. dropping the per-document forced
-   collection noted in `content/README.md`) can be validated.
-6. **Strong roots remain in host-data holders.** `store_host_any` values and
+5. **Strong roots remain in host-data holders.** `store_host_any` values and
    `AssociatedPlatform.object` hold strong `V8Object` roots inside the
    realm's host-data holder, so a dead realm needs one extra collection
    cycle. This is safe today only because nothing JS-reachable points at the
    host-data holder; a JS path to it would form a strong cycle none of the
    current tests catch.
-7. **`is_constructor` has no exact check.** See the IsConstructor gap under
+6. **`is_constructor` has no exact check.** See the IsConstructor gap under
    "ArrayBuffer / IsConstructor gaps".
 
 ### ArrayBuffer / IsConstructor gaps

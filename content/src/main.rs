@@ -1870,16 +1870,14 @@ impl ContentProcess {
 
         // Tear down the destroyed document's realm: prune callback records
         // whose creation realm has died (housekeeping — the captures are
-        // cppgc edges now, so the realm is collectable without it), drain the
-        // shared microtask queue, then run a full V8 + cppgc collection so
-        // the dead context is reclaimed eagerly rather than waiting for
-        // allocation pressure a fresh page may never generate.
+        // cppgc edges, so the realm is collectable without it) and drain the
+        // shared microtask queue. No collection is forced here: the dead
+        // realm is reclaimed at the next natural V8 + cppgc collection.
         #[cfg(v8_backend)]
         self.realm_parent.prune_dead_realm_callbacks();
         if let Err(error) = self.realm_parent.perform_a_microtask_checkpoint() {
             log::debug!("microtask checkpoint during document teardown failed: {error:?}");
         }
-        self.realm_parent.gc();
         Ok(())
     }
 
