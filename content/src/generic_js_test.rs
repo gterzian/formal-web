@@ -2248,32 +2248,30 @@ mod tests {
         assert!(TestTypes::value_as_object(&TestTypes::value_from_object(global_obj)).is_some());
     }
 
-    /// Validates that mutable downcast via `with_object_any_mut` followed by
-    /// an `ec` method call works correctly — the mutable borrow from
-    /// `with_object_any_mut` is dropped before the `ec` call.
-    ///
-    /// Canonical pattern for `set_onload`, `set_src`, `play`, and `pause`:
-    /// call `with_object_any_mut_with` which passes both `&mut dyn Any` and
-    /// `&mut dyn ExecutionContext<T>` to a closure, enabling `ec` method
-    /// calls during mutation without any Boa-specific workaround.
+    /// Validates the sound platform-object mutation pattern: clone the data
+    /// out of the platform object, run `ec` calls on the owned clone (no
+    /// reference into the platform data is live), then write the clone back.
     #[test]
-    fn with_object_any_mut_with_ec_inside_closure() {
+    fn cloned_platform_mutation_with_ec_calls() {
         let mut engine = setup();
         let widget = TestWidget::new();
         let obj = create_widget(widget, &mut engine);
 
-        // Mutate the widget AND call ec methods all within the same
-        // closure — no borrow conflict because with_object_any_mut_with
-        // passes `data` and `ec` as separate parameters.
-        engine.with_object_any_mut_with(
-            &obj,
-            Box::new(|data, ec| {
-                let widget = data.downcast_mut::<TestWidget>().unwrap();
-                widget.title = "ModifiedFromClosure".into();
-                // Verify we can call ec methods during mutation.
-                let _ = ec.value_from_string(ec.js_string_from_str("test"));
-            }),
-        );
+        // Clone the widget out; the borrow into the platform data ends here.
+        let mut widget = engine
+            .with_object_any(&obj)
+            .and_then(|data| data.downcast_ref::<TestWidget>().cloned())
+            .expect("the object must carry a TestWidget");
+        widget.title = "ModifiedFromClosure".into();
+        // `ec` may allocate while no platform borrow is live.
+        let _ = engine.value_from_string(engine.js_string_from_str("test"));
+        // Write the clone back.
+        if let Some(slot) = engine
+            .with_object_any_mut(&obj)
+            .and_then(|data| data.downcast_mut::<TestWidget>())
+        {
+            *slot = widget;
+        }
 
         // Verify the mutation persisted.
         let js_obj = TestTypes::value_from_object(obj.clone());
@@ -2821,27 +2819,45 @@ mod tests {
         assert!((engine.to_number(result).unwrap() - 7.0).abs() < 0.001);
     }
 
-    /// Validates that `create_builtin_function` works through
-    /// `&mut dyn ExecutionContext<T>` via `ec.create_builtin_function()`.
+    /// Captures for the builtin-capture tests: a Rust counter the behaviour
+    /// mutates. `#[ignore_trace]` because the counter holds no GC edges.
+    #[gc_struct]
+    struct CounterCapture {
+        #[ignore_trace]
+        counter: Rc<std::cell::Cell<f64>>,
+    }
+
+    fn increment_behaviour(
+        args: &[JsValue],
+        _this: JsValue,
+        captures: &CounterCapture,
+        ec: &mut dyn ExecutionContext<TestTypes>,
+    ) -> Completion<JsValue, TestTypes> {
+        let delta = if let Some(arg) = args.first() {
+            ec.to_number(arg.clone()).unwrap_or(1.0)
+        } else {
+            1.0
+        };
+        let old = captures.counter.get();
+        captures.counter.set(old + delta);
+        Ok(ec.value_from_number(old))
+    }
+
+    /// Validates that the traced-captures path works through
+    /// `&mut dyn ExecutionContext<T>` (the supported generic path).
     #[test]
-    fn create_builtin_function_through_ec_trait() {
+    fn create_builtin_fn_with_captures_through_ec_trait() {
         let mut engine = setup();
         let count = Rc::new(std::cell::Cell::new(0.0));
         let pk = engine.property_key_from_str("inc");
-        let count_for_fn = count.clone();
 
         let ec: &mut dyn ExecutionContext<TestTypes> = &mut engine;
-        let func = ec.create_builtin_function(
-            Box::new(move |args, _this, ec| {
-                let delta = if let Some(arg) = args.first() {
-                    ec.to_number(arg.clone()).unwrap_or(1.0)
-                } else {
-                    1.0
-                };
-                let old = count_for_fn.get();
-                count_for_fn.set(old + delta);
-                Ok(ec.value_from_number(old))
-            }),
+        let func = crate::js::create_builtin_fn_with_traced_captures(
+            ec,
+            CounterCapture {
+                counter: Rc::clone(&count),
+            },
+            increment_behaviour,
             0,
             pk,
             false,
@@ -2859,23 +2875,17 @@ mod tests {
     }
 
     #[test]
-    fn create_builtin_function_survives_allocation_pressure() {
+    fn create_builtin_captures_survive_allocation_pressure() {
         let mut engine = setup();
         let count = Rc::new(std::cell::Cell::new(0.0));
         let pk = engine.property_key_from_str("inc");
-        let count_for_fn = count.clone();
         let ec: &mut dyn ExecutionContext<TestTypes> = &mut engine;
-        let func = ec.create_builtin_function(
-            Box::new(move |args, _this, ec| {
-                let delta = if let Some(arg) = args.first() {
-                    ec.to_number(arg.clone()).unwrap_or(1.0)
-                } else {
-                    1.0
-                };
-                let old = count_for_fn.get();
-                count_for_fn.set(old + delta);
-                Ok(ec.value_from_number(old))
-            }),
+        let func = crate::js::create_builtin_fn_with_traced_captures(
+            ec,
+            CounterCapture {
+                counter: Rc::clone(&count),
+            },
+            increment_behaviour,
             0,
             pk,
             false,

@@ -137,10 +137,9 @@ and to a `downcast_ref` check as checking the platform object's
 Platform object types are `#[gc_struct]` Rust structs; the macro derives the
 active backend's GC traits.  The engine stores the struct on its managed
 heap and links it to the JS wrapper; domain code reaches the struct through
-the generic `with_object_any` / `with_object_any_mut` /
-`with_object_any_mut_with` accessors, never through backend-specific
-wrapper types (comment in backend-neutral terms — wrapper mechanics are
-documented in `js_engine/src/gc.rs`).
+the generic `with_object_any` / `with_object_any_mut` accessors, never through
+backend-specific wrapper types (comment in backend-neutral terms — wrapper
+mechanics are documented in `js_engine/src/gc.rs`).
 
 The typical pattern for a platform object:
 

@@ -176,104 +176,98 @@ where
         &def.attributes,
     )?;
 
-    let constructor_fn = engine.create_builtin_function(
-        Box::new(
-            move |args: &[Ty::JsValue],
-                  new_target_or_this: Ty::JsValue,
-                  ec: &mut dyn ExecutionContext<Ty>| {
-                // <https://webidl.spec.whatwg.org/#create-an-interface-object>
-                //
-                // Step 1: "Let steps be I's overridden constructor steps if they exist..."
-                //
-                // Step 1.1: "If I was not declared with a constructor operation,
-                //   then throw a TypeError."
-                //   Note: handled by I::create_platform_object default impl, which
-                //   returns "Illegal constructor".
-                //
-                // Step 1.2: "If NewTarget is undefined, then throw a TypeError."
-                //   Note: Boa's [[Call]] passes `undefined` as `this` for
-                //   constructable functions; [[Construct]] passes `new.target`.
-                if Ty::value_is_undefined(&new_target_or_this) {
-                    return Err(ec.new_type_error(&format!("{} is not a constructor", I::NAME)));
-                }
+    let constructor_fn = engine.create_builtin_fn_static(
+        move |args: &[Ty::JsValue],
+              new_target_or_this: Ty::JsValue,
+              ec: &mut dyn ExecutionContext<Ty>| {
+            // <https://webidl.spec.whatwg.org/#create-an-interface-object>
+            //
+            // Step 1: "Let steps be I's overridden constructor steps if they exist..."
+            //
+            // Step 1.1: "If I was not declared with a constructor operation,
+            //   then throw a TypeError."
+            //   Note: handled by I::create_platform_object default impl, which
+            //   returns "Illegal constructor".
+            //
+            // Step 1.2: "If NewTarget is undefined, then throw a TypeError."
+            //   Note: Boa's [[Call]] passes `undefined` as `this` for
+            //   constructable functions; [[Construct]] passes `new.target`.
+            if Ty::value_is_undefined(&new_target_or_this) {
+                return Err(ec.new_type_error(&format!("{} is not a constructor", I::NAME)));
+            }
 
-                // Step 1.3: "Let args be the passed arguments."
-                // Step 1.4: "Let n be the size of args."
-                // Step 1.5: "Let id be the identifier of interface I."
-                // Steps 1.6-1.7: Overload resolution (not yet implemented).
-                // Step 1.8: "Let object be the result of internally creating a new
-                //   object implementing I, with realm and NewTarget."
-                //
-                // <https://webidl.spec.whatwg.org/#internally-create-a-new-object-implementing-the-interface>
-                //
-                // Step 4: "If newTarget is not undefined — already checked above.
-                //   Step 4.2: "Let prototype be ? Get(newTarget, "prototype")."
-                let new_target_obj = Ty::value_as_object(&new_target_or_this).ok_or_else(|| {
+            // Step 1.3: "Let args be the passed arguments."
+            // Step 1.4: "Let n be the size of args."
+            // Step 1.5: "Let id be the identifier of interface I."
+            // Steps 1.6-1.7: Overload resolution (not yet implemented).
+            // Step 1.8: "Let object be the result of internally creating a new
+            //   object implementing I, with realm and NewTarget."
+            //
+            // <https://webidl.spec.whatwg.org/#internally-create-a-new-object-implementing-the-interface>
+            //
+            // Step 4: "If newTarget is not undefined — already checked above.
+            //   Step 4.2: "Let prototype be ? Get(newTarget, "prototype")."
+            let new_target_obj = Ty::value_as_object(&new_target_or_this).ok_or_else(|| {
+                ec.new_type_error(&format!(
+                    "{} constructor called without a valid new.target",
+                    I::NAME
+                ))
+            })?;
+            let prototype_val = EcmascriptHost::get(ec, &new_target_obj, "prototype")?;
+
+            // Step 4.3: "If prototype is not an Object, set prototype to the
+            //   interface prototype object for interface in targetRealm."
+            //   Note: cross-realm fallback not yet implemented; always falls
+            //   back to the current realm's prototype object.
+            let resolved_prototype = if Ty::value_as_object(&prototype_val).is_some() {
+                Ty::value_as_object(&prototype_val).ok_or_else(|| {
+                    ec.new_type_error("TypeError: new.target.prototype is not an object")
+                })?
+            } else {
+                // Note: cross-realm fallback not yet implemented; always
+                // falls back to the current realm's prototype object.
+                super::registry::get_prototype_from_host_defined::<Ty, I>(ec).ok_or_else(|| {
                     ec.new_type_error(&format!(
-                        "{} constructor called without a valid new.target",
-                        I::NAME
+                        "interface not registered: {}",
+                        std::any::type_name::<I>()
                     ))
-                })?;
-                let prototype_val = EcmascriptHost::get(ec, &new_target_obj, "prototype")?;
+                })?
+            };
 
-                // Step 4.3: "If prototype is not an Object, set prototype to the
-                //   interface prototype object for interface in targetRealm."
-                //   Note: cross-realm fallback not yet implemented; always falls
-                //   back to the current realm's prototype object.
-                let resolved_prototype = if Ty::value_as_object(&prototype_val).is_some() {
-                    Ty::value_as_object(&prototype_val).ok_or_else(|| {
-                        ec.new_type_error("TypeError: new.target.prototype is not an object")
-                    })?
-                } else {
-                    // Note: cross-realm fallback not yet implemented; always
-                    // falls back to the current realm's prototype object.
-                    super::registry::get_prototype_from_host_defined::<Ty, I>(ec).ok_or_else(
-                        || {
-                            ec.new_type_error(&format!(
-                                "interface not registered: {}",
-                                std::any::type_name::<I>()
-                            ))
-                        },
-                    )?
-                };
+            // Step 1.8 (cont): call I::create_platform_object.
+            let obj = I::create_platform_object(&new_target_or_this, args, ec)?;
 
-                // Step 1.8 (cont): call I::create_platform_object.
-                let obj = I::create_platform_object(&new_target_or_this, args, ec)?;
+            // Step 1.9: "Perform the constructor steps of constructor with
+            //   object as this and values as the argument values."
+            //   Note: handled inside create_platform_object.
+            // Step 1.10: "Let O be object, converted to a JavaScript value."
+            //   The engine stores the platform data in a GC wrapper so its
+            //   cells and JS edges are traced from the JS wrapper
+            //   (mirroring `create_interface_instance`).
+            let instance = js_engine::create_platform_object(ec, &resolved_prototype, obj);
 
-                // Step 1.9: "Perform the constructor steps of constructor with
-                //   object as this and values as the argument values."
-                //   Note: handled inside create_platform_object.
-                // Step 1.10: "Let O be object, converted to a JavaScript value."
-                //   The engine stores the platform data in a GC wrapper so its
-                //   cells and JS edges are traced from the JS wrapper
-                //   (mirroring `create_interface_instance`).
-                let instance = js_engine::create_platform_object(ec, &resolved_prototype, obj);
+            <Ty as PostCreateReflector<Ty>>::set_reflector(&instance, ec);
 
-                <Ty as PostCreateReflector<Ty>>::set_reflector(&instance, ec);
-
-                // Step 11: "For every interface ancestor interface in interfaces:"
-                // Only copies own interface's [[Unforgeables]]; ancestor iteration
-                // deferred until [[PrimaryInterface]] tracking is added.
-                //   Step 11.1: "Let unforgeables be the value of the [[Unforgeables]] slot…"
-                //   Step 11.2: "Let keys be ! unforgeables.[[OwnPropertyKeys]]()."
-                //   Step 11.3: "For each element key of keys:"
-                //   Step 11.3.1: "Let descriptor be ! unforgeables.[[GetOwnProperty]](key)."
-                //   Step 11.3.2: "Perform ! DefinePropertyOrThrow(instance, key, descriptor)."
-                if let Some(entry) =
-                    super::registry::get_unforgeables_from_host_defined::<Ty, I>(ec)
-                {
-                    let own_keys = ec.own_property_keys(entry.clone())?;
-                    for key in own_keys {
-                        if let Some(d) = ec.get_own_property(entry.clone(), key.clone())? {
-                            ec.define_property_or_throw(instance.clone(), key, d)?;
-                        }
+            // Step 11: "For every interface ancestor interface in interfaces:"
+            // Only copies own interface's [[Unforgeables]]; ancestor iteration
+            // deferred until [[PrimaryInterface]] tracking is added.
+            //   Step 11.1: "Let unforgeables be the value of the [[Unforgeables]] slot…"
+            //   Step 11.2: "Let keys be ! unforgeables.[[OwnPropertyKeys]]()."
+            //   Step 11.3: "For each element key of keys:"
+            //   Step 11.3.1: "Let descriptor be ! unforgeables.[[GetOwnProperty]](key)."
+            //   Step 11.3.2: "Perform ! DefinePropertyOrThrow(instance, key, descriptor)."
+            if let Some(entry) = super::registry::get_unforgeables_from_host_defined::<Ty, I>(ec) {
+                let own_keys = ec.own_property_keys(entry.clone())?;
+                for key in own_keys {
+                    if let Some(d) = ec.get_own_property(entry.clone(), key.clone())? {
+                        ec.define_property_or_throw(instance.clone(), key, d)?;
                     }
                 }
+            }
 
-                // Steps 1.11-1.13: Assert and return O.
-                Ok(Ty::value_from_object(instance))
-            },
-        ),
+            // Steps 1.11-1.13: Assert and return O.
+            Ok(Ty::value_from_object(instance))
+        },
         I::constructor_length() as u32,
         engine.property_key_from_str(I::NAME),
         true,

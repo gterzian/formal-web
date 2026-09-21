@@ -657,6 +657,7 @@ pub(crate) fn readable_stream_default_tee_pull_algorithm(
             tee_state.read_again = true;
 
             // Step 13.1.2: "Return a promise resolved with undefined."
+            drop(tee_state);
             return Ok(ec.value_undefined());
         }
 
@@ -861,20 +862,23 @@ pub(crate) fn readable_stream_default_tee_cancel1_algorithm(
     ec: &mut dyn ExecutionContext<crate::js::Types>,
 ) -> Completion<JsObject, crate::js::Types> {
     let (source_stream, cancel_promise, canceled2, reason1, reason2, cancel_resolvers) = {
-        let mut tee_state = tee_state.borrow_mut(ec);
-
         // Step 14.1: "Set canceled1 to true."
-        tee_state.canceled1 = true;
+        tee_state.borrow_mut(ec).canceled1 = true;
 
         // Step 14.2: "Set reason1 to reason."
-        tee_state.reason1.set(reason.clone(), ec);
+        tee_state.borrow(ec).reason1.set(reason.clone(), ec);
         (
-            tee_state.source_stream.clone(),
-            tee_state.cancel_promise.borrow(ec).clone().unwrap(),
-            tee_state.canceled2,
-            tee_state.reason1.borrow(ec).clone(),
-            tee_state.reason2.borrow(ec).clone(),
-            tee_state.cancel_resolvers.clone(),
+            tee_state.borrow(ec).source_stream.clone(),
+            tee_state
+                .borrow(ec)
+                .cancel_promise
+                .borrow(ec)
+                .clone()
+                .unwrap(),
+            tee_state.borrow(ec).canceled2,
+            tee_state.borrow(ec).reason1.borrow(ec).clone(),
+            tee_state.borrow(ec).reason2.borrow(ec).clone(),
+            tee_state.borrow(ec).cancel_resolvers.clone(),
         )
     };
 
@@ -907,20 +911,23 @@ pub(crate) fn readable_stream_default_tee_cancel2_algorithm(
     ec: &mut dyn ExecutionContext<crate::js::Types>,
 ) -> Completion<JsObject, crate::js::Types> {
     let (source_stream, cancel_promise, canceled1, reason1, reason2, cancel_resolvers) = {
-        let mut tee_state = tee_state.borrow_mut(ec);
-
         // Step 15.1: "Set canceled2 to true."
-        tee_state.canceled2 = true;
+        tee_state.borrow_mut(ec).canceled2 = true;
 
         // Step 15.2: "Set reason2 to reason."
-        tee_state.reason2.set(reason.clone(), ec);
+        tee_state.borrow(ec).reason2.set(reason.clone(), ec);
         (
-            tee_state.source_stream.clone(),
-            tee_state.cancel_promise.borrow(ec).clone().unwrap(),
-            tee_state.canceled1,
-            tee_state.reason1.borrow(ec).clone(),
-            tee_state.reason2.borrow(ec).clone(),
-            tee_state.cancel_resolvers.clone(),
+            tee_state.borrow(ec).source_stream.clone(),
+            tee_state
+                .borrow(ec)
+                .cancel_promise
+                .borrow(ec)
+                .clone()
+                .unwrap(),
+            tee_state.borrow(ec).canceled1,
+            tee_state.borrow(ec).reason1.borrow(ec).clone(),
+            tee_state.borrow(ec).reason2.borrow(ec).clone(),
+            tee_state.borrow(ec).cancel_resolvers.clone(),
         )
     };
 
@@ -2574,19 +2581,20 @@ pub(crate) fn readable_byte_stream_tee_pull1_algorithm(
     ec: &mut dyn ExecutionContext<crate::js::Types>,
 ) -> Completion<JsValue, crate::js::Types> {
     {
-        let mut tee = tee_state.borrow_mut(ec);
+        let mut tee_state = tee_state.borrow_mut(ec);
 
         // Step 20.1: "If reading is true,"
-        if tee.reading {
+        if tee_state.reading {
             // Step 20.1.1: "Set readAgainForBranch1 to true."
-            tee.read_again_for_branch1 = true;
+            tee_state.read_again_for_branch1 = true;
 
             // Step 20.1.2: "Return a promise resolved with undefined."
+            drop(tee_state);
             return Ok(ec.value_undefined());
         }
 
         // Step 20.2: "Set reading to true."
-        tee.reading = true;
+        tee_state.reading = true;
     }
 
     // Step 20.3: "Let byobRequest be ! ReadableByteStreamControllerGetBYOBRequest(branch1.[[controller]])."
@@ -2625,19 +2633,20 @@ pub(crate) fn readable_byte_stream_tee_pull2_algorithm(
     ec: &mut dyn ExecutionContext<crate::js::Types>,
 ) -> Completion<JsValue, crate::js::Types> {
     {
-        let mut tee = tee_state.borrow_mut(ec);
+        let mut tee_state = tee_state.borrow_mut(ec);
 
         // Step 21.1: "If reading is true,"
-        if tee.reading {
+        if tee_state.reading {
             // Step 21.1.1: "Set readAgainForBranch2 to true."
-            tee.read_again_for_branch2 = true;
+            tee_state.read_again_for_branch2 = true;
 
             // Step 21.1.2: "Return a promise resolved with undefined."
+            drop(tee_state);
             return Ok(ec.value_undefined());
         }
 
         // Step 21.2: "Set reading to true."
-        tee.reading = true;
+        tee_state.reading = true;
     }
 
     // Step 21.3: "Let byobRequest be ! ReadableByteStreamControllerGetBYOBRequest(branch2.[[controller]])."
@@ -2677,16 +2686,20 @@ pub(crate) fn readable_byte_stream_tee_cancel1_algorithm(
     ec: &mut dyn ExecutionContext<crate::js::Types>,
 ) -> Completion<JsObject, crate::js::Types> {
     let (source_stream, cancel_promise, canceled2, reason1, reason2, cancel_resolvers) = {
-        let mut tee = tee_state.borrow_mut(ec);
-        tee.canceled1 = true;
-        tee.reason1.set(reason.clone(), ec);
+        tee_state.borrow_mut(ec).canceled1 = true;
+        tee_state.borrow(ec).reason1.set(reason.clone(), ec);
         (
-            tee.source_stream.clone(),
-            tee.cancel_promise.borrow(ec).clone().unwrap(),
-            tee.canceled2,
-            tee.reason1.borrow(ec).clone(),
-            tee.reason2.borrow(ec).clone(),
-            tee.cancel_resolvers.clone(),
+            tee_state.borrow(ec).source_stream.clone(),
+            tee_state
+                .borrow(ec)
+                .cancel_promise
+                .borrow(ec)
+                .clone()
+                .unwrap(),
+            tee_state.borrow(ec).canceled2,
+            tee_state.borrow(ec).reason1.borrow(ec).clone(),
+            tee_state.borrow(ec).reason2.borrow(ec).clone(),
+            tee_state.borrow(ec).cancel_resolvers.clone(),
         )
     };
     if canceled2 {
@@ -2710,16 +2723,20 @@ pub(crate) fn readable_byte_stream_tee_cancel2_algorithm(
     ec: &mut dyn ExecutionContext<crate::js::Types>,
 ) -> Completion<JsObject, crate::js::Types> {
     let (source_stream, cancel_promise, canceled1, reason1, reason2, cancel_resolvers) = {
-        let mut tee = tee_state.borrow_mut(ec);
-        tee.canceled2 = true;
-        tee.reason2.set(reason.clone(), ec);
+        tee_state.borrow_mut(ec).canceled2 = true;
+        tee_state.borrow(ec).reason2.set(reason.clone(), ec);
         (
-            tee.source_stream.clone(),
-            tee.cancel_promise.borrow(ec).clone().unwrap(),
-            tee.canceled1,
-            tee.reason1.borrow(ec).clone(),
-            tee.reason2.borrow(ec).clone(),
-            tee.cancel_resolvers.clone(),
+            tee_state.borrow(ec).source_stream.clone(),
+            tee_state
+                .borrow(ec)
+                .cancel_promise
+                .borrow(ec)
+                .clone()
+                .unwrap(),
+            tee_state.borrow(ec).canceled1,
+            tee_state.borrow(ec).reason1.borrow(ec).clone(),
+            tee_state.borrow(ec).reason2.borrow(ec).clone(),
+            tee_state.borrow(ec).cancel_resolvers.clone(),
         )
     };
     if canceled1 {
@@ -3347,10 +3364,11 @@ impl PipeToState {
             state.writer.clone()
         };
         let write_promise = writer.write(value, ec)?;
+        let pending_write = gc_cell_new(Some(write_promise), ec);
         self.0
             .borrow_mut(ec)
             .pending_writes
-            .push_back(gc_cell_new(Some(write_promise), ec));
+            .push_back(pending_write);
         Ok(true)
     }
 
@@ -3526,20 +3544,22 @@ impl PipeToState {
         ec: &mut dyn ExecutionContext<crate::js::Types>,
     ) -> Completion<(), crate::js::Types> {
         let pending_write = {
-            let mut state = self.0.borrow_mut(ec);
-            if state.shutting_down {
+            if self.0.borrow(ec).shutting_down {
                 return Ok(());
             }
+            self.0.borrow_mut(ec).shutting_down = true;
 
-            state.shutting_down = true;
-
-            let should_wait = state.writer.stream_slot_value(ec).is_some_and(|dest| {
-                dest.state() == super::WritableStreamState::Writable
-                    && !dest.close_queued_or_in_flight(ec)
-                    && !state.pending_writes.is_empty()
-            });
+            let should_wait = {
+                let state = self.0.borrow(ec);
+                state.writer.stream_slot_value(ec).is_some_and(|dest| {
+                    dest.state() == super::WritableStreamState::Writable
+                        && !dest.close_queued_or_in_flight(ec)
+                        && !state.pending_writes.is_empty()
+                })
+            };
             if should_wait {
-                state.state = PipePumpState::ShuttingDownWithPendingWrites(action);
+                self.0.borrow_mut(ec).state = PipePumpState::ShuttingDownWithPendingWrites(action);
+                let state = self.0.borrow(ec);
                 state
                     .pending_writes
                     .front()
@@ -3573,9 +3593,9 @@ impl PipeToState {
         action: PipeShutdownAction,
         ec: &mut dyn ExecutionContext<crate::js::Types>,
     ) -> Completion<(), crate::js::Types> {
+        self.0.borrow_mut(ec).state = PipePumpState::ShuttingDownPendingAction(action);
         let (writer, source, dest, error, prevent_abort, prevent_cancel) = {
-            let mut state = self.0.borrow_mut(ec);
-            state.state = PipePumpState::ShuttingDownPendingAction(action);
+            let state = self.0.borrow(ec);
             (
                 state.writer.clone(),
                 state.reader.stream_slot_value(ec),
@@ -3656,9 +3676,9 @@ impl PipeToState {
             return Ok(());
         }
 
-        let (writer, reader, signal, mut error, resolvers) = {
-            let mut state = self.0.borrow_mut(ec);
-            state.state = PipePumpState::Finalized;
+        self.0.borrow_mut(ec).state = PipePumpState::Finalized;
+        let (writer, reader, signal, mut error) = {
+            let state = self.0.borrow(ec);
             (
                 state.writer.clone(),
                 state.reader.clone(),
@@ -3667,9 +3687,9 @@ impl PipeToState {
                     .shutdown_error
                     .as_ref()
                     .map(|cell| cell.borrow(ec).clone()),
-                state.resolvers.take(),
             )
         };
+        let resolvers = self.0.borrow_mut(ec).resolvers.take();
 
         if let Err(release_error) = super::writable_stream_default_writer_release(writer, ec) {
             if error.is_none() {
@@ -3814,28 +3834,32 @@ impl PipeToState {
         ec: &mut dyn ExecutionContext<crate::js::Types>,
     ) -> Completion<(), crate::js::Types> {
         let mut handled = Vec::new();
-        {
+        let pending_writes = {
             let mut state = self.0.borrow_mut(ec);
-            state.pending_writes.retain(|cell| {
-                let Some(promise_object) = cell.borrow(ec).clone() else {
-                    return false;
-                };
-                let ok =
-                    <crate::js::Types as JsTypes>::object_as_promise(&promise_object).is_some();
-                if !ok {
-                    debug_assert!(false, "pipeTo tracked a non-promise write handle");
-                    return false;
-                }
-                let pending = matches!(
-                    ec.promise_state(&promise_object),
-                    Ok(js_engine::PromiseState::Pending)
-                );
-                if !pending {
-                    handled.push(promise_object);
-                }
-                pending
-            });
+            std::mem::take(&mut state.pending_writes)
+        };
+        let mut kept = VecDeque::new();
+        for cell in pending_writes {
+            let Some(promise_object) = cell.borrow(ec).clone() else {
+                continue;
+            };
+            let ok = <crate::js::Types as JsTypes>::object_as_promise(&promise_object).is_some();
+            if !ok {
+                debug_assert!(false, "pipeTo tracked a non-promise write handle");
+                continue;
+            }
+            let pending = matches!(
+                ec.promise_state(&promise_object),
+                Ok(js_engine::PromiseState::Pending)
+            );
+            if !pending {
+                handled.push(promise_object);
+            }
+            if pending {
+                kept.push_back(cell);
+            }
         }
+        self.0.borrow_mut(ec).pending_writes = kept;
 
         for promise in handled {
             crate::webidl::mark_promise_as_handled(&promise, ec)?;
@@ -4120,10 +4144,12 @@ fn start_abort_cancel_source(
     abort_rejection: Option<JsValue>,
     ec: &mut dyn ExecutionContext<crate::js::Types>,
 ) -> Completion<JsValue, crate::js::Types> {
+    let abort_rejection_cell = abort_rejection.map(|error| gc_cell_new(error, ec));
+    state.borrow_mut(ec).abort_rejection = abort_rejection_cell;
     let (source, error) = {
-        let mut state_ref = state.borrow_mut(ec);
-        state_ref.abort_rejection = abort_rejection.map(|error| gc_cell_new(error, ec));
-        (state_ref.source.take(), state_ref.error.borrow(ec).clone())
+        let source = state.borrow_mut(ec).source.take();
+        let error = state.borrow(ec).error.borrow(ec).clone();
+        (source, error)
     };
 
     let cancel_promise = match source {

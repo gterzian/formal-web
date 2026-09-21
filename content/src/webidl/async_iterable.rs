@@ -536,6 +536,7 @@ where
         },
         0,
         ec.property_key_from_str("next"),
+        false,
     );
     let next_fn_value = Types::value_from_object(Types::object_from_function(next_fn));
     let _ = ec.object_set_property(prototype.clone(), "next", next_fn_value);
@@ -548,6 +549,7 @@ where
             },
             1,
             ec.property_key_from_str("return"),
+            false,
         );
         let return_fn_value = Types::value_from_object(Types::object_from_function(return_fn));
         let _ = ec.object_set_property(prototype.clone(), "return", return_fn_value);

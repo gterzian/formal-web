@@ -1492,6 +1492,44 @@ impl Drop for JscEngine {
 }
 
 impl JscEngine {
+    /// Create a built-in function from a type-erased closure.
+    ///
+    /// Deliberately not a `JsEngine` trait method: a closure's captures
+    /// cannot be traced, so generic domain code must use
+    /// `create_builtin_fn_static` or `create_builtin_fn_with_captures`.
+    pub fn create_builtin_fn(
+        &mut self,
+        behaviour: Box<
+            dyn Fn(
+                &[JscValue],
+                JscValue,
+                &mut dyn ExecutionContext<JscTypes>,
+            ) -> Completion<JscValue, JscTypes>,
+        >,
+        length: u32,
+        name: JscPropertyKey,
+    ) -> JscFunction {
+        self.create_builtin_function(behaviour, length, name, false)
+    }
+
+    /// Constructable variant of [`Self::create_builtin_fn`].
+    pub fn create_builtin_function(
+        &mut self,
+        behaviour: Box<
+            dyn Fn(
+                &[JscValue],
+                JscValue,
+                &mut dyn ExecutionContext<JscTypes>,
+            ) -> Completion<JscValue, JscTypes>,
+        >,
+        length: u32,
+        name: JscPropertyKey,
+        is_constructor: bool,
+    ) -> JscFunction {
+        let stored: StoredBehaviour = behaviour;
+        make_builtin_function(self.ctx_ptr(), stored, &name, length, is_constructor)
+    }
+
     pub fn new() -> Self {
         let context = JscContext::new();
         let realm_global = context.global_object();
@@ -2111,39 +2149,6 @@ impl ExecutionContext<JscTypes> for JscEngine {
         self
     }
 
-    fn create_builtin_fn(
-        &mut self,
-        behaviour: Box<
-            dyn Fn(
-                &[JscValue],
-                JscValue,
-                &mut dyn ExecutionContext<JscTypes>,
-            ) -> Completion<JscValue, JscTypes>,
-        >,
-        length: u32,
-        name: JscPropertyKey,
-    ) -> JscFunction {
-        self.create_builtin_function(behaviour, length, name, false)
-    }
-
-    fn create_builtin_function(
-        &mut self,
-        behaviour: Box<
-            dyn Fn(
-                &[JscValue],
-                JscValue,
-                &mut dyn ExecutionContext<JscTypes>,
-            ) -> Completion<JscValue, JscTypes>,
-        >,
-        length: u32,
-        name: JscPropertyKey,
-        is_constructor: bool,
-    ) -> JscFunction {
-        let stored: StoredBehaviour = behaviour;
-        let func = make_builtin_function(self.ctx_ptr(), stored, &name, length, is_constructor);
-        func
-    }
-
     fn create_builtin_fn_static(
         &mut self,
         behaviour: fn(
@@ -2153,9 +2158,10 @@ impl ExecutionContext<JscTypes> for JscEngine {
         ) -> Completion<JscValue, JscTypes>,
         length: u32,
         name: JscPropertyKey,
+        is_constructor: bool,
     ) -> JscFunction {
         let stored: StoredBehaviour = Box::new(move |args, this, ec| behaviour(args, this, ec));
-        let func = make_builtin_function(self.ctx_ptr(), stored, &name, length, false);
+        let func = make_builtin_function(self.ctx_ptr(), stored, &name, length, is_constructor);
         func
     }
 
@@ -4745,38 +4751,6 @@ impl ExecutionContext<JscTypes> for JscEngine {
             .downcast_mut::<std::collections::HashMap<usize, Box<dyn std::any::Any>>>()?;
         let key = object.as_raw() as usize;
         Some(map.get_mut(&key)?.as_mut())
-    }
-
-    fn with_object_any_mut_with(
-        &mut self,
-        object: &JscObject,
-        f: Box<dyn FnOnce(&mut dyn std::any::Any, &mut dyn ExecutionContext<JscTypes>) + '_>,
-    ) {
-        let map_type_id =
-            std::any::TypeId::of::<std::collections::HashMap<usize, Box<dyn std::any::Any>>>();
-        // Take a raw pointer to the data, then let the HashMap borrow expire
-        // before reborrowing `self` as `ec`.  At runtime the HashMap entry is
-        // still alive — we only decouple the borrow-checker lifetimes.
-        let data_ptr: Option<*mut dyn std::any::Any> = self
-            .host_data
-            .get_mut(&map_type_id)
-            .and_then(|boxed| {
-                boxed.downcast_mut::<std::collections::HashMap<usize, Box<dyn std::any::Any>>>()
-            })
-            .and_then(|map| {
-                let key = object.as_raw() as usize;
-                map.get_mut(&key)
-                    .map(|boxed| boxed.as_mut() as *mut dyn std::any::Any)
-            });
-        if let Some(data_ptr) = data_ptr {
-            let ec: &mut dyn ExecutionContext<JscTypes> = self;
-            // SAFETY: data_ptr points into the HashMap that is a field of
-            // `self.host_data`.  The HashMap entry is not removed, only
-            // reborrowed via a raw pointer.  `ec` is `&mut self` — the two
-            // pointers point to distinct memory (HashMap value vs struct
-            // fields), so no aliasing occurs.
-            f(unsafe { &mut *data_ptr }, ec);
-        }
     }
 
     fn new_type_error(&mut self, msg: &str) -> JscValue {

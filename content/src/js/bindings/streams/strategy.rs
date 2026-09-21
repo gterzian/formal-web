@@ -215,7 +215,8 @@ fn global_size_function(
     if !ec.same_value(&existing, &undefined_value) {
         return Ok(existing);
     }
-    let function = ec.create_builtin_fn_static(steps, length, ec.property_key_from_str("size"));
+    let function =
+        ec.create_builtin_fn_static(steps, length, ec.property_key_from_str("size"), false);
     let value = Types::value_from_object(Types::object_from_function(function));
     ec.define_property_or_throw(
         global,

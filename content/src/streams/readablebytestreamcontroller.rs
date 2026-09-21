@@ -529,7 +529,7 @@ impl ReadableByteStreamController {
         &self,
         ec: &mut dyn ExecutionContext<crate::js::Types>,
     ) -> Completion<(), crate::js::Types> {
-        if let Some(object) = self.byob_request_object.borrow_mut(ec).take() {
+        if let Some(object) = { self.byob_request_object.borrow_mut(ec).take() } {
             with_readable_stream_byob_request_ref(&object, ec, |request, ec| {
                 request.set_view_slot(None, ec)
             })?;
@@ -1624,11 +1624,9 @@ impl ReadableByteStreamController {
         &self,
         ec: &mut dyn ExecutionContext<crate::js::Types>,
     ) -> Completion<JsValue, crate::js::Types> {
-        let entry = self
-            .queue
-            .borrow_mut(ec)
-            .pop_front()
-            .ok_or_else(|| ec.new_type_error("Readable byte stream queue is empty"))?;
+        let entry = self.queue.borrow_mut(ec).pop_front();
+        let entry =
+            entry.ok_or_else(|| ec.new_type_error("Readable byte stream queue is empty"))?;
         let remaining_len = entry.remaining_len();
         let remaining_view = entry.remaining_view();
         self.queue_total_size

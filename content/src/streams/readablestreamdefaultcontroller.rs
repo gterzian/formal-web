@@ -341,10 +341,10 @@ impl ReadableStreamDefaultController {
         // Step 2: "If this.[[queue]] is not empty,"
         if !self.queue_is_empty(ec) {
             let (chunk, should_close_stream, _chunk_root) = {
-                let mut queue = self.queue.borrow_mut(ec);
-
                 // Step 2.1: "Let chunk be ! DequeueValue(this)."
-                let entry = queue
+                let entry = self
+                    .queue
+                    .borrow_mut(ec)
                     .pop_front()
                     .expect("queue was checked to be non-empty");
                 let chunk_value = entry.chunk.borrow(ec).clone();
@@ -362,7 +362,8 @@ impl ReadableStreamDefaultController {
                 }
 
                 // Step 2.2: "If this.[[closeRequested]] is true and this.[[queue]] is empty,"
-                let should_close_stream = self.close_requested.get() && queue.is_empty();
+                let should_close_stream =
+                    self.close_requested.get() && self.queue.borrow(ec).is_empty();
                 (chunk_value, should_close_stream, _chunk_root)
             };
 
@@ -687,8 +688,9 @@ impl ReadableStreamDefaultController {
         chunk_size: f64,
         ec: &mut dyn ExecutionContext<Types>,
     ) {
+        let chunk_cell = gc_cell_new(chunk, ec);
         self.queue.borrow_mut(ec).push_back(QueueEntry {
-            chunk: gc_cell_new(chunk, ec),
+            chunk: chunk_cell,
             size: chunk_size,
         });
         self.queue_total_size

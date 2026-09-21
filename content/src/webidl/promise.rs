@@ -270,18 +270,16 @@ where
             .first()
             .cloned()
             .unwrap_or_else(|| handler_ec.value_undefined());
-        let mut state_ref = captures.state_clone.borrow_mut(handler_ec);
 
         // Step 3.1: If rejected is true, abort these steps.
-        if state_ref.rejected {
+        if captures.state_clone.borrow(handler_ec).rejected {
             return Ok(handler_ec.value_undefined());
         }
 
         // Step 3.2: Set rejected to true.
-        state_ref.rejected = true;
+        captures.state_clone.borrow_mut(handler_ec).rejected = true;
 
         // Step 3.3: Perform failureSteps given arg.
-        drop(state_ref);
         if let Some(failure_steps) = captures.failure_cell.borrow_mut().take() {
             let _ = failure_steps(arg, handler_ec);
         }
@@ -361,6 +359,9 @@ where
                 .first()
                 .cloned()
                 .unwrap_or_else(|| handler_ec.value_undefined());
+            // Resolve the fallback before borrowing the cell so the results
+            // closure does not need `handler_ec` while the guard is live.
+            let undefined = handler_ec.value_undefined();
             let mut state_ref = captures.state_for_fulfillment.borrow_mut(handler_ec);
 
             // Step 9.2.1: Set result[promiseIndex] to arg.
@@ -372,18 +373,23 @@ where
             state_ref.fulfilled_count += 1;
 
             // Step 9.2.3: If fulfilledCount equals total, then perform successSteps given result.
-            if state_ref.fulfilled_count == state_ref.total {
-                let results: Vec<JsValue> = state_ref
-                    .result
-                    .iter()
-                    .map(|opt| opt.clone().unwrap_or_else(|| handler_ec.value_undefined()))
-                    .collect();
-                drop(state_ref);
-                if let Some(success_steps) =
+            let completed_results = if state_ref.fulfilled_count == state_ref.total {
+                Some(
+                    state_ref
+                        .result
+                        .iter()
+                        .map(|opt| opt.clone().unwrap_or_else(|| undefined.clone()))
+                        .collect::<Vec<JsValue>>(),
+                )
+            } else {
+                None
+            };
+            drop(state_ref);
+            if let Some(results) = completed_results
+                && let Some(success_steps) =
                     captures.success_cell_for_fulfillment.borrow_mut().take()
-                {
-                    let _ = success_steps(results, handler_ec);
-                }
+            {
+                let _ = success_steps(results, handler_ec);
             }
             Ok(handler_ec.value_undefined())
         }

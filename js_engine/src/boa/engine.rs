@@ -334,6 +334,60 @@ impl BoaContext {
         }
     }
 
+    /// Create a built-in function from a type-erased closure.
+    ///
+    /// Deliberately not a `JsEngine` trait method: a closure's captures
+    /// cannot be walked by the GC, so generic domain code must use
+    /// `create_builtin_fn_static` or `create_builtin_fn_with_captures`.
+    /// Kept as an inherent method for the engine's own tests.
+    pub fn create_builtin_fn(
+        &mut self,
+        behaviour: Box<
+            dyn Fn(
+                &[JsValue],
+                JsValue,
+                &mut dyn ExecutionContext<BoaTypes>,
+            ) -> Completion<JsValue, BoaTypes>,
+        >,
+        length: u32,
+        name: PropertyKey,
+    ) -> JsFunction {
+        let wrapped = UnsafeFnBox(behaviour);
+        create_builtin_fn_with_captures_impl(
+            self,
+            wrapped,
+            move |args, this, captures, ec| captures.0(args, this, ec),
+            length,
+            name,
+            false,
+        )
+    }
+
+    /// Constructable variant of [`Self::create_builtin_fn`].
+    pub fn create_builtin_function(
+        &mut self,
+        behaviour: Box<
+            dyn Fn(
+                &[JsValue],
+                JsValue,
+                &mut dyn ExecutionContext<BoaTypes>,
+            ) -> Completion<JsValue, BoaTypes>,
+        >,
+        length: u32,
+        name: PropertyKey,
+        is_constructor: bool,
+    ) -> JsFunction {
+        let wrapped = UnsafeFnBox(behaviour);
+        create_builtin_fn_with_captures_impl(
+            self,
+            wrapped,
+            move |args, this, captures, ec| captures.0(args, this, ec),
+            length,
+            name,
+            is_constructor,
+        )
+    }
+
     /// Build a Boa context with the realm's global object carrying the
     /// platform object produced by `factory`.
     ///
@@ -624,58 +678,12 @@ impl ExecutionContext<BoaTypes> for BoaContext {
         ) -> Completion<JsValue, BoaTypes>,
         length: u32,
         name: PropertyKey,
+        is_constructor: bool,
     ) -> JsFunction {
         create_builtin_fn_with_captures_impl(
             self,
             NoCaptures,
             move |args, this, _captures, ec| behaviour(args, this, ec),
-            length,
-            name,
-            false,
-        )
-    }
-
-    fn create_builtin_fn(
-        &mut self,
-        behaviour: Box<
-            dyn Fn(
-                &[JsValue],
-                JsValue,
-                &mut dyn ExecutionContext<BoaTypes>,
-            ) -> Completion<JsValue, BoaTypes>,
-        >,
-        length: u32,
-        name: PropertyKey,
-    ) -> JsFunction {
-        let wrapped = UnsafeFnBox(behaviour);
-        create_builtin_fn_with_captures_impl(
-            self,
-            wrapped,
-            move |args, this, captures, ec| captures.0(args, this, ec),
-            length,
-            name,
-            false,
-        )
-    }
-
-    fn create_builtin_function(
-        &mut self,
-        behaviour: Box<
-            dyn Fn(
-                &[JsValue],
-                JsValue,
-                &mut dyn ExecutionContext<BoaTypes>,
-            ) -> Completion<JsValue, BoaTypes>,
-        >,
-        length: u32,
-        name: PropertyKey,
-        is_constructor: bool,
-    ) -> JsFunction {
-        let wrapped = UnsafeFnBox(behaviour);
-        create_builtin_fn_with_captures_impl(
-            self,
-            wrapped,
-            move |args, this, captures, ec| captures.0(args, this, ec),
             length,
             name,
             is_constructor,
@@ -2164,22 +2172,6 @@ impl ExecutionContext<BoaTypes> for BoaContext {
         // outlives this function call.  The RefMut guard is temporary but
         // the pointed-to data remains valid as long as the JsObject is alive.
         Some(unsafe { &mut *(wrapper.0.as_any_mut() as *mut dyn std::any::Any) })
-    }
-
-    fn with_object_any_mut_with(
-        &mut self,
-        object: &JsObject,
-        f: Box<dyn FnOnce(&mut dyn std::any::Any, &mut dyn ExecutionContext<BoaTypes>) + '_>,
-    ) {
-        let mut wrapper = match object.downcast_mut::<NativeDataWrapper>() {
-            Some(w) => w,
-            None => return,
-        };
-        // SAFETY: Same as `with_object_any_mut` — the data lives in the GC heap.
-        let data: &mut dyn std::any::Any =
-            unsafe { &mut *(wrapper.0.as_any_mut() as *mut dyn std::any::Any) };
-        let ec: &mut dyn ExecutionContext<BoaTypes> = self;
-        f(data, ec);
     }
 
     fn new_type_error(&mut self, msg: &str) -> JsValue {

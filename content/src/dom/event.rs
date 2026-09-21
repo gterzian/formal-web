@@ -209,19 +209,23 @@ impl EventTarget {
         // listener's callback, and capture is listener's capture, then
         // append listener to eventTarget's event listener list.
         let listener_id = self.next_listener_id.get().wrapping_add(1);
-        let mut listeners = self.event_listener_list.borrow_mut(ec);
-        let duplicate = listeners.iter().any(|listener| {
-            listener.type_ == type_
-                && listener.capture == capture
-                && listener
-                    .callback
-                    .as_ref()
-                    .is_some_and(|existing| existing.equals(&callback, ec))
-        });
+        // Test membership under a shared borrow so `equals` can use the
+        // execution context; the mutable borrow is scoped to the append.
+        let duplicate = {
+            let listeners = self.event_listener_list.borrow(ec);
+            listeners.iter().any(|listener| {
+                listener.type_ == type_
+                    && listener.capture == capture
+                    && listener
+                        .callback
+                        .as_ref()
+                        .is_some_and(|existing| existing.equals(&callback, ec))
+            })
+        };
 
         if !duplicate {
             self.next_listener_id.set(listener_id);
-            listeners.push(EventListener {
+            self.event_listener_list.borrow_mut(ec).push(EventListener {
                 id: listener_id,
                 type_,
                 callback: Some(callback),
@@ -231,7 +235,6 @@ impl EventTarget {
                 signal: signal.clone(),
                 removed: false,
             });
-            std::mem::drop(listeners);
 
             // Step 6: If listener's signal is non-null, then add the
             // following abort steps to it: Remove an event listener with
@@ -258,15 +261,24 @@ impl EventTarget {
     ) {
         // Step 2: Set listener's removed to true and remove listener from
         // eventTarget's event listener list.
+        let matching_ids: Vec<u64> = {
+            let listeners = self.event_listener_list.borrow(ec);
+            listeners
+                .iter()
+                .filter(|listener| {
+                    listener.type_ == type_
+                        && listener.capture == capture
+                        && listener
+                            .callback
+                            .as_ref()
+                            .is_some_and(|existing| existing.equals(callback, ec))
+                })
+                .map(|listener| listener.id)
+                .collect()
+        };
         let mut listeners = self.event_listener_list.borrow_mut(ec);
         for listener in listeners.iter_mut() {
-            if listener.type_ == type_
-                && listener.capture == capture
-                && listener
-                    .callback
-                    .as_ref()
-                    .is_some_and(|existing| existing.equals(callback, ec))
-            {
+            if matching_ids.contains(&listener.id) {
                 listener.removed = true;
             }
         }
