@@ -1,7 +1,6 @@
 use std::cell::Cell;
 
 use crossbeam_channel::Sender;
-use objc2::MainThreadMarker;
 
 use ipc_messages::media::MediaPipelineId;
 
@@ -12,7 +11,7 @@ use super::av_sys::{AvPlayer, AvVideoOutput, url_from_string};
 // ---------------------------------------------------------------------------
 // AvfPipeline
 //
-// Runs inside the select loop on the main thread.
+// Runs inside the select loop on the graphics backend's own thread.
 // Frames are sent as MediaBackendEvent::Frame.
 // ---------------------------------------------------------------------------
 
@@ -35,13 +34,10 @@ impl AvfPipeline {
         url_string: String,
         event_tx: Sender<MediaBackendEvent>,
     ) -> Result<Self, String> {
-        let mtm = MainThreadMarker::new()
-            .ok_or_else(|| String::from("AvfPipeline must be created on the main thread"))?;
-
         let Some(ns_url) = url_from_string(&url_string) else {
             return Err(format!("failed to create NSURL from {url_string}"));
         };
-        let player = unsafe { AvPlayer::new_on_main(&ns_url, mtm) };
+        let player = AvPlayer::new(&ns_url);
         let Some(item) = player.current_item() else {
             return Err(String::from("AVPlayer did not create an AVPlayerItem"));
         };

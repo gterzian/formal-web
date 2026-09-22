@@ -12,6 +12,12 @@ publish = false
 default = ["ipc-channel-backend"]
 # ipc-channel transport for ALL extensions (net, media, content).
 ipc-channel-backend = []
+# In-process transport: extensions whose entry point the embedding binary
+# registered with `register_extension_runner` run on threads of the
+# embedding process over crossbeam channels instead of in helper processes.
+# Implies the ipc-channel backend because extensions without a registered
+# runner (and every helper binary's own `run_extension`) still use it.
+thread-backend = ["ipc-channel-backend"]
 # BrowserEngineKit backend: the OS launches extension processes via
 # NetworkingProcess/WebContentProcess/RenderingProcess and the transport is
 # libxpc (`IpcTransport::Xpc`). Compiles on any target; launching is only

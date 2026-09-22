@@ -134,6 +134,10 @@ pub(crate) type IpcChannelMessage<T> = (T, HashMap<usize, IpcSharedMemory>);
 pub(crate) enum IpcTransport<T: IpcSerialize + IpcDeserialize> {
     #[cfg_attr(not(feature = "ipc-channel-backend"), allow(dead_code))]
     IpcChannel(ipc_channel::ipc::IpcSender<IpcChannelMessage<T>>),
+    /// In-process transport: the extension runs on a thread of this process
+    /// and messages travel over crossbeam channels, with no serialization.
+    #[cfg(feature = "thread-backend")]
+    Thread(crossbeam_channel::Sender<IpcChannelMessage<T>>),
     /// libxpc transport: postcard-encoded payloads carried as `_p` data
     /// fields in XPC dictionaries. The name describes the wire mechanism,
     /// not which backend created the connection: under the `bek` backend the
@@ -158,6 +162,8 @@ impl<T: IpcSerialize + IpcDeserialize + std::fmt::Debug> std::fmt::Debug for Ipc
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             IpcTransport::IpcChannel(s) => write!(formatter, "IpcChannel({s:?})"),
+            #[cfg(feature = "thread-backend")]
+            IpcTransport::Thread(_) => write!(formatter, "Thread"),
             #[cfg(feature = "bek")]
             IpcTransport::Xpc { .. } => write!(formatter, "Xpc"),
         }
@@ -168,6 +174,8 @@ impl<T: IpcSerialize + IpcDeserialize> Clone for IpcTransport<T> {
     fn clone(&self) -> Self {
         match self {
             IpcTransport::IpcChannel(s) => IpcTransport::IpcChannel(s.clone()),
+            #[cfg(feature = "thread-backend")]
+            IpcTransport::Thread(sender) => IpcTransport::Thread(sender.clone()),
             #[cfg(feature = "bek")]
             IpcTransport::Xpc { connection, .. } => IpcTransport::Xpc {
                 connection: connection.clone(),
@@ -181,6 +189,8 @@ impl<T: IpcSerialize + IpcDeserialize + std::fmt::Debug> std::fmt::Debug for Ipc
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match &self.transport {
             IpcTransport::IpcChannel(sender) => write!(formatter, "IpcSender({sender:?})"),
+            #[cfg(feature = "thread-backend")]
+            IpcTransport::Thread(_) => write!(formatter, "IpcSender(<thread>)"),
             #[cfg(feature = "bek")]
             IpcTransport::Xpc { .. } => write!(formatter, "IpcSender(<xpc>)"),
         }
@@ -203,6 +213,10 @@ impl<T: IpcSerialize + IpcDeserialize> serde::Serialize for IpcSender<T> {
     fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
         match &self.transport {
             IpcTransport::IpcChannel(sender) => sender.serialize(serializer),
+            #[cfg(feature = "thread-backend")]
+            IpcTransport::Thread(_) => Err(serde::ser::Error::custom(
+                "an in-process IpcSender cannot be serialized",
+            )),
             #[cfg(feature = "bek")]
             IpcTransport::Xpc { .. } => Err(serde::ser::Error::custom(
                 "an XPC-backed IpcSender cannot be serialized",
@@ -245,6 +259,10 @@ impl<T: IpcSerialize + IpcDeserialize> IpcSender<T> {
             IpcTransport::IpcChannel(sender) => sender
                 .send((message, HashMap::new()))
                 .map_err(|error| IpcError::Transport(error.to_string())),
+            #[cfg(feature = "thread-backend")]
+            IpcTransport::Thread(sender) => sender
+                .send((message, HashMap::new()))
+                .map_err(|error| IpcError::Transport(error.to_string())),
             #[cfg(feature = "bek")]
             IpcTransport::Xpc { connection, .. } => {
                 let payload = postcard::to_allocvec(&message)
@@ -271,6 +289,16 @@ impl<T: IpcSerialize + IpcDeserialize> IpcSender<T> {
     ) -> Result<(), IpcError> {
         match &self.transport {
             IpcTransport::IpcChannel(sender) => {
+                let raw_map: HashMap<usize, IpcSharedMemory> = shmem_map
+                    .into_iter()
+                    .map(|(key, region)| (key, region.into_inner()))
+                    .collect();
+                sender
+                    .send((message, raw_map))
+                    .map_err(|error| IpcError::Transport(error.to_string()))
+            }
+            #[cfg(feature = "thread-backend")]
+            IpcTransport::Thread(sender) => {
                 let raw_map: HashMap<usize, IpcSharedMemory> = shmem_map
                     .into_iter()
                     .map(|(key, region)| (key, region.into_inner()))
@@ -310,6 +338,10 @@ impl<T: IpcSerialize + IpcDeserialize> IpcSender<T> {
 enum IpcReceiverInner<T: IpcSerialize + IpcDeserialize> {
     #[cfg(feature = "ipc-channel-backend")]
     IpcChannel(ipc_channel::ipc::IpcReceiver<IpcChannelMessage<T>>),
+    /// In-process transport: messages arrive directly from the extension
+    /// thread over a crossbeam channel.
+    #[cfg(feature = "thread-backend")]
+    Thread(crossbeam_channel::Receiver<IpcChannelMessage<T>>),
     /// Incoming messages forwarded from the XPC connection's message handler
     /// (which runs on a libxpc dispatch queue) onto a crossbeam channel.
     #[cfg(feature = "bek")]
@@ -334,6 +366,8 @@ impl<T: IpcSerialize + IpcDeserialize> std::fmt::Debug for IpcReceiver<T> {
         match &self.inner {
             #[cfg(feature = "ipc-channel-backend")]
             IpcReceiverInner::IpcChannel(_) => write!(formatter, "IpcReceiver(<ipc-channel>)"),
+            #[cfg(feature = "thread-backend")]
+            IpcReceiverInner::Thread(_) => write!(formatter, "IpcReceiver(<thread>)"),
             #[cfg(feature = "bek")]
             IpcReceiverInner::Xpc(_) => write!(formatter, "IpcReceiver(<xpc>)"),
         }
@@ -356,6 +390,12 @@ impl<T: IpcSerialize + IpcDeserialize> IpcReceiver<T> {
                     rx.recv().map_err(|_| IpcError::Disconnected)?;
                 Ok(incoming_with_regions(payload, shmem_map))
             }
+            #[cfg(feature = "thread-backend")]
+            IpcReceiverInner::Thread(rx) => {
+                let (payload, shmem_map): (T, HashMap<usize, IpcSharedMemory>) =
+                    rx.recv().map_err(|_| IpcError::Disconnected)?;
+                Ok(incoming_with_regions(payload, shmem_map))
+            }
             #[cfg(feature = "bek")]
             IpcReceiverInner::Xpc(rx) => rx.recv().map_err(|_| IpcError::Disconnected),
         }
@@ -370,6 +410,13 @@ impl<T: IpcSerialize + IpcDeserialize> IpcReceiver<T> {
                     .map_err(|_| IpcError::Disconnected)?;
                 Ok(incoming_with_regions(payload, shmem_map))
             }
+            #[cfg(feature = "thread-backend")]
+            IpcReceiverInner::Thread(rx) => {
+                let (payload, shmem_map): (T, HashMap<usize, IpcSharedMemory>) = rx
+                    .recv_timeout(timeout)
+                    .map_err(|_| IpcError::Disconnected)?;
+                Ok(incoming_with_regions(payload, shmem_map))
+            }
             #[cfg(feature = "bek")]
             IpcReceiverInner::Xpc(rx) => {
                 rx.recv_timeout(timeout).map_err(|_| IpcError::Disconnected)
@@ -381,6 +428,12 @@ impl<T: IpcSerialize + IpcDeserialize> IpcReceiver<T> {
         match &self.inner {
             #[cfg(feature = "ipc-channel-backend")]
             IpcReceiverInner::IpcChannel(rx) => {
+                let (payload, shmem_map): (T, HashMap<usize, IpcSharedMemory>) =
+                    rx.try_recv().map_err(|_| IpcError::Disconnected)?;
+                Ok(incoming_with_regions(payload, shmem_map))
+            }
+            #[cfg(feature = "thread-backend")]
+            IpcReceiverInner::Thread(rx) => {
                 let (payload, shmem_map): (T, HashMap<usize, IpcSharedMemory>) =
                     rx.try_recv().map_err(|_| IpcError::Disconnected)?;
                 Ok(incoming_with_regions(payload, shmem_map))
@@ -428,13 +481,14 @@ impl<T: IpcSerialize + IpcDeserialize> IpcReceiver<T> {
         }
     }
 
-    /// Consume and return the inner ipc-channel receiver.
-    #[cfg(feature = "ipc-channel-backend")]
-    pub(crate) fn into_inner(self) -> ipc_channel::ipc::IpcReceiver<IpcChannelMessage<T>> {
-        match self.inner {
-            IpcReceiverInner::IpcChannel(rx) => rx,
-            #[cfg(feature = "bek")]
-            IpcReceiverInner::Xpc(_) => unreachable!("not an ipc-channel receiver"),
+    /// Internal: create from a crossbeam receiver of raw channel messages
+    /// for the in-process transport.
+    #[cfg(feature = "thread-backend")]
+    pub(crate) fn from_thread_channel(
+        rx: crossbeam_channel::Receiver<IpcChannelMessage<T>>,
+    ) -> Self {
+        IpcReceiver {
+            inner: IpcReceiverInner::Thread(rx),
         }
     }
 }
@@ -459,6 +513,10 @@ impl<T: IpcSerialize + IpcDeserialize> serde::Serialize for IpcReceiver<T> {
     fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
         match &self.inner {
             IpcReceiverInner::IpcChannel(rx) => rx.serialize(serializer),
+            #[cfg(feature = "thread-backend")]
+            IpcReceiverInner::Thread(_) => Err(serde::ser::Error::custom(
+                "an in-process IpcReceiver cannot be serialized",
+            )),
             #[cfg(feature = "bek")]
             IpcReceiverInner::Xpc(_) => Err(serde::ser::Error::custom(
                 "an XPC-backed IpcReceiver cannot be serialized",
@@ -480,56 +538,66 @@ impl<'de, T: IpcSerialize + IpcDeserialize> serde::Deserialize<'de> for IpcRecei
 /// Bridge an [`IpcReceiver`] to a `crossbeam_channel::Receiver` for use
 /// with `select!`.
 ///
-/// On the ipc-channel backend this registers the raw ipc-channel receiver
-/// with the ipc-channel ROUTER (no thread).  On other backends a forwarding
-/// thread is spawned.
-#[cfg(feature = "ipc-channel-backend")]
+/// The ipc-channel transport registers the raw ipc-channel receiver with the
+/// ipc-channel ROUTER (no forwarding thread).  The in-process and XPC
+/// transports already receive on crossbeam channels, so a forwarding thread
+/// moves their messages into the returned channel.
 pub fn crossbeam_proxy<T: IpcSerialize + IpcDeserialize + Send + 'static>(
     receiver: IpcReceiver<T>,
 ) -> crossbeam_channel::Receiver<IpcIncoming<T>> {
-    let rx = receiver.into_inner();
     let (crossbeam_tx, crossbeam_rx) = crossbeam_channel::unbounded();
-    ROUTER.add_typed_route(
-        rx,
-        Box::new(
-            move |message: Result<(T, std::collections::HashMap<usize, IpcSharedMemory>), _>| {
-                if let Ok((payload, shmem_map)) = message {
-                    let regions: std::collections::HashMap<usize, IpcSharedRegion> = shmem_map
-                        .into_iter()
-                        .map(|(key, raw)| (key, IpcSharedRegion::from_ipc_shmem(raw)))
-                        .collect();
-                    let incoming = IpcIncoming {
-                        payload,
-                        shmem_regions: regions,
-                    };
-                    let _ = crossbeam_tx.send(incoming);
-                }
-            },
-        ),
-    );
-    crossbeam_rx
-}
-
-/// Bridge an [`IpcReceiver`] to a `crossbeam_channel::Receiver` for use
-/// with `select!`.
-///
-/// On non-ipc-channel backends this spawns a forwarding thread.
-#[cfg(not(feature = "ipc-channel-backend"))]
-pub fn crossbeam_proxy<T: IpcSerialize + IpcDeserialize + Send + 'static>(
-    receiver: IpcReceiver<T>,
-) -> crossbeam_channel::Receiver<IpcIncoming<T>> {
-    let (tx, rx) = crossbeam_channel::unbounded();
-    std::thread::Builder::new()
-        .name("formal-web:ipc-crossbeam-proxy".into())
-        .spawn(move || {
-            while let Ok(msg) = receiver.recv() {
-                if tx.send(msg).is_err() {
-                    break;
-                }
+    match receiver.inner {
+        #[cfg(feature = "ipc-channel-backend")]
+        IpcReceiverInner::IpcChannel(ipc_receiver) => {
+            ROUTER.add_typed_route(
+                ipc_receiver,
+                Box::new(
+                    move |message: Result<
+                        (T, std::collections::HashMap<usize, IpcSharedMemory>),
+                        _,
+                    >| {
+                        if let Ok((payload, shmem_map)) = message {
+                            let _ = crossbeam_tx.send(incoming_with_regions(payload, shmem_map));
+                        }
+                    },
+                ),
+            );
+        }
+        #[cfg(feature = "thread-backend")]
+        IpcReceiverInner::Thread(thread_receiver) => {
+            if let Err(error) = std::thread::Builder::new()
+                .name("formal-web:ipc-crossbeam-proxy".into())
+                .spawn(move || {
+                    for (payload, shmem_map) in thread_receiver {
+                        if crossbeam_tx
+                            .send(incoming_with_regions(payload, shmem_map))
+                            .is_err()
+                        {
+                            break;
+                        }
+                    }
+                })
+            {
+                log::error!("failed to spawn ipc crossbeam proxy thread: {error}");
             }
-        })
-        .expect("failed to spawn crossbeam proxy thread");
-    rx
+        }
+        #[cfg(feature = "bek")]
+        IpcReceiverInner::Xpc(xpc_receiver) => {
+            if let Err(error) = std::thread::Builder::new()
+                .name("formal-web:ipc-crossbeam-proxy".into())
+                .spawn(move || {
+                    while let Ok(incoming) = xpc_receiver.recv() {
+                        if crossbeam_tx.send(incoming).is_err() {
+                            break;
+                        }
+                    }
+                })
+            {
+                log::error!("failed to spawn ipc crossbeam proxy thread: {error}");
+            }
+        }
+    }
+    crossbeam_rx
 }
 
 // ── IpcConnection ──────────────────────────────────────────────────────────
@@ -563,6 +631,11 @@ pub(crate) enum ExtensionHandleImpl {
         child: Option<std::process::Child>,
         _bootstrap_token: String,
     },
+    /// An extension running on a thread of this process (the in-process
+    /// transport).  The thread is detached: it exits when the extension's
+    /// own message loop observes the shutdown command.
+    #[cfg(feature = "thread-backend")]
+    Thread,
     #[cfg(feature = "bek")]
     #[cfg_attr(
         all(feature = "bek", feature = "ipc-channel-backend"),
@@ -578,29 +651,19 @@ pub(crate) enum ExtensionHandleImpl {
 
 impl ExtensionHandle {
     /// Start an extension process from its manifest.
+    ///
+    /// Delegates to the backend dispatch, so a runner registered for the
+    /// manifest's service with
+    /// [`register_extension_runner`](crate::register_extension_runner) runs
+    /// the extension in-process and every other service is launched by the
+    /// compiled transport backend.
     pub fn launch<M, Out, In>(manifest: &M) -> Result<(Self, IpcConnection<Out, In>), IpcError>
     where
         M: ExtensionManifest,
         Out: IpcSerialize + IpcDeserialize + Send + 'static,
         In: IpcSerialize + IpcDeserialize + Send + 'static,
     {
-        #[cfg(feature = "ipc-channel-backend")]
-        {
-            crate::backend::ipc_channel::launch_extension(manifest)
-        }
-        #[cfg(all(not(feature = "ipc-channel-backend"), feature = "bek"))]
-        {
-            crate::backend::bek::launch_extension(manifest)
-        }
-        #[cfg(all(not(feature = "ipc-channel-backend"), not(feature = "bek")))]
-        {
-            let _ = manifest;
-            Err(IpcError::Transport(
-                "no IPC backend enabled: enable the ipc-channel-backend feature, \
-                 or the bek feature on iOS/iPadOS"
-                    .into(),
-            ))
-        }
+        crate::backend::launch_extension::<M, Out, In>(manifest)
     }
 
     /// Extract the child process handle, if any.
@@ -611,6 +674,8 @@ impl ExtensionHandle {
     pub fn take_child(&mut self) -> Option<std::process::Child> {
         match &mut self.inner {
             ExtensionHandleImpl::IpcChannel { child, .. } => child.take(),
+            #[cfg(feature = "thread-backend")]
+            ExtensionHandleImpl::Thread => None,
             #[cfg(feature = "bek")]
             ExtensionHandleImpl::Bek { .. } => None,
         }
@@ -624,6 +689,11 @@ impl ExtensionHandle {
                     let _ = child.kill();
                     let _ = child.wait();
                 }
+            }
+            #[cfg(feature = "thread-backend")]
+            ExtensionHandleImpl::Thread => {
+                // There is no way to force a thread to stop; the extension's
+                // message loop observes its own shutdown command and returns.
             }
             #[cfg(feature = "bek")]
             ExtensionHandleImpl::Bek {
@@ -662,6 +732,10 @@ impl ExtensionHandle {
                 Ok(CapabilityGrant { inner: grant })
             }
             ExtensionHandleImpl::IpcChannel { .. } => Err(IpcError::Transport(format!(
+                "capability grants require the bek backend (requested {capability:?})"
+            ))),
+            #[cfg(feature = "thread-backend")]
+            ExtensionHandleImpl::Thread => Err(IpcError::Transport(format!(
                 "capability grants require the bek backend (requested {capability:?})"
             ))),
         }

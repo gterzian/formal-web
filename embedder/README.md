@@ -86,9 +86,15 @@ rebuilds.
 - **Session history is not implemented.** The History menu's Back/Forward items
   are disabled; Reload re-navigates to the tab's committed URL because the
   user agent has no reload command.
-- **Closing a tab does not tear down its traversable.** The user agent has no
-  webview-teardown path, so a closed tab's webview keeps living there (the
-  same situation as closing a window).
+
+## Webview teardown
+
+Every embedder path that drops a tab or window must call
+`WebviewProvider::close_webview` for each webview it drops. The call is what
+destroys the tab's top-level traversable in the user agent and stops its
+content process; dropping only the embedder-side state leaves the traversable
+(and a whole content process) alive. The AppKit tab-close and window-close
+paths and the winit window-close path do this; a new close path must too.
 
 ## Current implementation status
 
@@ -102,8 +108,9 @@ Remaining work (roughly in priority order):
 
 - **Address-bar Enter opens a new tab instead of navigating** (under
   investigation).
-- **Tab close button** — needs a `ChromeAction::CloseTab(usize)` action and
-  cleanup of the tab state, compositor, and webview-to-window mapping.
+- **Tab close button** — needs a `ChromeAction::CloseTab(usize)` action,
+  a `WebviewProvider::close_webview` call for the closed tab, and cleanup of
+  the tab state, compositor, and webview-to-window mapping.
 - **Tab reordering** — drag-and-drop in the chrome HTML plus `tab_order`
   updates; tab drag-out to a new window would follow.
 - **Window title sync** — the content→UA title plumbing exists (parse-time

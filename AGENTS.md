@@ -308,6 +308,7 @@ shared dependency resolution and incremental compilation.
 | `wasm` | Wasmtime-based WebAssembly implementation (opt-in, Boa only) | no |
 | `media` | Video/audio playback support | yes |
 | `winit_embedder` | Build the winit **windowed** embedder on macOS (the AppKit backend is the default headed one there and the only one built without this feature); no-op elsewhere, where winit is the only option. On macOS the winit embedder always builds **headless-only** (no graphics deps) for automation (WPT/WebDriver/CDP/verification); this feature adds its windowed app, which headed automation also requires — automation never runs on the AppKit backend | no |
+| `thread-backend` | Run content, net, and graphics in-process on threads over crossbeam channels instead of in helper processes (see `ipc/ARCHITECTURE.md`) | no |
 
 V8 is the default backend for running WPT tests.  Wasm is a separate feature
 (and Boa-only) to avoid pulling in wasmtime when not needed.  JSC is

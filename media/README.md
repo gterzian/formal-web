@@ -78,9 +78,13 @@ use gstreamer_app::prelude::*;
 
 ## AVFoundation backend
 
-The pipeline is `AVPlayer → AVPlayerItem → AVPlayerItemVideoOutput`, run on
-the graphics process main thread — no background thread, because
-AVFoundation objects require `MainThreadMarker`.
+The pipeline is `AVPlayer → AVPlayerItem → AVPlayerItemVideoOutput`, created
+and used on a single dedicated thread that pumps its own `NSRunLoop`: the
+graphics process main thread in the process backend, the graphics
+select-loop thread in the in-process backend. AVFoundation requires one
+thread with a run loop, not specifically the process main thread, so
+`AvPlayer::new` fabricates a `MainThreadMarker` with `new_unchecked` instead
+of refusing to run off the main thread.
 
 `sample()` (≈120 Hz via the graphics process's 8ms select-loop tick when at
 least one pipeline is active) drains the run loop (`runUntilDate(8ms)`) so
@@ -96,8 +100,9 @@ Key design decisions:
 
 | Decision | Why |
 |---|---|
-| No background thread | AVFoundation objects require `MainThreadMarker`. The graphics
-  process main thread hosts the backend. |
+| No background thread | AVFoundation objects must share one thread with a run loop. The
+  graphics select loop both creates them and pumps that run loop (the graphics
+  process main thread, or the in-process graphics thread). |
 | Timer-driven `sample()`, not message-driven | Without a timer, `sample()` only runs when a command or event arrives,
   starving AVFoundation of CPU time. |
 | Frames flow through the same channel as EOS/error/duration | Eliminates the `frame_tx`/`frame_rx` pair from the dispatch loop. |

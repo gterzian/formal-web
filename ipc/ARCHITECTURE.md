@@ -15,13 +15,14 @@ The IPC (Inter-Process Communication) system connects the browser main process
 The media backend (AVFoundation / GStreamer from the `media` crate) runs inside
 the `formal-web-graphics` process — there is no separate media process.
 
-## Two Backend Architecture
+## Backend Architecture
 
-The crate `ipc/` provides an abstract IPC layer with two selectable backends.
+The crate `ipc/` provides an abstract IPC layer with three selectable backends.
 **`ipc-channel` is the default** (`default = ["ipc-channel-backend"]` in
-`ipc/Cargo.toml`); **`bek`** (BrowserEngineKit) is the alternative. The two
-flags are independent and non-exclusive; with neither enabled, `ipc` fails to
-compile with a `compile_error` in `backend.rs`.
+`ipc/Cargo.toml`); **`bek`** (BrowserEngineKit) is the iOS/iPadOS alternative,
+and **`thread-backend`** runs extensions in-process. The flags are
+independent and non-exclusive; with neither `ipc-channel-backend` nor `bek`
+enabled, `ipc` fails to compile with a `compile_error` in `backend.rs`.
 
 ### 1. `ipc-channel` backend (default, works everywhere)
 
@@ -79,11 +80,39 @@ enables `bek` by mistake still compiles (but cannot launch anything). Adopting
 in `ipc/bek-sys`'s documentation for what is validated versus what still needs
 entitlements, extension targets, and on-device integration.
 
+### 3. `thread-backend` (in-process; opt-in)
+
+Runs an extension on a thread of the embedding process instead of launching a
+helper process:
+
+- **Transport**: Two crossbeam channels per connection carry the payload and
+  its shared-memory regions (`IpcTransport::Thread`). Nothing is serialized.
+- **Launch**: The embedding binary registers each extension's entry point with
+  `ipc::register_extension_runner(service_name, run)` (the root `formal-web`
+  binary registers `net::run_net_process_with_server`,
+  `content::run_content_process_with_server`, and
+  `graphics::run_graphics_extension`). `ExtensionHandle::launch` consults the
+  registry by the manifest's `endpoint()` service name and, on a hit, spawns
+  the runner on a named thread; on a miss it falls back to the compiled
+  transport backend, so a service with no registered runner is still launched
+  as a helper process.
+- **Lifecycle**: The extension's own message loop observes its shutdown
+  command and returns. The handle holds no process, so `take_child` returns
+  `None` and `invalidate` cannot force the thread to stop.
+
+**Selection**: `thread-backend` implies `ipc-channel-backend` (extensions
+with no registered runner, and every helper binary's own `run_extension`, use
+ipc-channel). Enable it on the binary that links the extension code, e.g.
+`cargo run --release --features thread-backend`. Automation runs the
+`formal-web-embedder` binary, which registers no runners, so WPT and the
+TLA+ verification scripts always exercise the process backend.
+
 ## Crate Structure
 
 ```
 ipc/                          # Abstract IPC API
-├── Cargo.toml                # default = ["ipc-channel-backend"]; bek = ["dep:bek-sys"]
+├── Cargo.toml                # default = ["ipc-channel-backend"]; bek = ["dep:bek-sys"];
+│                             # thread-backend = ["ipc-channel-backend"]
 ├── src/
 │   ├── lib.rs                # Re-exports
 │   ├── types.rs              # IpcSender, IpcIncoming, IpcSharedRegion,
@@ -93,6 +122,7 @@ ipc/                          # Abstract IPC API
 │   ├── backend.rs            # Feature-gated backend selection
 │   └── backend/
 │       ├── ipc_channel.rs    # ipc-channel backend: IpcOneShotServer bootstrap
+│       ├── thread.rs         # in-process backend: runner registry + threads
 │       └── bek.rs            # bek backend: BEK launch + libxpc transport,
 │                             # anonymous-endpoint primitives
 
@@ -157,15 +187,18 @@ under the `bek` backend.
 
 ## Feature Selection
 
-The `ipc-channel-backend` and `bek` features are defined in `ipc/Cargo.toml`.
-`ipc-channel-backend` is inherited transitively by crates that depend on `ipc`
-(graphics, media, user_agent forward it); `bek` adds `bek-sys` as a
-dependency.
+The `ipc-channel-backend`, `bek`, and `thread-backend` features are defined
+in `ipc/Cargo.toml`. `ipc-channel-backend` is inherited transitively by crates
+that depend on `ipc` (graphics, media, user_agent forward it); `bek` adds
+`bek-sys` as a dependency; `thread-backend` implies `ipc-channel-backend`.
 
 ```bash
 # Default (ipc-channel everywhere — works on all platforms):
 cargo build --release
 cargo run --release
+
+# In-process content and net, helper-process graphics:
+cargo run --release --features thread-backend
 
 # iOS/iPadOS target validation build (bek backend, no entitlement needed —
 # compiles and links the real BrowserEngineKit Swift shim):
@@ -176,7 +209,7 @@ cargo build -p ipc -p bek-sys --target aarch64-apple-ios-sim \
 
 | Crate | Default backend | Alternative |
 |---|---|---|
-| All (content, net, graphics) | ipc-channel (`ipc-channel-backend` feature enabled) | bek (iOS only, `--features bek`)| 
+| All (content, net, graphics) | ipc-channel (`ipc-channel-backend` feature enabled) | bek (iOS only, `--features bek`); thread-backend (in-process, `--features thread-backend`) | 
 
 ## Message Types
 

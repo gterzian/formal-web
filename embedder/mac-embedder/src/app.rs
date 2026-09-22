@@ -2245,12 +2245,10 @@ impl MacApp {
         Self::set_address_field_focus_style(&window_state.address_field, true);
     }
 
-    /// Close a tab: drop its window state, surfaces, and chrome buttons,
-    /// then show the rightmost remaining tab. Closing the last tab closes
-    /// the window (which exits the app when it was the only window). The
-    /// underlying traversable in the user agent is not destroyed — the
-    /// user agent has no webview teardown path yet, the same situation as
-    /// closing a window.
+    /// Close a tab: destroy its webview in the user agent, drop its window
+    /// state, surfaces, and chrome buttons, then show the rightmost
+    /// remaining tab. Closing the last tab closes the window (which exits
+    /// the app when it was the only window).
     fn close_tab(&mut self, window_id: WindowId, webview_id: WebviewId) {
         let (empty, closed_active, window) = {
             let Some(window_state) = self.windows.get_mut(&window_id) else {
@@ -2277,6 +2275,11 @@ impl MacApp {
                 window_state.window.clone(),
             )
         };
+        if let Some(provider) = self.provider.as_ref()
+            && let Err(error) = provider.close_webview(webview_id)
+        {
+            error!("[mac-embedder] close webview: {error}");
+        }
         if empty {
             window.close();
             return;
@@ -2544,6 +2547,18 @@ impl MacApp {
             return;
         };
         info!("[mac-embedder] window closed window={window_id:?}");
+        let webview_ids = self
+            .windows
+            .get(&window_id)
+            .map(|window_state| window_state.tab_order.clone())
+            .unwrap_or_default();
+        if let Some(provider) = self.provider.as_ref() {
+            for webview_id in webview_ids {
+                if let Err(error) = provider.close_webview(webview_id) {
+                    error!("[mac-embedder] close webview: {error}");
+                }
+            }
+        }
         if let Some(window_state) = self.windows.get_mut(&window_id) {
             window_state.tabs.clear();
             window_state.tab_order.clear();

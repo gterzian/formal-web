@@ -1286,6 +1286,18 @@ impl ApplicationHandler<FormalWebUserEvent> for WindowedApp {
                 }
             }
             WindowEvent::CloseRequested | WindowEvent::Destroyed => {
+                let webview_ids = self
+                    .windows
+                    .get(&window_id)
+                    .map(|state| state.tab_order.clone())
+                    .unwrap_or_default();
+                if let Some(provider) = self.provider.as_ref() {
+                    for webview_id in webview_ids {
+                        if let Err(error) = provider.close_webview(webview_id) {
+                            error!("[winit-embedder] close webview: {error}");
+                        }
+                    }
+                }
                 if let Some(state) = self.windows.get_mut(&window_id) {
                     if let Some(window) = state.window.as_ref() {
                         window.set_visible(false);

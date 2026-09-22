@@ -1840,6 +1840,8 @@ dependencies = [
  "content",
  "embedder",
  "env_logger",
+ "graphics",
+ "ipc",
  "log",
  "media",
  "net",
