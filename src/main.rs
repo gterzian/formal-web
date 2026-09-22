@@ -38,6 +38,20 @@ enum CommandKind {
     Cdp(automation::CdpArgs),
 }
 
+/// Register the extension entry points this binary links, so extensions run
+/// on threads of this process instead of in helper processes (the in-process
+/// transport).
+#[cfg(feature = "thread-backend")]
+fn register_in_process_extensions() {
+    ipc::register_extension_runner("formal-web.net", net::run_net_process_with_server);
+    ipc::register_extension_runner("formal-web.graphics", graphics::run_graphics_extension);
+    #[cfg(any(feature = "v8", feature = "boa", feature = "jsc"))]
+    ipc::register_extension_runner(
+        "com.formal-web.app.content",
+        content::run_content_process_with_server,
+    );
+}
+
 fn delegated_tla_validate_command() -> Option<ExitCode> {
     let args = std::env::args_os().collect::<Vec<_>>();
     if args.get(1).is_none_or(|arg| arg != "validate-tla") {
@@ -61,6 +75,9 @@ fn main() -> ExitCode {
     if let Some(exit_code) = delegated_tla_validate_command() {
         return exit_code;
     }
+
+    #[cfg(feature = "thread-backend")]
+    register_in_process_extensions();
 
     let cli = Cli::parse();
     let (wpt_args, command) = match cli.command {

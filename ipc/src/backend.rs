@@ -1,4 +1,6 @@
 use crate::IpcError;
+#[cfg(feature = "thread-backend")]
+use crate::types::ExtensionEndpoint;
 use crate::types::{
     ExtensionHandle, ExtensionManifest, ExtensionServer, IpcConnection, IpcSerialize,
 };
@@ -6,6 +8,9 @@ use serde::de::DeserializeOwned;
 
 #[cfg(feature = "ipc-channel-backend")]
 pub(crate) mod ipc_channel;
+
+#[cfg(feature = "thread-backend")]
+pub(crate) mod thread;
 
 #[cfg(feature = "bek")]
 pub(crate) mod bek;
@@ -30,6 +35,18 @@ where
     Out: IpcSerialize + DeserializeOwned + Send + 'static,
     In: IpcSerialize + DeserializeOwned + Send + 'static,
 {
+    // An in-process runner registered for this service takes precedence over
+    // the compiled transport backend.
+    #[cfg(feature = "thread-backend")]
+    {
+        let service_name = match manifest.endpoint() {
+            ExtensionEndpoint::Singleton { service_name }
+            | ExtensionEndpoint::MultiInstance { service_name } => service_name,
+        };
+        if let Some(runner) = thread::find_runner::<Out, In>(service_name) {
+            return thread::launch::<Out, In>(service_name, runner);
+        }
+    }
     #[cfg(feature = "ipc-channel-backend")]
     {
         ipc_channel::launch_extension(manifest)

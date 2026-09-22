@@ -82,6 +82,62 @@ impl<R: SurfaceRenderer> WebviewState<R> {
     }
 }
 
+/// Run the graphics extension over an already-established connection: the
+/// entry point for the in-process transport, where the embedding process
+/// registers this function as the graphics extension's runner instead of
+/// launching the `formal-web-graphics` binary.
+pub fn run_graphics_extension(
+    server: ipc::ExtensionServer<GraphicsEvent, GraphicsCommand>,
+) -> Result<(), String> {
+    let receiver = ipc::crossbeam_proxy(server.connection.receiver);
+    let event_tx = server.connection.sender.clone();
+
+    // The media backend is chosen at compile time by feature: AVFoundation
+    // on Apple platforms when it is the active backend (explicit feature, or
+    // the default when no backend feature is selected); GStreamer otherwise.
+    #[cfg(all(
+        any(target_os = "macos", target_os = "ios"),
+        any(feature = "backend-avfoundation", not(feature = "backend-gstreamer"))
+    ))]
+    let backend: Option<media::backend::avfoundation::AvfBackend> =
+        match media::backend::avfoundation::AvfBackend::init() {
+            Ok(backend) => {
+                info!("[graphics] AVFoundation backend initialized");
+                Some(backend)
+            }
+            Err(error) => {
+                error!("[graphics] AVFoundation init failed: {error}");
+                None
+            }
+        };
+
+    #[cfg(not(all(
+        any(target_os = "macos", target_os = "ios"),
+        any(feature = "backend-avfoundation", not(feature = "backend-gstreamer"))
+    )))]
+    let backend: Option<media::backend::gstreamer::GStreamerBackend> =
+        match media::backend::gstreamer::GStreamerBackend::init() {
+            Ok(backend) => {
+                info!("[graphics] GStreamer backend initialized");
+                Some(backend)
+            }
+            Err(error) => {
+                error!("[graphics] GStreamer init failed: {error}");
+                None
+            }
+        };
+
+    // The surface renderer is chosen at compile time by feature: the
+    // zero-copy IOSurface renderer on macOS by default, the CPU readback
+    // renderer off macOS and with `cpu_readback`.
+    #[cfg(all(target_os = "macos", not(feature = "cpu_readback")))]
+    run_graphics_process::<_, renderer::IosurfaceRenderer>(receiver, event_tx, backend);
+    #[cfg(any(not(target_os = "macos"), feature = "cpu_readback"))]
+    run_graphics_process::<_, renderer::CpuRenderer>(receiver, event_tx, backend);
+
+    Ok(())
+}
+
 /// Run the graphics process event loop.
 /// The media backend (if provided) runs directly in this loop — no separate IPC.
 /// The pipeline_to_webview mapping is managed via RegisterMediaPipeline from content.

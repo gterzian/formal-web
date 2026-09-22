@@ -17,9 +17,18 @@ pub(crate) struct AvPlayer {
 unsafe impl Send for AvPlayer {}
 
 impl AvPlayer {
-    /// Create an AVPlayer on the main thread (safe, with explicit marker).
-    pub(crate) unsafe fn new_on_main(url: &NSURL, mtm: MainThreadMarker) -> Self {
-        let inner = unsafe { AVPlayer::playerWithURL(url, mtm) };
+    /// Create an AVPlayer on the graphics select-loop thread.
+    ///
+    /// SAFETY: the marker is fabricated because `AVPlayer` is annotated
+    /// `MainThreadOnly` by objc2-av-foundation, but AVFoundation only
+    /// requires that an `AVPlayer` and everything that touches it share one
+    /// thread with a run loop: creation happens here on the select-loop
+    /// thread and `AvfPipeline::sample` pumps that thread's `NSRunLoop`.
+    pub(crate) fn new(url: &NSURL) -> Self {
+        // SAFETY: see above; the caller guarantees it runs on the thread
+        // that owns the pipeline and pumps its run loop.
+        let marker = unsafe { MainThreadMarker::new_unchecked() };
+        let inner = unsafe { AVPlayer::playerWithURL(url, marker) };
         Self { inner }
     }
 

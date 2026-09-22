@@ -99,6 +99,20 @@ cargo build --release --features winit_embedder
 cargo run --release --features winit_embedder
 ```
 
+### Run extensions in-process
+
+The `thread-backend` feature runs content, net, and graphics on threads of
+the embedding process, connected by crossbeam channels, instead of launching
+helper processes:
+
+```bash
+cargo run --release --features thread-backend
+```
+
+Automation runs the `formal-web-embedder` binary, which registers no
+in-process extensions, so WPT and the TLA+ verification scripts always use
+the process backend. See `ipc/ARCHITECTURE.md` for the backend itself.
+
 ## Project architecture
 
 The following components, mapping to processes or extensions, are used:

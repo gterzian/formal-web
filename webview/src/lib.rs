@@ -123,6 +123,15 @@ impl WebviewProvider {
         self.send_ui_event_with_prefetched_clipboard_text(webview_id, event, None)
     }
 
+    /// Destroy the top-level traversable behind `webview_id`: the embedder
+    /// closed the webview's tab or window.  The user-agent thread drops the
+    /// traversable and its document, releases the graphics-process webview
+    /// state, and stops the content process once its agent owns no
+    /// traversables.
+    pub fn close_webview(&self, webview_id: WebviewId) -> Result<(), String> {
+        self.user_agent.destroy_traversable(webview_id.0)
+    }
+
     /// Sends a UI event that carries the clipboard text the embedder
     /// prefetched for a paste shortcut, so content answers the paste from
     /// its cache instead of reading the system clipboard itself.

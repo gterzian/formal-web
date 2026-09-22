@@ -1002,6 +1002,12 @@ pub enum UserAgentCommand {
         /// document cannot be created before they are in place.
         user_scripts: Vec<UserScript>,
     },
+    /// The embedder closed a webview: destroy its top-level traversable,
+    /// stopping the content process when the traversable's agent has no
+    /// traversables left.
+    DestroyTraversable {
+        traversable_id: NavigableId,
+    },
     /// The event loop the content process belongs to.  Required when
     /// `request.new_traversable_info` is `Some` (window.open creating a new
     /// traversable).  For existing-navigable navigations the UA looks up
@@ -1169,6 +1175,17 @@ impl UserAgent {
             .map_err(|error| {
                 format!("failed to start create-a-fresh-top-level-traversable: {error}")
             })
+    }
+
+    /// <https://html.spec.whatwg.org/multipage/#destroy-a-top-level-traversable>
+    ///
+    /// The embedder closed the webview for `traversable_id`; the
+    /// user-agent thread tears down the traversable and, when its agent has
+    /// no traversables left, stops the content process.
+    pub fn destroy_traversable(&self, traversable_id: NavigableId) -> Result<(), String> {
+        self.command_sender
+            .send(UserAgentCommand::DestroyTraversable { traversable_id })
+            .map_err(|error| format!("failed to send destroy-traversable command: {error}"))
     }
 
     /// <https://html.spec.whatwg.org/multipage/#navigate>
@@ -1738,6 +1755,9 @@ impl UserAgentWorker {
                 user_scripts,
             } => {
                 self.create_a_fresh_top_level_traversable(destination_url, user_scripts);
+            }
+            UserAgentCommand::DestroyTraversable { traversable_id } => {
+                self.destroy_a_top_level_traversable(traversable_id);
             }
             UserAgentCommand::Navigate {
                 event_loop_id,
@@ -3339,6 +3359,13 @@ impl UserAgentWorker {
             let _ = self
                 .state
                 .remove_pending_navigation_finalizations_for_traversable(*traversable_id);
+            self.pending_update_the_rendering.remove(traversable_id);
+            self.queued_rendering_opportunities.remove(traversable_id);
+            self.pending_worker_animation_frames.remove(traversable_id);
+            self.frame_needed.remove(traversable_id);
+            self.state
+                .frame_hit_info
+                .remove(&WebviewId(*traversable_id));
         }
         self.state
             .documents
@@ -3383,6 +3410,106 @@ impl UserAgentWorker {
     fn stop_event_loop_handle(&mut self, event_loop_id: EventLoopId) {
         if let Some(mut entry) = self.remove_event_loop_entry(event_loop_id) {
             entry.event_loop.shutdown();
+        }
+    }
+
+    /// <https://html.spec.whatwg.org/multipage/#destroy-a-top-level-traversable>
+    fn destroy_a_top_level_traversable(&mut self, traversable_id: NavigableId) {
+        // Step 1: Let browsingContext be traversable's active browsing context.
+        // Note: The active browsing context is removed as part of
+        // `remove_traversable` below; only the derived indices and the
+        // content process's document need explicit teardown here.
+        let event_loop_id = self.state.traversable_handles.get(&traversable_id).copied();
+        let active_document_id = self
+            .state
+            .active_documents_by_traversable
+            .get(&traversable_id)
+            .copied();
+        let removed_document_ids = self
+            .state
+            .documents
+            .iter()
+            .filter_map(|(document_id, document)| {
+                (document.traversable_id == traversable_id).then_some(*document_id)
+            })
+            .collect::<Vec<_>>();
+
+        // Step 2: For each historyEntry in traversable's session history entries in what order:
+        // Step 2.1: Let document be historyEntry's document.
+        // Step 2.2: If document is not null, then destroy a document and its descendants given document.
+        // Note: Only the active document is registered in the UA; the
+        // content process destroys it, and its descendants, when it handles
+        // DestroyDocument.
+        if let Some(document_id) = active_document_id
+            && let Ok(sender) = self.command_sender_for_document(document_id)
+            && let Err(error) = sender.send(ContentCommand::DestroyDocument { document_id })
+        {
+            error!("failed to destroy content document: {error}");
+        }
+
+        // Step 3: Remove browsingContext.
+        // Step 5: Remove traversable from the user agent's top-level traversable set.
+        // Note: Browsing-context removal is part of `remove_traversable`.
+        self.state.remove_traversable(traversable_id);
+        if let Some(event_loop_id) = event_loop_id
+            && let Some(agent) = window_agent_mut(&mut self.state, event_loop_id)
+        {
+            agent.traversable_ids.remove(&traversable_id);
+        }
+        self.state
+            .remove_pending_navigation_fetches_for_traversable(traversable_id);
+        let _ = self
+            .state
+            .remove_pending_navigation_finalizations_for_traversable(traversable_id);
+        self.state
+            .documents
+            .retain(|_, document| document.traversable_id != traversable_id);
+        let checks_to_remove = self
+            .state
+            .pending_before_unload_navigations
+            .iter_mut()
+            .filter_map(|(check_id, pending)| {
+                pending
+                    .pending_document_ids
+                    .retain(|document_id| !removed_document_ids.contains(document_id));
+                (pending.pending_document_ids.is_empty() || pending.navigable_id == traversable_id)
+                    .then_some(*check_id)
+            })
+            .collect::<Vec<_>>();
+        for check_id in checks_to_remove {
+            self.state
+                .pending_before_unload_navigations
+                .remove(&check_id);
+        }
+        self.pending_update_the_rendering.remove(&traversable_id);
+        self.queued_rendering_opportunities.remove(&traversable_id);
+        self.pending_worker_animation_frames.remove(&traversable_id);
+        self.frame_needed.remove(&traversable_id);
+        self.state.frame_hit_info.remove(&WebviewId(traversable_id));
+
+        // Step 4: Remove traversable from the user interface (e.g., close or hide its tab in a tabbed browser).
+        // Note: The embedder removes the tab; the graphics process releases
+        // the webview's compositor and surfaces here.
+        if let Some(graphics_sender) = &self.graphics_extension_sender
+            && let Err(error) =
+                graphics_sender.send(ipc_messages::graphics::GraphicsCommand::UnregisterWebview {
+                    webview_id: WebviewId(traversable_id),
+                })
+        {
+            error!("failed to unregister webview with graphics process: {error}");
+        }
+
+        // Step 6: Invoke WebDriver BiDi navigable destroyed with traversable.
+        // Note: Not implemented.
+
+        // Stop the content process once its window agent owns no
+        // traversables; its dedicated worker agents die with it.
+        if let Some(event_loop_id) = event_loop_id {
+            let should_stop = window_agent(&self.state, event_loop_id)
+                .is_some_and(|agent| agent.traversable_ids.is_empty());
+            if should_stop {
+                self.stop_event_loop_handle(event_loop_id);
+            }
         }
     }
 

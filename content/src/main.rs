@@ -3849,6 +3849,16 @@ fn content_token_from_args() -> Result<Option<String>, String> {
 
 /// Run the content extension.
 pub fn run_content_process(token: String) -> Result<(), String> {
+    ipc::run_extension::<Command, ContentEvent>(&token, run_content_process_with_server)
+}
+
+/// Run the content extension over an already-established connection: the
+/// entry point for the in-process transport, where the embedding process
+/// registers this function as the content extension's runner instead of
+/// launching the `formal-web-content` binary.
+pub fn run_content_process_with_server(
+    server: ipc::ExtensionServer<ContentEvent, Command>,
+) -> Result<(), String> {
     // When WASM is not enabled, use `never()` so the select never fires.
     // When WASM IS enabled, create a real channel that the wasm worker
     // signals when compilation completes.
@@ -3861,60 +3871,58 @@ pub fn run_content_process(token: String) -> Result<(), String> {
         (rx, tx)
     };
 
-    ipc::run_extension::<Command, ContentEvent>(&token, move |server| {
-        let event_sender = server.connection.sender.clone();
+    let event_sender = server.connection.sender.clone();
 
-        let cmd_rx = ipc::crossbeam_proxy(server.connection.receiver);
+    let cmd_rx = ipc::crossbeam_proxy(server.connection.receiver);
 
-        let (
+    let (
+        event_loop_id,
+        network_extension_sender,
+        graphics_sender,
+        content_command_sender,
+        trace_sender,
+        embedder_schemes,
+    ) = {
+        match cmd_rx.recv() {
+            Ok(incoming) => match incoming.payload {
+                ContentBootstrap {
+                    event_loop_id,
+                    net_sender,
+                    graphics_sender,
+                    content_command_sender,
+                    trace_sender,
+                    embedder_schemes,
+                } => (
+                    event_loop_id,
+                    net_sender,
+                    graphics_sender,
+                    content_command_sender,
+                    trace_sender,
+                    embedder_schemes,
+                ),
+                other => {
+                    error!("first message must be ContentBootstrap, got: {other:?}");
+                    return Err("wrong first message, expected ContentBootstrap".into());
+                }
+            },
+            Err(_) => return Err("command channel closed before ContentBootstrap".into()),
+        }
+    };
+
+    let mut process = {
+        ContentProcess::new(
+            event_sender.clone(),
+            wasm_signal_sender,
             event_loop_id,
             network_extension_sender,
             graphics_sender,
             content_command_sender,
             trace_sender,
             embedder_schemes,
-        ) = {
-            match cmd_rx.recv() {
-                Ok(incoming) => match incoming.payload {
-                    ContentBootstrap {
-                        event_loop_id,
-                        net_sender,
-                        graphics_sender,
-                        content_command_sender,
-                        trace_sender,
-                        embedder_schemes,
-                    } => (
-                        event_loop_id,
-                        net_sender,
-                        graphics_sender,
-                        content_command_sender,
-                        trace_sender,
-                        embedder_schemes,
-                    ),
-                    other => {
-                        error!("first message must be ContentBootstrap, got: {other:?}");
-                        return Err("wrong first message, expected ContentBootstrap".into());
-                    }
-                },
-                Err(_) => return Err("command channel closed before ContentBootstrap".into()),
-            }
-        };
+        )
+    };
 
-        let mut process = {
-            ContentProcess::new(
-                event_sender.clone(),
-                wasm_signal_sender,
-                event_loop_id,
-                network_extension_sender,
-                graphics_sender,
-                content_command_sender,
-                trace_sender,
-                embedder_schemes,
-            )
-        };
-
-        run_content_message_loop(&cmd_rx, &wasm_rx, &mut process)
-    })
+    run_content_message_loop(&cmd_rx, &wasm_rx, &mut process)
 }
 
 /// <https://html.spec.whatwg.org/#event-loop-processing-model>
