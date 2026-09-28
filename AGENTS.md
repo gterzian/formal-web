@@ -53,6 +53,10 @@ Read repository documentation from general to specific:
 2. Every `README.md` found by walking from the repo root down to the
    directory containing the file(s) your task touches, in that order.
 
+There is exactly one `AGENTS.md`, at the repository root.  Every other
+level of the tree documents itself with a `README.md`; nested `AGENTS.md`
+files are not part of the chain and must not be created.
+
 Concatenate all of them; together they form the "doc chain" for a task.
 
 ## The placement invariant

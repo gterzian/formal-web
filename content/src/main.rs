@@ -67,8 +67,9 @@ use ipc_messages::content::{
     ElementClickResult, EmbedBackgroundPolicy, EmbedLayout, EmbedSite, EmbedSiteId,
     Event as ContentEvent, EventLoopId, FetchRequest as ContentFetchRequest,
     FetchResponse as ContentFetchResponse, FontTransportSender, FrameCompositionMetadata, FrameId,
-    IframeEmbedSite, LoadedDocumentResponse, NavigableId, NavigationId, PaintFrame, PortId,
-    PortTaskKind, PreparedScene, RecordedScene, ScriptEvaluationResult, TitleChanged,
+    IframeEmbedSite, ImageEmbedData, ImageIdentifier, ImagePaintId, ImageTransportSender,
+    LoadedDocumentResponse, NavigableId, NavigationId, PaintFrame, PortId, PortTaskKind,
+    PreparedScene, RecordedScene, ResourcePartitionKey, ScriptEvaluationResult, TitleChanged,
     TraversableViewport, UserScript, ViewportSnapshot, WebviewId, WindowTimerKey, WorkerId,
     WorkerOwner,
 };
@@ -335,9 +336,13 @@ impl NetProvider for ContentNetProvider {
                     Ok((bytes, _fragment)) => {
                         handler.bytes(request.url.to_string(), Bytes::from(bytes));
                     }
-                    Err(_error) => {}
+                    Err(error) => {
+                        error!("failed to decode data URL for {}: {error}", request.url);
+                    }
                 },
-                Err(_error) => {}
+                Err(error) => {
+                    error!("failed to parse data URL for {}: {error}", request.url);
+                }
             },
             _scheme => {
                 let handler_id = new_document_fetch_id();
@@ -440,6 +445,16 @@ struct DocumentViewportState {
     offset_y: f32,
 }
 
+/// An `<img>` resource whose decoded pixels content must ship to the graphics
+/// process once. `node_id` locates the decoded bytes on the node at send
+/// time, so the bytes are copied only the first time the image is registered.
+struct PendingImage {
+    id: ImageIdentifier,
+    width: u32,
+    height: u32,
+    node_id: usize,
+}
+
 /// The content process: this implementation's realization of one agent
 /// cluster (<https://html.spec.whatwg.org/multipage/webappapis.html#agent-cluster>)
 /// as the physical `formal-web-content` process.  The process hosts exactly
@@ -502,6 +517,10 @@ pub(crate) struct ContentProcess {
     active_documents_by_traversable: HashMap<NavigableId, DocumentId>,
     font_namespace: u64,
     font_sender: FontTransportSender,
+    /// Tracks which `<img>` resources this process already shipped to the
+    /// graphics process, so an image's decoded pixels cross the boundary
+    /// once per webview lifetime.
+    image_sender: ImageTransportSender,
     tla_tracer: TLATracer,
     /// Shared clipboard cache. The embedder writes prefetched clipboard text
     /// here before dispatching paste events; `ShellProvider::get_clipboard_text`
@@ -594,6 +613,7 @@ impl ContentProcess {
             active_documents_by_traversable: HashMap::new(),
             font_namespace: new_font_namespace(),
             font_sender: FontTransportSender::default(),
+            image_sender: ImageTransportSender::default(),
             tla_tracer: TLATracer::new("Navigation", "formal-web:content", trace_sender.clone()),
             clipboard_cache: clipboard_cache.clone(),
             new_document_registry: Rc::new(RefCell::new(HashMap::new())),
@@ -693,8 +713,10 @@ impl ContentProcess {
         document_id: DocumentId,
         base_url: Option<String>,
         needs_paint: Arc<AtomicBool>,
+        cross_process_images: bool,
     ) -> DocumentConfig {
         DocumentConfig {
+            cross_process_images,
             viewport: self
                 .document_viewport_state(traversable_id)
                 .map(|viewport| viewport_of_snapshot(&viewport.snapshot)),
@@ -1209,6 +1231,7 @@ impl ContentProcess {
             document_id,
             None,
             needs_paint.clone(),
+            true,
         ))));
         let mut settings = self.create_environment_settings_object(
             Rc::clone(&document),
@@ -1408,6 +1431,7 @@ impl ContentProcess {
             document_id,
             Some(final_url.to_string()),
             needs_paint.clone(),
+            true,
         ))));
         // Steps 7.5, 7.6 and 7.10 run in `create_environment_settings_object` for the
         // otherwise branch; for the step-6 branch they already ran when the reused realm was
@@ -2492,13 +2516,21 @@ impl ContentProcess {
                     let viewport = document_guard.viewport().clone();
                     let (width, height) = viewport.window_size;
                     let mut scene = RenderScene::new();
+                    let mut pending_images = Vec::new();
+                    let partition = ResourcePartitionKey {
+                        top_level_traversable: document.top_level_traversable_id,
+                        origin: document.settings.origin.serialized.clone(),
+                    };
                     let composition = Self::build_frame_composition_metadata(
                         document_id,
+                        navigable_id,
+                        &partition,
                         &document_guard,
                         &document.navigable_container_states,
                         viewport.scale_f64(),
                         &mut video_paint_registry.borrow_mut(),
                         &canvas_registry.borrow(),
+                        &mut pending_images,
                     );
 
                     // Step 22: "For each `doc` of `docs`, update the rendering or user interface of `doc` and its node navigable to reflect the current state."
@@ -2518,6 +2550,51 @@ impl ContentProcess {
                         scene,
                         &mut next_shmem_key,
                     );
+
+                    // Ship each newly-seen `<img>` resource's decoded pixels to
+                    // the graphics process once, before the frame that
+                    // references it. Later frames reuse the registration.
+                    for pending in pending_images.drain(..) {
+                        if self.image_sender.is_sent(&pending.id) {
+                            continue;
+                        }
+                        let bytes = document_guard
+                            .get_node(pending.node_id)
+                            .and_then(|node| node.element_data())
+                            .and_then(|element| element.raster_image_data())
+                            .map(|raster| raster.data.data().to_vec());
+                        let Some(bytes) = bytes else {
+                            continue;
+                        };
+                        let Some((registration, region)) = self.image_sender.prepare_image(
+                            pending.id.clone(),
+                            pending.width,
+                            pending.height,
+                            &bytes,
+                            &mut next_shmem_key,
+                        ) else {
+                            continue;
+                        };
+                        let data_shmem_key = registration.data_shmem_key;
+                        let mut image_shmem = HashMap::new();
+                        image_shmem.insert(data_shmem_key, region);
+                        if let Some(graphics_sender) = &self.graphics_sender {
+                            let command = ipc_messages::graphics::GraphicsCommand::RegisterImage {
+                                webview_id: WebviewId(navigable_id),
+                                image_id: registration.id,
+                                width: registration.width,
+                                height: registration.height,
+                                data_shmem_key,
+                            };
+                            if let Err(error) =
+                                graphics_sender.send_with_shmem_map(command, image_shmem)
+                            {
+                                error!(
+                                    "failed to send image registration to graphics process: {error}"
+                                );
+                            }
+                        }
+                    }
                     log_render_state_debug(format!(
                         "emit paint navigable={} document={} size=({}, {})",
                         navigable_id, document_id, width, height,
@@ -2638,13 +2715,17 @@ impl ContentProcess {
         Some((x, y, width, height))
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn build_frame_composition_metadata(
         document_id: DocumentId,
+        navigable_id: NavigableId,
+        partition: &ResourcePartitionKey,
         document: &BaseDocument,
         container_states: &HashMap<usize, NavigableContainerState>,
         scale: f64,
         video_paint_registry: &mut HashMap<(DocumentId, usize), VideoPaintId>,
         canvas_registry: &HashMap<(DocumentId, usize), CanvasId>,
+        pending_images: &mut Vec<PendingImage>,
     ) -> FrameCompositionMetadata {
         let mut iframe_node_ids = container_states
             .iter()
@@ -2657,10 +2738,20 @@ impl ContentProcess {
         // Collect video node ids by scanning the document tree for <video> elements.
         let mut video_node_ids = Vec::new();
         document.visit(|node_id, node| {
-            if let Some(element_data) = node.element_data() {
-                if element_data.name.local == local_name!("video") {
-                    video_node_ids.push(node_id);
-                }
+            if let Some(element_data) = node.element_data()
+                && element_data.name.local == local_name!("video")
+            {
+                video_node_ids.push(node_id);
+            }
+        });
+
+        // Collect image node ids by scanning the document tree for <img> elements.
+        let mut image_node_ids = Vec::new();
+        document.visit(|node_id, node| {
+            if let Some(element_data) = node.element_data()
+                && element_data.name.local == local_name!("img")
+            {
+                image_node_ids.push(node_id);
             }
         });
 
@@ -2783,6 +2874,7 @@ impl ContentProcess {
             .filter(|((registry_document_id, _), _)| *registry_document_id == document_id)
             .collect::<Vec<_>>();
         canvas_entries.sort_by_key(|((_, canvas_node_id), _)| *canvas_node_id);
+        let canvas_count = canvas_entries.len();
         for (canvas_offset, ((_, canvas_node_id), canvas_id)) in
             canvas_entries.into_iter().enumerate()
         {
@@ -2800,6 +2892,50 @@ impl ContentProcess {
                 layout: EmbedLayout {
                     z_index: 0,
                     paint_order: (iframe_count + video_count + canvas_offset) as u32,
+                    transform: [1.0, 0.0, 0.0, 1.0, x, y],
+                    clip_bounds: [x, y, x + width, y + height],
+                },
+            }));
+        }
+
+        // Build image embed sites: every <img> element whose decoded pixels
+        // have loaded becomes its own compositing layer, drawing a shared
+        // decoded image registered once with the graphics process.
+        for (image_offset, image_node_id) in image_node_ids.into_iter().enumerate() {
+            let Some((x, y, width, height)) =
+                Self::content_box_for_node(document, image_node_id, scale)
+            else {
+                continue;
+            };
+            let Some((image_width, image_height, blob_id)) = document
+                .get_node(image_node_id)
+                .and_then(|node| node.element_data())
+                .and_then(|element| element.raster_image_data())
+                .map(|raster| (raster.width, raster.height, raster.data.id()))
+            else {
+                continue;
+            };
+            let image_id = ImageIdentifier {
+                partition: partition.clone(),
+                blob_id,
+            };
+            pending_images.push(PendingImage {
+                id: image_id.clone(),
+                width: image_width,
+                height: image_height,
+                node_id: image_node_id,
+            });
+            let clip_svg_path = format!("M0,0 L{width},0 L{width},{height} L0,{height} Z");
+            embed_sites.push(EmbedSite::Image(ImageEmbedData {
+                embed_site_id: EmbedSiteId((image_node_id as u64).wrapping_add(1)),
+                paint_id: ImagePaintId::for_node(navigable_id, image_node_id),
+                image_id,
+                background_policy: EmbedBackgroundPolicy::Transparent,
+                clip_svg_path,
+                clip_radius: 0.0,
+                layout: EmbedLayout {
+                    z_index: 0,
+                    paint_order: (iframe_count + video_count + canvas_count + image_offset) as u32,
                     transform: [1.0, 0.0, 0.0, 1.0, x, y],
                     clip_bounds: [x, y, x + width, y + height],
                 },

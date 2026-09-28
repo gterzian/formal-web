@@ -133,8 +133,8 @@ fn setup_realm(engine: &mut Engine, _document: Rc<RefCell<BaseDocument>>) -> Res
     use crate::html::GlobalScope;
     use crate::html::{
         CanvasRenderingContext2D, HTMLAnchorElement, HTMLCanvasElement, HTMLElement,
-        HTMLIFrameElement, HTMLInputElement, HTMLMediaElement, HTMLVideoElement, Location,
-        MessageChannel, MessageEvent, MessagePort, OffscreenCanvas,
+        HTMLIFrameElement, HTMLImageElement, HTMLInputElement, HTMLMediaElement, HTMLVideoElement,
+        Location, MessageChannel, MessageEvent, MessagePort, OffscreenCanvas,
         OffscreenCanvasRenderingContext2D, Window, WindowProxy, Worker,
     };
     use crate::streams::{
@@ -220,6 +220,7 @@ fn setup_realm(engine: &mut Engine, _document: Rc<RefCell<BaseDocument>>) -> Res
     reg!(HTMLCanvasElement);
     reg!(CanvasRenderingContext2D);
     reg!(HTMLIFrameElement);
+    reg!(HTMLImageElement);
     reg!(HTMLInputElement);
     reg!(HTMLMediaElement);
     reg!(HTMLVideoElement);
@@ -256,6 +257,7 @@ fn setup_realm(engine: &mut Engine, _document: Rc<RefCell<BaseDocument>>) -> Res
     wire_registry_prototype::<crate::js::Types, HTMLAnchorElement, HTMLElement>(engine);
     wire_registry_prototype::<crate::js::Types, HTMLCanvasElement, HTMLElement>(engine);
     wire_registry_prototype::<crate::js::Types, HTMLIFrameElement, HTMLElement>(engine);
+    wire_registry_prototype::<crate::js::Types, HTMLImageElement, HTMLElement>(engine);
     wire_registry_prototype::<crate::js::Types, HTMLMediaElement, HTMLElement>(engine);
     wire_registry_prototype::<crate::js::Types, HTMLVideoElement, HTMLMediaElement>(engine);
     wire_registry_prototype::<crate::js::Types, HTMLInputElement, HTMLElement>(engine);
@@ -278,6 +280,7 @@ fn setup_realm(engine: &mut Engine, _document: Rc<RefCell<BaseDocument>>) -> Res
     wire_registry_constructor_prototype::<crate::js::Types, OffscreenCanvas, EventTarget>(engine);
     wire_registry_constructor_prototype::<crate::js::Types, HTMLAnchorElement, HTMLElement>(engine);
     wire_registry_constructor_prototype::<crate::js::Types, HTMLIFrameElement, HTMLElement>(engine);
+    wire_registry_constructor_prototype::<crate::js::Types, HTMLImageElement, HTMLElement>(engine);
     wire_registry_constructor_prototype::<crate::js::Types, HTMLMediaElement, HTMLElement>(engine);
     wire_registry_constructor_prototype::<crate::js::Types, HTMLVideoElement, HTMLMediaElement>(
         engine,

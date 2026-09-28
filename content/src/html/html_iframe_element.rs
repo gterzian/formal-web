@@ -234,6 +234,7 @@ fn attach_iframe_subdocument_from_html(
         parent_document_id,
         Some(base_url),
         needs_paint.clone(),
+        false,
     ))));
     {
         let mut sub_document_guard = sub_document.borrow_mut();
