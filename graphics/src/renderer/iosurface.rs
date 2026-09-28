@@ -279,7 +279,9 @@ impl SurfaceRenderer for IosurfaceRenderer {
             .iter()
             .filter_map(|layer_id| match layer_id {
                 CompositingLayerId::Video(paint_id) => Some(*paint_id),
-                CompositingLayerId::Navigable(_) | CompositingLayerId::Canvas(_) => None,
+                CompositingLayerId::Navigable(_)
+                | CompositingLayerId::Canvas(_)
+                | CompositingLayerId::Image(_) => None,
             })
             .collect();
         self.gpu.retain_video_paints(&live_videos);

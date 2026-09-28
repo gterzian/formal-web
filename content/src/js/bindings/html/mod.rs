@@ -6,6 +6,7 @@ mod html_anchor_element;
 mod html_canvas_element;
 mod html_element;
 mod html_iframe_element;
+mod html_image_element;
 pub(crate) mod html_input_element;
 pub(crate) mod html_media_element;
 pub(crate) mod html_video_element;

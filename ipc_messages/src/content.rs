@@ -60,10 +60,103 @@ uuid_id!(BeforeUnloadCheckId);
 uuid_id!(NavigableId);
 uuid_id!(FrameId);
 uuid_id!(CanvasId);
+uuid_id!(ImagePaintId);
 uuid_id!(NavigationId);
 uuid_id!(PortId);
 uuid_id!(MessageId);
 uuid_id!(WorkerId);
+
+impl ImagePaintId {
+    /// Dedicated UUIDv5 namespace for `<img>` layer identifiers.
+    const LAYER_NAMESPACE: Uuid = Uuid::from_u128(0x6d5f0a1e_9c3b_4f2a_8e7d_1b2c3d4e5f60);
+
+    /// Derive the layer identifier for the `<img>` element at `node_id` in
+    /// the document hosted by `navigable_id`. A navigable hosts one document
+    /// at a time and a node id is stable for the element's life, so the
+    /// identifier is stable across frames and unique within a webview; the
+    /// frame-composition builder recomputes it without a side table.
+    ///
+    /// <https://html.spec.whatwg.org/#htmlimageelement>
+    pub fn for_node(navigable_id: NavigableId, node_id: usize) -> Self {
+        let name = format!("{}:{node_id}", navigable_id.0);
+        Self(Uuid::new_v5(&Self::LAYER_NAMESPACE, name.as_bytes()))
+    }
+}
+
+/// The cache partition a resource load belongs to: the top-level
+/// traversable that owns the document and the document's origin. Two loads
+/// that differ in either component never share a decoded-image cache entry.
+///
+/// <https://html.spec.whatwg.org/#origin>
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub struct ResourcePartitionKey {
+    pub top_level_traversable: NavigableId,
+    pub origin: String,
+}
+
+/// Identifies a decoded raster image: the content process-local `Blob` id
+/// stamped when the resource was loaded, scoped to the partition it was
+/// loaded in.
+///
+/// <https://html.spec.whatwg.org/#the-img-element>
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub struct ImageIdentifier {
+    pub partition: ResourcePartitionKey,
+    pub blob_id: u64,
+}
+
+/// A decoded raster image shipped to the graphics process, once per
+/// `ImageIdentifier`. The bytes travel in the IPC shared memory map under
+/// `data_shmem_key`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RegisteredImage {
+    pub id: ImageIdentifier,
+    pub width: u32,
+    pub height: u32,
+    pub data_shmem_key: usize,
+}
+
+/// Tracks which `ImageIdentifier`s this content process already shipped, so
+/// an image's pixels cross the process boundary once per webview lifetime.
+#[derive(Debug, Default)]
+pub struct ImageTransportSender {
+    sent_images: HashSet<ImageIdentifier>,
+}
+
+impl ImageTransportSender {
+    /// Whether `id`'s pixels were already shipped to the graphics process.
+    pub fn is_sent(&self, id: &ImageIdentifier) -> bool {
+        self.sent_images.contains(id)
+    }
+
+    /// Register `id`'s decoded bytes for transport if it has not been sent
+    /// before, assigning the next shared-memory key. Returns the
+    /// registration and the shmem region to place under that key, or
+    /// `None` when the image was already shipped.
+    pub fn prepare_image(
+        &mut self,
+        id: ImageIdentifier,
+        width: u32,
+        height: u32,
+        bytes: &[u8],
+        next_shmem_key: &mut usize,
+    ) -> Option<(RegisteredImage, ipc::IpcSharedRegion)> {
+        if !self.sent_images.insert(id.clone()) {
+            return None;
+        }
+        let data_shmem_key = *next_shmem_key;
+        *next_shmem_key += 1;
+        Some((
+            RegisteredImage {
+                id,
+                width,
+                height,
+                data_shmem_key,
+            },
+            ipc::IpcSharedRegion::from_bytes(bytes),
+        ))
+    }
+}
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize)]
 pub enum ColorScheme {
@@ -366,8 +459,26 @@ pub struct CanvasEmbedSite {
     pub layout: EmbedLayout,
 }
 
+/// An `<img>` embed site: a rectangle of externally-sourced raster content,
+/// positioned by layout and composited as its own layer. `paint_id`
+/// identifies the on-screen instance (so two `<img>` elements showing the
+/// same URL get two layers); `image_id` identifies the shared decoded
+/// texture that layer's one-node scene draws.
+///
+/// <https://html.spec.whatwg.org/#the-img-element>
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ImageEmbedData {
+    pub embed_site_id: EmbedSiteId,
+    pub paint_id: ImagePaintId,
+    pub image_id: ImageIdentifier,
+    pub background_policy: EmbedBackgroundPolicy,
+    pub clip_svg_path: String,
+    pub clip_radius: f64,
+    pub layout: EmbedLayout,
+}
+
 /// A single embed site within a parent document's composition.
-/// Iframes, video and offscreen canvas are
+/// Iframes, video, offscreen canvas and images are
 /// [embedded content](https://html.spec.whatwg.org/#embedded-content)
 /// and share the same z-order / paint-order space.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -375,6 +486,7 @@ pub enum EmbedSite {
     Frame(IframeEmbedSite),
     Video(VideoEmbedData),
     Canvas(CanvasEmbedSite),
+    Image(ImageEmbedData),
 }
 
 impl EmbedSite {
@@ -383,6 +495,7 @@ impl EmbedSite {
             EmbedSite::Frame(s) => &s.layout,
             EmbedSite::Video(s) => &s.layout,
             EmbedSite::Canvas(s) => &s.layout,
+            EmbedSite::Image(s) => &s.layout,
         }
     }
 

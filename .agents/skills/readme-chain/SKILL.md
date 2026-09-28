@@ -1,36 +1,33 @@
 ---
 name: readme-chain
-description: Collect the README.md documentation chain for a file or directory, ordered from the project root to the most specific directory. Use before editing or reviewing any file in a directory whose README has not been read in this session.
+description: Read the README.md documentation chain for a file or directory, ordered from the project root to the most specific directory, without re-reading what is already in context. Use before editing or reviewing a file whose directory README chain has not been read in this session.
 ---
 
 # readme-chain
 
-The documentation chain is every `README.md` between the project root and a
-target path, from general to specific. Read the chain before editing a file in
-a directory whose README has not been read in this session. Reading the chain
-is always preferred over relying on memory.
+The chain and its order are defined in `AGENTS.md` ("Documentation Chain").
+This skill ships instructions only: no script runs, you build the chain
+yourself and read the files with the `read` tool.
 
-`AGENTS.md` at the project root is always loaded and points to `SKILLS.md`,
-which indexes this skill. The chain therefore starts at the first `README.md`
-below the root.
+## Build the chain
 
-## Command
+1. Take the directory holding the target file (or the target directory).
+2. Walk up to the project root: the nearest ancestor containing `AGENTS.md`.
+3. Reverse that walk to get the `README.md` files from general to specific.
+   `AGENTS.md` is not read here — pi loads it before the session starts.
 
-```
-node scripts/readme-chain.mjs [path]
-node scripts/readme-chain.mjs [path] --list
-node scripts/readme-chain.mjs [path] --include-root
-```
+A `README.md` under `vendor/` is not part of the chain. Where a directory has
+no `README.md`, its guidance is in the nearest README above it.
 
-With no path the script uses the current working directory.
+## Do not duplicate
 
-- Default output is the chain summary followed by the contents of every
-  `README.md` in the chain.
-- `--list` prints only the chain summary.
-- `--include-root` also includes the root `AGENTS.md` in the summary and
-  contents.
+Your context already holds what you read earlier in this session; a second
+copy adds tokens and no information.
 
-The project root is the nearest ancestor containing `AGENTS.md`. Directories
-named `node_modules`, `vendor`, `target`, `.pi`, `.agents` and `.git` are
-skipped. The script keeps no state between runs; your own context records
-which directories you have already read.
+- Read a file only if its content is not already in context. A `read` with
+  `offset`/`limit`, or a result the `read` tool truncated, leaves part of the
+  file out — re-read those in full before relying on them.
+- The chain for a path stops at the first directory whose `README.md` you
+  already read in full: everything above it is in context.
+- Never re-read a README to re-confirm it. Re-read only what compaction
+  dropped or what you read partially.

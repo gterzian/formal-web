@@ -8,8 +8,8 @@ use js_engine::{Completion, ExecutionContext, JsTypes};
 
 use crate::dom::{DOMException, Document, Element, Node};
 use crate::html::{
-    HTMLAnchorElement, HTMLElement, HTMLIFrameElement, HTMLInputElement, HTMLMediaElement,
-    HTMLVideoElement,
+    HTMLAnchorElement, HTMLElement, HTMLIFrameElement, HTMLImageElement, HTMLInputElement,
+    HTMLMediaElement, HTMLVideoElement,
 };
 use crate::js::platform_objects::{
     collect_child_subtree_node_ids, document_object, invalidate_cached_node_ids,
@@ -272,6 +272,9 @@ fn try_with_node_ref<R>(
         }
         if let Some(html_input_element) = data.downcast_ref::<HTMLInputElement>() {
             return Ok(f(&html_input_element.html_element.element.node));
+        }
+        if let Some(html_image_element) = data.downcast_ref::<HTMLImageElement>() {
+            return Ok(f(&html_image_element.html_element.element.node));
         }
         if let Some(html_media_element) = data.downcast_ref::<HTMLMediaElement>() {
             return Ok(f(&html_media_element.html_element.element.node));
@@ -581,6 +584,11 @@ fn appendable_node(
             Some((
                 Rc::clone(&html_input_element.html_element.element.node.document),
                 html_input_element.html_element.element.node.node_id,
+            ))
+        } else if let Some(html_image_element) = data.downcast_ref::<HTMLImageElement>() {
+            Some((
+                Rc::clone(&html_image_element.html_element.element.node.document),
+                html_image_element.html_element.element.node.node_id,
             ))
         } else if let Some(html_media_element) = data.downcast_ref::<HTMLMediaElement>() {
             Some((

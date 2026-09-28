@@ -1,4 +1,6 @@
-use crate::content::{CanvasId, EmbedBackgroundPolicy, FrameId, PaintFrame, WebviewId};
+use crate::content::{
+    CanvasId, EmbedBackgroundPolicy, FrameId, ImageIdentifier, ImagePaintId, PaintFrame, WebviewId,
+};
 use crate::media::{MediaPipelineId, VideoPaintId};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -24,14 +26,15 @@ impl Default for CompositorSlotId {
 }
 
 /// Identifies one compositable layer within a webview: a cross-origin
-/// navigable (iframe), a `<video>` embed site, or an offscreen canvas. Same-
-/// origin iframes are baked into their parent's recorded scene and get no
-/// layer of their own.
+/// navigable (iframe), a `<video>` embed site, an offscreen canvas, or an
+/// `<img>` element. Same-origin iframes are baked into their parent's
+/// recorded scene and get no layer of their own.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum CompositingLayerId {
     Navigable(FrameId),
     Video(VideoPaintId),
     Canvas(CanvasId),
+    Image(ImagePaintId),
 }
 
 // ---------------------------------------------------------------------------
@@ -76,6 +79,17 @@ pub enum GraphicsCommand {
     RegisterCanvas {
         webview_id: WebviewId,
         canvas_id: CanvasId,
+    },
+    /// Register an `<img>` element's decoded pixels with its webview. The
+    /// bytes travel in the IPC shared-memory map under `data_shmem_key`; the
+    /// graphics process stores them keyed by `image_id`, shared by every
+    /// layer that references that image. Sent once per image per webview.
+    RegisterImage {
+        webview_id: WebviewId,
+        image_id: ImageIdentifier,
+        width: u32,
+        height: u32,
+        data_shmem_key: usize,
     },
     /// Remove a video frame slot (pipeline destroyed).
     RemoveVideoFrame {
