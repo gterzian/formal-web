@@ -1,4 +1,5 @@
 pub mod backend;
+mod websocket;
 
 use backend::{Backend, FetchReply, NetworkBackend, NetworkPartitionKey};
 use ipc_messages::content::{
@@ -8,6 +9,7 @@ use ipc_messages::network::{Request, Response, ResponseRecipient};
 use std::collections::HashMap;
 use std::env;
 use uuid::Uuid;
+use websocket::WebSocketConnections;
 
 fn net_token_from_args() -> Result<Option<String>, String> {
     let mut args = env::args().skip(1);
@@ -74,6 +76,9 @@ pub fn run_net_process_with_server(
     // id, so a backend reply can be routed to its caller.
     let mut pending: HashMap<Uuid, ResponseRecipient> = HashMap::new();
     let mut net_backend = Backend::new();
+    let mut web_sockets = WebSocketConnections::default();
+    #[cfg(feature = "webrtc")]
+    let mut webrtc_engine = webrtc::WebRtcEngine::new()?;
 
     loop {
         crossbeam_channel::select! {
@@ -134,6 +139,19 @@ pub fn run_net_process_with_server(
                                     break;
                                 }
                             }
+                            Request::WebSocket(request) => web_sockets.handle(request),
+                            #[cfg(feature = "webrtc")]
+                            Request::WebRtc(request) => webrtc_engine.handle(request),
+                            #[cfg(not(feature = "webrtc"))]
+                            Request::WebRtc(_) => {
+                                log::warn!("[net] WebRTC request dropped: built without the webrtc feature");
+                            }
+                            #[cfg(feature = "webrtc")]
+                            Request::SetGraphicsSender(sender) => {
+                                webrtc_engine.set_graphics_sender(sender);
+                            }
+                            #[cfg(not(feature = "webrtc"))]
+                            Request::SetGraphicsSender(_) => {}
                             Request::Shutdown => break,
                         }
                     }

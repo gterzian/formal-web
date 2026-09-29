@@ -1,3 +1,4 @@
+mod audio;
 pub mod compositor;
 // The zero-copy IOSurface surface backend: the default on macOS; disabled
 // by the `cpu_readback` feature. IOSurface sharing is macOS-only.
@@ -12,6 +13,7 @@ compile_error!(
 
 use std::collections::{HashMap, HashSet};
 
+use crate::audio::AudioState;
 use crate::renderer::{ReadbackChannels, SurfaceRenderer};
 use compositor::{Compositor, CompositorVideoFrame, LayerUpdate};
 use crossbeam_channel::{select, tick};
@@ -186,6 +188,7 @@ pub fn run_graphics_process<B: MediaBackend + 'static, R: SurfaceRenderer>(
     // Drain the first message to check for SetTraceSender.
     let mut tla_tracer = TLATracer::new("Navigation", "formal-web:graphics", None);
     let mut finished_videos: HashSet<VideoPaintId> = HashSet::new();
+    let mut audio = AudioState::new();
     if let Ok(incoming) = cmd_rx.try_recv() {
         if let GraphicsCommand::SetTraceSender(sender) = incoming.payload {
             tla_tracer.set_sender(sender);
@@ -204,6 +207,7 @@ pub fn run_graphics_process<B: MediaBackend + 'static, R: SurfaceRenderer>(
                 &mut tla_tracer,
                 &channels,
                 &event_sender,
+                &mut audio,
             );
         }
     }
@@ -284,6 +288,7 @@ pub fn run_graphics_process<B: MediaBackend + 'static, R: SurfaceRenderer>(
                     &mut tla_tracer,
                     &channels,
                     &event_sender,
+                    &mut audio,
                 ) {
                     break;
                 }
@@ -512,8 +517,24 @@ fn handle_command<B: MediaBackend + 'static, R: SurfaceRenderer>(
     tla_tracer: &mut TLATracer,
     channels: &ReadbackChannels<R::RenderData>,
     composed_scene_sender: &ipc::IpcSender<GraphicsEvent>,
+    audio: &mut AudioState,
 ) -> bool {
     match cmd {
+        GraphicsCommand::SetNetSender(sender) => audio.set_net_sender(sender),
+        GraphicsCommand::StartAudioCapture { peer, transceiver } => {
+            audio.start_capture(peer, transceiver);
+        }
+        GraphicsCommand::StopAudioCapture { peer, transceiver } => {
+            audio.stop_capture(peer, transceiver);
+        }
+        GraphicsCommand::PlayAudioPcm {
+            peer,
+            transceiver,
+            samples,
+        } => audio.play(peer, transceiver, samples),
+        GraphicsCommand::StopAudioPlayout { peer, transceiver } => {
+            audio.stop_playout(peer, transceiver);
+        }
         GraphicsCommand::RegisterWebview { webview_id } => {
             debug!("[graphics] registering webview {:?}", webview_id);
             webviews

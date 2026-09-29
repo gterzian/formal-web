@@ -49,5 +49,19 @@ gstreamer-app = { version = "0.23", optional = true }
 objc2 = "0.6.4"
 objc2-foundation = "0.3.2"
 objc2-av-foundation = { version = "0.3.2", features = ["objc2-core-media"] }
+objc2-avf-audio = { version = "0.3.2", features = [
+    "AVAudioBuffer",
+    "AVAudioEngine",
+    "AVAudioFormat",
+    "AVAudioIONode",
+    "AVAudioMixerNode",
+    "AVAudioNode",
+    "AVAudioSourceNode",
+    "AVAudioTime",
+    "AVAudioTypes",
+    "block2",
+] }
+objc2-core-audio-types = "0.3.2"
+block2 = "0.6"
 objc2-core-media = "0.3.2"
 objc2-core-video = "0.3.2"

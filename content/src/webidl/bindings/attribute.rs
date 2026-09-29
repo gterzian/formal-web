@@ -140,6 +140,53 @@ where
                 false,
             );
             desc.set = Some(setter_fn);
+        } else if attr.replaceable {
+            // <https://webidl.spec.whatwg.org/#dfn-attribute-setter>
+            // The [Replaceable] extended attribute turns the assignment into
+            // an own data property that shadows the accessor (step 4.5.7).
+            #[gc_struct]
+            struct ReplaceableCapture<T: JsTypes> {
+                #[ignore_trace]
+                attr_id: &'static str,
+                #[ignore_trace]
+                marker: std::marker::PhantomData<T>,
+            }
+
+            fn replaceable_behaviour<T: JsTypes + JsTypesWithRealm>(
+                args: &[T::JsValue],
+                this: T::JsValue,
+                captures: &ReplaceableCapture<T>,
+                ec: &mut dyn ExecutionContext<T>,
+            ) -> Completion<T::JsValue, T> {
+                let undefined = ec.value_undefined();
+                let value = args.first().cloned().unwrap_or_else(|| undefined.clone());
+
+                // Step 4.5.7.1: "Perform ? CreateDataProperty(esValue, id, V)."
+                let Some(this_object) = T::value_as_object(&this) else {
+                    return Err(ec.new_type_error(&format!(
+                        "cannot replace attribute '{}' on a non-object",
+                        captures.attr_id
+                    )));
+                };
+                let attr_key = ec.property_key_from_str(captures.attr_id);
+                ec.create_data_property(this_object, attr_key, value)?;
+
+                // Step 4.5.7.2: "Return undefined."
+                Ok(ec.value_undefined())
+            }
+
+            let setter_fn = crate::js::create_builtin_fn_with_traced_captures(
+                engine,
+                ReplaceableCapture {
+                    attr_id: attr.id,
+                    marker: std::marker::PhantomData,
+                },
+                replaceable_behaviour::<Ty>,
+                1,
+                name_key,
+                false,
+            );
+            desc.set = Some(setter_fn);
         } else if let Some(forward_id) = attr.put_forwards {
             // <https://webidl.spec.whatwg.org/#dfn-attribute-setter>
             // The [PutForwards] extended attribute turns the assignment into

@@ -303,3 +303,14 @@ two-submit layout.
   renderer's surface buffers for both. Content's `video_paint_registry` and
   `canvas_registry` retain the same keys. A fix needs a destroy signal from
   content for both.
+
+## Audio devices for WebRTC
+
+`audio.rs` owns the default audio input and output for WebRTC audio tracks
+(`media::backend::avfoundation::audio_io::AudioIo`, AVFoundation only): a
+`StartAudioCapture` command taps the input and sends 48 kHz mono 20 ms frames
+to the net process (`webrtc::Request::PushPcm`) over the sender the user
+agent hands over in `SetNetSender`; `PlayAudioPcm` queues the decoded frames
+of one remote track, mixed by summing in the source node's render callback.
+One capture runs at a time. With the GStreamer backend the commands are
+logged and dropped.
