@@ -12,7 +12,9 @@ mod realm;
 pub(crate) use array_index::is_array_index_key;
 pub(crate) use async_iterable::{AsyncValueIterable, create_value_async_iterator};
 #[allow(unused_imports)]
-pub(crate) use buffer_source::{get_a_copy_of_the_buffer_source, is_buffer_source};
+pub(crate) use buffer_source::{
+    create_array_buffer, get_a_copy_of_the_buffer_source, is_buffer_source,
+};
 pub(crate) use dictionary::convert_boolean_or_add_event_listener_options;
 
 pub(crate) use callback::{
@@ -20,10 +22,13 @@ pub(crate) use callback::{
     callback_interface_type_value, invoke_callback_function, nullable_value,
 };
 pub(crate) use dom_exception::{
-    data_clone_error_value, invalid_state_error_value, not_supported_error_value,
-    security_error_value, syntax_error_value,
+    data_clone_error_value, invalid_access_error_value, invalid_modification_error_value,
+    invalid_state_error_value, named_dom_exception_value, not_supported_error_value,
+    operation_error_value, security_error_value, syntax_error_value,
 };
-pub(crate) use integer::enforce_range_unsigned_long_long;
+pub(crate) use integer::{
+    enforce_range_unsigned_long_long, enforce_range_unsigned_short, unsigned_short,
+};
 pub(crate) use promise::{
     mark_promise_as_handled, promise_from_value, rejected_promise, rejected_promise_from_error,
     resolved_promise, transform_promise_to_undefined, upon_settlement,

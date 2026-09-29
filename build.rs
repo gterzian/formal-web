@@ -15,7 +15,11 @@ enum JavascriptBackend {
 fn main() {
     #[allow(unused_mut)]
     let mut prebuild_binaries_list: Vec<(&str, &str)> =
-        vec![("content", "formal-web-content"), ("net", "formal-web-net")];
+        vec![
+            ("content", "formal-web-content"),
+            ("net", "formal-web-net"),
+            ("webrtc", "formal-web-webrtc"),
+        ];
 
     // Only prebuild the media binary when the media feature is enabled.
     #[cfg(feature = "media")]
@@ -49,6 +53,8 @@ fn main() {
         "media/src",
         "webview/Cargo.toml",
         "webview/src",
+        "webrtc/Cargo.toml",
+        "webrtc/src",
     ] {
         println!("cargo:rerun-if-changed={path}");
     }

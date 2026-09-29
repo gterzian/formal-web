@@ -53,3 +53,38 @@ pub(crate) fn not_supported_error_value(
 ) -> JsValue {
     dom_exception_value(message, String::from("NotSupportedError"), ec)
 }
+
+/// <https://webidl.spec.whatwg.org/#operationerror>
+pub(crate) fn operation_error_value(
+    message: String,
+    ec: &mut dyn ExecutionContext<Types>,
+) -> JsValue {
+    dom_exception_value(message, String::from("OperationError"), ec)
+}
+
+/// <https://webidl.spec.whatwg.org/#invalidmodificationerror>
+pub(crate) fn invalid_modification_error_value(
+    message: String,
+    ec: &mut dyn ExecutionContext<Types>,
+) -> JsValue {
+    dom_exception_value(message, String::from("InvalidModificationError"), ec)
+}
+
+/// <https://webidl.spec.whatwg.org/#invalidaccesserror>
+pub(crate) fn invalid_access_error_value(
+    message: String,
+    ec: &mut dyn ExecutionContext<Types>,
+) -> JsValue {
+    dom_exception_value(message, String::from("InvalidAccessError"), ec)
+}
+
+/// <https://webidl.spec.whatwg.org/#dfn-DOMException>
+/// A DOMException whose name comes from another process (for example the
+/// WebRTC process's operation results).
+pub(crate) fn named_dom_exception_value(
+    name: String,
+    message: String,
+    ec: &mut dyn ExecutionContext<Types>,
+) -> JsValue {
+    dom_exception_value(message, name, ec)
+}

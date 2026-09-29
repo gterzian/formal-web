@@ -118,6 +118,17 @@ pub(crate) enum Task {
     /// as trusted events.
     DispatchEvent { events: Vec<DispatchEventEntry> },
 
+    /// A task of one RTCPeerConnection: a result or event the WebRTC process
+    /// sent (<https://w3c.github.io/webrtc-pc/#dom-peerconnection>, the
+    /// tasks its algorithms queue), or one the connection queued itself.
+    /// Queued on the networking task source.
+    /// <https://html.spec.whatwg.org/#networking-task-source>
+    WebRtc {
+        document_id: DocumentId,
+        peer: ipc_messages::webrtc::PeerConnectionId,
+        task: crate::webrtc::WebRtcTask,
+    },
+
     /// <https://html.spec.whatwg.org/#steps-to-fire-beforeunload>
     RunBeforeUnload {
         document_id: DocumentId,

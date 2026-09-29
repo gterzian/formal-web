@@ -6,6 +6,7 @@ pub(crate) mod testutils;
 pub(crate) mod ui_events;
 #[cfg(all(boa_backend, feature = "wasm"))]
 pub(crate) mod wasm;
+pub(crate) mod webrtc;
 
 pub(crate) use dom::install_document_property;
 #[cfg(all(boa_backend, feature = "wasm"))]

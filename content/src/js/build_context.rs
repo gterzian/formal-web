@@ -242,6 +242,33 @@ fn setup_realm(engine: &mut Engine, _document: Rc<RefCell<BaseDocument>>) -> Res
     reg!(WritableStreamDefaultWriter);
     reg!(TransformStream);
     reg!(TransformStreamDefaultController);
+    // WebRTC: [Exposed=Window].
+    {
+        use crate::webrtc::{
+            RTCDataChannel, RTCDataChannelEvent, RTCIceCandidate, RTCPeerConnection,
+            RTCPeerConnectionIceEvent, RTCSessionDescription,
+        };
+        reg!(RTCPeerConnection);
+        reg!(RTCDataChannel);
+        reg!(RTCSessionDescription);
+        reg!(RTCIceCandidate);
+        reg!(RTCPeerConnectionIceEvent);
+        reg!(RTCDataChannelEvent);
+        wire_registry_prototype::<crate::js::Types, RTCPeerConnection, EventTarget>(engine);
+        wire_registry_prototype::<crate::js::Types, RTCDataChannel, EventTarget>(engine);
+        wire_registry_prototype::<crate::js::Types, RTCPeerConnectionIceEvent, Event>(engine);
+        wire_registry_prototype::<crate::js::Types, RTCDataChannelEvent, Event>(engine);
+        wire_registry_constructor_prototype::<crate::js::Types, RTCPeerConnection, EventTarget>(
+            engine,
+        );
+        wire_registry_constructor_prototype::<crate::js::Types, RTCDataChannel, EventTarget>(
+            engine,
+        );
+        wire_registry_constructor_prototype::<crate::js::Types, RTCPeerConnectionIceEvent, Event>(
+            engine,
+        );
+        wire_registry_constructor_prototype::<crate::js::Types, RTCDataChannelEvent, Event>(engine);
+    }
 
     // Step 6: Wire prototype chains.
     wire_registry_prototype::<crate::js::Types, UIEvent, Event>(engine);

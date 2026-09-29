@@ -230,6 +230,20 @@ pub struct GlobalScope {
     /// state), created lazily on first port use.
     channel_messaging: GcCell<Option<ChannelMessaging>>,
 
+    /// The direct sender to the WebRTC extension process, set by the content
+    /// process at document creation.
+    #[ignore_trace]
+    webrtc_sender: Rc<RefCell<Option<IpcSender<ipc_messages::webrtc::Request>>>>,
+
+    /// This content process's own command sender, where the WebRTC process
+    /// sends the results and events of this realm's peer connections.
+    #[ignore_trace]
+    content_command_sender: Rc<RefCell<Option<IpcSender<ipc_messages::content::Command>>>>,
+
+    /// The realm's open RTCPeerConnections, by id, so the WebRTC tasks reach
+    /// them. A connection leaves when it closes.
+    peer_connections: GcCell<Vec<crate::webrtc::RTCPeerConnection>>,
+
     /// TLA trace sender for the MessagePort spec, set by the content process
     /// at document creation (mirrors the `event_sender` wiring).
     #[ignore_trace]
@@ -380,6 +394,9 @@ impl GlobalScope {
             event_loop_id: Rc::new(Cell::new(None)),
             worker_id: Rc::new(Cell::new(None)),
             channel_messaging: gc_cell_new(None, ec),
+            webrtc_sender: Rc::new(RefCell::new(None)),
+            content_command_sender: Rc::new(RefCell::new(None)),
+            peer_connections: gc_cell_new(Vec::new(), ec),
             trace_sender: Rc::new(RefCell::new(None)),
             parent_traversable_id: Rc::new(Cell::new(None)),
             top_level_traversable_id: Rc::new(Cell::new(None)),
@@ -561,6 +578,91 @@ impl GlobalScope {
 
     pub(crate) fn event_sender(&self) -> Option<IpcSender<ContentEvent>> {
         self.event_sender.borrow().clone()
+    }
+
+    /// Set the channels of this realm's peer connections: the sender to the
+    /// WebRTC process and the command sender its replies come back on.
+    pub(crate) fn set_webrtc_link(
+        &self,
+        webrtc_sender: Option<IpcSender<ipc_messages::webrtc::Request>>,
+        content_command_sender: IpcSender<ipc_messages::content::Command>,
+    ) {
+        *self.webrtc_sender.borrow_mut() = webrtc_sender;
+        *self.content_command_sender.borrow_mut() = Some(content_command_sender);
+    }
+
+    pub(crate) fn webrtc_sender(&self) -> Option<IpcSender<ipc_messages::webrtc::Request>> {
+        self.webrtc_sender.borrow().clone()
+    }
+
+    pub(crate) fn content_command_sender(
+        &self,
+    ) -> Option<IpcSender<ipc_messages::content::Command>> {
+        self.content_command_sender.borrow().clone()
+    }
+
+    pub(crate) fn register_peer_connection(
+        &self,
+        connection: crate::webrtc::RTCPeerConnection,
+        ec: &mut dyn ExecutionContext<Types>,
+    ) {
+        self.peer_connections.borrow_mut(ec).push(connection);
+    }
+
+    pub(crate) fn unregister_peer_connection(
+        &self,
+        peer: ipc_messages::webrtc::PeerConnectionId,
+        ec: &mut dyn ExecutionContext<Types>,
+    ) {
+        self.peer_connections
+            .borrow_mut(ec)
+            .retain(|connection| connection.id != peer);
+    }
+
+    pub(crate) fn peer_connection(
+        &self,
+        peer: ipc_messages::webrtc::PeerConnectionId,
+        ec: &mut dyn ExecutionContext<Types>,
+    ) -> Option<crate::webrtc::RTCPeerConnection> {
+        self.peer_connections
+            .borrow(ec)
+            .iter()
+            .find(|connection| connection.id == peer)
+            .cloned()
+    }
+
+    /// The realm's open peer connections.
+    pub(crate) fn peer_connections(
+        &self,
+        ec: &mut dyn ExecutionContext<Types>,
+    ) -> Vec<crate::webrtc::RTCPeerConnection> {
+        self.peer_connections.borrow(ec).clone()
+    }
+
+    /// Mirror a peer connection's reflector onto the registered clone:
+    /// EventTarget clones share their listener state but not their reflector
+    /// slot (as for `sync_owned_worker_reflector`).
+    pub(crate) fn sync_peer_connection_reflector(
+        &self,
+        peer: ipc_messages::webrtc::PeerConnectionId,
+        reflector: JsObject,
+        ec: &mut dyn ExecutionContext<Types>,
+    ) {
+        let Some(index) = self
+            .peer_connections
+            .borrow(ec)
+            .iter()
+            .position(|connection| connection.id == peer)
+        else {
+            return;
+        };
+        let Some(mut connection) = self.peer_connections.borrow(ec).get(index).cloned() else {
+            return;
+        };
+        ec.store_js_object(&mut connection.event_target.reflector, reflector);
+        if let Some(slot) = self.peer_connections.borrow_mut(ec).get_mut(index) {
+            *slot = connection;
+        }
     }
 
     /// Set the channel to the worker inbox of the event loop that owns the

@@ -63,3 +63,30 @@ pub(crate) fn is_buffer_source(value: &JsValue, _ec: &mut dyn ExecutionContext<T
     <Types as JsTypes>::object_as_array_buffer(&object).is_some()
         || <Types as JsTypes>::object_as_typed_array(&object).is_some()
 }
+
+/// <https://webidl.spec.whatwg.org/#arraybuffer-create>
+pub(crate) fn create_array_buffer(
+    bytes: &[u8],
+    ec: &mut dyn ExecutionContext<Types>,
+) -> Completion<<Types as JsTypes>::JsObject, Types> {
+    // Step 1: "Let jsArrayBuffer be ? AllocateArrayBuffer(realm.[[Intrinsics]].[[%ArrayBuffer%]], byteSequence's length)."
+    let realm = ec.current_realm();
+    let intrinsics = ec.realm_intrinsics(&realm);
+    let buffer =
+        ec.allocate_array_buffer(intrinsics.array_buffer.clone(), bytes.len() as u64, None)?;
+    // Step 2: "Let arrayBuffer be the result of converting jsArrayBuffer to an IDL value of type ArrayBuffer."
+    // Step 3: "Write byteSequence into arrayBuffer."
+    for (index, byte) in bytes.iter().enumerate() {
+        let value = ec.value_from_number(f64::from(*byte));
+        ec.set_value_in_buffer(
+            &buffer,
+            index as u64,
+            js_engine::enums::TypedArrayElementType::Uint8,
+            value,
+            false,
+            js_engine::enums::SharedMemoryOrder::Unordered,
+        )?;
+    }
+    // Step 4: "Return arrayBuffer."
+    Ok(<Types as JsTypes>::object_from_array_buffer(buffer))
+}
