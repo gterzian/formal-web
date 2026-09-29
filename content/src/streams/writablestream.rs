@@ -381,12 +381,12 @@ impl WritableStream {
         let (close_request, promise) = WriteRequest::new(ec)?;
         self.set_close_request_slot(Some(close_request), ec);
 
-        if let Some(writer_slot) = self.writer_slot(ec) {
-            if let Some(writer) = writer_slot.as_default_writer() {
-                if self.backpressure() && self.state() == WritableStreamState::Writable {
-                    writer.resolve_ready_promise(ec)?;
-                }
-            }
+        if let Some(writer_slot) = self.writer_slot(ec)
+            && let Some(writer) = writer_slot.as_default_writer()
+            && self.backpressure()
+            && self.state() == WritableStreamState::Writable
+        {
+            writer.resolve_ready_promise(ec)?;
         }
 
         let controller = self
@@ -541,10 +541,10 @@ impl WritableStream {
         }
 
         self.set_state(WritableStreamState::Closed);
-        if let Some(writer_slot) = self.writer_slot(ec) {
-            if let Some(writer) = writer_slot.as_default_writer() {
-                writer.resolve_closed_promise(ec)?;
-            }
+        if let Some(writer_slot) = self.writer_slot(ec)
+            && let Some(writer) = writer_slot.as_default_writer()
+        {
+            writer.resolve_closed_promise(ec)?;
         }
 
         debug_assert!(self.pending_abort_request_slot(ec).is_none());
@@ -642,10 +642,10 @@ impl WritableStream {
             close_request.reject(self.stored_error(ec), ec)?;
         }
 
-        if let Some(writer_slot) = self.writer_slot(ec) {
-            if let Some(writer) = writer_slot.as_default_writer() {
-                writer.ensure_closed_promise_rejected(self.stored_error(ec), ec)?;
-            }
+        if let Some(writer_slot) = self.writer_slot(ec)
+            && let Some(writer) = writer_slot.as_default_writer()
+        {
+            writer.ensure_closed_promise_rejected(self.stored_error(ec), ec)?;
         }
 
         Ok(())
@@ -666,10 +666,10 @@ impl WritableStream {
         self.set_state(WritableStreamState::Erroring);
         self.set_stored_error(reason.clone(), ec);
 
-        if let Some(writer_slot) = self.writer_slot(ec) {
-            if let Some(writer) = writer_slot.as_default_writer() {
-                writer.ensure_ready_promise_rejected(reason, ec)?;
-            }
+        if let Some(writer_slot) = self.writer_slot(ec)
+            && let Some(writer) = writer_slot.as_default_writer()
+        {
+            writer.ensure_ready_promise_rejected(reason, ec)?;
         }
 
         if !self.has_operation_marked_in_flight(ec) && controller.as_default_controller().started()
@@ -689,15 +689,14 @@ impl WritableStream {
         debug_assert_eq!(self.state(), WritableStreamState::Writable);
         debug_assert!(!self.close_queued_or_in_flight(ec));
 
-        if let Some(writer_slot) = self.writer_slot(ec) {
-            if let Some(writer) = writer_slot.as_default_writer() {
-                if backpressure != self.backpressure() {
-                    if backpressure {
-                        writer.reset_ready_promise(ec)?;
-                    } else {
-                        writer.resolve_ready_promise(ec)?;
-                    }
-                }
+        if let Some(writer_slot) = self.writer_slot(ec)
+            && let Some(writer) = writer_slot.as_default_writer()
+            && backpressure != self.backpressure()
+        {
+            if backpressure {
+                writer.reset_ready_promise(ec)?;
+            } else {
+                writer.resolve_ready_promise(ec)?;
             }
         }
 
@@ -791,7 +790,7 @@ fn create_writable_stream_object(
     let mut stream = WritableStream::new(ec);
     stream.initialize_writable_stream(ec);
     let stream_object: JsObject =
-        create_interface_instance::<Types, WritableStream>(stream.clone(), ec)?.into();
+        create_interface_instance::<Types, WritableStream>(stream.clone(), ec)?;
     Ok((stream, stream_object))
 }
 

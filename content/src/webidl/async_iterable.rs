@@ -49,21 +49,21 @@ fn next_on_fulfilled_behaviour<T: AsyncValueIterable>(
     // If it's an iterator result object ({value, done}), check done.
     if let Some(result_object) = Types::value_as_object(&result) {
         let done_result = js_engine::EcmascriptHost::get(ec, &result_object, "done");
-        if let Ok(done_val) = done_result {
-            if ec.to_boolean(&done_val) {
-                // Step 8.5.2: "If next is end of iteration, then:"
-                captures.iterator.finished.set(true);
-                captures
-                    .iterator
-                    .target
-                    .finish_async_iterator(&captures.iterator.state, ec)?;
-                // Return CreateIteratorResultObject(undefined, true)
-                return Ok(Types::value_from_object(create_iterator_result_object(
-                    ec.value_undefined(),
-                    true,
-                    ec,
-                )));
-            }
+        if let Ok(done_val) = done_result
+            && ec.to_boolean(&done_val)
+        {
+            // Step 8.5.2: "If next is end of iteration, then:"
+            captures.iterator.finished.set(true);
+            captures
+                .iterator
+                .target
+                .finish_async_iterator(&captures.iterator.state, ec)?;
+            // Return CreateIteratorResultObject(undefined, true)
+            return Ok(Types::value_from_object(create_iterator_result_object(
+                ec.value_undefined(),
+                true,
+                ec,
+            )));
         }
     }
 
@@ -330,9 +330,8 @@ where
     fn start_next(&self, ec: &mut dyn ExecutionContext<Types>) -> Completion<JsObject, Types> {
         // Step 8.1: "Let nextPromiseCapability be ! NewPromiseCapability(%Promise%)."
         // Note: We create a fallback capability for the finished/error paths.
-        let next_capability = ec
-            .new_promise_capability(ec.realm_intrinsics(&ec.current_realm()).promise)
-            .map_err(|e| e)?;
+        let next_capability =
+            ec.new_promise_capability(ec.realm_intrinsics(&ec.current_realm()).promise)?;
 
         // Step 8.2: "If object's is finished is true, then:"
         if self.finished.get() {
@@ -421,9 +420,8 @@ where
         // Step 8.1: "Let returnPromiseCapability be ! NewPromiseCapability(%Promise%)."
         // Note: used for finished/error fast-paths; normal path uses
         // the promise returned by perform_promise_then.
-        let return_capability = ec
-            .new_promise_capability(ec.realm_intrinsics(&ec.current_realm()).promise)
-            .map_err(|e| e)?;
+        let return_capability =
+            ec.new_promise_capability(ec.realm_intrinsics(&ec.current_realm()).promise)?;
 
         // Step 8.2: "If object's is finished is true, then:"
         if self.finished.get() {
@@ -602,9 +600,8 @@ where
         Ok(iterator) => iterator,
         Err(error) => {
             // Step 5: "IfAbruptRejectPromise(object, thisValidationPromiseCapability)."
-            let capability = ec
-                .new_promise_capability(ec.realm_intrinsics(&ec.current_realm()).promise)
-                .map_err(|e| e)?;
+            let capability =
+                ec.new_promise_capability(ec.realm_intrinsics(&ec.current_realm()).promise)?;
             let reject_obj = Types::object_from_function(capability.reject);
             let undefined = ec.value_undefined();
             ec.call(&reject_obj, &undefined, &[error])?;
@@ -635,9 +632,8 @@ where
     let iterator = match default_async_iterator_from_this::<T>(&this, ec) {
         Ok(iterator) => iterator,
         Err(error) => {
-            let capability = ec
-                .new_promise_capability(ec.realm_intrinsics(&ec.current_realm()).promise)
-                .map_err(|e| e)?;
+            let capability =
+                ec.new_promise_capability(ec.realm_intrinsics(&ec.current_realm()).promise)?;
             let reject_obj = Types::object_from_function(capability.reject);
             let undefined = ec.value_undefined();
             ec.call(&reject_obj, &undefined, &[error])?;
@@ -668,9 +664,7 @@ where
         false,
     );
 
-    let capability = ec
-        .new_promise_capability(ec.realm_intrinsics(&ec.current_realm()).promise)
-        .map_err(|e| e)?;
+    let capability = ec.new_promise_capability(ec.realm_intrinsics(&ec.current_realm()).promise)?;
     let result_promise = capability.promise.clone();
 
     let return_promise_obj = promise_from_object(return_result, ec)?;

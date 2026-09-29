@@ -67,6 +67,13 @@ pub(crate) trait WebIdlInterface<T: JsTypes + JsTypesWithRealm>: 'static {
         Self::is_global()
     }
 
+    /// <https://webidl.spec.whatwg.org/#dfn-value-iterator>
+    // Note: true for an interface that has an indexed property getter and an
+    // integer-typed attribute named "length" and no iterable declaration.
+    fn value_iterator() -> bool {
+        false
+    }
+
     /// <https://webidl.spec.whatwg.org/#call-a-user-objects-operation>
     fn create_platform_object(
         _new_target: &T::JsValue,
@@ -119,7 +126,8 @@ where
 
     // Step 13: "Otherwise, if interfaces contains an interface which supports
     //   indexed properties, named properties, or both:"
-    //   Not yet implemented.
+    //   Performed by `create_legacy_platform_object`, which wraps the instance
+    //   in the proxy carrying the legacy platform object internal methods.
     // Step 14: "Return instance."
     <Ty as PostCreateReflector<Ty>>::set_reflector(&instance, ec);
 
@@ -160,6 +168,49 @@ where
     // "Define the constants on the interface prototype object."
     super::constant::define_constants::<Ty>(proto.clone(), engine, &def.constants)?;
 
+    // <https://webidl.spec.whatwg.org/#ref-for-dfn-class-string>
+    // "Perform ! DefinePropertyOrThrow(interfaceProtoObj, @,
+    // PropertyDescriptor{[[Value]]: id, [[Writable]]: false, [[Enumerable]]:
+    // false, [[Configurable]]: true})."
+    let to_string_tag_key = engine.property_key_from_well_known_symbol("toStringTag");
+    let class_string = engine.js_string_from_str(I::NAME);
+    let class_string = EcmascriptHost::value_from_string(engine, class_string);
+    engine.define_property_or_throw(
+        proto.clone(),
+        to_string_tag_key,
+        JsPropertyDescriptor {
+            value: Some(class_string),
+            writable: Some(false),
+            enumerable: Some(false),
+            configurable: Some(true),
+            get: None,
+            set: None,
+        },
+    )?;
+
+    // <https://webidl.spec.whatwg.org/#es-iterator>
+    // "If the interface has an indexed property getter and an integer-typed attribute named "length", then a property must exist on the interface prototype object whose name is @@iterator, with attributes { [[Writable]]: true, [[Enumerable]]: false, [[Configurable]]: true } and whose value is the initial value of the %Array.prototype.values% property."
+    if I::value_iterator() {
+        let array = engine.create_empty_array();
+        let array_prototype = engine
+            .get_prototype_of(array)?
+            .ok_or_else(|| engine.new_type_error("%Array.prototype% is missing"))?;
+        let array_prototype_values = EcmascriptHost::get(engine, &array_prototype, "values")?;
+        let iterator_key = engine.property_key_from_well_known_symbol("iterator");
+        engine.define_property_or_throw(
+            proto.clone(),
+            iterator_key,
+            JsPropertyDescriptor {
+                value: Some(array_prototype_values),
+                writable: Some(true),
+                enumerable: Some(false),
+                configurable: Some(true),
+                get: None,
+                set: None,
+            },
+        )?;
+    }
+
     // Step 4: "Let unforgeables be OrdinaryObjectCreate(null)."
     // Step 5: "Define the unforgeable regular operations of I on unforgeables, given realm."
     // Step 6: "Define the unforgeable regular attributes of I on unforgeables, given realm."
@@ -192,8 +243,16 @@ where
             // Step 1.2: "If NewTarget is undefined, then throw a TypeError."
             //   Note: Boa's [[Call]] passes `undefined` as `this` for
             //   constructable functions; [[Construct]] passes `new.target`.
-            if Ty::value_is_undefined(&new_target_or_this) {
-                return Err(ec.new_type_error(&format!("{} is not a constructor", I::NAME)));
+            //   Note: On a [[Call]], the engine passes the receiver here (undefined
+            //   in strict code, the global object otherwise); a NewTarget is
+            //   always a constructor, so a receiver that is not one is a call
+            //   without new.
+            if Ty::value_is_undefined(&new_target_or_this) || !ec.is_constructor(&new_target_or_this)
+            {
+                return Err(ec.new_type_error(&format!(
+                    "Failed to construct '{}': Please use the 'new' operator, this DOM object constructor cannot be called as a function.",
+                    I::NAME
+                )));
             }
 
             // Step 1.3: "Let args be the passed arguments."

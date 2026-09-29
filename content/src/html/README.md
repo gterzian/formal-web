@@ -358,6 +358,42 @@ Remaining gaps:
   animation frames to mark the document animating and the UA to stop
   requesting its own redraw while the traversable is animating.
 
+## Resource links (`html_link_element.rs`)
+
+The document engine (blitz) fetches a stylesheet link when the element is
+inserted with `rel` and `href` already set, through the content process's
+resource fetch path. The `load` or `error` event of the link fires when that
+fetch completes (`linked_stylesheet_fetched`): the pending resource handler
+knows only the request URL, so every stylesheet link whose `href` resolves
+to it receives the event. Remaining work: the `disabled` attribute and
+`media` are reflected but not applied, and `rel=preload`, `rel=icon` and the
+other link types fetch nothing.
+
+## Web storage (`storage.rs`)
+
+`localStorage` and `sessionStorage` are in-memory maps held on the
+Document's storage holders: nothing is persisted, nothing is partitioned
+by origin, and a new document starts empty.  Remaining work:
+
+- A local storage bottle map shared by the documents of an origin and
+  persisted by the user agent.
+- Storage events: "broadcast" has no recipient, so no other Window is
+  notified of a change.
+- The bindings do not enforce required argument counts, so `getItem()`
+  without an argument converts `undefined` instead of throwing a
+  `TypeError` (`webstorage/missing_arguments.window.js`).
+- Lone surrogates cannot be stored: values travel as Rust strings
+  (`webstorage/storage_setitem.window.js`).
+
+## `noscript` content is rendered with scripting enabled
+
+Observed on Element Web's `index.html`: the text inside its `<noscript>`
+element shows in the viewport while the page's scripts run.  Whether the
+parser tokenizes the element's content as raw text (the scripting-enabled
+branch of the "in head"/"in body" insertion modes) or the user-agent
+stylesheet's `noscript { display: none }` rule is missing was not
+investigated.
+
 ## Related documentation
 
 - `content/src/webidl/README.md` — Web IDL bindings infrastructure, platform object pattern

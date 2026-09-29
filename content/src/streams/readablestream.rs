@@ -1,4 +1,5 @@
 use log::error;
+use std::slice::from_ref;
 use std::{
     cell::{Cell, RefCell},
     collections::VecDeque,
@@ -136,6 +137,10 @@ impl ReadableStream {
 
     pub(crate) fn set_disturbed(&self, disturbed: bool) {
         self.disturbed.set(disturbed);
+    }
+
+    pub(crate) fn disturbed(&self) -> bool {
+        self.disturbed.get()
     }
 
     /// <https://streams.spec.whatwg.org/#initialize-readable-stream>
@@ -430,17 +435,17 @@ fn default_tee_on_rejected_fn(
     };
 
     // Step 19.1: "Perform ! ReadableStreamDefaultControllerError(branch1.[[controller]], r)."
-    if let Some(branch1) = branch1.as_ref() {
-        if let Err(error) = default_tee_error_branch(branch1, error.clone(), ec) {
-            error!("[readable-stream] default tee error branch1 failed: {error:?}");
-        }
+    if let Some(branch1) = branch1.as_ref()
+        && let Err(error) = default_tee_error_branch(branch1, error.clone(), ec)
+    {
+        error!("[readable-stream] default tee error branch1 failed: {error:?}");
     }
 
     // Step 19.2: "Perform ! ReadableStreamDefaultControllerError(branch2.[[controller]], r)."
-    if let Some(branch2) = branch2.as_ref() {
-        if let Err(error) = default_tee_error_branch(branch2, error, ec) {
-            error!("[readable-stream] default tee error branch2 failed: {error:?}");
-        }
+    if let Some(branch2) = branch2.as_ref()
+        && let Err(error) = default_tee_error_branch(branch2, error, ec)
+    {
+        error!("[readable-stream] default tee error branch2 failed: {error:?}");
     }
 
     // Step 19.3: "If canceled1 is false or canceled2 is false, resolve cancelPromise with undefined."
@@ -721,26 +726,24 @@ pub(crate) fn readable_stream_default_tee_read_request_chunk_steps(
                     }
                     Err(clone_error) => {
                         // Step 13.3 chunk steps 1.3.2.1: "Perform ! ReadableStreamDefaultControllerError(branch1.[[controller]], cloneResult.[[Value]])."
-                        if let Some(branch1) = branch1.as_ref() {
-                            if let Err(error) =
+                        if let Some(branch1) = branch1.as_ref()
+                            && let Err(error) =
                                 default_tee_error_branch(branch1, clone_error.clone(), job_ec)
                             {
                                 error!(
                                     "[readable-stream] default tee error branch1 (chunk) failed: {error:?}"
                                 );
                             }
-                        }
 
                         // Step 13.3 chunk steps 1.3.2.2: "Perform ! ReadableStreamDefaultControllerError(branch2.[[controller]], cloneResult.[[Value]])."
-                        if let Some(branch2) = branch2.as_ref() {
-                            if let Err(error) =
+                        if let Some(branch2) = branch2.as_ref()
+                            && let Err(error) =
                                 default_tee_error_branch(branch2, clone_error.clone(), job_ec)
                             {
                                 error!(
                                     "[readable-stream] default tee error branch2 (chunk) failed: {error:?}"
                                 );
                             }
-                        }
 
                         // Step 13.3 chunk steps 1.3.2.3: "Resolve cancelPromise with ! ReadableStreamCancel(stream, cloneResult.[[Value]])."
                         if let Ok(cancel_result) =
@@ -757,18 +760,16 @@ pub(crate) fn readable_stream_default_tee_read_request_chunk_steps(
             }
 
             // Step 13.3 chunk steps 1.4: "If canceled1 is false, perform ! ReadableStreamDefaultControllerEnqueue(branch1.[[controller]], chunk1)."
-            if !canceled1 {
-                if let Some(branch1) = branch1.as_ref() {
+            if !canceled1
+                && let Some(branch1) = branch1.as_ref() {
                     let _ = default_tee_enqueue_to_branch(branch1, chunk1, job_ec);
                 }
-            }
 
             // Step 13.3 chunk steps 1.5: "If canceled2 is false, perform ! ReadableStreamDefaultControllerEnqueue(branch2.[[controller]], chunk2)."
-            if !canceled2 {
-                if let Some(branch2) = branch2.as_ref() {
+            if !canceled2
+                && let Some(branch2) = branch2.as_ref() {
                     let _ = default_tee_enqueue_to_branch(branch2, chunk2, job_ec);
                 }
-            }
 
             // Step 13.3 chunk steps 1.6: "Set reading to false."
             // Step 13.3 chunk steps 1.7: "If readAgain is true, perform pullAlgorithm."
@@ -824,23 +825,19 @@ pub(crate) fn readable_stream_default_tee_read_request_close_steps(
     };
 
     // Step 13.3 close steps 2: "If canceled1 is false, perform ! ReadableStreamDefaultControllerClose(branch1.[[controller]])."
-    if !canceled1 {
-        if let Some(branch1) = branch1.as_ref() {
-            default_tee_close_branch(branch1, ec)?;
-        }
+    if !canceled1 && let Some(branch1) = branch1.as_ref() {
+        default_tee_close_branch(branch1, ec)?;
     }
 
     // Step 13.3 close steps 3: "If canceled2 is false, perform ! ReadableStreamDefaultControllerClose(branch2.[[controller]])."
-    if !canceled2 {
-        if let Some(branch2) = branch2.as_ref() {
-            default_tee_close_branch(branch2, ec)?;
-        }
+    if !canceled2 && let Some(branch2) = branch2.as_ref() {
+        default_tee_close_branch(branch2, ec)?;
     }
 
     // Step 13.3 close steps 4: "If canceled1 is false or canceled2 is false, resolve cancelPromise with undefined."
     if !canceled1 || !canceled2 {
         let undefined = ec.value_undefined();
-        ec.call(&cancel_resolvers.resolve, &undefined, &[undefined.clone()])?;
+        ec.call(&cancel_resolvers.resolve, &undefined, from_ref(&undefined))?;
     }
 
     Ok(())
@@ -1484,7 +1481,7 @@ fn promise_from_sync_iterator_result_on_fulfilled_fn(
     let done_value = ec.value_from_bool(*done);
     let object = ec.create_plain_object(Some(&intrinsics.object_prototype));
     let value = ec.value_undefined();
-    let arg0 = args.first().cloned().unwrap_or_else(|| value);
+    let arg0 = args.first().cloned().unwrap_or(value);
     ec.create_data_property(object.clone(), value_key, arg0)?;
     ec.create_data_property(object.clone(), done_key, done_value)?;
     Ok(<crate::js::Types as JsTypes>::value_from_object(object))
@@ -1658,9 +1655,9 @@ pub(crate) fn readable_stream_close(
         ReadableStreamReader::Default(reader) => {
             // Step 5: "Resolve reader.[[closedPromise]] with undefined."
             if let Some(resolvers) = reader.closed_resolvers_slot_value(ec) {
-                let resolve: JsObject = resolvers.resolve.clone().into();
+                let resolve: JsObject = resolvers.resolve.clone();
                 let undefined = ec.value_undefined();
-                ec.call(&resolve, &undefined, &[undefined.clone()])?;
+                ec.call(&resolve, &undefined, from_ref(&undefined))?;
                 reader.set_closed_resolvers_slot_value(None, ec);
             }
 
@@ -1677,9 +1674,9 @@ pub(crate) fn readable_stream_close(
         }
         ReadableStreamReader::BYOB(reader) => {
             if let Some(resolvers) = reader.closed_resolvers_slot_value(ec) {
-                let resolve: JsObject = resolvers.resolve.clone().into();
+                let resolve: JsObject = resolvers.resolve.clone();
                 let undefined = ec.value_undefined();
-                ec.call(&resolve, &undefined, &[undefined.clone()])?;
+                ec.call(&resolve, &undefined, from_ref(&undefined))?;
                 reader.set_closed_resolvers_slot_value(None, ec);
             }
         }
@@ -1720,9 +1717,9 @@ pub(crate) fn readable_stream_error(
 
             // Step 6: "Reject reader.[[closedPromise]] with e."
             if let Some(resolvers) = reader.closed_resolvers_slot_value(ec) {
-                let reject: JsObject = resolvers.reject.clone().into();
+                let reject: JsObject = resolvers.reject.clone();
                 let undefined = ec.value_undefined();
-                ec.call(&reject, &undefined, &[error.clone()])?;
+                ec.call(&reject, &undefined, from_ref(&error))?;
                 reader.set_closed_resolvers_slot_value(None, ec);
             }
 
@@ -1735,9 +1732,9 @@ pub(crate) fn readable_stream_error(
             }
 
             if let Some(resolvers) = reader.closed_resolvers_slot_value(ec) {
-                let reject: JsObject = resolvers.reject.clone().into();
+                let reject: JsObject = resolvers.reject.clone();
                 let undefined = ec.value_undefined();
-                ec.call(&reject, &undefined, &[error.clone()])?;
+                ec.call(&reject, &undefined, from_ref(&error))?;
                 reader.set_closed_resolvers_slot_value(None, ec);
             }
 
@@ -1966,15 +1963,15 @@ fn byte_tee_forward_error_on_rejected_fn(
             tee.cancel_resolvers.clone(),
         )
     };
-    if let Some(ref branch1) = branch1 {
-        if let Err(error) = byte_tee_error_branch(branch1, error.clone(), ec) {
-            error!("[readable-stream] byte tee error branch1 failed: {error:?}");
-        }
+    if let Some(ref branch1) = branch1
+        && let Err(error) = byte_tee_error_branch(branch1, error.clone(), ec)
+    {
+        error!("[readable-stream] byte tee error branch1 failed: {error:?}");
     }
-    if let Some(ref branch2) = branch2 {
-        if let Err(error) = byte_tee_error_branch(branch2, error, ec) {
-            error!("[readable-stream] byte tee error branch2 failed: {error:?}");
-        }
+    if let Some(ref branch2) = branch2
+        && let Err(error) = byte_tee_error_branch(branch2, error, ec)
+    {
+        error!("[readable-stream] byte tee error branch2 failed: {error:?}");
     }
     if !canceled1 || !canceled2 {
         let undefined = ec.value_undefined();
@@ -2124,25 +2121,23 @@ pub(crate) fn readable_byte_stream_tee_default_reader_chunk_steps(
                     }
                     Err(error) => {
                         // Step 18.2 chunk steps 1.4.2.1: "Perform ! ReadableByteStreamControllerError(branch1.[[controller]], cloneResult.[[Value]])."
-                        if let Some(branch1) = branch1.as_ref() {
-                            if let Err(inner_error) =
+                        if let Some(branch1) = branch1.as_ref()
+                            && let Err(inner_error) =
                                 byte_tee_error_branch(branch1, error.clone(), job_ec)
-                            {
-                                error!(
-                                    "[readable-stream] byte tee error branch1 (chunk) failed: {inner_error:?}"
-                                );
-                            }
+                        {
+                            error!(
+                                "[readable-stream] byte tee error branch1 (chunk) failed: {inner_error:?}"
+                            );
                         }
 
                         // Step 18.2 chunk steps 1.4.2.2: "Perform ! ReadableByteStreamControllerError(branch2.[[controller]], cloneResult.[[Value]])."
-                        if let Some(branch2) = branch2.as_ref() {
-                            if let Err(error) =
+                        if let Some(branch2) = branch2.as_ref()
+                            && let Err(error) =
                                 byte_tee_error_branch(branch2, error.clone(), job_ec)
-                            {
-                                error!(
-                                    "[readable-stream] byte tee error branch2 (chunk) failed: {error:?}"
-                                );
-                            }
+                        {
+                            error!(
+                                "[readable-stream] byte tee error branch2 (chunk) failed: {error:?}"
+                            );
                         }
 
                         // Step 18.2 chunk steps 1.4.2.3: "Resolve cancelPromise with ! ReadableStreamCancel(stream, cloneResult.[[Value]])."
@@ -2163,17 +2158,13 @@ pub(crate) fn readable_byte_stream_tee_default_reader_chunk_steps(
             }
 
             // Step 18.2 chunk steps 1.5: "If canceled1 is false, perform ! ReadableByteStreamControllerEnqueue(branch1.[[controller]], chunk1)."
-            if !canceled1 {
-                if let Some(branch1) = branch1.as_ref() {
-                    byte_tee_enqueue_to_branch(branch1, chunk1, job_ec)?;
-                }
+            if !canceled1 && let Some(branch1) = branch1.as_ref() {
+                byte_tee_enqueue_to_branch(branch1, chunk1, job_ec)?;
             }
 
             // Step 18.2 chunk steps 1.6: "If canceled2 is false, perform ! ReadableByteStreamControllerEnqueue(branch2.[[controller]], chunk2)."
-            if !canceled2 {
-                if let Some(branch2) = branch2.as_ref() {
-                    byte_tee_enqueue_to_branch(branch2, chunk2, job_ec)?;
-                }
+            if !canceled2 && let Some(branch2) = branch2.as_ref() {
+                byte_tee_enqueue_to_branch(branch2, chunk2, job_ec)?;
             }
 
             // Step 18.2 chunk steps 1.7: "Set reading to false."
@@ -2219,33 +2210,27 @@ pub(crate) fn readable_byte_stream_tee_default_reader_close_steps(
         )
     };
 
-    if !canceled1 {
-        if let Some(branch1) = branch1.as_ref() {
-            byte_tee_close_branch(branch1, ec)?;
-        }
+    if !canceled1 && let Some(branch1) = branch1.as_ref() {
+        byte_tee_close_branch(branch1, ec)?;
     }
-    if !canceled2 {
-        if let Some(branch2) = branch2.as_ref() {
-            byte_tee_close_branch(branch2, ec)?;
-        }
+    if !canceled2 && let Some(branch2) = branch2.as_ref() {
+        byte_tee_close_branch(branch2, ec)?;
     }
-    if !canceled1 {
-        if let Some(branch1) = branch1.as_ref() {
-            if let Some(controller) = byte_tee_pending_pull_into_controller(branch1, ec) {
-                controller.respond(0, ec)?;
-            }
-        }
+    if !canceled1
+        && let Some(branch1) = branch1.as_ref()
+        && let Some(controller) = byte_tee_pending_pull_into_controller(branch1, ec)
+    {
+        controller.respond(0, ec)?;
     }
-    if !canceled2 {
-        if let Some(branch2) = branch2.as_ref() {
-            if let Some(controller) = byte_tee_pending_pull_into_controller(branch2, ec) {
-                controller.respond(0, ec)?;
-            }
-        }
+    if !canceled2
+        && let Some(branch2) = branch2.as_ref()
+        && let Some(controller) = byte_tee_pending_pull_into_controller(branch2, ec)
+    {
+        controller.respond(0, ec)?;
     }
     if !canceled1 || !canceled2 {
         let undefined = ec.value_undefined();
-        ec.call(&cancel_resolvers.resolve, &undefined, &[undefined.clone()])?;
+        ec.call(&cancel_resolvers.resolve, &undefined, from_ref(&undefined))?;
     }
     Ok(())
 }
@@ -2293,10 +2278,7 @@ fn readable_byte_stream_tee_pull_with_byob_reader(
     for_branch2: bool,
     ec: &mut dyn ExecutionContext<crate::js::Types>,
 ) -> Completion<(), crate::js::Types> {
-    let view = match ArrayBufferViewDescriptor::from_value(view_value.clone(), ec) {
-        Ok(v) => v,
-        Err(e) => return Err(e),
-    };
+    let view = ArrayBufferViewDescriptor::from_value(view_value.clone(), ec)?;
 
     // Step 19.1: "If reader implements ReadableStreamDefaultReader,"
     byte_tee_switch_to_byob_reader(&tee_state, ec)?;
@@ -2338,7 +2320,10 @@ fn byte_tee_pull_byob_on_fulfilled_fn(
     ec: &mut dyn ExecutionContext<crate::js::Types>,
 ) -> Completion<JsValue, crate::js::Types> {
     let (tee_state, for_branch2) = captures;
-    let arg0 = args.get(0).cloned().unwrap_or_else(|| ec.value_undefined());
+    let arg0 = args
+        .first()
+        .cloned()
+        .unwrap_or_else(|| ec.value_undefined());
     let result = ec.to_object(arg0)?;
     let done_val = js_engine::EcmascriptHost::get(ec, &result, "done")?;
     let done = ec.to_boolean(&done_val);
@@ -2380,62 +2365,46 @@ fn byte_tee_pull_byob_on_fulfilled_fn(
                     tee_state.borrow_mut(job_ec).reading = false;
 
                     // Step 19.4 close steps 4: "If byobCanceled is false, perform ! ReadableByteStreamControllerClose(byobBranch.[[controller]])."
-                    if !byob_canceled {
-                        if let Some(branch) = byob_branch.as_ref() {
-                            byte_tee_close_branch(branch, job_ec)?;
-                        }
+                    if !byob_canceled && let Some(branch) = byob_branch.as_ref() {
+                        byte_tee_close_branch(branch, job_ec)?;
                     }
 
                     // Step 19.4 close steps 5: "If otherCanceled is false, perform ! ReadableByteStreamControllerClose(otherBranch.[[controller]])."
-                    if !other_canceled {
-                        if let Some(branch) = other_branch.as_ref() {
-                            byte_tee_close_branch(branch, job_ec)?;
-                        }
+                    if !other_canceled && let Some(branch) = other_branch.as_ref() {
+                        byte_tee_close_branch(branch, job_ec)?;
                     }
 
                     // Step 19.4 close steps 6: "If chunk is not undefined,"
                     let undefined = job_ec.value_undefined();
                     if !job_ec.same_value(&chunk, &undefined) {
                         // Step 19.4 close steps 6.2: "If byobCanceled is false, perform ! ReadableByteStreamControllerRespondWithNewView(byobBranch.[[controller]], chunk)."
-                        if !byob_canceled {
-                            if let Some(branch) = byob_branch.as_ref() {
-                                if let Ok(view) =
-                                    ArrayBufferViewDescriptor::from_value(chunk.clone(), job_ec)
-                                {
-                                    if let Some(view_object) =
-                                        <crate::js::Types as JsTypes>::value_as_object(&chunk)
-                                    {
-                                        if let Some(controller) = branch
-                                            .controller_slot(job_ec)
-                                            .and_then(|c| c.as_byte_controller())
-                                        {
-                                            let _ = controller.respond_with_new_view(
-                                                view,
-                                                view_object,
-                                                job_ec,
-                                            );
-                                        }
-                                    }
-                                }
-                            }
+                        if !byob_canceled
+                            && let Some(branch) = byob_branch.as_ref()
+                            && let Ok(view) =
+                                ArrayBufferViewDescriptor::from_value(chunk.clone(), job_ec)
+                            && let Some(view_object) =
+                                <crate::js::Types as JsTypes>::value_as_object(&chunk)
+                            && let Some(controller) = branch
+                                .controller_slot(job_ec)
+                                .and_then(|c| c.as_byte_controller())
+                        {
+                            let _ = controller.respond_with_new_view(view, view_object, job_ec);
                         }
 
                         // Step 19.4 close steps 6.3: "If otherCanceled is false and otherBranch.[[controller]].[[pendingPullIntos]] is not empty, perform ! ReadableByteStreamControllerRespond(otherBranch.[[controller]], 0)."
-                        if !other_canceled {
-                            if let Some(branch) = other_branch.as_ref() {
-                                if let Some(controller) =
-                                    byte_tee_pending_pull_into_controller(branch, job_ec)
-                                {
-                                    let _ = controller.respond(0, job_ec);
-                                }
-                            }
+                        if !other_canceled
+                            && let Some(branch) = other_branch.as_ref()
+                            && let Some(controller) =
+                                byte_tee_pending_pull_into_controller(branch, job_ec)
+                        {
+                            let _ = controller.respond(0, job_ec);
                         }
                     }
 
                     // Step 19.4 close steps 7: "If byobCanceled is false or otherCanceled is false, resolve cancelPromise with undefined."
                     if !byob_canceled || !other_canceled {
                         let cancel_resolvers = tee_state.borrow(job_ec).cancel_resolvers.clone();
-                        job_ec.call(&cancel_resolvers.resolve, &undefined, &[undefined.clone()])?;
+                        job_ec.call(&cancel_resolvers.resolve, &undefined, from_ref(&undefined))?;
                     }
 
                     return Ok(());
@@ -2449,27 +2418,17 @@ fn byte_tee_pull_byob_on_fulfilled_fn(
                         Ok(cloned_chunk) => {
                             // Step 19.4 chunk steps 1.5.3: "Otherwise, let clonedChunk be cloneResult.[[Value]]."
                             // Step 19.4 chunk steps 1.5.4: "If byobCanceled is false, perform ! ReadableByteStreamControllerRespondWithNewView(byobBranch.[[controller]], chunk)."
-                            if !byob_canceled {
-                                if let Some(branch) = byob_branch.as_ref() {
-                                    if let Ok(view) =
-                                        ArrayBufferViewDescriptor::from_value(chunk.clone(), job_ec)
-                                    {
-                                        if let Some(view_object) =
-                                            <crate::js::Types as JsTypes>::value_as_object(&chunk)
-                                        {
-                                            if let Some(controller) = branch
-                                                .controller_slot(job_ec)
-                                                .and_then(|c| c.as_byte_controller())
-                                            {
-                                                let _ = controller.respond_with_new_view(
-                                                    view,
-                                                    view_object,
-                                                    job_ec,
-                                                );
-                                            }
-                                        }
-                                    }
-                                }
+                            if !byob_canceled
+                                && let Some(branch) = byob_branch.as_ref()
+                                && let Ok(view) =
+                                    ArrayBufferViewDescriptor::from_value(chunk.clone(), job_ec)
+                                && let Some(view_object) =
+                                    <crate::js::Types as JsTypes>::value_as_object(&chunk)
+                                && let Some(controller) = branch
+                                    .controller_slot(job_ec)
+                                    .and_then(|c| c.as_byte_controller())
+                            {
+                                let _ = controller.respond_with_new_view(view, view_object, job_ec);
                             }
 
                             // Step 19.4 chunk steps 1.5.5: "Perform ! ReadableByteStreamControllerEnqueue(otherBranch.[[controller]], clonedChunk)."
@@ -2479,25 +2438,23 @@ fn byte_tee_pull_byob_on_fulfilled_fn(
                         }
                         Err(error) => {
                             // Step 19.4 chunk steps 1.5.2.1: "Perform ! ReadableByteStreamControllerError(byobBranch.[[controller]], cloneResult.[[Value]])."
-                            if let Some(branch) = byob_branch.as_ref() {
-                                if let Err(error) =
+                            if let Some(branch) = byob_branch.as_ref()
+                                && let Err(error) =
                                     byte_tee_error_branch(branch, error.clone(), job_ec)
-                                {
-                                    error!(
-                                        "[readable-stream] byte tee error byob-branch (chunk) failed: {error:?}"
-                                    );
-                                }
+                            {
+                                error!(
+                                    "[readable-stream] byte tee error byob-branch (chunk) failed: {error:?}"
+                                );
                             }
 
                             // Step 19.4 chunk steps 1.5.2.2: "Perform ! ReadableByteStreamControllerError(otherBranch.[[controller]], cloneResult.[[Value]])."
-                            if let Some(branch) = other_branch.as_ref() {
-                                if let Err(error) =
+                            if let Some(branch) = other_branch.as_ref()
+                                && let Err(error) =
                                     byte_tee_error_branch(branch, error.clone(), job_ec)
-                                {
-                                    error!(
-                                        "[readable-stream] byte tee error other-branch (chunk) failed: {error:?}"
-                                    );
-                                }
+                            {
+                                error!(
+                                    "[readable-stream] byte tee error other-branch (chunk) failed: {error:?}"
+                                );
                             }
 
                             // Step 19.4 chunk steps 1.5.2.3: "Resolve cancelPromise with ! ReadableStreamCancel(stream, cloneResult.[[Value]])."
@@ -2520,22 +2477,16 @@ fn byte_tee_pull_byob_on_fulfilled_fn(
                     }
                 } else if !byob_canceled {
                     // Step 19.4 chunk steps 1.6: "Otherwise, if byobCanceled is false, perform ! ReadableByteStreamControllerRespondWithNewView(byobBranch.[[controller]], chunk)."
-                    if let Some(branch) = byob_branch.as_ref() {
-                        if let Ok(view) =
+                    if let Some(branch) = byob_branch.as_ref()
+                        && let Ok(view) =
                             ArrayBufferViewDescriptor::from_value(chunk.clone(), job_ec)
-                        {
-                            if let Some(view_object) =
-                                <crate::js::Types as JsTypes>::value_as_object(&chunk)
-                            {
-                                if let Some(controller) = branch
-                                    .controller_slot(job_ec)
-                                    .and_then(|c| c.as_byte_controller())
-                                {
-                                    let _ =
-                                        controller.respond_with_new_view(view, view_object, job_ec);
-                                }
-                            }
-                        }
+                        && let Some(view_object) =
+                            <crate::js::Types as JsTypes>::value_as_object(&chunk)
+                        && let Some(controller) = branch
+                            .controller_slot(job_ec)
+                            .and_then(|c| c.as_byte_controller())
+                    {
+                        let _ = controller.respond_with_new_view(view, view_object, job_ec);
                     }
                 }
 
@@ -2931,7 +2882,7 @@ fn extract_abort_signal(
         return Ok(None);
     }
 
-    let signal = EcmascriptHost::get(ec, &options_object, "signal")?;
+    let signal = EcmascriptHost::get(ec, options_object, "signal")?;
     if signal.is_undefined() {
         return Ok(None);
     }
@@ -2946,7 +2897,7 @@ fn extract_abort_signal(
 
     with_abort_signal_ref(&signal_object, ec, |signal, _ec| signal.clone())
         .map(Some)
-        .or_else(|_| Err(ec.new_type_error("options.signal is not an AbortSignal")))
+        .map_err(|_| ec.new_type_error("options.signal is not an AbortSignal"))
 }
 
 struct PipeOptions {
@@ -3051,7 +3002,6 @@ fn readable_stream_pipe_to(
     let (pipe_promise, pipe_resolvers) = ec.new_promise_pending()?;
     let pipe_promise_obj = pipe_promise
         .as_object()
-        .map(|o| o.clone())
         .unwrap_or_else(|| ec.realm_global_object());
 
     // Step 8: "If source.[[controller]] implements ReadableByteStreamController, let reader be either ! AcquireReadableStreamBYOBReader(source) or ! AcquireReadableStreamDefaultReader(source), at the user agent's discretion."
@@ -3691,15 +3641,15 @@ impl PipeToState {
         };
         let resolvers = self.0.borrow_mut(ec).resolvers.take();
 
-        if let Err(release_error) = super::writable_stream_default_writer_release(writer, ec) {
-            if error.is_none() {
-                error = Some(release_error);
-            }
+        if let Err(release_error) = super::writable_stream_default_writer_release(writer, ec)
+            && error.is_none()
+        {
+            error = Some(release_error);
         }
-        if let Err(release_error) = super::readable_stream_default_reader_release(reader, ec) {
-            if error.is_none() {
-                error = Some(release_error);
-            }
+        if let Err(release_error) = super::readable_stream_default_reader_release(reader, ec)
+            && error.is_none()
+        {
+            error = Some(release_error);
         }
 
         if let Some(signal) = signal {
@@ -3715,14 +3665,13 @@ impl PipeToState {
             let undefined = ec.value_undefined();
             match error {
                 Some(error) => {
-                    let reject: <crate::js::Types as JsTypes>::JsObject =
-                        resolvers.reject.clone().into();
+                    let reject: <crate::js::Types as JsTypes>::JsObject = resolvers.reject.clone();
                     ec.call(&reject, &undefined, &[error])?;
                 }
                 None => {
                     let resolve: <crate::js::Types as JsTypes>::JsObject =
-                        resolvers.resolve.clone().into();
-                    ec.call(&resolve, &undefined, &[undefined.clone()])?;
+                        resolvers.resolve.clone();
+                    ec.call(&resolve, &undefined, from_ref(&undefined))?;
                 }
             }
         }
@@ -3731,7 +3680,7 @@ impl PipeToState {
     }
 
     fn current_state(&self, ec: &mut dyn ExecutionContext<crate::js::Types>) -> PipePumpState {
-        self.0.borrow(ec).state.clone()
+        self.0.borrow(ec).state
     }
 
     fn set_state(&self, state: PipePumpState, ec: &mut dyn ExecutionContext<crate::js::Types>) {
@@ -3825,7 +3774,7 @@ impl PipeToState {
             .shutdown_action_promise
             .clone()
             .and_then(|cell| cell.borrow(ec).clone())
-            .map(|promise| Ok(ec.promise_state(&promise)?))
+            .map(|promise| ec.promise_state(&promise))
             .transpose()
     }
 
@@ -3940,21 +3889,18 @@ fn pipe_to_on_promise_settled(
             )
         };
 
-        if let Some(source) = source {
-            if source.state() == ReadableStreamState::Closed {
-                if let Some(dest) = dest {
-                    if dest.state() == super::WritableStreamState::Writable
-                        && !dest.close_queued_or_in_flight(ec)
-                    {
-                        let Some(done) = pipe_read_result_done(&result, ec)? else {
-                            return Ok(());
-                        };
+        if let Some(source) = source
+            && source.state() == ReadableStreamState::Closed
+            && let Some(dest) = dest
+            && dest.state() == super::WritableStreamState::Writable
+            && !dest.close_queued_or_in_flight(ec)
+        {
+            let Some(done) = pipe_read_result_done(&result, ec)? else {
+                return Ok(());
+            };
 
-                        if !done {
-                            let _ = state.write_chunk(result.clone(), ec)?;
-                        }
-                    }
-                }
+            if !done {
+                let _ = state.write_chunk(result.clone(), ec)?;
             }
         }
     }
@@ -4103,7 +4049,6 @@ fn abort_destination_then_cancel_source(
     let (promise, resolvers) = ec.new_promise_pending()?;
     let promise_obj = promise
         .as_object()
-        .map(|o| o.clone())
         .unwrap_or_else(|| ec.realm_global_object());
     let state = gc_cell_new(
         AbortThenCancelState {
@@ -4199,12 +4144,78 @@ fn finalize_abort_cancel_source(
 
     let undefined = ec.value_undefined();
     if let Some(reason) = abort_rejection.or(cancel_rejection) {
-        let reject: JsObject = resolvers.reject.clone().into();
+        let reject: JsObject = resolvers.reject.clone();
         ec.call(&reject, &undefined, &[reason])?;
     } else {
-        let resolve: JsObject = resolvers.resolve.clone().into();
-        ec.call(&resolve, &undefined, &[undefined.clone()])?;
+        let resolve: JsObject = resolvers.resolve.clone();
+        ec.call(&resolve, &undefined, from_ref(&undefined))?;
     }
 
     Ok(ec.value_undefined())
+}
+
+/// <https://streams.spec.whatwg.org/#readablestream-set-up-with-byte-reading-support>
+pub(crate) fn readable_stream_set_up_with_byte_reading_support(
+    ec: &mut dyn ExecutionContext<crate::js::Types>,
+) -> Completion<
+    (
+        ReadableStream,
+        JsObject,
+        super::ReadableByteStreamController,
+    ),
+    crate::js::Types,
+> {
+    use super::readablebytestreamcontroller::set_up_readable_byte_stream_controller;
+    use super::readablestreamdefaultcontroller::{CancelAlgorithm, PullAlgorithm, StartAlgorithm};
+
+    // Step 1: Let startAlgorithm be an algorithm that returns undefined.
+    let start_algorithm = StartAlgorithm::ReturnUndefined;
+
+    // Step 2: Let pullAlgorithmWrapper be an algorithm that runs these steps:
+    // Step 2.1: Let result be the result of running pullAlgorithm, if
+    // pullAlgorithm was given, or null otherwise. If this throws an exception
+    // e, return a promise rejected with e.
+    // Step 2.2: If result is a Promise, then return result.
+    // Step 2.3: Return a promise resolved with undefined.
+    // Note: No pullAlgorithm is given: the wrapper returns a promise resolved
+    // with undefined.
+    let pull_algorithm = PullAlgorithm::ReturnUndefined;
+
+    // Step 3: Let cancelAlgorithmWrapper be an algorithm that runs these
+    // steps:
+    // Step 3.1: Let result be the result of running cancelAlgorithm, if
+    // cancelAlgorithm was given, or null otherwise. If this throws an
+    // exception e, return a promise rejected with e.
+    // Step 3.2: If result is a Promise, then return result.
+    // Step 3.3: Return a promise resolved with undefined.
+    // Note: No cancelAlgorithm is given: the wrapper returns a promise
+    // resolved with undefined.
+    let cancel_algorithm = CancelAlgorithm::ReturnUndefined;
+
+    // Step 4: Perform ! InitializeReadableStream(stream).
+    let (mut stream, stream_object) = create_readable_stream_object(ec)?;
+    stream.initialize_readable_stream(ec);
+
+    // Step 5: Let controller be a new ReadableByteStreamController.
+    let controller = super::ReadableByteStreamController::new(ec);
+    let controller_object: JsObject = create_interface_instance::<
+        crate::js::Types,
+        super::ReadableByteStreamController,
+    >(controller.clone(), ec)?;
+
+    // Step 6: Perform ! SetUpReadableByteStreamController(stream, controller,
+    // startAlgorithm, pullAlgorithmWrapper, cancelAlgorithmWrapper,
+    // highWaterMark, undefined).
+    set_up_readable_byte_stream_controller(
+        stream.clone(),
+        controller.clone(),
+        &controller_object,
+        start_algorithm,
+        pull_algorithm,
+        cancel_algorithm,
+        0.0,
+        None,
+        ec,
+    )?;
+    Ok((stream, stream_object, controller))
 }

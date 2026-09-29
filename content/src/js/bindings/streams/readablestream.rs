@@ -369,7 +369,9 @@ fn cancel_method(
     let mut stream =
         with_readable_stream_ref(&stream_object, ec, |s: &ReadableStream, _ec| s.clone())?;
     let promise = stream.cancel(
-        args.get(0).cloned().unwrap_or_else(|| ec.value_undefined()),
+        args.first()
+            .cloned()
+            .unwrap_or_else(|| ec.value_undefined()),
         ec,
     )?;
     Ok(JsValue::from(promise))
@@ -385,7 +387,10 @@ fn get_reader_method(
     let mut stream =
         with_readable_stream_ref(&stream_object, ec, |s: &ReadableStream, _ec| s.clone())?;
     let reader = stream.get_reader(
-        &args.get(0).cloned().unwrap_or_else(|| ec.value_undefined()),
+        &args
+            .first()
+            .cloned()
+            .unwrap_or_else(|| ec.value_undefined()),
         ec,
     )?;
     Ok(JsValue::from(reader))
@@ -401,7 +406,10 @@ fn pipe_through_method(
     let mut stream =
         with_readable_stream_ref(&stream_object, ec, |s: &ReadableStream, _ec| s.clone())?;
     stream.pipe_through(
-        &args.get(0).cloned().unwrap_or_else(|| ec.value_undefined()),
+        &args
+            .first()
+            .cloned()
+            .unwrap_or_else(|| ec.value_undefined()),
         &args.get(1).cloned().unwrap_or_else(|| ec.value_undefined()),
         ec,
     )
@@ -417,7 +425,10 @@ fn pipe_to_operation(
     let mut stream =
         with_readable_stream_ref(&stream_object, ec, |s: &ReadableStream, _ec| s.clone())?;
     stream.pipe_to(
-        &args.get(0).cloned().unwrap_or_else(|| ec.value_undefined()),
+        &args
+            .first()
+            .cloned()
+            .unwrap_or_else(|| ec.value_undefined()),
         &args.get(1).cloned().unwrap_or_else(|| ec.value_undefined()),
         ec,
     )
@@ -476,7 +487,10 @@ pub(crate) fn from_static(
     args: &[JsValue],
     ec: &mut dyn ExecutionContext<Types>,
 ) -> Completion<JsValue, Types> {
-    let async_iterable = args.get(0).cloned().unwrap_or_else(|| ec.value_undefined());
+    let async_iterable = args
+        .first()
+        .cloned()
+        .unwrap_or_else(|| ec.value_undefined());
     Ok(JsValue::from(readable_stream_from_iterable(
         async_iterable,
         ec,
@@ -573,7 +587,9 @@ fn enqueue_method(
     let controller =
         with_readable_stream_default_controller_ref(&controller_object, ec, |c, _ec| c.clone())?;
     controller.enqueue(
-        args.get(0).cloned().unwrap_or_else(|| ec.value_undefined()),
+        args.first()
+            .cloned()
+            .unwrap_or_else(|| ec.value_undefined()),
         ec,
     )?;
     Ok(ec.value_undefined())
@@ -590,7 +606,9 @@ fn enqueue_byte_method(
     let controller =
         with_readable_byte_stream_controller_ref(&controller_object, ec, |c, _ec| c.clone())?;
     controller.enqueue(
-        args.get(0).cloned().unwrap_or_else(|| ec.value_undefined()),
+        args.first()
+            .cloned()
+            .unwrap_or_else(|| ec.value_undefined()),
         ec,
     )?;
     Ok(ec.value_undefined())
@@ -607,7 +625,9 @@ fn error_method(
     let controller =
         with_readable_stream_default_controller_ref(&controller_object, ec, |c, _ec| c.clone())?;
     controller.error(
-        args.get(0).cloned().unwrap_or_else(|| ec.value_undefined()),
+        args.first()
+            .cloned()
+            .unwrap_or_else(|| ec.value_undefined()),
         ec,
     )?;
     Ok(ec.value_undefined())
@@ -624,7 +644,9 @@ fn error_byte_method(
     let controller =
         with_readable_byte_stream_controller_ref(&controller_object, ec, |c, _ec| c.clone())?;
     controller.error(
-        args.get(0).cloned().unwrap_or_else(|| ec.value_undefined()),
+        args.first()
+            .cloned()
+            .unwrap_or_else(|| ec.value_undefined()),
         ec,
     )?;
     Ok(ec.value_undefined())
@@ -665,7 +687,9 @@ fn cancel_reader_method(
     })?;
     let reader = with_readable_stream_default_reader_ref(&reader_object, ec, |r, _ec| r.clone())?;
     let promise = reader.cancel(
-        args.get(0).cloned().unwrap_or_else(|| ec.value_undefined()),
+        args.first()
+            .cloned()
+            .unwrap_or_else(|| ec.value_undefined()),
         ec,
     )?;
     Ok(JsValue::from(promise))
@@ -693,7 +717,9 @@ fn cancel_byob_reader_method(
         .ok_or_else(|| ec.new_type_error("ReadableStreamBYOBReader receiver is not an object"))?;
     let reader = with_readable_stream_byob_reader_ref(&reader_object, ec, |r, _ec| r.clone())?;
     let promise = reader.cancel(
-        args.get(0).cloned().unwrap_or_else(|| ec.value_undefined()),
+        args.first()
+            .cloned()
+            .unwrap_or_else(|| ec.value_undefined()),
         ec,
     )?;
     Ok(JsValue::from(promise))
@@ -708,7 +734,10 @@ fn read_byob_method(
         .ok_or_else(|| ec.new_type_error("ReadableStreamBYOBReader receiver is not an object"))?;
     let reader = with_readable_stream_byob_reader_ref(&reader_object, ec, |r, _ec| r.clone())?;
     let promise = reader.read(
-        &args.get(0).cloned().unwrap_or_else(|| ec.value_undefined()),
+        &args
+            .first()
+            .cloned()
+            .unwrap_or_else(|| ec.value_undefined()),
         &args.get(1).cloned().unwrap_or_else(|| ec.value_undefined()),
         ec,
     )?;
@@ -762,7 +791,10 @@ fn respond_method(
 ) -> Completion<JsValue, Types> {
     let request_object = <Types as JsTypes>::value_as_object(this)
         .ok_or_else(|| ec.new_type_error("ReadableStreamBYOBRequest receiver is not an object"))?;
-    let arg = args.get(0).cloned().unwrap_or_else(|| ec.value_undefined());
+    let arg = args
+        .first()
+        .cloned()
+        .unwrap_or_else(|| ec.value_undefined());
     let bytes_written = ec.to_uint32(arg)?;
     let request = with_readable_stream_byob_request_ref(&request_object, ec, |r, _ec| r.clone())?;
     request.respond(bytes_written as usize, ec)?;
@@ -778,7 +810,9 @@ fn respond_with_new_view_method(
         .ok_or_else(|| ec.new_type_error("ReadableStreamBYOBRequest receiver is not an object"))?;
     let request = with_readable_stream_byob_request_ref(&request_object, ec, |r, _ec| r.clone())?;
     request.respond_with_new_view(
-        args.get(0).cloned().unwrap_or_else(|| ec.value_undefined()),
+        args.first()
+            .cloned()
+            .unwrap_or_else(|| ec.value_undefined()),
         ec,
     )?;
     Ok(ec.value_undefined())

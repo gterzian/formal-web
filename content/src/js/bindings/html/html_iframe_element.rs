@@ -145,10 +145,10 @@ fn try_with_html_iframe_element_ref<R>(
 ) -> Completion<R, Types> {
     let obj = <Types as JsTypes>::value_as_object(this)
         .ok_or_else(|| ec.new_type_error("HTMLIFrameElement receiver is not an object"))?;
-    if let Some(data) = ec.with_object_any(&obj) {
-        if let Some(iframe) = data.downcast_ref::<HTMLIFrameElement>() {
-            return Ok(f(iframe));
-        }
+    if let Some(data) = ec.with_object_any(&obj)
+        && let Some(iframe) = data.downcast_ref::<HTMLIFrameElement>()
+    {
+        return Ok(f(iframe));
     }
     Err(ec.new_type_error("receiver is not an HTMLIFrameElement"))
 }
@@ -181,7 +181,7 @@ fn set_onload(
     let iframe_object = <Types as JsTypes>::value_as_object(this)
         .ok_or_else(|| ec.new_type_error("HTMLIFrameElement receiver is not an object"))?;
     let callback = nullable_value(
-        args.get(0).unwrap_or(&ec.value_undefined()),
+        args.first().unwrap_or(&ec.value_undefined()),
         ec,
         callback_function_value,
     )?;
@@ -237,7 +237,7 @@ fn set_onerror(
     let iframe_object = <Types as JsTypes>::value_as_object(this)
         .ok_or_else(|| ec.new_type_error("HTMLIFrameElement receiver is not an object"))?;
     let callback = nullable_value(
-        args.get(0).unwrap_or(&ec.value_undefined()),
+        args.first().unwrap_or(&ec.value_undefined()),
         ec,
         callback_function_value,
     )?;
@@ -280,7 +280,7 @@ fn set_src(
     ec: &mut dyn ExecutionContext<Types>,
 ) -> Completion<JsValue, Types> {
     let undefined = ec.value_undefined();
-    let src = ec.to_rust_string(args.get(0).cloned().unwrap_or(undefined))?;
+    let src = ec.to_rust_string(args.first().cloned().unwrap_or(undefined))?;
     try_with_html_iframe_element_ref(this, ec, |iframe| iframe.set_src(&src))?;
     Ok(ec.value_undefined())
 }
@@ -300,7 +300,7 @@ fn set_srcdoc(
     ec: &mut dyn ExecutionContext<Types>,
 ) -> Completion<JsValue, Types> {
     let undefined = ec.value_undefined();
-    let srcdoc = ec.to_rust_string(args.get(0).cloned().unwrap_or(undefined))?;
+    let srcdoc = ec.to_rust_string(args.first().cloned().unwrap_or(undefined))?;
     try_with_html_iframe_element_ref(this, ec, |iframe| iframe.set_srcdoc(&srcdoc))?;
     Ok(ec.value_undefined())
 }
@@ -320,7 +320,7 @@ fn set_name(
     ec: &mut dyn ExecutionContext<Types>,
 ) -> Completion<JsValue, Types> {
     let undefined = ec.value_undefined();
-    let name = ec.to_rust_string(args.get(0).cloned().unwrap_or(undefined))?;
+    let name = ec.to_rust_string(args.first().cloned().unwrap_or(undefined))?;
     try_with_html_iframe_element_ref(this, ec, |iframe| iframe.set_name(&name))?;
     Ok(ec.value_undefined())
 }
@@ -340,7 +340,7 @@ fn set_width(
     ec: &mut dyn ExecutionContext<Types>,
 ) -> Completion<JsValue, Types> {
     let undefined = ec.value_undefined();
-    let width = ec.to_rust_string(args.get(0).cloned().unwrap_or(undefined))?;
+    let width = ec.to_rust_string(args.first().cloned().unwrap_or(undefined))?;
     try_with_html_iframe_element_ref(this, ec, |iframe| iframe.set_width(&width))?;
     Ok(ec.value_undefined())
 }
@@ -360,7 +360,7 @@ fn set_height(
     ec: &mut dyn ExecutionContext<Types>,
 ) -> Completion<JsValue, Types> {
     let undefined = ec.value_undefined();
-    let height = ec.to_rust_string(args.get(0).cloned().unwrap_or(undefined))?;
+    let height = ec.to_rust_string(args.first().cloned().unwrap_or(undefined))?;
     try_with_html_iframe_element_ref(this, ec, |iframe| iframe.set_height(&height))?;
     Ok(ec.value_undefined())
 }
@@ -370,7 +370,7 @@ fn get_content_document(
     _: &[JsValue],
     ec: &mut dyn ExecutionContext<Types>,
 ) -> Completion<JsValue, Types> {
-    let _ = try_with_html_iframe_element_ref(this, ec, |_iframe| ())?;
+    try_with_html_iframe_element_ref(this, ec, |_iframe| ())?;
     Ok(ec.value_null())
 }
 

@@ -13,6 +13,7 @@
 //! (realm, navigable).
 
 use crate::html::Window;
+use crate::js::StaticBuiltinFn;
 use crate::js::create_builtin_fn_with_traced_captures;
 use crate::js::platform_objects::with_global_scope;
 use crate::webidl::bindings::create_interface_instance;
@@ -782,15 +783,7 @@ fn create_ecmascript_proxy(
 ) -> Completion<JsObject, crate::js::Types> {
     let handler = ec.create_plain_object(None::<&JsObject>);
 
-    let traps: &[(
-        fn(
-            &[JsValue],
-            JsValue,
-            &mut dyn ExecutionContext<crate::js::Types>,
-        ) -> Completion<JsValue, crate::js::Types>,
-        u32,
-        &str,
-    )] = &[
+    let traps: &[(StaticBuiltinFn, u32, &str)] = &[
         (trap_get_prototype_of, 1, "getPrototypeOf"),
         (trap_set_prototype_of, 2, "setPrototypeOf"),
         (trap_is_extensible, 1, "isExtensible"),
@@ -810,11 +803,7 @@ fn create_ecmascript_proxy(
     #[gc_struct]
     struct TrapCapture {
         #[ignore_trace]
-        func: fn(
-            &[JsValue],
-            JsValue,
-            &mut dyn ExecutionContext<crate::js::Types>,
-        ) -> Completion<JsValue, crate::js::Types>,
+        func: StaticBuiltinFn,
     }
 
     fn trap_behaviour(

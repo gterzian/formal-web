@@ -1,5 +1,6 @@
 use js_engine::gc_struct;
 use js_engine::{Completion, ExecutionContext, JsTypes};
+use std::slice::from_ref;
 
 use crate::js::Types;
 
@@ -69,7 +70,7 @@ impl SizeAlgorithm {
                 let value = invoke_callback_function(
                     ec,
                     callback,
-                    &[chunk.clone()],
+                    from_ref(chunk),
                     ExceptionBehavior::Rethrow,
                     None,
                 )?;

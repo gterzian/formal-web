@@ -126,17 +126,27 @@ fn build_realm_inner(
 fn setup_realm(engine: &mut Engine, _document: Rc<RefCell<BaseDocument>>) -> Result<(), String> {
     #[cfg(not(boa_backend))]
     let document = _document;
+    use crate::cssom::CSSStyleDeclaration;
+    use crate::cssom_view::MediaQueryList;
     use crate::dom::{
-        AbortController, AbortSignal, DOMException, Document, Element, Event, EventTarget, Node,
+        AbortController, AbortSignal, Attr, DOMException, DOMImplementation, Document, Element,
+        Event, EventTarget, NamedNodeMap, Node,
     };
+    use crate::encoding::{TextDecoder, TextEncoder};
+    use crate::fetch::{FetchApiRequest, Headers, Response};
+    use crate::file_api::{Blob, File};
+    use crate::geometry::DOMRectReadOnly;
     #[cfg(not(boa_backend))]
     use crate::html::GlobalScope;
+    use crate::html::Storage;
     use crate::html::{
         CanvasRenderingContext2D, HTMLAnchorElement, HTMLCanvasElement, HTMLElement,
-        HTMLIFrameElement, HTMLInputElement, HTMLMediaElement, HTMLVideoElement, Location,
-        MessageChannel, MessageEvent, MessagePort, OffscreenCanvas,
-        OffscreenCanvasRenderingContext2D, Window, WindowProxy, Worker,
+        HTMLIFrameElement, HTMLInputElement, HTMLLinkElement, HTMLMediaElement, HTMLScriptElement,
+        HTMLVideoElement, Location, MessageChannel, MessageEvent, MessagePort, Navigator,
+        OffscreenCanvas, OffscreenCanvasRenderingContext2D, PromiseRejectionEvent, Window,
+        WindowProxy, Worker,
     };
+    use crate::resize_observer::{ResizeObserver, ResizeObserverEntry, ResizeObserverSize};
     use crate::streams::{
         ByteLengthQueuingStrategy, CountQueuingStrategy, ReadableByteStreamController,
         ReadableStream, ReadableStreamBYOBReader, ReadableStreamBYOBRequest,
@@ -145,6 +155,7 @@ fn setup_realm(engine: &mut Engine, _document: Rc<RefCell<BaseDocument>>) -> Res
         WritableStreamDefaultWriter,
     };
     use crate::ui_events::{MouseEvent, UIEvent};
+    use crate::url_standard::{URL, URLSearchParams};
     use crate::webidl::bindings::{
         get_registry_prototype, initialize_registry, register_interface_spec,
         wire_registry_constructor_prototype, wire_registry_prototype,
@@ -204,8 +215,10 @@ fn setup_realm(engine: &mut Engine, _document: Rc<RefCell<BaseDocument>>) -> Res
 
     reg!(EventTarget);
     reg!(DOMException);
+    reg!(DOMImplementation);
     reg!(Event);
     reg!(MessageEvent);
+    reg!(PromiseRejectionEvent);
     reg!(MessageChannel);
     reg!(MessagePort);
     reg!(UIEvent);
@@ -215,8 +228,19 @@ fn setup_realm(engine: &mut Engine, _document: Rc<RefCell<BaseDocument>>) -> Res
     reg!(Node);
     reg!(Document);
     reg!(Element);
+    reg!(Attr);
+    reg!(NamedNodeMap);
+    reg!(CSSStyleDeclaration);
+    reg!(DOMRectReadOnly);
+    reg!(ResizeObserver);
+    reg!(ResizeObserverEntry);
+    reg!(ResizeObserverSize);
+    reg!(Storage);
+    reg!(MediaQueryList);
     reg!(HTMLElement);
     reg!(HTMLAnchorElement);
+    reg!(HTMLScriptElement);
+    reg!(HTMLLinkElement);
     reg!(HTMLCanvasElement);
     reg!(CanvasRenderingContext2D);
     reg!(HTMLIFrameElement);
@@ -229,6 +253,20 @@ fn setup_realm(engine: &mut Engine, _document: Rc<RefCell<BaseDocument>>) -> Res
     reg!(WindowProxy);
     reg!(Worker);
     reg!(Location);
+    reg!(Navigator);
+    reg!(URL);
+    reg!(URLSearchParams);
+    install_pair_iterator::<URLSearchParams>(engine)?;
+    reg!(Headers);
+    install_pair_iterator::<Headers>(engine)?;
+    reg!(FetchApiRequest);
+    reg!(Response);
+    reg!(Blob);
+    reg!(File);
+    reg!(TextEncoder);
+    reg!(TextDecoder);
+    wire_registry_prototype::<crate::js::Types, File, Blob>(engine);
+    wire_registry_constructor_prototype::<crate::js::Types, File, Blob>(engine);
     reg!(ByteLengthQueuingStrategy);
     reg!(CountQueuingStrategy);
     reg!(ReadableStream);
@@ -242,18 +280,92 @@ fn setup_realm(engine: &mut Engine, _document: Rc<RefCell<BaseDocument>>) -> Res
     reg!(WritableStreamDefaultWriter);
     reg!(TransformStream);
     reg!(TransformStreamDefaultController);
+    // WebRTC and Media Capture and Streams: [Exposed=Window], built with the
+    // `webrtc` feature.
+    #[cfg(feature = "webrtc")]
+    {
+        use crate::mediacapture_streams::{
+            MediaDeviceInfo, MediaDevices, MediaStream, MediaStreamTrack, MediaStreamTrackEvent,
+        };
+        use crate::webrtc::{
+            RTCDataChannel, RTCDataChannelEvent, RTCIceCandidate, RTCPeerConnection,
+            RTCPeerConnectionIceEvent, RTCRtpReceiver, RTCRtpSender, RTCRtpTransceiver,
+            RTCSessionDescription, RTCStatsReport, RTCTrackEvent,
+        };
+        use crate::websockets::{CloseEvent, WebSocket};
+        reg!(RTCPeerConnection);
+        reg!(RTCDataChannel);
+        reg!(RTCSessionDescription);
+        reg!(RTCIceCandidate);
+        reg!(RTCPeerConnectionIceEvent);
+        reg!(RTCDataChannelEvent);
+        reg!(WebSocket);
+        reg!(CloseEvent);
+        reg!(MediaStreamTrack);
+        reg!(MediaStream);
+        reg!(MediaDevices);
+        reg!(MediaDeviceInfo);
+        reg!(MediaStreamTrackEvent);
+        reg!(RTCRtpSender);
+        reg!(RTCRtpReceiver);
+        reg!(RTCRtpTransceiver);
+        reg!(RTCTrackEvent);
+        reg!(RTCStatsReport);
+        install_pair_iterator::<RTCStatsReport>(engine)?;
+        wire_registry_prototype::<crate::js::Types, MediaStreamTrack, EventTarget>(engine);
+        wire_registry_prototype::<crate::js::Types, MediaStream, EventTarget>(engine);
+        wire_registry_prototype::<crate::js::Types, MediaDevices, EventTarget>(engine);
+        wire_registry_prototype::<crate::js::Types, MediaStreamTrackEvent, Event>(engine);
+        wire_registry_prototype::<crate::js::Types, RTCTrackEvent, Event>(engine);
+        wire_registry_constructor_prototype::<crate::js::Types, MediaStreamTrack, EventTarget>(
+            engine,
+        );
+        wire_registry_constructor_prototype::<crate::js::Types, MediaStream, EventTarget>(engine);
+        wire_registry_constructor_prototype::<crate::js::Types, MediaDevices, EventTarget>(engine);
+        wire_registry_constructor_prototype::<crate::js::Types, MediaStreamTrackEvent, Event>(
+            engine,
+        );
+        wire_registry_constructor_prototype::<crate::js::Types, RTCTrackEvent, Event>(engine);
+        wire_registry_prototype::<crate::js::Types, WebSocket, EventTarget>(engine);
+        wire_registry_prototype::<crate::js::Types, CloseEvent, Event>(engine);
+        wire_registry_constructor_prototype::<crate::js::Types, WebSocket, EventTarget>(engine);
+        wire_registry_prototype::<crate::js::Types, MediaQueryList, EventTarget>(engine);
+        wire_registry_constructor_prototype::<crate::js::Types, MediaQueryList, EventTarget>(
+            engine,
+        );
+        wire_registry_constructor_prototype::<crate::js::Types, CloseEvent, Event>(engine);
+        wire_registry_prototype::<crate::js::Types, RTCPeerConnection, EventTarget>(engine);
+        wire_registry_prototype::<crate::js::Types, RTCDataChannel, EventTarget>(engine);
+        wire_registry_prototype::<crate::js::Types, RTCPeerConnectionIceEvent, Event>(engine);
+        wire_registry_prototype::<crate::js::Types, RTCDataChannelEvent, Event>(engine);
+        wire_registry_constructor_prototype::<crate::js::Types, RTCPeerConnection, EventTarget>(
+            engine,
+        );
+        wire_registry_constructor_prototype::<crate::js::Types, RTCDataChannel, EventTarget>(
+            engine,
+        );
+        wire_registry_constructor_prototype::<crate::js::Types, RTCPeerConnectionIceEvent, Event>(
+            engine,
+        );
+        wire_registry_constructor_prototype::<crate::js::Types, RTCDataChannelEvent, Event>(engine);
+    }
 
     // Step 6: Wire prototype chains.
     wire_registry_prototype::<crate::js::Types, UIEvent, Event>(engine);
     wire_registry_prototype::<crate::js::Types, MessageEvent, Event>(engine);
+    wire_registry_prototype::<crate::js::Types, PromiseRejectionEvent, Event>(engine);
+    wire_registry_constructor_prototype::<crate::js::Types, PromiseRejectionEvent, Event>(engine);
     wire_registry_prototype::<crate::js::Types, MessagePort, EventTarget>(engine);
     wire_registry_prototype::<crate::js::Types, MouseEvent, UIEvent>(engine);
     wire_registry_prototype::<crate::js::Types, AbortSignal, EventTarget>(engine);
     wire_registry_prototype::<crate::js::Types, Node, EventTarget>(engine);
     wire_registry_prototype::<crate::js::Types, Document, Node>(engine);
     wire_registry_prototype::<crate::js::Types, Element, Node>(engine);
+    wire_registry_prototype::<crate::js::Types, Attr, Node>(engine);
     wire_registry_prototype::<crate::js::Types, HTMLElement, Element>(engine);
     wire_registry_prototype::<crate::js::Types, HTMLAnchorElement, HTMLElement>(engine);
+    wire_registry_prototype::<crate::js::Types, HTMLScriptElement, HTMLElement>(engine);
+    wire_registry_prototype::<crate::js::Types, HTMLLinkElement, HTMLElement>(engine);
     wire_registry_prototype::<crate::js::Types, HTMLCanvasElement, HTMLElement>(engine);
     wire_registry_prototype::<crate::js::Types, HTMLIFrameElement, HTMLElement>(engine);
     wire_registry_prototype::<crate::js::Types, HTMLMediaElement, HTMLElement>(engine);
@@ -273,10 +385,13 @@ fn setup_realm(engine: &mut Engine, _document: Rc<RefCell<BaseDocument>>) -> Res
     wire_registry_constructor_prototype::<crate::js::Types, Node, EventTarget>(engine);
     wire_registry_constructor_prototype::<crate::js::Types, Document, Node>(engine);
     wire_registry_constructor_prototype::<crate::js::Types, Element, Node>(engine);
+    wire_registry_constructor_prototype::<crate::js::Types, Attr, Node>(engine);
     wire_registry_constructor_prototype::<crate::js::Types, HTMLElement, Element>(engine);
     wire_registry_constructor_prototype::<crate::js::Types, HTMLCanvasElement, HTMLElement>(engine);
     wire_registry_constructor_prototype::<crate::js::Types, OffscreenCanvas, EventTarget>(engine);
     wire_registry_constructor_prototype::<crate::js::Types, HTMLAnchorElement, HTMLElement>(engine);
+    wire_registry_constructor_prototype::<crate::js::Types, HTMLScriptElement, HTMLElement>(engine);
+    wire_registry_constructor_prototype::<crate::js::Types, HTMLLinkElement, HTMLElement>(engine);
     wire_registry_constructor_prototype::<crate::js::Types, HTMLIFrameElement, HTMLElement>(engine);
     wire_registry_constructor_prototype::<crate::js::Types, HTMLMediaElement, HTMLElement>(engine);
     wire_registry_constructor_prototype::<crate::js::Types, HTMLVideoElement, HTMLMediaElement>(
@@ -322,18 +437,13 @@ fn setup_realm(engine: &mut Engine, _document: Rc<RefCell<BaseDocument>>) -> Res
                         }
                         if let Ok(Some(descriptor)) =
                             engine.get_own_property(proto.clone(), key.clone())
+                            && (descriptor.value.is_some() || descriptor.get.is_some())
+                            && let Err(error) =
+                                engine.define_property_or_throw(global_obj.clone(), key, descriptor)
                         {
-                            if descriptor.value.is_some() || descriptor.get.is_some() {
-                                if let Err(error) = engine.define_property_or_throw(
-                                    global_obj.clone(),
-                                    key,
-                                    descriptor,
-                                ) {
-                                    error!(
-                                        "failed to copy a Window prototype property to the global object: {error:?}"
-                                    );
-                                }
-                            }
+                            error!(
+                                "failed to copy a Window prototype property to the global object: {error:?}"
+                            );
                         }
                     }
                 }
@@ -445,30 +555,27 @@ fn setup_realm(engine: &mut Engine, _document: Rc<RefCell<BaseDocument>>) -> Res
 
         // pipeTo: JS wrapper that calls the native backstop.
         let wrapper_source = "(function pipeTo(dest, opts) { return this.__formalWebReadableStreamPipeToNative(dest, opts); })";
-        if let Ok(wrapper_val) = engine.evaluate_script(wrapper_source) {
-            if let Some(wrapper_obj) =
+        if let Ok(wrapper_val) = engine.evaluate_script(wrapper_source)
+            && let Some(wrapper_obj) =
                 <crate::js::Types as js_engine::JsTypes>::value_as_object(&wrapper_val)
-            {
-                let pipe_value =
-                    <crate::js::Types as js_engine::JsTypes>::value_from_object(wrapper_obj);
-                let pipe_to_desc = js_engine::records::PropertyDescriptor::<crate::js::Types> {
-                    value: Some(pipe_value),
-                    writable: Some(true),
-                    configurable: Some(true),
-                    enumerable: None,
-                    get: None,
-                    set: None,
-                };
-                engine
-                    .define_property_or_throw(
-                        rs_proto.clone(),
-                        engine.property_key_from_str("pipeTo"),
-                        pipe_to_desc,
-                    )
-                    .map_err(|error| {
-                        format!("failed to install ReadableStream.pipeTo: {error:?}")
-                    })?;
-            }
+        {
+            let pipe_value =
+                <crate::js::Types as js_engine::JsTypes>::value_from_object(wrapper_obj);
+            let pipe_to_desc = js_engine::records::PropertyDescriptor::<crate::js::Types> {
+                value: Some(pipe_value),
+                writable: Some(true),
+                configurable: Some(true),
+                enumerable: None,
+                get: None,
+                set: None,
+            };
+            engine
+                .define_property_or_throw(
+                    rs_proto.clone(),
+                    engine.property_key_from_str("pipeTo"),
+                    pipe_to_desc,
+                )
+                .map_err(|error| format!("failed to install ReadableStream.pipeTo: {error:?}"))?;
         }
     }
 
@@ -496,12 +603,15 @@ fn setup_worker_realm(
     use crate::dom::{
         AbortController, AbortSignal, DOMException, Document, Element, Event, EventTarget, Node,
     };
+    use crate::encoding::{TextDecoder, TextEncoder};
+    use crate::fetch::{FetchApiRequest, Headers, Response};
+    use crate::file_api::{Blob, File};
     #[cfg(not(boa_backend))]
     use crate::html::GlobalScope;
     use crate::html::{
         DedicatedWorkerGlobalScope, MessageChannel, MessageEvent, MessagePort, OffscreenCanvas,
-        OffscreenCanvasRenderingContext2D, Worker, WorkerGlobalScope, WorkerLocation,
-        WorkerNavigator,
+        OffscreenCanvasRenderingContext2D, PromiseRejectionEvent, Worker, WorkerGlobalScope,
+        WorkerLocation, WorkerNavigator,
     };
     use crate::streams::{
         ByteLengthQueuingStrategy, CountQueuingStrategy, ReadableByteStreamController,
@@ -510,6 +620,7 @@ fn setup_worker_realm(
         TransformStreamDefaultController, WritableStream, WritableStreamDefaultController,
         WritableStreamDefaultWriter,
     };
+    use crate::url_standard::{URL, URLSearchParams};
     use crate::webidl::bindings::{
         get_registry_prototype, initialize_registry, register_interface_spec,
         wire_registry_constructor_prototype, wire_registry_prototype,
@@ -586,6 +697,7 @@ fn setup_worker_realm(
     reg!(DOMException);
     reg!(Event);
     reg!(MessageEvent);
+    reg!(PromiseRejectionEvent);
     reg!(MessageChannel);
     reg!(MessagePort);
     reg!(AbortSignal);
@@ -598,6 +710,19 @@ fn setup_worker_realm(
     reg!(DedicatedWorkerGlobalScope);
     reg!(WorkerLocation);
     reg!(WorkerNavigator);
+    reg!(URL);
+    reg!(URLSearchParams);
+    install_pair_iterator::<URLSearchParams>(engine)?;
+    reg!(Headers);
+    install_pair_iterator::<Headers>(engine)?;
+    reg!(FetchApiRequest);
+    reg!(Response);
+    reg!(Blob);
+    reg!(File);
+    reg!(TextEncoder);
+    reg!(TextDecoder);
+    wire_registry_prototype::<crate::js::Types, File, Blob>(engine);
+    wire_registry_constructor_prototype::<crate::js::Types, File, Blob>(engine);
     reg!(OffscreenCanvas);
     reg!(OffscreenCanvasRenderingContext2D);
     reg!(ByteLengthQueuingStrategy);
@@ -616,6 +741,8 @@ fn setup_worker_realm(
 
     // Step 6: Wire prototype chains.
     wire_registry_prototype::<crate::js::Types, MessageEvent, Event>(engine);
+    wire_registry_prototype::<crate::js::Types, PromiseRejectionEvent, Event>(engine);
+    wire_registry_constructor_prototype::<crate::js::Types, PromiseRejectionEvent, Event>(engine);
     wire_registry_prototype::<crate::js::Types, MessagePort, EventTarget>(engine);
     wire_registry_prototype::<crate::js::Types, AbortSignal, EventTarget>(engine);
     wire_registry_prototype::<crate::js::Types, Node, EventTarget>(engine);
@@ -708,6 +835,41 @@ fn setup_worker_realm(
     crate::js::bindings::testutils::install_testutils_namespace(engine)
         .map_err(|error| format!("failed to install TestUtils namespace: {:?}", error))?;
 
+    Ok(())
+}
+
+/// <https://webidl.spec.whatwg.org/#js-iterable>
+/// Install the @@iterator of a pair-iterable interface's prototype.
+/// <https://webidl.spec.whatwg.org/#define-the-iteration-methods>
+fn install_pair_iterator<T: crate::webidl::PairIterable>(
+    engine: &mut Engine,
+) -> Result<(), String> {
+    use crate::webidl::bindings::get_registry_prototype;
+    use js_engine::records::PropertyDescriptor;
+    use js_engine::{EcmascriptHost, ExecutionContext as _};
+
+    // The @@iterator property's value is the same function object as the
+    // entries method's.
+    let Some(prototype) = get_registry_prototype::<crate::js::Types, T>(engine) else {
+        return Err(format!("{} is not registered", T::NAME));
+    };
+    let entries = EcmascriptHost::get(engine, &prototype, "entries")
+        .map_err(|error| format!("failed to read {}.prototype.entries: {error:?}", T::NAME))?;
+    let iterator_key = engine.property_key_from_well_known_symbol("iterator");
+    engine
+        .define_property_or_throw(
+            prototype,
+            iterator_key,
+            PropertyDescriptor {
+                value: Some(entries),
+                writable: Some(true),
+                enumerable: Some(false),
+                configurable: Some(true),
+                get: None,
+                set: None,
+            },
+        )
+        .map_err(|error| format!("failed to install {} @@iterator: {error:?}", T::NAME))?;
     Ok(())
 }
 

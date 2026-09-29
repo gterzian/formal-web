@@ -135,10 +135,10 @@ fn try_with_video_ref<R>(
 ) -> Completion<R, crate::js::Types> {
     let obj = crate::js::Types::value_as_object(this)
         .ok_or_else(|| ec.new_type_error("expected object"))?;
-    if let Some(data) = ec.with_object_any(&obj) {
-        if let Some(video) = data.downcast_ref::<HTMLVideoElement>() {
-            return Ok(f(video));
-        }
+    if let Some(data) = ec.with_object_any(&obj)
+        && let Some(video) = data.downcast_ref::<HTMLVideoElement>()
+    {
+        return Ok(f(video));
     }
     Err(ec.new_type_error("expected HTMLVideoElement"))
 }
@@ -195,7 +195,7 @@ fn set_plays_inline(
     args: &[JsValue],
     ec: &mut dyn ExecutionContext<crate::js::Types>,
 ) -> Completion<JsValue, crate::js::Types> {
-    let value = args.first().map_or(false, |v| ec.to_boolean(v));
+    let value = args.first().is_some_and(|v| ec.to_boolean(v));
     try_with_video_ref(this, ec, |v| v.set_plays_inline(value))?;
     Ok(ec.value_undefined())
 }

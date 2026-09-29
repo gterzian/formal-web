@@ -6,7 +6,8 @@ use js_engine::{Completion, ExecutionContext, JsTypes};
 
 use super::BUBBLING_PHASE;
 use super::CAPTURING_PHASE;
-use super::event::{Event, EventListener, EventTarget, NONE};
+use super::event::{Event, EventListener, EventTarget, HasEvent, NONE};
+use crate::webidl::bindings::WebIdlInterface;
 
 /// <https://dom.spec.whatwg.org/#event-path-item>
 #[derive(Clone)]
@@ -352,4 +353,38 @@ fn inner_invoke(
 
     // Step 3: Return found.
     Ok(found)
+}
+
+/// <https://dom.spec.whatwg.org/#concept-event-fire>
+/// Fire an event given as a constructed Event subclass (steps 3 and 4 of the
+/// fire algorithm ran when the caller built `event_data`).
+pub(crate) fn fire_event_using<E>(
+    target: &EventTarget,
+    event_data: E,
+    time_millis: f64,
+    ec: &mut dyn ExecutionContext<Types>,
+) -> Completion<bool, Types>
+where
+    E: HasEvent
+        + WebIdlInterface<Types>
+        + Clone
+        + js_engine::gc::Trace
+        + js_engine::gc::Finalize
+        + 'static,
+{
+    // Step 2: Let event be the result of creating an event given
+    //         eventConstructor, in the relevant realm of target.
+    // Note: Creating the event also initializes its isTrusted attribute to
+    // true and its timeStamp attribute to the time of the occurrence.
+    let event_object = create_interface_instance::<Types, E>(event_data, ec)?;
+    let event: Event = ec
+        .with_object_any(&event_object)
+        .and_then(|data| data.downcast_ref::<E>().map(|event| event.event().clone()))
+        .ok_or_else(|| ec.new_type_error("event object is not the expected Event subclass"))?;
+    *event.is_trusted.borrow_mut(ec) = true;
+    *event.time_stamp.borrow_mut(ec) = time_millis;
+    // Step 5: Return the result of dispatching event at target, with legacy
+    //         target override flag set if set.
+    let path = simple_path(target, ec);
+    dispatch_with_path(ec, &path, &event)
 }

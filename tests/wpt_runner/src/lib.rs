@@ -71,15 +71,15 @@ impl RunnerBuildProfile {
 
 fn current_runner_build_profile() -> Option<RunnerBuildProfile> {
     let current_executable = std::env::current_exe().ok()?;
-    if let Ok(release_executable) = runner_executable_path(RunnerBuildProfile::Release) {
-        if same_file_path(&current_executable, &release_executable) {
-            return Some(RunnerBuildProfile::Release);
-        }
+    if let Ok(release_executable) = runner_executable_path(RunnerBuildProfile::Release)
+        && same_file_path(&current_executable, &release_executable)
+    {
+        return Some(RunnerBuildProfile::Release);
     }
-    if let Ok(debug_executable) = runner_executable_path(RunnerBuildProfile::Debug) {
-        if same_file_path(&current_executable, &debug_executable) {
-            return Some(RunnerBuildProfile::Debug);
-        }
+    if let Ok(debug_executable) = runner_executable_path(RunnerBuildProfile::Debug)
+        && same_file_path(&current_executable, &debug_executable)
+    {
+        return Some(RunnerBuildProfile::Debug);
     }
     None
 }
@@ -444,21 +444,20 @@ pub fn run(args: TestWptArgs, verify: bool) -> Result<(), String> {
             SuiteKind::Formal => &formal_meta,
         };
 
-        if !ignore_metadata {
-            if let Some(reason) = suite_meta
+        if !ignore_metadata
+            && let Some(reason) = suite_meta
                 .disabled_reason_for(&test.source_relative_path)
                 .or_else(|| {
                     suite_meta
                         .expectation_for(&test.source_relative_path)
                         .and_then(|entry| entry.disabled.clone())
                 })
-            {
-                let result = skipped_result(&test.display_path, test.kind, reason);
-                print_test_result(&result);
-                update_summary(&mut summary, &result);
-                results.push(result);
-                continue;
-            }
+        {
+            let result = skipped_result(&test.display_path, test.kind, reason);
+            print_test_result(&result);
+            update_summary(&mut summary, &result);
+            results.push(result);
+            continue;
         }
 
         let observed = run_with_shared_runner(
@@ -477,10 +476,10 @@ pub fn run(args: TestWptArgs, verify: bool) -> Result<(), String> {
             ignore_metadata,
         );
         if compared.actual == WptStatus::Crash {
-            if let Some(runner) = shared_runner.take() {
-                if let Err(error) = runner.shutdown() {
-                    error!("[wpt-runner] failed to shutdown runner on crash: {error}");
-                }
+            if let Some(runner) = shared_runner.take()
+                && let Err(error) = runner.shutdown()
+            {
+                error!("[wpt-runner] failed to shutdown runner on crash: {error}");
             }
             shared_runner_error = None;
         }
@@ -490,9 +489,7 @@ pub fn run(args: TestWptArgs, verify: bool) -> Result<(), String> {
     }
 
     if let Some(runner) = shared_runner {
-        if let Err(error) = runner.shutdown() {
-            return Err(error);
-        }
+        runner.shutdown()?;
     }
 
     print_summary(&summary);
@@ -758,7 +755,9 @@ impl WptServeProcess {
             "doc_root": config.wpt.root,
             "ports": {
                 "http": [port, "auto"],
-                "https": ["auto", "auto"]
+                "https": ["auto", "auto"],
+                "ws": ["auto"],
+                "wss": ["auto"]
             }
         });
         fs::write(
@@ -1721,10 +1720,10 @@ fn print_test_result(result: &ComparedTestResult) {
         _ => println!("{:<6} {}", result.actual.as_str(), result.path),
     }
 
-    if let Some(message) = result.message.as_deref() {
-        if result.unexpected || matches!(result.actual, WptStatus::Error | WptStatus::Crash) {
-            println!("  message: {message}");
-        }
+    if let Some(message) = result.message.as_deref()
+        && (result.unexpected || matches!(result.actual, WptStatus::Error | WptStatus::Crash))
+    {
+        println!("  message: {message}");
     }
 
     for subtest in &result.subtests {
@@ -1832,17 +1831,15 @@ fn wait_for_test_report(
                     continue;
                 };
 
-                if summary_value != Value::Null {
-                    if let Ok(summary) = serde_json::from_value::<LiveHarnessSummary>(summary_value)
-                    {
-                        if summary.harness_status.is_some() {
-                            return observed_result_from_summary(
-                                test,
-                                summary,
-                                started.elapsed().as_millis(),
-                            );
-                        }
-                    }
+                if summary_value != Value::Null
+                    && let Ok(summary) = serde_json::from_value::<LiveHarnessSummary>(summary_value)
+                    && summary.harness_status.is_some()
+                {
+                    return observed_result_from_summary(
+                        test,
+                        summary,
+                        started.elapsed().as_millis(),
+                    );
                 }
             }
             Err(error) => {
@@ -2290,10 +2287,10 @@ fn unregister_wptserve_pid(pid: u32) {
     let mut pids = load_registered_wptserve_pids();
     let original_len = pids.len();
     pids.retain(|existing| *existing != pid);
-    if pids.len() != original_len {
-        if let Err(error) = save_registered_wptserve_pids(&pids) {
-            error!("[wpt-runner] failed to update registered wptserve pids: {error}");
-        }
+    if pids.len() != original_len
+        && let Err(error) = save_registered_wptserve_pids(&pids)
+    {
+        error!("[wpt-runner] failed to update registered wptserve pids: {error}");
     }
 }
 
@@ -2321,14 +2318,6 @@ fn cleanup_registered_wptserve_processes() {
 ///
 /// Priority:
 /// 1. `PYTHON` environment variable (user override)
-/// 2. `python3` — may resolve to an incompatible version (e.g. 3.14 with
-///    broken expat), so we verify it can run a simple script first.
-/// 3. `python3.10`, `python3.11`, `python3.12`, `python3.13` — fallback
-///    candidates that are more likely to have a working `ensurepip`.
-/// Resolve a working Python 3 interpreter to use for launching `wpt serve`.
-///
-/// Priority:
-/// 1. `PYTHON` environment variable (user override)
 /// 2. `python3` — verify it can actually create a venv.
 /// 3. `python3.10`, `python3.11`, `python3.12`, `python3.13` — fallback.
 ///
@@ -2337,10 +2326,11 @@ fn cleanup_registered_wptserve_processes() {
 /// has a `.python-version` file that confuses pyenv).
 fn resolve_python_interpreter() -> Result<String, String> {
     // 1. User override via PYTHON env var.
-    if let Ok(path) = std::env::var("PYTHON") {
-        if !path.is_empty() && check_python_works(&path) {
-            return resolve_to_absolute(&path);
-        }
+    if let Ok(path) = std::env::var("PYTHON")
+        && !path.is_empty()
+        && check_python_works(&path)
+    {
+        return resolve_to_absolute(&path);
     }
 
     // 2. Try python3 first.
@@ -2495,7 +2485,7 @@ fn wait_for_child_exit(child: &mut Child, timeout: Duration) -> Result<Option<Ex
 fn request_wptserve_shutdown(child: &mut Child) -> Result<(), String> {
     #[cfg(unix)]
     {
-        return send_signal_to_wptserve_group(child.id(), libc::SIGINT);
+        send_signal_to_wptserve_group(child.id(), libc::SIGINT)
     }
 
     #[cfg(not(unix))]
@@ -2607,10 +2597,10 @@ fn wait_for_webdriver_ready(port: u16, child: &mut Child, timeout: Duration) -> 
             return Err(child_failure_message(Some(&status), &stderr));
         }
 
-        if let Ok(value) = webdriver_request(port, "GET", "/status", None) {
-            if value.get("ready").and_then(Value::as_bool).unwrap_or(false) {
-                return Ok(());
-            }
+        if let Ok(value) = webdriver_request(port, "GET", "/status", None)
+            && value.get("ready").and_then(Value::as_bool).unwrap_or(false)
+        {
+            return Ok(());
         }
 
         if Instant::now() >= deadline {
@@ -2663,10 +2653,10 @@ fn wait_for_child(child: &mut Child, timeout: Duration) -> Result<ExitStatus, St
 
 fn read_child_stderr(child: &mut Child) -> String {
     let mut stderr = String::new();
-    if let Some(mut handle) = child.stderr.take() {
-        if let Err(error) = handle.read_to_string(&mut stderr) {
-            error!("[wpt-runner] failed to read child stderr: {error}");
-        }
+    if let Some(mut handle) = child.stderr.take()
+        && let Err(error) = handle.read_to_string(&mut stderr)
+    {
+        error!("[wpt-runner] failed to read child stderr: {error}");
     }
     if stderr.len() > CHILD_STDERR_LIMIT {
         stderr.truncate(CHILD_STDERR_LIMIT);

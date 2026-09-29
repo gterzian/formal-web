@@ -22,7 +22,7 @@ use crate::webidl::{relevant_realm_global_this_value, security_error_value, synt
 use super::resolved_style_properties_for_element;
 use super::structured_data::safe_passing_of_structured_data::structured_serialize_with_transfer;
 use super::windowproxy::create_window_proxy;
-use super::{GlobalScope, Location, the_rules_for_choosing_a_navigable};
+use super::{GlobalScope, Location, Navigator, Storage, the_rules_for_choosing_a_navigable};
 use js_engine::gc_struct;
 
 /// <https://html.spec.whatwg.org/#window>
@@ -258,6 +258,97 @@ impl Window {
         Ok(location)
     }
 
+    /// <https://html.spec.whatwg.org/#concept-document-window>
+    fn associated_document(
+        &self,
+        ec: &mut dyn ExecutionContext<Types>,
+    ) -> Completion<Document, Types> {
+        let document_object = self
+            .global_scope
+            .document_object(ec)
+            .ok_or_else(|| ec.new_type_error("the Window has no associated Document"))?;
+        ec.with_object_any(&document_object)
+            .and_then(|data| data.downcast_ref::<Document>().cloned())
+            .ok_or_else(|| ec.new_type_error("the Window's document is not a Document"))
+    }
+
+    /// <https://html.spec.whatwg.org/#dom-localstorage>
+    pub(crate) fn local_storage(
+        &self,
+        ec: &mut dyn ExecutionContext<Types>,
+    ) -> Completion<Storage, Types> {
+        let document = self.associated_document(ec)?;
+        // Step 1: "If this's associated Document's local storage holder is non-null, then return it."
+        if let Some(storage) = document.local_storage_holder.borrow(ec).clone() {
+            return Ok(storage);
+        }
+
+        // Step 2: "Let map be the result of running obtain a local storage bottle map with this's relevant settings object and "localStorage"."
+        // Step 3: "If map is failure, then throw a "SecurityError" DOMException."
+        // Note: the bottle map is an in-memory map created with the Storage
+        // object; storage partitioning is not implemented, so obtaining it
+        // cannot fail.
+        // Step 4: "Let storage be a new Storage object whose map is map."
+        let storage = Storage::new(ec)?;
+
+        // Step 5: "Set this's associated Document's local storage holder to storage."
+        *document.local_storage_holder.borrow_mut(ec) = Some(storage.clone());
+
+        // Step 6: "Return storage."
+        Ok(storage)
+    }
+
+    /// <https://html.spec.whatwg.org/#dom-sessionstorage>
+    pub(crate) fn session_storage(
+        &self,
+        ec: &mut dyn ExecutionContext<Types>,
+    ) -> Completion<Storage, Types> {
+        let document = self.associated_document(ec)?;
+        // Step 1: "If this's associated Document's session storage holder is non-null, then return it."
+        if let Some(storage) = document.session_storage_holder.borrow(ec).clone() {
+            return Ok(storage);
+        }
+
+        // Step 2: "Let map be the result of running obtain a session storage bottle map with this's relevant settings object and "sessionStorage"."
+        // Step 3: "If map is failure, then throw a "SecurityError" DOMException."
+        // Note: the bottle map is an in-memory map created with the Storage
+        // object; storage partitioning is not implemented, so obtaining it
+        // cannot fail.
+        // Step 4: "Let storage be a new Storage object whose map is map."
+        let storage = Storage::new(ec)?;
+
+        // Step 5: "Set this's associated Document's session storage holder to storage."
+        *document.session_storage_holder.borrow_mut(ec) = Some(storage.clone());
+
+        // Step 6: "Return storage."
+        Ok(storage)
+    }
+
+    /// <https://html.spec.whatwg.org/#dom-navigator>
+    pub(crate) fn navigator_value(
+        &self,
+        ec: &mut dyn ExecutionContext<Types>,
+    ) -> Completion<Navigator, Types> {
+        // The navigator and clientInformation getter steps are to return
+        // this's associated Navigator.
+        // Note: Each Window object has an associated Navigator, which is a
+        // new Navigator object created when the Window is created; it is
+        // created on first access and cached on the realm's global scope.
+        // The binding layer converts the returned Navigator to the cached JS
+        // object.
+        if let Some(navigator_object) = self.global_scope.navigator_object(ec) {
+            let navigator = ec
+                .with_object_any(&navigator_object)
+                .and_then(|data| data.downcast_ref::<Navigator>().cloned())
+                .ok_or_else(|| ec.new_type_error("navigator object is not a Navigator"))?;
+            return Ok(navigator);
+        }
+        let navigator = Navigator::new();
+        let object = create_interface_instance::<Types, Navigator>(navigator.clone(), ec)?;
+        self.global_scope.store_navigator_object(object, ec);
+        Ok(navigator)
+    }
+
     /// <https://html.spec.whatwg.org/#dom-window-postmessage>
     pub(crate) fn post_message(
         &self,
@@ -336,17 +427,17 @@ pub(crate) fn window_computed_style_properties_for_element(
     let mut obj = Some(elt);
 
     // Step 3: "If pseudoElt is provided, is not the empty string, and starts with a colon..."
-    if let Some(pseudo_elt) = pseudo_elt.map(str::trim).filter(|value| !value.is_empty()) {
-        if pseudo_elt.starts_with(':') {
-            // Step 3.1: Parse pseudoElt as a <pseudo-element-selector>.
-            // Step 3.2 / 3.3: Map invalid, ::slotted(), ::part(), or supported pseudo-element
-            // requests to the corresponding pseudo-element object.
-            //
-            // Note: The implementation does not yet expose pseudo-element platform objects, so any
-            // pseudo-element request leaves `obj` null and therefore produces an empty declaration
-            // list below.
-            obj = None;
-        }
+    if let Some(pseudo_elt) = pseudo_elt.map(str::trim).filter(|value| !value.is_empty())
+        && pseudo_elt.starts_with(':')
+    {
+        // Step 3.1: Parse pseudoElt as a <pseudo-element-selector>.
+        // Step 3.2 / 3.3: Map invalid, ::slotted(), ::part(), or supported pseudo-element
+        // requests to the corresponding pseudo-element object.
+        //
+        // Note: The implementation does not yet expose pseudo-element platform objects, so any
+        // pseudo-element request leaves `obj` null and therefore produces an empty declaration
+        // list below.
+        obj = None;
     }
 
     // Step 4: "Let decls be an empty list of CSS declarations."
@@ -393,18 +484,8 @@ pub(crate) fn window_post_message_steps(
     // there.  The message therefore carries only the serialized data.
 
     // Step 2: Let incumbentSettings be the incumbent settings object.
-    let (source_navigable_id, source_origin, event_sender) = with_global_scope(
-        ec,
-        |global_scope,
-         _ec|
-         -> Completion<
-            (
-                Option<NavigableId>,
-                Option<String>,
-                Option<IpcSender<ContentEvent>>,
-            ),
-            crate::js::Types,
-        > {
+    let (source_navigable_id, source_origin, event_sender) =
+        with_global_scope(ec, |global_scope, _ec| {
             Ok((
                 global_scope.source_navigable_id(),
                 global_scope
@@ -412,8 +493,7 @@ pub(crate) fn window_post_message_steps(
                     .map(|url| url.origin().unicode_serialization()),
                 global_scope.event_sender(),
             ))
-        },
-    )?;
+        })?;
     let Some(source_navigable_id) = source_navigable_id else {
         return Err(ec.new_type_error("postMessage: no source navigable"));
     };

@@ -20,14 +20,18 @@ mod html_dom_tree;
 mod html_element;
 pub(crate) mod html_iframe_element;
 pub(crate) mod html_input_element;
+pub(crate) mod html_link_element;
 pub(crate) mod html_media_element;
 mod html_parser;
+pub(crate) mod html_script_element;
 pub(crate) mod html_video_element;
 mod hyperlink_element_utils;
 mod location;
 pub(crate) mod message_event;
 pub(crate) mod messageport;
-mod navigator;
+pub(crate) mod navigator;
+pub(crate) mod promise_rejection_event;
+pub(crate) mod storage;
 pub(crate) mod structured_data;
 pub(crate) mod timers;
 pub(crate) mod ui_events;
@@ -54,30 +58,39 @@ pub use environment_settings_object::EnvironmentSettingsObject;
 pub use global_scope::GlobalScope;
 pub use global_scope::GlobalScopeKind;
 pub(crate) use global_scope::TimerHandler;
+pub(crate) use global_scope::{BrowsingContextWindow, NewDocumentRegistry, VideoPaintRegistry};
+pub use storage::Storage;
 
 pub use html_anchor_element::HTMLAnchorElement;
 pub(crate) use html_dom_tree::{
     run_dom_post_connection_steps_for_document, run_dom_removing_steps_for_document,
 };
 pub use html_element::HTMLElement;
-pub(crate) use html_element::{
-    inline_style_properties_for_element, resolved_style_properties_for_element,
-};
+pub(crate) use html_element::resolved_style_properties_for_element;
 pub use html_iframe_element::HTMLIFrameElement;
 pub(crate) use html_iframe_element::attach_same_origin_child_document_for_traversable;
 pub(crate) use html_iframe_element::{
     fire_deferred_iframe_load_events, run_iframe_load_event_steps_for_traversable,
 };
 pub use html_input_element::HTMLInputElement;
+pub use html_link_element::HTMLLinkElement;
+pub(crate) use html_link_element::linked_stylesheet_fetched;
 pub use html_media_element::{HTMLMediaElement, MediaError};
 pub(crate) use html_parser::PendingParserScript;
 pub use html_parser::{JsHtmlParserProvider, execute_parser_scripts, parse_html_into_document};
+pub use html_script_element::HTMLScriptElement;
+pub(crate) use html_script_element::{
+    execute_the_script_element, mark_parser_scripts_started, script_element_fetch_completed,
+    script_html_element_post_connection_steps,
+};
 pub use html_video_element::HTMLVideoElement;
 pub(crate) use hyperlink_element_utils::HyperlinkElementUtils;
 pub use location::Location;
 pub(crate) use location::LocationError;
 pub(crate) use message_event::{MessageEvent, MessageEventInit};
 pub(crate) use messageport::{MessageChannel, MessagePort};
+pub(crate) use navigator::Navigator;
+pub(crate) use promise_rejection_event::{PromiseRejectionEvent, PromiseRejectionEventInit};
 pub use window::Window;
 pub(crate) use window::window_computed_style_properties_for_element;
 pub(crate) use window::{PostMessageOptions, window_post_message_steps};
@@ -143,15 +156,7 @@ pub(crate) fn create_a_new_browsing_context_and_document(
     parent_engine: Option<&mut Engine>,
     creator_origin: Option<environment_settings_object::Origin>,
     wiring: RealmWiring,
-) -> Result<
-    (
-        JsObject,
-        Window,
-        EnvironmentSettingsObject,
-        Rc<RefCell<BaseDocument>>,
-    ),
-    String,
-> {
+) -> Result<BrowsingContextWindow, String> {
     // Step 1: Let browsingContext be a new browsing context.
     // Step 2: Let unsafeContextCreationTime be the unsafe shared current time.
     // Step 3: Let creatorOrigin be null.

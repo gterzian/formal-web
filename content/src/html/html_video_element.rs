@@ -71,7 +71,7 @@ impl HTMLVideoElement {
         self.media_element
             .html_element
             .element
-            .set_attribute("poster", poster);
+            .set_an_attribute_value("poster", poster, None, None);
     }
 
     /// <https://html.spec.whatwg.org/#dom-video-playsinline>
@@ -88,12 +88,12 @@ impl HTMLVideoElement {
             self.media_element
                 .html_element
                 .element
-                .set_attribute("playsinline", "");
+                .set_an_attribute_value("playsinline", "", None, None);
         } else {
             self.media_element
                 .html_element
                 .element
-                .remove_attribute("playsinline");
+                .remove_an_attribute_by_name("playsinline");
         }
     }
 
@@ -111,7 +111,7 @@ impl HTMLVideoElement {
         self.media_element
             .html_element
             .element
-            .set_attribute("width", value);
+            .set_an_attribute_value("width", value, None, None);
     }
 
     /// <https://html.spec.whatwg.org/#dom-video-height>
@@ -128,6 +128,6 @@ impl HTMLVideoElement {
         self.media_element
             .html_element
             .element
-            .set_attribute("height", value);
+            .set_an_attribute_value("height", value, None, None);
     }
 }

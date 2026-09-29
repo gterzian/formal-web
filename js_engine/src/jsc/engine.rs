@@ -1448,6 +1448,11 @@ impl JsTypesWithRealm for JscTypes {
 /// JSC engine wrapper.  Owns a `JSGlobalContextRef` and implements
 /// `JsEngine<JscTypes>`, `ExecutionContext<JscTypes>`, and
 /// `EcmascriptHost<JscTypes>`.
+/// The (proxy, target) pairs made by `create_platform_object_proxy`, in
+/// `host_data`.
+#[derive(Default)]
+struct PlatformObjectProxies(Vec<(JscObject, JscObject)>);
+
 pub struct JscEngine {
     context: JscContext,
     /// The realm's global object (e.g. the Window for this document).
@@ -1492,6 +1497,18 @@ impl Drop for JscEngine {
 }
 
 impl JscEngine {
+    /// The platform object behind a proxy made by
+    /// `create_platform_object_proxy`.
+    fn platform_object_proxy_target(&self, object: &JscObject) -> Option<JscObject> {
+        self.host_data
+            .get(&std::any::TypeId::of::<PlatformObjectProxies>())?
+            .downcast_ref::<PlatformObjectProxies>()?
+            .0
+            .iter()
+            .find(|(proxy, _)| proxy == object)
+            .map(|(_, target)| *target)
+    }
+
     /// Create a built-in function from a type-erased closure.
     ///
     /// Deliberately not a `JsEngine` trait method: a closure's captures
@@ -4738,18 +4755,33 @@ impl ExecutionContext<JscTypes> for JscEngine {
             .get(&map_type_id)?
             .downcast_ref::<std::collections::HashMap<usize, Box<dyn std::any::Any>>>()?;
         let key = object.as_raw() as usize;
-        Some(map.get(&key)?.as_ref())
+        match map.get(&key) {
+            Some(data) => Some(data.as_ref()),
+            None => {
+                let target = self.platform_object_proxy_target(object)?;
+                self.with_object_any(&target)
+            }
+        }
     }
 
     /// Retrieve mutable data stored via `create_object_with_any`.
     fn with_object_any_mut(&mut self, object: &JscObject) -> Option<&mut dyn std::any::Any> {
         let map_type_id =
             std::any::TypeId::of::<std::collections::HashMap<usize, Box<dyn std::any::Any>>>();
+        let key = object.as_raw() as usize;
+        let is_platform_object = self
+            .host_data
+            .get(&map_type_id)?
+            .downcast_ref::<std::collections::HashMap<usize, Box<dyn std::any::Any>>>()?
+            .contains_key(&key);
+        if !is_platform_object {
+            let target = self.platform_object_proxy_target(object)?;
+            return self.with_object_any_mut(&target);
+        }
         let map = self
             .host_data
             .get_mut(&map_type_id)?
             .downcast_mut::<std::collections::HashMap<usize, Box<dyn std::any::Any>>>()?;
-        let key = object.as_raw() as usize;
         Some(map.get_mut(&key)?.as_mut())
     }
 
@@ -4879,6 +4911,23 @@ impl ExecutionContext<JscTypes> for JscEngine {
         }
 
         Ok(JscObject { raw: result, ctx })
+    }
+
+    fn create_platform_object_proxy(
+        &mut self,
+        target: JscObject,
+        handler: JscObject,
+    ) -> Completion<JscObject, JscTypes> {
+        let proxy = self.create_proxy(target, handler)?;
+        let id = std::any::TypeId::of::<PlatformObjectProxies>();
+        let proxies = self
+            .host_data
+            .entry(id)
+            .or_insert_with(|| Box::new(PlatformObjectProxies::default()));
+        if let Some(proxies) = proxies.downcast_mut::<PlatformObjectProxies>() {
+            proxies.0.push((proxy, target));
+        }
+        Ok(proxy)
     }
 
     // ── Error Reporting ──────────────────────────────────────────────────

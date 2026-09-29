@@ -1,13 +1,9 @@
-use std::collections::BTreeMap;
-
 type JsValue = <crate::js::Types as JsTypes>::JsValue;
-type JsObject = <crate::js::Types as JsTypes>::JsObject;
 type Types = crate::js::Types;
 
-use crate::dom::Element;
 use crate::html::{
     HTMLAnchorElement, HTMLCanvasElement, HTMLElement, HTMLIFrameElement, HTMLInputElement,
-    HTMLMediaElement, HTMLVideoElement, inline_style_properties_for_element,
+    HTMLLinkElement, HTMLScriptElement,
 };
 use crate::webidl::bindings::{AttributeDef, InterfaceDefinition, OperationDef, WebIdlInterface};
 
@@ -126,6 +122,14 @@ fn click_method(
                 data.downcast_ref::<HTMLIFrameElement>()
                     .map(|iframe| iframe.html_element.clone())
             })
+            .or_else(|| {
+                data.downcast_ref::<HTMLScriptElement>()
+                    .map(|script| script.html_element.clone())
+            })
+            .or_else(|| {
+                data.downcast_ref::<HTMLLinkElement>()
+                    .map(|link| link.html_element.clone())
+            })
     });
     let Some(html_element) = html_element else {
         return Err(ec.new_type_error("receiver is not an HTMLElement"));
@@ -157,6 +161,12 @@ fn try_with_html_element_ref<R>(
         }
         if let Some(iframe) = data.downcast_ref::<HTMLIFrameElement>() {
             return Ok(f(&iframe.html_element));
+        }
+        if let Some(script) = data.downcast_ref::<HTMLScriptElement>() {
+            return Ok(f(&script.html_element));
+        }
+        if let Some(link) = data.downcast_ref::<HTMLLinkElement>() {
+            return Ok(f(&link.html_element));
         }
     }
     Err(ec.new_type_error("receiver is not an HTMLElement"))
@@ -236,7 +246,7 @@ fn set_hidden(
     args: &[JsValue],
     ec: &mut dyn ExecutionContext<crate::js::Types>,
 ) -> Completion<JsValue, crate::js::Types> {
-    let hidden = args.first().map_or(false, |v| ec.to_boolean(v));
+    let hidden = args.first().is_some_and(|v| ec.to_boolean(v));
     try_with_html_element_ref(this, ec, |html_element| html_element.set_hidden(hidden))?;
     Ok(ec.value_undefined())
 }
@@ -246,375 +256,11 @@ fn get_style(
     _: &[JsValue],
     ec: &mut dyn ExecutionContext<crate::js::Types>,
 ) -> Completion<JsValue, crate::js::Types> {
-    use crate::js::Types;
-
-    let object = Types::value_as_object(this)
-        .ok_or_else(|| ec.new_type_error("style getter: receiver is not an object"))?;
-    let element_ref = Types::value_from_object(object.clone());
-
-    // Build the style declaration object with a reference to the element,
-    // so that cssText and individual property setters can write back.
-    let properties = try_with_html_element_ref(this, ec, |html_element| {
-        inline_style_properties_for_element(&html_element.element)
-    })?;
-
-    let style_obj = ec.create_plain_object(None);
-
-    for (name, value) in &properties {
-        // cssText is handled separately; skip it here to avoid conflict.
-        if name == "cssText" {
-            continue;
-        }
-        let js_value = ec.value_from_string(ec.js_string_from_str(value.as_str()));
-        let name_key = ec.property_key_from_str(name);
-        ec.set(style_obj.clone(), name_key, js_value.clone(), false)?;
-        let alias = camel_case_property_name(name);
-        if alias != *name {
-            let alias_key = ec.property_key_from_str(&alias);
-            ec.set(style_obj.clone(), alias_key, js_value, false)?;
-        }
-    }
-
-    // getPropertyValue method
-    fn get_property_value_fn(
-        args: &[JsValue],
-        this_ec_val: JsValue,
-        inner_ec: &mut dyn ExecutionContext<Types>,
-    ) -> Completion<JsValue, Types> {
-        let property_name = if let Some(arg) = args.first() {
-            inner_ec
-                .to_rust_string(arg.clone())?
-                .trim()
-                .to_ascii_lowercase()
-        } else {
-            String::new()
-        };
-        let Some(object) = Types::value_as_object(&this_ec_val) else {
-            return Ok(inner_ec.value_from_string(inner_ec.js_string_from_str("")));
-        };
-        let key = inner_ec.property_key_from_str(&property_name);
-        let value = ExecutionContext::get(inner_ec, object, key)?;
-        if Types::value_is_undefined(&value) {
-            return Ok(inner_ec.value_from_string(inner_ec.js_string_from_str("")));
-        }
-        Ok(value)
-    }
-    let get_property_value_fn = {
-        let name_key = ec.property_key_from_str("getPropertyValue");
-        crate::js::create_builtin_fn_static(ec, get_property_value_fn, 1, name_key)
-    };
-    let method_val = Types::value_from_object(Types::object_from_function(get_property_value_fn));
-    ec.set(
-        style_obj.clone(),
-        ec.property_key_from_str("getPropertyValue"),
-        method_val,
-        false,
-    )?;
-
-    // Store a reference to the element so cssText setter can write back.
-    ec.set(
-        style_obj.clone(),
-        ec.property_key_from_str("__element"),
-        element_ref,
-        false,
-    )?;
-
-    // Implement cssText as a live getter/setter backed by the element's style attribute.
-    fn css_text_getter_fn(
-        _args: &[JsValue],
-        this_ec_val: JsValue,
-        inner_ec: &mut dyn ExecutionContext<Types>,
-    ) -> Completion<JsValue, Types> {
-        let element_val = {
-            let this_obj = Types::value_as_object(&this_ec_val).ok_or_else(|| {
-                inner_ec.new_type_error("cssText getter: receiver is not an object")
-            })?;
-            ExecutionContext::get(
-                inner_ec,
-                this_obj,
-                inner_ec.property_key_from_str("__element"),
-            )?
-        };
-        let style = element_style_attribute(&element_val, inner_ec).unwrap_or_default();
-        Ok(inner_ec.value_from_string(inner_ec.js_string_from_str(&style)))
-    }
-    let css_text_getter = {
-        let name_key = ec.property_key_from_str("get cssText");
-        crate::js::create_builtin_fn_static(ec, css_text_getter_fn, 0, name_key)
-    };
-
-    fn css_text_setter_fn(
-        args: &[JsValue],
-        this_ec_val: JsValue,
-        inner_ec: &mut dyn ExecutionContext<Types>,
-    ) -> Completion<JsValue, Types> {
-        let value = if let Some(arg) = args.first() {
-            inner_ec.to_rust_string(arg.clone())?
-        } else {
-            String::new()
-        };
-        let element_val = {
-            let this_obj = Types::value_as_object(&this_ec_val).ok_or_else(|| {
-                inner_ec.new_type_error("cssText setter: receiver is not an object")
-            })?;
-            ExecutionContext::get(
-                inner_ec,
-                this_obj,
-                inner_ec.property_key_from_str("__element"),
-            )?
-        };
-        set_element_style_attribute(&element_val, &value, inner_ec);
-        Ok(inner_ec.value_undefined())
-    }
-    let css_text_setter = {
-        let name_key = ec.property_key_from_str("set cssText");
-        crate::js::create_builtin_fn_static(ec, css_text_setter_fn, 1, name_key)
-    };
-
-    let css_text_key = ec.property_key_from_str("cssText");
-    let accessor_desc = js_engine::PropertyDescriptor {
-        value: None,
-        writable: None,
-        get: Some(css_text_getter),
-        set: Some(css_text_setter),
-        enumerable: Some(true),
-        configurable: Some(true),
-    };
-    ec.define_property_or_throw(style_obj.clone(), css_text_key, accessor_desc)?;
-
-    Ok(Types::value_from_object(style_obj))
-}
-
-/// Read the element's `style` attribute via the generic EC trait.
-fn element_style_attribute(
-    element_val: &JsValue,
-    ec: &mut dyn ExecutionContext<crate::js::Types>,
-) -> Option<String> {
-    use crate::js::Types;
-    let obj = Types::value_as_object(element_val)?;
-    let data = ec.with_object_any(&obj)?;
-
-    // Note: dyn Any::downcast_ref matches exact type only, so we check
-    // most-derived types first and walk up to base types.
-    if let Some(el) = data.downcast_ref::<HTMLVideoElement>() {
-        Some(
-            el.media_element
-                .html_element
-                .element
-                .get_attribute("style")
-                .unwrap_or_default(),
-        )
-    } else if let Some(el) = data.downcast_ref::<HTMLMediaElement>() {
-        Some(
-            el.html_element
-                .element
-                .get_attribute("style")
-                .unwrap_or_default(),
-        )
-    } else if let Some(el) = data.downcast_ref::<HTMLAnchorElement>() {
-        Some(
-            el.html_element
-                .element
-                .get_attribute("style")
-                .unwrap_or_default(),
-        )
-    } else if let Some(el) = data.downcast_ref::<HTMLCanvasElement>() {
-        Some(
-            el.html_element
-                .element
-                .get_attribute("style")
-                .unwrap_or_default(),
-        )
-    } else if let Some(el) = data.downcast_ref::<HTMLIFrameElement>() {
-        Some(
-            el.html_element
-                .element
-                .get_attribute("style")
-                .unwrap_or_default(),
-        )
-    } else if let Some(el) = data.downcast_ref::<HTMLInputElement>() {
-        Some(
-            el.html_element
-                .element
-                .get_attribute("style")
-                .unwrap_or_default(),
-        )
-    } else if let Some(el) = data.downcast_ref::<HTMLElement>() {
-        Some(el.element.get_attribute("style").unwrap_or_default())
-    } else if let Some(el) = data.downcast_ref::<Element>() {
-        Some(el.get_attribute("style").unwrap_or_default())
-    } else {
-        None
-    }
-}
-
-/// Set/remove the element's `style` attribute via the generic EC trait.
-fn set_element_style_attribute(
-    element_val: &JsValue,
-    value: &str,
-    ec: &mut dyn ExecutionContext<crate::js::Types>,
-) {
-    use crate::js::Types;
-    let Some(obj) = Types::value_as_object(element_val) else {
-        return;
-    };
-    let Some(data) = ec.with_object_any(&obj) else {
-        return;
-    };
-
-    if let Some(el) = data.downcast_ref::<HTMLVideoElement>() {
-        let elem = &el.media_element.html_element.element;
-        if value.is_empty() {
-            elem.remove_attribute("style");
-        } else {
-            elem.set_attribute("style", value);
-        }
-    } else if let Some(el) = data.downcast_ref::<HTMLMediaElement>() {
-        let elem = &el.html_element.element;
-        if value.is_empty() {
-            elem.remove_attribute("style");
-        } else {
-            elem.set_attribute("style", value);
-        }
-    } else if let Some(el) = data.downcast_ref::<HTMLAnchorElement>() {
-        let elem = &el.html_element.element;
-        if value.is_empty() {
-            elem.remove_attribute("style");
-        } else {
-            elem.set_attribute("style", value);
-        }
-    } else if let Some(el) = data.downcast_ref::<HTMLCanvasElement>() {
-        let elem = &el.html_element.element;
-        if value.is_empty() {
-            elem.remove_attribute("style");
-        } else {
-            elem.set_attribute("style", value);
-        }
-    } else if let Some(el) = data.downcast_ref::<HTMLIFrameElement>() {
-        let elem = &el.html_element.element;
-        if value.is_empty() {
-            elem.remove_attribute("style");
-        } else {
-            elem.set_attribute("style", value);
-        }
-    } else if let Some(el) = data.downcast_ref::<HTMLInputElement>() {
-        let elem = &el.html_element.element;
-        if value.is_empty() {
-            elem.remove_attribute("style");
-        } else {
-            elem.set_attribute("style", value);
-        }
-    } else if let Some(el) = data.downcast_ref::<HTMLElement>() {
-        let elem = &el.element;
-        if value.is_empty() {
-            elem.remove_attribute("style");
-        } else {
-            elem.set_attribute("style", value);
-        }
-    } else if let Some(el) = data.downcast_ref::<Element>() {
-        if value.is_empty() {
-            el.remove_attribute("style");
-        } else {
-            el.set_attribute("style", value);
-        }
-    }
-}
-
-pub(crate) fn style_declaration_object(
-    properties: &BTreeMap<String, String>,
-    ec: &mut dyn ExecutionContext<crate::js::Types>,
-) -> Completion<JsObject, crate::js::Types> {
-    let object = ec.create_plain_object(None);
-    for (name, value) in properties {
-        let js_value = ec.value_from_string(ec.js_string_from_str(value.as_str()));
-        let key = ec.property_key_from_str(name.as_str());
-        let desc = js_engine::PropertyDescriptor {
-            value: Some(js_value.clone()),
-            writable: Some(true),
-            get: None,
-            set: None,
-            enumerable: Some(true),
-            configurable: Some(true),
-        };
-        ec.define_property_or_throw(object.clone(), key, desc)?;
-
-        let alias = camel_case_property_name(name);
-        if alias != *name {
-            let alias_key = ec.property_key_from_str(alias.as_str());
-            let alias_desc = js_engine::PropertyDescriptor {
-                value: Some(js_value),
-                writable: Some(true),
-                get: None,
-                set: None,
-                enumerable: Some(true),
-                configurable: Some(true),
-            };
-            ec.define_property_or_throw(object.clone(), alias_key, alias_desc)?;
-        }
-    }
-
-    // Add getPropertyValue method.
-    fn getter_fn_impl(
-        args: &[JsValue],
-        this: JsValue,
-        ec: &mut dyn ExecutionContext<Types>,
-    ) -> Completion<JsValue, Types> {
-        // Step 1.1: convert to ASCII lowercase.
-        let undef = ec.value_undefined();
-        let property_name = ec
-            .to_rust_string(args.first().cloned().unwrap_or(undef))?
-            .trim()
-            .to_ascii_lowercase();
-
-        // Step 2: Look up property in the declaration object.
-        let object = match <crate::js::Types as JsTypes>::value_as_object(&this) {
-            Some(obj) => obj,
-            None => return Ok(ec.value_from_string(ec.js_string_from_str(""))),
-        };
-        let key = ec.property_key_from_str(property_name.as_str());
-        let value = js_engine::ExecutionContext::get(ec, object, key)?;
-
-        // Step 3: Return empty string for undefined values.
-        if value.is_undefined() {
-            return Ok(ec.value_from_string(ec.js_string_from_str("")));
-        }
-        Ok(value)
-    }
-    let getter_fn = {
-        let name_key = ec.property_key_from_str("getPropertyValue");
-        crate::js::create_builtin_fn_static(ec, getter_fn_impl, 1, name_key)
-    };
-    let getter_value = <crate::js::Types as JsTypes>::value_from_object(
-        <crate::js::Types as JsTypes>::object_from_function(getter_fn),
-    );
-    let getter_key = ec.property_key_from_str("getPropertyValue");
-    let desc = js_engine::PropertyDescriptor {
-        value: Some(getter_value),
-        writable: Some(true),
-        get: None,
-        set: None,
-        enumerable: Some(true),
-        configurable: Some(true),
-    };
-    ec.define_property_or_throw(object.clone(), getter_key, desc)?;
-
-    Ok(object)
-}
-
-fn camel_case_property_name(name: &str) -> String {
-    let mut result = String::with_capacity(name.len());
-    let mut uppercase_next = false;
-    for ch in name.chars() {
-        if ch == '-' {
-            uppercase_next = true;
-            continue;
-        }
-        if uppercase_next {
-            result.extend(ch.to_uppercase());
-            uppercase_next = false;
-        } else {
-            result.push(ch);
-        }
-    }
-    result
+    let element = try_with_html_element_ref(this, ec, |html_element| html_element.element.clone())?;
+    let declaration_block = element.style(ec)?;
+    declaration_block
+        .reflector
+        .clone()
+        .map(crate::js::Types::value_from_object)
+        .ok_or_else(|| ec.new_type_error("CSSStyleDeclaration has no reflector"))
 }

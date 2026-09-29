@@ -72,7 +72,9 @@ impl HTMLInputElement {
     pub(crate) fn set_type(&self, value: &str) {
         // Step 1: The setter steps are to run this's set the content attribute
         //         with the given value.
-        self.html_element.element.set_attribute("type", value);
+        self.html_element
+            .element
+            .set_an_attribute_value("type", value, None, None);
     }
 
     /// <https://html.spec.whatwg.org/#dom-input-value>
@@ -102,9 +104,13 @@ impl HTMLInputElement {
         // Update the content attribute.  Blitz's attribute mutation
         // handler (mutator.rs) picks this up and syncs TextInputData.
         if sanitized.is_empty() {
-            self.html_element.element.remove_attribute("value");
+            self.html_element
+                .element
+                .remove_an_attribute_by_name("value");
         } else {
-            self.html_element.element.set_attribute("value", &sanitized);
+            self.html_element
+                .element
+                .set_an_attribute_value("value", &sanitized, None, None);
         }
     }
 
@@ -149,5 +155,5 @@ const INPUT_TYPE_KEYWORDS: &[&str] = &[
 fn value_to_string(value: &str) -> String {
     // For type=text (the default), the value sanitization algorithm is the
     // identity — strip newlines per spec step "strip newlines from value".
-    value.replace('\n', "").replace('\r', "")
+    value.replace(['\n', '\r'], "")
 }

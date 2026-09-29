@@ -52,6 +52,12 @@ pub enum Request {
         request: FetchRequest,
         reply_to: ResponseRecipient,
     },
+    /// A request for the WebRTC engine the net process hosts (built with
+    /// the `webrtc` feature; dropped with a warning otherwise).
+    WebRtc(crate::webrtc::Request),
+    /// The graphics process's command sender: where the WebRTC engine plays
+    /// out the audio it decodes (`GraphicsCommand::PlayAudioPcm`).
+    SetGraphicsSender(IpcSender<crate::graphics::GraphicsCommand>),
     NavigationFetch {
         /// The network partition key of the navigation fetch: the event
         /// loop id of the similar-origin window agent of the agent cluster
@@ -61,6 +67,8 @@ pub enum Request {
         request: NavigationFetchRequest,
         reply_to: ResponseRecipient,
     },
+    /// A WebSocket connection request from a content process.
+    WebSocket(crate::websocket::WebSocketRequest),
     Shutdown,
 }
 

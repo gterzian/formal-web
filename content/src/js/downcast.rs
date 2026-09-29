@@ -3,18 +3,37 @@
 //! These use [`ExecutionContext::with_object_any`] / `with_object_any_mut`
 //! to extract native Rust data from JavaScript platform objects.
 
+use crate::cssom::CSSStyleDeclaration;
+use crate::cssom_view::MediaQueryList;
 use crate::dom::{
-    AbortController, AbortSignal, Document, Element, Event, EventTarget, HasEvent, Node,
+    AbortController, AbortSignal, Attr, Document, Element, Event, EventTarget, HasEvent,
+    NamedNodeMap, Node,
 };
+use crate::fetch::Headers;
+use crate::geometry::DOMRectReadOnly;
+use crate::html::Storage;
 use crate::html::{
     CanvasRenderingContext2D, DedicatedWorkerGlobalScope, HTMLAnchorElement, HTMLCanvasElement,
-    HTMLElement, HTMLIFrameElement, HTMLInputElement, HTMLMediaElement, HTMLVideoElement,
-    MessageEvent, MessagePort, OffscreenCanvas, OffscreenCanvasRenderingContext2D, Window, Worker,
-    WorkerGlobalScope,
+    HTMLElement, HTMLIFrameElement, HTMLInputElement, HTMLLinkElement, HTMLMediaElement,
+    HTMLScriptElement, HTMLVideoElement, MessageEvent, MessagePort, OffscreenCanvas,
+    OffscreenCanvasRenderingContext2D, PromiseRejectionEvent, Window, Worker, WorkerGlobalScope,
 };
 use crate::js::Types;
 use crate::js::platform_objects::with_global_scope;
+#[cfg(feature = "webrtc")]
+use crate::mediacapture_streams::{
+    MediaDevices, MediaStream, MediaStreamTrack, MediaStreamTrackEvent,
+};
+use crate::resize_observer::{ResizeObserver, ResizeObserverEntry, ResizeObserverSize};
 use crate::ui_events::{MouseEvent, UIEvent};
+use crate::url_standard::URLSearchParams;
+#[cfg(feature = "webrtc")]
+use crate::webrtc::{
+    RTCDataChannel, RTCDataChannelEvent, RTCIceCandidate, RTCPeerConnection,
+    RTCPeerConnectionIceEvent, RTCRtpReceiver, RTCRtpSender, RTCRtpTransceiver,
+    RTCSessionDescription, RTCTrackEvent,
+};
+use crate::websockets::{CloseEvent, WebSocket};
 use js_engine::{Completion, ExecutionContext, JsTypes};
 use log::error;
 use std::any::Any;
@@ -41,7 +60,40 @@ pub(crate) fn event_from_js_object(
                 data.downcast_ref::<MouseEvent>()
                     .map(|mouse_event| mouse_event.event().clone())
             })
+            .or_else(|| {
+                data.downcast_ref::<PromiseRejectionEvent>()
+                    .map(|rejection_event| rejection_event.event().clone())
+            })
+            .or_else(|| webrtc_event(data))
+            .or_else(|| {
+                data.downcast_ref::<CloseEvent>()
+                    .map(|close_event| close_event.event().clone())
+            })
     })
+}
+
+/// The embedded `Event` of the WebRTC and Media Capture event types.
+#[cfg(feature = "webrtc")]
+fn webrtc_event(data: &dyn Any) -> Option<Event> {
+    data.downcast_ref::<RTCPeerConnectionIceEvent>()
+        .map(|ice_event| ice_event.event().clone())
+        .or_else(|| {
+            data.downcast_ref::<RTCDataChannelEvent>()
+                .map(|channel_event| channel_event.event().clone())
+        })
+        .or_else(|| {
+            data.downcast_ref::<RTCTrackEvent>()
+                .map(|track_event| track_event.event().clone())
+        })
+        .or_else(|| {
+            data.downcast_ref::<MediaStreamTrackEvent>()
+                .map(|track_event| track_event.event().clone())
+        })
+}
+
+#[cfg(not(feature = "webrtc"))]
+fn webrtc_event(_data: &dyn Any) -> Option<Event> {
+    None
 }
 
 /// Run `f` on the `EventTarget` embedded in a platform object's native data.
@@ -74,6 +126,16 @@ fn with_platform_event_target_mut<R>(
         anchor.html_element.element.node.event_target
     );
     target!(
+        HTMLScriptElement,
+        script,
+        script.html_element.element.node.event_target
+    );
+    target!(
+        HTMLLinkElement,
+        link,
+        link.html_element.element.node.event_target
+    );
+    target!(
         HTMLCanvasElement,
         canvas,
         canvas.html_element.element.node.event_target
@@ -99,11 +161,28 @@ fn with_platform_event_target_mut<R>(
         video.media_element.html_element.element.node.event_target
     );
     target!(Node, node, node.event_target);
+    target!(Attr, attr, attr.event_target);
     if let Some(target_value) = data.downcast_mut::<EventTarget>() {
         return Some(f(target_value));
     }
     target!(MessagePort, port, port.event_target);
     target!(Worker, worker, worker.event_target);
+    #[cfg(feature = "webrtc")]
+    target!(RTCPeerConnection, connection, connection.event_target);
+    #[cfg(feature = "webrtc")]
+    target!(RTCDataChannel, channel, channel.event_target);
+    target!(WebSocket, socket, socket.event_target);
+    target!(
+        MediaQueryList,
+        media_query_list,
+        media_query_list.event_target
+    );
+    #[cfg(feature = "webrtc")]
+    target!(MediaStreamTrack, track, track.event_target);
+    #[cfg(feature = "webrtc")]
+    target!(MediaStream, stream, stream.event_target);
+    #[cfg(feature = "webrtc")]
+    target!(MediaDevices, devices, devices.event_target);
     target!(
         DedicatedWorkerGlobalScope,
         dedicated_scope,
@@ -144,6 +223,16 @@ fn with_platform_reflector_slot_mut<R>(
         anchor.html_element.element.node.event_target
     );
     slot!(
+        HTMLScriptElement,
+        script,
+        script.html_element.element.node.event_target
+    );
+    slot!(
+        HTMLLinkElement,
+        link,
+        link.html_element.element.node.event_target
+    );
+    slot!(
         HTMLCanvasElement,
         canvas,
         canvas.html_element.element.node.event_target
@@ -169,11 +258,46 @@ fn with_platform_reflector_slot_mut<R>(
         video.media_element.html_element.element.node.event_target
     );
     slot!(Node, node, node.event_target);
+    slot!(Attr, attr, attr.event_target);
     if let Some(target_value) = data.downcast_mut::<EventTarget>() {
         return Some(f(&mut target_value.reflector));
     }
+    if let Some(map) = data.downcast_mut::<NamedNodeMap>() {
+        return Some(f(&mut map.reflector));
+    }
+    if let Some(declaration_block) = data.downcast_mut::<CSSStyleDeclaration>() {
+        return Some(f(&mut declaration_block.reflector));
+    }
+    if let Some(rect) = data.downcast_mut::<DOMRectReadOnly>() {
+        return Some(f(&mut rect.reflector));
+    }
+    if let Some(entry) = data.downcast_mut::<ResizeObserverEntry>() {
+        return Some(f(&mut entry.reflector));
+    }
+    if let Some(size) = data.downcast_mut::<ResizeObserverSize>() {
+        return Some(f(&mut size.reflector));
+    }
+    if let Some(storage) = data.downcast_mut::<Storage>() {
+        return Some(f(&mut storage.reflector));
+    }
     slot!(MessagePort, port, port.event_target);
     slot!(Worker, worker, worker.event_target);
+    #[cfg(feature = "webrtc")]
+    slot!(RTCPeerConnection, connection, connection.event_target);
+    #[cfg(feature = "webrtc")]
+    slot!(RTCDataChannel, channel, channel.event_target);
+    slot!(WebSocket, socket, socket.event_target);
+    slot!(
+        MediaQueryList,
+        media_query_list,
+        media_query_list.event_target
+    );
+    #[cfg(feature = "webrtc")]
+    slot!(MediaStreamTrack, track, track.event_target);
+    #[cfg(feature = "webrtc")]
+    slot!(MediaStream, stream, stream.event_target);
+    #[cfg(feature = "webrtc")]
+    slot!(MediaDevices, devices, devices.event_target);
     slot!(
         DedicatedWorkerGlobalScope,
         dedicated_scope,
@@ -193,8 +317,54 @@ fn with_platform_reflector_slot_mut<R>(
     if let Some(canvas) = data.downcast_mut::<OffscreenCanvas>() {
         return Some(f(&mut canvas.reflector));
     }
+    if let Some(params) = data.downcast_mut::<URLSearchParams>() {
+        return Some(f(&mut params.reflector));
+    }
+    if let Some(headers) = data.downcast_mut::<Headers>() {
+        return Some(f(&mut headers.reflector));
+    }
+    #[cfg(feature = "webrtc")]
+    {
+        if let Some(sender) = data.downcast_mut::<RTCRtpSender>() {
+            return Some(f(&mut sender.reflector));
+        }
+        if let Some(receiver) = data.downcast_mut::<RTCRtpReceiver>() {
+            return Some(f(&mut receiver.reflector));
+        }
+        if let Some(transceiver) = data.downcast_mut::<RTCRtpTransceiver>() {
+            return Some(f(&mut transceiver.reflector));
+        }
+    }
     if let Some(event) = data.downcast_mut::<Event>() {
         return Some(f(&mut event.event_mut().reflector));
+    }
+    if let Some(close_event) = data.downcast_mut::<CloseEvent>() {
+        return Some(f(&mut close_event.event_mut().reflector));
+    }
+    if let Some(rejection_event) = data.downcast_mut::<PromiseRejectionEvent>() {
+        return Some(f(&mut rejection_event.event_mut().reflector));
+    }
+    #[cfg(feature = "webrtc")]
+    {
+        if let Some(ice_event) = data.downcast_mut::<RTCPeerConnectionIceEvent>() {
+            return Some(f(&mut ice_event.event_mut().reflector));
+        }
+        if let Some(channel_event) = data.downcast_mut::<RTCDataChannelEvent>() {
+            return Some(f(&mut channel_event.event_mut().reflector));
+        }
+        if let Some(track_event) = data.downcast_mut::<RTCTrackEvent>() {
+            return Some(f(&mut track_event.event_mut().reflector));
+        }
+        if let Some(track_event) = data.downcast_mut::<MediaStreamTrackEvent>() {
+            return Some(f(&mut track_event.event_mut().reflector));
+        }
+        // RTCSessionDescription and RTCIceCandidate keep no reflector: their
+        // getters return the objects the connection stores.
+        if data.downcast_ref::<RTCSessionDescription>().is_some()
+            || data.downcast_ref::<RTCIceCandidate>().is_some()
+        {
+            return None;
+        }
     }
     if let Some(message_event) = data.downcast_mut::<MessageEvent>() {
         return Some(f(&mut message_event.event_mut().reflector));
@@ -308,14 +478,68 @@ pub(crate) fn try_set_event_target_reflector(
             return;
         }
 
+        // A ResizeObserver keeps its reflector in a shared cell so the
+        // document's [[resizeObservers]] clone sees it.
+        if let Some(observer) = ec
+            .with_object_any(&obj)
+            .and_then(|data| data.downcast_ref::<ResizeObserver>().cloned())
+        {
+            *observer.reflector.borrow_mut(ec) = reflector;
+            return;
+        }
+
         // Set the reflector on the embedded target; capture the Worker id so
         // the owner realm's registered clone can be synced after the borrow
         // is released.
-        let worker_id = ec.with_object_any_mut(&obj).and_then(|data| {
-            let worker_id = data.downcast_ref::<Worker>().map(|worker| worker.worker_id);
-            with_platform_reflector_slot_mut(data, |slot| *slot = reflector.clone());
-            worker_id
+        #[cfg(feature = "webrtc")]
+        let peer = ec.with_object_any(&obj).and_then(|data| {
+            data.downcast_ref::<RTCPeerConnection>()
+                .map(|connection| connection.id)
         });
+        let (worker_id, socket) = ec
+            .with_object_any_mut(&obj)
+            .map(|data| {
+                let worker_id = data.downcast_ref::<Worker>().map(|worker| worker.worker_id);
+                let socket = data.downcast_ref::<WebSocket>().map(|socket| socket.id);
+                with_platform_reflector_slot_mut(data, |slot| *slot = reflector.clone());
+                (worker_id, socket)
+            })
+            .unwrap_or((None, None));
+
+        if let Some(socket) = socket {
+            // The realm's registry holds a clone of the socket made by its
+            // constructor; mirror the reflector onto it, as for workers.
+            let reflector = reflector.clone();
+            if let Err(error) = with_global_scope(ec, move |global_scope, ec| {
+                if let Some(reflector) = reflector {
+                    global_scope.sync_web_socket_reflector(socket, reflector, ec);
+                }
+                Ok(())
+            }) {
+                error!(
+                    "failed to sync the reflector of a WebSocket: {}",
+                    error.display()
+                );
+            }
+        }
+
+        #[cfg(feature = "webrtc")]
+        if let Some(peer) = peer {
+            // The realm's registry holds a clone of the connection made by
+            // its constructor; mirror the reflector onto it, as for workers.
+            let reflector = reflector.clone();
+            if let Err(error) = with_global_scope(ec, move |global_scope, ec| {
+                if let Some(reflector) = reflector {
+                    global_scope.sync_peer_connection_reflector(peer, reflector, ec);
+                }
+                Ok(())
+            }) {
+                error!(
+                    "failed to sync the reflector of an RTCPeerConnection: {}",
+                    error.display()
+                );
+            }
+        }
 
         if let Some(worker_id) = worker_id {
             // The owner realm's GlobalScope registered a clone of this event
@@ -354,6 +578,10 @@ pub(crate) fn event_target_from_js_object(
             Some(html_element.element.node.event_target.clone())
         } else if let Some(anchor) = data.downcast_ref::<HTMLAnchorElement>() {
             Some(anchor.html_element.element.node.event_target.clone())
+        } else if let Some(script) = data.downcast_ref::<HTMLScriptElement>() {
+            Some(script.html_element.element.node.event_target.clone())
+        } else if let Some(link) = data.downcast_ref::<HTMLLinkElement>() {
+            Some(link.html_element.element.node.event_target.clone())
         } else if let Some(canvas) = data.downcast_ref::<HTMLCanvasElement>() {
             Some(canvas.html_element.element.node.event_target.clone())
         } else if let Some(iframe) = data.downcast_ref::<HTMLIFrameElement>() {
@@ -374,18 +602,24 @@ pub(crate) fn event_target_from_js_object(
             )
         } else if let Some(node) = data.downcast_ref::<Node>() {
             Some(node.event_target.clone())
+        } else if let Some(attr) = data.downcast_ref::<Attr>() {
+            Some(attr.event_target.clone())
         } else if let Some(port) = data.downcast_ref::<MessagePort>() {
             Some(port.event_target.clone())
+        } else if let Some(socket) = data.downcast_ref::<WebSocket>() {
+            Some(socket.event_target.clone())
+        } else if let Some(media_query_list) = data.downcast_ref::<MediaQueryList>() {
+            Some(media_query_list.event_target.clone())
+        } else if let Some(target) = webrtc_event_target(data) {
+            Some(target)
         } else if let Some(worker) = data.downcast_ref::<Worker>() {
             Some(worker.event_target.clone())
         } else if let Some(dedicated_scope) = data.downcast_ref::<DedicatedWorkerGlobalScope>() {
             Some(dedicated_scope.worker_global_scope.event_target.clone())
         } else if let Some(worker_global_scope) = data.downcast_ref::<WorkerGlobalScope>() {
             Some(worker_global_scope.event_target.clone())
-        } else if let Some(event_target) = data.downcast_ref::<EventTarget>() {
-            Some(event_target.clone())
         } else {
-            None
+            data.downcast_ref::<EventTarget>().cloned()
         }
     })
 }
@@ -434,4 +668,26 @@ pub(crate) fn with_abort_signal_ref<R>(
         .and_then(|data| data.downcast_ref::<AbortSignal>().cloned())
         .ok_or_else(|| ec.new_type_error("object is not an AbortSignal"))?;
     Ok(f(&signal, ec))
+}
+
+/// The `EventTarget` of the WebRTC and Media Capture platform objects.
+#[cfg(feature = "webrtc")]
+fn webrtc_event_target(data: &dyn Any) -> Option<EventTarget> {
+    if let Some(connection) = data.downcast_ref::<RTCPeerConnection>() {
+        Some(connection.event_target.clone())
+    } else if let Some(channel) = data.downcast_ref::<RTCDataChannel>() {
+        Some(channel.event_target.clone())
+    } else if let Some(track) = data.downcast_ref::<MediaStreamTrack>() {
+        Some(track.event_target.clone())
+    } else if let Some(stream) = data.downcast_ref::<MediaStream>() {
+        Some(stream.event_target.clone())
+    } else {
+        data.downcast_ref::<MediaDevices>()
+            .map(|devices| devices.event_target.clone())
+    }
+}
+
+#[cfg(not(feature = "webrtc"))]
+fn webrtc_event_target(_data: &dyn Any) -> Option<EventTarget> {
+    None
 }

@@ -1,8 +1,11 @@
+use crate::dom::DOMException;
 use crate::html::{DedicatedWorkerGlobalScope, WindowOrWorkerGlobalScope, WorkerGlobalScope};
 use crate::js::Types;
 use crate::js::downcast::event_target_from_js_object;
 use crate::js::platform_objects::with_worker_global_scope;
-use crate::webidl::bindings::{AttributeDef, InterfaceDefinition, OperationDef, WebIdlInterface};
+use crate::webidl::bindings::{
+    AttributeDef, InterfaceDefinition, OperationDef, WebIdlInterface, create_interface_instance,
+};
 use crate::webidl::{callback_function_value, nullable_value};
 use ipc_messages::content::Event as ContentEvent;
 use js_engine::{Completion, ExecutionContext, JsTypes};
@@ -303,6 +306,37 @@ fn define_window_or_worker_global_scope_members(def: &mut InterfaceDefinition<Ty
         promise_type: false,
         exposed: None,
     });
+    def.add_attribute(AttributeDef {
+        id: "isSecureContext",
+        getter: get_is_secure_context,
+        setter: None,
+        static_: false,
+        unforgeable: false,
+        promise_type: false,
+        legacy_lenient_this: false,
+        replaceable: false,
+        put_forwards: None,
+        legacy_lenient_setter: false,
+        exposed: None,
+    });
+    def.add_operation(OperationDef {
+        id: "btoa",
+        length: 1,
+        method: btoa_method,
+        static_: false,
+        unforgeable: false,
+        promise_type: false,
+        exposed: None,
+    });
+    def.add_operation(OperationDef {
+        id: "atob",
+        length: 1,
+        method: atob_method,
+        static_: false,
+        unforgeable: false,
+        promise_type: false,
+        exposed: None,
+    });
     def.add_operation(OperationDef {
         id: "requestAnimationFrame",
         length: 1,
@@ -388,6 +422,49 @@ fn structured_clone_method(
     let worker_global_scope = worker_global_scope_domain_from(this, ec)?;
     let result = worker_global_scope.structured_clone(value, None, ec)?;
     Ok(result)
+}
+
+fn get_is_secure_context(
+    this: &JsValue,
+    _args: &[JsValue],
+    ec: &mut dyn ExecutionContext<Types>,
+) -> Completion<JsValue, Types> {
+    let worker_global_scope = worker_global_scope_domain_from(this, ec)?;
+    Ok(ec.value_from_bool(worker_global_scope.is_secure_context()))
+}
+
+fn btoa_method(
+    this: &JsValue,
+    args: &[JsValue],
+    ec: &mut dyn ExecutionContext<Types>,
+) -> Completion<JsValue, Types> {
+    let undefined = ec.value_undefined();
+    let data = ec.to_rust_string(args.first().cloned().unwrap_or(undefined))?;
+    let worker_global_scope = worker_global_scope_domain_from(this, ec)?;
+    let encoded = worker_global_scope
+        .btoa(&data)
+        .map_err(|error| dom_exception_value(error, ec))?;
+    Ok(ec.value_from_string(ec.js_string_from_str(&encoded)))
+}
+
+fn atob_method(
+    this: &JsValue,
+    args: &[JsValue],
+    ec: &mut dyn ExecutionContext<Types>,
+) -> Completion<JsValue, Types> {
+    let undefined = ec.value_undefined();
+    let data = ec.to_rust_string(args.first().cloned().unwrap_or(undefined))?;
+    let worker_global_scope = worker_global_scope_domain_from(this, ec)?;
+    let decoded = worker_global_scope
+        .atob(&data)
+        .map_err(|error| dom_exception_value(error, ec))?;
+    Ok(ec.value_from_string(ec.js_string_from_str(&decoded)))
+}
+
+fn dom_exception_value(error: DOMException, ec: &mut dyn ExecutionContext<Types>) -> JsValue {
+    create_interface_instance::<Types, DOMException>(error, ec)
+        .map(Types::value_from_object)
+        .unwrap_or_else(|err| err)
 }
 
 /// <https://html.spec.whatwg.org/#dom-animationframeprovider-requestanimationframe>

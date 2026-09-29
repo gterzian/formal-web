@@ -7,11 +7,18 @@ use crate::html::{
     structured_data::safe_passing_of_structured_data::StructuredCloneOptions,
     window_computed_style_properties_for_element,
 };
+use crate::js::Types;
+use crate::js::bindings::event_handlers;
+use crate::js::bindings::fetch::fetch_operation;
 use crate::js::bindings::html::global_event_handlers::define_global_event_handlers;
-use crate::webidl::bindings::{AttributeDef, InterfaceDefinition, OperationDef, WebIdlInterface};
+use crate::webidl::bindings::{
+    AttributeDef, InterfaceDefinition, OperationDef, WebIdlInterface, create_interface_instance,
+};
 use crate::webidl::callback_function_value;
 
-use super::style_declaration_object;
+use crate::cssom::CSSStyleDeclaration;
+use crate::cssom_view::MediaQueryList;
+use crate::dom::DOMException;
 
 use js_engine::{Completion, ExecutionContext, JsTypes};
 
@@ -67,6 +74,32 @@ impl WebIdlInterface<crate::js::Types> for Window {
             legacy_lenient_setter: false,
             exposed: None,
         });
+        for (id, getter, setter) in [
+            (
+                "onunhandledrejection",
+                get_onunhandledrejection as _,
+                set_onunhandledrejection as _,
+            ),
+            (
+                "onrejectionhandled",
+                get_onrejectionhandled as _,
+                set_onrejectionhandled as _,
+            ),
+        ] {
+            def.add_attribute(AttributeDef {
+                id,
+                getter,
+                setter: Some(setter),
+                static_: false,
+                unforgeable: false,
+                promise_type: false,
+                legacy_lenient_this: false,
+                replaceable: false,
+                put_forwards: None,
+                legacy_lenient_setter: false,
+                exposed: None,
+            });
+        }
         def.add_attribute(AttributeDef {
             id: "name",
             getter: get_name,
@@ -76,6 +109,71 @@ impl WebIdlInterface<crate::js::Types> for Window {
             promise_type: false,
             legacy_lenient_this: false,
             replaceable: false,
+            put_forwards: None,
+            legacy_lenient_setter: false,
+            exposed: None,
+        });
+        def.add_attribute(AttributeDef {
+            id: "isSecureContext",
+            getter: get_is_secure_context,
+            setter: None,
+            static_: false,
+            unforgeable: false,
+            promise_type: false,
+            legacy_lenient_this: false,
+            replaceable: false,
+            put_forwards: None,
+            legacy_lenient_setter: false,
+            exposed: None,
+        });
+        def.add_attribute(AttributeDef {
+            id: "localStorage",
+            getter: get_local_storage,
+            setter: None,
+            static_: false,
+            unforgeable: false,
+            promise_type: false,
+            legacy_lenient_this: false,
+            replaceable: false,
+            put_forwards: None,
+            legacy_lenient_setter: false,
+            exposed: None,
+        });
+        def.add_attribute(AttributeDef {
+            id: "sessionStorage",
+            getter: get_session_storage,
+            setter: None,
+            static_: false,
+            unforgeable: false,
+            promise_type: false,
+            legacy_lenient_this: false,
+            replaceable: false,
+            put_forwards: None,
+            legacy_lenient_setter: false,
+            exposed: None,
+        });
+        def.add_attribute(AttributeDef {
+            id: "navigator",
+            getter: get_navigator,
+            setter: None,
+            static_: false,
+            unforgeable: false,
+            promise_type: false,
+            legacy_lenient_this: false,
+            replaceable: false,
+            put_forwards: None,
+            legacy_lenient_setter: false,
+            exposed: None,
+        });
+        def.add_attribute(AttributeDef {
+            id: "clientInformation",
+            getter: get_navigator,
+            setter: None,
+            static_: false,
+            unforgeable: false,
+            promise_type: false,
+            legacy_lenient_this: false,
+            replaceable: true,
             put_forwards: None,
             legacy_lenient_setter: false,
             exposed: None,
@@ -300,6 +398,42 @@ impl WebIdlInterface<crate::js::Types> for Window {
             promise_type: false,
             exposed: None,
         });
+        def.add_operation(OperationDef {
+            id: "btoa",
+            length: 1,
+            method: btoa_method,
+            static_: false,
+            unforgeable: false,
+            promise_type: false,
+            exposed: None,
+        });
+        def.add_operation(OperationDef {
+            id: "atob",
+            length: 1,
+            method: atob_method,
+            static_: false,
+            unforgeable: false,
+            promise_type: false,
+            exposed: None,
+        });
+        def.add_operation(OperationDef {
+            id: "matchMedia",
+            length: 1,
+            method: match_media_method,
+            static_: false,
+            unforgeable: false,
+            promise_type: false,
+            exposed: None,
+        });
+        def.add_operation(OperationDef {
+            id: "fetch",
+            length: 1,
+            method: fetch_operation,
+            static_: false,
+            unforgeable: false,
+            promise_type: true,
+            exposed: None,
+        });
     }
 }
 
@@ -332,6 +466,57 @@ fn structured_clone_method(
     // construct_typed_array_view looks up the typed-array constructor on it).
     let window = window_domain_from(this, ec)?;
     window.structured_clone(value, options, ec)
+}
+
+fn btoa_method(
+    this: &JsValue,
+    args: &[JsValue],
+    ec: &mut dyn ExecutionContext<crate::js::Types>,
+) -> Completion<JsValue, crate::js::Types> {
+    let undefined = ec.value_undefined();
+    let data = ec.to_rust_string(args.first().cloned().unwrap_or(undefined))?;
+    let window = window_domain_from(this, ec)?;
+    let encoded = window
+        .btoa(&data)
+        .map_err(|error| dom_exception_value(error, ec))?;
+    Ok(ec.value_from_string(ec.js_string_from_str(&encoded)))
+}
+
+fn atob_method(
+    this: &JsValue,
+    args: &[JsValue],
+    ec: &mut dyn ExecutionContext<crate::js::Types>,
+) -> Completion<JsValue, crate::js::Types> {
+    let undefined = ec.value_undefined();
+    let data = ec.to_rust_string(args.first().cloned().unwrap_or(undefined))?;
+    let window = window_domain_from(this, ec)?;
+    let decoded = window
+        .atob(&data)
+        .map_err(|error| dom_exception_value(error, ec))?;
+    Ok(ec.value_from_string(ec.js_string_from_str(&decoded)))
+}
+
+fn dom_exception_value(
+    error: DOMException,
+    ec: &mut dyn ExecutionContext<crate::js::Types>,
+) -> JsValue {
+    create_interface_instance::<crate::js::Types, DOMException>(error, ec)
+        .map(crate::js::Types::value_from_object)
+        .unwrap_or_else(|err| err)
+}
+
+fn match_media_method(
+    this: &JsValue,
+    args: &[JsValue],
+    ec: &mut dyn ExecutionContext<crate::js::Types>,
+) -> Completion<JsValue, crate::js::Types> {
+    let undefined = ec.value_undefined();
+    let query = ec.to_rust_string(args.first().cloned().unwrap_or(undefined))?;
+    let window = window_domain_from(this, ec)?;
+    let media_query_list = window.match_media(&query, ec);
+    let object =
+        create_interface_instance::<crate::js::Types, MediaQueryList>(media_query_list, ec)?;
+    Ok(crate::js::Types::value_from_object(object))
 }
 
 fn parse_structured_clone_options(
@@ -514,7 +699,7 @@ fn open_method(
     let undefined = ec.value_undefined();
     let url = ec.to_rust_string(args.first().cloned().unwrap_or_else(|| undefined.clone()))?;
     let target = ec.to_rust_string(args.get(1).cloned().unwrap_or_else(|| undefined.clone()))?;
-    let features = ec.to_rust_string(args.get(2).cloned().unwrap_or_else(|| undefined))?;
+    let features = ec.to_rust_string(args.get(2).cloned().unwrap_or(undefined))?;
 
     let window = window_domain_from(this, ec)?;
     window.open(&url, &target, &features, ec)
@@ -667,6 +852,62 @@ fn get_location(
     ))
 }
 
+fn get_is_secure_context(
+    this: &JsValue,
+    _: &[JsValue],
+    ec: &mut dyn ExecutionContext<crate::js::Types>,
+) -> Completion<JsValue, crate::js::Types> {
+    let window = window_domain_from(this, ec)?;
+    Ok(ec.value_from_bool(window.is_secure_context()))
+}
+
+fn get_local_storage(
+    this: &JsValue,
+    _: &[JsValue],
+    ec: &mut dyn ExecutionContext<crate::js::Types>,
+) -> Completion<JsValue, crate::js::Types> {
+    let window = window_domain_from(this, ec)?;
+    window
+        .local_storage(ec)?
+        .reflector
+        .clone()
+        .map(crate::js::Types::value_from_object)
+        .ok_or_else(|| ec.new_type_error("Storage has no reflector"))
+}
+
+fn get_session_storage(
+    this: &JsValue,
+    _: &[JsValue],
+    ec: &mut dyn ExecutionContext<crate::js::Types>,
+) -> Completion<JsValue, crate::js::Types> {
+    let window = window_domain_from(this, ec)?;
+    window
+        .session_storage(ec)?
+        .reflector
+        .clone()
+        .map(crate::js::Types::value_from_object)
+        .ok_or_else(|| ec.new_type_error("Storage has no reflector"))
+}
+
+fn get_navigator(
+    this: &JsValue,
+    _: &[JsValue],
+    ec: &mut dyn ExecutionContext<crate::js::Types>,
+) -> Completion<JsValue, crate::js::Types> {
+    // <https://html.spec.whatwg.org/#dom-navigator>
+    let window = window_domain_from(this, ec)?;
+    // The domain method creates the Navigator on first access and caches its
+    // JS object on the global scope; the binding returns that cached object.
+    window.navigator_value(ec)?;
+    let navigator_object = window
+        .global_scope
+        .navigator_object(ec)
+        .ok_or_else(|| ec.new_type_error("window has no Navigator object"))?;
+    Ok(<crate::js::Types as JsTypes>::value_from_object(
+        navigator_object,
+    ))
+}
+
 fn close_method(
     this: &JsValue,
     _: &[JsValue],
@@ -716,7 +957,7 @@ fn cancel_animation_frame_method(
     ec: &mut dyn ExecutionContext<crate::js::Types>,
 ) -> Completion<JsValue, crate::js::Types> {
     let undefined = ec.value_undefined();
-    let handle = ec.to_uint32(args.first().cloned().unwrap_or_else(|| undefined))?;
+    let handle = ec.to_uint32(args.first().cloned().unwrap_or(undefined))?;
     let window = window_domain_from(this, ec)?;
     window.global_scope.cancel_animation_frame(handle, ec);
     Ok(ec.value_undefined())
@@ -729,7 +970,7 @@ fn set_timeout_method(
 ) -> Completion<JsValue, crate::js::Types> {
     let undefined = ec.value_undefined();
     let handler = args.first().cloned().unwrap_or_else(|| undefined.clone());
-    let delay = args.get(1).cloned().unwrap_or_else(|| undefined);
+    let delay = args.get(1).cloned().unwrap_or(undefined);
     let extra_args: Vec<JsValue> = args.iter().skip(2).cloned().collect();
     let window = window_domain_from(this, ec)?;
     window
@@ -743,7 +984,7 @@ fn clear_timeout_method(
     ec: &mut dyn ExecutionContext<crate::js::Types>,
 ) -> Completion<JsValue, crate::js::Types> {
     let undefined = ec.value_undefined();
-    let timer_id = ec.to_uint32(args.first().cloned().unwrap_or_else(|| undefined))?;
+    let timer_id = ec.to_uint32(args.first().cloned().unwrap_or(undefined))?;
     let window = window_domain_from(this, ec)?;
     window.clear_timeout(timer_id, ec);
     Ok(ec.value_undefined())
@@ -756,7 +997,7 @@ fn set_interval_method(
 ) -> Completion<JsValue, crate::js::Types> {
     let undefined = ec.value_undefined();
     let handler = args.first().cloned().unwrap_or_else(|| undefined.clone());
-    let delay = args.get(1).cloned().unwrap_or_else(|| undefined);
+    let delay = args.get(1).cloned().unwrap_or(undefined);
     let extra_args: Vec<JsValue> = args.iter().skip(2).cloned().collect();
     let window = window_domain_from(this, ec)?;
     window
@@ -770,7 +1011,7 @@ fn clear_interval_method(
     ec: &mut dyn ExecutionContext<crate::js::Types>,
 ) -> Completion<JsValue, crate::js::Types> {
     let undefined = ec.value_undefined();
-    let timer_id = ec.to_uint32(args.first().cloned().unwrap_or_else(|| undefined))?;
+    let timer_id = ec.to_uint32(args.first().cloned().unwrap_or(undefined))?;
     let window = window_domain_from(this, ec)?;
     window.clear_interval(timer_id, ec);
     Ok(ec.value_undefined())
@@ -782,7 +1023,7 @@ fn get_computed_style_method(
     ec: &mut dyn ExecutionContext<crate::js::Types>,
 ) -> Completion<JsValue, crate::js::Types> {
     let undefined = ec.value_undefined();
-    let pseudo_elt = if args.get(1).map_or(true, |v| {
+    let pseudo_elt = if args.get(1).is_none_or(|v| {
         crate::js::Types::value_is_null(v) || crate::js::Types::value_is_undefined(v)
     }) {
         None
@@ -795,7 +1036,7 @@ fn get_computed_style_method(
         let err_object = ec.new_type_error("element receiver is not an object");
         let object = match args
             .first()
-            .and_then(|v| <crate::js::Types as JsTypes>::value_as_object(v))
+            .and_then(<crate::js::Types as JsTypes>::value_as_object)
         {
             Some(o) => o,
             None => return Err(err_object),
@@ -807,7 +1048,12 @@ fn get_computed_style_method(
         window_computed_style_properties_for_element(&element, pseudo_elt.as_deref())
     };
     // ec borrow from with_object_any is released here.
-    style_declaration_object(&properties, ec).map(|obj| crate::js::Types::value_from_object(obj))
+    let declaration_block = CSSStyleDeclaration::new(None, Some(properties), ec)?;
+    declaration_block
+        .reflector
+        .clone()
+        .map(crate::js::Types::value_from_object)
+        .ok_or_else(|| ec.new_type_error("CSSStyleDeclaration has no reflector"))
 }
 
 /// <https://html.spec.whatwg.org/#the-windowproxy-exotic-object>
@@ -820,3 +1066,8 @@ fn current_window_object_from(
 ) -> JsObject {
     resolve_window(this, ec)
 }
+
+event_handlers!(
+    get_onunhandledrejection, set_onunhandledrejection, "unhandledrejection";
+    get_onrejectionhandled, set_onrejectionhandled, "rejectionhandled";
+);
