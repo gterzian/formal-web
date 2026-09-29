@@ -20,9 +20,9 @@ ipc-channel-backend = []
 thread-backend = ["ipc-channel-backend"]
 # BrowserEngineKit backend: the OS launches extension processes via
 # NetworkingProcess/WebContentProcess/RenderingProcess and the transport is
-# libxpc (`IpcTransport::Xpc`). Compiles on any target; launching is only
-# possible on iOS/iPadOS, where BrowserEngineKit exists (see `bek-sys`).
-bek = ["dep:bek-sys"]
+# libxpc (`IpcTransport::Xpc`). Compiles on Apple targets (libxpc); launching
+# is only possible on iOS/iPadOS, where BrowserEngineKit exists (see `bek-sys`).
+bek = ["dep:bek-sys", "dep:xpc-sys"]
 
 [dependencies]
 crossbeam-channel = "0.5"
@@ -34,10 +34,9 @@ postcard = { version = "1", features = ["use-std"] }
 # (see Module docs in backend.rs).
 ipc-channel = { git = "https://github.com/gterzian/ipc-channel", rev = "169da83" }
 
-# xpc-sys wraps the libxpc layer used by the `bek` backend's `Xpc` transport
-# (and, on macOS, still provides the launchd primitives). The crate is a
-# no-op stub off Apple targets.
-xpc-sys = { path = "xpc-sys" }
+# xpc-sys wraps the libxpc layer used by the `bek` backend's `Xpc` transport.
+# It compiles on Apple targets only, so only the `bek` feature pulls it in.
+xpc-sys = { path = "xpc-sys", optional = true }
 
 # bek-sys links the BrowserEngineKit Swift shim (iOS targets only; off-iOS it
 # is a compile-only stub). Only pulled in when the `bek` feature is enabled.

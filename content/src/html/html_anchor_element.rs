@@ -183,7 +183,9 @@ impl HTMLAnchorElement {
     /// <https://html.spec.whatwg.org/#dom-hyperlink-href>
     pub(crate) fn set_href(&self, href: &str) {
         // Step 1: "Set the href content attribute to the given value."
-        self.html_element.element.set_attribute("href", href);
+        self.html_element
+            .element
+            .set_an_attribute_value("href", href, None, None);
     }
 
     /// <https://html.spec.whatwg.org/#dom-a-target>
@@ -198,7 +200,9 @@ impl HTMLAnchorElement {
     /// <https://html.spec.whatwg.org/#dom-a-target>
     pub(crate) fn set_target(&self, target: &str) {
         // Step 1: "Set the target content attribute to the given value."
-        self.html_element.element.set_attribute("target", target);
+        self.html_element
+            .element
+            .set_an_attribute_value("target", target, None, None);
     }
 
     /// <https://html.spec.whatwg.org/#dom-a-download>
@@ -215,7 +219,7 @@ impl HTMLAnchorElement {
         // Step 1: "Set the download content attribute to the given value."
         self.html_element
             .element
-            .set_attribute("download", download);
+            .set_an_attribute_value("download", download, None, None);
     }
 
     /// <https://html.spec.whatwg.org/#dom-a-rel>
@@ -230,7 +234,9 @@ impl HTMLAnchorElement {
     /// <https://html.spec.whatwg.org/#dom-a-rel>
     pub(crate) fn set_rel(&self, rel: &str) {
         // Step 1: "Set the rel content attribute to the given value."
-        self.html_element.element.set_attribute("rel", rel);
+        self.html_element
+            .element
+            .set_an_attribute_value("rel", rel, None, None);
     }
 
     /// <https://html.spec.whatwg.org/#dom-a-referrerpolicy>
@@ -245,9 +251,12 @@ impl HTMLAnchorElement {
     /// <https://html.spec.whatwg.org/#dom-a-referrerpolicy>
     pub(crate) fn set_referrer_policy(&self, referrer_policy: &str) {
         // Step 1: "Set the referrerpolicy content attribute to the given value."
-        self.html_element
-            .element
-            .set_attribute("referrerpolicy", referrer_policy);
+        self.html_element.element.set_an_attribute_value(
+            "referrerpolicy",
+            referrer_policy,
+            None,
+            None,
+        );
     }
 }
 
@@ -272,6 +281,6 @@ impl HyperlinkElementUtils for HTMLAnchorElement {
         // Step 1: "Set the element's href content attribute's value to the element's url, serialized."
         self.html_element
             .element
-            .set_attribute("href", url.as_str());
+            .set_an_attribute_value("href", url.as_str(), None, None);
     }
 }

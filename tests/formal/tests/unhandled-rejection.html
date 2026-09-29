@@ -1,0 +1,47 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>unhandledrejection events</title>
+<script src="/resources/testharness.js"></script>
+<script src="/resources/testharnessreport.js"></script>
+<div id="log"></div>
+<script>
+"use strict";
+setup({ allow_uncaught_exception: true });
+
+async_test((t) => {
+  const error = new Error("nobody catches me");
+  let rejected;
+  window.onunhandledrejection = t.step_func((event) => {
+    assert_true(event instanceof PromiseRejectionEvent);
+    assert_equals(event.type, "unhandledrejection");
+    assert_true(event.cancelable);
+    assert_equals(event.promise, rejected, "the event names the rejected promise");
+    assert_equals(event.reason, error, "the event carries the rejection reason");
+    event.preventDefault();
+    window.onunhandledrejection = null;
+    t.done();
+  });
+  rejected = Promise.reject(error);
+}, "a rejection without a handler fires unhandledrejection at the window");
+
+async_test((t) => {
+  window.addEventListener("unhandledrejection", t.step_func((event) => {
+    if (event.reason && event.reason.message === "nobody catches me") return;
+    assert_unreached("a handled rejection must not fire: " + event.reason);
+  }));
+  Promise.reject(new Error("caught")).catch(() => {});
+  const later = Promise.reject(new Error("caught in the same task"));
+  later.then(null, () => {});
+  t.step_timeout(() => t.done(), 100);
+}, "a rejection with a handler fires no event");
+
+test(() => {
+  const promise = Promise.resolve();
+  const event = new PromiseRejectionEvent("unhandledrejection", { promise, reason: 42, cancelable: true });
+  assert_equals(event.promise, promise);
+  assert_equals(event.reason, 42);
+  assert_true(event.cancelable);
+  assert_equals(new PromiseRejectionEvent("x", { promise }).reason, undefined);
+  assert_throws_js(TypeError, () => new PromiseRejectionEvent("x", {}), "promise is required");
+}, "PromiseRejectionEvent constructor");
+</script>

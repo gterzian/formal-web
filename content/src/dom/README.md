@@ -8,6 +8,33 @@
 - `content/src/js/bindings` delegates DOM algorithms here — bindings never embed DOM logic.
 - Use the `web_standards` extension (`spec_lookup`) with `https://dom.spec.whatwg.org/` to read the DOM spec.  For single-sentence spec definitions, quote the defining sentence instead of inventing `Step N:` comments.
 
+## Attributes
+
+blitz's per-element attribute storage is the attribute list; the DOM
+algorithms in `element.rs` read and write it through `Attribute` records
+(`attr.rs`), and the `Attr` platform objects are a materialized view of it
+(`Element::attribute_list`), one per stored attribute, kept across calls so
+`getAttributeNode` and `attributes[i]` return the same object.  Rules that
+follow from that split:
+
+- Rust code that reflects a content attribute uses the record-level
+  algorithms (`set_an_attribute_value`, `remove_an_attribute_by_name`,
+  `get_an_attribute_value`); the IDL methods with `ec` (`remove_attribute`,
+  `toggle_attribute`, the `*AttributeNode` family, `NamedNodeMap`) are for
+  bindings, because only they can detach an attribute's `Attr` before the
+  storage changes.  A removal through a record-level algorithm leaves a
+  script-held `Attr` attached until the next `attribute_list` run, which then
+  freezes whatever value it last observed.
+- An `Attr` has no blitz node, so it does not embed `Node`; the Node members
+  it defines (`nodeType`, `nodeName`, `nodeValue`, `textContent`,
+  `parentNode`, `ownerDocument`) resolve the receiver in
+  `js/bindings/dom/node.rs` before the tree-backed lookup, and the other Node
+  members throw for it.
+- "Handle attribute changes" (mutation records, custom element reactions,
+  the attribute change steps) is not implemented; the `TODO` sits at each
+  call in `element.rs`.  Event handler content attributes set after the
+  element's wrapper exists are therefore not compiled.
+
 ## Event dispatch
 
 The dispatch algorithm and its data types live in `dispatch.rs` and `event.rs`, each function and field carrying its spec anchor and verbatim `// Step N:` comments; the step-by-step mapping lives there, not here.  Two module conventions are not visible from the code alone:

@@ -1,6 +1,8 @@
 use std::{mem, ptr};
 
+use crate::fetch::abort_fetch;
 use crate::js::Types;
+use crate::js::platform_objects::with_global_scope;
 use crate::streams::PipeToState;
 use crate::webidl::Callback;
 use crate::webidl::bindings::create_interface_instance;
@@ -33,6 +35,13 @@ pub(crate) enum AbortAlgorithm {
     ReadableStreamPipeTo {
         state: PipeToState,
     },
+
+    /// The abort steps the fetch() method adds to its request's signal
+    /// (step 11): they abort the pending fetch with this id.
+    Fetch {
+        #[ignore_trace]
+        fetch_id: u64,
+    },
 }
 
 impl AbortAlgorithm {
@@ -53,6 +62,19 @@ impl AbortAlgorithm {
             }
             Self::ReadableStreamPipeTo { state } => {
                 state.run_abort_algorithm(ec)?;
+            }
+            Self::Fetch { fetch_id } => {
+                // The fetch() method's step 11.4: abort the fetch() call with
+                // p, request, responseObject, and requestObject's signal's
+                // abort reason.
+                let fetch_id = *fetch_id;
+                with_global_scope(ec, |global_scope, ec| {
+                    let Some(pending) = global_scope.take_fetch(fetch_id, ec) else {
+                        return Ok(());
+                    };
+                    let reason = pending.request_object.signal().reason_value(ec);
+                    abort_fetch(pending, reason, ec)
+                })?;
             }
         }
 
@@ -78,6 +100,7 @@ impl AbortAlgorithm {
                 Self::ReadableStreamPipeTo { state: left_state },
                 Self::ReadableStreamPipeTo { state: right_state },
             ) => left_state.ptr_eq(right_state),
+            (Self::Fetch { fetch_id: left }, Self::Fetch { fetch_id: right }) => left == right,
             _ => false,
         }
     }

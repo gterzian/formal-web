@@ -110,7 +110,7 @@ impl HTMLCanvasElement {
         }
         self.html_element
             .element
-            .set_attribute(name, &value.to_string());
+            .set_an_attribute_value(name, &value.to_string(), None, None);
         Ok(())
     }
 

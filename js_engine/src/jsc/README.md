@@ -41,6 +41,9 @@ strategies, transform, writable), formal gc-protection.
 - **`WindowTimer.arguments`** — `Vec<JsValue>` elements unprotected from GC.
   Needs `GcRootHandle` wrapping.
 - **`detach_array_buffer`** — No-op (`Ok(())`).
+- **`create_platform_object_proxy`** — The (proxy, target) pairs are kept in
+  `host_data` as unprotected `JscObject`s and compared by raw pointer, so a
+  collected proxy's address can alias a later object.
 - **`species_constructor`** — Always returns `default_constructor`.
 - **Cross-realm `new.target`** — `get_function_realm` always returns the
   current realm.

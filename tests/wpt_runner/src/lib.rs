@@ -758,7 +758,9 @@ impl WptServeProcess {
             "doc_root": config.wpt.root,
             "ports": {
                 "http": [port, "auto"],
-                "https": ["auto", "auto"]
+                "https": ["auto", "auto"],
+                "ws": ["auto"],
+                "wss": ["auto"]
             }
         });
         fs::write(

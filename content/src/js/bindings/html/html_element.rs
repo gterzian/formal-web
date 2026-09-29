@@ -7,7 +7,8 @@ type Types = crate::js::Types;
 use crate::dom::Element;
 use crate::html::{
     HTMLAnchorElement, HTMLCanvasElement, HTMLElement, HTMLIFrameElement, HTMLInputElement,
-    HTMLMediaElement, HTMLVideoElement, inline_style_properties_for_element,
+    HTMLLinkElement, HTMLMediaElement, HTMLScriptElement, HTMLVideoElement,
+    inline_style_properties_for_element,
 };
 use crate::webidl::bindings::{AttributeDef, InterfaceDefinition, OperationDef, WebIdlInterface};
 
@@ -126,6 +127,14 @@ fn click_method(
                 data.downcast_ref::<HTMLIFrameElement>()
                     .map(|iframe| iframe.html_element.clone())
             })
+            .or_else(|| {
+                data.downcast_ref::<HTMLScriptElement>()
+                    .map(|script| script.html_element.clone())
+            })
+            .or_else(|| {
+                data.downcast_ref::<HTMLLinkElement>()
+                    .map(|link| link.html_element.clone())
+            })
     });
     let Some(html_element) = html_element else {
         return Err(ec.new_type_error("receiver is not an HTMLElement"));
@@ -157,6 +166,12 @@ fn try_with_html_element_ref<R>(
         }
         if let Some(iframe) = data.downcast_ref::<HTMLIFrameElement>() {
             return Ok(f(&iframe.html_element));
+        }
+        if let Some(script) = data.downcast_ref::<HTMLScriptElement>() {
+            return Ok(f(&script.html_element));
+        }
+        if let Some(link) = data.downcast_ref::<HTMLLinkElement>() {
+            return Ok(f(&link.html_element));
         }
     }
     Err(ec.new_type_error("receiver is not an HTMLElement"))
@@ -432,6 +447,20 @@ fn element_style_attribute(
                 .get_attribute("style")
                 .unwrap_or_default(),
         )
+    } else if let Some(el) = data.downcast_ref::<HTMLScriptElement>() {
+        Some(
+            el.html_element
+                .element
+                .get_attribute("style")
+                .unwrap_or_default(),
+        )
+    } else if let Some(el) = data.downcast_ref::<HTMLLinkElement>() {
+        Some(
+            el.html_element
+                .element
+                .get_attribute("style")
+                .unwrap_or_default(),
+        )
     } else if let Some(el) = data.downcast_ref::<HTMLInputElement>() {
         Some(
             el.html_element
@@ -465,57 +494,71 @@ fn set_element_style_attribute(
     if let Some(el) = data.downcast_ref::<HTMLVideoElement>() {
         let elem = &el.media_element.html_element.element;
         if value.is_empty() {
-            elem.remove_attribute("style");
+            elem.remove_an_attribute_by_name("style");
         } else {
-            elem.set_attribute("style", value);
+            elem.set_an_attribute_value("style", value, None, None);
         }
     } else if let Some(el) = data.downcast_ref::<HTMLMediaElement>() {
         let elem = &el.html_element.element;
         if value.is_empty() {
-            elem.remove_attribute("style");
+            elem.remove_an_attribute_by_name("style");
         } else {
-            elem.set_attribute("style", value);
+            elem.set_an_attribute_value("style", value, None, None);
         }
     } else if let Some(el) = data.downcast_ref::<HTMLAnchorElement>() {
         let elem = &el.html_element.element;
         if value.is_empty() {
-            elem.remove_attribute("style");
+            elem.remove_an_attribute_by_name("style");
         } else {
-            elem.set_attribute("style", value);
+            elem.set_an_attribute_value("style", value, None, None);
         }
     } else if let Some(el) = data.downcast_ref::<HTMLCanvasElement>() {
         let elem = &el.html_element.element;
         if value.is_empty() {
-            elem.remove_attribute("style");
+            elem.remove_an_attribute_by_name("style");
         } else {
-            elem.set_attribute("style", value);
+            elem.set_an_attribute_value("style", value, None, None);
         }
     } else if let Some(el) = data.downcast_ref::<HTMLIFrameElement>() {
         let elem = &el.html_element.element;
         if value.is_empty() {
-            elem.remove_attribute("style");
+            elem.remove_an_attribute_by_name("style");
         } else {
-            elem.set_attribute("style", value);
+            elem.set_an_attribute_value("style", value, None, None);
+        }
+    } else if let Some(el) = data.downcast_ref::<HTMLScriptElement>() {
+        let elem = &el.html_element.element;
+        if value.is_empty() {
+            elem.remove_an_attribute_by_name("style");
+        } else {
+            elem.set_an_attribute_value("style", value, None, None);
+        }
+    } else if let Some(el) = data.downcast_ref::<HTMLLinkElement>() {
+        let elem = &el.html_element.element;
+        if value.is_empty() {
+            elem.remove_an_attribute_by_name("style");
+        } else {
+            elem.set_an_attribute_value("style", value, None, None);
         }
     } else if let Some(el) = data.downcast_ref::<HTMLInputElement>() {
         let elem = &el.html_element.element;
         if value.is_empty() {
-            elem.remove_attribute("style");
+            elem.remove_an_attribute_by_name("style");
         } else {
-            elem.set_attribute("style", value);
+            elem.set_an_attribute_value("style", value, None, None);
         }
     } else if let Some(el) = data.downcast_ref::<HTMLElement>() {
         let elem = &el.element;
         if value.is_empty() {
-            elem.remove_attribute("style");
+            elem.remove_an_attribute_by_name("style");
         } else {
-            elem.set_attribute("style", value);
+            elem.set_an_attribute_value("style", value, None, None);
         }
     } else if let Some(el) = data.downcast_ref::<Element>() {
         if value.is_empty() {
-            el.remove_attribute("style");
+            el.remove_an_attribute_by_name("style");
         } else {
-            el.set_attribute("style", value);
+            el.set_an_attribute_value("style", value, None, None);
         }
     }
 }

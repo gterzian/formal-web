@@ -65,7 +65,9 @@ impl HTMLIFrameElement {
     /// <https://html.spec.whatwg.org/#dom-iframe-src>
     pub(crate) fn set_src(&self, src: &str) {
         // Step 1: "Set this's src content attribute to the given value."
-        self.html_element.element.set_attribute("src", src);
+        self.html_element
+            .element
+            .set_an_attribute_value("src", src, None, None);
     }
 
     /// <https://html.spec.whatwg.org/#dom-iframe-srcdoc>
@@ -80,7 +82,9 @@ impl HTMLIFrameElement {
     /// <https://html.spec.whatwg.org/#dom-iframe-srcdoc>
     pub(crate) fn set_srcdoc(&self, srcdoc: &str) {
         // Step 1: "Set this's srcdoc content attribute to the given value."
-        self.html_element.element.set_attribute("srcdoc", srcdoc);
+        self.html_element
+            .element
+            .set_an_attribute_value("srcdoc", srcdoc, None, None);
     }
 
     /// <https://html.spec.whatwg.org/#dom-iframe-name>
@@ -95,7 +99,9 @@ impl HTMLIFrameElement {
     /// <https://html.spec.whatwg.org/#dom-iframe-name>
     pub(crate) fn set_name(&self, name: &str) {
         // Step 1: "Set this's name content attribute to the given value."
-        self.html_element.element.set_attribute("name", name);
+        self.html_element
+            .element
+            .set_an_attribute_value("name", name, None, None);
     }
 
     /// <https://html.spec.whatwg.org/#dom-dim-width>
@@ -110,7 +116,9 @@ impl HTMLIFrameElement {
     /// <https://html.spec.whatwg.org/#dom-dim-width>
     pub(crate) fn set_width(&self, width: &str) {
         // Step 1: "Set this's width content attribute to the given value."
-        self.html_element.element.set_attribute("width", width);
+        self.html_element
+            .element
+            .set_an_attribute_value("width", width, None, None);
     }
 
     /// <https://html.spec.whatwg.org/#dom-dim-height>
@@ -125,7 +133,9 @@ impl HTMLIFrameElement {
     /// <https://html.spec.whatwg.org/#dom-dim-height>
     pub(crate) fn set_height(&self, height: &str) {
         // Step 1: "Set this's height content attribute to the given value."
-        self.html_element.element.set_attribute("height", height);
+        self.html_element
+            .element
+            .set_an_attribute_value("height", height, None, None);
     }
 
     /// <https://html.spec.whatwg.org/#handler-onload>

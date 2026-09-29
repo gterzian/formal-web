@@ -492,7 +492,12 @@ impl DedicatedWorkerAgentState {
             let response = ContentFetchResponse {
                 final_url: script_url,
                 status: 200,
+                status_text: String::from("OK"),
                 content_type: String::from("text/javascript"),
+                header_list: vec![(
+                    String::from("content-type"),
+                    String::from("text/javascript"),
+                )],
                 body: bytes,
             };
             return self.complete_worker_script_fetch(response);

@@ -9,6 +9,10 @@ The `net` crate owns the `formal-web-net` entrypoint and executes fetch requests
 
 ## Modular network backends
 
+Remaining work: the URLSession backend never completes a fetch of an `ftp:`
+URL (observed on macOS with `workers/Worker_cross_origin_security_err.htm`,
+disabled in `tests/wpt/meta/workers/`), where the fetch should fail.
+
 Network work is hidden behind the `NetworkBackend` trait
 (`net/src/backend/`), whose single method, `http_network_or_cache_fetch`,
 maps coarsely to the fetch spec's
@@ -65,3 +69,11 @@ queue) over a private Objective-C FFI layer. The raw FFI declarations
 via `cc`, exposing the small C API `fw_url_session_create/fetch/release`)
 are crate-private; the public surface — `UrlSession::new`, `UrlSession::fetch`,
 and the `FetchResponse` type — is safe. Apple targets only.
+
+## WebSocket connections (`websocket.rs`)
+
+One thread per connection over tungstenite, polling the socket with a short
+read timeout so content's send and close requests interleave with the peer's
+messages. Remaining work: the opening handshake has none of the fetch
+integration the WebSockets Standard gives it (no CSP, no cookies, no proxy),
+and a `wss:` server is trusted through the platform certificate store only.

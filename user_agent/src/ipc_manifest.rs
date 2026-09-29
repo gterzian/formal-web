@@ -1,6 +1,7 @@
 //! Extension manifests for the formal-web extension processes.
 //!
-//! Defines `ExtensionManifest` implementations for net, media, and content,
+//! Defines `ExtensionManifest` implementations for net, graphics, WebRTC and
+//! content,
 //! wrapping the existing process-spawning logic.
 
 #[cfg(unix)]

@@ -197,6 +197,11 @@ DOM-specific part stays in the domain.
    unqualified.  `crate::wasm::namespace::compile_fn(bytes, ctx)` is wrong;
    `compile_fn(bytes, ctx)` is right.
 
+6. **An interface with indexed or named properties also implements
+   `LegacyPlatformObject`** next to its `WebIdlInterface` impl, and the domain
+   creates it with `create_legacy_platform_object`; see
+   `content/src/webidl/README.md`, "Legacy platform objects".
+
 ### Spec step annotation rules
 
 Only the **domain method** (the one that implements the spec algorithm) gets

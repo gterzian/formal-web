@@ -119,6 +119,22 @@ Key design decisions:
 | Reading duration before asset loads | `kCMTimeIndefinite`, `seconds()` returns `NaN` | Poll `item.status() == ReadyToPlay` first |
 | `kCVPixelBufferPixelFormatTypeKey` double-ref | Crash during pipeline creation | Use `kCVPixelBufferPixelFormatTypeKey` directly (it's already `&CFString`), not `&kCVPixelBufferPixelFormatTypeKey` |
 
+## Audio capture and playout (AVFoundation)
+
+`backend/avfoundation/audio_io.rs` runs one `AVAudioEngine` for the WebRTC
+audio paths: a tap on the input node converts the device's format to 48 kHz
+mono 20 ms frames (channel average, linear resampling) for the capture sink,
+and an `AVAudioSourceNode` renders the queued frames of every remote track,
+mixed by summing. Capture and playout share the engine's clock, which is
+what the echo canceller in the WebRTC engine needs. The engine starts on the
+first capture or playout and stops when both are idle; each playout queue
+keeps at most 200 ms.
+
+Remaining work: the first capture prompts macOS for microphone access on the
+graphics helper, and a denied prompt yields a running tap that delivers
+silence; there is no device selection (the default input and output only)
+and no input level or mute control.
+
 ## Known issues and non-goals
 
 - **Audio output** — Both backends decode audio but it's not yet exposed to the system.

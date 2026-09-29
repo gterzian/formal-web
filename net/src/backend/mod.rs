@@ -21,6 +21,7 @@
 //! on a background queue. The net process main loop receives those replies
 //! and routes them to the request's reply_to recipient.
 
+use data_url::DataUrl;
 use ipc_messages::content::{EventLoopId, FetchRequest, FetchResponse};
 use std::fs;
 use url::Url;
@@ -78,9 +79,14 @@ fn handle_local_schemes(request: &FetchRequest) -> Result<Option<FetchResponse>,
         return Ok(Some(FetchResponse {
             final_url: String::from("about:blank"),
             status: 200,
+            status_text: String::from("OK"),
+            header_list: content_type_header_list("text/html; charset=utf-8"),
             content_type: String::from("text/html; charset=utf-8"),
             body: Vec::new(),
         }));
+    }
+    if parsed.scheme() == "data" {
+        return fetch_data_url(&request.url).map(Some);
     }
     Ok(None)
 }
@@ -99,9 +105,43 @@ fn fetch_file_url(url: &str) -> Result<FetchResponse, String> {
     Ok(FetchResponse {
         final_url: url.to_owned(),
         status: 200,
+        status_text: String::from("OK"),
+        header_list: content_type_header_list(&content_type),
         content_type,
         body,
     })
+}
+
+/// <https://fetch.spec.whatwg.org/#scheme-fetch>
+fn fetch_data_url(url: &str) -> Result<FetchResponse, String> {
+    // "data": Let dataURLStruct be the result of running the data: URL
+    // processor on request's current URL. If dataURLStruct is failure, then
+    // return a network error. Let mimeType be dataURLStruct's MIME type,
+    // serialized. Return a new response whose status message is `OK`, header
+    // list is « (`Content-Type`, mimeType) », and body is dataURLStruct's
+    // body as a body.
+    let data_url =
+        DataUrl::process(url).map_err(|error| format!("invalid data: URL: {error:?}"))?;
+    let (body, _fragment) = data_url
+        .decode_to_vec()
+        .map_err(|error| format!("failed to decode data: URL body: {error:?}"))?;
+    let content_type = data_url.mime_type().to_string();
+    Ok(FetchResponse {
+        final_url: url.to_owned(),
+        status: 200,
+        status_text: String::from("OK"),
+        header_list: content_type_header_list(&content_type),
+        content_type,
+        body,
+    })
+}
+
+/// A header list holding only the content type the backend reports.
+pub(crate) fn content_type_header_list(content_type: &str) -> Vec<(String, String)> {
+    if content_type.is_empty() {
+        return Vec::new();
+    }
+    vec![(String::from("content-type"), content_type.to_owned())]
 }
 
 // ── Backend selection ───────────────────────────────────────────────────────
@@ -145,6 +185,54 @@ pub type Backend = tokio::TokioBackend;
     not(any(feature = "tokio", not(target_vendor = "apple")))
 ))]
 compile_error!("net requires at least one network backend: `tokio` or `url_session`");
+
+/// The reason phrase of an HTTP status code, for a backend that does not
+/// report the status message of a response.
+pub(crate) fn reason_phrase(status: u16) -> &'static str {
+    match status {
+        100 => "Continue",
+        101 => "Switching Protocols",
+        200 => "OK",
+        201 => "Created",
+        202 => "Accepted",
+        203 => "Non-Authoritative Information",
+        204 => "No Content",
+        205 => "Reset Content",
+        206 => "Partial Content",
+        300 => "Multiple Choices",
+        301 => "Moved Permanently",
+        302 => "Found",
+        303 => "See Other",
+        304 => "Not Modified",
+        307 => "Temporary Redirect",
+        308 => "Permanent Redirect",
+        400 => "Bad Request",
+        401 => "Unauthorized",
+        403 => "Forbidden",
+        404 => "Not Found",
+        405 => "Method Not Allowed",
+        406 => "Not Acceptable",
+        408 => "Request Timeout",
+        409 => "Conflict",
+        410 => "Gone",
+        411 => "Length Required",
+        412 => "Precondition Failed",
+        413 => "Content Too Large",
+        414 => "URI Too Long",
+        415 => "Unsupported Media Type",
+        416 => "Range Not Satisfiable",
+        417 => "Expectation Failed",
+        426 => "Upgrade Required",
+        429 => "Too Many Requests",
+        500 => "Internal Server Error",
+        501 => "Not Implemented",
+        502 => "Bad Gateway",
+        503 => "Service Unavailable",
+        504 => "Gateway Timeout",
+        505 => "HTTP Version Not Supported",
+        _ => "",
+    }
+}
 
 #[cfg(test)]
 mod tests {

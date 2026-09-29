@@ -1,0 +1,52 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>WebRTC audio: the default input reaches the remote peer</title>
+<script src="/resources/testharness.js"></script>
+<script src="/resources/testharnessreport.js"></script>
+<div id="log"></div>
+<audio id="remote" autoplay></audio>
+<script>
+"use strict";
+// Manual: needs an audio input device, microphone permission for the
+// graphics helper, and no VPN tunnel (see tests/formal/README.md). Not in
+// include.ini.
+
+const statsOfType = async (pc, type) =>
+  [...(await pc.getStats()).values()].filter((stats) => stats.type === type);
+
+promise_test(async (t) => {
+  const a = new RTCPeerConnection();
+  const b = new RTCPeerConnection();
+  t.add_cleanup(() => { a.close(); b.close(); });
+  a.onicecandidate = (e) => { if (e.candidate && e.candidate.candidate) b.addIceCandidate(e.candidate); };
+  b.onicecandidate = (e) => { if (e.candidate && e.candidate.candidate) a.addIceCandidate(e.candidate); };
+  const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+  a.addTrack(stream.getAudioTracks()[0], stream);
+  const remoteTrack = new Promise((resolve) => { b.ontrack = resolve; });
+  const offer = await a.createOffer();
+  await a.setLocalDescription(offer);
+  await b.setRemoteDescription(offer);
+  await b.setLocalDescription();
+  await a.setRemoteDescription(b.localDescription);
+  const event = await remoteTrack;
+  const remote = document.getElementById("remote");
+  remote.srcObject = event.streams[0];
+  assert_equals(remote.srcObject, event.streams[0], "srcObject keeps the stream");
+  const connected = new Promise((resolve) => {
+    const check = () => { if (b.connectionState === "connected") resolve(); };
+    b.onconnectionstatechange = check;
+    check();
+  });
+  await connected;
+  let encoded = 0;
+  let received = 0;
+  for (let i = 0; i < 40 && (encoded === 0 || received === 0); i++) {
+    await new Promise((resolve) => t.step_timeout(resolve, 200));
+    encoded = (await statsOfType(a, "engine-audio-out")).reduce((sum, stats) => sum + (stats.samplesEncoded || 0), 0);
+    received = (await statsOfType(b, "engine-audio-in")).reduce((sum, stats) => sum + (stats.packetsReceived || 0), 0);
+  }
+  assert_greater_than(encoded, 0, "a encoded captured audio");
+  assert_greater_than(received, 0, "b received audio packets");
+  assert_false(event.track.muted, "the remote track is unmuted once media flows");
+}, "captured audio is encoded, sent and received");
+</script>

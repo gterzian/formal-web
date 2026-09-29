@@ -162,6 +162,19 @@ See `tests/wpt/meta/README.md` for the metadata file format.
 
 ## Troubleshooting
 
+### The websockets suite cannot run under this runner
+
+Every `websockets/*.any.js` test includes `constants.sub.js`, whose template
+reads `{{ports[h2][0]}}` unconditionally. The runner passes `--no-h2`, and
+wptserve then leaves the `h2` port list empty even when the config names
+one, so the include fails with a 500 (`IndexError`) and each test reports
+`CreateWebSocket is not defined`. The `ws` and `wss` servers themselves start
+from the `ports` the runner configures. Running with `--h2` resolves the
+template in a `build_config` probe but was not validated end to end; the
+suite stays unselected until it is. `tests/webrtc/` has no WebSocket echo
+server either, so the WebSocket checks were run by hand against a Node `ws`
+server.
+
 ### Python `ssl` / `venv` errors
 
 ```text

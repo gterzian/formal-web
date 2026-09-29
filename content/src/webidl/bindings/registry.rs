@@ -11,6 +11,10 @@ pub(crate) struct InterfaceEntry<T: JsTypes> {
     pub(crate) constructor: T::JsObject,
     /// <https://webidl.spec.whatwg.org/#internally-create-a-new-object-implementing-the-interface>
     pub(crate) unforgeables: Option<T::JsObject>,
+    /// The proxy handler carrying the legacy platform object internal
+    /// methods of an interface that supports indexed or named properties.
+    /// <https://webidl.spec.whatwg.org/#dfn-legacy-platform-object>
+    pub(crate) legacy_platform_object_handler: Option<T::JsObject>,
 }
 
 /// Registry of Web IDL interfaces.
@@ -40,8 +44,21 @@ impl<T: JsTypes> InterfaceRegistry<T> {
                 prototype,
                 constructor,
                 unforgeables: None,
+                legacy_platform_object_handler: None,
             },
         );
+    }
+
+    pub(crate) fn get_legacy_platform_object_handler<U: 'static>(&self) -> Option<&T::JsObject> {
+        self.map
+            .get(&TypeId::of::<U>())
+            .and_then(|e| e.legacy_platform_object_handler.as_ref())
+    }
+
+    pub(crate) fn set_legacy_platform_object_handler<U: 'static>(&mut self, handler: T::JsObject) {
+        if let Some(entry) = self.map.get_mut(&TypeId::of::<U>()) {
+            entry.legacy_platform_object_handler = Some(handler);
+        }
     }
 
     pub(crate) fn get_prototype<U: 'static>(&self) -> Option<&T::JsObject> {
@@ -141,6 +158,34 @@ where
     I: 'static,
 {
     with_registry_ref::<Ty, _>(ec, |registry| registry.get_unforgeables::<I>().cloned())
+}
+
+/// Set the legacy platform object proxy handler for an interface in the
+/// registry.
+pub(crate) fn set_legacy_platform_object_handler_for_interface<Ty, I>(
+    ec: &mut dyn ExecutionContext<Ty>,
+    handler: Ty::JsObject,
+) where
+    Ty: JsTypes + JsTypesWithRealm,
+    I: 'static,
+{
+    with_registry_mut::<Ty, _>(ec, |registry| {
+        registry.set_legacy_platform_object_handler::<I>(handler);
+    });
+}
+
+/// Get the legacy platform object proxy handler of an interface from the
+/// registry.
+pub(crate) fn get_legacy_platform_object_handler_from_host_defined<Ty, I>(
+    ec: &dyn ExecutionContext<Ty>,
+) -> Option<Ty::JsObject>
+where
+    Ty: JsTypes + JsTypesWithRealm,
+    I: 'static,
+{
+    with_registry_ref::<Ty, _>(ec, |registry| {
+        registry.get_legacy_platform_object_handler::<I>().cloned()
+    })
 }
 
 /// Get a prototype from the registry.

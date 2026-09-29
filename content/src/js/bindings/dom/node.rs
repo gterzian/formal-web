@@ -6,10 +6,11 @@ type JsValue = <crate::js::Types as JsTypes>::JsValue;
 
 use js_engine::{Completion, ExecutionContext, JsTypes};
 
-use crate::dom::{DOMException, Document, Element, Node};
+use crate::dom::{Attr, DOMException, Document, Element, Node};
 use crate::html::{
-    HTMLAnchorElement, HTMLElement, HTMLIFrameElement, HTMLInputElement, HTMLMediaElement,
-    HTMLVideoElement,
+    HTMLAnchorElement, HTMLElement, HTMLIFrameElement, HTMLInputElement, HTMLLinkElement,
+    HTMLMediaElement, HTMLScriptElement, HTMLVideoElement,
+    script_html_element_post_connection_steps,
 };
 use crate::js::platform_objects::{
     collect_child_subtree_node_ids, document_object, invalidate_cached_node_ids,
@@ -270,6 +271,12 @@ fn try_with_node_ref<R>(
         if let Some(html_iframe_element) = data.downcast_ref::<HTMLIFrameElement>() {
             return Ok(f(&html_iframe_element.html_element.element.node));
         }
+        if let Some(html_script_element) = data.downcast_ref::<HTMLScriptElement>() {
+            return Ok(f(&html_script_element.html_element.element.node));
+        }
+        if let Some(html_link_element) = data.downcast_ref::<HTMLLinkElement>() {
+            return Ok(f(&html_link_element.html_element.element.node));
+        }
         if let Some(html_input_element) = data.downcast_ref::<HTMLInputElement>() {
             return Ok(f(&html_input_element.html_element.element.node));
         }
@@ -287,11 +294,23 @@ fn try_with_node_ref<R>(
     Err(ec.new_type_error("receiver is not a Node"))
 }
 
+// An Attr is a Node whose state is not a blitz tree node, so the Node members
+// that Attr defines resolve it before the tree-backed receiver lookup.
+fn attr_receiver(this: &JsValue, ec: &mut dyn ExecutionContext<crate::js::Types>) -> Option<Attr> {
+    let object = crate::js::Types::value_as_object(this)?;
+    ec.with_object_any(&object)
+        .and_then(|data| data.downcast_ref::<Attr>().cloned())
+}
+
 fn get_text_content(
     this: &JsValue,
     _: &[JsValue],
     ec: &mut dyn ExecutionContext<crate::js::Types>,
 ) -> Completion<JsValue, crate::js::Types> {
+    if let Some(attr) = attr_receiver(this, ec) {
+        let value = attr.text_content(ec);
+        return Ok(ec.value_from_string(ec.js_string_from_str(&value)));
+    }
     match try_with_node_ref(this, ec, |node| node.text_content())? {
         Some(content) => Ok(ec.value_from_string(ec.js_string_from_str(content.as_str()))),
         None => Ok(ec.value_null()),
@@ -337,6 +356,9 @@ fn get_parent_node(
     _: &[JsValue],
     ec: &mut dyn ExecutionContext<crate::js::Types>,
 ) -> Completion<JsValue, crate::js::Types> {
+    if attr_receiver(this, ec).is_some() {
+        return Ok(ec.value_null());
+    }
     let (document, node_id) = try_with_node_ref(this, ec, |node| {
         (Rc::clone(&node.document), node.parent_node())
     })?;
@@ -408,6 +430,9 @@ fn get_node_type(
     _: &[JsValue],
     ec: &mut dyn ExecutionContext<crate::js::Types>,
 ) -> Completion<JsValue, crate::js::Types> {
+    if let Some(attr) = attr_receiver(this, ec) {
+        return Ok(ec.value_from_number(attr.node_type() as f64));
+    }
     let node_type = try_with_node_ref(this, ec, |node| node.node_type())?;
     Ok(ec.value_from_number(node_type as f64))
 }
@@ -417,6 +442,10 @@ fn get_node_name(
     _: &[JsValue],
     ec: &mut dyn ExecutionContext<crate::js::Types>,
 ) -> Completion<JsValue, crate::js::Types> {
+    if let Some(attr) = attr_receiver(this, ec) {
+        let name = attr.node_name();
+        return Ok(ec.value_from_string(ec.js_string_from_str(&name)));
+    }
     let name = try_with_node_ref(this, ec, |node| node.node_name())?;
     Ok(ec.value_from_string(ec.js_string_from_str(name.as_str())))
 }
@@ -426,6 +455,10 @@ fn get_owner_document(
     _: &[JsValue],
     ec: &mut dyn ExecutionContext<crate::js::Types>,
 ) -> Completion<JsValue, crate::js::Types> {
+    if attr_receiver(this, ec).is_some() {
+        let obj = document_object(ec)?;
+        return Ok(crate::js::Types::value_from_object(obj));
+    }
     let owner_document = try_with_node_ref(this, ec, Node::owner_document_node_id)?;
     match owner_document {
         Some(0) => {
@@ -446,6 +479,10 @@ fn get_node_value(
     _: &[JsValue],
     ec: &mut dyn ExecutionContext<crate::js::Types>,
 ) -> Completion<JsValue, crate::js::Types> {
+    if let Some(attr) = attr_receiver(this, ec) {
+        let value = attr.node_value(ec);
+        return Ok(ec.value_from_string(ec.js_string_from_str(&value)));
+    }
     match try_with_node_ref(this, ec, |node| node.node_value())? {
         Some(value) => Ok(ec.value_from_string(ec.js_string_from_str(value.as_str()))),
         None => Ok(ec.value_null()),
@@ -463,6 +500,10 @@ fn set_node_value(
     } else {
         Some(ec.to_rust_string(first.unwrap().clone())?)
     };
+    if let Some(attr) = attr_receiver(this, ec) {
+        attr.set_node_value(value.as_deref(), ec);
+        return Ok(ec.value_undefined());
+    }
     try_with_node_ref(this, ec, |node| node.set_node_value(value.as_deref()))?;
     Ok(ec.value_undefined())
 }
@@ -478,6 +519,10 @@ fn set_text_content(
     } else {
         Some(ec.to_rust_string(first.unwrap().clone())?)
     };
+    if let Some(attr) = attr_receiver(this, ec) {
+        attr.set_text_content(text.as_deref(), ec);
+        return Ok(ec.value_undefined());
+    }
     let dropped_node_ids = try_with_node_ref(this, ec, |node| {
         let should_invalidate = {
             let document = node.document.borrow();
@@ -507,7 +552,10 @@ fn append_child(
         .unwrap_or_else(|| ec.value_undefined());
     let child = appendable_node(&child_val, ec)?;
     match try_with_node_ref(this, ec, |node| node.append_child(&child))? {
-        Ok(_) => Ok(child_val),
+        Ok(_) => {
+            script_html_element_post_connection_steps(child.node_id, ec)?;
+            Ok(child_val)
+        }
         Err(dom_exception) => Err(dom_exception_error(dom_exception, ec)),
     }
 }
@@ -533,7 +581,10 @@ fn insert_before(
     match try_with_node_ref(this, ec, |node| {
         node.insert_before(&child, reference_child.as_ref())
     })? {
-        Ok(_) => Ok(child_val),
+        Ok(_) => {
+            script_html_element_post_connection_steps(child.node_id, ec)?;
+            Ok(child_val)
+        }
         Err(dom_exception) => Err(dom_exception_error(dom_exception, ec)),
     }
 }
@@ -576,6 +627,16 @@ fn appendable_node(
             Some((
                 Rc::clone(&html_iframe_element.html_element.element.node.document),
                 html_iframe_element.html_element.element.node.node_id,
+            ))
+        } else if let Some(html_script_element) = data.downcast_ref::<HTMLScriptElement>() {
+            Some((
+                Rc::clone(&html_script_element.html_element.element.node.document),
+                html_script_element.html_element.element.node.node_id,
+            ))
+        } else if let Some(html_link_element) = data.downcast_ref::<HTMLLinkElement>() {
+            Some((
+                Rc::clone(&html_link_element.html_element.element.node.document),
+                html_link_element.html_element.element.node.node_id,
             ))
         } else if let Some(html_input_element) = data.downcast_ref::<HTMLInputElement>() {
             Some((

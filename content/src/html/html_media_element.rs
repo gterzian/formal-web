@@ -5,6 +5,10 @@ use blitz_dom::BaseDocument;
 use log::{debug, error};
 
 use crate::js::Types;
+#[cfg(feature = "webrtc")]
+use crate::mediacapture_streams::MediaStream;
+#[cfg(feature = "webrtc")]
+use js_engine::gc::{GcCell, gc_cell_new};
 
 use crate::html::{HTMLElement, await_a_stable_state};
 use crate::js::platform_objects::with_global_scope;
@@ -57,6 +61,10 @@ pub struct HTMLMediaElement {
 
     /// <https://html.spec.whatwg.org/#can-autoplay-flag>
     can_autoplay: bool,
+
+    /// <https://html.spec.whatwg.org/#dom-media-srcobject>
+    #[cfg(feature = "webrtc")]
+    src_object: GcCell<Option<MediaStream>>,
 
     /// <https://html.spec.whatwg.org/#delaying-the-load-event-flag>
     delaying_the_load_event: bool,
@@ -143,11 +151,37 @@ impl HTMLMediaElement {
             default_playback_start_position: 0.0,
             duration: f64::NAN,
             can_autoplay: true,
+            #[cfg(feature = "webrtc")]
+            src_object: gc_cell_new(None, ec),
             delaying_the_load_event: false,
             is_currently_stalled: false,
             show_poster: true,
             video_paint_id: VideoPaintId::new(),
         }
+    }
+
+    /// <https://html.spec.whatwg.org/#dom-media-srcobject>
+    #[cfg(feature = "webrtc")]
+    pub(crate) fn src_object(&self, ec: &mut dyn ExecutionContext<Types>) -> Option<MediaStream> {
+        // On getting, it must return the element's assigned media provider
+        // object, if any, or null otherwise.
+        self.src_object.borrow(ec).clone()
+    }
+
+    /// <https://html.spec.whatwg.org/#dom-media-srcobject>
+    #[cfg(feature = "webrtc")]
+    pub(crate) fn set_src_object(
+        &self,
+        stream: Option<MediaStream>,
+        ec: &mut dyn ExecutionContext<Types>,
+    ) {
+        // On setting, it must set the element's assigned media provider object
+        // to the new value, and then invoke the element's media element load
+        // algorithm.
+        // Note: The load algorithm is not run for a MediaStream: a remote
+        // audio track plays out through the graphics process as soon as its
+        // transceiver receives, whether or not an element shows it.
+        *self.src_object.borrow_mut(ec) = stream;
     }
 
     /// <https://html.spec.whatwg.org/#dom-media-networkstate>
@@ -171,7 +205,9 @@ impl HTMLMediaElement {
     /// <https://html.spec.whatwg.org/#dom-media-src>
     pub(crate) fn set_src(&mut self, src: &str, ec: &mut dyn ExecutionContext<crate::js::Types>) {
         // Step 1: Set this's src content attribute to the given value.
-        self.html_element.element.set_attribute("src", src);
+        self.html_element
+            .element
+            .set_an_attribute_value("src", src, None, None);
 
         // Step 2: Invoke the element's media element load algorithm.
         self.media_element_load_algorithm(ec);
@@ -468,9 +504,13 @@ impl HTMLMediaElement {
     /// <https://html.spec.whatwg.org/#dom-media-autoplay>
     pub(crate) fn set_autoplay(&self, value: bool) {
         if value {
-            self.html_element.element.set_attribute("autoplay", "");
+            self.html_element
+                .element
+                .set_an_attribute_value("autoplay", "", None, None);
         } else {
-            self.html_element.element.remove_attribute("autoplay");
+            self.html_element
+                .element
+                .remove_an_attribute_by_name("autoplay");
         }
     }
 
@@ -482,9 +522,13 @@ impl HTMLMediaElement {
     /// <https://html.spec.whatwg.org/#dom-media-loop>
     pub(crate) fn set_loop(&self, value: bool) {
         if value {
-            self.html_element.element.set_attribute("loop", "");
+            self.html_element
+                .element
+                .set_an_attribute_value("loop", "", None, None);
         } else {
-            self.html_element.element.remove_attribute("loop");
+            self.html_element
+                .element
+                .remove_an_attribute_by_name("loop");
         }
     }
 
@@ -496,9 +540,13 @@ impl HTMLMediaElement {
     /// <https://html.spec.whatwg.org/#dom-media-controls>
     pub(crate) fn set_controls(&self, value: bool) {
         if value {
-            self.html_element.element.set_attribute("controls", "");
+            self.html_element
+                .element
+                .set_an_attribute_value("controls", "", None, None);
         } else {
-            self.html_element.element.remove_attribute("controls");
+            self.html_element
+                .element
+                .remove_an_attribute_by_name("controls");
         }
     }
 
@@ -510,9 +558,13 @@ impl HTMLMediaElement {
     /// <https://html.spec.whatwg.org/#dom-media-muted>
     pub(crate) fn set_muted(&self, value: bool) {
         if value {
-            self.html_element.element.set_attribute("muted", "");
+            self.html_element
+                .element
+                .set_an_attribute_value("muted", "", None, None);
         } else {
-            self.html_element.element.remove_attribute("muted");
+            self.html_element
+                .element
+                .remove_an_attribute_by_name("muted");
         }
     }
 
@@ -534,7 +586,9 @@ impl HTMLMediaElement {
 
     /// <https://html.spec.whatwg.org/#dom-media-preload>
     pub(crate) fn set_preload(&self, value: &str) {
-        self.html_element.element.set_attribute("preload", value);
+        self.html_element
+            .element
+            .set_an_attribute_value("preload", value, None, None);
     }
 
     /// <https://html.spec.whatwg.org/#dom-media-play>

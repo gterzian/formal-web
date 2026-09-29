@@ -1,5 +1,8 @@
 use crate::content::{CanvasId, EmbedBackgroundPolicy, FrameId, PaintFrame, WebviewId};
 use crate::media::{MediaPipelineId, VideoPaintId};
+use crate::network::Request as NetworkRequest;
+use crate::webrtc::{PeerConnectionId, TransceiverId};
+use ipc::IpcSender;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use uuid::Uuid;
@@ -117,6 +120,31 @@ pub enum GraphicsCommand {
     /// Forward a TLA+ trace sender (dev only, ipc-channel mode).
     /// Sent by the UA right after launch, before any other commands.
     SetTraceSender(Option<verification::TraceSender>),
+    /// The net process's request sender: where captured audio goes
+    /// (`webrtc::Request::PushPcm`). Sent by the UA right after launch.
+    SetNetSender(IpcSender<NetworkRequest>),
+    /// Capture the default audio input for an audio sender: 48 kHz mono PCM,
+    /// 20 ms at a time, to the net process.
+    /// <https://w3c.github.io/mediacapture-main/#dfn-source>
+    StartAudioCapture {
+        peer: PeerConnectionId,
+        transceiver: TransceiverId,
+    },
+    StopAudioCapture {
+        peer: PeerConnectionId,
+        transceiver: TransceiverId,
+    },
+    /// Decoded 48 kHz mono PCM of a remote audio track, 20 ms, for the
+    /// default audio output.
+    PlayAudioPcm {
+        peer: PeerConnectionId,
+        transceiver: TransceiverId,
+        samples: Vec<i16>,
+    },
+    StopAudioPlayout {
+        peer: PeerConnectionId,
+        transceiver: TransceiverId,
+    },
     /// Shut down the graphics process.
     Shutdown,
 }
