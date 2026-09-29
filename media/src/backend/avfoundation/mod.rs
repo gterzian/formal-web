@@ -1,3 +1,4 @@
+pub mod audio_io;
 mod av_sys;
 mod pipeline;
 

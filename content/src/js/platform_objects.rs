@@ -8,8 +8,8 @@ use html5ever::{local_name, ns};
 use crate::dom::{Document, Element, EventPathItem, Node};
 use crate::html::{
     ActivationBehavior, DedicatedWorkerGlobalScope, GlobalScope, HTMLAnchorElement,
-    HTMLCanvasElement, HTMLElement, HTMLIFrameElement, HTMLInputElement, HTMLMediaElement,
-    HTMLVideoElement, Window, WorkerGlobalScope,
+    HTMLCanvasElement, HTMLElement, HTMLIFrameElement, HTMLInputElement, HTMLLinkElement,
+    HTMLMediaElement, HTMLScriptElement, HTMLVideoElement, Window, WorkerGlobalScope,
 };
 use crate::js::downcast::event_target_from_js_object;
 use crate::webidl::bindings::create_interface_instance;
@@ -327,6 +327,10 @@ fn element_object_from_document(
                     5_u8
                 } else if element.name.local == local_name!("canvas") {
                     6_u8
+                } else if element.name.local == local_name!("script") {
+                    7_u8
+                } else if element.name.local == local_name!("link") {
+                    8_u8
                 } else {
                     1_u8
                 }
@@ -337,6 +341,14 @@ fn element_object_from_document(
         .unwrap_or(0);
 
     let object = match kind {
+        7 => create_interface_instance::<crate::js::Types, HTMLScriptElement>(
+            HTMLScriptElement::new(document, node_id, ec),
+            ec,
+        ),
+        8 => create_interface_instance::<crate::js::Types, HTMLLinkElement>(
+            HTMLLinkElement::new(document, node_id, ec),
+            ec,
+        ),
         5 => create_interface_instance::<crate::js::Types, HTMLInputElement>(
             HTMLInputElement::new(document, node_id, ec),
             ec,

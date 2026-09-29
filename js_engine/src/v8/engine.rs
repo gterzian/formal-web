@@ -10,11 +10,12 @@ use std::rc::{Rc, Weak as RcWeak};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Once};
 
-use log::error;
+use log::{debug, error};
 use rusty_v8 as v8;
 
 use crate::enums::{
-    IntegrityLevel, IteratorKind, PromiseState, SharedMemoryOrder, TypedArrayElementType,
+    IntegrityLevel, IteratorKind, PromiseRejectionOperation, PromiseState, SharedMemoryOrder,
+    TypedArrayElementType,
 };
 use crate::gc::{JsTypesGcExt, Trace};
 use crate::records::{
@@ -210,6 +211,7 @@ impl SharedIsolate {
         );
         let mut isolate = v8::Isolate::new(v8::CreateParams::default().cpp_heap(heap));
         isolate.set_microtasks_policy(v8::MicrotasksPolicy::Explicit);
+        isolate.set_promise_reject_callback(promise_reject_callback);
         let microtask_queue = v8::MicrotaskQueue::new(&mut isolate, v8::MicrotasksPolicy::Explicit);
         let shared = Rc::new(Self {
             isolate_id: NEXT_ISOLATE_ID.fetch_add(1, Ordering::Relaxed),
@@ -472,6 +474,33 @@ fn host_data_pointer<'scope>(
     NonNull::new(pointer)
 }
 
+/// The private symbol that `create_platform_object_proxy` sets on a proxy's
+/// target so proxies of that target resolve to its platform data.
+const PLATFORM_OBJECT_PROXY_TARGET_MARK: &str = "js_engine#platform_object_proxy_target";
+
+fn platform_object_proxy_target_mark<'scope>(
+    scope: &mut v8::PinScope<'scope, '_>,
+) -> v8::Local<'scope, v8::Private> {
+    let name = v8::String::new(scope, PLATFORM_OBJECT_PROXY_TARGET_MARK)
+        .expect("static V8 private name allocation failed");
+    v8::Private::for_api(scope, Some(name))
+}
+
+/// The platform data behind a proxy created by `create_platform_object_proxy`:
+/// the target's host data, when the target carries the proxy-target mark.
+fn platform_object_proxy_host_data(
+    scope: &mut v8::PinScope<'_, '_>,
+    value: v8::Local<'_, v8::Value>,
+) -> Option<NonNull<c_void>> {
+    let proxy = v8::Local::<v8::Proxy>::try_from(value).ok()?;
+    let target = v8::Local::<v8::Object>::try_from(proxy.get_target(scope)).ok()?;
+    let mark = platform_object_proxy_target_mark(scope);
+    if target.has_private(scope, mark) != Some(true) {
+        return None;
+    }
+    host_data_pointer(scope, target)
+}
+
 fn root_handle<T>(scope: &mut v8::PinScope<'_, '_>, handle: v8::Local<'_, T>) -> V8Handle<T> {
     V8Handle::Root(v8::Global::new(scope, handle))
 }
@@ -508,6 +537,9 @@ fn wrap_local_value(
     let object_profile = if value.is_object() {
         let object = v8::Local::<v8::Object>::try_from(value).expect("V8 object type check failed");
         host_data = host_data_pointer(scope, object);
+        if host_data.is_none() {
+            host_data = platform_object_proxy_host_data(scope, value);
+        }
         let array_buffer_handle = v8::Local::<v8::ArrayBuffer>::try_from(value)
             .ok()
             .map(|handle| root_handle(scope, handle));
@@ -3962,6 +3994,36 @@ impl ExecutionContext<V8Types> for V8Engine {
         })
     }
 
+    fn create_platform_object_proxy(
+        &mut self,
+        target: V8Object,
+        handler: V8Object,
+    ) -> Completion<V8Object, V8Types> {
+        let isolate_id = self.isolate_id;
+        v8_engine_scope_with_context!(scope, self, &self.realm_state.realm.context, {
+            let target = local_object(scope, isolate_id, &target)?;
+            let handler = local_object(scope, isolate_id, &handler)?;
+            let mark = platform_object_proxy_target_mark(scope);
+            let marked = v8::Boolean::new(scope, true);
+            if target.set_private(scope, mark, marked.into()) != Some(true) {
+                return Err(caught_exception(
+                    scope,
+                    isolate_id,
+                    None,
+                    "marking the platform object proxy target failed",
+                ));
+            }
+            let proxy = v8::Proxy::new(scope, target, handler).ok_or_else(|| {
+                caught_exception(scope, isolate_id, None, "Proxy creation failed")
+            })?;
+            Ok(object_from_wrapped_value(wrap_local_value(
+                scope,
+                isolate_id,
+                proxy.into(),
+            )))
+        })
+    }
+
     fn js_string_to_rust_string(&self, string: &V8String) -> String {
         String::from_utf16_lossy(&string.utf16)
     }
@@ -4031,6 +4093,53 @@ impl ExecutionContext<V8Types> for V8Engine {
     ) -> V8Function {
         self.make_builtin_function(Box::new(behaviour), length, name, is_constructor)
     }
+}
+
+/// <https://tc39.es/ecma262/#sec-host-promise-rejection-tracker>
+///
+/// V8 reports a promise rejected without a handler, and a handler added to
+/// an already rejected promise, through the isolate's promise-reject
+/// callback; both reach the engine's `promise_rejection_tracker` host hook
+/// as the spec's "reject" and "handle" operations. V8's two other events
+/// (a rejection after the promise was already resolved, and a resolution
+/// after a rejection) are not host hook operations.
+unsafe extern "C" fn promise_reject_callback(message: v8::PromiseRejectMessage) {
+    let operation = match message.get_event() {
+        v8::PromiseRejectEvent::PromiseRejectWithNoHandler => PromiseRejectionOperation::Reject,
+        v8::PromiseRejectEvent::PromiseHandlerAddedAfterReject => PromiseRejectionOperation::Handle,
+        _ => return,
+    };
+    let promise = message.get_promise();
+    // SAFETY: V8 invokes the promise-reject callback on the isolate thread
+    // with the promise's context entered and no Rust handle scope; rusty_v8
+    // requires a CallbackScope at this boundary, and the scope is pinned for
+    // its full use below.
+    v8::callback_scope!(unsafe scope, promise);
+
+    let engine_pointer = CURRENT_ENGINE.get();
+    if engine_pointer.is_null() {
+        debug!("promise rejection reported without an active engine");
+        return;
+    }
+    // SAFETY: CURRENT_ENGINE is installed around every operation that can
+    // execute JavaScript and is restricted to the isolate thread; the
+    // callback runs synchronously inside such an operation, which already
+    // holds the isolate scope. The callback-scope guard lets the hook's
+    // engine calls reborrow the pinned callback scope instead of the (already
+    // borrowed) shared isolate.
+    let engine = unsafe { &mut *engine_pointer };
+    let Some(hook) = &engine.host_hooks.promise_rejection_tracker else {
+        return;
+    };
+    let _current_callback_scope = CurrentCallbackScopeGuard::enter(scope, engine.isolate_id);
+    let promise_value = wrap_local_value(scope, engine.isolate_id, promise.into());
+    let Some(promise_object) = V8Types::value_as_object(&promise_value) else {
+        return;
+    };
+    let Some(promise) = V8Types::object_as_promise(&promise_object) else {
+        return;
+    };
+    hook(promise, operation);
 }
 
 #[cfg(test)]

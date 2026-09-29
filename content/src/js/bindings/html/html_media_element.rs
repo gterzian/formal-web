@@ -71,6 +71,20 @@ impl WebIdlInterface<crate::js::Types> for HTMLMediaElement {
             legacy_lenient_setter: false,
             exposed: None,
         });
+        #[cfg(feature = "webrtc")]
+        def.add_attribute(AttributeDef {
+            id: "srcObject",
+            getter: get_src_object,
+            setter: Some(set_src_object),
+            static_: false,
+            unforgeable: false,
+            promise_type: false,
+            legacy_lenient_this: false,
+            replaceable: false,
+            put_forwards: None,
+            legacy_lenient_setter: false,
+            exposed: None,
+        });
         def.add_attribute(AttributeDef {
             id: "src",
             getter: get_src,
@@ -334,7 +348,7 @@ fn set_src(
     ec: &mut dyn ExecutionContext<crate::js::Types>,
 ) -> Completion<JsValue, crate::js::Types> {
     let undefined = ec.value_undefined();
-    let src = ec.to_rust_string(args.first().cloned().unwrap_or_else(|| undefined))?;
+    let src = ec.to_rust_string(args.first().cloned().unwrap_or(undefined))?;
     let obj = crate::js::Types::value_as_object(this)
         .ok_or_else(|| ec.new_type_error("expected object"))?;
     // Clone the media element out so `set_src` can call `ec`, then write it
@@ -401,7 +415,7 @@ fn set_current_time(
     _args: &[JsValue],
     ec: &mut dyn ExecutionContext<crate::js::Types>,
 ) -> Completion<JsValue, crate::js::Types> {
-    let _ = try_with_media_ref(this, ec, |_media| ())?;
+    try_with_media_ref(this, ec, |_media| ())?;
     // TODO: Implement using interior mutability.
     Ok(ec.value_undefined())
 }
@@ -459,7 +473,7 @@ fn set_autoplay(
     args: &[JsValue],
     ec: &mut dyn ExecutionContext<crate::js::Types>,
 ) -> Completion<JsValue, crate::js::Types> {
-    let value = args.first().map_or(false, |v| ec.to_boolean(v));
+    let value = args.first().is_some_and(|v| ec.to_boolean(v));
     try_with_media_ref(this, ec, |media| media.set_autoplay(value))?;
     Ok(ec.value_undefined())
 }
@@ -478,7 +492,7 @@ fn set_loop(
     args: &[JsValue],
     ec: &mut dyn ExecutionContext<crate::js::Types>,
 ) -> Completion<JsValue, crate::js::Types> {
-    let value = args.first().map_or(false, |v| ec.to_boolean(v));
+    let value = args.first().is_some_and(|v| ec.to_boolean(v));
     try_with_media_ref(this, ec, |media| media.set_loop(value))?;
     Ok(ec.value_undefined())
 }
@@ -497,7 +511,7 @@ fn set_controls(
     args: &[JsValue],
     ec: &mut dyn ExecutionContext<crate::js::Types>,
 ) -> Completion<JsValue, crate::js::Types> {
-    let value = args.first().map_or(false, |v| ec.to_boolean(v));
+    let value = args.first().is_some_and(|v| ec.to_boolean(v));
     try_with_media_ref(this, ec, |media| media.set_controls(value))?;
     Ok(ec.value_undefined())
 }
@@ -516,7 +530,7 @@ fn set_muted(
     args: &[JsValue],
     ec: &mut dyn ExecutionContext<crate::js::Types>,
 ) -> Completion<JsValue, crate::js::Types> {
-    let value = args.first().map_or(false, |v| ec.to_boolean(v));
+    let value = args.first().is_some_and(|v| ec.to_boolean(v));
     try_with_media_ref(this, ec, |media| media.set_muted(value))?;
     Ok(ec.value_undefined())
 }
@@ -537,7 +551,7 @@ fn set_volume(
 ) -> Completion<JsValue, crate::js::Types> {
     let vol = args
         .first()
-        .and_then(|v| crate::js::Types::value_as_number(v))
+        .and_then(crate::js::Types::value_as_number)
         .unwrap_or(1.0);
     try_with_media_ref(this, ec, |media| media.set_volume(vol))?;
     Ok(ec.value_undefined())
@@ -558,7 +572,7 @@ fn set_preload(
     ec: &mut dyn ExecutionContext<crate::js::Types>,
 ) -> Completion<JsValue, crate::js::Types> {
     let undefined = ec.value_undefined();
-    let value = ec.to_rust_string(args.first().cloned().unwrap_or_else(|| undefined))?;
+    let value = ec.to_rust_string(args.first().cloned().unwrap_or(undefined))?;
     try_with_media_ref(this, ec, |media| media.set_preload(&value))?;
     Ok(ec.value_undefined())
 }
@@ -568,7 +582,7 @@ fn load_method(
     _args: &[JsValue],
     ec: &mut dyn ExecutionContext<crate::js::Types>,
 ) -> Completion<JsValue, crate::js::Types> {
-    let _ = try_with_media_ref(this, ec, |_media| ())?;
+    try_with_media_ref(this, ec, |_media| ())?;
     // Note: load() takes &mut self and requires interior mutability. The HTMLMediaElement
     // is behind a plain &ref in the binding layer. Adding RefCell support is tracked
     // as a separate gap — this binding currently returns undefined.
@@ -613,9 +627,46 @@ fn can_play_type(
     _args: &[JsValue],
     ec: &mut dyn ExecutionContext<crate::js::Types>,
 ) -> Completion<JsValue, crate::js::Types> {
-    let _ = try_with_media_ref(this, ec, |_media| ())?;
+    try_with_media_ref(this, ec, |_media| ())?;
 
     // Step 1: Return "probably" if the type is a media type that can be rendered.
     // Initial cut: return empty string (no types supported).
     Ok(ec.value_from_string(ec.js_string_from_str("")))
+}
+
+#[cfg(feature = "webrtc")]
+fn get_src_object(
+    this: &JsValue,
+    _args: &[JsValue],
+    ec: &mut dyn ExecutionContext<crate::js::Types>,
+) -> Completion<JsValue, crate::js::Types> {
+    let media = try_with_media_ref(this, ec, |media| media.clone())?;
+    Ok(
+        match media.src_object(ec).and_then(|stream| stream.object()) {
+            Some(object) => crate::js::Types::value_from_object(object),
+            None => ec.value_null(),
+        },
+    )
+}
+
+#[cfg(feature = "webrtc")]
+fn set_src_object(
+    this: &JsValue,
+    args: &[JsValue],
+    ec: &mut dyn ExecutionContext<crate::js::Types>,
+) -> Completion<JsValue, crate::js::Types> {
+    let undefined = ec.value_undefined();
+    let value = args.first().unwrap_or(&undefined);
+    let stream =
+        if crate::js::Types::value_is_null(value) || crate::js::Types::value_is_undefined(value) {
+            None
+        } else {
+            Some(
+                crate::js::bindings::mediacapture_streams::stream_from_value(value, ec)
+                    .ok_or_else(|| ec.new_type_error("srcObject accepts a MediaStream or null"))?,
+            )
+        };
+    let media = try_with_media_ref(this, ec, |media| media.clone())?;
+    media.set_src_object(stream, ec);
+    Ok(ec.value_undefined())
 }

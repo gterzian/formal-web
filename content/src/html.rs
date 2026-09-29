@@ -20,14 +20,17 @@ mod html_dom_tree;
 mod html_element;
 pub(crate) mod html_iframe_element;
 pub(crate) mod html_input_element;
+pub(crate) mod html_link_element;
 pub(crate) mod html_media_element;
 mod html_parser;
+pub(crate) mod html_script_element;
 pub(crate) mod html_video_element;
 mod hyperlink_element_utils;
 mod location;
 pub(crate) mod message_event;
 pub(crate) mod messageport;
-mod navigator;
+pub(crate) mod navigator;
+pub(crate) mod promise_rejection_event;
 pub(crate) mod structured_data;
 pub(crate) mod timers;
 pub(crate) mod ui_events;
@@ -69,15 +72,24 @@ pub(crate) use html_iframe_element::{
     fire_deferred_iframe_load_events, run_iframe_load_event_steps_for_traversable,
 };
 pub use html_input_element::HTMLInputElement;
+pub use html_link_element::HTMLLinkElement;
+pub(crate) use html_link_element::linked_stylesheet_fetched;
 pub use html_media_element::{HTMLMediaElement, MediaError};
 pub(crate) use html_parser::PendingParserScript;
 pub use html_parser::{JsHtmlParserProvider, execute_parser_scripts, parse_html_into_document};
+pub use html_script_element::HTMLScriptElement;
+pub(crate) use html_script_element::{
+    execute_the_script_element, mark_parser_scripts_started, script_element_fetch_completed,
+    script_html_element_post_connection_steps,
+};
 pub use html_video_element::HTMLVideoElement;
 pub(crate) use hyperlink_element_utils::HyperlinkElementUtils;
 pub use location::Location;
 pub(crate) use location::LocationError;
 pub(crate) use message_event::{MessageEvent, MessageEventInit};
 pub(crate) use messageport::{MessageChannel, MessagePort};
+pub(crate) use navigator::Navigator;
+pub(crate) use promise_rejection_event::{PromiseRejectionEvent, PromiseRejectionEventInit};
 pub use window::Window;
 pub(crate) use window::window_computed_style_properties_for_element;
 pub(crate) use window::{PostMessageOptions, window_post_message_steps};

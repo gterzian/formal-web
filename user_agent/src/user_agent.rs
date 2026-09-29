@@ -1533,6 +1533,7 @@ struct UserAgentWorker {
     /// Used during shutdown: sends Shutdown command, waits for
     /// ShutdownComplete, then joins the child.
     graphics_child: Option<std::process::Child>,
+    /// Sender to the WebRTC extension, handed to every content process.
 
     /// Host integration used to surface navigation, paint, clipboard, and viewport state.
     host: Arc<dyn Embedder>,
@@ -1611,6 +1612,21 @@ impl UserAgentWorker {
                         ))
                     {
                         log::error!("failed to send trace sender to graphics: {error}");
+                    }
+                    // The audio paths of WebRTC: captured PCM goes from graphics
+                    // to the net process, decoded PCM from the net process to
+                    // graphics.
+                    if let Err(error) =
+                        sender.send(ipc_messages::graphics::GraphicsCommand::SetNetSender(
+                            net_connection.sender(),
+                        ))
+                    {
+                        log::error!("failed to send the net sender to graphics: {error}");
+                    }
+                    if let Err(error) = net_connection.sender().send(
+                        ipc_messages::network::Request::SetGraphicsSender(sender.clone()),
+                    ) {
+                        log::error!("failed to send the graphics sender to net: {error}");
                     }
                     let receiver = connection.receiver;
                     let child = handle.take_child();
@@ -2165,6 +2181,14 @@ impl UserAgentWorker {
     }
 
     /// route the embedder's answer back to whoever asked for the fetch.
+    /// A header list holding only the content type the embedder reports.
+    fn content_type_header_list(content_type: &str) -> Vec<(String, String)> {
+        if content_type.is_empty() {
+            return Vec::new();
+        }
+        vec![(String::from("content-type"), content_type.to_owned())]
+    }
+
     fn complete_embedder_scheme_fetch(
         &mut self,
         request_id: EmbedderSchemeFetchId,
@@ -2182,6 +2206,8 @@ impl UserAgentWorker {
         let result = result.map(|response| ContentFetchResponse {
             final_url: url,
             status: response.status,
+            status_text: String::new(),
+            header_list: Self::content_type_header_list(&response.content_type),
             content_type: response.content_type,
             body: response.body,
         });

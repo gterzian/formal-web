@@ -138,6 +138,10 @@ impl ReadableStream {
         self.disturbed.set(disturbed);
     }
 
+    pub(crate) fn disturbed(&self) -> bool {
+        self.disturbed.get()
+    }
+
     /// <https://streams.spec.whatwg.org/#initialize-readable-stream>
     fn initialize_readable_stream(&mut self, ec: &mut dyn ExecutionContext<Types>) {
         // Step 1: "Set stream.[[state]] to \"readable\"."
@@ -4207,4 +4211,70 @@ fn finalize_abort_cancel_source(
     }
 
     Ok(ec.value_undefined())
+}
+
+/// <https://streams.spec.whatwg.org/#readablestream-set-up-with-byte-reading-support>
+pub(crate) fn readable_stream_set_up_with_byte_reading_support(
+    ec: &mut dyn ExecutionContext<crate::js::Types>,
+) -> Completion<
+    (
+        ReadableStream,
+        JsObject,
+        super::ReadableByteStreamController,
+    ),
+    crate::js::Types,
+> {
+    use super::readablebytestreamcontroller::set_up_readable_byte_stream_controller;
+    use super::readablestreamdefaultcontroller::{CancelAlgorithm, PullAlgorithm, StartAlgorithm};
+
+    // Step 1: Let startAlgorithm be an algorithm that returns undefined.
+    let start_algorithm = StartAlgorithm::ReturnUndefined;
+
+    // Step 2: Let pullAlgorithmWrapper be an algorithm that runs these steps:
+    // Step 2.1: Let result be the result of running pullAlgorithm, if
+    // pullAlgorithm was given, or null otherwise. If this throws an exception
+    // e, return a promise rejected with e.
+    // Step 2.2: If result is a Promise, then return result.
+    // Step 2.3: Return a promise resolved with undefined.
+    // Note: No pullAlgorithm is given: the wrapper returns a promise resolved
+    // with undefined.
+    let pull_algorithm = PullAlgorithm::ReturnUndefined;
+
+    // Step 3: Let cancelAlgorithmWrapper be an algorithm that runs these
+    // steps:
+    // Step 3.1: Let result be the result of running cancelAlgorithm, if
+    // cancelAlgorithm was given, or null otherwise. If this throws an
+    // exception e, return a promise rejected with e.
+    // Step 3.2: If result is a Promise, then return result.
+    // Step 3.3: Return a promise resolved with undefined.
+    // Note: No cancelAlgorithm is given: the wrapper returns a promise
+    // resolved with undefined.
+    let cancel_algorithm = CancelAlgorithm::ReturnUndefined;
+
+    // Step 4: Perform ! InitializeReadableStream(stream).
+    let (mut stream, stream_object) = create_readable_stream_object(ec)?;
+    stream.initialize_readable_stream(ec);
+
+    // Step 5: Let controller be a new ReadableByteStreamController.
+    let controller = super::ReadableByteStreamController::new(ec);
+    let controller_object: JsObject = create_interface_instance::<
+        crate::js::Types,
+        super::ReadableByteStreamController,
+    >(controller.clone(), ec)?;
+
+    // Step 6: Perform ! SetUpReadableByteStreamController(stream, controller,
+    // startAlgorithm, pullAlgorithmWrapper, cancelAlgorithmWrapper,
+    // highWaterMark, undefined).
+    set_up_readable_byte_stream_controller(
+        stream.clone(),
+        controller.clone(),
+        &controller_object,
+        start_algorithm,
+        pull_algorithm,
+        cancel_algorithm,
+        0.0,
+        None,
+        ec,
+    )?;
+    Ok((stream, stream_object, controller))
 }

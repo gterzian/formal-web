@@ -9,11 +9,16 @@ pub type FwUrlSession = *mut FwUrlSession_private;
 /// Completion callback invoked exactly once when a data task finishes.
 /// All pointer arguments are only valid for the duration of the call;
 /// the caller must copy what it needs. `error` is NULL on success.
+/// `header_names` and `header_values` are parallel arrays of `header_count`
+/// NUL-terminated strings: every field of the HTTP response.
 pub type FwUrlSessionCompletion = unsafe extern "C" fn(
     context: *mut c_void,
     status_code: c_int,
     final_url: *const c_char,
     content_type: *const c_char,
+    header_names: *const *const c_char,
+    header_values: *const *const c_char,
+    header_count: usize,
     body: *const u8,
     body_length: usize,
     error: *const c_char,

@@ -32,8 +32,11 @@ use log::{debug, error};
 use super::environment_settings_object::RealmWiring;
 use super::event_loop::{EventLoopTaskSources, Task};
 use crate::dom::event::EventTarget;
+use crate::fetch::{FetchRequestSnapshot, PendingFetch};
+use crate::file_api::Blob;
 use crate::js::{Engine, Types};
 use crate::webidl::Callback;
+use crate::websockets::WebSocket;
 
 type JsValue = <Types as JsTypes>::JsValue;
 type JsObject = <Types as JsTypes>::JsObject;
@@ -179,6 +182,31 @@ pub struct GlobalScope {
     /// <https://html.spec.whatwg.org/#dom-location>
     location_object: GcCell<Option<JsObject>>,
 
+    /// <https://html.spec.whatwg.org/#dom-navigator>
+    navigator_object: GcCell<Option<JsObject>>,
+
+    /// <https://dom.spec.whatwg.org/#dom-document-implementation>
+    dom_implementation_object: GcCell<Option<JsObject>>,
+
+    /// <https://w3c.github.io/mediacapture-main/#dom-navigator-mediadevices>
+    #[cfg(feature = "webrtc")]
+    media_devices_object: GcCell<Option<JsObject>>,
+
+    /// <https://html.spec.whatwg.org/#dom-navigator-languages>
+    navigator_languages_object: GcCell<Option<JsObject>>,
+
+    /// <https://w3c.github.io/FileAPI/#BlobURLStore>
+    #[ignore_trace]
+    blob_url_store: RefCell<Vec<(String, Blob)>>,
+
+    /// <https://websockets.spec.whatwg.org/#websocket>
+    web_sockets: GcCell<Vec<WebSocket>>,
+
+    /// <https://fetch.spec.whatwg.org/#dom-global-fetch>
+    fetches: GcCell<Vec<PendingFetch>>,
+    #[ignore_trace]
+    fetch_id_counter: Cell<u64>,
+
     /// WindowProxy cache entries for navigables (and the iframe node each
     /// navigable is the content navigable of), keyed by navigable id.
     /// <https://html.spec.whatwg.org/#the-windowproxy-exotic-object>
@@ -229,6 +257,16 @@ pub struct GlobalScope {
     /// Per-realm channel messaging state (ports, message queues, transfer
     /// state), created lazily on first port use.
     channel_messaging: GcCell<Option<ChannelMessaging>>,
+
+    /// This content process's own command sender, where the net process
+    /// sends the results and events of this realm's peer connections.
+    #[ignore_trace]
+    content_command_sender: Rc<RefCell<Option<IpcSender<ipc_messages::content::Command>>>>,
+
+    /// The realm's open RTCPeerConnections, by id, so the WebRTC tasks reach
+    /// them. A connection leaves when it closes.
+    #[cfg(feature = "webrtc")]
+    peer_connections: GcCell<Vec<crate::webrtc::RTCPeerConnection>>,
 
     /// TLA trace sender for the MessagePort spec, set by the content process
     /// at document creation (mirrors the `event_sender` wiring).
@@ -368,6 +406,15 @@ impl GlobalScope {
             document: Rc::new(RefCell::new(document)),
             document_object: gc_cell_new(None, ec),
             location_object: gc_cell_new(None, ec),
+            navigator_object: gc_cell_new(None, ec),
+            dom_implementation_object: gc_cell_new(None, ec),
+            #[cfg(feature = "webrtc")]
+            media_devices_object: gc_cell_new(None, ec),
+            navigator_languages_object: gc_cell_new(None, ec),
+            blob_url_store: RefCell::new(Vec::new()),
+            web_sockets: gc_cell_new(Vec::new(), ec),
+            fetches: gc_cell_new(Vec::new(), ec),
+            fetch_id_counter: Cell::new(0),
             window_proxies: gc_cell_new(Vec::new(), ec),
             node_objects: gc_cell_new(Vec::new(), ec),
             animation_frame_callback_identifier: Cell::new(0),
@@ -380,6 +427,9 @@ impl GlobalScope {
             event_loop_id: Rc::new(Cell::new(None)),
             worker_id: Rc::new(Cell::new(None)),
             channel_messaging: gc_cell_new(None, ec),
+            content_command_sender: Rc::new(RefCell::new(None)),
+            #[cfg(feature = "webrtc")]
+            peer_connections: gc_cell_new(Vec::new(), ec),
             trace_sender: Rc::new(RefCell::new(None)),
             parent_traversable_id: Rc::new(Cell::new(None)),
             top_level_traversable_id: Rc::new(Cell::new(None)),
@@ -561,6 +611,132 @@ impl GlobalScope {
 
     pub(crate) fn event_sender(&self) -> Option<IpcSender<ContentEvent>> {
         self.event_sender.borrow().clone()
+    }
+
+    /// Set the command sender of this realm's content process: where the
+    /// net process answers the realm's WebSockets and peer connections.
+    pub(crate) fn set_content_command_sender(
+        &self,
+        content_command_sender: IpcSender<ipc_messages::content::Command>,
+    ) {
+        *self.content_command_sender.borrow_mut() = Some(content_command_sender);
+    }
+
+    pub(crate) fn content_command_sender(
+        &self,
+    ) -> Option<IpcSender<ipc_messages::content::Command>> {
+        self.content_command_sender.borrow().clone()
+    }
+
+    pub(crate) fn next_fetch_id(&self) -> u64 {
+        let fetch_id = self.fetch_id_counter.get() + 1;
+        self.fetch_id_counter.set(fetch_id);
+        fetch_id
+    }
+
+    pub(crate) fn add_pending_fetch(
+        &self,
+        fetch: PendingFetch,
+        ec: &mut dyn ExecutionContext<Types>,
+    ) {
+        self.fetches.borrow_mut(ec).push(fetch);
+    }
+
+    /// The fetches not yet handed to the net process, marked as dispatched.
+    pub(crate) fn take_undispatched_fetches(
+        &self,
+        ec: &mut dyn ExecutionContext<Types>,
+    ) -> Vec<(u64, FetchRequestSnapshot)> {
+        let mut fetches = self.fetches.borrow_mut(ec);
+        fetches
+            .iter_mut()
+            .filter(|fetch| !fetch.dispatched)
+            .map(|fetch| {
+                fetch.dispatched = true;
+                (fetch.fetch_id, fetch.request.clone())
+            })
+            .collect()
+    }
+
+    pub(crate) fn take_fetch(
+        &self,
+        fetch_id: u64,
+        ec: &mut dyn ExecutionContext<Types>,
+    ) -> Option<PendingFetch> {
+        let mut fetches = self.fetches.borrow_mut(ec);
+        let index = fetches
+            .iter()
+            .position(|fetch| fetch.fetch_id == fetch_id)?;
+        Some(fetches.remove(index))
+    }
+
+    #[cfg(feature = "webrtc")]
+    pub(crate) fn register_peer_connection(
+        &self,
+        connection: crate::webrtc::RTCPeerConnection,
+        ec: &mut dyn ExecutionContext<Types>,
+    ) {
+        self.peer_connections.borrow_mut(ec).push(connection);
+    }
+
+    #[cfg(feature = "webrtc")]
+    pub(crate) fn unregister_peer_connection(
+        &self,
+        peer: ipc_messages::webrtc::PeerConnectionId,
+        ec: &mut dyn ExecutionContext<Types>,
+    ) {
+        self.peer_connections
+            .borrow_mut(ec)
+            .retain(|connection| connection.id != peer);
+    }
+
+    #[cfg(feature = "webrtc")]
+    pub(crate) fn peer_connection(
+        &self,
+        peer: ipc_messages::webrtc::PeerConnectionId,
+        ec: &mut dyn ExecutionContext<Types>,
+    ) -> Option<crate::webrtc::RTCPeerConnection> {
+        self.peer_connections
+            .borrow(ec)
+            .iter()
+            .find(|connection| connection.id == peer)
+            .cloned()
+    }
+
+    /// The realm's open peer connections.
+    #[cfg(feature = "webrtc")]
+    pub(crate) fn peer_connections(
+        &self,
+        ec: &mut dyn ExecutionContext<Types>,
+    ) -> Vec<crate::webrtc::RTCPeerConnection> {
+        self.peer_connections.borrow(ec).clone()
+    }
+
+    /// Mirror a peer connection's reflector onto the registered clone:
+    /// EventTarget clones share their listener state but not their reflector
+    /// slot (as for `sync_owned_worker_reflector`).
+    #[cfg(feature = "webrtc")]
+    pub(crate) fn sync_peer_connection_reflector(
+        &self,
+        peer: ipc_messages::webrtc::PeerConnectionId,
+        reflector: JsObject,
+        ec: &mut dyn ExecutionContext<Types>,
+    ) {
+        let Some(index) = self
+            .peer_connections
+            .borrow(ec)
+            .iter()
+            .position(|connection| connection.id == peer)
+        else {
+            return;
+        };
+        let Some(mut connection) = self.peer_connections.borrow(ec).get(index).cloned() else {
+            return;
+        };
+        ec.store_js_object(&mut connection.event_target.reflector, reflector);
+        if let Some(slot) = self.peer_connections.borrow_mut(ec).get_mut(index) {
+            *slot = connection;
+        }
     }
 
     /// Set the channel to the worker inbox of the event loop that owns the
@@ -800,6 +976,142 @@ impl GlobalScope {
         ec: &mut dyn ExecutionContext<Types>,
     ) {
         self.location_object.borrow_mut(ec).replace(object);
+    }
+
+    pub(crate) fn navigator_object(
+        &self,
+        ec: &mut dyn ExecutionContext<Types>,
+    ) -> Option<JsObject> {
+        self.navigator_object.borrow(ec).clone()
+    }
+
+    #[cfg(feature = "webrtc")]
+    pub(crate) fn media_devices_object(
+        &self,
+        ec: &mut dyn ExecutionContext<Types>,
+    ) -> Option<JsObject> {
+        self.media_devices_object.borrow(ec).clone()
+    }
+
+    #[cfg(feature = "webrtc")]
+    pub(crate) fn store_media_devices_object(
+        &self,
+        object: JsObject,
+        ec: &mut dyn ExecutionContext<Types>,
+    ) {
+        self.media_devices_object.borrow_mut(ec).replace(object);
+    }
+
+    pub(crate) fn store_navigator_object(
+        &self,
+        object: JsObject,
+        ec: &mut dyn ExecutionContext<Types>,
+    ) {
+        self.navigator_object.borrow_mut(ec).replace(object);
+    }
+
+    pub(crate) fn dom_implementation_object(
+        &self,
+        ec: &mut dyn ExecutionContext<Types>,
+    ) -> Option<JsObject> {
+        self.dom_implementation_object.borrow(ec).clone()
+    }
+
+    pub(crate) fn store_dom_implementation_object(
+        &self,
+        object: JsObject,
+        ec: &mut dyn ExecutionContext<Types>,
+    ) {
+        self.dom_implementation_object
+            .borrow_mut(ec)
+            .replace(object);
+    }
+
+    pub(crate) fn navigator_languages_object(
+        &self,
+        ec: &mut dyn ExecutionContext<Types>,
+    ) -> Option<JsObject> {
+        self.navigator_languages_object.borrow(ec).clone()
+    }
+
+    pub(crate) fn store_navigator_languages_object(
+        &self,
+        object: JsObject,
+        ec: &mut dyn ExecutionContext<Types>,
+    ) {
+        self.navigator_languages_object
+            .borrow_mut(ec)
+            .replace(object);
+    }
+
+    pub(crate) fn add_blob_url_entry(&self, url: String, object: Blob) {
+        self.blob_url_store.borrow_mut().push((url, object));
+    }
+
+    pub(crate) fn remove_blob_url_entry(&self, url: &str) {
+        self.blob_url_store
+            .borrow_mut()
+            .retain(|(entry_url, _)| entry_url != url);
+    }
+
+    pub(crate) fn register_web_socket(
+        &self,
+        socket: WebSocket,
+        ec: &mut dyn ExecutionContext<Types>,
+    ) {
+        self.web_sockets.borrow_mut(ec).push(socket);
+    }
+
+    pub(crate) fn unregister_web_socket(
+        &self,
+        id: ipc_messages::websocket::WebSocketId,
+        ec: &mut dyn ExecutionContext<Types>,
+    ) {
+        self.web_sockets
+            .borrow_mut(ec)
+            .retain(|socket| socket.id != id);
+    }
+
+    pub(crate) fn web_socket(
+        &self,
+        id: ipc_messages::websocket::WebSocketId,
+        ec: &mut dyn ExecutionContext<Types>,
+    ) -> Option<WebSocket> {
+        self.web_sockets
+            .borrow(ec)
+            .iter()
+            .find(|socket| socket.id == id)
+            .cloned()
+    }
+
+    /// The realm's WebSocket objects whose connections are not closed.
+    pub(crate) fn web_sockets(&self, ec: &mut dyn ExecutionContext<Types>) -> Vec<WebSocket> {
+        self.web_sockets.borrow(ec).clone()
+    }
+
+    /// Mirror a WebSocket's reflector onto the registered clone, as for peer
+    /// connections.
+    pub(crate) fn sync_web_socket_reflector(
+        &self,
+        id: ipc_messages::websocket::WebSocketId,
+        reflector: JsObject,
+        ec: &mut dyn ExecutionContext<Types>,
+    ) {
+        let Some(index) = self
+            .web_sockets
+            .borrow(ec)
+            .iter()
+            .position(|socket| socket.id == id)
+        else {
+            return;
+        };
+        let Some(mut socket) = self.web_sockets.borrow(ec).get(index).cloned() else {
+            return;
+        };
+        ec.store_js_object(&mut socket.event_target.reflector, reflector);
+        if let Some(slot) = self.web_sockets.borrow_mut(ec).get_mut(index) {
+            *slot = socket;
+        }
     }
 
     /// <https://html.spec.whatwg.org/#the-windowproxy-exotic-object>
