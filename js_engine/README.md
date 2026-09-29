@@ -26,6 +26,19 @@ Two categories of abstraction:
 | `ExecutionContext<T>` | Interface for ECMA-262 operations that reference the surrounding agent's running execution context |
 | `JsTypesGcExt` | Cycle-safe reflector link between Rust domain objects and their JS wrappers |
 
+### Platform object proxies
+
+`ExecutionContext::create_platform_object_proxy(target, handler)` builds a
+Proxy whose `with_object_any`/`with_object_any_mut` resolve to the target's
+platform data, so a Web IDL operation called with the proxy as `this`
+downcasts to the platform object (Web IDL legacy platform objects are built
+this way).  A proxy made with plain `create_proxy`, or by script, never
+resolves.  V8 marks the target with a private symbol and reads it through
+`Proxy::GetTarget` when wrapping a value.  Boa has no public accessor for a
+proxy's target, and JSC no public API for it either, so both keep the
+(proxy, target) pairs in the realm's host-defined store; those handles live
+as long as the realm.
+
 ### Module layout
 
 | Module | Contents |

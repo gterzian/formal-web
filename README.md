@@ -113,6 +113,25 @@ Automation runs the `formal-web-embedder` binary, which registers no
 in-process extensions, so WPT and the TLA+ verification scripts always use
 the process backend. See `ipc/ARCHITECTURE.md` for the backend itself.
 
+## Optional web features
+
+Web platform features that a build can leave out are Cargo features of the
+root package; each one turns on the content-side code and the engine the
+hosting helper process needs. The default build has all of them.
+
+| Feature | Web APIs | Code | Host |
+|---|---|---|---|
+| `webrtc` | `RTCPeerConnection`, `RTCDataChannel`, `RTCRtpSender/Receiver/Transceiver`, `RTCStatsReport`, `navigator.mediaDevices`, `MediaStream`, `MediaStreamTrack` | `content/src/webrtc`, `content/src/mediacapture_streams` and their bindings, gated by `content/webrtc` | the `webrtc` crate (qrtc engine) inside the net process, gated by `net/webrtc` |
+
+```bash
+# Without WebRTC
+cargo build --release --no-default-features --features v8,media
+```
+
+A helper built on its own needs the feature spelled out
+(`cargo build -p net --bin formal-web-net --features webrtc`); a workspace
+build unifies it from the root package.
+
 ## Project architecture
 
 The following components, mapping to processes or extensions, are used:

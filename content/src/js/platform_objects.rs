@@ -8,8 +8,8 @@ use html5ever::{local_name, ns};
 use crate::dom::{Document, Element, EventPathItem, Node};
 use crate::html::{
     ActivationBehavior, DedicatedWorkerGlobalScope, GlobalScope, HTMLAnchorElement,
-    HTMLCanvasElement, HTMLElement, HTMLIFrameElement, HTMLInputElement, HTMLMediaElement,
-    HTMLVideoElement, Window, WorkerGlobalScope,
+    HTMLCanvasElement, HTMLElement, HTMLIFrameElement, HTMLInputElement, HTMLLinkElement,
+    HTMLMediaElement, HTMLScriptElement, HTMLVideoElement, Window, WorkerGlobalScope,
 };
 use crate::js::downcast::event_target_from_js_object;
 use crate::webidl::bindings::create_interface_instance;
@@ -186,9 +186,21 @@ pub(crate) fn resolve_element_object(
     node_id: usize,
     ec: &mut dyn ExecutionContext<crate::js::Types>,
 ) -> Completion<<crate::js::Types as JsTypes>::JsObject, crate::js::Types> {
-    // Read cache + document via immutable GlobalScope access.
-    let (cached, document) = match global_scope_or_error(ec).cloned() {
-        Some(gs) => (gs.cached_node_object(node_id, ec), gs.document()),
+    let document = match global_scope_or_error(ec).cloned() {
+        Some(gs) => gs.document(),
+        None => return Err(ec.new_type_error("global object is not a Window")),
+    };
+    resolve_element_object_in(document, node_id, ec)
+}
+
+pub(crate) fn resolve_element_object_in(
+    document: Rc<RefCell<BaseDocument>>,
+    node_id: usize,
+    ec: &mut dyn ExecutionContext<crate::js::Types>,
+) -> Completion<<crate::js::Types as JsTypes>::JsObject, crate::js::Types> {
+    // Read cache via immutable GlobalScope access.
+    let cached = match global_scope_or_error(ec).cloned() {
+        Some(gs) => gs.cached_node_object(&document, node_id, ec),
         None => return Err(ec.new_type_error("global object is not a Window")),
     };
     if let Some(object) = cached {
@@ -209,7 +221,7 @@ pub(crate) fn resolve_element_object(
 
     // Cache the result (immutable GlobalScope access).
     if let Some(gs) = global_scope_or_error(ec).cloned() {
-        gs.cache_node_object(node_id, object.clone(), ec);
+        gs.cache_node_object(document, node_id, object.clone(), ec);
     }
 
     Ok(object)
@@ -221,7 +233,7 @@ pub(crate) fn object_for_existing_node(
     ec: &mut dyn ExecutionContext<crate::js::Types>,
 ) -> Completion<<crate::js::Types as JsTypes>::JsObject, crate::js::Types> {
     let cached = match global_scope_or_error(ec).cloned() {
-        Some(gs) => gs.cached_node_object(node_id, ec),
+        Some(gs) => gs.cached_node_object(&document, node_id, ec),
         None => return Err(ec.new_type_error("global object is not a Window")),
     };
     if let Some(object) = cached {
@@ -233,7 +245,7 @@ pub(crate) fn object_for_existing_node(
         .get_node(node_id)
         .is_some_and(BlitzNode::is_element);
     if is_element {
-        resolve_element_object(node_id, ec)
+        resolve_element_object_in(document, node_id, ec)
     } else {
         resolve_or_create_text_node_object(document, node_id, ec)
     }
@@ -245,18 +257,20 @@ pub(crate) fn resolve_or_create_text_node_object(
     ec: &mut dyn ExecutionContext<crate::js::Types>,
 ) -> Completion<<crate::js::Types as JsTypes>::JsObject, crate::js::Types> {
     let cached = match global_scope_or_error(ec).cloned() {
-        Some(gs) => gs.cached_node_object(node_id, ec),
+        Some(gs) => gs.cached_node_object(&document, node_id, ec),
         None => return Err(ec.new_type_error("global object is not a Window")),
     };
     if let Some(object) = cached {
         return Ok(object);
     }
 
-    let object =
-        create_interface_instance::<crate::js::Types, Node>(Node::new(document, node_id, ec), ec)?;
+    let object = create_interface_instance::<crate::js::Types, Node>(
+        Node::new(document.clone(), node_id, ec),
+        ec,
+    )?;
 
     if let Some(gs) = global_scope_or_error(ec).cloned() {
-        gs.cache_node_object(node_id, object.clone(), ec);
+        gs.cache_node_object(document, node_id, object.clone(), ec);
     }
 
     Ok(object)
@@ -327,6 +341,10 @@ fn element_object_from_document(
                     5_u8
                 } else if element.name.local == local_name!("canvas") {
                     6_u8
+                } else if element.name.local == local_name!("script") {
+                    7_u8
+                } else if element.name.local == local_name!("link") {
+                    8_u8
                 } else {
                     1_u8
                 }
@@ -337,6 +355,14 @@ fn element_object_from_document(
         .unwrap_or(0);
 
     let object = match kind {
+        7 => create_interface_instance::<crate::js::Types, HTMLScriptElement>(
+            HTMLScriptElement::new(document, node_id, ec),
+            ec,
+        ),
+        8 => create_interface_instance::<crate::js::Types, HTMLLinkElement>(
+            HTMLLinkElement::new(document, node_id, ec),
+            ec,
+        ),
         5 => create_interface_instance::<crate::js::Types, HTMLInputElement>(
             HTMLInputElement::new(document, node_id, ec),
             ec,
@@ -419,10 +445,9 @@ pub(crate) fn build_path_from_target_js_object(
             ))
         } else if let Some(node) = data.downcast_ref::<Node>() {
             Some((node.node_id, node.document.clone()))
-        } else if let Some(document) = data.downcast_ref::<Document>() {
-            Some((document.node.node_id, document.node.document.clone()))
         } else {
-            None
+            data.downcast_ref::<Document>()
+                .map(|document| (document.node.node_id, document.node.document.clone()))
         }
     });
 

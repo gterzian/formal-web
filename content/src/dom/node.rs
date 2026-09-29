@@ -174,9 +174,7 @@ impl Node {
     /// <https://dom.spec.whatwg.org/#dom-node-nodevalue>
     pub(crate) fn node_value(&self) -> Option<String> {
         let document = self.document.borrow();
-        let Some(node) = document.get_node(self.node_id) else {
-            return None;
-        };
+        let node = document.get_node(self.node_id)?;
 
         match &node.data {
             NodeData::Text(text) => Some(text.content.clone()),
@@ -344,7 +342,6 @@ impl Node {
             let mut document = self.document.borrow_mut();
             let mut mutator = document.mutate();
             mutator.set_node_text(self.node_id, value);
-            return;
         }
 
         // Step 4: "Do nothing."

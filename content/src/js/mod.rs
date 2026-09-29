@@ -26,11 +26,7 @@ pub(crate) use downcast::{
 /// This is the safe replacement for the removed `create_builtin_fn` trait method.
 pub(crate) fn create_builtin_fn_static(
     ec: &mut dyn ExecutionContext<Types>,
-    behaviour: fn(
-        &[<Types as JsTypes>::JsValue],
-        <Types as JsTypes>::JsValue,
-        &mut dyn ExecutionContext<Types>,
-    ) -> Completion<<Types as JsTypes>::JsValue, Types>,
+    behaviour: StaticBuiltinFn,
     length: u32,
     name: <Types as JsTypes>::PropertyKey,
 ) -> <Types as JsTypes>::Function {
@@ -45,6 +41,14 @@ pub(crate) struct FnCapture {
     #[ignore_trace]
     pub(crate) func: FnCaptureFn,
 }
+
+/// Signature for a stateless builtin function: the arguments, the `this`
+/// value and the execution context.
+pub(crate) type StaticBuiltinFn = fn(
+    &[<Types as JsTypes>::JsValue],
+    <Types as JsTypes>::JsValue,
+    &mut dyn ExecutionContext<Types>,
+) -> Completion<<Types as JsTypes>::JsValue, Types>;
 
 /// Signature for the function pointers used in getter/setter/operation captures.
 pub(crate) type FnCaptureFn = fn(

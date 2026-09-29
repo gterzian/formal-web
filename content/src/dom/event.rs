@@ -187,10 +187,10 @@ impl EventTarget {
         ec: &mut dyn ExecutionContext<Types>,
     ) {
         // Step 2: If listener's signal is non-null and is aborted, then return.
-        if let Some(signal) = signal.as_ref() {
-            if signal.aborted_value(ec) {
-                return;
-            }
+        if let Some(signal) = signal.as_ref()
+            && signal.aborted_value(ec)
+        {
+            return;
         }
 
         // Step 3: If listener's callback is null, then return.

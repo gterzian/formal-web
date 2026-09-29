@@ -13,7 +13,7 @@ use html5ever::{
     tree_builder::{ElementFlags, NodeOrText, QuirksMode, TreeBuilderOpts, TreeSink},
 };
 
-use crate::html::EnvironmentSettingsObject;
+use crate::html::{EnvironmentSettingsObject, execute_the_script_element};
 
 fn html5ever_to_blitz_attr(attr: html5ever::Attribute) -> Attribute {
     Attribute {
@@ -235,8 +235,8 @@ impl<'m, 'doc> TreeSink for JsTreeSink<'m, 'doc> {
 }
 
 pub enum PendingParserScript {
-    External { src: String },
-    Inline { source: String },
+    External { node_id: usize, src: String },
+    Inline { node_id: usize, source: String },
 }
 
 fn normalized_script_type(script_type: &str) -> String {
@@ -293,11 +293,11 @@ pub fn execute_parser_scripts(
 ) -> Result<(), String> {
     for script in scripts {
         match script {
-            PendingParserScript::External { src } => {
+            PendingParserScript::External { src, .. } => {
                 warn!("external script fetch is not implemented yet: {src}");
             }
-            PendingParserScript::Inline { source } => {
-                if let Err(error) = settings.evaluate_script(&source) {
+            PendingParserScript::Inline { node_id, source } => {
+                if let Err(error) = execute_the_script_element(settings, node_id, &source) {
                     error!("[parser script] content error: {error}");
                 }
             }
@@ -308,12 +308,8 @@ pub fn execute_parser_scripts(
 }
 
 fn parser_script_for_node(document: &BaseDocument, node_id: usize) -> Option<PendingParserScript> {
-    let Some(node) = document.get_node(node_id) else {
-        return None;
-    };
-    let Some(element) = node.element_data() else {
-        return None;
-    };
+    let node = document.get_node(node_id)?;
+    let element = node.element_data()?;
     if let Some(script_type) = element.attr(blitz_dom::local_name!("type")) {
         let script_type = normalized_script_type(script_type);
         if script_type == "module" || !is_classic_javascript_type(&script_type) {
@@ -322,6 +318,7 @@ fn parser_script_for_node(document: &BaseDocument, node_id: usize) -> Option<Pen
     }
     if let Some(src) = element.attr(blitz_dom::local_name!("src")) {
         return Some(PendingParserScript::External {
+            node_id,
             src: src.to_owned(),
         });
     }
@@ -330,5 +327,5 @@ fn parser_script_for_node(document: &BaseDocument, node_id: usize) -> Option<Pen
         return None;
     }
 
-    Some(PendingParserScript::Inline { source })
+    Some(PendingParserScript::Inline { node_id, source })
 }

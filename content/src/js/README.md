@@ -146,6 +146,25 @@ prototype-to-parent and constructor-to-parent linkages are done by explicit
 `build_context.rs`.  Each new type that inherits from an existing interface
 must have the corresponding wiring lines.
 
+## Adding an EventTarget platform object
+
+A non-element platform object whose interface inherits from `EventTarget`
+(`WebSocket`, `RTCDataChannel`, `Worker`) embeds an `EventTarget` and must be
+added to every list that resolves a JS object to it, or its events fire at a
+target no handler was registered on:
+
+1. `content/src/js/downcast.rs` — the `target!` arms of
+   `with_event_target_mut` and `with_event_target_ref`, the `slot!` arm of
+   `with_platform_reflector_slot_mut`, and the chain in
+   `event_target_from_js_object` (the one event handler IDL attributes use).
+2. When the realm's `GlobalScope` keeps a registered clone of the object to
+   route tasks to it, `try_set_event_target_reflector` must mirror the
+   reflector onto that clone (`sync_web_socket_reflector`,
+   `sync_peer_connection_reflector`): EventTarget clones share listener state
+   but not the reflector slot.
+3. `content/src/js/build_context.rs` — `reg!`, `wire_registry_prototype` and
+   `wire_registry_constructor_prototype` against `EventTarget`.
+
 ## Event platform-object downcast convention
 
 Every Event platform-object type (Event itself and its subclasses UIEvent,

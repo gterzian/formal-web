@@ -65,7 +65,9 @@ impl HTMLIFrameElement {
     /// <https://html.spec.whatwg.org/#dom-iframe-src>
     pub(crate) fn set_src(&self, src: &str) {
         // Step 1: "Set this's src content attribute to the given value."
-        self.html_element.element.set_attribute("src", src);
+        self.html_element
+            .element
+            .set_an_attribute_value("src", src, None, None);
     }
 
     /// <https://html.spec.whatwg.org/#dom-iframe-srcdoc>
@@ -80,7 +82,9 @@ impl HTMLIFrameElement {
     /// <https://html.spec.whatwg.org/#dom-iframe-srcdoc>
     pub(crate) fn set_srcdoc(&self, srcdoc: &str) {
         // Step 1: "Set this's srcdoc content attribute to the given value."
-        self.html_element.element.set_attribute("srcdoc", srcdoc);
+        self.html_element
+            .element
+            .set_an_attribute_value("srcdoc", srcdoc, None, None);
     }
 
     /// <https://html.spec.whatwg.org/#dom-iframe-name>
@@ -95,7 +99,9 @@ impl HTMLIFrameElement {
     /// <https://html.spec.whatwg.org/#dom-iframe-name>
     pub(crate) fn set_name(&self, name: &str) {
         // Step 1: "Set this's name content attribute to the given value."
-        self.html_element.element.set_attribute("name", name);
+        self.html_element
+            .element
+            .set_an_attribute_value("name", name, None, None);
     }
 
     /// <https://html.spec.whatwg.org/#dom-dim-width>
@@ -110,7 +116,9 @@ impl HTMLIFrameElement {
     /// <https://html.spec.whatwg.org/#dom-dim-width>
     pub(crate) fn set_width(&self, width: &str) {
         // Step 1: "Set this's width content attribute to the given value."
-        self.html_element.element.set_attribute("width", width);
+        self.html_element
+            .element
+            .set_an_attribute_value("width", width, None, None);
     }
 
     /// <https://html.spec.whatwg.org/#dom-dim-height>
@@ -125,7 +133,9 @@ impl HTMLIFrameElement {
     /// <https://html.spec.whatwg.org/#dom-dim-height>
     pub(crate) fn set_height(&self, height: &str) {
         // Step 1: "Set this's height content attribute to the given value."
-        self.html_element.element.set_attribute("height", height);
+        self.html_element
+            .element
+            .set_an_attribute_value("height", height, None, None);
     }
 
     /// <https://html.spec.whatwg.org/#handler-onload>
@@ -176,16 +186,15 @@ fn shared_attribute_processing_steps_for_iframe_and_frame_elements(
     // then set url to maybeURL."
     let node = document.get_node(iframe_node_id)?;
     let element = node.element_data()?;
-    if let Some(src) = element.attr(local_name!("src")).map(str::trim) {
-        if !src.is_empty() {
-            if let Ok(url) = creation_url.join(src) {
-                // TODO: Shared step 3: "If the inclusive ancestor navigables of element's
-                // node navigable contains a navigable whose active document's URL equals url
-                // with exclude fragments set to true, then return null."
-                // This needs user-agent-owned navigable ancestry.
-                return Some(url);
-            }
-        }
+    if let Some(src) = element.attr(local_name!("src")).map(str::trim)
+        && !src.is_empty()
+        && let Ok(url) = creation_url.join(src)
+    {
+        // TODO: Shared step 3: "If the inclusive ancestor navigables of element's
+        // node navigable contains a navigable whose active document's URL equals url
+        // with exclude fragments set to true, then return null."
+        // This needs user-agent-owned navigable ancestry.
+        return Some(url);
     }
 
     // TODO: Shared step 4: "If url matches about:blank and initialInsertion is true,
@@ -1006,10 +1015,11 @@ fn process_iframe_attributes(
 
     // Note: If transitioning from cross-origin to same-origin, retire the old traversable
     // so the user agent can clean up the cross-origin child navigable.
-    if let Some(previous_iframe_state) = previous_iframe_state.as_ref() {
-        if previous_iframe_state.cross_origin && !cross_origin {
-            retire_iframe_traversable(process, parent_traversable_id, previous_iframe_state)?;
-        }
+    if let Some(previous_iframe_state) = previous_iframe_state.as_ref()
+        && previous_iframe_state.cross_origin
+        && !cross_origin
+    {
+        retire_iframe_traversable(process, parent_traversable_id, previous_iframe_state)?;
     }
 
     // Step 2.3: "If url matches about:blank and initialInsertion is true:"

@@ -1,0 +1,135 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>Fetch API: Headers, Request, Response and fetch()</title>
+<script src="/resources/testharness.js"></script>
+<script src="/resources/testharnessreport.js"></script>
+<div id="log"></div>
+<script>
+  test(() => {
+    const headers = new Headers({ "Content-Type": "text/plain", "X-A": "1" });
+    assert_equals(headers.get("content-type"), "text/plain", "names are case-insensitive");
+    headers.append("x-a", "2");
+    assert_equals(headers.get("X-A"), "1, 2", "values combine");
+    headers.set("X-A", "3");
+    assert_equals(headers.get("x-a"), "3");
+    assert_true(headers.has("x-a"));
+    headers.delete("x-a");
+    assert_false(headers.has("x-a"));
+    assert_equals([...headers].length, 1);
+    assert_equals([...new Headers([["b", "2"], ["a", "1"]]).keys()].join(","), "a,b", "iteration is sorted");
+    assert_throws_js(TypeError, () => headers.append("bad name", "x"));
+    assert_equals(Object.prototype.toString.call(headers), "[object Headers]");
+  }, "Headers stores, combines and iterates header values");
+
+  test(() => {
+    const request = new Request("data.json", {
+      method: "post",
+      headers: { "X-Test": "yes" },
+      body: "payload",
+    });
+    assert_true(request instanceof Request);
+    assert_equals(request.method, "POST", "known methods are normalized");
+    assert_equals(request.url, location.origin + location.pathname.replace(/[^/]*$/, "") + "data.json", "the URL is resolved against the document");
+    assert_equals(request.headers.get("x-test"), "yes");
+    assert_equals(request.headers.get("content-type"), "text/plain;charset=UTF-8", "a string body sets the content type");
+    assert_equals(request.mode, "cors");
+    assert_equals(request.credentials, "same-origin");
+    assert_true(request.signal instanceof AbortSignal);
+    assert_false(request.bodyUsed);
+    assert_throws_js(TypeError, () => new Request("x", { method: "TRACE" }));
+    assert_throws_js(TypeError, () => new Request("x", { body: "b" }), "GET requests cannot have a body");
+    assert_throws_js(TypeError, () => new Request("http://user:pw@example.com/"));
+  }, "Request exposes its request state");
+
+  promise_test(async (t) => {
+    const request = new Request("x", { method: "PUT", body: "payload" });
+    const clone = request.clone();
+    assert_equals(await request.text(), "payload");
+    assert_true(request.bodyUsed);
+    assert_equals(await clone.text(), "payload", "the clone keeps its own body");
+    await promise_rejects_js(t, TypeError, request.text(), "a used body rejects");
+  }, "Request bodies can be read and cloned");
+
+  promise_test(async () => {
+    const response = new Response(JSON.stringify({ a: 1 }), {
+      status: 201,
+      statusText: "Created",
+      headers: { "Content-Type": "application/json" },
+    });
+    assert_equals(response.status, 201);
+    assert_equals(response.statusText, "Created");
+    assert_true(response.ok);
+    assert_equals(response.type, "default");
+    assert_equals(response.headers.get("content-type"), "application/json");
+    const json = await response.json();
+    assert_equals(json.a, 1);
+    assert_throws_js(RangeError, () => new Response("", { status: 199 }));
+    assert_throws_js(TypeError, () => new Response("body", { status: 204 }));
+    const error = Response.error();
+    assert_equals(error.type, "error");
+    assert_equals(error.status, 0);
+    const redirect = Response.redirect("target", 301);
+    assert_equals(redirect.status, 301);
+    assert_equals(redirect.headers.get("location"), location.origin + location.pathname.replace(/[^/]*$/, "") + "target");
+    const fromJson = Response.json({ b: 2 });
+    assert_equals(fromJson.headers.get("content-type"), "application/json");
+    assert_equals((await fromJson.json()).b, 2);
+    const bytes = await new Response(new Uint8Array([104, 105])).bytes();
+    assert_equals(bytes.length, 2);
+    const blob = await new Response("blob", { headers: { "content-type": "text/x-test" } }).blob();
+    assert_equals(blob.type, "text/x-test");
+    assert_equals(await blob.text(), "blob");
+  }, "Response constructors, static methods and body readers");
+
+  promise_test(async () => {
+    const response = await fetch("fetch-api-resource.json");
+    assert_true(response instanceof Response);
+    assert_equals(response.status, 200);
+    assert_true(response.ok);
+    assert_equals(response.type, "basic");
+    assert_equals(response.url, location.origin + location.pathname.replace(/[^/]*$/, "") + "fetch-api-resource.json");
+    assert_true(response.headers.has("content-type"), "the response carries its content type");
+    const clone = response.clone();
+    const json = await response.json();
+    assert_equals(json.greeting, "hello");
+    assert_equals(json.count, 3);
+    assert_true(response.bodyUsed);
+    const text = await clone.text();
+    assert_equals(JSON.parse(text).greeting, "hello");
+  }, "fetch() resolves with the fetched resource");
+
+  promise_test(async (t) => {
+    const response = await fetch(new Request("fetch-api-resource.json"));
+    const stream = response.body;
+    assert_true(stream instanceof ReadableStream);
+    assert_equals(response.body, stream, "the body stream is stable");
+    const reader = stream.getReader();
+    let total = 0;
+    for (;;) {
+      const { value, done } = await reader.read();
+      if (done) break;
+      total += value.length;
+    }
+    assert_equals(total, 31);
+  }, "fetch() responses expose a readable body stream");
+
+  promise_test(async (t) => {
+    const response = await fetch("fetch-api-does-not-exist.json");
+    assert_equals(response.status, 404);
+    assert_false(response.ok);
+  }, "fetch() resolves with an error status response");
+
+  promise_test(async (t) => {
+    const controller = new AbortController();
+    controller.abort();
+    await promise_rejects_dom(t, "AbortError", fetch("fetch-api-resource.json", { signal: controller.signal }));
+    const controller2 = new AbortController();
+    const promise = fetch("fetch-api-resource.json", { signal: controller2.signal });
+    controller2.abort();
+    await promise_rejects_dom(t, "AbortError", promise);
+  }, "fetch() rejects when its signal is aborted");
+
+  promise_test(async (t) => {
+    await promise_rejects_js(t, TypeError, fetch("http://user:pw@localhost/"), "credentials in the URL");
+  }, "fetch() rejects an invalid request");
+</script>

@@ -2153,7 +2153,8 @@ impl ExecutionContext<BoaTypes> for BoaContext {
         // the JsObject's GcRefCell is already mutably borrowed (e.g. during
         // re-entrant property access inside Boa's VM).
         if !object.is::<NativeDataWrapper>() {
-            return None;
+            let target = self.platform_object_proxy_target(object)?;
+            return self.with_object_any(&target);
         }
         let borrow = object.try_borrow().ok()?;
         // SAFETY: we verified is::<NativeDataWrapper>(), so the data is
@@ -2167,6 +2168,10 @@ impl ExecutionContext<BoaTypes> for BoaContext {
     }
 
     fn with_object_any_mut(&mut self, object: &JsObject) -> Option<&mut dyn std::any::Any> {
+        if !object.is::<NativeDataWrapper>() {
+            let target = self.platform_object_proxy_target(object)?;
+            return self.with_object_any_mut(&target);
+        }
         let mut wrapper = object.downcast_mut::<NativeDataWrapper>()?;
         // SAFETY: The TraceableBox lives in the JsObject's GC heap, which
         // outlives this function call.  The RefMut guard is temporary but
@@ -2221,6 +2226,26 @@ impl ExecutionContext<BoaTypes> for BoaContext {
                 e.into_opaque(&mut self.context)
                     .unwrap_or_else(|_| boa_engine::JsValue::undefined())
             })
+    }
+
+    fn create_platform_object_proxy(
+        &mut self,
+        target: boa_engine::JsObject,
+        handler: boa_engine::JsObject,
+    ) -> Completion<boa_engine::JsObject, BoaTypes> {
+        let proxy = self.create_proxy(target.clone(), handler)?;
+        // Boa exposes no public accessor for a proxy's target, so the realm's
+        // host-defined store keeps the (proxy, target) pairs; the handles
+        // stay rooted for the realm's lifetime.
+        let id = std::any::TypeId::of::<PlatformObjectProxies>();
+        let mut proxies = self
+            .remove_host_any(&id)
+            .and_then(|boxed| boxed.downcast::<PlatformObjectProxies>().ok())
+            .map(|boxed| *boxed)
+            .unwrap_or_default();
+        proxies.0.push((proxy.clone(), target));
+        self.store_host_any(id, Box::new(proxies));
+        Ok(proxy)
     }
 
     // ── String Utilities ─────────────────────────────────────────────
@@ -2439,6 +2464,24 @@ impl boa_engine::JsData for TraceableBox {}
 ///
 /// Used by `create_object_with_any` and retrieved via `with_object_any`.
 pub struct NativeDataWrapper(pub TraceableBox);
+
+/// The (proxy, target) pairs made by `create_platform_object_proxy`, in the
+/// realm's host-defined store.
+#[derive(Default)]
+struct PlatformObjectProxies(Vec<(JsObject, JsObject)>);
+
+impl BoaContext {
+    /// The platform object behind a proxy made by
+    /// `create_platform_object_proxy`.
+    fn platform_object_proxy_target(&self, object: &JsObject) -> Option<JsObject> {
+        self.get_host_any(&std::any::TypeId::of::<PlatformObjectProxies>())?
+            .downcast_ref::<PlatformObjectProxies>()?
+            .0
+            .iter()
+            .find(|(proxy, _)| proxy == object)
+            .map(|(_, target)| target.clone())
+    }
+}
 /// Type-erased storage wrapper for the host-defined data store.
 #[derive(Default)]
 struct HostAnyMap(std::collections::HashMap<std::any::TypeId, Box<dyn std::any::Any>>);

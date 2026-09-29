@@ -7,6 +7,10 @@ autobins = false
 
 [features]
 default = []
+# The WebRTC engine (`webrtc` crate on qrtc) hosted in this process; the
+# `webrtc` feature of the root package turns it on together with the
+# content-side RTCPeerConnection code.
+webrtc = ["dep:webrtc"]
 # The tokio/reqwest backend. On non-Apple platforms it is the default (and
 # only) backend and reqwest is always compiled (see the target-specific
 # dependency tables); on Apple it is opt-in.
@@ -27,11 +31,14 @@ path = "src/bin/net_process.rs"
 [dependencies]
 ipc = { path = "../ipc" }
 ipc_messages = { path = "../ipc_messages" }
+webrtc = { path = "../webrtc", optional = true }
 crossbeam-channel = "0.5"
 mime_guess = "2"
 log = "0.4"
 env_logger = "0.11"
 url = "2"
+data-url = "0.3"
+tungstenite = { version = "0.24", features = ["rustls-tls-native-roots"] }
 uuid = { version = "1", features = ["serde", "v4"] }
 
 # --- tokio/reqwest backend ---

@@ -210,9 +210,7 @@ impl AutomationController {
         host: &mut H,
     ) -> Option<AutomationSnapshot> {
         let snapshot = host.automation_snapshot();
-        if snapshot.webview_id.is_none() {
-            return None;
-        }
+        snapshot.webview_id?;
         Some(snapshot)
     }
 
@@ -495,10 +493,10 @@ pub(crate) fn read_http_request(stream: &mut TcpStream) -> Result<Option<HttpReq
         if trimmed.is_empty() {
             continue;
         }
-        if let Some((name, value)) = trimmed.split_once(':') {
-            if name.trim().eq_ignore_ascii_case("content-length") {
-                content_length = value.trim().parse::<usize>().unwrap_or(0);
-            }
+        if let Some((name, value)) = trimmed.split_once(':')
+            && name.trim().eq_ignore_ascii_case("content-length")
+        {
+            content_length = value.trim().parse::<usize>().unwrap_or(0);
         }
     }
 

@@ -132,9 +132,6 @@ this crate.
   itself, and with it the task-level checkpoint and the document bookkeeping
   `run_task` performs.
 
-- **Clippy warning backlog.** The content crate has a backlog of pre-existing
-  clippy warnings (e.g. "useless conversion to the same type: V8Object").
-
 ## Layout
 
 - `content/src/main.rs` and the root modules resume embedder-driven HTML algorithms and content IPC entry points.

@@ -1,0 +1,50 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>HTMLLinkElement and stylesheet load events</title>
+<script src="/resources/testharness.js"></script>
+<script src="/resources/testharnessreport.js"></script>
+<div id="log"></div>
+<div id="styled">styled</div>
+<script>
+"use strict";
+
+test(() => {
+  const link = document.createElement("link");
+  assert_true(link instanceof HTMLLinkElement);
+  link.rel = "stylesheet";
+  link.type = "text/css";
+  link.href = "x.css";
+  assert_equals(link.getAttribute("rel"), "stylesheet", "rel reflects");
+  assert_equals(link.getAttribute("type"), "text/css", "type reflects");
+  assert_equals(link.getAttribute("href"), "x.css", "href content attribute");
+  assert_equals(link.href, new URL("x.css", location.href).href, "href resolves against the document");
+  assert_equals(link.crossOrigin, null);
+  link.crossOrigin = "anonymous";
+  assert_equals(link.getAttribute("crossorigin"), "anonymous");
+  link.crossOrigin = null;
+  assert_false(link.hasAttribute("crossorigin"));
+  assert_false(link.disabled);
+}, "HTMLLinkElement reflects its attributes");
+
+async_test((t) => {
+  const link = document.createElement("link");
+  link.rel = "stylesheet";
+  link.onload = t.step_func_done((event) => {
+    assert_equals(event.type, "load");
+    assert_equals(event.target, link, "the event fires at the link");
+    assert_true(link.isConnected === undefined || link.isConnected, "the link stays in the document");
+  });
+  link.onerror = t.unreached_func("the stylesheet exists");
+  link.href = "link-element-stylesheet.css";
+  document.head.appendChild(link);
+}, "an inserted stylesheet link fires load once the sheet is fetched");
+
+async_test((t) => {
+  const link = document.createElement("link");
+  link.rel = "stylesheet";
+  link.onload = t.unreached_func("a missing stylesheet must not load");
+  link.onerror = t.step_func_done(() => {});
+  link.href = "link-element-does-not-exist.css";
+  document.head.appendChild(link);
+}, "an inserted stylesheet link whose fetch fails fires error");
+</script>

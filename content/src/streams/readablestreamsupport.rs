@@ -244,15 +244,14 @@ where
     ec.enqueue_job_with_realm(
         realm,
         Box::new(move |job_ec| {
-            if let Err(error) = task(job_ec) {
-                if let Ok(rejected) = rejected_promise(error, job_ec) {
-                    if let Err(error) = mark_promise_as_handled(&rejected, job_ec) {
-                        log::warn!(
-                            "[readable-stream] failed to mark promise as handled: {:?}",
-                            error
-                        );
-                    }
-                }
+            if let Err(error) = task(job_ec)
+                && let Ok(rejected) = rejected_promise(error, job_ec)
+                && let Err(error) = mark_promise_as_handled(&rejected, job_ec)
+            {
+                log::warn!(
+                    "[readable-stream] failed to mark promise as handled: {:?}",
+                    error
+                );
             }
         }),
     );

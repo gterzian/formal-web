@@ -105,7 +105,7 @@ int fw_url_session_fetch(
                     // path: the Rust trampoline treats NULL as success. A
                     // static literal stays valid for the duration of the
                     // call when strdup failed.
-                    completion(context, 0, NULL, NULL, NULL, 0,
+                    completion(context, 0, NULL, NULL, NULL, NULL, 0, NULL, 0,
                                message_copy ? message_copy : "URLSession fetch failed");
                 }
                 free(message_copy);
@@ -114,11 +114,38 @@ int fw_url_session_fetch(
 
             long status = 0;
             NSString *content_type = nil;
+            NSDictionary *header_fields = nil;
             if ([response isKindOfClass:[NSHTTPURLResponse class]]) {
                 NSHTTPURLResponse *http_response = (NSHTTPURLResponse *)response;
                 status = [http_response statusCode];
-                content_type =
-                    [[http_response allHeaderFields] objectForKey:@"Content-Type"];
+                header_fields = [http_response allHeaderFields];
+                content_type = [header_fields objectForKey:@"Content-Type"];
+            }
+
+            // Every response header as C strings, for the duration of the
+            // completion call.
+            size_t header_count = header_fields ? (size_t)[header_fields count] : 0;
+            char **header_names = header_count ? calloc(header_count, sizeof(char *)) : NULL;
+            char **header_values = header_count ? calloc(header_count, sizeof(char *)) : NULL;
+            size_t copied = 0;
+            if (header_names && header_values) {
+                for (id key in header_fields) {
+                    NSString *name = [key description];
+                    NSString *value = [[header_fields objectForKey:key] description];
+                    const char *name_cstring = [name UTF8String];
+                    const char *value_cstring = [value UTF8String];
+                    if (!name_cstring || !value_cstring) {
+                        continue;
+                    }
+                    header_names[copied] = strdup(name_cstring);
+                    header_values[copied] = strdup(value_cstring);
+                    if (!header_names[copied] || !header_values[copied]) {
+                        free(header_names[copied]);
+                        free(header_values[copied]);
+                        break;
+                    }
+                    copied++;
+                }
             }
 
             NSString *final_url_string = [[response URL] absoluteString];
@@ -130,9 +157,16 @@ int fw_url_session_fetch(
             size_t length = data ? (size_t)[data length] : 0;
 
             if (completion) {
-                completion(context, (int)status, final_url_copy, content_type_copy, bytes,
-                           length, NULL);
+                completion(context, (int)status, final_url_copy, content_type_copy,
+                           (const char *const *)header_names,
+                           (const char *const *)header_values, copied, bytes, length, NULL);
             }
+            for (size_t index = 0; index < copied; index++) {
+                free(header_names[index]);
+                free(header_values[index]);
+            }
+            free(header_names);
+            free(header_values);
             free(final_url_copy);
             free(content_type_copy);
         }];

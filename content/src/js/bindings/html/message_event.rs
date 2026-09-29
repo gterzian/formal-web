@@ -298,9 +298,7 @@ fn init_message_event_method(
         .map(|v| ec.to_rust_string(v.clone()))
         .transpose()?
         .unwrap_or_default();
-    let source = args
-        .get(6)
-        .and_then(|v| crate::js::Types::value_as_object(v));
+    let source = args.get(6).and_then(crate::js::Types::value_as_object);
     let ports = args
         .get(7)
         .map(|v| {

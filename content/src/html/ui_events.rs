@@ -146,27 +146,26 @@ fn build_event_path(
         // Step 6.3 / Step 6.9.6.2: Append to an event path with the event
         // target, then each ancestor, in target-to-root order.
         // <https://dom.spec.whatwg.org/#concept-event-dispatch>
-        if let Ok(object) = crate::js::platform_objects::resolve_element_object(*node_id, ec) {
-            if let Some(event_target) =
+        if let Ok(object) = crate::js::platform_objects::resolve_element_object(*node_id, ec)
+            && let Some(event_target) =
                 crate::js::downcast::event_target_from_js_object(ec, &object)
-            {
-                // Step 6.9.6.1: If isActivationEvent is true, event's bubbles
-                //               attribute is true, activationTarget is null,
-                //               and parent has activation behavior, then set
-                //               activationTarget to parent.
-                // <https://dom.spec.whatwg.org/#concept-event-dispatch>
-                // <https://html.spec.whatwg.org/#links-created-by-a-and-area-elements:activation-behaviour-2>
-                let has_activation_behavior = ec
-                    .with_object_any(&object)
-                    .and_then(|data| data.downcast_ref::<HTMLAnchorElement>())
-                    .map(|anchor| anchor.href_attribute().is_some())
-                    .unwrap_or(false);
-                path.push(EventPathItem {
-                    invocation_target: event_target.clone(),
-                    shadow_adjusted_target: (index == 0).then_some(event_target),
-                    has_activation_behavior,
-                });
-            }
+        {
+            // Step 6.9.6.1: If isActivationEvent is true, event's bubbles
+            //               attribute is true, activationTarget is null,
+            //               and parent has activation behavior, then set
+            //               activationTarget to parent.
+            // <https://dom.spec.whatwg.org/#concept-event-dispatch>
+            // <https://html.spec.whatwg.org/#links-created-by-a-and-area-elements:activation-behaviour-2>
+            let has_activation_behavior = ec
+                .with_object_any(&object)
+                .and_then(|data| data.downcast_ref::<HTMLAnchorElement>())
+                .map(|anchor| anchor.href_attribute().is_some())
+                .unwrap_or(false);
+            path.push(EventPathItem {
+                invocation_target: event_target.clone(),
+                shadow_adjusted_target: (index == 0).then_some(event_target),
+                has_activation_behavior,
+            });
         }
     }
     // Step 6.9.9: If parent is non-null, then set parent to the result of

@@ -1,4 +1,5 @@
 use log::debug;
+use std::slice::from_ref;
 use std::{cell::Cell, rc::Rc};
 
 use js_engine::{Completion, ExecutionContext, JsTypes, PromiseResolvers};
@@ -271,7 +272,10 @@ fn sink_write_algorithm_fn(
     ec: &mut dyn ExecutionContext<Types>,
 ) -> Completion<JsValue, Types> {
     // Step 2.1: "Return ! TransformStreamDefaultSinkWriteAlgorithm(stream, chunk)."
-    let chunk = args.get(0).cloned().unwrap_or_else(|| ec.value_undefined());
+    let chunk = args
+        .first()
+        .cloned()
+        .unwrap_or_else(|| ec.value_undefined());
     let promise = transform_stream_default_sink_write_algorithm(stream.clone(), chunk, ec)?;
     Ok(JsValue::from(promise))
 }
@@ -283,7 +287,10 @@ fn sink_abort_algorithm_fn(
     ec: &mut dyn ExecutionContext<Types>,
 ) -> Completion<JsValue, Types> {
     // Step 3.1: "Return ! TransformStreamDefaultSinkAbortAlgorithm(stream, reason)."
-    let reason = args.get(0).cloned().unwrap_or_else(|| ec.value_undefined());
+    let reason = args
+        .first()
+        .cloned()
+        .unwrap_or_else(|| ec.value_undefined());
     let promise = transform_stream_default_sink_abort_algorithm(stream.clone(), reason, ec)?;
     Ok(JsValue::from(promise))
 }
@@ -305,7 +312,10 @@ fn perform_transform_on_rejected_fn(
     stream: &TransformStream,
     ec: &mut dyn ExecutionContext<Types>,
 ) -> Completion<JsValue, Types> {
-    let error = args.get(0).cloned().unwrap_or_else(|| ec.value_undefined());
+    let error = args
+        .first()
+        .cloned()
+        .unwrap_or_else(|| ec.value_undefined());
 
     // Step 2.1: "Perform ! TransformStreamError(controller.[[stream]], r)."
     transform_stream_error(stream, error.clone(), ec)?;
@@ -384,7 +394,10 @@ fn sink_abort_on_rejected_fn(
     ec: &mut dyn ExecutionContext<Types>,
 ) -> Completion<JsValue, Types> {
     let (controller, readable) = captures;
-    let error = args.get(0).cloned().unwrap_or_else(|| ec.value_undefined());
+    let error = args
+        .first()
+        .cloned()
+        .unwrap_or_else(|| ec.value_undefined());
 
     // Step 7.2.1: "Perform ! ReadableStreamDefaultControllerError(readable.[[controller]], r)."
     let readable_controller = readable
@@ -438,7 +451,10 @@ fn sink_close_on_rejected_fn(
     ec: &mut dyn ExecutionContext<Types>,
 ) -> Completion<JsValue, Types> {
     let (controller, readable) = captures;
-    let error = args.get(0).cloned().unwrap_or_else(|| ec.value_undefined());
+    let error = args
+        .first()
+        .cloned()
+        .unwrap_or_else(|| ec.value_undefined());
 
     // Step 7.2.1: "Perform ! ReadableStreamDefaultControllerError(readable.[[controller]], r)."
     let readable_controller = readable
@@ -514,7 +530,10 @@ fn source_cancel_on_rejected_fn(
     ec: &mut dyn ExecutionContext<Types>,
 ) -> Completion<JsValue, Types> {
     let (controller, stream, writable) = captures;
-    let error = args.get(0).cloned().unwrap_or_else(|| ec.value_undefined());
+    let error = args
+        .first()
+        .cloned()
+        .unwrap_or_else(|| ec.value_undefined());
 
     // Step 7.2.1: "Perform ! WritableStreamDefaultControllerErrorIfNeeded(writable.[[controller]], r)."
     let writable_controller = writable
@@ -1045,7 +1064,7 @@ fn transform_stream_default_sink_abort_algorithm(
                 .ok_or_else(|| ec.new_type_error("new_promise_pending did not return an object"))?
         }
         Some(TransformCancelAlgorithm::JavaScript(ref callback)) => {
-            match callback.call(&[reason.clone()], ec) {
+            match callback.call(from_ref(&reason), ec) {
                 Ok(value) => promise_from_value(value, ec)?,
                 Err(error) => rejected_promise(error, ec)?,
             }
@@ -1245,7 +1264,7 @@ pub(crate) fn transform_stream_default_source_cancel_algorithm(
                 .ok_or_else(|| ec.new_type_error("new_promise_pending did not return an object"))?
         }
         Some(TransformCancelAlgorithm::JavaScript(ref callback)) => {
-            match callback.call(&[reason.clone()], ec) {
+            match callback.call(from_ref(&reason), ec) {
                 Ok(value) => promise_from_value(value, ec)?,
                 Err(error) => rejected_promise(error, ec)?,
             }
@@ -1313,8 +1332,7 @@ fn create_transform_stream_default_controller(
     let controller_object: JsObject = create_interface_instance::<
         Types,
         TransformStreamDefaultController,
-    >(controller.clone(), ec)?
-    .into();
+    >(controller.clone(), ec)?;
     Ok((controller, controller_object))
 }
 
@@ -1414,11 +1432,11 @@ pub(crate) fn construct_transform_stream(
             ec.call(&start_resolvers.resolve, &undefined, &[result])?;
         } else {
             // Step 13: "Otherwise, resolve startPromise with undefined."
-            ec.call(&start_resolvers.resolve, &undefined, &[undefined.clone()])?;
+            ec.call(&start_resolvers.resolve, &undefined, from_ref(&undefined))?;
         }
     } else {
         // Step 13: "Otherwise, resolve startPromise with undefined."
-        ec.call(&start_resolvers.resolve, &undefined, &[undefined.clone()])?;
+        ec.call(&start_resolvers.resolve, &undefined, from_ref(&undefined))?;
     }
 
     Ok(stream)

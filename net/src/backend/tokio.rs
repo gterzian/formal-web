@@ -72,6 +72,21 @@ impl TokioBackend {
             .map_err(|error| format!("network request failed: {error}"))?;
         let final_url = response.url().to_string();
         let status = response.status().as_u16();
+        let status_text = response
+            .status()
+            .canonical_reason()
+            .unwrap_or("")
+            .to_owned();
+        let header_list = response
+            .headers()
+            .iter()
+            .map(|(name, value)| {
+                (
+                    name.as_str().to_owned(),
+                    String::from_utf8_lossy(value.as_bytes()).into_owned(),
+                )
+            })
+            .collect::<Vec<_>>();
         let content_type = response
             .headers()
             .get(CONTENT_TYPE)
@@ -86,7 +101,9 @@ impl TokioBackend {
         Ok(FetchResponse {
             final_url,
             status,
+            status_text,
             content_type,
+            header_list,
             body,
         })
     }

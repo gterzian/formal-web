@@ -133,7 +133,7 @@ impl ReadableStreamBYOBReader {
         ec: &mut dyn ExecutionContext<Types>,
     ) -> Completion<(), Types> {
         let not_attached = ec.new_type_error("reader is not attached to a stream");
-        let stream = self.stream_slot_value(ec).ok_or_else(|| not_attached)?;
+        let stream = self.stream_slot_value(ec).ok_or(not_attached)?;
 
         // Step 3: Set stream.[[disturbed]] to true.
         stream.set_disturbed(true);
@@ -161,7 +161,7 @@ impl ReadableStreamBYOBReader {
         let no_ctrl = ec.new_type_error("ReadableStream is missing its controller");
         let controller = stream.controller_slot(ec).ok_or_else(|| no_ctrl.clone())?;
         let not_byte = ec.new_type_error("ReadableStreamBYOBReader requires a byte stream");
-        let controller = controller.as_byte_controller().ok_or_else(|| not_byte)?;
+        let controller = controller.as_byte_controller().ok_or(not_byte)?;
         controller.pull_into(view, min, read_into_request, ec)
     }
 
@@ -274,7 +274,7 @@ fn create_readable_stream_byob_reader(
 ) -> Completion<JsObject, Types> {
     let reader = ReadableStreamBYOBReader::new(ec);
     let reader_object: JsObject =
-        create_interface_instance::<Types, ReadableStreamBYOBReader>(reader, ec)?.into();
+        create_interface_instance::<Types, ReadableStreamBYOBReader>(reader, ec)?;
     Ok(reader_object)
 }
 

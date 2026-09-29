@@ -1,4 +1,5 @@
 use std::mem;
+use std::slice::from_ref;
 
 use js_engine::{Completion, ExecutionContext, JsTypes, PromiseResolvers};
 
@@ -144,9 +145,7 @@ pub(crate) trait ReadableStreamGenericReader: Clone {
         // Step 1: "Let stream be reader.[[stream]]."
         let not_attached_error =
             ec.new_type_error("ReadableStream reader is not attached to a stream");
-        let stream = self
-            .stream_slot_value(ec)
-            .ok_or_else(|| not_attached_error)?;
+        let stream = self.stream_slot_value(ec).ok_or(not_attached_error)?;
 
         // Step 2: "Assert: stream is not undefined."
         debug_assert!(self.stream_slot_value(ec).is_some());
@@ -160,7 +159,7 @@ pub(crate) trait ReadableStreamGenericReader: Clone {
         if stream.state() == ReadableStreamState::Readable {
             if let Some(resolvers) = self.closed_resolvers_slot_value(ec) {
                 let undefined = ec.value_undefined();
-                ec.call(&resolvers.reject, &undefined, &[release_error.clone()])?;
+                ec.call(&resolvers.reject, &undefined, from_ref(&release_error))?;
             }
         } else {
             // Step 5: "Otherwise, set reader.[[closedPromise]] to a promise rejected with a TypeError exception."
@@ -176,9 +175,7 @@ pub(crate) trait ReadableStreamGenericReader: Clone {
 
         // Step 7: "Perform ! stream.[[controller]].[[ReleaseSteps]]()."
         let no_controller_error = ec.new_type_error("ReadableStream is missing its controller");
-        let controller = stream
-            .controller_slot(ec)
-            .ok_or_else(|| no_controller_error)?;
+        let controller = stream.controller_slot(ec).ok_or(no_controller_error)?;
         controller.release_steps(ec)?;
 
         // Step 8: "Set stream.[[reader]] to undefined."
@@ -473,7 +470,7 @@ fn create_readable_stream_default_reader(
 ) -> Completion<JsObject, Types> {
     let reader = ReadableStreamDefaultReader::new(ec);
     let reader_object: JsObject =
-        create_interface_instance::<Types, ReadableStreamDefaultReader>(reader, ec)?.into();
+        create_interface_instance::<Types, ReadableStreamDefaultReader>(reader, ec)?;
     Ok(reader_object)
 }
 

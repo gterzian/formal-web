@@ -199,10 +199,10 @@ fn try_with_location_ref<R>(
 ) -> Completion<R, crate::js::Types> {
     let obj = crate::js::Types::value_as_object(this)
         .ok_or_else(|| ec.new_type_error("Location receiver is not an object"))?;
-    if let Some(data) = ec.with_object_any(&obj) {
-        if let Some(location) = data.downcast_ref::<Location>() {
-            return Ok(f(location));
-        }
+    if let Some(data) = ec.with_object_any(&obj)
+        && let Some(location) = data.downcast_ref::<Location>()
+    {
+        return Ok(f(location));
     }
     Err(ec.new_type_error("receiver is not a Location"))
 }
@@ -219,7 +219,7 @@ fn location_error_to_js_value(
         }
     };
     create_interface_instance::<crate::js::Types, DOMException>(exception, ec)
-        .map(|obj| crate::js::Types::value_from_object(obj))
+        .map(crate::js::Types::value_from_object)
         .unwrap_or_else(|err| err)
 }
 
