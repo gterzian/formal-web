@@ -20,6 +20,9 @@ pub struct FetchResponse {
     pub status: u16,
     pub final_url: String,
     pub content_type: String,
+    /// Every header field of the response, in the order Foundation reports
+    /// them.
+    pub header_list: Vec<(String, String)>,
     pub body: Vec<u8>,
 }
 
@@ -131,6 +134,9 @@ unsafe extern "C" fn completion_trampoline(
     status_code: std::os::raw::c_int,
     final_url: *const std::os::raw::c_char,
     content_type: *const std::os::raw::c_char,
+    header_names: *const *const std::os::raw::c_char,
+    header_values: *const *const std::os::raw::c_char,
+    header_count: usize,
     body: *const u8,
     body_length: usize,
     error: *const std::os::raw::c_char,
@@ -169,10 +175,31 @@ unsafe extern "C" fn completion_trampoline(
             // valid for the duration of the call.
             unsafe { std::slice::from_raw_parts(body, body_length) }.to_vec()
         };
+        let mut header_list = Vec::with_capacity(header_count);
+        if !header_names.is_null() && !header_values.is_null() {
+            // SAFETY: the two arrays hold `header_count` pointers to
+            // NUL-terminated C strings, all valid for the duration of the
+            // call; they are copied out here.
+            let names = unsafe { std::slice::from_raw_parts(header_names, header_count) };
+            let values = unsafe { std::slice::from_raw_parts(header_values, header_count) };
+            for (name, value) in names.iter().zip(values) {
+                if name.is_null() || value.is_null() {
+                    continue;
+                }
+                let name = unsafe { CStr::from_ptr(*name) }
+                    .to_string_lossy()
+                    .into_owned();
+                let value = unsafe { CStr::from_ptr(*value) }
+                    .to_string_lossy()
+                    .into_owned();
+                header_list.push((name, value));
+            }
+        }
         Ok(FetchResponse {
             status: status_code as u16,
             final_url,
             content_type,
+            header_list,
             body,
         })
     };

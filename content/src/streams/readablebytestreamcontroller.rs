@@ -617,8 +617,7 @@ impl ReadableByteStreamController {
 
         let request = ReadableStreamBYOBRequest::new(self.clone(), ec);
         let object: JsObject =
-            create_interface_instance::<crate::js::Types, ReadableStreamBYOBRequest>(request, ec)?
-                .into();
+            create_interface_instance::<crate::js::Types, ReadableStreamBYOBRequest>(request, ec)?;
         *self.byob_request_object.borrow_mut(ec) = Some(object.clone());
         self.update_byob_request_view(ec)?;
         Ok(Some(object))
@@ -1839,8 +1838,7 @@ pub(crate) fn set_up_readable_byte_stream_controller_from_underlying_source(
     let controller_object: JsObject = create_interface_instance::<
         crate::js::Types,
         ReadableByteStreamController,
-    >(controller.clone(), ec)?
-    .into();
+    >(controller.clone(), ec)?;
 
     let mut start_algorithm = StartAlgorithm::ReturnUndefined;
     let mut pull_algorithm = PullAlgorithm::ReturnUndefined;

@@ -9,8 +9,12 @@ autobins = false
 unexpected_cfgs = { level = "warn", check-cfg = ['cfg(boa_backend)', 'cfg(jsc_backend)', 'cfg(v8_backend)'] }
 
 [features]
-default = ["media", "v8"]
+default = ["media", "v8", "webrtc"]
 media = []
+# WebRTC and Media Capture and Streams (`crate::webrtc`,
+# `crate::mediacapture_streams` and their bindings); the net process must be
+# built with its own `webrtc` feature to answer the requests.
+webrtc = []
 
 # Backend selection (mutually exclusive). V8 is the default.
 # Boa available by passing --no-default-features --features boa,media.
@@ -50,6 +54,7 @@ style = { version = "0.17.0", package = "stylo" }
 style_traits = { version = "0.17.0", package = "stylo_traits" }
 crossbeam-channel = "0.5"
 url = "2"
+form_urlencoded = "1"
 uuid = { version = "1", features = ["serde", "v4"] }
 xml5ever = "0.39.0"
 verification = { path = "../verification" }

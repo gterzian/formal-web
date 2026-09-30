@@ -48,7 +48,8 @@ impl HTMLElement {
     /// <https://html.spec.whatwg.org/#dom-title>
     pub(crate) fn set_title(&self, title: &str) {
         // Step 1: "Set this's title content attribute to the given value."
-        self.element.set_attribute("title", title);
+        self.element
+            .set_an_attribute_value("title", title, None, None);
     }
 
     /// <https://html.spec.whatwg.org/#dom-lang>
@@ -60,7 +61,8 @@ impl HTMLElement {
     /// <https://html.spec.whatwg.org/#dom-lang>
     pub(crate) fn set_lang(&self, lang: &str) {
         // Step 1: "Set this's lang content attribute to the given value."
-        self.element.set_attribute("lang", lang);
+        self.element
+            .set_an_attribute_value("lang", lang, None, None);
     }
 
     /// <https://html.spec.whatwg.org/#dom-dir>
@@ -72,7 +74,7 @@ impl HTMLElement {
     /// <https://html.spec.whatwg.org/#dom-dir>
     pub(crate) fn set_dir(&self, dir: &str) {
         // Step 1: "Set this's dir content attribute to the given value."
-        self.element.set_attribute("dir", dir);
+        self.element.set_an_attribute_value("dir", dir, None, None);
     }
 
     /// <https://html.spec.whatwg.org/#dom-hidden>
@@ -86,9 +88,10 @@ impl HTMLElement {
     pub(crate) fn set_hidden(&self, hidden: bool) {
         // Step 1: "Set the hidden attribute to the Hidden State if the given value is true; otherwise remove it."
         if hidden {
-            self.element.set_attribute("hidden", "");
+            self.element
+                .set_an_attribute_value("hidden", "", None, None);
         } else {
-            self.element.remove_attribute("hidden");
+            self.element.remove_an_attribute_by_name("hidden");
         }
     }
 

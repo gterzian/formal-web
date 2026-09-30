@@ -410,7 +410,7 @@ impl WritableStreamDefaultWriter {
 
     fn release(&self, ec: &mut dyn ExecutionContext<Types>) -> Completion<(), Types> {
         let released = ec.new_type_error("WritableStreamDefaultWriter has been released");
-        let stream = self.stream_slot_value(ec).ok_or_else(|| released)?;
+        let stream = self.stream_slot_value(ec).ok_or(released)?;
         debug_assert!(stream.writer_slot(ec).is_some());
 
         let released_error = type_error_value("Writer was released", ec)?;
@@ -428,7 +428,7 @@ impl WritableStreamDefaultWriter {
         ec: &mut dyn ExecutionContext<Types>,
     ) -> Completion<JsObject, Types> {
         let no_ctrl = ec.new_type_error("WritableStream is missing its controller");
-        let controller = stream.controller_slot(ec).ok_or_else(|| no_ctrl)?;
+        let controller = stream.controller_slot(ec).ok_or(no_ctrl)?;
         let chunk_size = writable_stream_default_controller_get_chunk_size(
             controller.as_default_controller(),
             &chunk,

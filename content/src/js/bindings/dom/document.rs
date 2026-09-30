@@ -3,11 +3,11 @@ use std::rc::Rc;
 
 type JsValue = <crate::js::Types as JsTypes>::JsValue;
 
-use crate::dom::Document;
+use crate::dom::{Attr, DOMException, Document};
 use crate::js::bindings::html::global_event_handlers::define_global_event_handlers;
 use crate::js::platform_objects::{
     document_object, invalidate_cached_node_ids, resolve_element_object,
-    resolve_or_create_text_node_object,
+    resolve_or_create_text_node_object, with_global_scope,
 };
 use crate::webidl::bindings::{
     AttributeDef, InterfaceDefinition, OperationDef, WebIdlInterface, create_interface_instance,
@@ -97,8 +97,65 @@ impl WebIdlInterface<crate::js::Types> for Document {
             promise_type: false,
             exposed: None,
         });
+        def.add_operation(OperationDef {
+            id: "createAttribute",
+            length: 1,
+            method: create_attribute,
+            static_: false,
+            unforgeable: false,
+            promise_type: false,
+            exposed: None,
+        });
+        def.add_operation(OperationDef {
+            id: "createAttributeNS",
+            length: 2,
+            method: create_attribute_ns,
+            static_: false,
+            unforgeable: false,
+            promise_type: false,
+            exposed: None,
+        });
 
         // §3.7.6: Regular attributes
+        def.add_attribute(AttributeDef {
+            id: "implementation",
+            getter: get_implementation,
+            setter: None,
+            static_: false,
+            unforgeable: false,
+            promise_type: false,
+            legacy_lenient_this: false,
+            replaceable: false,
+            put_forwards: None,
+            legacy_lenient_setter: false,
+            exposed: None,
+        });
+        def.add_attribute(AttributeDef {
+            id: "head",
+            getter: get_head,
+            setter: None,
+            static_: false,
+            unforgeable: false,
+            promise_type: false,
+            legacy_lenient_this: false,
+            replaceable: false,
+            put_forwards: None,
+            legacy_lenient_setter: false,
+            exposed: None,
+        });
+        def.add_attribute(AttributeDef {
+            id: "currentScript",
+            getter: get_current_script,
+            setter: None,
+            static_: false,
+            unforgeable: false,
+            promise_type: false,
+            legacy_lenient_this: false,
+            replaceable: false,
+            put_forwards: None,
+            legacy_lenient_setter: false,
+            exposed: None,
+        });
         def.add_attribute(AttributeDef {
             id: "body",
             getter: get_body,
@@ -302,6 +359,60 @@ fn create_text_node(
     Ok(crate::js::Types::value_from_object(obj))
 }
 
+fn attr_value(attr: Attr, ec: &mut dyn ExecutionContext<crate::js::Types>) -> JsValue {
+    attr.event_target
+        .reflector
+        .clone()
+        .map(crate::js::Types::value_from_object)
+        .unwrap_or_else(|| ec.value_null())
+}
+
+fn dom_exception_value(
+    error: DOMException,
+    ec: &mut dyn ExecutionContext<crate::js::Types>,
+) -> JsValue {
+    create_interface_instance::<crate::js::Types, DOMException>(error, ec)
+        .map(crate::js::Types::value_from_object)
+        .unwrap_or_else(|err| err)
+}
+
+fn create_attribute(
+    this: &JsValue,
+    args: &[JsValue],
+    ec: &mut dyn ExecutionContext<crate::js::Types>,
+) -> Completion<JsValue, crate::js::Types> {
+    let value_undefined = ec.value_undefined();
+    let local_name = ec.to_rust_string(args.first().cloned().unwrap_or(value_undefined))?;
+    let document = try_with_document(this, ec, |document, _ec| document.clone())?;
+    let attr = document
+        .create_attribute(&local_name, ec)?
+        .map_err(|error| dom_exception_value(error, ec))?;
+    Ok(attr_value(attr, ec))
+}
+
+fn create_attribute_ns(
+    this: &JsValue,
+    args: &[JsValue],
+    ec: &mut dyn ExecutionContext<crate::js::Types>,
+) -> Completion<JsValue, crate::js::Types> {
+    let value_undefined = ec.value_undefined();
+    let namespace = match args.first() {
+        Some(value)
+            if !crate::js::Types::value_is_null(value)
+                && !crate::js::Types::value_is_undefined(value) =>
+        {
+            Some(ec.to_rust_string(value.clone())?)
+        }
+        _ => None,
+    };
+    let qualified_name = ec.to_rust_string(args.get(1).cloned().unwrap_or(value_undefined))?;
+    let document = try_with_document(this, ec, |document, _ec| document.clone())?;
+    let attr = document
+        .create_attribute_ns(namespace.as_deref(), &qualified_name, ec)?
+        .map_err(|error| dom_exception_value(error, ec))?;
+    Ok(attr_value(attr, ec))
+}
+
 fn create_comment(
     this: &JsValue,
     args: &[JsValue],
@@ -326,6 +437,52 @@ fn get_body(
 ) -> Completion<JsValue, crate::js::Types> {
     let node_id = try_with_document(this, ec, |document, _ec| Document::body(document))?
         .map_err(|error| ec.new_syntax_error(&error))?;
+    match node_id {
+        Some(node_id) => {
+            let obj = resolve_element_object(node_id, ec)?;
+            Ok(crate::js::Types::value_from_object(obj))
+        }
+        None => Ok(ec.value_null()),
+    }
+}
+
+fn get_implementation(
+    this: &JsValue,
+    _: &[JsValue],
+    ec: &mut dyn ExecutionContext<crate::js::Types>,
+) -> Completion<JsValue, crate::js::Types> {
+    let document = try_with_document(this, ec, |document, _ec| document.clone())?;
+    document.implementation(ec)?;
+    let object = with_global_scope(ec, |global_scope, ec| {
+        global_scope
+            .dom_implementation_object(ec)
+            .ok_or_else(|| ec.new_type_error("document has no DOMImplementation object"))
+    })?;
+    Ok(crate::js::Types::value_from_object(object))
+}
+
+fn get_head(
+    this: &JsValue,
+    _: &[JsValue],
+    ec: &mut dyn ExecutionContext<crate::js::Types>,
+) -> Completion<JsValue, crate::js::Types> {
+    let node_id = try_with_document(this, ec, |document, _ec| Document::head(document))?
+        .map_err(|error| ec.new_syntax_error(&error))?;
+    match node_id {
+        Some(node_id) => {
+            let obj = resolve_element_object(node_id, ec)?;
+            Ok(crate::js::Types::value_from_object(obj))
+        }
+        None => Ok(ec.value_null()),
+    }
+}
+
+fn get_current_script(
+    this: &JsValue,
+    _: &[JsValue],
+    ec: &mut dyn ExecutionContext<crate::js::Types>,
+) -> Completion<JsValue, crate::js::Types> {
+    let node_id = try_with_document(this, ec, |document, _ec| Document::current_script(document))?;
     match node_id {
         Some(node_id) => {
             let obj = resolve_element_object(node_id, ec)?;

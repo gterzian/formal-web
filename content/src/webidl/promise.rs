@@ -19,16 +19,6 @@ pub(crate) fn resolve_to_undefined_impl(
 }
 type JsObject = <Types as JsTypes>::JsObject;
 
-/// **Web IDL Promise Manipulation**
-///
-/// Helpers for creating and transforming promises per https://webidl.spec.whatwg.org/#js-promise-manipulation
-///
-/// Each helper maps directly to a Web IDL operation:
-/// - `resolved_promise` → § a-promise-resolved-with
-/// - `rejected_promise` → § a-promise-rejected-with
-/// - `promise_from_value` → § js-to-promise
-/// - `transform_promise_to_undefined` → § dfn-perform-steps-once-promise-is-settled
-
 /// <https://webidl.spec.whatwg.org/#a-promise-resolved-with>
 pub(crate) fn resolved_promise(
     value: JsValue,
@@ -125,7 +115,7 @@ pub(crate) fn transform_promise_to_undefined(
     // ignores it (calls promise.then() which creates its own).  The
     // returned promise resolves to undefined when promise_object settles.
     let js_promise =
-        <Types as JsTypes>::object_as_promise(promise_object).ok_or_else(|| not_promise_err)?;
+        <Types as JsTypes>::object_as_promise(promise_object).ok_or(not_promise_err)?;
     let result = ec.perform_promise_then(js_promise, Some(on_fulfilled), None, None)?;
 
     // Step 8 of react: "Return newCapability."
@@ -144,7 +134,7 @@ pub(crate) fn mark_promise_as_handled(
     let on_rejected = create_builtin_fn_static(ec, resolve_to_undefined_impl, 1, name_key);
     // PerformPromiseThen with rejection-only handler.
     let js_promise =
-        <Types as JsTypes>::object_as_promise(promise_object).ok_or_else(|| not_promise_err)?;
+        <Types as JsTypes>::object_as_promise(promise_object).ok_or(not_promise_err)?;
     ec.perform_promise_then(js_promise, None, Some(on_rejected), None)?;
     Ok(())
 }
@@ -457,7 +447,7 @@ pub(crate) fn wait_for_all_get_promise(
         Box::new(
             move |results: Vec<JsValue>, inner_ec: &mut dyn ExecutionContext<Types>| {
                 // Step 2.1: Resolve promise with results.
-                let resolve: JsObject = resolvers_for_success.resolve.clone().into();
+                let resolve: JsObject = resolvers_for_success.resolve.clone();
                 let undefined = inner_ec.value_undefined();
                 // Convert results to JS array for Promise<sequence<T>>
                 let array = inner_ec.create_empty_array();
@@ -471,7 +461,7 @@ pub(crate) fn wait_for_all_get_promise(
         Box::new(
             move |reason: JsValue, inner_ec: &mut dyn ExecutionContext<Types>| {
                 // Step 3.1: Reject promise with reason.
-                let reject: JsObject = resolvers.reject.clone().into();
+                let reject: JsObject = resolvers.reject.clone();
                 let undefined = inner_ec.value_undefined();
                 inner_ec.call(&reject, &undefined, &[reason])?;
                 Ok(())

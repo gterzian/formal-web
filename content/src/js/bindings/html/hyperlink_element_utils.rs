@@ -31,10 +31,10 @@ fn try_with_hyperlink_element_utils_ref<R>(
 ) -> Completion<R, crate::js::Types> {
     let object = crate::js::Types::value_as_object(this)
         .ok_or_else(|| ec.new_type_error("hyperlink receiver is not an object"))?;
-    if let Some(data) = ec.with_object_any(&object) {
-        if let Some(anchor) = data.downcast_ref::<HTMLAnchorElement>() {
-            return Ok(f(&*anchor));
-        }
+    if let Some(data) = ec.with_object_any(&object)
+        && let Some(anchor) = data.downcast_ref::<HTMLAnchorElement>()
+    {
+        return Ok(f(anchor));
     }
     Err(ec.new_type_error("receiver does not implement HyperlinkElementUtils"))
 }

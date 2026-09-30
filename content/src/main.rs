@@ -9,14 +9,22 @@ pub mod js;
 pub mod testutils;
 
 pub mod dom;
+pub(crate) mod encoding;
+pub(crate) mod file_api;
 #[cfg(test)]
 mod generic_js_test;
 pub mod html;
+#[cfg(feature = "webrtc")]
+pub(crate) mod mediacapture_streams;
 pub mod streams;
 pub mod ui_events;
+pub(crate) mod url_standard;
 #[cfg(all(boa_backend, feature = "wasm"))]
 pub mod wasm;
 pub mod webidl;
+#[cfg(feature = "webrtc")]
+pub(crate) mod webrtc;
+pub(crate) mod websockets;
 
 use crate::dom::{EventTargetAccess, dispatch_with_path, fire_event, simple_path};
 use crate::html::environment_settings_object::RealmWiring;
@@ -28,10 +36,13 @@ use crate::html::workers::dedicated_worker_agent::{
     WorkerChannelMessage, WorkerEvent, WorkerHandle, WorkerInbound, fire_worker_posted_message,
 };
 use crate::html::{
-    EnvironmentSettingsObject, JsHtmlParserProvider, MessageEvent, PendingParserScript, Window,
+    EnvironmentSettingsObject, JsHtmlParserProvider, MessageEvent, NewDocumentRegistry,
+    PendingParserScript, VideoPaintRegistry, Window,
     attach_same_origin_child_document_for_traversable, execute_parser_scripts,
+    execute_the_script_element, linked_stylesheet_fetched, mark_parser_scripts_started,
     parse_html_into_document, run_dom_post_connection_steps_for_document,
     run_dom_removing_steps_for_document, run_iframe_load_event_steps_for_traversable,
+    script_element_fetch_completed,
     structured_data::safe_passing_of_structured_data::{
         SerializeWithTransferResult, structured_deserialize_with_transfer,
     },
@@ -53,7 +64,15 @@ use data_url::DataUrl;
 use html5ever::local_name;
 use js_engine::{EcmascriptHost, ExecutionContext, JsTypes};
 
-use crate::fetch::request_header_list;
+/// A document after initialise the document object: the document, its
+/// settings object and its needs-paint flag.
+type InitialisedDocument = (
+    Rc<RefCell<BaseDocument>>,
+    EnvironmentSettingsObject,
+    Arc<AtomicBool>,
+);
+
+use crate::fetch::{FetchResponseData, process_response, request_header_list};
 use ipc_messages::content::Command::{
     ClickElement, CompleteDocumentFetch, ContentBootstrap, CreateEmptyDocument,
     CreateLoadedDocument, DestroyDocument, DispatchEvent, EvaluateScript, FailDocumentFetch,
@@ -145,7 +164,18 @@ fn epoch_millis(epoch_anchor: Instant, epoch_anchor_wall_ms: f64, instant: Insta
             * 1000.0
 }
 
-enum PendingNetworkHandler {
+pub(crate) enum PendingNetworkHandler {
+    /// A fetch() call's request (the fetch() method's step 12).
+    Fetch {
+        document_id: DocumentId,
+        fetch_id: u64,
+    },
+    /// A script element's classic script fetch (prepare the script element
+    /// step 31.11).
+    Script {
+        document_id: DocumentId,
+        node_id: usize,
+    },
     Resource {
         document_id: DocumentId,
         request_url: String,
@@ -242,9 +272,9 @@ impl ShellProvider for ContentShellProvider {
 }
 
 enum DeferredScriptState {
-    Inline { source: String },
-    ExternalPending { src: String },
-    ExternalReady { source: String },
+    Inline { node_id: usize, source: String },
+    ExternalPending { node_id: usize, src: String },
+    ExternalReady { node_id: usize, source: String },
     ExternalFailed { src: String },
 }
 
@@ -411,6 +441,8 @@ pub(crate) struct ContentDocument {
     settings: EnvironmentSettingsObject,
     pending_document_load: Option<PendingDocumentLoad>,
     navigable_container_states: HashMap<usize, NavigableContainerState>,
+    /// The script elements whose already started flag is set: prepared once,
+    /// by the parser path or by the post-connection sweep.
     viewport_offset_x: f32,
     viewport_offset_y: f32,
     /// Set whenever the document may have changed and needs a blitz render
@@ -511,14 +543,13 @@ pub(crate) struct ContentProcess {
     /// (window.open).  ContentProcess holds one Rc, and before running JS it
     /// sets a clone on the source document's GlobalScope so that
     /// `register_new_traversable_document` can insert directly into this map.
-    new_document_registry:
-        Rc<RefCell<HashMap<DocumentId, (EnvironmentSettingsObject, Rc<RefCell<BaseDocument>>)>>>,
+    new_document_registry: NewDocumentRegistry,
 
     /// Consolidated wasm content-process state (worker + pending tracking).
     #[cfg(all(boa_backend, feature = "wasm"))]
     wasm: crate::wasm::ContentWasmState,
 
-    video_paint_registry: Rc<RefCell<HashMap<(DocumentId, usize), VideoPaintId>>>,
+    video_paint_registry: VideoPaintRegistry,
     /// Shared registry mapping (document_id, node_id) → CanvasId, set on each
     /// realm's GlobalScope so `transferControlToOffscreen` can register canvas
     /// ids and `build_frame_composition_metadata` can read them back.
@@ -645,6 +676,7 @@ impl ContentProcess {
         let trace_sender = self.trace_sender.clone();
         let worker_event_sender = self.worker_event_sender.clone();
         let network_extension_sender = self.network_extension_sender.clone();
+        let content_command_sender = self.content_command_sender.clone();
         with_global_scope(
             &mut settings.realm_execution_context,
             |global_scope, _ec| {
@@ -653,6 +685,7 @@ impl ContentProcess {
                 global_scope.set_worker_owner_inbox(worker_event_sender.clone());
                 global_scope.set_network_partition_event_loop_id(self.event_loop_id);
                 global_scope.set_network_extension_sender(network_extension_sender.clone());
+                global_scope.set_content_command_sender(content_command_sender.clone());
                 Ok(())
             },
         )
@@ -776,7 +809,7 @@ impl ContentProcess {
         Ok(())
     }
 
-    fn register_pending_handler(
+    pub(crate) fn register_pending_handler(
         &self,
         pending_handler: PendingNetworkHandler,
     ) -> Result<DocumentFetchId, String> {
@@ -793,7 +826,7 @@ impl ContentProcess {
 
     /// `navigable_id` is the navigable of the document the fetch is for;
     /// an embedder-scheme fetch names it to the user agent.
-    fn request_remote_fetch(
+    pub(crate) fn request_remote_fetch(
         &self,
         handler_id: DocumentFetchId,
         navigable_id: NavigableId,
@@ -810,11 +843,27 @@ impl ContentProcess {
             header_list: request_header_list(&request),
             body: request_body_string(&request.body),
         };
+        self.send_content_fetch_request(
+            handler_id,
+            navigable_id,
+            request.url.scheme(),
+            fetch_request,
+        )
+    }
 
+    /// Hand a fetch to the process that answers its scheme: the embedder for
+    /// a scheme it serves, otherwise net.
+    fn send_content_fetch_request(
+        &self,
+        handler_id: DocumentFetchId,
+        navigable_id: NavigableId,
+        scheme: &str,
+        fetch_request: ContentFetchRequest,
+    ) -> Result<(), String> {
         // A scheme the embedder serves is answered by the embedder, so the
         // fetch goes to the user agent instead of to net, ahead of
         // <https://fetch.spec.whatwg.org/#scheme-fetch>
-        if self.embedder_schemes.contains(request.url.scheme()) {
+        if self.embedder_schemes.contains(scheme) {
             return self
                 .event_sender
                 .send(ContentEvent::EmbedderSchemeFetchRequested(
@@ -845,8 +894,12 @@ impl ContentProcess {
 
     fn deferred_script_state(script: PendingParserScript) -> DeferredScriptState {
         match script {
-            PendingParserScript::Inline { source } => DeferredScriptState::Inline { source },
-            PendingParserScript::External { src } => DeferredScriptState::ExternalPending { src },
+            PendingParserScript::Inline { node_id, source } => {
+                DeferredScriptState::Inline { node_id, source }
+            }
+            PendingParserScript::External { node_id, src } => {
+                DeferredScriptState::ExternalPending { node_id, src }
+            }
         }
     }
 
@@ -861,7 +914,7 @@ impl ContentProcess {
             return;
         };
         let failed_src = match script {
-            DeferredScriptState::ExternalPending { src }
+            DeferredScriptState::ExternalPending { src, .. }
             | DeferredScriptState::ExternalFailed { src } => src.clone(),
             DeferredScriptState::Inline { .. } | DeferredScriptState::ExternalReady { .. } => {
                 return;
@@ -885,8 +938,9 @@ impl ContentProcess {
         let Some(script) = pending_document_load.scripts.get_mut(script_index) else {
             return;
         };
-        if matches!(script, DeferredScriptState::ExternalPending { .. }) {
+        if let DeferredScriptState::ExternalPending { node_id, .. } = script {
             *script = DeferredScriptState::ExternalReady {
+                node_id: *node_id,
                 source: String::from_utf8_lossy(&body).into_owned(),
             };
         }
@@ -1004,12 +1058,14 @@ impl ContentProcess {
             let trace_sender = self.trace_sender.clone();
             let worker_event_sender = self.worker_event_sender.clone();
             let network_extension_sender = self.network_extension_sender.clone();
+            let content_command_sender = self.content_command_sender.clone();
             with_global_scope(settings.ec(), |global_scope, _ec| {
                 global_scope.set_event_loop_id(self.event_loop_id);
                 global_scope.set_trace_sender(trace_sender.clone());
                 global_scope.set_worker_owner_inbox(worker_event_sender.clone());
                 global_scope.set_network_partition_event_loop_id(self.event_loop_id);
                 global_scope.set_network_extension_sender(network_extension_sender.clone());
+                global_scope.set_content_command_sender(content_command_sender.clone());
                 Ok(())
             })
             .map_err(|error| format!("failed to set event loop id: {}", error.display()))?;
@@ -1057,10 +1113,10 @@ impl ContentProcess {
             .documents
             .get(&document_id)
             .map(|document| document.traversable_id);
-        if let Some(traversable_id) = load_traversable_id {
-            if let Err(error) = self.set_up_new_document_registry(traversable_id) {
-                warn!("failed to set up new document registry: {error}");
-            }
+        if let Some(traversable_id) = load_traversable_id
+            && let Err(error) = self.set_up_new_document_registry(traversable_id)
+        {
+            warn!("failed to set up new document registry: {error}");
         }
 
         let (ready_to_finish, traversable_id, resources_ready, scripts_ready) = {
@@ -1117,9 +1173,13 @@ impl ContentProcess {
 
             for (script_idx, script) in pending_document_load.scripts.iter().enumerate() {
                 match script {
-                    DeferredScriptState::Inline { source }
-                    | DeferredScriptState::ExternalReady { source } => {
-                        if let Err(error) = content_document.settings.evaluate_script(source) {
+                    DeferredScriptState::Inline { node_id, source }
+                    | DeferredScriptState::ExternalReady { node_id, source } => {
+                        if let Err(error) = execute_the_script_element(
+                            &mut content_document.settings,
+                            *node_id,
+                            source,
+                        ) {
                             error!("[deferred eval #{script_idx}] content error: {error}");
                         }
                     }
@@ -1128,6 +1188,8 @@ impl ContentProcess {
                 }
             }
         }
+        // The scripts may have inserted script elements of their own.
+        run_dom_post_connection_steps_for_document(self, document_id)?;
 
         // Tear down the shared registry and drain any traversable documents
         // created by the load's scripts (window.open) into this process's
@@ -1202,7 +1264,7 @@ impl ContentProcess {
         user_scripts: Vec<UserScript>,
     ) -> Result<(), String> {
         let viewport_state = self.document_viewport_state(traversable_id);
-        let frame_id = frame_id.unwrap_or_else(FrameId::new);
+        let frame_id = frame_id.unwrap_or_default();
         let needs_paint = Arc::new(AtomicBool::new(false));
         let document = Rc::new(RefCell::new(BaseDocument::new(self.document_config(
             traversable_id,
@@ -1305,14 +1367,7 @@ impl ContentProcess {
         traversable_id: NavigableId,
         document_id: DocumentId,
         final_url: &str,
-    ) -> Result<
-        (
-            Rc<RefCell<BaseDocument>>,
-            EnvironmentSettingsObject,
-            Arc<AtomicBool>,
-        ),
-        String,
-    > {
+    ) -> Result<InitialisedDocument, String> {
         // Step 1: "Let browsingContext be the result of obtaining a browsing context to use for
         // a navigation response given navigationParams."
         // Note: Ran in the user agent: `UserAgent::initialise_the_document_object` resolved
@@ -1501,7 +1556,7 @@ impl ContentProcess {
             body,
         } = response;
         let viewport_state = self.document_viewport_state(traversable_id);
-        let frame_id = frame_id.unwrap_or_else(FrameId::new);
+        let frame_id = frame_id.unwrap_or_default();
         // This block continues <https://html.spec.whatwg.org/#navigate-html>.
         // Step 1: "Let document be the result of creating and initializing a `Document` object
         // given `html`, `text/html`, and navigationParams."
@@ -1534,6 +1589,13 @@ impl ContentProcess {
         // `continue_document_load` fires the load event and reports the commit
         // (ContentFinalizeNavigation) once resources and deferred scripts are ready.
 
+        let parser_script_node_ids = parser_scripts
+            .iter()
+            .map(|script| match script {
+                PendingParserScript::External { node_id, .. }
+                | PendingParserScript::Inline { node_id, .. } => *node_id,
+            })
+            .collect::<Vec<_>>();
         let deferred_scripts = parser_scripts
             .into_iter()
             .map(Self::deferred_script_state)
@@ -1577,6 +1639,9 @@ impl ContentProcess {
         // can resolve `_parent`/`_top` targets.
         let _ = self.set_navigable_hierarchy_on_global_scope(document_id);
 
+        if let Some(content_document) = self.documents.get_mut(&document_id) {
+            mark_parser_scripts_started(&mut content_document.settings, &parser_script_node_ids)?;
+        }
         run_dom_post_connection_steps_for_document(self, document_id)?;
 
         let deferred_fetches = self
@@ -1589,7 +1654,7 @@ impl ContentProcess {
                     .iter()
                     .enumerate()
                     .filter_map(|(script_index, script)| match script {
-                        DeferredScriptState::ExternalPending { src } => {
+                        DeferredScriptState::ExternalPending { src, .. } => {
                             Some((script_index, src.clone()))
                         }
                         DeferredScriptState::Inline { .. }
@@ -1762,6 +1827,28 @@ impl ContentProcess {
 
     fn destroy_document(&mut self, document_id: DocumentId) -> Result<(), String> {
         run_dom_removing_steps_for_document(self, document_id)?;
+        // Close the document's peer connections, so the WebRTC engine
+        // releases their sockets and threads.
+        // <https://w3c.github.io/webrtc-pc/#dfn-close-the-connection>
+        if let Some(content_document) = self.documents.get_mut(&document_id)
+            && let Err(error) =
+                with_global_scope(content_document.settings.ec(), |global_scope, ec| {
+                    #[cfg(feature = "webrtc")]
+                    for connection in global_scope.peer_connections(ec) {
+                        connection.close_the_connection(ec);
+                    }
+                    // <https://websockets.spec.whatwg.org/#make-disappear>
+                    for web_socket in global_scope.web_sockets(ec) {
+                        web_socket.make_disappear(ec);
+                    }
+                    Ok(())
+                })
+        {
+            error!(
+                "failed to close the peer connections of {document_id}: {}",
+                error.display()
+            );
+        }
         // Terminate the dedicated workers this document owns: the document is
         // going away, so its workers are no longer actively needed.  Their
         // handles stay registered until the workers' closed reports arrive
@@ -1862,6 +1949,14 @@ impl ContentProcess {
                     ..
                 }
                 | PendingNetworkHandler::DeferredScript {
+                    document_id: pending_document_id,
+                    ..
+                }
+                | PendingNetworkHandler::Script {
+                    document_id: pending_document_id,
+                    ..
+                }
+                | PendingNetworkHandler::Fetch {
                     document_id: pending_document_id,
                     ..
                 } => *pending_document_id != document_id,
@@ -1968,7 +2063,7 @@ impl ContentProcess {
                 .documents
                 .get(&document_id)
                 .map(|doc| doc.traversable_id)
-                .unwrap_or(NavigableId::new());
+                .unwrap_or_default();
 
             // Set up shared registry so window.open can register new documents
             // (same as click_element does).
@@ -2270,6 +2365,77 @@ impl ContentProcess {
 
     /// Fire one queued message event on a port (the message task of the
     /// message port post message steps).
+    /// A task of one RTCPeerConnection, in its document's realm.
+    #[cfg(feature = "webrtc")]
+    fn handle_webrtc_task(
+        &mut self,
+        document_id: DocumentId,
+        peer: ipc_messages::webrtc::PeerConnectionId,
+        task: crate::webrtc::WebRtcTask,
+    ) -> Result<(), String> {
+        let Some(content_document) = self.documents.get_mut(&document_id) else {
+            // The document is gone, and its connections with it.
+            return Ok(());
+        };
+        let time_millis = content_document.settings.current_time_millis();
+        with_global_scope(content_document.settings.ec(), |global_scope, ec| {
+            let Some(connection) = global_scope.peer_connection(peer, ec) else {
+                return Ok(());
+            };
+            connection.run_task(task, time_millis, ec)
+        })
+        .map_err(|error| format!("WebRTC task failed: {}", error.display()))?;
+        // The task's event handlers may have mutated the document.
+        self.mark_document_dirty(document_id);
+        let traversable_id = self
+            .documents
+            .get(&document_id)
+            .map(|document| document.traversable_id);
+        if let Some(traversable_id) = traversable_id
+            && let Err(error) = self
+                .event_sender
+                .send(ContentEvent::RenderingOpRequested(traversable_id))
+        {
+            error!("failed to request rendering op for WebRTC task: {error}");
+        }
+        Ok(())
+    }
+
+    /// A task of one WebSocket, in its document's realm.
+    fn handle_web_socket_task(
+        &mut self,
+        document_id: DocumentId,
+        socket: ipc_messages::websocket::WebSocketId,
+        event: ipc_messages::websocket::WebSocketEvent,
+    ) -> Result<(), String> {
+        let Some(content_document) = self.documents.get_mut(&document_id) else {
+            // The document is gone, and its sockets with it.
+            return Ok(());
+        };
+        let time_millis = content_document.settings.current_time_millis();
+        with_global_scope(content_document.settings.ec(), |global_scope, ec| {
+            let Some(web_socket) = global_scope.web_socket(socket, ec) else {
+                return Ok(());
+            };
+            web_socket.feedback(event, time_millis, ec)
+        })
+        .map_err(|error| format!("WebSocket task failed: {}", error.display()))?;
+        // The task's event handlers may have mutated the document.
+        self.mark_document_dirty(document_id);
+        let traversable_id = self
+            .documents
+            .get(&document_id)
+            .map(|document| document.traversable_id);
+        if let Some(traversable_id) = traversable_id
+            && let Err(error) = self
+                .event_sender
+                .send(ContentEvent::RenderingOpRequested(traversable_id))
+        {
+            error!("failed to request rendering op for WebSocket task: {error}");
+        }
+        Ok(())
+    }
+
     fn handle_run_port_message_task(&mut self, port_id: PortId) -> Result<(), String> {
         let Some(document_id) = self.find_port_document(port_id) else {
             return Ok(());
@@ -2657,10 +2823,10 @@ impl ContentProcess {
         // Collect video node ids by scanning the document tree for <video> elements.
         let mut video_node_ids = Vec::new();
         document.visit(|node_id, node| {
-            if let Some(element_data) = node.element_data() {
-                if element_data.name.local == local_name!("video") {
-                    video_node_ids.push(node_id);
-                }
+            if let Some(element_data) = node.element_data()
+                && element_data.name.local == local_name!("video")
+            {
+                video_node_ids.push(node_id);
             }
         });
 
@@ -2761,7 +2927,7 @@ impl ContentProcess {
 
             let paint_id = video_paint_registry
                 .entry((document_id, video_node_id))
-                .or_insert_with(VideoPaintId::new);
+                .or_default();
 
             embed_sites.push(EmbedSite::Video(VideoEmbedData {
                 paint_id: *paint_id,
@@ -2856,13 +3022,17 @@ impl ContentProcess {
         match pending_handler {
             PendingNetworkHandler::Resource {
                 document_id,
-                request_url: _,
+                request_url,
                 handler,
             } => {
                 handler.bytes(
                     response.final_url.clone(),
                     Bytes::copy_from_slice(&response.body),
                 );
+                // A stylesheet link's load event needs an ok status; the
+                // resource handler received the body either way.
+                let success = (200..300).contains(&response_status);
+                linked_stylesheet_fetched(self, document_id, &request_url, success)?;
                 let Some(content_document) = self.documents.get(&document_id) else {
                     error!("[content] complete_document_fetch: document {document_id} not found");
                     return Ok(());
@@ -2883,6 +3053,49 @@ impl ContentProcess {
                     .map_err(|error| {
                         format!("failed to request rendering op for resource fetch: {error}")
                     })?;
+                Ok(())
+            }
+            PendingNetworkHandler::Fetch {
+                document_id,
+                fetch_id,
+            } => self.complete_fetch(
+                document_id,
+                fetch_id,
+                Some(FetchResponseData {
+                    final_url: response.final_url,
+                    status: response.status,
+                    status_text: response.status_text,
+                    header_list: response.header_list,
+                    content_type: response.content_type,
+                    body: response.body,
+                }),
+            ),
+            PendingNetworkHandler::Script {
+                document_id,
+                node_id,
+            } => {
+                let source = deferred_script_response_is_executable(&response)
+                    .then(|| String::from_utf8_lossy(&response.body).into_owned());
+                if source.is_none() {
+                    warn!(
+                        "content script rejected: url={} status={} content-type={}",
+                        response.final_url, response.status, response.content_type,
+                    );
+                }
+                script_element_fetch_completed(self, document_id, node_id, source)?;
+                self.run_post_task_dom_steps();
+                self.mark_document_dirty(document_id);
+                if let Some(traversable_id) = self
+                    .documents
+                    .get(&document_id)
+                    .map(|document| document.traversable_id)
+                {
+                    self.event_sender
+                        .send(ContentEvent::RenderingOpRequested(traversable_id))
+                        .map_err(|error| {
+                            format!("failed to request rendering op for script fetch: {error}")
+                        })?;
+                }
                 Ok(())
             }
             PendingNetworkHandler::DeferredScript {
@@ -2945,7 +3158,8 @@ impl ContentProcess {
                 request_url,
                 handler,
             } => {
-                handler.bytes(request_url, Bytes::new());
+                handler.bytes(request_url.clone(), Bytes::new());
+                linked_stylesheet_fetched(self, document_id, &request_url, false)?;
                 let Some(content_document) = self.documents.get(&document_id) else {
                     error!("[content] fail_document_fetch: document {document_id} not found");
                     return Ok(());
@@ -2963,6 +3177,18 @@ impl ContentProcess {
                             "failed to request rendering op for resource fetch failure: {error}"
                         )
                     })?;
+                Ok(())
+            }
+            PendingNetworkHandler::Fetch {
+                document_id,
+                fetch_id,
+            } => self.complete_fetch(document_id, fetch_id, None),
+            PendingNetworkHandler::Script {
+                document_id,
+                node_id,
+            } => {
+                script_element_fetch_completed(self, document_id, node_id, None)?;
+                self.mark_document_dirty(document_id);
                 Ok(())
             }
             PendingNetworkHandler::DeferredScript {
@@ -3100,19 +3326,18 @@ impl ContentProcess {
                 // to clean up.
                 if let WorkerOwner::Document(document_id) = handle.owner
                     && self.documents.contains_key(&document_id)
+                    && let Some(document) = self.documents.get_mut(&document_id)
                 {
-                    if let Some(document) = self.documents.get_mut(&document_id) {
-                        with_global_scope(document.settings.ec(), |global_scope, ec| {
-                            global_scope.discard_owned_worker(worker_id, ec);
-                            Ok(())
-                        })
-                        .map_err(|error| {
-                            format!(
-                                "failed to discard closed worker {worker_id}: {}",
-                                error.display()
-                            )
-                        })?;
-                    }
+                    with_global_scope(document.settings.ec(), |global_scope, ec| {
+                        global_scope.discard_owned_worker(worker_id, ec);
+                        Ok(())
+                    })
+                    .map_err(|error| {
+                        format!(
+                            "failed to discard closed worker {worker_id}: {}",
+                            error.display()
+                        )
+                    })?;
                 }
                 Ok(())
             }
@@ -3494,6 +3719,17 @@ impl ContentProcess {
                 self.run_window_timer(document_id, timer_id, timer_key, nesting_level)
             }
             Task::RunPortMessage { port } => self.handle_run_port_message_task(port),
+            #[cfg(feature = "webrtc")]
+            Task::WebRtc {
+                document_id,
+                peer,
+                task,
+            } => self.handle_webrtc_task(document_id, peer, task),
+            Task::WebSocket {
+                document_id,
+                socket,
+                event,
+            } => self.handle_web_socket_task(document_id, socket, event),
             Task::RunWorkerTimer { worker_id, .. } => {
                 // A worker timer task should never reach the window event
                 // loop: worker timers are reaped by the worker's own event
@@ -3657,6 +3893,113 @@ impl ContentProcess {
     /// external animation (a video frame arriving at the graphics process)
     /// does not call this, so a static document that keeps being asked to
     /// render skips the blitz resolve + paint on an unchanged scene.
+    /// The DOM post-connection steps of every document a task may have
+    /// mutated (<https://html.spec.whatwg.org/#dom-trees>): script elements
+    /// inserted by script are prepared here.
+    fn run_post_task_dom_steps(&mut self) {
+        self.dispatch_pending_fetches();
+        let dirty_documents: Vec<DocumentId> = self
+            .documents
+            .iter()
+            .filter(|(_, document)| document.needs_paint.load(Ordering::Relaxed))
+            .map(|(document_id, _)| *document_id)
+            .collect();
+        for document_id in dirty_documents {
+            if let Err(error) = run_dom_post_connection_steps_for_document(self, document_id) {
+                error!("post-task DOM steps failed for {document_id}: {error}");
+            }
+        }
+    }
+
+    /// Hand every fetch() request started by the task that just ran to the
+    /// process that answers it (the fetch() method's step 12).
+    fn dispatch_pending_fetches(&mut self) {
+        let document_ids: Vec<DocumentId> = self.documents.keys().copied().collect();
+        for document_id in document_ids {
+            let Some(content_document) = self.documents.get_mut(&document_id) else {
+                continue;
+            };
+            let navigable_id = content_document.traversable_id;
+            let requests =
+                match with_global_scope(content_document.settings.ec(), |global_scope, ec| {
+                    Ok(global_scope.take_undispatched_fetches(ec))
+                }) {
+                    Ok(requests) => requests,
+                    Err(error) => {
+                        error!("failed to collect pending fetches for {document_id}: {error:?}");
+                        continue;
+                    }
+                };
+            for (fetch_id, request) in requests {
+                let scheme = request
+                    .url
+                    .split_once(':')
+                    .map(|(scheme, _)| scheme.to_owned())
+                    .unwrap_or_default();
+                let handler_id = match self.register_pending_handler(PendingNetworkHandler::Fetch {
+                    document_id,
+                    fetch_id,
+                }) {
+                    Ok(handler_id) => handler_id,
+                    Err(error) => {
+                        error!("failed to register fetch {fetch_id}: {error}");
+                        continue;
+                    }
+                };
+                // Note: The IPC request body is a string, so a body that is not
+                // UTF-8 is sent lossily.
+                let fetch_request = ContentFetchRequest {
+                    handler_id,
+                    url: request.url,
+                    method: request.method,
+                    header_list: request.header_list,
+                    body: request
+                        .body
+                        .map(|body| String::from_utf8_lossy(&body).into_owned())
+                        .unwrap_or_default(),
+                };
+                if let Err(error) = self.send_content_fetch_request(
+                    handler_id,
+                    navigable_id,
+                    &scheme,
+                    fetch_request,
+                ) {
+                    error!("failed to send fetch {fetch_id}: {error}");
+                    if let Err(error) = self.complete_fetch(document_id, fetch_id, None) {
+                        error!("failed to fail fetch {fetch_id}: {error}");
+                    }
+                }
+            }
+        }
+    }
+
+    /// Settle a fetch() promise with the response net delivered, or reject it
+    /// when the fetch failed (the fetch() method's processResponse steps).
+    fn complete_fetch(
+        &mut self,
+        document_id: DocumentId,
+        fetch_id: u64,
+        response: Option<FetchResponseData>,
+    ) -> Result<(), String> {
+        let Some(content_document) = self.documents.get_mut(&document_id) else {
+            return Ok(());
+        };
+        let traversable_id = content_document.traversable_id;
+        with_global_scope(content_document.settings.ec(), |global_scope, ec| {
+            let Some(pending) = global_scope.take_fetch(fetch_id, ec) else {
+                return Ok(());
+            };
+            process_response(pending, response, ec)
+        })
+        .map_err(|error| format!("fetch {fetch_id} completion failed: {error:?}"))?;
+        self.perform_microtask_checkpoint()?;
+        self.run_post_task_dom_steps();
+        self.mark_document_dirty(document_id);
+        self.event_sender
+            .send(ContentEvent::RenderingOpRequested(traversable_id))
+            .map_err(|error| format!("failed to request rendering op for fetch: {error}"))
+    }
+
     fn mark_document_dirty(&self, document_id: DocumentId) {
         if let Some(document) = self.documents.get(&document_id) {
             document.needs_paint.store(true, Ordering::Relaxed);
@@ -3757,6 +4100,40 @@ impl ContentProcess {
             Command::PortTask { port, task } => {
                 self.task_queue
                     .queue_a_task(Task::PortRouting { port, kind: task });
+                Ok(true)
+            }
+            #[cfg(feature = "webrtc")]
+            Command::WebRtc {
+                document_id,
+                peer,
+                message,
+            } => {
+                // The WebRTC engine's results and events run as tasks (the
+                // algorithms "queue a task" for them).
+                self.task_queue.queue_a_task(Task::WebRtc {
+                    document_id,
+                    peer,
+                    task: crate::webrtc::WebRtcTask::Ipc(message),
+                });
+                Ok(true)
+            }
+            #[cfg(not(feature = "webrtc"))]
+            Command::WebRtc { .. } => {
+                warn!("WebRTC message dropped: built without the webrtc feature");
+                Ok(true)
+            }
+            Command::WebSocket {
+                document_id,
+                socket,
+                event,
+            } => {
+                // The feedback from the WebSocket connection runs as a task
+                // (the algorithms "queue a task" for it).
+                self.task_queue.queue_a_task(Task::WebSocket {
+                    document_id,
+                    socket,
+                    event,
+                });
                 Ok(true)
             }
             Command::RunBeforeUnload {
@@ -3980,6 +4357,7 @@ fn run_content_message_loop(
                     if let Err(error) = process.run_task(oldest_task) {
                         error!("content error: {error}");
                     }
+                    process.run_post_task_dom_steps();
                 }
                 Err(_) => return Ok(()),
             }
@@ -4001,11 +4379,12 @@ fn run_content_message_loop(
         } else if arm == timer_arm {
             if operation.recv(&timer_expiry).is_ok() {
                 process.run_steps_after_a_timeout();
+                process.run_post_task_dom_steps();
             }
         } else if Some(arm) == command_arm {
             match operation.recv(cmd_rx) {
                 Ok(incoming) => match process.handle_command(incoming.payload) {
-                    Ok(true) => {}
+                    Ok(true) => process.run_post_task_dom_steps(),
                     Ok(false) => return Ok(()),
                     Err(error) => error!("content error: {error}"),
                 },

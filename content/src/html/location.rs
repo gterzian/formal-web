@@ -648,13 +648,10 @@ impl Location {
         if let Err(error) = copy_url.set_host(Some(host_port.host)) {
             error!("[location] failed to set host on URL: {error}");
         }
-        match host_port.port {
-            Some(port) => {
-                if let Err(()) = copy_url.set_port(Some(port)) {
-                    error!("[location] failed to set port on URL");
-                }
-            }
-            None => {}
+        if let Some(port) = host_port.port
+            && let Err(()) = copy_url.set_port(Some(port))
+        {
+            error!("[location] failed to set port on URL");
         }
     }
 

@@ -119,7 +119,11 @@ pub struct LoadedDocumentResponse {
 pub struct FetchResponse {
     pub final_url: String,
     pub status: u16,
+    /// <https://fetch.spec.whatwg.org/#concept-response-status-message>
+    pub status_text: String,
     pub content_type: String,
+    /// <https://fetch.spec.whatwg.org/#concept-response-header-list>
+    pub header_list: Vec<(String, String)>,
     pub body: Vec<u8>,
 }
 
@@ -531,10 +535,10 @@ impl FontTransportReceiver {
         font_data: &HashMap<usize, Vec<u8>>,
     ) {
         for font in registered_fonts {
-            if let Entry::Vacant(entry) = self.fonts.entry(font.id) {
-                if let Some(data) = font_data.get(&font.data_shmem_key) {
-                    entry.insert(font.into_font_data_from_bytes(data.clone()));
-                }
+            if let Entry::Vacant(entry) = self.fonts.entry(font.id)
+                && let Some(data) = font_data.get(&font.data_shmem_key)
+            {
+                entry.insert(font.into_font_data_from_bytes(data.clone()));
             }
         }
     }
@@ -1050,6 +1054,23 @@ pub enum Command {
         /// `Event::EmbedderSchemeFetchRequested` and never reaches net.
         embedder_schemes: Vec<String>,
     },
+    /// An operation result or an event for one RTCPeerConnection, from the
+    /// WebRTC engine in the net process. Content queues a task for it on the
+    /// networking task source.
+    /// <https://html.spec.whatwg.org/#networking-task-source>
+    WebRtc {
+        document_id: DocumentId,
+        peer: crate::webrtc::PeerConnectionId,
+        message: crate::webrtc::Message,
+    },
+    /// Feedback from one WebSocket connection, from the net process.
+    /// Content queues a task for it on the WebSocket task source.
+    /// <https://websockets.spec.whatwg.org/#websocket-task-source>
+    WebSocket {
+        document_id: DocumentId,
+        socket: crate::websocket::WebSocketId,
+        event: crate::websocket::WebSocketEvent,
+    },
     /// A video pipeline reached end of stream. Content should unset any
     /// animating flags associated with this pipeline.
     NotifyVideoEnded {
@@ -1564,7 +1585,9 @@ mod tests {
             response: FetchResponse {
                 final_url: String::from("https://example.test/script.js"),
                 status: 404,
+                status_text: String::from("Not Found"),
                 content_type: String::from("text/html"),
+                header_list: vec![(String::from("content-type"), String::from("text/html"))],
                 body: vec![1, 2, 3, 4],
             },
         })
@@ -1583,7 +1606,12 @@ mod tests {
                     FetchResponse {
                         final_url: String::from("https://example.test/script.js"),
                         status: 404,
+                        status_text: String::from("Not Found"),
                         content_type: String::from("text/html"),
+                        header_list: vec![(
+                            String::from("content-type"),
+                            String::from("text/html")
+                        )],
                         body: vec![1, 2, 3, 4],
                     }
                 );

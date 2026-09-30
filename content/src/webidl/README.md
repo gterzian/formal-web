@@ -91,6 +91,10 @@ the work left):
 - **`[Exposed]` realm filtering** (attribute/operation step 1.1): not
   implemented — realm-based exposure checking is deferred.
 - **Observable array types** (attribute step 1.8): not implemented.
+- **Iterator prototype objects** (`iterable<K, V>` declarations, in
+  `iterable.rs`): one is created per default iterator object instead of one
+  per interface and realm, so two iterators of the same interface do not
+  share a prototype.
 - **Attribute getter `[[LegacyLenientThis]]`**: delegated to the
   user-provided getter rather than auto-generated; the `legacy_lenient_this`
   field exists on `AttributeDef` but is unused.
@@ -153,6 +157,27 @@ pub struct MyInterface {
 
 The JS-visible properties and methods are registered separately via the Web
 IDL bindings (`WebIdlInterface`); the Rust struct holds only the backing state.
+
+### Legacy platform objects
+
+An interface with indexed or named properties (`NamedNodeMap`, and later
+`NodeList`, `HTMLCollection`, `DOMTokenList`, `CSSStyleDeclaration`) is a
+[legacy platform object](https://webidl.spec.whatwg.org/#dfn-legacy-platform-object).
+Its binding implements `LegacyPlatformObject` (`legacy_platform_object.rs`)
+next to `WebIdlInterface`, delegating the supported property indices and
+names and the property values to domain methods, and the domain creates the
+object with `create_legacy_platform_object` instead of
+`create_interface_instance`.  That wraps the instance in a Proxy whose traps
+are the Web IDL §3.9 internal methods and stores the proxy as the object's
+reflector; one handler object per interface and realm lives in the registry.
+
+The proxy is created with the engine's `create_platform_object_proxy`, so
+`with_object_any` on the proxy yields the target's platform data and every
+binding downcasts `this` as usual.  Never build one with plain
+`create_proxy` (bindings would then fail to downcast the receiver), and never
+hand out the target instance: the reflector is the proxy.  Indexed and named
+setters and deleters are not implemented; an interface declaring them needs
+the setter and deleter branches of the traps filled in.
 
 ### Exotic objects and custom internal methods
 

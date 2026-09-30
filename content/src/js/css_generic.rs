@@ -1,6 +1,6 @@
 use js_engine::{Completion, ExecutionContext, JsTypes};
 
-use crate::css::CSS;
+use crate::css::Css;
 use crate::js::Types;
 
 fn supports_impl(
@@ -12,11 +12,11 @@ fn supports_impl(
         // Invoked as supports(property, value) — 2 required arguments.
         let property = ec.to_rust_string(args[0].clone()).unwrap_or_default();
         let value = ec.to_rust_string(args[1].clone()).unwrap_or_default();
-        CSS::supports(&property, &value)
-    } else if args.len() >= 1 {
+        Css::supports(&property, &value)
+    } else if !args.is_empty() {
         // Invoked as supports(conditionText) — 1 required argument.
         let condition_text = ec.to_rust_string(args[0].clone()).unwrap_or_default();
-        CSS::supports_condition(&condition_text)
+        Css::supports_condition(&condition_text)
     } else {
         false
     };

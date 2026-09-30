@@ -749,6 +749,21 @@ pub trait ExecutionContext<T: JsTypes + JsTypesWithRealm>: EcmascriptHost<T> {
         handler: T::JsObject,
     ) -> Completion<T::JsObject, T>;
 
+    /// <https://tc39.es/ecma262/#sec-proxycreate>
+    ///
+    /// Creates a Proxy exotic object whose target is a platform object
+    /// (created with `create_object_with_any`) and marks the proxy as that
+    /// object's JS-visible form: `with_object_any` and `with_object_any_mut`
+    /// on the proxy resolve the target's platform data, so a Web IDL
+    /// operation invoked with the proxy as `this` downcasts to the platform
+    /// object.  Web IDL legacy platform objects (interfaces with indexed or
+    /// named properties) are built this way.
+    fn create_platform_object_proxy(
+        &mut self,
+        target: T::JsObject,
+        handler: T::JsObject,
+    ) -> Completion<T::JsObject, T>;
+
     // ────────────────────────────────────────────────────────────────────────
     // Error Reporting
     // ────────────────────────────────────────────────────────────────────────

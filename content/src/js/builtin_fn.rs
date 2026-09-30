@@ -1,5 +1,14 @@
 use js_engine::{Completion, ExecutionContext, JsTypes, JsTypesWithRealm};
 
+/// The behaviour of a builtin function with traced captures: the arguments,
+/// the `this` value, the captures and the execution context.
+pub(crate) type TracedCaptureBehaviour<T, C> = fn(
+    &[<T as JsTypes>::JsValue],
+    <T as JsTypes>::JsValue,
+    &C,
+    &mut dyn ExecutionContext<T>,
+) -> Completion<<T as JsTypes>::JsValue, T>;
+
 /// Create a builtin function with GC-traceable captures.
 /// Generic over `T` so Web IDL infrastructure (operation.rs, attribute.rs)
 /// can call it with their own type parameter.
@@ -15,12 +24,7 @@ use js_engine::{Completion, ExecutionContext, JsTypes, JsTypesWithRealm};
 pub(crate) fn create_builtin_fn_with_traced_captures<T, C>(
     ec: &mut dyn ExecutionContext<T>,
     captures: C,
-    behaviour: fn(
-        &[T::JsValue],
-        T::JsValue,
-        &C,
-        &mut dyn ExecutionContext<T>,
-    ) -> Completion<T::JsValue, T>,
+    behaviour: TracedCaptureBehaviour<T, C>,
     length: u32,
     name: T::PropertyKey,
     is_constructor: bool,
@@ -43,12 +47,7 @@ where
 pub(crate) fn create_builtin_fn_with_traced_captures<T, C>(
     ec: &mut dyn ExecutionContext<T>,
     captures: C,
-    behaviour: fn(
-        &[T::JsValue],
-        T::JsValue,
-        &C,
-        &mut dyn ExecutionContext<T>,
-    ) -> Completion<T::JsValue, T>,
+    behaviour: TracedCaptureBehaviour<T, C>,
     length: u32,
     name: T::PropertyKey,
     is_constructor: bool,
@@ -71,12 +70,7 @@ where
 pub(crate) fn create_builtin_fn_with_traced_captures<T, C>(
     ec: &mut dyn ExecutionContext<T>,
     captures: C,
-    behaviour: fn(
-        &[T::JsValue],
-        T::JsValue,
-        &C,
-        &mut dyn ExecutionContext<T>,
-    ) -> Completion<T::JsValue, T>,
+    behaviour: TracedCaptureBehaviour<T, C>,
     length: u32,
     name: T::PropertyKey,
     is_constructor: bool,
@@ -85,18 +79,14 @@ where
     T: JsTypes + JsTypesWithRealm,
     C: 'static,
 {
-    use js_engine::jsc::{JscFunction, JscPropertyKey, JscTypes, JscValue};
+    use js_engine::jsc::{JscFunction, JscPropertyKey, JscTypes};
 
     // SAFETY: On the JSC backend, T is always JscTypes.
     let jsc_ec: &mut dyn ExecutionContext<JscTypes> = unsafe { std::mem::transmute(ec) };
 
     // SAFETY: fn pointers are all usize-sized regardless of signature.
-    let jsc_behaviour: fn(
-        &[JscValue],
-        JscValue,
-        &C,
-        &mut dyn ExecutionContext<JscTypes>,
-    ) -> Completion<JscValue, JscTypes> = unsafe { std::mem::transmute(behaviour) };
+    let jsc_behaviour: TracedCaptureBehaviour<JscTypes, C> =
+        unsafe { std::mem::transmute(behaviour) };
 
     // SAFETY: T::PropertyKey and JscPropertyKey have same size at runtime.
     let jsc_name: JscPropertyKey = unsafe {

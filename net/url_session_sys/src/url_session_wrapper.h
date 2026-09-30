@@ -13,11 +13,17 @@ typedef struct fw_url_session *fw_url_session_t;
 // Completion callback invoked exactly once when a data task finishes.
 // All pointer arguments are only valid for the duration of the call;
 // the caller must copy what it needs. `error` is NULL on success.
+// `header_names` and `header_values` are parallel arrays of `header_count`
+// NUL-terminated strings: every field of the HTTP response, in the order
+// Foundation reports them.
 typedef void (*fw_url_session_completion)(
     void *context,
     int status_code,
     const char *final_url,
     const char *content_type,
+    const char *const *header_names,
+    const char *const *header_values,
+    size_t header_count,
     const uint8_t *body,
     size_t body_length,
     const char *error);

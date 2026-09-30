@@ -19,9 +19,9 @@ use style_traits::ParsingMode;
 /// Holds useful CSS-related functions that do not belong elsewhere.
 ///
 /// https://drafts.csswg.org/css-conditional-3/#the-css-namespace
-pub(crate) struct CSS;
+pub(crate) struct Css;
 
-impl CSS {
+impl Css {
     /// <https://drafts.csswg.org/css-conditional-3/#dom-css-supports-conditiontext-conditiontext>
     pub(crate) fn supports(property: &str, value: &str) -> bool {
         // Step 1: If property is an ASCII case-insensitive match for any defined CSS property
@@ -60,10 +60,10 @@ impl CSS {
         {
             let mut input = cssparser::ParserInput::new(condition_text);
             let mut parser: Parser = cssparser::Parser::new(&mut input);
-            if let Ok(condition) = parser.parse_entirely(|input| SupportsCondition::parse(input)) {
-                if condition.eval(&context) {
-                    return true;
-                }
+            if let Ok(condition) = parser.parse_entirely(|input| SupportsCondition::parse(input))
+                && condition.eval(&context)
+            {
+                return true;
             }
         }
 
@@ -80,10 +80,9 @@ impl CSS {
             let mut parser: Parser = cssparser::Parser::new(&mut input);
             if let Ok(condition) =
                 parser.parse_entirely(|input| parse_condition_or_declaration(input))
+                && condition.eval(&context)
             {
-                if condition.eval(&context) {
-                    return true;
-                }
+                return true;
             }
         }
 

@@ -358,6 +358,17 @@ Remaining gaps:
   animation frames to mark the document animating and the UA to stop
   requesting its own redraw while the traversable is animating.
 
+## Resource links (`html_link_element.rs`)
+
+The document engine (blitz) fetches a stylesheet link when the element is
+inserted with `rel` and `href` already set, through the content process's
+resource fetch path. The `load` or `error` event of the link fires when that
+fetch completes (`linked_stylesheet_fetched`): the pending resource handler
+knows only the request URL, so every stylesheet link whose `href` resolves
+to it receives the event. Remaining work: the `disabled` attribute and
+`media` are reflected but not applied, and `rel=preload`, `rel=icon` and the
+other link types fetch nothing.
+
 ## Related documentation
 
 - `content/src/webidl/README.md` — Web IDL bindings infrastructure, platform object pattern

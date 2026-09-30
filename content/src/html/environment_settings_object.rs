@@ -8,8 +8,9 @@ use ipc_messages::content::{
 };
 use url::Url;
 
+use crate::dom::fire_event_using;
 use crate::html::event_loop::EventLoopTaskSources;
-use crate::html::{TimerHandler, Window};
+use crate::html::{PromiseRejectionEvent, PromiseRejectionEventInit, TimerHandler, Window};
 use crate::js::bindings::dom::document::create_document_platform_object;
 use crate::js::build_context::{build_context, build_realm};
 use crate::js::platform_objects::{with_global_scope, with_worker_global_scope};
@@ -17,7 +18,10 @@ use crate::js::{
     Engine, Types, install_console_namespace, install_css_namespace, install_document_property,
 };
 use crate::webidl::bindings::get_registry_prototype;
-use js_engine::{EcmascriptHost, ExecutionContext, JsTypes};
+use js_engine::enums::{PromiseRejectionOperation, PromiseState};
+use js_engine::{EcmascriptHost, ExecutionContext, HostHooks, JsTypes};
+
+type Promise = <Types as JsTypes>::Promise;
 
 type JsValue = <Types as JsTypes>::JsValue;
 type JsObject = <Types as JsTypes>::JsObject;
@@ -92,6 +96,9 @@ pub struct EnvironmentSettingsObject {
 
     /// <https://html.spec.whatwg.org/#concept-settings-object-time-origin>
     pub time_origin: Instant,
+
+    /// <https://html.spec.whatwg.org/#about-to-be-notified-rejected-promises-list>
+    pub(crate) about_to_be_notified_rejected_promises: Rc<RefCell<Vec<Promise>>>,
 }
 
 impl EnvironmentSettingsObject {
@@ -120,6 +127,22 @@ impl EnvironmentSettingsObject {
             Some(parent) => build_realm(parent, Rc::clone(&document))?,
             None => build_context(Rc::clone(&document))?,
         };
+        let about_to_be_notified_rejected_promises: Rc<RefCell<Vec<Promise>>> =
+            Rc::new(RefCell::new(Vec::new()));
+        {
+            // The trait is imported here only: `ExecutionContext` implements
+            // methods of the same names on the engine.
+            use js_engine::JsEngine;
+            JsEngine::set_host_hooks(
+                &mut engine,
+                HostHooks {
+                    promise_rejection_tracker: Some(Box::new(host_promise_rejection_tracker(
+                        Rc::clone(&about_to_be_notified_rejected_promises),
+                    ))),
+                    ..HostHooks::empty()
+                },
+            );
+        }
 
         // Connect the new realm's GlobalScope to the content process through
         // the EC trait's realm_global_object + with_object_any.
@@ -208,6 +231,7 @@ impl EnvironmentSettingsObject {
             creation_url,
             referrer_policy: ReferrerPolicy::NoReferrerWhenDowngrade,
             time_origin: Instant::now(),
+            about_to_be_notified_rejected_promises,
         })
     }
 
@@ -307,6 +331,7 @@ impl EnvironmentSettingsObject {
                 creation_url,
                 referrer_policy: ReferrerPolicy::NoReferrerWhenDowngrade,
                 time_origin: Instant::now(),
+                about_to_be_notified_rejected_promises: Rc::new(RefCell::new(Vec::new())),
             },
             worker_global_scope,
         ))
@@ -364,6 +389,17 @@ impl EnvironmentSettingsObject {
 
     /// Convert a JsValue error (Completion error) to a displayable String.
     fn error_to_string(&mut self, error: <Types as JsTypes>::JsValue) -> String {
+        // An Error object's stack names the script location the log needs;
+        // any other thrown value is stringified.
+        if let Some(object) = <Types as JsTypes>::value_as_object(&error)
+            && let Ok(stack) =
+                EcmascriptHost::get(&mut self.realm_execution_context, &object, "stack")
+            && !<Types as JsTypes>::value_is_undefined(&stack)
+            && let Ok(stack) = self.realm_execution_context.to_rust_string(stack)
+            && !stack.is_empty()
+        {
+            return stack;
+        }
         self.realm_execution_context
             .to_rust_string(error)
             .unwrap_or_else(|_| "unknown error".to_string())
@@ -388,12 +424,10 @@ impl EnvironmentSettingsObject {
     }
 
     fn evaluate_script_without_microtask_checkpoint(&mut self, source: &str) -> Result<(), String> {
-        let result = self
-            .realm_execution_context
+        self.realm_execution_context
             .evaluate_script(source)
             .map(|_| ())
-            .map_err(|error| self.error_to_string(error));
-        result
+            .map_err(|error| self.error_to_string(error))
     }
 
     pub fn evaluate_script_to_json(&mut self, source: &str) -> Result<serde_json::Value, String> {
@@ -595,7 +629,132 @@ impl EnvironmentSettingsObject {
     pub fn perform_a_microtask_checkpoint(&mut self) -> Result<(), String> {
         self.realm_execution_context
             .perform_a_microtask_checkpoint()
+            .map_err(|error| self.error_to_string(error))?;
+        self.notify_about_rejected_promises()
             .map_err(|error| self.error_to_string(error))
+    }
+
+    /// <https://html.spec.whatwg.org/#notify-about-rejected-promises>
+    fn notify_about_rejected_promises(&mut self) -> js_engine::Completion<(), Types> {
+        // Step 1: Let list be a copy of global's about-to-be-notified rejected
+        // promises list.
+        // Step 2: If list is empty, return.
+        // Step 3: Clear global's about-to-be-notified rejected promises list.
+        let list = std::mem::take(&mut *self.about_to_be_notified_rejected_promises.borrow_mut());
+        if list.is_empty() {
+            return Ok(());
+        }
+
+        // Step 4: Let global be the relevant global object of the settings
+        // object.
+        // Step 5: Queue a global task on the DOM manipulation task source given
+        // global to run the following substep:
+        // Note: The steps run at the end of this checkpoint, not in a queued
+        // task.
+        let time_millis = self.current_time_millis();
+        let global = self.realm_execution_context.realm_global_object();
+        let window = self
+            .realm_execution_context
+            .with_object_any(&global)
+            .and_then(|data| data.downcast_ref::<Window>().cloned());
+        // Step 5.1: For each promise p in list:
+        for promise in list {
+            // Step 5.1.1: If p.[[PromiseIsHandled]] is true, then continue.
+            // Note: A promise handled before this point left the list through
+            // the tracker's "handle" operation.
+            let promise_object = <Types as JsTypes>::object_from_promise(promise);
+            let PromiseState::Rejected(reason) = self
+                .realm_execution_context
+                .promise_state(&promise_object)?
+            else {
+                continue;
+            };
+
+            // Step 5.1.2: Let notHandled be the result of firing an event named
+            // unhandledrejection at global, using PromiseRejectionEvent, with
+            // the cancelable attribute initialized to true, the promise
+            // attribute initialized to p, and the reason attribute initialized
+            // to the value of p's [[PromiseResult]] internal slot.
+            let mut not_handled = true;
+            if let Some(window) = &window {
+                let event = PromiseRejectionEvent::new(
+                    String::from("unhandledrejection"),
+                    PromiseRejectionEventInit {
+                        bubbles: false,
+                        cancelable: true,
+                        composed: false,
+                        promise: promise_object.clone(),
+                        reason: reason.clone(),
+                    },
+                    &mut self.realm_execution_context,
+                );
+                not_handled = fire_event_using(
+                    &window.event_target,
+                    event,
+                    time_millis,
+                    &mut self.realm_execution_context,
+                )?;
+            }
+
+            // Step 5.1.3: If notHandled is true, then the user agent may report
+            // p to a developer console.
+            if not_handled {
+                let message = self.error_to_string(reason);
+                error!("Uncaught (in promise) {message}");
+            }
+
+            // Step 5.1.4: If p.[[PromiseIsHandled]] is false, add p to
+            // global's outstanding rejected promises weak set.
+            // Note: The outstanding set, and the rejectionhandled event it
+            // serves, are not kept.
+        }
+        Ok(())
+    }
+}
+
+/// <https://html.spec.whatwg.org/#the-hostpromiserejectiontracker-implementation>
+fn host_promise_rejection_tracker(
+    about_to_be_notified: Rc<RefCell<Vec<Promise>>>,
+) -> impl Fn(Promise, PromiseRejectionOperation) {
+    move |promise, operation| {
+        // Step 1: Let script be the running script.
+        // Step 2: If script is a classic script and script's muted errors is
+        // true, then return.
+        // Step 3: Let settings object be the current settings object.
+        // Step 4: If script is not null, then set settings object to script's
+        // settings object.
+        // Step 5: Let global be settings object's global object.
+        // Note: The tracker of each realm's engine reaches that realm's list.
+        match operation {
+            // Step 6: If operation is "reject":
+            // Step 6.1: Append promise to global's about-to-be-notified rejected
+            // promises list.
+            PromiseRejectionOperation::Reject => {
+                about_to_be_notified.borrow_mut().push(promise);
+            }
+            // Step 7: If operation is "handle":
+            PromiseRejectionOperation::Handle => {
+                // Step 7.1: If global's about-to-be-notified rejected promises
+                // list contains promise, then remove promise from that list
+                // and return.
+                // Step 7.2: If global's outstanding rejected promises weak set
+                // does not contain promise, then return.
+                // Step 7.3: Remove promise from global's outstanding rejected
+                // promises weak set.
+                // Step 7.4: Queue a global task on the DOM manipulation task
+                // source given global to fire an event named rejectionhandled
+                // at global, using PromiseRejectionEvent, with the promise
+                // attribute initialized to promise, and the reason attribute
+                // initialized to the value of promise's [[PromiseResult]]
+                // internal slot.
+                // Note: The outstanding set is not kept, so no rejectionhandled
+                // event fires.
+                let handled = <Types as JsTypes>::object_from_promise(promise);
+                about_to_be_notified.borrow_mut().retain(|pending| {
+                    <Types as JsTypes>::object_from_promise(pending.clone()) != handled
+                });
+            }
+        }
     }
 }
 
@@ -623,7 +782,8 @@ impl js_engine::EcmascriptHost<crate::js::Types> for EnvironmentSettingsObject {
 
     fn perform_a_microtask_checkpoint(&mut self) -> js_engine::Completion<(), crate::js::Types> {
         self.realm_execution_context
-            .perform_a_microtask_checkpoint()
+            .perform_a_microtask_checkpoint()?;
+        self.notify_about_rejected_promises()
     }
 
     fn report_exception(&mut self, error: JsValue) {

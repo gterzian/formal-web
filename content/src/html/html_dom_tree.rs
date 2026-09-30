@@ -4,13 +4,15 @@ use ipc_messages::content::DocumentId;
 use super::html_iframe_element::{
     run_iframe_post_connection_steps_for_document, run_iframe_removing_steps_for_document,
 };
+use super::html_script_element::run_script_post_connection_steps_for_document;
 
 /// <https://html.spec.whatwg.org/#dom-trees>
 pub(crate) fn run_dom_post_connection_steps_for_document(
     process: &mut ContentProcess,
     document_id: DocumentId,
 ) -> Result<(), String> {
-    run_iframe_post_connection_steps_for_document(process, document_id)
+    run_iframe_post_connection_steps_for_document(process, document_id)?;
+    run_script_post_connection_steps_for_document(process, document_id)
 }
 
 /// <https://dom.spec.whatwg.org/#concept-node-remove>

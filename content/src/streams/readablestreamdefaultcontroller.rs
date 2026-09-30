@@ -749,7 +749,7 @@ pub(crate) fn set_up_readable_stream_default_controller(
     stream.set_controller_object_slot(Some(controller_object.clone()), ec);
 
     // Step 9: "Let startResult be the result of performing startAlgorithm. (This might throw an exception.)"
-    let start_result = start_algorithm.call(&controller_object, ec)?;
+    let start_result = start_algorithm.call(controller_object, ec)?;
 
     // Step 10: "Let startPromise be a promise resolved with startResult."
     let realm = ec.current_realm();

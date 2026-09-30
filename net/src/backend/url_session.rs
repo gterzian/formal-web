@@ -8,7 +8,9 @@ use ipc_messages::content::{FetchRequest, FetchResponse};
 use url_session_sys::UrlSession;
 use uuid::Uuid;
 
-use super::{FetchReplySender, NetworkBackend, NetworkPartitionKey, handle_local_schemes};
+use super::{
+    FetchReplySender, NetworkBackend, NetworkPartitionKey, handle_local_schemes, reason_phrase,
+};
 
 /// <https://fetch.spec.whatwg.org/#http-network-fetch>
 pub struct UrlSessionBackend {
@@ -83,9 +85,13 @@ impl NetworkBackend for UrlSessionBackend {
             &request.header_list,
             body_bytes,
             move |result| {
+                // Note: Foundation reports no reason phrase, so the status
+                // message is the reason phrase of the status code.
                 let result = result.map(|response| FetchResponse {
                     final_url: response.final_url,
                     status: response.status,
+                    status_text: reason_phrase(response.status).to_owned(),
+                    header_list: response.header_list,
                     content_type: response.content_type,
                     body: response.body,
                 });
