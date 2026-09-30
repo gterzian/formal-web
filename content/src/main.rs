@@ -28,9 +28,9 @@ use crate::html::workers::dedicated_worker_agent::{
     WorkerChannelMessage, WorkerEvent, WorkerHandle, WorkerInbound, fire_worker_posted_message,
 };
 use crate::html::{
-    EnvironmentSettingsObject, JsHtmlParserProvider, MessageEvent, PendingParserScript, Window,
-    attach_same_origin_child_document_for_traversable, execute_parser_scripts,
-    parse_html_into_document, run_dom_post_connection_steps_for_document,
+    EnvironmentSettingsObject, HTMLImageElement, JsHtmlParserProvider, MessageEvent,
+    PendingParserScript, Window, attach_same_origin_child_document_for_traversable,
+    execute_parser_scripts, parse_html_into_document, run_dom_post_connection_steps_for_document,
     run_dom_removing_steps_for_document, run_iframe_load_event_steps_for_traversable,
     structured_data::safe_passing_of_structured_data::{
         SerializeWithTransferResult, structured_deserialize_with_transfer,
@@ -40,12 +40,12 @@ use crate::html::{
 use crate::infra::strip_and_collapse_ascii_whitespace;
 use crate::js::Engine;
 use crate::js::downcast::try_with_event_target_mut;
-use crate::js::platform_objects::with_global_scope;
+use crate::js::platform_objects::{resolve_element_object, with_global_scope};
 use crate::ui_event::deserialize_ui_event;
 #[cfg(all(boa_backend, feature = "wasm"))]
 use crate::wasm::{WasmResult, compile_continuation, compile_rejection, instantiate_continuation};
 use anyrender::Scene as RenderScene;
-use blitz_dom::{BaseDocument, DocumentConfig};
+use blitz_dom::{BaseDocument, DocumentConfig, Status};
 use blitz_paint::paint_scene;
 use blitz_traits::net::{Body, Bytes, NetHandler, NetProvider, Request};
 use blitz_traits::shell::{ClipboardError, ColorScheme, ShellProvider, Viewport};
@@ -436,6 +436,70 @@ pub(crate) struct ContentDocument {
     /// (embed sites, viewport, and frame id are unchanged when nothing dirtied
     /// the document).
     last_composition: Option<FrameCompositionMetadata>,
+    /// The `src` last notified per `<img>` node, so a load/error event fires
+    /// once per request. Keyed by node id.
+    notified_image_sources: HashMap<usize, String>,
+}
+
+impl ContentDocument {
+    /// <https://html.spec.whatwg.org/#update-the-image-data>
+    fn fire_pending_image_events(&mut self) {
+        // Note: steps 1 through 27 (the fetch, decode, and request bookkeeping)
+        // run in blitz; content runs only the event-firing portions below,
+        // observing the resolved status from the element on the next render pass
+        // (the fetch marks the document dirty, so a pass follows) rather than
+        // from a per-element callback.
+        let pending: Vec<(usize, String, bool)> = {
+            let document = self.document.borrow();
+            let mut pending = Vec::new();
+            document.visit(|node_id, node| {
+                let Some(element) = node.element_data() else {
+                    return;
+                };
+                let loaded = match element.image_status() {
+                    Some(Status::Ok) => true,
+                    Some(Status::Error) => false,
+                    Some(Status::Loading) | None => return,
+                };
+                let src = node
+                    .attr(local_name!("src"))
+                    .unwrap_or_default()
+                    .to_string();
+                if src.is_empty() || self.notified_image_sources.get(&node_id) == Some(&src) {
+                    return;
+                }
+                pending.push((node_id, src, loaded));
+            });
+            pending
+        };
+
+        for (node_id, src, loaded) in pending {
+            self.notified_image_sources.insert(node_id, src);
+            let time_millis = self.settings.current_time_millis();
+            let ec = &mut self.settings.realm_execution_context;
+            let Ok(object) = resolve_element_object(node_id, ec) else {
+                continue;
+            };
+            let event_target = ec.with_object_any(&object).and_then(|data| {
+                data.downcast_ref::<HTMLImageElement>()
+                    .map(|image| image.html_element.element.node.event_target.clone())
+            });
+            let Some(event_target) = event_target else {
+                continue;
+            };
+            let event_type = if loaded {
+                // Step 7.4.7.3: "If maybe omit events is not set or previousURL is not equal to urlString, then fire an event named load at element."
+                "load"
+            } else {
+                // Step 11.2.2: "If all of the following are true: element has a src attribute or it uses srcset or picture; and maybe omit events is not set or previousURL is not the empty string, then fire an event named error at element."
+                // Step 13.4.2: "If maybe omit events is not set or previousURL is not equal to selected source, then fire an event named error at element."
+                "error"
+            };
+            if let Err(error) = fire_event(ec, &event_target, event_type, time_millis, false) {
+                warn!("failed to fire {event_type} event for <img>: {error:?}");
+            }
+        }
+    }
 }
 
 #[derive(Clone)]
@@ -713,10 +777,10 @@ impl ContentProcess {
         document_id: DocumentId,
         base_url: Option<String>,
         needs_paint: Arc<AtomicBool>,
-        cross_process_images: bool,
+        embedded_images: bool,
     ) -> DocumentConfig {
         DocumentConfig {
-            cross_process_images,
+            embedded_images,
             viewport: self
                 .document_viewport_state(traversable_id)
                 .map(|viewport| viewport_of_snapshot(&viewport.snapshot)),
@@ -1052,6 +1116,7 @@ impl ContentProcess {
                     needs_paint: Arc::new(AtomicBool::new(false)),
                     last_scene: None,
                     last_composition: None,
+                    notified_image_sources: HashMap::new(),
                 },
             );
             self.active_documents_by_traversable
@@ -1298,6 +1363,7 @@ impl ContentProcess {
                 needs_paint,
                 last_scene: None,
                 last_composition: None,
+                notified_image_sources: HashMap::new(),
             },
         );
         self.active_documents_by_traversable
@@ -1588,6 +1654,7 @@ impl ContentProcess {
                 needs_paint,
                 last_scene: None,
                 last_composition: None,
+                notified_image_sources: HashMap::new(),
             },
         );
         // Make the document addressable immediately so the shared
@@ -2407,6 +2474,7 @@ impl ContentProcess {
                 .ok_or_else(|| format!("unknown document id: {document_id}"))?;
 
             document.document.borrow_mut().handle_messages();
+            document.fire_pending_image_events();
 
             // Step 1: "Let `frameTimestamp` be `eventLoop`'s last render opportunity time."
             // The user agent stamps the opportunity time on the browser-wide monotonic
