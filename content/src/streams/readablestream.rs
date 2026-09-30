@@ -3326,10 +3326,8 @@ impl PipeToState {
         // Note: trigger the read FIRST so the pull algorithm runs and
         // may queue a Rust job (via enqueue_job_with_realm in chunk_steps).
         // Then set up the reaction on writer_closed_promise.  When that
-        // reaction fires (JSC drains microtasks at the end of
-        // perform_promise_then), pipe_to_append_reaction_fn calls
-        // run_jobs() to drain any pending Rust jobs, including the read
-        // result job.
+        // reaction fires, pipe_to_append_reaction_fn calls run_jobs() to
+        // drain any pending Rust jobs, including the read result job.
         let read_request = ReadRequest::ReadableStreamPipeTo {
             state: self.clone(),
         };

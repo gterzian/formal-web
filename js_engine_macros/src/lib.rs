@@ -9,14 +9,14 @@
 //! - **Boa** (`feature = "boa"`): `gc_struct_boa` emits
 //!   `#[derive(boa_gc::Finalize, boa_gc::Trace, boa_engine::JsData)]`
 //!   and translates `#[ignore_trace]` -> `#[unsafe_ignore_trace]`.
-//! - **JSC / V8**: `gc_struct_jsc` emits
-//!   no-op `Trace`/`Finalize` impls and strips `#[ignore_trace]`.
+//! - **V8** (`feature = "v8"`): `gc_struct_v8` emits field-walking
+//!   `Trace`/`Finalize` impls and strips `#[ignore_trace]`.
 //!
 //! ## `#[ignore_trace]` (field-level)
 //!
 //! Marks a field as not participating in GC tracing.  On Boa this becomes
-//! `#[unsafe_ignore_trace]` (consumed by `boa_gc::Trace` derive); on JSC
-//! it is stripped (persistent handles do not use tracing).  Only valid inside a `#[gc_struct]`.
+//! `#[unsafe_ignore_trace]` (consumed by `boa_gc::Trace` derive); on V8
+//! it is stripped.  Only valid inside a `#[gc_struct]`.
 //!
 //! Usage:
 //! ```ignore
@@ -62,8 +62,8 @@ fn transform_boa(fields: &mut syn::Fields) {
     }
 }
 
-// JSC: strips #[ignore_trace]
-fn transform_jsc(fields: &mut syn::Fields) {
+// Strips #[ignore_trace] from fields for backends that do not consume it.
+fn strip_ignore_trace(fields: &mut syn::Fields) {
     match fields {
         syn::Fields::Named(named) => {
             for field in named.named.iter_mut() {
@@ -130,67 +130,8 @@ pub fn gc_struct_boa(_attr: TokenStream, item: TokenStream) -> TokenStream {
     }
 }
 
-#[proc_macro_attribute]
-pub fn gc_struct_jsc(_attr: TokenStream, item: TokenStream) -> TokenStream {
-    let mut input = parse_macro_input!(item as Item);
-    match &mut input {
-        Item::Struct(item_struct) => {
-            transform_jsc(&mut item_struct.fields);
-            let attrs = &item_struct.attrs;
-            let vis = &item_struct.vis;
-            let ident = &item_struct.ident;
-            let generics = &item_struct.generics;
-            let fields = &item_struct.fields;
-            let semi = &item_struct.semi_token;
-
-            let (impl_generics, ty_generics, where_clause) = generics.split_for_impl();
-
-            let expanded = quote! {
-                #(#attrs)*
-                #[derive(Clone)]
-                #vis struct #ident #generics #fields #semi
-
-                unsafe impl #impl_generics ::js_engine::gc::Trace for #ident #ty_generics #where_clause {}
-                impl #impl_generics ::js_engine::gc::Finalize for #ident #ty_generics #where_clause {}
-            };
-            expanded.into()
-        }
-        Item::Enum(item_enum) => {
-            // Strip #[ignore_trace] from variant fields
-            for variant in &mut item_enum.variants {
-                transform_jsc(&mut variant.fields);
-            }
-            let attrs = &item_enum.attrs;
-            let vis = &item_enum.vis;
-            let ident = &item_enum.ident;
-            let generics = &item_enum.generics;
-            let variants = &item_enum.variants;
-
-            let (impl_generics, ty_generics, where_clause) = generics.split_for_impl();
-
-            let expanded = quote! {
-                #(#attrs)*
-                #[derive(Clone)]
-                #vis enum #ident #generics {
-                    #variants
-                }
-
-                unsafe impl #impl_generics ::js_engine::gc::Trace for #ident #ty_generics #where_clause {}
-                impl #impl_generics ::js_engine::gc::Finalize for #ident #ty_generics #where_clause {}
-            };
-            expanded.into()
-        }
-        _ => syn::Error::new_spanned(
-            &input,
-            "#[gc_struct] can only be applied to structs and enums",
-        )
-        .to_compile_error()
-        .into(),
-    }
-}
-
 /// Stub attribute: `#[ignore_trace]` is consumed by `gc_struct_boa`
-/// and `gc_struct_jsc`.  On its own it is a no-op pass-through.
+/// and `gc_struct_v8`.  On its own it is a no-op pass-through.
 #[proc_macro_attribute]
 pub fn ignore_trace(_attr: TokenStream, item: TokenStream) -> TokenStream {
     item
@@ -438,7 +379,7 @@ pub fn gc_struct_v8(_attr: TokenStream, item: TokenStream) -> TokenStream {
         Item::Struct(item_struct) => {
             let (trace_statements, store_statements) = v8_struct_trace_body(&item_struct.fields);
             let traced_field_types = v8_traced_field_types(&item_struct.fields);
-            transform_jsc(&mut item_struct.fields);
+            strip_ignore_trace(&mut item_struct.fields);
             let attrs = &item_struct.attrs;
             let vis = &item_struct.vis;
             let ident = &item_struct.ident;
@@ -490,7 +431,7 @@ pub fn gc_struct_v8(_attr: TokenStream, item: TokenStream) -> TokenStream {
                 traced_field_types.extend(v8_traced_field_types(&variant.fields));
             }
             for variant in &mut item_enum.variants {
-                transform_jsc(&mut variant.fields);
+                strip_ignore_trace(&mut variant.fields);
             }
             let attrs = &item_enum.attrs;
             let vis = &item_enum.vis;

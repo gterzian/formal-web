@@ -2,7 +2,7 @@
 
 <https://tc39.es/ecma262/>
 
-Bridges between ECMAScript engines (Boa, JavaScriptCore, and V8) and formal-web's
+Bridges between ECMAScript engines (Boa and V8) and formal-web's
 HTML/DOM/WebIDL layers. Content code never depends on backend-specific APIs —
 it sees only the generic traits below.
 
@@ -36,7 +36,6 @@ Two categories of abstraction:
 | `records` | `IteratorRecord`, `PromiseCapability`, `PromiseResolvers`, `PropertyDescriptor`, `RealmIntrinsics` |
 | `gc` | `Trace`, `Finalize`, `GcRootHandle`, `GcCell` (backend-abstracted) |
 | `boa/` | Boa backend — see `src/boa/README.md` |
-| `jsc/` | JSC backend (macOS, experimental) — see `src/jsc/README.md` |
 | `v8/` | V8 backend through `rusty_v8` (macOS arm64) — see `src/v8/README.md` |
 
 ## Feature flags
@@ -45,18 +44,17 @@ Two categories of abstraction:
 |---|---|---|
 | `v8` | V8 150.1.0 through `rusty_v8` (macOS arm64) | **default** |
 | `boa` | Boa (git dep) | opt-in |
-| `jsc` | JavaScriptCore (macOS, experimental) | opt-in |
 
 Exactly one engine feature must be active. The `wasm` feature (the
 Wasmtime-based WebAssembly implementation) only applies to the Boa backend
-— Boa has no native WebAssembly, while V8 and JSC implement WebAssembly
+— Boa has no native WebAssembly, while V8 implements WebAssembly
 natively.
 
 ## Per-engine documentation
 
 - [`src/v8/README.md`](src/v8/README.md) — V8 backend design (cppgc tracing), build commands, WPT results, remaining work
 - [`src/boa/README.md`](src/boa/README.md) — Boa backend build commands, WPT results
-- [`src/jsc/README.md`](src/jsc/README.md) — JSC backend build commands, WPT results, remaining work
+- [`src/jsc/README.md`](src/jsc/README.md) — notes from the removed JavaScriptCore backend
 
 ## Known cross-engine failures
 

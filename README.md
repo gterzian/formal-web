@@ -39,13 +39,9 @@ others replace it:
 cargo build --release --no-default-features --features boa,media
 cargo run --release --no-default-features --features boa,media
 
-# Boa + WebAssembly (`wasm` is Boa-only: V8 and JSC implement WebAssembly natively)
+# Boa + WebAssembly (`wasm` is Boa-only: V8 implements WebAssembly natively)
 cargo build --release --no-default-features --features boa,wasm,media
 cargo run --release --no-default-features --features boa,wasm,media
-
-# JSC (experimental, macOS only)
-cargo build --release --no-default-features --features jsc,media
-cargo run --release --no-default-features --features jsc,media
 ```
 
 ### Choose media and graphics backends (selected on the `graphics` build)

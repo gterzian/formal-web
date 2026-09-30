@@ -45,7 +45,7 @@ enum CommandKind {
 fn register_in_process_extensions() {
     ipc::register_extension_runner("formal-web.net", net::run_net_process_with_server);
     ipc::register_extension_runner("formal-web.graphics", graphics::run_graphics_extension);
-    #[cfg(any(feature = "v8", feature = "boa", feature = "jsc"))]
+    #[cfg(any(feature = "v8", feature = "boa"))]
     ipc::register_extension_runner(
         "com.formal-web.app.content",
         content::run_content_process_with_server,

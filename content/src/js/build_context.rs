@@ -17,7 +17,7 @@ pub(crate) fn build_context(document: Rc<RefCell<BaseDocument>>) -> Result<Engin
 
 /// Create a new realm associated with an existing engine.
 ///
-/// V8 shares its isolate. Boa and JSC currently create a fresh engine.
+/// V8 shares its isolate. Boa currently creates a fresh engine.
 pub(crate) fn build_realm(
     engine: &mut Engine,
     document: Rc<RefCell<BaseDocument>>,
@@ -37,8 +37,8 @@ pub(crate) fn build_worker_realm(
 ) -> Result<Engine, String> {
     // The Boa backend builds the realm's global object through its host hooks
     // and needs a factory that constructs the DedicatedWorkerGlobalScope
-    // platform object once the execution context exists. JSC/V8 create it in
-    // `setup_worker_realm` and associate it with the global object there.
+    // platform object once the execution context exists. V8 creates it in
+    // `setup_worker_realm` and associates it with the global object there.
     #[cfg(boa_backend)]
     let mut engine = {
         use crate::html::{DedicatedWorkerGlobalScope, GlobalScope};
@@ -57,7 +57,7 @@ pub(crate) fn build_worker_realm(
     };
     #[cfg(not(boa_backend))]
     let mut engine = js_engine::create_engine()?;
-    // Create the worker global object (JSC/V8) and run the realm bootstrap
+    // Create the worker global object (V8) and run the realm bootstrap
     // on every backend: the interface registry, console, interface
     // registration, and the worker global scope's prototype wiring
     // (see `setup_worker_realm`).  On Boa the global object was already
@@ -69,7 +69,7 @@ pub(crate) fn build_worker_realm(
 fn build_context_inner(document: Rc<RefCell<BaseDocument>>) -> Result<Engine, String> {
     // The Boa backend builds the realm's global object through its host hooks
     // and needs a factory that constructs the Window platform object once the
-    // execution context exists. JSC/V8 create the Window in `setup_realm` and
+    // execution context exists. V8 creates the Window in `setup_realm` and
     // associate it with the global object there.
     #[cfg(boa_backend)]
     let mut engine = {
@@ -90,14 +90,6 @@ fn build_context_inner(document: Rc<RefCell<BaseDocument>>) -> Result<Engine, St
     let mut engine = js_engine::create_engine()?;
     setup_realm(&mut engine, document)?;
     Ok(engine)
-}
-
-#[cfg(jsc_backend)]
-fn build_realm_inner(
-    _engine: &mut Engine,
-    document: Rc<RefCell<BaseDocument>>,
-) -> Result<Engine, String> {
-    build_context_inner(document)
 }
 
 #[cfg(v8_backend)]
@@ -154,7 +146,7 @@ fn setup_realm(engine: &mut Engine, _document: Rc<RefCell<BaseDocument>>) -> Res
     // Step 1: Create the Window with GlobalScope and associate it with the
     // realm's global object so `global_scope_or_error` works. The Boa backend
     // constructs the Window through its host hooks during realm creation, so
-    // only JSC/V8 create it here.
+    // only V8 creates it here.
     #[cfg(not(boa_backend))]
     let global_obj = {
         let global_scope = GlobalScope::new(
@@ -305,9 +297,9 @@ fn setup_realm(engine: &mut Engine, _document: Rc<RefCell<BaseDocument>>) -> Res
             Ok(false) | Err(_) => true,
         };
 
-        // Step 7b: Engines with an immutable global object [[Prototype]]
-        // (e.g. JSC) fall back to copying Window/EventTarget properties onto
-        // the global object.
+        // Step 7b: Engines whose global object has an immutable [[Prototype]]
+        // fall back to copying Window/EventTarget properties onto the global
+        // object.
         if immutable_global_proto {
             let prototypes = [
                 get_registry_prototype::<crate::js::Types, EventTarget>(engine),
@@ -522,7 +514,7 @@ fn setup_worker_realm(
     // be the global object of realm execution context's Realm component."
     // The Boa backend constructs the platform object through its host hooks
     // during realm creation, so it only returns the realm's global object
-    // here; JSC/V8 create the worker global scope and associate it with the
+    // here; V8 creates the worker global scope and associates it with the
     // realm's global object.
     let global_obj = {
         #[cfg(not(boa_backend))]
@@ -666,9 +658,9 @@ fn setup_worker_realm(
             Ok(false) | Err(_) => true,
         };
 
-        // Step 7b: Engines with an immutable global object [[Prototype]]
-        // (e.g. JSC) fall back to copying the worker prototype properties
-        // onto the global object.
+        // Step 7b: Engines whose global object has an immutable [[Prototype]]
+        // fall back to copying the worker prototype properties onto the global
+        // object.
         if immutable_global_proto {
             let prototypes = [
                 get_registry_prototype::<crate::js::Types, EventTarget>(engine),

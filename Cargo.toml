@@ -22,7 +22,6 @@ winit_embedder = ["embedder/winit_embedder"]
 
 # Backend selection.
 # These propagate to the content crate via workspace dependency resolution.
-jsc = ["dep:content", "content/jsc"]
 boa = ["dep:content", "content/boa", "content/media"]
 v8 = ["dep:content", "content/v8", "content/media"]
 wasm = ["content/wasm"]

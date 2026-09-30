@@ -2,8 +2,8 @@
 
 Opt-in engine: a git dependency on `boa-dev/boa`. Boa has no native
 WebAssembly; the `wasm` feature wires the Wasmtime-based WebAssembly
-implementation for this backend. (V8 and JSC implement WebAssembly
-natively — see `../v8/README.md` and `../jsc/README.md`.)
+implementation for this backend. (V8 implements WebAssembly
+natively — see `../v8/README.md`.)
 
 ## Build
 

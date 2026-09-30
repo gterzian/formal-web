@@ -281,7 +281,7 @@ or Simulator plus the EU/Japan alternative-browser-engine entitlements.
   handler does not map them back into `IpcIncoming::shmem_regions` yet.
 - Rendering-extension consolidation: BEK has one rendering category; the
   graphics and media process roles need merging inside it (see the design).
-- JIT entitlements for the JS engine (V8/JSC) on iOS.
+- JIT entitlements for the JS engine (V8) on iOS.
 - An iOS host embedder shell + Xcode "iOS Generic Extension" targets + `arm64e`
   builds, all of which need the EU/Japan entitlements first.
 

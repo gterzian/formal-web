@@ -349,8 +349,7 @@ impl ReadableStreamDefaultController {
                     .expect("queue was checked to be non-empty");
                 let chunk_value = entry.chunk.borrow(ec).clone();
                 // Protect the chunk immediately after extraction so it
-                // survives JSC GC even after the QueueEntry's JsValueCell
-                // is dropped (which calls JSValueUnprotect).
+                // survives GC after the QueueEntry is dropped.
                 let _chunk_root = ec.protect_value(&chunk_value);
                 {
                     let new_size = self.queue_total_size.get() - entry.size;

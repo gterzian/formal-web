@@ -16,7 +16,6 @@
 //! | [`records`] | `IteratorRecord`, `PromiseCapability`, `PromiseResolvers`, `PropertyDescriptor` |
 //! | [`gc`] | `Trace`, `Finalize`, `GcRootHandle` (engine-specific) |
 //! | [`boa`] | Boa backend (feature = "boa") |
-//! | [`jsc`] | JSC backend (feature = "jsc") |
 //! | [`v8`] | V8 backend (feature = "v8") |
 //!
 //! ## Feature flags
@@ -24,7 +23,6 @@
 //! | Feature | Engine | Default |
 //! |---|---|---|
 //! | `boa` | Boa (git dep) | **default** |
-//! | `jsc` | JavaScriptCore (macOS) | opt-in |
 //! | `v8` | V8 (macOS arm64) | opt-in |
 //!
 //! At most one engine feature can be active.
@@ -37,12 +35,6 @@ pub mod types;
 
 #[cfg(feature = "boa")]
 pub mod boa;
-
-#[cfg(feature = "jsc")]
-pub mod jsc_sys;
-
-#[cfg(feature = "jsc")]
-pub mod jsc;
 
 #[cfg(feature = "v8")]
 pub mod v8;
@@ -63,7 +55,7 @@ pub use enums::{
     IntegrityLevel, IteratorKind, Numeric, PreferredType, PromiseRejectionOperation, PromiseState,
     SharedMemoryOrder, TypedArrayElementType,
 };
-#[cfg(any(feature = "jsc", feature = "v8"))]
+#[cfg(feature = "v8")]
 pub use gc::associate_existing_object;
 pub use gc::{
     Finalize, GcCell, GcRootHandle, JsTypesGcExt, Trace, create_platform_object, gc_cell_new,
@@ -73,9 +65,6 @@ pub use js_engine_macros::gc_struct_boa as gc_struct;
 
 #[cfg(feature = "v8")]
 pub use js_engine_macros::gc_struct_v8 as gc_struct;
-
-#[cfg(all(not(feature = "boa"), not(feature = "v8")))]
-pub use js_engine_macros::gc_struct_jsc as gc_struct;
 
 pub use js_engine_macros::ignore_trace;
 pub use records::{

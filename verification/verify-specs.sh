@@ -128,7 +128,8 @@ echo "building workspace..."
 cargo build --release \
     -p embedder --bin formal-web-embedder \
     -p content  --bin formal-web-content \
-    -p net      --bin formal-web-net
+    -p net      --bin formal-web-net \
+    -p graphics --bin formal-web-graphics
 
 FORMAL_WEB_TLA2TOOLS_JAR="$TLA2TOOLS_JAR" \
 FORMAL_WEB_TLC_WORKERS="$TLC_WORKERS" \

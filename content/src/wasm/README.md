@@ -3,7 +3,7 @@
 Implements the [`WebAssembly`](https://www.w3.org/TR/wasm-js-api/) namespace
 exposed to web content.  Uses the `wasmtime` crate (crates.io) as the
 underlying WebAssembly engine.  Only compiled on the Boa backend behind the
-`wasm` feature (V8 and JSC implement WebAssembly natively).
+`wasm` feature (V8 implements WebAssembly natively).
 
 ## Module layout
 

@@ -29,11 +29,8 @@ fn supports_impl(
 /// Installs the `CSS` namespace on the global object using only the
 /// generic [`ExecutionContext`] trait — no engine-specific APIs.
 ///
-/// Uses `create_builtin_function` (closure path) instead of
-/// `create_builtin_function_from_behaviour` (Behaviour trait object path)
-/// because the Behaviour trait object path causes a SIGSEGV on the JSC
-/// backend.  Since CSS.supports() carries no captures, the closure path
-/// is equivalent and works on all backends.
+/// Uses `create_builtin_fn_static` because `CSS.supports()` carries no
+/// captures.
 /// <https://drafts.csswg.org/css-conditional-3/#dom-css-supports-conditiontext-conditiontext>
 pub(crate) fn install_css_namespace(ec: &mut dyn ExecutionContext<Types>) -> Completion<(), Types> {
     // Create the CSS namespace object.

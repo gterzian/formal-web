@@ -1407,11 +1407,9 @@ impl GlobalScope {
         ipc_messages::media::MediaPipelineId(uuid::Uuid::new_v4())
     }
 
-    /// Store the engine context so new realms can share the same JS engine
-    /// (same GC heap on JSC).  Called during engine setup, before any JS
-    /// execution that might trigger `window.open`.
-    /// Note: Only used on JSC backend (Boa creates fresh contexts).
-    #[allow(dead_code)]
+    /// Set the shared video-paint registry that both GlobalScope and
+    /// ContentProcess access. ContentProcess sets this during document
+    /// creation so media resources can register paint IDs.
     pub(crate) fn set_video_paint_registry(
         &self,
         registry: Rc<RefCell<HashMap<(DocumentId, usize), VideoPaintId>>>,

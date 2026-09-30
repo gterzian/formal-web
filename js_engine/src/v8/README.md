@@ -32,8 +32,7 @@ fields, and JS edges are collected in one pass.
   wrapper → platform → cells → JS edges and can collect cycles.
 - `gc::create_platform_object` is the single entry point that wraps concrete
   platform data (`Trace` + `Finalize`) in the backend's GC wrapper
-  (`V8PlatformData` on V8, `TraceableBox` on Boa, raw side-table data on
-  JSC) before `create_object_with_any`; the Web IDL bindings
+  (`V8PlatformData` on V8, `TraceableBox` on Boa) before `create_object_with_any`; the Web IDL bindings
   (`create_interface_instance`, constructor closures, async-iterator
   objects) call it instead of reaching into `js_engine::v8::` or
   `js_engine::boa::` directly. Passing an unwrapped `Box<dyn Any>` to
@@ -84,7 +83,7 @@ The opaque `Box<dyn Fn>` path (`create_builtin_fn` / `create_builtin_function`)
 is no longer on the `JsEngine` trait — generic domain code cannot reach it,
 and the Web IDL constructor in `register_interface_spec` goes through
 `create_builtin_fn_static`. The concrete engines keep it as an inherent
-method for their own tests and the JSC backend; its closures must capture
+method for their own tests; its closures must capture
 **no strong JS handles** (resolve the realm's objects per call instead).
 
 `destroy_document` still clears the document's event-listener and
@@ -151,7 +150,7 @@ have appeared and disappeared between runs.
 4. **The opaque closure path remains on the concrete engines.**
    `create_builtin_fn` / `create_builtin_function` are no longer `JsEngine`
    trait methods, so generic domain code cannot use them; they survive as
-   inherent methods for the engine tests and the JSC backend. A future
+   inherent methods for the engine tests. A future
    production caller holding a concrete engine could still pass a closure
    with rooted captures, so the doc-comment rule (capture no strong JS
    handles) still applies.
