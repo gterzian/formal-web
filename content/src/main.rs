@@ -9,14 +9,19 @@ pub mod js;
 pub mod testutils;
 
 pub mod dom;
+pub(crate) mod encoding;
+pub(crate) mod file_api;
 #[cfg(test)]
 mod generic_js_test;
 pub mod html;
 pub mod streams;
 pub mod ui_events;
+pub(crate) mod url_standard;
 #[cfg(all(boa_backend, feature = "wasm"))]
 pub mod wasm;
 pub mod webidl;
+pub(crate) mod webrtc;
+pub(crate) mod websockets;
 
 use crate::dom::{EventTargetAccess, dispatch_with_path, fire_event, simple_path};
 use crate::html::environment_settings_object::RealmWiring;
@@ -533,6 +538,9 @@ pub(crate) struct ContentProcess {
     graphics_sender: Option<ipc::IpcSender<ipc_messages::graphics::GraphicsCommand>>,
     /// This content process's own command sender, used by net for direct response routing.
     content_command_sender: ipc::IpcSender<Command>,
+    /// Direct sender to the WebRTC extension process, when the user agent
+    /// runs one. Set during ContentBootstrap.
+    webrtc_sender: Option<ipc::IpcSender<ipc_messages::webrtc::Request>>,
     /// Monotonic-clock reading captured at the same moment as
     /// `epoch_anchor_wall_ms`; together they convert monotonic readings to
     /// epoch-relative milliseconds on the clock shared with the user agent
@@ -564,6 +572,7 @@ impl ContentProcess {
         network_extension_sender: ipc::IpcSender<ipc_messages::network::Request>,
         graphics_sender: Option<ipc::IpcSender<ipc_messages::graphics::GraphicsCommand>>,
         content_command_sender: ipc::IpcSender<Command>,
+        webrtc_sender: Option<ipc::IpcSender<ipc_messages::webrtc::Request>>,
         trace_sender: Option<TraceSender>,
         embedder_schemes: Vec<String>,
     ) -> Self {
@@ -605,6 +614,7 @@ impl ContentProcess {
             network_extension_sender,
             graphics_sender,
             content_command_sender,
+            webrtc_sender,
             epoch_anchor,
             epoch_anchor_wall_ms,
             trace_sender,
@@ -645,6 +655,8 @@ impl ContentProcess {
         let trace_sender = self.trace_sender.clone();
         let worker_event_sender = self.worker_event_sender.clone();
         let network_extension_sender = self.network_extension_sender.clone();
+        let webrtc_sender = self.webrtc_sender.clone();
+        let content_command_sender = self.content_command_sender.clone();
         with_global_scope(
             &mut settings.realm_execution_context,
             |global_scope, _ec| {
@@ -653,6 +665,7 @@ impl ContentProcess {
                 global_scope.set_worker_owner_inbox(worker_event_sender.clone());
                 global_scope.set_network_partition_event_loop_id(self.event_loop_id);
                 global_scope.set_network_extension_sender(network_extension_sender.clone());
+                global_scope.set_webrtc_link(webrtc_sender.clone(), content_command_sender.clone());
                 Ok(())
             },
         )
@@ -1004,12 +1017,15 @@ impl ContentProcess {
             let trace_sender = self.trace_sender.clone();
             let worker_event_sender = self.worker_event_sender.clone();
             let network_extension_sender = self.network_extension_sender.clone();
+            let webrtc_sender = self.webrtc_sender.clone();
+            let content_command_sender = self.content_command_sender.clone();
             with_global_scope(settings.ec(), |global_scope, _ec| {
                 global_scope.set_event_loop_id(self.event_loop_id);
                 global_scope.set_trace_sender(trace_sender.clone());
                 global_scope.set_worker_owner_inbox(worker_event_sender.clone());
                 global_scope.set_network_partition_event_loop_id(self.event_loop_id);
                 global_scope.set_network_extension_sender(network_extension_sender.clone());
+                global_scope.set_webrtc_link(webrtc_sender.clone(), content_command_sender.clone());
                 Ok(())
             })
             .map_err(|error| format!("failed to set event loop id: {}", error.display()))?;
@@ -1762,6 +1778,27 @@ impl ContentProcess {
 
     fn destroy_document(&mut self, document_id: DocumentId) -> Result<(), String> {
         run_dom_removing_steps_for_document(self, document_id)?;
+        // Close the document's peer connections, so the WebRTC process
+        // releases their sockets and threads.
+        // <https://w3c.github.io/webrtc-pc/#dfn-close-the-connection>
+        if let Some(content_document) = self.documents.get_mut(&document_id)
+            && let Err(error) =
+                with_global_scope(content_document.settings.ec(), |global_scope, ec| {
+                    for connection in global_scope.peer_connections(ec) {
+                        connection.close_the_connection(ec);
+                    }
+                    // <https://websockets.spec.whatwg.org/#make-disappear>
+                    for web_socket in global_scope.web_sockets(ec) {
+                        web_socket.make_disappear(ec);
+                    }
+                    Ok(())
+                })
+        {
+            error!(
+                "failed to close the peer connections of {document_id}: {}",
+                error.display()
+            );
+        }
         // Terminate the dedicated workers this document owns: the document is
         // going away, so its workers are no longer actively needed.  Their
         // handles stay registered until the workers' closed reports arrive
@@ -2270,6 +2307,76 @@ impl ContentProcess {
 
     /// Fire one queued message event on a port (the message task of the
     /// message port post message steps).
+    /// A task of one RTCPeerConnection, in its document's realm.
+    fn handle_webrtc_task(
+        &mut self,
+        document_id: DocumentId,
+        peer: ipc_messages::webrtc::PeerConnectionId,
+        task: crate::webrtc::WebRtcTask,
+    ) -> Result<(), String> {
+        let Some(content_document) = self.documents.get_mut(&document_id) else {
+            // The document is gone, and its connections with it.
+            return Ok(());
+        };
+        let time_millis = content_document.settings.current_time_millis();
+        with_global_scope(content_document.settings.ec(), |global_scope, ec| {
+            let Some(connection) = global_scope.peer_connection(peer, ec) else {
+                return Ok(());
+            };
+            connection.run_task(task, time_millis, ec)
+        })
+        .map_err(|error| format!("WebRTC task failed: {}", error.display()))?;
+        // The task's event handlers may have mutated the document.
+        self.mark_document_dirty(document_id);
+        let traversable_id = self
+            .documents
+            .get(&document_id)
+            .map(|document| document.traversable_id);
+        if let Some(traversable_id) = traversable_id
+            && let Err(error) = self
+                .event_sender
+                .send(ContentEvent::RenderingOpRequested(traversable_id))
+        {
+            error!("failed to request rendering op for WebRTC task: {error}");
+        }
+        Ok(())
+    }
+
+    /// A task of one WebSocket, in its document's realm.
+    fn handle_web_socket_task(
+        &mut self,
+        document_id: DocumentId,
+        socket: ipc_messages::websocket::WebSocketId,
+        event: ipc_messages::websocket::WebSocketEvent,
+    ) -> Result<(), String> {
+        let Some(content_document) = self.documents.get_mut(&document_id) else {
+            // The document is gone, and its sockets with it.
+            return Ok(());
+        };
+        let time_millis = content_document.settings.current_time_millis();
+        with_global_scope(content_document.settings.ec(), |global_scope, ec| {
+            let Some(web_socket) = global_scope.web_socket(socket, ec) else {
+                return Ok(());
+            };
+            web_socket.feedback(event, time_millis, ec)
+        })
+        .map_err(|error| format!("WebSocket task failed: {}", error.display()))?;
+        // The task's event handlers may have mutated the document.
+        self.mark_document_dirty(document_id);
+        let traversable_id = self
+            .documents
+            .get(&document_id)
+            .map(|document| document.traversable_id);
+        if let Some(traversable_id) = traversable_id
+            && let Err(error) = self
+                .event_sender
+                .send(ContentEvent::RenderingOpRequested(traversable_id))
+        {
+            error!("failed to request rendering op for WebSocket task: {error}");
+        }
+        Ok(())
+    }
+
     fn handle_run_port_message_task(&mut self, port_id: PortId) -> Result<(), String> {
         let Some(document_id) = self.find_port_document(port_id) else {
             return Ok(());
@@ -3494,6 +3601,16 @@ impl ContentProcess {
                 self.run_window_timer(document_id, timer_id, timer_key, nesting_level)
             }
             Task::RunPortMessage { port } => self.handle_run_port_message_task(port),
+            Task::WebRtc {
+                document_id,
+                peer,
+                task,
+            } => self.handle_webrtc_task(document_id, peer, task),
+            Task::WebSocket {
+                document_id,
+                socket,
+                event,
+            } => self.handle_web_socket_task(document_id, socket, event),
             Task::RunWorkerTimer { worker_id, .. } => {
                 // A worker timer task should never reach the window event
                 // loop: worker timers are reaped by the worker's own event
@@ -3759,6 +3876,34 @@ impl ContentProcess {
                     .queue_a_task(Task::PortRouting { port, kind: task });
                 Ok(true)
             }
+            Command::WebRtc {
+                document_id,
+                peer,
+                message,
+            } => {
+                // The WebRTC process's results and events run as tasks
+                // (the algorithms "queue a task" for them).
+                self.task_queue.queue_a_task(Task::WebRtc {
+                    document_id,
+                    peer,
+                    task: crate::webrtc::WebRtcTask::Ipc(message),
+                });
+                Ok(true)
+            }
+            Command::WebSocket {
+                document_id,
+                socket,
+                event,
+            } => {
+                // The feedback from the WebSocket connection runs as a task
+                // (the algorithms "queue a task" for it).
+                self.task_queue.queue_a_task(Task::WebSocket {
+                    document_id,
+                    socket,
+                    event,
+                });
+                Ok(true)
+            }
             Command::RunBeforeUnload {
                 document_id,
                 check_id,
@@ -3880,6 +4025,7 @@ pub fn run_content_process_with_server(
         network_extension_sender,
         graphics_sender,
         content_command_sender,
+        webrtc_sender,
         trace_sender,
         embedder_schemes,
     ) = {
@@ -3890,6 +4036,7 @@ pub fn run_content_process_with_server(
                     net_sender,
                     graphics_sender,
                     content_command_sender,
+                    webrtc_sender,
                     trace_sender,
                     embedder_schemes,
                 } => (
@@ -3897,6 +4044,7 @@ pub fn run_content_process_with_server(
                     net_sender,
                     graphics_sender,
                     content_command_sender,
+                    webrtc_sender,
                     trace_sender,
                     embedder_schemes,
                 ),
@@ -3917,6 +4065,7 @@ pub fn run_content_process_with_server(
             network_extension_sender,
             graphics_sender,
             content_command_sender,
+            webrtc_sender,
             trace_sender,
             embedder_schemes,
         )

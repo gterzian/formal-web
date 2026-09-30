@@ -14,7 +14,7 @@ default = ["media", "v8"]
 media = ["dep:media"]
 # Run the extensions the embedding binary links in-process on threads
 # instead of launching helper processes (see `ipc/ARCHITECTURE.md`).
-thread-backend = ["dep:ipc", "dep:graphics", "ipc/thread-backend"]
+thread-backend = ["dep:ipc", "dep:graphics", "dep:webrtc", "ipc/thread-backend"]
 # Build the winit windowed embedder on macOS (the AppKit backend is the
 # default there and the only one built without this feature). On other
 # platforms the winit backend is the only option.
@@ -33,6 +33,7 @@ clap = { version = "4.5", features = ["derive"] }
 content = { path = "content", optional = true, default-features = false }
 embedder = { path = "embedder" }
 graphics = { path = "graphics", optional = true }
+webrtc = { path = "webrtc", optional = true }
 ipc = { path = "ipc", optional = true }
 media = { path = "media", optional = true }
 net = { path = "net" }
@@ -45,6 +46,7 @@ env_logger = "0.11"
 resolver = "2"
 members = [
     ".",
+    "webrtc",
     "automation",
     "content",
     "graphics",

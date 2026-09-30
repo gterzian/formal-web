@@ -1533,6 +1533,9 @@ struct UserAgentWorker {
     /// Used during shutdown: sends Shutdown command, waits for
     /// ShutdownComplete, then joins the child.
     graphics_child: Option<std::process::Child>,
+    /// Sender to the WebRTC extension, handed to every content process.
+    webrtc_extension_sender: Option<ipc::IpcSender<ipc_messages::webrtc::Request>>,
+    webrtc_child: Option<std::process::Child>,
 
     /// Host integration used to surface navigation, paint, clipboard, and viewport state.
     host: Arc<dyn Embedder>,
@@ -1623,6 +1626,24 @@ impl UserAgentWorker {
             }
         };
 
+        // Start the WebRTC process (the network side of RTCPeerConnection).
+        let (webrtc_extension_sender, webrtc_child) = {
+            use crate::ipc_manifest::WebRtcExtensionManifest;
+            match ipc::ExtensionHandle::launch::<
+                WebRtcExtensionManifest,
+                ipc_messages::webrtc::Request,
+                ipc_messages::webrtc::Response,
+            >(&WebRtcExtensionManifest {
+                extensions_directory: config.extensions_directory.clone(),
+            }) {
+                Ok((mut handle, connection)) => (Some(connection.sender), handle.take_child()),
+                Err(error) => {
+                    log::error!("failed to start webrtc process: {error}");
+                    (None, None)
+                }
+            }
+        };
+
         // HR Time "estimated monotonic time of the Unix epoch": simultaneous
         // wall-clock and monotonic readings at process start, so monotonic
         // instants can be converted to epoch-relative milliseconds
@@ -1642,6 +1663,8 @@ impl UserAgentWorker {
             graphics_extension_sender,
             graphics_event_receiver,
             graphics_child,
+            webrtc_extension_sender,
+            webrtc_child,
             host,
             tla_tracer: TLATracer::new("Navigation", "formal-web:user-agent", trace_sender.clone()),
             epoch_anchor,
@@ -2319,6 +2342,7 @@ impl UserAgentWorker {
             self.trace_sender.clone(),
             self.net_connection.sender(),
             self.graphics_extension_sender.clone(),
+            self.webrtc_extension_sender.clone(),
             &self.config,
         )?;
         // Step 3: Let agent be a new agent whose [[CanBlock]] is canBlock, [[Signifier]] is
@@ -5491,6 +5515,18 @@ impl UserAgentWorker {
             && let Err(error) = child.wait()
         {
             log::error!("failed to wait for graphics process exit: {error}");
+        }
+
+        // Shut down the WebRTC process, which closes every peer connection.
+        if let Some(sender) = &self.webrtc_extension_sender
+            && let Err(error) = sender.send(ipc_messages::webrtc::Request::Shutdown)
+        {
+            log::error!("failed to send shutdown to webrtc process: {error}");
+        }
+        if let Some(mut child) = self.webrtc_child.take()
+            && let Err(error) = child.wait()
+        {
+            log::error!("failed to wait for webrtc process exit: {error}");
         }
 
         self.net_connection.shutdown();

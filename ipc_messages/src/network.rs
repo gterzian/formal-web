@@ -61,6 +61,8 @@ pub enum Request {
         request: NavigationFetchRequest,
         reply_to: ResponseRecipient,
     },
+    /// A WebSocket connection request from a content process.
+    WebSocket(crate::websocket::WebSocketRequest),
     Shutdown,
 }
 

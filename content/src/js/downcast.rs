@@ -15,6 +15,12 @@ use crate::html::{
 use crate::js::Types;
 use crate::js::platform_objects::with_global_scope;
 use crate::ui_events::{MouseEvent, UIEvent};
+use crate::url_standard::URLSearchParams;
+use crate::webrtc::{
+    RTCDataChannel, RTCDataChannelEvent, RTCIceCandidate, RTCPeerConnection,
+    RTCPeerConnectionIceEvent, RTCSessionDescription,
+};
+use crate::websockets::{CloseEvent, WebSocket};
 use js_engine::{Completion, ExecutionContext, JsTypes};
 use log::error;
 use std::any::Any;
@@ -40,6 +46,18 @@ pub(crate) fn event_from_js_object(
             .or_else(|| {
                 data.downcast_ref::<MouseEvent>()
                     .map(|mouse_event| mouse_event.event().clone())
+            })
+            .or_else(|| {
+                data.downcast_ref::<RTCPeerConnectionIceEvent>()
+                    .map(|ice_event| ice_event.event().clone())
+            })
+            .or_else(|| {
+                data.downcast_ref::<RTCDataChannelEvent>()
+                    .map(|channel_event| channel_event.event().clone())
+            })
+            .or_else(|| {
+                data.downcast_ref::<CloseEvent>()
+                    .map(|close_event| close_event.event().clone())
             })
     })
 }
@@ -104,6 +122,9 @@ fn with_platform_event_target_mut<R>(
     }
     target!(MessagePort, port, port.event_target);
     target!(Worker, worker, worker.event_target);
+    target!(RTCPeerConnection, connection, connection.event_target);
+    target!(RTCDataChannel, channel, channel.event_target);
+    target!(WebSocket, socket, socket.event_target);
     target!(
         DedicatedWorkerGlobalScope,
         dedicated_scope,
@@ -174,6 +195,9 @@ fn with_platform_reflector_slot_mut<R>(
     }
     slot!(MessagePort, port, port.event_target);
     slot!(Worker, worker, worker.event_target);
+    slot!(RTCPeerConnection, connection, connection.event_target);
+    slot!(RTCDataChannel, channel, channel.event_target);
+    slot!(WebSocket, socket, socket.event_target);
     slot!(
         DedicatedWorkerGlobalScope,
         dedicated_scope,
@@ -193,8 +217,27 @@ fn with_platform_reflector_slot_mut<R>(
     if let Some(canvas) = data.downcast_mut::<OffscreenCanvas>() {
         return Some(f(&mut canvas.reflector));
     }
+    if let Some(params) = data.downcast_mut::<URLSearchParams>() {
+        return Some(f(&mut params.reflector));
+    }
     if let Some(event) = data.downcast_mut::<Event>() {
         return Some(f(&mut event.event_mut().reflector));
+    }
+    if let Some(close_event) = data.downcast_mut::<CloseEvent>() {
+        return Some(f(&mut close_event.event_mut().reflector));
+    }
+    if let Some(ice_event) = data.downcast_mut::<RTCPeerConnectionIceEvent>() {
+        return Some(f(&mut ice_event.event_mut().reflector));
+    }
+    if let Some(channel_event) = data.downcast_mut::<RTCDataChannelEvent>() {
+        return Some(f(&mut channel_event.event_mut().reflector));
+    }
+    // RTCSessionDescription and RTCIceCandidate keep no reflector: their
+    // getters return the objects the connection stores.
+    if data.downcast_ref::<RTCSessionDescription>().is_some()
+        || data.downcast_ref::<RTCIceCandidate>().is_some()
+    {
+        return None;
     }
     if let Some(message_event) = data.downcast_mut::<MessageEvent>() {
         return Some(f(&mut message_event.event_mut().reflector));
@@ -311,11 +354,52 @@ pub(crate) fn try_set_event_target_reflector(
         // Set the reflector on the embedded target; capture the Worker id so
         // the owner realm's registered clone can be synced after the borrow
         // is released.
-        let worker_id = ec.with_object_any_mut(&obj).and_then(|data| {
-            let worker_id = data.downcast_ref::<Worker>().map(|worker| worker.worker_id);
-            with_platform_reflector_slot_mut(data, |slot| *slot = reflector.clone());
-            worker_id
-        });
+        let (worker_id, peer, socket) = ec
+            .with_object_any_mut(&obj)
+            .map(|data| {
+                let worker_id = data.downcast_ref::<Worker>().map(|worker| worker.worker_id);
+                let peer = data
+                    .downcast_ref::<RTCPeerConnection>()
+                    .map(|connection| connection.id);
+                let socket = data.downcast_ref::<WebSocket>().map(|socket| socket.id);
+                with_platform_reflector_slot_mut(data, |slot| *slot = reflector.clone());
+                (worker_id, peer, socket)
+            })
+            .unwrap_or((None, None, None));
+
+        if let Some(socket) = socket {
+            // The realm's registry holds a clone of the socket made by its
+            // constructor; mirror the reflector onto it, as for workers.
+            let reflector = reflector.clone();
+            if let Err(error) = with_global_scope(ec, move |global_scope, ec| {
+                if let Some(reflector) = reflector {
+                    global_scope.sync_web_socket_reflector(socket, reflector, ec);
+                }
+                Ok(())
+            }) {
+                error!(
+                    "failed to sync the reflector of a WebSocket: {}",
+                    error.display()
+                );
+            }
+        }
+
+        if let Some(peer) = peer {
+            // The realm's registry holds a clone of the connection made by
+            // its constructor; mirror the reflector onto it, as for workers.
+            let reflector = reflector.clone();
+            if let Err(error) = with_global_scope(ec, move |global_scope, ec| {
+                if let Some(reflector) = reflector {
+                    global_scope.sync_peer_connection_reflector(peer, reflector, ec);
+                }
+                Ok(())
+            }) {
+                error!(
+                    "failed to sync the reflector of an RTCPeerConnection: {}",
+                    error.display()
+                );
+            }
+        }
 
         if let Some(worker_id) = worker_id {
             // The owner realm's GlobalScope registered a clone of this event
@@ -376,6 +460,12 @@ pub(crate) fn event_target_from_js_object(
             Some(node.event_target.clone())
         } else if let Some(port) = data.downcast_ref::<MessagePort>() {
             Some(port.event_target.clone())
+        } else if let Some(socket) = data.downcast_ref::<WebSocket>() {
+            Some(socket.event_target.clone())
+        } else if let Some(connection) = data.downcast_ref::<RTCPeerConnection>() {
+            Some(connection.event_target.clone())
+        } else if let Some(channel) = data.downcast_ref::<RTCDataChannel>() {
+            Some(channel.event_target.clone())
         } else if let Some(worker) = data.downcast_ref::<Worker>() {
             Some(worker.event_target.clone())
         } else if let Some(dedicated_scope) = data.downcast_ref::<DedicatedWorkerGlobalScope>() {

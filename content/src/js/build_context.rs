@@ -129,12 +129,14 @@ fn setup_realm(engine: &mut Engine, _document: Rc<RefCell<BaseDocument>>) -> Res
     use crate::dom::{
         AbortController, AbortSignal, DOMException, Document, Element, Event, EventTarget, Node,
     };
+    use crate::encoding::{TextDecoder, TextEncoder};
+    use crate::file_api::{Blob, File};
     #[cfg(not(boa_backend))]
     use crate::html::GlobalScope;
     use crate::html::{
         CanvasRenderingContext2D, HTMLAnchorElement, HTMLCanvasElement, HTMLElement,
         HTMLIFrameElement, HTMLInputElement, HTMLMediaElement, HTMLVideoElement, Location,
-        MessageChannel, MessageEvent, MessagePort, OffscreenCanvas,
+        MessageChannel, MessageEvent, MessagePort, Navigator, OffscreenCanvas,
         OffscreenCanvasRenderingContext2D, Window, WindowProxy, Worker,
     };
     use crate::streams::{
@@ -145,6 +147,7 @@ fn setup_realm(engine: &mut Engine, _document: Rc<RefCell<BaseDocument>>) -> Res
         WritableStreamDefaultWriter,
     };
     use crate::ui_events::{MouseEvent, UIEvent};
+    use crate::url_standard::{URL, URLSearchParams};
     use crate::webidl::bindings::{
         get_registry_prototype, initialize_registry, register_interface_spec,
         wire_registry_constructor_prototype, wire_registry_prototype,
@@ -229,6 +232,16 @@ fn setup_realm(engine: &mut Engine, _document: Rc<RefCell<BaseDocument>>) -> Res
     reg!(WindowProxy);
     reg!(Worker);
     reg!(Location);
+    reg!(Navigator);
+    reg!(URL);
+    reg!(URLSearchParams);
+    install_url_search_params_iterator(engine)?;
+    reg!(Blob);
+    reg!(File);
+    reg!(TextEncoder);
+    reg!(TextDecoder);
+    wire_registry_prototype::<crate::js::Types, File, Blob>(engine);
+    wire_registry_constructor_prototype::<crate::js::Types, File, Blob>(engine);
     reg!(ByteLengthQueuingStrategy);
     reg!(CountQueuingStrategy);
     reg!(ReadableStream);
@@ -242,6 +255,40 @@ fn setup_realm(engine: &mut Engine, _document: Rc<RefCell<BaseDocument>>) -> Res
     reg!(WritableStreamDefaultWriter);
     reg!(TransformStream);
     reg!(TransformStreamDefaultController);
+    // WebRTC: [Exposed=Window].
+    {
+        use crate::webrtc::{
+            RTCDataChannel, RTCDataChannelEvent, RTCIceCandidate, RTCPeerConnection,
+            RTCPeerConnectionIceEvent, RTCSessionDescription,
+        };
+        use crate::websockets::{CloseEvent, WebSocket};
+        reg!(RTCPeerConnection);
+        reg!(RTCDataChannel);
+        reg!(RTCSessionDescription);
+        reg!(RTCIceCandidate);
+        reg!(RTCPeerConnectionIceEvent);
+        reg!(RTCDataChannelEvent);
+        reg!(WebSocket);
+        reg!(CloseEvent);
+        wire_registry_prototype::<crate::js::Types, WebSocket, EventTarget>(engine);
+        wire_registry_prototype::<crate::js::Types, CloseEvent, Event>(engine);
+        wire_registry_constructor_prototype::<crate::js::Types, WebSocket, EventTarget>(engine);
+        wire_registry_constructor_prototype::<crate::js::Types, CloseEvent, Event>(engine);
+        wire_registry_prototype::<crate::js::Types, RTCPeerConnection, EventTarget>(engine);
+        wire_registry_prototype::<crate::js::Types, RTCDataChannel, EventTarget>(engine);
+        wire_registry_prototype::<crate::js::Types, RTCPeerConnectionIceEvent, Event>(engine);
+        wire_registry_prototype::<crate::js::Types, RTCDataChannelEvent, Event>(engine);
+        wire_registry_constructor_prototype::<crate::js::Types, RTCPeerConnection, EventTarget>(
+            engine,
+        );
+        wire_registry_constructor_prototype::<crate::js::Types, RTCDataChannel, EventTarget>(
+            engine,
+        );
+        wire_registry_constructor_prototype::<crate::js::Types, RTCPeerConnectionIceEvent, Event>(
+            engine,
+        );
+        wire_registry_constructor_prototype::<crate::js::Types, RTCDataChannelEvent, Event>(engine);
+    }
 
     // Step 6: Wire prototype chains.
     wire_registry_prototype::<crate::js::Types, UIEvent, Event>(engine);
@@ -496,6 +543,8 @@ fn setup_worker_realm(
     use crate::dom::{
         AbortController, AbortSignal, DOMException, Document, Element, Event, EventTarget, Node,
     };
+    use crate::encoding::{TextDecoder, TextEncoder};
+    use crate::file_api::{Blob, File};
     #[cfg(not(boa_backend))]
     use crate::html::GlobalScope;
     use crate::html::{
@@ -510,6 +559,7 @@ fn setup_worker_realm(
         TransformStreamDefaultController, WritableStream, WritableStreamDefaultController,
         WritableStreamDefaultWriter,
     };
+    use crate::url_standard::{URL, URLSearchParams};
     use crate::webidl::bindings::{
         get_registry_prototype, initialize_registry, register_interface_spec,
         wire_registry_constructor_prototype, wire_registry_prototype,
@@ -598,6 +648,15 @@ fn setup_worker_realm(
     reg!(DedicatedWorkerGlobalScope);
     reg!(WorkerLocation);
     reg!(WorkerNavigator);
+    reg!(URL);
+    reg!(URLSearchParams);
+    install_url_search_params_iterator(engine)?;
+    reg!(Blob);
+    reg!(File);
+    reg!(TextEncoder);
+    reg!(TextDecoder);
+    wire_registry_prototype::<crate::js::Types, File, Blob>(engine);
+    wire_registry_constructor_prototype::<crate::js::Types, File, Blob>(engine);
     reg!(OffscreenCanvas);
     reg!(OffscreenCanvasRenderingContext2D);
     reg!(ByteLengthQueuingStrategy);
@@ -708,6 +767,39 @@ fn setup_worker_realm(
     crate::js::bindings::testutils::install_testutils_namespace(engine)
         .map_err(|error| format!("failed to install TestUtils namespace: {:?}", error))?;
 
+    Ok(())
+}
+
+/// <https://webidl.spec.whatwg.org/#js-iterable>
+fn install_url_search_params_iterator(engine: &mut Engine) -> Result<(), String> {
+    use crate::url_standard::URLSearchParams;
+    use crate::webidl::bindings::get_registry_prototype;
+    use js_engine::records::PropertyDescriptor;
+    use js_engine::{EcmascriptHost, ExecutionContext as _};
+
+    // The @@iterator property's value is the same function object as the
+    // entries method's.
+    let Some(prototype) = get_registry_prototype::<crate::js::Types, URLSearchParams>(engine)
+    else {
+        return Err(String::from("URLSearchParams is not registered"));
+    };
+    let entries = EcmascriptHost::get(engine, &prototype, "entries")
+        .map_err(|error| format!("failed to read URLSearchParams.prototype.entries: {error:?}"))?;
+    let iterator_key = engine.property_key_from_well_known_symbol("iterator");
+    engine
+        .define_property_or_throw(
+            prototype,
+            iterator_key,
+            PropertyDescriptor {
+                value: Some(entries),
+                writable: Some(true),
+                enumerable: Some(false),
+                configurable: Some(true),
+                get: None,
+                set: None,
+            },
+        )
+        .map_err(|error| format!("failed to install URLSearchParams @@iterator: {error:?}"))?;
     Ok(())
 }
 

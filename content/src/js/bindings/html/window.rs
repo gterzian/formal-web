@@ -81,6 +81,32 @@ impl WebIdlInterface<crate::js::Types> for Window {
             exposed: None,
         });
         def.add_attribute(AttributeDef {
+            id: "navigator",
+            getter: get_navigator,
+            setter: None,
+            static_: false,
+            unforgeable: false,
+            promise_type: false,
+            legacy_lenient_this: false,
+            replaceable: false,
+            put_forwards: None,
+            legacy_lenient_setter: false,
+            exposed: None,
+        });
+        def.add_attribute(AttributeDef {
+            id: "clientInformation",
+            getter: get_navigator,
+            setter: None,
+            static_: false,
+            unforgeable: false,
+            promise_type: false,
+            legacy_lenient_this: false,
+            replaceable: true,
+            put_forwards: None,
+            legacy_lenient_setter: false,
+            exposed: None,
+        });
+        def.add_attribute(AttributeDef {
             id: "location",
             getter: get_location,
             setter: None,
@@ -664,6 +690,25 @@ fn get_location(
         .ok_or_else(|| ec.new_type_error("window has no Location object"))?;
     Ok(<crate::js::Types as JsTypes>::value_from_object(
         location_object,
+    ))
+}
+
+fn get_navigator(
+    this: &JsValue,
+    _: &[JsValue],
+    ec: &mut dyn ExecutionContext<crate::js::Types>,
+) -> Completion<JsValue, crate::js::Types> {
+    // <https://html.spec.whatwg.org/#dom-navigator>
+    let window = window_domain_from(this, ec)?;
+    // The domain method creates the Navigator on first access and caches its
+    // JS object on the global scope; the binding returns that cached object.
+    window.navigator_value(ec)?;
+    let navigator_object = window
+        .global_scope
+        .navigator_object(ec)
+        .ok_or_else(|| ec.new_type_error("window has no Navigator object"))?;
+    Ok(<crate::js::Types as JsTypes>::value_from_object(
+        navigator_object,
     ))
 }
 

@@ -1039,6 +1039,9 @@ pub enum Command {
         net_sender: ipc::IpcSender<crate::network::Request>,
         /// Direct sender to the graphics process.
         graphics_sender: Option<ipc::IpcSender<crate::graphics::GraphicsCommand>>,
+        /// Direct sender to the WebRTC process, which runs the network side
+        /// of every RTCPeerConnection.
+        webrtc_sender: Option<ipc::IpcSender<crate::webrtc::Request>>,
         /// The content process's own command sender. Net uses this to route
         /// `CompleteDocumentFetch` directly to this content process.
         content_command_sender: ipc::IpcSender<Command>,
@@ -1049,6 +1052,23 @@ pub enum Command {
         /// the user agent. A fetch for one of them goes to the user agent as
         /// `Event::EmbedderSchemeFetchRequested` and never reaches net.
         embedder_schemes: Vec<String>,
+    },
+    /// An operation result or an event for one RTCPeerConnection, from the
+    /// WebRTC process. Content queues a task for it on the networking task
+    /// source.
+    /// <https://html.spec.whatwg.org/#networking-task-source>
+    WebRtc {
+        document_id: DocumentId,
+        peer: crate::webrtc::PeerConnectionId,
+        message: crate::webrtc::Message,
+    },
+    /// Feedback from one WebSocket connection, from the net process.
+    /// Content queues a task for it on the WebSocket task source.
+    /// <https://websockets.spec.whatwg.org/#websocket-task-source>
+    WebSocket {
+        document_id: DocumentId,
+        socket: crate::websocket::WebSocketId,
+        event: crate::websocket::WebSocketEvent,
     },
     /// A video pipeline reached end of stream. Content should unset any
     /// animating flags associated with this pipeline.

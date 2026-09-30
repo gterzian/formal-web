@@ -183,6 +183,7 @@ pub fn spawn_window_event_loop(
     trace_sender: Option<TraceSender>,
     network_extension_sender: ipc::IpcSender<ipc_messages::network::Request>,
     graphics_sender_for_bootstrap: Option<ipc::IpcSender<GraphicsCommand>>,
+    webrtc_sender_for_bootstrap: Option<ipc::IpcSender<ipc_messages::webrtc::Request>>,
     config: &EmbedderConfig,
 ) -> Result<WindowEventLoop, String> {
     let manifest =
@@ -216,6 +217,7 @@ pub fn spawn_window_event_loop(
             event_loop_id,
             net_sender: network_extension_sender_fwd,
             graphics_sender: graphics_sender_for_bootstrap,
+            webrtc_sender: webrtc_sender_for_bootstrap,
             content_command_sender,
             trace_sender,
             embedder_schemes: config.embedder_schemes.clone(),

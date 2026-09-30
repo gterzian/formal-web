@@ -1,6 +1,7 @@
 //! Extension manifests for the formal-web extension processes.
 //!
-//! Defines `ExtensionManifest` implementations for net, media, and content,
+//! Defines `ExtensionManifest` implementations for net, graphics, WebRTC and
+//! content,
 //! wrapping the existing process-spawning logic.
 
 #[cfg(unix)]
@@ -84,6 +85,44 @@ impl ExtensionManifest for GraphicsExtensionManifest {
 
         child_process.spawn().map_err(|error| {
             IpcError::Transport(format!("failed to start graphics process: {error}"))
+        })
+    }
+}
+
+// ── WebRTC extension manifest ───────────────────────────────────────────────
+
+pub struct WebRtcExtensionManifest {
+    /// Where the embedder keeps the extension executables, searched before
+    /// the directory of the current executable.
+    pub extensions_directory: Option<PathBuf>,
+}
+
+impl ExtensionManifest for WebRtcExtensionManifest {
+    fn endpoint(&self) -> ExtensionEndpoint {
+        ExtensionEndpoint::Singleton {
+            service_name: "formal-web.webrtc",
+        }
+    }
+
+    fn bek_target(&self) -> Result<(BekProcessKind, String), IpcError> {
+        Ok((
+            BekProcessKind::Networking,
+            "com.formal-web.app.WebRtcExtension".into(),
+        ))
+    }
+
+    fn spawn(&self, token: &BootstrapToken) -> Result<std::process::Child, IpcError> {
+        let executable_path =
+            sidecar_executable_path("formal-web-webrtc", self.extensions_directory.as_deref())
+                .map_err(IpcError::Transport)?;
+
+        let mut child_process = ProcessCommand::new(&executable_path);
+        #[cfg(unix)]
+        child_process.arg0("formal-web-webrtc");
+        child_process.arg("--webrtc-token").arg(token.to_string());
+
+        child_process.spawn().map_err(|error| {
+            IpcError::Transport(format!("failed to start webrtc process: {error}"))
         })
     }
 }

@@ -50,6 +50,7 @@ style = { version = "0.17.0", package = "stylo" }
 style_traits = { version = "0.17.0", package = "stylo_traits" }
 crossbeam-channel = "0.5"
 url = "2"
+form_urlencoded = "1"
 uuid = { version = "1", features = ["serde", "v4"] }
 xml5ever = "0.39.0"
 verification = { path = "../verification" }
