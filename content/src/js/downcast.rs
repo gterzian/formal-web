@@ -8,9 +8,9 @@ use crate::dom::{
 };
 use crate::html::{
     CanvasRenderingContext2D, DedicatedWorkerGlobalScope, HTMLAnchorElement, HTMLCanvasElement,
-    HTMLElement, HTMLIFrameElement, HTMLInputElement, HTMLMediaElement, HTMLVideoElement,
-    MessageEvent, MessagePort, OffscreenCanvas, OffscreenCanvasRenderingContext2D, Window, Worker,
-    WorkerGlobalScope,
+    HTMLElement, HTMLIFrameElement, HTMLImageElement, HTMLInputElement, HTMLMediaElement,
+    HTMLVideoElement, MessageEvent, MessagePort, OffscreenCanvas,
+    OffscreenCanvasRenderingContext2D, Window, Worker, WorkerGlobalScope,
 };
 use crate::js::Types;
 use crate::js::platform_objects::with_global_scope;
@@ -84,6 +84,11 @@ fn with_platform_event_target_mut<R>(
         iframe.html_element.element.node.event_target
     );
     target!(
+        HTMLImageElement,
+        image,
+        image.html_element.element.node.event_target
+    );
+    target!(
         HTMLMediaElement,
         media,
         media.html_element.element.node.event_target
@@ -152,6 +157,11 @@ fn with_platform_reflector_slot_mut<R>(
         HTMLIFrameElement,
         iframe,
         iframe.html_element.element.node.event_target
+    );
+    slot!(
+        HTMLImageElement,
+        image,
+        image.html_element.element.node.event_target
     );
     slot!(
         HTMLMediaElement,
@@ -358,6 +368,8 @@ pub(crate) fn event_target_from_js_object(
             Some(canvas.html_element.element.node.event_target.clone())
         } else if let Some(iframe) = data.downcast_ref::<HTMLIFrameElement>() {
             Some(iframe.html_element.element.node.event_target.clone())
+        } else if let Some(image) = data.downcast_ref::<HTMLImageElement>() {
+            Some(image.html_element.element.node.event_target.clone())
         } else if let Some(input) = data.downcast_ref::<HTMLInputElement>() {
             Some(input.html_element.element.node.event_target.clone())
         } else if let Some(media) = data.downcast_ref::<HTMLMediaElement>() {

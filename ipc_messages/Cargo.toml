@@ -5,12 +5,12 @@ edition = "2024"
 publish = false
 
 [dependencies]
-anyrender = { version = "0.10", features = ["serde"] }
+anyrender = { version = "0.11", features = ["serde"] }
 ipc = { path = "../ipc" }
 ipc-channel = { git = "https://github.com/gterzian/ipc-channel", rev = "169da83" }
 peniko = "0.6.0"
 postcard = { version = "1", features = ["use-std"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
-uuid = { version = "1", features = ["serde", "v4"] }
+uuid = { version = "1", features = ["serde", "v4", "v5"] }
 verification = { path = "../verification" }

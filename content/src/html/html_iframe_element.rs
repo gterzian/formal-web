@@ -234,6 +234,7 @@ fn attach_iframe_subdocument_from_html(
         parent_document_id,
         Some(base_url),
         needs_paint.clone(),
+        false,
     ))));
     {
         let mut sub_document_guard = sub_document.borrow_mut();
@@ -457,6 +458,7 @@ fn create_a_new_child_navigable(
             needs_paint,
             last_scene: None,
             last_composition: None,
+            notified_image_sources: HashMap::new(),
         },
     );
     process

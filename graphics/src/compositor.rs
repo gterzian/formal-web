@@ -6,7 +6,8 @@ use anyrender::{PaintScene, Scene as RenderScene};
 use ipc::IpcSharedRegion;
 use ipc_messages::content::{
     CanvasId, EmbedBackgroundPolicy, EmbedSite, FontTransportReceiver, FrameCompositionMetadata,
-    FrameId, IframeEmbedSite, PaintFrame, RecordedScene, serialize_scene_to_vec,
+    FrameId, IframeEmbedSite, ImageIdentifier, ImagePaintId, PaintFrame, RecordedScene,
+    serialize_scene_to_vec,
 };
 use ipc_messages::graphics::{CompositingLayerId, FrameHitInfo, LayerTopology, SurfacePayload};
 
@@ -191,6 +192,16 @@ pub struct CompositorCanvasFrame {
     pub dirty: bool,
 }
 
+/// The state of one on-screen `<img>` instance. `image_id` is the shared
+/// decoded image it draws; `dirty` is set when the layer still needs its
+/// one-node scene rasterized (first paint, or a switch to a different
+/// image) and cleared once it has been rendered.
+#[derive(Clone)]
+struct ImageLayerState {
+    image_id: ImageIdentifier,
+    dirty: bool,
+}
+
 /// The per-webview compositor: receives PaintFrames and VideoFrames,
 /// composes them into a single final scene, and publishes the result plus
 /// hit-testing info back to the user agent. Owns the webview's font
@@ -205,8 +216,14 @@ pub struct Compositor {
     resolved_tree_dirty: bool,
     /// Latest frame per video paint id.
     video_frames: HashMap<VideoPaintId, CompositorVideoFrame>,
-    /// Latest committed scene per offscreen canvas id.
+    /// Latest decoded scene per offscreen canvas id.
     canvas_frames: HashMap<CanvasId, CompositorCanvasFrame>,
+    /// Decoded pixels per `ImageIdentifier`, shared by every `<img>` layer
+    /// that references the same image. Populated by `RegisterImage`.
+    image_registry: HashMap<ImageIdentifier, ImageData>,
+    /// Per-instance `<img>` layer state: which shared image it draws and
+    /// whether its one-node scene still needs rasterizing.
+    image_layers: HashMap<ImagePaintId, ImageLayerState>,
     /// True when the latest top-level frame arrived but its composition is
     /// deferred until every embedded frame it references has arrived.
     composition_pending: bool,
@@ -244,6 +261,7 @@ impl Compositor {
         self.pending_frames.clear();
         self.committed_frames.clear();
         self.video_frames.clear();
+        self.clear_image_layers();
         // Canvas frames are NOT cleared here: a canvas is registered and its
         // first scene committed by the incoming document's script, which runs
         // before the navigation is finalized.  A stale canvas frame is keyed
@@ -296,6 +314,77 @@ impl Compositor {
         self.canvas_frames.remove(&canvas_id);
     }
 
+    /// Store the decoded pixels for an `<img>` resource. Returns `false`
+    /// when the image is already registered (the same identifier), so the
+    /// caller can skip redundant work.
+    pub fn store_image(
+        &mut self,
+        id: ImageIdentifier,
+        width: u32,
+        height: u32,
+        bytes: &[u8],
+    ) -> bool {
+        if self.image_registry.contains_key(&id) {
+            return false;
+        }
+        self.image_registry.insert(
+            id,
+            ImageData {
+                data: peniko::Blob::from(bytes.to_vec()),
+                format: ImageFormat::Rgba8,
+                alpha_type: ImageAlphaType::Alpha,
+                width,
+                height,
+            },
+        );
+        true
+    }
+
+    /// Drop every image layer (and its surface) on navigation: the outgoing
+    /// document's `<img>` elements are gone. Registered image bytes are kept
+    /// so a later document in the same partition reusing the same resource
+    /// does not re-upload.
+    fn clear_image_layers(&mut self) {
+        self.image_layers.clear();
+    }
+
+    /// Rebuild the `<img>` layer set from the committed frames' embed sites:
+    /// a paint id present this cycle keeps its dirty state while it still
+    /// draws the same image; a new paint id, or one that switched image, is
+    /// dirty so its one-node scene is rasterized once.
+    fn refresh_image_layers(&mut self) {
+        let mut refreshed: HashMap<ImagePaintId, ImageLayerState> = HashMap::new();
+        for frame in self.committed_frames.values() {
+            for site in &frame.composition.embed_sites {
+                let EmbedSite::Image(image) = site else {
+                    continue;
+                };
+                match refreshed.get_mut(&image.paint_id) {
+                    Some(state) if state.image_id == image.image_id => {}
+                    Some(state) => {
+                        state.image_id = image.image_id.clone();
+                        state.dirty = true;
+                    }
+                    None => {
+                        let dirty = self
+                            .image_layers
+                            .get(&image.paint_id)
+                            .map(|state| state.image_id != image.image_id)
+                            .unwrap_or(true);
+                        refreshed.insert(
+                            image.paint_id,
+                            ImageLayerState {
+                                image_id: image.image_id.clone(),
+                                dirty,
+                            },
+                        );
+                    }
+                }
+            }
+        }
+        self.image_layers = refreshed;
+    }
+
     /// Clear the dirty flag for the layers that were actually re-rendered this
     /// cycle. Called by the event loop after `submit_layers` succeeds; a layer
     /// whose content no longer changed keeps its last surface on the next
@@ -316,6 +405,11 @@ impl Compositor {
                 CompositingLayerId::Canvas(canvas_id) => {
                     if let Some(frame) = self.canvas_frames.get_mut(canvas_id) {
                         frame.dirty = false;
+                    }
+                }
+                CompositingLayerId::Image(paint_id) => {
+                    if let Some(state) = self.image_layers.get_mut(paint_id) {
+                        state.dirty = false;
                     }
                 }
             }
@@ -448,6 +542,7 @@ impl Compositor {
                 );
             }
             self.resolved_tree_dirty = true;
+            self.refresh_image_layers();
             return scene_changed;
         }
 
@@ -467,6 +562,7 @@ impl Compositor {
 
         self.committed_frames.insert(frame_id, frame);
         self.resolved_tree_dirty = true;
+        self.refresh_image_layers();
         scene_changed
     }
 
@@ -535,6 +631,9 @@ impl Compositor {
         for canvas_id in self.canvas_frames.keys() {
             live.insert(CompositingLayerId::Canvas(*canvas_id));
         }
+        for paint_id in self.image_layers.keys() {
+            live.insert(CompositingLayerId::Image(*paint_id));
+        }
         live
     }
 
@@ -567,6 +666,7 @@ impl Compositor {
             match site {
                 EmbedSite::Frame(_iframe_site) => {}
                 EmbedSite::Canvas(_) => {}
+                EmbedSite::Image(_) => {}
                 EmbedSite::Video(video_data) => {
                     if expected_videos.contains(&video_data.paint_id)
                         && !self.video_frames.contains_key(&video_data.paint_id)
@@ -609,6 +709,7 @@ impl Compositor {
                     }
                 }
                 EmbedSite::Canvas(_) => {}
+                EmbedSite::Image(_) => {}
                 EmbedSite::Video(video_data) => {
                     if expected_videos.contains(&video_data.paint_id)
                         && !self.video_frames.contains_key(&video_data.paint_id)
@@ -887,6 +988,7 @@ impl Compositor {
                 EmbedSite::Frame(f) => Some((f.embed_site_id, f.background_policy)),
                 EmbedSite::Video(_) => None,
                 EmbedSite::Canvas(_) => None,
+                EmbedSite::Image(_) => None,
             })
             .collect();
 
@@ -1093,6 +1195,79 @@ impl Compositor {
                         render,
                     });
                 }
+                EmbedSite::Image(image_data) => {
+                    let Some(image) = self.image_registry.get(&image_data.image_id).cloned() else {
+                        if input_debug_enabled() {
+                            trace!(
+                                "[input-debug][compositor] image paint_id={:?} no decoded pixels yet",
+                                image_data.paint_id
+                            );
+                        }
+                        continue;
+                    };
+                    let dirty = self
+                        .image_layers
+                        .get(&image_data.paint_id)
+                        .map(|state| state.dirty)
+                        .unwrap_or(true);
+                    if input_debug_enabled() {
+                        trace!(
+                            "[input-debug][compositor] image paint_id={:?} dirty={}",
+                            image_data.paint_id, dirty
+                        );
+                    }
+                    let transform = Affine::new(image_data.layout.transform);
+                    let tx = transform.as_coeffs()[4];
+                    let ty = transform.as_coeffs()[5];
+                    let clip_rect = Rect::new(
+                        image_data.layout.clip_bounds[0] - tx,
+                        image_data.layout.clip_bounds[1] - ty,
+                        image_data.layout.clip_bounds[2] - tx,
+                        image_data.layout.clip_bounds[3] - ty,
+                    );
+                    let local_w = clip_rect.width();
+                    let local_h = clip_rect.height();
+                    let scale_x = if image.width > 0 {
+                        local_w / image.width as f64
+                    } else {
+                        1.0
+                    };
+                    let scale_y = if image.height > 0 {
+                        local_h / image.height as f64
+                    } else {
+                        1.0
+                    };
+                    let image_transform = Affine::new([scale_x, 0.0, 0.0, scale_y, tx, ty]);
+
+                    // The `<img>` embed site is its own layer: a one-node
+                    // scene drawing the decoded image at identity, placed by
+                    // `image_transform` (scaled to the clip rect).
+                    let render = if dirty {
+                        let mut image_scene = RenderScene::new();
+                        image_scene.draw_image(ImageBrushRef::from(&image), Affine::IDENTITY);
+                        Some(image_scene)
+                    } else {
+                        None
+                    };
+
+                    layers.push(LayerUpdate {
+                        layer_id: CompositingLayerId::Image(image_data.paint_id),
+                        parent: Some(CompositingLayerId::Navigable(frame_id)),
+                        transform: image_transform,
+                        clip_bounds: Rect::new(
+                            image_data.layout.clip_bounds[0],
+                            image_data.layout.clip_bounds[1],
+                            image_data.layout.clip_bounds[2],
+                            image_data.layout.clip_bounds[3],
+                        ),
+                        corner_radius: image_data.clip_radius,
+                        z_order: (z, paint_order),
+                        background: None,
+                        width: image.width,
+                        height: image.height,
+                        render,
+                    });
+                }
             }
         }
 
@@ -1290,6 +1465,7 @@ impl Compositor {
                 EmbedSite::Frame(f) => Some(f.child_frame_id),
                 EmbedSite::Video(_) => None,
                 EmbedSite::Canvas(_) => None,
+                EmbedSite::Image(_) => None,
             })
             .collect::<Vec<_>>();
         for child_frame_id in child_frame_ids {

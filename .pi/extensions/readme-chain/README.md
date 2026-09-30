@@ -1,30 +1,30 @@
 # readme-chain — Documentation chain collector
 
 Provides the `readme_chain` tool and `/readme-chain` command to collect a
-project's documentation chain (AGENTS.md → nested README.md files) for a
-given file path.  The tool helps the agent understand project conventions
-before editing files.
+project's documentation chain (nested README.md files) for a given file path.
+The tool helps the agent understand project conventions before editing files,
+without re-sending README content the model has already seen.
 
 ## How it works
 
-Every project using the [formal-web documentation chain](../../AGENTS.md)
-convention has an `AGENTS.md` at the root and `README.md` files scattered
-through the directory tree.
+Every project using the [formal-web documentation chain](../../../AGENTS.md)
+convention has a single `AGENTS.md` at the root and `README.md` files
+scattered through the directory tree.
 
 The `readme-chain` extension:
 
-1. **Tracks** which directories have been "introduced" by having their
-   README chain read — either explicitly via `readme_chain()` or implicitly
-   when the agent reads a `README.md` or `AGENTS.md` file.
+1. **Collects the chain** — walks up the directory tree from the given path,
+   gathering every `README.md` on the way to the root.
 
-2. **Provides the `readme_chain` tool** — a custom LLM-callable tool that
-   walks up the directory tree from a given file path, collects all
-   `AGENTS.md` and `README.md` files, and returns their full contents.
-   The agent is prompted to call this before editing files in unfamiliar
-   directories.
+2. **Filters what is already in context** — inspects the model's active
+   conversation context (the session entries that survive compaction) and
+   returns only the READMEs that are not already present.  A README counts as
+   present when a previous `readme_chain` result included it, or when it was
+   read in full with the `read` tool.  Partial or truncated reads do not
+   count.
 
-3. **Provides `/readme-chain`** — a command for human use that summarises
-   the chain without reading the full contents.
+3. **Provides `/readme-chain`** — a command for human use that summarises the
+   chain, marking the files read previously.
 
 ## What the chain means
 
@@ -32,32 +32,39 @@ The documentation chain for a file at `content/src/wasm/namespace.rs`
 consists of:
 
 ```
-AGENTS.md                          — project-wide rules and conventions
 content/README.md                  — content crate overview
 content/src/wasm/README.md         — wasm domain conventions
 ```
 
+`AGENTS.md` is not part of the returned chain.  The project keeps exactly one
+`AGENTS.md`, at the root (see [`AGENTS.md`](../../../AGENTS.md), "Documentation
+Chain"), and pi loads it as project instructions before the session starts.
+
 When the agent calls `readme_chain({ path: "content/src/wasm/namespace.rs" })`,
-it gets all three files concatenated, in order from general to specific.
+it gets both README files concatenated, in order from general to specific.
+Any README that was read previously is still listed in the summary — marked
+`_(read previously — content omitted)_` — but its content is left out of the
+returned text.
 
 ## Commands
 
 | Command | Description |
 |---|---|
-| `/readme-chain [path]` | Display the documentation chain for a file or directory |
+| `/readme-chain [path]` | Display the documentation chain for a file or directory, marking files read previously |
 
 ## Tool
 
 | Tool | Description |
 |---|---|
-| `readme_chain({ path?: string })` | Collect and return the full documentation chain for a path |
+| `readme_chain({ path?: string })` | Collect the documentation chain for a path and return the READMEs not already in context |
 
 ## Design notes
 
-- **Per-session state only.** Extensions are reloaded on `/reload`, so the
-  consulted set is reset.
-- **Vendor/config paths are ignored.** Files under `node_modules/`,
-  `vendor/`, `target/`, `.pi/`, and `.git/` never trigger auto-consult.
-- **Reading a README auto-consults.** When the agent reads a `README.md` or
-  `AGENTS.md` file, that directory is automatically marked as consulted
-  without needing a separate `readme_chain` call.
+- **Context is derived from the session, not tracked separately.** The
+  "already in context" set is rebuilt from `ctx.sessionManager` on every call,
+  so it follows compaction and session changes automatically.  A README
+  dropped by compaction is offered again.
+- **The tool result carries `details.readmes`.** The absolute paths of the
+  READMEs a call delivered are recorded there so later calls can detect them
+  exactly.  Session results recorded before this payload existed are detected
+  by parsing the rendered section headers.
