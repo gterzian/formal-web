@@ -3,10 +3,8 @@
 <title>Callback GC Protection Tests</title>
 <script>
 // Tests that JS callbacks stored in Rust-side structs (Callback, SourceMethod,
-// stream algorithms) survive garbage collection cycles.
-// On JSC, these callbacks are stored via JSObjectSetPrivate and must be
-// independently protected with JSValueProtect; otherwise the GC can collect
-// them while Rust still holds a reference.
+// stream algorithms) survive garbage collection cycles: the engine's GC must
+// keep them alive while Rust holds a reference.
 
 var results = [];
 var allPassed = true;
@@ -41,7 +39,7 @@ function runGc() {
 
 // Test 1: ReadableStream pull callback survives GC.
 // The pull algorithm is stored as a Callback inside a SourceMethod inside
-// the ReadableStreamDefaultController.  On JSC, this must be JSValueProtect'd.
+// the ReadableStreamDefaultController.
 test("ReadableStream pull callback survives GC", async function () {
   var pullCalled = false;
   var pullValue = null;

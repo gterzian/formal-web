@@ -618,14 +618,6 @@ pub trait ExecutionContext<T: JsTypes + JsTypesWithRealm>: EcmascriptHost<T> {
         promise: &T::JsObject,
     ) -> Completion<crate::enums::PromiseState<T>, T>;
 
-    /// Protect a value from garbage collection until the returned handle is dropped.
-    /// On JSC this calls `JSValueProtect`, on Boa it is a no-op.
-    /// Use this when a JsValue needs to survive across GC cycles (e.g., captured
-    /// in a closure for `enqueue_job_with_realm`).
-    fn protect_value(&mut self, value: &T::JsValue) -> crate::gc::GcRootHandle<T> {
-        crate::gc::GcRootHandle::new(value.clone(), None)
-    }
-
     // ────────────────────────────────────────────────────────────────────────
     // §27.5 Generator Abstract Operations
     // ────────────────────────────────────────────────────────────────────────
@@ -837,9 +829,8 @@ pub trait ExecutionContext<T: JsTypes + JsTypesWithRealm>: EcmascriptHost<T> {
     /// returned handle.  When the handle is dropped, the protection is released.
     ///
     /// Boa: no-op (the GC traces through `#[derive(Trace)]` automatically).
-    /// JSC: calls `JSValueProtect` / `JSValueUnprotect`.
     fn create_root(&mut self, value: &T::JsValue) -> crate::gc::GcRootHandle<T> {
-        crate::gc::GcRootHandle::new(value.clone(), None)
+        crate::gc::GcRootHandle::new(value.clone())
     }
 
     /// <https://tc39.es/ecma262/#sec-createbuiltinfunction>
@@ -1023,13 +1014,6 @@ where
     D: std::any::Any + crate::gc::Trace + 'static,
 {
     crate::boa::BoaContext::build(factory)
-}
-
-/// Create a new engine with a realm whose global object is prepared for
-/// platform-data association.
-#[cfg(feature = "jsc")]
-pub fn create_engine() -> Result<crate::jsc::JscEngine, String> {
-    Ok(crate::jsc::JscEngine::new())
 }
 
 /// Create a new engine with a realm whose global object is prepared for

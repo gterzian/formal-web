@@ -17,7 +17,7 @@ pub(crate) fn build_context(document: Rc<RefCell<BaseDocument>>) -> Result<Engin
 
 /// Create a new realm associated with an existing engine.
 ///
-/// V8 shares its isolate. Boa and JSC currently create a fresh engine.
+/// V8 shares its isolate. Boa currently creates a fresh engine.
 pub(crate) fn build_realm(
     engine: &mut Engine,
     document: Rc<RefCell<BaseDocument>>,
@@ -37,8 +37,8 @@ pub(crate) fn build_worker_realm(
 ) -> Result<Engine, String> {
     // The Boa backend builds the realm's global object through its host hooks
     // and needs a factory that constructs the DedicatedWorkerGlobalScope
-    // platform object once the execution context exists. JSC/V8 create it in
-    // `setup_worker_realm` and associate it with the global object there.
+    // platform object once the execution context exists. V8 creates it in
+    // `setup_worker_realm` and associates it with the global object there.
     #[cfg(boa_backend)]
     let mut engine = {
         use crate::html::{DedicatedWorkerGlobalScope, GlobalScope};
@@ -57,7 +57,7 @@ pub(crate) fn build_worker_realm(
     };
     #[cfg(not(boa_backend))]
     let mut engine = js_engine::create_engine()?;
-    // Create the worker global object (JSC/V8) and run the realm bootstrap
+    // Create the worker global object (V8) and run the realm bootstrap
     // on every backend: the interface registry, console, interface
     // registration, and the worker global scope's prototype wiring
     // (see `setup_worker_realm`).  On Boa the global object was already
@@ -69,7 +69,7 @@ pub(crate) fn build_worker_realm(
 fn build_context_inner(document: Rc<RefCell<BaseDocument>>) -> Result<Engine, String> {
     // The Boa backend builds the realm's global object through its host hooks
     // and needs a factory that constructs the Window platform object once the
-    // execution context exists. JSC/V8 create the Window in `setup_realm` and
+    // execution context exists. V8 creates the Window in `setup_realm` and
     // associate it with the global object there.
     #[cfg(boa_backend)]
     let mut engine = {
@@ -90,14 +90,6 @@ fn build_context_inner(document: Rc<RefCell<BaseDocument>>) -> Result<Engine, St
     let mut engine = js_engine::create_engine()?;
     setup_realm(&mut engine, document)?;
     Ok(engine)
-}
-
-#[cfg(jsc_backend)]
-fn build_realm_inner(
-    _engine: &mut Engine,
-    document: Rc<RefCell<BaseDocument>>,
-) -> Result<Engine, String> {
-    build_context_inner(document)
 }
 
 #[cfg(v8_backend)]
@@ -154,7 +146,7 @@ fn setup_realm(engine: &mut Engine, _document: Rc<RefCell<BaseDocument>>) -> Res
     // Step 1: Create the Window with GlobalScope and associate it with the
     // realm's global object so `global_scope_or_error` works. The Boa backend
     // constructs the Window through its host hooks during realm creation, so
-    // only JSC/V8 create it here.
+    // only V8 creates it here.
     #[cfg(not(boa_backend))]
     let global_obj = {
         let global_scope = GlobalScope::new(
@@ -299,44 +291,13 @@ fn setup_realm(engine: &mut Engine, _document: Rc<RefCell<BaseDocument>>) -> Res
     // Step 7: Set the global object's prototype to Window.prototype so
     // `instanceof Window` etc. works.
     if let Some(window_proto) = get_registry_prototype::<crate::js::Types, Window>(engine) {
-        let proto_set = engine.set_prototype(global_obj.clone(), Some(window_proto.clone()));
-        let immutable_global_proto = match proto_set {
-            Ok(true) => false,
-            Ok(false) | Err(_) => true,
-        };
-
-        // Step 7b: Engines with an immutable global object [[Prototype]]
-        // (e.g. JSC) fall back to copying Window/EventTarget properties onto
-        // the global object.
-        if immutable_global_proto {
-            let prototypes = [
-                get_registry_prototype::<crate::js::Types, EventTarget>(engine),
-                Some(window_proto),
-            ];
-            for proto in prototypes.iter().flatten() {
-                if let Ok(keys) = engine.own_property_keys(proto.clone()) {
-                    for key in keys {
-                        let key_str = engine.property_key_to_rust_string(&key);
-                        if key_str == "constructor" || key_str == "__proto__" {
-                            continue;
-                        }
-                        if let Ok(Some(descriptor)) =
-                            engine.get_own_property(proto.clone(), key.clone())
-                        {
-                            if descriptor.value.is_some() || descriptor.get.is_some() {
-                                if let Err(error) = engine.define_property_or_throw(
-                                    global_obj.clone(),
-                                    key,
-                                    descriptor,
-                                ) {
-                                    error!(
-                                        "failed to copy a Window prototype property to the global object: {error:?}"
-                                    );
-                                }
-                            }
-                        }
-                    }
-                }
+        match engine.set_prototype(global_obj.clone(), Some(window_proto)) {
+            Ok(true) => {}
+            Ok(false) => {
+                error!("the global object's prototype could not be set to Window.prototype")
+            }
+            Err(error) => {
+                error!("failed to set the global object's prototype to Window.prototype: {error:?}")
             }
         }
     }
@@ -522,7 +483,7 @@ fn setup_worker_realm(
     // be the global object of realm execution context's Realm component."
     // The Boa backend constructs the platform object through its host hooks
     // during realm creation, so it only returns the realm's global object
-    // here; JSC/V8 create the worker global scope and associate it with the
+    // here; V8 creates the worker global scope and associates it with the
     // realm's global object.
     let global_obj = {
         #[cfg(not(boa_backend))]
@@ -660,47 +621,14 @@ fn setup_worker_realm(
     if let Some(dedicated_proto) =
         get_registry_prototype::<crate::js::Types, DedicatedWorkerGlobalScope>(engine)
     {
-        let proto_set = engine.set_prototype(global_obj.clone(), Some(dedicated_proto.clone()));
-        let immutable_global_proto = match proto_set {
-            Ok(true) => false,
-            Ok(false) | Err(_) => true,
-        };
-
-        // Step 7b: Engines with an immutable global object [[Prototype]]
-        // (e.g. JSC) fall back to copying the worker prototype properties
-        // onto the global object.
-        if immutable_global_proto {
-            let prototypes = [
-                get_registry_prototype::<crate::js::Types, EventTarget>(engine),
-                get_registry_prototype::<crate::js::Types, WorkerGlobalScope>(engine),
-                Some(dedicated_proto),
-            ];
-            for proto in prototypes.iter().flatten() {
-                if let Ok(keys) = engine.own_property_keys(proto.clone()) {
-                    for key in keys {
-                        let key_str = engine.property_key_to_rust_string(&key);
-                        if key_str == "constructor" || key_str == "__proto__" {
-                            continue;
-                        }
-                        match engine.get_own_property(proto.clone(), key.clone()) {
-                            Ok(Some(descriptor))
-                                if descriptor.value.is_some() || descriptor.get.is_some() =>
-                            {
-                                if let Err(error) = engine.define_property_or_throw(
-                                    global_obj.clone(),
-                                    key,
-                                    descriptor,
-                                ) {
-                                    error!(
-                                        "failed to copy a worker prototype property to the global object: {error:?}"
-                                    );
-                                }
-                            }
-                            _ => {}
-                        }
-                    }
-                }
-            }
+        match engine.set_prototype(global_obj.clone(), Some(dedicated_proto)) {
+            Ok(true) => {}
+            Ok(false) => error!(
+                "the worker global object's prototype could not be set to DedicatedWorkerGlobalScope.prototype"
+            ),
+            Err(error) => error!(
+                "failed to set the worker global object's prototype to DedicatedWorkerGlobalScope.prototype: {error:?}"
+            ),
         }
     }
 

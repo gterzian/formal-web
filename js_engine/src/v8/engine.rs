@@ -1468,8 +1468,8 @@ impl V8Engine {
     /// This is deliberately **not** a `JsEngine` trait method: a closure's
     /// captures cannot be walked by cppgc, so generic domain code must use
     /// `create_builtin_fn_static` or `create_builtin_fn_with_captures`. It
-    /// remains an inherent method for the engine's own tests and the JSC
-    /// backend, whose closures capture only non-JS values.
+    /// remains an inherent method for the engine's own tests, whose closures
+    /// capture only non-JS values.
     pub fn create_builtin_fn(
         &mut self,
         behaviour: StoredBehaviour,
@@ -3629,7 +3629,7 @@ impl ExecutionContext<V8Types> for V8Engine {
         let promise = capability.promise;
         let resolve = capability.resolve;
         let reject = capability.reject;
-        let resolvers = PromiseResolvers::new(resolve.0, reject.0, self);
+        let resolvers = PromiseResolvers::new(resolve.0, reject.0);
         Ok((promise, resolvers))
     }
 

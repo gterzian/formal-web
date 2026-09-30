@@ -295,7 +295,7 @@ shared dependency resolution and incremental compilation.
   - `formal-web-graphics` owns per-webview compositors and runs the media backend (video/audio
     playback) in-process. It receives `PaintFrame` and media-command payloads and sends back
     composed scenes with `FrameHitInfo` for hit-testing.
-- **`js_engine` crate**: a generic JS engine trait and ECMA-262 abstract operations. Three backends: V8 (default, runs WPT), Boa (opt-in), and JSC (macOS opt-in). The `wasm` feature is the Wasmtime-based WebAssembly implementation for the Boa engine only (V8 and JSC implement WebAssembly natively). See `js_engine/README.md`.
+- **`js_engine` crate**: a generic JS engine trait and ECMA-262 abstract operations. Two backends: V8 (default, runs WPT) and Boa (opt-in). The `wasm` feature is the Wasmtime-based WebAssembly implementation for the Boa engine only (V8 implements WebAssembly natively). See `js_engine/README.md`.
 - **`js_engine_macros` crate**: proc-macro companion providing `#[gc_struct]` for GC-traced platform objects.
 
 ### Feature flags
@@ -304,16 +304,13 @@ shared dependency resolution and incremental compilation.
 |---|---|---|
 | `v8` | V8 backend via `rusty_v8` (macOS arm64, runs WPT) | **yes** |
 | `boa` | Boa JS engine backend (opt-in; hosts the `wasm` feature) | no |
-| `jsc` | JavaScriptCore backend (macOS only, experimental) | no |
 | `wasm` | Wasmtime-based WebAssembly implementation (opt-in, Boa only) | no |
 | `media` | Video/audio playback support | yes |
 | `winit_embedder` | Build the winit **windowed** embedder on macOS (the AppKit backend is the default headed one there and the only one built without this feature); no-op elsewhere, where winit is the only option. On macOS the winit embedder always builds **headless-only** (no graphics deps) for automation (WPT/WebDriver/CDP/verification); this feature adds its windowed app, which headed automation also requires — automation never runs on the AppKit backend | no |
 | `thread-backend` | Run content, net, and graphics in-process on threads over crossbeam channels instead of in helper processes (see `ipc/ARCHITECTURE.md`) | no |
 
 V8 is the default backend for running WPT tests.  Wasm is a separate feature
-(and Boa-only) to avoid pulling in wasmtime when not needed.  JSC is
-macOS-only and experimental (see `js_engine/src/jsc/README.md` for known
-issues).
+(and Boa-only) to avoid pulling in wasmtime when not needed.
 
 ## Build commands
 
@@ -343,20 +340,10 @@ rustup run 1.94.0 cargo run --release --no-default-features --features boa,media
 ### With WebAssembly (opt-in, Boa only)
 
 The `wasm` feature is the Wasmtime-based WebAssembly implementation for the
-Boa engine (V8 and JSC implement WebAssembly natively — no feature needed).
+Boa engine (V8 implements WebAssembly natively — no feature needed).
 
 ```bash
 rustup run 1.94.0 cargo build --release --no-default-features --features boa,wasm,media
-```
-
-### JSC backend (macOS only)
-
-```bash
-# Build content binary with JSC
-rustup run 1.94.0 cargo build --release --no-default-features --features jsc -p content --bin formal-web-content
-
-# Run WPT via JSC content process
-RUST_LOG=error target/release/formal-web wpt <test-path>
 ```
 
 ### Without media (no video playback)
@@ -462,6 +449,15 @@ cpu_readback` (or any other non-default backend) stays in `target/{profile}`
 and `cargo run --release` reuses it, so the default AppKit embedder receives
 CPU-readback payloads it rejects.  Run a full `cargo build --release` after
 switching a helper's feature set.
+
+A stale helper can also stall shutdown: the embedder waits for every helper
+to exit, so a helper that does not understand the current shutdown message
+leaves `formal-web-embedder` blocked in `wait` after the WebDriver session is
+deleted (observed: `formal-web-content` exited while `formal-web-net` and
+`formal-web-graphics` stayed alive, and the embedder never returned).  Every
+harness that builds only a subset of helpers must build **all** the helpers
+it spawns — the `verification/` scripts build the embedder, content, net,
+and graphics for this reason.
 
 ### Process binary search paths
 
@@ -780,7 +776,7 @@ At the end of each task, run the following steps **in order**:
    - If the test lives in a directory that `tests/wpt/include.ini` does not
      select, add a `[path/to/test]` / `skip: false` entry so it is collected.
    - If a test cannot pass on every supported engine (V8 and Boa are the
-     two that must pass; JSC is ignored) or on every feature build, keep it
+     two that must pass) or on every feature build, keep it
      disabled and update its `disabled` reason to state exactly which
      dependency is missing — never leave a stale reason describing the old
      failure.
@@ -788,9 +784,8 @@ At the end of each task, run the following steps **in order**:
 
 9. **Run all verification steps** — Every end-of-task run executes ALL verification steps unconditionally. Do not skip any step based on a subjective assessment of "relevance" — changes to seemingly unrelated files (test pages, configuration, documentation) routinely break downstream steps in this multi-process system. Running everything catches regressions the agent cannot predict.
 
-   Two engines run WPT: V8 (default) and Boa (opt-in). JSC is experimental
-   (content crate compiles but `run_content_process` returns an error at
-   runtime).  Default verification runs use the V8 backend (the default
+   Two engines run WPT: V8 (default) and Boa (opt-in).  Default verification
+   runs use the V8 backend (the default
    features); run Boa with `--no-default-features --features boa,media`.
 
    - **Default WPT run** —

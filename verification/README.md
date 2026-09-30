@@ -7,6 +7,7 @@ The verification crate owns trace recording, TLA+ validation, and the shutdown w
 - `VerificationRun::finish()` requires all top-level `TraceSender` clones to be dropped so shutdown can observe channel closure and complete.
 - Verification uses the local TLA+ Toolbox jar at `/Applications/TLA+ Toolbox.app/Contents/Eclipse/tla2tools.jar` by default.
 - `./verification/verify-specs.sh` is the canonical end-of-task verification: it starts the embedder headless with TLA+ tracing, runs a minimal WebDriver session against `verification/iframe-trace-page.html`, collects trace events, and validates all specs (Navigation, RenderingOpportunity, …) against their models.
+- Both verification scripts rebuild every helper they spawn (embedder, content, net, graphics); keep that list complete, since a stale helper can leave the embedder blocked in shutdown (see `AGENTS.md`, "IPC wire format consistency").
 - `./verification/verify-navigation.sh` is the hyperlink-navigation flow: it drives one link click (`StartupExample.html` → `navigated.html`) and treats successful `Navigation` TLA+ validation as the acceptance criterion. On failure, the human-readable report includes the failing NDJSON entry, preceding context entries, and the full TLC counterexample trace.
 
 ## Specs

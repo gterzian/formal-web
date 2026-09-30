@@ -65,21 +65,6 @@ impl WritableStreamDefaultWriter {
         promise: Option<JsObject>,
         ec: &mut dyn ExecutionContext<Types>,
     ) {
-        // JSC: protect new value from GC, unprotect old value
-        #[cfg(feature = "jsc")]
-        {
-            let old = self.ready_promise.borrow(ec).clone();
-            if let Some(ref old_obj) = old {
-                unsafe {
-                    js_engine::jsc_sys::JSValueUnprotect(old_obj.ctx(), old_obj.as_value_ref());
-                }
-            }
-            if let Some(ref new_obj) = promise {
-                unsafe {
-                    js_engine::jsc_sys::JSValueProtect(new_obj.ctx(), new_obj.as_value_ref());
-                }
-            }
-        }
         *self.ready_promise.borrow_mut(ec) = promise;
     }
     pub(crate) fn ready_resolvers_value(
@@ -106,21 +91,6 @@ impl WritableStreamDefaultWriter {
         promise: Option<JsObject>,
         ec: &mut dyn ExecutionContext<Types>,
     ) {
-        // JSC: protect new value from GC, unprotect old value
-        #[cfg(feature = "jsc")]
-        {
-            let old = self.closed_promise.borrow(ec).clone();
-            if let Some(ref old_obj) = old {
-                unsafe {
-                    js_engine::jsc_sys::JSValueUnprotect(old_obj.ctx(), old_obj.as_value_ref());
-                }
-            }
-            if let Some(ref new_obj) = promise {
-                unsafe {
-                    js_engine::jsc_sys::JSValueProtect(new_obj.ctx(), new_obj.as_value_ref());
-                }
-            }
-        }
         *self.closed_promise.borrow_mut(ec) = promise;
     }
     pub(crate) fn closed_resolvers_value(

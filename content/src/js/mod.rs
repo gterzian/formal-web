@@ -65,9 +65,6 @@ pub(crate) fn fn_capture_behaviour(
 
 /// Content-level type alias for the concrete JS types in use.
 /// Set by the build script from the selected engine feature.
-#[cfg(jsc_backend)]
-pub(crate) type Types = js_engine::jsc::JscTypes;
-
 #[cfg(boa_backend)]
 pub(crate) type Types = js_engine::boa::BoaTypes;
 
@@ -75,10 +72,7 @@ pub(crate) type Types = js_engine::boa::BoaTypes;
 pub(crate) type Types = js_engine::v8::V8Types;
 
 /// Content-level type alias for the concrete JS engine in use.
-/// `BoaContext` on Boa, `JscEngine` on JSC, and `V8Engine` on V8.
-#[cfg(jsc_backend)]
-pub(crate) type Engine = js_engine::jsc::JscEngine;
-
+/// `BoaContext` on Boa and `V8Engine` on V8.
 #[cfg(boa_backend)]
 pub(crate) type Engine = js_engine::boa::BoaContext;
 

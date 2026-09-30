@@ -115,19 +115,7 @@ pub struct ModuleRequest<T: JsTypes> {
 pub struct PromiseResolvers<T: JsTypes> {
     pub resolve: T::JsObject,
     pub reject: T::JsObject,
-    // On JSC, protect both resolve and reject JS function objects from GC
-    // while Rust code holds references.  Rc refcounting keeps protections
-    // alive across Clone/Drop cycles.
-    #[cfg(not(feature = "boa"))]
-    #[allow(dead_code)]
-    root: Option<PromiseResolverRoots<T>>,
 }
-
-#[cfg(not(feature = "boa"))]
-type PromiseResolverRoots<T> = (
-    std::rc::Rc<crate::gc::GcRootHandle<T>>,
-    std::rc::Rc<crate::gc::GcRootHandle<T>>,
-);
 
 impl<T: JsTypes> std::fmt::Debug for PromiseResolvers<T> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -138,36 +126,13 @@ impl<T: JsTypes> std::fmt::Debug for PromiseResolvers<T> {
     }
 }
 
-#[cfg(all(not(feature = "boa"), not(feature = "v8")))]
-unsafe impl<T: JsTypes> crate::gc::Trace for PromiseResolvers<T> {}
-
 #[cfg(not(feature = "boa"))]
 impl<T: JsTypes> crate::gc::Finalize for PromiseResolvers<T> {}
 
 impl<T: JsTypes> PromiseResolvers<T> {
-    /// Create promise resolvers with GC protection.
-    /// On JSC, protects both resolve and reject via JSValueProtect.
-    /// On Boa, this is a no-op (GC traces via Trace derive).
-    #[cfg_attr(feature = "boa", allow(unused_variables))]
-    pub fn new(resolve: T::JsObject, reject: T::JsObject, ec: &mut dyn ExecutionContext<T>) -> Self
-    where
-        T: crate::JsTypesWithRealm,
-    {
-        #[cfg(not(feature = "boa"))]
-        let resolve_value = T::value_from_object(resolve.clone());
-        #[cfg(not(feature = "boa"))]
-        let reject_value = T::value_from_object(reject.clone());
-        #[cfg(not(feature = "boa"))]
-        let root = Some((
-            std::rc::Rc::new(ec.create_root(&resolve_value)),
-            std::rc::Rc::new(ec.create_root(&reject_value)),
-        ));
-        Self {
-            resolve,
-            reject,
-            #[cfg(not(feature = "boa"))]
-            root,
-        }
+    /// Create a new pair of promise resolvers.
+    pub fn new(resolve: T::JsObject, reject: T::JsObject) -> Self {
+        Self { resolve, reject }
     }
 
     /// Resolves the associated promise with the given value.

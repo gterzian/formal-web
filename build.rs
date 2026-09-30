@@ -8,7 +8,6 @@ const PREBUILD_TARGET_DIR_NAME: &str = "helper-prebuild";
 #[derive(Clone, Copy)]
 enum JavascriptBackend {
     Boa,
-    Jsc,
     V8,
 }
 
@@ -93,7 +92,6 @@ fn prebuild_binaries(prebuild_list: &[(&str, &str)]) -> Result<(), String> {
     let has_media = cfg!(feature = "media");
     let backend_feature = match javascript_backend {
         JavascriptBackend::Boa => "boa",
-        JavascriptBackend::Jsc => "jsc",
         JavascriptBackend::V8 => "v8",
     };
     // The prebuild runs with `--no-default-features`, which would otherwise
@@ -150,7 +148,6 @@ fn prebuild_binaries(prebuild_list: &[(&str, &str)]) -> Result<(), String> {
 fn selected_javascript_backend() -> Result<JavascriptBackend, String> {
     let enabled_backends = [
         (cfg!(feature = "boa"), JavascriptBackend::Boa, "boa"),
-        (cfg!(feature = "jsc"), JavascriptBackend::Jsc, "jsc"),
         (cfg!(feature = "v8"), JavascriptBackend::V8, "v8"),
     ];
     let selected_backends: Vec<_> = enabled_backends

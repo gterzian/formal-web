@@ -22,12 +22,8 @@ use crate::{ExecutionContext, JsTypes, JsTypesWithRealm};
 
 #[cfg(feature = "boa")]
 use crate::boa::BoaTypes;
-#[cfg(feature = "jsc")]
-use crate::jsc::JscTypes;
 #[cfg(feature = "v8")]
 use crate::v8::V8Types;
-
-pub type UnrootAction<T> = Box<dyn FnOnce(&<T as JsTypes>::JsValue)>;
 
 // ============================================================================
 // SECTION I: SPEC-ANNOTATION TRAITS
@@ -70,9 +66,6 @@ pub unsafe trait Trace {
 #[cfg(feature = "boa")]
 pub unsafe trait Trace: boa_gc::Trace {}
 
-#[cfg(all(not(feature = "boa"), not(feature = "v8")))]
-pub unsafe trait Trace {}
-
 /// Lifecycle hook executed when the host engine reclaims the object's backing
 /// memory.
 pub trait Finalize {
@@ -100,41 +93,17 @@ pub trait JsTypesGcExt: JsTypes + JsTypesWithRealm + Sized + 'static {
     ) -> Option<Self::JsObject>;
 }
 
-/// Internal guard that executes the unroot action when dropped.
-/// Shared across all clones of a GcRootHandle via Rc.
-pub(crate) struct SharedUnroot<T: JsTypes> {
-    value: T::JsValue,
-    action: Option<UnrootAction<T>>,
-}
-
-impl<T: JsTypes> Drop for SharedUnroot<T> {
-    fn drop(&mut self) {
-        if let Some(action) = self.action.take() {
-            action(&self.value);
-        }
-    }
-}
-
-/// An RAII guard that unroots a protected JS value when the last clone is dropped.
+/// An RAII guard that holds a rooted JS value for as long as the handle lives.
 pub struct GcRootHandle<T: JsTypes> {
     /// The rooted JS value. Callers can read this to pass the value
     /// to trait methods like `EcmascriptHost::call`.
     pub value: T::JsValue,
-    /// Shared reference to the unrooting logic.
-    /// On Boa this is always None. On JSC it holds the unprotect action.
-    guard: Option<std::rc::Rc<SharedUnroot<T>>>,
 }
 
 impl<T: JsTypes> GcRootHandle<T> {
     /// Creates a new root handle.
-    pub fn new(value: T::JsValue, unroot_action: Option<UnrootAction<T>>) -> Self {
-        let guard = unroot_action.map(|action| {
-            std::rc::Rc::new(SharedUnroot {
-                value: value.clone(),
-                action: Some(action),
-            })
-        });
-        Self { value, guard }
+    pub fn new(value: T::JsValue) -> Self {
+        Self { value }
     }
 }
 
@@ -142,14 +111,9 @@ impl<T: JsTypes> Clone for GcRootHandle<T> {
     fn clone(&self) -> Self {
         Self {
             value: self.value.clone(),
-            // Bumping the Rc count safely shares the unroot action across clones.
-            guard: self.guard.clone(),
         }
     }
 }
-
-// No custom Drop needed — standard drop glue drops the Option<Rc>,
-// which decrements the count and triggers SharedUnroot::drop at zero.
 
 // ============================================================================
 // SECTION III: UNIFIED GC CELL
@@ -234,60 +198,6 @@ mod boa_cells {
 
     pub type GcRef<'a, T> = boa_gc::GcRef<'a, T>;
     pub type GcRefMut<'a, T> = boa_gc::GcRefMut<'a, T>;
-}
-
-// ── JSC backend ────────────────────────────────────────────────────────────
-//
-// `GcCell<T>` is `Rc<RefCell<T>>`. JSC's GC does not observe Rust-side
-// references; previously JS values were individually protected with
-// JSValueProtect/JSValueUnprotect by dedicated `JsValueCell`/`JsObjectCell`
-// wrappers. Those wrappers have been removed in favour of the unified
-// `GcCell`; JSC does not re-add the protection and relies on the values
-// being reachable through the engine's own tracking.
-#[cfg(feature = "jsc")]
-pub use jsc_cells::*;
-
-#[cfg(feature = "jsc")]
-mod jsc_cells {
-    use super::*;
-    use crate::jsc::JscTypes;
-
-    /// Unified GC-managed cell providing interior mutability.
-    #[derive(Clone)]
-    pub struct GcCell<T>(pub(crate) std::rc::Rc<std::cell::RefCell<T>>);
-
-    /// Construct a [`GcCell`] with the given value.
-    pub fn gc_cell_new<T>(value: T, _ec: &mut dyn ExecutionContext<JscTypes>) -> GcCell<T> {
-        GcCell(std::rc::Rc::new(std::cell::RefCell::new(value)))
-    }
-
-    impl<T> GcCell<T> {
-        /// Immutably borrow the wrapped value.
-        pub fn borrow<'a, 'e>(&'a self, _ec: &'e dyn ExecutionContext<JscTypes>) -> GcRef<'a, T> {
-            self.0.borrow()
-        }
-
-        /// Mutably borrow the wrapped value.
-        pub fn borrow_mut<'a, 'e>(
-            &'a self,
-            _ec: &'e mut dyn ExecutionContext<JscTypes>,
-        ) -> GcRefMut<'a, T> {
-            self.0.borrow_mut()
-        }
-
-        /// Replace the wrapped value.
-        pub fn set<'a, 'e>(&'a self, value: T, _ec: &'e mut dyn ExecutionContext<JscTypes>) {
-            *self.0.borrow_mut() = value;
-        }
-
-        /// Compare two cells for pointer equality.
-        pub fn ptr_eq(&self, other: &Self) -> bool {
-            std::rc::Rc::ptr_eq(&self.0, &other.0)
-        }
-    }
-
-    pub type GcRef<'a, T> = std::cell::Ref<'a, T>;
-    pub type GcRefMut<'a, T> = std::cell::RefMut<'a, T>;
 }
 
 // ── V8 backend ─────────────────────────────────────────────────────────────
@@ -375,20 +285,13 @@ mod v8_cells {
 /// Construct a [`GcCell`] with the given value.
 ///
 /// The execution context supplies the engine access required for allocation
-/// (the cppgc heap on V8). Boa and JSC ignore it but accept it for API
-/// uniformity.
+/// (the cppgc heap on V8). Boa ignores it but accepts it for API uniformity.
 #[cfg(feature = "boa")]
 pub fn gc_cell_new<T: boa_gc::Trace + 'static>(
     value: T,
     ec: &mut dyn ExecutionContext<BoaTypes>,
 ) -> GcCell<T> {
     boa_cells::gc_cell_new(value, ec)
-}
-
-/// Construct a [`GcCell`] with the given value.
-#[cfg(feature = "jsc")]
-pub fn gc_cell_new<T>(value: T, ec: &mut dyn ExecutionContext<JscTypes>) -> GcCell<T> {
-    jsc_cells::gc_cell_new(value, ec)
 }
 
 /// Construct a [`GcCell`] with the given value.
@@ -409,12 +312,6 @@ pub fn gc_cell_ptr_eq<T: boa_gc::Trace + 'static>(a: &GcCell<T>, b: &GcCell<T>) 
 }
 
 /// Compare two [`GcCell`] references for pointer equality.
-#[cfg(feature = "jsc")]
-pub fn gc_cell_ptr_eq<T: 'static>(a: &GcCell<T>, b: &GcCell<T>) -> bool {
-    a.ptr_eq(b)
-}
-
-/// Compare two [`GcCell`] references for pointer equality.
 #[cfg(feature = "v8")]
 pub fn gc_cell_ptr_eq<T: Trace + 'static>(a: &GcCell<T>, b: &GcCell<T>) -> bool {
     a.ptr_eq(b)
@@ -423,30 +320,13 @@ pub fn gc_cell_ptr_eq<T: Trace + 'static>(a: &GcCell<T>, b: &GcCell<T>) -> bool 
 /// Associate Rust platform data with an existing JS object (e.g. the Window
 /// platform object with the realm's global object).
 ///
-/// Each backend stores the data where its `with_object_any` machinery can
-/// find it again: JSC keeps a side map keyed by object pointer; V8 keeps a
-/// per-realm association list. (The Boa backend builds the global object
-/// directly through its host hooks, so it has no need for this.)
+/// V8 stores the data where its `with_object_any` machinery can find it
+/// again, in a per-realm association list. (The Boa backend builds the global
+/// object directly through its host hooks, so it has no need for this.)
 ///
 /// The data must be GC-traceable (`Trace` + `Finalize`): the bound is
 /// satisfied by `#[gc_struct]` types, whose cells and JS edges participate in
 /// the engine's tracing.
-#[cfg(feature = "jsc")]
-pub fn associate_existing_object<D>(
-    ec: &mut dyn ExecutionContext<JscTypes>,
-    object: &<JscTypes as JsTypes>::JsObject,
-    data: D,
-) where
-    D: 'static + Trace + Finalize,
-{
-    let engine = ec
-        .as_any_mut()
-        .downcast_mut::<crate::jsc::JscEngine>()
-        .expect("associate_existing_object called with a non-JSC execution context");
-    engine.associate_existing_object(object, Box::new(data));
-}
-
-/// Associate Rust platform data with an existing JS object.
 #[cfg(feature = "v8")]
 pub fn associate_existing_object<D>(
     ec: &mut dyn ExecutionContext<V8Types>,
@@ -470,33 +350,7 @@ pub fn associate_existing_object<D>(
 /// Create a JS object with the given prototype, wrapping GC-traceable
 /// platform data in the backend's GC wrapper (V8 `V8PlatformData`, Boa
 /// `TraceableBox`) so the engine's GC traces the platform object's cells and
-/// JS edges from the JS wrapper. JSC stores the raw data in its per-object
-/// side table.
-///
-/// The concrete data type `D` is known here (`Trace` + `Finalize`), so the
-/// wrapper carries the real trace/finalize vtables; `create_object_with_any`
-/// alone only receives type-erased `Box<dyn Any>` and falls back to no-op
-/// tracing, which is only safe for prototypes and namespace objects that hold
-/// no `GcCell` fields. Generic over `Ty` so the Web IDL bindings can call it
-/// from generic code.
-#[cfg(feature = "jsc")]
-pub fn create_platform_object<Ty, D>(
-    ec: &mut dyn ExecutionContext<Ty>,
-    prototype: &Ty::JsObject,
-    data: D,
-) -> Ty::JsObject
-where
-    Ty: JsTypes + JsTypesWithRealm,
-    D: 'static + Trace + Finalize,
-{
-    ec.create_object_with_any(prototype.clone(), Box::new(data))
-}
-
-/// Create a JS object with the given prototype, wrapping GC-traceable
-/// platform data in the backend's GC wrapper (V8 `V8PlatformData`, Boa
-/// `TraceableBox`) so the engine's GC traces the platform object's cells and
-/// JS edges from the JS wrapper. JSC stores the raw data in its per-object
-/// side table.
+/// JS edges from the JS wrapper.
 ///
 /// The concrete data type `D` is known here (`Trace` + `Finalize`), so the
 /// wrapper carries the real trace/finalize vtables; `create_object_with_any`
@@ -527,8 +381,7 @@ where
 /// Create a JS object with the given prototype, wrapping GC-traceable
 /// platform data in the backend's GC wrapper (V8 `V8PlatformData`, Boa
 /// `TraceableBox`) so the engine's GC traces the platform object's cells and
-/// JS edges from the JS wrapper. JSC stores the raw data in its per-object
-/// side table.
+/// JS edges from the JS wrapper.
 ///
 /// The concrete data type `D` is known here (`Trace` + `Finalize`), so the
 /// wrapper carries the real trace/finalize vtables; `create_object_with_any`
@@ -564,7 +417,7 @@ where
 /// regardless of the active JS engine backend.
 ///
 /// For structs: attaches `#[derive(boa_gc::Finalize, boa_gc::Trace, boa_engine::JsData)]`
-/// on Boa (or no-op Trace/Finalize impls on JSC).
+/// on Boa.
 ///
 /// For enums: attaches `#[derive(boa_gc::Finalize, boa_gc::Trace)]` without `JsData`,
 /// since enums are not stored as platform objects.
@@ -682,81 +535,6 @@ mod boa_gc_impl {
     }
 
     impl boa_gc::Finalize for super::GcRootHandle<BoaTypes> {}
-}
-
-// ── JSC backend ───────────────────────────────────────────────────────────
-#[cfg(feature = "jsc")]
-mod jsc_gc_impl {
-    use super::*;
-    use crate::jsc::JscTypes;
-
-    impl JsTypesGcExt for JscTypes {
-        /// A (raw_object_ptr, context) pair so that `upgrade_reflector` can
-        /// reconstruct a fully-valid `JscObject` with a non-null context.
-        type Reflector = (*mut std::ffi::c_void, *mut crate::jsc_sys::JSContextRef);
-        type Context = crate::jsc::JscEngine;
-
-        fn create_reflector(_context: &mut Self::Context, obj: &Self::JsObject) -> Self::Reflector {
-            (obj.as_raw() as *mut std::ffi::c_void, obj.ctx())
-        }
-
-        fn upgrade_reflector(
-            _context: &mut Self::Context,
-            reflector: &Self::Reflector,
-        ) -> Option<Self::JsObject> {
-            let (raw_ptr, ctx) = *reflector;
-            if raw_ptr.is_null() || ctx.is_null() {
-                None
-            } else {
-                Some(unsafe {
-                    crate::jsc::JscObject::from_raw(
-                        raw_ptr as *mut crate::jsc_sys::JSObjectRef,
-                        ctx,
-                    )
-                })
-            }
-        }
-    }
-
-    #[allow(dead_code)]
-    pub extern "C" fn jsc_generic_finalizer<V>(object: *mut std::ffi::c_void) {
-        unsafe {
-            let private_data =
-                crate::jsc_sys::JSObjectGetPrivate(object as *mut crate::jsc_sys::JSObjectRef);
-            if !private_data.is_null() {
-                drop(std::sync::Arc::from_raw(
-                    private_data as *const std::cell::RefCell<V>,
-                ));
-            }
-        }
-    }
-}
-
-#[cfg(all(not(feature = "boa"), not(feature = "v8")))]
-mod persistent_handle_trace_impls {
-    use super::Trace;
-
-    // Blanket Trace impls for common types used as captures with
-    // `create_builtin_function`.
-    unsafe impl Trace for () {}
-    unsafe impl Trace for bool {}
-    unsafe impl Trace for u64 {}
-    unsafe impl Trace for i64 {}
-    unsafe impl Trace for u32 {}
-    unsafe impl Trace for i32 {}
-    unsafe impl Trace for usize {}
-    unsafe impl Trace for String {}
-    // Bound on T ensures that only types whose inner value is itself GC-safe
-    // can be wrapped in Rc<RefCell<T>>/Rc<Cell<T>> and held as a traced field.
-    // This prevents raw JscValue/JscObject from being stored behind these
-    // wrappers (they must use GcCell instead).
-    unsafe impl<T: Trace> Trace for std::rc::Rc<std::cell::RefCell<T>> {}
-    unsafe impl<T: Trace> Trace for std::rc::Rc<std::cell::Cell<T>> {}
-    unsafe impl<T: Trace> Trace for super::GcCell<T> {}
-    unsafe impl<A: Trace, B: Trace> Trace for (A, B) {}
-    unsafe impl<A: Trace, B: Trace, C: Trace> Trace for (A, B, C) {}
-    unsafe impl<A: Trace, B: Trace, C: Trace, D: Trace> Trace for (A, B, C, D) {}
-    unsafe impl<A: Trace, B: Trace, C: Trace, D: Trace, E: Trace> Trace for (A, B, C, D, E) {}
 }
 
 // V8: the same blanket impls with real trace bodies. `Cell<T>` values are
