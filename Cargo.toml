@@ -74,18 +74,9 @@ default-members = [
 ]
 
 [workspace.dependencies]
-# Blitz crates (git dep from gterzian/blitz fork)
-blitz-traits = { git = "https://github.com/gterzian/blitz", rev = "954b41f25e4fbfae39d7c512016d8193ee53ee80", default-features = false }
-blitz-dom = { git = "https://github.com/gterzian/blitz", rev = "954b41f25e4fbfae39d7c512016d8193ee53ee80", default-features = false }
-blitz-paint = { git = "https://github.com/gterzian/blitz", rev = "954b41f25e4fbfae39d7c512016d8193ee53ee80", default-features = false }
-blitz-html = { git = "https://github.com/gterzian/blitz", rev = "954b41f25e4fbfae39d7c512016d8193ee53ee80", default-features = false }
-
-# Blitz is patched to a local copy of the pinned revision (`/tmp/blitz-patched`)
-# so it can be edited: the frame-composition path needs
-# `DocumentConfig::cross_process_images`, which stops `<img>` elements being
-# baked into the top-level document's scene.
-[patch."https://github.com/gterzian/blitz"]
-blitz-traits = { path = "/tmp/blitz-patched/packages/blitz-traits" }
-blitz-dom = { path = "/tmp/blitz-patched/packages/blitz-dom" }
-blitz-paint = { path = "/tmp/blitz-patched/packages/blitz-paint" }
-blitz-html = { path = "/tmp/blitz-patched/packages/blitz-html" }
+# Temporary: blitz comes from the sibling fork checkout so the `embedded_images`
+# edit takes effect. Switch back to the git dependency once the edit is pushed.
+blitz-traits = { path = "../blitz/packages/blitz-traits", default-features = false }
+blitz-dom = { path = "../blitz/packages/blitz-dom", default-features = false }
+blitz-paint = { path = "../blitz/packages/blitz-paint", default-features = false }
+blitz-html = { path = "../blitz/packages/blitz-html", default-features = false }

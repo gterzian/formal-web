@@ -458,6 +458,7 @@ fn create_a_new_child_navigable(
             needs_paint,
             last_scene: None,
             last_composition: None,
+            notified_image_sources: HashMap::new(),
         },
     );
     process

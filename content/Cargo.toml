@@ -29,7 +29,7 @@ name = "formal-web-content"
 path = "src/bin/content_process.rs"
 
 [dependencies]
-anyrender = { version = "0.10", features = ["serde"] }
+anyrender = { version = "0.11", features = ["serde"] }
 blitz-dom = { workspace = true, features = ["svg", "system_fonts"] }
 blitz-paint = { workspace = true, features = ["svg"] }
 blitz-traits = { workspace = true }
@@ -46,8 +46,8 @@ env_logger = "0.11"
 postcard = { version = "1", features = ["use-std"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
-style = { version = "0.17.0", package = "stylo" }
-style_traits = { version = "0.17.0", package = "stylo_traits" }
+style = { version = "0.18.0", package = "stylo" }
+style_traits = { version = "0.18.0", package = "stylo_traits" }
 crossbeam-channel = "0.5"
 url = "2"
 uuid = { version = "1", features = ["serde", "v4"] }
