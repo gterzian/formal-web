@@ -7,6 +7,9 @@ use crate::html::{
     structured_data::safe_passing_of_structured_data::StructuredCloneOptions,
     window_computed_style_properties_for_element,
 };
+use crate::js::Types;
+use crate::js::bindings::event_handlers;
+use crate::js::bindings::fetch::fetch_operation;
 use crate::js::bindings::html::global_event_handlers::define_global_event_handlers;
 use crate::webidl::bindings::{AttributeDef, InterfaceDefinition, OperationDef, WebIdlInterface};
 use crate::webidl::callback_function_value;
@@ -67,6 +70,32 @@ impl WebIdlInterface<crate::js::Types> for Window {
             legacy_lenient_setter: false,
             exposed: None,
         });
+        for (id, getter, setter) in [
+            (
+                "onunhandledrejection",
+                get_onunhandledrejection as _,
+                set_onunhandledrejection as _,
+            ),
+            (
+                "onrejectionhandled",
+                get_onrejectionhandled as _,
+                set_onrejectionhandled as _,
+            ),
+        ] {
+            def.add_attribute(AttributeDef {
+                id,
+                getter,
+                setter: Some(setter),
+                static_: false,
+                unforgeable: false,
+                promise_type: false,
+                legacy_lenient_this: false,
+                replaceable: false,
+                put_forwards: None,
+                legacy_lenient_setter: false,
+                exposed: None,
+            });
+        }
         def.add_attribute(AttributeDef {
             id: "name",
             getter: get_name,
@@ -76,6 +105,32 @@ impl WebIdlInterface<crate::js::Types> for Window {
             promise_type: false,
             legacy_lenient_this: false,
             replaceable: false,
+            put_forwards: None,
+            legacy_lenient_setter: false,
+            exposed: None,
+        });
+        def.add_attribute(AttributeDef {
+            id: "navigator",
+            getter: get_navigator,
+            setter: None,
+            static_: false,
+            unforgeable: false,
+            promise_type: false,
+            legacy_lenient_this: false,
+            replaceable: false,
+            put_forwards: None,
+            legacy_lenient_setter: false,
+            exposed: None,
+        });
+        def.add_attribute(AttributeDef {
+            id: "clientInformation",
+            getter: get_navigator,
+            setter: None,
+            static_: false,
+            unforgeable: false,
+            promise_type: false,
+            legacy_lenient_this: false,
+            replaceable: true,
             put_forwards: None,
             legacy_lenient_setter: false,
             exposed: None,
@@ -298,6 +353,15 @@ impl WebIdlInterface<crate::js::Types> for Window {
             static_: false,
             unforgeable: false,
             promise_type: false,
+            exposed: None,
+        });
+        def.add_operation(OperationDef {
+            id: "fetch",
+            length: 1,
+            method: fetch_operation,
+            static_: false,
+            unforgeable: false,
+            promise_type: true,
             exposed: None,
         });
     }
@@ -667,6 +731,25 @@ fn get_location(
     ))
 }
 
+fn get_navigator(
+    this: &JsValue,
+    _: &[JsValue],
+    ec: &mut dyn ExecutionContext<crate::js::Types>,
+) -> Completion<JsValue, crate::js::Types> {
+    // <https://html.spec.whatwg.org/#dom-navigator>
+    let window = window_domain_from(this, ec)?;
+    // The domain method creates the Navigator on first access and caches its
+    // JS object on the global scope; the binding returns that cached object.
+    window.navigator_value(ec)?;
+    let navigator_object = window
+        .global_scope
+        .navigator_object(ec)
+        .ok_or_else(|| ec.new_type_error("window has no Navigator object"))?;
+    Ok(<crate::js::Types as JsTypes>::value_from_object(
+        navigator_object,
+    ))
+}
+
 fn close_method(
     this: &JsValue,
     _: &[JsValue],
@@ -820,3 +903,8 @@ fn current_window_object_from(
 ) -> JsObject {
     resolve_window(this, ec)
 }
+
+event_handlers!(
+    get_onunhandledrejection, set_onunhandledrejection, "unhandledrejection";
+    get_onrejectionhandled, set_onrejectionhandled, "rejectionhandled";
+);

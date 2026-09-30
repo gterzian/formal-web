@@ -1,0 +1,148 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>WebRTC: two RTCPeerConnections exchange data channel messages</title>
+<script src="/resources/testharness.js"></script>
+<script src="/resources/testharnessreport.js"></script>
+<script>
+"use strict";
+
+test(() => {
+  const pc = new RTCPeerConnection();
+  assert_equals(pc.signalingState, "stable");
+  assert_equals(pc.iceGatheringState, "new");
+  assert_equals(pc.iceConnectionState, "new");
+  assert_equals(pc.connectionState, "new");
+  assert_equals(pc.localDescription, null);
+  assert_equals(pc.remoteDescription, null);
+  pc.close();
+  assert_equals(pc.signalingState, "closed");
+  assert_equals(pc.connectionState, "closed");
+  assert_throws_dom("InvalidStateError", () => pc.createDataChannel("x"));
+}, "RTCPeerConnection initial state and close()");
+
+test(() => {
+  const pc = new RTCPeerConnection();
+  assert_throws_js(TypeError, () => pc.createDataChannel("x", { negotiated: true }));
+  assert_throws_js(TypeError, () => pc.createDataChannel("x", { maxPacketLifeTime: 1, maxRetransmits: 1 }));
+  assert_throws_js(TypeError, () => pc.createDataChannel("x", { negotiated: true, id: 65535 }));
+  const dc = pc.createDataChannel("label", { ordered: false, maxRetransmits: 0, protocol: "p" });
+  assert_true(dc instanceof RTCDataChannel);
+  assert_true(dc instanceof EventTarget);
+  assert_equals(dc.label, "label");
+  assert_equals(dc.ordered, false);
+  assert_equals(dc.maxRetransmits, 0);
+  assert_equals(dc.maxPacketLifeTime, null);
+  assert_equals(dc.protocol, "p");
+  assert_equals(dc.negotiated, false);
+  assert_equals(dc.readyState, "connecting");
+  assert_equals(dc.bufferedAmount, 0);
+  assert_equals(dc.binaryType, "arraybuffer");
+  assert_throws_dom("InvalidStateError", () => dc.send("too early"));
+  pc.close();
+}, "createDataChannel() argument checks and initial channel state");
+
+test(() => {
+  assert_throws_dom("SyntaxError", () => new RTCPeerConnection({ iceServers: [{ urls: "http://example.com" }] }),
+    "a URL that is not stun, stuns, turn or turns");
+  assert_throws_dom("InvalidAccessError", () => new RTCPeerConnection({ iceServers: [{ urls: "turn:example.com" }] }),
+    "a TURN server without credentials");
+}, "RTCConfiguration ICE server validation");
+
+test(() => {
+  const description = new RTCSessionDescription({ type: "offer", sdp: "v=0\r\n" });
+  assert_equals(description.type, "offer");
+  assert_equals(description.sdp, "v=0\r\n");
+  assert_object_equals(description.toJSON(), { type: "offer", sdp: "v=0\r\n" });
+  assert_throws_js(TypeError, () => new RTCSessionDescription({ type: "bogus" }));
+  assert_throws_js(TypeError, () => new RTCIceCandidate({ candidate: "" }));
+  const candidate = new RTCIceCandidate({
+    candidate: "candidate:1 1 udp 2122260223 192.0.2.1 50000 typ host",
+    sdpMid: "0",
+  });
+  assert_equals(candidate.foundation, "1");
+  assert_equals(candidate.component, "rtp");
+  assert_equals(candidate.protocol, "udp");
+  assert_equals(candidate.priority, 2122260223);
+  assert_equals(candidate.address, "192.0.2.1");
+  assert_equals(candidate.port, 50000);
+  assert_equals(candidate.type, "host");
+  assert_equals(candidate.sdpMLineIndex, null);
+  assert_object_equals(candidate.toJSON(), {
+    candidate: "candidate:1 1 udp 2122260223 192.0.2.1 50000 typ host",
+    sdpMid: "0",
+    sdpMLineIndex: null,
+    usernameFragment: null,
+  });
+}, "RTCSessionDescription and RTCIceCandidate");
+
+promise_test(async (t) => {
+  const pc = new RTCPeerConnection();
+  t.add_cleanup(() => pc.close());
+  await promise_rejects_dom(t, "InvalidStateError", pc.createAnswer());
+  await promise_rejects_dom(t, "InvalidStateError", pc.addIceCandidate({ candidate: "", sdpMid: "0" }));
+  await promise_rejects_dom(t, "InvalidModificationError",
+    pc.setLocalDescription({ type: "offer", sdp: "v=0\r\n" }));
+}, "Operations that are invalid in the stable state");
+
+promise_test(async (t) => {
+  const a = new RTCPeerConnection();
+  const b = new RTCPeerConnection();
+  t.add_cleanup(() => { a.close(); b.close(); });
+  a.onicecandidate = (e) => { if (e.candidate && e.candidate.candidate) b.addIceCandidate(e.candidate); };
+  b.onicecandidate = (e) => { if (e.candidate && e.candidate.candidate) a.addIceCandidate(e.candidate); };
+
+  const negotiationNeeded = new Promise((resolve) => { a.onnegotiationneeded = resolve; });
+  const dc = a.createDataChannel("chat", { protocol: "test" });
+  await negotiationNeeded;
+
+  const signaling = [];
+  a.onsignalingstatechange = () => signaling.push(a.signalingState);
+  const remoteChannel = new Promise((resolve) => { b.ondatachannel = (e) => resolve(e.channel); });
+
+  const offer = await a.createOffer();
+  assert_equals(offer.type, "offer");
+  assert_true(offer.sdp.includes("m=application"), "the offer negotiates data");
+  await a.setLocalDescription(offer);
+  assert_equals(a.signalingState, "have-local-offer");
+  assert_equals(a.pendingLocalDescription.sdp, offer.sdp);
+  assert_equals(a.localDescription, a.pendingLocalDescription, "localDescription is the same object");
+
+  await b.setRemoteDescription(offer);
+  assert_equals(b.signalingState, "have-remote-offer");
+  await b.setLocalDescription();
+  assert_equals(b.signalingState, "stable");
+  assert_equals(b.currentLocalDescription.type, "answer");
+
+  await a.setRemoteDescription(b.localDescription);
+  assert_equals(a.signalingState, "stable");
+  assert_array_equals(signaling, ["have-local-offer", "stable"]);
+
+  const bc = await remoteChannel;
+  assert_equals(bc.label, "chat");
+  assert_equals(bc.protocol, "test");
+  if (dc.readyState !== "open") await new Promise((resolve) => { dc.onopen = resolve; });
+  assert_equals(dc.readyState, "open");
+  assert_not_equals(dc.id, null);
+
+  const received = [];
+  const both = new Promise((resolve) => {
+    bc.onmessage = (e) => { received.push(e.data); if (received.length === 2) resolve(); };
+  });
+  dc.send("hello ü 🦀");
+  dc.send(new Uint8Array([1, 2, 3, 250]));
+  await both;
+  assert_equals(received[0], "hello ü 🦀");
+  assert_true(received[1] instanceof ArrayBuffer);
+  assert_array_equals(Array.from(new Uint8Array(received[1])), [1, 2, 3, 250]);
+
+  const echo = new Promise((resolve) => { dc.onmessage = (e) => resolve(e.data); });
+  bc.send("pong");
+  assert_equals(await echo, "pong");
+
+  const closed = new Promise((resolve) => { bc.onclose = resolve; });
+  dc.close();
+  assert_equals(dc.readyState, "closing");
+  await closed;
+  assert_equals(bc.readyState, "closed");
+}, "Two peer connections exchange text and binary messages over a data channel");
+</script>
