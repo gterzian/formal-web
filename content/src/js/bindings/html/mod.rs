@@ -13,6 +13,7 @@ pub(crate) mod hyperlink_element_utils;
 mod location;
 pub(crate) mod message_event;
 pub(crate) mod messageport;
+mod navigator;
 mod offscreen_canvas;
 mod offscreen_canvas_rendering_context_2d;
 pub(crate) mod window;

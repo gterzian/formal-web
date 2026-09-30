@@ -91,6 +91,10 @@ the work left):
 - **`[Exposed]` realm filtering** (attribute/operation step 1.1): not
   implemented — realm-based exposure checking is deferred.
 - **Observable array types** (attribute step 1.8): not implemented.
+- **Iterator prototype objects** (`iterable<K, V>` declarations, in
+  `iterable.rs`): one is created per default iterator object instead of one
+  per interface and realm, so two iterators of the same interface do not
+  share a prototype.
 - **Attribute getter `[[LegacyLenientThis]]`**: delegated to the
   user-provided getter rather than auto-generated; the `legacy_lenient_this`
   field exists on `AttributeDef` but is unused.

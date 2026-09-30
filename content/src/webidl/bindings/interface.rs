@@ -160,6 +160,26 @@ where
     // "Define the constants on the interface prototype object."
     super::constant::define_constants::<Ty>(proto.clone(), engine, &def.constants)?;
 
+    // <https://webidl.spec.whatwg.org/#ref-for-dfn-class-string>
+    // "Perform ! DefinePropertyOrThrow(interfaceProtoObj, @,
+    // PropertyDescriptor{[[Value]]: id, [[Writable]]: false, [[Enumerable]]:
+    // false, [[Configurable]]: true})."
+    let to_string_tag_key = engine.property_key_from_well_known_symbol("toStringTag");
+    let class_string = engine.js_string_from_str(I::NAME);
+    let class_string = EcmascriptHost::value_from_string(engine, class_string);
+    engine.define_property_or_throw(
+        proto.clone(),
+        to_string_tag_key,
+        JsPropertyDescriptor {
+            value: Some(class_string),
+            writable: Some(false),
+            enumerable: Some(false),
+            configurable: Some(true),
+            get: None,
+            set: None,
+        },
+    )?;
+
     // Step 4: "Let unforgeables be OrdinaryObjectCreate(null)."
     // Step 5: "Define the unforgeable regular operations of I on unforgeables, given realm."
     // Step 6: "Define the unforgeable regular attributes of I on unforgeables, given realm."
@@ -192,8 +212,16 @@ where
             // Step 1.2: "If NewTarget is undefined, then throw a TypeError."
             //   Note: Boa's [[Call]] passes `undefined` as `this` for
             //   constructable functions; [[Construct]] passes `new.target`.
-            if Ty::value_is_undefined(&new_target_or_this) {
-                return Err(ec.new_type_error(&format!("{} is not a constructor", I::NAME)));
+            //   Note: On a [[Call]], the engine passes the receiver here (undefined
+            //   in strict code, the global object otherwise); a NewTarget is
+            //   always a constructor, so a receiver that is not one is a call
+            //   without new.
+            if Ty::value_is_undefined(&new_target_or_this) || !ec.is_constructor(&new_target_or_this)
+            {
+                return Err(ec.new_type_error(&format!(
+                    "Failed to construct '{}': Please use the 'new' operator, this DOM object constructor cannot be called as a function.",
+                    I::NAME
+                )));
             }
 
             // Step 1.3: "Let args be the passed arguments."

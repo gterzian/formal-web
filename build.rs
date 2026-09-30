@@ -49,6 +49,8 @@ fn main() {
         "media/src",
         "webview/Cargo.toml",
         "webview/src",
+        "webrtc/Cargo.toml",
+        "webrtc/src",
     ] {
         println!("cargo:rerun-if-changed={path}");
     }
@@ -106,11 +108,15 @@ fn prebuild_binaries(prebuild_list: &[(&str, &str)]) -> Result<(), String> {
     } else {
         "tokio"
     };
-    let content_features = if has_media {
-        format!("{backend_feature},{net_backend_feature},media")
-    } else {
-        format!("{backend_feature},{net_backend_feature}")
-    };
+    let mut content_features = format!("{backend_feature},{net_backend_feature}");
+    if has_media {
+        content_features.push_str(",media");
+    }
+    // The `webrtc` feature of both content and net: the RTCPeerConnection
+    // code and the engine the net process hosts.
+    if cfg!(feature = "webrtc") {
+        content_features.push_str(",webrtc");
+    }
     command.args(["--no-default-features", "--features", &content_features]);
     command.arg("--target-dir").arg(&prebuild_target_root);
     for (package_name, binary_name) in prebuild_list {

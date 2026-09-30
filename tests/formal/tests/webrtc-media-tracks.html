@@ -1,0 +1,136 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>WebRTC media: getUserMedia, tracks, transceivers, the track event and getStats</title>
+<script src="/resources/testharness.js"></script>
+<script src="/resources/testharnessreport.js"></script>
+<div id="log"></div>
+<script>
+"use strict";
+
+promise_test(async () => {
+  assert_true(navigator.mediaDevices instanceof MediaDevices);
+  assert_equals(navigator.mediaDevices, navigator.mediaDevices, "one MediaDevices per navigator");
+  const devices = await navigator.mediaDevices.enumerateDevices();
+  assert_true(Array.isArray(devices));
+  assert_true(devices.some((device) => device.kind === "audioinput"), "an audio input is listed");
+  assert_true(devices.every((device) => device instanceof MediaDeviceInfo));
+  assert_equals(typeof devices[0].toJSON().deviceId, "string");
+}, "navigator.mediaDevices lists the audio devices");
+
+promise_test(async (t) => {
+  await promise_rejects_js(t, TypeError, navigator.mediaDevices.getUserMedia({}), "nothing requested");
+  await promise_rejects_dom(t, "NotFoundError", navigator.mediaDevices.getUserMedia({ video: true }), "no camera");
+  const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+  assert_true(stream instanceof MediaStream);
+  assert_true(stream.active);
+  assert_equals(stream.getTracks().length, 1);
+  assert_equals(stream.getAudioTracks().length, 1);
+  assert_equals(stream.getVideoTracks().length, 0);
+  const [track] = stream.getTracks();
+  assert_true(track instanceof MediaStreamTrack);
+  assert_equals(track.kind, "audio");
+  assert_equals(track.readyState, "live");
+  assert_true(track.enabled);
+  assert_false(track.muted);
+  assert_equals(stream.getTrackById(track.id), track, "tracks keep their identity");
+  const clone = track.clone();
+  assert_not_equals(clone.id, track.id);
+  assert_equals(clone.kind, "audio");
+  track.enabled = false;
+  assert_false(track.enabled);
+  track.stop();
+  assert_equals(track.readyState, "ended");
+  assert_false(stream.active, "a stream with only ended tracks is inactive");
+  const built = new MediaStream([clone]);
+  assert_equals(built.getTracks().length, 1);
+  assert_true(built.active);
+  built.removeTrack(clone);
+  assert_equals(built.getTracks().length, 0);
+}, "getUserMedia({audio: true}) resolves with a live audio track");
+
+promise_test(async (t) => {
+  const a = new RTCPeerConnection();
+  const b = new RTCPeerConnection();
+  t.add_cleanup(() => { a.close(); b.close(); });
+  const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+  const [track] = stream.getTracks();
+  assert_equals(a.getSenders().length, 0);
+  const negotiationNeeded = new Promise((resolve) => { a.onnegotiationneeded = resolve; });
+  const sender = a.addTrack(track, stream);
+  assert_true(sender instanceof RTCRtpSender);
+  assert_equals(sender.track, track);
+  assert_equals(a.getSenders().length, 1);
+  assert_equals(a.getSenders()[0], sender, "senders keep their identity");
+  assert_equals(a.getTransceivers().length, 1);
+  const transceiver = a.getTransceivers()[0];
+  assert_true(transceiver instanceof RTCRtpTransceiver);
+  assert_equals(transceiver.sender, sender);
+  assert_true(transceiver.receiver instanceof RTCRtpReceiver);
+  assert_equals(transceiver.receiver.track.kind, "audio");
+  assert_equals(transceiver.direction, "sendrecv");
+  assert_equals(transceiver.currentDirection, null);
+  assert_equals(transceiver.mid, null);
+  assert_throws_dom("InvalidAccessError", () => a.addTrack(track), "a track is added once");
+  await negotiationNeeded;
+
+  const remoteTrack = new Promise((resolve) => { b.ontrack = resolve; });
+  const offer = await a.createOffer();
+  assert_true(offer.sdp.includes("m=audio"), "the offer negotiates audio");
+  assert_true(offer.sdp.includes("a=msid:" + stream.id), "the offer names the stream");
+  await a.setLocalDescription(offer);
+  await b.setRemoteDescription(offer);
+  assert_equals(b.getTransceivers().length, 1, "the remote offer created a transceiver");
+  assert_equals(b.getReceivers().length, 1);
+  await b.setLocalDescription();
+  await a.setRemoteDescription(b.localDescription);
+  assert_equals(typeof transceiver.mid, "string", "the transceiver is associated with an m= section");
+  assert_true(offer.sdp.includes("a=mid:" + transceiver.mid), "mid is the m= section's mid");
+  assert_equals(transceiver.currentDirection, "sendonly", "b answers recvonly");
+
+  const event = await remoteTrack;
+  assert_true(event instanceof RTCTrackEvent);
+  assert_equals(event.track.kind, "audio");
+  assert_equals(event.receiver.track, event.track);
+  assert_equals(event.transceiver.receiver, event.receiver);
+  assert_equals(event.streams.length, 1);
+  assert_equals(event.streams[0].id, stream.id, "the remote stream keeps the sender's stream id");
+  assert_equals(event.streams[0].getTracks()[0], event.track);
+  assert_equals(b.getTransceivers()[0].currentDirection, "recvonly");
+
+  const report = await a.getStats();
+  assert_true(report instanceof RTCStatsReport);
+  const types = [...report.values()].map((stats) => stats.type);
+  assert_true(types.includes("peer-connection"), "the report has a peer-connection entry: " + types.join(","));
+  for (const [id, stats] of report) {
+    assert_equals(stats.id, id, "entries are keyed by their id");
+    assert_true(report.has(id));
+    assert_equals(report.get(id).type, stats.type);
+  }
+  assert_equals(report.size, types.length);
+
+  const replacement = track.clone();
+  await sender.replaceTrack(replacement);
+  assert_equals(sender.track, replacement, "replaceTrack swaps the sender's track");
+  a.removeTrack(sender);
+  assert_equals(sender.track, null, "removeTrack clears the sender's track");
+  assert_equals(transceiver.direction, "recvonly");
+  transceiver.stop();
+  assert_equals(transceiver.direction, "stopped");
+  assert_equals(a.getTransceivers().length, 1, "a stopping transceiver stays listed until negotiated");
+}, "addTrack negotiates an audio transceiver, fires track on the remote side and reports stats");
+
+promise_test(async (t) => {
+  const pc = new RTCPeerConnection();
+  t.add_cleanup(() => pc.close());
+  const transceiver = pc.addTransceiver("audio", { direction: "recvonly" });
+  assert_equals(transceiver.direction, "recvonly");
+  assert_equals(transceiver.sender.track, null);
+  transceiver.direction = "inactive";
+  assert_equals(transceiver.direction, "inactive");
+  assert_throws_js(TypeError, () => pc.addTransceiver("text"));
+  const offer = await pc.createOffer();
+  assert_true(offer.sdp.includes("m=audio"));
+  pc.close();
+  assert_throws_dom("InvalidStateError", () => pc.addTransceiver("audio"));
+}, "addTransceiver creates a transceiver from a kind");
+</script>

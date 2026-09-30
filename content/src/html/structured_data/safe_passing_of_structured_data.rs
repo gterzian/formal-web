@@ -351,9 +351,14 @@ fn structured_serialize_internal(
     }
 
     // Step 19: Otherwise, if value is a platform object that is a serializable object.
-    // TODO: Check registered [Serializable] platform objects.
+    // Note: No interface is decorated [Serializable] yet, so no platform
+    // object takes this branch.
     // Step 20: Otherwise, if value is a platform object, then throw a "DataCloneError" DOMException.
-    // TODO: Add platform object detection.
+    // A platform object is an object created for a Web IDL interface; it
+    // carries its interface's platform data.
+    if ec.with_object_any(&object).is_some() {
+        return Err(crate::webidl::data_clone_error_value(ec));
+    }
 
     // Step 21: Otherwise, if IsCallable(value) is true, then throw a "DataCloneError" DOMException.
     if ec.is_callable(value) {

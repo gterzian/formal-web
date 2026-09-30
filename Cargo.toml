@@ -10,8 +10,12 @@ name = "formal-web"
 path = "src/main.rs"
 
 [features]
-default = ["media", "v8"]
+default = ["media", "v8", "webrtc"]
 media = ["dep:media"]
+# WebRTC (RTCPeerConnection, data channels, media tracks) and Media Capture
+# and Streams: the content-side code and the engine the net process hosts.
+# See README.md, "Optional web features".
+webrtc = ["content/webrtc", "net/webrtc"]
 # Run the extensions the embedding binary links in-process on threads
 # instead of launching helper processes (see `ipc/ARCHITECTURE.md`).
 thread-backend = ["dep:ipc", "dep:graphics", "ipc/thread-backend"]
@@ -45,6 +49,7 @@ env_logger = "0.11"
 resolver = "2"
 members = [
     ".",
+    "webrtc",
     "automation",
     "content",
     "graphics",

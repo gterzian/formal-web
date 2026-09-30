@@ -22,7 +22,7 @@ use crate::webidl::{relevant_realm_global_this_value, security_error_value, synt
 use super::resolved_style_properties_for_element;
 use super::structured_data::safe_passing_of_structured_data::structured_serialize_with_transfer;
 use super::windowproxy::create_window_proxy;
-use super::{GlobalScope, Location, the_rules_for_choosing_a_navigable};
+use super::{GlobalScope, Location, Navigator, the_rules_for_choosing_a_navigable};
 use js_engine::gc_struct;
 
 /// <https://html.spec.whatwg.org/#window>
@@ -256,6 +256,31 @@ impl Window {
         let object = create_interface_instance::<Types, Location>(location.clone(), ec)?;
         self.global_scope.store_location_object(object, ec);
         Ok(location)
+    }
+
+    /// <https://html.spec.whatwg.org/#dom-navigator>
+    pub(crate) fn navigator_value(
+        &self,
+        ec: &mut dyn ExecutionContext<Types>,
+    ) -> Completion<Navigator, Types> {
+        // The navigator and clientInformation getter steps are to return
+        // this's associated Navigator.
+        // Note: Each Window object has an associated Navigator, which is a
+        // new Navigator object created when the Window is created; it is
+        // created on first access and cached on the realm's global scope.
+        // The binding layer converts the returned Navigator to the cached JS
+        // object.
+        if let Some(navigator_object) = self.global_scope.navigator_object(ec) {
+            let navigator = ec
+                .with_object_any(&navigator_object)
+                .and_then(|data| data.downcast_ref::<Navigator>().cloned())
+                .ok_or_else(|| ec.new_type_error("navigator object is not a Navigator"))?;
+            return Ok(navigator);
+        }
+        let navigator = Navigator::new();
+        let object = create_interface_instance::<Types, Navigator>(navigator.clone(), ec)?;
+        self.global_scope.store_navigator_object(object, ec);
+        Ok(navigator)
     }
 
     /// <https://html.spec.whatwg.org/#dom-window-postmessage>
