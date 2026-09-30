@@ -291,44 +291,13 @@ fn setup_realm(engine: &mut Engine, _document: Rc<RefCell<BaseDocument>>) -> Res
     // Step 7: Set the global object's prototype to Window.prototype so
     // `instanceof Window` etc. works.
     if let Some(window_proto) = get_registry_prototype::<crate::js::Types, Window>(engine) {
-        let proto_set = engine.set_prototype(global_obj.clone(), Some(window_proto.clone()));
-        let immutable_global_proto = match proto_set {
-            Ok(true) => false,
-            Ok(false) | Err(_) => true,
-        };
-
-        // Step 7b: Engines whose global object has an immutable [[Prototype]]
-        // fall back to copying Window/EventTarget properties onto the global
-        // object.
-        if immutable_global_proto {
-            let prototypes = [
-                get_registry_prototype::<crate::js::Types, EventTarget>(engine),
-                Some(window_proto),
-            ];
-            for proto in prototypes.iter().flatten() {
-                if let Ok(keys) = engine.own_property_keys(proto.clone()) {
-                    for key in keys {
-                        let key_str = engine.property_key_to_rust_string(&key);
-                        if key_str == "constructor" || key_str == "__proto__" {
-                            continue;
-                        }
-                        if let Ok(Some(descriptor)) =
-                            engine.get_own_property(proto.clone(), key.clone())
-                        {
-                            if descriptor.value.is_some() || descriptor.get.is_some() {
-                                if let Err(error) = engine.define_property_or_throw(
-                                    global_obj.clone(),
-                                    key,
-                                    descriptor,
-                                ) {
-                                    error!(
-                                        "failed to copy a Window prototype property to the global object: {error:?}"
-                                    );
-                                }
-                            }
-                        }
-                    }
-                }
+        match engine.set_prototype(global_obj.clone(), Some(window_proto)) {
+            Ok(true) => {}
+            Ok(false) => {
+                error!("the global object's prototype could not be set to Window.prototype")
+            }
+            Err(error) => {
+                error!("failed to set the global object's prototype to Window.prototype: {error:?}")
             }
         }
     }
@@ -652,47 +621,14 @@ fn setup_worker_realm(
     if let Some(dedicated_proto) =
         get_registry_prototype::<crate::js::Types, DedicatedWorkerGlobalScope>(engine)
     {
-        let proto_set = engine.set_prototype(global_obj.clone(), Some(dedicated_proto.clone()));
-        let immutable_global_proto = match proto_set {
-            Ok(true) => false,
-            Ok(false) | Err(_) => true,
-        };
-
-        // Step 7b: Engines whose global object has an immutable [[Prototype]]
-        // fall back to copying the worker prototype properties onto the global
-        // object.
-        if immutable_global_proto {
-            let prototypes = [
-                get_registry_prototype::<crate::js::Types, EventTarget>(engine),
-                get_registry_prototype::<crate::js::Types, WorkerGlobalScope>(engine),
-                Some(dedicated_proto),
-            ];
-            for proto in prototypes.iter().flatten() {
-                if let Ok(keys) = engine.own_property_keys(proto.clone()) {
-                    for key in keys {
-                        let key_str = engine.property_key_to_rust_string(&key);
-                        if key_str == "constructor" || key_str == "__proto__" {
-                            continue;
-                        }
-                        match engine.get_own_property(proto.clone(), key.clone()) {
-                            Ok(Some(descriptor))
-                                if descriptor.value.is_some() || descriptor.get.is_some() =>
-                            {
-                                if let Err(error) = engine.define_property_or_throw(
-                                    global_obj.clone(),
-                                    key,
-                                    descriptor,
-                                ) {
-                                    error!(
-                                        "failed to copy a worker prototype property to the global object: {error:?}"
-                                    );
-                                }
-                            }
-                            _ => {}
-                        }
-                    }
-                }
-            }
+        match engine.set_prototype(global_obj.clone(), Some(dedicated_proto)) {
+            Ok(true) => {}
+            Ok(false) => error!(
+                "the worker global object's prototype could not be set to DedicatedWorkerGlobalScope.prototype"
+            ),
+            Err(error) => error!(
+                "failed to set the worker global object's prototype to DedicatedWorkerGlobalScope.prototype: {error:?}"
+            ),
         }
     }
 
