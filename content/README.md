@@ -57,6 +57,13 @@ only then removes it, so the value stays valid while Rust holds it across
 engine calls.  A `borrow_mut(ec).pop_front()` / `.take()` / `std::mem::take`
 leaves the value as an untraced edge that the next collection can free.
 
+**Cloning the cell itself.**  A cloned `GcCell` (for example the `state`
+captured by a queued job closure) keeps the heap cell and its JS contents
+alive for as long as the clone lives; writing the clone back into traced
+storage converts it back to a traced edge (`Trace::store`).  Clone the cell
+itself only when the clone must outlive every traced owner; to read a value
+without extending the cell's lifetime, use `borrow`/`get` instead.
+
 Platform-object plain fields follow the same rule: a field read out and then
 cleared is cloned and rooted with `js_engine::gc::make_strong_traced` before
 the slot is cleared, and a field mutated to a fresh JS value and written back

@@ -26,7 +26,7 @@ use crate::{
 };
 
 use super::gc::V8PlatformData;
-use super::trace::take_roots_reached_during_trace;
+use super::trace::{take_roots_reached_during_trace, take_strong_cells_reached_during_trace};
 use super::types::{CachedPrimitive, ObjectProfile, V8ArrayBufferState, V8Handle};
 use super::{
     V8ArrayBuffer, V8BigInt, V8Constructor, V8DataView, V8Function, V8Generator, V8Map, V8Object,
@@ -2110,6 +2110,7 @@ impl EcmascriptHost<V8Types> for V8Engine {
         // Discard roots seen by allocation-triggered traces: this collection
         // traces the whole heap again and reports only what it finds.
         take_roots_reached_during_trace();
+        take_strong_cells_reached_during_trace();
         let shared_isolate = Rc::clone(&self.shared_isolate);
         v8_shared_isolate!(isolate, shared_isolate, self.isolate_id, {
             isolate.request_garbage_collection_for_testing(v8::GarbageCollectionType::Full);
@@ -2124,6 +2125,13 @@ impl EcmascriptHost<V8Types> for V8Engine {
             error!(
                 "{roots_reached} rooted JS handle(s) reached cppgc tracing: the store \
                  invariant was bypassed and the referents are over-retained"
+            );
+        }
+        let strong_cells_reached = take_strong_cells_reached_during_trace();
+        if strong_cells_reached > 0 {
+            error!(
+                "{strong_cells_reached} rooted GcCell(s) reached cppgc tracing: the store \
+                 invariant was bypassed and the cells are over-retained"
             );
         }
     }
@@ -5345,6 +5353,88 @@ mod tests {
         assert!(
             x_collected.get(),
             "the payload referenced only through the cell edge must be collected with it"
+        );
+        drop(x_weak);
+    }
+
+    #[test]
+    fn cloned_cell_in_rust_memory_keeps_js_contents_alive() {
+        let mut engine = V8Engine::new();
+        let x = ExecutionContext::evaluate_script(&mut engine, "({ marker: 'payload' })")
+            .expect("the payload object must evaluate");
+        let x_object = V8Types::value_as_object(&x).expect("the payload must be an object");
+        let x_collected = Rc::new(Cell::new(false));
+        let x_weak = install_guaranteed_finalizer(&mut engine, &x_object, Rc::clone(&x_collected));
+
+        let cell = gc_cell_new(Some(x_object), &mut engine);
+        drop(x);
+        // The clone lands in Rust-owned memory that no cppgc owner traces;
+        // dropping the original leaves it as the only reference to the cell.
+        let clone = cell.clone();
+        drop(cell);
+
+        engine.gc();
+
+        assert!(
+            !x_collected.get(),
+            "the rooted clone must keep the cell's JS contents alive"
+        );
+        assert!(
+            clone.borrow(&engine).is_some(),
+            "the cell must still hold the payload"
+        );
+
+        // Dropping the clone unroots the cell, so the next collection reclaims
+        // it and its JS contents.
+        drop(clone);
+        engine.gc();
+        assert!(
+            x_collected.get(),
+            "the payload must be collected once the clone is dropped"
+        );
+        drop(x_weak);
+    }
+
+    /// A clone written back into traced storage becomes an edge again, so the
+    /// cell and its contents are reclaimed with the owner that holds it.
+    #[test]
+    fn stored_cell_clone_becomes_an_edge() {
+        let mut engine = V8Engine::new();
+        let x = ExecutionContext::evaluate_script(&mut engine, "({ marker: 'payload' })")
+            .expect("the payload object must evaluate");
+        let x_object = V8Types::value_as_object(&x).expect("the payload must be an object");
+        let x_collected = Rc::new(Cell::new(false));
+        let x_weak = install_guaranteed_finalizer(&mut engine, &x_object, Rc::clone(&x_collected));
+
+        let cell = gc_cell_new(Some(x_object), &mut engine);
+        drop(x);
+        let mut clone = cell.clone();
+        // `store` is the conversion a platform object's write-back runs.
+        clone.store(&mut engine);
+        drop(cell);
+
+        let platform_dropped = Rc::new(Cell::new(false));
+        let prototype = engine.create_plain_object(None);
+        let owner = engine.create_object_with_any(
+            prototype,
+            Box::new(V8PlatformData::new(TestPlatform {
+                dropped: DropFlag(Rc::clone(&platform_dropped)),
+                reflector: None,
+                peer: None,
+                cell: Some(clone),
+            })),
+        );
+
+        drop(owner);
+        engine.gc();
+
+        assert!(
+            platform_dropped.get(),
+            "the owning platform must be collected"
+        );
+        assert!(
+            x_collected.get(),
+            "the stored clone must not keep the payload alive"
         );
         drop(x_weak);
     }

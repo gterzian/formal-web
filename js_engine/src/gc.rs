@@ -545,11 +545,14 @@ pub fn associate_existing_object<D>(
         .as_any_mut()
         .downcast_mut::<crate::v8::V8Engine>()
         .expect("associate_existing_object called with a non-V8 execution context");
-    // The concrete type is known here (`D: Trace`), so the platform is
-    // wrapped in `V8PlatformData` with its real trace before the engine
-    // stores it on the cppgc heap: the associated platform's cells and JS
-    // edges (Window event listeners, timers, ...) must be traced while the
-    // realm lives.
+    // The concrete type is known here (`D: Trace`), so rooted handles and
+    // cloned cells are converted to edges before the platform enters traced
+    // storage, and the platform is wrapped in `V8PlatformData` with its real
+    // trace before the engine stores it on the cppgc heap: the associated
+    // platform's cells and JS edges (Window event listeners, timers, ...)
+    // must be traced while the realm lives.
+    let mut data = data;
+    data.store(engine);
     engine.associate_existing_object(object, Box::new(crate::v8::V8PlatformData::new(data)));
 }
 
@@ -574,10 +577,15 @@ where
     Ty: JsTypes + JsTypesWithRealm,
     D: 'static + Trace + Finalize,
 {
-    // The concrete type is known here (`D: Trace`), so the platform is
-    // wrapped in `V8PlatformData` with its real trace before the engine
-    // stores it on the cppgc heap: the platform's cells and JS edges must
-    // be traced while the wrapper lives.
+    // The concrete type is known here (`D: Trace`), so rooted handles and
+    // cloned cells are converted to edges before the platform enters traced
+    // storage, and the platform is wrapped in `V8PlatformData` with its real
+    // trace before the engine stores it on the cppgc heap: the platform's
+    // cells and JS edges must be traced while the wrapper lives.
+    let mut data = data;
+    if let Some(engine) = ec.as_any_mut().downcast_mut::<crate::v8::V8Engine>() {
+        data.store(engine);
+    }
     ec.create_object_with_any(
         prototype.clone(),
         Box::new(crate::v8::V8PlatformData::new(data)),
@@ -797,12 +805,15 @@ mod v8_trace_impls {
         }
 
         fn store(&mut self, _ec: &mut dyn crate::ExecutionContext<crate::v8::V8Types>) {
-            // The cell's contents are converted when they are written.
+            // A clone re-entering traced storage becomes an edge again; its
+            // contents are converted when they are written.
+            self.0.store_as_member();
         }
 
         fn make_strong(&mut self, _ec: &mut dyn crate::ExecutionContext<crate::v8::V8Types>) {
-            // The cell's heap cell is kept alive by the traced owner that holds
-            // it; a nested cell cannot be rooted in place.
+            // A clone leaving traced storage is rooted, so it keeps the heap
+            // cell (and its JS contents) alive while Rust holds it.
+            self.0.root();
         }
     }
 

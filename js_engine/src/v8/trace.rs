@@ -78,6 +78,10 @@ thread_local! {
     /// A nonzero value means a write into traced storage bypassed
     /// `Trace::store`.
     static ROOTS_REACHED_DURING_TRACE: Cell<u64> = const { Cell::new(0) };
+    /// Rooted (`Persistent`) cells reached by cppgc tracing since the last
+    /// full collection. A nonzero value means a cloned cell was stored in
+    /// traced storage without `Trace::store` converting it back to an edge.
+    static STRONG_CELLS_REACHED_DURING_TRACE: Cell<u64> = const { Cell::new(0) };
 }
 
 fn record_root_reached_during_trace() {
@@ -88,6 +92,17 @@ fn record_root_reached_during_trace() {
 /// can report whether the store invariant was bypassed.
 pub(crate) fn take_roots_reached_during_trace() -> u64 {
     ROOTS_REACHED_DURING_TRACE.with(|count| count.replace(0))
+}
+
+/// Record that a rooted cell was reached by tracing (see
+/// [`STRONG_CELLS_REACHED_DURING_TRACE`]).
+pub(crate) fn record_strong_cell_reached_during_trace() {
+    STRONG_CELLS_REACHED_DURING_TRACE.with(|count| count.set(count.get() + 1));
+}
+
+/// Reset and return the count of rooted cells reached by tracing.
+pub(crate) fn take_strong_cells_reached_during_trace() -> u64 {
+    STRONG_CELLS_REACHED_DURING_TRACE.with(|count| count.replace(0))
 }
 
 /// Assert that every present handle in an optional pair is an edge.

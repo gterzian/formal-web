@@ -1,13 +1,17 @@
 //! V8 backend GC cells backed by `rusty_v8::cppgc`.
 //!
-//! A [`V8GcCell`] is a cppgc `Member` edge to a [`HeapCell`] allocated on the
-//! isolate's `cppgc::Heap`. Cloning a cell creates a second `Member` edge to
-//! the same heap cell (via `GetRustObj`), mirroring the clone semantics of
-//! Boa's `Gc<GcRefCell<T>>`: the cell stays alive while any edge is traced by
-//! a live owner, and is reclaimed once the last owner dies. The wrapped value
-//! lives in an `UnsafeCell`, so mutation is only granted with isolate-scoped
-//! proof — the execution context. A runtime borrow counter restores the
-//! double-borrow checks `RefCell` provides on other engines.
+//! A [`V8GcCell`] is a reference to a [`HeapCell`] allocated on the isolate's
+//! `cppgc::Heap`, in one of two modes: a cppgc `Member` edge while the cell is
+//! stored in traced storage, or a cppgc `Persistent` root once it leaves (a
+//! clone held in Rust memory). The `Member` edge is kept alive by the traced
+//! owner that holds it; the `Persistent` is a GC root, so a clone captured in
+//! a queued job or a plain struct keeps the heap cell — and, through it, the
+//! JS objects in the cell's edges — alive until the clone is dropped. Cloning
+//! a cell always produces the `Persistent` mode; [`Trace::store`] converts a
+//! clone back to the `Member` mode when it re-enters traced storage. The
+//! wrapped value lives in an `UnsafeCell`, so mutation is only granted with
+//! isolate-scoped proof — the execution context. A runtime borrow counter
+//! restores the double-borrow checks `RefCell` provides on other engines.
 
 use std::any::Any;
 use std::cell::{Cell, UnsafeCell};
@@ -16,7 +20,7 @@ use std::ops::{Deref, DerefMut};
 
 use log::error;
 use rusty_v8 as v8;
-use v8::cppgc::{self, GarbageCollected, GetRustObj, Member};
+use v8::cppgc::{self, GarbageCollected, Member, Persistent};
 
 use crate::ExecutionContext;
 use crate::gc::Trace;
@@ -157,19 +161,33 @@ unsafe impl<T: Trace + 'static> GarbageCollected for HeapCell<T> {
     }
 }
 
-/// A shared, cloneable GC-managed cell: a cppgc `Member` edge to a heap cell.
+/// A shared, cloneable GC-managed cell: a [`HeapCell`] referenced in either
+/// the traced (`Member`) or rooted (`Persistent`) mode.
 ///
-/// The cell is kept alive while any clone (edge) is traced by a live owner
-/// and is reclaimed by the isolate's cppgc heap once the last edge is
-/// unreachable.
-pub struct V8GcCell<T: Trace + 'static>(Member<HeapCell<T>>);
+/// The cell is kept alive while a traced owner holds the `Member` edge or
+/// while any rooted clone holds the `Persistent`; it is reclaimed by the
+/// isolate's cppgc heap once neither remains.
+enum CellLink<T: Trace + 'static> {
+    /// A cppgc edge, traced by the heap object that holds the cell.
+    Member(Member<HeapCell<T>>),
+    /// A cppgc root held by Rust-owned memory, e.g. a cloned cell captured in
+    /// a queued job.
+    Strong(Persistent<HeapCell<T>>),
+}
+
+pub struct V8GcCell<T: Trace + 'static>(CellLink<T>);
 
 impl<T: Trace + 'static> Clone for V8GcCell<T> {
     fn clone(&self) -> Self {
-        // `Member::new` reads the pointee through `GetRustObj` and creates a
-        // second strong edge to the same heap cell; the cell stays alive while
-        // any edge is traced.
-        Self(Member::new(&self.0))
+        // A clone may land in Rust-owned memory that no cppgc owner traces, so
+        // it takes the rooted mode: `Persistent::new` reads the pointee through
+        // `GetRustObj` and roots the same heap cell. `Trace::store` converts it
+        // back to the traced mode when the clone re-enters traced storage.
+        let strong = match &self.0 {
+            CellLink::Member(member) => Persistent::new(member),
+            CellLink::Strong(persistent) => Persistent::new(persistent),
+        };
+        Self(CellLink::Strong(strong))
     }
 }
 
@@ -183,7 +201,47 @@ impl<T: Trace + 'static> V8GcCell<T> {
             // destination for a stack-created pointer.
             unsafe { v8::cppgc::make_garbage_collected(heap, heap_cell) }
         });
-        Self(Member::new(&pointer))
+        Self(CellLink::Member(Member::new(&pointer)))
+    }
+
+    /// The heap cell this reference points at.
+    ///
+    /// The cell is kept alive for the borrow: a `Member` by the traced owner
+    /// that holds it (the borrower follows the borrow discipline), a
+    /// `Persistent` by its own root.
+    fn heap_cell(&self) -> &HeapCell<T> {
+        match &self.0 {
+            // SAFETY: The `Member` appears in the trace implementation of the
+            // owner that holds this reference, which is alive for the borrow.
+            CellLink::Member(member) => {
+                unsafe { member.get() }.expect("V8 GcCell member holds no heap cell")
+            }
+            CellLink::Strong(persistent) => {
+                persistent.get().expect("V8 GcCell root holds no heap cell")
+            }
+        }
+    }
+
+    /// Convert a rooted clone back to a traced edge so the cell is reclaimed
+    /// with the owner that now holds it. Idempotent for edges.
+    pub(crate) fn store_as_member(&mut self) {
+        let member = match &self.0 {
+            CellLink::Member(_) => return,
+            // The rooted reference keeps the cell alive while the edge is
+            // created; no allocation can run between the two.
+            CellLink::Strong(persistent) => Member::new(persistent),
+        };
+        self.0 = CellLink::Member(member);
+    }
+
+    /// Root the cell so a reference held in Rust-owned memory keeps it (and
+    /// the JS objects in its edges) alive. Idempotent for roots.
+    pub(crate) fn root(&mut self) {
+        let strong = match &self.0 {
+            CellLink::Strong(_) => return,
+            CellLink::Member(member) => Persistent::new(member),
+        };
+        self.0 = CellLink::Strong(strong);
     }
 
     /// Immutably borrow the wrapped value.
@@ -193,11 +251,11 @@ impl<T: Trace + 'static> V8GcCell<T> {
     /// while a borrow is held — and the borrow discipline forbids it: an
     /// engine call can allocate and trigger a cppgc trace that reads the cell
     /// while the borrow is live (see `js_engine/README.md`). Clone the value
-    /// out instead, or scope the borrow to a non-engine section. The heap
-    /// cell is kept alive by this edge (`Member`) for the whole borrow, and
-    /// the borrow counter prevents mutable aliasing.
+    /// out instead, or scope the borrow to a non-engine section. The cell's
+    /// reference is held for the whole borrow, and the borrow counter prevents
+    /// mutable aliasing.
     pub(crate) fn borrow<'a>(&'a self, _ec: &dyn ExecutionContext<V8Types>) -> V8GcRef<'a, T> {
-        let heap_cell = unsafe { self.0.get() }.expect("V8 GcCell edge holds no heap cell");
+        let heap_cell = self.heap_cell();
         if heap_cell.writer.get() {
             panic!("GcCell<T> already mutably borrowed");
         }
@@ -222,7 +280,7 @@ impl<T: Trace + 'static> V8GcCell<T> {
         &'a self,
         ec: &'a mut dyn ExecutionContext<V8Types>,
     ) -> V8GcRefMut<'a, T> {
-        let heap_cell = unsafe { self.0.get() }.expect("V8 GcCell edge holds no heap cell");
+        let heap_cell = self.heap_cell();
         if heap_cell.writer.get() || heap_cell.readers.get() > 0 {
             panic!("GcCell<T> already borrowed");
         }
@@ -238,7 +296,7 @@ impl<T: Trace + 'static> V8GcCell<T> {
 
     /// Replace the wrapped value.
     pub(crate) fn set(&self, value: T, _ec: &mut dyn ExecutionContext<V8Types>) {
-        let heap_cell = unsafe { self.0.get() }.expect("V8 GcCell edge holds no heap cell");
+        let heap_cell = self.heap_cell();
         if heap_cell.writer.get() || heap_cell.readers.get() > 0 {
             panic!("GcCell<T> already borrowed");
         }
@@ -250,16 +308,28 @@ impl<T: Trace + 'static> V8GcCell<T> {
 
     /// Compare two cells for pointer equality.
     pub(crate) fn ptr_eq(&self, other: &Self) -> bool {
-        self.0.get_rust_obj() == other.0.get_rust_obj()
+        std::ptr::eq(self.heap_cell(), other.heap_cell())
     }
 }
 
 // The cell edge is traced by visiting the underlying `Member`: a parent heap
 // object tracing a nested `GcCell` field keeps the cell alive and traces its
-// contents.
+// contents. A rooted cell reached here means a clone was stored in traced
+// storage without `Trace::store` converting it back — the referent is
+// over-retained (the root keeps it alive) rather than dangling; report it like
+// a rooted handle reached by tracing.
 impl<T: Trace + 'static> Traced for V8GcCell<T> {
     fn trace(&self, visitor: &mut Visitor) {
-        visitor.trace(&self.0);
+        match &self.0 {
+            CellLink::Member(member) => visitor.trace(member),
+            CellLink::Strong(_) => {
+                crate::v8::trace::record_strong_cell_reached_during_trace();
+                debug_assert!(
+                    false,
+                    "a rooted GcCell reached cppgc tracing: the store invariant was bypassed"
+                );
+            }
+        }
     }
 }
 

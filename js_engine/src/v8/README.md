@@ -13,10 +13,15 @@ fields, and JS edges are collected in one pass.
   `#[ignore_trace]` fields and copies each remaining field's `#[cfg]` onto its
   generated statement, so a conditionally-present field is traced in the build
   where it exists.
-- `GcCell<T>` is a cppgc `Member<HeapCell<T>>` edge; cloning creates a second
-  edge via `Member::new(&existing)` (`GetRustObj`). The `HeapCell` is a heap
-  object whose `trace` delegates to `T`'s edges. Cells are traced from their
-  owning platform object — no `Persistent` roots.
+- `GcCell<T>` is a two-mode reference to a `HeapCell<T>`: a cppgc
+  `Member<HeapCell<T>>` edge while the cell is stored in traced storage, and a
+  cppgc `Persistent<HeapCell<T>>` root once it leaves (a clone held in
+  Rust-owned memory). `Clone` always produces the rooted mode, so a cell
+  captured in a queued job or plain struct keeps the `HeapCell` and its JS
+  contents alive until the clone drops; `Trace::store` converts it back to an
+  edge when it re-enters traced storage. The `HeapCell` is a heap object whose
+  `trace` delegates to `T`'s edges. Cells are traced from their owning platform
+  object while an edge holds them and from their own root while a clone does.
 - JS references are two-mode `V8Handle`s: `Root(Global)` for ephemeral Rust
   values, `Edge(Rc<TracedReference>)` once stored. Conversion happens at
   `gc_cell_new`/`GcCell::set` (via `Trace::store`), when a `GcCell::borrow_mut`
@@ -30,9 +35,9 @@ fields, and JS edges are collected in one pass.
   `Trace::store` converts only handles that are
   still `Root`, so storing an already-converted container does not open a V8
   value scope per element. A `debug_assert` in the `Trace` impls rejects a
-  `Root` reached by marking as a store-invariant violation; release builds
-  count such roots and `V8Engine::gc` logs the count (the invariant is not
-  compiled out under `--release`).
+  `Root` handle or a rooted `GcCell` reached by marking as a store-invariant
+  violation; release builds count both and `V8Engine::gc` logs the counts (the
+  invariant is not compiled out under `--release`).
 - Platform objects are allocated on the cppgc heap (`V8PlatformData`, a
   type-erased cppgc object tracing through the concrete type) and linked to
   their JS wrapper with `v8::Object::wrap`, so the unified heap traces
@@ -158,17 +163,6 @@ Last recorded: `executed=272 unexpected=0`.
    current tests catch.
 6. **`is_constructor` has no exact check.** See the IsConstructor gap under
    "ArrayBuffer / IsConstructor gaps".
-7. **A cloned `GcCell` does not keep its JS contents alive across a V8
-   collection.** `GcCell::clone` creates a second cppgc `Member` edge; a clone
-   held in Rust-owned memory (a queued job closure) is not traced, and once the
-   originating platform object is collected the heap cell is swept. Making the
-   clone a cppgc `Persistent` roots the heap cell but not its JS contents: a
-   forced V8 full GC (the `gc()` builtin, a critical memory-pressure
-   notification, or `V8Engine::gc`) collects a JS object held only through a
-   `Persistent`-rooted cell, because the V8 marker does not trace cppgc-only
-   roots, so the cell's `TracedReference`s are never visited. Rooting the cell's
-   JS contents (or not capturing live cells in Rust-owned closures) is the
-   sound fix; `gc_cell_new`/`GcCell::clone` stay `Member` edges.
 
 ### ArrayBuffer / IsConstructor gaps
 
