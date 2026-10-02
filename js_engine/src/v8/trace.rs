@@ -48,6 +48,16 @@ fn store_optional_handle<T>(
     }
 }
 
+/// Root the referent of an optional `V8Handle`.
+fn make_strong_optional_handle<T>(
+    handle: &mut Option<V8Handle<T>>,
+    scope: &mut v8::PinScope<'_, '_, ()>,
+) {
+    if let Some(handle) = handle {
+        handle.make_strong(scope);
+    }
+}
+
 /// Assert that a handle reached by cppgc tracing is an edge, never a strong
 /// root. A root here means a write into traced storage bypassed `store`; the
 /// marker would silently skip it and the referent would be over-retained
@@ -142,6 +152,30 @@ unsafe impl Trace for V8Value {
             }
         });
     }
+
+    fn make_strong(&mut self, ec: &mut dyn ExecutionContext<V8Types>) {
+        if !self.needs_strong() {
+            return;
+        }
+        let engine = ec
+            .as_any_mut()
+            .downcast_mut::<V8Engine>()
+            .expect("V8 value rooted with a non-V8 execution context");
+        engine.with_value_scope(|scope| {
+            self.handle.make_strong(scope);
+            if let Some(profile) = &mut self.object_profile {
+                profile.object_handle.make_strong(scope);
+                make_strong_optional_handle(&mut profile.array_buffer_handle, scope);
+                make_strong_optional_handle(&mut profile.shared_array_buffer_handle, scope);
+                make_strong_optional_handle(&mut profile.typed_array_handle, scope);
+                make_strong_optional_handle(&mut profile.data_view_handle, scope);
+                make_strong_optional_handle(&mut profile.promise_handle, scope);
+                make_strong_optional_handle(&mut profile.function_handle, scope);
+                make_strong_optional_handle(&mut profile.map_handle, scope);
+                make_strong_optional_handle(&mut profile.set_handle, scope);
+            }
+        });
+    }
 }
 
 // SAFETY: See `V8Value`; both handles are edges to the same object.
@@ -165,6 +199,20 @@ unsafe impl Trace for V8Object {
             self.1.store_edge(scope);
         });
     }
+
+    fn make_strong(&mut self, ec: &mut dyn ExecutionContext<V8Types>) {
+        self.0.make_strong(ec);
+        if !self.1.is_edge() {
+            return;
+        }
+        let engine = ec
+            .as_any_mut()
+            .downcast_mut::<V8Engine>()
+            .expect("V8 object rooted with a non-V8 execution context");
+        engine.with_value_scope(|scope| {
+            self.1.make_strong(scope);
+        });
+    }
 }
 
 // SAFETY: The string value (when present) holds the only edges.
@@ -181,6 +229,12 @@ unsafe impl Trace for V8String {
             value.store(ec);
         }
     }
+
+    fn make_strong(&mut self, ec: &mut dyn ExecutionContext<V8Types>) {
+        if let Some(value) = &mut self.value {
+            value.make_strong(ec);
+        }
+    }
 }
 
 // SAFETY: The symbol wraps a single value.
@@ -193,6 +247,10 @@ unsafe impl Trace for V8Symbol {
     fn store(&mut self, ec: &mut dyn ExecutionContext<V8Types>) {
         self.0.store(ec);
     }
+
+    fn make_strong(&mut self, ec: &mut dyn ExecutionContext<V8Types>) {
+        self.0.make_strong(ec);
+    }
 }
 
 // SAFETY: The bigint wraps a single value.
@@ -204,6 +262,10 @@ unsafe impl Trace for V8BigInt {
 
     fn store(&mut self, ec: &mut dyn ExecutionContext<V8Types>) {
         self.value.store(ec);
+    }
+
+    fn make_strong(&mut self, ec: &mut dyn ExecutionContext<V8Types>) {
+        self.value.make_strong(ec);
     }
 }
 
@@ -239,6 +301,20 @@ macro_rules! typed_wrapper_trace {
                         self.1.store_edge(scope);
                     });
                 }
+
+                fn make_strong(&mut self, ec: &mut dyn ExecutionContext<V8Types>) {
+                    self.0.make_strong(ec);
+                    if !self.1.is_edge() {
+                        return;
+                    }
+                    let engine = ec
+                        .as_any_mut()
+                        .downcast_mut::<V8Engine>()
+                        .expect("V8 typed wrapper rooted with a non-V8 execution context");
+                    engine.with_value_scope(|scope| {
+                        self.1.make_strong(scope);
+                    });
+                }
             }
         )*
     };
@@ -270,6 +346,10 @@ macro_rules! tagged_wrapper_trace {
                 fn store(&mut self, ec: &mut dyn ExecutionContext<V8Types>) {
                     self.0.store(ec);
                 }
+
+                fn make_strong(&mut self, ec: &mut dyn ExecutionContext<V8Types>) {
+                    self.0.make_strong(ec);
+                }
             }
         )*
     };
@@ -294,6 +374,10 @@ unsafe impl Trace for GcRootHandle<V8Types> {
     fn store(&mut self, ec: &mut dyn ExecutionContext<V8Types>) {
         self.value.store(ec);
     }
+
+    fn make_strong(&mut self, ec: &mut dyn ExecutionContext<V8Types>) {
+        self.value.make_strong(ec);
+    }
 }
 
 // SAFETY: The promise resolvers hold the two function edges.
@@ -310,6 +394,11 @@ unsafe impl Trace for PromiseResolvers<V8Types> {
         self.resolve.store(ec);
         self.reject.store(ec);
     }
+
+    fn make_strong(&mut self, ec: &mut dyn ExecutionContext<V8Types>) {
+        self.resolve.make_strong(ec);
+        self.reject.make_strong(ec);
+    }
 }
 
 // SAFETY: The optional value is visited when present.
@@ -324,6 +413,12 @@ unsafe impl<T: Trace> Trace for Option<T> {
     fn store(&mut self, ec: &mut dyn ExecutionContext<V8Types>) {
         if let Some(value) = self {
             value.store(ec);
+        }
+    }
+
+    fn make_strong(&mut self, ec: &mut dyn ExecutionContext<V8Types>) {
+        if let Some(value) = self {
+            value.make_strong(ec);
         }
     }
 }
@@ -343,6 +438,12 @@ unsafe impl<T: Trace> Trace for Vec<T> {
             item.store(ec);
         }
     }
+
+    fn make_strong(&mut self, ec: &mut dyn ExecutionContext<V8Types>) {
+        for item in self {
+            item.make_strong(ec);
+        }
+    }
 }
 
 // SAFETY: Every element is visited.
@@ -357,6 +458,12 @@ unsafe impl<T: Trace> Trace for VecDeque<T> {
     fn store(&mut self, ec: &mut dyn ExecutionContext<V8Types>) {
         for item in self {
             item.store(ec);
+        }
+    }
+
+    fn make_strong(&mut self, ec: &mut dyn ExecutionContext<V8Types>) {
+        for item in self {
+            item.make_strong(ec);
         }
     }
 }
@@ -377,5 +484,9 @@ unsafe impl<T: Trace> Trace for Rc<T> {
 
     fn store(&mut self, _ec: &mut dyn ExecutionContext<V8Types>) {
         // A shared value is converted at its creation site, not here.
+    }
+
+    fn make_strong(&mut self, _ec: &mut dyn ExecutionContext<V8Types>) {
+        // A shared value is rooted at its creation site, not here.
     }
 }

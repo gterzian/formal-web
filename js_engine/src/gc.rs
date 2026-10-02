@@ -61,6 +61,17 @@ pub unsafe trait Trace {
     /// object is traced — which is what lets cycles spanning the JS heap and
     /// the cppgc heap be collected.
     fn store(&mut self, ec: &mut dyn crate::ExecutionContext<crate::v8::V8Types>);
+
+    /// Convert every cppgc edge inside this value back into a rooted JS
+    /// handle, so the value stays valid after it leaves traced storage.
+    ///
+    /// The inverse of [`Trace::store`]: a value removed from a `GcCell` (by
+    /// `GcCell::get`/`take`/`pop_front`) or a `GcCell` clone held in Rust
+    /// memory (a queued job, a plain struct) must root its referents itself,
+    /// because no cppgc owner will trace it anymore. Reference an edge whose
+    /// referent was already reclaimed (possible only when the caller removed
+    /// it without rooting it first) is a store-discipline violation.
+    fn make_strong(&mut self, ec: &mut dyn crate::ExecutionContext<crate::v8::V8Types>);
 }
 
 #[cfg(feature = "boa")]
@@ -132,6 +143,7 @@ pub use boa_cells::*;
 mod boa_cells {
     use super::*;
     use crate::boa::BoaTypes;
+    use std::collections::VecDeque;
 
     /// Unified GC-managed cell providing interior mutability.
     ///
@@ -171,6 +183,63 @@ mod boa_cells {
         /// Compare two cells for pointer equality.
         pub fn ptr_eq(&self, other: &Self) -> bool {
             boa_gc::Gc::ptr_eq(&self.0, &other.0)
+        }
+    }
+
+    /// Operations that hand an owned copy of the wrapped value back to Rust
+    /// code. On Boa a `Gc` clone already keeps the whole graph alive, so the
+    /// implementations are the plain borrow operations; the API is uniform
+    /// with the V8 backend, where the copy must be rooted explicitly.
+    impl<T: boa_gc::Trace + Clone + 'static> GcCell<T> {
+        /// Clone the wrapped value.
+        pub fn get(&self, _ec: &mut dyn ExecutionContext<BoaTypes>) -> T {
+            self.0.borrow().clone()
+        }
+
+        /// Replace the wrapped value, returning the previous value.
+        pub fn replace(&self, value: T, _ec: &mut dyn ExecutionContext<BoaTypes>) -> T {
+            std::mem::replace(&mut *self.0.borrow_mut(), value)
+        }
+    }
+
+    impl<T: boa_gc::Trace + Clone + 'static> GcCell<Option<T>> {
+        /// Remove the wrapped value.
+        pub fn take(&self, _ec: &mut dyn ExecutionContext<BoaTypes>) -> Option<T> {
+            self.0.borrow_mut().take()
+        }
+    }
+
+    impl<T: boa_gc::Trace + Clone + 'static> GcCell<Vec<T>> {
+        /// Remove every element.
+        pub fn take_all(&self, _ec: &mut dyn ExecutionContext<BoaTypes>) -> Vec<T> {
+            std::mem::take(&mut *self.0.borrow_mut())
+        }
+
+        /// Remove the last element.
+        pub fn pop(&self, _ec: &mut dyn ExecutionContext<BoaTypes>) -> Option<T> {
+            self.0.borrow_mut().pop()
+        }
+
+        /// Remove the element at `index`.
+        pub fn remove(&self, index: usize, _ec: &mut dyn ExecutionContext<BoaTypes>) -> T {
+            self.0.borrow_mut().remove(index)
+        }
+    }
+
+    impl<T: boa_gc::Trace + Clone + 'static> GcCell<VecDeque<T>> {
+        /// Remove every element.
+        pub fn take_all(&self, _ec: &mut dyn ExecutionContext<BoaTypes>) -> VecDeque<T> {
+            std::mem::take(&mut *self.0.borrow_mut())
+        }
+
+        /// Remove the first element.
+        pub fn pop_front(&self, _ec: &mut dyn ExecutionContext<BoaTypes>) -> Option<T> {
+            self.0.borrow_mut().pop_front()
+        }
+
+        /// Remove the last element.
+        pub fn pop_back(&self, _ec: &mut dyn ExecutionContext<BoaTypes>) -> Option<T> {
+            self.0.borrow_mut().pop_back()
         }
     }
 
@@ -228,6 +297,7 @@ mod v8_cells {
     use crate::gc::Trace;
     use crate::v8::gc::{V8GcCell, V8GcRef, V8GcRefMut};
     use crate::v8::{V8Engine, V8Types};
+    use std::collections::VecDeque;
 
     /// Unified GC-managed cell providing interior mutability.
     #[derive(Clone)]
@@ -278,9 +348,145 @@ mod v8_cells {
         }
     }
 
+    /// Operations that hand an owned copy of the wrapped value back to Rust
+    /// code, rooting every cppgc edge it holds so the value stays valid after
+    /// it leaves the cell.
+    ///
+    /// A clone is taken while the cell still holds the original, so the
+    /// referents are kept alive by the cell across the conversion; once the
+    /// copy is rooted it is safe for the original to be removed.
+    impl<T: Trace + Clone + 'static> GcCell<T> {
+        /// Clone the wrapped value and root its edges, so the copy can outlive
+        /// the cell and the engine may run while Rust holds it.
+        pub fn get(&self, ec: &mut dyn ExecutionContext<V8Types>) -> T {
+            let mut value = self.borrow(ec).clone();
+            Trace::make_strong(&mut value, ec);
+            value
+        }
+
+        /// Replace the wrapped value, returning the previous value rooted.
+        pub fn replace(&self, value: T, ec: &mut dyn ExecutionContext<V8Types>) -> T {
+            let previous = self.get(ec);
+            self.set(value, ec);
+            previous
+        }
+    }
+
+    impl<T: Trace + Clone + 'static> GcCell<Option<T>> {
+        /// Remove the wrapped value and root its edges.
+        pub fn take(&self, ec: &mut dyn ExecutionContext<V8Types>) -> Option<T> {
+            let value = self.get(ec);
+            self.set(None, ec);
+            value
+        }
+    }
+
+    impl<T: Trace + Clone + 'static> GcCell<Vec<T>> {
+        /// Remove every element, rooting each one's edges.
+        pub fn take_all(&self, ec: &mut dyn ExecutionContext<V8Types>) -> Vec<T> {
+            let value = self.get(ec);
+            self.set(Vec::new(), ec);
+            value
+        }
+
+        /// Remove the last element, rooting its edges.
+        pub fn pop(&self, ec: &mut dyn ExecutionContext<V8Types>) -> Option<T> {
+            let mut value = self.borrow(ec).last().cloned();
+            if let Some(value) = &mut value {
+                Trace::make_strong(value, ec);
+            }
+            if value.is_some() {
+                self.borrow_mut(ec).pop();
+            }
+            value
+        }
+
+        /// Remove the element at `index`, rooting its edges. Panics when
+        /// `index` is out of bounds.
+        pub fn remove(&self, index: usize, ec: &mut dyn ExecutionContext<V8Types>) -> T {
+            let mut value = self
+                .borrow(ec)
+                .get(index)
+                .cloned()
+                .expect("GcCell<Vec<T>>::remove index out of bounds");
+            Trace::make_strong(&mut value, ec);
+            self.borrow_mut(ec).remove(index);
+            value
+        }
+    }
+
+    impl<T: Trace + Clone + 'static> GcCell<VecDeque<T>> {
+        /// Remove every element, rooting each one's edges.
+        pub fn take_all(&self, ec: &mut dyn ExecutionContext<V8Types>) -> VecDeque<T> {
+            let value = self.get(ec);
+            self.set(VecDeque::new(), ec);
+            value
+        }
+
+        /// Remove the first element, rooting its edges.
+        pub fn pop_front(&self, ec: &mut dyn ExecutionContext<V8Types>) -> Option<T> {
+            let mut value = self.borrow(ec).front().cloned();
+            if let Some(value) = &mut value {
+                Trace::make_strong(value, ec);
+            }
+            if value.is_some() {
+                self.borrow_mut(ec).pop_front();
+            }
+            value
+        }
+
+        /// Remove the last element, rooting its edges.
+        pub fn pop_back(&self, ec: &mut dyn ExecutionContext<V8Types>) -> Option<T> {
+            let mut value = self.borrow(ec).back().cloned();
+            if let Some(value) = &mut value {
+                Trace::make_strong(value, ec);
+            }
+            if value.is_some() {
+                self.borrow_mut(ec).pop_back();
+            }
+            value
+        }
+    }
+
     pub type GcRef<'a, T> = V8GcRef<'a, T>;
     pub type GcRefMut<'a, T> = V8GcRefMut<'a, T>;
 }
+
+/// Convert rooted handles in `value` into cppgc edges, so a value that has
+/// been mutated in Rust memory and is about to be written back into traced
+/// storage satisfies the store invariant.
+///
+/// A backend-agnostic entry point for the V8-only [`Trace::store`] operation:
+/// Boa traces `Gc` handles through its own collector, so the call is a no-op
+/// there. Content code calls this before writing a cloned platform object
+/// back (see `content/src/js/downcast.rs::with_cloned_platform_mut`).
+#[cfg(feature = "v8")]
+pub fn store_traced<T: Trace>(value: &mut T, ec: &mut dyn ExecutionContext<V8Types>) {
+    value.store(ec);
+}
+
+/// Convert rooted handles in `value` into cppgc edges (no-op on Boa).
+#[cfg(feature = "boa")]
+pub fn store_traced<T: Trace>(_value: &mut T, _ec: &mut dyn ExecutionContext<BoaTypes>) {}
+
+/// Root the cppgc edges in `value`, so a value removed from traced storage (a
+/// platform-object field cleared after the value is read, a queued job's
+/// captured state) stays valid while Rust holds it.
+///
+/// A backend-agnostic entry point for the V8-only [`Trace::make_strong`]
+/// operation: Boa's `Gc` handles are keeps the graph alive by themselves, so
+/// the call is a no-op there. Callers must clone the value out while its
+/// tracing owner still holds it, root the clone, and only then clear the
+/// owner's field — rooting a value that no longer has a tracing owner can race
+/// a collection against the conversion.
+#[cfg(feature = "v8")]
+pub fn make_strong_traced<T: Trace>(value: &mut T, ec: &mut dyn ExecutionContext<V8Types>) {
+    value.make_strong(ec);
+}
+
+/// Root the cppgc edges in `value` (no-op on Boa).
+#[cfg(feature = "boa")]
+pub fn make_strong_traced<T: Trace>(_value: &mut T, _ec: &mut dyn ExecutionContext<BoaTypes>) {}
 
 /// Construct a [`GcCell`] with the given value.
 ///
@@ -551,6 +757,8 @@ mod v8_trace_impls {
                     unsafe fn trace(&self, _visitor: &mut Visitor) {}
 
                     fn store(&mut self, _ec: &mut dyn crate::ExecutionContext<crate::v8::V8Types>) {}
+
+                    fn make_strong(&mut self, _ec: &mut dyn crate::ExecutionContext<crate::v8::V8Types>) {}
                 }
             )*
         };
@@ -579,6 +787,8 @@ mod v8_trace_impls {
         unsafe fn trace(&self, _visitor: &mut Visitor) {}
 
         fn store(&mut self, _ec: &mut dyn crate::ExecutionContext<crate::v8::V8Types>) {}
+
+        fn make_strong(&mut self, _ec: &mut dyn crate::ExecutionContext<crate::v8::V8Types>) {}
     }
 
     unsafe impl<T: Trace + 'static> Trace for super::GcCell<T> {
@@ -588,6 +798,11 @@ mod v8_trace_impls {
 
         fn store(&mut self, _ec: &mut dyn crate::ExecutionContext<crate::v8::V8Types>) {
             // The cell's contents are converted when they are written.
+        }
+
+        fn make_strong(&mut self, _ec: &mut dyn crate::ExecutionContext<crate::v8::V8Types>) {
+            // The cell's heap cell is kept alive by the traced owner that holds
+            // it; a nested cell cannot be rooted in place.
         }
     }
 
@@ -604,6 +819,12 @@ mod v8_trace_impls {
                 fn store(&mut self, ec: &mut dyn crate::ExecutionContext<crate::v8::V8Types>) {
                     $(
                         self.$i.store(ec);
+                    )*
+                }
+
+                fn make_strong(&mut self, ec: &mut dyn crate::ExecutionContext<crate::v8::V8Types>) {
+                    $(
+                        self.$i.make_strong(ec);
                     )*
                 }
             }

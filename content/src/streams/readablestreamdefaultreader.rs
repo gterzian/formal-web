@@ -1,5 +1,3 @@
-use std::mem;
-
 use js_engine::{Completion, ExecutionContext, JsTypes, PromiseResolvers};
 
 use crate::js::Types;
@@ -239,7 +237,7 @@ impl ReadableStreamDefaultReader {
         &self,
         ec: &mut dyn ExecutionContext<Types>,
     ) -> Vec<ReadRequest> {
-        mem::take(&mut self.read_requests.borrow_mut(ec))
+        self.read_requests.take_all(ec)
     }
     pub(crate) fn read_requests_len(&self, ec: &mut dyn ExecutionContext<Types>) -> usize {
         self.read_requests.borrow(ec).len()

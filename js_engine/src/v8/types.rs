@@ -27,6 +27,11 @@ pub(crate) fn optional_handle_is_root<T>(handle: &Option<V8Handle<T>>) -> bool {
     handle.as_ref().is_some_and(V8Handle::is_root)
 }
 
+/// Whether an optional handle is still a cppgc edge that needs `make_strong`.
+pub(crate) fn optional_handle_is_edge<T>(handle: &Option<V8Handle<T>>) -> bool {
+    handle.as_ref().is_some_and(V8Handle::is_edge)
+}
+
 #[derive(Clone, Debug)]
 pub(crate) struct ObjectProfile {
     pub object_handle: V8Handle<v8::Object>,
@@ -74,6 +79,21 @@ impl ObjectProfile {
             || optional_handle_is_root(&self.function_handle)
             || optional_handle_is_root(&self.map_handle)
             || optional_handle_is_root(&self.set_handle)
+    }
+
+    /// Whether any handle in this profile is still a cppgc edge that must be
+    /// rooted before the value leaves traced storage. Used to skip opening a
+    /// V8 value scope when there is nothing to convert.
+    pub(crate) fn needs_strong(&self) -> bool {
+        self.object_handle.is_edge()
+            || optional_handle_is_edge(&self.array_buffer_handle)
+            || optional_handle_is_edge(&self.shared_array_buffer_handle)
+            || optional_handle_is_edge(&self.typed_array_handle)
+            || optional_handle_is_edge(&self.data_view_handle)
+            || optional_handle_is_edge(&self.promise_handle)
+            || optional_handle_is_edge(&self.function_handle)
+            || optional_handle_is_edge(&self.map_handle)
+            || optional_handle_is_edge(&self.set_handle)
     }
 }
 
@@ -134,11 +154,32 @@ impl<T> V8Handle<T> {
         matches!(self, Self::Root(_))
     }
 
+    /// Whether this handle is a cppgc edge that must be rooted before it
+    /// leaves traced storage.
+    pub(crate) fn is_edge(&self) -> bool {
+        matches!(self, Self::Edge(_))
+    }
+
     /// Convert a rooted handle into a cppgc edge. Idempotent for edges.
     pub(crate) fn store_edge(&mut self, scope: &mut v8::PinScope<'_, '_, ()>) {
         if let Self::Root(global) = self {
             let local = v8::Local::new(scope, &*global);
             *self = Self::Edge(std::rc::Rc::new(v8::TracedReference::new(scope, local)));
+        }
+    }
+
+    /// Convert a cppgc edge into a rooted handle. Idempotent for roots.
+    ///
+    /// Callers must ensure no garbage collection can run between removing the
+    /// value from traced storage and this call: the referent is kept alive by
+    /// the cppgc owner that traced the edge, and the value is not traced once
+    /// it has been removed.
+    pub(crate) fn make_strong(&mut self, scope: &mut v8::PinScope<'_, '_, ()>) {
+        if let Self::Edge(edge) = self {
+            let replacement = edge.get(scope).map(|local| v8::Global::new(scope, local));
+            if let Some(global) = replacement {
+                *self = Self::Root(global);
+            }
         }
     }
 
@@ -189,6 +230,16 @@ impl V8Value {
                 .object_profile
                 .as_ref()
                 .is_some_and(|profile| profile.needs_store())
+    }
+
+    /// Whether any handle in this value is still a cppgc edge that must be
+    /// rooted before the value leaves traced storage.
+    pub(crate) fn needs_strong(&self) -> bool {
+        self.handle.is_edge()
+            || self
+                .object_profile
+                .as_ref()
+                .is_some_and(|profile| profile.needs_strong())
     }
 
     pub fn is_undefined(&self) -> bool {

@@ -133,6 +133,11 @@ unsafe impl Trace for RealmHostData {
         // platform Members are traced by this type, so no root-to-edge
         // conversion is needed here.
     }
+
+    fn make_strong(&mut self, _ec: &mut dyn ExecutionContext<V8Types>) {
+        // The host data is only ever stored in its holder; its strong values
+        // and traced Members stay as they are.
+    }
 }
 
 #[derive(Clone)]
@@ -179,6 +184,11 @@ struct SharedIsolate {
     realm_states: RefCell<Vec<RcWeak<V8RealmState>>>,
     queued_jobs: RefCell<VecDeque<QueuedJob>>,
     callback_handles: RefCell<Vec<CallbackHandle>>,
+    /// The registry length at which the next opportunistic compaction runs.
+    /// Doubling it after each compaction keeps the amortized cost linear
+    /// instead of walking the registry on every native-function creation once
+    /// the threshold is reached.
+    next_compaction_len: Cell<usize>,
     isolate: RefCell<v8::OwnedIsolate>,
     microtask_queue: v8::UniqueRef<v8::MicrotaskQueue>,
     /// Shared security token installed on every context created in this
@@ -216,6 +226,7 @@ impl SharedIsolate {
             realm_states: RefCell::new(Vec::new()),
             queued_jobs: RefCell::new(VecDeque::new()),
             callback_handles: RefCell::new(Vec::new()),
+            next_compaction_len: Cell::new(CALLBACK_HANDLE_COMPACTION_THRESHOLD),
             isolate: RefCell::new(isolate),
             microtask_queue,
             security_token: RefCell::new(None),
@@ -1416,7 +1427,7 @@ impl V8Engine {
             // first — the guaranteed finalizer may not have run yet, and
             // dropping the weak handle below would cancel it, so the slot
             // hand-off is what prevents a leaked or double-freed record.
-            if callback_handles.len() >= CALLBACK_HANDLE_COMPACTION_THRESHOLD {
+            if callback_handles.len() >= self.shared_isolate.next_compaction_len.get() {
                 callback_handles.retain(|handle| {
                     if handle.weak.is_empty() {
                         if let Some(record) = handle.record.borrow_mut().take() {
@@ -1427,6 +1438,12 @@ impl V8Engine {
                         true
                     }
                 });
+                self.shared_isolate.next_compaction_len.set(
+                    callback_handles
+                        .len()
+                        .saturating_mul(2)
+                        .max(CALLBACK_HANDLE_COMPACTION_THRESHOLD),
+                );
             }
             callback_handles.push(CallbackHandle {
                 weak: callback_handle,
@@ -1749,7 +1766,7 @@ pub fn create_builtin_fn_with_captures<T, C>(
     is_constructor: bool,
 ) -> T::Function
 where
-    T: JsTypes + JsTypesWithRealm,
+    T: JsTypes + JsTypesWithRealm + 'static,
     C: Trace + 'static,
 {
     let engine = execution_context
@@ -1758,10 +1775,15 @@ where
         .expect("create_builtin_fn_with_captures called with a non-V8 engine");
 
     // The generic parameter T is the active backend's JsTypes; in a
-    // V8-selected build it is always V8Types. The layout assertions below
-    // turn a mismatched instantiation (e.g. a mock type with a different
-    // PropertyKey/Function layout) into an immediate panic instead of the
-    // byte copies silently corrupting the stack.
+    // V8-selected build it is always V8Types. The identity check makes a
+    // mismatched instantiation (e.g. a mock type with a different
+    // PropertyKey/Function layout) panic before any byte copy; the layout
+    // assertions below then document the representation the casts rely on.
+    assert_eq!(
+        std::any::TypeId::of::<T>(),
+        std::any::TypeId::of::<V8Types>(),
+        "create_builtin_fn_with_captures instantiated with a non-V8 execution context"
+    );
     assert_eq!(
         std::mem::size_of::<T::PropertyKey>(),
         std::mem::size_of::<V8PropertyKey>(),
@@ -1897,6 +1919,23 @@ unsafe impl Trace for PromiseReactionCaptures {
         if let Some((resolve, reject)) = &mut self.rejected_capability {
             resolve.store(ec);
             reject.store(ec);
+        }
+    }
+
+    fn make_strong(&mut self, ec: &mut dyn ExecutionContext<V8Types>) {
+        if let Some(on_fulfilled) = &mut self.on_fulfilled {
+            on_fulfilled.make_strong(ec);
+        }
+        if let Some(on_rejected) = &mut self.on_rejected {
+            on_rejected.make_strong(ec);
+        }
+        if let Some((resolve, reject)) = &mut self.fulfilled_capability {
+            resolve.make_strong(ec);
+            reject.make_strong(ec);
+        }
+        if let Some((resolve, reject)) = &mut self.rejected_capability {
+            resolve.make_strong(ec);
+            reject.make_strong(ec);
         }
     }
 }
@@ -4954,6 +4993,32 @@ mod tests {
         assert!(callback_dropped.get());
     }
 
+    /// `GcCell::get` roots the copy's JS edges, so a value cloned out of a
+    /// cell and then removed from it survives a collection.
+    #[test]
+    fn cell_get_roots_value_across_gc() {
+        let mut engine = V8Engine::new();
+        let x = ExecutionContext::evaluate_script(&mut engine, "({ marker: 'payload' })")
+            .expect("the payload object must evaluate");
+        let x_object = V8Types::value_as_object(&x).expect("the payload must be an object");
+        let x_collected = Rc::new(Cell::new(false));
+        let x_weak = install_guaranteed_finalizer(&mut engine, &x_object, Rc::clone(&x_collected));
+
+        let cell = gc_cell_new(Some(x_object), &mut engine);
+        drop(x);
+        let rooted = cell.get(&mut engine).expect("the cell holds the value");
+        cell.set(None, &mut engine);
+
+        engine.gc();
+
+        assert!(
+            !x_collected.get(),
+            "the rooted copy must keep the payload alive"
+        );
+        drop(rooted);
+        drop(x_weak);
+    }
+
     /// A traced platform payload with a finalization probe and the three
     /// reference kinds production platform objects carry: a reflector edge
     /// back to the JS wrapper, a peer edge to another wrapper, and a nested
@@ -4993,6 +5058,18 @@ mod tests {
             }
             if let Some(cell) = &mut self.cell {
                 Trace::store(cell, ec);
+            }
+        }
+
+        fn make_strong(&mut self, ec: &mut dyn ExecutionContext<V8Types>) {
+            if let Some(reflector) = &mut self.reflector {
+                Trace::make_strong(reflector, ec);
+            }
+            if let Some(peer) = &mut self.peer {
+                Trace::make_strong(peer, ec);
+            }
+            if let Some(cell) = &mut self.cell {
+                Trace::make_strong(cell, ec);
             }
         }
     }
@@ -5678,12 +5755,20 @@ mod tests {
         );
         drop(functions);
         engine.gc();
-        // The next registration compacts the stale entries out of the
-        // registry instead of letting it grow for the isolate's lifetime.
-        let _keep = make_function(&mut engine);
+        // Creating past the doubled trigger compacts the stale entries out of
+        // the registry instead of letting it grow for the isolate's lifetime.
+        // The trigger doubles after each compaction, so the registry crosses
+        // it exactly once here and the 72 stale entries are removed.
+        let keep: Vec<_> = (0..CALLBACK_HANDLE_COMPACTION_THRESHOLD * 2)
+            .map(|_| make_function(&mut engine))
+            .collect();
         let live_count = engine.shared_isolate.callback_handles.borrow().len();
         assert!(
-            live_count <= CALLBACK_HANDLE_COMPACTION_THRESHOLD,
+            live_count >= keep.len(),
+            "every live function must stay registered (len={live_count})"
+        );
+        assert!(
+            live_count < CALLBACK_HANDLE_COMPACTION_THRESHOLD + 8 + keep.len(),
             "the registry must compact stale entries (len={live_count})"
         );
     }
@@ -5758,6 +5843,7 @@ mod tests {
         unsafe impl Trace for Payload {
             unsafe fn trace(&self, _visitor: &mut Visitor) {}
             fn store(&mut self, _ec: &mut dyn ExecutionContext<V8Types>) {}
+            fn make_strong(&mut self, _ec: &mut dyn ExecutionContext<V8Types>) {}
         }
         impl Drop for Payload {
             fn drop(&mut self) {

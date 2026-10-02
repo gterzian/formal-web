@@ -157,12 +157,27 @@ pub fn ignore_trace(_attr: TokenStream, item: TokenStream) -> TokenStream {
 fn v8_field_is_ignored(field: &syn::Field) -> bool {
     field.attrs.iter().any(|attr| {
         attr.path().is_ident("ignore_trace")
-            // Fields gated behind `cfg`/`cfg_attr` are engine-specific state
-            // (e.g. the boa-only wasm state) and may not exist on V8; they are
-            // not traced.
-            || attr.path().is_ident("cfg")
-            || attr.path().is_ident("cfg_attr")
+            // A `cfg_attr` that expands to `ignore_trace` must be handled like
+            // the plain attribute; other `cfg_attr`s are traced like any
+            // other field (their condition is preserved on the generated
+            // statement below).
+            || (attr.path().is_ident("cfg_attr")
+                && quote::quote!(#attr).to_string().contains("ignore_trace"))
     })
+}
+
+/// The `cfg` attributes of a struct field, copied onto its generated
+/// trace/store/make-strong statements so a conditionally-present field is only
+/// touched when it exists. A field behind `#[cfg]` that holds a handle or a
+/// `GcCell` must still be traced in the build where it exists. Enum variant
+/// fields behind `#[cfg]` are not supported (no current `#[gc_struct]` enum has
+/// one).
+fn v8_field_cfgs(field: &syn::Field) -> Vec<&syn::Attribute> {
+    field
+        .attrs
+        .iter()
+        .filter(|attr| attr.path().is_ident("cfg"))
+        .collect()
 }
 
 /// Whether the type token stream mentions the given type parameter.
@@ -225,14 +240,20 @@ fn v8_traced_field_types(fields: &syn::Fields) -> Vec<syn::Type> {
     types
 }
 
-/// Struct trace and store bodies: one statement per non-ignored field.
-/// `trace` visits the field's edges; `store` converts its rooted handles into
-/// edges when the value is stored into traced storage.
+/// Struct trace, store, and make-strong bodies: one statement per non-ignored
+/// field. `trace` visits the field's edges; `store` converts its rooted handles
+/// into edges when the value is stored into traced storage; `make_strong`
+/// roots its edges when the value leaves traced storage.
 fn v8_struct_trace_body(
     fields: &syn::Fields,
-) -> (Vec<proc_macro2::TokenStream>, Vec<proc_macro2::TokenStream>) {
+) -> (
+    Vec<proc_macro2::TokenStream>,
+    Vec<proc_macro2::TokenStream>,
+    Vec<proc_macro2::TokenStream>,
+) {
     let mut traces = Vec::new();
     let mut stores = Vec::new();
+    let mut strongs = Vec::new();
     match fields {
         syn::Fields::Named(named) => {
             for field in named.named.iter() {
@@ -240,13 +261,20 @@ fn v8_struct_trace_body(
                     continue;
                 }
                 let ident = field.ident.as_ref().expect("named field has an identifier");
+                let cfgs = v8_field_cfgs(field);
                 traces.push(quote! {
                     // SAFETY: The field's own trace implementation visits its
                     // edges; this call is generated for a non-ignored field.
+                    #(#cfgs)*
                     unsafe { ::js_engine::gc::Trace::trace(&self.#ident, visitor) };
                 });
                 stores.push(quote! {
+                    #(#cfgs)*
                     ::js_engine::gc::Trace::store(&mut self.#ident, ec);
+                });
+                strongs.push(quote! {
+                    #(#cfgs)*
+                    ::js_engine::gc::Trace::make_strong(&mut self.#ident, ec);
                 });
             }
         }
@@ -256,33 +284,42 @@ fn v8_struct_trace_body(
                     continue;
                 }
                 let index = syn::Index::from(index);
+                let cfgs = v8_field_cfgs(field);
                 traces.push(quote! {
                     // SAFETY: The field's own trace implementation visits its
                     // edges; this call is generated for a non-ignored field.
+                    #(#cfgs)*
                     unsafe { ::js_engine::gc::Trace::trace(&self.#index, visitor) };
                 });
                 stores.push(quote! {
+                    #(#cfgs)*
                     ::js_engine::gc::Trace::store(&mut self.#index, ec);
+                });
+                strongs.push(quote! {
+                    #(#cfgs)*
+                    ::js_engine::gc::Trace::make_strong(&mut self.#index, ec);
                 });
             }
         }
         syn::Fields::Unit => {}
     }
-    (traces, stores)
+    (traces, stores, strongs)
 }
 
-/// Enum trace and store bodies: one match arm per variant for each.
-/// Returns the trace arms, the store arms, and whether any traced field
-/// exists.
+/// Enum trace, store, and make-strong bodies: one match arm per variant for
+/// each. Returns the trace arms, the store arms, the make-strong arms, and
+/// whether any traced field exists.
 fn v8_enum_trace_body(
     item_enum: &syn::ItemEnum,
 ) -> (
+    Vec<proc_macro2::TokenStream>,
     Vec<proc_macro2::TokenStream>,
     Vec<proc_macro2::TokenStream>,
     bool,
 ) {
     let mut trace_arms = Vec::new();
     let mut store_arms = Vec::new();
+    let mut strong_arms = Vec::new();
     let mut has_traced_fields = false;
     for variant in &item_enum.variants {
         let variant_ident = &variant.ident;
@@ -290,6 +327,7 @@ fn v8_enum_trace_body(
             syn::Fields::Unit => {
                 trace_arms.push(quote! { Self::#variant_ident => {} });
                 store_arms.push(quote! { Self::#variant_ident => {} });
+                strong_arms.push(quote! { Self::#variant_ident => {} });
             }
             syn::Fields::Named(named) => {
                 let traced: Vec<&syn::Ident> = named
@@ -312,9 +350,15 @@ fn v8_enum_trace_body(
                         ::js_engine::gc::Trace::store(#ident, ec);
                     }
                 });
+                let strongs = traced.iter().map(|ident| {
+                    quote! {
+                        ::js_engine::gc::Trace::make_strong(#ident, ec);
+                    }
+                });
                 if traced.is_empty() {
                     trace_arms.push(quote! { Self::#variant_ident { .. } => {} });
                     store_arms.push(quote! { Self::#variant_ident { .. } => {} });
+                    strong_arms.push(quote! { Self::#variant_ident { .. } => {} });
                 } else {
                     trace_arms.push(quote! {
                         Self::#variant_ident { #(#traced),* , .. } => {
@@ -326,12 +370,18 @@ fn v8_enum_trace_body(
                             #(#stores)*
                         }
                     });
+                    strong_arms.push(quote! {
+                        Self::#variant_ident { #(#traced),* , .. } => {
+                            #(#strongs)*
+                        }
+                    });
                 }
             }
             syn::Fields::Unnamed(unnamed) => {
                 let mut bindings = Vec::new();
                 let mut traces = Vec::new();
                 let mut stores = Vec::new();
+                let mut strongs = Vec::new();
                 for (index, field) in unnamed.unnamed.iter().enumerate() {
                     if v8_field_is_ignored(field) {
                         bindings.push(quote! { _ });
@@ -351,6 +401,9 @@ fn v8_enum_trace_body(
                         stores.push(quote! {
                             ::js_engine::gc::Trace::store(#binding, ec);
                         });
+                        strongs.push(quote! {
+                            ::js_engine::gc::Trace::make_strong(#binding, ec);
+                        });
                     }
                 }
                 trace_arms.push(quote! {
@@ -363,10 +416,15 @@ fn v8_enum_trace_body(
                         #(#stores)*
                     }
                 });
+                strong_arms.push(quote! {
+                    Self::#variant_ident(#(#bindings),*) => {
+                        #(#strongs)*
+                    }
+                });
             }
         }
     }
-    (trace_arms, store_arms, has_traced_fields)
+    (trace_arms, store_arms, strong_arms, has_traced_fields)
 }
 
 /// V8 backend: `#[gc_struct]` types implement cppgc `Traced` (field-walking
@@ -377,7 +435,8 @@ pub fn gc_struct_v8(_attr: TokenStream, item: TokenStream) -> TokenStream {
     let mut input = parse_macro_input!(item as Item);
     match &mut input {
         Item::Struct(item_struct) => {
-            let (trace_statements, store_statements) = v8_struct_trace_body(&item_struct.fields);
+            let (trace_statements, store_statements, strong_statements) =
+                v8_struct_trace_body(&item_struct.fields);
             let traced_field_types = v8_traced_field_types(&item_struct.fields);
             strip_ignore_trace(&mut item_struct.fields);
             let attrs = &item_struct.attrs;
@@ -409,6 +468,10 @@ pub fn gc_struct_v8(_attr: TokenStream, item: TokenStream) -> TokenStream {
                     fn store(&mut self, ec: &mut dyn ::js_engine::ExecutionContext<::js_engine::v8::V8Types>) {
                         #(#store_statements)*
                     }
+
+                    fn make_strong(&mut self, ec: &mut dyn ::js_engine::ExecutionContext<::js_engine::v8::V8Types>) {
+                        #(#strong_statements)*
+                    }
                 }
 
                 unsafe impl #impl_generics ::js_engine::v8_gc::GarbageCollected for #ident #ty_generics #where_clause {
@@ -425,7 +488,7 @@ pub fn gc_struct_v8(_attr: TokenStream, item: TokenStream) -> TokenStream {
             expanded.into()
         }
         Item::Enum(item_enum) => {
-            let (trace_arms, store_arms, _) = v8_enum_trace_body(item_enum);
+            let (trace_arms, store_arms, strong_arms, _) = v8_enum_trace_body(item_enum);
             let mut traced_field_types = Vec::new();
             for variant in &item_enum.variants {
                 traced_field_types.extend(v8_traced_field_types(&variant.fields));
@@ -465,6 +528,12 @@ pub fn gc_struct_v8(_attr: TokenStream, item: TokenStream) -> TokenStream {
                     fn store(&mut self, ec: &mut dyn ::js_engine::ExecutionContext<::js_engine::v8::V8Types>) {
                         match self {
                             #(#store_arms)*
+                        }
+                    }
+
+                    fn make_strong(&mut self, ec: &mut dyn ::js_engine::ExecutionContext<::js_engine::v8::V8Types>) {
+                        match self {
+                            #(#strong_arms)*
                         }
                     }
                 }

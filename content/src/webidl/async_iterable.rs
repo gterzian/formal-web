@@ -239,6 +239,12 @@ unsafe impl<T: AsyncValueIterable + 'static> js_engine::gc::Trace for DefaultAsy
         self.state.store(ec);
         self.ongoing_promise.store(ec);
     }
+
+    fn make_strong(&mut self, ec: &mut dyn js_engine::ExecutionContext<crate::js::Types>) {
+        self.target.make_strong(ec);
+        self.state.make_strong(ec);
+        self.ongoing_promise.make_strong(ec);
+    }
 }
 #[cfg(feature = "v8")]
 impl<T: AsyncValueIterable + 'static> js_engine::gc::Finalize for DefaultAsyncIterator<T> {}
@@ -267,8 +273,9 @@ where
         // Note: Extract the clone before the if-let to avoid holding
         // the GcCell borrow guard across the entire block, which would
         // prevent a subsequent borrow_mut() (the temporary in `if let`
-        // lives until the end of the block in Rust).
-        let ongoing = self.ongoing_promise.borrow(ec).clone();
+        // lives until the end of the block in Rust). `get` roots the copy's
+        // edges so it stays valid across the engine calls below.
+        let ongoing = self.ongoing_promise.get(ec);
         if let Some(previous) = ongoing {
             // Step 10: "If ongoingPromise is not null, then:"
             // Step 10.1: "Let afterOngoingPromiseCapability be ! NewPromiseCapability(%Promise%)."
