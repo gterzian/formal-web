@@ -15,9 +15,11 @@ fields, and JS edges are collected in one pass.
   where it exists.
 - `GcCell<T>` is a two-mode reference to a `HeapCell<T>`: a cppgc
   `Member<HeapCell<T>>` edge while the cell is stored in traced storage, and a
-  cppgc `Persistent<HeapCell<T>>` root once it leaves (a clone held in
-  Rust-owned memory). `Clone` always produces the rooted mode, so a cell
-  captured in a queued job or plain struct keeps the `HeapCell` and its JS
+  cppgc `Persistent<HeapCell<T>>` root while it has no traced owner — a fresh
+  cell and a clone held in Rust-owned memory. `gc_cell_new` constructs the
+  rooted mode so a collection running between creation and storage cannot
+  sweep the cell, and `Clone` likewise always produces the rooted mode, so a
+  cell captured in a queued job or plain struct keeps the `HeapCell` and its JS
   contents alive until the clone drops; `Trace::store` converts it back to an
   edge when it re-enters traced storage. The `HeapCell` is a heap object whose
   `trace` delegates to `T`'s edges. Cells are traced from their owning platform
@@ -34,8 +36,12 @@ fields, and JS edges are collected in one pass.
   plain field cleared after being read) stays valid across engine calls.
   `Trace::store` converts only handles that are
   still `Root`, so storing an already-converted container does not open a V8
-  value scope per element. A `debug_assert` in the `Trace` impls rejects a
-  `Root` handle or a rooted `GcCell` reached by marking as a store-invariant
+  value scope per element. A `V8Object` holds two independently created edges
+  (its value handle and its typed object handle) and a typed wrapper holds its
+  object's edges plus its own; `Trace` visits every one, because an edge
+  skipped by the marker has its `TracedReference` storage cell reclaimed and a
+  later read is a use-after-free. A `debug_assert` in the `Trace` impls rejects
+  a `Root` handle or a rooted `GcCell` reached by marking as a store-invariant
   violation; release builds count both and `V8Engine::gc` logs the counts (the
   invariant is not compiled out under `--release`).
 - Platform objects are allocated on the cppgc heap (`V8PlatformData`, a
@@ -163,6 +169,28 @@ Last recorded: `executed=272 unexpected=0`.
    current tests catch.
 6. **`is_constructor` has no exact check.** See the IsConstructor gap under
    "ArrayBuffer / IsConstructor gaps".
+7. **An `Edge` clone that leaves traced storage is not rooted.**
+   `V8Handle::clone` on an `Edge` shares the `Rc<TracedReference>`; a clone
+   obtained with `cell.borrow(ec).clone()` and then removed from its cell
+   (or whose owning platform is collected) is not visited by any marker, so
+   its `TracedReference` storage cell is reclaimed and a later read is a
+   use-after-free or, if the node is reused, reads a different object. The
+   sanctioned `GcCell::get`/`take`/`pop*` root the copy with
+   `Trace::make_strong` first; `Clone` cannot, because it has no V8 scope.
+   Closing this needs V8's mark epoch (a GC prologue callback bumping a
+   counter, stamped on every traced edge and checked before `to_local`) or a
+   rooted `Clone`; neither is implemented.
+8. **`create_realm` retains every realm state.**
+   `V8Engine::created_realm_states` holds a strong `Rc<V8RealmState>` per
+   `create_realm` call so the realm state outlives the returned handle. Only
+   the generic engine tests call `create_realm`, but nothing removes the
+   entries, so each call leaks the realm's intrinsics and host-data holder
+   for the engine's lifetime.
+9. **SharedArrayBuffer bytes are read through `Cell<u8>`.**
+   `array_buffer_data`/`clone_array_buffer` iterate the cached backing store
+   as `&[Cell<u8>]`. When another agent on the `thread-backend` feature
+   writes the same SharedArrayBuffer, the read races with that write; there
+   is no `is_shared` check or atomic access.
 
 ### ArrayBuffer / IsConstructor gaps
 

@@ -33,7 +33,12 @@ use crate::v8_gc::{Traced, Visitor};
 /// the `v8::Object::wrap` link, so the unified heap collects wrapper/platform
 /// pairs (and cycles through their cells) together.
 pub struct V8PlatformData {
-    data: Box<dyn Any>,
+    // Interior mutability: the domain data is mutated through
+    // `with_object_any_mut`, whose only pointer is derived from a shared
+    // reference to the platform object (rusty_v8 hands out `*const` from the
+    // cppgc object). Routing the write through `UnsafeCell::get` keeps the
+    // write from going through a `*mut` derived from `&`.
+    data: UnsafeCell<Box<dyn Any>>,
     trace_fn: unsafe fn(&dyn Any, &mut cppgc::Visitor),
 }
 
@@ -41,7 +46,7 @@ impl V8PlatformData {
     /// Wrap traceable domain data (a `#[gc_struct]` platform object).
     pub fn new<T: Any + Trace>(data: T) -> Self {
         Self {
-            data: Box::new(data),
+            data: UnsafeCell::new(Box::new(data)),
             trace_fn: |data, visitor| {
                 // SAFETY: The box holds exactly the `T` this closure was
                 // created for; the trace implementation visits its edges.
@@ -59,7 +64,7 @@ impl V8PlatformData {
     /// Wrap non-traceable data (prototypes, namespace objects) with no edges.
     pub fn noop(data: Box<dyn Any>) -> Self {
         Self {
-            data,
+            data: UnsafeCell::new(data),
             trace_fn: |_data, _visitor| {},
         }
     }
@@ -70,11 +75,22 @@ impl V8PlatformData {
     }
 
     pub fn as_any(&self) -> &dyn Any {
-        &*self.data
+        // SAFETY: shared access is unique while the caller holds no mutable
+        // borrow; marks are stop-the-world on the isolate thread.
+        unsafe { &**self.data.get() }
     }
 
-    pub fn as_any_mut(&mut self) -> &mut dyn Any {
-        &mut *self.data
+    /// Raw pointer to the boxed value, for mutation through the cell.
+    ///
+    /// # Safety
+    ///
+    /// The caller must hold the exclusive platform-data access path for the
+    /// borrow derived from the returned pointer (the engine's
+    /// `with_object_any_mut` uses its `&mut self` receiver as that proof).
+    /// The write goes through `UnsafeCell`, so no `*mut` is derived from a
+    /// shared reference.
+    pub(crate) fn data_mut_ptr(&self) -> *mut Box<dyn Any> {
+        self.data.get()
     }
 }
 
@@ -85,7 +101,7 @@ unsafe impl GarbageCollected for V8PlatformData {
     fn trace(&self, visitor: &mut cppgc::Visitor) {
         // SAFETY: The trace runs during stop-the-world marking on the isolate
         // thread; no Rust code mutates the platform data concurrently.
-        unsafe { (self.trace_fn)(&*self.data, visitor) }
+        unsafe { (self.trace_fn)(&**self.data.get(), visitor) }
     }
 
     fn get_name(&self) -> &'static std::ffi::CStr {
@@ -193,15 +209,21 @@ impl<T: Trace + 'static> Clone for V8GcCell<T> {
 
 impl<T: Trace + 'static> V8GcCell<T> {
     /// Allocate a new cell on the engine's isolate cppgc heap.
+    ///
+    /// The cell starts in the rooted (`Persistent`) mode: a freshly created
+    /// cell has no traced owner yet, so an edge would be swept by the first
+    /// collection before `Trace::store` moves it into traced storage. The
+    /// `Persistent` keeps it alive until then; `store_as_member` converts it
+    /// to an edge when it enters a traced owner.
     pub(crate) fn new(value: T, engine: &V8Engine) -> Self {
         let heap_cell = HeapCell::new(value);
         let pointer = engine.with_cpp_heap(|heap| {
             // SAFETY: `make_garbage_collected` returns an `UnsafePtr` which is
-            // immediately moved into the `Member` edge below — the required
+            // immediately moved into the `Persistent` root below — a valid
             // destination for a stack-created pointer.
             unsafe { v8::cppgc::make_garbage_collected(heap, heap_cell) }
         });
-        Self(CellLink::Member(Member::new(&pointer)))
+        Self(CellLink::Strong(Persistent::new(&pointer)))
     }
 
     /// The heap cell this reference points at.
@@ -356,7 +378,12 @@ impl<T> Drop for V8GcRef<'_, T> {
         // SAFETY: `cell` points into the same heap cell that supplied `value`;
         // it is kept alive by the edge for the guard's lifetime.
         unsafe {
-            (*self.cell).readers.set((*self.cell).readers.get() - 1);
+            let readers = (*self.cell).readers.get();
+            (*self.cell).readers.set(
+                readers
+                    .checked_sub(1)
+                    .expect("GcCell reader count underflow"),
+            );
         }
     }
 }
@@ -392,18 +419,19 @@ impl<T: Trace + 'static> DerefMut for V8GcRefMut<'_, T> {
 
 impl<T: Trace + 'static> Drop for V8GcRefMut<'_, T> {
     fn drop(&mut self) {
-        // Clear the writer flag before storing: `store` materializes V8
-        // locals (allocating a `TracedReference` through the engine's value
-        // scope), and a mark must not observe a live mutable borrow.
-        // SAFETY: Same liveness argument as `V8GcRef::drop`.
-        unsafe {
-            (*self.cell).writer.set(false);
-        }
+        // Keep the writer flag set through `store`: the marker derives `&T`
+        // from the cell when tracing it, and clearing the flag first would
+        // let a mark that runs during `store` alias the live `&mut T`. The
+        // flag is cleared only after the store finishes. `store` walks the
+        // cell's contents and never re-borrows this cell, so this cannot
+        // introduce a self-conflict; if a mark does run, `HeapCell::trace`
+        // aborts rather than aliasing the mutable borrow.
         // SAFETY: The heap cell is kept alive by the originating edge for the
-        // guard's lifetime, the writer flag is cleared, and `&mut *value` is
-        // the only live reference into the cell.
+        // guard's lifetime, and `&mut *value` is the only live reference into
+        // the cell.
         unsafe {
             Trace::store(&mut *self.value, self.ec);
+            (*self.cell).writer.set(false);
         }
     }
 }

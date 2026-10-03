@@ -189,14 +189,17 @@ struct SharedIsolate {
     /// instead of walking the registry on every native-function creation once
     /// the threshold is reached.
     next_compaction_len: Cell<usize>,
-    isolate: RefCell<v8::OwnedIsolate>,
-    microtask_queue: v8::UniqueRef<v8::MicrotaskQueue>,
     /// Shared security token installed on every context created in this
     /// isolate.  V8 gates cross-context access to another context's global
     /// object on security-token equality; each `Context::new` otherwise gets
     /// its own token, so same-origin same-process window access (the
     /// WindowProxy same-origin path) would throw `TypeError: no access`.
     security_token: RefCell<Option<v8::Global<v8::Value>>>,
+    /// Declared before `isolate` so it drops first: the microtask queue is
+    /// owned by, and unlinks from a list inside, the isolate, so it must not
+    /// outlive it.
+    microtask_queue: v8::UniqueRef<v8::MicrotaskQueue>,
+    isolate: RefCell<v8::OwnedIsolate>,
 }
 
 impl SharedIsolate {
@@ -3947,9 +3950,13 @@ impl ExecutionContext<V8Types> for V8Engine {
         // `with_object_any`. The `&mut self` receiver makes this the
         // exclusive host-data access path for the duration of the returned
         // borrow; marking is atomic, so no concurrent marker reads the
-        // platform data while it is mutated.
-        let platform = unsafe { &mut *(address as *mut V8PlatformData) };
-        Some(platform.as_any_mut())
+        // platform data while it is mutated. The value is reached through a
+        // shared reference and mutated through its `UnsafeCell`, so no
+        // `*mut` is derived from a shared reference.
+        let platform = unsafe { &*(address as *const V8PlatformData) };
+        // SAFETY: The `&mut self` receiver is the exclusivity proof documented
+        // on `V8PlatformData::data_mut_ptr`.
+        Some(unsafe { &mut **platform.data_mut_ptr() })
     }
 
     fn store_js_object(&mut self, slot: &mut Option<V8Object>, value: V8Object) {
@@ -5321,18 +5328,20 @@ mod tests {
         drop(x);
 
         // A platform object owns the cell so it is traced while the platform
-        // lives (the production pattern for stream controller state).
+        // lives (the production pattern for stream controller state). The
+        // freshly created cell is rooted until `store` converts it to an edge
+        // inside the platform.
         let platform_dropped = Rc::new(Cell::new(false));
+        let mut platform = TestPlatform {
+            dropped: DropFlag(Rc::clone(&platform_dropped)),
+            reflector: None,
+            peer: None,
+            cell: Some(cell),
+        };
+        Trace::store(&mut platform, &mut engine);
         let prototype = engine.create_plain_object(None);
-        let owner = engine.create_object_with_any(
-            prototype,
-            Box::new(V8PlatformData::new(TestPlatform {
-                dropped: DropFlag(Rc::clone(&platform_dropped)),
-                reflector: None,
-                peer: None,
-                cell: Some(cell),
-            })),
-        );
+        let owner =
+            engine.create_object_with_any(prototype, Box::new(V8PlatformData::new(platform)));
         assert!(
             engine
                 .with_object_any(&owner)
@@ -5379,10 +5388,13 @@ mod tests {
             !x_collected.get(),
             "the rooted clone must keep the cell's JS contents alive"
         );
-        assert!(
-            clone.borrow(&engine).is_some(),
-            "the cell must still hold the payload"
-        );
+        let held = clone
+            .get(&mut engine)
+            .expect("the cell must still hold the payload");
+        let marker = EcmascriptHost::get(&mut engine, &held, "marker")
+            .expect("the payload must still have its marker");
+        assert_eq!(engine.to_rust_string(marker).expect("string"), "payload");
+        drop(held);
 
         // Dropping the clone unroots the cell, so the next collection reclaims
         // it and its JS contents.
@@ -5915,15 +5927,80 @@ mod tests {
             !payload_collected.get(),
             "the payload referenced only through the associated platform cell must survive gc"
         );
-        assert!(
-            engine
-                .with_object_any(&global)
-                .and_then(|data| data.downcast_ref::<TestPlatform>())
-                .and_then(|platform| platform.cell.as_ref())
-                .is_some(),
-            "the associated platform cell must survive gc"
-        );
+        let cell = engine
+            .with_object_any(&global)
+            .and_then(|data| data.downcast_ref::<TestPlatform>())
+            .and_then(|platform| platform.cell.as_ref())
+            .expect("the associated platform cell must survive gc")
+            .clone();
+        let held = cell
+            .get(&mut engine)
+            .expect("the associated platform cell must still hold the payload");
+        let marker = EcmascriptHost::get(&mut engine, &held, "marker")
+            .expect("the payload must still have its marker");
+        assert_eq!(engine.to_rust_string(marker).expect("string"), "payload");
         drop(payload_weak);
+    }
+
+    /// A JS object stored as a cppgc edge (`V8Object`, two traced handles)
+    /// must still be readable after a forced full collection: a handle the
+    /// trace implementation skipped would have its storage cell reclaimed and
+    /// reading it afterwards is a use-after-free.
+    #[test]
+    fn traced_object_handle_survives_forced_gc() {
+        struct Holder {
+            object: Option<V8Object>,
+        }
+        unsafe impl crate::v8_gc::GarbageCollected for Holder {
+            fn trace(&self, visitor: &mut Visitor) {
+                if let Some(object) = &self.object {
+                    // SAFETY: delegated to the field's trace.
+                    unsafe { Trace::trace(object, visitor) }
+                }
+            }
+            fn get_name(&self) -> &'static std::ffi::CStr {
+                c"Holder"
+            }
+        }
+
+        let mut engine = V8Engine::new();
+        let x = ExecutionContext::evaluate_script(&mut engine, "({ marker: 42 })")
+            .expect("the payload object must evaluate");
+        let mut x_object = V8Types::value_as_object(&x).expect("the payload must be an object");
+        crate::gc::Trace::store(&mut x_object, &mut engine);
+        drop(x);
+
+        let isolate_id = engine.isolate_id;
+        let persistent =
+            v8_engine_scope_with_context!(scope, engine, &engine.realm_state.realm.context, {
+                let isolate = &mut ****scope;
+                let heap = isolate.get_cpp_heap().expect("cpp heap");
+                let pointer = unsafe {
+                    v8::cppgc::make_garbage_collected(
+                        heap,
+                        Holder {
+                            object: Some(x_object),
+                        },
+                    )
+                };
+                v8::cppgc::Persistent::new(&pointer)
+            });
+
+        engine.gc();
+
+        let marker =
+            v8_engine_scope_with_context!(scope, engine, &engine.realm_state.realm.context, {
+                let holder = persistent.get().expect("holder alive");
+                let object = holder.object.as_ref().expect("object alive");
+                let local = local_object(scope, isolate_id, object).expect("local");
+                let key = v8::String::new(scope, "marker").expect("key");
+                let value = local.get(scope, key.into()).expect("marker");
+                v8::Local::<v8::Number>::try_from(value)
+                    .expect("number")
+                    .value()
+            });
+        assert_eq!(marker, 42.0);
+        drop(persistent);
     }
 
     #[test]

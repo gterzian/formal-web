@@ -795,6 +795,25 @@ mod tests {
         assert_eq!(read_marker(&mut engine, &rooted), 32.0);
     }
 
+    /// A `GcCell` must keep its contents alive from construction until it is
+    /// stored: a freshly created cell has no traced owner yet, so an edge
+    /// would be swept by a collection that runs before the cell enters traced
+    /// storage. The test creates the cell, collects before storing it, and
+    /// reads its contents afterwards.
+    #[test]
+    fn gc_cell_new_roots_cell_before_it_is_stored() {
+        let mut engine = setup();
+        let object = object_with_marker(&mut engine, 51.0);
+        let cell = gc_cell_new(Some(object), &mut engine);
+
+        engine.gc();
+
+        let held = cell
+            .get(&mut engine)
+            .expect("the cell still holds the object");
+        assert_eq!(read_marker(&mut engine, &held), 51.0);
+    }
+
     #[test]
     fn multi_downcast_button_seen_as_button_and_widget() {
         let mut engine = setup();

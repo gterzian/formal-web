@@ -199,6 +199,13 @@ unsafe impl Trace for V8Object {
         debug_assert_stored(&self.1);
         // SAFETY: Delegated to the inner value's trace.
         unsafe { self.0.trace(visitor) }
+        // The typed object handle is a distinct edge from the value's own
+        // handles (each `store` creates its own `TracedReference`), so it
+        // must be visited too or its node is reclaimed while the wrapper
+        // still uses it.
+        if let V8Handle::Edge(edge) = &self.1 {
+            visitor.trace(&**edge);
+        }
     }
 
     fn store(&mut self, ec: &mut dyn ExecutionContext<V8Types>) {
