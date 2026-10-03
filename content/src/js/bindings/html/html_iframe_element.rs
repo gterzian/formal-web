@@ -153,6 +153,21 @@ fn try_with_html_iframe_element_ref<R>(
     Err(ec.new_type_error("receiver is not an HTMLIFrameElement"))
 }
 
+/// Clone the platform object out of its JS wrapper so an operation can hold
+/// the reference while borrowing the execution context mutably. The clone
+/// shares the `GcCell` handler slots with the registered platform object, so
+/// mutations through the clone are visible through the wrapper.
+fn clone_html_iframe_element(
+    this: &JsValue,
+    ec: &mut dyn ExecutionContext<Types>,
+) -> Completion<HTMLIFrameElement, Types> {
+    let obj = <Types as JsTypes>::value_as_object(this)
+        .ok_or_else(|| ec.new_type_error("HTMLIFrameElement receiver is not an object"))?;
+    ec.with_object_any(&obj)
+        .and_then(|data| data.downcast_ref::<HTMLIFrameElement>().cloned())
+        .ok_or_else(|| ec.new_type_error("receiver is not an HTMLIFrameElement"))
+}
+
 fn get_src(
     this: &JsValue,
     _: &[JsValue],
@@ -167,7 +182,8 @@ fn get_onload(
     _: &[JsValue],
     ec: &mut dyn ExecutionContext<Types>,
 ) -> Completion<JsValue, Types> {
-    let onload = try_with_html_iframe_element_ref(this, ec, |iframe| iframe.onload_value())?;
+    let iframe = clone_html_iframe_element(this, ec)?;
+    let onload = iframe.onload_value(ec);
     Ok(onload
         .map(|callback| callback.to_js_value())
         .unwrap_or_else(|| ec.value_null()))
@@ -178,21 +194,14 @@ fn set_onload(
     args: &[JsValue],
     ec: &mut dyn ExecutionContext<Types>,
 ) -> Completion<JsValue, Types> {
-    let iframe_object = <Types as JsTypes>::value_as_object(this)
-        .ok_or_else(|| ec.new_type_error("HTMLIFrameElement receiver is not an object"))?;
     let callback = nullable_value(
         args.get(0).unwrap_or(&ec.value_undefined()),
         ec,
         callback_function_value,
     )?;
 
-    let previous = match ec
-        .with_object_any_mut(&iframe_object)
-        .and_then(|data| data.downcast_mut::<HTMLIFrameElement>())
-    {
-        Some(iframe) => iframe.replace_onload(callback.clone()),
-        None => return Err(ec.new_type_error("receiver is not an HTMLIFrameElement")),
-    };
+    let iframe = clone_html_iframe_element(this, ec)?;
+    let previous = iframe.replace_onload(callback.clone(), ec);
 
     if let Some(previous) = previous {
         try_with_event_target_mut(this, ec, |target, ec| {
@@ -223,7 +232,8 @@ fn get_onerror(
     _: &[JsValue],
     ec: &mut dyn ExecutionContext<Types>,
 ) -> Completion<JsValue, Types> {
-    let onerror = try_with_html_iframe_element_ref(this, ec, |iframe| iframe.onerror_value())?;
+    let iframe = clone_html_iframe_element(this, ec)?;
+    let onerror = iframe.onerror_value(ec);
     Ok(onerror
         .map(|callback| callback.to_js_value())
         .unwrap_or_else(|| ec.value_null()))
@@ -234,21 +244,14 @@ fn set_onerror(
     args: &[JsValue],
     ec: &mut dyn ExecutionContext<Types>,
 ) -> Completion<JsValue, Types> {
-    let iframe_object = <Types as JsTypes>::value_as_object(this)
-        .ok_or_else(|| ec.new_type_error("HTMLIFrameElement receiver is not an object"))?;
     let callback = nullable_value(
         args.get(0).unwrap_or(&ec.value_undefined()),
         ec,
         callback_function_value,
     )?;
 
-    let previous = match ec
-        .with_object_any_mut(&iframe_object)
-        .and_then(|data| data.downcast_mut::<HTMLIFrameElement>())
-    {
-        Some(iframe) => iframe.replace_onerror(callback.clone()),
-        None => return Err(ec.new_type_error("receiver is not an HTMLIFrameElement")),
-    };
+    let iframe = clone_html_iframe_element(this, ec)?;
+    let previous = iframe.replace_onerror(callback.clone(), ec);
 
     if let Some(previous) = previous {
         try_with_event_target_mut(this, ec, |target, ec| {

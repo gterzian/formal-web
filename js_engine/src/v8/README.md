@@ -69,6 +69,14 @@ function is captured by one of its own native callbacks (once the Rust realm
 handle is dropped) in a single pass; platform data is finalized at isolate
 destruction.
 
+Unsafe blocks follow the repo-wide discipline in `AGENTS.md` ("Unsafe-code
+discipline"). The backend-specific checks are the `GcCell` borrow counters on
+the guard deref/drop paths, strict LIFO drop order for the thread-local engine
+and callback-scope guards, isolate identity on engine entry and
+`with_object_any`, and the non-shared backing store before `array_buffer_data`
+iterates it as `Cell<u8>`. Checks that run inside V8's C++ callbacks (the
+cppgc `trace` functions) use `fatal_invariant!` instead of a panic.
+
 ## Native callback records and realm teardown
 
 `make_builtin_function` records live in the shared-isolate callback registry
@@ -186,11 +194,14 @@ Last recorded: `executed=272 unexpected=0`.
    the generic engine tests call `create_realm`, but nothing removes the
    entries, so each call leaks the realm's intrinsics and host-data holder
    for the engine's lifetime.
-9. **SharedArrayBuffer bytes are read through `Cell<u8>`.**
-   `array_buffer_data`/`clone_array_buffer` iterate the cached backing store
-   as `&[Cell<u8>]`. When another agent on the `thread-backend` feature
-   writes the same SharedArrayBuffer, the read races with that write; there
-   is no `is_shared` check or atomic access.
+9. **Traced-capture payload is reached through a raw pointer.**
+   `create_builtin_fn_with_captures` caches a `*const C` into the capture
+   holder and dereferences it from the callback closure. The holder is alive
+   exactly while the function is callable (the closure cannot run after the
+   function dies), so the pointer is sound, but nothing re-validates it at
+   call time. Resolving the payload from the function's holder instead would
+   remove the raw pointer; the `native_callback` record is read from its
+   owning slot rather than a cached pointer.
 
 ### ArrayBuffer / IsConstructor gaps
 

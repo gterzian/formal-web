@@ -18,11 +18,11 @@ use std::cell::{Cell, UnsafeCell};
 use std::marker::PhantomData;
 use std::ops::{Deref, DerefMut};
 
-use log::error;
 use rusty_v8 as v8;
 use v8::cppgc::{self, GarbageCollected, Member, Persistent};
 
 use crate::ExecutionContext;
+use crate::fatal_invariant;
 use crate::gc::Trace;
 use crate::v8::{V8Engine, V8Types};
 use crate::v8_gc::{Traced, Visitor};
@@ -48,15 +48,16 @@ impl V8PlatformData {
         Self {
             data: UnsafeCell::new(Box::new(data)),
             trace_fn: |data, visitor| {
-                // SAFETY: The box holds exactly the `T` this closure was
-                // created for; the trace implementation visits its edges.
-                unsafe {
-                    <T as Trace>::trace(
-                        data.downcast_ref::<T>()
-                            .expect("platform data type mismatch"),
-                        visitor,
-                    )
-                }
+                // The box holds exactly the `T` this closure was created for.
+                // A mismatch would mean the trace function outlived or was
+                // paired with the wrong allocation; the marker runs inside
+                // V8's C++ visitor, so this aborts instead of unwinding.
+                let Some(data) = data.downcast_ref::<T>() else {
+                    fatal_invariant!("V8 platform data type mismatch during cppgc tracing");
+                };
+                // SAFETY: The trace implementation visits the platform's
+                // edges exactly once during stop-the-world marking.
+                unsafe { <T as Trace>::trace(data, visitor) }
             },
         }
     }
@@ -163,8 +164,7 @@ unsafe impl<T: Trace + 'static> GarbageCollected for HeapCell<T> {
         // crash rather than silent undefined behavior. Shared borrows are
         // legal aliasing and do not trip this check.
         if let Err(message) = self.trace_conflict() {
-            error!("{message}; aborting to avoid aliasing undefined behavior");
-            std::process::abort();
+            fatal_invariant!("{message}; aborting to avoid aliasing undefined behavior");
         }
         // SAFETY: The trace runs during stop-the-world marking on the isolate
         // thread and the borrow counter proves no mutable borrow is live; no
@@ -366,6 +366,13 @@ impl<T> Deref for V8GcRef<'_, T> {
     type Target = T;
 
     fn deref(&self) -> &T {
+        // The cell may not be mutably borrowed while a shared guard holds it;
+        // a live writer flag here means a `borrow_mut` guard was leaked or the
+        // guard was constructed outside `V8GcCell::borrow`.
+        assert!(
+            !unsafe { (*self.cell).writer.get() },
+            "V8GcRef dereferenced while the cell is mutably borrowed"
+        );
         // SAFETY: The edge held by the originating `V8GcCell` keeps the heap
         // cell alive for the lifetime of this guard (`'a`), and the borrow
         // counter guarantees no mutable borrow is active.
@@ -403,6 +410,10 @@ impl<T: Trace + 'static> Deref for V8GcRefMut<'_, T> {
     type Target = T;
 
     fn deref(&self) -> &T {
+        assert!(
+            unsafe { (*self.cell).writer.get() },
+            "V8GcRefMut used after its mutable borrow ended"
+        );
         // SAFETY: See `V8GcRef::deref`; the borrow counter guarantees this is
         // the only active borrow.
         unsafe { &*self.value }
@@ -411,6 +422,10 @@ impl<T: Trace + 'static> Deref for V8GcRefMut<'_, T> {
 
 impl<T: Trace + 'static> DerefMut for V8GcRefMut<'_, T> {
     fn deref_mut(&mut self) -> &mut T {
+        assert!(
+            unsafe { (*self.cell).writer.get() },
+            "V8GcRefMut used after its mutable borrow ended"
+        );
         // SAFETY: The guard is the only mutable borrow (checked at creation);
         // no other accessor holds a reference into this cell.
         unsafe { &mut *self.value }
@@ -430,6 +445,10 @@ impl<T: Trace + 'static> Drop for V8GcRefMut<'_, T> {
         // guard's lifetime, and `&mut *value` is the only live reference into
         // the cell.
         unsafe {
+            assert!(
+                (*self.cell).writer.get(),
+                "V8GcRefMut dropped without an active writer flag"
+            );
             Trace::store(&mut *self.value, self.ec);
             (*self.cell).writer.set(false);
         }

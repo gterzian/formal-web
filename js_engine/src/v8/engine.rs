@@ -390,11 +390,14 @@ impl V8Engine {
 
 struct CurrentEngineGuard {
     previous: *mut V8Engine,
+    installed: *mut V8Engine,
 }
 
 struct CurrentCallbackScopeGuard {
     previous_scope: *mut StoredCallbackScope,
     previous_isolate_id: u64,
+    installed_scope: *mut StoredCallbackScope,
+    installed_isolate_id: u64,
 }
 
 impl CurrentCallbackScopeGuard {
@@ -405,12 +408,29 @@ impl CurrentCallbackScopeGuard {
         Self {
             previous_scope,
             previous_isolate_id,
+            installed_scope: scope_pointer,
+            installed_isolate_id: isolate_id,
         }
     }
 }
 
 impl Drop for CurrentCallbackScopeGuard {
     fn drop(&mut self) {
+        // Guards are strictly nested (each `enter` is matched by a drop in the
+        // same call frame), so this guard must be the top of both stacks. A
+        // mismatch means a guard was leaked or dropped out of order, and the
+        // thread-local pointers the macros reborrow would no longer describe
+        // the active scope.
+        assert_eq!(
+            CURRENT_CALLBACK_SCOPE.get(),
+            self.installed_scope,
+            "callback scope guards dropped out of order"
+        );
+        assert_eq!(
+            CURRENT_CALLBACK_ISOLATE_ID.get(),
+            self.installed_isolate_id,
+            "callback scope isolate id changed under its guard"
+        );
         CURRENT_CALLBACK_SCOPE.set(self.previous_scope);
         CURRENT_CALLBACK_ISOLATE_ID.set(self.previous_isolate_id);
     }
@@ -420,12 +440,20 @@ impl CurrentEngineGuard {
     fn enter(engine: &mut V8Engine) -> Self {
         let engine_pointer = engine as *mut V8Engine;
         let previous = CURRENT_ENGINE.replace(engine_pointer);
-        Self { previous }
+        Self {
+            previous,
+            installed: engine_pointer,
+        }
     }
 }
 
 impl Drop for CurrentEngineGuard {
     fn drop(&mut self) {
+        assert_eq!(
+            CURRENT_ENGINE.get(),
+            self.installed,
+            "engine guards dropped out of order"
+        );
         CURRENT_ENGINE.set(self.previous);
     }
 }
@@ -794,8 +822,10 @@ fn native_callback(
         scope.throw_exception(exception);
         return;
     };
-    let record_pointer = external.value().cast::<CallbackRecord>();
-    if record_pointer.is_null() {
+    let slot_pointer = external
+        .value()
+        .cast::<RefCell<Option<Box<CallbackRecord>>>>();
+    if slot_pointer.is_null() {
         let message = v8::String::new(scope, "invalid native callback record")
             .expect("static V8 callback error allocation failed");
         let exception = v8::Exception::error(scope, message);
@@ -812,56 +842,70 @@ fn native_callback(
         return;
     }
 
-    // SAFETY: Callback records are created by `make_builtin_function` and
-    // released once the function dies (by the guaranteed weak finalizer, by
-    // the registry compaction, or at isolate teardown); V8 invokes this
-    // callback only while the function is strongly reachable, so the record
-    // is still in its slot. CURRENT_ENGINE is installed around every
-    // operation that can execute JavaScript and is restricted to the isolate
-    // thread. The isolate id check below prevents a record from being used
-    // by another isolate. `catch_unwind` prevents Rust unwinding from
-    // crossing V8's callback boundary.
+    // SAFETY: `slot_pointer` points at the shared slot created by
+    // `make_builtin_function`; the registry entry and the guaranteed weak
+    // finalizer keep that `Rc` allocation alive for as long as V8 can invoke
+    // this function, so reborrowing the slot is valid and a taken slot is
+    // reported as a JS error instead of dereferencing the freed record.
+    // CURRENT_ENGINE is installed around every operation that can execute
+    // JavaScript and is restricted to the isolate thread. The isolate id
+    // check below prevents a record from being used by another isolate.
+    // `catch_unwind` prevents Rust unwinding from crossing V8's callback
+    // boundary.
     let (result, callback_isolate_id) = unsafe {
-        let record = &*record_pointer;
+        let record_slot = &*slot_pointer;
         let engine = &mut *engine_pointer;
-        let result = if record.isolate_id != engine.isolate_id {
-            Err(engine.new_type_error("native callback belongs to a different V8 isolate"))
-        } else if let Some(creation_realm) = record.creation_realm.upgrade() {
-            let previous_realm = replace(&mut engine.realm_state, creation_realm);
-            let completion = {
-                let _current_callback_scope =
-                    CurrentCallbackScopeGuard::enter(scope, record.isolate_id);
-                let callback_arguments: Vec<_> = (0..arguments.length())
-                    .map(|index| wrap_local_value(scope, record.isolate_id, arguments.get(index)))
-                    .collect();
-                // For construct calls, V8's `this` is the newly created
-                // receiver; the Web IDL constructor logic expects `this` to be
-                // `new.target` (matching Boa's [[Construct]] convention), so
-                // pass `new_target` instead.
-                let this_value = if arguments.is_construct_call() {
-                    wrap_local_value(scope, record.isolate_id, arguments.new_target())
-                } else {
-                    wrap_local_value(scope, record.isolate_id, arguments.this().into())
-                };
-                match catch_unwind(AssertUnwindSafe(|| {
-                    let behaviour = record.behaviour.borrow();
-                    let Some(behaviour) = behaviour.as_ref() else {
-                        return Err(engine.new_type_error(
-                            "native callback behaviour released after its realm was destroyed",
-                        ));
+        let record_guard = record_slot.borrow();
+        match record_guard.as_ref() {
+            None => (
+                Err(engine.new_type_error(
+                    "native callback behaviour released after its realm was destroyed",
+                )),
+                engine.isolate_id,
+            ),
+            Some(record) => {
+                let result = if record.isolate_id != engine.isolate_id {
+                    Err(engine.new_type_error("native callback belongs to a different V8 isolate"))
+                } else if let Some(creation_realm) = record.creation_realm.upgrade() {
+                    let previous_realm = replace(&mut engine.realm_state, creation_realm);
+                    let completion = {
+                        let _current_callback_scope =
+                            CurrentCallbackScopeGuard::enter(scope, record.isolate_id);
+                        let callback_arguments: Vec<_> = (0..arguments.length())
+                            .map(|index| {
+                                wrap_local_value(scope, record.isolate_id, arguments.get(index))
+                            })
+                            .collect();
+                        // For construct calls, V8's `this` is the newly created
+                        // receiver; the Web IDL constructor logic expects `this` to be
+                        // `new.target` (matching Boa's [[Construct]] convention), so
+                        // pass `new_target` instead.
+                        let this_value = if arguments.is_construct_call() {
+                            wrap_local_value(scope, record.isolate_id, arguments.new_target())
+                        } else {
+                            wrap_local_value(scope, record.isolate_id, arguments.this().into())
+                        };
+                        match catch_unwind(AssertUnwindSafe(|| {
+                            let behaviour = record.behaviour.borrow();
+                            let Some(behaviour) = behaviour.as_ref() else {
+                                return Err(engine.new_type_error(
+                                    "native callback behaviour released after its realm was destroyed",
+                                ));
+                            };
+                            (behaviour)(&callback_arguments, this_value, engine)
+                        })) {
+                            Ok(completion) => completion,
+                            Err(_) => Err(engine.new_type_error("Rust panic in native callback")),
+                        }
                     };
-                    (behaviour)(&callback_arguments, this_value, engine)
-                })) {
-                    Ok(completion) => completion,
-                    Err(_) => Err(engine.new_type_error("Rust panic in native callback")),
-                }
-            };
-            engine.realm_state = previous_realm;
-            completion
-        } else {
-            Err(engine.new_type_error("native callback creation realm no longer exists"))
-        };
-        (result, record.isolate_id)
+                    engine.realm_state = previous_realm;
+                    completion
+                } else {
+                    Err(engine.new_type_error("native callback creation realm no longer exists"))
+                };
+                (result, record.isolate_id)
+            }
+        }
     };
 
     match result {
@@ -1371,22 +1415,16 @@ impl V8Engine {
         });
         // The record lives in a shared slot owned by both the guaranteed
         // finalizer and the callback-handle registry entry; whichever drops
-        // the function first frees it. The raw pointer handed to V8's
-        // `External` data is derived from the box inside the slot and stays
-        // valid while the function is alive (the slot is only taken once the
-        // function has been collected, at which point V8 can no longer invoke
-        // the callback).
+        // the function first frees it. The `External` data is a pointer to the
+        // slot, not to the record: the callback re-reads the slot and treats a
+        // taken slot as a JS error, so a freed record is never dereferenced.
         let record_slot = Rc::new(RefCell::new(Some(record)));
-        let record_pointer = record_slot
-            .borrow()
-            .as_ref()
-            .expect("callback record slot is empty before the function exists")
-            .as_ref() as *const CallbackRecord;
+        let slot_pointer = Rc::as_ptr(&record_slot);
         let isolate_id = self.isolate_id;
         let function_name = self.property_key_to_rust_string(&name);
 
         v8_engine_scope_with_context!(scope, self, &self.realm_state.realm.context, {
-            let external = v8::External::new(scope, record_pointer.cast_mut().cast());
+            let external = v8::External::new(scope, slot_pointer.cast_mut().cast());
             let constructor_behavior = if is_constructor {
                 v8::ConstructorBehavior::Allow
             } else {
@@ -3545,6 +3583,13 @@ impl ExecutionContext<V8Types> for V8Engine {
         if live_detached {
             return None;
         }
+        // An `ArrayBuffer`'s backing store is never shared with another agent;
+        // if this ever held a shared store the `Cell<u8>` iteration below
+        // would race with the other agent's writes. Fail loudly instead.
+        assert!(
+            !state.backing_store.is_shared(),
+            "array_buffer_data must not read a shared backing store through Cell<u8>"
+        );
         Some(state.backing_store.iter().map(Cell::get).collect())
     }
 
@@ -3927,6 +3972,10 @@ impl ExecutionContext<V8Types> for V8Engine {
                 .map(|associated| associated.platform_pointer as usize)
         };
         let address = platform_address?;
+        assert_eq!(
+            object.0.isolate_id, self.isolate_id,
+            "with_object_any called with a value from another isolate"
+        );
         // SAFETY: `host_data_pointer` validates the marker and tag before
         // placing this pointer in a V8Value; the associated records keep
         // their platform alive through a traced cppgc Member. cppgc is
@@ -3946,6 +3995,10 @@ impl ExecutionContext<V8Types> for V8Engine {
                 .map(|associated| associated.platform_pointer as usize)
         };
         let address = platform_address?;
+        assert_eq!(
+            object.0.isolate_id, self.isolate_id,
+            "with_object_any_mut called with a value from another isolate"
+        );
         // SAFETY: The marker and reachability invariants are the same as in
         // `with_object_any`. The `&mut self` receiver makes this the
         // exclusive host-data access path for the duration of the returned
