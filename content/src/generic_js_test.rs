@@ -700,6 +700,7 @@ mod tests {
     use js_engine::PromiseState;
     use js_engine::PropertyDescriptor;
     use js_engine::TypedArrayElementType;
+    use js_engine::gc::gc_cell_new;
     use js_engine::{EcmascriptHost, ExecutionContext, JsEngine};
 
     /// Create an initialized engine context with the TestWidget interface registered.
@@ -742,6 +743,75 @@ mod tests {
     /// Create a TestButton platform object.
     fn create_button(button: TestButton, ec: &mut dyn ExecutionContext<TestTypes>) -> JsObject {
         create_test_button(button, ec).unwrap()
+    }
+
+    /// A plain object with a single numeric `marker` property, used by the
+    /// `GcCell` rooting tests as the referent a cell holds.
+    fn object_with_marker(ec: &mut dyn ExecutionContext<TestTypes>, marker: f64) -> JsObject {
+        let object = ec.create_plain_object(None);
+        let key = ec.property_key_from_str("marker");
+        let value = ec.value_from_number(marker);
+        ec.set(object.clone(), key, value, false)
+            .expect("set the object's marker property");
+        object
+    }
+
+    /// Read the `marker` property through the execution context, exercising
+    /// the referent's object after a collection.
+    fn read_marker(ec: &mut dyn ExecutionContext<TestTypes>, object: &JsObject) -> f64 {
+        let value = EcmascriptHost::get(ec, object, "marker").expect("read the object's marker");
+        ec.to_number(value).expect("marker is a number")
+    }
+
+    /// A value cloned out of a `GcCell` with `get` must stay valid after the
+    /// cell is cleared and a collection runs: `get` roots the copy's edges,
+    /// so the referent is no longer kept alive only by the cell.
+    #[test]
+    fn gc_cell_get_roots_value_across_collection() {
+        let mut engine = setup();
+        let object = object_with_marker(&mut engine, 31.0);
+        let cell = gc_cell_new(Some(object), &mut engine);
+
+        let rooted = cell.get(&mut engine).expect("the cell holds the object");
+        cell.set(None, &mut engine);
+
+        engine.gc();
+
+        assert_eq!(read_marker(&mut engine, &rooted), 31.0);
+    }
+
+    /// `GcCell::take` roots the removed value, so it survives the cell
+    /// dropping its edge and a collection.
+    #[test]
+    fn gc_cell_take_roots_value_across_collection() {
+        let mut engine = setup();
+        let object = object_with_marker(&mut engine, 32.0);
+        let cell = gc_cell_new(Some(object), &mut engine);
+
+        let rooted = cell.take(&mut engine).expect("the cell holds the object");
+
+        engine.gc();
+
+        assert_eq!(read_marker(&mut engine, &rooted), 32.0);
+    }
+
+    /// A `GcCell` must keep its contents alive from construction until it is
+    /// stored: a freshly created cell has no traced owner yet, so an edge
+    /// would be swept by a collection that runs before the cell enters traced
+    /// storage. The test creates the cell, collects before storing it, and
+    /// reads its contents afterwards.
+    #[test]
+    fn gc_cell_new_roots_cell_before_it_is_stored() {
+        let mut engine = setup();
+        let object = object_with_marker(&mut engine, 51.0);
+        let cell = gc_cell_new(Some(object), &mut engine);
+
+        engine.gc();
+
+        let held = cell
+            .get(&mut engine)
+            .expect("the cell still holds the object");
+        assert_eq!(read_marker(&mut engine, &held), 51.0);
     }
 
     #[test]

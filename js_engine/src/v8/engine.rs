@@ -26,7 +26,7 @@ use crate::{
 };
 
 use super::gc::V8PlatformData;
-use super::trace::take_roots_reached_during_trace;
+use super::trace::{take_roots_reached_during_trace, take_strong_cells_reached_during_trace};
 use super::types::{CachedPrimitive, ObjectProfile, V8ArrayBufferState, V8Handle};
 use super::{
     V8ArrayBuffer, V8BigInt, V8Constructor, V8DataView, V8Function, V8Generator, V8Map, V8Object,
@@ -133,6 +133,11 @@ unsafe impl Trace for RealmHostData {
         // platform Members are traced by this type, so no root-to-edge
         // conversion is needed here.
     }
+
+    fn make_strong(&mut self, _ec: &mut dyn ExecutionContext<V8Types>) {
+        // The host data is only ever stored in its holder; its strong values
+        // and traced Members stay as they are.
+    }
 }
 
 #[derive(Clone)]
@@ -179,14 +184,22 @@ struct SharedIsolate {
     realm_states: RefCell<Vec<RcWeak<V8RealmState>>>,
     queued_jobs: RefCell<VecDeque<QueuedJob>>,
     callback_handles: RefCell<Vec<CallbackHandle>>,
-    isolate: RefCell<v8::OwnedIsolate>,
-    microtask_queue: v8::UniqueRef<v8::MicrotaskQueue>,
+    /// The registry length at which the next opportunistic compaction runs.
+    /// Doubling it after each compaction keeps the amortized cost linear
+    /// instead of walking the registry on every native-function creation once
+    /// the threshold is reached.
+    next_compaction_len: Cell<usize>,
     /// Shared security token installed on every context created in this
     /// isolate.  V8 gates cross-context access to another context's global
     /// object on security-token equality; each `Context::new` otherwise gets
     /// its own token, so same-origin same-process window access (the
     /// WindowProxy same-origin path) would throw `TypeError: no access`.
     security_token: RefCell<Option<v8::Global<v8::Value>>>,
+    /// Declared before `isolate` so it drops first: the microtask queue is
+    /// owned by, and unlinks from a list inside, the isolate, so it must not
+    /// outlive it.
+    microtask_queue: v8::UniqueRef<v8::MicrotaskQueue>,
+    isolate: RefCell<v8::OwnedIsolate>,
 }
 
 impl SharedIsolate {
@@ -216,6 +229,7 @@ impl SharedIsolate {
             realm_states: RefCell::new(Vec::new()),
             queued_jobs: RefCell::new(VecDeque::new()),
             callback_handles: RefCell::new(Vec::new()),
+            next_compaction_len: Cell::new(CALLBACK_HANDLE_COMPACTION_THRESHOLD),
             isolate: RefCell::new(isolate),
             microtask_queue,
             security_token: RefCell::new(None),
@@ -376,11 +390,14 @@ impl V8Engine {
 
 struct CurrentEngineGuard {
     previous: *mut V8Engine,
+    installed: *mut V8Engine,
 }
 
 struct CurrentCallbackScopeGuard {
     previous_scope: *mut StoredCallbackScope,
     previous_isolate_id: u64,
+    installed_scope: *mut StoredCallbackScope,
+    installed_isolate_id: u64,
 }
 
 impl CurrentCallbackScopeGuard {
@@ -391,12 +408,29 @@ impl CurrentCallbackScopeGuard {
         Self {
             previous_scope,
             previous_isolate_id,
+            installed_scope: scope_pointer,
+            installed_isolate_id: isolate_id,
         }
     }
 }
 
 impl Drop for CurrentCallbackScopeGuard {
     fn drop(&mut self) {
+        // Guards are strictly nested (each `enter` is matched by a drop in the
+        // same call frame), so this guard must be the top of both stacks. A
+        // mismatch means a guard was leaked or dropped out of order, and the
+        // thread-local pointers the macros reborrow would no longer describe
+        // the active scope.
+        assert_eq!(
+            CURRENT_CALLBACK_SCOPE.get(),
+            self.installed_scope,
+            "callback scope guards dropped out of order"
+        );
+        assert_eq!(
+            CURRENT_CALLBACK_ISOLATE_ID.get(),
+            self.installed_isolate_id,
+            "callback scope isolate id changed under its guard"
+        );
         CURRENT_CALLBACK_SCOPE.set(self.previous_scope);
         CURRENT_CALLBACK_ISOLATE_ID.set(self.previous_isolate_id);
     }
@@ -406,12 +440,20 @@ impl CurrentEngineGuard {
     fn enter(engine: &mut V8Engine) -> Self {
         let engine_pointer = engine as *mut V8Engine;
         let previous = CURRENT_ENGINE.replace(engine_pointer);
-        Self { previous }
+        Self {
+            previous,
+            installed: engine_pointer,
+        }
     }
 }
 
 impl Drop for CurrentEngineGuard {
     fn drop(&mut self) {
+        assert_eq!(
+            CURRENT_ENGINE.get(),
+            self.installed,
+            "engine guards dropped out of order"
+        );
         CURRENT_ENGINE.set(self.previous);
     }
 }
@@ -780,8 +822,10 @@ fn native_callback(
         scope.throw_exception(exception);
         return;
     };
-    let record_pointer = external.value().cast::<CallbackRecord>();
-    if record_pointer.is_null() {
+    let slot_pointer = external
+        .value()
+        .cast::<RefCell<Option<Box<CallbackRecord>>>>();
+    if slot_pointer.is_null() {
         let message = v8::String::new(scope, "invalid native callback record")
             .expect("static V8 callback error allocation failed");
         let exception = v8::Exception::error(scope, message);
@@ -798,56 +842,70 @@ fn native_callback(
         return;
     }
 
-    // SAFETY: Callback records are created by `make_builtin_function` and
-    // released once the function dies (by the guaranteed weak finalizer, by
-    // the registry compaction, or at isolate teardown); V8 invokes this
-    // callback only while the function is strongly reachable, so the record
-    // is still in its slot. CURRENT_ENGINE is installed around every
-    // operation that can execute JavaScript and is restricted to the isolate
-    // thread. The isolate id check below prevents a record from being used
-    // by another isolate. `catch_unwind` prevents Rust unwinding from
-    // crossing V8's callback boundary.
+    // SAFETY: `slot_pointer` points at the shared slot created by
+    // `make_builtin_function`; the registry entry and the guaranteed weak
+    // finalizer keep that `Rc` allocation alive for as long as V8 can invoke
+    // this function, so reborrowing the slot is valid and a taken slot is
+    // reported as a JS error instead of dereferencing the freed record.
+    // CURRENT_ENGINE is installed around every operation that can execute
+    // JavaScript and is restricted to the isolate thread. The isolate id
+    // check below prevents a record from being used by another isolate.
+    // `catch_unwind` prevents Rust unwinding from crossing V8's callback
+    // boundary.
     let (result, callback_isolate_id) = unsafe {
-        let record = &*record_pointer;
+        let record_slot = &*slot_pointer;
         let engine = &mut *engine_pointer;
-        let result = if record.isolate_id != engine.isolate_id {
-            Err(engine.new_type_error("native callback belongs to a different V8 isolate"))
-        } else if let Some(creation_realm) = record.creation_realm.upgrade() {
-            let previous_realm = replace(&mut engine.realm_state, creation_realm);
-            let completion = {
-                let _current_callback_scope =
-                    CurrentCallbackScopeGuard::enter(scope, record.isolate_id);
-                let callback_arguments: Vec<_> = (0..arguments.length())
-                    .map(|index| wrap_local_value(scope, record.isolate_id, arguments.get(index)))
-                    .collect();
-                // For construct calls, V8's `this` is the newly created
-                // receiver; the Web IDL constructor logic expects `this` to be
-                // `new.target` (matching Boa's [[Construct]] convention), so
-                // pass `new_target` instead.
-                let this_value = if arguments.is_construct_call() {
-                    wrap_local_value(scope, record.isolate_id, arguments.new_target())
-                } else {
-                    wrap_local_value(scope, record.isolate_id, arguments.this().into())
-                };
-                match catch_unwind(AssertUnwindSafe(|| {
-                    let behaviour = record.behaviour.borrow();
-                    let Some(behaviour) = behaviour.as_ref() else {
-                        return Err(engine.new_type_error(
-                            "native callback behaviour released after its realm was destroyed",
-                        ));
+        let record_guard = record_slot.borrow();
+        match record_guard.as_ref() {
+            None => (
+                Err(engine.new_type_error(
+                    "native callback behaviour released after its realm was destroyed",
+                )),
+                engine.isolate_id,
+            ),
+            Some(record) => {
+                let result = if record.isolate_id != engine.isolate_id {
+                    Err(engine.new_type_error("native callback belongs to a different V8 isolate"))
+                } else if let Some(creation_realm) = record.creation_realm.upgrade() {
+                    let previous_realm = replace(&mut engine.realm_state, creation_realm);
+                    let completion = {
+                        let _current_callback_scope =
+                            CurrentCallbackScopeGuard::enter(scope, record.isolate_id);
+                        let callback_arguments: Vec<_> = (0..arguments.length())
+                            .map(|index| {
+                                wrap_local_value(scope, record.isolate_id, arguments.get(index))
+                            })
+                            .collect();
+                        // For construct calls, V8's `this` is the newly created
+                        // receiver; the Web IDL constructor logic expects `this` to be
+                        // `new.target` (matching Boa's [[Construct]] convention), so
+                        // pass `new_target` instead.
+                        let this_value = if arguments.is_construct_call() {
+                            wrap_local_value(scope, record.isolate_id, arguments.new_target())
+                        } else {
+                            wrap_local_value(scope, record.isolate_id, arguments.this().into())
+                        };
+                        match catch_unwind(AssertUnwindSafe(|| {
+                            let behaviour = record.behaviour.borrow();
+                            let Some(behaviour) = behaviour.as_ref() else {
+                                return Err(engine.new_type_error(
+                                    "native callback behaviour released after its realm was destroyed",
+                                ));
+                            };
+                            (behaviour)(&callback_arguments, this_value, engine)
+                        })) {
+                            Ok(completion) => completion,
+                            Err(_) => Err(engine.new_type_error("Rust panic in native callback")),
+                        }
                     };
-                    (behaviour)(&callback_arguments, this_value, engine)
-                })) {
-                    Ok(completion) => completion,
-                    Err(_) => Err(engine.new_type_error("Rust panic in native callback")),
-                }
-            };
-            engine.realm_state = previous_realm;
-            completion
-        } else {
-            Err(engine.new_type_error("native callback creation realm no longer exists"))
-        };
-        (result, record.isolate_id)
+                    engine.realm_state = previous_realm;
+                    completion
+                } else {
+                    Err(engine.new_type_error("native callback creation realm no longer exists"))
+                };
+                (result, record.isolate_id)
+            }
+        }
     };
 
     match result {
@@ -1357,22 +1415,16 @@ impl V8Engine {
         });
         // The record lives in a shared slot owned by both the guaranteed
         // finalizer and the callback-handle registry entry; whichever drops
-        // the function first frees it. The raw pointer handed to V8's
-        // `External` data is derived from the box inside the slot and stays
-        // valid while the function is alive (the slot is only taken once the
-        // function has been collected, at which point V8 can no longer invoke
-        // the callback).
+        // the function first frees it. The `External` data is a pointer to the
+        // slot, not to the record: the callback re-reads the slot and treats a
+        // taken slot as a JS error, so a freed record is never dereferenced.
         let record_slot = Rc::new(RefCell::new(Some(record)));
-        let record_pointer = record_slot
-            .borrow()
-            .as_ref()
-            .expect("callback record slot is empty before the function exists")
-            .as_ref() as *const CallbackRecord;
+        let slot_pointer = Rc::as_ptr(&record_slot);
         let isolate_id = self.isolate_id;
         let function_name = self.property_key_to_rust_string(&name);
 
         v8_engine_scope_with_context!(scope, self, &self.realm_state.realm.context, {
-            let external = v8::External::new(scope, record_pointer.cast_mut().cast());
+            let external = v8::External::new(scope, slot_pointer.cast_mut().cast());
             let constructor_behavior = if is_constructor {
                 v8::ConstructorBehavior::Allow
             } else {
@@ -1416,7 +1468,7 @@ impl V8Engine {
             // first — the guaranteed finalizer may not have run yet, and
             // dropping the weak handle below would cancel it, so the slot
             // hand-off is what prevents a leaked or double-freed record.
-            if callback_handles.len() >= CALLBACK_HANDLE_COMPACTION_THRESHOLD {
+            if callback_handles.len() >= self.shared_isolate.next_compaction_len.get() {
                 callback_handles.retain(|handle| {
                     if handle.weak.is_empty() {
                         if let Some(record) = handle.record.borrow_mut().take() {
@@ -1427,6 +1479,12 @@ impl V8Engine {
                         true
                     }
                 });
+                self.shared_isolate.next_compaction_len.set(
+                    callback_handles
+                        .len()
+                        .saturating_mul(2)
+                        .max(CALLBACK_HANDLE_COMPACTION_THRESHOLD),
+                );
             }
             callback_handles.push(CallbackHandle {
                 weak: callback_handle,
@@ -1749,7 +1807,7 @@ pub fn create_builtin_fn_with_captures<T, C>(
     is_constructor: bool,
 ) -> T::Function
 where
-    T: JsTypes + JsTypesWithRealm,
+    T: JsTypes + JsTypesWithRealm + 'static,
     C: Trace + 'static,
 {
     let engine = execution_context
@@ -1758,10 +1816,15 @@ where
         .expect("create_builtin_fn_with_captures called with a non-V8 engine");
 
     // The generic parameter T is the active backend's JsTypes; in a
-    // V8-selected build it is always V8Types. The layout assertions below
-    // turn a mismatched instantiation (e.g. a mock type with a different
-    // PropertyKey/Function layout) into an immediate panic instead of the
-    // byte copies silently corrupting the stack.
+    // V8-selected build it is always V8Types. The identity check makes a
+    // mismatched instantiation (e.g. a mock type with a different
+    // PropertyKey/Function layout) panic before any byte copy; the layout
+    // assertions below then document the representation the casts rely on.
+    assert_eq!(
+        std::any::TypeId::of::<T>(),
+        std::any::TypeId::of::<V8Types>(),
+        "create_builtin_fn_with_captures instantiated with a non-V8 execution context"
+    );
     assert_eq!(
         std::mem::size_of::<T::PropertyKey>(),
         std::mem::size_of::<V8PropertyKey>(),
@@ -1897,6 +1960,23 @@ unsafe impl Trace for PromiseReactionCaptures {
         if let Some((resolve, reject)) = &mut self.rejected_capability {
             resolve.store(ec);
             reject.store(ec);
+        }
+    }
+
+    fn make_strong(&mut self, ec: &mut dyn ExecutionContext<V8Types>) {
+        if let Some(on_fulfilled) = &mut self.on_fulfilled {
+            on_fulfilled.make_strong(ec);
+        }
+        if let Some(on_rejected) = &mut self.on_rejected {
+            on_rejected.make_strong(ec);
+        }
+        if let Some((resolve, reject)) = &mut self.fulfilled_capability {
+            resolve.make_strong(ec);
+            reject.make_strong(ec);
+        }
+        if let Some((resolve, reject)) = &mut self.rejected_capability {
+            resolve.make_strong(ec);
+            reject.make_strong(ec);
         }
     }
 }
@@ -2071,6 +2151,7 @@ impl EcmascriptHost<V8Types> for V8Engine {
         // Discard roots seen by allocation-triggered traces: this collection
         // traces the whole heap again and reports only what it finds.
         take_roots_reached_during_trace();
+        take_strong_cells_reached_during_trace();
         let shared_isolate = Rc::clone(&self.shared_isolate);
         v8_shared_isolate!(isolate, shared_isolate, self.isolate_id, {
             isolate.request_garbage_collection_for_testing(v8::GarbageCollectionType::Full);
@@ -2085,6 +2166,13 @@ impl EcmascriptHost<V8Types> for V8Engine {
             error!(
                 "{roots_reached} rooted JS handle(s) reached cppgc tracing: the store \
                  invariant was bypassed and the referents are over-retained"
+            );
+        }
+        let strong_cells_reached = take_strong_cells_reached_during_trace();
+        if strong_cells_reached > 0 {
+            error!(
+                "{strong_cells_reached} rooted GcCell(s) reached cppgc tracing: the store \
+                 invariant was bypassed and the cells are over-retained"
             );
         }
     }
@@ -3495,6 +3583,13 @@ impl ExecutionContext<V8Types> for V8Engine {
         if live_detached {
             return None;
         }
+        // An `ArrayBuffer`'s backing store is never shared with another agent;
+        // if this ever held a shared store the `Cell<u8>` iteration below
+        // would race with the other agent's writes. Fail loudly instead.
+        assert!(
+            !state.backing_store.is_shared(),
+            "array_buffer_data must not read a shared backing store through Cell<u8>"
+        );
         Some(state.backing_store.iter().map(Cell::get).collect())
     }
 
@@ -3877,6 +3972,10 @@ impl ExecutionContext<V8Types> for V8Engine {
                 .map(|associated| associated.platform_pointer as usize)
         };
         let address = platform_address?;
+        assert_eq!(
+            object.0.isolate_id, self.isolate_id,
+            "with_object_any called with a value from another isolate"
+        );
         // SAFETY: `host_data_pointer` validates the marker and tag before
         // placing this pointer in a V8Value; the associated records keep
         // their platform alive through a traced cppgc Member. cppgc is
@@ -3896,13 +3995,21 @@ impl ExecutionContext<V8Types> for V8Engine {
                 .map(|associated| associated.platform_pointer as usize)
         };
         let address = platform_address?;
+        assert_eq!(
+            object.0.isolate_id, self.isolate_id,
+            "with_object_any_mut called with a value from another isolate"
+        );
         // SAFETY: The marker and reachability invariants are the same as in
         // `with_object_any`. The `&mut self` receiver makes this the
         // exclusive host-data access path for the duration of the returned
         // borrow; marking is atomic, so no concurrent marker reads the
-        // platform data while it is mutated.
-        let platform = unsafe { &mut *(address as *mut V8PlatformData) };
-        Some(platform.as_any_mut())
+        // platform data while it is mutated. The value is reached through a
+        // shared reference and mutated through its `UnsafeCell`, so no
+        // `*mut` is derived from a shared reference.
+        let platform = unsafe { &*(address as *const V8PlatformData) };
+        // SAFETY: The `&mut self` receiver is the exclusivity proof documented
+        // on `V8PlatformData::data_mut_ptr`.
+        Some(unsafe { &mut **platform.data_mut_ptr() })
     }
 
     fn store_js_object(&mut self, slot: &mut Option<V8Object>, value: V8Object) {
@@ -4954,6 +5061,32 @@ mod tests {
         assert!(callback_dropped.get());
     }
 
+    /// `GcCell::get` roots the copy's JS edges, so a value cloned out of a
+    /// cell and then removed from it survives a collection.
+    #[test]
+    fn cell_get_roots_value_across_gc() {
+        let mut engine = V8Engine::new();
+        let x = ExecutionContext::evaluate_script(&mut engine, "({ marker: 'payload' })")
+            .expect("the payload object must evaluate");
+        let x_object = V8Types::value_as_object(&x).expect("the payload must be an object");
+        let x_collected = Rc::new(Cell::new(false));
+        let x_weak = install_guaranteed_finalizer(&mut engine, &x_object, Rc::clone(&x_collected));
+
+        let cell = gc_cell_new(Some(x_object), &mut engine);
+        drop(x);
+        let rooted = cell.get(&mut engine).expect("the cell holds the value");
+        cell.set(None, &mut engine);
+
+        engine.gc();
+
+        assert!(
+            !x_collected.get(),
+            "the rooted copy must keep the payload alive"
+        );
+        drop(rooted);
+        drop(x_weak);
+    }
+
     /// A traced platform payload with a finalization probe and the three
     /// reference kinds production platform objects carry: a reflector edge
     /// back to the JS wrapper, a peer edge to another wrapper, and a nested
@@ -4993,6 +5126,18 @@ mod tests {
             }
             if let Some(cell) = &mut self.cell {
                 Trace::store(cell, ec);
+            }
+        }
+
+        fn make_strong(&mut self, ec: &mut dyn ExecutionContext<V8Types>) {
+            if let Some(reflector) = &mut self.reflector {
+                Trace::make_strong(reflector, ec);
+            }
+            if let Some(peer) = &mut self.peer {
+                Trace::make_strong(peer, ec);
+            }
+            if let Some(cell) = &mut self.cell {
+                Trace::make_strong(cell, ec);
             }
         }
     }
@@ -5236,18 +5381,20 @@ mod tests {
         drop(x);
 
         // A platform object owns the cell so it is traced while the platform
-        // lives (the production pattern for stream controller state).
+        // lives (the production pattern for stream controller state). The
+        // freshly created cell is rooted until `store` converts it to an edge
+        // inside the platform.
         let platform_dropped = Rc::new(Cell::new(false));
+        let mut platform = TestPlatform {
+            dropped: DropFlag(Rc::clone(&platform_dropped)),
+            reflector: None,
+            peer: None,
+            cell: Some(cell),
+        };
+        Trace::store(&mut platform, &mut engine);
         let prototype = engine.create_plain_object(None);
-        let owner = engine.create_object_with_any(
-            prototype,
-            Box::new(V8PlatformData::new(TestPlatform {
-                dropped: DropFlag(Rc::clone(&platform_dropped)),
-                reflector: None,
-                peer: None,
-                cell: Some(cell),
-            })),
-        );
+        let owner =
+            engine.create_object_with_any(prototype, Box::new(V8PlatformData::new(platform)));
         assert!(
             engine
                 .with_object_any(&owner)
@@ -5268,6 +5415,91 @@ mod tests {
         assert!(
             x_collected.get(),
             "the payload referenced only through the cell edge must be collected with it"
+        );
+        drop(x_weak);
+    }
+
+    #[test]
+    fn cloned_cell_in_rust_memory_keeps_js_contents_alive() {
+        let mut engine = V8Engine::new();
+        let x = ExecutionContext::evaluate_script(&mut engine, "({ marker: 'payload' })")
+            .expect("the payload object must evaluate");
+        let x_object = V8Types::value_as_object(&x).expect("the payload must be an object");
+        let x_collected = Rc::new(Cell::new(false));
+        let x_weak = install_guaranteed_finalizer(&mut engine, &x_object, Rc::clone(&x_collected));
+
+        let cell = gc_cell_new(Some(x_object), &mut engine);
+        drop(x);
+        // The clone lands in Rust-owned memory that no cppgc owner traces;
+        // dropping the original leaves it as the only reference to the cell.
+        let clone = cell.clone();
+        drop(cell);
+
+        engine.gc();
+
+        assert!(
+            !x_collected.get(),
+            "the rooted clone must keep the cell's JS contents alive"
+        );
+        let held = clone
+            .get(&mut engine)
+            .expect("the cell must still hold the payload");
+        let marker = EcmascriptHost::get(&mut engine, &held, "marker")
+            .expect("the payload must still have its marker");
+        assert_eq!(engine.to_rust_string(marker).expect("string"), "payload");
+        drop(held);
+
+        // Dropping the clone unroots the cell, so the next collection reclaims
+        // it and its JS contents.
+        drop(clone);
+        engine.gc();
+        assert!(
+            x_collected.get(),
+            "the payload must be collected once the clone is dropped"
+        );
+        drop(x_weak);
+    }
+
+    /// A clone written back into traced storage becomes an edge again, so the
+    /// cell and its contents are reclaimed with the owner that holds it.
+    #[test]
+    fn stored_cell_clone_becomes_an_edge() {
+        let mut engine = V8Engine::new();
+        let x = ExecutionContext::evaluate_script(&mut engine, "({ marker: 'payload' })")
+            .expect("the payload object must evaluate");
+        let x_object = V8Types::value_as_object(&x).expect("the payload must be an object");
+        let x_collected = Rc::new(Cell::new(false));
+        let x_weak = install_guaranteed_finalizer(&mut engine, &x_object, Rc::clone(&x_collected));
+
+        let cell = gc_cell_new(Some(x_object), &mut engine);
+        drop(x);
+        let mut clone = cell.clone();
+        // `store` is the conversion a platform object's write-back runs.
+        clone.store(&mut engine);
+        drop(cell);
+
+        let platform_dropped = Rc::new(Cell::new(false));
+        let prototype = engine.create_plain_object(None);
+        let owner = engine.create_object_with_any(
+            prototype,
+            Box::new(V8PlatformData::new(TestPlatform {
+                dropped: DropFlag(Rc::clone(&platform_dropped)),
+                reflector: None,
+                peer: None,
+                cell: Some(clone),
+            })),
+        );
+
+        drop(owner);
+        engine.gc();
+
+        assert!(
+            platform_dropped.get(),
+            "the owning platform must be collected"
+        );
+        assert!(
+            x_collected.get(),
+            "the stored clone must not keep the payload alive"
         );
         drop(x_weak);
     }
@@ -5678,12 +5910,20 @@ mod tests {
         );
         drop(functions);
         engine.gc();
-        // The next registration compacts the stale entries out of the
-        // registry instead of letting it grow for the isolate's lifetime.
-        let _keep = make_function(&mut engine);
+        // Creating past the doubled trigger compacts the stale entries out of
+        // the registry instead of letting it grow for the isolate's lifetime.
+        // The trigger doubles after each compaction, so the registry crosses
+        // it exactly once here and the 72 stale entries are removed.
+        let keep: Vec<_> = (0..CALLBACK_HANDLE_COMPACTION_THRESHOLD * 2)
+            .map(|_| make_function(&mut engine))
+            .collect();
         let live_count = engine.shared_isolate.callback_handles.borrow().len();
         assert!(
-            live_count <= CALLBACK_HANDLE_COMPACTION_THRESHOLD,
+            live_count >= keep.len(),
+            "every live function must stay registered (len={live_count})"
+        );
+        assert!(
+            live_count < CALLBACK_HANDLE_COMPACTION_THRESHOLD + 8 + keep.len(),
             "the registry must compact stale entries (len={live_count})"
         );
     }
@@ -5740,15 +5980,80 @@ mod tests {
             !payload_collected.get(),
             "the payload referenced only through the associated platform cell must survive gc"
         );
-        assert!(
-            engine
-                .with_object_any(&global)
-                .and_then(|data| data.downcast_ref::<TestPlatform>())
-                .and_then(|platform| platform.cell.as_ref())
-                .is_some(),
-            "the associated platform cell must survive gc"
-        );
+        let cell = engine
+            .with_object_any(&global)
+            .and_then(|data| data.downcast_ref::<TestPlatform>())
+            .and_then(|platform| platform.cell.as_ref())
+            .expect("the associated platform cell must survive gc")
+            .clone();
+        let held = cell
+            .get(&mut engine)
+            .expect("the associated platform cell must still hold the payload");
+        let marker = EcmascriptHost::get(&mut engine, &held, "marker")
+            .expect("the payload must still have its marker");
+        assert_eq!(engine.to_rust_string(marker).expect("string"), "payload");
         drop(payload_weak);
+    }
+
+    /// A JS object stored as a cppgc edge (`V8Object`, two traced handles)
+    /// must still be readable after a forced full collection: a handle the
+    /// trace implementation skipped would have its storage cell reclaimed and
+    /// reading it afterwards is a use-after-free.
+    #[test]
+    fn traced_object_handle_survives_forced_gc() {
+        struct Holder {
+            object: Option<V8Object>,
+        }
+        unsafe impl crate::v8_gc::GarbageCollected for Holder {
+            fn trace(&self, visitor: &mut Visitor) {
+                if let Some(object) = &self.object {
+                    // SAFETY: delegated to the field's trace.
+                    unsafe { Trace::trace(object, visitor) }
+                }
+            }
+            fn get_name(&self) -> &'static std::ffi::CStr {
+                c"Holder"
+            }
+        }
+
+        let mut engine = V8Engine::new();
+        let x = ExecutionContext::evaluate_script(&mut engine, "({ marker: 42 })")
+            .expect("the payload object must evaluate");
+        let mut x_object = V8Types::value_as_object(&x).expect("the payload must be an object");
+        crate::gc::Trace::store(&mut x_object, &mut engine);
+        drop(x);
+
+        let isolate_id = engine.isolate_id;
+        let persistent =
+            v8_engine_scope_with_context!(scope, engine, &engine.realm_state.realm.context, {
+                let isolate = &mut ****scope;
+                let heap = isolate.get_cpp_heap().expect("cpp heap");
+                let pointer = unsafe {
+                    v8::cppgc::make_garbage_collected(
+                        heap,
+                        Holder {
+                            object: Some(x_object),
+                        },
+                    )
+                };
+                v8::cppgc::Persistent::new(&pointer)
+            });
+
+        engine.gc();
+
+        let marker =
+            v8_engine_scope_with_context!(scope, engine, &engine.realm_state.realm.context, {
+                let holder = persistent.get().expect("holder alive");
+                let object = holder.object.as_ref().expect("object alive");
+                let local = local_object(scope, isolate_id, object).expect("local");
+                let key = v8::String::new(scope, "marker").expect("key");
+                let value = local.get(scope, key.into()).expect("marker");
+                v8::Local::<v8::Number>::try_from(value)
+                    .expect("number")
+                    .value()
+            });
+        assert_eq!(marker, 42.0);
+        drop(persistent);
     }
 
     #[test]
@@ -5758,6 +6063,7 @@ mod tests {
         unsafe impl Trace for Payload {
             unsafe fn trace(&self, _visitor: &mut Visitor) {}
             fn store(&mut self, _ec: &mut dyn ExecutionContext<V8Types>) {}
+            fn make_strong(&mut self, _ec: &mut dyn ExecutionContext<V8Types>) {}
         }
         impl Drop for Payload {
             fn drop(&mut self) {

@@ -18,7 +18,7 @@ use crate::webidl::{
     transform_promise_to_undefined,
 };
 use js_engine::EcmascriptHost;
-use js_engine::gc::{GcCell, gc_cell_new};
+use js_engine::gc::{GcCell, gc_cell_new, make_strong_traced};
 use js_engine::gc_struct;
 use js_engine::records::PromiseResolvers;
 use js_engine::types::JsTypes;
@@ -3687,7 +3687,11 @@ impl PipeToState {
                     .map(|cell| cell.borrow(ec).clone()),
             )
         };
-        let resolvers = self.0.borrow_mut(ec).resolvers.take();
+        let mut resolvers = self.0.borrow(ec).resolvers.clone();
+        if let Some(resolvers) = &mut resolvers {
+            make_strong_traced(resolvers, ec);
+        }
+        self.0.borrow_mut(ec).resolvers = None;
 
         if let Err(release_error) = super::writable_stream_default_writer_release(writer, ec) {
             if error.is_none() {
@@ -4145,8 +4149,15 @@ fn start_abort_cancel_source(
     let abort_rejection_cell = abort_rejection.map(|error| gc_cell_new(error, ec));
     state.borrow_mut(ec).abort_rejection = abort_rejection_cell;
     let (source, error) = {
-        let source = state.borrow_mut(ec).source.take();
+        // Clone the source while the state cell still holds it, root the
+        // clone's edges, and only then clear the slot: rooting a value that no
+        // longer has a tracing owner could race a collection.
+        let mut source = state.borrow(ec).source.clone();
+        if let Some(source) = &mut source {
+            make_strong_traced(source, ec);
+        }
         let error = state.borrow(ec).error.borrow(ec).clone();
+        state.borrow_mut(ec).source = None;
         (source, error)
     };
 

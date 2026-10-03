@@ -31,7 +31,6 @@ switch performed by the V8 callback machinery has no Boa counterpart.
 
 ## WPT results
 
-Last recorded: `executed=79 unexpected=2` — the same two BYOB failures as
-V8 (see `../README.md`, "Known cross-engine failures").
+Last recorded: `executed=272 unexpected=0`.
 
 Wasm tests are excluded from the default WPT run (opt-in `--features wasm`).

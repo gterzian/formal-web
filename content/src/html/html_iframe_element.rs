@@ -11,6 +11,7 @@ use std::{
 
 use blitz_dom::BaseDocument;
 use html5ever::{local_name, ns};
+use js_engine::gc::{GcCell, gc_cell_new};
 use js_engine::{ExecutionContext, gc_struct};
 use url::Url;
 
@@ -28,10 +29,10 @@ pub struct HTMLIFrameElement {
     pub html_element: HTMLElement,
 
     /// <https://html.spec.whatwg.org/#handler-onload>
-    onload: Option<Callback>,
+    onload: GcCell<Option<Callback>>,
 
     /// <https://html.spec.whatwg.org/#handler-onerror>
-    onerror: Option<Callback>,
+    onerror: GcCell<Option<Callback>>,
 }
 
 impl EventTargetAccess for HTMLIFrameElement {
@@ -48,8 +49,8 @@ impl HTMLIFrameElement {
     ) -> Self {
         Self {
             html_element: HTMLElement::new(document, node_id, ec),
-            onload: None,
-            onerror: None,
+            onload: gc_cell_new(None, ec),
+            onerror: gc_cell_new(None, ec),
         }
     }
 
@@ -129,23 +130,31 @@ impl HTMLIFrameElement {
     }
 
     /// <https://html.spec.whatwg.org/#handler-onload>
-    pub(crate) fn onload_value(&self) -> Option<Callback> {
-        self.onload.clone()
+    pub(crate) fn onload_value(&self, ec: &mut dyn ExecutionContext<Types>) -> Option<Callback> {
+        self.onload.get(ec)
     }
 
     /// <https://html.spec.whatwg.org/#handler-onload>
-    pub(crate) fn replace_onload(&mut self, callback: Option<Callback>) -> Option<Callback> {
-        std::mem::replace(&mut self.onload, callback)
+    pub(crate) fn replace_onload(
+        &self,
+        callback: Option<Callback>,
+        ec: &mut dyn ExecutionContext<Types>,
+    ) -> Option<Callback> {
+        self.onload.replace(callback, ec)
     }
 
     /// <https://html.spec.whatwg.org/#handler-onerror>
-    pub(crate) fn onerror_value(&self) -> Option<Callback> {
-        self.onerror.clone()
+    pub(crate) fn onerror_value(&self, ec: &mut dyn ExecutionContext<Types>) -> Option<Callback> {
+        self.onerror.get(ec)
     }
 
     /// <https://html.spec.whatwg.org/#handler-onerror>
-    pub(crate) fn replace_onerror(&mut self, callback: Option<Callback>) -> Option<Callback> {
-        std::mem::replace(&mut self.onerror, callback)
+    pub(crate) fn replace_onerror(
+        &self,
+        callback: Option<Callback>,
+        ec: &mut dyn ExecutionContext<Types>,
+    ) -> Option<Callback> {
+        self.onerror.replace(callback, ec)
     }
 }
 

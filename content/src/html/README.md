@@ -99,12 +99,14 @@ comments, and the `backing` cell's variants document the same-process vs
 cross-content-process behavior — read those before extending the proxy.
 Two constraints are not visible from the traps alone:
 
-- The `SameContentProcess` backing keeps the Window's JS object handle
-  **rooted** (not a cppgc-traced edge): the backing must stay usable across
-  the navigation-commit garbage collection, and a traced edge read back
-  from the cell after that collection is not reliably usable on the V8
-  backend.  Do not convert it to a traced edge; see the field note in
-  `WindowProxyBacking`.
+- The `SameContentProcess` backing holds the Window's JS object as an
+  ordinary traced `JsObject` field; `WindowProxy::backing` reads it through
+  `GcCell::get`, which roots the cloned backing's edges before returning it.
+  That matters because the returned clone must stay usable after navigation
+  commit re-points or replaces the shared cell: an unrooted edge read back
+  from the cell would lose its referent to the navigation-commit garbage
+  collection on the V8 backend.  Do not replace the `get` with a
+  `borrow().clone()`.
 - The `backing` cell is shared by every clone of the `WindowProxy` (the
   realm's cached copy and the platform object), so navigation commit
   re-points the cell in place — `destroy_document` in the content process

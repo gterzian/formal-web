@@ -33,18 +33,13 @@ type JsObject = <Types as JsTypes>::JsObject;
 #[gc_struct]
 pub(crate) enum WindowProxyBacking {
     /// The navigable's active Window lives in this content process; the
-    /// proxy traps delegate property access to it.  `js_object` is the
-    /// Window's JS object handle, kept rooted so the backing stays usable
-    /// across the navigation-commit garbage collection that runs when the
-    /// old document is destroyed (a cppgc-traced edge read back from the
-    /// cell after that collection is not reliably usable on the V8 backend).
+    /// proxy traps delegate property access to it.
     SameContentProcess {
         /// <https://html.spec.whatwg.org/#concept-windowproxy-window>
         window: Window,
 
         /// <https://html.spec.whatwg.org/#concept-windowproxy-window>
-        /// The Window's JS object handle, rooted for the proxy's lifetime.
-        #[ignore_trace]
+        /// The Window's JS object handle.
         js_object: JsObject,
     },
 
@@ -87,10 +82,9 @@ impl WindowProxy {
     }
 
     /// <https://html.spec.whatwg.org/#concept-windowproxy-window>
-    /// Clone the backing out of the shared cell (no engine call is made
-    /// while the cell borrow is live).
+    /// Clone the backing out of the shared cell, rooting the clone's edges.
     pub(crate) fn backing(&self, ec: &mut dyn ExecutionContext<Types>) -> WindowProxyBacking {
-        self.backing.borrow(ec).clone()
+        self.backing.get(ec)
     }
 
     /// <https://html.spec.whatwg.org/#concept-windowproxy-window>
@@ -104,9 +98,8 @@ impl WindowProxy {
 }
 
 /// The JS object handle of the Window backing the proxy, when it lives in
-/// this content process.  The handle is the rooted one stored in the
-/// backing (not the EventTarget reflector edge), so it stays usable across
-/// the navigation-commit garbage collection.
+/// this content process.  `backing` was produced by `WindowProxy::backing`,
+/// so the handle is already rooted.
 fn window_object_handle(backing: &WindowProxyBacking) -> Option<JsObject> {
     match backing {
         WindowProxyBacking::SameContentProcess { js_object, .. } => Some(js_object.clone()),

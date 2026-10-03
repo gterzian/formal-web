@@ -29,6 +29,23 @@ When in doubt, ask before writing.
 
 Never write any unsafe code withou the user's explicit approval.
 
+## Unsafe-code discipline
+
+Every `unsafe` block states the precondition it relies on in a `// SAFETY:`
+comment, and asserts that precondition at the block whenever the check is
+O(1) — a deterministic panic (or abort) is better than undefined behavior.
+
+- A precondition that guards memory safety is checked with `assert!` (not
+  `debug_assert!`), so the release build fails loudly too.
+- A precondition that only diagnoses a latent bug (e.g. a store-invariant
+  violation that over-retains rather than dangles) may use `debug_assert!`
+  plus a release-build counter, as the V8 `Trace` impls do.
+- A check inside an `extern "C"` frame or a cppgc trace callback must not
+  unwind into C++; use `js_engine::fatal_invariant!` (logs and aborts) there.
+- When a precondition genuinely cannot be checked cheaply (a property of the
+  allocator or of V8 internals, not of the call), the `// SAFETY:` comment is
+  the enforcement and no assertion is expected.
+
 # grep caution
 
 When using `grep` (or `rg`/`find`), **never** search paths outside the repository root or under `vendor/` without explicit narrowing. In particular, avoid searching `~/.cargo/registry/` or other system-wide locations — those directories are large and the search will hang indefinitely. Instead, use `cargo doc` and check the generated docs, or browse the relevant source files directly with `read`.

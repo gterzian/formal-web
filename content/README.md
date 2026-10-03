@@ -47,6 +47,29 @@ Writing a rooted handle through a mutable guard is safe: dropping the guard
 runs `Trace::store` over the cell's contents, converting those handles into
 cppgc edges before the borrow ends.
 
+**Removing a value from a cell.**  A value that leaves a cell — a queued
+request dequeued, a slot taken, a resolver pair consumed — must be removed
+through `GcCell::get`/`take`/`take_all`/`pop_front`/`pop_back`/`remove`,
+never by cloning the guard and then clearing the cell separately.  The
+`get`/`take` family clones the value while the cell still traces it, converts
+the clone's cppgc edges into `v8::Global` handles (`Trace::make_strong`), and
+only then removes it, so the value stays valid while Rust holds it across
+engine calls.  A `borrow_mut(ec).pop_front()` / `.take()` / `std::mem::take`
+leaves the value as an untraced edge that the next collection can free.
+
+**Cloning the cell itself.**  A cloned `GcCell` (for example the `state`
+captured by a queued job closure) keeps the heap cell and its JS contents
+alive for as long as the clone lives; writing the clone back into traced
+storage converts it back to a traced edge (`Trace::store`).  Clone the cell
+itself only when the clone must outlive every traced owner; to read a value
+without extending the cell's lifetime, use `borrow`/`get` instead.
+
+Platform-object plain fields follow the same rule: a field read out and then
+cleared is cloned and rooted with `js_engine::gc::make_strong_traced` before
+the slot is cleared, and a field mutated to a fresh JS value and written back
+gets `js_engine::gc::store_traced` from `with_cloned_platform_mut` (see
+`content/src/js/downcast.rs`).
+
 Platform-object native data follows the same clone-out/write-back rule:
 `with_object_any_mut` ties its `&mut dyn Any` to `&mut ec`, so an operation
 that must call the engine while mutating a platform object clones it out,
