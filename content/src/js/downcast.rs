@@ -15,6 +15,7 @@ use crate::html::{
 use crate::js::Types;
 use crate::js::platform_objects::with_global_scope;
 use crate::ui_events::{MouseEvent, UIEvent};
+use js_engine::gc::{Trace, store_traced};
 use js_engine::{Completion, ExecutionContext, JsTypes};
 use log::error;
 use std::any::Any;
@@ -221,12 +222,16 @@ pub(crate) fn with_cloned_platform_mut<T, R>(
     f: impl FnOnce(&mut T, &mut dyn ExecutionContext<Types>) -> R,
 ) -> Option<R>
 where
-    T: Clone + 'static,
+    T: Clone + Trace + 'static,
 {
     let mut platform = ec
         .with_object_any(object)
         .and_then(|data| data.downcast_ref::<T>().cloned())?;
     let result = f(&mut platform, ec);
+    // Convert any rooted handle `f` assigned to a direct field into a cppgc
+    // edge before the clone re-enters traced storage; otherwise the write-back
+    // would install a strong root the marker cannot see.
+    store_traced(&mut platform, ec);
     if let Some(slot) = ec
         .with_object_any_mut(object)
         .and_then(|data| data.downcast_mut::<T>())

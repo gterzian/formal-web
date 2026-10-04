@@ -529,7 +529,7 @@ impl ReadableByteStreamController {
         &self,
         ec: &mut dyn ExecutionContext<crate::js::Types>,
     ) -> Completion<(), crate::js::Types> {
-        if let Some(object) = { self.byob_request_object.borrow_mut(ec).take() } {
+        if let Some(object) = self.byob_request_object.take(ec) {
             with_readable_stream_byob_request_ref(&object, ec, |request, ec| {
                 request.set_view_slot(None, ec)
             })?;
@@ -665,7 +665,7 @@ impl ReadableByteStreamController {
         ec: &mut dyn ExecutionContext<crate::js::Types>,
     ) -> Completion<JsObject, crate::js::Types> {
         self.reset_queue(ec);
-        let pending = std::mem::take(&mut *self.pending_pull_intos.borrow_mut(ec));
+        let pending = self.pending_pull_intos.take_all(ec);
         self.invalidate_byob_request(ec)?;
         for descriptor in pending {
             descriptor.cancel(ec)?;
@@ -856,7 +856,7 @@ impl ReadableByteStreamController {
         // Step 1: If this.[[pendingPullIntos]] is not empty,
         if !self.pending_pull_intos.borrow(ec).is_empty() {
             // Step 1.1: Let firstPendingPullInto be this.[[pendingPullIntos]][0].
-            let mut pending = std::mem::take(&mut *self.pending_pull_intos.borrow_mut(ec));
+            let mut pending = self.pending_pull_intos.take_all(ec);
             let mut first = pending.pop_front().expect("pending pull intos not empty");
             // Step 1.2: Set firstPendingPullInto's reader type to "none".
             first.request = PullRequest::None;
@@ -1066,7 +1066,7 @@ impl ReadableByteStreamController {
         }
 
         self.reset_queue(ec);
-        let pending = std::mem::take(&mut *self.pending_pull_intos.borrow_mut(ec));
+        let pending = self.pending_pull_intos.take_all(ec);
         self.invalidate_byob_request(ec)?;
 
         for descriptor in pending {
@@ -1624,7 +1624,7 @@ impl ReadableByteStreamController {
         &self,
         ec: &mut dyn ExecutionContext<crate::js::Types>,
     ) -> Completion<JsValue, crate::js::Types> {
-        let entry = self.queue.borrow_mut(ec).pop_front();
+        let entry = self.queue.pop_front(ec);
         let entry =
             entry.ok_or_else(|| ec.new_type_error("Readable byte stream queue is empty"))?;
         let remaining_len = entry.remaining_len();
@@ -1770,7 +1770,7 @@ impl ReadableByteStreamController {
                 break;
             }
             // Step 3.2: Let pullIntoDescriptor be controller.[[pendingPullIntos]][0].
-            let mut popped = self.pending_pull_intos.borrow_mut(ec).pop_front();
+            let mut popped = self.pending_pull_intos.pop_front(ec);
             let Some(descriptor) = popped.as_mut() else {
                 break;
             };

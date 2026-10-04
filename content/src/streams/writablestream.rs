@@ -154,7 +154,7 @@ impl WritableStream {
         &self,
         ec: &mut dyn ExecutionContext<Types>,
     ) -> Option<WriteRequest> {
-        self.close_request.borrow_mut(ec).take()
+        self.close_request.take(ec)
     }
     pub(crate) fn in_flight_write_request_slot(
         &self,
@@ -173,7 +173,7 @@ impl WritableStream {
         &self,
         ec: &mut dyn ExecutionContext<Types>,
     ) -> Option<WriteRequest> {
-        self.in_flight_write_request.borrow_mut(ec).take()
+        self.in_flight_write_request.take(ec)
     }
     pub(crate) fn in_flight_close_request_slot(
         &self,
@@ -192,7 +192,7 @@ impl WritableStream {
         &self,
         ec: &mut dyn ExecutionContext<Types>,
     ) -> Option<WriteRequest> {
-        self.in_flight_close_request.borrow_mut(ec).take()
+        self.in_flight_close_request.take(ec)
     }
     pub(crate) fn pending_abort_request_slot(
         &self,
@@ -211,7 +211,7 @@ impl WritableStream {
         &self,
         ec: &mut dyn ExecutionContext<Types>,
     ) -> Option<PendingAbortRequest> {
-        self.pending_abort_request.borrow_mut(ec).take()
+        self.pending_abort_request.take(ec)
     }
     pub(crate) fn push_write_request(
         &self,
@@ -224,18 +224,17 @@ impl WritableStream {
         &self,
         ec: &mut dyn ExecutionContext<Types>,
     ) -> Option<WriteRequest> {
-        let mut write_requests = self.write_requests.borrow_mut(ec);
-        if write_requests.is_empty() {
+        if self.write_requests.borrow(ec).is_empty() {
             None
         } else {
-            Some(write_requests.remove(0))
+            Some(self.write_requests.remove(0, ec))
         }
     }
     pub(crate) fn take_write_requests(
         &self,
         ec: &mut dyn ExecutionContext<Types>,
     ) -> Vec<WriteRequest> {
-        std::mem::take(&mut self.write_requests.borrow_mut(ec))
+        self.write_requests.take_all(ec)
     }
 
     pub(crate) fn same_instance(&self, other: &Self) -> bool {

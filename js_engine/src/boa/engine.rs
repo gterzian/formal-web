@@ -112,12 +112,19 @@ pub fn create_builtin_fn_with_captures<T, C>(
     is_constructor: bool,
 ) -> T::Function
 where
-    T: JsTypes,
+    T: JsTypes + 'static,
     C: boa_gc::Trace + 'static,
 {
-    // SAFETY: On the Boa backend, T is always BoaTypes.
-    // &mut dyn ExecutionContext<T> and &mut dyn ExecutionContext<BoaTypes>
-    // have identical fat-pointer layout (2 * usize).
+    // Gate the pointer/byte casts below on the type parameter actually being
+    // the concrete Boa backend, so a mismatched instantiation panics before
+    // any reinterpretation instead of silently corrupting memory.
+    assert_eq!(
+        std::any::TypeId::of::<T>(),
+        std::any::TypeId::of::<BoaTypes>(),
+        "create_builtin_fn_with_captures instantiated with a non-Boa execution context"
+    );
+    // SAFETY: The TypeId check above proves T is BoaTypes, so the generic
+    // fat pointer and fn pointer layouts match the concrete Boa ones.
     let boa_ec: &mut dyn ExecutionContext<BoaTypes> = unsafe { std::mem::transmute(ec) };
     // SAFETY: fn pointers are all usize-sized regardless of signature.
     let boa_behaviour: fn(
@@ -178,8 +185,10 @@ where
         + Copy
         + 'static,
 {
-    let context = unsafe { ec_to_ctx(ec) };
-    let boa = context_as_engine(context);
+    let boa = ec
+        .as_any_mut()
+        .downcast_mut::<BoaContext>()
+        .expect("create_builtin_fn_with_captures_impl called with a non-Boa execution context");
 
     let realm = boa.current_realm();
     let name_str = match &name {
@@ -303,27 +312,31 @@ where
     ) -> JsObject {
         let ec_pointer = *self.ec.borrow();
         if let Some(ec_pointer) = ec_pointer {
-            let factory = self.factory.borrow();
-            let factory = factory.as_ref().expect("global object factory consumed");
-            // SAFETY: The execution context is stored once, after the initial
-            // context is built, and remains valid for the lifetime of this
-            // host hook. `create_global_object` runs synchronously inside
-            // realm creation, where no other borrow of the context is active.
-            let ec = unsafe { &mut *ec_pointer };
-            let data = factory(ec);
-            JsObject::from_proto_and_data(
-                intrinsics.constructors().object().prototype(),
-                NativeDataWrapper(TraceableBox::new(data)),
-            )
-        } else {
-            // Initial builder realm: no execution context yet, so the global
-            // object carries placeholder platform data. This realm is
-            // replaced by the real one below.
-            JsObject::from_proto_and_data(
-                intrinsics.constructors().object().prototype(),
-                NativeDataWrapper(TraceableBox::noop(Box::new(()))),
-            )
+            // Take the factory so the closure (and anything it captures) is
+            // released after the realm's platform object has been built;
+            // leaving it in place keeps it alive for the context's lifetime.
+            let factory = self.factory.borrow_mut().take();
+            if let Some(factory) = factory {
+                // SAFETY: The execution context is stored once, after the
+                // initial context is built, and remains valid for the
+                // lifetime of this host hook. `create_global_object` runs
+                // synchronously inside realm creation, where no other borrow
+                // of the context is active.
+                let ec = unsafe { &mut *ec_pointer };
+                let data = factory(ec);
+                return JsObject::from_proto_and_data(
+                    intrinsics.constructors().object().prototype(),
+                    NativeDataWrapper(TraceableBox::new(data)),
+                );
+            }
         }
+        // Initial builder realm (no execution context yet) or a realm created
+        // after the factory was consumed: the global object carries
+        // placeholder platform data.
+        JsObject::from_proto_and_data(
+            intrinsics.constructors().object().prototype(),
+            NativeDataWrapper(TraceableBox::noop(Box::new(()))),
+        )
     }
 }
 

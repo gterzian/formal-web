@@ -430,9 +430,10 @@ difference is enforced at teardown. The three models:
    (`content/src/js/builtin_fn.rs`): the captures live in a cppgc-traced
    platform object, so their cells and JS edges stay alive exactly while the
    function is reachable and are released when it dies. They are **not**
-   strong roots: an untraced captured `GcCell` member can be collected while
-   the function is still live (the streams empty-queue panic the teardown GC
-   surfaced), and a strong root pins the realm.
+   strong roots: the captures object stores the cells as cppgc edges
+   (`Trace::store`), so the function's reachability alone keeps them alive,
+   while a cell cloned into an opaque closure stays rooted for the closure's
+   lifetime and pins whatever the cell reaches.
 
 3. **Resolved per call — no persistent handle.** Web IDL interface
    constructors look up their prototype from the interface registry at

@@ -39,6 +39,21 @@ pub mod boa;
 #[cfg(feature = "v8")]
 pub mod v8;
 
+/// Log an invariant violation and abort the process.
+///
+/// Used where a panic would unwind across an FFI boundary (V8's GC trace
+/// callback and native callbacks): a violated GC/handle invariant is
+/// unrecoverable, and continuing can corrupt the heap, so the process aborts
+/// deterministically with a message rather than unwinding into C++ or
+/// dereferencing freed memory.
+#[macro_export]
+macro_rules! fatal_invariant {
+    ($($arg:tt)*) => {{
+        ::log::error!($($arg)*);
+        ::std::process::abort();
+    }};
+}
+
 /// Re-exported cppgc surface for the V8 backend, referenced by
 /// `#[gc_struct]`-generated tracing impls. Content code must not depend on
 /// `rusty_v8` directly, so the cppgc traits and the visitor type are

@@ -1254,10 +1254,7 @@ impl GlobalScope {
     }
 
     pub(crate) fn clear_all_timers(&self, ec: &mut dyn ExecutionContext<Types>) {
-        let cleared_timers = {
-            let mut timers = self.window_timers.borrow_mut(ec);
-            std::mem::take(&mut *timers)
-        };
+        let cleared_timers = self.window_timers.take_all(ec);
         let Ok(task_sources) = self.task_sources() else {
             return;
         };
