@@ -33,8 +33,8 @@ path = "src/bin/graphics_process.rs"
 
 [dependencies]
 verification = { path = "../verification" }
-anyrender = { version = "0.10", features = ["serde"] }
-anyrender_vello = "0.10.1"
+anyrender = { version = "0.11", features = ["serde"] }
+anyrender_vello = "0.11.0"
 ipc = { path = "../ipc" }
 ipc_messages = { path = "../ipc_messages" }
 media = { path = "../media" }

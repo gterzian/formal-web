@@ -662,6 +662,30 @@ fn handle_command<B: MediaBackend + 'static, R: SurfaceRenderer>(
                 webview_id.0, deadline_ms
             );
         }
+        GraphicsCommand::RegisterImage {
+            webview_id,
+            image_id,
+            width,
+            height,
+            data_shmem_key,
+        } => {
+            let bytes = shmem_regions
+                .get(&data_shmem_key)
+                .map(|region| region.as_slice())
+                .unwrap_or_default();
+            let slot = webviews
+                .entry(webview_id)
+                .or_insert_with(|| WebviewState::new(channels.clone()));
+            if slot.compositor.store_image(image_id, width, height, bytes) {
+                debug!(
+                    "[render-pipe] Graphics register image webview={:?} size={}x{} bytes={}",
+                    webview_id,
+                    width,
+                    height,
+                    bytes.len()
+                );
+            }
+        }
         GraphicsCommand::RemoveVideoFrame {
             webview_id,
             paint_id,

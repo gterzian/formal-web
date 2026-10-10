@@ -70,6 +70,10 @@ Read repository documentation from general to specific:
 2. Every `README.md` found by walking from the repo root down to the
    directory containing the file(s) your task touches, in that order.
 
+There is exactly one `AGENTS.md`, at the repository root.  Every other
+level of the tree documents itself with a `README.md`; nested `AGENTS.md`
+files are not part of the chain and must not be created.
+
 Concatenate all of them; together they form the "doc chain" for a task.
 
 ## The placement invariant
@@ -418,13 +422,16 @@ cargo build --release -p graphics --bin formal-web-graphics
 ### External dependencies: blitz and anyrender
 
 Blitz crates (blitz-traits, blitz-dom, blitz-paint, blitz-html, stylo_taffy,
-debug_timer) come from a git dependency on
-<https://github.com/gterzian/blitz> (rev `954b41f`).
+debug_timer) come from the sibling fork checkout `../blitz`
+(`gterzian/blitz`, `0.3.0-alpha.5`), which carries the
+`DocumentConfig::embedded_images` edit that keeps `<img>` out of the
+document's own scene.  Switch the workspace dependencies back to a git
+dependency on <https://github.com/gterzian/blitz> once that edit is pushed.
 
-AnyRender crates (anyrender, anyrender_vello, anyrender_vello_cpu,
-anyrender_svg, wgpu_context) are sourced from crates.io at the versions
-required by the blitz workspace (0.10, 0.10.1, 0.12.1, 0.11.0, 0.6.0
-respectively).
+Stylo is `0.18.0`; the AnyRender crates (anyrender, anyrender_vello,
+anyrender_vello_cpu, anyrender_svg, wgpu_context) are sourced from crates.io
+at the versions the blitz workspace requires (0.11, 0.11.0, 0.14.0, 0.12.0,
+0.6.0 respectively).
 
 ### IPC wire format consistency
 

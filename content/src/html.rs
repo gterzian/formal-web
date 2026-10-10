@@ -19,6 +19,7 @@ mod html_anchor_element;
 mod html_dom_tree;
 mod html_element;
 pub(crate) mod html_iframe_element;
+pub(crate) mod html_image_element;
 pub(crate) mod html_input_element;
 pub(crate) mod html_media_element;
 mod html_parser;
@@ -68,6 +69,7 @@ pub(crate) use html_iframe_element::attach_same_origin_child_document_for_traver
 pub(crate) use html_iframe_element::{
     fire_deferred_iframe_load_events, run_iframe_load_event_steps_for_traversable,
 };
+pub use html_image_element::HTMLImageElement;
 pub use html_input_element::HTMLInputElement;
 pub use html_media_element::{HTMLMediaElement, MediaError};
 pub(crate) use html_parser::PendingParserScript;
