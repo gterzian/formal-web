@@ -63,15 +63,31 @@ impl DOMException {
 
     /// <https://webidl.spec.whatwg.org/#dom-domexception-code>
     pub(crate) fn code_value(&self) -> u16 {
+        // The code getter steps are to return the legacy code indicated in
+        // the error names table for this's name, or 0 if no such entry
+        // exists in the table.
+        // <https://webidl.spec.whatwg.org/#dfn-error-names-table>
         match self.name.as_str() {
+            "IndexSizeError" => 1,
             "HierarchyRequestError" => 3,
+            "WrongDocumentError" => 4,
             "InvalidCharacterError" => 5,
+            "NoModificationAllowedError" => 7,
             "NotFoundError" => 8,
             "NotSupportedError" => 9,
+            "InUseAttributeError" => 10,
+            "InvalidStateError" => 11,
             "SyntaxError" => 12,
+            "InvalidModificationError" => 13,
+            "NamespaceError" => 14,
+            "InvalidAccessError" => 15,
+            "TypeMismatchError" => 17,
             "SecurityError" => 18,
+            "NetworkError" => 19,
             "AbortError" => 20,
+            "URLMismatchError" => 21,
             "TimeoutError" => 23,
+            "InvalidNodeTypeError" => 24,
             "DataCloneError" => 25,
             _ => 0,
         }
