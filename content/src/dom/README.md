@@ -6,7 +6,7 @@
 - HTML-owned global-object [platform objects](https://webidl.spec.whatwg.org/#dfn-platform-object) (`GlobalScope`, `Window`) live in `content/src/html`; DOM dispatch code here depends on them when the DOM Standard talks about window-backed targets.
 - Native UI-event to DOM-dispatch bridging lives in `content/src/html/ui_events.rs`; activation-target selection stays in `dispatch.rs`.
 - `content/src/js/bindings` delegates DOM algorithms here — bindings never embed DOM logic.
-- Use the `web_standards` extension (`spec_lookup`) with `https://dom.spec.whatwg.org/` to read the DOM spec.  For single-sentence spec definitions, quote the defining sentence instead of inventing `Step N:` comments.
+- Use the `web-standards` skill with `https://dom.spec.whatwg.org/` to read the DOM spec.  For single-sentence spec definitions, quote the defining sentence instead of inventing `Step N:` comments.
 
 ## Event dispatch
 

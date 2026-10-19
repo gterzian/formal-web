@@ -142,14 +142,13 @@ anywhere:
   that contradicts the rule (e.g. one that uses a word the rule bans) is
   scruff, not justification.
 
-### readme-chain extension
+# Skills
 
-The `.pi/extensions/readme-chain/` extension provides:
-- **`readme_chain({ path })` tool** — Call this before editing a file to fetch the full
-  chain of AGENTS.md and README.md files for that file's path, from general to specific.
-  Reading the chain is always preferred over relying on memory.
-- **`/readme-chain [path]` command** — Lists the chain files for a path (for human use).
-See `.pi/extensions/readme-chain/README.md` for full documentation.
+Skills live in `.agents/skills/<name>/`; Pi discovers these directories
+natively. `SKILLS.md` is the guide: it indexes the skills, owns the install and
+runtime requirements, and states the conventions for adding or restructuring a
+skill. Read it before first use, then read the skill's `SKILL.md` before
+running it. When a skill cannot run, report that and wait for direction.
 
 # Algorithm Implementation
 
@@ -483,45 +482,10 @@ containing its own executable (`target/{profile}/`).  With the workspace,
 all binaries land in the shared `target/{profile}/` directory, so the
 embedder finds them by default.
 
-# Local Extensions
-
-## pi-browser — CDP Browser Tools
-
-The `.pi/extensions/browser/` extension wraps formal-web's CDP server into
-agent-callable tools for live interactive debugging during feature development.
-
-- **`browser_navigate`** — Navigate to a URL and wait for load.
-- **`browser_evaluate`** — Run a JavaScript expression in the page context.
-- **`browser_click`** — Click an element by CSS selector.
-- **`browser_type`** — Type text into an input.
-- **`browser_hover`** — Hover over an element for CSS `:hover` testing.
-- **`browser_get_text`** — Read visible text from the page or a selector.
-- **`browser_get_attribute`** — Read a DOM attribute value.
-- **`browser_get_computed_style`** — Read a computed CSS property.
-- **`browser_screenshot`** — Capture a PNG screenshot.
-- **`browser_capture_console`** — Collect console output for N milliseconds.
-- **`browser_history_back`** — Go back in browser history.
-- **`browser_reload`** — Reload the current page.
-- **`/browser-connect [port]`** — Connect to a CDP endpoint.
-- **`/browser-status`** — Show connection state and targets.
-
-See `.pi/extensions/browser/README.md` for tool details, command reference,
-formal-web CDP specifics, and the future roadmap.
-
-## Testing with formal-web
+# Testing with formal-web
 
 Formal-web supports three testing interfaces. See `automation/README.md`
 for detailed documentation.
-
-## web_standards — Spec Reading
-
-The `.pi/extensions/web_standards/` extension lazily loads and caches web standards documents (WHATWG, W3C, etc.) on first use. Provides three tools for the agent to read specs interactively:
-
-- **`spec_lookup`** — Look up a named anchor in a spec by its `id` attribute. Returns the element's tag, rendered content, and walks forward siblings to show algorithm boxes (with full recursive step numbering) until the next heading or named definition. This is the primary tool for reading spec content.
-
-  **Truncated dfn → scroll to section.** A `<dfn>` is inline inside a `<p>`, so its algorithm `<ol>` sibling is out of reach. When the result looks incomplete, check the `Section:` line — its value is the section heading id. Look that up next. See `.pi/extensions/web_standards/README.md` for details.
-- **`spec_ref_links`** — Find every place a concept is referenced in a spec. Returns the full URL for each usage site with its enclosing algorithm/section context. Use with `read` to render the full content at a specific reference location.
-- **`spec_search_id`** — Search for element `id` attributes containing a given substring. Use to discover anchor IDs when you know a keyword but not the exact id.
 
 # Naming Conventions
 
@@ -583,8 +547,8 @@ fact rather than an inference from the test result.  Report both.
 
 - Keep README guidance general and durable; one-off implementation details belong in source or tests, not in repository docs.
 - Use neutral, factual language.
-- Use the `web_standards` extension tools (`spec_lookup`, `spec_ref_links`, `spec_search_id`) to read spec content instead of reading local copies or fetching directly. This is not a one-shot lookup — consult the spec **iteratively** as you write code: start by reading the algorithm to understand the structure, implement the corresponding code, then re-read the spec and compare each step against what you wrote. The spec is the source of truth for both the algorithm logic and the documentation annotations (`// Step N:`, anchor URLs, `// Note:` for discrepancies) that code must carry. The end-of-task spec-mapping review (step 4 below) is the final checkpoint that every algorithm in the changeset is consistently implemented and properly annotated.
-- **Reference URLs vs canonical URLs.** In web standards, every definition (`#dfn-foo`) has corresponding reference links (`#ref-for-dfn-foo`, `#ref-for-dfn-foo①`, …) at each usage site. When documenting code that implements a specific algorithm step, prefer the *reference URL* over the canonical concept URL — your code implements "the thing as used in a particular algorithm", not the thing itself. Use `spec_ref_links` to find all reference URLs for a concept.
+- Use the `web-standards` skill (see `SKILLS.md`) to read spec content instead of reading local copies or fetching directly. This is not a one-shot lookup — consult the spec **iteratively** as you write code: start by reading the algorithm to understand the structure, implement the corresponding code, then re-read the spec and compare each step against what you wrote. The spec is the source of truth for both the algorithm logic and the documentation annotations (`// Step N:`, anchor URLs, `// Note:` for discrepancies) that code must carry. The end-of-task spec-mapping review (step 4 below) is the final checkpoint that every algorithm in the changeset is consistently implemented and properly annotated.
+- **Reference URLs vs canonical URLs.** In web standards, every definition (`#dfn-foo`) has corresponding reference links (`#ref-for-dfn-foo`, `#ref-for-dfn-foo①`, …) at each usage site. When documenting code that implements a specific algorithm step, prefer the *reference URL* over the canonical concept URL — your code implements "the thing as used in a particular algorithm", not the thing itself. Use the skill's `refs` command to find all reference URLs for a concept.
 - Treat `vendor/` and vendored WPT resources as read-only unless the task explicitly requires vendor changes.
 - The words "runtime", "sidecar", "carrier", "root", and "domain document" (or "domain_document") are forbidden in this repo.
 - **Method doc comments:** A method that implements a spec algorithm has only the spec link as its doc comment — no `/// Note:` continuation above the method. All explanation, step references, and context belong in `//` comments inside the method body, as notes below the relevant steps.

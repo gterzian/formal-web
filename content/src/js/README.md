@@ -75,7 +75,7 @@ inside a backing engine (on the Boa backend this means using only public Boa
 APIs).  Instead, follow this methodology:
 
 1. Read the relevant spec (e.g. HTML §7.2.3 The WindowProxy exotic object)
-   using `spec_lookup`.
+   using the `web-standards` skill's `lookup` command.
 2. Look at the **index of links** at the bottom of the spec section — each
    JS operation references an ECMAScript spec algorithm by URL, e.g.
    [`OrdinaryGetPrototypeOf`](https://tc39.es/ecma262/#sec-ordinarygetprototypeof)
