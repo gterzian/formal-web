@@ -1,6 +1,6 @@
 ---
 name: browser-debug
-description: Drive a running formal-web or Chrome instance over the Chrome DevTools Protocol: navigate, evaluate JavaScript, click, type, hover, read text, attributes and computed styles, take screenshots and capture console output. Use for live interactive debugging while developing a feature and for reproducing failing WPT behavior on a minimal page.
+description: "Drive a running formal-web or Chrome instance over the Chrome DevTools Protocol: navigate, evaluate JavaScript, click, type, hover, read text, attributes and computed styles, take screenshots and capture console output. Use for live interactive debugging while developing a feature and for reproducing failing WPT behavior on a minimal page."
 compatibility: Requires Node.js 22 or newer and a CDP endpoint, by default port 9222, for example `formal-web-embedder cdp --port 9222`.
 ---
 
@@ -47,9 +47,12 @@ node scripts/browser.mjs status
   `input`/`change` so reactive frameworks see it.
 - `hover` tries CDP `mouseMoved`, verifies `:hover`, and falls back to
   dispatching mouse events. With no selector it moves the mouse away.
-- `text` returns up to 4000 characters; `--max` overrides the cap.
+- `text` returns up to 4000 characters; `--max` overrides the cap. In
+  formal-web `innerText` is undefined, so use `eval` with `textContent`.
 - Structured results print as JSON. `text`, `attr` and `style` print the raw
   value.
+- `scroll` defaults to the viewport centre, but formal-web does not expose
+  `innerWidth`/`innerHeight`; pass explicit `x` and `y` coordinates there.
 - `screenshot` writes a PNG to `--out` (default a timestamped file under the
   system temp directory) and prints the path.
 

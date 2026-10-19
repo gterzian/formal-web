@@ -44,3 +44,12 @@ formal-web-embedder cdp --port 9222 --startup-url "file:///path/to/page.html"
 5. **Render latency after navigation.** `Page.loadEventFired` fires before the
    first paint completes. Take a screenshot after a short delay when checking
    rendered output.
+
+6. **`innerText` is not implemented.** `document.body.innerText` is
+   `undefined`, so `browser.mjs text` returns an empty string. Use `eval` with
+   `textContent` to read element text.
+
+7. **Viewport metrics are not exposed.** `window.innerWidth` and
+   `window.innerHeight` are `undefined`, so `browser.mjs scroll` cannot default
+   to the viewport centre and uses `(0, 0)`. Pass explicit `x` and `y`
+   coordinates to target the page.
