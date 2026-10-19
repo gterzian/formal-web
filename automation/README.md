@@ -62,10 +62,10 @@ ws.addEventListener('open', async () => {
 });
 ```
 
-The pi agent's browser extension (`.pi/extensions/browser/`) wraps this
-into the `browser_navigate`, `browser_click`, etc. tools. Before using
-those tools, run `/browser-connect [port]` to connect the extension to
-formal-web's CDP endpoint.
+The `browser-debug` skill wraps this into the `navigate`, `click`, `eval`,
+and other `browser.mjs` commands. See `AGENTS.md` (section "Skills") for the
+command line; scripts connect to formal-web's CDP endpoint on port 9222 by
+default.
 
 ## WebDriver Server
 

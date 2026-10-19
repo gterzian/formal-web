@@ -1,6 +1,0 @@
-{
-  "name": "web_standards",
-  "dependencies": {
-    "cheerio": "^1.0.0"
-  }
-}

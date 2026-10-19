@@ -9,7 +9,7 @@
   (`contentWindow` resolves and the iframe `load` event does fire).
 - Keep helper names aligned with the corresponding HTML algorithm anchors, and prefer explicit error returns or `debug_assert!` plus safe early returns over sentinel ids.
 - Trigger parser-discovered iframe work from document-load parsing completion.
-- Use the `web_standards` extension (`spec_lookup`) with `https://html.spec.whatwg.org/` to read the HTML spec.
+- Use the `web-standards` skill with `https://html.spec.whatwg.org/` to read the HTML spec.
 
 ## Common microsyntaxes (`common_microsyntaxes/`)
 
