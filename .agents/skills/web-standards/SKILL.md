@@ -1,17 +1,13 @@
 ---
 name: web-standards
 description: Read exact text from WHATWG and W3C specifications by anchor id, find anchor ids by keyword, and list where a concept is referenced. Use whenever implementing, annotating, citing or reviewing code against a web standard (HTML, DOM, Fetch, Streams, URL, Web IDL, Infra, WebRTC), including every `// Step N:` comment and spec link.
-compatibility: Requires Node.js 22 or newer and network access to the spec hosts.
+compatibility: Requires network access to the spec hosts.
 ---
 
 # web-standards
 
-Spec text is the source of truth for both algorithm logic and the annotations
-code must carry. Use this skill before writing, annotating or reviewing any
-spec-implementing code, and again after writing it to compare each step.
-
-Run the script from this skill directory (`scripts/spec.mjs`), or with the full
-path from the repository root. Fetched specs are cached on disk for 24 hours.
+Use this skill to read spec text before writing, annotating or reviewing code
+against a web standard. Fetched specs are cached on disk for 24 hours.
 
 ## Commands
 
@@ -42,20 +38,10 @@ Look up any cross-reference by its exact URL fragment. Split a full URL before
 that heading id next. For example, `queue-a-microtask` truncates; `queuing-tasks`
 renders the full algorithm.
 
-**Prefer reference URLs.** When documenting a step that uses a concept, use the
-reference URL (`#ref-for-dfn-platform-object①`) over the canonical definition
-URL (`#dfn-platform-object`): the code implements the thing as used in that
-algorithm, not the concept in the abstract.
-
-**Re-read iteratively.** Read the algorithm, implement it, then read it again
-and compare every step. Do not rely on a single lookup.
-
 ## Annotation conventions
 
-The conventions live in `AGENTS.md` under "Algorithm Implementation" and
-"Spec Fidelity" — step comments, anchor URLs, `// Note:` for discrepancies,
-the three-layer architecture, and the spec-mapping review. Follow them
-exactly; this skill only supplies the spec text.
+Annotation conventions live in `AGENTS.md` under "Algorithm Implementation"
+and "Spec Fidelity". This skill only supplies the spec text.
 
 ## Verify annotations
 
@@ -71,6 +57,5 @@ node scripts/spec.mjs verify content/src --refresh
 
 ## Boa API mapping
 
-`references/boa-api-mapping.md` maps ECMAScript operations referenced by web
-specs to Boa's Rust API, with the search methodology for locating an anchor in
-Boa's source. Read it when implementing Web IDL or HTML algorithms with Boa.
+Read `references/boa-api-mapping.md` when implementing Web IDL or HTML
+algorithms with Boa.

@@ -6,9 +6,7 @@
   "directories": {
     "test": "tests"
   },
-  "scripts": {
-    "build:skills": "node .agents/skills/build-skills.mjs"
-  },
+  "scripts": {},
   "repository": {
     "type": "git",
     "url": "git+https://github.com/gterzian/formal-web.git"
@@ -22,8 +20,6 @@
   },
   "homepage": "https://github.com/gterzian/formal-web#readme",
   "devDependencies": {
-    "@types/node": "^25.9.1",
-    "cheerio": "^1.2.0",
-    "esbuild": "^0.28.0"
+    "@types/node": "^25.9.1"
   }
 }

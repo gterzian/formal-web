@@ -1,22 +1,3 @@
-import type { Cheerio, CheerioAPI } from "cheerio";
-
-export interface SpecLink {
-  text: string;
-  href: string;
-}
-
-export interface RefContext {
-  type: string;
-  name: string;
-  sectionId?: string;
-}
-
-export interface RenderableContainer {
-  container: Cheerio<any>;
-  type: "algorithm" | "section";
-  sectionLevel?: number;
-}
-
 export const DOC_REMINDER = `
 
 ── Spec Doc Reminder ──
@@ -28,12 +9,9 @@ When implementing from this spec:
 `;
 
 /** Collect all external links within a selection, deduplicated by href and text. */
-export function collectLinks(
-  $: CheerioAPI,
-  $root: Cheerio<any>
-): SpecLink[] {
-  const seen = new Set<string>();
-  const links: SpecLink[] = [];
+export function collectLinks($, $root) {
+  const seen = new Set();
+  const links = [];
   $root.find("a[href]").each((_index, element) => {
     const $element = $(element);
     const href = $element.attr("href")?.trim() || "";
@@ -49,7 +27,7 @@ export function collectLinks(
 }
 
 /** Merge links into an existing list without duplicating href/text pairs. */
-export function mergeLinks(target: SpecLink[], incoming: SpecLink[]): void {
+export function mergeLinks(target, incoming) {
   for (const link of incoming) {
     if (
       !target.some(
@@ -61,7 +39,7 @@ export function mergeLinks(target: SpecLink[], incoming: SpecLink[]): void {
   }
 }
 
-export function formatLinkTable(links: SpecLink[]): string {
+export function formatLinkTable(links) {
   if (links.length === 0) return "";
   const maxLen = Math.max(...links.map((link) => link.text.length), "Term".length);
   const header = `┌─ ${"Term".padEnd(maxLen)} ── ${"Link".padEnd(70)} ─┐`;
@@ -77,19 +55,12 @@ export function formatLinkTable(links: SpecLink[]): string {
 // are NOT numbered in the HTML — the browser renders them. We assign numbers
 // recursively based on position.
 
-export function renderAlgorithmSteps(
-  $: CheerioAPI,
-  $orderedList: Cheerio<any>,
-  parentNumber: string,
-  links: SpecLink[]
-): string[] {
-  const lines: string[] = [];
+export function renderAlgorithmSteps($, $orderedList, parentNumber, links) {
+  const lines = [];
   $orderedList.children("li").each((index, listItem) => {
     const $listItem = $(listItem);
     const number = index + 1;
-    const fullNumber = parentNumber
-      ? `${parentNumber}.${number}`
-      : `${number}`;
+    const fullNumber = parentNumber ? `${parentNumber}.${number}` : `${number}`;
 
     mergeLinks(links, collectLinks($, $listItem));
 
@@ -112,12 +83,8 @@ export function renderAlgorithmSteps(
 }
 
 /** Render a `div[data-algorithm]` or `ol.algorithm` container. */
-export function renderAlgorithmContainer(
-  $: CheerioAPI,
-  $algorithm: Cheerio<any>,
-  links: SpecLink[]
-): string {
-  const algorithmTag = ($algorithm.prop("tagName") as string).toLowerCase();
+export function renderAlgorithmContainer($, $algorithm, links) {
+  const algorithmTag = ($algorithm.prop("tagName") || "").toLowerCase();
   const algorithmName =
     $algorithm.attr("data-algorithm") ||
     $algorithm.attr("aria-label") ||
@@ -149,16 +116,11 @@ export function renderAlgorithmContainer(
 //   - the next heading (h1-h6), optionally respecting a heading level threshold
 //   - the next <dfn> with an id attribute (a new named definition)
 
-export function walkSiblingContent(
-  $: CheerioAPI,
-  startElement: Cheerio<any>,
-  links: SpecLink[],
-  stopAtLevel?: number
-): string[] {
-  const parts: string[] = [];
+export function walkSiblingContent($, startElement, links, stopAtLevel) {
+  const parts = [];
   let element = startElement.next();
   while (element.length) {
-    const tag = (element.prop("tagName") as string | undefined)?.toLowerCase();
+    const tag = (element.prop("tagName") || "").toLowerCase();
 
     // Stop at the next heading.
     if (tag && /^h[1-6]$/.test(tag)) {
@@ -193,23 +155,20 @@ export function walkSiblingContent(
 }
 
 /** Find the nearest enclosing section heading for an element. */
-export function findParentSectionEl(
-  $: CheerioAPI,
-  element: Cheerio<any>
-): { id: string; text: string } | undefined {
+export function findParentSectionEl($, element) {
   let parent = element.parent();
   while (parent.length) {
-    const parentTag = (parent.prop("tagName") as string).toLowerCase();
+    const parentTag = (parent.prop("tagName") || "").toLowerCase();
     if (/^h[1-6]$/.test(parentTag) && parent.attr("id")) {
-      return { id: parent.attr("id")!, text: parent.text().trim() };
+      return { id: parent.attr("id"), text: parent.text().trim() };
     }
     const previousId = parent.prevAll("[id]").first();
     if (
       previousId.length &&
-      /^h[1-6]$/.test((previousId.prop("tagName") as string).toLowerCase())
+      /^h[1-6]$/.test((previousId.prop("tagName") || "").toLowerCase())
     ) {
       return {
-        id: previousId.attr("id")!,
+        id: previousId.attr("id"),
         text: previousId.text().trim(),
       };
     }
@@ -223,13 +182,10 @@ export function findParentSectionEl(
  * (and its preceding siblings) for the nearest enclosing heading or
  * algorithm box.
  */
-export function findRefContext(
-  $: CheerioAPI,
-  $element: Cheerio<any>
-): RefContext {
+export function findRefContext($, $element) {
   let ancestor = $element.parent();
   while (ancestor.length) {
-    const tag = (ancestor.prop("tagName") as string).toLowerCase();
+    const tag = (ancestor.prop("tagName") || "").toLowerCase();
     // Check for algorithm containers: <div data-algorithm> or <ol class="algorithm">
     if (
       (tag === "div" && ancestor.attr("data-algorithm")) ||
@@ -258,13 +214,10 @@ export function findRefContext(
 }
 
 /** Same ancestor walk as findRefContext, returning the renderable container. */
-export function findRenderableContainer(
-  $: CheerioAPI,
-  $element: Cheerio<any>
-): RenderableContainer | null {
+export function findRenderableContainer($, $element) {
   let ancestor = $element.parent();
   while (ancestor.length) {
-    const tag = (ancestor.prop("tagName") as string).toLowerCase();
+    const tag = (ancestor.prop("tagName") || "").toLowerCase();
     if (
       (tag === "div" && ancestor.attr("data-algorithm")) ||
       (tag === "ol" && ancestor.attr("class") === "algorithm")
@@ -275,9 +228,7 @@ export function findRenderableContainer(
       .prevAll("h1[id], h2[id], h3[id], h4[id], h5[id], h6[id]")
       .first();
     if (previousHeading.length) {
-      const level = parseInt(
-        (previousHeading.prop("tagName") as string)[1]
-      );
+      const level = parseInt((previousHeading.prop("tagName") || "")[1]);
       return {
         container: previousHeading,
         type: "section",
@@ -290,6 +241,6 @@ export function findRenderableContainer(
 }
 
 /** Percent-encode non-ASCII characters (circled digits) for the URL fragment. */
-export function buildRefUrl(specBase: string, refId: string): string {
+export function buildRefUrl(specBase, refId) {
   return `${specBase}#${encodeURI(refId)}`;
 }

@@ -144,24 +144,11 @@ anywhere:
 
 # Skills
 
-Skills live in `.agents/skills/<name>/`. Each has a `SKILL.md` with the full
-instructions and a script in `scripts/`. Pi discovers these directories natively;
-other harnesses find them through this section and the index in `SKILLS.md`.
-Run scripts with `node` from the repository root, and read a skill's `SKILL.md`
-before first use.
-
-- **web-standards**: read spec text before writing, annotating or reviewing any algorithm.
-  `node .agents/skills/web-standards/scripts/spec.mjs lookup <spec-url> <id>`
-  `node .agents/skills/web-standards/scripts/spec.mjs refs <spec-url> <id> [--read <n>|all]`
-  `node .agents/skills/web-standards/scripts/spec.mjs search <spec-url> <keyword>`
-  `node .agents/skills/web-standards/scripts/spec.mjs verify <path...>`
-- **readme-chain**: read the README chain the first time you edit in a directory during a session.
-  `node .agents/skills/readme-chain/scripts/readme-chain.mjs <path>`
-- **browser-debug**: check live behavior of formal-web over CDP, default port 9222.
-  `node .agents/skills/browser-debug/scripts/browser.mjs <command> [args]`
-- **startup-page-test**: run the startup-page test plan with `/skill:startup-page-test`.
-
-When a skill cannot run, report that and wait for direction.
+Skills live in `.agents/skills/<name>/`; Pi discovers these directories
+natively. `SKILLS.md` is the guide: it indexes the skills, owns the install and
+runtime requirements, and states the conventions for adding or restructuring a
+skill. Read it before first use, then read the skill's `SKILL.md` before
+running it. When a skill cannot run, report that and wait for direction.
 
 # Algorithm Implementation
 
@@ -560,7 +547,7 @@ fact rather than an inference from the test result.  Report both.
 
 - Keep README guidance general and durable; one-off implementation details belong in source or tests, not in repository docs.
 - Use neutral, factual language.
-- Use the `web-standards` skill (`node .agents/skills/web-standards/scripts/spec.mjs ...`) to read spec content instead of reading local copies or fetching directly. This is not a one-shot lookup — consult the spec **iteratively** as you write code: start by reading the algorithm to understand the structure, implement the corresponding code, then re-read the spec and compare each step against what you wrote. The spec is the source of truth for both the algorithm logic and the documentation annotations (`// Step N:`, anchor URLs, `// Note:` for discrepancies) that code must carry. The end-of-task spec-mapping review (step 4 below) is the final checkpoint that every algorithm in the changeset is consistently implemented and properly annotated.
+- Use the `web-standards` skill (see `SKILLS.md`) to read spec content instead of reading local copies or fetching directly. This is not a one-shot lookup — consult the spec **iteratively** as you write code: start by reading the algorithm to understand the structure, implement the corresponding code, then re-read the spec and compare each step against what you wrote. The spec is the source of truth for both the algorithm logic and the documentation annotations (`// Step N:`, anchor URLs, `// Note:` for discrepancies) that code must carry. The end-of-task spec-mapping review (step 4 below) is the final checkpoint that every algorithm in the changeset is consistently implemented and properly annotated.
 - **Reference URLs vs canonical URLs.** In web standards, every definition (`#dfn-foo`) has corresponding reference links (`#ref-for-dfn-foo`, `#ref-for-dfn-foo①`, …) at each usage site. When documenting code that implements a specific algorithm step, prefer the *reference URL* over the canonical concept URL — your code implements "the thing as used in a particular algorithm", not the thing itself. Use the skill's `refs` command to find all reference URLs for a concept.
 - Treat `vendor/` and vendored WPT resources as read-only unless the task explicitly requires vendor changes.
 - The words "runtime", "sidecar", "carrier", "root", and "domain document" (or "domain_document") are forbidden in this repo.

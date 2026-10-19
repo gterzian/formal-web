@@ -16,5 +16,4 @@ embedder/Cargo.lock
 media/Cargo.lock
 net/Cargo.lock
 node_modules/
-.pi/collected-sessions/
-.pi/extensions/pi-share-hf/.archive.log
+/.npm-cache/

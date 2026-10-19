@@ -1,62 +1,45 @@
-export interface PendingRequest {
-  resolve: (value: unknown) => void;
-  reject: (error: Error) => void;
-}
-
-export type EventHandler = (params: any) => void;
-
-export interface CDPTarget {
-  type: string;
-  url: string;
-  webSocketDebuggerUrl?: string;
-}
+import WebSocket from "ws";
 
 export class CDPClient {
-  private socket: WebSocket | null = null;
-  private pending = new Map<number, PendingRequest>();
-  private eventHandlers = new Map<string, EventHandler[]>();
-  private messageId = 0;
-  private readyPromise: Promise<void>;
-  private resolveReady: (() => void) | null = null;
-  private rejectReady: ((error: Error) => void) | null = null;
-  private isClosed = false;
-
-  constructor(wsUrl: string) {
+  constructor(wsUrl) {
+    this.wsUrl = wsUrl;
+    this.socket = null;
+    this.pending = new Map();
+    this.eventHandlers = new Map();
+    this.messageId = 0;
+    this.isClosed = false;
     this.readyPromise = new Promise((resolve, reject) => {
       this.resolveReady = resolve;
       this.rejectReady = reject;
     });
-    this.connect(wsUrl);
+    this.connect();
   }
 
-  private connect(wsUrl: string): void {
+  connect() {
     this.isClosed = false;
-    this.socket = new WebSocket(wsUrl);
+    this.socket = new WebSocket(this.wsUrl);
 
-    this.socket.addEventListener("open", () => {
+    this.socket.on("open", () => {
       this.resolveReady?.();
       this.resolveReady = null;
       this.rejectReady = null;
     });
 
-    this.socket.addEventListener("error", () => {
-      const error = new Error("CDP WebSocket error");
+    this.socket.on("error", (error) => {
       this.rejectReady?.(error);
       this.resolveReady = null;
       this.rejectReady = null;
     });
 
-    this.socket.addEventListener("message", (event) => {
-      const raw = typeof event.data === "string" ? event.data : "";
-      if (!raw) return;
-      let message: any;
+    this.socket.on("message", (raw) => {
+      let message;
       try {
-        message = JSON.parse(raw);
+        message = JSON.parse(raw.toString());
       } catch {
         return;
       }
       if (message.id != null && this.pending.has(message.id)) {
-        const pending = this.pending.get(message.id)!;
+        const pending = this.pending.get(message.id);
         this.pending.delete(message.id);
         if (message.error) {
           pending.reject(new Error(message.error.message));
@@ -72,7 +55,7 @@ export class CDPClient {
       }
     });
 
-    this.socket.addEventListener("close", () => {
+    this.socket.on("close", () => {
       this.isClosed = true;
       const error = new Error("CDP socket closed");
       for (const pending of this.pending.values()) {
@@ -82,38 +65,34 @@ export class CDPClient {
     });
   }
 
-  get ready(): Promise<void> {
+  get ready() {
     return this.readyPromise;
   }
 
-  get closed(): boolean {
+  get closed() {
     return this.isClosed;
   }
 
-  async send<T = any>(method: string, params: object = {}): Promise<T> {
+  async send(method, params = {}) {
     if (this.isClosed || !this.socket) {
       throw new Error("CDP socket closed");
     }
-    return new Promise<T>((resolve, reject) => {
+    return new Promise((resolve, reject) => {
       const id = ++this.messageId;
-      this.pending.set(id, {
-        resolve: (value) => resolve(value as T),
-        reject,
-      });
-      try {
-        this.socket!.send(JSON.stringify({ id, method, params }));
-      } catch (error) {
+      this.pending.set(id, { resolve, reject });
+      this.socket.send(JSON.stringify({ id, method, params }), (error) => {
+        if (!error) return;
         this.pending.delete(id);
-        reject(error instanceof Error ? error : new Error(String(error)));
-      }
+        reject(error);
+      });
     });
   }
 
-  onEvent(method: string, handler: EventHandler): () => void {
+  onEvent(method, handler) {
     if (!this.eventHandlers.has(method)) {
       this.eventHandlers.set(method, []);
     }
-    this.eventHandlers.get(method)!.push(handler);
+    this.eventHandlers.get(method).push(handler);
     return () => {
       const handlers = this.eventHandlers.get(method);
       if (!handlers) return;
@@ -124,7 +103,7 @@ export class CDPClient {
     };
   }
 
-  close(): void {
+  close() {
     this.isClosed = true;
     if (this.socket) {
       this.socket.close();
@@ -133,7 +112,7 @@ export class CDPClient {
   }
 }
 
-export function resolvePort(explicitPort?: number): number {
+export function resolvePort(explicitPort) {
   if (explicitPort !== undefined) return explicitPort;
   const fromEnvironment = process.env.FORMAL_WEB_CDP_PORT;
   if (fromEnvironment) {
@@ -143,15 +122,15 @@ export function resolvePort(explicitPort?: number): number {
   return 9222;
 }
 
-export async function listTargets(port: number): Promise<CDPTarget[]> {
+export async function listTargets(port) {
   const response = await fetch(`http://localhost:${port}/json/list`);
   if (!response.ok) {
     throw new Error(`CDP list failed: ${response.status}`);
   }
-  return (await response.json()) as CDPTarget[];
+  return await response.json();
 }
 
-async function resolvePageWsUrl(port: number): Promise<string> {
+async function resolvePageWsUrl(port) {
   const targets = await listTargets(port);
   const page = targets.find(
     (target) => target.type === "page" && target.webSocketDebuggerUrl
@@ -162,7 +141,7 @@ async function resolvePageWsUrl(port: number): Promise<string> {
   return page.webSocketDebuggerUrl;
 }
 
-export async function connect(port: number): Promise<CDPClient> {
+export async function connect(port) {
   const wsUrl = await resolvePageWsUrl(port);
   const client = new CDPClient(wsUrl);
   await client.ready;
@@ -175,7 +154,7 @@ export async function connect(port: number): Promise<CDPClient> {
   return client;
 }
 
-function isConnectionError(error: unknown): boolean {
+function isConnectionError(error) {
   const message = error instanceof Error ? error.message : String(error);
   return (
     message.includes("CDP socket closed") ||
@@ -188,11 +167,8 @@ function isConnectionError(error: unknown): boolean {
 }
 
 /** Run an operation and retry once when the connection fails. */
-export async function withRetry<T>(
-  port: number,
-  operation: (client: CDPClient) => Promise<T>
-): Promise<T> {
-  const attempt = async (): Promise<T> => {
+export async function withRetry(port, operation) {
+  const attempt = async () => {
     const client = await connect(port);
     try {
       return await operation(client);
@@ -209,10 +185,7 @@ export async function withRetry<T>(
   }
 }
 
-export async function jsEval<T = any>(
-  client: CDPClient,
-  expression: string
-): Promise<T> {
+export async function jsEval(client, expression) {
   const { result, exceptionDetails } = await client.send("Runtime.evaluate", {
     expression,
     returnByValue: true,
@@ -223,13 +196,10 @@ export async function jsEval<T = any>(
       exceptionDetails.exception?.description ?? exceptionDetails.text
     );
   }
-  return result.value as T;
+  return result.value;
 }
 
-export function waitForLoad(
-  client: CDPClient,
-  timeoutMs = 8000
-): Promise<void> {
+export function waitForLoad(client, timeoutMs = 8000) {
   return new Promise((resolve) => {
     const off = client.onEvent("Page.loadEventFired", () => {
       off();
@@ -242,10 +212,7 @@ export function waitForLoad(
   });
 }
 
-export function waitForNavigation(
-  client: CDPClient,
-  timeoutMs = 8000
-): Promise<void> {
+export function waitForNavigation(client, timeoutMs = 8000) {
   return new Promise((resolve) => {
     const off = client.onEvent("Page.frameNavigated", (params) => {
       if (params?.frame?.parentId == null) {
@@ -260,16 +227,8 @@ export function waitForNavigation(
   });
 }
 
-export async function getBoundingRect(
-  client: CDPClient,
-  selector: string
-): Promise<{ left: number; top: number; width: number; height: number }> {
-  const rect = await jsEval<{
-    left: number;
-    top: number;
-    width: number;
-    height: number;
-  } | null>(
+export async function getBoundingRect(client, selector) {
+  const rect = await jsEval(
     client,
     `(() => {
       const element = document.querySelector(${JSON.stringify(selector)});
@@ -289,11 +248,7 @@ export async function getBoundingRect(
  * formal-web may stub or reject Input methods, in which case callers fall
  * back to a JS-based implementation.
  */
-export async function tryCdpInput(
-  client: CDPClient,
-  method: string,
-  params: object
-): Promise<boolean> {
+export async function tryCdpInput(client, method, params) {
   try {
     await client.send(method, params);
     return true;
@@ -302,12 +257,8 @@ export async function tryCdpInput(
   }
 }
 
-export async function jsSetInputValue(
-  client: CDPClient,
-  selector: string,
-  text: string
-): Promise<void> {
-  const applied = await jsEval<boolean>(
+export async function jsSetInputValue(client, selector, text) {
+  const applied = await jsEval(
     client,
     `(() => {
       const element = document.querySelector(${JSON.stringify(selector)});
@@ -330,11 +281,8 @@ export async function jsSetInputValue(
   }
 }
 
-export async function jsHoverElement(
-  client: CDPClient,
-  selector: string
-): Promise<void> {
-  const hovered = await jsEval<boolean>(
+export async function jsHoverElement(client, selector) {
+  const hovered = await jsEval(
     client,
     `(() => {
       const element = document.querySelector(${JSON.stringify(selector)});
@@ -349,10 +297,7 @@ export async function jsHoverElement(
   }
 }
 
-export async function jsUnhoverElement(
-  client: CDPClient,
-  selector: string
-): Promise<void> {
+export async function jsUnhoverElement(client, selector) {
   await jsEval(
     client,
     `(() => {

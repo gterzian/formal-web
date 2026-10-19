@@ -6,12 +6,8 @@ disable-model-invocation: true
 
 # startup-page-test
 
-Run a structured browser test of the FormalWeb startup page. Start a CDP
-endpoint on the startup page first:
-
-```bash
-formal-web-embedder cdp --port 9222 --startup-url "file:///path/to/startup-page.html"
-```
+Run a structured browser test of the FormalWeb startup page. Start the CDP
+endpoint on the startup page as described in the `browser-debug` skill.
 
 The plan's selectors refer to the startup page it was written for. If the page
 being served does not contain them, report the missing elements and stop

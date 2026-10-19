@@ -1,10 +1,6 @@
 # formal-web CDP support
 
-formal-web's CDP server implements a subset of the protocol. Start it with:
-
-```bash
-formal-web-embedder cdp --port 9222 --startup-url "file:///path/to/page.html"
-```
+formal-web's CDP server implements a subset of the protocol.
 
 ## Method support
 

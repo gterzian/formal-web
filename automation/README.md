@@ -63,9 +63,9 @@ ws.addEventListener('open', async () => {
 ```
 
 The `browser-debug` skill wraps this into the `navigate`, `click`, `eval`,
-and other `browser.mjs` commands. See `AGENTS.md` (section "Skills") for the
-command line; scripts connect to formal-web's CDP endpoint on port 9222 by
-default.
+and other `browser.mjs` commands. See `.agents/skills/browser-debug/SKILL.md`
+for the command line; scripts connect to formal-web's CDP endpoint on port 9222
+by default.
 
 ## WebDriver Server
 

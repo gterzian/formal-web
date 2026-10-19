@@ -1,7 +1,6 @@
 ---
 name: readme-chain
 description: Collect the README.md documentation chain for a file or directory, ordered from the project root to the most specific directory. Use before editing or reviewing any file in a directory whose README has not been read in this session.
-compatibility: Requires Node.js 22 or newer.
 ---
 
 # readme-chain
@@ -11,9 +10,9 @@ target path, from general to specific. Read the chain before editing a file in
 a directory whose README has not been read in this session. Reading the chain
 is always preferred over relying on memory.
 
-`AGENTS.md` at the project root is the entry point and names this skill, so it
-is always loaded. The chain therefore starts at the first `README.md` below the
-root.
+`AGENTS.md` at the project root is always loaded and points to `SKILLS.md`,
+which indexes this skill. The chain therefore starts at the first `README.md`
+below the root.
 
 ## Command
 
@@ -23,9 +22,7 @@ node scripts/readme-chain.mjs [path] --list
 node scripts/readme-chain.mjs [path] --include-root
 ```
 
-Run the script from this skill directory (`scripts/readme-chain.mjs`), or with
-the full path from the repository root. With no path it uses the current
-working directory.
+With no path the script uses the current working directory.
 
 - Default output is the chain summary followed by the contents of every
   `README.md` in the chain.

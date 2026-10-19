@@ -1,0 +1,13 @@
+{
+  "name": "formal-web-skill-web-standards",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Spec reading CLI for the web-standards Agent Skill",
+  "engines": {
+    "node": ">=20.18.1"
+  },
+  "dependencies": {
+    "cheerio": "^1.2.0"
+  }
+}

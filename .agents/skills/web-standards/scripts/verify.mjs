@@ -1,40 +1,7 @@
 import { readdir, readFile } from "node:fs/promises";
 import { join, relative } from "node:path";
-import type { Cheerio, CheerioAPI } from "cheerio";
-import { getDoc, type FetchOptions } from "./cache.ts";
-import {
-  findParentSectionEl,
-  findRenderableContainer,
-} from "./render.ts";
-
-export interface StepComment {
-  line: number;
-  number: string;
-  text: string;
-}
-
-export interface AnchorRecord {
-  file: string;
-  line: number;
-  anchor: string;
-  url: string;
-  steps: StepComment[];
-}
-
-export interface VerifyIssue {
-  file: string;
-  line: number;
-  anchor: string;
-  message: string;
-  expected?: string;
-  actual?: string;
-}
-
-export interface VerifyReport {
-  checkedAnchors: number;
-  checkedSteps: number;
-  issues: VerifyIssue[];
-}
+import { getDoc } from "./cache.mjs";
+import { findParentSectionEl, findRenderableContainer } from "./render.mjs";
 
 const DOC_ANCHOR_PATTERN = /^\s*\/\/\/\s*<((?:https?):\/\/[^>\s]+)>/;
 const STEP_PATTERN = /^\s*\/\/\s*Step\s+([0-9]+(?:\.[0-9]+)*):\s*(.*)$/;
@@ -51,13 +18,13 @@ const SKIP_DIRECTORIES = new Set([
   ".agents",
 ]);
 
-async function collectRustFiles(path: string): Promise<string[]> {
+async function collectRustFiles(path) {
   const entries = await readdir(path, { withFileTypes: true }).catch(() => null);
   if (entries === null) {
     return path.endsWith(".rs") ? [path] : [];
   }
 
-  const files: string[] = [];
+  const files = [];
   for (const entry of entries) {
     if (entry.isDirectory()) {
       if (SKIP_DIRECTORIES.has(entry.name)) continue;
@@ -70,11 +37,11 @@ async function collectRustFiles(path: string): Promise<string[]> {
 }
 
 /** Parse a Rust file into anchor declarations and their step comments. */
-export function parseAnchors(file: string, source: string): AnchorRecord[] {
+function parseAnchors(file, source) {
   const lines = source.split("\n");
-  const records: AnchorRecord[] = [];
-  let pendingAnchor: { url: string; line: number } | null = null;
-  let currentRecord: AnchorRecord | null = null;
+  const records = [];
+  let pendingAnchor = null;
+  let currentRecord = null;
 
   for (let index = 0; index < lines.length; index += 1) {
     const line = lines[index];
@@ -90,7 +57,7 @@ export function parseAnchors(file: string, source: string): AnchorRecord[] {
       if (pendingAnchor) {
         const fragmentIndex = pendingAnchor.url.lastIndexOf("#");
         if (fragmentIndex !== -1 && fragmentIndex < pendingAnchor.url.length - 1) {
-          const record: AnchorRecord = {
+          const record = {
             file,
             line: pendingAnchor.line,
             anchor: pendingAnchor.url.slice(fragmentIndex + 1),
@@ -124,11 +91,7 @@ export function parseAnchors(file: string, source: string): AnchorRecord[] {
   return records;
 }
 
-function collectStepText(
-  lines: string[],
-  startIndex: number,
-  firstLine: string
-): { text: string; lastIndex: number } {
+function collectStepText(lines, startIndex, firstLine) {
   const parts = [firstLine.trim()];
   let index = startIndex + 1;
   for (; index < lines.length; index += 1) {
@@ -144,7 +107,7 @@ function collectStepText(
   return { text: parts.join(" "), lastIndex: index - 1 };
 }
 
-function normalize(value: string): string {
+function normalize(value) {
   const unquoted = value.replace(/^["'“”]+|["'“”]+$/g, "");
   return unquoted
     .toLowerCase()
@@ -152,7 +115,7 @@ function normalize(value: string): string {
     .trim();
 }
 
-function extractQuotedText(comment: string): string {
+function extractQuotedText(comment) {
   const trimmed = comment.trim();
   // Only treat the comment as quoted when it starts with a quote; an unquoted
   // comment may still contain quoted literals such as "InvalidStateError".
@@ -166,15 +129,15 @@ function extractQuotedText(comment: string): string {
   return dashIndex === -1 ? trimmed : trimmed.slice(0, dashIndex);
 }
 
-function firstWords(value: string, count: number): string {
+function firstWords(value, count) {
   return normalize(value).split(" ").slice(0, count).join(" ");
 }
 
-function squash(value: string): string {
+function squash(value) {
   return value.toLowerCase().replace(/[^a-z0-9]/g, "");
 }
 
-function stepTextMatches(comment: string, renderedStep: string): boolean {
+function stepTextMatches(comment, renderedStep) {
   const quoted = extractQuotedText(comment);
   const normalizedComment = normalize(quoted);
   const normalizedStep = normalize(renderedStep);
@@ -194,12 +157,7 @@ function stepTextMatches(comment: string, renderedStep: string): boolean {
   return firstWords(quoted, 6) === firstWords(renderedStep, 6);
 }
 
-function collectAlgorithmSteps(
-  $: CheerioAPI,
-  $orderedList: Cheerio<any>,
-  parentNumber: string,
-  map: Map<string, string>
-): void {
+function collectAlgorithmSteps($, $orderedList, parentNumber, map) {
   $orderedList.children("li").each((index, listItem) => {
     const $listItem = $(listItem);
     const fullNumber = parentNumber
@@ -217,9 +175,7 @@ function collectAlgorithmSteps(
     // in separate paragraphs of the same list item, e.g. "2.1 Run ...".
     $listItem.find("p").each((_paragraphIndex, paragraph) => {
       const paragraphText = $(paragraph).text().trim();
-      const embedded = /^(\d+(?:\.\d+)+)\.?\s+([\s\S]*)$/.exec(
-        paragraphText
-      );
+      const embedded = /^(\d+(?:\.\d+)+)\.?\s+([\s\S]*)$/.exec(paragraphText);
       if (embedded && !map.has(embedded[1])) {
         map.set(embedded[1], embedded[2]);
       }
@@ -232,12 +188,8 @@ function collectAlgorithmSteps(
   });
 }
 
-function collectFromAlgorithmContainer(
-  $: CheerioAPI,
-  $algorithm: Cheerio<any>,
-  map: Map<string, string>
-): void {
-  const tag = ($algorithm.prop("tagName") as string).toLowerCase();
+function collectFromAlgorithmContainer($, $algorithm, map) {
+  const tag = ($algorithm.prop("tagName") || "").toLowerCase();
   if (tag === "ol") {
     collectAlgorithmSteps($, $algorithm, "", map);
     return;
@@ -248,15 +200,10 @@ function collectFromAlgorithmContainer(
   }
 }
 
-function collectFromSection(
-  $: CheerioAPI,
-  $heading: Cheerio<any>,
-  level: number,
-  map: Map<string, string>
-): void {
+function collectFromSection($, $heading, level, map) {
   let element = $heading.next();
   while (element.length) {
-    const tag = (element.prop("tagName") as string | undefined)?.toLowerCase();
+    const tag = (element.prop("tagName") || "").toLowerCase();
     if (tag && /^h[1-6]$/.test(tag) && parseInt(tag[1]) <= level) break;
     if (tag === "div" && element.attr("data-algorithm") !== undefined) {
       collectFromAlgorithmContainer($, element, map);
@@ -273,15 +220,12 @@ function collectFromSection(
   }
 }
 
-function collectStepsForAnchor(
-  $: CheerioAPI,
-  anchor: string
-): Map<string, string> {
-  const map = new Map<string, string>();
+function collectStepsForAnchor($, anchor) {
+  const map = new Map();
   const $element = $(`[id="${anchor}"]`).first();
   if (!$element.length) return map;
 
-  const tagName = ($element.prop("tagName") as string).toLowerCase();
+  const tagName = ($element.prop("tagName") || "").toLowerCase();
 
   if (tagName === "div" && $element.attr("data-algorithm") !== undefined) {
     collectFromAlgorithmContainer($, $element, map);
@@ -307,30 +251,27 @@ function collectStepsForAnchor(
   if (parentSection) {
     const $heading = $(`[id="${parentSection.id}"]`).first();
     if ($heading.length) {
-      const headingTag = ($heading.prop("tagName") as string).toLowerCase();
+      const headingTag = ($heading.prop("tagName") || "").toLowerCase();
       collectFromSection($, $heading, parseInt(headingTag[1]), map);
     }
   }
   return map;
 }
 
-export async function verifyPaths(
-  paths: string[],
-  options: FetchOptions = {}
-): Promise<VerifyReport> {
-  const files: string[] = [];
+export async function verifyPaths(paths, options = {}) {
+  const files = [];
   for (const path of paths) {
     files.push(...(await collectRustFiles(path)));
   }
 
-  const records: AnchorRecord[] = [];
+  const records = [];
   for (const file of files) {
     const source = await readFile(file, "utf-8");
     records.push(...parseAnchors(file, source));
   }
 
-  const issues: VerifyIssue[] = [];
-  const documents = new Map<string, CheerioAPI | null>();
+  const issues = [];
+  const documents = new Map();
   let checkedAnchors = 0;
   let checkedSteps = 0;
 
@@ -397,11 +338,8 @@ export async function verifyPaths(
   return { checkedAnchors, checkedSteps, issues };
 }
 
-export function formatVerifyReport(
-  report: VerifyReport,
-  root: string
-): string {
-  const lines: string[] = [];
+export function formatVerifyReport(report, root) {
+  const lines = [];
   for (const issue of report.issues) {
     lines.push(
       `${relative(root, issue.file)}:${issue.line} ${issue.anchor}: ${issue.message}`

@@ -2,16 +2,11 @@ import { createHash } from "node:crypto";
 import { mkdir, readFile, rename, stat, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { join } from "node:path";
-import { load, type CheerioAPI } from "cheerio";
+import { load } from "cheerio";
 
 const CACHE_TTL_MS = 24 * 60 * 60 * 1000;
 
-export interface FetchOptions {
-  /** Bypass a fresh cache entry and fetch the spec again. */
-  refresh?: boolean;
-}
-
-function cacheDirectory(): string {
+function cacheDirectory() {
   const xdgCacheHome = process.env.XDG_CACHE_HOME;
   const base =
     xdgCacheHome && xdgCacheHome.length > 0
@@ -20,29 +15,26 @@ function cacheDirectory(): string {
   return join(base, "formal-web", "specs");
 }
 
-function cachePathFor(url: string): string {
+function cachePathFor(url) {
   const digest = createHash("sha256").update(url).digest("hex");
   return join(cacheDirectory(), `${digest}.html`);
 }
 
-async function readFreshCache(path: string): Promise<string | null> {
+async function readFreshCache(path) {
   const entry = await stat(path).catch(() => null);
   if (!entry || !entry.isFile()) return null;
   if (Date.now() - entry.mtimeMs > CACHE_TTL_MS) return null;
   return readFile(path, "utf-8").catch(() => null);
 }
 
-async function writeCache(path: string, html: string): Promise<void> {
+async function writeCache(path, html) {
   await mkdir(cacheDirectory(), { recursive: true });
   const temporary = `${path}.${process.pid}.tmp`;
   await writeFile(temporary, html, "utf-8");
   await rename(temporary, path);
 }
 
-async function fetchSpecHtml(
-  url: string,
-  options: FetchOptions
-): Promise<string> {
+async function fetchSpecHtml(url, options) {
   const path = cachePathFor(url);
   if (!options.refresh) {
     const cached = await readFreshCache(path);
@@ -76,19 +68,7 @@ async function fetchSpecHtml(
   return html;
 }
 
-export async function getDoc(
-  url: string,
-  options: FetchOptions = {}
-): Promise<CheerioAPI> {
+export async function getDoc(url, options = {}) {
   const html = await fetchSpecHtml(url, options);
   return load(html);
-}
-
-export async function elementExists(
-  url: string,
-  id: string,
-  options: FetchOptions = {}
-): Promise<boolean> {
-  const $ = await getDoc(url, options);
-  return $(`[id="${id}"]`).length > 0;
 }
