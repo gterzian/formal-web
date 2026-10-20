@@ -3833,7 +3833,15 @@ impl ContentProcess {
         if let Err(error) = fire_event(ec, &event_target, event_type, time_millis, false) {
             warn!("failed to fire {event_type} event for <img>: {error:?}");
         }
-        Ok(())
+        // The load/error handler can change the DOM, and the rendering
+        // opportunity noted when the image became available may already be
+        // in flight, so its paint predates the event. Note a fresh
+        // opportunity for the handler's changes.
+        self.event_sender
+            .send(ContentEvent::RenderingOpRequested(
+                content_document.traversable_id,
+            ))
+            .map_err(|error| format!("failed to request rendering op for an image event: {error}"))
     }
 
     /// The message task of one message a dedicated worker posted back to its

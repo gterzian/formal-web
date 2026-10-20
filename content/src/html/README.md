@@ -294,6 +294,11 @@ Known gaps in the processing model:
   are not modeled.
 - Image formats are limited to what the `image` crate decodes (PNG, JPEG,
   GIF, WebP); an SVG `src` is reported as an error.
+- Content reads only the encoded header (`into_dimensions`) to decide that an
+  image loaded, so a resource the graphics process cannot decode (a corrupt
+  PNG chunk, for example) leaves the element `complete` with its header
+  dimensions while its layer stays empty; the decode error is only logged by
+  the graphics process, and the element never fires `error`.
 
 ## Canvas
 
