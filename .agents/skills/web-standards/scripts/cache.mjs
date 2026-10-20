@@ -4,7 +4,7 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 import { load } from "cheerio";
 
-const CACHE_TTL_MS = 24 * 60 * 60 * 1000;
+const CACHE_TTL_MS = 14 * 24 * 60 * 60 * 1000;
 
 function cacheDirectory() {
   const xdgCacheHome = process.env.XDG_CACHE_HOME;

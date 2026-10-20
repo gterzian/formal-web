@@ -7,7 +7,7 @@ compatibility: Requires network access to the spec hosts.
 # web-standards
 
 Use this skill to read spec text before writing, annotating or reviewing code
-against a web standard. Fetched specs are cached on disk for 24 hours.
+against a web standard. Fetched specs are cached on disk for two weeks.
 
 ## Commands
 
@@ -47,8 +47,10 @@ and "Spec Fidelity". This skill only supplies the spec text.
 
 `spec.mjs verify <path...>` scans Rust sources for spec URLs in doc comments
 and `// Step N:` step comments. It checks that each anchor exists and that
-each step comment matches the first words of the numbered spec step. It exits
-non-zero when it finds a mismatch.
+each step comment matches the first words of the numbered spec step. Anchors
+defined in prose (an IDL attribute or method, a concept) have no numbered
+steps; they are only checked for existence. It exits non-zero when it finds a
+mismatch.
 
 ```
 node scripts/spec.mjs verify content/src/dom/event.rs

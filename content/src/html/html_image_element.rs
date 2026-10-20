@@ -9,7 +9,7 @@ use crate::html::HTMLElement;
 use crate::html::image_data::{self, ImageElement};
 use crate::js::Types;
 use crate::webidl::bindings::create_interface_instance;
-use crate::webidl::rejected_promise;
+use crate::webidl::{rejected_promise, resolved_promise};
 
 /// <https://html.spec.whatwg.org/#htmlimageelement>
 #[gc_struct]
@@ -108,13 +108,15 @@ impl HTMLImageElement {
     /// <https://html.spec.whatwg.org/#dom-img-crossorigin>
     pub(crate) fn cross_origin(&self) -> Option<String> {
         // Step 1: "Return the value of the crossorigin content attribute, limited to only known values."
+        // Note: Reflection returns null when the attribute is absent, which is
+        // why this is nullable; an unknown value reflects as the empty string.
         let value = self.html_element.element.get_attribute("crossorigin")?;
         if value.eq_ignore_ascii_case("anonymous") {
             Some(String::from("anonymous"))
         } else if value.eq_ignore_ascii_case("use-credentials") {
             Some(String::from("use-credentials"))
         } else {
-            None
+            Some(String::new())
         }
     }
 
@@ -274,10 +276,11 @@ impl HTMLImageElement {
     /// <https://html.spec.whatwg.org/#dom-img-referrerpolicy>
     pub(crate) fn referrer_policy(&self) -> String {
         // Step 1: "Return the value of the referrerpolicy content attribute, limited to only known values."
-        self.html_element
-            .element
-            .get_attribute("referrerpolicy")
-            .unwrap_or_default()
+        // Note: An unknown value maps to the empty string (the invalid value
+        // default), as reflection with the limited-to-known-values flag
+        // requires.
+        let value = self.html_element.element.get_attribute("referrerpolicy");
+        String::from(image_data::referrer_policy_state(value.as_deref()))
     }
 
     /// <https://html.spec.whatwg.org/#dom-img-referrerpolicy>
@@ -349,29 +352,31 @@ impl HTMLImageElement {
         &self,
         ec: &mut dyn ExecutionContext<Types>,
         element: &ImageElement,
-    ) -> Completion<<crate::js::Types as JsTypes>::JsValue, crate::js::Types> {
+    ) -> Completion<<Types as JsTypes>::JsValue, Types> {
         // Step 1: "Let promise be a new promise."
         // Step 2: "Queue a microtask to perform the following steps:"
-        // Note: The promise is settled without queuing the microtask: it
-        // resolves when the current request is available and rejects with an
-        // "EncodingError" DOMException otherwise.  Steps 2.1-2.3 (fully
-        // active check, in-parallel decode wait, animation-frame retention)
-        // are not modeled.
+        // Step 2.1: "Let global be this's relevant global object."
+        // Step 2.2: "If any of the following are true: this's node document is not fully active; or this's current request's state is broken, then reject promise with an \"EncodingError\" DOMException."
+        // Step 2.3: "Otherwise, in parallel, wait for one of the following cases to occur, and perform the corresponding actions:"
+        // Note: The queued microtask and the in-parallel wait are not modeled:
+        // the promise is settled synchronously from the current request's
+        // state, and the fully-active check is omitted (an unavailable
+        // request is also rejected).
         // Step 3: "Return promise."
         if image_data::is_available(element) {
-            let promise = crate::webidl::resolved_promise(ec.value_undefined(), ec)?;
-            Ok(<crate::js::Types as JsTypes>::value_from_object(promise))
+            let promise = resolved_promise(ec.value_undefined(), ec)?;
+            Ok(Types::value_from_object(promise))
         } else {
-            let exception = create_interface_instance::<crate::js::Types, DOMException>(
+            let exception = create_interface_instance::<Types, DOMException>(
                 DOMException::new(
                     String::from("The source image cannot be decoded."),
                     String::from("EncodingError"),
                 ),
                 ec,
             )?;
-            let reason = <crate::js::Types as JsTypes>::value_from_object(exception);
+            let reason = Types::value_from_object(exception);
             let promise = rejected_promise(reason, ec)?;
-            Ok(<crate::js::Types as JsTypes>::value_from_object(promise))
+            Ok(Types::value_from_object(promise))
         }
     }
 }

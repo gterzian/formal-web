@@ -169,12 +169,44 @@ impl ImageAttributes {
 
     /// <https://html.spec.whatwg.org/#attr-img-crossorigin>
     fn cors_settings_mode(&self) -> &'static str {
-        match self.crossorigin.as_deref() {
-            Some(value) if value.eq_ignore_ascii_case("use-credentials") => "use-credentials",
-            Some(value) if value.eq_ignore_ascii_case("anonymous") => "anonymous",
-            _ => "no-cors",
-        }
+        cors_settings_mode(self.crossorigin.as_deref())
     }
+}
+
+/// The CORS settings attribute mode of a `crossorigin` attribute value.
+/// <https://html.spec.whatwg.org/#cors-settings-attribute>
+pub(crate) fn cors_settings_mode(value: Option<&str>) -> &'static str {
+    match value {
+        None => "no-cors",
+        Some(value) if value.eq_ignore_ascii_case("use-credentials") => "use-credentials",
+        // Note: the attribute's empty value default and invalid value default
+        // are both the Anonymous state.
+        Some(_) => "anonymous",
+    }
+}
+
+/// <https://html.spec.whatwg.org/#referrer-policy-attribute>
+pub(crate) fn referrer_policy_state(value: Option<&str>) -> &'static str {
+    const STATES: [&str; 8] = [
+        "no-referrer",
+        "no-referrer-when-downgrade",
+        "same-origin",
+        "origin",
+        "strict-origin",
+        "origin-when-cross-origin",
+        "strict-origin-when-cross-origin",
+        "unsafe-url",
+    ];
+    let Some(value) = value else {
+        // The missing value default is the empty string state.
+        return "";
+    };
+    // An enumerated attribute's keywords match ASCII case-insensitively; the
+    // invalid value default is also the empty string state.
+    STATES
+        .into_iter()
+        .find(|state| value.eq_ignore_ascii_case(state))
+        .unwrap_or("")
 }
 
 impl ImageRegistry {
@@ -194,9 +226,8 @@ impl ImageRegistry {
         std::mem::take(&mut self.pending_tasks)
     }
 
-    /// Forget a destroyed document's element state.  The available-images
-    /// entries are kept: a later document in the same partition can reuse
-    /// them without a fetch.
+    /// Forget a destroyed document's element state, including its list of
+    /// available images: the list belongs to the Document that owned it.
     pub(crate) fn forget_document(&mut self, document_id: DocumentId) {
         self.elements
             .retain(|(element_document_id, _), _| *element_document_id != document_id);
@@ -260,8 +291,10 @@ pub(crate) fn update_the_image_data(
     // Note: This user agent supports images.
 
     // Step 3: Let `previousURL` be the current request's current URL.
+    // Note: `previousURL` is compared against only when `maybe omit events`
+    // is set, and it never is (the flag is set only by the auto-sizes
+    // mutation, which is not implemented), so it is not tracked.
     let element = registry.element_mut(document_id, node_id);
-    let previous_url = element.current_request.current_url.clone();
 
     // Step 4: Let `selected source` be null and `selected pixel density` be undefined.
     let mut selected_source: Option<String> = None;
@@ -295,7 +328,6 @@ pub(crate) fn update_the_image_data(
                 partition,
                 origin,
                 selected_source,
-                previous_url,
             );
             return;
         };
@@ -348,13 +380,11 @@ pub(crate) fn update_the_image_data(
             // Step 7.4.7.2: Set the current request's current URL to `urlString`.
             // Note: Handled by step 7.4.4 above.
             // Step 7.4.7.3: If `maybe omit events` is not set or `previousURL` is not equal to `urlString`, then fire an event named `load` at `element`.
-            // Note: The `maybe omit events` flag is never set.
-            if previous_url != url_string {
-                registry.pending_tasks.push(ImageTask::FireLoad {
-                    document_id,
-                    node_id,
-                });
-            }
+            // Note: `maybe omit events` is never set, so the event always fires.
+            registry.pending_tasks.push(ImageTask::FireLoad {
+                document_id,
+                node_id,
+            });
             // Step 7.4.8: Abort the update the image data algorithm.
             return;
         }
@@ -381,7 +411,6 @@ pub(crate) fn update_the_image_data(
             partition,
             origin,
             selected_source,
-            previous_url,
         );
     } else {
         // Step 9: If another instance of this algorithm for `element` was started after this instance (even if it aborted and is no longer running), then return.
@@ -403,7 +432,6 @@ pub(crate) fn update_the_image_data(
                 partition,
                 origin,
                 selected_source,
-                previous_url,
             );
             return;
         }
@@ -418,8 +446,9 @@ pub(crate) fn update_the_image_data(
         // Step 11.2.1: Change the current request's current URL to the empty string.
         element.current_request.current_url = String::new();
         // Step 11.2.2: If all of the following are true: `element` has a `src` attribute or it uses `srcset` or `picture`; and `maybe omit events` is not set or `previousURL` is not the empty string, then fire an event named `error` at `element`.
-        let has_src = attributes.src.is_some();
-        if (has_src || attributes.uses_srcset_or_picture()) && !previous_url.is_empty() {
+        // Note: `maybe omit events` is never set, so the second condition
+        // always holds.
+        if attributes.src.is_some() || attributes.uses_srcset_or_picture() {
             registry.pending_tasks.push(ImageTask::FireError {
                 document_id,
                 node_id,
@@ -448,7 +477,7 @@ fn select_an_image_source(attributes: &ImageAttributes) -> Option<String> {
     attributes.src.clone().filter(|src| !src.is_empty())
 }
 
-// Note: This helper holds steps 9 through 26 of the same algorithm; it is
+// Note: This helper holds steps 12 through 26 of the same algorithm; it is
 // split out only so the step 7 fast path can return early.
 #[allow(clippy::too_many_arguments)]
 fn run_after_selected_source(
@@ -461,7 +490,6 @@ fn run_after_selected_source(
     partition: &ResourcePartitionKey,
     origin: &str,
     selected_source: String,
-    previous_url: String,
 ) {
     // Step 12: Let `urlString` be the result of encoding-parsing-and-serializing a URL given `selected source`, relative to `element`'s node document.
     let Some(url_string) = encoding_parsing_and_serializing_url(base_url, &selected_source) else {
@@ -472,15 +500,11 @@ fn run_after_selected_source(
         // Step 13.4: Queue an element task on the DOM manipulation task source given `element` and the following steps:
         // Step 13.4.1: Change the current request's current URL to `selected source`.
         // Step 13.4.2: If `maybe omit events` is not set or `previousURL` is not equal to `selected source`, then fire an event named `error` at `element`.
+        // Note: `maybe omit events` is never set, so the condition always
+        // holds.
+        abort_and_fire_error(registry, document_id, node_id, attributes, selected_source);
+
         // Step 13.5: Return.
-        abort_and_fire_error(
-            registry,
-            document_id,
-            node_id,
-            attributes,
-            previous_url,
-            selected_source,
-        );
         return;
     };
 
@@ -556,8 +580,6 @@ fn run_after_selected_source(
     sink.start_image_fetch(document_id, node_id, handler_id, &url_string);
 }
 
-/// Step 27 of "update the image data" for a response in a supported image
-/// format, once the image's dimensions are known.
 /// <https://html.spec.whatwg.org/#update-the-image-data>
 pub(crate) fn image_fetch_succeeded(
     registry: &mut ImageRegistry,
@@ -573,7 +595,7 @@ pub(crate) fn image_fetch_succeeded(
         .take_if(|pending| pending.fetch_id == Some(handler_id))
     {
         Some(pending) => {
-            // Step 27 (last task) 1: If `image request` is the pending request, abort the image request for the current request, upgrade the pending request to the current request, and prepare `image request` for presentation given `element`.
+            // Step 27 (the last network task) 1: "If `image request` is the pending request, abort the image request for the current request, upgrade the pending request to the current request, and prepare `image request` for presentation given `element`."
             element.current_request = pending;
             element.current_request.fetch_id = None;
             element.current_request.clone()
@@ -592,15 +614,19 @@ pub(crate) fn image_fetch_succeeded(
         width: dimensions.0,
         height: dimensions.1,
     };
-    // Step 27 (the next networking task): If the user agent is able to determine `image request`'s image's width and height, set `image request`'s state to `partially available`.
-    // Step 27 (the last networking task) 2: Set `image request` to the `completely available` state.
+    // Step 27 (the next network task), "If the resource type and data corresponds to a supported image format": "If the user agent is able to determine `image request`'s image's width and height, and `image request` is the pending request, set `image request`'s state to `partially available`."
+    // Step 27 (the next network task), second entry: "Otherwise, if the user agent is able to determine `image request`'s image's width and height, and `image request` is the current request, prepare `image request` for presentation given `element` and set `image request`'s state to `partially available`."
+    // Step 27 (the last network task) 2: "Set `image request` to the `completely available` state."
+    // Note: The response body arrives whole, so the request is prepared for
+    // presentation and set to completely available in the same task; the
+    // partially available state is never presented on its own.
     request.state = ImageRequestState::CompletelyAvailable;
     request.image_data = Some(loaded.clone());
     request.preferred_density_corrected_dimensions = Some(dimensions);
     let key = request.available_images_key.clone();
     element.current_request = request;
 
-    // Step 27 (the last networking task) 3: Add the image to the list of available images using the key `key`, with the ignore higher-layer caching flag set.
+    // Step 27 (the last network task) 3: "Add the image to the list of available images using the key `key`, with the ignore higher-layer caching flag set."
     if let Some(key) = key {
         registry
             .available_images
@@ -614,19 +640,18 @@ pub(crate) fn image_fetch_succeeded(
             width: dimensions.0,
             height: dimensions.1,
         });
-    // Step 27 (the last networking task) 4: If `maybe omit events` is not set or `previousURL` is not equal to `urlString`, then fire an event named `load` at `element`.
-    // Note: `maybe omit events` is never set.
+    // Step 27 (the last network task) 4: "If `maybe omit events` is not set or `previousURL` is not equal to `urlString`, then fire an event named `load` at `element`."
+    // Note: `maybe omit events` is never set, so the event always fires.
     registry.pending_tasks.push(ImageTask::FireLoad {
         document_id,
         node_id,
     });
 }
 
-/// Step 27's "Otherwise" entry: the image data is not in a supported format.
 /// <https://html.spec.whatwg.org/#update-the-image-data>
 pub(crate) fn image_fetch_failed(registry: &mut ImageRegistry, handler_id: DocumentFetchId) {
-    // Step 27: Otherwise: The image data is not in a supported file format; the user agent must set `image request`'s state to `broken`, abort the image request for the current request and the pending request, upgrade the pending request to the current request if `image request` is the pending request, and then, if `maybe omit events` is not set or `previousURL` is not equal to `urlString`, queue an element task on the DOM manipulation task source given `element` to fire an event named `error` at `element`.
-    // Note: `maybe omit events` is never set, and the event task is queued
+    // Step 27 (Otherwise): "The image data is not in a supported file format; the user agent must set `image request`'s state to `broken`, abort the image request for the current request and the pending request, upgrade the pending request to the current request if `image request` is the pending request, and then, if `maybe omit events` is not set or `previousURL` is not equal to `urlString`, queue an element task on the DOM manipulation task source given `element` to fire an event named `error` at `element`."
+    // Note: `maybe omit events` is never set, so the event task is queued
     // unconditionally below.
     let Some((document_id, node_id)) = find_fetch(registry, handler_id) else {
         return;
@@ -639,6 +664,9 @@ pub(crate) fn image_fetch_failed(registry: &mut ImageRegistry, handler_id: Docum
     {
         element.current_request = element.pending_request.take().unwrap_or_default();
     }
+    // Step 27 (Otherwise) continues: the pending request is aborted (there is
+    // no fetch to cancel beyond dropping its record).
+    element.pending_request = None;
     element.current_request.state = ImageRequestState::Broken;
     element.current_request.image_data = None;
     element.current_request.fetch_id = None;
@@ -682,10 +710,30 @@ pub(crate) fn image_element(
 /// The natural dimensions of the element's current request.
 /// <https://html.spec.whatwg.org/#density-corrected-intrinsic-width-and-height>
 pub(crate) fn natural_dimensions(element: &ImageElement) -> Option<(u32, u32)> {
-    // Note: Density correction is not modeled; the decoded pixel dimensions
-    // are returned.
+    // Step 1: Let `density` be `img`'s current request's current pixel density.
+    let density = element.current_request.current_pixel_density;
+    // Step 2: Let `dimensions` be `img`'s current request's preferred density-corrected dimensions.
+    // Step 3: If `dimensions` is not null, then set `dimensions`'s width to `dimensions`'s width divided by `density`, set `dimensions`'s height to `dimensions`'s height divided by `density`, and return `dimensions`.
+    if let Some((width, height)) = element
+        .current_request
+        .preferred_density_corrected_dimensions
+    {
+        return Some((
+            (f64::from(width) / density).round() as u32,
+            (f64::from(height) / density).round() as u32,
+        ));
+    }
+    // Step 4: Let `intrinsicWidth`, `intrinsicHeight`, and `intrinsicRatio` be `img`'s intrinsic width, intrinsic height, and intrinsic aspect ratio, if any, respectively.
     let image = element.current_request.image_data.as_ref()?;
-    Some((image.width, image.height))
+    // Step 5: If `intrinsicWidth` is not absent, then set `intrinsicWidth` to `intrinsicWidth` divided by `density`.
+    // Step 6: If `intrinsicHeight` is not absent, then set `intrinsicHeight` to `intrinsicHeight` divided by `density`.
+    // Step 7: Return the result of applying the default sizing algorithm with `intrinsicWidth`, `intrinsicHeight`, and `intrinsicRatio`, using a contain constraint whose width and height are `img`'s concrete object size's width and height, respectively.
+    // Note: The default sizing algorithm is not modeled; the density-corrected
+    // intrinsic dimensions are returned directly.
+    Some((
+        (f64::from(image.width) / density).round() as u32,
+        (f64::from(image.height) / density).round() as u32,
+    ))
 }
 
 /// Whether the element provides an available paint source.
@@ -703,23 +751,21 @@ pub(crate) fn current_image_id(element: &ImageElement) -> Option<ImageIdentifier
         .map(|image| image.image_id.clone())
 }
 
-// Note: This helper merges the shared tail of steps 11 and 13 (the state and
-// event handling both entries perform).
+// Note: This helper merges the shared tail of steps 13.1-13.4 (the state and
+// event handling the URL-parse-failure path performs).
 fn abort_and_fire_error(
     registry: &mut ImageRegistry,
     document_id: DocumentId,
     node_id: usize,
     attributes: &ImageAttributes,
-    previous_url: String,
     current_url: String,
 ) {
     let element = registry.element_mut(document_id, node_id);
     element.current_request.state = ImageRequestState::Broken;
     element.current_request.image_data = None;
-    element.current_request.current_url = current_url.clone();
+    element.current_request.current_url = current_url;
     element.pending_request = None;
-    let has_src = attributes.src.is_some();
-    if (has_src || attributes.uses_srcset_or_picture()) && previous_url != current_url {
+    if attributes.src.is_some() || attributes.uses_srcset_or_picture() {
         registry.pending_tasks.push(ImageTask::FireError {
             document_id,
             node_id,

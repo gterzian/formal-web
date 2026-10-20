@@ -25,7 +25,8 @@ use url::Url;
 use uuid::Uuid;
 
 use crate::html::image_data::{
-    ImageAttributes, ImageFetchSink, ImageRegistry, update_the_image_data,
+    ImageAttributes, ImageFetchSink, ImageRegistry, cors_settings_mode, referrer_policy_state,
+    update_the_image_data,
 };
 use crate::{LocalContentStateRef, PendingNetworkHandler};
 
@@ -86,7 +87,8 @@ pub(crate) struct DocumentProviders {
     host: DocumentHost,
     navigable_id: NavigableId,
     event_loop_id: EventLoopId,
-    /// <https://html.spec.whatwg.org/#concept-document-creation-url>
+    /// The document's URL, which subresource URLs are resolved against.  A
+    /// `<base>` element's href is not reflected here.
     base_url: Option<Url>,
     partition: ResourcePartitionKey,
     local_state: LocalContentStateRef,
@@ -348,36 +350,20 @@ impl DocumentHooks for DocumentProviders {
         let Some(element) = element else {
             return;
         };
+        if element.name.local.as_ref() != "img" {
+            return;
+        }
+        // Note: The relevant-mutations list counts every `img` removal, but
+        // only a removal from a `<picture>` parent is selected here: it is the
+        // case where the selected source could change (picture selection
+        // itself is not tracked), while any other removal would re-run the
+        // algorithm only to fire a redundant `load` for an available image.
         let removed_from_picture =
             old_ancestor.is_some_and(|ancestor| ancestor.name.local.as_ref() == "picture");
-        if element.name.local.as_ref() != "img" || !is_subtree_root || !removed_from_picture {
+        if !is_subtree_root || !removed_from_picture {
             return;
         }
         self.run_image_update(node_id, element);
-    }
-}
-
-/// <https://html.spec.whatwg.org/#attr-img-crossorigin>
-fn cors_settings_mode(value: Option<&str>) -> &'static str {
-    match value {
-        Some(value) if value.eq_ignore_ascii_case("use-credentials") => "use-credentials",
-        Some(value) if value.eq_ignore_ascii_case("anonymous") => "anonymous",
-        _ => "no-cors",
-    }
-}
-
-/// <https://html.spec.whatwg.org/#attr-img-referrerpolicy>
-fn referrer_policy_state(value: Option<&str>) -> &'static str {
-    match value {
-        Some("no-referrer") => "no-referrer",
-        Some("no-referrer-when-downgrade") => "no-referrer-when-downgrade",
-        Some("same-origin") => "same-origin",
-        Some("origin") => "origin",
-        Some("strict-origin") => "strict-origin",
-        Some("origin-when-cross-origin") => "origin-when-cross-origin",
-        Some("strict-origin-when-cross-origin") => "strict-origin-when-cross-origin",
-        Some("unsafe-url") => "unsafe-url",
-        _ => "",
     }
 }
 

@@ -115,18 +115,13 @@ pub struct RegisteredImage {
 }
 
 /// Tracks which `ImageIdentifier`s this content process already shipped, so
-/// an image's pixels cross the process boundary once per webview lifetime.
+/// an image's pixels cross the process boundary at most once per identifier.
 #[derive(Debug, Default)]
 pub struct ImageTransportSender {
     sent_images: HashSet<ImageIdentifier>,
 }
 
 impl ImageTransportSender {
-    /// Whether `id`'s pixels were already shipped to the graphics process.
-    pub fn is_sent(&self, id: &ImageIdentifier) -> bool {
-        self.sent_images.contains(id)
-    }
-
     /// Register `id`'s decoded bytes for transport if it has not been sent
     /// before, assigning the next shared-memory key. Returns the
     /// registration and the shmem region to place under that key, or

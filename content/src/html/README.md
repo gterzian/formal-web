@@ -288,10 +288,23 @@ and owns the pixels.  `naturalWidth`, `naturalHeight`, `complete`,
 Known gaps in the processing model:
 
 - `srcset`/`sizes` selection picks the first `srcset` candidate and ignores
-  the descriptors and `sizes`; a parent `<picture>` element is not tracked.
+  the descriptors and `sizes`, so the current pixel density is always 1.0 and
+  the natural dimensions are the decoded pixel dimensions; a parent
+  `<picture>` element and its `<source>` siblings are not tracked, so
+  `picture`/`source` mutations never re-run the algorithm.
 - Lazy loading (`loading=lazy`), animation restart, EXIF density
   correction, CORS enforcement, and progressive/multipart image decoding
   are not modeled.
+- The `img` adopting steps are not observed, so adopting an element into
+  another document does not re-run the algorithm.
+- Subresource URLs resolve against the document's URL only: a `<base href>`
+  change is not reflected in the base URL captured by `DocumentProviders`.
+- The `Image(width, height)` legacy factory function is not implemented, so
+  `new Image()` throws; `available-images-onload.html` and
+  `Image-constructor.html` are blocked on it.
+- `decode()` settles its promise synchronously from the current request's
+  state instead of from the queued microtask and the in-parallel decode
+  wait.
 - Image formats are limited to what the `image` crate decodes (PNG, JPEG,
   GIF, WebP); an SVG `src` is reported as an error.
 - Content reads only the encoded header (`into_dimensions`) to decide that an

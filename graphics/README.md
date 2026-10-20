@@ -141,7 +141,9 @@ behind the renderer trait's macOS-only `store_video_frame`.
 pixels: `Compositor::store_image` decodes them into the shared
 `ImageData` registry, and the image's layer draws that decoded texture.  The
 content process sends each `ImageIdentifier` once; a decode failure is logged
-and leaves the image layer empty.
+and leaves the image layer empty.  The registry has no eviction step, so the
+decoded pixels of every image the webview ever registered stay resident for
+the webview's lifetime.
 
 ## Video frames → shared texture (macOS)
 

@@ -83,8 +83,7 @@ pub enum GraphicsCommand {
     /// Register an `<img>` element's encoded image data with its webview.
     /// The bytes travel in the IPC shared-memory map under `data_shmem_key`;
     /// the graphics process decodes them into the texture keyed by
-    /// `image_id`, shared by every layer that references that image. Sent
-    /// once per image per webview.
+    /// `image_id`, shared by every layer that references that image.
     RegisterImage {
         webview_id: WebviewId,
         image_id: ImageIdentifier,
