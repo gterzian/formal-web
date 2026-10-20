@@ -80,15 +80,14 @@ pub enum GraphicsCommand {
         webview_id: WebviewId,
         canvas_id: CanvasId,
     },
-    /// Register an `<img>` element's decoded pixels with its webview. The
-    /// bytes travel in the IPC shared-memory map under `data_shmem_key`; the
-    /// graphics process stores them keyed by `image_id`, shared by every
-    /// layer that references that image. Sent once per image per webview.
+    /// Register an `<img>` element's encoded image data with its webview.
+    /// The bytes travel in the IPC shared-memory map under `data_shmem_key`;
+    /// the graphics process decodes them into the texture keyed by
+    /// `image_id`, shared by every layer that references that image. Sent
+    /// once per image per webview.
     RegisterImage {
         webview_id: WebviewId,
         image_id: ImageIdentifier,
-        width: u32,
-        height: u32,
         data_shmem_key: usize,
     },
     /// Remove a video frame slot (pipeline destroyed).

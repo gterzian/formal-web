@@ -421,11 +421,12 @@ cargo build --release -p graphics --bin formal-web-graphics
 ### External dependencies: blitz and anyrender
 
 Blitz crates (blitz-traits, blitz-dom, blitz-paint, blitz-html, stylo_taffy,
-debug_timer) come from the sibling fork checkout `../blitz`
-(`gterzian/blitz`, `0.3.0-alpha.5`), which carries the
-`DocumentConfig::embedded_images` edit that keeps `<img>` out of the
-document's own scene.  Switch the workspace dependencies back to a git
-dependency on <https://github.com/gterzian/blitz> once that edit is pushed.
+debug_timer) come from the `resource_hooks` branch of
+<https://github.com/gterzian/blitz> (`0.3.0-alpha.5`).  That branch carries
+the `DocumentConfig::embedded_images` edit that keeps `<img>` out of the
+document's own scene, and the `DocumentHooks` refactor that makes the
+embedder load subresources and observe DOM tree mutations.  `Cargo.lock`
+pins the branch's revision; refresh it after the branch moves.
 
 Stylo is `0.18.0`; the AnyRender crates (anyrender, anyrender_vello,
 anyrender_vello_cpu, anyrender_svg, wgpu_context) are sourced from crates.io

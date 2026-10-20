@@ -665,8 +665,6 @@ fn handle_command<B: MediaBackend + 'static, R: SurfaceRenderer>(
         GraphicsCommand::RegisterImage {
             webview_id,
             image_id,
-            width,
-            height,
             data_shmem_key,
         } => {
             let bytes = shmem_regions
@@ -676,14 +674,18 @@ fn handle_command<B: MediaBackend + 'static, R: SurfaceRenderer>(
             let slot = webviews
                 .entry(webview_id)
                 .or_insert_with(|| WebviewState::new(channels.clone()));
-            if slot.compositor.store_image(image_id, width, height, bytes) {
-                debug!(
-                    "[render-pipe] Graphics register image webview={:?} size={}x{} bytes={}",
+            match slot.compositor.store_image(image_id, bytes) {
+                Ok(Some((width, height))) => debug!(
+                    "[render-pipe] Graphics register image webview={:?} size={}x{} encoded_bytes={}",
                     webview_id,
                     width,
                     height,
                     bytes.len()
-                );
+                ),
+                Ok(None) => {}
+                Err(error) => {
+                    error!("[render-pipe] Graphics failed to decode image: {error}");
+                }
             }
         }
         GraphicsCommand::RemoveVideoFrame {

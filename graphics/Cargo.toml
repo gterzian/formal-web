@@ -40,6 +40,7 @@ ipc_messages = { path = "../ipc_messages" }
 media = { path = "../media" }
 ipc-channel = { git = "https://github.com/gterzian/ipc-channel", rev = "169da83" }
 kurbo = "0.13"
+image = { version = "0.25.6", default-features = false, features = ["png", "jpeg", "gif", "webp"] }
 peniko = "0.6"
 serde = { version = "1", features = ["derive"] }
 log = "0.4"

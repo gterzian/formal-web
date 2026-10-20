@@ -73,9 +73,7 @@ default-members = [
 ]
 
 [workspace.dependencies]
-# Temporary: blitz comes from the sibling fork checkout so the `embedded_images`
-# edit takes effect. Switch back to the git dependency once the edit is pushed.
-blitz-traits = { path = "../blitz/packages/blitz-traits", default-features = false }
-blitz-dom = { path = "../blitz/packages/blitz-dom", default-features = false }
-blitz-paint = { path = "../blitz/packages/blitz-paint", default-features = false }
-blitz-html = { path = "../blitz/packages/blitz-html", default-features = false }
+blitz-traits = { git = "https://github.com/gterzian/blitz", branch = "resource_hooks", default-features = false }
+blitz-dom = { git = "https://github.com/gterzian/blitz", branch = "resource_hooks", default-features = false }
+blitz-paint = { git = "https://github.com/gterzian/blitz", branch = "resource_hooks", default-features = false }
+blitz-html = { git = "https://github.com/gterzian/blitz", branch = "resource_hooks", default-features = false }

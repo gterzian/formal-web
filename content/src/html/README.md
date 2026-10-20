@@ -266,6 +266,35 @@ protected/permissible/suspendable monitoring is not.
   lookup by (origin, name); the dedicated-only implementation folds
   `WorkerGlobalScopeKind` into the dedicated global scope.
 
+## Images
+
+`image_data.rs` owns the `<img>` processing model: the current and pending
+image requests, the per-document list of available images, and the "update
+the image data" algorithm with its `// Step N:` comments.  The DOM's
+mutation hooks (`document_hooks.rs`) call it for the element's relevant
+mutations; do not run the algorithm from the IDL setters or from the render
+path.  Work that needs the document (setting blitz's intrinsic size, firing
+the queued `load`/`error` element task) is pushed onto
+`ImageRegistry::pending_tasks` and drained by `ContentProcess` after the
+task or command that produced it.
+
+An image element's availability is tracked in the registry, not in blitz's
+`SpecialElementData::Image`: content installs a zero-pixel `RasterImageData`
+only to give layout the intrinsic size, while the graphics process decodes
+and owns the pixels.  `naturalWidth`, `naturalHeight`, `complete`,
+`currentSrc`, and `decode` therefore read the registry (through the realm's
+`GlobalScope`); reading `raster_image_data` is not a substitute.
+
+Known gaps in the processing model:
+
+- `srcset`/`sizes` selection picks the first `srcset` candidate and ignores
+  the descriptors and `sizes`; a parent `<picture>` element is not tracked.
+- Lazy loading (`loading=lazy`), animation restart, EXIF density
+  correction, CORS enforcement, and progressive/multipart image decoding
+  are not modeled.
+- Image formats are limited to what the `image` crate decodes (PNG, JPEG,
+  GIF, WebP); an SVG `src` is reported as an error.
+
 ## Canvas
 
 Both 2D rendering context interfaces live in `content/src/html/canvas/`:

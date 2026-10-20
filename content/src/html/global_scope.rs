@@ -2,7 +2,7 @@ use std::{
     cell::{Cell, RefCell},
     collections::{HashMap, HashSet},
     rc::Rc,
-    sync::Arc,
+    sync::{Arc, Mutex},
     vec::Vec,
 };
 
@@ -32,6 +32,7 @@ use log::{debug, error};
 use super::environment_settings_object::RealmWiring;
 use super::event_loop::{EventLoopTaskSources, Task};
 use crate::dom::event::EventTarget;
+use crate::html::image_data::ImageRegistry;
 use crate::js::{Engine, Types};
 use crate::webidl::Callback;
 
@@ -339,6 +340,11 @@ pub struct GlobalScope {
     #[ignore_trace]
     epoch_anchor_wall_ms: Rc<std::cell::Cell<Option<f64>>>,
 
+    /// The image processing model state shared with `ContentProcess`, so the
+    /// `<img>` IDL members can read the current request's state.
+    #[ignore_trace]
+    image_registry: Rc<RefCell<Option<Arc<Mutex<ImageRegistry>>>>>,
+
     /// The document's repaint flag, shared with `ContentDocument`: a script
     /// that mutates only canvas/offscreen state (no DOM mutation) marks it
     /// dirty here so the next update-the-rendering re-runs blitz and rebuilds
@@ -397,6 +403,7 @@ impl GlobalScope {
             epoch_anchor: Rc::new(std::cell::Cell::new(None)),
             epoch_anchor_wall_ms: Rc::new(std::cell::Cell::new(None)),
             needs_paint: Rc::new(RefCell::new(None)),
+            image_registry: Rc::new(RefCell::new(None)),
 
             creation_url: Rc::new(RefCell::new(None)),
             #[cfg(all(boa_backend, feature = "wasm"))]
@@ -1357,6 +1364,15 @@ impl GlobalScope {
     /// ContentProcess access.  ContentProcess sets this during document
     /// creation so that `resource_selection_algorithm` can register
     /// paint IDs during JS execution.
+    pub(crate) fn set_image_registry(&self, registry: Arc<Mutex<ImageRegistry>>) {
+        self.image_registry.borrow_mut().replace(registry);
+    }
+
+    /// The image processing model state, if this realm's document has one.
+    pub(crate) fn image_registry(&self) -> Option<Arc<Mutex<ImageRegistry>>> {
+        self.image_registry.borrow().clone()
+    }
+
     pub(crate) fn set_graphics_sender(
         &self,
         sender: IpcSender<ipc_messages::graphics::GraphicsCommand>,

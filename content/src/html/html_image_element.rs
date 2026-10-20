@@ -6,6 +6,7 @@ use url::Url;
 
 use crate::dom::DOMException;
 use crate::html::HTMLElement;
+use crate::html::image_data::{self, ImageElement};
 use crate::js::Types;
 use crate::webidl::bindings::create_interface_instance;
 use crate::webidl::rejected_promise;
@@ -33,15 +34,6 @@ impl HTMLImageElement {
             .element
             .get_attribute("src")
             .unwrap_or_default()
-    }
-
-    /// The decoded image's dimensions, or `None` when the image is not
-    /// available.
-    fn natural_dimensions(&self) -> Option<(u32, u32)> {
-        let document = self.html_element.element.node.document.borrow();
-        let node = document.get_node(self.html_element.element.node.node_id)?;
-        let raster = node.element_data()?.raster_image_data()?;
-        Some((raster.width, raster.height))
     }
 
     /// <https://html.spec.whatwg.org/#dom-img-alt>
@@ -186,7 +178,7 @@ impl HTMLImageElement {
     }
 
     /// <https://html.spec.whatwg.org/#dom-img-width>
-    pub(crate) fn width(&self) -> u32 {
+    pub(crate) fn width(&self, element: &ImageElement) -> u32 {
         // Step 1: "Return the width of this's dimensions."
         // Note: The element's rendered dimensions are not tracked; when the
         // width content attribute is present its value is returned, otherwise
@@ -199,7 +191,7 @@ impl HTMLImageElement {
         {
             return width;
         }
-        self.natural_width()
+        self.natural_width(element)
     }
 
     /// <https://html.spec.whatwg.org/#dom-img-width>
@@ -211,7 +203,7 @@ impl HTMLImageElement {
     }
 
     /// <https://html.spec.whatwg.org/#dom-img-height>
-    pub(crate) fn height(&self) -> u32 {
+    pub(crate) fn height(&self, element: &ImageElement) -> u32 {
         // Step 1: "Return the height of this's dimensions."
         // Note: The element's rendered dimensions are not tracked; when the
         // height content attribute is present its value is returned, otherwise
@@ -224,7 +216,7 @@ impl HTMLImageElement {
         {
             return height;
         }
-        self.natural_height()
+        self.natural_height(element)
     }
 
     /// <https://html.spec.whatwg.org/#dom-img-height>
@@ -236,61 +228,47 @@ impl HTMLImageElement {
     }
 
     /// <https://html.spec.whatwg.org/#dom-img-naturalwidth>
-    pub(crate) fn natural_width(&self) -> u32 {
+    pub(crate) fn natural_width(&self, element: &ImageElement) -> u32 {
         // Step 1: If the image is not available, then return 0.
         // Step 2: Return the respective component of the image's density-corrected natural width and height, in CSS pixels.
         // Note: Density correction is not modeled; the decoded pixel width is returned.
-        self.natural_dimensions()
+        image_data::natural_dimensions(element)
             .map(|(width, _)| width)
             .unwrap_or(0)
     }
 
     /// <https://html.spec.whatwg.org/#dom-img-naturalheight>
-    pub(crate) fn natural_height(&self) -> u32 {
+    pub(crate) fn natural_height(&self, element: &ImageElement) -> u32 {
         // Step 1: If the image is not available, then return 0.
         // Step 2: Return the respective component of the image's density-corrected natural width and height, in CSS pixels.
         // Note: Density correction is not modeled; the decoded pixel height is returned.
-        self.natural_dimensions()
+        image_data::natural_dimensions(element)
             .map(|(_, height)| height)
             .unwrap_or(0)
     }
 
     /// <https://html.spec.whatwg.org/#dom-img-complete>
-    pub(crate) fn complete(&self) -> bool {
+    pub(crate) fn complete(&self, element: &ImageElement) -> bool {
         // Step 1: If any of the following are true: both the src attribute and the srcset attribute are omitted; the srcset attribute is omitted and the src attribute's value is the empty string; the img element's current request's state is completely available and its pending request is null; or the img element's current request's state is broken and its pending request is null, then return true.
-        // Note: The current request's state is not modeled separately; the
-        // image is treated as completely available once its decoded data is
-        // present on the element, and broken is never entered.
-        let has_src = self
-            .html_element
-            .element
-            .get_attribute("src")
-            .is_some_and(|value| !value.is_empty());
-        let has_srcset = self
-            .html_element
-            .element
-            .get_attribute("srcset")
-            .is_some_and(|value| !value.is_empty());
-        if !has_src && !has_srcset {
+        let src = self.html_element.element.get_attribute("src");
+        let srcset = self.html_element.element.get_attribute("srcset");
+        let has_src = src.is_some();
+        let has_srcset = srcset.is_some();
+        let src_is_empty = src.as_deref().is_some_and(str::is_empty);
+        if !has_srcset && (!has_src || src_is_empty) {
             return true;
         }
 
-        self.natural_dimensions().is_some()
+        let state = element.current_request.state;
+        state == image_data::ImageRequestState::CompletelyAvailable
+            && element.pending_request.is_none()
+            || state == image_data::ImageRequestState::Broken && element.pending_request.is_none()
     }
 
     /// <https://html.spec.whatwg.org/#dom-img-currentsrc>
-    pub(crate) fn current_src(&self, document_creation_url: &Url) -> String {
+    pub(crate) fn current_src(&self, element: &ImageElement) -> String {
         // Step 1: Return the current request's current URL.
-        // Note: The current request's URL is approximated by the resolved src
-        // content attribute; srcset selection is not modeled.
-        let value = self.src_attribute();
-        if value.is_empty() {
-            return String::new();
-        }
-        document_creation_url
-            .join(&value)
-            .map(|url| url.to_string())
-            .unwrap_or_default()
+        element.current_request.current_url.clone()
     }
 
     /// <https://html.spec.whatwg.org/#dom-img-referrerpolicy>
@@ -370,16 +348,17 @@ impl HTMLImageElement {
     pub(crate) fn decode(
         &self,
         ec: &mut dyn ExecutionContext<Types>,
+        element: &ImageElement,
     ) -> Completion<<crate::js::Types as JsTypes>::JsValue, crate::js::Types> {
         // Step 1: "Let promise be a new promise."
         // Step 2: "Queue a microtask to perform the following steps:"
-        // Note: The image's decoded data is already synchronously present on
-        // the element (blitz decodes on load), so the queued microtask
-        // resolves or rejects without waiting. Steps 2.1-2.3 (fully active
-        // check, in-parallel decode wait, animation-frame retention) are not
-        // modeled.
+        // Note: The promise is settled without queuing the microtask: it
+        // resolves when the current request is available and rejects with an
+        // "EncodingError" DOMException otherwise.  Steps 2.1-2.3 (fully
+        // active check, in-parallel decode wait, animation-frame retention)
+        // are not modeled.
         // Step 3: "Return promise."
-        if self.natural_dimensions().is_some() {
+        if image_data::is_available(element) {
             let promise = crate::webidl::resolved_promise(ec.value_undefined(), ec)?;
             Ok(<crate::js::Types as JsTypes>::value_from_object(promise))
         } else {

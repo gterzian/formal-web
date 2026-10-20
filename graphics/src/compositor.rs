@@ -314,30 +314,34 @@ impl Compositor {
         self.canvas_frames.remove(&canvas_id);
     }
 
-    /// Store the decoded pixels for an `<img>` resource. Returns `false`
-    /// when the image is already registered (the same identifier), so the
-    /// caller can skip redundant work.
+    /// Decode an `<img>` resource into the shared image registry. Returns
+    /// `Ok(None)` when the image is already registered (the same
+    /// identifier), so the caller can skip redundant work, and the decoded
+    /// dimensions when the image was newly registered.
     pub fn store_image(
         &mut self,
         id: ImageIdentifier,
-        width: u32,
-        height: u32,
-        bytes: &[u8],
-    ) -> bool {
+        encoded_bytes: &[u8],
+    ) -> Result<Option<(u32, u32)>, String> {
         if self.image_registry.contains_key(&id) {
-            return false;
+            return Ok(None);
         }
+        let decoded = image::load_from_memory(encoded_bytes)
+            .map_err(|error| format!("failed to decode image: {error}"))?
+            .into_rgba8();
+        let width = decoded.width();
+        let height = decoded.height();
         self.image_registry.insert(
             id,
             ImageData {
-                data: peniko::Blob::from(bytes.to_vec()),
+                data: peniko::Blob::from(decoded.into_raw()),
                 format: ImageFormat::Rgba8,
                 alpha_type: ImageAlphaType::Alpha,
                 width,
                 height,
             },
         );
-        true
+        Ok(Some((width, height)))
     }
 
     /// Drop every image layer (and its surface) on navigation: the outgoing

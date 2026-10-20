@@ -19,8 +19,12 @@ pub mod wasm;
 pub mod webidl;
 
 use crate::dom::{EventTargetAccess, dispatch_with_path, fire_event, simple_path};
+use crate::html::document_hooks::{
+    AssetRequest, DocumentHost, DocumentProviders, install_resource,
+};
 use crate::html::environment_settings_object::RealmWiring;
-use crate::html::event_loop::{EventLoopTaskSources, Task, TaskQueue};
+use crate::html::event_loop::{EventLoopTaskSources, ImageEvent, Task, TaskQueue};
+use crate::html::image_data::{self, ImageRegistry, ImageTask};
 use crate::html::timers::MapOfActiveTimers;
 use crate::html::timers::TimerRealm;
 use crate::html::ui_events::{dispatch_trusted_click_event, dispatch_ui_event};
@@ -45,9 +49,9 @@ use crate::ui_event::deserialize_ui_event;
 #[cfg(all(boa_backend, feature = "wasm"))]
 use crate::wasm::{WasmResult, compile_continuation, compile_rejection, instantiate_continuation};
 use anyrender::Scene as RenderScene;
-use blitz_dom::{BaseDocument, DocumentConfig, Status};
+use blitz_dom::{BaseDocument, DocumentConfig};
 use blitz_paint::paint_scene;
-use blitz_traits::net::{Body, Bytes, NetHandler, NetProvider, Request};
+use blitz_traits::net::{Body, Request};
 use blitz_traits::shell::{ClipboardError, ColorScheme, ShellProvider, Viewport};
 use data_url::DataUrl;
 use html5ever::local_name;
@@ -80,7 +84,8 @@ use std::{
     cell::RefCell,
     collections::{HashMap, HashSet},
     env,
-    rc::Rc,
+    io::Cursor,
+    rc::{Rc, Weak},
     sync::{
         Arc, Mutex,
         atomic::{AtomicBool, Ordering},
@@ -146,11 +151,18 @@ fn epoch_millis(epoch_anchor: Instant, epoch_anchor_wall_ms: f64, instant: Insta
             * 1000.0
 }
 
-enum PendingNetworkHandler {
-    Resource {
+pub(crate) enum PendingNetworkHandler {
+    /// A stylesheet, font, or background image reported by a `blitz-dom`
+    /// document hook.
+    Asset {
+        host: DocumentHost,
+        request: AssetRequest,
+    },
+    /// The response of an `<img>` element's image request.
+    Image {
         document_id: DocumentId,
-        request_url: String,
-        handler: Box<dyn NetHandler>,
+        navigable_id: NavigableId,
+        node_id: usize,
     },
     DeferredScript {
         document_id: DocumentId,
@@ -158,8 +170,8 @@ enum PendingNetworkHandler {
     },
 }
 
-struct LocalContentState {
-    pending_handlers: HashMap<DocumentFetchId, PendingNetworkHandler>,
+pub(crate) struct LocalContentState {
+    pub(crate) pending_handlers: HashMap<DocumentFetchId, PendingNetworkHandler>,
 }
 
 pub(crate) type LocalContentStateRef = Arc<Mutex<LocalContentState>>;
@@ -312,101 +324,6 @@ fn log_render_state_debug(message: impl AsRef<str>) {
     }
 }
 
-#[derive(Clone)]
-struct ContentNetProvider {
-    local_state: LocalContentStateRef,
-    content_document_id: DocumentId,
-    /// The navigable of the document whose subresources this provider
-    /// fetches; an embedder-scheme fetch names it to the user agent.
-    navigable_id: NavigableId,
-    event_loop_id: EventLoopId,
-    network_extension_sender: ipc::IpcSender<ipc_messages::network::Request>,
-    content_command_sender: ipc::IpcSender<Command>,
-    /// The channel to the user agent, which owns the embedder.
-    event_sender: ipc::IpcSender<ContentEvent>,
-    /// The URL schemes the embedder serves itself.
-    embedder_schemes: Arc<HashSet<String>>,
-}
-
-impl NetProvider for ContentNetProvider {
-    fn fetch(&self, _doc_id: usize, request: Request, handler: Box<dyn NetHandler>) {
-        match request.url.scheme() {
-            "data" => match DataUrl::process(request.url.as_str()) {
-                Ok(data_url) => match data_url.decode_to_vec() {
-                    Ok((bytes, _fragment)) => {
-                        handler.bytes(request.url.to_string(), Bytes::from(bytes));
-                    }
-                    Err(error) => {
-                        error!("failed to decode data URL for {}: {error}", request.url);
-                    }
-                },
-                Err(error) => {
-                    error!("failed to parse data URL for {}: {error}", request.url);
-                }
-            },
-            _scheme => {
-                let handler_id = new_document_fetch_id();
-                let mut local_state = self
-                    .local_state
-                    .lock()
-                    .expect("local content state mutex poisoned");
-                local_state.pending_handlers.insert(
-                    handler_id,
-                    PendingNetworkHandler::Resource {
-                        document_id: self.content_document_id,
-                        request_url: request.url.to_string(),
-                        handler,
-                    },
-                );
-                drop(local_state);
-
-                let fetch_request = ContentFetchRequest {
-                    handler_id,
-                    url: request.url.to_string(),
-                    method: request.method.to_string(),
-                    header_list: request_header_list(&request),
-                    body: request_body_string(&request.body),
-                };
-
-                // A scheme the embedder serves is answered by the
-                // embedder, so the fetch goes to the user agent instead of
-                // to net, ahead of
-                // <https://fetch.spec.whatwg.org/#scheme-fetch>
-                if self.embedder_schemes.contains(request.url.scheme()) {
-                    if let Err(error) =
-                        self.event_sender
-                            .send(ContentEvent::EmbedderSchemeFetchRequested(
-                                EmbedderSchemeFetchRequested {
-                                    navigable_id: self.navigable_id,
-                                    handler_id,
-                                    request: fetch_request,
-                                },
-                            ))
-                    {
-                        error!(
-                            "failed to send an embedder-scheme fetch to the user agent: {error}"
-                        );
-                    }
-                    return;
-                }
-
-                let network_request = ipc_messages::network::Request::Fetch {
-                    event_loop_id: self.event_loop_id,
-                    request_id: uuid::Uuid::new_v4(),
-                    request: fetch_request,
-                    reply_to: ipc_messages::network::ResponseRecipient::ContentProcess {
-                        content_command_sender: self.content_command_sender.clone(),
-                        handler_id,
-                    },
-                };
-                if let Err(error) = self.network_extension_sender.send(network_request) {
-                    error!("failed to send direct fetch request to net: {error}");
-                }
-            }
-        }
-    }
-}
-
 pub(crate) struct ContentDocument {
     traversable_id: NavigableId,
     parent_traversable_id: Option<NavigableId>,
@@ -436,70 +353,6 @@ pub(crate) struct ContentDocument {
     /// (embed sites, viewport, and frame id are unchanged when nothing dirtied
     /// the document).
     last_composition: Option<FrameCompositionMetadata>,
-    /// The `src` last notified per `<img>` node, so a load/error event fires
-    /// once per request. Keyed by node id.
-    notified_image_sources: HashMap<usize, String>,
-}
-
-impl ContentDocument {
-    /// <https://html.spec.whatwg.org/#update-the-image-data>
-    fn fire_pending_image_events(&mut self) {
-        // Note: steps 1 through 27 (the fetch, decode, and request bookkeeping)
-        // run in blitz; content runs only the event-firing portions below,
-        // observing the resolved status from the element on the next render pass
-        // (the fetch marks the document dirty, so a pass follows) rather than
-        // from a per-element callback.
-        let pending: Vec<(usize, String, bool)> = {
-            let document = self.document.borrow();
-            let mut pending = Vec::new();
-            document.visit(|node_id, node| {
-                let Some(element) = node.element_data() else {
-                    return;
-                };
-                let loaded = match element.image_status() {
-                    Some(Status::Ok) => true,
-                    Some(Status::Error) => false,
-                    Some(Status::Loading) | None => return,
-                };
-                let src = node
-                    .attr(local_name!("src"))
-                    .unwrap_or_default()
-                    .to_string();
-                if src.is_empty() || self.notified_image_sources.get(&node_id) == Some(&src) {
-                    return;
-                }
-                pending.push((node_id, src, loaded));
-            });
-            pending
-        };
-
-        for (node_id, src, loaded) in pending {
-            self.notified_image_sources.insert(node_id, src);
-            let time_millis = self.settings.current_time_millis();
-            let ec = &mut self.settings.realm_execution_context;
-            let Ok(object) = resolve_element_object(node_id, ec) else {
-                continue;
-            };
-            let event_target = ec.with_object_any(&object).and_then(|data| {
-                data.downcast_ref::<HTMLImageElement>()
-                    .map(|image| image.html_element.element.node.event_target.clone())
-            });
-            let Some(event_target) = event_target else {
-                continue;
-            };
-            let event_type = if loaded {
-                // Step 7.4.7.3: "If maybe omit events is not set or previousURL is not equal to urlString, then fire an event named load at element."
-                "load"
-            } else {
-                // Step 11.2.2: "If all of the following are true: element has a src attribute or it uses srcset or picture; and maybe omit events is not set or previousURL is not the empty string, then fire an event named error at element."
-                // Step 13.4.2: "If maybe omit events is not set or previousURL is not equal to selected source, then fire an event named error at element."
-                "error"
-            };
-            if let Err(error) = fire_event(ec, &event_target, event_type, time_millis, false) {
-                warn!("failed to fire {event_type} event for <img>: {error:?}");
-            }
-        }
-    }
 }
 
 #[derive(Clone)]
@@ -507,16 +360,6 @@ struct DocumentViewportState {
     snapshot: ViewportSnapshot,
     offset_x: f32,
     offset_y: f32,
-}
-
-/// An `<img>` resource whose decoded pixels content must ship to the graphics
-/// process once. `node_id` locates the decoded bytes on the node at send
-/// time, so the bytes are copied only the first time the image is registered.
-struct PendingImage {
-    id: ImageIdentifier,
-    width: u32,
-    height: u32,
-    node_id: usize,
 }
 
 /// The content process: this implementation's realization of one agent
@@ -585,6 +428,11 @@ pub(crate) struct ContentProcess {
     /// graphics process, so an image's decoded pixels cross the boundary
     /// once per webview lifetime.
     image_sender: ImageTransportSender,
+    /// The `<img>` processing model state shared by the process's documents.
+    image_registry: Arc<Mutex<ImageRegistry>>,
+    /// The same-origin iframe subdocuments owned by this process's documents,
+    /// keyed by the id their `DocumentProviders` routes asset fetches with.
+    subdocuments: HashMap<uuid::Uuid, Weak<RefCell<BaseDocument>>>,
     tla_tracer: TLATracer,
     /// Shared clipboard cache. The embedder writes prefetched clipboard text
     /// here before dispatching paste events; `ShellProvider::get_clipboard_text`
@@ -678,6 +526,8 @@ impl ContentProcess {
             font_namespace: new_font_namespace(),
             font_sender: FontTransportSender::default(),
             image_sender: ImageTransportSender::default(),
+            image_registry: Arc::new(Mutex::new(ImageRegistry::default())),
+            subdocuments: HashMap::new(),
             tla_tracer: TLATracer::new("Navigation", "formal-web:content", trace_sender.clone()),
             clipboard_cache: clipboard_cache.clone(),
             new_document_registry: Rc::new(RefCell::new(HashMap::new())),
@@ -737,6 +587,7 @@ impl ContentProcess {
                 global_scope.set_worker_owner_inbox(worker_event_sender.clone());
                 global_scope.set_network_partition_event_loop_id(self.event_loop_id);
                 global_scope.set_network_extension_sender(network_extension_sender.clone());
+                global_scope.set_image_registry(Arc::clone(&self.image_registry));
                 Ok(())
             },
         )
@@ -771,30 +622,41 @@ impl ContentProcess {
             })
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn document_config(
         &self,
         traversable_id: NavigableId,
-        document_id: DocumentId,
+        top_level_traversable_id: NavigableId,
         base_url: Option<String>,
+        origin: String,
         needs_paint: Arc<AtomicBool>,
         embedded_images: bool,
+        host: DocumentHost,
     ) -> DocumentConfig {
+        let partition = ResourcePartitionKey {
+            top_level_traversable: top_level_traversable_id,
+            origin,
+        };
         DocumentConfig {
             embedded_images,
             viewport: self
                 .document_viewport_state(traversable_id)
                 .map(|viewport| viewport_of_snapshot(&viewport.snapshot)),
-            base_url,
-            net_provider: Some(Arc::new(ContentNetProvider {
-                local_state: Arc::clone(&self.local_state),
-                content_document_id: document_id,
-                navigable_id: traversable_id,
-                event_loop_id: self.event_loop_id,
-                network_extension_sender: self.network_extension_sender.clone(),
-                content_command_sender: self.content_command_sender.clone(),
-                event_sender: self.event_sender.clone(),
-                embedder_schemes: Arc::clone(&self.embedder_schemes),
-            })),
+            base_url: base_url.clone(),
+            hooks: Some(Arc::new(DocumentProviders::new(
+                host,
+                traversable_id,
+                self.event_loop_id,
+                base_url.and_then(|url| Url::parse(&url).ok()),
+                partition,
+                Arc::clone(&self.local_state),
+                self.network_extension_sender.clone(),
+                self.content_command_sender.clone(),
+                self.event_sender.clone(),
+                Arc::clone(&self.embedder_schemes),
+                Arc::clone(&self.image_registry),
+                needs_paint.clone(),
+            ))),
             shell_provider: Some(Arc::new(ContentShellProvider::new(
                 self.event_sender.clone(),
                 self.clipboard_cache.clone(),
@@ -1096,6 +958,7 @@ impl ContentProcess {
                 global_scope.set_worker_owner_inbox(worker_event_sender.clone());
                 global_scope.set_network_partition_event_loop_id(self.event_loop_id);
                 global_scope.set_network_extension_sender(network_extension_sender.clone());
+                global_scope.set_image_registry(Arc::clone(&self.image_registry));
                 Ok(())
             })
             .map_err(|error| format!("failed to set event loop id: {}", error.display()))?;
@@ -1116,7 +979,6 @@ impl ContentProcess {
                     needs_paint: Arc::new(AtomicBool::new(false)),
                     last_scene: None,
                     last_composition: None,
-                    notified_image_sources: HashMap::new(),
                 },
             );
             self.active_documents_by_traversable
@@ -1157,7 +1019,6 @@ impl ContentProcess {
                 .ok_or_else(|| format!("unknown document id: {document_id}"))?;
             let traversable_id = content_document.traversable_id;
 
-            content_document.document.borrow_mut().handle_messages();
             let resources_ready = !content_document
                 .document
                 .borrow()
@@ -1293,10 +1154,12 @@ impl ContentProcess {
         let needs_paint = Arc::new(AtomicBool::new(false));
         let document = Rc::new(RefCell::new(BaseDocument::new(self.document_config(
             traversable_id,
-            document_id,
+            top_level_traversable_id,
             None,
+            String::from("null"),
             needs_paint.clone(),
             true,
+            DocumentHost::Main(document_id),
         ))));
         let mut settings = self.create_environment_settings_object(
             Rc::clone(&document),
@@ -1363,7 +1226,6 @@ impl ContentProcess {
                 needs_paint,
                 last_scene: None,
                 last_composition: None,
-                notified_image_sources: HashMap::new(),
             },
         );
         self.active_documents_by_traversable
@@ -1393,6 +1255,7 @@ impl ContentProcess {
         &mut self,
         traversable_id: NavigableId,
         document_id: DocumentId,
+        top_level_traversable_id: NavigableId,
         final_url: &str,
     ) -> Result<
         (
@@ -1492,12 +1355,15 @@ impl ContentProcess {
         // (`create_loaded_document`), which continues navigate-html with the parse.
         let creation_url = Url::parse(final_url).map_err(|error| error.to_string())?;
         let needs_paint = Arc::new(AtomicBool::new(false));
+        let origin = creation_url.origin().unicode_serialization();
         let document = Rc::new(RefCell::new(BaseDocument::new(self.document_config(
             traversable_id,
-            document_id,
+            top_level_traversable_id,
             Some(final_url.to_string()),
+            origin,
             needs_paint.clone(),
             true,
+            DocumentHost::Main(document_id),
         ))));
         // Steps 7.5, 7.6 and 7.10 run in `create_environment_settings_object` for the
         // otherwise branch; for the step-6 branch they already ran when the reused realm was
@@ -1599,8 +1465,12 @@ impl ContentProcess {
         // `Self::initialise_the_document_object`; the user-agent-side steps (browsing context
         // and agent selection) ran in `UserAgent::initialise_the_document_object` before this
         // command was dispatched.
-        let (document, mut settings, needs_paint) =
-            self.initialise_the_document_object(traversable_id, document_id, &final_url)?;
+        let (document, mut settings, needs_paint) = self.initialise_the_document_object(
+            traversable_id,
+            document_id,
+            top_level_traversable_id,
+            &final_url,
+        )?;
 
         run_user_scripts(&mut settings, &user_scripts);
 
@@ -1654,7 +1524,6 @@ impl ContentProcess {
                 needs_paint,
                 last_scene: None,
                 last_composition: None,
-                notified_image_sources: HashMap::new(),
             },
         );
         // Make the document addressable immediately so the shared
@@ -1948,7 +1817,10 @@ impl ContentProcess {
         local_state
             .pending_handlers
             .retain(|_, pending_handler| match pending_handler {
-                PendingNetworkHandler::Resource {
+                PendingNetworkHandler::Asset { host, .. } => {
+                    host.parent_document_id() != document_id
+                }
+                PendingNetworkHandler::Image {
                     document_id: pending_document_id,
                     ..
                 }
@@ -1958,6 +1830,12 @@ impl ContentProcess {
                 } => *pending_document_id != document_id,
             });
         drop(local_state);
+        self.image_registry
+            .lock()
+            .expect("image registry mutex poisoned")
+            .forget_document(document_id);
+        self.subdocuments
+            .retain(|_, subdocument| subdocument.strong_count() > 0);
 
         // Tear down the destroyed document's realm: prune callback records
         // whose creation realm has died (housekeeping — the captures are
@@ -2467,14 +2345,15 @@ impl ContentProcess {
         ));
         let video_paint_registry = Rc::clone(&self.video_paint_registry);
         let canvas_registry = Rc::clone(&self.canvas_registry);
+        let image_registry = Arc::clone(&self.image_registry);
+        let image_registry_guard = image_registry
+            .lock()
+            .expect("image registry mutex poisoned");
         let (paint_frame, shmem_map) = {
             let document = self
                 .documents
                 .get_mut(&document_id)
                 .ok_or_else(|| format!("unknown document id: {document_id}"))?;
-
-            document.document.borrow_mut().handle_messages();
-            document.fire_pending_image_events();
 
             // Step 1: "Let `frameTimestamp` be `eventLoop`'s last render opportunity time."
             // The user agent stamps the opportunity time on the browser-wide monotonic
@@ -2584,21 +2463,15 @@ impl ContentProcess {
                     let viewport = document_guard.viewport().clone();
                     let (width, height) = viewport.window_size;
                     let mut scene = RenderScene::new();
-                    let mut pending_images = Vec::new();
-                    let partition = ResourcePartitionKey {
-                        top_level_traversable: document.top_level_traversable_id,
-                        origin: document.settings.origin.serialized.clone(),
-                    };
                     let composition = Self::build_frame_composition_metadata(
                         document_id,
                         navigable_id,
-                        &partition,
                         &document_guard,
                         &document.navigable_container_states,
                         viewport.scale_f64(),
                         &mut video_paint_registry.borrow_mut(),
                         &canvas_registry.borrow(),
-                        &mut pending_images,
+                        &image_registry_guard,
                     );
 
                     // Step 22: "For each `doc` of `docs`, update the rendering or user interface of `doc` and its node navigable to reflect the current state."
@@ -2619,50 +2492,6 @@ impl ContentProcess {
                         &mut next_shmem_key,
                     );
 
-                    // Ship each newly-seen `<img>` resource's decoded pixels to
-                    // the graphics process once, before the frame that
-                    // references it. Later frames reuse the registration.
-                    for pending in pending_images.drain(..) {
-                        if self.image_sender.is_sent(&pending.id) {
-                            continue;
-                        }
-                        let bytes = document_guard
-                            .get_node(pending.node_id)
-                            .and_then(|node| node.element_data())
-                            .and_then(|element| element.raster_image_data())
-                            .map(|raster| raster.data.data().to_vec());
-                        let Some(bytes) = bytes else {
-                            continue;
-                        };
-                        let Some((registration, region)) = self.image_sender.prepare_image(
-                            pending.id.clone(),
-                            pending.width,
-                            pending.height,
-                            &bytes,
-                            &mut next_shmem_key,
-                        ) else {
-                            continue;
-                        };
-                        let data_shmem_key = registration.data_shmem_key;
-                        let mut image_shmem = HashMap::new();
-                        image_shmem.insert(data_shmem_key, region);
-                        if let Some(graphics_sender) = &self.graphics_sender {
-                            let command = ipc_messages::graphics::GraphicsCommand::RegisterImage {
-                                webview_id: WebviewId(navigable_id),
-                                image_id: registration.id,
-                                width: registration.width,
-                                height: registration.height,
-                                data_shmem_key,
-                            };
-                            if let Err(error) =
-                                graphics_sender.send_with_shmem_map(command, image_shmem)
-                            {
-                                error!(
-                                    "failed to send image registration to graphics process: {error}"
-                                );
-                            }
-                        }
-                    }
                     log_render_state_debug(format!(
                         "emit paint navigable={} document={} size=({}, {})",
                         navigable_id, document_id, width, height,
@@ -2787,13 +2616,12 @@ impl ContentProcess {
     fn build_frame_composition_metadata(
         document_id: DocumentId,
         navigable_id: NavigableId,
-        partition: &ResourcePartitionKey,
         document: &BaseDocument,
         container_states: &HashMap<usize, NavigableContainerState>,
         scale: f64,
         video_paint_registry: &mut HashMap<(DocumentId, usize), VideoPaintId>,
         canvas_registry: &HashMap<(DocumentId, usize), CanvasId>,
-        pending_images: &mut Vec<PendingImage>,
+        image_registry: &ImageRegistry,
     ) -> FrameCompositionMetadata {
         let mut iframe_node_ids = container_states
             .iter()
@@ -2966,8 +2794,8 @@ impl ContentProcess {
             }));
         }
 
-        // Build image embed sites: every <img> element whose decoded pixels
-        // have loaded becomes its own compositing layer, drawing a shared
+        // Build image embed sites: every <img> element whose current request
+        // is available becomes its own compositing layer, drawing a shared
         // decoded image registered once with the graphics process.
         for (image_offset, image_node_id) in image_node_ids.into_iter().enumerate() {
             let Some((x, y, width, height)) =
@@ -2975,24 +2803,13 @@ impl ContentProcess {
             else {
                 continue;
             };
-            let Some((image_width, image_height, blob_id)) = document
-                .get_node(image_node_id)
-                .and_then(|node| node.element_data())
-                .and_then(|element| element.raster_image_data())
-                .map(|raster| (raster.width, raster.height, raster.data.id()))
-            else {
+            let element = image_data::image_element(image_registry, document_id, image_node_id);
+            if !image_data::is_available(&element) {
+                continue;
+            }
+            let Some(image_id) = image_data::current_image_id(&element) else {
                 continue;
             };
-            let image_id = ImageIdentifier {
-                partition: partition.clone(),
-                blob_id,
-            };
-            pending_images.push(PendingImage {
-                id: image_id.clone(),
-                width: image_width,
-                height: image_height,
-                node_id: image_node_id,
-            });
             let clip_svg_path = format!("M0,0 L{width},0 L{width},{height} L0,{height} Z");
             embed_sites.push(EmbedSite::Image(ImageEmbedData {
                 embed_site_id: EmbedSiteId((image_node_id as u64).wrapping_add(1)),
@@ -3037,6 +2854,229 @@ impl ContentProcess {
         Some((x, y, width, height))
     }
 
+    fn complete_asset_fetch(
+        &mut self,
+        host: DocumentHost,
+        request: AssetRequest,
+        response_url: &str,
+        body: &[u8],
+    ) -> Result<(), String> {
+        let parent_document_id = host.parent_document_id();
+        let Some(traversable_id) = self
+            .documents
+            .get(&parent_document_id)
+            .map(|content_document| content_document.traversable_id)
+        else {
+            error!("[content] complete_asset_fetch: document {parent_document_id} not found");
+            return Ok(());
+        };
+        let document = match host {
+            DocumentHost::Main(document_id) => self
+                .documents
+                .get(&document_id)
+                .map(|content_document| Rc::clone(&content_document.document)),
+            DocumentHost::Subdocument { id, .. } => {
+                self.subdocuments.get(&id).and_then(Weak::upgrade)
+            }
+        };
+        let Some(document) = document else {
+            error!("[content] complete_asset_fetch: document {host:?} not found");
+            return Ok(());
+        };
+        install_resource(&mut document.borrow_mut(), &request, response_url, body)?;
+        if matches!(host, DocumentHost::Main(_)) {
+            self.continue_document_load(parent_document_id)?;
+        }
+        self.mark_document_dirty(parent_document_id);
+        self.event_sender
+            .send(ContentEvent::RenderingOpRequested(traversable_id))
+            .map_err(|error| {
+                format!("failed to request rendering op for an asset fetch: {error}")
+            })?;
+        Ok(())
+    }
+
+    fn fail_asset_fetch(
+        &mut self,
+        host: DocumentHost,
+        request: AssetRequest,
+    ) -> Result<(), String> {
+        let parent_document_id = host.parent_document_id();
+        let traversable_id = self
+            .documents
+            .get(&parent_document_id)
+            .map(|content_document| content_document.traversable_id);
+        match request {
+            AssetRequest::Stylesheet {
+                request_id: Some(request_id),
+                ..
+            } => {
+                if let DocumentHost::Main(document_id) = host
+                    && let Some(content_document) = self.documents.get(&document_id)
+                {
+                    content_document
+                        .document
+                        .borrow_mut()
+                        .cancel_pending_resource(request_id);
+                }
+                if matches!(host, DocumentHost::Main(_)) {
+                    self.continue_document_load(parent_document_id)?;
+                }
+            }
+            AssetRequest::Stylesheet { .. } | AssetRequest::StylesheetImport { .. } => {
+                // A stylesheet that failed to load is not retried; the
+                // document load continues without it.
+                if matches!(host, DocumentHost::Main(_)) {
+                    self.continue_document_load(parent_document_id)?;
+                }
+            }
+            AssetRequest::Font { .. } | AssetRequest::DecodedImage { .. } => {}
+        }
+        self.mark_document_dirty(parent_document_id);
+        if let Some(traversable_id) = traversable_id {
+            self.event_sender
+                .send(ContentEvent::RenderingOpRequested(traversable_id))
+                .map_err(|error| {
+                    format!("failed to request rendering op for a failed asset fetch: {error}")
+                })?;
+        }
+        Ok(())
+    }
+
+    fn complete_image_fetch(
+        &mut self,
+        document_id: DocumentId,
+        node_id: usize,
+        navigable_id: NavigableId,
+        handler_id: DocumentFetchId,
+        body: &[u8],
+    ) -> Result<(), String> {
+        let dimensions = image::ImageReader::new(Cursor::new(body))
+            .with_guessed_format()
+            .map_err(|error| format!("failed to sniff image data: {error}"))?
+            .into_dimensions()
+            .ok();
+        let Some(dimensions) = dimensions else {
+            return self.fail_image_fetch(handler_id);
+        };
+        let encoded = Arc::new(body.to_vec());
+        let image_id = {
+            let mut registry = self
+                .image_registry
+                .lock()
+                .expect("image registry mutex poisoned");
+            image_data::image_fetch_succeeded(&mut registry, handler_id, dimensions);
+            let element = image_data::image_element(&registry, document_id, node_id);
+            image_data::current_image_id(&element)
+        };
+        if let Some(image_id) = image_id {
+            self.register_image_with_graphics(navigable_id, image_id, encoded)?;
+        }
+        self.drain_image_tasks()
+    }
+
+    fn fail_image_fetch(&mut self, handler_id: DocumentFetchId) -> Result<(), String> {
+        {
+            let mut registry = self
+                .image_registry
+                .lock()
+                .expect("image registry mutex poisoned");
+            image_data::image_fetch_failed(&mut registry, handler_id);
+        }
+        self.drain_image_tasks()
+    }
+
+    /// Ship the encoded bytes of a newly available `<img>` resource to the
+    /// graphics process, which decodes it into its own compositing layer.
+    fn register_image_with_graphics(
+        &mut self,
+        navigable_id: NavigableId,
+        image_id: ImageIdentifier,
+        encoded: Arc<Vec<u8>>,
+    ) -> Result<(), String> {
+        let mut next_shmem_key = 0usize;
+        let Some((registration, region)) =
+            self.image_sender
+                .prepare_image(image_id, &encoded, &mut next_shmem_key)
+        else {
+            return Ok(());
+        };
+        let data_shmem_key = registration.data_shmem_key;
+        let mut image_shmem = HashMap::new();
+        image_shmem.insert(data_shmem_key, region);
+        if let Some(graphics_sender) = &self.graphics_sender {
+            let command = ipc_messages::graphics::GraphicsCommand::RegisterImage {
+                webview_id: WebviewId(navigable_id),
+                image_id: registration.id,
+                data_shmem_key,
+            };
+            graphics_sender
+                .send_with_shmem_map(command, image_shmem)
+                .map_err(|error| format!("failed to register image with graphics: {error}"))?;
+        }
+        Ok(())
+    }
+
+    fn drain_image_tasks(&mut self) -> Result<(), String> {
+        let tasks = {
+            let mut registry = self
+                .image_registry
+                .lock()
+                .expect("image registry mutex poisoned");
+            registry.take_pending_tasks()
+        };
+        for task in tasks {
+            match task {
+                ImageTask::PrepareForPresentation {
+                    document_id,
+                    node_id,
+                    width,
+                    height,
+                } => {
+                    let Some(content_document) = self.documents.get(&document_id) else {
+                        continue;
+                    };
+                    content_document
+                        .document
+                        .borrow_mut()
+                        .set_image_intrinsic_size(node_id, width, height);
+                    content_document.needs_paint.store(true, Ordering::Relaxed);
+                    let traversable_id = content_document.traversable_id;
+                    self.event_sender
+                        .send(ContentEvent::RenderingOpRequested(traversable_id))
+                        .map_err(|error| {
+                            format!("failed to request rendering op for a presented image: {error}")
+                        })?;
+                }
+                ImageTask::FireLoad {
+                    document_id,
+                    node_id,
+                } => {
+                    if self.documents.contains_key(&document_id) {
+                        self.task_queue.queue_a_task(Task::RunImageEvent {
+                            document_id,
+                            node_id,
+                            event: ImageEvent::Load,
+                        });
+                    }
+                }
+                ImageTask::FireError {
+                    document_id,
+                    node_id,
+                } => {
+                    if self.documents.contains_key(&document_id) {
+                        self.task_queue.queue_a_task(Task::RunImageEvent {
+                            document_id,
+                            node_id,
+                            event: ImageEvent::Error,
+                        });
+                    }
+                }
+            }
+        }
+        Ok(())
+    }
+
     fn complete_document_fetch(
         &mut self,
         handler_id: DocumentFetchId,
@@ -3058,36 +3098,33 @@ impl ContentProcess {
         };
 
         match pending_handler {
-            PendingNetworkHandler::Resource {
-                document_id,
-                request_url: _,
-                handler,
-            } => {
-                handler.bytes(
-                    response.final_url.clone(),
-                    Bytes::copy_from_slice(&response.body),
-                );
-                let Some(content_document) = self.documents.get(&document_id) else {
-                    error!("[content] complete_document_fetch: document {document_id} not found");
-                    return Ok(());
-                };
-                let traversable_id = content_document.traversable_id;
+            PendingNetworkHandler::Asset { host, request } => {
                 log_render_state_debug(format!(
-                    "complete resource fetch handler={} traversable={} document={} status={} type={} url={}",
+                    "complete asset fetch handler={} document={} status={} type={} url={}",
                     handler_id,
-                    traversable_id,
-                    document_id,
+                    host.parent_document_id(),
                     response_status,
                     response_type,
                     response_url,
                 ));
-                self.continue_document_load(document_id)?;
-                self.event_sender
-                    .send(ContentEvent::RenderingOpRequested(traversable_id))
-                    .map_err(|error| {
-                        format!("failed to request rendering op for resource fetch: {error}")
-                    })?;
-                Ok(())
+                self.complete_asset_fetch(host, request, &response_url, &response.body)
+            }
+            PendingNetworkHandler::Image {
+                document_id,
+                navigable_id,
+                node_id,
+            } => {
+                log_render_state_debug(format!(
+                    "complete image fetch handler={} document={} node={} status={} type={} url={}",
+                    handler_id, document_id, node_id, response_status, response_type, response_url,
+                ));
+                self.complete_image_fetch(
+                    document_id,
+                    node_id,
+                    navigable_id,
+                    handler_id,
+                    &response.body,
+                )
             }
             PendingNetworkHandler::DeferredScript {
                 document_id,
@@ -3144,30 +3181,24 @@ impl ContentProcess {
         };
 
         match pending_handler {
-            PendingNetworkHandler::Resource {
+            PendingNetworkHandler::Asset { host, request } => {
+                warn!(
+                    "content asset fetch failed handler={} document={} request={request:?}",
+                    handler_id,
+                    host.parent_document_id(),
+                );
+                self.fail_asset_fetch(host, request)
+            }
+            PendingNetworkHandler::Image {
                 document_id,
-                request_url,
-                handler,
+                node_id,
+                ..
             } => {
-                handler.bytes(request_url, Bytes::new());
-                let Some(content_document) = self.documents.get(&document_id) else {
-                    error!("[content] fail_document_fetch: document {document_id} not found");
-                    return Ok(());
-                };
-                let traversable_id = content_document.traversable_id;
-                log_render_state_debug(format!(
-                    "fail resource fetch handler={} traversable={} document={}",
-                    handler_id, traversable_id, document_id,
-                ));
-                self.continue_document_load(document_id)?;
-                self.event_sender
-                    .send(ContentEvent::RenderingOpRequested(traversable_id))
-                    .map_err(|error| {
-                        format!(
-                            "failed to request rendering op for resource fetch failure: {error}"
-                        )
-                    })?;
-                Ok(())
+                warn!(
+                    "content image fetch failed handler={} document={} node={}",
+                    handler_id, document_id, node_id,
+                );
+                self.fail_image_fetch(handler_id)
             }
             PendingNetworkHandler::DeferredScript {
                 document_id,
@@ -3653,6 +3684,9 @@ impl ContentProcess {
 
     fn handle_command(&mut self, command: Command) -> Result<bool, String> {
         let result = self.handle_command_inner(command);
+        if let Err(error) = self.drain_image_tasks() {
+            error!("failed to drain image tasks after a command: {error}");
+        }
 
         #[cfg(all(boa_backend, feature = "wasm"))]
         {
@@ -3736,6 +3770,11 @@ impl ContentProcess {
                 selector,
             } => self.click_element_and_send_result(traversable_id, request_id, selector),
             Task::DispatchEvent { events } => self.dispatch_events(events),
+            Task::RunImageEvent {
+                document_id,
+                node_id,
+                event,
+            } => self.run_image_event(document_id, node_id, event),
             Task::RunBeforeUnload {
                 document_id,
                 check_id,
@@ -3755,10 +3794,46 @@ impl ContentProcess {
         }
         steps?;
 
+        // Image mutations observed by the DOM hooks queue element tasks and
+        // presentation work; run them as part of the task that caused them.
+        self.drain_image_tasks()?;
+
         // Step 2.7: "Set the event loop's currently running task back to null."
         // Note: Not implemented, as for step 2.5.
         // Step 2.8: "Perform a microtask checkpoint."
         self.perform_microtask_checkpoint()
+    }
+
+    /// <https://html.spec.whatwg.org/#update-the-image-data>
+    fn run_image_event(
+        &mut self,
+        document_id: DocumentId,
+        node_id: usize,
+        event: ImageEvent,
+    ) -> Result<(), String> {
+        let Some(content_document) = self.documents.get_mut(&document_id) else {
+            return Ok(());
+        };
+        let time_millis = content_document.settings.current_time_millis();
+        let ec = content_document.settings.ec();
+        let Ok(object) = resolve_element_object(node_id, ec) else {
+            return Ok(());
+        };
+        let event_target = ec.with_object_any(&object).and_then(|data| {
+            data.downcast_ref::<HTMLImageElement>()
+                .map(|image| image.html_element.element.node.event_target.clone())
+        });
+        let Some(event_target) = event_target else {
+            return Ok(());
+        };
+        let event_type = match event {
+            ImageEvent::Load => "load",
+            ImageEvent::Error => "error",
+        };
+        if let Err(error) = fire_event(ec, &event_target, event_type, time_millis, false) {
+            warn!("failed to fire {event_type} event for <img>: {error:?}");
+        }
+        Ok(())
     }
 
     /// The message task of one message a dedicated worker posted back to its

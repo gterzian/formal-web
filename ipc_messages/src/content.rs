@@ -111,8 +111,6 @@ pub struct ImageIdentifier {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RegisteredImage {
     pub id: ImageIdentifier,
-    pub width: u32,
-    pub height: u32,
     pub data_shmem_key: usize,
 }
 
@@ -136,9 +134,7 @@ impl ImageTransportSender {
     pub fn prepare_image(
         &mut self,
         id: ImageIdentifier,
-        width: u32,
-        height: u32,
-        bytes: &[u8],
+        encoded_bytes: &[u8],
         next_shmem_key: &mut usize,
     ) -> Option<(RegisteredImage, ipc::IpcSharedRegion)> {
         if !self.sent_images.insert(id.clone()) {
@@ -147,13 +143,8 @@ impl ImageTransportSender {
         let data_shmem_key = *next_shmem_key;
         *next_shmem_key += 1;
         Some((
-            RegisteredImage {
-                id,
-                width,
-                height,
-                data_shmem_key,
-            },
-            ipc::IpcSharedRegion::from_bytes(bytes),
+            RegisteredImage { id, data_shmem_key },
+            ipc::IpcSharedRegion::from_bytes(encoded_bytes),
         ))
     }
 }

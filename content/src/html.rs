@@ -11,6 +11,7 @@ pub(crate) mod channel_messaging;
 pub(crate) use channel_messaging::ChannelMessaging;
 pub(crate) mod common_microsyntaxes;
 pub(crate) mod dispatch;
+pub(crate) mod document_hooks;
 pub(crate) mod environment_settings_object;
 pub(crate) mod event_handler;
 pub(crate) mod event_loop;
@@ -25,6 +26,7 @@ pub(crate) mod html_media_element;
 mod html_parser;
 pub(crate) mod html_video_element;
 mod hyperlink_element_utils;
+pub(crate) mod image_data;
 mod location;
 pub(crate) mod message_event;
 pub(crate) mod messageport;
@@ -203,7 +205,6 @@ pub(crate) fn create_a_new_browsing_context_and_document(
     let document = Rc::new(RefCell::new(BaseDocument::new(DocumentConfig {
         viewport: None,
         base_url: None,
-        net_provider: None,
         shell_provider: None,
         html_parser_provider: None,
         ..DocumentConfig::default()

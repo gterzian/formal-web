@@ -1,7 +1,11 @@
 type JsValue = <crate::js::Types as JsTypes>::JsValue;
 
 use crate::html::HTMLImageElement;
+use crate::html::image_data::{ImageElement, ImageRegistry, image_element};
+use crate::js::platform_objects::with_global_scope;
 use crate::webidl::bindings::{AttributeDef, InterfaceDefinition, OperationDef, WebIdlInterface};
+use ipc_messages::content::DocumentId;
+use std::sync::{Arc, Mutex};
 
 use js_engine::{Completion, ExecutionContext, JsTypes};
 
@@ -94,6 +98,18 @@ fn attribute(
     });
 }
 
+fn image_registry(
+    ec: &mut dyn ExecutionContext<crate::js::Types>,
+) -> Completion<(Arc<Mutex<ImageRegistry>>, DocumentId), crate::js::Types> {
+    let state = with_global_scope(ec, |global_scope, _ec| {
+        Ok((global_scope.image_registry(), global_scope.document_id()))
+    })?;
+    match state {
+        (Some(registry), Some(document_id)) => Ok((registry, document_id)),
+        _ => Err(ec.new_type_error("image state is not available")),
+    }
+}
+
 fn try_with_image_ref<R>(
     this: &JsValue,
     ec: &mut dyn ExecutionContext<crate::js::Types>,
@@ -107,6 +123,30 @@ fn try_with_image_ref<R>(
         return Ok(f(image));
     }
     Err(ec.new_type_error("expected HTMLImageElement"))
+}
+
+fn image_element_for_node(
+    node_id: usize,
+    ec: &mut dyn ExecutionContext<crate::js::Types>,
+) -> Completion<ImageElement, crate::js::Types> {
+    let (registry, document_id) = image_registry(ec)?;
+    let registry = registry.lock().unwrap_or_else(|error| error.into_inner());
+    Ok(image_element(&registry, document_id, node_id))
+}
+
+fn image_element_for(
+    this: &JsValue,
+    ec: &mut dyn ExecutionContext<crate::js::Types>,
+) -> Completion<ImageElement, crate::js::Types> {
+    let (registry, document_id) = image_registry(ec)?;
+    try_with_image_ref(this, ec, |image| {
+        let registry = registry.lock().unwrap_or_else(|error| error.into_inner());
+        image_element(
+            &registry,
+            document_id,
+            image.html_element.element.node.node_id,
+        )
+    })
 }
 
 fn get_alt(
@@ -283,7 +323,8 @@ fn get_width(
     _args: &[JsValue],
     ec: &mut dyn ExecutionContext<crate::js::Types>,
 ) -> Completion<JsValue, crate::js::Types> {
-    let value = try_with_image_ref(this, ec, HTMLImageElement::width)?;
+    let element = image_element_for(this, ec)?;
+    let value = try_with_image_ref(this, ec, |image| image.width(&element))?;
     Ok(ec.value_from_number(f64::from(value)))
 }
 
@@ -303,7 +344,8 @@ fn get_height(
     _args: &[JsValue],
     ec: &mut dyn ExecutionContext<crate::js::Types>,
 ) -> Completion<JsValue, crate::js::Types> {
-    let value = try_with_image_ref(this, ec, HTMLImageElement::height)?;
+    let element = image_element_for(this, ec)?;
+    let value = try_with_image_ref(this, ec, |image| image.height(&element))?;
     Ok(ec.value_from_number(f64::from(value)))
 }
 
@@ -323,7 +365,8 @@ fn get_natural_width(
     _args: &[JsValue],
     ec: &mut dyn ExecutionContext<crate::js::Types>,
 ) -> Completion<JsValue, crate::js::Types> {
-    let value = try_with_image_ref(this, ec, HTMLImageElement::natural_width)?;
+    let element = image_element_for(this, ec)?;
+    let value = try_with_image_ref(this, ec, |image| image.natural_width(&element))?;
     Ok(ec.value_from_number(f64::from(value)))
 }
 
@@ -332,7 +375,8 @@ fn get_natural_height(
     _args: &[JsValue],
     ec: &mut dyn ExecutionContext<crate::js::Types>,
 ) -> Completion<JsValue, crate::js::Types> {
-    let value = try_with_image_ref(this, ec, HTMLImageElement::natural_height)?;
+    let element = image_element_for(this, ec)?;
+    let value = try_with_image_ref(this, ec, |image| image.natural_height(&element))?;
     Ok(ec.value_from_number(f64::from(value)))
 }
 
@@ -341,7 +385,8 @@ fn get_complete(
     _args: &[JsValue],
     ec: &mut dyn ExecutionContext<crate::js::Types>,
 ) -> Completion<JsValue, crate::js::Types> {
-    let value = try_with_image_ref(this, ec, HTMLImageElement::complete)?;
+    let element = image_element_for(this, ec)?;
+    let value = try_with_image_ref(this, ec, |image| image.complete(&element))?;
     Ok(ec.value_from_bool(value))
 }
 
@@ -350,8 +395,8 @@ fn get_current_src(
     _args: &[JsValue],
     ec: &mut dyn ExecutionContext<crate::js::Types>,
 ) -> Completion<JsValue, crate::js::Types> {
-    let base_url = super::hyperlink_element_utils::document_creation_url(ec)?;
-    let value = try_with_image_ref(this, ec, |image| image.current_src(&base_url))?;
+    let element = image_element_for(this, ec)?;
+    let value = try_with_image_ref(this, ec, |image| image.current_src(&element))?;
     Ok(ec.value_from_string(ec.js_string_from_str(&value)))
 }
 
@@ -448,5 +493,7 @@ fn decode_method(
         .with_object_any(&obj)
         .and_then(|data| data.downcast_ref::<HTMLImageElement>().cloned())
         .ok_or_else(|| ec.new_type_error("expected HTMLImageElement"))?;
-    image.decode(ec)
+    let node_id = image.html_element.element.node.node_id;
+    let element = image_element_for_node(node_id, ec)?;
+    image.decode(ec, &element)
 }

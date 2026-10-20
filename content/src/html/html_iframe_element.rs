@@ -238,13 +238,30 @@ fn attach_iframe_subdocument_from_html(
         return Ok(());
     };
     let needs_paint = Arc::new(AtomicBool::new(false));
+    let top_level_traversable_id = process
+        .documents
+        .get(&parent_document_id)
+        .map(|content_document| content_document.top_level_traversable_id)
+        .unwrap_or(traversable_id);
+    let origin = Url::parse(&base_url)
+        .map(|url| url.origin().unicode_serialization())
+        .unwrap_or_else(|_| String::from("null"));
+    let subdocument_id = uuid::Uuid::new_v4();
     let sub_document = Rc::new(RefCell::new(BaseDocument::new(process.document_config(
         traversable_id,
-        parent_document_id,
+        top_level_traversable_id,
         Some(base_url),
+        origin,
         needs_paint.clone(),
         false,
+        crate::html::document_hooks::DocumentHost::Subdocument {
+            parent_document_id,
+            id: subdocument_id,
+        },
     ))));
+    process
+        .subdocuments
+        .insert(subdocument_id, Rc::downgrade(&sub_document));
     {
         let mut sub_document_guard = sub_document.borrow_mut();
         super::parse_html_into_document(&mut sub_document_guard, &html);
@@ -467,7 +484,6 @@ fn create_a_new_child_navigable(
             needs_paint,
             last_scene: None,
             last_composition: None,
-            notified_image_sources: HashMap::new(),
         },
     );
     process

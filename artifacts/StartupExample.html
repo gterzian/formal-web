@@ -188,6 +188,54 @@
         background: #faf9f7;
         box-shadow: inset 0 2px 6px rgba(0,0,0,0.03);
       }
+
+      .image-grid {
+        display: grid;
+        grid-template-columns: repeat(auto-fill, minmax(9rem, 1fr));
+        gap: 0.75rem;
+      }
+
+      .image-card {
+        margin: 0;
+        padding: 0.5rem;
+        border: 1px solid #e4e2ec;
+        border-radius: 0.85rem;
+        background: #faf9f7;
+      }
+
+      .image-card img {
+        display: block;
+        width: 100%;
+        height: auto;
+        min-height: 4rem;
+        background: #eceae5;
+        border-radius: 0.5rem;
+      }
+
+      .image-card figcaption {
+        margin-top: 0.4rem;
+        font-size: 0.72rem;
+        line-height: 1.35;
+        color: #5a5a72;
+        word-break: break-word;
+      }
+
+      .image-state {
+        display: block;
+        color: #7a7a92;
+        font-variant-numeric: tabular-nums;
+      }
+
+      .image-card.loaded { border-color: #28a745; }
+      .image-card.loaded .image-state { color: #155724; }
+      .image-card.failed { border-color: #dc3545; }
+      .image-card.failed .image-state { color: #721c24; }
+
+      #image-data {
+        width: 5rem;
+        height: 5rem;
+        margin-inline: auto;
+      }
     </style>
   </head>
   <body>
@@ -404,6 +452,61 @@
           <button class="btn btn-outline" id="oc-stop-btn" type="button">Stop</button>
         </div>
         <div class="output-box" id="oc-output" style="margin-top:0.6rem;">Worker ready</div>
+      </section>
+
+      <!-- ──── 9. Images ──── -->
+      <section class="section-card">
+        <div class="section-title">
+          <span>Images</span>
+          <span class="badge working">Working</span>
+        </div>
+        <p class="section-desc">
+          Multiple <code>&lt;img&gt;</code> elements loaded through the HTML
+          update-the-image-data algorithm: PNG, JPEG, GIF, a
+          <code>data:</code> URL, a repeated resource, and failing requests.
+          Each image is decoded by the graphics process and composited on its
+          own layer.
+        </p>
+
+        <div class="image-grid" id="image-grid">
+          <figure class="image-card" id="image-card-png">
+            <img id="image-png" src="images/sunset.png" alt="Sunset PNG" width="320" height="180">
+            <figcaption>sunset.png <span class="image-state" id="image-state-png">loading…</span></figcaption>
+          </figure>
+          <figure class="image-card" id="image-card-jpeg">
+            <img id="image-jpeg" src="images/checker.jpg" alt="Checker JPEG" width="240" height="160">
+            <figcaption>checker.jpg <span class="image-state" id="image-state-jpeg">loading…</span></figcaption>
+          </figure>
+          <figure class="image-card" id="image-card-gif">
+            <img id="image-gif" src="images/stripes.gif" alt="Stripes GIF" width="200" height="120">
+            <figcaption>stripes.gif <span class="image-state" id="image-state-gif">loading…</span></figcaption>
+          </figure>
+          <figure class="image-card" id="image-card-data">
+            <img id="image-data" alt="Inline data URL PNG" width="64" height="64">
+            <figcaption>data: PNG <span class="image-state" id="image-state-data">loading…</span></figcaption>
+          </figure>
+          <figure class="image-card" id="image-card-shared">
+            <img id="image-shared" src="images/sunset.png" alt="Second layer using sunset.png" width="160" height="90">
+            <figcaption>same sunset.png <span class="image-state" id="image-state-shared">loading…</span></figcaption>
+          </figure>
+          <figure class="image-card" id="image-card-missing">
+            <img id="image-missing" src="images/missing.png" alt="Missing image" width="120" height="80">
+            <figcaption>missing.png <span class="image-state" id="image-state-missing">loading…</span></figcaption>
+          </figure>
+          <figure class="image-card" id="image-card-broken">
+            <img id="image-broken" src="images/not-an-image.txt" alt="Invalid image" width="120" height="80">
+            <figcaption>not-an-image.txt <span class="image-state" id="image-state-broken">loading…</span></figcaption>
+          </figure>
+        </div>
+
+        <div class="btn-row" style="margin-top:0.8rem;">
+          <button class="btn btn-primary" id="image-swap-btn" type="button">Swap sources</button>
+          <button class="btn btn-primary" id="image-add-btn" type="button">Add an image</button>
+          <button class="btn btn-outline" id="image-reinsert-btn" type="button">Remove + reinsert first</button>
+        </div>
+        <div class="output-box" id="image-output" style="margin-top:0.6rem;">
+          Waiting for images…
+        </div>
       </section>
 
       <footer style="text-align:center;padding:1rem 0 0;font-size:0.82rem;color:#a0a0b8;">
@@ -647,6 +750,98 @@
           output.className = "output-box";
         });
       })();
+      // ──── 9. Images ────
+      (function() {
+        var output   = document.getElementById("image-output");
+        var grid     = document.getElementById("image-grid");
+        var dataImg  = document.getElementById("image-data");
+        var dataUri  = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAEAAAABACAIAAAAlC+aJAAAAT0lEQVR42u3PQQkAAAgEsMtnFvv7NYJvYbACS/W8FgEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQGBywJIm9GH84/x+gAAAABJRU5ErkJggg==";
+        var ids = ["png", "jpeg", "gif", "data", "shared", "missing", "broken"];
+        var addedCount = 0;
+
+        function describe(id) {
+          var img = document.getElementById("image-" + id);
+          if (!img) return id + "=removed";
+          var state = img.complete
+            ? (img.naturalWidth > 0 ? "ok" : "broken")
+            : "loading";
+          return id + ": " + state + " " + img.naturalWidth + "×" + img.naturalHeight;
+        }
+
+        function refresh() {
+          var parts = [];
+          ids.forEach(function(id) { parts.push(describe(id)); });
+          output.textContent = parts.join("  ·  ");
+        }
+
+        function updateCard(img, id, kind) {
+          var card = img.parentNode;
+          if (card) card.className = "image-card " + (kind === "load" ? "loaded" : "failed");
+          var label = document.getElementById("image-state-" + id);
+          if (label) {
+            label.textContent = kind === "load"
+              ? img.naturalWidth + "×" + img.naturalHeight + " loaded"
+              : "error";
+          }
+          refresh();
+        }
+
+        function watch(id) {
+          var img = document.getElementById("image-" + id);
+          if (!img) return;
+          img.addEventListener("load", function() { updateCard(img, id, "load"); });
+          img.addEventListener("error", function() { updateCard(img, id, "error"); });
+          if (img.complete) {
+            updateCard(img, id, img.naturalWidth > 0 ? "load" : "error");
+          }
+        }
+
+        dataImg.src = dataUri;
+        ids.forEach(watch);
+        refresh();
+
+        document.getElementById("image-swap-btn").addEventListener("click", function() {
+          var png  = document.getElementById("image-png");
+          var jpeg = document.getElementById("image-jpeg");
+          var pngIsSunset = png.getAttribute("src") === "images/sunset.png";
+          png.setAttribute("src", pngIsSunset ? "images/checker.jpg" : "images/sunset.png");
+          jpeg.setAttribute("src", pngIsSunset ? "images/sunset.png" : "images/checker.jpg");
+          refresh();
+        });
+
+        document.getElementById("image-add-btn").addEventListener("click", function() {
+          addedCount += 1;
+          var id = "added-" + addedCount;
+          var figure = document.createElement("figure");
+          figure.className = "image-card";
+          figure.setAttribute("id", "image-card-" + id);
+          var img = document.createElement("img");
+          img.setAttribute("id", "image-" + id);
+          img.setAttribute("src", addedCount % 2 === 1 ? "images/sunset.png" : "images/checker.jpg");
+          img.setAttribute("alt", "Dynamically added image");
+          var caption = document.createElement("figcaption");
+          caption.textContent = "added #" + addedCount;
+          figure.appendChild(img);
+          figure.appendChild(caption);
+          grid.appendChild(figure);
+          ids.push(id);
+          img.addEventListener("load", function() { updateCard(img, id, "load"); });
+          img.addEventListener("error", function() { updateCard(img, id, "error"); });
+          refresh();
+        });
+
+        document.getElementById("image-reinsert-btn").addEventListener("click", function() {
+          var img = document.getElementById("image-png");
+          var figure = img.parentNode;
+          grid.removeChild(figure);
+          refresh();
+          setTimeout(function() {
+            grid.insertBefore(figure, grid.firstChild);
+            refresh();
+          }, 300);
+        });
+      })();
+
     </script>
   </body>
 </html>

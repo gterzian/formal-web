@@ -137,6 +137,12 @@ The video texture import (macOS AVFoundation `PixelBufferFrame` → Metal
 texture → Vello `override_image`) lives in its own module, `renderer/video.rs`,
 behind the renderer trait's macOS-only `store_video_frame`.
 
+`RegisterImage` carries the encoded image bytes (PNG/JPEG/...), not raw
+pixels: `Compositor::store_image` decodes them into the shared
+`ImageData` registry, and the image's layer draws that decoded texture.  The
+content process sends each `ImageIdentifier` once; a decode failure is logged
+and leaves the image layer empty.
+
 ## Video frames → shared texture (macOS)
 
 The AVFoundation pipeline delivers the decoded `CVPixelBuffer` itself

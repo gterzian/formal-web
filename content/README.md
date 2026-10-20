@@ -135,6 +135,29 @@ pending handler first, so the response side does not know which was taken.
 Filtering here rather than in net is what keeps net a place where networking
 happens rather than a fetch coordinator; see `user_agent/README.md`.
 
+`blitz-dom` does not fetch anything.  Every subresource the document needs is
+reported through the document hooks in `content/src/html/document_hooks.rs`
+(`DocumentProviders` implements `blitz_dom::DocumentHooks`): stylesheets,
+`@import` rules, `@font-face` fonts, and CSS background/mask images.  Each
+request takes the scheme routing above and comes back as
+`Command::CompleteDocumentFetch`; content then installs the result into the
+document with `BaseDocument::handle_message` (a `Resource`, or
+`complete_stylesheet_import` for `@import`).  `data:` URLs are decoded in
+content and delivered through the same command.  Background and mask images
+are decoded in content because blitz paints them; `<img>` pixels go to the
+graphics process instead (see below).
+
+The `<img>` element follows its own processing model in
+`content/src/html/image_data.rs`: the DOM hooks report the relevant mutations
+(attribute changes, insertion, removal) and run "update the image data", the
+fetch starts through the same pending-handler route, and the event loop
+completes the request.  Keep an `<img>` fetch on that path: it owns the
+element's current/pending request state, the list of available images, and
+the `load`/`error` element tasks.  Same-origin iframe subdocuments paint
+their images into the parent's scene, so their images stay on the
+layout-time loader rather than the `<img>` processing model
+(`DocumentHost::Subdocument`).
+
 ## Clipboard
 
 The content process never accesses the system clipboard: a paste is answered
