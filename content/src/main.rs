@@ -51,31 +51,29 @@ use crate::wasm::{WasmResult, compile_continuation, compile_rejection, instantia
 use anyrender::Scene as RenderScene;
 use blitz_dom::{BaseDocument, DocumentConfig};
 use blitz_paint::paint_scene;
-use blitz_traits::net::{Body, Request};
+use blitz_traits::net::Request;
 use blitz_traits::shell::{ClipboardError, ColorScheme, ShellProvider, Viewport};
 use data_url::DataUrl;
 use html5ever::local_name;
 use js_engine::{EcmascriptHost, ExecutionContext, JsTypes};
 
-use crate::fetch::request_header_list;
+use crate::fetch::{FetchContext, InternalFetchRequest, fetch};
 use ipc_messages::content::Command::{
     ClickElement, CompleteDocumentFetch, ContentBootstrap, CreateEmptyDocument,
     CreateLoadedDocument, DestroyDocument, DispatchEvent, EvaluateScript, FailDocumentFetch,
     NotifyVideoEnded, RunAnimationFrameCallbacks, SetTraversableViewport, SetViewport, Shutdown,
     UpdateTheRendering,
 };
-use ipc_messages::content::EmbedderSchemeFetchRequested;
 use ipc_messages::content::{
     BeforeUnloadCheckId, CanvasEmbedSite, CanvasId, ClipboardWriteRequested,
     ColorScheme as MessageColorScheme, Command, DispatchEventEntry, DocumentFetchId, DocumentId,
     ElementClickResult, EmbedBackgroundPolicy, EmbedLayout, EmbedSite, EmbedSiteId,
-    Event as ContentEvent, EventLoopId, FetchRequest as ContentFetchRequest,
-    FetchResponse as ContentFetchResponse, FontTransportSender, FrameCompositionMetadata, FrameId,
-    IframeEmbedSite, ImageEmbedData, ImageIdentifier, ImagePaintId, ImageTransportSender,
-    LoadedDocumentResponse, NavigableId, NavigationId, PaintFrame, PortId, PortTaskKind,
-    PreparedScene, RecordedScene, ResourcePartitionKey, ScriptEvaluationResult, TitleChanged,
-    TraversableViewport, UserScript, ViewportSnapshot, WebviewId, WindowTimerKey, WorkerId,
-    WorkerOwner,
+    Event as ContentEvent, EventLoopId, FetchResponse as ContentFetchResponse, FontTransportSender,
+    FrameCompositionMetadata, FrameId, IframeEmbedSite, ImageEmbedData, ImageIdentifier,
+    ImagePaintId, ImageTransportSender, LoadedDocumentResponse, NavigableId, NavigationId,
+    PaintFrame, PortId, PortTaskKind, PreparedScene, RecordedScene, ResourcePartitionKey,
+    ScriptEvaluationResult, TitleChanged, TraversableViewport, UserScript, ViewportSnapshot,
+    WebviewId, WindowTimerKey, WorkerId, WorkerOwner,
 };
 use ipc_messages::media::{VideoEmbedData, VideoPaintId};
 use ipc_messages::safe_passing_of_structured_data::PostMessageRequest;
@@ -178,10 +176,6 @@ pub(crate) type LocalContentStateRef = Arc<Mutex<LocalContentState>>;
 
 /// Tracks the playback state of a video element across paints.
 /// Stored in the paint registry instead of on the element for now.
-pub(crate) fn new_document_fetch_id() -> DocumentFetchId {
-    DocumentFetchId::new()
-}
-
 /// Shared clipboard cache for paste-without-IPC.
 /// `get_clipboard_text` reads from this cache instead of doing a blocking
 /// IPC round-trip. The embedder prefetches clipboard text before dispatching
@@ -278,14 +272,6 @@ pub(crate) struct NavigableContainerState {
 struct PendingDocumentLoad {
     finalize_url: String,
     scripts: Vec<DeferredScriptState>,
-}
-
-fn request_body_string(body: &Body) -> String {
-    match body {
-        Body::Bytes(bytes) => String::from_utf8_lossy(bytes).into_owned(),
-        Body::Form(form) => serde_json::to_string(form).unwrap_or_default(),
-        Body::Empty => String::new(),
-    }
 }
 
 /// Run the embedder's scripts in a new document's realm, before the
@@ -724,71 +710,34 @@ impl ContentProcess {
         Ok(())
     }
 
-    fn register_pending_handler(
-        &self,
-        pending_handler: PendingNetworkHandler,
-    ) -> Result<DocumentFetchId, String> {
-        let handler_id = new_document_fetch_id();
-        let mut local_state = self
-            .local_state
-            .lock()
-            .expect("local content state mutex poisoned");
-        local_state
-            .pending_handlers
-            .insert(handler_id, pending_handler);
-        Ok(handler_id)
-    }
-
     /// `navigable_id` is the navigable of the document the fetch is for;
     /// an embedder-scheme fetch names it to the user agent.
     fn request_remote_fetch(
         &self,
         handler_id: DocumentFetchId,
         navigable_id: NavigableId,
+        pending: PendingNetworkHandler,
         request: Request,
     ) -> Result<(), String> {
         log_render_state_debug(format!(
             "request remote fetch handler={} method={} url={}",
             handler_id, request.method, request.url,
         ));
-        let fetch_request = ContentFetchRequest {
-            handler_id,
-            url: request.url.to_string(),
-            method: request.method.to_string(),
-            header_list: request_header_list(&request),
-            body: request_body_string(&request.body),
-        };
-
-        // A scheme the embedder serves is answered by the embedder, so the
-        // fetch goes to the user agent instead of to net, ahead of
-        // <https://fetch.spec.whatwg.org/#scheme-fetch>
-        if self.embedder_schemes.contains(request.url.scheme()) {
-            return self
-                .event_sender
-                .send(ContentEvent::EmbedderSchemeFetchRequested(
-                    EmbedderSchemeFetchRequested {
-                        navigable_id,
-                        handler_id,
-                        request: fetch_request,
-                    },
-                ))
-                .map_err(|error| {
-                    format!("failed to send an embedder-scheme fetch to the user agent: {error}")
-                });
-        }
-
-        let network_request = ipc_messages::network::Request::Fetch {
+        let context = FetchContext {
             event_loop_id: self.event_loop_id,
-            request_id: uuid::Uuid::new_v4(),
-            request: fetch_request,
-            reply_to: ipc_messages::network::ResponseRecipient::ContentProcess {
-                content_command_sender: self.content_command_sender.clone(),
-                handler_id,
-            },
+            navigable_id,
+            content_command_sender: &self.content_command_sender,
+            event_sender: &self.event_sender,
+            network_extension_sender: &self.network_extension_sender,
+            embedder_schemes: self.embedder_schemes.as_ref(),
+            local_state: &self.local_state,
         };
-        self.network_extension_sender
-            .send(network_request)
-            .map_err(|error| format!("failed to send document fetch request to net: {error}"))
+        fetch(
+            &context,
+            handler_id,
+            pending,
+            InternalFetchRequest::from_request(&request),
+        )
     }
 
     fn deferred_script_state(script: PendingParserScript) -> DeferredScriptState {
@@ -865,11 +814,16 @@ impl ContentProcess {
             return Ok(());
         }
 
-        let handler_id = self.register_pending_handler(PendingNetworkHandler::DeferredScript {
-            document_id,
-            script_index,
-        })?;
-        self.request_remote_fetch(handler_id, navigable_id, Request::get(resolved_url))
+        let handler_id = DocumentFetchId::new();
+        self.request_remote_fetch(
+            handler_id,
+            navigable_id,
+            PendingNetworkHandler::DeferredScript {
+                document_id,
+                script_index,
+            },
+            Request::get(resolved_url),
+        )
     }
 
     fn allocate_navigable_id(&self) -> Result<NavigableId, String> {

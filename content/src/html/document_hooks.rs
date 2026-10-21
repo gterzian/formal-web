@@ -15,8 +15,8 @@ use blitz_dom::{
 };
 use blitz_traits::net::Bytes;
 use ipc_messages::content::{
-    Command, DocumentFetchId, DocumentId, EmbedderSchemeFetchRequested, Event as ContentEvent,
-    EventLoopId, FetchRequest, FetchResponse, NavigableId, ResourcePartitionKey,
+    Command, DocumentFetchId, DocumentId, Event as ContentEvent, EventLoopId, NavigableId,
+    ResourcePartitionKey,
 };
 use ipc_messages::network::Request as NetworkRequest;
 use log::error;
@@ -24,6 +24,7 @@ use style::stylesheets::Origin;
 use url::Url;
 use uuid::Uuid;
 
+use crate::fetch::{FetchContext, InternalFetchRequest, fetch};
 use crate::html::image_data::{
     ImageAttributes, ImageFetchSink, ImageRegistry, cors_settings_mode, referrer_policy_state,
     update_the_image_data,
@@ -138,88 +139,22 @@ impl DocumentProviders {
         url: String,
         pending: PendingNetworkHandler,
     ) {
-        {
-            let mut local_state = self.local_state.lock().unwrap_or_else(|error| {
-                error!("local content state mutex poisoned: {error}");
-                error.into_inner()
-            });
-            local_state.pending_handlers.insert(handler_id, pending);
-        }
-
-        let fetch_request = FetchRequest {
-            handler_id,
-            url,
-            method: String::from("GET"),
-            header_list: Vec::new(),
-            body: String::new(),
-        };
-
-        // A data URL is decoded in this process and delivered through the
-        // same command the net process would use.
-        // <https://fetch.spec.whatwg.org/#data-url-processor>
-        if fetch_request.url.starts_with("data:") {
-            let response = match data_url::DataUrl::process(&fetch_request.url) {
-                Ok(data_url) => match data_url.decode_to_vec() {
-                    Ok((bytes, _fragment)) => Command::CompleteDocumentFetch {
-                        handler_id,
-                        response: FetchResponse {
-                            final_url: fetch_request.url.clone(),
-                            status: 200,
-                            content_type: String::new(),
-                            body: bytes,
-                        },
-                    },
-                    Err(error) => {
-                        error!("failed to decode data URL for an asset fetch: {error}");
-                        Command::FailDocumentFetch { handler_id }
-                    }
-                },
-                Err(error) => {
-                    error!("failed to parse data URL for an asset fetch: {error}");
-                    Command::FailDocumentFetch { handler_id }
-                }
-            };
-            if let Err(error) = self.content_command_sender.send(response) {
-                error!("failed to deliver a data URL response to the event loop: {error}");
-            }
-            return;
-        }
-
-        // A scheme the embedder serves is answered by the embedder, ahead of
-        // <https://fetch.spec.whatwg.org/#scheme-fetch>
-        if self.embedder_schemes.contains(
-            Url::parse(&fetch_request.url)
-                .ok()
-                .map(|url| url.scheme().to_string())
-                .unwrap_or_default()
-                .as_str(),
-        ) {
-            if let Err(error) = self
-                .event_sender
-                .send(ContentEvent::EmbedderSchemeFetchRequested(
-                    EmbedderSchemeFetchRequested {
-                        navigable_id: self.navigable_id,
-                        handler_id,
-                        request: fetch_request,
-                    },
-                ))
-            {
-                error!("failed to send an embedder-scheme fetch to the user agent: {error}");
-            }
-            return;
-        }
-
-        let network_request = NetworkRequest::Fetch {
+        let context = FetchContext {
             event_loop_id: self.event_loop_id,
-            request_id: Uuid::new_v4(),
-            request: fetch_request,
-            reply_to: ipc_messages::network::ResponseRecipient::ContentProcess {
-                content_command_sender: self.content_command_sender.clone(),
-                handler_id,
-            },
+            navigable_id: self.navigable_id,
+            content_command_sender: &self.content_command_sender,
+            event_sender: &self.event_sender,
+            network_extension_sender: &self.network_extension_sender,
+            embedder_schemes: self.embedder_schemes.as_ref(),
+            local_state: &self.local_state,
         };
-        if let Err(error) = self.network_extension_sender.send(network_request) {
-            error!("failed to send resource fetch to net: {error}");
+        if let Err(error) = fetch(
+            &context,
+            handler_id,
+            pending,
+            InternalFetchRequest::get(url),
+        ) {
+            error!("failed to start fetch: {error}");
         }
     }
 }

@@ -206,8 +206,8 @@
       .image-card img {
         display: block;
         width: 100%;
-        height: auto;
-        min-height: 4rem;
+        height: 6rem;
+        object-fit: cover;
         background: #eceae5;
         border-radius: 0.5rem;
       }
@@ -220,22 +220,6 @@
         word-break: break-word;
       }
 
-      .image-state {
-        display: block;
-        color: #7a7a92;
-        font-variant-numeric: tabular-nums;
-      }
-
-      .image-card.loaded { border-color: #28a745; }
-      .image-card.loaded .image-state { color: #155724; }
-      .image-card.failed { border-color: #dc3545; }
-      .image-card.failed .image-state { color: #721c24; }
-
-      #image-data {
-        width: 5rem;
-        height: 5rem;
-        margin-inline: auto;
-      }
     </style>
   </head>
   <body>
@@ -461,51 +445,25 @@
           <span class="badge working">Working</span>
         </div>
         <p class="section-desc">
-          Multiple <code>&lt;img&gt;</code> elements loaded through the HTML
-          update-the-image-data algorithm: PNG, JPEG, GIF, a
-          <code>data:</code> URL, a repeated resource, and failing requests.
-          Each image is decoded by the graphics process and composited on its
-          own layer.
+          Each <code>&lt;img&gt;</code> is decoded by the graphics process and
+          drawn on its own layer. <strong>Add empty image</strong> inserts an
+          <code>&lt;img&gt;</code> holding an invisible placeholder; that DOM
+          change updates the page's own texture. <strong>Add sources</strong>
+          then swaps in the real images: only their layers change, not the page
+          texture. Use Quartz Debug's flash-screen-updates to see the
+          difference.
         </p>
 
-        <div class="image-grid" id="image-grid">
-          <figure class="image-card" id="image-card-png">
-            <img id="image-png" src="images/sunset.png" alt="Sunset PNG" width="320" height="180">
-            <figcaption>sunset.png <span class="image-state" id="image-state-png">loading…</span></figcaption>
-          </figure>
-          <figure class="image-card" id="image-card-jpeg">
-            <img id="image-jpeg" src="images/checker.jpg" alt="Checker JPEG" width="240" height="160">
-            <figcaption>checker.jpg <span class="image-state" id="image-state-jpeg">loading…</span></figcaption>
-          </figure>
-          <figure class="image-card" id="image-card-gif">
-            <img id="image-gif" src="images/stripes.gif" alt="Stripes GIF" width="200" height="120">
-            <figcaption>stripes.gif <span class="image-state" id="image-state-gif">loading…</span></figcaption>
-          </figure>
-          <figure class="image-card" id="image-card-data">
-            <img id="image-data" alt="Inline data URL PNG" width="64" height="64">
-            <figcaption>data: PNG <span class="image-state" id="image-state-data">loading…</span></figcaption>
-          </figure>
-          <figure class="image-card" id="image-card-shared">
-            <img id="image-shared" src="images/sunset.png" alt="Second layer using sunset.png" width="160" height="90">
-            <figcaption>same sunset.png <span class="image-state" id="image-state-shared">loading…</span></figcaption>
-          </figure>
-          <figure class="image-card" id="image-card-missing">
-            <img id="image-missing" src="images/missing.png" alt="Missing image" width="120" height="80">
-            <figcaption>missing.png <span class="image-state" id="image-state-missing">loading…</span></figcaption>
-          </figure>
-          <figure class="image-card" id="image-card-broken">
-            <img id="image-broken" src="images/not-an-image.txt" alt="Invalid image" width="120" height="80">
-            <figcaption>not-an-image.txt <span class="image-state" id="image-state-broken">loading…</span></figcaption>
-          </figure>
-        </div>
+        <div class="image-grid" id="image-grid"></div>
 
         <div class="btn-row" style="margin-top:0.8rem;">
+          <button class="btn btn-primary" id="image-add-empty-btn" type="button">Add empty image</button>
+          <button class="btn btn-primary" id="image-load-btn" type="button">Add sources</button>
           <button class="btn btn-primary" id="image-swap-btn" type="button">Swap sources</button>
-          <button class="btn btn-primary" id="image-add-btn" type="button">Add an image</button>
-          <button class="btn btn-outline" id="image-reinsert-btn" type="button">Remove + reinsert first</button>
+          <button class="btn btn-outline" id="image-clear-btn" type="button">Clear</button>
         </div>
-        <div class="output-box" id="image-output" style="margin-top:0.6rem;">
-          Waiting for images…
+        <div class="output-box" style="margin-top:0.6rem;">
+          Add empty images, then load their sources.
         </div>
       </section>
 
@@ -752,93 +710,93 @@
       })();
       // ──── 9. Images ────
       (function() {
-        var output   = document.getElementById("image-output");
-        var grid     = document.getElementById("image-grid");
-        var dataImg  = document.getElementById("image-data");
-        var dataUri  = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAEAAAABACAIAAAAlC+aJAAAAbElEQVR42u3XoQ0AIAxFQfZBMweKpRiQeVigqBoIlyArOPXyS20jfH2u8N12XwAAAAAAUoBXPnq6BwAAAADIAZQYAAAAwB5QYgAAAAB7QIkBAAAA7AElBgAAALAHlBgAAADAHlBiAAAAgG8AG7JXIR5wSlbiAAAAAElFTkSuQmCC";
-        var ids = ["png", "jpeg", "gif", "data", "shared", "missing", "broken"];
-        var addedCount = 0;
+        var grid = document.getElementById("image-grid");
+        // Invisible 1x1 PNG: the image element gets its real source later, but
+        // it is already an image for the document's paint stream, so swapping
+        // the source does not change the page's own texture.
+        var placeholder =
+          "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNkYAAAAAYAAjCB0C8AAAAASUVORK5CYII=";
+        var sources = [
+          { url: "images/sunset.png", width: 320, height: 180 },
+          { url: "images/checker.jpg", width: 240, height: 160 },
+          { url: "images/stripes.gif", width: 200, height: 120 },
+        ];
+        var nextSlot = 0;
 
-        function describe(id) {
-          var img = document.getElementById("image-" + id);
-          if (!img) return id + "=removed";
-          var state = img.complete
-            ? (img.naturalWidth > 0 ? "ok" : "broken")
-            : "loading";
-          return id + ": " + state + " " + img.naturalWidth + "×" + img.naturalHeight;
-        }
+        document.getElementById("image-add-empty-btn").addEventListener("click", function() {
+          var source = sources[nextSlot % sources.length];
+          nextSlot += 1;
 
-        function refresh() {
-          var parts = [];
-          ids.forEach(function(id) { parts.push(describe(id)); });
-          output.textContent = parts.join("  ·  ");
-        }
+          // Build through innerHTML: the parser path resolves the stylesheet
+          // for the new figure, so the image gets its fixed-height box.
+          var template = document.createElement("div");
+          template.innerHTML =
+            '<figure class="image-card">' +
+              '<img id="image-slot-' + nextSlot + '"' +
+              ' alt="Image layer slot ' + nextSlot + '"' +
+              ' width="' + source.width + '" height="' + source.height + '"' +
+              ' data-source="' + source.url + '"' +
+              ' src="' + placeholder + '">' +
+              '<figcaption>layer slot ' + nextSlot + '</figcaption>' +
+            '</figure>';
+          grid.appendChild(template.firstChild);
+        });
 
-        function updateCard(img, id, kind) {
-          var card = img.parentNode;
-          if (card) card.className = "image-card " + (kind === "load" ? "loaded" : "failed");
-          var label = document.getElementById("image-state-" + id);
-          if (label) {
-            label.textContent = kind === "load"
-              ? img.naturalWidth + "×" + img.naturalHeight + " loaded"
-              : "error";
-          }
-          refresh();
-        }
-
-        function watch(id) {
-          var img = document.getElementById("image-" + id);
-          if (!img) return;
-          img.addEventListener("load", function() { updateCard(img, id, "load"); });
-          img.addEventListener("error", function() { updateCard(img, id, "error"); });
-          if (img.complete) {
-            updateCard(img, id, img.naturalWidth > 0 ? "load" : "error");
+        function loadSource(image) {
+          var source = image.getAttribute("data-source");
+          if (source) {
+            image.setAttribute("src", source);
+            image.setAttribute("data-loaded", "true");
           }
         }
 
-        dataImg.src = dataUri;
-        ids.forEach(watch);
-        refresh();
+        function loadSourceWhenAvailable(image) {
+          // Wait for the placeholder to be available before swapping in the
+          // real source, so the document's paint stream does not change when
+          // the element first becomes an image.
+          if (image.complete && image.naturalWidth > 0) {
+            loadSource(image);
+          } else {
+            image.addEventListener("load", function() { loadSource(image); }, { once: true });
+          }
+        }
+
+        document.getElementById("image-load-btn").addEventListener("click", function() {
+          var images = grid.querySelectorAll("img");
+          for (var index = 0; index < images.length; index += 1) {
+            var image = images[index];
+            if (image.getAttribute("data-loaded") === "true") {
+              continue;
+            }
+            loadSourceWhenAvailable(image);
+          }
+        });
 
         document.getElementById("image-swap-btn").addEventListener("click", function() {
-          var png  = document.getElementById("image-png");
-          var jpeg = document.getElementById("image-jpeg");
-          var pngIsSunset = png.getAttribute("src") === "images/sunset.png";
-          png.setAttribute("src", pngIsSunset ? "images/checker.jpg" : "images/sunset.png");
-          jpeg.setAttribute("src", pngIsSunset ? "images/sunset.png" : "images/checker.jpg");
-          refresh();
+          var images = grid.querySelectorAll("img");
+          for (var index = 0; index < images.length; index += 1) {
+            var image = images[index];
+            if (image.getAttribute("data-loaded") !== "true") {
+              continue;
+            }
+            var current = image.getAttribute("src");
+            var sourceIndex = -1;
+            for (var candidate = 0; candidate < sources.length; candidate += 1) {
+              if (sources[candidate].url === current) {
+                sourceIndex = candidate;
+                break;
+              }
+            }
+            var next = sources[(sourceIndex + 1) % sources.length];
+            image.setAttribute("src", next.url);
+          }
         });
 
-        document.getElementById("image-add-btn").addEventListener("click", function() {
-          addedCount += 1;
-          var id = "added-" + addedCount;
-          var figure = document.createElement("figure");
-          figure.className = "image-card";
-          figure.setAttribute("id", "image-card-" + id);
-          var img = document.createElement("img");
-          img.setAttribute("id", "image-" + id);
-          img.setAttribute("src", addedCount % 2 === 1 ? "images/sunset.png" : "images/checker.jpg");
-          img.setAttribute("alt", "Dynamically added image");
-          var caption = document.createElement("figcaption");
-          caption.textContent = "added #" + addedCount;
-          figure.appendChild(img);
-          figure.appendChild(caption);
-          grid.appendChild(figure);
-          ids.push(id);
-          img.addEventListener("load", function() { updateCard(img, id, "load"); });
-          img.addEventListener("error", function() { updateCard(img, id, "error"); });
-          refresh();
-        });
-
-        document.getElementById("image-reinsert-btn").addEventListener("click", function() {
-          var img = document.getElementById("image-png");
-          var figure = img.parentNode;
-          grid.removeChild(figure);
-          refresh();
-          setTimeout(function() {
-            grid.insertBefore(figure, grid.firstChild);
-            refresh();
-          }, 300);
+        document.getElementById("image-clear-btn").addEventListener("click", function() {
+          nextSlot = 0;
+          while (grid.firstChild) {
+            grid.removeChild(grid.firstChild);
+          }
         });
       })();
 

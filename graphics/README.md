@@ -277,12 +277,13 @@ two-submit layout.
   device, so a pipeline plays only on the webview it was created for.
 - **Format/lifecycle**: RGBA-only for Vello, pixel-buffer/texture lifetime
   management, the 64-multiple width padding (see above).
-- **Layer granularity is one layer per navigable (and per video).** Each
-  document is rendered into a single `RecordedScene` and presented to
-  CoreAnimation as one `IOSurface` per web layer; there is no sub-division
-  within a document. A change that genuinely alters the document's visible
-  output (a `:hover` effect, a caret blink, a scroll) therefore re-rasterizes
-  and re-presents the whole layer's surface — `store_frame`'s scene comparison
+- **Layer granularity is one layer per navigable (plus one per video,
+  offscreen canvas, and `<img>` instance).** Each document is rendered into a
+  single `RecordedScene` and presented to CoreAnimation as one `IOSurface` per
+  web layer; there is no sub-division within a document. A change that
+  genuinely alters the document's visible output (a `:hover` effect, a caret
+  blink, a scroll) therefore re-rasterizes and re-presents the whole layer's
+  surface — `store_frame`'s scene comparison
   correctly flags the whole layer dirty, and `setContents:` swaps the entire
   `IOSurface` with no old-vs-new diff, so Quartz Debug flashes the full layer
   bounds rather than the changed pixels. This is expected for the current

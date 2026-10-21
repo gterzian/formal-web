@@ -125,6 +125,13 @@ adding work to the loop:
 `request_header_list`, the conversion from a blitz `Request` to the header
 list that travels on the wire.
 
+`fetch` is the minimal start of the Fetch algorithm: it registers the response
+continuation, implements the `data:` branch of scheme fetch, and routes the
+other schemes to the embedder or net. The per-step notes in `fetch`,
+`main_fetch`, and `scheme_fetch` mark what is still missing (request client
+population, default headers, preloading, CORS, redirects, timing, and response
+handover).
+
 Subresource fetches leave this process by one of two routes, chosen by the
 URL's scheme. A scheme named in `ContentBootstrap::embedder_schemes` is one
 the embedder serves itself: the fetch goes to the user agent as
@@ -180,6 +187,14 @@ this crate.
 
 - **Clippy warning backlog.** The content crate has a backlog of pre-existing
   clippy warnings (e.g. "useless conversion to the same type: V8Object").
+
+- **A dynamically inserted `<img>` ignores a fixed CSS `height`.** An `<img>`
+  created with `createElement` and appended with `appendChild` lays out at its
+  intrinsic aspect ratio; the stylesheet's `height` and an inline `height` on
+  the element are both ignored, so changing the source reflows the document.
+  Building the same figure through `innerHTML` applies the stylesheet, and the
+  image keeps its fixed-height box. Images present in the initial markup are
+  unaffected.
 
 ## Layout
 
