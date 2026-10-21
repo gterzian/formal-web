@@ -7,7 +7,7 @@
 //! mutations), the image element's IDL getters, and the event loop's fetch
 //! completion handling.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 
 use blitz_dom::ElementData;
 use html5ever::local_name;
@@ -55,6 +55,10 @@ pub(crate) struct ImageRequest {
     pub(crate) available_images_key: Option<String>,
     /// The fetch this request is waiting for, if any.
     pub(crate) fetch_id: Option<DocumentFetchId>,
+    /// Identifies this request instance: a `decode()` promise waiting on the
+    /// current request rejects when the element's current request is replaced
+    /// by a request with a different id.
+    pub(crate) request_id: u64,
 }
 
 impl Default for ImageRequest {
@@ -68,6 +72,7 @@ impl Default for ImageRequest {
             image_id: None,
             available_images_key: None,
             fetch_id: None,
+            request_id: 0,
         }
     }
 }
@@ -114,6 +119,31 @@ pub(crate) enum ImageTask {
     },
 }
 
+/// The outcome of decoding one image resource, as reported by the graphics
+/// process.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum ImageDecode {
+    Decoded,
+    Failed,
+}
+
+/// What `decode()` does with a promise waiting on a request (step 2.3).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum DecodeSettlement {
+    Wait,
+    Resolve,
+    Reject,
+}
+
+/// The fetch the microtask queued at step 8 of "update the image data"
+/// starts, once the algorithm reached a stable state.
+pub(crate) struct PendingImageFetch {
+    pub(crate) document_id: DocumentId,
+    pub(crate) node_id: usize,
+    pub(crate) handler_id: DocumentFetchId,
+    pub(crate) url: String,
+}
+
 /// The image-processing state of the content process, shared by every
 /// document it hosts.
 #[derive(Default)]
@@ -124,6 +154,14 @@ pub(crate) struct ImageRegistry {
     pub(crate) available_images: HashMap<(DocumentId, String), LoadedImage>,
     /// Identifies the next fetched image resource within this process.
     pub(crate) next_blob_id: u64,
+    /// Identifies the next image request instance within this process.
+    pub(crate) next_request_id: u64,
+    /// The decode outcome of each image resource the graphics process has
+    /// reported.  A request whose image id is absent is still being decoded.
+    pub(crate) image_decodes: HashMap<ImageIdentifier, ImageDecode>,
+    /// The fetches queued by the microtask at step 8, in the order their
+    /// instances queued them.  Drained at a microtask checkpoint.
+    pub(crate) pending_microtasks: VecDeque<PendingImageFetch>,
     /// Element tasks the algorithms queued, drained by `ContentProcess`.
     pub(crate) pending_tasks: Vec<ImageTask>,
 }
@@ -233,6 +271,8 @@ impl ImageRegistry {
             .retain(|(element_document_id, _), _| *element_document_id != document_id);
         self.available_images
             .retain(|(image_document_id, _), _| *image_document_id != document_id);
+        self.pending_microtasks
+            .retain(|update| update.document_id != document_id);
         self.pending_tasks.retain(|task| match task {
             ImageTask::PrepareForPresentation {
                 document_id: task_document_id,
@@ -276,7 +316,6 @@ fn available_images_key(url: &str, attributes: &ImageAttributes, origin: &str) -
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn update_the_image_data(
     registry: &mut ImageRegistry,
-    sink: &dyn ImageFetchSink,
     document_id: DocumentId,
     node_id: usize,
     attributes: &ImageAttributes,
@@ -313,134 +352,84 @@ pub(crate) fn update_the_image_data(
     element.last_selected_source = selected_source.clone();
 
     // Step 7: If `selected source` is not null:
-    if let Some(selected_source) = selected_source.clone() {
+    if let Some(selected_source) = selected_source.as_deref() {
         // Step 7.1: Let `urlString` be the result of encoding-parsing-and-serializing a URL given `selected source`, relative to `element`'s node document.
-        let Some(url_string) = encoding_parsing_and_serializing_url(base_url, &selected_source)
-        else {
-            // Step 7.2: If `urlString` is failure, then abort this inner set of steps.
-            run_after_selected_source(
-                registry,
-                sink,
-                document_id,
-                node_id,
-                attributes,
-                base_url,
-                partition,
-                origin,
-                selected_source,
-            );
-            return;
-        };
+        let url_string = encoding_parsing_and_serializing_url(base_url, selected_source);
+        // Step 7.2: If `urlString` is failure, then abort this inner set of steps.
+        if let Some(url_string) = url_string {
+            // Step 7.3: Let `key` be a tuple consisting of `urlString`, `element`'s `crossorigin` attribute's mode, and, if that mode is not No CORS, `element`'s node document's origin.
+            let key = available_images_key(&url_string, attributes, origin);
 
-        // Step 7.3: Let `key` be a tuple consisting of `urlString`, `element`'s `crossorigin` attribute's mode, and, if that mode is not No CORS, `element`'s node document's origin.
-        let key = available_images_key(&url_string, attributes, origin);
-
-        // Step 7.4: If the list of available images contains an entry for `key`:
-        if let Some(available) = registry
-            .available_images
-            .get(&(document_id, key.clone()))
-            .cloned()
-        {
-            let element = registry.element_mut(document_id, node_id);
-            // Step 7.4.1: Set the ignore higher-layer caching flag for that entry.
-            // Note: Higher-layer caching is not modeled.
-            // Step 7.4.2: Abort the image request for the current request and the pending request.
-            element.pending_request = None;
-            // Step 7.4.3: Set the pending request to null.
-            // Step 7.4.4: Set the current request to a new image request whose image data is that of the entry and whose state is completely available.
-            element.current_request = ImageRequest {
-                state: ImageRequestState::CompletelyAvailable,
-                current_url: url_string.clone(),
-                image_data: Some(available.clone()),
-                current_pixel_density: 1.0,
-                preferred_density_corrected_dimensions: None,
-                image_id: Some(available.image_id.clone()),
-                available_images_key: Some(key),
-                fetch_id: None,
-            };
-            // Step 7.4.5: Prepare the current request for presentation given `element`.
-            registry
-                .pending_tasks
-                .push(ImageTask::PrepareForPresentation {
+            // Step 7.4: If the list of available images contains an entry for `key`:
+            if let Some(available) = registry
+                .available_images
+                .get(&(document_id, key.clone()))
+                .cloned()
+            {
+                let request_id = next_request_id(registry);
+                let element = registry.element_mut(document_id, node_id);
+                // Step 7.4.1: Set the ignore higher-layer caching flag for that entry.
+                // Note: Higher-layer caching is not modeled.
+                // Step 7.4.2: Abort the image request for the current request and the pending request.
+                element.pending_request = None;
+                // Step 7.4.3: Set the pending request to null.
+                // Step 7.4.4: Set the current request to a new image request whose image data is that of the entry and whose state is completely available.
+                element.current_request = ImageRequest {
+                    state: ImageRequestState::CompletelyAvailable,
+                    current_url: url_string.clone(),
+                    image_data: Some(available.clone()),
+                    current_pixel_density: 1.0,
+                    preferred_density_corrected_dimensions: None,
+                    image_id: Some(available.image_id.clone()),
+                    available_images_key: Some(key),
+                    fetch_id: None,
+                    request_id,
+                };
+                // Step 7.4.5: Prepare the current request for presentation given `element`.
+                registry
+                    .pending_tasks
+                    .push(ImageTask::PrepareForPresentation {
+                        document_id,
+                        node_id,
+                        width: available.width,
+                        height: available.height,
+                    });
+                // Step 7.4.6: Set the current request's current pixel density to `selected pixel density`.
+                if let Some(density) = selected_pixel_density {
+                    registry
+                        .element_mut(document_id, node_id)
+                        .current_request
+                        .current_pixel_density = density;
+                }
+                // Step 7.4.7: Queue an element task on the DOM manipulation task source given `element` and the following steps:
+                // Step 7.4.7.1: If `restart animation` is set, then restart the animation.
+                // Note: Image animation is not implemented.
+                // Step 7.4.7.2: Set the current request's current URL to `urlString`.
+                // Note: Handled by step 7.4.4 above.
+                // Step 7.4.7.3: If `maybe omit events` is not set or `previousURL` is not equal to `urlString`, then fire an event named `load` at `element`.
+                // Note: `maybe omit events` is never set, so the event always fires.
+                registry.pending_tasks.push(ImageTask::FireLoad {
                     document_id,
                     node_id,
-                    width: available.width,
-                    height: available.height,
                 });
-            // Step 7.4.6: Set the current request's current pixel density to `selected pixel density`.
-            if let Some(density) = selected_pixel_density {
-                registry
-                    .element_mut(document_id, node_id)
-                    .current_request
-                    .current_pixel_density = density;
+                // Step 7.4.8: Abort the update the image data algorithm.
+                return;
             }
-            // Step 7.4.7: Queue an element task on the DOM manipulation task source given `element` and the following steps:
-            // Step 7.4.7.1: If `restart animation` is set, then restart the animation.
-            // Note: Image animation is not implemented.
-            // Step 7.4.7.2: Set the current request's current URL to `urlString`.
-            // Note: Handled by step 7.4.4 above.
-            // Step 7.4.7.3: If `maybe omit events` is not set or `previousURL` is not equal to `urlString`, then fire an event named `load` at `element`.
-            // Note: `maybe omit events` is never set, so the event always fires.
-            registry.pending_tasks.push(ImageTask::FireLoad {
-                document_id,
-                node_id,
-            });
-            // Step 7.4.8: Abort the update the image data algorithm.
-            return;
         }
+    }
 
-        // Step 8: Queue a microtask to perform the rest of this algorithm, allowing the task that invoked this algorithm to continue.
-        // Note: The microtask boundary is not modeled: the remaining steps
-        // run synchronously in the mutation hook, and the fetch itself is
-        // asynchronous.
-        // Step 9: If another instance of this algorithm for `element` was started after this instance (even if it aborted and is no longer running), then return.
-        // Note: The algorithm runs synchronously from the mutation hook, so
-        // there is no interleaving instance to discard.
-        // Step 10: Let `selected source` and `selected pixel density` be the URL and pixel density that results from selecting an image source, respectively.
-        // Note: `selected source` was selected in step 5; selecting from a
-        // source set is not modeled here.
-        // Step 11: If `selected source` is null:
-        // Note: `selected source` is non-null in this branch.
-        run_after_selected_source(
-            registry,
-            sink,
-            document_id,
-            node_id,
-            attributes,
-            base_url,
-            partition,
-            origin,
-            selected_source,
-        );
-    } else {
-        // Step 9: If another instance of this algorithm for `element` was started after this instance (even if it aborted and is no longer running), then return.
-        // Note: The algorithm runs synchronously from the mutation hook, so
-        // there is no interleaving instance to discard.
-        // Step 10: Let `selected source` and `selected pixel density` be the URL and pixel density that results from selecting an image source, respectively.
-        // Note: The source set is selected by `select_an_image_source`
-        // below: the first `srcset` candidate, or `src` when the source set
-        // yields nothing.  A `sizes`-driven choice is not modeled.
-        let selected_source = select_an_image_source(attributes);
-        if let Some(selected_source) = selected_source {
-            run_after_selected_source(
-                registry,
-                sink,
-                document_id,
-                node_id,
-                attributes,
-                base_url,
-                partition,
-                origin,
-                selected_source,
-            );
-            return;
-        }
-
-        // Step 11: If `selected source` is null:
-        let element = registry.element_mut(document_id, node_id);
+    // Step 10: Let `selected source` and `selected pixel density` be the URL and pixel density that results from selecting an image source, respectively.
+    // Note: The source set is selected by `select_an_image_source`: the first
+    // `srcset` candidate, or `src` when the source set yields nothing.  A
+    // `sizes`-driven choice is not modeled.
+    let selected_source = select_an_image_source(attributes);
+    // Step 11: If `selected source` is null:
+    let Some(selected_source) = selected_source else {
         // Step 11.1: Set the current request's state to `broken`, abort the image request for the current request and the pending request, and set the pending request to null.
+        let element = registry.element_mut(document_id, node_id);
         element.current_request.state = ImageRequestState::Broken;
         element.current_request.image_data = None;
+        element.current_request.fetch_id = None;
         element.pending_request = None;
         // Step 11.2: Queue an element task on the DOM manipulation task source given `element` and the following steps:
         // Step 11.2.1: Change the current request's current URL to the empty string.
@@ -455,42 +444,9 @@ pub(crate) fn update_the_image_data(
             });
         }
         // Step 11.3: Return.
-    }
-}
+        return;
+    };
 
-/// <https://html.spec.whatwg.org/#select-an-image-source>
-fn select_an_image_source(attributes: &ImageAttributes) -> Option<String> {
-    // Note: The source set's `sizes` descriptor is not evaluated; the first
-    // candidate of the `srcset` attribute is chosen, and the `src` attribute
-    // is the fallback.
-    if let Some(srcset) = attributes.srcset.as_deref() {
-        for candidate in srcset.split(',') {
-            let first_token = candidate.split_ascii_whitespace().next();
-            if let Some(token) = first_token {
-                let token = token.trim_end_matches(',');
-                if !token.is_empty() {
-                    return Some(token.to_string());
-                }
-            }
-        }
-    }
-    attributes.src.clone().filter(|src| !src.is_empty())
-}
-
-// Note: This helper holds steps 12 through 26 of the same algorithm; it is
-// split out only so the step 7 fast path can return early.
-#[allow(clippy::too_many_arguments)]
-fn run_after_selected_source(
-    registry: &mut ImageRegistry,
-    sink: &dyn ImageFetchSink,
-    document_id: DocumentId,
-    node_id: usize,
-    attributes: &ImageAttributes,
-    base_url: Option<&Url>,
-    partition: &ResourcePartitionKey,
-    origin: &str,
-    selected_source: String,
-) {
     // Step 12: Let `urlString` be the result of encoding-parsing-and-serializing a URL given `selected source`, relative to `element`'s node document.
     let Some(url_string) = encoding_parsing_and_serializing_url(base_url, &selected_source) else {
         // Step 13: If `urlString` is failure:
@@ -510,6 +466,7 @@ fn run_after_selected_source(
 
     let blob_id = registry.next_blob_id;
     registry.next_blob_id += 1;
+    let request_id = next_request_id(registry);
     let element = registry.element_mut(document_id, node_id);
     // Step 14: If the pending request is not null and `urlString` is the same as the pending request's current URL, then return.
     if element
@@ -550,6 +507,7 @@ fn run_after_selected_source(
         image_id: Some(image_id.clone()),
         available_images_key: Some(key),
         fetch_id: None,
+        request_id,
     };
 
     // Step 18: If the current request's state is `unavailable` or `broken`, then set the current request to `image request`. Otherwise, set the pending request to `image request`.
@@ -565,6 +523,67 @@ fn run_after_selected_source(
         element.pending_request = Some(image_request);
     }
 
+    // Step 8: Queue a microtask to perform the rest of this algorithm, allowing the task that invoked this algorithm to continue.
+    // Note: Steps 10 through 18 ran synchronously above, so `complete` and
+    // `currentSrc` read the new request before the next microtask checkpoint;
+    // the queued microtask performs step 9 and steps 19 through 26.
+    registry.pending_microtasks.push_back(PendingImageFetch {
+        document_id,
+        node_id,
+        handler_id,
+        url: url_string,
+    });
+}
+
+/// Allocates the next image request instance id.
+fn next_request_id(registry: &mut ImageRegistry) -> u64 {
+    registry.next_request_id += 1;
+    registry.next_request_id
+}
+
+/// <https://html.spec.whatwg.org/#select-an-image-source>
+fn select_an_image_source(attributes: &ImageAttributes) -> Option<String> {
+    // Note: The source set's `sizes` descriptor is not evaluated; the first
+    // candidate of the `srcset` attribute is chosen, and the `src` attribute
+    // is the fallback.
+    if let Some(srcset) = attributes.srcset.as_deref() {
+        for candidate in srcset.split(',') {
+            let first_token = candidate.split_ascii_whitespace().next();
+            if let Some(token) = first_token {
+                let token = token.trim_end_matches(',');
+                if !token.is_empty() {
+                    return Some(token.to_string());
+                }
+            }
+        }
+    }
+    attributes.src.clone().filter(|src| !src.is_empty())
+}
+
+/// <https://html.spec.whatwg.org/#update-the-image-data>
+pub(crate) fn continue_update_the_image_data(
+    registry: &mut ImageRegistry,
+    sink: &dyn ImageFetchSink,
+    fetch: &PendingImageFetch,
+) {
+    let document_id = fetch.document_id;
+    let node_id = fetch.node_id;
+    let handler_id = fetch.handler_id;
+    // Step 9: If another instance of this algorithm for `element` was started after this instance (even if it aborted and is no longer running), then return.
+    // Note: The instance takes effect only while the request it installed is
+    // still the element's; a later instance that replaced the request (or
+    // aborted it) discards this one.
+    let request_is_installed = {
+        let element = registry.element(document_id, node_id);
+        element.current_request.fetch_id == Some(handler_id)
+            || element
+                .pending_request
+                .as_ref()
+                .is_some_and(|pending| pending.fetch_id == Some(handler_id))
+    };
+    if !request_is_installed {
+        return;
+    }
     // Step 19: Let `request` be the result of creating a potential-CORS request given `urlString`, "image", and the current state of `element`'s `crossorigin` content attribute.
     // Step 20: Set `request`'s client to `element`'s node document's relevant settings object.
     // Step 21: If `element` uses `srcset` or `picture`, set `request`'s initiator to "imageset".
@@ -577,7 +596,9 @@ fn run_after_selected_source(
     // Step 25: If the will lazy load element steps given the `img` return true:
     // Note: Not implemented; images are obtained immediately.
     // Step 26: Fetch the image: Fetch `request`. Return from this algorithm, and run the remaining steps as part of the fetch's processResponse for the response `response`.
-    sink.start_image_fetch(document_id, node_id, handler_id, &url_string);
+    // Note: The request was created and installed by steps 17 and 18, before
+    // this microtask ran.
+    sink.start_image_fetch(document_id, node_id, handler_id, &fetch.url);
 }
 
 /// <https://html.spec.whatwg.org/#update-the-image-data>
@@ -751,6 +772,75 @@ pub(crate) fn current_image_id(element: &ImageElement) -> Option<ImageIdentifier
         .map(|image| image.image_id.clone())
 }
 
+/// The identity of the element's current request, as `decode()` records it.
+pub(crate) fn current_request_id(element: &ImageElement) -> u64 {
+    element.current_request.request_id
+}
+
+/// Records the graphics process's decode outcome for one image resource.
+pub(crate) fn image_decoded(
+    registry: &mut ImageRegistry,
+    image_id: &ImageIdentifier,
+    decoded: bool,
+) {
+    registry.image_decodes.insert(
+        image_id.clone(),
+        if decoded {
+            ImageDecode::Decoded
+        } else {
+            ImageDecode::Failed
+        },
+    );
+}
+
+/// The decision `decode()` step 2.3 makes for a promise waiting on the request
+/// the element's current request had when the promise was registered.
+pub(crate) fn decode_settlement(
+    registry: &ImageRegistry,
+    document_id: DocumentId,
+    node_id: usize,
+    request_id: u64,
+) -> DecodeSettlement {
+    let element = registry.element(document_id, node_id);
+    let request = &element.current_request;
+    // "This img element's current request changes or is mutated"
+    if request.request_id != request_id {
+        return DecodeSettlement::Reject;
+    }
+    match request.state {
+        ImageRequestState::Broken => DecodeSettlement::Reject,
+        ImageRequestState::CompletelyAvailable => {
+            let decode = request
+                .image_id
+                .as_ref()
+                .and_then(|image_id| registry.image_decodes.get(image_id));
+            match decode {
+                Some(ImageDecode::Decoded) => DecodeSettlement::Resolve,
+                Some(ImageDecode::Failed) => DecodeSettlement::Reject,
+                None => DecodeSettlement::Wait,
+            }
+        }
+        ImageRequestState::Unavailable | ImageRequestState::PartiallyAvailable => {
+            DecodeSettlement::Wait
+        }
+    }
+}
+
+/// Whether `decode()` step 2.2 rejects the promise: the current request is
+/// broken, or the processing model never installed a request for the element.
+/// No source leaves the request broken when "update the image data" runs, and
+/// an element that never reached the model (a detached `<img>` without `src`
+/// or `srcset`) is indistinguishable from it here.
+pub(crate) fn decode_rejects_now(
+    registry: &ImageRegistry,
+    document_id: DocumentId,
+    node_id: usize,
+) -> bool {
+    let element = registry.element(document_id, node_id);
+    element.current_request.state == ImageRequestState::Broken
+        || element.current_request.request_id == 0
+}
+
 // Note: This helper merges the shared tail of steps 13.1-13.4 (the state and
 // event handling the URL-parse-failure path performs).
 fn abort_and_fire_error(
@@ -763,6 +853,7 @@ fn abort_and_fire_error(
     let element = registry.element_mut(document_id, node_id);
     element.current_request.state = ImageRequestState::Broken;
     element.current_request.image_data = None;
+    element.current_request.fetch_id = None;
     element.current_request.current_url = current_url;
     element.pending_request = None;
     if attributes.src.is_some() || attributes.uses_srcset_or_picture() {

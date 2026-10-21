@@ -674,18 +674,32 @@ fn handle_command<B: MediaBackend + 'static, R: SurfaceRenderer>(
             let slot = webviews
                 .entry(webview_id)
                 .or_insert_with(|| WebviewState::new(channels.clone()));
-            match slot.compositor.store_image(image_id, bytes) {
-                Ok(Some((width, height))) => debug!(
-                    "[render-pipe] Graphics register image webview={:?} size={}x{} encoded_bytes={}",
-                    webview_id,
-                    width,
-                    height,
-                    bytes.len()
-                ),
-                Ok(None) => {}
+            let result = match slot.compositor.store_image(image_id.clone(), bytes) {
+                Ok(Some((width, height))) => {
+                    debug!(
+                        "[render-pipe] Graphics register image webview={:?} size={}x{} encoded_bytes={}",
+                        webview_id,
+                        width,
+                        height,
+                        bytes.len()
+                    );
+                    Ok(())
+                }
+                Ok(None) => Ok(()),
                 Err(error) => {
                     error!("[render-pipe] Graphics failed to decode image: {error}");
+                    Err(error)
                 }
+            };
+            if let Err(send_error) = composed_scene_sender.send(GraphicsEvent::ImageDecoded {
+                webview_id,
+                image_id,
+                result,
+            }) {
+                error!(
+                    "[graphics] failed to report image decode result for {:?}: {send_error}",
+                    webview_id
+                );
             }
         }
         GraphicsCommand::RemoveVideoFrame {

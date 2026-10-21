@@ -49,7 +49,7 @@ use crate::ui_event::deserialize_ui_event;
 #[cfg(all(boa_backend, feature = "wasm"))]
 use crate::wasm::{WasmResult, compile_continuation, compile_rejection, instantiate_continuation};
 use anyrender::Scene as RenderScene;
-use blitz_dom::{BaseDocument, DocumentConfig};
+use blitz_dom::{BaseDocument, DocumentConfig, DocumentHooks};
 use blitz_paint::paint_scene;
 use blitz_traits::net::Request;
 use blitz_traits::shell::{ClipboardError, ColorScheme, ShellProvider, Viewport};
@@ -61,8 +61,8 @@ use crate::fetch::{FetchContext, InternalFetchRequest, fetch};
 use ipc_messages::content::Command::{
     ClickElement, CompleteDocumentFetch, ContentBootstrap, CreateEmptyDocument,
     CreateLoadedDocument, DestroyDocument, DispatchEvent, EvaluateScript, FailDocumentFetch,
-    NotifyVideoEnded, RunAnimationFrameCallbacks, SetTraversableViewport, SetViewport, Shutdown,
-    UpdateTheRendering,
+    ImageDecoded, NotifyVideoEnded, RunAnimationFrameCallbacks, SetTraversableViewport,
+    SetViewport, Shutdown, UpdateTheRendering,
 };
 use ipc_messages::content::{
     BeforeUnloadCheckId, CanvasEmbedSite, CanvasId, ClipboardWriteRequested,
@@ -317,6 +317,11 @@ pub(crate) struct ContentDocument {
     frame_id: FrameId,
     document: Rc<RefCell<BaseDocument>>,
     settings: EnvironmentSettingsObject,
+    /// The document's `DocumentProviders`, which the microtask checkpoints use
+    /// to run the "update the image data" continuations queued at step 8.
+    /// `None` for a document created without hooks (the initial about:blank
+    /// document of a `window.open` realm), which never queues a continuation.
+    providers: Option<Arc<DocumentProviders>>,
     pending_document_load: Option<PendingDocumentLoad>,
     navigable_container_states: HashMap<usize, NavigableContainerState>,
     viewport_offset_x: f32,
@@ -618,31 +623,32 @@ impl ContentProcess {
         needs_paint: Arc<AtomicBool>,
         embedded_images: bool,
         host: DocumentHost,
-    ) -> DocumentConfig {
+    ) -> (DocumentConfig, Arc<DocumentProviders>) {
         let partition = ResourcePartitionKey {
             top_level_traversable: top_level_traversable_id,
             origin,
         };
-        DocumentConfig {
+        let providers = Arc::new(DocumentProviders::new(
+            host,
+            traversable_id,
+            self.event_loop_id,
+            base_url.as_ref().and_then(|url| Url::parse(url).ok()),
+            partition,
+            Arc::clone(&self.local_state),
+            self.network_extension_sender.clone(),
+            self.content_command_sender.clone(),
+            self.event_sender.clone(),
+            Arc::clone(&self.embedder_schemes),
+            Arc::clone(&self.image_registry),
+            needs_paint.clone(),
+        ));
+        let config = DocumentConfig {
             embedded_images,
             viewport: self
                 .document_viewport_state(traversable_id)
                 .map(|viewport| viewport_of_snapshot(&viewport.snapshot)),
-            base_url: base_url.clone(),
-            hooks: Some(Arc::new(DocumentProviders::new(
-                host,
-                traversable_id,
-                self.event_loop_id,
-                base_url.and_then(|url| Url::parse(&url).ok()),
-                partition,
-                Arc::clone(&self.local_state),
-                self.network_extension_sender.clone(),
-                self.content_command_sender.clone(),
-                self.event_sender.clone(),
-                Arc::clone(&self.embedder_schemes),
-                Arc::clone(&self.image_registry),
-                needs_paint.clone(),
-            ))),
+            base_url,
+            hooks: Some(Arc::clone(&providers) as Arc<dyn DocumentHooks>),
             shell_provider: Some(Arc::new(ContentShellProvider::new(
                 self.event_sender.clone(),
                 self.clipboard_cache.clone(),
@@ -650,7 +656,8 @@ impl ContentProcess {
             ))),
             html_parser_provider: Some(Arc::new(JsHtmlParserProvider)),
             ..DocumentConfig::default()
-        }
+        };
+        (config, providers)
     }
 
     fn set_viewport(&mut self, viewport: ViewportSnapshot) {
@@ -926,6 +933,7 @@ impl ContentProcess {
                     frame_id,
                     document,
                     settings,
+                    providers: None,
                     pending_document_load: None,
                     navigable_container_states: HashMap::new(),
                     viewport_offset_x: 0.0,
@@ -977,7 +985,11 @@ impl ContentProcess {
                 .document
                 .borrow()
                 .has_pending_critical_resources();
-
+            // Note: "Fetching the image must delay the load event" is not
+            // implemented: this engine runs parser scripts after parsing (at
+            // load completion), so an image whose `src` a page script clears
+            // cannot release the load event it would be delaying. See
+            // content/src/html/README.md (Images).
             let Some(pending_document_load) = content_document.pending_document_load.as_mut()
             else {
                 return Ok(());
@@ -1106,7 +1118,7 @@ impl ContentProcess {
         let viewport_state = self.document_viewport_state(traversable_id);
         let frame_id = frame_id.unwrap_or_else(FrameId::new);
         let needs_paint = Arc::new(AtomicBool::new(false));
-        let document = Rc::new(RefCell::new(BaseDocument::new(self.document_config(
+        let (document_config, providers) = self.document_config(
             traversable_id,
             top_level_traversable_id,
             None,
@@ -1114,7 +1126,8 @@ impl ContentProcess {
             needs_paint.clone(),
             true,
             DocumentHost::Main(document_id),
-        ))));
+        );
+        let document = Rc::new(RefCell::new(BaseDocument::new(document_config)));
         let mut settings = self.create_environment_settings_object(
             Rc::clone(&document),
             Url::parse("about:blank").map_err(|error| error.to_string())?,
@@ -1167,6 +1180,7 @@ impl ContentProcess {
                 frame_id,
                 document,
                 settings,
+                providers: Some(providers),
                 pending_document_load: None,
                 navigable_container_states: HashMap::new(),
                 viewport_offset_x: viewport_state
@@ -1205,6 +1219,7 @@ impl ContentProcess {
     }
 
     /// <https://html.spec.whatwg.org/#initialise-the-document-object>
+    #[allow(clippy::type_complexity)]
     fn initialise_the_document_object(
         &mut self,
         traversable_id: NavigableId,
@@ -1216,6 +1231,7 @@ impl ContentProcess {
             Rc<RefCell<BaseDocument>>,
             EnvironmentSettingsObject,
             Arc<AtomicBool>,
+            Arc<DocumentProviders>,
         ),
         String,
     > {
@@ -1310,7 +1326,7 @@ impl ContentProcess {
         let creation_url = Url::parse(final_url).map_err(|error| error.to_string())?;
         let needs_paint = Arc::new(AtomicBool::new(false));
         let origin = creation_url.origin().unicode_serialization();
-        let document = Rc::new(RefCell::new(BaseDocument::new(self.document_config(
+        let (document_config, providers) = self.document_config(
             traversable_id,
             top_level_traversable_id,
             Some(final_url.to_string()),
@@ -1318,7 +1334,8 @@ impl ContentProcess {
             needs_paint.clone(),
             true,
             DocumentHost::Main(document_id),
-        ))));
+        );
+        let document = Rc::new(RefCell::new(BaseDocument::new(document_config)));
         // Steps 7.5, 7.6 and 7.10 run in `create_environment_settings_object` for the
         // otherwise branch; for the step-6 branch they already ran when the reused realm was
         // created, and `repoint_document` re-points that realm at the new document.
@@ -1353,7 +1370,7 @@ impl ContentProcess {
             );
         }
 
-        Ok((document, settings, needs_paint))
+        Ok((document, settings, needs_paint, providers))
     }
 
     /// <https://html.spec.whatwg.org/#initialise-the-document-object> — step 6
@@ -1419,12 +1436,13 @@ impl ContentProcess {
         // `Self::initialise_the_document_object`; the user-agent-side steps (browsing context
         // and agent selection) ran in `UserAgent::initialise_the_document_object` before this
         // command was dispatched.
-        let (document, mut settings, needs_paint) = self.initialise_the_document_object(
-            traversable_id,
-            document_id,
-            top_level_traversable_id,
-            &final_url,
-        )?;
+        let (document, mut settings, needs_paint, providers) = self
+            .initialise_the_document_object(
+                traversable_id,
+                document_id,
+                top_level_traversable_id,
+                &final_url,
+            )?;
 
         run_user_scripts(&mut settings, &user_scripts);
 
@@ -1462,6 +1480,7 @@ impl ContentProcess {
                 frame_id,
                 document: Rc::clone(&document),
                 settings,
+                providers: Some(providers),
                 pending_document_load: Some(PendingDocumentLoad {
                     finalize_url: final_url.clone(),
                     scripts: deferred_scripts,
@@ -1485,6 +1504,12 @@ impl ContentProcess {
         // script execution.
         self.active_documents_by_traversable
             .insert(traversable_id, document_id);
+
+        // The parse task's stable state: start the fetches the parsed `<img>`
+        // elements queued (step 8 of "update the image data") before the
+        // document starts its other subresource fetches, so an image's load
+        // event does not have to wait for them behind the deferred scripts.
+        self.drain_image_microtasks();
         attach_same_origin_child_document_for_traversable(self, traversable_id)?;
 
         // Set the navigable hierarchy on the GlobalScope so that `window.open`
@@ -2948,27 +2973,44 @@ impl ContentProcess {
         image_id: ImageIdentifier,
         encoded: Arc<Vec<u8>>,
     ) -> Result<(), String> {
+        let image_without_transport = image_id.clone();
         let mut next_shmem_key = 0usize;
         let Some((registration, region)) =
             self.image_sender
                 .prepare_image(image_id, &encoded, &mut next_shmem_key)
         else {
+            // The bytes never reach the graphics process, so nothing will
+            // decode this image: record it as decoded so `decode()` settles.
+            self.record_image_decoded(&image_without_transport);
             return Ok(());
         };
         let data_shmem_key = registration.data_shmem_key;
         let mut image_shmem = HashMap::new();
         image_shmem.insert(data_shmem_key, region);
-        if let Some(graphics_sender) = &self.graphics_sender {
-            let command = ipc_messages::graphics::GraphicsCommand::RegisterImage {
-                webview_id: WebviewId(navigable_id),
-                image_id: registration.id,
-                data_shmem_key,
-            };
-            graphics_sender
-                .send_with_shmem_map(command, image_shmem)
-                .map_err(|error| format!("failed to register image with graphics: {error}"))?;
-        }
+        let Some(graphics_sender) = &self.graphics_sender else {
+            // Without a graphics process the image is never decoded; record it
+            // as decoded so `decode()` settles.
+            self.record_image_decoded(&registration.id);
+            return Ok(());
+        };
+        let command = ipc_messages::graphics::GraphicsCommand::RegisterImage {
+            webview_id: WebviewId(navigable_id),
+            image_id: registration.id,
+            data_shmem_key,
+        };
+        graphics_sender
+            .send_with_shmem_map(command, image_shmem)
+            .map_err(|error| format!("failed to register image with graphics: {error}"))?;
         Ok(())
+    }
+
+    /// Records the graphics process's decode outcome for one image resource.
+    fn record_image_decoded(&mut self, image_id: &ImageIdentifier) {
+        let mut registry = self
+            .image_registry
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        image_data::image_decoded(&mut registry, image_id, true);
     }
 
     fn drain_image_tasks(&mut self) -> Result<(), String> {
@@ -3638,6 +3680,11 @@ impl ContentProcess {
 
     fn handle_command(&mut self, command: Command) -> Result<bool, String> {
         let result = self.handle_command_inner(command);
+        // The command that ran can queue "update the image data" microtasks (a
+        // document being parsed inserts its `<img>` elements); start their
+        // fetches now, so a document whose load event waits for them makes
+        // progress even when no task follows.
+        self.drain_image_microtasks();
         if let Err(error) = self.drain_image_tasks() {
             error!("failed to drain image tasks after a command: {error}");
         }
@@ -3883,13 +3930,61 @@ impl ContentProcess {
 
     /// <https://html.spec.whatwg.org/#perform-a-microtask-checkpoint>
     fn perform_microtask_checkpoint(&mut self) -> Result<(), String> {
+        // The microtasks "update the image data" queued at step 8 run before
+        // the engine's job queue: their instances queued them during the
+        // mutation that ran before any microtask this task enqueued.
+        self.drain_image_microtasks();
         for document in self.documents.values_mut() {
             document
                 .settings
                 .perform_a_microtask_checkpoint()
                 .map_err(|error| format!("microtask checkpoint failed: {error}"))?;
         }
+        self.settle_pending_image_decodes();
         Ok(())
+    }
+
+    /// Runs the microtasks "update the image data" queued at step 8, starting
+    /// each queued fetch.
+    fn drain_image_microtasks(&mut self) {
+        while let Some(fetch) = {
+            self.image_registry
+                .lock()
+                .unwrap_or_else(|error| error.into_inner())
+                .pending_microtasks
+                .pop_front()
+        } {
+            let Some(providers) = self
+                .documents
+                .get(&fetch.document_id)
+                .and_then(|document| document.providers.clone())
+            else {
+                continue;
+            };
+            let mut registry = self
+                .image_registry
+                .lock()
+                .unwrap_or_else(|error| error.into_inner());
+            image_data::continue_update_the_image_data(&mut registry, providers.as_ref(), &fetch);
+        }
+    }
+
+    /// Settles the `decode()` promises whose request reached its outcome
+    /// (step 2.3 of `decode()`).
+    fn settle_pending_image_decodes(&mut self) {
+        for content_document in self.documents.values_mut() {
+            let result = with_global_scope(content_document.settings.ec(), |global_scope, ec| {
+                global_scope.settle_pending_image_decodes(ec)
+            });
+            if let Err(error) = result {
+                let message = content_document
+                    .settings
+                    .ec()
+                    .to_rust_string(error)
+                    .unwrap_or_else(|_| String::from("unknown error"));
+                error!("failed to settle pending image decode promises: {message}");
+            }
+        }
     }
 
     /// Mark a document as needing a render. Called whenever content runs a
@@ -4033,6 +4128,20 @@ impl ContentProcess {
             }
             FailDocumentFetch { handler_id } => {
                 self.fail_document_fetch(handler_id)?;
+                Ok(true)
+            }
+            ImageDecoded { image_id, result } => {
+                if let Err(error) = &result {
+                    error!("graphics failed to decode an image: {error}");
+                }
+                {
+                    let mut registry = self
+                        .image_registry
+                        .lock()
+                        .unwrap_or_else(|error| error.into_inner());
+                    image_data::image_decoded(&mut registry, &image_id, result.is_ok());
+                }
+                self.settle_pending_image_decodes();
                 Ok(true)
             }
             ContentBootstrap { .. } => {

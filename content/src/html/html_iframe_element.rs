@@ -247,7 +247,7 @@ fn attach_iframe_subdocument_from_html(
         .map(|url| url.origin().unicode_serialization())
         .unwrap_or_else(|_| String::from("null"));
     let subdocument_id = uuid::Uuid::new_v4();
-    let sub_document = Rc::new(RefCell::new(BaseDocument::new(process.document_config(
+    let (document_config, _) = process.document_config(
         traversable_id,
         top_level_traversable_id,
         Some(base_url),
@@ -258,7 +258,8 @@ fn attach_iframe_subdocument_from_html(
             parent_document_id,
             id: subdocument_id,
         },
-    ))));
+    );
+    let sub_document = Rc::new(RefCell::new(BaseDocument::new(document_config)));
     process
         .subdocuments
         .insert(subdocument_id, Rc::downgrade(&sub_document));
@@ -477,6 +478,7 @@ fn create_a_new_child_navigable(
             frame_id: content_frame_id,
             document: new_document,
             settings,
+            providers: None,
             pending_document_load: None,
             navigable_container_states: HashMap::new(),
             viewport_offset_x: 0.0,

@@ -4,12 +4,11 @@ use blitz_dom::BaseDocument;
 use js_engine::{Completion, ExecutionContext, JsTypes, gc_struct};
 use url::Url;
 
-use crate::dom::DOMException;
 use crate::html::HTMLElement;
 use crate::html::image_data::{self, ImageElement};
+use crate::html::queue_a_microtask;
 use crate::js::Types;
-use crate::webidl::bindings::create_interface_instance;
-use crate::webidl::{rejected_promise, resolved_promise};
+use crate::js::platform_objects::with_global_scope;
 
 /// <https://html.spec.whatwg.org/#htmlimageelement>
 #[gc_struct]
@@ -351,32 +350,36 @@ impl HTMLImageElement {
     pub(crate) fn decode(
         &self,
         ec: &mut dyn ExecutionContext<Types>,
-        element: &ImageElement,
     ) -> Completion<<Types as JsTypes>::JsValue, Types> {
         // Step 1: "Let promise be a new promise."
+        let (promise, resolvers) = ec.new_promise_pending()?;
+        let node_id = self.html_element.element.node.node_id;
+        // Note: The promise's resolving functions are registered here, before
+        // the step 2 microtask, because only a traced GC cell keeps them alive
+        // across the microtask boundary.  The promise is armed with the
+        // element's current request by the microtask itself.
+        with_global_scope(ec, |global_scope, ec| {
+            global_scope.add_pending_image_decode(ec, node_id, resolvers);
+            Ok(ec.value_undefined())
+        })?;
         // Step 2: "Queue a microtask to perform the following steps:"
-        // Step 2.1: "Let global be this's relevant global object."
-        // Step 2.2: "If any of the following are true: this's node document is not fully active; or this's current request's state is broken, then reject promise with an \"EncodingError\" DOMException."
-        // Step 2.3: "Otherwise, in parallel, wait for one of the following cases to occur, and perform the corresponding actions:"
-        // Note: The queued microtask and the in-parallel wait are not modeled:
-        // the promise is settled synchronously from the current request's
-        // state, and the fully-active check is omitted (an unavailable
-        // request is also rejected).
+        queue_a_microtask(ec, move |ec| {
+            // Step 2.1: "Let global be this's relevant global object."
+            // Step 2.2: "If any of the following are true: this's node document is not fully active; or this's current request's state is broken, then reject promise with an \"EncodingError\" DOMException."
+            // Note: The fully-active check is not modeled; a broken request
+            // rejects the promise here.
+            // Step 2.3: "Otherwise, in parallel, wait for one of the following cases to occur, and perform the corresponding actions:"
+            // Note: "In parallel" is the graphics process decoding the image
+            // once the content process registers it; the wait ends when the
+            // request becomes completely available, breaks, changes, or its
+            // decode fails, checked after every task and microtask
+            // checkpoint.
+            with_global_scope(ec, |global_scope, ec| {
+                global_scope.arm_pending_image_decodes(ec, node_id)
+            })
+            .map(|()| ec.value_undefined())
+        });
         // Step 3: "Return promise."
-        if image_data::is_available(element) {
-            let promise = resolved_promise(ec.value_undefined(), ec)?;
-            Ok(Types::value_from_object(promise))
-        } else {
-            let exception = create_interface_instance::<Types, DOMException>(
-                DOMException::new(
-                    String::from("The source image cannot be decoded."),
-                    String::from("EncodingError"),
-                ),
-                ec,
-            )?;
-            let reason = Types::value_from_object(exception);
-            let promise = rejected_promise(reason, ec)?;
-            Ok(Types::value_from_object(promise))
-        }
+        Ok(promise)
     }
 }

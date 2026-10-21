@@ -318,7 +318,6 @@ impl DocumentProviders {
         });
         update_the_image_data(
             &mut registry,
-            self,
             self.host.parent_document_id(),
             node_id,
             &attributes,

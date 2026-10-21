@@ -140,10 +140,13 @@ behind the renderer trait's macOS-only `store_video_frame`.
 `RegisterImage` carries the encoded image bytes (PNG/JPEG/...), not raw
 pixels: `Compositor::store_image` decodes them into the shared
 `ImageData` registry, and the image's layer draws that decoded texture.  The
-content process sends each `ImageIdentifier` once; a decode failure is logged
-and leaves the image layer empty.  The registry has no eviction step, so the
-decoded pixels of every image the webview ever registered stay resident for
-the webview's lifetime.
+content process sends each `ImageIdentifier` once.  Every registration is
+answered with `GraphicsEvent::ImageDecoded` (the decoded dimensions or the
+decoder's error), which the user agent forwards to the content process: an
+image's `decode()` promise waits for this report, so a decode failure must
+keep rejecting it even though the layer stays empty.  The registry has no
+eviction step, so the decoded pixels of every image the webview ever
+registered stay resident for the webview's lifetime.
 
 ## Video frames → shared texture (macOS)
 

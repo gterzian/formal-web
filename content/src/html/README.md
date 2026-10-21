@@ -285,6 +285,19 @@ and owns the pixels.  `naturalWidth`, `naturalHeight`, `complete`,
 `currentSrc`, and `decode` therefore read the registry (through the realm's
 `GlobalScope`); reading `raster_image_data` is not a substitute.
 
+The step 8 microtask starts the queued fetch through
+`ContentProcess::drain_image_microtasks` (after each command, once the parse
+has installed its documents, and at every microtask checkpoint): the DOM
+hooks run inside blitz with no execution context, so they cannot enqueue an
+engine job themselves.  The element tasks and the fetch start are drained
+separately on purpose — starting the fetch before the document's deferred
+script fetches keeps an image's `load` event from queueing behind them.
+`decode()` promises live on the realm's `GlobalScope` (a traced `GcCell`, so
+the resolving functions survive to settlement) and are settled by
+`ContentProcess::settle_pending_image_decodes` from the request's state plus
+the graphics process's `ImageDecoded` reports; never settle a promise while
+holding a `GcCell` borrow.
+
 Known gaps in the processing model:
 
 - `srcset`/`sizes` selection picks the first `srcset` candidate and ignores
@@ -295,6 +308,13 @@ Known gaps in the processing model:
 - Lazy loading (`loading=lazy`), animation restart, EXIF density
   correction, CORS enforcement, and progressive/multipart image decoding
   are not modeled.
+- "Fetching the image must delay the load event" is not modeled: the document
+  load event ignores `<img>` fetches.  Implementing it as written deadlocks
+  on any page whose script clears the image's `src` to release the load
+  event: the engine runs parser scripts at load completion (see
+  `continue_document_load`), so the clearing script would itself wait for the
+  load event, and the fetch it is meant to abort never finishes.  The spec's
+  ordering needs parser scripts to run during parsing first.
 - The `img` adopting steps are not observed, so adopting an element into
   another document does not re-run the algorithm.
 - Subresource URLs resolve against the document's URL only: a `<base href>`
@@ -302,16 +322,14 @@ Known gaps in the processing model:
 - The `Image(width, height)` legacy factory function is not implemented, so
   `new Image()` throws; `available-images-onload.html` and
   `Image-constructor.html` are blocked on it.
-- `decode()` settles its promise synchronously from the current request's
-  state instead of from the queued microtask and the in-parallel decode
-  wait.
 - Image formats are limited to what the `image` crate decodes (PNG, JPEG,
   GIF, WebP); an SVG `src` is reported as an error.
 - Content reads only the encoded header (`into_dimensions`) to decide that an
   image loaded, so a resource the graphics process cannot decode (a corrupt
   PNG chunk, for example) leaves the element `complete` with its header
-  dimensions while its layer stays empty; the decode error is only logged by
-  the graphics process, and the element never fires `error`.
+  dimensions while its layer stays empty.  `decode()` does see the failure:
+  the graphics process reports every decode through
+  `GraphicsEvent::ImageDecoded`, and the promise rejects when it fails.
 
 ## Canvas
 

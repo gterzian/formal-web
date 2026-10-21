@@ -1154,6 +1154,14 @@ pub enum Command {
     NotifyVideoEnded {
         video_paint_id: VideoPaintId,
     },
+    /// The graphics process finished decoding an `<img>` resource.  Content
+    /// records the result and settles the `decode()` promises waiting on that
+    /// image (step 2.3 of `decode()`).
+    ImageDecoded {
+        image_id: ImageIdentifier,
+        /// `Err` carries the decoder's failure reason.
+        result: Result<(), String>,
+    },
     /// The target-process half of the window post message steps (step 8 and
     /// its substeps): the user agent routes this to the target window's event
     /// loop after the source content process ran steps 1–7.

@@ -200,6 +200,16 @@ pub enum GraphicsEvent {
         webview_id: WebviewId,
         video_paint_id: VideoPaintId,
     },
+    /// The graphics process finished decoding an `<img>` resource registered
+    /// with `GraphicsCommand::RegisterImage`. The UA forwards the result to
+    /// the content process that registered the image, which settles the
+    /// `decode()` promises waiting on it.
+    ImageDecoded {
+        webview_id: WebviewId,
+        image_id: ImageIdentifier,
+        /// `Err` carries the decoder's failure reason.
+        result: Result<(), String>,
+    },
     /// A cross-origin child frame's content changed (a source the top-level
     /// content process does not itself drive). The UA notes a rendering
     /// opportunity for the parent traversable so its render cycle re-composes

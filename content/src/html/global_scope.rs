@@ -2,6 +2,7 @@ use std::{
     cell::{Cell, RefCell},
     collections::{HashMap, HashSet},
     rc::Rc,
+    slice::from_ref,
     sync::{Arc, Mutex},
     vec::Vec,
 };
@@ -26,15 +27,17 @@ use ipc_messages::content::{
 use ipc_messages::media::VideoPaintId;
 use ipc_messages::network::Request as NetworkRequest;
 use js_engine::gc::{GcCell, gc_cell_new};
-use js_engine::{Completion, ExecutionContext, JsTypes, gc_struct};
+use js_engine::{Completion, ExecutionContext, JsTypes, PromiseResolvers, gc_struct};
 use log::{debug, error};
 
 use super::environment_settings_object::RealmWiring;
 use super::event_loop::{EventLoopTaskSources, Task};
+use crate::dom::DOMException;
 use crate::dom::event::EventTarget;
-use crate::html::image_data::ImageRegistry;
+use crate::html::image_data::{self, DecodeSettlement, ImageRegistry};
 use crate::js::{Engine, Types};
 use crate::webidl::Callback;
+use crate::webidl::bindings::create_interface_instance;
 
 type JsValue = <Types as JsTypes>::JsValue;
 type JsObject = <Types as JsTypes>::JsObject;
@@ -117,6 +120,21 @@ pub struct AnimationFrameCallback {
 
     /// <https://webidl.spec.whatwg.org/#idl-callback-function>
     pub callback: Callback,
+}
+
+/// One `decode()` promise, waiting for its image request to be decoded (the
+/// wait of `decode()` step 2.3).
+#[gc_struct]
+struct PendingImageDecode {
+    /// The `<img>` element's node id.
+    #[ignore_trace]
+    node_id: usize,
+    /// The identity of the current request the promise waits on, or `None`
+    /// until the microtask queued at decode() step 2 reads it.
+    #[ignore_trace]
+    request_id: Option<u64>,
+    /// The promise's resolving and rejecting functions.
+    resolvers: PromiseResolvers<Types>,
 }
 
 /// <https://html.spec.whatwg.org/#timers>
@@ -345,6 +363,9 @@ pub struct GlobalScope {
     #[ignore_trace]
     image_registry: Rc<RefCell<Option<Arc<Mutex<ImageRegistry>>>>>,
 
+    /// The `decode()` promises whose image request is not decoded yet.
+    pending_image_decodes: GcCell<Vec<PendingImageDecode>>,
+
     /// The document's repaint flag, shared with `ContentDocument`: a script
     /// that mutates only canvas/offscreen state (no DOM mutation) marks it
     /// dirty here so the next update-the-rendering re-runs blitz and rebuilds
@@ -404,6 +425,7 @@ impl GlobalScope {
             epoch_anchor_wall_ms: Rc::new(std::cell::Cell::new(None)),
             needs_paint: Rc::new(RefCell::new(None)),
             image_registry: Rc::new(RefCell::new(None)),
+            pending_image_decodes: gc_cell_new(Vec::new(), ec),
 
             creation_url: Rc::new(RefCell::new(None)),
             #[cfg(all(boa_backend, feature = "wasm"))]
@@ -1373,6 +1395,138 @@ impl GlobalScope {
         self.image_registry.borrow().clone()
     }
 
+    /// Records the `decode()` promise for `node_id`, to be armed by the
+    /// microtask queued at step 2 of `decode()` and settled once its request
+    /// is decoded.
+    pub(crate) fn add_pending_image_decode(
+        &self,
+        ec: &mut dyn ExecutionContext<Types>,
+        node_id: usize,
+        resolvers: PromiseResolvers<Types>,
+    ) {
+        self.pending_image_decodes
+            .borrow_mut(ec)
+            .push(PendingImageDecode {
+                node_id,
+                request_id: None,
+                resolvers,
+            });
+    }
+
+    /// `decode()` step 2.2 and 2.3's read of the element's state: arm every
+    /// unarmed promise for `node_id` with the identity of the current request
+    /// it waits on, rejecting the promises of a broken request.
+    pub(crate) fn arm_pending_image_decodes(
+        &self,
+        ec: &mut dyn ExecutionContext<Types>,
+        node_id: usize,
+    ) -> Completion<(), Types> {
+        let Some(registry) = self.image_registry() else {
+            return Ok(());
+        };
+        let Some(document_id) = self.document_id() else {
+            return Ok(());
+        };
+        let unarmed = {
+            let waiters = self.pending_image_decodes.borrow(ec);
+            waiters
+                .iter()
+                .enumerate()
+                .filter(|(_, waiter)| waiter.node_id == node_id && waiter.request_id.is_none())
+                .map(|(index, waiter)| (index, waiter.resolvers.clone()))
+                .collect::<Vec<_>>()
+        };
+        let request_id = {
+            let registry = registry.lock().unwrap_or_else(|error| error.into_inner());
+            if image_data::decode_rejects_now(&registry, document_id, node_id) {
+                None
+            } else {
+                Some(image_data::current_request_id(&image_data::image_element(
+                    &registry,
+                    document_id,
+                    node_id,
+                )))
+            }
+        };
+        let mut settled = Vec::new();
+        for (index, resolvers) in unarmed {
+            match request_id {
+                Some(request_id) => {
+                    let mut waiters = self.pending_image_decodes.borrow_mut(ec);
+                    waiters[index].request_id = Some(request_id);
+                }
+                None => {
+                    reject_with_encoding_error(&resolvers, ec)?;
+                    settled.push(index);
+                }
+            }
+        }
+        if !settled.is_empty() {
+            let mut waiters = self.pending_image_decodes.borrow_mut(ec);
+            for index in settled.into_iter().rev() {
+                waiters.remove(index);
+            }
+        }
+        Ok(())
+    }
+
+    /// Settles every armed `decode()` promise whose request reached its
+    /// outcome (step 2.3): resolved once the request is completely available
+    /// and decoded, rejected when the request changed, broke, or failed to
+    /// decode.
+    pub(crate) fn settle_pending_image_decodes(
+        &self,
+        ec: &mut dyn ExecutionContext<Types>,
+    ) -> Completion<(), Types> {
+        let Some(registry) = self.image_registry() else {
+            return Ok(());
+        };
+        let Some(document_id) = self.document_id() else {
+            return Ok(());
+        };
+        let waiters = {
+            let registered = self.pending_image_decodes.borrow(ec);
+            registered
+                .iter()
+                .filter_map(|waiter| {
+                    waiter
+                        .request_id
+                        .map(|request_id| (waiter.node_id, request_id, waiter.resolvers.clone()))
+                })
+                .collect::<Vec<_>>()
+        };
+        let settlings = {
+            let registry = registry.lock().unwrap_or_else(|error| error.into_inner());
+            waiters
+                .iter()
+                .map(|(node_id, request_id, _)| {
+                    image_data::decode_settlement(&registry, document_id, *node_id, *request_id)
+                })
+                .collect::<Vec<_>>()
+        };
+        let mut settled = Vec::new();
+        for (index, (_, _, resolvers)) in waiters.iter().enumerate() {
+            match settlings[index] {
+                DecodeSettlement::Wait => continue,
+                DecodeSettlement::Resolve => {
+                    let undefined = ec.value_undefined();
+                    ec.call(&resolvers.resolve, &undefined, from_ref(&undefined))?;
+                }
+                DecodeSettlement::Reject => {
+                    reject_with_encoding_error(resolvers, ec)?;
+                }
+            }
+            settled.push(index);
+        }
+        if !settled.is_empty() {
+            let mut registered = self.pending_image_decodes.borrow_mut(ec);
+            for index in settled.into_iter().rev() {
+                registered.remove(index);
+            }
+        }
+        Ok(())
+    }
+
     pub(crate) fn set_graphics_sender(
         &self,
         sender: IpcSender<ipc_messages::graphics::GraphicsCommand>,
@@ -1574,4 +1728,23 @@ impl GlobalScope {
             .as_ref()
             .and_then(|state| state.consume_wasm_request(request_id, ec))
     }
+}
+
+/// Rejects one `decode()` promise with the "EncodingError" DOMException that
+/// step 2.2 and step 2.3 reject with.
+fn reject_with_encoding_error(
+    resolvers: &PromiseResolvers<Types>,
+    ec: &mut dyn ExecutionContext<Types>,
+) -> Completion<(), Types> {
+    let exception = create_interface_instance::<Types, DOMException>(
+        DOMException::new(
+            String::from("The source image cannot be decoded."),
+            String::from("EncodingError"),
+        ),
+        ec,
+    )?;
+    let reason = Types::value_from_object(exception);
+    let undefined = ec.value_undefined();
+    ec.call(&resolvers.reject, &undefined, &[reason])?;
+    Ok(())
 }

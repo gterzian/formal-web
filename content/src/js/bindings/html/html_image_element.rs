@@ -125,15 +125,6 @@ fn try_with_image_ref<R>(
     Err(ec.new_type_error("expected HTMLImageElement"))
 }
 
-fn image_element_for_node(
-    node_id: usize,
-    ec: &mut dyn ExecutionContext<crate::js::Types>,
-) -> Completion<ImageElement, crate::js::Types> {
-    let (registry, document_id) = image_registry(ec)?;
-    let registry = registry.lock().unwrap_or_else(|error| error.into_inner());
-    Ok(image_element(&registry, document_id, node_id))
-}
-
 fn image_element_for(
     this: &JsValue,
     ec: &mut dyn ExecutionContext<crate::js::Types>,
@@ -488,12 +479,10 @@ fn decode_method(
     let obj = crate::js::Types::value_as_object(this)
         .ok_or_else(|| ec.new_type_error("expected object"))?;
     // Clone the image out of the object registry so the domain method can
-    // use `ec` (it creates the promise, and on failure a DOMException).
+    // use `ec` (it creates the promise and queues its microtask).
     let image = ec
         .with_object_any(&obj)
         .and_then(|data| data.downcast_ref::<HTMLImageElement>().cloned())
         .ok_or_else(|| ec.new_type_error("expected HTMLImageElement"))?;
-    let node_id = image.html_element.element.node.node_id;
-    let element = image_element_for_node(node_id, ec)?;
-    image.decode(ec, &element)
+    image.decode(ec)
 }
