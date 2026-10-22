@@ -60,6 +60,14 @@ fails with a clear error).
   viewport changes propagate to the provider on window/tab/navigation
   events.
 
+The AppKit backend presents a sublayer's `contents` only for the layers a
+composition presents with a surface — a clean layer arrives as topology only
+(see `graphics/README.md`, "Surface delivery invariants").  A presentation path
+that creates a sublayer outside such a composition (the tab-switch
+re-presentation in `reconcile_sublayers`) must therefore supply the surface
+retained for that layer; setting `contents` without a change is what makes
+Quartz Debug flash a layer.
+
 ### Multi-window and multi-tab
 
 `WindowedApp` owns a `HashMap<WindowId, WindowState>`; a

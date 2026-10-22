@@ -7,7 +7,7 @@
 use super::image::StoredImageResult;
 use super::{
     FrameDelivery, FrameMetadata, GpuContext, MAX_SURFACE_DIMENSION, PollRequest, ReadbackChannels,
-    RenderError, SurfaceBuffers, SurfaceRenderer, SurfaceRingState, frame_metadata,
+    RenderError, SubmitOutcome, SurfaceBuffers, SurfaceRenderer, SurfaceRingState, frame_metadata,
 };
 use ipc_messages::content::{ImageIdentifier, WebviewId};
 use ipc_messages::graphics::{CompositingLayerId, GraphicsEvent, LayerTopology, SurfacePayload};
@@ -277,7 +277,7 @@ impl SurfaceRenderer for CpuRenderer {
         &mut self,
         composed: ComposedScene,
         sender: &ipc::IpcSender<GraphicsEvent>,
-    ) -> Result<Vec<CompositingLayerId>, RenderError> {
+    ) -> Result<SubmitOutcome, RenderError> {
         let ComposedScene {
             webview_id,
             layers,
@@ -484,7 +484,10 @@ impl SurfaceRenderer for CpuRenderer {
                 );
             }
         }
-        Ok(rendered)
+        Ok(SubmitOutcome {
+            delivered: rendered,
+            gpu_work: total > 0,
+        })
     }
 
     fn handle_render_done(

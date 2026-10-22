@@ -61,7 +61,23 @@ pub struct FrameDelivery {
     pub graphics_computed: bool,
 }
 
-/// The outcome of submitting a composed scene.
+/// The outcome of one composition: which layer surfaces reached the embedder
+/// and whether the GPU has work in flight for them.
+pub struct SubmitOutcome {
+    /// The layers this composition delivered a surface for — re-rendered, or
+    /// presented directly from a shared surface. The compositor clears these
+    /// layers' dirty flags; a layer the outcome omits keeps its dirty flag and
+    /// is presented again on the next composition, so a failed submission
+    /// never loses a surface.
+    pub delivered: Vec<CompositingLayerId>,
+    /// True when GPU work was submitted and the frame is delivered on
+    /// completion. False when nothing was rendered (every layer clean): the
+    /// renderer then sends a surface-less `PixelFrameReady` itself, so the
+    /// frame never reaches [`handle_render_done`](SurfaceRenderer::handle_render_done)
+    /// and the run loop traces `GraphicsComputed` for it directly.
+    pub gpu_work: bool,
+}
+
 #[derive(Debug)]
 pub enum RenderError {
     /// Buffer allocation or GPU failure; the scene was dropped.
@@ -416,18 +432,17 @@ pub trait SurfaceRenderer {
         Self: Sized;
 
     /// Submit `composed` for per-layer rendering. Each layer with a `render`
-    /// scene is rasterized into its own surface; clean layers (render `None`)
-    /// are skipped and keep their last surface. Returns the layer ids that
-    /// were actually re-rendered, so the caller can clear their dirty flags.
-    /// The GPU completion is delivered on `ReadbackChannels::render_done_tx`
-    /// as `Self::RenderData`. When nothing was re-rendered (every layer
-    /// clean), `sender` is used to emit a surface-less `PixelFrameReady` so
-    /// the UA still learns the composition completed.
+    /// scene is rasterized into its own surface, and each layer with a
+    /// `direct_surface` is delivered as that surface; clean layers (both
+    /// `None`) are skipped and keep their last surface. The GPU completion is
+    /// delivered on `ReadbackChannels::render_done_tx` as `Self::RenderData`.
+    /// When nothing was rendered, `sender` is used to emit a surface-less
+    /// `PixelFrameReady` so the UA still learns the composition completed.
     fn submit_layers(
         &mut self,
         composed: ComposedScene,
         sender: &ipc::IpcSender<GraphicsEvent>,
-    ) -> Result<Vec<CompositingLayerId>, RenderError>;
+    ) -> Result<SubmitOutcome, RenderError>;
 
     /// The GPU completed a frame: deliver
     /// the frame to the embedder. The run loop emits the `GraphicsComputed`

@@ -66,6 +66,25 @@ The invariants that keep the pipeline correct:
   produced at submit time and consumed by its `handle_render_done`, which
   sends `PixelFrameReady`; completed frames arrive on a single channel whose
   message type is that `RenderData`.
+- **A layer carries a surface only when that composition presents it**: it
+  became dirty (its content changed), or it re-enters the composition after
+  being absent from the previous one. Every layer kind follows this — the
+  document layer, cross-origin iframe layers, video, offscreen canvas, and
+  `<img>` layers, whose macOS direct surface is fixed at decode time and is
+  therefore delivered exactly once per presentation. A clean layer is
+  reported as topology only (`render` and `direct_surface` both `None`) and
+  the embedder keeps the contents it already has.
+
+  This is not an optimisation to skip: the embedder presents a surface by
+  setting the layer's CoreAnimation `contents`, which the window server
+  treats as a layer update even when the surface is the one already
+  presented (Quartz Debug then flashes the layer's bounds with no pixel
+  change). Re-sending an unchanged surface is what a flash-per-input-event
+  looks like; every new layer kind must opt into the dirty/absent rule
+  instead. The rule also keeps a layer that was dropped and re-presented
+  (a child navigable scrolled out of view and back) from coming back blank:
+  the compositor records the layers the last delivered composition presented
+  and treats a layer missing from that set as needing presentation.
 - Per-frame copies on the CPU path today: GPU → CPU readback, kernel copy in
   the IPC transport, CPU → GPU upload, and Vello's internal atlas copy.
 
@@ -148,7 +167,10 @@ resulting presentation entry. Two backends exist:
   by the graphics process. The compositor emits the image layer as a direct
   surface; the embedder looks it up by IOSurfaceID and sets it as the contents
   of that image layer's CoreAnimation sublayer. The surface is padded to the
-  Metal width constraint and the embedder crops it with `contentsRect`.
+  Metal width constraint and the embedder crops it with `contentsRect`. The
+  surface is fixed by the decode, so it is delivered for the composition that
+  presents the layer and withheld from the cycles that follow, exactly like a
+  re-rendered layer (see "Surface delivery invariants").
 
 The content process sends each `ImageIdentifier` once. Every registration is
 answered with `GraphicsEvent::ImageDecoded` (decoded dimensions or the
