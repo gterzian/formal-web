@@ -138,15 +138,30 @@ texture → Vello `override_image`) lives in its own module, `renderer/video.rs`
 behind the renderer trait's macOS-only `store_video_frame`.
 
 `RegisterImage` carries the encoded image bytes (PNG/JPEG/...), not raw
-pixels: `Compositor::store_image` decodes them into the shared
-`ImageData` registry, and the image's layer draws that decoded texture.  The
-content process sends each `ImageIdentifier` once.  Every registration is
-answered with `GraphicsEvent::ImageDecoded` (the decoded dimensions or the
-decoder's error), which the user agent forwards to the content process: an
-image's `decode()` promise waits for this report, so a decode failure must
-keep rejecting it even though the layer stays empty.  The registry has no
-eviction step, so the decoded pixels of every image the webview ever
-registered stay resident for the webview's lifetime.
+pixels. The renderer's `ImageBackend` decodes them; the compositor stores the
+resulting presentation entry. Two backends exist:
+
+- **CPU / cross-platform** (`renderer/image/cpu.rs`): decode to RGBA8
+  `ImageData`; the image layer is rendered into its own layer surface like
+  other scene content.
+- **macOS** (`renderer/image/macos.rs`): decode into a global IOSurface owned
+  by the graphics process. The compositor emits the image layer as a direct
+  surface; the embedder looks it up by IOSurfaceID and sets it as the contents
+  of that image layer's CoreAnimation sublayer. The surface is padded to the
+  Metal width constraint and the embedder crops it with `contentsRect`.
+
+The content process sends each `ImageIdentifier` once. Every registration is
+answered with `GraphicsEvent::ImageDecoded` (decoded dimensions or the
+decoder's error), which the UA forwards to content: `decode()` waits for this
+report, so a decode failure must keep rejecting it even though the layer stays
+empty. `GraphicsCommand::UnregisterImages` releases a document's decoded
+data/IOSurfaces when its `DestroyDocument` arrives; that is the only eviction
+step, so images otherwise stay resident for the webview's lifetime.
+
+Limitations: the macOS path still performs the decode-to-IOSurface copy (a
+native ImageIO decoder writing directly into the surface is the next step);
+the CPU path renders each image into a layer surface; both use the `image`
+crate decoder today.
 
 ## Video frames → shared texture (macOS)
 

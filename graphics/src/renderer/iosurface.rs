@@ -3,12 +3,13 @@
 //! embedder imports the same surface and blits it, with no readback and no
 //! IPC pixel bytes.
 
+use super::image::StoredImageResult;
 use super::{
     FrameDelivery, FrameMetadata, GpuContext, MAX_SURFACE_DIMENSION, PollRequest, ReadbackChannels,
     RenderError, SurfaceBuffers, SurfaceRenderer, SurfaceRingState, frame_metadata,
 };
 use crate::iosurface::{IosurfaceTexture, create_shared_texture};
-use ipc_messages::content::WebviewId;
+use ipc_messages::content::{ImageIdentifier, WebviewId};
 use ipc_messages::graphics::{CompositingLayerId, GraphicsEvent, LayerTopology, SurfacePayload};
 use ipc_messages::media::VideoPaintId;
 use log::{debug, error, info};
@@ -85,6 +86,18 @@ impl SurfaceRenderer for IosurfaceRenderer {
         })
     }
 
+    fn store_image(
+        &mut self,
+        id: &ImageIdentifier,
+        encoded: &[u8],
+    ) -> Result<Option<StoredImageResult>, String> {
+        self.gpu.store_image(id, encoded)
+    }
+
+    fn release_images(&mut self, image_ids: &[ImageIdentifier]) {
+        self.gpu.release_images(image_ids);
+    }
+
     fn submit_layers(
         &mut self,
         composed: ComposedScene,
@@ -120,6 +133,13 @@ impl SurfaceRenderer for IosurfaceRenderer {
         let mut topology = Vec::with_capacity(layers.len());
 
         for layer in layers {
+            if let Some(direct_surface) = layer.direct_surface.clone() {
+                // A macOS image layer presented directly from its own
+                // IOSurface: no layer surface is rendered; the embedder maps
+                // the image surface to this layer's CA sublayer.
+                topology.push(layer.into_layer_topology_with_surface(direct_surface));
+                continue;
+            }
             let Some(ref scene) = layer.render else {
                 // Clean layer: keep its last surface, still report topology.
                 topology.push(layer.into_layer_topology());

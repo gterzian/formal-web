@@ -674,8 +674,11 @@ fn handle_command<B: MediaBackend + 'static, R: SurfaceRenderer>(
             let slot = webviews
                 .entry(webview_id)
                 .or_insert_with(|| WebviewState::new(channels.clone()));
-            let result = match slot.compositor.store_image(image_id.clone(), bytes) {
-                Ok(Some((width, height))) => {
+            let stored = slot.renderer.store_image(&image_id, bytes);
+            let result = match stored {
+                Ok(Some((stored, (width, height)))) => {
+                    slot.compositor
+                        .insert_image(image_id.clone(), stored, (width, height));
                     debug!(
                         "[render-pipe] Graphics register image webview={:?} size={}x{} encoded_bytes={}",
                         webview_id,
@@ -700,6 +703,15 @@ fn handle_command<B: MediaBackend + 'static, R: SurfaceRenderer>(
                     "[graphics] failed to report image decode result for {:?}: {send_error}",
                     webview_id
                 );
+            }
+        }
+        GraphicsCommand::UnregisterImages {
+            webview_id,
+            image_ids,
+        } => {
+            if let Some(slot) = webviews.get_mut(&webview_id) {
+                slot.compositor.remove_images(&image_ids);
+                slot.renderer.release_images(&image_ids);
             }
         }
         GraphicsCommand::RemoveVideoFrame {

@@ -89,6 +89,14 @@ pub enum GraphicsCommand {
         image_id: ImageIdentifier,
         data_shmem_key: usize,
     },
+    /// Drop the decoded state and shared surface of `<img>` resources whose
+    /// document was unloaded.  The content process names the identifiers it
+    /// registered for that document; the graphics process removes the
+    /// compositor entry and the backend's decoded data or IOSurface.
+    UnregisterImages {
+        webview_id: WebviewId,
+        image_ids: Vec<ImageIdentifier>,
+    },
     /// Remove a video frame slot (pipeline destroyed).
     RemoveVideoFrame {
         webview_id: WebviewId,

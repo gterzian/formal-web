@@ -2,7 +2,8 @@
 
 `content/src/html` owns HTML parser integration, document lifecycle work, navigation helpers, and HTML global-object [platform objects](https://webidl.spec.whatwg.org/#dfn-platform-object) such as `Window` and `GlobalScope`.
 
-- Keep DOM-tree entry points under `content/src/html/html_dom_tree.rs`, and route per-element hooks from there into element modules.
+- `dom_trees.rs` implements the DOM Standard's mutation hooks and the HTML Standard's generic hooks from [`#dom-trees`](https://html.spec.whatwg.org/#dom-trees).  The generic hooks dispatch to the per-element hooks an element's local name defines (`HtmlElementHooks`), implemented in the element's module; add a new element to `html_element_hooks` and implement the trait there, never branch on the local name inside a general hook.
+- `html_dom_tree.rs` holds the document-level iframe post-connection and removing entry points run at document load completion and document destruction; the iframe's HTML element steps do not run from the `MutationHooks` hooks.
 - Keep iframe bindings and iframe processing algorithms together in `content/src/html/html_iframe_element.rs` as free functions over content-process state (`ContentProcess`).
   `contentDocument` is unimplemented: the getter returns null even for a
   same-origin child navigable whose document lives in this content process
@@ -270,13 +271,13 @@ protected/permissible/suspendable monitoring is not.
 
 `image_data.rs` owns the `<img>` processing model: the current and pending
 image requests, the per-document list of available images, and the "update
-the image data" algorithm with its `// Step N:` comments.  The DOM's
-mutation hooks (`document_hooks.rs`) call it for the element's relevant
-mutations; do not run the algorithm from the IDL setters or from the render
-path.  Work that needs the document (setting blitz's intrinsic size, firing
-the queued `load`/`error` element task) is pushed onto
-`ImageRegistry::pending_tasks` and drained by `ContentProcess` after the
-task or command that produced it.
+the image data" algorithm with its `// Step N:` comments.  It also implements
+the `<img>` HTML element hooks (insertion, removal, and relevant attribute
+mutations); `dom_trees.rs` dispatches to them.  Do not run the algorithm from
+the IDL setters or from the render path.  Work that needs the document
+(setting blitz's intrinsic size, firing the queued `load`/`error` element
+task) is pushed onto `ImageRegistry::pending_tasks` and drained by
+`ContentProcess` after the task or command that produced it.
 
 An image element's availability is tracked in the registry, not in blitz's
 `SpecialElementData::Image`: content installs a zero-pixel `RasterImageData`
@@ -285,13 +286,29 @@ and owns the pixels.  `naturalWidth`, `naturalHeight`, `complete`,
 `currentSrc`, and `decode` therefore read the registry (through the realm's
 `GlobalScope`); reading `raster_image_data` is not a substitute.
 
-The step 8 microtask starts the queued fetch through
+The microtask queued at step 8 performs the rest of "update the image data"
+(steps 9-26), including starting the fetch, through
 `ContentProcess::drain_image_microtasks` (after each command, once the parse
-has installed its documents, and at every microtask checkpoint): the DOM
-hooks run inside blitz with no execution context, so they cannot enqueue an
-engine job themselves.  The element tasks and the fetch start are drained
-separately on purpose — starting the fetch before the document's deferred
-script fetches keeps an image's `load` event from queueing behind them.
+has installed its documents, and at every microtask checkpoint): the HTML
+element hooks run inside blitz with no execution context, so they cannot
+enqueue an engine job themselves.  The element tasks (presentation,
+`load`/`error`, and the environment `finishUpdate`) are drained separately
+through `drain_image_tasks`; starting the fetch before the document's
+deferred script fetches keeps an image's `load` event from queueing behind
+them.  The fetch's response continues at step 27 (or step 17.5 of "reacting
+to environment changes") in `process_image_fetch_response`.
+
+The graphics side of `<img>` is selected by the graphics image backend.  Content
+sniffs the encoded header and sends the encoded bytes with
+`GraphicsCommand::RegisterImage`; the graphics process decodes them.  On macOS
+the image is decoded into its own global IOSurface and the compositor emits the
+image layer as a direct surface, which the embedder maps to that layer's
+CoreAnimation sublayer.  The CPU/cross-platform backend decodes to `ImageData`
+and Vello renders the image into the layer surface.  `RegisterImage` is sent
+once per `ImageIdentifier`; `DestroyDocument` sends `UnregisterImages` with the
+ids tracked in `registered_images_by_document` plus the registry's ids, so the
+graphics compositor and image backend release the decoded data and IOSurfaces.
+
 `decode()` promises live on the realm's `GlobalScope` (a traced `GcCell`, so
 the resolving functions survive to settlement) and are settled by
 `ContentProcess::settle_pending_image_decodes` from the request's state plus
@@ -300,11 +317,34 @@ holding a `GcCell` borrow.
 
 Known gaps in the processing model:
 
+- `update-src-complete.html` is disabled.  It asserts `img.complete` is false
+  synchronously after setting `src`, but steps 10-18 (including installing
+  the new request as the pending request) run in the step 8 microtask, so
+  `complete` (true while the current request is completely available and the
+  pending request is null) stays true until the microtask runs.  The
+  synchronous false result is the on-demand behavior in "when to obtain
+  images" (the current request's state returns to unavailable), not the
+  immediate-obtaining behavior implemented here.
+
 - `srcset`/`sizes` selection picks the first `srcset` candidate and ignores
   the descriptors and `sizes`, so the current pixel density is always 1.0 and
   the natural dimensions are the decoded pixel dimensions; a parent
   `<picture>` element and its `<source>` siblings are not tracked, so
-  `picture`/`source` mutations never re-run the algorithm.
+  `picture`/`source` mutations never re-run the algorithm.  "Reacting to
+  environment changes" runs on every viewport change but uses the same
+  selection, so a `sizes`-driven choice never changes the image.  The
+  insertion hook receives no parent, so the `img` insertion steps cannot
+  check for a `<picture>` parent and update the image data on every
+  insertion; the HTML element moving steps are not observed because blitz
+  exposes no moving hook.
+- The macOS image path's remaining copy is the decode into the IOSurface; from
+  then on the image is delivered to the embedder zero-copy.  The CPU path
+  renders each image into a layer surface.  Both backends currently use the
+  `image` crate decoder; a native ImageIO decoder writing directly into the
+  IOSurface is the next step.
+- Decoded images are retained for the webview lifetime until their document is
+  destroyed; there is no per-image eviction for images still referenced by a
+  live document.
 - Lazy loading (`loading=lazy`), animation restart, EXIF density
   correction, CORS enforcement, and progressive/multipart image decoding
   are not modeled.

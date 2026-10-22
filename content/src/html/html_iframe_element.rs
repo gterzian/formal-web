@@ -18,7 +18,7 @@ use url::Url;
 use crate::{
     ContentDocument, ContentProcess, EMPTY_HTML_DOCUMENT, NavigableContainerState,
     dom::event::EventTargetAccess, dom::fire_event, html::HTMLElement,
-    html::create_a_new_browsing_context_and_document,
+    html::create_a_new_browsing_context_and_document, html::dom_trees::DocumentHost,
     html::environment_settings_object::RealmWiring, html::navigate, js::Types, webidl::Callback,
 };
 
@@ -254,7 +254,7 @@ fn attach_iframe_subdocument_from_html(
         origin,
         needs_paint.clone(),
         false,
-        crate::html::document_hooks::DocumentHost::Subdocument {
+        DocumentHost::Subdocument {
             parent_document_id,
             id: subdocument_id,
         },

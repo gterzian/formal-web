@@ -133,6 +133,20 @@ pub(crate) enum Task {
         document_id: DocumentId,
         node_id: usize,
         event: ImageEvent,
+        /// The current URL the task sets before firing, when the algorithm's
+        /// queued steps include it (steps 11.2.1 and 13.4.1).
+        current_url: Option<String>,
+    },
+
+    /// The element task queued by "reacting to environment changes" to run
+    /// `finishUpdate`.
+    /// <https://html.spec.whatwg.org/#reacting-to-environment-changes>
+    RunImageEnvironmentUpdate {
+        document_id: DocumentId,
+        node_id: usize,
+        instance_id: u64,
+        selected_source: String,
+        selected_pixel_density: f64,
     },
 
     /// <https://html.spec.whatwg.org/#steps-to-fire-beforeunload>

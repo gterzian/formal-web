@@ -142,6 +142,16 @@ impl ImageTransportSender {
             ipc::IpcSharedRegion::from_bytes(encoded_bytes),
         ))
     }
+
+    /// Forget images whose document unloaded.  A later document that loads
+    /// the same resource gets a fresh `ImageIdentifier` (the blob id is
+    /// allocated per fetched request), so these identifiers will not be
+    /// registered again.
+    pub fn forget_images(&mut self, image_ids: &[ImageIdentifier]) {
+        for image_id in image_ids {
+            self.sent_images.remove(image_id);
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize)]

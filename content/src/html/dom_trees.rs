@@ -1,9 +1,12 @@
-//! The content process's implementation of the `blitz-dom` document hooks.
+//! The content process's implementation of `blitz-dom`'s DOM mutation hooks
+//! and resource hooks.
 //!
-//! The hooks report subresource requests and DOM tree mutations while
-//! blitz's DOM is mutably borrowed.  Loading a subresource is asynchronous
-//! and starts here; DOM algorithms that need the document run on the event
-//! loop after the hook returns.
+//! The DOM Standard's hooks enter the HTML Standard's own hooks in
+//! `#dom-trees`, which dispatch to the per-element hooks an element's local
+//! name defines.  The hooks report subresource requests and DOM tree
+//! mutations while blitz's DOM is mutably borrowed.  Loading a subresource is
+//! asynchronous and starts here; DOM algorithms that need the document run on
+//! the event loop after the hook returns.
 
 use std::collections::HashSet;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -11,9 +14,11 @@ use std::sync::{Arc, Mutex};
 
 use blitz_dom::resource::{Resource, ResourceLoadResponse};
 use blitz_dom::{
-    BaseDocument, DocumentEvent, DocumentHooks, ElementData, FontFaceOverrides, ResourceRequest,
+    BaseDocument, DocumentEvent, ElementData, FontFaceOverrides, MutationHooks, ResourceHooks,
+    ResourceRequest,
 };
 use blitz_traits::net::Bytes;
+use html5ever::ns;
 use ipc_messages::content::{
     Command, DocumentFetchId, DocumentId, Event as ContentEvent, EventLoopId, NavigableId,
     ResourcePartitionKey,
@@ -26,8 +31,8 @@ use uuid::Uuid;
 
 use crate::fetch::{FetchContext, InternalFetchRequest, fetch};
 use crate::html::image_data::{
-    ImageAttributes, ImageFetchSink, ImageRegistry, cors_settings_mode, referrer_policy_state,
-    update_the_image_data,
+    IMAGE_ELEMENT_HOOKS, ImageAttributes, ImageFetchSink, ImageRegistry,
+    reacting_to_environment_changes as run_reacting_to_environment_changes, update_the_image_data,
 };
 use crate::{LocalContentStateRef, PendingNetworkHandler};
 
@@ -83,7 +88,7 @@ pub(crate) enum AssetRequest {
 }
 
 /// The service providers of one content document, handed to `blitz-dom` as
-/// its [`DocumentHooks`].
+/// its [`MutationHooks`] and [`ResourceHooks`].
 pub(crate) struct DocumentProviders {
     host: DocumentHost,
     navigable_id: NavigableId,
@@ -179,7 +184,58 @@ impl ImageFetchSink for DocumentProviders {
     }
 }
 
-impl DocumentHooks for DocumentProviders {
+/// <https://html.spec.whatwg.org/#dom-trees>
+pub(crate) trait HtmlElementHooks {
+    /// <https://html.spec.whatwg.org/#html-element-insertion-steps>
+    fn insertion_steps(
+        &self,
+        document: &DocumentProviders,
+        node_id: usize,
+        inserted_node: &ElementData,
+    );
+
+    /// <https://html.spec.whatwg.org/#html-element-post-connection-steps>
+    fn post_connection_steps(&self, _: &DocumentProviders, _: usize, _: &ElementData) {}
+
+    /// <https://html.spec.whatwg.org/#html-element-removing-steps>
+    fn removing_steps(
+        &self,
+        _: &DocumentProviders,
+        _: usize,
+        _: &ElementData,
+        _: bool,
+        _: Option<&ElementData>,
+    ) {
+    }
+
+    /// <https://dom.spec.whatwg.org/#concept-element-attributes-change-ext>
+    #[allow(clippy::too_many_arguments)]
+    fn attribute_change_steps(
+        &self,
+        _: &DocumentProviders,
+        _: usize,
+        _: &ElementData,
+        _: &str,
+        _: Option<&str>,
+        _: Option<&str>,
+        _: &str,
+    ) {
+    }
+}
+
+/// The per-element hooks the element's local name defines, or `None` when it
+/// defines none.
+fn html_element_hooks(element: &ElementData) -> Option<&'static dyn HtmlElementHooks> {
+    if element.name.ns != ns!(html) {
+        return None;
+    }
+    match element.name.local.as_ref() {
+        "img" => Some(IMAGE_ELEMENT_HOOKS),
+        _ => None,
+    }
+}
+
+impl ResourceHooks for DocumentProviders {
     fn resource_request(&self, request: ResourceRequest) {
         let (url, asset) = match request {
             ResourceRequest::Stylesheet {
@@ -230,8 +286,10 @@ impl DocumentHooks for DocumentProviders {
             },
         );
     }
+}
 
-    /// <https://html.spec.whatwg.org/#relevant-mutations>
+impl MutationHooks for DocumentProviders {
+    /// <https://dom.spec.whatwg.org/#concept-element-attributes-change-ext>
     fn attribute_change_steps(
         &self,
         node_id: usize,
@@ -241,40 +299,47 @@ impl DocumentHooks for DocumentProviders {
         new_value: Option<&str>,
         namespace: &str,
     ) {
-        if element.name.local.as_ref() != "img" || !namespace.is_empty() {
-            return;
+        if let Some(hooks) = html_element_hooks(element) {
+            hooks.attribute_change_steps(
+                self, node_id, element, local_name, old_value, new_value, namespace,
+            );
         }
-        // <https://html.spec.whatwg.org/#relevant-mutations>
-        let relevant = match local_name {
-            "src" | "srcset" | "sizes" => true,
-            "crossorigin" => cors_settings_mode(old_value) != cors_settings_mode(new_value),
-            "referrerpolicy" => {
-                referrer_policy_state(old_value) != referrer_policy_state(new_value)
-            }
-            _ => false,
-        };
-        if !relevant {
-            return;
-        }
-        // <https://html.spec.whatwg.org/#reacting-to-dom-mutations>: setting
-        // `src` to the same value sets the restart animation flag.
-        // Note: Image animation is not implemented, so the flag has no
-        // effect.
-        self.run_image_update(node_id, element);
     }
 
-    /// <https://html.spec.whatwg.org/#relevant-mutations>
+    /// <https://html.spec.whatwg.org/#dom-trees:concept-node-insert-ext>
     fn insertion_steps(&self, node_id: usize, element: Option<&ElementData>) {
-        let Some(element) = element else {
-            return;
-        };
-        if element.name.local.as_ref() != "img" {
-            return;
+        // Step 1: "If insertedNode is an element whose namespace is the HTML namespace, and this
+        // standard defines HTML element insertion steps for insertedNode's local name, then
+        // run the corresponding HTML element insertion steps given insertedNode."
+        if let Some(inserted_node) = element
+            && let Some(hooks) = html_element_hooks(inserted_node)
+        {
+            hooks.insertion_steps(self, node_id, inserted_node);
         }
-        self.run_image_update(node_id, element);
+        // Step 2: "If insertedNode is a form-associated element or the ancestor of a
+        // form-associated element:"
+        // Step 2.1: "If the form-associated element's parser inserted flag is set, then return."
+        // Step 2.2: "Reset the form owner of the form-associated element."
+        // Note: Form-associated elements are not implemented.
+        // Step 3: "If insertedNode is an Element that is not on the stack of open elements of an
+        // HTML parser, then process internal resource links given insertedNode's node document."
+        // Note: The stack of open elements is parser state that is not available here, and
+        // internal resource links are not implemented.
     }
 
-    /// <https://html.spec.whatwg.org/#relevant-mutations>
+    /// <https://html.spec.whatwg.org/#dom-trees:concept-node-post-connection-ext>
+    fn post_connection_steps(&self, node_id: usize, element: Option<&ElementData>) {
+        // Step 1: "If insertedNode is an element whose namespace is the HTML namespace, and this
+        // standard defines HTML element post-connection steps for insertedNode's local name, then
+        // run the corresponding HTML element post-connection steps given insertedNode."
+        if let Some(connected_node) = element
+            && let Some(hooks) = html_element_hooks(connected_node)
+        {
+            hooks.post_connection_steps(self, node_id, connected_node);
+        }
+    }
+
+    /// <https://html.spec.whatwg.org/#dom-trees:concept-node-remove-ext>
     fn removing_steps(
         &self,
         node_id: usize,
@@ -282,28 +347,40 @@ impl DocumentHooks for DocumentProviders {
         is_subtree_root: bool,
         old_ancestor: Option<&ElementData>,
     ) {
-        let Some(element) = element else {
-            return;
-        };
-        if element.name.local.as_ref() != "img" {
-            return;
+        // Step 1: "Let document be removedNode's node document."
+        // Step 2: "If document's focused area is removedNode, then set document's focused area to
+        // document's viewport, and set document's relevant global object's navigation API's focus
+        // changed during ongoing navigation to false."
+        // Note: Focus tracking is not implemented, and the document is not reachable from this
+        // hook while blitz holds it mutably borrowed.
+        // Step 3: "If removedNode is an element whose namespace is the HTML namespace, and this
+        // standard defines HTML element removing steps for removedNode's local name, then run the
+        // corresponding HTML element removing steps given removedNode, isSubtreeRoot, and
+        // oldAncestor."
+        if let Some(removed_node) = element
+            && let Some(hooks) = html_element_hooks(removed_node)
+        {
+            hooks.removing_steps(self, node_id, removed_node, is_subtree_root, old_ancestor);
         }
-        // Note: The relevant-mutations list counts every `img` removal, but
-        // only a removal from a `<picture>` parent is selected here: it is the
-        // case where the selected source could change (picture selection
-        // itself is not tracked), while any other removal would re-run the
-        // algorithm only to fire a redundant `load` for an available image.
-        let removed_from_picture =
-            old_ancestor.is_some_and(|ancestor| ancestor.name.local.as_ref() == "picture");
-        if !is_subtree_root || !removed_from_picture {
-            return;
-        }
-        self.run_image_update(node_id, element);
+        // Step 4: "If removedNode is a form-associated element with a non-null form owner and
+        // removedNode and its form owner are no longer in the same tree, then reset the form
+        // owner of removedNode."
+        // Step 5: "If removedNode's popover attribute is not in the No Popover state, then run
+        // the hide popover algorithm given removedNode, false, false, false, and null."
+        // Note: Form-associated elements and popovers are not implemented.
     }
 }
 
 impl DocumentProviders {
-    fn run_image_update(&self, node_id: usize, element: &ElementData) {
+    /// <https://html.spec.whatwg.org/#when-to-obtain-images>
+    pub(crate) fn run_image_update(&self, node_id: usize, element: &ElementData) {
+        // "When obtaining images immediately, the user agent must synchronously
+        // update the image data of the img element, with the restart animation
+        // flag set if so stated, whenever that element is created or has
+        // experienced relevant mutations."
+        // <https://html.spec.whatwg.org/#when-to-obtain-images:relevant-mutations>
+        // The restart animation flag is never set (image animation is not
+        // implemented).
         // Same-origin iframe subdocuments keep their images in the parent
         // document's scene (`embedded_images` is false for them), so their
         // images load through the document's layout-time image loader rather
@@ -326,6 +403,31 @@ impl DocumentProviders {
             &self.partition.origin,
         );
         self.needs_paint.store(true, Ordering::Relaxed);
+    }
+
+    /// <https://html.spec.whatwg.org/#reacting-to-environment-changes>
+    pub(crate) fn reacting_to_environment_changes(
+        &self,
+        node_id: usize,
+        attributes: &ImageAttributes,
+    ) {
+        if !matches!(self.host, DocumentHost::Main(_)) {
+            return;
+        }
+        let mut registry = self.image_registry.lock().unwrap_or_else(|error| {
+            error!("image registry mutex poisoned: {error}");
+            error.into_inner()
+        });
+        run_reacting_to_environment_changes(
+            &mut registry,
+            self,
+            self.host.parent_document_id(),
+            node_id,
+            attributes,
+            self.base_url.as_ref(),
+            &self.partition,
+            &self.partition.origin,
+        );
     }
 }
 

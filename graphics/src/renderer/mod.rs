@@ -14,7 +14,8 @@
 //! owns its surface buffers ([`SurfaceBuffers`]) and its delivery path.
 
 use anyrender::PaintScene;
-use ipc_messages::content::{FrameId, WebviewId};
+use image::ImageBackend;
+use ipc_messages::content::{FrameId, ImageIdentifier, WebviewId};
 use ipc_messages::graphics::{ChildViewport, CompositingLayerId, FrameHitInfo, GraphicsEvent};
 use ipc_messages::media::VideoPaintId;
 use kurbo::Affine;
@@ -130,6 +131,7 @@ pub(crate) struct GpuContext {
     pub(crate) device_handle: wgpu_context::DeviceHandle,
     vello_renderer: VelloRenderer,
     vello_scene: VelloScene,
+    images: image::Backend,
     pub(crate) generation: u64,
     #[cfg(target_os = "macos")]
     video: video::VideoTextures,
@@ -157,10 +159,34 @@ impl GpuContext {
             device_handle,
             vello_renderer,
             vello_scene: VelloScene::new(),
+            images: image::Backend::new(),
             generation: 0,
             #[cfg(target_os = "macos")]
             video: video::VideoTextures::new(),
         })
+    }
+
+    /// Decode one `<img>` resource into the backend's image storage. Returns
+    /// the stored image (rendered pixels or a direct IOSurface) and the
+    /// decoded dimensions; `None` means the image was already stored.
+    pub(crate) fn store_image(
+        &mut self,
+        id: &ImageIdentifier,
+        encoded: &[u8],
+    ) -> Result<Option<image::StoredImageResult>, String> {
+        self.images.store_image(
+            &self.device_handle.device,
+            &self.device_handle.queue,
+            &mut self.vello_renderer,
+            id,
+            encoded,
+        )
+    }
+
+    /// Drop the decoded image state and shared surfaces for images whose
+    /// document was unloaded.
+    pub(crate) fn release_images(&mut self, image_ids: &[ImageIdentifier]) {
+        self.images.release_images(image_ids);
     }
 
     /// The raw Metal device backing this renderer (macOS), needed to create
@@ -417,6 +443,19 @@ pub trait SurfaceRenderer {
     /// webview's renderer).
     fn render_done_webview_id(data: &Self::RenderData) -> WebviewId;
 
+    /// Decode one `<img>` resource into the backend's image storage. Returns
+    /// the stored image and the decoded dimensions; `None` means the image
+    /// was already stored.
+    fn store_image(
+        &mut self,
+        id: &ImageIdentifier,
+        encoded: &[u8],
+    ) -> Result<Option<image::StoredImageResult>, String>;
+
+    /// Drop the decoded image state and any shared surfaces for the given
+    /// image identifiers (their document was unloaded).
+    fn release_images(&mut self, image_ids: &[ImageIdentifier]);
+
     /// Store a video frame for `paint_id` without touching the GPU: the
     /// media callback keeps the latest decoded pixel buffer plus its
     /// metadata here, and the compose-time import (blit) happens in
@@ -441,6 +480,8 @@ pub trait SurfaceRenderer {
 
 #[cfg(target_os = "macos")]
 mod video;
+
+pub(crate) mod image;
 
 /// The CPU readback backend: renders into an intermediate texture and ships
 /// pixels through the webview's shared-memory ring. The backend off macOS

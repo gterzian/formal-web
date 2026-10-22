@@ -12,6 +12,7 @@ use ipc_messages::content::{
 use ipc_messages::graphics::{CompositingLayerId, FrameHitInfo, LayerTopology, SurfacePayload};
 
 use crate::ComposedScene;
+use crate::renderer::image::StoredImage;
 use ipc_messages::media::VideoPaintId;
 use kurbo::{Affine, Rect, Shape};
 use log::{error, info, trace};
@@ -81,6 +82,11 @@ pub struct LayerUpdate {
     pub width: u32,
     pub height: u32,
     pub render: Option<RenderScene>,
+    /// Set when the layer is presented directly from a shared surface (a
+    /// macOS `<img>` IOSurface) instead of being rendered into a layer
+    /// surface. The surface is forwarded to the embedder, which maps it to
+    /// the layer's CoreAnimation sublayer.
+    pub direct_surface: Option<SurfacePayload>,
 }
 
 impl LayerUpdate {
@@ -202,6 +208,15 @@ struct ImageLayerState {
     dirty: bool,
 }
 
+/// One decoded image registered with the compositor: the presentation form
+/// chosen by the image backend plus its logical dimensions.
+#[derive(Clone)]
+struct StoredImageEntry {
+    stored: StoredImage,
+    width: u32,
+    height: u32,
+}
+
 /// The per-webview compositor: receives PaintFrames and VideoFrames,
 /// composes them into a single final scene, and publishes the result plus
 /// hit-testing info back to the user agent. Owns the webview's font
@@ -218,9 +233,9 @@ pub struct Compositor {
     video_frames: HashMap<VideoPaintId, CompositorVideoFrame>,
     /// Latest decoded scene per offscreen canvas id.
     canvas_frames: HashMap<CanvasId, CompositorCanvasFrame>,
-    /// Decoded pixels per `ImageIdentifier`, shared by every `<img>` layer
-    /// that references the same image. Populated by `RegisterImage`.
-    image_registry: HashMap<ImageIdentifier, ImageData>,
+    /// Decoded image state per `ImageIdentifier`, shared by every `<img>`
+    /// layer that references the same image. Populated by `RegisterImage`.
+    image_registry: HashMap<ImageIdentifier, StoredImageEntry>,
     /// Per-instance `<img>` layer state: which shared image it draws and
     /// whether its one-node scene still needs rasterizing.
     image_layers: HashMap<ImagePaintId, ImageLayerState>,
@@ -314,40 +329,43 @@ impl Compositor {
         self.canvas_frames.remove(&canvas_id);
     }
 
-    /// Decode an `<img>` resource into the shared image registry. Returns
-    /// `Ok(None)` when the image is already registered (the same
-    /// identifier), so the caller can skip redundant work, and the decoded
-    /// dimensions when the image was newly registered.
-    pub fn store_image(
+    /// Register an image the renderer's image backend already decoded. The
+    /// backend decides whether the layer draws rendered pixels or is
+    /// presented directly from a shared IOSurface.
+    pub fn insert_image(
         &mut self,
         id: ImageIdentifier,
-        encoded_bytes: &[u8],
-    ) -> Result<Option<(u32, u32)>, String> {
+        stored: StoredImage,
+        dimensions: (u32, u32),
+    ) {
         if self.image_registry.contains_key(&id) {
-            return Ok(None);
+            return;
         }
-        let decoded = image::load_from_memory(encoded_bytes)
-            .map_err(|error| format!("failed to decode image: {error}"))?
-            .into_rgba8();
-        let width = decoded.width();
-        let height = decoded.height();
         self.image_registry.insert(
             id,
-            ImageData {
-                data: peniko::Blob::from(decoded.into_raw()),
-                format: ImageFormat::Rgba8,
-                alpha_type: ImageAlphaType::Alpha,
-                width,
-                height,
+            StoredImageEntry {
+                stored,
+                width: dimensions.0,
+                height: dimensions.1,
             },
         );
-        Ok(Some((width, height)))
     }
 
-    /// Drop every image layer (and its surface) on navigation: the outgoing
-    /// document's `<img>` elements are gone. Registered image bytes are kept
-    /// so a later document in the same partition reusing the same resource
-    /// does not re-upload.
+    /// Drop the decoded image entries and their per-layer state.  The
+    /// renderer's image backend drops the decoded pixels/shared surfaces; a
+    /// later document that loads the same resource registers a fresh
+    /// `ImageIdentifier`.
+    pub fn remove_images(&mut self, image_ids: &[ImageIdentifier]) {
+        let image_ids: HashSet<ImageIdentifier> = image_ids.iter().cloned().collect();
+        self.image_registry
+            .retain(|image_id, _| !image_ids.contains(image_id));
+        self.image_layers
+            .retain(|_, state| !image_ids.contains(&state.image_id));
+    }
+
+    /// Drop every image layer on navigation: the outgoing document's `<img>`
+    /// elements are gone. The document's registered images are released by
+    /// `remove_images` when its `DestroyDocument` command arrives.
     fn clear_image_layers(&mut self) {
         self.image_layers.clear();
     }
@@ -984,6 +1002,7 @@ impl Compositor {
             width: frame_width,
             height: frame_height,
             render,
+            direct_surface: None,
         });
 
         let bg_map: HashMap<_, _> = embed_sites
@@ -1131,6 +1150,7 @@ impl Compositor {
                         width: video_frame.width,
                         height: video_frame.height,
                         render,
+                        direct_surface: None,
                     });
                 }
                 EmbedSite::Canvas(canvas_site) => {
@@ -1197,10 +1217,11 @@ impl Compositor {
                         width: canvas_frame.width,
                         height: canvas_frame.height,
                         render,
+                        direct_surface: None,
                     });
                 }
                 EmbedSite::Image(image_data) => {
-                    let Some(image) = self.image_registry.get(&image_data.image_id).cloned() else {
+                    let Some(entry) = self.image_registry.get(&image_data.image_id).cloned() else {
                         if input_debug_enabled() {
                             trace!(
                                 "[input-debug][compositor] image paint_id={:?} no decoded pixels yet",
@@ -1231,27 +1252,35 @@ impl Compositor {
                     );
                     let local_w = clip_rect.width();
                     let local_h = clip_rect.height();
-                    let scale_x = if image.width > 0 {
-                        local_w / image.width as f64
+                    let scale_x = if entry.width > 0 {
+                        local_w / entry.width as f64
                     } else {
                         1.0
                     };
-                    let scale_y = if image.height > 0 {
-                        local_h / image.height as f64
+                    let scale_y = if entry.height > 0 {
+                        local_h / entry.height as f64
                     } else {
                         1.0
                     };
                     let image_transform = Affine::new([scale_x, 0.0, 0.0, scale_y, tx, ty]);
 
-                    // The `<img>` embed site is its own layer: a one-node
-                    // scene drawing the decoded image at identity, placed by
-                    // `image_transform` (scaled to the clip rect).
-                    let render = if dirty {
-                        let mut image_scene = RenderScene::new();
-                        image_scene.draw_image(ImageBrushRef::from(&image), Affine::IDENTITY);
-                        Some(image_scene)
+                    // The `<img>` embed site is its own layer. The CPU image
+                    // backend draws the decoded pixels into a layer scene;
+                    // the macOS backend provides the image's own IOSurface,
+                    // which the embedder presents directly on the layer.
+                    let (render, direct_surface) = if let Some(surface) = &entry.stored.surface {
+                        (None, Some(surface.payload.clone()))
+                    } else if let Some(image) = &entry.stored.image_data {
+                        let render = if dirty {
+                            let mut image_scene = RenderScene::new();
+                            image_scene.draw_image(ImageBrushRef::from(image), Affine::IDENTITY);
+                            Some(image_scene)
+                        } else {
+                            None
+                        };
+                        (render, None)
                     } else {
-                        None
+                        (None, None)
                     };
 
                     layers.push(LayerUpdate {
@@ -1267,9 +1296,10 @@ impl Compositor {
                         corner_radius: image_data.clip_radius,
                         z_order: (z, paint_order),
                         background: None,
-                        width: image.width,
-                        height: image.height,
+                        width: entry.width,
+                        height: entry.height,
                         render,
+                        direct_surface,
                     });
                 }
             }
