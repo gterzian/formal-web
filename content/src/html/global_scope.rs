@@ -34,7 +34,7 @@ use log::{debug, error};
 use super::environment_settings_object::RealmWiring;
 use super::event_loop::{EventLoopTaskSources, Task};
 use crate::dom::event::EventTarget;
-use crate::html::dom_trees::DocumentProviders;
+use crate::html::document_providers::DocumentProviders;
 use crate::html::image_data::{
     self, DecodeSettlement, ImageAttributes, ImageRegistry, ImageUpdateEnvironment,
     PendingImageDataUpdate,

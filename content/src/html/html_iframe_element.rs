@@ -17,7 +17,7 @@ use url::Url;
 use crate::{
     ContentDocument, ContentProcess, EMPTY_HTML_DOCUMENT, NavigableContainerState,
     dom::event::EventTargetAccess, dom::fire_event, html::HTMLElement,
-    html::create_a_new_browsing_context_and_document, html::dom_trees::DocumentHost,
+    html::create_a_new_browsing_context_and_document, html::document_providers::DocumentHost,
     html::environment_settings_object::RealmWiring, html::navigate, js::Types, webidl::Callback,
 };
 

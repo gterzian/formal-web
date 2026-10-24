@@ -19,7 +19,9 @@ pub mod wasm;
 pub mod webidl;
 
 use crate::dom::{EventTargetAccess, dispatch_with_path, fire_event, simple_path};
-use crate::html::dom_trees::{AssetRequest, DocumentHost, DocumentProviders, install_resource};
+use crate::html::document_providers::{
+    AssetRequest, DocumentHost, DocumentProviders, install_resource,
+};
 use crate::html::environment_settings_object::RealmWiring;
 use crate::html::event_loop::{EventLoopTaskSources, ImageEvent, Task, TaskQueue};
 use crate::html::image_data::{self, ImageAttributes, ImageFetchOutcome, ImageRegistry, ImageTask};
@@ -777,7 +779,7 @@ impl ContentProcess {
                 }
             }
             for (node_id, attributes) in images {
-                providers.reacting_to_environment_changes(node_id, &attributes);
+                image_data::reacting_to_environment_changes(&providers, node_id, &attributes);
             }
         }
 

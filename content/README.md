@@ -143,9 +143,9 @@ Filtering here rather than in net is what keeps net a place where networking
 happens rather than a fetch coordinator; see `user_agent/README.md`.
 
 `blitz-dom` does not fetch anything.  Every subresource the document needs is
-reported through the DOM mutation hooks and resource hooks in `content/src/html/dom_trees.rs`
-(`DocumentProviders` implements `blitz_dom::MutationHooks` and
-`blitz_dom::ResourceHooks`): stylesheets,
+reported through the `blitz_dom::ResourceHooks` impl of `DocumentProviders` in
+`content/src/html/document_providers.rs` and the DOM tree steps in
+`content/src/html/dom_trees.rs`: stylesheets,
 `@import` rules, `@font-face` fonts, and CSS background/mask images.  Each
 request takes the scheme routing above and comes back as
 `Command::CompleteDocumentFetch`; content then installs the result into the
@@ -156,11 +156,11 @@ are decoded in content because blitz paints them; `<img>` pixels go to the
 graphics process instead (see below).
 
 The `<img>` element follows its own processing model in
-`content/src/html/image_data.rs`: the DOM hooks in `dom_trees.rs` dispatch to
-the `<img>` HTML element hooks there, which report the relevant mutations
-(attribute changes, insertion, removal) and run "update the image data", the
-fetch starts through the same pending-handler route, and the event loop
-completes the request.  Keep an `<img>` fetch on that path: it owns the
+`content/src/html/image_data.rs`: the DOM tree steps in `dom_trees.rs`
+dispatch to the `<img>` HTML element steps there, which report the relevant
+mutations (attribute changes, insertion, removal) and run "update the image
+data", the fetch starts through the same pending-handler route, and the event
+loop completes the request.  Keep an `<img>` fetch on that path: it owns the
 element's current/pending request state, the list of available images, and
 the `load`/`error` element tasks.  The completed image is registered with the
 graphics process once per `ImageIdentifier`; the graphics image backend chooses

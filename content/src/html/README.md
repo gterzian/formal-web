@@ -2,7 +2,8 @@
 
 `content/src/html` owns HTML parser integration, document lifecycle work, navigation helpers, and HTML global-object [platform objects](https://webidl.spec.whatwg.org/#dfn-platform-object) such as `Window` and `GlobalScope`.
 
-- `dom_trees.rs` implements the DOM Standard's mutation hooks and the HTML Standard's generic hooks from [`#dom-trees`](https://html.spec.whatwg.org/#dom-trees).  The generic hooks dispatch to the per-element hooks an element's local name defines (`HtmlElementHooks`), implemented in the element's module; add a new element to `html_element_hooks` and implement the trait there, never branch on the local name inside a general hook.
+- `dom_trees.rs` implements the HTML Standard's DOM tree steps from [`#dom-trees`](https://html.spec.whatwg.org/#dom-trees) as `blitz_dom::MutationHooks` methods.  Each general step dispatches to the HTML element steps the element's local name defines; those are free functions in the element's module (the `<img>` ones are in `image_data.rs`).  Add an element by extending the dispatch in the general step and writing its functions beside the element.
+- `document_providers.rs` is blitz plumbing, not a spec algorithm: it holds `DocumentProviders`, its `ResourceHooks` impl (which reports blitz's subresource requests), the `AssetRequest` those fetches carry, and `install_resource`, which installs a fetched response into the document.  A function carrying a spec anchor belongs in the module that owns that spec section, not here.
 - `html_dom_tree.rs` holds the document-level iframe post-connection and removing entry points run at document load completion and document destruction; the iframe's HTML element steps do not run from the `MutationHooks` hooks.
 - Keep iframe bindings and iframe processing algorithms together in `content/src/html/html_iframe_element.rs` as free functions over content-process state (`ContentProcess`).
   `contentDocument` is unimplemented: the getter returns null even for a
@@ -271,12 +272,12 @@ protected/permissible/suspendable monitoring is not.
 
 `image_data.rs` owns the `<img>` processing model: the current and pending
 image requests, the per-document list of available images, and the "update
-the image data" algorithm with its `// Step N:` comments.  It also implements
-the `<img>` HTML element hooks (insertion, removal, and relevant attribute
-mutations); `dom_trees.rs` dispatches to them.  Do not run the algorithm from
-the IDL setters or from the render path.  Work that needs the document
-(setting blitz's intrinsic size, firing the queued `load`/`error` element
-task) is pushed onto `ImageRegistry::pending_tasks` and drained by
+the image data" algorithm with its `// Step N:` comments.  It also holds the
+`<img>` HTML element steps (insertion, removal, and relevant attribute
+mutations) as free functions that `dom_trees.rs` dispatches to.  Do not run
+the algorithm from the IDL setters or from the render path.  Work that needs
+the document (setting blitz's intrinsic size, firing the queued `load`/`error`
+element task) is pushed onto `ImageRegistry::pending_tasks` and drained by
 `ContentProcess` after the task or command that produced it.
 
 An image element's availability is tracked in the registry, not in blitz's
@@ -287,16 +288,16 @@ and owns the pixels.  `naturalWidth`, `naturalHeight`, `complete`,
 `GlobalScope`); reading `raster_image_data` is not a substitute.
 
 The microtask queued at step 8 performs the rest of "update the image data"
-(steps 9-26), including starting the fetch.  The HTML element hooks run inside
+(steps 9-26), including starting the fetch.  The HTML element steps run inside
 blitz with no execution context.  blitz's hook traits carry no `Send + Sync`
 bound, because everything they touch runs on the thread that owns the
 document, so `DocumentProviders` holds `Rc`/`RefCell` state, including the
 realm's microtask queue (`EnvironmentSettingsObject::realm_job_queue`, installed by
-`ContentProcess::wire_image_realm`) and the hook queues the continuation there
-at the mutation point.  It is a real engine microtask, in FIFO order with the
-realm's other microtasks: an image mutation made in the current task is
-therefore visible to every microtask that task queues after it, `decode()`'s
-step 2 in particular.  The continuation carries only the element's
+`ContentProcess::wire_image_realm`), and the image steps queue the
+continuation there at the mutation point.  It is a real engine microtask, in
+FIFO order with the realm's other microtasks: an image mutation made in the
+current task is therefore visible to every microtask that task queues after
+it, `decode()`'s step 2 in particular.  The continuation carries only the element's
 `ImageElementId` and the update instance id; it reads the element's attributes
 (step 10), the document's base URL, partition and origin, and the fetch sink
 from the realm and the document's providers when it runs.  Batching the

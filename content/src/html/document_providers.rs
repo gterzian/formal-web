@@ -1,0 +1,347 @@
+//! The providers a content document hands to `blitz-dom`, and the subresource
+//! fetches its hooks start.
+//!
+//! `blitz-dom` fetches nothing and has no realm: it reports the subresources a
+//! document needs through its resource hooks, and the DOM tree mutations it
+//! performs through its mutation hooks, while the document is mutably borrowed.
+//! [`DocumentProviders`] is the object both traits are implemented on.  The
+//! mutation hooks are the HTML Standard's DOM tree steps (`dom_trees.rs`); the
+//! `<img>` processing model they enter runs in `image_data.rs`.
+
+use std::cell::{Cell, RefCell};
+use std::collections::HashSet;
+use std::rc::Rc;
+
+use blitz_dom::resource::{Resource, ResourceLoadResponse};
+use blitz_dom::{BaseDocument, DocumentEvent, FontFaceOverrides, ResourceHooks, ResourceRequest};
+use blitz_traits::net::Bytes;
+use ipc_messages::content::{
+    Command, DocumentFetchId, DocumentId, Event as ContentEvent, EventLoopId, ImageElementId,
+    NavigableId, ResourcePartitionKey,
+};
+use ipc_messages::network::Request as NetworkRequest;
+use log::error;
+use style::stylesheets::Origin;
+use url::Url;
+use uuid::Uuid;
+
+use crate::fetch::{FetchContext, InternalFetchRequest, fetch};
+use crate::html::image_data::{ImageFetchSink, ImageRegistry};
+use crate::js::{RealmJob, RealmJobQueue};
+use crate::{LocalContentStateRef, PendingNetworkHandler};
+
+/// Which document of the content process an asset fetch belongs to: a
+/// document in the process's document table, or a same-origin iframe
+/// subdocument owned by one of those documents.
+#[derive(Clone, Copy, Debug)]
+pub(crate) enum DocumentHost {
+    Main(DocumentId),
+    Subdocument {
+        parent_document_id: DocumentId,
+        id: Uuid,
+    },
+}
+
+impl DocumentHost {
+    pub(crate) fn parent_document_id(self) -> DocumentId {
+        match self {
+            Self::Main(document_id) => document_id,
+            Self::Subdocument {
+                parent_document_id, ..
+            } => parent_document_id,
+        }
+    }
+}
+
+/// A subresource fetch the content process started in response to a
+/// `blitz-dom` hook or an image mutation.
+#[derive(Clone, Debug)]
+pub(crate) enum AssetRequest {
+    /// A `<link rel=stylesheet>` stylesheet.
+    Stylesheet {
+        node_id: usize,
+        url: String,
+        request_id: Option<usize>,
+    },
+    /// An `@import` stylesheet.
+    StylesheetImport { url: String },
+    /// An `@font-face` font.
+    Font {
+        overrides: FontFaceOverrides,
+        url: String,
+    },
+    /// A decoded image installed into the document's layout-time image
+    /// loader: a CSS `background-image`/`mask-image`, or an `<img>` in a
+    /// same-origin iframe subdocument (which blitz paints into its parent's
+    /// scene).
+    DecodedImage {
+        node_id: usize,
+        url: String,
+        image_type: blitz_dom::util::ImageType,
+    },
+}
+
+/// The service providers of one content document, handed to `blitz-dom` as
+/// its mutation and resource hooks.
+pub(crate) struct DocumentProviders {
+    host: DocumentHost,
+    navigable_id: NavigableId,
+    event_loop_id: EventLoopId,
+    /// The document's URL, which subresource URLs are resolved against.  A
+    /// `<base>` element's href is not reflected here.
+    base_url: Option<Url>,
+    partition: ResourcePartitionKey,
+    local_state: LocalContentStateRef,
+    network_extension_sender: ipc::IpcSender<NetworkRequest>,
+    content_command_sender: ipc::IpcSender<Command>,
+    event_sender: ipc::IpcSender<ContentEvent>,
+    embedder_schemes: Rc<HashSet<String>>,
+    image_registry: Rc<RefCell<ImageRegistry>>,
+    /// The realm's microtask queue, so the `<img>` element steps can queue the
+    /// continuation of step 8 of "update the image data" where the mutation
+    /// happens, without an execution context.  Set once the document's realm
+    /// exists.
+    image_job_queue: RefCell<Option<RealmJobQueue>>,
+    needs_paint: Rc<Cell<bool>>,
+}
+
+impl DocumentProviders {
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn new(
+        host: DocumentHost,
+        navigable_id: NavigableId,
+        event_loop_id: EventLoopId,
+        base_url: Option<Url>,
+        partition: ResourcePartitionKey,
+        local_state: LocalContentStateRef,
+        network_extension_sender: ipc::IpcSender<NetworkRequest>,
+        content_command_sender: ipc::IpcSender<Command>,
+        event_sender: ipc::IpcSender<ContentEvent>,
+        embedder_schemes: Rc<HashSet<String>>,
+        image_registry: Rc<RefCell<ImageRegistry>>,
+        needs_paint: Rc<Cell<bool>>,
+    ) -> Self {
+        Self {
+            host,
+            navigable_id,
+            event_loop_id,
+            base_url,
+            partition,
+            local_state,
+            network_extension_sender,
+            content_command_sender,
+            event_sender,
+            embedder_schemes,
+            image_registry,
+            image_job_queue: RefCell::new(None),
+            needs_paint,
+        }
+    }
+
+    /// Give the image element steps the queue of the realm that owns this
+    /// document.
+    ///
+    /// <https://html.spec.whatwg.org/#queue-a-microtask>
+    pub(crate) fn set_image_job_queue(&self, queue: RealmJobQueue) {
+        self.image_job_queue.borrow_mut().replace(queue);
+    }
+
+    /// Queue a microtask in the realm that owns this document.
+    pub(crate) fn queue_image_job(&self, job: RealmJob) {
+        let queue = self.image_job_queue.borrow().clone();
+        if let Some(queue) = queue {
+            queue.queue(job);
+        }
+    }
+
+    /// Which document of the content process these providers serve.
+    pub(crate) fn host(&self) -> DocumentHost {
+        self.host
+    }
+
+    /// The document's base URL, which the image processing model resolves
+    /// selected sources against.
+    pub(crate) fn base_url(&self) -> Option<&Url> {
+        self.base_url.as_ref()
+    }
+
+    /// The partition the document's network requests are made in.
+    pub(crate) fn partition(&self) -> &ResourcePartitionKey {
+        &self.partition
+    }
+
+    /// The image processing state shared by every document of the content
+    /// process.
+    pub(crate) fn image_registry(&self) -> &RefCell<ImageRegistry> {
+        &self.image_registry
+    }
+
+    /// Mark the document as needing a frame, the same flag blitz sets when it
+    /// calls `ShellProvider::request_redraw`.
+    pub(crate) fn request_redraw(&self) {
+        self.needs_paint.set(true);
+    }
+
+    fn start_fetch(
+        &self,
+        handler_id: DocumentFetchId,
+        url: String,
+        pending: PendingNetworkHandler,
+    ) {
+        let context = FetchContext {
+            event_loop_id: self.event_loop_id,
+            navigable_id: self.navigable_id,
+            content_command_sender: &self.content_command_sender,
+            event_sender: &self.event_sender,
+            network_extension_sender: &self.network_extension_sender,
+            embedder_schemes: self.embedder_schemes.as_ref(),
+            local_state: &self.local_state,
+        };
+        if let Err(error) = fetch(
+            &context,
+            handler_id,
+            pending,
+            InternalFetchRequest::get(url),
+        ) {
+            error!("failed to start fetch: {error}");
+        }
+    }
+}
+
+impl ImageFetchSink for DocumentProviders {
+    fn start_image_fetch(
+        &self,
+        element_id: ImageElementId,
+        document_id: DocumentId,
+        handler_id: DocumentFetchId,
+        url: &str,
+    ) {
+        self.start_fetch(
+            handler_id,
+            url.to_string(),
+            PendingNetworkHandler::Image {
+                document_id,
+                navigable_id: self.navigable_id,
+                element_id,
+            },
+        );
+    }
+}
+
+impl ResourceHooks for DocumentProviders {
+    fn resource_request(&self, request: ResourceRequest) {
+        let (url, asset) = match request {
+            ResourceRequest::Stylesheet {
+                node_id,
+                url,
+                request_id,
+            } => (
+                url.to_string(),
+                AssetRequest::Stylesheet {
+                    node_id,
+                    url: url.to_string(),
+                    request_id,
+                },
+            ),
+            ResourceRequest::StylesheetImport { url } => (
+                url.to_string(),
+                AssetRequest::StylesheetImport {
+                    url: url.to_string(),
+                },
+            ),
+            ResourceRequest::Font { overrides, url, .. } => (
+                url.to_string(),
+                AssetRequest::Font {
+                    overrides,
+                    url: url.to_string(),
+                },
+            ),
+            ResourceRequest::Image {
+                node_id,
+                url,
+                image_type,
+            } => (
+                url.to_string(),
+                AssetRequest::DecodedImage {
+                    node_id,
+                    url: url.to_string(),
+                    image_type,
+                },
+            ),
+        };
+        let handler_id = DocumentFetchId::new();
+        self.start_fetch(
+            handler_id,
+            url,
+            PendingNetworkHandler::Asset {
+                host: self.host,
+                request: asset,
+            },
+        );
+    }
+}
+
+pub(crate) fn install_resource(
+    document: &mut BaseDocument,
+    request: &AssetRequest,
+    response_url: &str,
+    body: &[u8],
+) -> Result<(), String> {
+    match request {
+        AssetRequest::Stylesheet {
+            node_id,
+            url,
+            request_id,
+        } => {
+            let css = std::str::from_utf8(body)
+                .map_err(|error| format!("stylesheet {url} is not UTF-8: {error}"))?;
+            let sheet = document.make_stylesheet(css, Origin::Author);
+            document.handle_message(DocumentEvent::ResourceLoad(ResourceLoadResponse {
+                request_id: request_id.unwrap_or(0),
+                node_id: Some(*node_id),
+                resolved_url: Some(response_url.to_string()),
+                result: Ok(Resource::Css(sheet)),
+            }));
+            Ok(())
+        }
+        AssetRequest::StylesheetImport { url } => {
+            let css = std::str::from_utf8(body)
+                .map_err(|error| format!("imported stylesheet {url} is not UTF-8: {error}"))?;
+            document.complete_stylesheet_import(url, css);
+            Ok(())
+        }
+        AssetRequest::Font { overrides, url } => {
+            let bytes = blitz_dom::decode_font_bytes(body).into_owned();
+            document.handle_message(DocumentEvent::ResourceLoad(ResourceLoadResponse {
+                request_id: 0,
+                node_id: None,
+                resolved_url: Some(url.clone()),
+                result: Ok(Resource::Font(Bytes::from(bytes), overrides.clone())),
+            }));
+            Ok(())
+        }
+        AssetRequest::DecodedImage {
+            node_id,
+            url,
+            image_type,
+        } => {
+            let decoded = image::load_from_memory(body)
+                .map_err(|error| format!("failed to decode image {url}: {error}"))?
+                .into_rgba8();
+            let width = decoded.width();
+            let height = decoded.height();
+            document.handle_message(DocumentEvent::ResourceLoad(ResourceLoadResponse {
+                request_id: 0,
+                node_id: Some(*node_id),
+                resolved_url: Some(response_url.to_string()),
+                result: Ok(Resource::Image(
+                    *image_type,
+                    width,
+                    height,
+                    std::sync::Arc::new(decoded.into_raw()),
+                )),
+            }));
+            Ok(())
+        }
+    }
+}

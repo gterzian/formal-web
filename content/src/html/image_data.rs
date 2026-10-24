@@ -3,13 +3,13 @@
 //! This module owns the per-element image request state
 //! (<https://html.spec.whatwg.org/#images-processing-model>) and the "update
 //! the image data" algorithm that drives the element's fetches.  It also
-//! implements the `<img>` element's HTML element hooks, which `dom_trees.rs`
-//! dispatches to.  The hooks count their DOM mutations as
-//! <https://html.spec.whatwg.org/#reacting-to-dom-mutations:relevant-mutations>;
+//! holds the `<img>` element's HTML element steps, which the general DOM tree
+//! steps in `dom_trees.rs` dispatch to.  The steps count their DOM mutations
+//! as <https://html.spec.whatwg.org/#reacting-to-dom-mutations:relevant-mutations>;
 //! "when to obtain images" then answers a relevant mutation (or the element's
 //! creation) by running "update the image data" synchronously
 //! (<https://html.spec.whatwg.org/#when-to-obtain-images>).  The state is
-//! shared between the hooks, the image element's IDL getters, and the event
+//! shared between the steps, the image element's IDL getters, and the event
 //! loop's fetch completion handling.
 
 use std::collections::{HashMap, HashSet};
@@ -19,9 +19,12 @@ use html5ever::local_name;
 use ipc_messages::content::{
     DocumentFetchId, DocumentId, ImageElementId, ImageIdentifier, ResourcePartitionKey,
 };
+use log::error;
 use url::Url;
 
-use crate::html::dom_trees::{DocumentProviders, HtmlElementHooks};
+use crate::html::document_providers::{DocumentHost, DocumentProviders};
+use crate::js::RealmJob;
+use crate::js::platform_objects::with_global_scope;
 
 /// <https://html.spec.whatwg.org/#img-req-state>
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -313,89 +316,129 @@ impl ImageAttributes {
     }
 }
 
-/// The HTML element hooks the `img` local name defines.
-struct ImageElementHooks;
-
-/// The `img` element's HTML element hooks.
-pub(crate) const IMAGE_ELEMENT_HOOKS: &dyn HtmlElementHooks = &ImageElementHooks;
-
-impl HtmlElementHooks for ImageElementHooks {
-    /// <https://html.spec.whatwg.org/#the-img-element:html-element-insertion-steps>
-    fn insertion_steps(
-        &self,
-        document: &DocumentProviders,
-        node_id: usize,
-        inserted_node: &ElementData,
-    ) {
-        // Step 1: "If insertedNode's parent is a picture element, then, count this as a relevant mutation for insertedNode."
-        // This counts the mutation as a relevant mutation.  When obtaining
-        // images immediately, that synchronously updates the image data
-        // (<https://html.spec.whatwg.org/#when-to-obtain-images>).
-        // Note: The DOM insertion hook is passed the element without the node tree, so the parent is not available.  The image data is updated for every insertion instead: the algorithm also runs when the element is created, and insertion is the first point at which this implementation observes the element.
-        document.run_image_update(node_id, inserted_node);
+/// <https://html.spec.whatwg.org/#when-to-obtain-images>
+pub(crate) fn run_image_update(
+    document: &DocumentProviders,
+    node_id: usize,
+    element: &ElementData,
+) {
+    // "When obtaining images immediately, the user agent must synchronously
+    // update the image data of the img element, with the restart animation
+    // flag set if so stated, whenever that element is created or has
+    // experienced relevant mutations."
+    // <https://html.spec.whatwg.org/#when-to-obtain-images:relevant-mutations>
+    // The restart animation flag is never set (image animation is not
+    // implemented).
+    // Note: Same-origin iframe subdocuments keep their images in the parent
+    // document's scene (`embedded_images` is false for them), so their images
+    // load through the document's layout-time image loader rather than the
+    // `<img>` processing model.
+    if !matches!(document.host(), DocumentHost::Main(_)) {
+        return;
     }
-
-    /// <https://html.spec.whatwg.org/#the-img-element:html-element-removing-steps>
-    fn removing_steps(
-        &self,
-        document: &DocumentProviders,
-        node_id: usize,
-        removed_node: &ElementData,
-        is_subtree_root: bool,
-        old_ancestor: Option<&ElementData>,
-    ) {
-        // Step 1: "If isSubtreeRoot is true and oldAncestor is a picture element, then count this as a relevant mutation for removedNode."
-        // Note: Only a removal from a `<picture>` parent re-runs the algorithm: it is the case where the selected source could change (picture selection itself is not tracked), while any other removal would re-run the algorithm only to fire a redundant `load` for an available image.
-        let removed_from_picture =
-            old_ancestor.is_some_and(|ancestor| ancestor.name.local.as_ref() == "picture");
-        if !is_subtree_root || !removed_from_picture {
-            return;
-        }
-        // Step 2: "Set removedNode's last auto-sizes width to null."
-        // Note: The last auto-sizes width is not tracked; auto-sizes is not implemented.
-        // The mutation is a relevant mutation; obtaining images immediately
-        // updates the image data
-        // (<https://html.spec.whatwg.org/#when-to-obtain-images>).
-        document.run_image_update(node_id, removed_node);
-    }
-
-    /// <https://html.spec.whatwg.org/#reacting-to-dom-mutations:relevant-mutations>
-    fn attribute_change_steps(
-        &self,
-        document: &DocumentProviders,
-        node_id: usize,
-        element: &ElementData,
-        local_name: &str,
-        old_value: Option<&str>,
-        new_value: Option<&str>,
-        namespace: &str,
-    ) {
-        // The relevant mutations for an img element are as follows:
-        // "The element's src, srcset, or sizes attributes are set, changed, or removed."
-        // "The element's src attribute is set to the same value as the previous value. This must set the restart animation flag for the update the image data algorithm."
-        // "The element's crossorigin attribute's state is changed."
-        // "The element's referrerpolicy attribute's state is changed."
-        // Note: The remaining relevant mutations (`<source>` sibling changes under a `<picture>` parent, the adopting steps, and auto-sizes) are not observed.
-        if !namespace.is_empty() {
-            return;
-        }
-        let relevant = match local_name {
-            "src" | "srcset" | "sizes" => true,
-            "crossorigin" => cors_settings_mode(old_value) != cors_settings_mode(new_value),
-            "referrerpolicy" => {
-                referrer_policy_state(old_value) != referrer_policy_state(new_value)
+    let document_id = document.host().parent_document_id();
+    let attributes = ImageAttributes::from_element(element);
+    let update = {
+        let mut registry = document.image_registry().borrow_mut();
+        update_the_image_data(
+            &mut registry,
+            document_id,
+            node_id,
+            &attributes,
+            document.base_url(),
+            &document.partition().origin,
+        )
+    };
+    document.request_redraw();
+    // Step 8 of "update the image data" queues a microtask; this runs without
+    // an execution context, so it hands the continuation to the realm's queue,
+    // which keeps it in the same order relative to the microtasks the current
+    // task queues next.
+    if let Some(update) = update {
+        let job: RealmJob = Box::new(move |ec| {
+            if let Err(error) = with_global_scope(ec, |global_scope, ec| {
+                global_scope.run_image_update(ec, &update)
+            }) {
+                let message = ec
+                    .to_rust_string(error)
+                    .unwrap_or_else(|_| String::from("unknown error"));
+                error!("failed to continue \"update the image data\": {message}");
             }
-            _ => false,
-        };
-        if !relevant {
-            return;
-        }
-        // Note: The restart animation flag is not implemented because image animation is not.
-        // The attribute change is one of the relevant mutations; obtaining
-        // images immediately updates the image data
-        // (<https://html.spec.whatwg.org/#when-to-obtain-images>).
-        document.run_image_update(node_id, element);
+        });
+        document.queue_image_job(job);
     }
+}
+
+/// <https://html.spec.whatwg.org/#the-img-element:html-element-insertion-steps>
+pub(crate) fn insertion_steps(
+    document: &DocumentProviders,
+    node_id: usize,
+    inserted_node: &ElementData,
+) {
+    // Step 1: "If insertedNode's parent is a picture element, then, count this as a relevant mutation for insertedNode."
+    // This counts the mutation as a relevant mutation.  When obtaining
+    // images immediately, that synchronously updates the image data
+    // (<https://html.spec.whatwg.org/#when-to-obtain-images>).
+    // Note: The DOM insertion hook is passed the element without the node tree, so the parent is not available.  The image data is updated for every insertion instead: the algorithm also runs when the element is created, and insertion is the first point at which this implementation observes the element.
+    run_image_update(document, node_id, inserted_node);
+}
+
+/// <https://html.spec.whatwg.org/#the-img-element:html-element-removing-steps>
+pub(crate) fn removing_steps(
+    document: &DocumentProviders,
+    node_id: usize,
+    removed_node: &ElementData,
+    is_subtree_root: bool,
+    old_ancestor: Option<&ElementData>,
+) {
+    // Step 1: "If isSubtreeRoot is true and oldAncestor is a picture element, then count this as a relevant mutation for removedNode."
+    // Note: Only a removal from a `<picture>` parent re-runs the algorithm: it is the case where the selected source could change (picture selection itself is not tracked), while any other removal would re-run the algorithm only to fire a redundant `load` for an available image.
+    let removed_from_picture =
+        old_ancestor.is_some_and(|ancestor| ancestor.name.local.as_ref() == "picture");
+    if !is_subtree_root || !removed_from_picture {
+        return;
+    }
+    // Step 2: "Set removedNode's last auto-sizes width to null."
+    // Note: The last auto-sizes width is not tracked; auto-sizes is not implemented.
+    // The mutation is a relevant mutation; obtaining images immediately
+    // updates the image data
+    // (<https://html.spec.whatwg.org/#when-to-obtain-images>).
+    run_image_update(document, node_id, removed_node);
+}
+
+/// <https://html.spec.whatwg.org/#reacting-to-dom-mutations:relevant-mutations>
+pub(crate) fn attribute_change_steps(
+    document: &DocumentProviders,
+    node_id: usize,
+    element: &ElementData,
+    local_name: &str,
+    old_value: Option<&str>,
+    new_value: Option<&str>,
+    namespace: &str,
+) {
+    // The relevant mutations for an img element are as follows:
+    // "The element's src, srcset, or sizes attributes are set, changed, or removed."
+    // "The element's src attribute is set to the same value as the previous value. This must set the restart animation flag for the update the image data algorithm."
+    // "The element's crossorigin attribute's state is changed."
+    // "The element's referrerpolicy attribute's state is changed."
+    // Note: The remaining relevant mutations (`<source>` sibling changes under a `<picture>` parent, the adopting steps, and auto-sizes) are not observed.
+    if !namespace.is_empty() {
+        return;
+    }
+    let relevant = match local_name {
+        "src" | "srcset" | "sizes" => true,
+        "crossorigin" => cors_settings_mode(old_value) != cors_settings_mode(new_value),
+        "referrerpolicy" => referrer_policy_state(old_value) != referrer_policy_state(new_value),
+        _ => false,
+    };
+    if !relevant {
+        return;
+    }
+    // Note: The restart animation flag is not implemented because image animation is not.
+    // The attribute change is one of the relevant mutations; obtaining
+    // images immediately updates the image data
+    // (<https://html.spec.whatwg.org/#when-to-obtain-images>).
+    run_image_update(document, node_id, element);
 }
 
 /// The CORS settings attribute mode of a `crossorigin` attribute value.
@@ -1113,20 +1156,24 @@ fn process_reacting_to_environment_changes_response(
 }
 
 /// <https://html.spec.whatwg.org/#reacting-to-environment-changes>
-#[allow(clippy::too_many_arguments)]
 pub(crate) fn reacting_to_environment_changes(
-    registry: &mut ImageRegistry,
-    sink: &dyn ImageFetchSink,
-    document_id: DocumentId,
+    document: &DocumentProviders,
     node_id: usize,
     attributes: &ImageAttributes,
-    base_url: Option<&Url>,
-    partition: &ResourcePartitionKey,
-    origin: &str,
 ) {
     // Step 1: Await a stable state. The synchronous section consists of all the remaining steps of this algorithm until the algorithm says the synchronous section has ended. (Steps in synchronous sections are marked with ⌛.)
     // Note: The viewport command handler runs this when no task is queued (a
     // stable state).
+    // Note: A same-origin iframe subdocument's images load through the
+    // document's layout-time image loader, not the processing model.
+    if !matches!(document.host(), DocumentHost::Main(_)) {
+        return;
+    }
+    let document_id = document.host().parent_document_id();
+    let base_url = document.base_url();
+    let partition = document.partition();
+    let origin = &partition.origin;
+    let mut registry = document.image_registry().borrow_mut();
     let element = registry.element(document_id, node_id);
     // Step 2: ⌛ If the `img` element does not use `srcset` or `picture`, its node document is not fully active, it has image data whose resource type is `multipart/x-mixed-replace`, or its pending request is not null, then return.
     // Note: The content process only runs this for an active document;
@@ -1162,7 +1209,7 @@ pub(crate) fn reacting_to_environment_changes(
     // Step 12: ⌛ Let `image request` be a new image request whose current URL is `urlString`.
     let blob_id = registry.next_blob_id;
     registry.next_blob_id += 1;
-    let request_id = next_request_id(registry);
+    let request_id = next_request_id(&mut registry);
     let environment_update = EnvironmentUpdate {
         instance_id: element.update_instance_id,
         selected_source: selected_source.clone(),
@@ -1234,7 +1281,7 @@ pub(crate) fn reacting_to_environment_changes(
             pending.fetch_id = Some(handler_id);
         }
     }
-    sink.start_image_fetch(element_id, document_id, handler_id, &url_string);
+    document.start_image_fetch(element_id, document_id, handler_id, &url_string);
 }
 
 /// <https://html.spec.whatwg.org/#reacting-to-environment-changes>
