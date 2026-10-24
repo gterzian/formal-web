@@ -52,8 +52,11 @@ use boa_engine::{
         builtins::{JsDate, JsMap, JsRegExp, JsSet},
     },
     property::PropertyKey,
+    realm::Realm,
     value::PreferredType as BoaPreferredType,
 };
+
+use std::{cell::RefCell, collections::VecDeque, rc::Rc};
 
 use crate::{
     Completion, EcmascriptHost, ExecutionContext, HostHooks, IntegrityLevel, IteratorKind,
@@ -249,6 +252,80 @@ pub struct BoaContext {
     context: Context,
 }
 
+type BoaRealmJob = Box<dyn FnOnce(&mut dyn ExecutionContext<BoaTypes>)>;
+
+thread_local! {
+    /// The realm jobs queued through a [`BoaRealmJobQueue`], per realm.  A
+    /// realm's jobs run at the start of its next microtask checkpoint, before
+    /// the ECMAScript job queue, which is the order the V8 backend gives
+    /// `enqueue_job_with_realm`.  The queue cannot live on the context:
+    /// `BoaContext` is `#[repr(transparent)]` over `Context`.
+    static REALM_JOBS: RefCell<Vec<(Realm, Rc<RefCell<VecDeque<BoaRealmJob>>>)>> =
+        const { RefCell::new(Vec::new()) };
+}
+
+/// A handle that queues a microtask in one realm without an execution context.
+///
+/// <https://html.spec.whatwg.org/#queue-a-microtask>
+#[derive(Clone)]
+pub struct BoaRealmJobQueue {
+    jobs: Rc<RefCell<VecDeque<BoaRealmJob>>>,
+}
+
+impl BoaRealmJobQueue {
+    pub fn queue(&self, job: BoaRealmJob) {
+        self.jobs.borrow_mut().push_back(job);
+    }
+}
+
+/// The job queue for `realm`, created on first use.
+fn realm_job_queue_for(realm: &Realm) -> BoaRealmJobQueue {
+    REALM_JOBS.with(|queues| {
+        let mut queues = queues.borrow_mut();
+        // Drop the queues no handle refers to any more.
+        queues.retain(|(_, jobs)| Rc::strong_count(jobs) > 1);
+        if let Some((_, jobs)) = queues
+            .iter()
+            .find(|(queued_realm, _)| *queued_realm == *realm)
+        {
+            return BoaRealmJobQueue {
+                jobs: Rc::clone(jobs),
+            };
+        }
+        let jobs = Rc::new(RefCell::new(VecDeque::new()));
+        queues.push((realm.clone(), Rc::clone(&jobs)));
+        BoaRealmJobQueue { jobs }
+    })
+}
+
+/// Removes the jobs queued for `realm`, so jobs queued while these run wait
+/// for the next round.
+fn take_realm_jobs(realm: &Realm) -> Vec<(Realm, BoaRealmJob)> {
+    REALM_JOBS.with(|queues| {
+        let queues = queues.borrow();
+        let Some((_, jobs)) = queues
+            .iter()
+            .find(|(queued_realm, _)| *queued_realm == *realm)
+        else {
+            return Vec::new();
+        };
+        jobs.borrow_mut()
+            .drain(..)
+            .map(|job| (realm.clone(), job))
+            .collect()
+    })
+}
+
+fn has_realm_jobs(realm: &Realm) -> bool {
+    REALM_JOBS.with(|queues| {
+        let queues = queues.borrow();
+        queues
+            .iter()
+            .find(|(queued_realm, _)| *queued_realm == *realm)
+            .is_some_and(|(_, jobs)| !jobs.borrow().is_empty())
+    })
+}
+
 // ── Bridge casts (temporary) ────────────────────────────────────────────────
 //
 // These convert between `&mut Context` and `&mut dyn ExecutionContext<BoaTypes>`
@@ -341,6 +418,14 @@ where
 }
 
 impl BoaContext {
+    /// The queue a DOM hook can hand to code that runs without an execution
+    /// context, so the work still lands in this realm's microtask queue.
+    ///
+    /// <https://html.spec.whatwg.org/#queue-a-microtask>
+    pub fn realm_job_queue(&self) -> BoaRealmJobQueue {
+        realm_job_queue_for(self.context.realm())
+    }
+
     pub fn new() -> Self {
         Self {
             context: Context::default(),
@@ -2522,7 +2607,27 @@ impl EcmascriptHost<BoaTypes> for BoaContext {
     }
 
     fn perform_a_microtask_checkpoint(&mut self) -> Completion<(), BoaTypes> {
-        let _ = self.context.run_jobs();
+        loop {
+            let realm = self.context.realm().clone();
+            for (job_realm, job) in take_realm_jobs(&realm) {
+                let generic_job = GenericJob::new(
+                    move |context| {
+                        job(context_as_ec(context));
+                        Ok(JsValue::undefined())
+                    },
+                    job_realm,
+                );
+                if let Err(error) = generic_job.call(&mut self.context) {
+                    log::error!("queued realm microtask failed: {error}");
+                }
+            }
+            if let Err(error) = self.context.run_jobs() {
+                log::error!("ECMAScript job queue failed: {error}");
+            }
+            if !has_realm_jobs(&realm) {
+                break;
+            }
+        }
         Ok(())
     }
 

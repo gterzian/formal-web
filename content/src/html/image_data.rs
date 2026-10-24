@@ -12,11 +12,13 @@
 //! shared between the hooks, the image element's IDL getters, and the event
 //! loop's fetch completion handling.
 
-use std::collections::{HashMap, HashSet, VecDeque};
+use std::collections::{HashMap, HashSet};
 
 use blitz_dom::ElementData;
 use html5ever::local_name;
-use ipc_messages::content::{DocumentFetchId, DocumentId, ImageIdentifier, ResourcePartitionKey};
+use ipc_messages::content::{
+    DocumentFetchId, DocumentId, ImageElementId, ImageIdentifier, ResourcePartitionKey,
+};
 use url::Url;
 
 use crate::html::dom_trees::{DocumentProviders, HtmlElementHooks};
@@ -119,11 +121,18 @@ pub(crate) struct LoadedImage {
     pub(crate) image_id: ImageIdentifier,
     pub(crate) width: u32,
     pub(crate) height: u32,
+    /// The graphics process's decode outcome for `image_id`; `None` until it
+    /// reports one.  A request that reuses a cached entry inherits it, so
+    /// `decode()` settles without waiting for a second report.
+    pub(crate) decode: Option<ImageDecode>,
 }
 
 /// The image-processing state of one `<img>` element.
 #[derive(Clone, Debug, Default)]
 pub(crate) struct ImageElement {
+    /// The document the element belongs to, and its DOM node id.
+    pub(crate) document_id: DocumentId,
+    pub(crate) node_id: usize,
     /// <https://html.spec.whatwg.org/#current-request>
     pub(crate) current_request: ImageRequest,
     /// <https://html.spec.whatwg.org/#pending-request>
@@ -172,6 +181,33 @@ pub(crate) enum ImageTask {
     },
 }
 
+impl ImageTask {
+    /// The element this task was queued for.
+    pub(crate) fn element(&self) -> (DocumentId, usize) {
+        match self {
+            Self::PrepareForPresentation {
+                document_id,
+                node_id,
+                ..
+            }
+            | Self::FireLoad {
+                document_id,
+                node_id,
+            }
+            | Self::FireError {
+                document_id,
+                node_id,
+                ..
+            }
+            | Self::FinishEnvironmentUpdate {
+                document_id,
+                node_id,
+                ..
+            } => (*document_id, *node_id),
+        }
+    }
+}
+
 /// The outcome of decoding one image resource, as reported by the graphics
 /// process.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -188,15 +224,20 @@ pub(crate) enum DecodeSettlement {
     Reject,
 }
 
-/// The fetch the microtask queued at step 8 of "update the image data"
-/// starts, once the algorithm reached a stable state.
+/// The identity of the "update the image data" instance whose step 8 queued a
+/// microtask: the continuation reads the element, the document and the
+/// processing model state when it runs.
 pub(crate) struct PendingImageDataUpdate {
-    pub(crate) document_id: DocumentId,
-    pub(crate) node_id: usize,
+    /// The element the algorithm instance is running for.
+    pub(crate) element_id: ImageElementId,
     /// The image-data algorithm instance that queued the microtask (step 9).
     pub(crate) instance_id: u64,
-    /// The `<img>` attributes read before step 8; steps 10 and 17-23 use
-    /// them.
+}
+
+/// The document facts the step-8 continuation reads when it runs: the
+/// element's attributes (step 10 selects an image source from them again), and
+/// the document's base URL, partition and origin.
+pub(crate) struct ImageUpdateEnvironment {
     pub(crate) attributes: ImageAttributes,
     pub(crate) base_url: Option<Url>,
     pub(crate) partition: ResourcePartitionKey,
@@ -207,8 +248,13 @@ pub(crate) struct PendingImageDataUpdate {
 /// document it hosts.
 #[derive(Default)]
 pub(crate) struct ImageRegistry {
-    /// <https://html.spec.whatwg.org/#images-processing-model>
-    pub(crate) elements: HashMap<(DocumentId, usize), ImageElement>,
+    /// The processing model state of every `<img>` element this process has
+    /// seen, keyed by the element's identity: the value the DOM hooks, the
+    /// step-8 continuation and the image fetch's response all carry.
+    pub(crate) elements: HashMap<ImageElementId, ImageElement>,
+    /// The element identity for a DOM node, allocated the first time the
+    /// processing model sees the element.
+    pub(crate) element_ids: HashMap<(DocumentId, usize), ImageElementId>,
     /// <https://html.spec.whatwg.org/#list-of-available-images>
     pub(crate) available_images: HashMap<(DocumentId, String), LoadedImage>,
     /// Identifies the next fetched image resource within this process.
@@ -217,12 +263,6 @@ pub(crate) struct ImageRegistry {
     pub(crate) next_request_id: u64,
     /// Identifies the next image-data algorithm instance within this process.
     pub(crate) next_update_instance_id: u64,
-    /// The decode outcome of each image resource the graphics process has
-    /// reported.  A request whose image id is absent is still being decoded.
-    pub(crate) image_decodes: HashMap<ImageIdentifier, ImageDecode>,
-    /// The microtasks queued by step 8, in the order their instances queued
-    /// them.  Drained at a microtask checkpoint.
-    pub(crate) pending_microtasks: VecDeque<PendingImageDataUpdate>,
     /// Element tasks the algorithms queued, drained by `ContentProcess`.
     pub(crate) pending_tasks: Vec<ImageTask>,
 }
@@ -230,8 +270,8 @@ pub(crate) struct ImageRegistry {
 pub(crate) trait ImageFetchSink {
     fn start_image_fetch(
         &self,
+        element_id: ImageElementId,
         document_id: DocumentId,
-        node_id: usize,
         handler_id: DocumentFetchId,
         url: &str,
     );
@@ -395,16 +435,53 @@ pub(crate) fn referrer_policy_state(value: Option<&str>) -> &'static str {
 }
 
 impl ImageRegistry {
+    /// The identity of the element at `node_id`, allocated the first time the
+    /// processing model sees it.  Every later input for this element (a DOM
+    /// hook, the step-8 continuation, the image fetch's response) carries this
+    /// value, so the state machine never has to search for the element.
+    pub(crate) fn element_id(&mut self, document_id: DocumentId, node_id: usize) -> ImageElementId {
+        *self.element_ids.entry((document_id, node_id)).or_default()
+    }
+
+    /// The element's identity, if the processing model has seen it.
+    pub(crate) fn existing_element_id(
+        &self,
+        document_id: DocumentId,
+        node_id: usize,
+    ) -> Option<ImageElementId> {
+        self.element_ids.get(&(document_id, node_id)).copied()
+    }
+
+    /// The document and DOM node an element identity is registered for.
+    pub(crate) fn element_location(
+        &self,
+        element_id: ImageElementId,
+    ) -> Option<(DocumentId, usize)> {
+        self.elements
+            .get(&element_id)
+            .map(|element| (element.document_id, element.node_id))
+    }
+
     /// The processing model state for one element, created on first use.
     pub(crate) fn element(&self, document_id: DocumentId, node_id: usize) -> ImageElement {
-        self.elements
-            .get(&(document_id, node_id))
-            .cloned()
+        self.existing_element_id(document_id, node_id)
+            .and_then(|element_id| self.elements.get(&element_id).cloned())
             .unwrap_or_default()
     }
 
-    fn element_mut(&mut self, document_id: DocumentId, node_id: usize) -> &mut ImageElement {
-        self.elements.entry((document_id, node_id)).or_default()
+    pub(crate) fn element_mut(
+        &mut self,
+        document_id: DocumentId,
+        node_id: usize,
+    ) -> &mut ImageElement {
+        let element_id = self.element_id(document_id, node_id);
+        self.elements
+            .entry(element_id)
+            .or_insert_with(|| ImageElement {
+                document_id,
+                node_id,
+                ..ImageElement::default()
+            })
     }
 
     pub(crate) fn take_pending_tasks(&mut self) -> Vec<ImageTask> {
@@ -418,8 +495,8 @@ impl ImageRegistry {
     /// graphics process.
     pub(crate) fn forget_document(&mut self, document_id: DocumentId) -> Vec<ImageIdentifier> {
         let mut image_ids = HashSet::new();
-        for ((element_document_id, _), element) in &self.elements {
-            if *element_document_id != document_id {
+        for element in self.elements.values() {
+            if element.document_id != document_id {
                 continue;
             }
             if let Some(image_id) = element.current_request.image_id.clone() {
@@ -438,15 +515,12 @@ impl ImageRegistry {
                 image_ids.insert(loaded.image_id.clone());
             }
         }
-        for image_id in &image_ids {
-            self.image_decodes.remove(image_id);
-        }
         self.elements
+            .retain(|_, element| element.document_id != document_id);
+        self.element_ids
             .retain(|(element_document_id, _), _| *element_document_id != document_id);
         self.available_images
             .retain(|(image_document_id, _), _| *image_document_id != document_id);
-        self.pending_microtasks
-            .retain(|update| update.document_id != document_id);
         self.pending_tasks.retain(|task| match task {
             ImageTask::PrepareForPresentation {
                 document_id: task_document_id,
@@ -499,9 +573,8 @@ pub(crate) fn update_the_image_data(
     node_id: usize,
     attributes: &ImageAttributes,
     base_url: Option<&Url>,
-    partition: &ResourcePartitionKey,
     origin: &str,
-) {
+) -> Option<PendingImageDataUpdate> {
     // Step 1: If `element`'s node document is not fully active:
     // Note: The content process only runs this algorithm for an active
     // document, so the step and its substeps do not apply.
@@ -601,23 +674,18 @@ pub(crate) fn update_the_image_data(
                     node_id,
                 });
                 // Step 7.4.8: Abort the update the image data algorithm.
-                return;
+                return None;
             }
         }
     }
 
     // Step 8: Queue a microtask to perform the rest of this algorithm, allowing the task that invoked this algorithm to continue.
-    registry
-        .pending_microtasks
-        .push_back(PendingImageDataUpdate {
-            document_id,
-            node_id,
-            instance_id,
-            attributes: attributes.clone(),
-            base_url: base_url.cloned(),
-            partition: partition.clone(),
-            origin: origin.to_string(),
-        });
+    // Note: The DOM hooks run without an execution context, so the caller
+    // queues the returned update as a microtask in the element's realm.
+    Some(PendingImageDataUpdate {
+        element_id: registry.element_id(document_id, node_id),
+        instance_id,
+    })
 }
 
 /// Allocates the next image request instance id.
@@ -642,7 +710,7 @@ fn abort_the_image_request(request: Option<&mut ImageRequest>) {
     request.image_data = None;
     // Step 3: "Abort any instance of the fetching algorithm for `image request`, discarding any pending tasks generated by that algorithm."
     // Note: The net fetch cannot be cancelled from content; clearing the
-    // fetch id makes a late response's `find_fetch` ignore it.
+    // fetch id makes a late response's fetch-id match fail.
     request.fetch_id = None;
 }
 
@@ -680,10 +748,12 @@ fn select_an_image_source(attributes: &ImageAttributes) -> Option<(String, f64)>
 pub(crate) fn continue_update_the_image_data(
     registry: &mut ImageRegistry,
     sink: &dyn ImageFetchSink,
+    environment: &ImageUpdateEnvironment,
     update: &PendingImageDataUpdate,
 ) {
-    let document_id = update.document_id;
-    let node_id = update.node_id;
+    let Some((document_id, node_id)) = registry.element_location(update.element_id) else {
+        return;
+    };
     // Step 9: If another instance of this algorithm for `element` was started after this instance (even if it aborted and is no longer running), then return.
     if registry.element(document_id, node_id).update_instance_id != update.instance_id {
         return;
@@ -694,7 +764,7 @@ pub(crate) fn continue_update_the_image_data(
     // `srcset` candidate, or `src` when the source set yields nothing.  A
     // `sizes`-driven choice is not modeled.
     let Some((selected_source, selected_pixel_density)) =
-        select_an_image_source(&update.attributes)
+        select_an_image_source(&environment.attributes)
     else {
         // Step 11.1: Set the current request's state to `broken`, abort the image request for the current request and the pending request, and set the pending request to null.
         {
@@ -709,7 +779,7 @@ pub(crate) fn continue_update_the_image_data(
         // Step 11.2.2: If all of the following are true: `element` has a `src` attribute or it uses `srcset` or `picture`; and `maybe omit events` is not set or `previousURL` is not the empty string, then fire an event named `error` at `element`.
         // Note: `maybe omit events` is never set, so the second condition
         // always holds.
-        if update.attributes.src.is_some() || update.attributes.uses_srcset_or_picture() {
+        if environment.attributes.src.is_some() || environment.attributes.uses_srcset_or_picture() {
             registry.pending_tasks.push(ImageTask::FireError {
                 document_id,
                 node_id,
@@ -722,7 +792,7 @@ pub(crate) fn continue_update_the_image_data(
 
     // Step 12: Let `urlString` be the result of encoding-parsing-and-serializing a URL given `selected source`, relative to `element`'s node document.
     let Some(url_string) =
-        encoding_parsing_and_serializing_url(update.base_url.as_ref(), &selected_source)
+        encoding_parsing_and_serializing_url(environment.base_url.as_ref(), &selected_source)
     else {
         // Step 13.1: Abort the image request for the current request and the pending request.
         // Step 13.2: Set the current request's state to `broken`.
@@ -776,7 +846,7 @@ pub(crate) fn continue_update_the_image_data(
     let blob_id = registry.next_blob_id;
     registry.next_blob_id += 1;
     let request_id = next_request_id(registry);
-    let key = available_images_key(&url_string, &update.attributes, &update.origin);
+    let key = available_images_key(&url_string, &environment.attributes, &environment.origin);
     let handler_id = DocumentFetchId::new();
     let image_request = ImageRequest {
         state: ImageRequestState::Unavailable,
@@ -785,7 +855,7 @@ pub(crate) fn continue_update_the_image_data(
         current_pixel_density: selected_pixel_density,
         preferred_density_corrected_dimensions: None,
         image_id: Some(ImageIdentifier {
-            partition: update.partition.clone(),
+            partition: environment.partition.clone(),
             blob_id,
         }),
         available_images_key: Some(key),
@@ -823,7 +893,7 @@ pub(crate) fn continue_update_the_image_data(
     // Step 25: If the will lazy load element steps given the `img` return true:
     // Note: Not implemented; images are obtained immediately.
     // Step 26: Fetch the image: Fetch `request`. Return from this algorithm, and run the remaining steps as part of the fetch's processResponse for the response `response`.
-    sink.start_image_fetch(document_id, node_id, handler_id, &url_string);
+    sink.start_image_fetch(update.element_id, document_id, handler_id, &url_string);
 }
 
 /// What the fetch's processResponse did with the image, so the content
@@ -837,12 +907,32 @@ pub(crate) enum ImageFetchOutcome {
 /// to the algorithm that created the request.
 pub(crate) fn process_image_fetch_response(
     registry: &mut ImageRegistry,
+    element_id: ImageElementId,
     handler_id: DocumentFetchId,
     dimensions: Option<(u32, u32)>,
 ) -> ImageFetchOutcome {
-    let Some((document_id, node_id, _is_pending, source)) = find_fetch(registry, handler_id) else {
+    let Some(element) = registry.elements.get(&element_id) else {
         return ImageFetchOutcome::Failed;
     };
+    // The response belongs to the request that started the fetch: the current
+    // request, or the pending one while an update is in flight.
+    let source = if element.current_request.fetch_id == Some(handler_id) {
+        element.current_request.source
+    } else if element
+        .pending_request
+        .as_ref()
+        .is_some_and(|pending| pending.fetch_id == Some(handler_id))
+    {
+        element
+            .pending_request
+            .as_ref()
+            .map(|pending| pending.source)
+            .unwrap_or_default()
+    } else {
+        // A late response for a request the processing model already aborted.
+        return ImageFetchOutcome::Failed;
+    };
+    let (document_id, node_id) = (element.document_id, element.node_id);
     match source {
         ImageRequestSource::UpdateTheImageData => process_update_the_image_data_response(
             registry,
@@ -919,6 +1009,7 @@ fn process_update_the_image_data_response(
             image_id: image_id.clone(),
             width: dimensions.0,
             height: dimensions.1,
+            decode: None,
         };
         // Step 27 (the next network task), "If the resource type and data corresponds to a supported image format": "If the user agent is able to determine `image request`'s image's width and height, and `image request` is the pending request, set `image request`'s state to `partially available`."
         // Step 27 (the next network task), second entry: "Otherwise, if the user agent is able to determine `image request`'s image's width and height, and `image request` is the current request, prepare `image request` for presentation given `element` and set `image request`'s state to `partially available`."
@@ -966,13 +1057,15 @@ fn process_reacting_to_environment_changes_response(
 ) -> ImageFetchOutcome {
     let Some(dimensions) = dimensions else {
         // Step 17.5.1: "If response's unsafe response is a network error or if the image format is unsupported (as determined by applying the image sniffing rules, again as mentioned earlier), or if the user agent is able to determine that `image request`'s image is corrupted in some fatal way such that the image dimensions cannot be obtained, or if the resource type is `multipart/x-mixed-replace`, then set the pending request to null and return."
-        if let Some(element) = registry.elements.get_mut(&(document_id, node_id))
-            && element
+        {
+            let element = registry.element_mut(document_id, node_id);
+            if element
                 .pending_request
                 .as_ref()
                 .is_some_and(|pending| pending.fetch_id == Some(handler_id))
-        {
-            element.pending_request = None;
+            {
+                element.pending_request = None;
+            }
         }
         return ImageFetchOutcome::Failed;
     };
@@ -997,6 +1090,7 @@ fn process_reacting_to_environment_changes_response(
             image_id: image_id.clone(),
             width: dimensions.0,
             height: dimensions.1,
+            decode: None,
         });
         pending.preferred_density_corrected_dimensions = Some(dimensions);
         let Some(update) = pending.environment_update.clone() else {
@@ -1133,13 +1227,14 @@ pub(crate) fn reacting_to_environment_changes(
     // Step 17.5: ⌛ Fetch `request`, with `processResponse` set to the following steps given response `response`:
     // Note: The response half is `process_reacting_to_environment_changes_response`.
     let handler_id = DocumentFetchId::new();
+    let element_id = registry.element_id(document_id, node_id);
     {
         let element = registry.element_mut(document_id, node_id);
         if let Some(pending) = element.pending_request.as_mut() {
             pending.fetch_id = Some(handler_id);
         }
     }
-    sink.start_image_fetch(document_id, node_id, handler_id, &url_string);
+    sink.start_image_fetch(element_id, document_id, handler_id, &url_string);
 }
 
 /// <https://html.spec.whatwg.org/#reacting-to-environment-changes>
@@ -1209,34 +1304,6 @@ pub(crate) fn finish_environment_update(
     });
 }
 
-fn find_fetch(
-    registry: &ImageRegistry,
-    handler_id: DocumentFetchId,
-) -> Option<(DocumentId, usize, bool, ImageRequestSource)> {
-    registry
-        .elements
-        .iter()
-        .find_map(|((document_id, node_id), element)| {
-            if element.current_request.fetch_id == Some(handler_id) {
-                Some((
-                    *document_id,
-                    *node_id,
-                    false,
-                    element.current_request.source,
-                ))
-            } else {
-                element.pending_request.as_ref().and_then(|pending| {
-                    (pending.fetch_id == Some(handler_id)).then_some((
-                        *document_id,
-                        *node_id,
-                        true,
-                        pending.source,
-                    ))
-                })
-            }
-        })
-}
-
 /// The image-processing state of an `<img>` element, if the element has been
 /// seen by the processing model.
 pub(crate) fn image_element(
@@ -1296,24 +1363,60 @@ pub(crate) fn current_request_id(element: &ImageElement) -> u64 {
     element.current_request.request_id
 }
 
-/// Records the graphics process's decode outcome for one image resource.
+/// Records the graphics process's decode outcome for one image resource on
+/// the requests and cached entries that reference it, and returns the elements
+/// whose `decode()` promise can now settle.
 pub(crate) fn image_decoded(
     registry: &mut ImageRegistry,
     image_id: &ImageIdentifier,
     decoded: bool,
-) {
-    registry.image_decodes.insert(
-        image_id.clone(),
-        if decoded {
-            ImageDecode::Decoded
-        } else {
-            ImageDecode::Failed
-        },
-    );
+) -> Vec<ImageElementId> {
+    let outcome = if decoded {
+        ImageDecode::Decoded
+    } else {
+        ImageDecode::Failed
+    };
+    let mut elements = Vec::new();
+    for (element_id, element) in &mut registry.elements {
+        let current = record_decode(&mut element.current_request, image_id, outcome);
+        let pending = element
+            .pending_request
+            .as_mut()
+            .is_some_and(|pending| record_decode(pending, image_id, outcome));
+        if current || pending {
+            elements.push(*element_id);
+        }
+    }
+    // A later request for the same URL reuses the cached entry (step 7.4.4 of
+    // "update the image data"), so the entry keeps the outcome too.
+    for loaded in registry.available_images.values_mut() {
+        if &loaded.image_id == image_id {
+            loaded.decode = Some(outcome);
+        }
+    }
+    elements
+}
+
+/// Records `outcome` on `request` if its image data is `image_id`.
+fn record_decode(
+    request: &mut ImageRequest,
+    image_id: &ImageIdentifier,
+    outcome: ImageDecode,
+) -> bool {
+    match request.image_data.as_mut() {
+        Some(image) if &image.image_id == image_id => {
+            image.decode = Some(outcome);
+            true
+        }
+        _ => false,
+    }
 }
 
 /// The decision `decode()` step 2.3 makes for a promise waiting on the request
-/// the element's current request had when the promise was registered.
+/// the element's current request had when the promise was registered.  A
+/// request id of zero means the processing model never installed a request for
+/// the element (a detached `<img>` with no source), which "update the image
+/// data" leaves broken: such a promise rejects.
 pub(crate) fn decode_settlement(
     registry: &ImageRegistry,
     document_id: DocumentId,
@@ -1323,16 +1426,13 @@ pub(crate) fn decode_settlement(
     let element = registry.element(document_id, node_id);
     let request = &element.current_request;
     // "This img element's current request changes or is mutated"
-    if request.request_id != request_id {
+    if request.request_id != request_id || request.request_id == 0 {
         return DecodeSettlement::Reject;
     }
     match request.state {
         ImageRequestState::Broken => DecodeSettlement::Reject,
         ImageRequestState::CompletelyAvailable => {
-            let decode = request
-                .image_id
-                .as_ref()
-                .and_then(|image_id| registry.image_decodes.get(image_id));
+            let decode = request.image_data.as_ref().and_then(|image| image.decode);
             match decode {
                 Some(ImageDecode::Decoded) => DecodeSettlement::Resolve,
                 Some(ImageDecode::Failed) => DecodeSettlement::Reject,
@@ -1343,19 +1443,4 @@ pub(crate) fn decode_settlement(
             DecodeSettlement::Wait
         }
     }
-}
-
-/// Whether `decode()` step 2.2 rejects the promise: the current request is
-/// broken, or the processing model never installed a request for the element.
-/// No source leaves the request broken when "update the image data" runs, and
-/// an element that never reached the model (a detached `<img>` without `src`
-/// or `srcset`) is indistinguishable from it here.
-pub(crate) fn decode_rejects_now(
-    registry: &ImageRegistry,
-    document_id: DocumentId,
-    node_id: usize,
-) -> bool {
-    let element = registry.element(document_id, node_id);
-    element.current_request.state == ImageRequestState::Broken
-        || element.current_request.request_id == 0
 }

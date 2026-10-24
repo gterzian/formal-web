@@ -3,10 +3,9 @@ use ipc_messages::content::{
     NewChildNavigableInfo, UserNavigationInvolvement, iframe_target_name,
 };
 use std::{
-    cell::RefCell,
+    cell::{Cell, RefCell},
     collections::{HashMap, HashSet},
     rc::Rc,
-    sync::{Arc, atomic::AtomicBool},
 };
 
 use blitz_dom::BaseDocument;
@@ -237,7 +236,7 @@ fn attach_iframe_subdocument_from_html(
     else {
         return Ok(());
     };
-    let needs_paint = Arc::new(AtomicBool::new(false));
+    let needs_paint = Rc::new(Cell::new(false));
     let top_level_traversable_id = process
         .documents
         .get(&parent_document_id)
@@ -468,7 +467,7 @@ fn create_a_new_child_navigable(
     // flag: this child navigable's render is driven by content command
     // handlers (event/script dispatch); resource-load re-notes via the
     // shell provider are not connected for dynamically-created documents.
-    let needs_paint = Arc::new(AtomicBool::new(false));
+    let needs_paint = Rc::new(Cell::new(false));
     process.documents.insert(
         new_document_id,
         ContentDocument {

@@ -67,26 +67,23 @@ use ipc_messages::content::{
     ColorScheme as MessageColorScheme, Command, DispatchEventEntry, DocumentFetchId, DocumentId,
     ElementClickResult, EmbedBackgroundPolicy, EmbedLayout, EmbedSite, EmbedSiteId,
     Event as ContentEvent, EventLoopId, FetchResponse as ContentFetchResponse, FontTransportSender,
-    FrameCompositionMetadata, FrameId, IframeEmbedSite, ImageEmbedData, ImageIdentifier,
-    ImagePaintId, ImageTransportSender, LoadedDocumentResponse, NavigableId, NavigationId,
-    PaintFrame, PortId, PortTaskKind, PreparedScene, RecordedScene, ResourcePartitionKey,
-    ScriptEvaluationResult, TitleChanged, TraversableViewport, UserScript, ViewportSnapshot,
-    WebviewId, WindowTimerKey, WorkerId, WorkerOwner,
+    FrameCompositionMetadata, FrameId, IframeEmbedSite, ImageElementId, ImageEmbedData,
+    ImageIdentifier, ImagePaintId, ImageTransportSender, LoadedDocumentResponse, NavigableId,
+    NavigationId, PaintFrame, PortId, PortTaskKind, PreparedScene, RecordedScene,
+    ResourcePartitionKey, ScriptEvaluationResult, TitleChanged, TraversableViewport, UserScript,
+    ViewportSnapshot, WebviewId, WindowTimerKey, WorkerId, WorkerOwner,
 };
 use ipc_messages::graphics::GraphicsCommand;
 use ipc_messages::media::{VideoEmbedData, VideoPaintId};
 use ipc_messages::safe_passing_of_structured_data::PostMessageRequest;
 use log::{debug, error, info, warn};
 use std::{
-    cell::RefCell,
+    cell::{Cell, RefCell},
     collections::{HashMap, HashSet},
     env,
     io::Cursor,
     rc::{Rc, Weak},
-    sync::{
-        Arc, Mutex,
-        atomic::{AtomicBool, Ordering},
-    },
+    sync::Arc,
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 use url::Url;
@@ -159,7 +156,9 @@ pub(crate) enum PendingNetworkHandler {
     Image {
         document_id: DocumentId,
         navigable_id: NavigableId,
-        node_id: usize,
+        /// The element the request belongs to; the response is routed to that
+        /// element's processing model state without searching for it.
+        element_id: ImageElementId,
     },
     DeferredScript {
         document_id: DocumentId,
@@ -171,7 +170,7 @@ pub(crate) struct LocalContentState {
     pub(crate) pending_handlers: HashMap<DocumentFetchId, PendingNetworkHandler>,
 }
 
-pub(crate) type LocalContentStateRef = Arc<Mutex<LocalContentState>>;
+pub(crate) type LocalContentStateRef = Rc<RefCell<LocalContentState>>;
 
 /// Tracks the playback state of a video element across paints.
 /// Stored in the paint registry instead of on the element for now.
@@ -179,10 +178,10 @@ pub(crate) type LocalContentStateRef = Arc<Mutex<LocalContentState>>;
 /// `get_clipboard_text` reads from this cache instead of doing a blocking
 /// IPC round-trip. The embedder prefetches clipboard text before dispatching
 /// paste events and writes it here via `set_clipboard_cache`.
-type ClipboardCache = std::sync::Arc<std::sync::Mutex<Option<String>>>;
+type ClipboardCache = Rc<RefCell<Option<String>>>;
 
 fn new_clipboard_cache() -> ClipboardCache {
-    std::sync::Arc::new(std::sync::Mutex::new(None))
+    Rc::new(RefCell::new(None))
 }
 
 struct ContentShellProvider {
@@ -195,21 +194,23 @@ struct ContentShellProvider {
     /// identical scene during a video-driven render cycle skips the blitz
     /// work entirely.
     ///
-    /// The `Arc<AtomicBool>` (rather than an `Rc<RefCell<bool>>` or a single
+    /// Shared between this provider, which blitz calls `request_redraw()`
+    /// on, and the `ContentDocument` that `update_the_rendering` reads.
+    ///
     /// `bool`) is a blitz shell-provider constraint, not our own cross-thread
     /// sharing: blitz's `ShellProvider` trait is `Send + Sync`, so this
     /// `ContentShellProvider` must be `Send + Sync`, which forces the flag to
     /// be a thread-safe shared value. It is shared between the
     /// `ContentShellProvider` that blitz calls `request_redraw()` on and the
     /// `ContentDocument` that `update_the_rendering` reads.
-    needs_paint: Arc<AtomicBool>,
+    needs_paint: Rc<Cell<bool>>,
 }
 
 impl ContentShellProvider {
     fn new(
         event_sender: ipc::IpcSender<ContentEvent>,
         clipboard_cache: ClipboardCache,
-        needs_paint: Arc<AtomicBool>,
+        needs_paint: Rc<Cell<bool>>,
     ) -> Self {
         Self {
             event_sender,
@@ -221,16 +222,14 @@ impl ContentShellProvider {
 
 impl ShellProvider for ContentShellProvider {
     fn request_redraw(&self) {
-        self.needs_paint.store(true, Ordering::Relaxed);
+        self.needs_paint.set(true);
     }
 
     fn get_clipboard_text(&self) -> Result<String, ClipboardError> {
         // The embedder prefetches the clipboard text into the cache before
         // dispatching a paste event (DispatchEventEntry.prefetched_clipboard_text);
         // content never reads the system clipboard itself.
-        if let Ok(mut cache) = self.clipboard_cache.lock()
-            && let Some(text) = cache.take()
-        {
+        if let Some(text) = self.clipboard_cache.borrow_mut().take() {
             return Ok(text);
         }
         error!("clipboard read requested but no prefetched clipboard text is available");
@@ -332,7 +331,7 @@ pub(crate) struct ContentDocument {
     /// not animating — so a static document that keeps being asked to render
     /// (e.g. a video elsewhere drives the render cycle) does not re-run blitz
     /// on an unchanged scene.
-    needs_paint: Arc<AtomicBool>,
+    needs_paint: Rc<Cell<bool>>,
     /// The last recorded scene, reused verbatim on a clean render cycle so the
     /// graphics process keeps the content layer clean (an unchanged scene is
     /// not re-rasterized) instead of re-painting an unchanged document. Fonts
@@ -419,7 +418,7 @@ pub(crate) struct ContentProcess {
     /// once per webview lifetime.
     image_sender: ImageTransportSender,
     /// The `<img>` processing model state shared by the process's documents.
-    image_registry: Arc<Mutex<ImageRegistry>>,
+    image_registry: Rc<RefCell<ImageRegistry>>,
     /// The image identifiers each document has registered with the graphics
     /// process; released when the document is destroyed.
     registered_images_by_document: HashMap<DocumentId, HashSet<ImageIdentifier>>,
@@ -476,7 +475,7 @@ pub(crate) struct ContentProcess {
     /// The URL schemes the embedder serves itself, received in
     /// `ContentBootstrap` and fixed for the life of the process. A fetch for
     /// one of them goes to the user agent instead of to net.
-    embedder_schemes: Arc<HashSet<String>>,
+    embedder_schemes: Rc<HashSet<String>>,
 }
 
 impl ContentProcess {
@@ -506,7 +505,7 @@ impl ContentProcess {
         Self {
             event_sender,
             event_loop_id,
-            local_state: Arc::new(Mutex::new(LocalContentState {
+            local_state: Rc::new(RefCell::new(LocalContentState {
                 pending_handlers: HashMap::new(),
             })),
             default_viewport: None,
@@ -519,7 +518,7 @@ impl ContentProcess {
             font_namespace: new_font_namespace(),
             font_sender: FontTransportSender::default(),
             image_sender: ImageTransportSender::default(),
-            image_registry: Arc::new(Mutex::new(ImageRegistry::default())),
+            image_registry: Rc::new(RefCell::new(ImageRegistry::default())),
             registered_images_by_document: HashMap::new(),
             subdocuments: HashMap::new(),
             tla_tracer: TLATracer::new("Navigation", "formal-web:content", trace_sender.clone()),
@@ -539,7 +538,7 @@ impl ContentProcess {
             realm_parent: Engine::new(),
             active_timers: Rc::new(RefCell::new(MapOfActiveTimers::default())),
             task_queue: TaskQueue::new(),
-            embedder_schemes: Arc::new(embedder_schemes.into_iter().collect()),
+            embedder_schemes: Rc::new(embedder_schemes.into_iter().collect()),
         }
     }
 
@@ -581,7 +580,7 @@ impl ContentProcess {
                 global_scope.set_worker_owner_inbox(worker_event_sender.clone());
                 global_scope.set_network_partition_event_loop_id(self.event_loop_id);
                 global_scope.set_network_extension_sender(network_extension_sender.clone());
-                global_scope.set_image_registry(Arc::clone(&self.image_registry));
+                global_scope.set_image_registry(Rc::clone(&self.image_registry));
                 Ok(())
             },
         )
@@ -592,9 +591,7 @@ impl ContentProcess {
     /// Set the clipboard cache from a prefetched clipboard text.
     /// Called before dispatching paste events.
     fn set_clipboard_cache(&self, text: Option<String>) {
-        if let Ok(mut cache) = self.clipboard_cache.lock() {
-            *cache = text;
-        }
+        *self.clipboard_cache.borrow_mut() = text;
     }
 
     fn document_viewport_state(
@@ -617,13 +614,41 @@ impl ContentProcess {
     }
 
     #[allow(clippy::too_many_arguments)]
+    /// Wires the document's realm to its processing model state: the realm
+    /// reads the image registry, the document's providers (base URL, partition,
+    /// origin, fetch sink) and queues the step-8 continuations the `<img>` DOM
+    /// hooks produce.
+    ///
+    /// <https://html.spec.whatwg.org/#queue-a-microtask>
+    fn wire_image_realm(
+        &mut self,
+        settings: &mut EnvironmentSettingsObject,
+        providers: &Arc<DocumentProviders>,
+    ) -> Result<(), String> {
+        let queue = settings.realm_execution_context.realm_job_queue();
+        providers.set_image_job_queue(queue);
+        with_global_scope(
+            &mut settings.realm_execution_context,
+            |global_scope, _ec| {
+                global_scope.set_image_providers(Arc::clone(providers));
+                Ok(())
+            },
+        )
+        .map_err(|error| {
+            format!(
+                "failed to set the document's image environment: {}",
+                error.display()
+            )
+        })
+    }
+
     fn document_config(
         &self,
         traversable_id: NavigableId,
         top_level_traversable_id: NavigableId,
         base_url: Option<String>,
         origin: String,
-        needs_paint: Arc<AtomicBool>,
+        needs_paint: Rc<Cell<bool>>,
         embedded_images: bool,
         host: DocumentHost,
     ) -> (DocumentConfig, Arc<DocumentProviders>) {
@@ -631,18 +656,23 @@ impl ContentProcess {
             top_level_traversable: top_level_traversable_id,
             origin,
         };
+        // blitz's `DocumentConfig` takes `Arc<dyn MutationHooks>` while the
+        // providers hold `Rc` state, since the content process is
+        // single-threaded: the `Arc` is a container here, not a thread-safety
+        // requirement.
+        #[allow(clippy::arc_with_non_send_sync)]
         let providers = Arc::new(DocumentProviders::new(
             host,
             traversable_id,
             self.event_loop_id,
             base_url.as_ref().and_then(|url| Url::parse(url).ok()),
             partition,
-            Arc::clone(&self.local_state),
+            Rc::clone(&self.local_state),
             self.network_extension_sender.clone(),
             self.content_command_sender.clone(),
             self.event_sender.clone(),
-            Arc::clone(&self.embedder_schemes),
-            Arc::clone(&self.image_registry),
+            Rc::clone(&self.embedder_schemes),
+            Rc::clone(&self.image_registry),
             needs_paint.clone(),
         ));
         let config = DocumentConfig {
@@ -653,6 +683,11 @@ impl ContentProcess {
             base_url,
             mutation_hooks: Some(Arc::clone(&providers) as Arc<dyn MutationHooks>),
             resource_hooks: Some(Arc::clone(&providers) as Arc<dyn ResourceHooks>),
+            // blitz's `DocumentConfig` takes `Arc<dyn ShellProvider>` while the
+            // provider holds `Rc` state, since the content process is
+            // single-threaded: the `Arc` is a container here, not a
+            // thread-safety requirement.
+            #[allow(clippy::arc_with_non_send_sync)]
             shell_provider: Some(Arc::new(ContentShellProvider::new(
                 self.event_sender.clone(),
                 self.clipboard_cache.clone(),
@@ -707,7 +742,7 @@ impl ContentProcess {
         // A viewport change resizes the document surface; mark it dirty so the
         // next update-the-rendering re-paints instead of reusing the stale-size
         // cached scene.
-        document.needs_paint.store(true, Ordering::Relaxed);
+        document.needs_paint.set(true);
         document
             .document
             .borrow_mut()
@@ -719,16 +754,12 @@ impl ContentProcess {
         // The viewport change is a stable state: let every `<img>` in the
         // document react to the new environment.
         let image_node_ids: Vec<usize> = {
-            let registry = self
-                .image_registry
-                .lock()
-                .unwrap_or_else(|error| error.into_inner());
+            let registry = self.image_registry.borrow_mut();
             registry
                 .elements
-                .keys()
-                .filter_map(|(image_document_id, node_id)| {
-                    (*image_document_id == document_id).then_some(*node_id)
-                })
+                .values()
+                .filter(|element| element.document_id == document_id)
+                .map(|element| element.node_id)
                 .collect()
         };
         let providers = document.providers.clone();
@@ -958,7 +989,7 @@ impl ContentProcess {
                 global_scope.set_worker_owner_inbox(worker_event_sender.clone());
                 global_scope.set_network_partition_event_loop_id(self.event_loop_id);
                 global_scope.set_network_extension_sender(network_extension_sender.clone());
-                global_scope.set_image_registry(Arc::clone(&self.image_registry));
+                global_scope.set_image_registry(Rc::clone(&self.image_registry));
                 Ok(())
             })
             .map_err(|error| format!("failed to set event loop id: {}", error.display()))?;
@@ -977,7 +1008,7 @@ impl ContentProcess {
                     navigable_container_states: HashMap::new(),
                     viewport_offset_x: 0.0,
                     viewport_offset_y: 0.0,
-                    needs_paint: Arc::new(AtomicBool::new(false)),
+                    needs_paint: Rc::new(Cell::new(false)),
                     last_scene: None,
                     last_composition: None,
                 },
@@ -1156,7 +1187,7 @@ impl ContentProcess {
     ) -> Result<(), String> {
         let viewport_state = self.document_viewport_state(traversable_id);
         let frame_id = frame_id.unwrap_or_else(FrameId::new);
-        let needs_paint = Arc::new(AtomicBool::new(false));
+        let needs_paint = Rc::new(Cell::new(false));
         let (document_config, providers) = self.document_config(
             traversable_id,
             top_level_traversable_id,
@@ -1173,6 +1204,7 @@ impl ContentProcess {
             traversable_id,
             document_id,
         )?;
+        self.wire_image_realm(&mut settings, &providers)?;
 
         // Set the video-paint registry on GlobalScope so that
         // resource_selection_algorithm can register paint IDs.
@@ -1269,7 +1301,7 @@ impl ContentProcess {
         (
             Rc<RefCell<BaseDocument>>,
             EnvironmentSettingsObject,
-            Arc<AtomicBool>,
+            Rc<Cell<bool>>,
             Arc<DocumentProviders>,
         ),
         String,
@@ -1363,7 +1395,7 @@ impl ContentProcess {
         // Note: The document and settings object are returned to the caller
         // (`create_loaded_document`), which continues navigate-html with the parse.
         let creation_url = Url::parse(final_url).map_err(|error| error.to_string())?;
-        let needs_paint = Arc::new(AtomicBool::new(false));
+        let needs_paint = Rc::new(Cell::new(false));
         let origin = creation_url.origin().unicode_serialization();
         let (document_config, providers) = self.document_config(
             traversable_id,
@@ -1390,6 +1422,7 @@ impl ContentProcess {
                 document_id,
             )?,
         };
+        self.wire_image_realm(&mut settings, &providers)?;
 
         // The video-paint registry and graphics sender are engine integration, not spec
         // steps: they wire the document's GlobalScope to the media and graphics pipelines.
@@ -1544,11 +1577,16 @@ impl ContentProcess {
         self.active_documents_by_traversable
             .insert(traversable_id, document_id);
 
-        // The parse task's stable state: start the fetches the parsed `<img>`
-        // elements queued (step 8 of "update the image data") before the
-        // document starts its other subresource fetches, so an image's load
-        // event does not have to wait for them behind the deferred scripts.
-        self.drain_image_microtasks();
+        // The parse task's stable state: run the document's microtask
+        // checkpoint so the continuations the parsed `<img>` elements queued at
+        // step 8 of "update the image data" start their fetches before the
+        // document starts its other subresource fetches; an image's load event
+        // then does not have to wait for them behind the deferred scripts.
+        if let Some(content_document) = self.documents.get_mut(&document_id)
+            && let Err(error) = content_document.settings.perform_a_microtask_checkpoint()
+        {
+            error!("failed to run the parsed document's microtask checkpoint: {error}");
+        }
         attach_same_origin_child_document_for_traversable(self, traversable_id)?;
 
         // Set the navigable hierarchy on the GlobalScope so that `window.open`
@@ -1818,8 +1856,7 @@ impl ContentProcess {
                 .unwrap_or_default();
             image_ids.extend(
                 self.image_registry
-                    .lock()
-                    .expect("image registry mutex poisoned")
+                    .borrow_mut()
                     .forget_document(document_id),
             );
             if !image_ids.is_empty() {
@@ -1850,10 +1887,7 @@ impl ContentProcess {
                     || self.wasm.pending_requests.get(request_id) != Some(&document_id)
             });
         }
-        let mut local_state = self
-            .local_state
-            .lock()
-            .expect("local content state mutex poisoned");
+        let mut local_state = self.local_state.borrow_mut();
         local_state
             .pending_handlers
             .retain(|_, pending_handler| match pending_handler {
@@ -2381,10 +2415,8 @@ impl ContentProcess {
         ));
         let video_paint_registry = Rc::clone(&self.video_paint_registry);
         let canvas_registry = Rc::clone(&self.canvas_registry);
-        let image_registry = Arc::clone(&self.image_registry);
-        let image_registry_guard = image_registry
-            .lock()
-            .expect("image registry mutex poisoned");
+        let image_registry = Rc::clone(&self.image_registry);
+        let image_registry_guard = image_registry.borrow_mut();
         let (paint_frame, shmem_map) = {
             let document = self
                 .documents
@@ -2419,7 +2451,7 @@ impl ContentProcess {
             // process keeps the content layer clean instead of re-rasterizing an
             // unchanged scene every cycle.
             let should_render = {
-                let needs_paint = document.needs_paint.load(Ordering::Relaxed);
+                let needs_paint = document.needs_paint.get();
                 let document_guard = document.document.borrow();
                 needs_paint
                     || had_pending_r_af
@@ -2571,7 +2603,7 @@ impl ContentProcess {
                 };
                 document.last_scene = Some(recorded_scene);
                 document.last_composition = Some(composition);
-                document.needs_paint.store(false, Ordering::Relaxed);
+                document.needs_paint.set(false);
                 (paint_frame, shmem_data)
             }
         };
@@ -2985,6 +3017,7 @@ impl ContentProcess {
         &mut self,
         document_id: DocumentId,
         navigable_id: NavigableId,
+        element_id: ImageElementId,
         handler_id: DocumentFetchId,
         body: &[u8],
     ) -> Result<(), String> {
@@ -2994,11 +3027,13 @@ impl ContentProcess {
             .into_dimensions()
             .ok();
         let outcome = {
-            let mut registry = self
-                .image_registry
-                .lock()
-                .expect("image registry mutex poisoned");
-            image_data::process_image_fetch_response(&mut registry, handler_id, dimensions)
+            let mut registry = self.image_registry.borrow_mut();
+            image_data::process_image_fetch_response(
+                &mut registry,
+                element_id,
+                handler_id,
+                dimensions,
+            )
         };
         match outcome {
             ImageFetchOutcome::ImageAvailable(image_id) => {
@@ -3016,13 +3051,14 @@ impl ContentProcess {
 
     /// The image fetch's processResponse failure branch: a network error or a
     /// response that is not a usable image.
-    fn process_image_fetch_failure(&mut self, handler_id: DocumentFetchId) -> Result<(), String> {
+    fn process_image_fetch_failure(
+        &mut self,
+        element_id: ImageElementId,
+        handler_id: DocumentFetchId,
+    ) -> Result<(), String> {
         {
-            let mut registry = self
-                .image_registry
-                .lock()
-                .expect("image registry mutex poisoned");
-            image_data::process_image_fetch_response(&mut registry, handler_id, None);
+            let mut registry = self.image_registry.borrow_mut();
+            image_data::process_image_fetch_response(&mut registry, element_id, handler_id, None);
         }
         self.drain_image_tasks()
     }
@@ -3068,11 +3104,13 @@ impl ContentProcess {
 
     /// Records the graphics process's decode outcome for one image resource.
     fn record_image_decoded(&mut self, image_id: &ImageIdentifier) {
-        let mut registry = self
-            .image_registry
-            .lock()
-            .unwrap_or_else(|error| error.into_inner());
-        image_data::image_decoded(&mut registry, image_id, true);
+        let settled = {
+            let mut registry = self.image_registry.borrow_mut();
+            image_data::image_decoded(&mut registry, image_id, true)
+        };
+        for element_id in settled {
+            self.settle_image_decodes(element_id);
+        }
     }
 
     /// Runs the image element tasks the algorithms queued: the
@@ -3081,13 +3119,11 @@ impl ContentProcess {
     /// algorithm; each `ImageTask` variant names the step that queued it.
     fn drain_image_tasks(&mut self) -> Result<(), String> {
         let tasks = {
-            let mut registry = self
-                .image_registry
-                .lock()
-                .expect("image registry mutex poisoned");
+            let mut registry = self.image_registry.borrow_mut();
             registry.take_pending_tasks()
         };
         for task in tasks {
+            let (task_document_id, task_node_id) = task.element();
             match task {
                 ImageTask::PrepareForPresentation {
                     document_id,
@@ -3102,7 +3138,7 @@ impl ContentProcess {
                         .document
                         .borrow_mut()
                         .set_image_intrinsic_size(node_id, width, height);
-                    content_document.needs_paint.store(true, Ordering::Relaxed);
+                    content_document.needs_paint.set(true);
                     let traversable_id = content_document.traversable_id;
                     self.event_sender
                         .send(ContentEvent::RenderingOpRequested(traversable_id))
@@ -3156,6 +3192,15 @@ impl ContentProcess {
                     }
                 }
             }
+            // The task moved the element's image data to its new state; the
+            // `decode()` promises waiting on that element read it here.
+            let element_id = {
+                let registry = self.image_registry.borrow_mut();
+                registry.existing_element_id(task_document_id, task_node_id)
+            };
+            if let Some(element_id) = element_id {
+                self.settle_image_decodes(element_id);
+            }
         }
         Ok(())
     }
@@ -3169,10 +3214,7 @@ impl ContentProcess {
         let response_status = response.status;
         let response_type = response.content_type.clone();
         let pending_handler = {
-            let mut local_state = self
-                .local_state
-                .lock()
-                .expect("local content state mutex poisoned");
+            let mut local_state = self.local_state.borrow_mut();
             local_state.pending_handlers.remove(&handler_id)
         };
 
@@ -3195,15 +3237,21 @@ impl ContentProcess {
             PendingNetworkHandler::Image {
                 document_id,
                 navigable_id,
-                node_id,
+                element_id,
             } => {
                 log_render_state_debug(format!(
-                    "complete image fetch handler={} document={} node={} status={} type={} url={}",
-                    handler_id, document_id, node_id, response_status, response_type, response_url,
+                    "complete image fetch handler={} document={} element={} status={} type={} url={}",
+                    handler_id,
+                    document_id,
+                    element_id,
+                    response_status,
+                    response_type,
+                    response_url,
                 ));
                 self.process_image_fetch_response(
                     document_id,
                     navigable_id,
+                    element_id,
                     handler_id,
                     &response.body,
                 )
@@ -3251,10 +3299,7 @@ impl ContentProcess {
 
     fn fail_document_fetch(&mut self, handler_id: DocumentFetchId) -> Result<(), String> {
         let pending_handler = {
-            let mut local_state = self
-                .local_state
-                .lock()
-                .expect("local content state mutex poisoned");
+            let mut local_state = self.local_state.borrow_mut();
             local_state.pending_handlers.remove(&handler_id)
         };
 
@@ -3273,14 +3318,14 @@ impl ContentProcess {
             }
             PendingNetworkHandler::Image {
                 document_id,
-                node_id,
+                element_id,
                 ..
             } => {
                 warn!(
-                    "content image fetch failed handler={} document={} node={}",
-                    handler_id, document_id, node_id,
+                    "content image fetch failed handler={} document={} element={}",
+                    handler_id, document_id, element_id,
                 );
-                self.process_image_fetch_failure(handler_id)
+                self.process_image_fetch_failure(element_id, handler_id)
             }
             PendingNetworkHandler::DeferredScript {
                 document_id,
@@ -3766,11 +3811,6 @@ impl ContentProcess {
 
     fn handle_command(&mut self, command: Command) -> Result<bool, String> {
         let result = self.handle_command_inner(command);
-        // The command that ran can queue "update the image data" microtasks (a
-        // document being parsed inserts its `<img>` elements); start their
-        // fetches now, so a document whose load event waits for them makes
-        // progress even when no task follows.
-        self.drain_image_microtasks();
         if let Err(error) = self.drain_image_tasks() {
             error!("failed to drain image tasks after a command: {error}");
         }
@@ -3914,13 +3954,11 @@ impl ContentProcess {
         current_url: Option<String>,
     ) -> Result<(), String> {
         if let Some(current_url) = current_url {
-            let mut registry = self
-                .image_registry
-                .lock()
-                .unwrap_or_else(|error| error.into_inner());
-            if let Some(element) = registry.elements.get_mut(&(document_id, node_id)) {
-                element.current_request.current_url = current_url;
-            }
+            let mut registry = self.image_registry.borrow_mut();
+            registry
+                .element_mut(document_id, node_id)
+                .current_request
+                .current_url = current_url;
         }
         let Some(content_document) = self.documents.get_mut(&document_id) else {
             return Ok(());
@@ -3964,10 +4002,7 @@ impl ContentProcess {
         selected_source: &str,
         selected_pixel_density: f64,
     ) -> Result<(), String> {
-        let mut registry = self
-            .image_registry
-            .lock()
-            .unwrap_or_else(|error| error.into_inner());
+        let mut registry = self.image_registry.borrow_mut();
         image_data::finish_environment_update(
             &mut registry,
             document_id,
@@ -4064,60 +4099,43 @@ impl ContentProcess {
 
     /// <https://html.spec.whatwg.org/#perform-a-microtask-checkpoint>
     fn perform_microtask_checkpoint(&mut self) -> Result<(), String> {
-        // The microtasks "update the image data" queued at step 8 run before
-        // the engine's job queue: their instances queued them during the
-        // mutation that ran before any microtask this task enqueued.
-        self.drain_image_microtasks();
+        // Each document's checkpoint runs the "update the image data"
+        // continuations its DOM hooks queued (step 8) before the engine's job
+        // queue: their instances queued them during a mutation that ran before
+        // any microtask this task enqueued.
         for document in self.documents.values_mut() {
             document
                 .settings
                 .perform_a_microtask_checkpoint()
                 .map_err(|error| format!("microtask checkpoint failed: {error}"))?;
         }
-        self.settle_pending_image_decodes();
         Ok(())
     }
 
-    /// Runs the microtasks "update the image data" queued at step 8,
-    /// performing steps 9-26 (including starting the fetch).
-    fn drain_image_microtasks(&mut self) {
-        while let Some(fetch) = {
-            self.image_registry
-                .lock()
-                .unwrap_or_else(|error| error.into_inner())
-                .pending_microtasks
-                .pop_front()
-        } {
-            let Some(providers) = self
-                .documents
-                .get(&fetch.document_id)
-                .and_then(|document| document.providers.clone())
-            else {
-                continue;
-            };
-            let mut registry = self
-                .image_registry
-                .lock()
-                .unwrap_or_else(|error| error.into_inner());
-            image_data::continue_update_the_image_data(&mut registry, providers.as_ref(), &fetch);
-        }
-    }
-
-    /// Settles the `decode()` promises whose request reached its outcome
-    /// (step 2.3 of `decode()`).
-    fn settle_pending_image_decodes(&mut self) {
-        for content_document in self.documents.values_mut() {
-            let result = with_global_scope(content_document.settings.ec(), |global_scope, ec| {
-                global_scope.settle_pending_image_decodes(ec)
-            });
-            if let Err(error) = result {
-                let message = content_document
-                    .settings
-                    .ec()
-                    .to_rust_string(error)
-                    .unwrap_or_else(|_| String::from("unknown error"));
-                error!("failed to settle pending image decode promises: {message}");
-            }
+    /// Settles the `decode()` promises waiting on one `<img>` element, whose
+    /// image data the processing model just moved to a new state: the content
+    /// process's side of `decode()` step 2.2 and 2.3.
+    fn settle_image_decodes(&mut self, element_id: ImageElementId) {
+        let location = {
+            let registry = self.image_registry.borrow_mut();
+            registry.element_location(element_id)
+        };
+        let Some((document_id, _node_id)) = location else {
+            return;
+        };
+        let Some(content_document) = self.documents.get_mut(&document_id) else {
+            return;
+        };
+        let result = with_global_scope(content_document.settings.ec(), |global_scope, ec| {
+            global_scope.settle_pending_image_decodes(ec, element_id)
+        });
+        if let Err(error) = result {
+            let message = content_document
+                .settings
+                .ec()
+                .to_rust_string(error)
+                .unwrap_or_else(|_| String::from("unknown error"));
+            error!("failed to settle pending image decode promises: {message}");
         }
     }
 
@@ -4129,7 +4147,7 @@ impl ContentProcess {
     /// render skips the blitz resolve + paint on an unchanged scene.
     fn mark_document_dirty(&self, document_id: DocumentId) {
         if let Some(document) = self.documents.get(&document_id) {
-            document.needs_paint.store(true, Ordering::Relaxed);
+            document.needs_paint.set(true);
         }
     }
 
@@ -4268,14 +4286,13 @@ impl ContentProcess {
                 if let Err(error) = &result {
                     error!("graphics failed to decode an image: {error}");
                 }
-                {
-                    let mut registry = self
-                        .image_registry
-                        .lock()
-                        .unwrap_or_else(|error| error.into_inner());
-                    image_data::image_decoded(&mut registry, &image_id, result.is_ok());
+                let settled = {
+                    let mut registry = self.image_registry.borrow_mut();
+                    image_data::image_decoded(&mut registry, &image_id, result.is_ok())
+                };
+                for element_id in settled {
+                    self.settle_image_decodes(element_id);
                 }
-                self.settle_pending_image_decodes();
                 Ok(true)
             }
             ContentBootstrap { .. } => {

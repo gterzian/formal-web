@@ -61,6 +61,7 @@ uuid_id!(NavigableId);
 uuid_id!(FrameId);
 uuid_id!(CanvasId);
 uuid_id!(ImagePaintId);
+uuid_id!(ImageElementId);
 uuid_id!(NavigationId);
 uuid_id!(PortId);
 uuid_id!(MessageId);

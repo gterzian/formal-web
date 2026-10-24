@@ -3,7 +3,7 @@ use std::{
     collections::{HashMap, HashSet},
     rc::Rc,
     slice::from_ref,
-    sync::{Arc, Mutex},
+    sync::Arc,
     vec::Vec,
 };
 
@@ -22,7 +22,8 @@ use super::workers::dedicated_worker_agent::{
 use blitz_dom::BaseDocument;
 use ipc::IpcSender;
 use ipc_messages::content::{
-    CanvasId, DocumentId, Event as ContentEvent, EventLoopId, NavigableId, WindowTimerKey, WorkerId,
+    CanvasId, DocumentId, Event as ContentEvent, EventLoopId, ImageElementId, NavigableId,
+    WindowTimerKey, WorkerId,
 };
 use ipc_messages::media::VideoPaintId;
 use ipc_messages::network::Request as NetworkRequest;
@@ -32,12 +33,15 @@ use log::{debug, error};
 
 use super::environment_settings_object::RealmWiring;
 use super::event_loop::{EventLoopTaskSources, Task};
-use crate::dom::DOMException;
 use crate::dom::event::EventTarget;
-use crate::html::image_data::{self, DecodeSettlement, ImageRegistry};
+use crate::html::dom_trees::DocumentProviders;
+use crate::html::image_data::{
+    self, DecodeSettlement, ImageAttributes, ImageRegistry, ImageUpdateEnvironment,
+    PendingImageDataUpdate,
+};
 use crate::js::{Engine, Types};
 use crate::webidl::Callback;
-use crate::webidl::bindings::create_interface_instance;
+use crate::webidl::dom_exception::encoding_error_value;
 
 type JsValue = <Types as JsTypes>::JsValue;
 type JsObject = <Types as JsTypes>::JsObject;
@@ -126,9 +130,9 @@ pub struct AnimationFrameCallback {
 /// wait of `decode()` step 2.3).
 #[gc_struct]
 struct PendingImageDecode {
-    /// The `<img>` element's node id.
+    /// The identity the processing model uses for the `<img>` element.
     #[ignore_trace]
-    node_id: usize,
+    element_id: ImageElementId,
     /// The identity of the current request the promise waits on, or `None`
     /// until the microtask queued at decode() step 2 reads it.
     #[ignore_trace]
@@ -361,7 +365,13 @@ pub struct GlobalScope {
     /// The image processing model state shared with `ContentProcess`, so the
     /// `<img>` IDL members can read the current request's state.
     #[ignore_trace]
-    image_registry: Rc<RefCell<Option<Arc<Mutex<ImageRegistry>>>>>,
+    image_registry: Rc<RefCell<Option<Rc<RefCell<ImageRegistry>>>>>,
+
+    /// The document's providers, from which the `update the image data`
+    /// continuation queued at step 8 reads the document's base URL, partition
+    /// and origin, and starts the image fetch.
+    #[ignore_trace]
+    image_providers: Rc<RefCell<Option<Arc<DocumentProviders>>>>,
 
     /// The `decode()` promises whose image request is not decoded yet.
     pending_image_decodes: GcCell<Vec<PendingImageDecode>>,
@@ -372,7 +382,7 @@ pub struct GlobalScope {
     /// the frame composition (which picks up a newly registered canvas embed
     /// site).
     #[ignore_trace]
-    needs_paint: Rc<RefCell<Option<Arc<std::sync::atomic::AtomicBool>>>>,
+    needs_paint: Rc<RefCell<Option<Rc<Cell<bool>>>>>,
 
     /// <https://html.spec.whatwg.org/#concept-document-creation-url>
     /// The creation URL of this window's Document.
@@ -425,6 +435,7 @@ impl GlobalScope {
             epoch_anchor_wall_ms: Rc::new(std::cell::Cell::new(None)),
             needs_paint: Rc::new(RefCell::new(None)),
             image_registry: Rc::new(RefCell::new(None)),
+            image_providers: Rc::new(RefCell::new(None)),
             pending_image_decodes: gc_cell_new(Vec::new(), ec),
 
             creation_url: Rc::new(RefCell::new(None)),
@@ -1386,13 +1397,24 @@ impl GlobalScope {
     /// ContentProcess access.  ContentProcess sets this during document
     /// creation so that `resource_selection_algorithm` can register
     /// paint IDs during JS execution.
-    pub(crate) fn set_image_registry(&self, registry: Arc<Mutex<ImageRegistry>>) {
+    pub(crate) fn set_image_registry(&self, registry: Rc<RefCell<ImageRegistry>>) {
         self.image_registry.borrow_mut().replace(registry);
     }
 
     /// The image processing model state, if this realm's document has one.
-    pub(crate) fn image_registry(&self) -> Option<Arc<Mutex<ImageRegistry>>> {
+    pub(crate) fn image_registry(&self) -> Option<Rc<RefCell<ImageRegistry>>> {
         self.image_registry.borrow().clone()
+    }
+
+    /// The document's providers, which give the step-8 continuation the
+    /// document's base URL, partition and origin, and the sink that starts the
+    /// image fetch.
+    pub(crate) fn set_image_providers(&self, providers: Arc<DocumentProviders>) {
+        self.image_providers.borrow_mut().replace(providers);
+    }
+
+    fn image_providers(&self) -> Option<Arc<DocumentProviders>> {
+        self.image_providers.borrow().clone()
     }
 
     /// Records the `decode()` promise for `node_id`, to be armed by the
@@ -1401,111 +1423,106 @@ impl GlobalScope {
     pub(crate) fn add_pending_image_decode(
         &self,
         ec: &mut dyn ExecutionContext<Types>,
-        node_id: usize,
+        element_id: ImageElementId,
         resolvers: PromiseResolvers<Types>,
     ) {
         self.pending_image_decodes
             .borrow_mut(ec)
             .push(PendingImageDecode {
-                node_id,
+                element_id,
                 request_id: None,
                 resolvers,
             });
     }
 
+    /// The identity the processing model uses for the `<img>` element at
+    /// `node_id`, allocated on first use.
+    pub(crate) fn image_element_id(&self, node_id: usize) -> Option<ImageElementId> {
+        let registry = self.image_registry()?;
+        let document_id = self.document_id()?;
+        let mut registry = registry.borrow_mut();
+        Some(registry.element_id(document_id, node_id))
+    }
+
     /// `decode()` step 2.2 and 2.3's read of the element's state: arm every
     /// unarmed promise for `node_id` with the identity of the current request
-    /// it waits on, rejecting the promises of a broken request.
+    /// it waits on, then settle the promises that request already decides.
     pub(crate) fn arm_pending_image_decodes(
         &self,
         ec: &mut dyn ExecutionContext<Types>,
-        node_id: usize,
+        element_id: ImageElementId,
     ) -> Completion<(), Types> {
         let Some(registry) = self.image_registry() else {
             return Ok(());
         };
-        let Some(document_id) = self.document_id() else {
-            return Ok(());
-        };
-        let unarmed = {
-            let waiters = self.pending_image_decodes.borrow(ec);
-            waiters
-                .iter()
-                .enumerate()
-                .filter(|(_, waiter)| waiter.node_id == node_id && waiter.request_id.is_none())
-                .map(|(index, waiter)| (index, waiter.resolvers.clone()))
-                .collect::<Vec<_>>()
-        };
         let request_id = {
-            let registry = registry.lock().unwrap_or_else(|error| error.into_inner());
-            if image_data::decode_rejects_now(&registry, document_id, node_id) {
-                None
-            } else {
-                Some(image_data::current_request_id(&image_data::image_element(
-                    &registry,
-                    document_id,
-                    node_id,
-                )))
+            let registry = registry.borrow_mut();
+            match registry.element_location(element_id) {
+                Some((document_id, node_id)) => {
+                    image_data::current_request_id(&registry.element(document_id, node_id))
+                }
+                // The processing model never installed a request for this
+                // element, so the request identity `decode()` waits on is the
+                // default one (0), which `decode_settlement` rejects.
+                None => 0,
             }
         };
-        let mut settled = Vec::new();
-        for (index, resolvers) in unarmed {
-            match request_id {
-                Some(request_id) => {
-                    let mut waiters = self.pending_image_decodes.borrow_mut(ec);
-                    waiters[index].request_id = Some(request_id);
-                }
-                None => {
-                    reject_with_encoding_error(&resolvers, ec)?;
-                    settled.push(index);
-                }
-            }
-        }
-        if !settled.is_empty() {
+        {
             let mut waiters = self.pending_image_decodes.borrow_mut(ec);
-            for index in settled.into_iter().rev() {
-                waiters.remove(index);
+            for waiter in waiters.iter_mut() {
+                if waiter.element_id == element_id && waiter.request_id.is_none() {
+                    waiter.request_id = Some(request_id);
+                }
             }
         }
-        Ok(())
+        self.settle_pending_image_decodes(ec, element_id)
     }
 
-    /// Settles every armed `decode()` promise whose request reached its
-    /// outcome (step 2.3): resolved once the request is completely available
-    /// and decoded, rejected when the request changed, broke, or failed to
-    /// decode.
+    /// Settles the `decode()` promises waiting on `node_id`'s current request
+    /// (step 2.2 and 2.3 of `decode()`): resolved once the request is
+    /// completely available and decoded, rejected when the request changed,
+    /// broke, or failed to decode.
     pub(crate) fn settle_pending_image_decodes(
         &self,
         ec: &mut dyn ExecutionContext<Types>,
+        element_id: ImageElementId,
     ) -> Completion<(), Types> {
         let Some(registry) = self.image_registry() else {
-            return Ok(());
-        };
-        let Some(document_id) = self.document_id() else {
             return Ok(());
         };
         let waiters = {
             let registered = self.pending_image_decodes.borrow(ec);
             registered
                 .iter()
-                .filter_map(|waiter| {
+                .enumerate()
+                .filter(|(_, waiter)| waiter.element_id == element_id)
+                .filter_map(|(index, waiter)| {
                     waiter
                         .request_id
-                        .map(|request_id| (waiter.node_id, request_id, waiter.resolvers.clone()))
+                        .map(|request_id| (index, request_id, waiter.resolvers.clone()))
                 })
                 .collect::<Vec<_>>()
         };
+        if waiters.is_empty() {
+            return Ok(());
+        }
         let settlings = {
-            let registry = registry.lock().unwrap_or_else(|error| error.into_inner());
+            let registry = registry.borrow_mut();
+            let location = registry.element_location(element_id);
             waiters
                 .iter()
-                .map(|(node_id, request_id, _)| {
-                    image_data::decode_settlement(&registry, document_id, *node_id, *request_id)
+                .map(|(_, request_id, _)| match location {
+                    Some((document_id, node_id)) => {
+                        image_data::decode_settlement(&registry, document_id, node_id, *request_id)
+                    }
+                    // The element's document went away: the wait ends without
+                    // a decode, which `decode()` step 2.3 rejects.
+                    None => DecodeSettlement::Reject,
                 })
                 .collect::<Vec<_>>()
         };
         let mut settled = Vec::new();
-        for (index, (_, _, resolvers)) in waiters.iter().enumerate() {
+        for (index, (waiter_index, _, resolvers)) in waiters.iter().enumerate() {
             match settlings[index] {
                 DecodeSettlement::Wait => continue,
                 DecodeSettlement::Resolve => {
@@ -1516,7 +1533,7 @@ impl GlobalScope {
                     reject_with_encoding_error(resolvers, ec)?;
                 }
             }
-            settled.push(index);
+            settled.push(*waiter_index);
         }
         if !settled.is_empty() {
             let mut registered = self.pending_image_decodes.borrow_mut(ec);
@@ -1525,6 +1542,56 @@ impl GlobalScope {
             }
         }
         Ok(())
+    }
+
+    /// Runs the rest of "update the image data" (steps 9-26) for one algorithm
+    /// instance, from the microtask queued at step 8: the continuation reads
+    /// the element's attributes (step 10), the document's base URL, partition
+    /// and origin, and the fetch sink here, when it runs, and then settles the
+    /// `decode()` promises the new state decides.
+    pub(crate) fn run_image_update(
+        &self,
+        ec: &mut dyn ExecutionContext<Types>,
+        update: &PendingImageDataUpdate,
+    ) -> Completion<(), Types> {
+        let Some(registry) = self.image_registry() else {
+            return Ok(());
+        };
+        let Some(providers) = self.image_providers() else {
+            return Ok(());
+        };
+        let Some((_document_id, node_id)) = registry.borrow().element_location(update.element_id)
+        else {
+            return Ok(());
+        };
+        let environment = {
+            let document = self.document();
+            let document = document.borrow();
+            let Some(element) = document
+                .get_node(node_id)
+                .and_then(|node| node.element_data())
+            else {
+                return Ok(());
+            };
+            ImageUpdateEnvironment {
+                attributes: ImageAttributes::from_element(element),
+                base_url: providers.base_url().cloned(),
+                partition: providers.partition().clone(),
+                origin: providers.partition().origin.clone(),
+            }
+        };
+        {
+            let mut registry = registry.borrow_mut();
+            image_data::continue_update_the_image_data(
+                &mut registry,
+                providers.as_ref(),
+                &environment,
+                update,
+            );
+        }
+        // Steps 10-18 may have replaced the element's current request, which
+        // decides the promises waiting on it.
+        self.settle_pending_image_decodes(ec, update.element_id)
     }
 
     pub(crate) fn set_graphics_sender(
@@ -1557,7 +1624,7 @@ impl GlobalScope {
 
     /// Set the shared repaint flag that both GlobalScope and ContentDocument
     /// access. ContentProcess sets this during document creation.
-    pub(crate) fn set_needs_paint(&self, flag: Arc<std::sync::atomic::AtomicBool>) {
+    pub(crate) fn set_needs_paint(&self, flag: Rc<Cell<bool>>) {
         *self.needs_paint.borrow_mut() = Some(flag);
     }
 
@@ -1566,7 +1633,7 @@ impl GlobalScope {
     /// blitz and rebuilds the frame composition.
     pub(crate) fn mark_document_dirty(&self) {
         if let Some(flag) = self.needs_paint.borrow().as_ref() {
-            flag.store(true, std::sync::atomic::Ordering::Relaxed);
+            flag.set(true);
         }
     }
 
@@ -1730,20 +1797,13 @@ impl GlobalScope {
     }
 }
 
-/// Rejects one `decode()` promise with the "EncodingError" DOMException that
+/// Rejects one `decode()` promise with the DOMException that `decode()`
 /// step 2.2 and step 2.3 reject with.
 fn reject_with_encoding_error(
     resolvers: &PromiseResolvers<Types>,
     ec: &mut dyn ExecutionContext<Types>,
 ) -> Completion<(), Types> {
-    let exception = create_interface_instance::<Types, DOMException>(
-        DOMException::new(
-            String::from("The source image cannot be decoded."),
-            String::from("EncodingError"),
-        ),
-        ec,
-    )?;
-    let reason = Types::value_from_object(exception);
+    let reason = encoding_error_value(ec);
     let undefined = ec.value_undefined();
     ec.call(&resolvers.reject, &undefined, &[reason])?;
     Ok(())

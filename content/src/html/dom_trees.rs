@@ -8,9 +8,9 @@
 //! asynchronous and starts here; DOM algorithms that need the document run on
 //! the event loop after the hook returns.
 
+use std::cell::{Cell, RefCell};
 use std::collections::HashSet;
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Mutex};
+use std::rc::Rc;
 
 use blitz_dom::resource::{Resource, ResourceLoadResponse};
 use blitz_dom::{
@@ -20,8 +20,8 @@ use blitz_dom::{
 use blitz_traits::net::Bytes;
 use html5ever::ns;
 use ipc_messages::content::{
-    Command, DocumentFetchId, DocumentId, Event as ContentEvent, EventLoopId, NavigableId,
-    ResourcePartitionKey,
+    Command, DocumentFetchId, DocumentId, Event as ContentEvent, EventLoopId, ImageElementId,
+    NavigableId, ResourcePartitionKey,
 };
 use ipc_messages::network::Request as NetworkRequest;
 use log::error;
@@ -34,6 +34,8 @@ use crate::html::image_data::{
     IMAGE_ELEMENT_HOOKS, ImageAttributes, ImageFetchSink, ImageRegistry,
     reacting_to_environment_changes as run_reacting_to_environment_changes, update_the_image_data,
 };
+use crate::js::RealmJobQueue;
+use crate::js::platform_objects::with_global_scope;
 use crate::{LocalContentStateRef, PendingNetworkHandler};
 
 /// Which document of the content process an asset fetch belongs to: a
@@ -101,9 +103,14 @@ pub(crate) struct DocumentProviders {
     network_extension_sender: ipc::IpcSender<NetworkRequest>,
     content_command_sender: ipc::IpcSender<Command>,
     event_sender: ipc::IpcSender<ContentEvent>,
-    embedder_schemes: Arc<HashSet<String>>,
-    image_registry: Arc<Mutex<ImageRegistry>>,
-    needs_paint: Arc<AtomicBool>,
+    embedder_schemes: Rc<HashSet<String>>,
+    image_registry: Rc<RefCell<ImageRegistry>>,
+    /// The realm's microtask queue, so the `<img>` hooks can queue the
+    /// continuation of step 8 of "update the image data" where the mutation
+    /// happens, without an execution context.  Set once the document's realm
+    /// exists.
+    image_job_queue: RefCell<Option<RealmJobQueue>>,
+    needs_paint: Rc<Cell<bool>>,
 }
 
 impl DocumentProviders {
@@ -118,9 +125,9 @@ impl DocumentProviders {
         network_extension_sender: ipc::IpcSender<NetworkRequest>,
         content_command_sender: ipc::IpcSender<Command>,
         event_sender: ipc::IpcSender<ContentEvent>,
-        embedder_schemes: Arc<HashSet<String>>,
-        image_registry: Arc<Mutex<ImageRegistry>>,
-        needs_paint: Arc<AtomicBool>,
+        embedder_schemes: Rc<HashSet<String>>,
+        image_registry: Rc<RefCell<ImageRegistry>>,
+        needs_paint: Rc<Cell<bool>>,
     ) -> Self {
         Self {
             host,
@@ -134,8 +141,27 @@ impl DocumentProviders {
             event_sender,
             embedder_schemes,
             image_registry,
+            image_job_queue: RefCell::new(None),
             needs_paint,
         }
+    }
+
+    /// Give the hooks the queue of the realm that owns this document.
+    ///
+    /// <https://html.spec.whatwg.org/#queue-a-microtask>
+    pub(crate) fn set_image_job_queue(&self, queue: RealmJobQueue) {
+        self.image_job_queue.borrow_mut().replace(queue);
+    }
+
+    /// The document's base URL, which the image processing model resolves
+    /// selected sources against.
+    pub(crate) fn base_url(&self) -> Option<&Url> {
+        self.base_url.as_ref()
+    }
+
+    /// The partition the document's network requests are made in.
+    pub(crate) fn partition(&self) -> &ResourcePartitionKey {
+        &self.partition
     }
 
     fn start_fetch(
@@ -167,8 +193,8 @@ impl DocumentProviders {
 impl ImageFetchSink for DocumentProviders {
     fn start_image_fetch(
         &self,
+        element_id: ImageElementId,
         document_id: DocumentId,
-        node_id: usize,
         handler_id: DocumentFetchId,
         url: &str,
     ) {
@@ -178,7 +204,7 @@ impl ImageFetchSink for DocumentProviders {
             PendingNetworkHandler::Image {
                 document_id,
                 navigable_id: self.navigable_id,
-                node_id,
+                element_id,
             },
         );
     }
@@ -389,20 +415,37 @@ impl DocumentProviders {
             return;
         }
         let attributes = ImageAttributes::from_element(element);
-        let mut registry = self.image_registry.lock().unwrap_or_else(|error| {
-            error!("image registry mutex poisoned: {error}");
-            error.into_inner()
-        });
-        update_the_image_data(
-            &mut registry,
-            self.host.parent_document_id(),
-            node_id,
-            &attributes,
-            self.base_url.as_ref(),
-            &self.partition,
-            &self.partition.origin,
-        );
-        self.needs_paint.store(true, Ordering::Relaxed);
+        let update = {
+            let mut registry = self.image_registry.borrow_mut();
+            update_the_image_data(
+                &mut registry,
+                self.host.parent_document_id(),
+                node_id,
+                &attributes,
+                self.base_url.as_ref(),
+                &self.partition.origin,
+            )
+        };
+        self.needs_paint.set(true);
+        // Step 8 of "update the image data" queues a microtask; this hook runs
+        // without an execution context, so it hands the continuation to the
+        // realm's queue, which keeps it in the same order relative to the
+        // microtasks the current task queues next.
+        if let Some(update) = update
+            && let Some(queue) = self.image_job_queue.borrow().clone()
+        {
+            let job: crate::js::RealmJob = Box::new(move |ec| {
+                if let Err(error) = with_global_scope(ec, |global_scope, ec| {
+                    global_scope.run_image_update(ec, &update)
+                }) {
+                    let message = ec
+                        .to_rust_string(error)
+                        .unwrap_or_else(|_| String::from("unknown error"));
+                    error!("failed to continue \"update the image data\": {message}");
+                }
+            });
+            queue.queue(job);
+        }
     }
 
     /// <https://html.spec.whatwg.org/#reacting-to-environment-changes>
@@ -414,10 +457,7 @@ impl DocumentProviders {
         if !matches!(self.host, DocumentHost::Main(_)) {
             return;
         }
-        let mut registry = self.image_registry.lock().unwrap_or_else(|error| {
-            error!("image registry mutex poisoned: {error}");
-            error.into_inner()
-        });
+        let mut registry = self.image_registry.borrow_mut();
         run_reacting_to_environment_changes(
             &mut registry,
             self,
@@ -488,7 +528,7 @@ pub(crate) fn install_resource(
                     *image_type,
                     width,
                     height,
-                    Arc::new(decoded.into_raw()),
+                    std::sync::Arc::new(decoded.into_raw()),
                 )),
             }));
             Ok(())

@@ -53,3 +53,12 @@ pub(crate) fn not_supported_error_value(
 ) -> JsValue {
     dom_exception_value(message, String::from("NotSupportedError"), ec)
 }
+
+/// <https://webidl.spec.whatwg.org/#encodingerror>
+pub(crate) fn encoding_error_value(ec: &mut dyn ExecutionContext<Types>) -> JsValue {
+    dom_exception_value(
+        String::from("The source image cannot be decoded."),
+        String::from("EncodingError"),
+        ec,
+    )
+}

@@ -371,21 +371,18 @@ pub(crate) fn fetch(
     // response through `Command::CompleteDocumentFetch` / `FailDocumentFetch`.
     let url = Url::parse(&request.url)
         .map_err(|error| format!("failed to parse fetch URL {:?}: {error}", request.url))?;
-    {
-        let mut local_state = context
-            .local_state
-            .lock()
-            .map_err(|error| format!("local content state mutex poisoned: {error}"))?;
-        local_state.pending_handlers.insert(handler_id, pending);
-    }
+    context
+        .local_state
+        .borrow_mut()
+        .pending_handlers
+        .insert(handler_id, pending);
     let result = main_fetch(context, handler_id, request, &url);
     if result.is_err() {
-        match context.local_state.lock() {
-            Ok(mut local_state) => {
-                local_state.pending_handlers.remove(&handler_id);
-            }
-            Err(error) => error!("local content state mutex poisoned: {error}"),
-        }
+        context
+            .local_state
+            .borrow_mut()
+            .pending_handlers
+            .remove(&handler_id);
     }
     // Step 18: Return fetchParams’s controller.
     // Note: The controller is not returned to callers; `FetchController` exists

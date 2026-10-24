@@ -5,7 +5,8 @@ use crate::html::image_data::{ImageElement, ImageRegistry, image_element};
 use crate::js::platform_objects::with_global_scope;
 use crate::webidl::bindings::{AttributeDef, InterfaceDefinition, OperationDef, WebIdlInterface};
 use ipc_messages::content::DocumentId;
-use std::sync::{Arc, Mutex};
+use std::cell::RefCell;
+use std::rc::Rc;
 
 use js_engine::{Completion, ExecutionContext, JsTypes};
 
@@ -100,7 +101,7 @@ fn attribute(
 
 fn image_registry(
     ec: &mut dyn ExecutionContext<crate::js::Types>,
-) -> Completion<(Arc<Mutex<ImageRegistry>>, DocumentId), crate::js::Types> {
+) -> Completion<(Rc<RefCell<ImageRegistry>>, DocumentId), crate::js::Types> {
     let state = with_global_scope(ec, |global_scope, _ec| {
         Ok((global_scope.image_registry(), global_scope.document_id()))
     })?;
@@ -131,7 +132,7 @@ fn image_element_for(
 ) -> Completion<ImageElement, crate::js::Types> {
     let (registry, document_id) = image_registry(ec)?;
     try_with_image_ref(this, ec, |image| {
-        let registry = registry.lock().unwrap_or_else(|error| error.into_inner());
+        let registry = registry.borrow_mut();
         image_element(
             &registry,
             document_id,

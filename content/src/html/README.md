@@ -287,16 +287,28 @@ and owns the pixels.  `naturalWidth`, `naturalHeight`, `complete`,
 `GlobalScope`); reading `raster_image_data` is not a substitute.
 
 The microtask queued at step 8 performs the rest of "update the image data"
-(steps 9-26), including starting the fetch, through
-`ContentProcess::drain_image_microtasks` (after each command, once the parse
-has installed its documents, and at every microtask checkpoint): the HTML
-element hooks run inside blitz with no execution context, so they cannot
-enqueue an engine job themselves.  The element tasks (presentation,
+(steps 9-26), including starting the fetch.  The HTML element hooks run inside
+blitz with no execution context.  blitz's hook traits carry no `Send + Sync`
+bound, because everything they touch runs on the thread that owns the
+document, so `DocumentProviders` holds `Rc`/`RefCell` state, including the
+realm's microtask queue (`EnvironmentSettingsObject::realm_job_queue`, installed by
+`ContentProcess::wire_image_realm`) and the hook queues the continuation there
+at the mutation point.  It is a real engine microtask, in FIFO order with the
+realm's other microtasks: an image mutation made in the current task is
+therefore visible to every microtask that task queues after it, `decode()`'s
+step 2 in particular.  The continuation carries only the element's
+`ImageElementId` and the update instance id; it reads the element's attributes
+(step 10), the document's base URL, partition and origin, and the fetch sink
+from the realm and the document's providers when it runs.  Batching the
+continuations in a content-side queue and draining it at content-chosen points
+reorders them against the engine's microtasks and reintroduces the reject that
+`img.src = …; await img.decode()` used to hit.  The parse task runs the
+document's checkpoint at its stable state so the fetches start before the
+document's deferred script fetches.  The element tasks (presentation,
 `load`/`error`, and the environment `finishUpdate`) are drained separately
-through `drain_image_tasks`; starting the fetch before the document's
-deferred script fetches keeps an image's `load` event from queueing behind
-them.  The fetch's response continues at step 27 (or step 17.5 of "reacting
-to environment changes") in `process_image_fetch_response`.
+through `drain_image_tasks`.  The fetch's response continues at step 27 (or
+step 17.5 of "reacting to environment changes") in
+`process_image_fetch_response`.
 
 The graphics side of `<img>` is selected by the graphics image backend.  Content
 sniffs the encoded header and sends the encoded bytes with
@@ -309,11 +321,28 @@ once per `ImageIdentifier`; `DestroyDocument` sends `UnregisterImages` with the
 ids tracked in `registered_images_by_document` plus the registry's ids, so the
 graphics compositor and image backend release the decoded data and IOSurfaces.
 
+An element's processing model state is keyed by an `ImageElementId`: a UUID
+allocated the first time the model sees the element and carried by every input
+that moves it - the step-8 continuation, the fetch's response
+(`PendingNetworkHandler::Image`), the element tasks, and a `decode()` promise's
+waiter.  DOM node ids are only used to reach the element for attribute reads
+and events, through `ImageRegistry::element_location`.  A graphics decode
+report is addressed by `ImageIdentifier` instead, because the list of available
+images shares one decoded resource between elements; the report is recorded on
+every request and cache entry showing that resource, and the elements it
+matched are settled.
+
 `decode()` promises live on the realm's `GlobalScope` (a traced `GcCell`, so
-the resolving functions survive to settlement) and are settled by
-`ContentProcess::settle_pending_image_decodes` from the request's state plus
-the graphics process's `ImageDecoded` reports; never settle a promise while
-holding a `GcCell` borrow.
+the resolving functions survive to settlement; the image registry cannot hold
+them) and are settled per element by `ContentProcess::settle_image_decodes`,
+called from the image-flow step that moved that element's request to a new
+state.  `decode()` step 2.3 waits "in parallel", which here means the settle
+decision is re-read at each of those steps; there is no per-checkpoint sweep.
+Step 2.3 queues a task to resolve or reject, but the message or event that
+reached the deciding step already is a content task, so the settlement runs in
+it rather than queueing another.  The graphics process's decode outcome is
+recorded on the request's image data, which a request reusing a cached image
+inherits.  Never settle a promise while holding a `GcCell` borrow.
 
 Known gaps in the processing model:
 

@@ -9,6 +9,7 @@ use crate::html::image_data::{self, ImageElement};
 use crate::html::queue_a_microtask;
 use crate::js::Types;
 use crate::js::platform_objects::with_global_scope;
+use crate::webidl::dom_exception::encoding_error_value;
 
 /// <https://html.spec.whatwg.org/#htmlimageelement>
 #[gc_struct]
@@ -357,9 +358,21 @@ impl HTMLImageElement {
         // Note: The promise's resolving functions are registered here, before
         // the step 2 microtask, because only a traced GC cell keeps them alive
         // across the microtask boundary.  The promise is armed with the
-        // element's current request by the microtask itself.
+        // element's current request by the microtask itself, and both carry the
+        // element's identity rather than its DOM node.
+        let element_id = with_global_scope(ec, |global_scope, _ec| {
+            Ok(global_scope.image_element_id(node_id))
+        })?;
+        let Some(element_id) = element_id else {
+            // No processing model to wait on: the request can never be
+            // decoded.
+            let reason = encoding_error_value(ec);
+            let undefined = ec.value_undefined();
+            ec.call(&resolvers.reject, &undefined, &[reason])?;
+            return Ok(promise);
+        };
         with_global_scope(ec, |global_scope, ec| {
-            global_scope.add_pending_image_decode(ec, node_id, resolvers);
+            global_scope.add_pending_image_decode(ec, element_id, resolvers);
             Ok(ec.value_undefined())
         })?;
         // Step 2: "Queue a microtask to perform the following steps:"
@@ -371,11 +384,12 @@ impl HTMLImageElement {
             // Step 2.3: "Otherwise, in parallel, wait for one of the following cases to occur, and perform the corresponding actions:"
             // Note: "In parallel" is the graphics process decoding the image
             // once the content process registers it; the wait ends when the
-            // request becomes completely available, breaks, changes, or its
-            // decode fails, checked after every task and microtask
-            // checkpoint.
+            // request becomes completely available, breaks or changes, or its
+            // decode fails.  The processing model settles the promise at each
+            // step that reaches one of those outcomes: the step-8
+            // continuation, the element tasks, and the `ImageDecoded` command.
             with_global_scope(ec, |global_scope, ec| {
-                global_scope.arm_pending_image_decodes(ec, node_id)
+                global_scope.arm_pending_image_decodes(ec, element_id)
             })
             .map(|()| ec.value_undefined())
         });
