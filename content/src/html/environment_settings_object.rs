@@ -388,12 +388,10 @@ impl EnvironmentSettingsObject {
     }
 
     fn evaluate_script_without_microtask_checkpoint(&mut self, source: &str) -> Result<(), String> {
-        let result = self
-            .realm_execution_context
+        self.realm_execution_context
             .evaluate_script(source)
             .map(|_| ())
-            .map_err(|error| self.error_to_string(error));
-        result
+            .map_err(|error| self.error_to_string(error))
     }
 
     pub fn evaluate_script_to_json(&mut self, source: &str) -> Result<serde_json::Value, String> {
@@ -592,6 +590,7 @@ impl EnvironmentSettingsObject {
         }
     }
 
+    /// <https://html.spec.whatwg.org/#perform-a-microtask-checkpoint>
     pub fn perform_a_microtask_checkpoint(&mut self) -> Result<(), String> {
         self.realm_execution_context
             .perform_a_microtask_checkpoint()

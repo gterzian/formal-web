@@ -13,6 +13,14 @@ use crate::html::structured_data::safe_passing_of_structured_data::SerializeWith
 
 use super::timers::{MapOfActiveTimers, TimerRealm};
 
+/// The event one `<img>` element task fires.
+/// <https://html.spec.whatwg.org/#update-the-image-data>
+#[derive(Clone, Copy, Debug)]
+pub(crate) enum ImageEvent {
+    Load,
+    Error,
+}
+
 /// <https://html.spec.whatwg.org/#concept-task>
 pub(crate) enum Task {
     /// The task that runs one expired window timer's steps (step 9 of the
@@ -117,6 +125,29 @@ pub(crate) enum Task {
     /// The input events the embedder delivered for this document, dispatched
     /// as trusted events.
     DispatchEvent { events: Vec<DispatchEventEntry> },
+
+    /// An element task on the DOM manipulation task source queued by "update
+    /// the image data": fire `load` or `error` at the `<img>` element.
+    /// <https://html.spec.whatwg.org/#update-the-image-data>
+    RunImageEvent {
+        document_id: DocumentId,
+        node_id: usize,
+        event: ImageEvent,
+        /// The current URL the task sets before firing, when the algorithm's
+        /// queued steps include it (steps 11.2.1 and 13.4.1).
+        current_url: Option<String>,
+    },
+
+    /// The element task queued by "reacting to environment changes" to run
+    /// `finishUpdate`.
+    /// <https://html.spec.whatwg.org/#reacting-to-environment-changes>
+    RunImageEnvironmentUpdate {
+        document_id: DocumentId,
+        node_id: usize,
+        instance_id: u64,
+        selected_source: String,
+        selected_pixel_density: f64,
+    },
 
     /// <https://html.spec.whatwg.org/#steps-to-fire-beforeunload>
     RunBeforeUnload {

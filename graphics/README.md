@@ -66,6 +66,25 @@ The invariants that keep the pipeline correct:
   produced at submit time and consumed by its `handle_render_done`, which
   sends `PixelFrameReady`; completed frames arrive on a single channel whose
   message type is that `RenderData`.
+- **A layer carries a surface only when that composition presents it**: it
+  became dirty (its content changed), or it re-enters the composition after
+  being absent from the previous one. Every layer kind follows this — the
+  document layer, cross-origin iframe layers, video, offscreen canvas, and
+  `<img>` layers, whose macOS direct surface is fixed at decode time and is
+  therefore delivered exactly once per presentation. A clean layer is
+  reported as topology only (`render` and `direct_surface` both `None`) and
+  the embedder keeps the contents it already has.
+
+  This is not an optimisation to skip: the embedder presents a surface by
+  setting the layer's CoreAnimation `contents`, which the window server
+  treats as a layer update even when the surface is the one already
+  presented (Quartz Debug then flashes the layer's bounds with no pixel
+  change). Re-sending an unchanged surface is what a flash-per-input-event
+  looks like; every new layer kind must opt into the dirty/absent rule
+  instead. The rule also keeps a layer that was dropped and re-presented
+  (a child navigable scrolled out of view and back) from coming back blank:
+  the compositor records the layers the last delivered composition presented
+  and treats a layer missing from that set as needing presentation.
 - Per-frame copies on the CPU path today: GPU → CPU readback, kernel copy in
   the IPC transport, CPU → GPU upload, and Vello's internal atlas copy.
 
@@ -136,6 +155,35 @@ and keep that registration/blit contract.
 The video texture import (macOS AVFoundation `PixelBufferFrame` → Metal
 texture → Vello `override_image`) lives in its own module, `renderer/video.rs`,
 behind the renderer trait's macOS-only `store_video_frame`.
+
+`RegisterImage` carries the encoded image bytes (PNG/JPEG/...), not raw
+pixels. The renderer's `ImageBackend` decodes them; the compositor stores the
+resulting presentation entry. Two backends exist:
+
+- **CPU / cross-platform** (`renderer/image/cpu.rs`): decode to RGBA8
+  `ImageData`; the image layer is rendered into its own layer surface like
+  other scene content.
+- **macOS** (`renderer/image/macos.rs`): decode into a global IOSurface owned
+  by the graphics process. The compositor emits the image layer as a direct
+  surface; the embedder looks it up by IOSurfaceID and sets it as the contents
+  of that image layer's CoreAnimation sublayer. The surface is padded to the
+  Metal width constraint and the embedder crops it with `contentsRect`. The
+  surface is fixed by the decode, so it is delivered for the composition that
+  presents the layer and withheld from the cycles that follow, exactly like a
+  re-rendered layer (see "Surface delivery invariants").
+
+The content process sends each `ImageIdentifier` once. Every registration is
+answered with `GraphicsEvent::ImageDecoded` (decoded dimensions or the
+decoder's error), which the UA forwards to content: `decode()` waits for this
+report, so a decode failure must keep rejecting it even though the layer stays
+empty. `GraphicsCommand::UnregisterImages` releases a document's decoded
+data/IOSurfaces when its `DestroyDocument` arrives; that is the only eviction
+step, so images otherwise stay resident for the webview's lifetime.
+
+Limitations: the macOS path still performs the decode-to-IOSurface copy (a
+native ImageIO decoder writing directly into the surface is the next step);
+the CPU path renders each image into a layer surface; both use the `image`
+crate decoder today.
 
 ## Video frames → shared texture (macOS)
 
@@ -269,12 +317,13 @@ two-submit layout.
   device, so a pipeline plays only on the webview it was created for.
 - **Format/lifecycle**: RGBA-only for Vello, pixel-buffer/texture lifetime
   management, the 64-multiple width padding (see above).
-- **Layer granularity is one layer per navigable (and per video).** Each
-  document is rendered into a single `RecordedScene` and presented to
-  CoreAnimation as one `IOSurface` per web layer; there is no sub-division
-  within a document. A change that genuinely alters the document's visible
-  output (a `:hover` effect, a caret blink, a scroll) therefore re-rasterizes
-  and re-presents the whole layer's surface — `store_frame`'s scene comparison
+- **Layer granularity is one layer per navigable (plus one per video,
+  offscreen canvas, and `<img>` instance).** Each document is rendered into a
+  single `RecordedScene` and presented to CoreAnimation as one `IOSurface` per
+  web layer; there is no sub-division within a document. A change that
+  genuinely alters the document's visible output (a `:hover` effect, a caret
+  blink, a scroll) therefore re-rasterizes and re-presents the whole layer's
+  surface — `store_frame`'s scene comparison
   correctly flags the whole layer dirty, and `setContents:` swaps the entire
   `IOSurface` with no old-vs-new diff, so Quartz Debug flashes the full layer
   bounds rather than the changed pixels. This is expected for the current

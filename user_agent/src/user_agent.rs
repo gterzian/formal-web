@@ -5697,6 +5697,32 @@ impl UserAgentWorker {
                     error!("failed to send video-ended to event loop {event_loop_id}: {error}");
                 }
             }
+            GraphicsEvent::ImageDecoded {
+                webview_id,
+                image_id,
+                result,
+            } => {
+                let event_loop_id = match self.state.traversable_handles.get(&webview_id.0) {
+                    Some(event_loop_id) => *event_loop_id,
+                    None => return,
+                };
+                let Some(agent) = window_agent(&self.state, event_loop_id) else {
+                    return;
+                };
+                if let Err(error) =
+                    agent
+                        .event_loop
+                        .command_sender
+                        .send(ContentCommand::ImageDecoded {
+                            image_id: image_id.clone(),
+                            result: result.clone(),
+                        })
+                {
+                    error!(
+                        "failed to send image-decode result to event loop {event_loop_id}: {error}"
+                    );
+                }
+            }
             GraphicsEvent::CompositionChanged { webview_id } => {
                 // A cross-origin iframe's content changed (or a video frame
                 // arrived) without the top-level content process driving a

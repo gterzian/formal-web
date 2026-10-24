@@ -72,8 +72,14 @@ export function renderAlgorithmSteps($, $orderedList, parentNumber, links) {
 
     lines.push(`  Step ${fullNumber}: ${stepText}`);
 
-    // Recurse into nested <ol>
-    const $nestedList = $listItem.children("ol");
+    // Recurse into the step's nested <ol>s. They are often wrapped in <dl>,
+    // <dd>, or <div> rather than being direct children of the <li> (e.g. the
+    // branches of "jump to the first applicable entry" steps). Take only the
+    // first level below this list: a deeper <ol> is rendered by its own
+    // parent's recursion.
+    const $nestedList = $listItem
+      .find("ol")
+      .filter((_, nested) => $(nested).parent().closest("ol").is($orderedList));
     if ($nestedList.length) {
       const nested = renderAlgorithmSteps($, $nestedList, fullNumber, links);
       lines.push(...nested);

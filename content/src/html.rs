@@ -11,6 +11,8 @@ pub(crate) mod channel_messaging;
 pub(crate) use channel_messaging::ChannelMessaging;
 pub(crate) mod common_microsyntaxes;
 pub(crate) mod dispatch;
+pub(crate) mod document_providers;
+pub(crate) mod dom_trees;
 pub(crate) mod environment_settings_object;
 pub(crate) mod event_handler;
 pub(crate) mod event_loop;
@@ -19,11 +21,13 @@ mod html_anchor_element;
 mod html_dom_tree;
 mod html_element;
 pub(crate) mod html_iframe_element;
+pub(crate) mod html_image_element;
 pub(crate) mod html_input_element;
 pub(crate) mod html_media_element;
 mod html_parser;
 pub(crate) mod html_video_element;
 mod hyperlink_element_utils;
+pub(crate) mod image_data;
 mod location;
 pub(crate) mod message_event;
 pub(crate) mod messageport;
@@ -68,6 +72,7 @@ pub(crate) use html_iframe_element::attach_same_origin_child_document_for_traver
 pub(crate) use html_iframe_element::{
     fire_deferred_iframe_load_events, run_iframe_load_event_steps_for_traversable,
 };
+pub use html_image_element::HTMLImageElement;
 pub use html_input_element::HTMLInputElement;
 pub use html_media_element::{HTMLMediaElement, MediaError};
 pub(crate) use html_parser::PendingParserScript;
@@ -201,7 +206,6 @@ pub(crate) fn create_a_new_browsing_context_and_document(
     let document = Rc::new(RefCell::new(BaseDocument::new(DocumentConfig {
         viewport: None,
         base_url: None,
-        net_provider: None,
         shell_provider: None,
         html_parser_provider: None,
         ..DocumentConfig::default()

@@ -188,6 +188,38 @@
         background: #faf9f7;
         box-shadow: inset 0 2px 6px rgba(0,0,0,0.03);
       }
+
+      .image-grid {
+        display: grid;
+        grid-template-columns: repeat(auto-fill, minmax(9rem, 1fr));
+        gap: 0.75rem;
+      }
+
+      .image-card {
+        margin: 0;
+        padding: 0.5rem;
+        border: 1px solid #e4e2ec;
+        border-radius: 0.85rem;
+        background: #faf9f7;
+      }
+
+      .image-card img {
+        display: block;
+        width: 100%;
+        height: 6rem;
+        object-fit: cover;
+        background: #eceae5;
+        border-radius: 0.5rem;
+      }
+
+      .image-card figcaption {
+        margin-top: 0.4rem;
+        font-size: 0.72rem;
+        line-height: 1.35;
+        color: #5a5a72;
+        word-break: break-word;
+      }
+
     </style>
   </head>
   <body>
@@ -404,6 +436,35 @@
           <button class="btn btn-outline" id="oc-stop-btn" type="button">Stop</button>
         </div>
         <div class="output-box" id="oc-output" style="margin-top:0.6rem;">Worker ready</div>
+      </section>
+
+      <!-- ──── 9. Images ──── -->
+      <section class="section-card">
+        <div class="section-title">
+          <span>Images</span>
+          <span class="badge working">Working</span>
+        </div>
+        <p class="section-desc">
+          Each <code>&lt;img&gt;</code> is decoded by the graphics process and
+          drawn on its own layer. <strong>Add empty image</strong> inserts an
+          <code>&lt;img&gt;</code> holding an invisible placeholder; that DOM
+          change updates the page's own texture. <strong>Add sources</strong>
+          then swaps in the real images: only their layers change, not the page
+          texture. Use Quartz Debug's flash-screen-updates to see the
+          difference.
+        </p>
+
+        <div class="image-grid" id="image-grid"></div>
+
+        <div class="btn-row" style="margin-top:0.8rem;">
+          <button class="btn btn-primary" id="image-add-empty-btn" type="button">Add empty image</button>
+          <button class="btn btn-primary" id="image-load-btn" type="button">Add sources</button>
+          <button class="btn btn-primary" id="image-swap-btn" type="button">Swap sources</button>
+          <button class="btn btn-outline" id="image-clear-btn" type="button">Clear</button>
+        </div>
+        <div class="output-box" style="margin-top:0.6rem;">
+          Add empty images, then load their sources.
+        </div>
       </section>
 
       <footer style="text-align:center;padding:1rem 0 0;font-size:0.82rem;color:#a0a0b8;">
@@ -647,6 +708,98 @@
           output.className = "output-box";
         });
       })();
+      // ──── 9. Images ────
+      (function() {
+        var grid = document.getElementById("image-grid");
+        // Invisible 1x1 PNG: the image element gets its real source later, but
+        // it is already an image for the document's paint stream, so swapping
+        // the source does not change the page's own texture.
+        var placeholder =
+          "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNkYAAAAAYAAjCB0C8AAAAASUVORK5CYII=";
+        var sources = [
+          { url: "images/sunset.png", width: 320, height: 180 },
+          { url: "images/checker.jpg", width: 240, height: 160 },
+          { url: "images/stripes.gif", width: 200, height: 120 },
+        ];
+        var nextSlot = 0;
+
+        document.getElementById("image-add-empty-btn").addEventListener("click", function() {
+          var source = sources[nextSlot % sources.length];
+          nextSlot += 1;
+
+          // Build through innerHTML: the parser path resolves the stylesheet
+          // for the new figure, so the image gets its fixed-height box.
+          var template = document.createElement("div");
+          template.innerHTML =
+            '<figure class="image-card">' +
+              '<img id="image-slot-' + nextSlot + '"' +
+              ' alt="Image layer slot ' + nextSlot + '"' +
+              ' width="' + source.width + '" height="' + source.height + '"' +
+              ' data-source="' + source.url + '"' +
+              ' src="' + placeholder + '">' +
+              '<figcaption>layer slot ' + nextSlot + '</figcaption>' +
+            '</figure>';
+          grid.appendChild(template.firstChild);
+        });
+
+        function loadSource(image) {
+          var source = image.getAttribute("data-source");
+          if (source) {
+            image.setAttribute("src", source);
+            image.setAttribute("data-loaded", "true");
+          }
+        }
+
+        function loadSourceWhenAvailable(image) {
+          // Wait for the placeholder to be available before swapping in the
+          // real source, so the document's paint stream does not change when
+          // the element first becomes an image.
+          if (image.complete && image.naturalWidth > 0) {
+            loadSource(image);
+          } else {
+            image.addEventListener("load", function() { loadSource(image); }, { once: true });
+          }
+        }
+
+        document.getElementById("image-load-btn").addEventListener("click", function() {
+          var images = grid.querySelectorAll("img");
+          for (var index = 0; index < images.length; index += 1) {
+            var image = images[index];
+            if (image.getAttribute("data-loaded") === "true") {
+              continue;
+            }
+            loadSourceWhenAvailable(image);
+          }
+        });
+
+        document.getElementById("image-swap-btn").addEventListener("click", function() {
+          var images = grid.querySelectorAll("img");
+          for (var index = 0; index < images.length; index += 1) {
+            var image = images[index];
+            if (image.getAttribute("data-loaded") !== "true") {
+              continue;
+            }
+            var current = image.getAttribute("src");
+            var sourceIndex = -1;
+            for (var candidate = 0; candidate < sources.length; candidate += 1) {
+              if (sources[candidate].url === current) {
+                sourceIndex = candidate;
+                break;
+              }
+            }
+            var next = sources[(sourceIndex + 1) % sources.length];
+            image.setAttribute("src", next.url);
+          }
+        });
+
+        document.getElementById("image-clear-btn").addEventListener("click", function() {
+          nextSlot = 0;
+          while (grid.firstChild) {
+            grid.removeChild(grid.firstChild);
+          }
+        });
+      })();
+
     </script>
   </body>
 </html>

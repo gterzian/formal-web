@@ -26,7 +26,12 @@ async function lookupAnchor(url, id, options) {
   }
 
   const tagName = (element.prop("tagName") || "").toLowerCase();
-  const text = element.text().trim();
+  // A <dfn>'s own text is only the term; the sentence that defines it lives in
+  // the enclosing <p>, <dd>, or <dt>.
+  const text =
+    tagName === "dfn"
+      ? (element.closest("p, dd, dt").text().trim() || element.text().trim())
+      : element.text().trim();
 
   const links = [];
   mergeLinks(links, collectLinks($, element));

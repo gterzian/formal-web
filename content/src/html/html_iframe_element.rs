@@ -3,10 +3,9 @@ use ipc_messages::content::{
     NewChildNavigableInfo, UserNavigationInvolvement, iframe_target_name,
 };
 use std::{
-    cell::RefCell,
+    cell::{Cell, RefCell},
     collections::{HashMap, HashSet},
     rc::Rc,
-    sync::{Arc, atomic::AtomicBool},
 };
 
 use blitz_dom::BaseDocument;
@@ -18,7 +17,7 @@ use url::Url;
 use crate::{
     ContentDocument, ContentProcess, EMPTY_HTML_DOCUMENT, NavigableContainerState,
     dom::event::EventTargetAccess, dom::fire_event, html::HTMLElement,
-    html::create_a_new_browsing_context_and_document,
+    html::create_a_new_browsing_context_and_document, html::document_providers::DocumentHost,
     html::environment_settings_object::RealmWiring, html::navigate, js::Types, webidl::Callback,
 };
 
@@ -237,13 +236,32 @@ fn attach_iframe_subdocument_from_html(
     else {
         return Ok(());
     };
-    let needs_paint = Arc::new(AtomicBool::new(false));
-    let sub_document = Rc::new(RefCell::new(BaseDocument::new(process.document_config(
+    let needs_paint = Rc::new(Cell::new(false));
+    let top_level_traversable_id = process
+        .documents
+        .get(&parent_document_id)
+        .map(|content_document| content_document.top_level_traversable_id)
+        .unwrap_or(traversable_id);
+    let origin = Url::parse(&base_url)
+        .map(|url| url.origin().unicode_serialization())
+        .unwrap_or_else(|_| String::from("null"));
+    let subdocument_id = uuid::Uuid::new_v4();
+    let (document_config, _) = process.document_config(
         traversable_id,
-        parent_document_id,
+        top_level_traversable_id,
         Some(base_url),
+        origin,
         needs_paint.clone(),
-    ))));
+        false,
+        DocumentHost::Subdocument {
+            parent_document_id,
+            id: subdocument_id,
+        },
+    );
+    let sub_document = Rc::new(RefCell::new(BaseDocument::new(document_config)));
+    process
+        .subdocuments
+        .insert(subdocument_id, Rc::downgrade(&sub_document));
     {
         let mut sub_document_guard = sub_document.borrow_mut();
         super::parse_html_into_document(&mut sub_document_guard, &html);
@@ -449,7 +467,7 @@ fn create_a_new_child_navigable(
     // flag: this child navigable's render is driven by content command
     // handlers (event/script dispatch); resource-load re-notes via the
     // shell provider are not connected for dynamically-created documents.
-    let needs_paint = Arc::new(AtomicBool::new(false));
+    let needs_paint = Rc::new(Cell::new(false));
     process.documents.insert(
         new_document_id,
         ContentDocument {
@@ -459,6 +477,7 @@ fn create_a_new_child_navigable(
             frame_id: content_frame_id,
             document: new_document,
             settings,
+            providers: None,
             pending_document_load: None,
             navigable_container_states: HashMap::new(),
             viewport_offset_x: 0.0,

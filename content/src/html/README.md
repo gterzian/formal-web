@@ -2,7 +2,9 @@
 
 `content/src/html` owns HTML parser integration, document lifecycle work, navigation helpers, and HTML global-object [platform objects](https://webidl.spec.whatwg.org/#dfn-platform-object) such as `Window` and `GlobalScope`.
 
-- Keep DOM-tree entry points under `content/src/html/html_dom_tree.rs`, and route per-element hooks from there into element modules.
+- `dom_trees.rs` implements the HTML Standard's DOM tree steps from [`#dom-trees`](https://html.spec.whatwg.org/#dom-trees) as `blitz_dom::MutationHooks` methods.  Each general step dispatches to the HTML element steps the element's local name defines; those are free functions in the element's module (the `<img>` ones are in `image_data.rs`).  Add an element by extending the dispatch in the general step and writing its functions beside the element.
+- `document_providers.rs` is blitz plumbing, not a spec algorithm: it holds `DocumentProviders`, its `ResourceHooks` impl (which reports blitz's subresource requests), the `AssetRequest` those fetches carry, and `install_resource`, which installs a fetched response into the document.  A function carrying a spec anchor belongs in the module that owns that spec section, not here.
+- `html_dom_tree.rs` holds the document-level iframe post-connection and removing entry points run at document load completion and document destruction; the iframe's HTML element steps do not run from the `MutationHooks` hooks.
 - Keep iframe bindings and iframe processing algorithms together in `content/src/html/html_iframe_element.rs` as free functions over content-process state (`ContentProcess`).
   `contentDocument` is unimplemented: the getter returns null even for a
   same-origin child navigable whose document lives in this content process
@@ -265,6 +267,139 @@ protected/permissible/suspendable monitoring is not.
   allocation (which must happen in the user agent) and the UA-side instance
   lookup by (origin, name); the dedicated-only implementation folds
   `WorkerGlobalScopeKind` into the dedicated global scope.
+
+## Images
+
+`image_data.rs` owns the `<img>` processing model: the current and pending
+image requests, the per-document list of available images, and the "update
+the image data" algorithm with its `// Step N:` comments.  It also holds the
+`<img>` HTML element steps (insertion, removal, and relevant attribute
+mutations) as free functions that `dom_trees.rs` dispatches to.  Do not run
+the algorithm from the IDL setters or from the render path.  Work that needs
+the document (setting blitz's intrinsic size, firing the queued `load`/`error`
+element task) is pushed onto `ImageRegistry::pending_tasks` and drained by
+`ContentProcess` after the task or command that produced it.
+
+An image element's availability is tracked in the registry, not in blitz's
+`SpecialElementData::Image`: content installs a zero-pixel `RasterImageData`
+only to give layout the intrinsic size, while the graphics process decodes
+and owns the pixels.  `naturalWidth`, `naturalHeight`, `complete`,
+`currentSrc`, and `decode` therefore read the registry (through the realm's
+`GlobalScope`); reading `raster_image_data` is not a substitute.
+
+The microtask queued at step 8 performs the rest of "update the image data"
+(steps 9-26), including starting the fetch.  The HTML element steps run inside
+blitz with no execution context.  blitz's hook traits carry no `Send + Sync`
+bound, because everything they touch runs on the thread that owns the
+document, so `DocumentProviders` holds `Rc`/`RefCell` state, including the
+realm's microtask queue (`EnvironmentSettingsObject::realm_job_queue`, installed by
+`ContentProcess::wire_image_realm`), and the image steps queue the
+continuation there at the mutation point.  It is a real engine microtask, in
+FIFO order with the realm's other microtasks: an image mutation made in the
+current task is therefore visible to every microtask that task queues after
+it, `decode()`'s step 2 in particular.  The continuation carries only the element's
+`ImageElementId` and the update instance id; it reads the element's attributes
+(step 10), the document's base URL, partition and origin, and the fetch sink
+from the realm and the document's providers when it runs.  Batching the
+continuations in a content-side queue and draining it at content-chosen points
+reorders them against the engine's microtasks and reintroduces the reject that
+`img.src = …; await img.decode()` used to hit.  The parse task runs the
+document's checkpoint at its stable state so the fetches start before the
+document's deferred script fetches.  The element tasks (presentation,
+`load`/`error`, and the environment `finishUpdate`) are drained separately
+through `drain_image_tasks`.  The fetch's response continues at step 27 (or
+step 17.5 of "reacting to environment changes") in
+`process_image_fetch_response`.
+
+The graphics side of `<img>` is selected by the graphics image backend.  Content
+sniffs the encoded header and sends the encoded bytes with
+`GraphicsCommand::RegisterImage`; the graphics process decodes them.  On macOS
+the image is decoded into its own global IOSurface and the compositor emits the
+image layer as a direct surface, which the embedder maps to that layer's
+CoreAnimation sublayer.  The CPU/cross-platform backend decodes to `ImageData`
+and Vello renders the image into the layer surface.  `RegisterImage` is sent
+once per `ImageIdentifier`; `DestroyDocument` sends `UnregisterImages` with the
+ids tracked in `registered_images_by_document` plus the registry's ids, so the
+graphics compositor and image backend release the decoded data and IOSurfaces.
+
+An element's processing model state is keyed by an `ImageElementId`: a UUID
+allocated the first time the model sees the element and carried by every input
+that moves it - the step-8 continuation, the fetch's response
+(`PendingNetworkHandler::Image`), the element tasks, and a `decode()` promise's
+waiter.  DOM node ids are only used to reach the element for attribute reads
+and events, through `ImageRegistry::element_location`.  A graphics decode
+report is addressed by `ImageIdentifier` instead, because the list of available
+images shares one decoded resource between elements; the report is recorded on
+every request and cache entry showing that resource, and the elements it
+matched are settled.
+
+`decode()` promises live on the realm's `GlobalScope` (a traced `GcCell`, so
+the resolving functions survive to settlement; the image registry cannot hold
+them) and are settled per element by `ContentProcess::settle_image_decodes`,
+called from the image-flow step that moved that element's request to a new
+state.  `decode()` step 2.3 waits "in parallel", which here means the settle
+decision is re-read at each of those steps; there is no per-checkpoint sweep.
+Step 2.3 queues a task to resolve or reject, but the message or event that
+reached the deciding step already is a content task, so the settlement runs in
+it rather than queueing another.  The graphics process's decode outcome is
+recorded on the request's image data, which a request reusing a cached image
+inherits.  Never settle a promise while holding a `GcCell` borrow.
+
+Known gaps in the processing model:
+
+- `update-src-complete.html` is disabled.  It asserts `img.complete` is false
+  synchronously after setting `src`, but steps 10-18 (including installing
+  the new request as the pending request) run in the step 8 microtask, so
+  `complete` (true while the current request is completely available and the
+  pending request is null) stays true until the microtask runs.  The
+  synchronous false result is the on-demand behavior in "when to obtain
+  images" (the current request's state returns to unavailable), not the
+  immediate-obtaining behavior implemented here.
+
+- `srcset`/`sizes` selection picks the first `srcset` candidate and ignores
+  the descriptors and `sizes`, so the current pixel density is always 1.0 and
+  the natural dimensions are the decoded pixel dimensions; a parent
+  `<picture>` element and its `<source>` siblings are not tracked, so
+  `picture`/`source` mutations never re-run the algorithm.  "Reacting to
+  environment changes" runs on every viewport change but uses the same
+  selection, so a `sizes`-driven choice never changes the image.  The
+  insertion hook receives no parent, so the `img` insertion steps cannot
+  check for a `<picture>` parent and update the image data on every
+  insertion; the HTML element moving steps are not observed because blitz
+  exposes no moving hook.
+- The macOS image path's remaining copy is the decode into the IOSurface; from
+  then on the image is delivered to the embedder zero-copy.  The CPU path
+  renders each image into a layer surface.  Both backends currently use the
+  `image` crate decoder; a native ImageIO decoder writing directly into the
+  IOSurface is the next step.
+- Decoded images are retained for the webview lifetime until their document is
+  destroyed; there is no per-image eviction for images still referenced by a
+  live document.
+- Lazy loading (`loading=lazy`), animation restart, EXIF density
+  correction, CORS enforcement, and progressive/multipart image decoding
+  are not modeled.
+- "Fetching the image must delay the load event" is not modeled: the document
+  load event ignores `<img>` fetches.  Implementing it as written deadlocks
+  on any page whose script clears the image's `src` to release the load
+  event: the engine runs parser scripts at load completion (see
+  `continue_document_load`), so the clearing script would itself wait for the
+  load event, and the fetch it is meant to abort never finishes.  The spec's
+  ordering needs parser scripts to run during parsing first.
+- The `img` adopting steps are not observed, so adopting an element into
+  another document does not re-run the algorithm.
+- Subresource URLs resolve against the document's URL only: a `<base href>`
+  change is not reflected in the base URL captured by `DocumentProviders`.
+- The `Image(width, height)` legacy factory function is not implemented, so
+  `new Image()` throws; `available-images-onload.html` and
+  `Image-constructor.html` are blocked on it.
+- Image formats are limited to what the `image` crate decodes (PNG, JPEG,
+  GIF, WebP); an SVG `src` is reported as an error.
+- Content reads only the encoded header (`into_dimensions`) to decide that an
+  image loaded, so a resource the graphics process cannot decode (a corrupt
+  PNG chunk, for example) leaves the element `complete` with its header
+  dimensions while its layer stays empty.  `decode()` does see the failure:
+  the graphics process reports every decode through
+  `GraphicsEvent::ImageDecoded`, and the promise rejects when it fails.
 
 ## Canvas
 

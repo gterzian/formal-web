@@ -64,7 +64,7 @@ pub mod v8_gc {
 }
 
 pub use engine::{
-    Completion, EcmascriptHost, ExecutionContext, HostHooks, JsEngine, create_engine,
+    Completion, EcmascriptHost, ExecutionContext, HostHooks, JsEngine, RealmJob, create_engine,
 };
 pub use enums::{
     IntegrityLevel, IteratorKind, Numeric, PreferredType, PromiseRejectionOperation, PromiseState,

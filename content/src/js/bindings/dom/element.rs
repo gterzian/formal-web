@@ -2,8 +2,8 @@ type JsValue = <crate::js::Types as JsTypes>::JsValue;
 
 use crate::dom::{DOMException, Element};
 use crate::html::{
-    HTMLAnchorElement, HTMLCanvasElement, HTMLElement, HTMLIFrameElement, HTMLInputElement,
-    HTMLMediaElement, HTMLVideoElement,
+    HTMLAnchorElement, HTMLCanvasElement, HTMLElement, HTMLIFrameElement, HTMLImageElement,
+    HTMLInputElement, HTMLMediaElement, HTMLVideoElement,
 };
 use crate::js::bindings::html::global_event_handlers::define_global_event_handlers;
 use crate::js::platform_objects::{invalidate_cached_node_ids, resolve_element_object};
@@ -204,6 +204,9 @@ pub(crate) fn try_with_element_ref<R>(
         }
         if let Some(html_input_element) = data.downcast_ref::<HTMLInputElement>() {
             return Ok(f(&html_input_element.html_element.element));
+        }
+        if let Some(html_image_element) = data.downcast_ref::<HTMLImageElement>() {
+            return Ok(f(&html_image_element.html_element.element));
         }
         if let Some(html_media_element) = data.downcast_ref::<HTMLMediaElement>() {
             return Ok(f(&html_media_element.html_element.element));
@@ -441,6 +444,13 @@ fn class_list_value(
             .get_attribute("class")
             .unwrap_or_default());
     }
+    if let Some(image) = data.downcast_ref::<HTMLImageElement>() {
+        return Ok(image
+            .html_element
+            .element
+            .get_attribute("class")
+            .unwrap_or_default());
+    }
     if let Some(anc) = data.downcast_ref::<HTMLAnchorElement>() {
         return Ok(anc
             .html_element
@@ -491,6 +501,8 @@ fn class_list_set_value(
             set_class(&ifr.html_element.element);
         } else if let Some(input) = data.downcast_ref::<HTMLInputElement>() {
             set_class(&input.html_element.element);
+        } else if let Some(image) = data.downcast_ref::<HTMLImageElement>() {
+            set_class(&image.html_element.element);
         } else if let Some(anc) = data.downcast_ref::<HTMLAnchorElement>() {
             set_class(&anc.html_element.element);
         } else if let Some(canvas) = data.downcast_ref::<HTMLCanvasElement>() {

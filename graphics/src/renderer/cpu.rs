@@ -4,11 +4,12 @@
 //! macOS (GStreamer media backend) and on macOS when built with the
 //! `cpu_readback` feature.
 
+use super::image::StoredImageResult;
 use super::{
     FrameDelivery, FrameMetadata, GpuContext, MAX_SURFACE_DIMENSION, PollRequest, ReadbackChannels,
-    RenderError, SurfaceBuffers, SurfaceRenderer, SurfaceRingState, frame_metadata,
+    RenderError, SubmitOutcome, SurfaceBuffers, SurfaceRenderer, SurfaceRingState, frame_metadata,
 };
-use ipc_messages::content::WebviewId;
+use ipc_messages::content::{ImageIdentifier, WebviewId};
 use ipc_messages::graphics::{CompositingLayerId, GraphicsEvent, LayerTopology, SurfacePayload};
 use log::{debug, error, info};
 use std::collections::{HashMap, HashSet};
@@ -260,11 +261,23 @@ impl SurfaceRenderer for CpuRenderer {
         })
     }
 
+    fn store_image(
+        &mut self,
+        id: &ImageIdentifier,
+        encoded: &[u8],
+    ) -> Result<Option<StoredImageResult>, String> {
+        self.gpu.store_image(id, encoded)
+    }
+
+    fn release_images(&mut self, image_ids: &[ImageIdentifier]) {
+        self.gpu.release_images(image_ids);
+    }
+
     fn submit_layers(
         &mut self,
         composed: ComposedScene,
         sender: &ipc::IpcSender<GraphicsEvent>,
-    ) -> Result<Vec<CompositingLayerId>, RenderError> {
+    ) -> Result<SubmitOutcome, RenderError> {
         let ComposedScene {
             webview_id,
             layers,
@@ -296,6 +309,10 @@ impl SurfaceRenderer for CpuRenderer {
         let mut total = 0;
 
         for layer in layers {
+            debug_assert!(
+                layer.direct_surface.is_none(),
+                "CPU image backend must not produce a direct surface"
+            );
             let Some(ref scene) = layer.render else {
                 // Clean layer: keep its last surface, still report topology.
                 topology.push(layer.into_layer_topology());
@@ -467,7 +484,10 @@ impl SurfaceRenderer for CpuRenderer {
                 );
             }
         }
-        Ok(rendered)
+        Ok(SubmitOutcome {
+            delivered: rendered,
+            gpu_work: total > 0,
+        })
     }
 
     fn handle_render_done(
@@ -634,7 +654,9 @@ impl SurfaceRenderer for CpuRenderer {
                 .iter()
                 .filter_map(|layer_id| match layer_id {
                     CompositingLayerId::Video(paint_id) => Some(*paint_id),
-                    CompositingLayerId::Navigable(_) | CompositingLayerId::Canvas(_) => None,
+                    CompositingLayerId::Navigable(_)
+                    | CompositingLayerId::Canvas(_)
+                    | CompositingLayerId::Image(_) => None,
                 })
                 .collect();
             self.gpu.retain_video_paints(&live_videos);

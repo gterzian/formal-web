@@ -125,6 +125,13 @@ adding work to the loop:
 `request_header_list`, the conversion from a blitz `Request` to the header
 list that travels on the wire.
 
+`fetch` is the minimal start of the Fetch algorithm: it registers the response
+continuation, implements the `data:` branch of scheme fetch, and routes the
+other schemes to the embedder or net. The per-step notes in `fetch`,
+`main_fetch`, and `scheme_fetch` mark what is still missing (request client
+population, default headers, preloading, CORS, redirects, timing, and response
+handover).
+
 Subresource fetches leave this process by one of two routes, chosen by the
 URL's scheme. A scheme named in `ContentBootstrap::embedder_schemes` is one
 the embedder serves itself: the fetch goes to the user agent as
@@ -134,6 +141,35 @@ scheme goes straight to the net process. Both routes register the same
 pending handler first, so the response side does not know which was taken.
 Filtering here rather than in net is what keeps net a place where networking
 happens rather than a fetch coordinator; see `user_agent/README.md`.
+
+`blitz-dom` does not fetch anything.  Every subresource the document needs is
+reported through the `blitz_dom::ResourceHooks` impl of `DocumentProviders` in
+`content/src/html/document_providers.rs` and the DOM tree steps in
+`content/src/html/dom_trees.rs`: stylesheets,
+`@import` rules, `@font-face` fonts, and CSS background/mask images.  Each
+request takes the scheme routing above and comes back as
+`Command::CompleteDocumentFetch`; content then installs the result into the
+document with `BaseDocument::handle_message` (a `Resource`, or
+`complete_stylesheet_import` for `@import`).  `data:` URLs are decoded in
+content and delivered through the same command.  Background and mask images
+are decoded in content because blitz paints them; `<img>` pixels go to the
+graphics process instead (see below).
+
+The `<img>` element follows its own processing model in
+`content/src/html/image_data.rs`: the DOM tree steps in `dom_trees.rs`
+dispatch to the `<img>` HTML element steps there, which report the relevant
+mutations (attribute changes, insertion, removal) and run "update the image
+data", the fetch starts through the same pending-handler route, and the event
+loop completes the request.  Keep an `<img>` fetch on that path: it owns the
+element's current/pending request state, the list of available images, and
+the `load`/`error` element tasks.  The completed image is registered with the
+graphics process once per `ImageIdentifier`; the graphics image backend chooses
+a per-image IOSurface (macOS, presented on its own CoreAnimation sublayer) or
+CPU `ImageData` rendered into a layer surface.  `DestroyDocument` releases the
+document's registered images with `GraphicsCommand::UnregisterImages`.
+Same-origin iframe subdocuments paint their images into the parent's scene,
+so their images stay on the layout-time loader rather than the `<img>`
+processing model (`DocumentHost::Subdocument`).
 
 ## Clipboard
 
@@ -157,6 +193,14 @@ this crate.
 
 - **Clippy warning backlog.** The content crate has a backlog of pre-existing
   clippy warnings (e.g. "useless conversion to the same type: V8Object").
+
+- **A dynamically inserted `<img>` ignores a fixed CSS `height`.** An `<img>`
+  created with `createElement` and appended with `appendChild` lays out at its
+  intrinsic aspect ratio; the stylesheet's `height` and an inline `height` on
+  the element are both ignored, so changing the source reflows the document.
+  Building the same figure through `innerHTML` applies the stylesheet, and the
+  image keeps its fixed-height box. Images present in the initial markup are
+  unaffected.
 
 ## Layout
 

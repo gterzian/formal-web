@@ -59,7 +59,7 @@ installed once:
 ```
 
 Bump a skill's dependencies in its `package.json` and run `npm install` again.
-`readme-chain` and `startup-page-test` have no dependencies.
+`startup-page-test` has no dependencies.
 
 ## Run
 
