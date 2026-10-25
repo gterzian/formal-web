@@ -1,7 +1,7 @@
 type JsValue = <crate::js::Types as JsTypes>::JsValue;
 
 use crate::html::HTMLImageElement;
-use crate::html::image_data::{ImageElement, ImageRegistry, image_element};
+use crate::html::images_processing_model::{ImageElement, ImageRegistry, image_element};
 use crate::js::platform_objects::with_global_scope;
 use crate::webidl::bindings::{AttributeDef, InterfaceDefinition, OperationDef, WebIdlInterface};
 use ipc_messages::content::DocumentId;

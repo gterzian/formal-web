@@ -1,15 +1,10 @@
-//! The HTML Standard's DOM tree steps.
-//!
-//! The DOM Standard runs these when a node is inserted, becomes connected, is
-//! removed, or has an attribute changed.  Each general step dispatches to the
-//! HTML element steps the element's local name defines; the element steps
-//! themselves live in the element's module.
+//! <https://html.spec.whatwg.org/#dom-trees>
 
 use blitz_dom::{ElementData, MutationHooks};
 use html5ever::ns;
 
 use crate::html::document_providers::DocumentProviders;
-use crate::html::image_data;
+use crate::html::images_processing_model;
 
 /// Whether the element is in the HTML namespace: every HTML element step is
 /// defined for a local name within it.
@@ -29,7 +24,7 @@ impl MutationHooks for DocumentProviders {
         namespace: &str,
     ) {
         if is_html_element(element) && element.name.local.as_ref() == "img" {
-            image_data::attribute_change_steps(
+            images_processing_model::attribute_change_steps(
                 self, node_id, element, local_name, old_value, new_value, namespace,
             );
         }
@@ -44,7 +39,7 @@ impl MutationHooks for DocumentProviders {
             && is_html_element(inserted_node)
             && inserted_node.name.local.as_ref() == "img"
         {
-            image_data::insertion_steps(self, node_id, inserted_node);
+            images_processing_model::insertion_steps(self, node_id, inserted_node);
         }
         // Step 2: "If insertedNode is a form-associated element or the ancestor of a
         // form-associated element:"
@@ -87,7 +82,13 @@ impl MutationHooks for DocumentProviders {
             && is_html_element(removed_node)
             && removed_node.name.local.as_ref() == "img"
         {
-            image_data::removing_steps(self, node_id, removed_node, is_subtree_root, old_ancestor);
+            images_processing_model::removing_steps(
+                self,
+                node_id,
+                removed_node,
+                is_subtree_root,
+                old_ancestor,
+            );
         }
         // Step 4: "If removedNode is a form-associated element with a non-null form owner and
         // removedNode and its form owner are no longer in the same tree, then reset the form

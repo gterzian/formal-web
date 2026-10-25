@@ -1,12 +1,7 @@
-//! The providers a content document hands to `blitz-dom`, and the subresource
-//! fetches its hooks start.
-//!
-//! `blitz-dom` fetches nothing and has no realm: it reports the subresources a
-//! document needs through its resource hooks, and the DOM tree mutations it
-//! performs through its mutation hooks, while the document is mutably borrowed.
-//! [`DocumentProviders`] is the object both traits are implemented on.  The
-//! mutation hooks are the HTML Standard's DOM tree steps (`dom_trees.rs`); the
-//! `<img>` processing model they enter runs in `image_data.rs`.
+//! The service providers one content document hands to `blitz-dom`: its
+//! `MutationHooks` (the HTML DOM tree steps in `dom_trees.rs`) and its
+//! `ResourceHooks` (the subresource fetches).  The mutation hooks enter the
+//! `<img>` processing model in `images_processing_model.rs`.
 
 use std::cell::{Cell, RefCell};
 use std::collections::HashSet;
@@ -17,7 +12,7 @@ use blitz_dom::{BaseDocument, DocumentEvent, FontFaceOverrides, ResourceHooks, R
 use blitz_traits::net::Bytes;
 use ipc_messages::content::{
     Command, DocumentFetchId, DocumentId, Event as ContentEvent, EventLoopId, ImageElementId,
-    NavigableId, ResourcePartitionKey,
+    ImageEvent, NavigableId, ResourcePartitionKey,
 };
 use ipc_messages::network::Request as NetworkRequest;
 use log::error;
@@ -26,7 +21,7 @@ use url::Url;
 use uuid::Uuid;
 
 use crate::fetch::{FetchContext, InternalFetchRequest, fetch};
-use crate::html::image_data::{ImageFetchSink, ImageRegistry};
+use crate::html::images_processing_model::{ImageFetchSink, ImageRegistry};
 use crate::js::{RealmJob, RealmJobQueue};
 use crate::{LocalContentStateRef, PendingNetworkHandler};
 
@@ -97,11 +92,11 @@ pub(crate) struct DocumentProviders {
     event_sender: ipc::IpcSender<ContentEvent>,
     embedder_schemes: Rc<HashSet<String>>,
     image_registry: Rc<RefCell<ImageRegistry>>,
-    /// The realm's microtask queue, so the `<img>` element steps can queue the
-    /// continuation of step 8 of "update the image data" where the mutation
-    /// happens, without an execution context.  Set once the document's realm
-    /// exists.
-    image_job_queue: RefCell<Option<RealmJobQueue>>,
+    /// The realm's microtask queue, so DOM hooks that run without an
+    /// execution context can queue their microtasks
+    /// (<https://html.spec.whatwg.org/#queue-a-microtask>).  Set once the
+    /// document's realm exists.
+    job_queue: RefCell<Option<RealmJobQueue>>,
     needs_paint: Rc<Cell<bool>>,
 }
 
@@ -133,22 +128,20 @@ impl DocumentProviders {
             event_sender,
             embedder_schemes,
             image_registry,
-            image_job_queue: RefCell::new(None),
+            job_queue: RefCell::new(None),
             needs_paint,
         }
     }
 
-    /// Give the image element steps the queue of the realm that owns this
+    /// Give the DOM hooks the microtask queue of the realm that owns this
     /// document.
-    ///
-    /// <https://html.spec.whatwg.org/#queue-a-microtask>
-    pub(crate) fn set_image_job_queue(&self, queue: RealmJobQueue) {
-        self.image_job_queue.borrow_mut().replace(queue);
+    pub(crate) fn set_job_queue(&self, queue: RealmJobQueue) {
+        self.job_queue.borrow_mut().replace(queue);
     }
 
     /// Queue a microtask in the realm that owns this document.
-    pub(crate) fn queue_image_job(&self, job: RealmJob) {
-        let queue = self.image_job_queue.borrow().clone();
+    pub(crate) fn queue_job(&self, job: RealmJob) {
+        let queue = self.job_queue.borrow().clone();
         if let Some(queue) = queue {
             queue.queue(job);
         }
@@ -225,6 +218,44 @@ impl ImageFetchSink for DocumentProviders {
                 element_id,
             },
         );
+    }
+
+    fn queue_image_element_task(
+        &self,
+        document_id: DocumentId,
+        node_id: usize,
+        event: ImageEvent,
+        current_url: Option<String>,
+    ) {
+        let command = Command::RunImageElementTask {
+            document_id,
+            node_id,
+            event,
+            current_url,
+        };
+        if let Err(error) = self.content_command_sender.send(command) {
+            error!("failed to queue an image element task: {error}");
+        }
+    }
+
+    fn queue_finish_environment_update(
+        &self,
+        document_id: DocumentId,
+        node_id: usize,
+        instance_id: u64,
+        selected_source: String,
+        selected_pixel_density: f64,
+    ) {
+        let command = Command::RunImageEnvironmentUpdate {
+            document_id,
+            node_id,
+            instance_id,
+            selected_source,
+            selected_pixel_density,
+        };
+        if let Err(error) = self.content_command_sender.send(command) {
+            error!("failed to queue an image environment update: {error}");
+        }
     }
 }
 

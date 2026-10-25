@@ -27,7 +27,7 @@ pub(crate) mod html_media_element;
 mod html_parser;
 pub(crate) mod html_video_element;
 mod hyperlink_element_utils;
-pub(crate) mod image_data;
+pub(crate) mod images_processing_model;
 mod location;
 pub(crate) mod message_event;
 pub(crate) mod messageport;

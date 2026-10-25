@@ -5,7 +5,7 @@ use js_engine::{Completion, ExecutionContext, JsTypes, gc_struct};
 use url::Url;
 
 use crate::html::HTMLElement;
-use crate::html::image_data::{self, ImageElement};
+use crate::html::images_processing_model::{self, ImageElement};
 use crate::html::queue_a_microtask;
 use crate::js::Types;
 use crate::js::platform_objects::with_global_scope;
@@ -234,7 +234,7 @@ impl HTMLImageElement {
         // Step 1: If the image is not available, then return 0.
         // Step 2: Return the respective component of the image's density-corrected natural width and height, in CSS pixels.
         // Note: Density correction is not modeled; the decoded pixel width is returned.
-        image_data::natural_dimensions(element)
+        images_processing_model::natural_dimensions(element)
             .map(|(width, _)| width)
             .unwrap_or(0)
     }
@@ -244,7 +244,7 @@ impl HTMLImageElement {
         // Step 1: If the image is not available, then return 0.
         // Step 2: Return the respective component of the image's density-corrected natural width and height, in CSS pixels.
         // Note: Density correction is not modeled; the decoded pixel height is returned.
-        image_data::natural_dimensions(element)
+        images_processing_model::natural_dimensions(element)
             .map(|(_, height)| height)
             .unwrap_or(0)
     }
@@ -262,9 +262,10 @@ impl HTMLImageElement {
         }
 
         let state = element.current_request.state;
-        state == image_data::ImageRequestState::CompletelyAvailable
+        state == images_processing_model::ImageRequestState::CompletelyAvailable
             && element.pending_request.is_none()
-            || state == image_data::ImageRequestState::Broken && element.pending_request.is_none()
+            || state == images_processing_model::ImageRequestState::Broken
+                && element.pending_request.is_none()
     }
 
     /// <https://html.spec.whatwg.org/#dom-img-currentsrc>
@@ -280,7 +281,9 @@ impl HTMLImageElement {
         // default), as reflection with the limited-to-known-values flag
         // requires.
         let value = self.html_element.element.get_attribute("referrerpolicy");
-        String::from(image_data::referrer_policy_state(value.as_deref()))
+        String::from(images_processing_model::referrer_policy_state(
+            value.as_deref(),
+        ))
     }
 
     /// <https://html.spec.whatwg.org/#dom-img-referrerpolicy>

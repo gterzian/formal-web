@@ -1,23 +1,11 @@
-//! The HTML image processing model.
-//!
-//! This module owns the per-element image request state
-//! (<https://html.spec.whatwg.org/#images-processing-model>) and the "update
-//! the image data" algorithm that drives the element's fetches.  It also
-//! holds the `<img>` element's HTML element steps, which the general DOM tree
-//! steps in `dom_trees.rs` dispatch to.  The steps count their DOM mutations
-//! as <https://html.spec.whatwg.org/#reacting-to-dom-mutations:relevant-mutations>;
-//! "when to obtain images" then answers a relevant mutation (or the element's
-//! creation) by running "update the image data" synchronously
-//! (<https://html.spec.whatwg.org/#when-to-obtain-images>).  The state is
-//! shared between the steps, the image element's IDL getters, and the event
-//! loop's fetch completion handling.
+//! <https://html.spec.whatwg.org/#images-processing-model>
 
 use std::collections::{HashMap, HashSet};
 
 use blitz_dom::ElementData;
 use html5ever::local_name;
 use ipc_messages::content::{
-    DocumentFetchId, DocumentId, ImageElementId, ImageIdentifier, ResourcePartitionKey,
+    DocumentFetchId, DocumentId, ImageElementId, ImageEvent, ImageIdentifier, ResourcePartitionKey,
 };
 use log::error;
 use url::Url;
@@ -69,7 +57,8 @@ pub(crate) struct ImageRequest {
     pub(crate) fetch_id: Option<DocumentFetchId>,
     /// Identifies this request instance: a `decode()` promise waiting on the
     /// current request rejects when the element's current request is replaced
-    /// by a request with a different id.
+    /// by a request with a different id
+    /// (<https://html.spec.whatwg.org/#dom-img-decode>).
     pub(crate) request_id: u64,
     /// Which algorithm created the request, so its fetch's processResponse
     /// runs the matching continuation.
@@ -89,8 +78,8 @@ pub(crate) enum ImageRequestSource {
     ReactingToEnvironmentChanges,
 }
 
-/// The state "reacting to environment changes" carries from its synchronous
-/// section to its `finishUpdate` steps.
+/// The state of <https://html.spec.whatwg.org/#reacting-to-environment-changes>
+/// carried from its synchronous section to its `finishUpdate` steps.
 #[derive(Clone, Debug)]
 pub(crate) struct EnvironmentUpdate {
     /// The image-data algorithm instance that was current when the
@@ -119,6 +108,7 @@ impl Default for ImageRequest {
     }
 }
 
+/// <https://html.spec.whatwg.org/#img-req-data>
 #[derive(Clone, Debug)]
 pub(crate) struct LoadedImage {
     pub(crate) image_id: ImageIdentifier,
@@ -126,7 +116,8 @@ pub(crate) struct LoadedImage {
     pub(crate) height: u32,
     /// The graphics process's decode outcome for `image_id`; `None` until it
     /// reports one.  A request that reuses a cached entry inherits it, so
-    /// `decode()` settles without waiting for a second report.
+    /// `decode()` settles without waiting for a second report
+    /// (<https://html.spec.whatwg.org/#dom-img-decode>).
     pub(crate) decode: Option<ImageDecode>,
 }
 
@@ -143,72 +134,20 @@ pub(crate) struct ImageElement {
     /// <https://html.spec.whatwg.org/#last-selected-source>
     pub(crate) last_selected_source: Option<String>,
     /// The image-data algorithm instance that most recently started for the
-    /// element.  A later instance invalidates an earlier queued microtask or
+    /// element; a later instance invalidates an earlier queued microtask or
     /// `finishUpdate` (step 9 and environment step 15.1).
     pub(crate) update_instance_id: u64,
 }
 
-/// Work produced by the processing model that needs the document (and so runs
-/// on the content process's event loop, not inside a DOM mutation hook).
-#[derive(Clone, Debug)]
-pub(crate) enum ImageTask {
-    /// The work of step 7.4.5 / step 27's "prepare an image for presentation",
-    /// run once the event loop can touch the document.
-    PrepareForPresentation {
-        document_id: DocumentId,
-        node_id: usize,
-        width: u32,
-        height: u32,
-    },
-    /// The element task queued to fire `load` at the element.
-    FireLoad {
-        document_id: DocumentId,
-        node_id: usize,
-    },
-    /// The element task queued to fire `error` at the element.
-    FireError {
-        document_id: DocumentId,
-        node_id: usize,
-        /// The current request URL the task sets before firing, when the
-        /// algorithm's queued steps include it (steps 11.2.1 and 13.4.1).
-        current_url: Option<String>,
-    },
-    /// The element task queued by "reacting to environment changes" to run
-    /// `finishUpdate` (steps 16.2 and 17.5.3).
-    FinishEnvironmentUpdate {
-        document_id: DocumentId,
-        node_id: usize,
-        instance_id: u64,
-        selected_source: String,
-        selected_pixel_density: f64,
-    },
-}
-
-impl ImageTask {
-    /// The element this task was queued for.
-    pub(crate) fn element(&self) -> (DocumentId, usize) {
-        match self {
-            Self::PrepareForPresentation {
-                document_id,
-                node_id,
-                ..
-            }
-            | Self::FireLoad {
-                document_id,
-                node_id,
-            }
-            | Self::FireError {
-                document_id,
-                node_id,
-                ..
-            }
-            | Self::FinishEnvironmentUpdate {
-                document_id,
-                node_id,
-                ..
-            } => (*document_id, *node_id),
-        }
-    }
+/// The blitz-side part of
+/// <https://html.spec.whatwg.org/#prepare-an-image-for-presentation> that
+/// could not run while the DOM hook held the document mutably borrowed.
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct ImagePresentation {
+    pub(crate) document_id: DocumentId,
+    pub(crate) node_id: usize,
+    pub(crate) width: u32,
+    pub(crate) height: u32,
 }
 
 /// The outcome of decoding one image resource, as reported by the graphics
@@ -220,6 +159,7 @@ pub(crate) enum ImageDecode {
 }
 
 /// What `decode()` does with a promise waiting on a request (step 2.3).
+/// <https://html.spec.whatwg.org/#dom-img-decode>
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum DecodeSettlement {
     Wait,
@@ -227,9 +167,7 @@ pub(crate) enum DecodeSettlement {
     Reject,
 }
 
-/// The identity of the "update the image data" instance whose step 8 queued a
-/// microtask: the continuation reads the element, the document and the
-/// processing model state when it runs.
+/// The element and algorithm instance whose step-8 microtask is queued.
 pub(crate) struct PendingImageDataUpdate {
     /// The element the algorithm instance is running for.
     pub(crate) element_id: ImageElementId,
@@ -237,9 +175,7 @@ pub(crate) struct PendingImageDataUpdate {
     pub(crate) instance_id: u64,
 }
 
-/// The document facts the step-8 continuation reads when it runs: the
-/// element's attributes (step 10 selects an image source from them again), and
-/// the document's base URL, partition and origin.
+/// The document state step 10 reads when the queued microtask runs.
 pub(crate) struct ImageUpdateEnvironment {
     pub(crate) attributes: ImageAttributes,
     pub(crate) base_url: Option<Url>,
@@ -266,8 +202,10 @@ pub(crate) struct ImageRegistry {
     pub(crate) next_request_id: u64,
     /// Identifies the next image-data algorithm instance within this process.
     pub(crate) next_update_instance_id: u64,
-    /// Element tasks the algorithms queued, drained by `ContentProcess`.
-    pub(crate) pending_tasks: Vec<ImageTask>,
+    /// The "prepare an image for presentation" work the processing model
+    /// produced while a DOM hook held the document mutably borrowed.  This is
+    /// model state waiting to be written to blitz, not a queued task.
+    pub(crate) pending_presentation: Vec<ImagePresentation>,
 }
 
 pub(crate) trait ImageFetchSink {
@@ -277,6 +215,28 @@ pub(crate) trait ImageFetchSink {
         document_id: DocumentId,
         handler_id: DocumentFetchId,
         url: &str,
+    );
+
+    /// Queues an element task on the DOM manipulation task source by sending
+    /// the content process a command of its own.
+    /// <https://html.spec.whatwg.org/#queue-an-element-task>
+    fn queue_image_element_task(
+        &self,
+        document_id: DocumentId,
+        node_id: usize,
+        event: ImageEvent,
+        current_url: Option<String>,
+    );
+
+    /// Queues the element task that runs `finishUpdate`.
+    /// <https://html.spec.whatwg.org/#reacting-to-environment-changes>
+    fn queue_finish_environment_update(
+        &self,
+        document_id: DocumentId,
+        node_id: usize,
+        instance_id: u64,
+        selected_source: String,
+        selected_pixel_density: f64,
     );
 }
 
@@ -317,11 +277,7 @@ impl ImageAttributes {
 }
 
 /// <https://html.spec.whatwg.org/#when-to-obtain-images>
-pub(crate) fn run_image_update(
-    document: &DocumentProviders,
-    node_id: usize,
-    element: &ElementData,
-) {
+pub(crate) fn obtain_images(document: &DocumentProviders, node_id: usize, element: &ElementData) {
     // "When obtaining images immediately, the user agent must synchronously
     // update the image data of the img element, with the restart animation
     // flag set if so stated, whenever that element is created or has
@@ -342,6 +298,7 @@ pub(crate) fn run_image_update(
         let mut registry = document.image_registry().borrow_mut();
         update_the_image_data(
             &mut registry,
+            document,
             document_id,
             node_id,
             &attributes,
@@ -357,7 +314,7 @@ pub(crate) fn run_image_update(
     if let Some(update) = update {
         let job: RealmJob = Box::new(move |ec| {
             if let Err(error) = with_global_scope(ec, |global_scope, ec| {
-                global_scope.run_image_update(ec, &update)
+                global_scope.update_the_image_data_microtask(ec, &update)
             }) {
                 let message = ec
                     .to_rust_string(error)
@@ -365,7 +322,7 @@ pub(crate) fn run_image_update(
                 error!("failed to continue \"update the image data\": {message}");
             }
         });
-        document.queue_image_job(job);
+        document.queue_job(job);
     }
 }
 
@@ -380,7 +337,7 @@ pub(crate) fn insertion_steps(
     // images immediately, that synchronously updates the image data
     // (<https://html.spec.whatwg.org/#when-to-obtain-images>).
     // Note: The DOM insertion hook is passed the element without the node tree, so the parent is not available.  The image data is updated for every insertion instead: the algorithm also runs when the element is created, and insertion is the first point at which this implementation observes the element.
-    run_image_update(document, node_id, inserted_node);
+    obtain_images(document, node_id, inserted_node);
 }
 
 /// <https://html.spec.whatwg.org/#the-img-element:html-element-removing-steps>
@@ -403,7 +360,7 @@ pub(crate) fn removing_steps(
     // The mutation is a relevant mutation; obtaining images immediately
     // updates the image data
     // (<https://html.spec.whatwg.org/#when-to-obtain-images>).
-    run_image_update(document, node_id, removed_node);
+    obtain_images(document, node_id, removed_node);
 }
 
 /// <https://html.spec.whatwg.org/#reacting-to-dom-mutations:relevant-mutations>
@@ -438,7 +395,7 @@ pub(crate) fn attribute_change_steps(
     // The attribute change is one of the relevant mutations; obtaining
     // images immediately updates the image data
     // (<https://html.spec.whatwg.org/#when-to-obtain-images>).
-    run_image_update(document, node_id, element);
+    obtain_images(document, node_id, element);
 }
 
 /// The CORS settings attribute mode of a `crossorigin` attribute value.
@@ -527,8 +484,8 @@ impl ImageRegistry {
             })
     }
 
-    pub(crate) fn take_pending_tasks(&mut self) -> Vec<ImageTask> {
-        std::mem::take(&mut self.pending_tasks)
+    pub(crate) fn take_pending_presentation(&mut self) -> Vec<ImagePresentation> {
+        std::mem::take(&mut self.pending_presentation)
     }
 
     /// Forget a destroyed document's element state, including its list of
@@ -564,24 +521,8 @@ impl ImageRegistry {
             .retain(|(element_document_id, _), _| *element_document_id != document_id);
         self.available_images
             .retain(|(image_document_id, _), _| *image_document_id != document_id);
-        self.pending_tasks.retain(|task| match task {
-            ImageTask::PrepareForPresentation {
-                document_id: task_document_id,
-                ..
-            }
-            | ImageTask::FireLoad {
-                document_id: task_document_id,
-                ..
-            }
-            | ImageTask::FireError {
-                document_id: task_document_id,
-                ..
-            }
-            | ImageTask::FinishEnvironmentUpdate {
-                document_id: task_document_id,
-                ..
-            } => *task_document_id != document_id,
-        });
+        self.pending_presentation
+            .retain(|presentation| presentation.document_id != document_id);
         image_ids.into_iter().collect()
     }
 }
@@ -612,6 +553,7 @@ fn available_images_key(url: &str, attributes: &ImageAttributes, origin: &str) -
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn update_the_image_data(
     registry: &mut ImageRegistry,
+    sink: &dyn ImageFetchSink,
     document_id: DocumentId,
     node_id: usize,
     attributes: &ImageAttributes,
@@ -690,14 +632,13 @@ pub(crate) fn update_the_image_data(
                     environment_update: None,
                 };
                 // Step 7.4.5: Prepare the current request for presentation given `element`.
-                registry
-                    .pending_tasks
-                    .push(ImageTask::PrepareForPresentation {
-                        document_id,
-                        node_id,
-                        width: available.width,
-                        height: available.height,
-                    });
+                prepare_an_image_for_presentation(
+                    registry,
+                    document_id,
+                    node_id,
+                    available.width,
+                    available.height,
+                );
                 // Step 7.4.6: Set the current request's current pixel density to `selected pixel density`.
                 if let Some(density) = selected_pixel_density {
                     registry
@@ -712,10 +653,7 @@ pub(crate) fn update_the_image_data(
                 // Note: Handled by step 7.4.4 above.
                 // Step 7.4.7.3: If `maybe omit events` is not set or `previousURL` is not equal to `urlString`, then fire an event named `load` at `element`.
                 // Note: `maybe omit events` is never set, so the event always fires.
-                registry.pending_tasks.push(ImageTask::FireLoad {
-                    document_id,
-                    node_id,
-                });
+                sink.queue_image_element_task(document_id, node_id, ImageEvent::Load, None);
                 // Step 7.4.8: Abort the update the image data algorithm.
                 return None;
             }
@@ -729,6 +667,36 @@ pub(crate) fn update_the_image_data(
         element_id: registry.element_id(document_id, node_id),
         instance_id,
     })
+}
+
+/// <https://html.spec.whatwg.org/#prepare-an-image-for-presentation>
+fn prepare_an_image_for_presentation(
+    registry: &mut ImageRegistry,
+    document_id: DocumentId,
+    node_id: usize,
+    width: u32,
+    height: u32,
+) {
+    // Step 1: Let `exifTagMap` be the EXIF tags obtained from `req`'s image data, as defined by the relevant codec.
+    // Step 2: Let `physicalWidth` and `physicalHeight` be the width and height obtained from `req`'s image data, as defined by the relevant codec.
+    // Step 3: Let `dimX` be the value of `exifTagMap`'s tag 0xA002 (PixelXDimension).
+    // Step 4: Let `dimY` be the value of `exifTagMap`'s tag 0xA003 (PixelYDimension).
+    // Step 5: Let `resX` be the value of `exifTagMap`'s tag 0x011A (XResolution).
+    // Step 6: Let `resY` be the value of `exifTagMap`'s tag 0x011B (YResolution).
+    // Step 7: Let `resUnit` be the value of `exifTagMap`'s tag 0x0128 (ResolutionUnit).
+    // Step 8: If all the following are true: `dimX` is a positive integer; `dimY` is a positive integer; `resX` is a positive floating-point number; `resY` is a positive floating-point number; `physicalWidth` × 72 / `resX` is `dimX`; `physicalHeight` × 72 / `resY` is `dimY`; `resUnit` is 2 (Inch), then:
+    // Note: EXIF metadata is not read; the decoded pixel dimensions are used as
+    // the preferred density-corrected dimensions.
+    // Step 9: Update `req`'s `img` element's presentation appropriately.
+    // Note: blitz holds the document mutably borrowed while a DOM hook runs, so
+    // the element's intrinsic size is written from `pending_presentation` once
+    // the content process has the document again.
+    registry.pending_presentation.push(ImagePresentation {
+        document_id,
+        node_id,
+        width,
+        height,
+    });
 }
 
 /// Allocates the next image request instance id.
@@ -823,11 +791,12 @@ pub(crate) fn continue_update_the_image_data(
         // Note: `maybe omit events` is never set, so the second condition
         // always holds.
         if environment.attributes.src.is_some() || environment.attributes.uses_srcset_or_picture() {
-            registry.pending_tasks.push(ImageTask::FireError {
+            sink.queue_image_element_task(
                 document_id,
                 node_id,
-                current_url: Some(String::new()),
-            });
+                ImageEvent::Error,
+                Some(String::new()),
+            );
         }
         // Step 11.3: Return.
         return;
@@ -852,11 +821,12 @@ pub(crate) fn continue_update_the_image_data(
         // Step 13.4.2: If `maybe omit events` is not set or `previousURL` is not equal to `selected source`, then fire an event named `error` at `element`.
         // Note: `maybe omit events` is never set, so the condition always
         // holds.
-        registry.pending_tasks.push(ImageTask::FireError {
+        sink.queue_image_element_task(
             document_id,
             node_id,
-            current_url: Some(selected_source),
-        });
+            ImageEvent::Error,
+            Some(selected_source),
+        );
         // Step 13.5: Return.
         return;
     };
@@ -950,6 +920,7 @@ pub(crate) enum ImageFetchOutcome {
 /// to the algorithm that created the request.
 pub(crate) fn process_image_fetch_response(
     registry: &mut ImageRegistry,
+    sink: &dyn ImageFetchSink,
     element_id: ImageElementId,
     handler_id: DocumentFetchId,
     dimensions: Option<(u32, u32)>,
@@ -979,6 +950,7 @@ pub(crate) fn process_image_fetch_response(
     match source {
         ImageRequestSource::UpdateTheImageData => process_update_the_image_data_response(
             registry,
+            sink,
             document_id,
             node_id,
             handler_id,
@@ -987,6 +959,7 @@ pub(crate) fn process_image_fetch_response(
         ImageRequestSource::ReactingToEnvironmentChanges => {
             process_reacting_to_environment_changes_response(
                 registry,
+                sink,
                 document_id,
                 node_id,
                 handler_id,
@@ -999,6 +972,7 @@ pub(crate) fn process_image_fetch_response(
 /// <https://html.spec.whatwg.org/#update-the-image-data>
 fn process_update_the_image_data_response(
     registry: &mut ImageRegistry,
+    sink: &dyn ImageFetchSink,
     document_id: DocumentId,
     node_id: usize,
     handler_id: DocumentFetchId,
@@ -1020,11 +994,7 @@ fn process_update_the_image_data_response(
         abort_the_image_request(Some(&mut element.current_request));
         abort_the_image_request(element.pending_request.as_mut());
         element.pending_request = None;
-        registry.pending_tasks.push(ImageTask::FireError {
-            document_id,
-            node_id,
-            current_url: None,
-        });
+        sink.queue_image_element_task(document_id, node_id, ImageEvent::Error, None);
         return ImageFetchOutcome::Failed;
     };
 
@@ -1067,32 +1037,24 @@ fn process_update_the_image_data_response(
         element.current_request = request;
     }
 
+    // Step 27.8 / Step 27.11: prepare `image request` for presentation given `element`.
+    prepare_an_image_for_presentation(registry, document_id, node_id, dimensions.0, dimensions.1);
     // Step 27.13: "Add the image to the list of available images using the key `key`, with the ignore higher-layer caching flag set."
     if let Some(key) = key {
         registry
             .available_images
             .insert((document_id, key), loaded.clone());
     }
-    registry
-        .pending_tasks
-        .push(ImageTask::PrepareForPresentation {
-            document_id,
-            node_id,
-            width: dimensions.0,
-            height: dimensions.1,
-        });
     // Step 27.14: "If `maybe omit events` is not set or `previousURL` is not equal to `urlString`, then fire an event named `load` at `element`."
     // Note: `maybe omit events` is never set, so the event always fires.
-    registry.pending_tasks.push(ImageTask::FireLoad {
-        document_id,
-        node_id,
-    });
+    sink.queue_image_element_task(document_id, node_id, ImageEvent::Load, None);
     ImageFetchOutcome::ImageAvailable(image_id)
 }
 
 /// <https://html.spec.whatwg.org/#reacting-to-environment-changes>
 fn process_reacting_to_environment_changes_response(
     registry: &mut ImageRegistry,
+    sink: &dyn ImageFetchSink,
     document_id: DocumentId,
     node_id: usize,
     handler_id: DocumentFetchId,
@@ -1143,15 +1105,13 @@ fn process_reacting_to_environment_changes_response(
     }
 
     // Step 17.5.3: "Queue an element task on the DOM manipulation task source given the `img` element and `finishUpdate`."
-    registry
-        .pending_tasks
-        .push(ImageTask::FinishEnvironmentUpdate {
-            document_id,
-            node_id,
-            instance_id: environment_update.instance_id,
-            selected_source: environment_update.selected_source,
-            selected_pixel_density: environment_update.selected_pixel_density,
-        });
+    sink.queue_finish_environment_update(
+        document_id,
+        node_id,
+        environment_update.instance_id,
+        environment_update.selected_source,
+        environment_update.selected_pixel_density,
+    );
     ImageFetchOutcome::ImageAvailable(image_id)
 }
 
@@ -1253,15 +1213,13 @@ pub(crate) fn reacting_to_environment_changes(
             }
         }
         // Step 16.2: ⌛ Queue an element task on the DOM manipulation task source given the `img` element and `finishUpdate`.
-        registry
-            .pending_tasks
-            .push(ImageTask::FinishEnvironmentUpdate {
-                document_id,
-                node_id,
-                instance_id: environment_update.instance_id,
-                selected_source: environment_update.selected_source,
-                selected_pixel_density: environment_update.selected_pixel_density,
-            });
+        document.queue_finish_environment_update(
+            document_id,
+            node_id,
+            environment_update.instance_id,
+            environment_update.selected_source,
+            environment_update.selected_pixel_density,
+        );
         return;
     }
     // Step 17: Otherwise:
@@ -1292,12 +1250,12 @@ pub(crate) fn finish_environment_update(
     instance_id: u64,
     selected_source: &str,
     selected_pixel_density: f64,
-) {
+) -> bool {
     // Step 15.1: If the `img` element has experienced relevant mutations since this algorithm started, then set the pending request to null and abort these steps.
     let (loaded, key) = {
         let element = registry.element_mut(document_id, node_id);
         let Some(pending) = element.pending_request.as_ref() else {
-            return;
+            return false;
         };
         // Note: Only the request this environment update installed is
         // aborted; a newer request installed by "update the image data"
@@ -1308,16 +1266,16 @@ pub(crate) fn finish_environment_update(
                 .as_ref()
                 .is_none_or(|update| update.instance_id != instance_id)
         {
-            return;
+            return false;
         }
         if element.update_instance_id != instance_id {
             element.pending_request = None;
-            return;
+            return false;
         }
         // Step 15.2: Set the `img` element's last selected source to `selected source` and the `img` element's current pixel density to `selected pixel density`.
         element.last_selected_source = Some(selected_source.to_string());
         let Some(request) = element.pending_request.as_mut() else {
-            return;
+            return false;
         };
         request.current_pixel_density = selected_pixel_density;
         // Step 15.3: Set the `image request`'s state to `completely available`.
@@ -1335,20 +1293,19 @@ pub(crate) fn finish_environment_update(
     upgrade_the_pending_request_to_the_current_request(registry.element_mut(document_id, node_id));
     // Step 15.6: Prepare `image request` for presentation given the `img` element.
     if let Some(loaded) = loaded {
-        registry
-            .pending_tasks
-            .push(ImageTask::PrepareForPresentation {
-                document_id,
-                node_id,
-                width: loaded.width,
-                height: loaded.height,
-            });
+        prepare_an_image_for_presentation(
+            registry,
+            document_id,
+            node_id,
+            loaded.width,
+            loaded.height,
+        );
     }
     // Step 15.7: Fire an event named `load` at the `img` element.
-    registry.pending_tasks.push(ImageTask::FireLoad {
-        document_id,
-        node_id,
-    });
+    // Note: `finish_environment_update` runs inside the element task queued at
+    // step 16.2 or 17.5.3, so step 15.7 fires the event directly rather than
+    // queueing another task.
+    true
 }
 
 /// The image-processing state of an `<img>` element, if the element has been
@@ -1405,14 +1362,16 @@ pub(crate) fn current_image_id(element: &ImageElement) -> Option<ImageIdentifier
         .map(|image| image.image_id.clone())
 }
 
-/// The identity of the element's current request, as `decode()` records it.
+/// The identity of the element's current request, as `decode()` records it
+/// (<https://html.spec.whatwg.org/#dom-img-decode>).
 pub(crate) fn current_request_id(element: &ImageElement) -> u64 {
     element.current_request.request_id
 }
 
 /// Records the graphics process's decode outcome for one image resource on
 /// the requests and cached entries that reference it, and returns the elements
-/// whose `decode()` promise can now settle.
+/// whose `decode()` promise can now settle
+/// (<https://html.spec.whatwg.org/#dom-img-decode>).
 pub(crate) fn image_decoded(
     registry: &mut ImageRegistry,
     image_id: &ImageIdentifier,
@@ -1460,10 +1419,11 @@ fn record_decode(
 }
 
 /// The decision `decode()` step 2.3 makes for a promise waiting on the request
-/// the element's current request had when the promise was registered.  A
-/// request id of zero means the processing model never installed a request for
-/// the element (a detached `<img>` with no source), which "update the image
-/// data" leaves broken: such a promise rejects.
+/// the element's current request had when the promise was registered
+/// (<https://html.spec.whatwg.org/#dom-img-decode>).  A request id of zero
+/// means the processing model never installed a request for the element (a
+/// detached `<img>` with no source), which "update the image data" leaves
+/// broken: such a promise rejects.
 pub(crate) fn decode_settlement(
     registry: &ImageRegistry,
     document_id: DocumentId,

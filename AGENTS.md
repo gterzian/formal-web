@@ -201,11 +201,17 @@ for the definitive spec-annotation reference with examples and common mistakes.
    summary, no prose.  **Zero prose — not a single explanatory sentence.**
    If the function name is not enough context, the spec IS the documentation.
    Explanatory doc comments on spec-implementing functions are violations.
+   The same holds for module docs: a module that owns a spec section carries
+   that section's anchor and nothing else.
 
    The Rust function name MUST match the spec algorithm name, with `_`
    separators replacing spaces and hyphens.  For example, "steps to fire
    beforeunload" becomes `steps_to_fire_beforeunload`, not `fire_global_event`.
-   The spec→code mapping must be discoverable by name alone.
+   The spec→code mapping must be discoverable by name alone.  Each
+   asynchronous part of a split algorithm is named for the part it implements,
+   and a comment that names a spec step, method, or attribute links the
+   algorithm or interface that defines it — a bare member name is not a spec
+   reference.
 
    The anchor is a claim that the item **is** that algorithm.  It must name
    the algorithm the item implements, never an algorithm that merely calls
@@ -500,6 +506,8 @@ for detailed documentation.
 - Use descriptive variable names throughout. Single-letter names (`s`, `st`, `wid`, `el`, `p`,
   `cs`, `at`, `ch`) are prohibited in new code and should be expanded when touching existing
   code. A variable called `state` is always clearer than `s`.
+- Name a shared mechanism for what it is, not for its first user (`job_queue`, not
+  `image_job_queue`).
 - Exception: closure parameters in iterator chains (`.map(|x| ...)`) where the type is obvious
   from context. But even there, prefer short but meaningful names like `tab` over `t`.
 - **Never use fully qualified paths** — no `crate::foo::bar::baz(...)` anywhere.

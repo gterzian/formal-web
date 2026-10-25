@@ -23,8 +23,10 @@ use crate::html::document_providers::{
     AssetRequest, DocumentHost, DocumentProviders, install_resource,
 };
 use crate::html::environment_settings_object::RealmWiring;
-use crate::html::event_loop::{EventLoopTaskSources, ImageEvent, Task, TaskQueue};
-use crate::html::image_data::{self, ImageAttributes, ImageFetchOutcome, ImageRegistry, ImageTask};
+use crate::html::event_loop::{EventLoopTaskSources, Task, TaskQueue};
+use crate::html::images_processing_model::{
+    self, ImageAttributes, ImageFetchOutcome, ImageRegistry,
+};
 use crate::html::timers::MapOfActiveTimers;
 use crate::html::timers::TimerRealm;
 use crate::html::ui_events::{dispatch_trusted_click_event, dispatch_ui_event};
@@ -61,15 +63,15 @@ use crate::fetch::{FetchContext, InternalFetchRequest, fetch};
 use ipc_messages::content::Command::{
     ClickElement, CompleteDocumentFetch, ContentBootstrap, CreateEmptyDocument,
     CreateLoadedDocument, DestroyDocument, DispatchEvent, EvaluateScript, FailDocumentFetch,
-    ImageDecoded, NotifyVideoEnded, RunAnimationFrameCallbacks, SetTraversableViewport,
-    SetViewport, Shutdown, UpdateTheRendering,
+    ImageDecoded, NotifyVideoEnded, RunAnimationFrameCallbacks, RunImageElementTask,
+    RunImageEnvironmentUpdate, SetTraversableViewport, SetViewport, Shutdown, UpdateTheRendering,
 };
 use ipc_messages::content::{
     BeforeUnloadCheckId, CanvasEmbedSite, CanvasId, ClipboardWriteRequested,
     ColorScheme as MessageColorScheme, Command, DispatchEventEntry, DocumentFetchId, DocumentId,
     ElementClickResult, EmbedBackgroundPolicy, EmbedLayout, EmbedSite, EmbedSiteId,
     Event as ContentEvent, EventLoopId, FetchResponse as ContentFetchResponse, FontTransportSender,
-    FrameCompositionMetadata, FrameId, IframeEmbedSite, ImageElementId, ImageEmbedData,
+    FrameCompositionMetadata, FrameId, IframeEmbedSite, ImageElementId, ImageEmbedData, ImageEvent,
     ImageIdentifier, ImagePaintId, ImageTransportSender, LoadedDocumentResponse, NavigableId,
     NavigationId, PaintFrame, PortId, PortTaskKind, PreparedScene, RecordedScene,
     ResourcePartitionKey, ScriptEvaluationResult, TitleChanged, TraversableViewport, UserScript,
@@ -317,11 +319,11 @@ pub(crate) struct ContentDocument {
     frame_id: FrameId,
     document: Rc<RefCell<BaseDocument>>,
     settings: EnvironmentSettingsObject,
-    /// The document's `DocumentProviders`, which the microtask checkpoints use
-    /// to run the "update the image data" continuations queued at step 8.
+    /// The document's `DocumentProviders`, which the content process uses to
+    /// apply the microtasks and presentation state the DOM hooks produce.
     /// `None` for a document created without hooks (the initial about:blank
-    /// document of a `window.open` realm), which never queues a continuation.
-    providers: Option<Arc<DocumentProviders>>,
+    /// document of a `window.open` realm).
+    providers: Option<Rc<DocumentProviders>>,
     pending_document_load: Option<PendingDocumentLoad>,
     navigable_container_states: HashMap<usize, NavigableContainerState>,
     viewport_offset_x: f32,
@@ -615,30 +617,30 @@ impl ContentProcess {
             })
     }
 
-    #[allow(clippy::too_many_arguments)]
-    /// Wires the document's realm to its processing model state: the realm
-    /// reads the image registry, the document's providers (base URL, partition,
-    /// origin, fetch sink) and queues the step-8 continuations the `<img>` DOM
-    /// hooks produce.
-    ///
-    /// <https://html.spec.whatwg.org/#queue-a-microtask>
-    fn wire_image_realm(
+    /// Connects a document's realm to its `DocumentProviders`.  The providers
+    /// run `blitz-dom`'s hooks, which cannot reach the realm: the mutation
+    /// hooks have no execution context, so they queue their microtasks on the
+    /// realm's queue (<https://html.spec.whatwg.org/#queue-a-microtask>), and
+    /// the resource hooks need the document's base URL, partition and origin.
+    /// The realm's algorithms read the providers back for that state and for
+    /// the image fetch sink.
+    fn wire_document_providers(
         &mut self,
         settings: &mut EnvironmentSettingsObject,
-        providers: &Arc<DocumentProviders>,
+        providers: &Rc<DocumentProviders>,
     ) -> Result<(), String> {
         let queue = settings.realm_execution_context.realm_job_queue();
-        providers.set_image_job_queue(queue);
+        providers.set_job_queue(queue);
         with_global_scope(
             &mut settings.realm_execution_context,
             |global_scope, _ec| {
-                global_scope.set_image_providers(Arc::clone(providers));
+                global_scope.set_document_providers(Rc::clone(providers));
                 Ok(())
             },
         )
         .map_err(|error| {
             format!(
-                "failed to set the document's image environment: {}",
+                "failed to connect the document's providers: {}",
                 error.display()
             )
         })
@@ -653,17 +655,12 @@ impl ContentProcess {
         needs_paint: Rc<Cell<bool>>,
         embedded_images: bool,
         host: DocumentHost,
-    ) -> (DocumentConfig, Arc<DocumentProviders>) {
+    ) -> (DocumentConfig, Rc<DocumentProviders>) {
         let partition = ResourcePartitionKey {
             top_level_traversable: top_level_traversable_id,
             origin,
         };
-        // blitz's `DocumentConfig` takes `Arc<dyn MutationHooks>` while the
-        // providers hold `Rc` state, since the content process is
-        // single-threaded: the `Arc` is a container here, not a thread-safety
-        // requirement.
-        #[allow(clippy::arc_with_non_send_sync)]
-        let providers = Arc::new(DocumentProviders::new(
+        let providers = Rc::new(DocumentProviders::new(
             host,
             traversable_id,
             self.event_loop_id,
@@ -683,8 +680,8 @@ impl ContentProcess {
                 .document_viewport_state(traversable_id)
                 .map(|viewport| viewport_of_snapshot(&viewport.snapshot)),
             base_url,
-            mutation_hooks: Some(Arc::clone(&providers) as Arc<dyn MutationHooks>),
-            resource_hooks: Some(Arc::clone(&providers) as Arc<dyn ResourceHooks>),
+            mutation_hooks: Some(Rc::clone(&providers) as Rc<dyn MutationHooks>),
+            resource_hooks: Some(Rc::clone(&providers) as Rc<dyn ResourceHooks>),
             // blitz's `DocumentConfig` takes `Arc<dyn ShellProvider>` while the
             // provider holds `Rc` state, since the content process is
             // single-threaded: the `Arc` is a container here, not a
@@ -779,7 +776,11 @@ impl ContentProcess {
                 }
             }
             for (node_id, attributes) in images {
-                image_data::reacting_to_environment_changes(&providers, node_id, &attributes);
+                images_processing_model::reacting_to_environment_changes(
+                    &providers,
+                    node_id,
+                    &attributes,
+                );
             }
         }
 
@@ -1206,7 +1207,7 @@ impl ContentProcess {
             traversable_id,
             document_id,
         )?;
-        self.wire_image_realm(&mut settings, &providers)?;
+        self.wire_document_providers(&mut settings, &providers)?;
 
         // Set the video-paint registry on GlobalScope so that
         // resource_selection_algorithm can register paint IDs.
@@ -1304,7 +1305,7 @@ impl ContentProcess {
             Rc<RefCell<BaseDocument>>,
             EnvironmentSettingsObject,
             Rc<Cell<bool>>,
-            Arc<DocumentProviders>,
+            Rc<DocumentProviders>,
         ),
         String,
     > {
@@ -1424,7 +1425,7 @@ impl ContentProcess {
                 document_id,
             )?,
         };
-        self.wire_image_realm(&mut settings, &providers)?;
+        self.wire_document_providers(&mut settings, &providers)?;
 
         // The video-paint registry and graphics sender are engine integration, not spec
         // steps: they wire the document's GlobalScope to the media and graphics pipelines.
@@ -2873,11 +2874,12 @@ impl ContentProcess {
             else {
                 continue;
             };
-            let element = image_data::image_element(image_registry, document_id, image_node_id);
-            if !image_data::is_available(&element) {
+            let element =
+                images_processing_model::image_element(image_registry, document_id, image_node_id);
+            if !images_processing_model::is_available(&element) {
                 continue;
             }
-            let Some(image_id) = image_data::current_image_id(&element) else {
+            let Some(image_id) = images_processing_model::current_image_id(&element) else {
                 continue;
             };
             let clip_svg_path = format!("M0,0 L{width},0 L{width},{height} L0,{height} Z");
@@ -3013,8 +3015,10 @@ impl ContentProcess {
         Ok(())
     }
 
-    /// The image fetch's `processResponse`: step 27 of "update the image
-    /// data" or steps 17.5.1-17.5.3 of "reacting to environment changes".
+    /// The image fetch's `processResponse`, which runs step 27 of
+    /// <https://html.spec.whatwg.org/#update-the-image-data> or steps
+    /// 17.5.1-17.5.3 of
+    /// <https://html.spec.whatwg.org/#reacting-to-environment-changes>.
     fn process_image_fetch_response(
         &mut self,
         document_id: DocumentId,
@@ -3023,15 +3027,27 @@ impl ContentProcess {
         handler_id: DocumentFetchId,
         body: &[u8],
     ) -> Result<(), String> {
+        let providers = self
+            .documents
+            .get(&document_id)
+            .and_then(|content_document| content_document.providers.clone());
+        let Some(providers) = providers else {
+            return Ok(());
+        };
         let dimensions = image::ImageReader::new(Cursor::new(body))
             .with_guessed_format()
             .map_err(|error| format!("failed to sniff image data: {error}"))?
             .into_dimensions()
             .ok();
+        // Note: the net process delivers the whole response body in one
+        // message, so this is step 27's last networking task; fetch does not
+        // stream chunks yet, so the per-chunk presentation updates of the
+        // earlier networking tasks are not modeled.
         let outcome = {
             let mut registry = self.image_registry.borrow_mut();
-            image_data::process_image_fetch_response(
+            images_processing_model::process_image_fetch_response(
                 &mut registry,
+                providers.as_ref(),
                 element_id,
                 handler_id,
                 dimensions,
@@ -3048,21 +3064,47 @@ impl ContentProcess {
             }
             ImageFetchOutcome::Failed => {}
         }
-        self.drain_image_tasks()
+        self.settle_image_decodes(element_id);
+        Ok(())
     }
 
-    /// The image fetch's processResponse failure branch: a network error or a
-    /// response that is not a usable image.
+    /// The image fetch's `processResponse` failure branch: a network error or
+    /// a response that is not a usable image, per
+    /// <https://html.spec.whatwg.org/#update-the-image-data> and
+    /// <https://html.spec.whatwg.org/#reacting-to-environment-changes>.
     fn process_image_fetch_failure(
         &mut self,
         element_id: ImageElementId,
         handler_id: DocumentFetchId,
     ) -> Result<(), String> {
+        let document_id = {
+            let registry = self.image_registry.borrow();
+            registry
+                .element_location(element_id)
+                .map(|(document_id, _)| document_id)
+        };
+        let Some(document_id) = document_id else {
+            return Ok(());
+        };
+        let providers = self
+            .documents
+            .get(&document_id)
+            .and_then(|content_document| content_document.providers.clone());
+        let Some(providers) = providers else {
+            return Ok(());
+        };
         {
             let mut registry = self.image_registry.borrow_mut();
-            image_data::process_image_fetch_response(&mut registry, element_id, handler_id, None);
+            images_processing_model::process_image_fetch_response(
+                &mut registry,
+                providers.as_ref(),
+                element_id,
+                handler_id,
+                None,
+            );
         }
-        self.drain_image_tasks()
+        self.settle_image_decodes(element_id);
+        Ok(())
     }
 
     /// Ship the encoded bytes of a newly available `<img>` resource to the
@@ -3108,101 +3150,42 @@ impl ContentProcess {
     fn record_image_decoded(&mut self, image_id: &ImageIdentifier) {
         let settled = {
             let mut registry = self.image_registry.borrow_mut();
-            image_data::image_decoded(&mut registry, image_id, true)
+            images_processing_model::image_decoded(&mut registry, image_id, true)
         };
         for element_id in settled {
             self.settle_image_decodes(element_id);
         }
     }
 
-    /// Runs the image element tasks the algorithms queued: the
-    /// prepare-for-presentation work, the `load`/`error` element tasks, and
-    /// the environment `finishUpdate`.  This is the queue drain, not an
-    /// algorithm; each `ImageTask` variant names the step that queued it.
-    fn drain_image_tasks(&mut self) -> Result<(), String> {
-        let tasks = {
+    /// Writes the "prepare an image for presentation" state the processing
+    /// model produced to the documents' blitz trees.  This is model state, not
+    /// a queued task: a DOM hook runs while blitz holds the document mutably
+    /// borrowed, so the write waits until the content process has the document
+    /// again.
+    fn apply_pending_image_presentation(&mut self) -> Result<(), String> {
+        let presentations = {
             let mut registry = self.image_registry.borrow_mut();
-            registry.take_pending_tasks()
+            registry.take_pending_presentation()
         };
-        for task in tasks {
-            let (task_document_id, task_node_id) = task.element();
-            match task {
-                ImageTask::PrepareForPresentation {
-                    document_id,
-                    node_id,
-                    width,
-                    height,
-                } => {
-                    let Some(content_document) = self.documents.get(&document_id) else {
-                        continue;
-                    };
-                    content_document
-                        .document
-                        .borrow_mut()
-                        .set_image_intrinsic_size(node_id, width, height);
-                    content_document.needs_paint.set(true);
-                    let traversable_id = content_document.traversable_id;
-                    self.event_sender
-                        .send(ContentEvent::RenderingOpRequested(traversable_id))
-                        .map_err(|error| {
-                            format!("failed to request rendering op for a presented image: {error}")
-                        })?;
-                }
-                ImageTask::FireLoad {
-                    document_id,
-                    node_id,
-                } => {
-                    if self.documents.contains_key(&document_id) {
-                        self.task_queue.queue_a_task(Task::RunImageEvent {
-                            document_id,
-                            node_id,
-                            event: ImageEvent::Load,
-                            current_url: None,
-                        });
-                    }
-                }
-                ImageTask::FireError {
-                    document_id,
-                    node_id,
-                    current_url,
-                } => {
-                    if self.documents.contains_key(&document_id) {
-                        self.task_queue.queue_a_task(Task::RunImageEvent {
-                            document_id,
-                            node_id,
-                            event: ImageEvent::Error,
-                            current_url,
-                        });
-                    }
-                }
-                ImageTask::FinishEnvironmentUpdate {
-                    document_id,
-                    node_id,
-                    instance_id,
-                    selected_source,
-                    selected_pixel_density,
-                } => {
-                    if self.documents.contains_key(&document_id) {
-                        self.task_queue
-                            .queue_a_task(Task::RunImageEnvironmentUpdate {
-                                document_id,
-                                node_id,
-                                instance_id,
-                                selected_source,
-                                selected_pixel_density,
-                            });
-                    }
-                }
-            }
-            // The task moved the element's image data to its new state; the
-            // `decode()` promises waiting on that element read it here.
-            let element_id = {
-                let registry = self.image_registry.borrow_mut();
-                registry.existing_element_id(task_document_id, task_node_id)
+        for presentation in presentations {
+            let Some(content_document) = self.documents.get(&presentation.document_id) else {
+                continue;
             };
-            if let Some(element_id) = element_id {
-                self.settle_image_decodes(element_id);
-            }
+            content_document
+                .document
+                .borrow_mut()
+                .set_image_intrinsic_size(
+                    presentation.node_id,
+                    presentation.width,
+                    presentation.height,
+                );
+            content_document.needs_paint.set(true);
+            let traversable_id = content_document.traversable_id;
+            self.event_sender
+                .send(ContentEvent::RenderingOpRequested(traversable_id))
+                .map_err(|error| {
+                    format!("failed to request rendering op for a presented image: {error}")
+                })?;
         }
         Ok(())
     }
@@ -3813,8 +3796,8 @@ impl ContentProcess {
 
     fn handle_command(&mut self, command: Command) -> Result<bool, String> {
         let result = self.handle_command_inner(command);
-        if let Err(error) = self.drain_image_tasks() {
-            error!("failed to drain image tasks after a command: {error}");
+        if let Err(error) = self.apply_pending_image_presentation() {
+            error!("failed to apply pending image presentation after a command: {error}");
         }
 
         #[cfg(all(boa_backend, feature = "wasm"))]
@@ -3823,6 +3806,16 @@ impl ContentProcess {
             // process completed results from the shared queue.
             self.drain_all_pending_wasm_requests();
             self.drain_wasm_results();
+        }
+
+        // <https://html.spec.whatwg.org/#perform-a-microtask-checkpoint>
+        // Every command that is conceptually a task ends with a checkpoint;
+        // commands that only queue a task run their checkpoint when that task
+        // finishes.
+        if matches!(&result, Ok(true))
+            && let Err(error) = self.perform_microtask_checkpoint()
+        {
+            error!("microtask checkpoint after a command failed: {error}");
         }
 
         result
@@ -3899,25 +3892,6 @@ impl ContentProcess {
                 selector,
             } => self.click_element_and_send_result(traversable_id, request_id, selector),
             Task::DispatchEvent { events } => self.dispatch_events(events),
-            Task::RunImageEvent {
-                document_id,
-                node_id,
-                event,
-                current_url,
-            } => self.run_image_event(document_id, node_id, event, current_url),
-            Task::RunImageEnvironmentUpdate {
-                document_id,
-                node_id,
-                instance_id,
-                selected_source,
-                selected_pixel_density,
-            } => self.run_image_environment_update(
-                document_id,
-                node_id,
-                instance_id,
-                &selected_source,
-                selected_pixel_density,
-            ),
             Task::RunBeforeUnload {
                 document_id,
                 check_id,
@@ -3937,9 +3911,9 @@ impl ContentProcess {
         }
         steps?;
 
-        // Image mutations observed by the DOM hooks queue element tasks and
-        // presentation work; run them as part of the task that caused them.
-        self.drain_image_tasks()?;
+        // Image mutations observed by the DOM hooks produce presentation state;
+        // write it as part of the task that caused it.
+        self.apply_pending_image_presentation()?;
 
         // Step 2.7: "Set the event loop's currently running task back to null."
         // Note: Not implemented, as for step 2.5.
@@ -3947,7 +3921,12 @@ impl ContentProcess {
         self.perform_microtask_checkpoint()
     }
 
-    /// <https://html.spec.whatwg.org/#update-the-image-data>
+    /// Runs a queued image element task: set the current URL when the
+    /// algorithm's queued steps include it (steps 11.2.1 and 13.4.1), then fire
+    /// `load` or `error` at the element (steps 7.4.7.3, 11.2.2, 13.4.2, 27.14,
+    /// and environment step 15.7) — see
+    /// <https://html.spec.whatwg.org/#update-the-image-data> and
+    /// <https://html.spec.whatwg.org/#reacting-to-environment-changes>.
     fn run_image_event(
         &mut self,
         document_id: DocumentId,
@@ -3995,7 +3974,8 @@ impl ContentProcess {
             .map_err(|error| format!("failed to request rendering op for an image event: {error}"))
     }
 
-    /// <https://html.spec.whatwg.org/#reacting-to-environment-changes>
+    /// Runs the `finishUpdate` element task queued at step 16.2 or 17.5.3 of
+    /// <https://html.spec.whatwg.org/#reacting-to-environment-changes>.
     fn run_image_environment_update(
         &mut self,
         document_id: DocumentId,
@@ -4004,15 +3984,30 @@ impl ContentProcess {
         selected_source: &str,
         selected_pixel_density: f64,
     ) -> Result<(), String> {
-        let mut registry = self.image_registry.borrow_mut();
-        image_data::finish_environment_update(
-            &mut registry,
-            document_id,
-            node_id,
-            instance_id,
-            selected_source,
-            selected_pixel_density,
-        );
+        let fire_load = {
+            let mut registry = self.image_registry.borrow_mut();
+            images_processing_model::finish_environment_update(
+                &mut registry,
+                document_id,
+                node_id,
+                instance_id,
+                selected_source,
+                selected_pixel_density,
+            )
+        };
+        let element_id = {
+            let registry = self.image_registry.borrow();
+            registry.existing_element_id(document_id, node_id)
+        };
+        if let Some(element_id) = element_id {
+            self.settle_image_decodes(element_id);
+        }
+        if fire_load {
+            // Step 15.6 runs before step 15.7, so write the presentation the
+            // `finishUpdate` task produced before firing `load`.
+            self.apply_pending_image_presentation()?;
+            self.run_image_event(document_id, node_id, ImageEvent::Load, None)?;
+        }
         Ok(())
     }
 
@@ -4116,7 +4111,8 @@ impl ContentProcess {
 
     /// Settles the `decode()` promises waiting on one `<img>` element, whose
     /// image data the processing model just moved to a new state: the content
-    /// process's side of `decode()` step 2.2 and 2.3.
+    /// process's side of `decode()` step 2.2 and 2.3
+    /// (<https://html.spec.whatwg.org/#dom-img-decode>).
     fn settle_image_decodes(&mut self, element_id: ImageElementId) {
         let location = {
             let registry = self.image_registry.borrow_mut();
@@ -4290,11 +4286,36 @@ impl ContentProcess {
                 }
                 let settled = {
                     let mut registry = self.image_registry.borrow_mut();
-                    image_data::image_decoded(&mut registry, &image_id, result.is_ok())
+                    images_processing_model::image_decoded(&mut registry, &image_id, result.is_ok())
                 };
                 for element_id in settled {
                     self.settle_image_decodes(element_id);
                 }
+                Ok(true)
+            }
+            RunImageElementTask {
+                document_id,
+                node_id,
+                event,
+                current_url,
+            } => {
+                self.run_image_event(document_id, node_id, event, current_url)?;
+                Ok(true)
+            }
+            RunImageEnvironmentUpdate {
+                document_id,
+                node_id,
+                instance_id,
+                selected_source,
+                selected_pixel_density,
+            } => {
+                self.run_image_environment_update(
+                    document_id,
+                    node_id,
+                    instance_id,
+                    &selected_source,
+                    selected_pixel_density,
+                )?;
                 Ok(true)
             }
             ContentBootstrap { .. } => {

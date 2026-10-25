@@ -1039,19 +1039,29 @@ pub enum WorkerOwner {
     Worker(WorkerId),
 }
 
+/// The event an `<img>` element task fires.
+/// <https://html.spec.whatwg.org/#update-the-image-data>
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub enum ImageEvent {
+    /// <https://html.spec.whatwg.org/#event-load>
+    Load,
+    /// <https://html.spec.whatwg.org/#event-error>
+    Error,
+}
+
 /// A message the user agent (or the net process) sends into a content
 /// process to drive it.  A content process is one agent cluster; most
 /// commands are addressed to the cluster's single similar-origin window
 /// agent and arrive on the process's main command channel, whose receiver —
 /// the content process main thread — both handles the cluster's work
 /// (bootstrap, viewport, document lifecycle, navigation-fetch completions,
-/// shutdown) and runs the window agent's event loop.  A command is not an
-/// event-loop task: when the spec step behind a command says to queue a
-/// task on the window event loop, the content process queues the
-/// corresponding `Task` while handling the command (see
-/// `content/src/html/event_loop.rs`); the cluster-level commands it runs
-/// directly.  A dedicated worker agent of the cluster is addressed over its
-/// own user-agent command channel (see
+/// image element tasks, shutdown) and runs the window agent's event loop.  A
+/// command that only triggers an event-loop task queues the corresponding
+/// `Task` while handling the command (see
+/// `content/src/html/event_loop.rs`); a command that *is* the queued task
+/// (the image element tasks) runs its steps directly; the cluster-level
+/// commands it runs directly as well.  A dedicated worker agent of the
+/// cluster is addressed over its own user-agent command channel (see
 /// `ContentEvent::DedicatedWorkerAgentObtained`) rather than the process's
 /// main channel.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -1172,6 +1182,28 @@ pub enum Command {
         image_id: ImageIdentifier,
         /// `Err` carries the decoder's failure reason.
         result: Result<(), String>,
+    },
+    /// An element task on the DOM manipulation task source queued by an image
+    /// algorithm: run the task's steps, which may set the current URL and fire
+    /// `load` or `error` at the `<img>` element.
+    /// <https://html.spec.whatwg.org/#queue-an-element-task>
+    RunImageElementTask {
+        document_id: DocumentId,
+        node_id: usize,
+        event: ImageEvent,
+        /// The current request URL the task sets before firing, when the
+        /// algorithm's queued steps include it (steps 11.2.1 and 13.4.1).
+        current_url: Option<String>,
+    },
+    /// The element task queued by "reacting to environment changes" to run
+    /// `finishUpdate`.
+    /// <https://html.spec.whatwg.org/#reacting-to-environment-changes>
+    RunImageEnvironmentUpdate {
+        document_id: DocumentId,
+        node_id: usize,
+        instance_id: u64,
+        selected_source: String,
+        selected_pixel_density: f64,
     },
     /// The target-process half of the window post message steps (step 8 and
     /// its substeps): the user agent routes this to the target window's event

@@ -3,7 +3,6 @@ use std::{
     collections::{HashMap, HashSet},
     rc::Rc,
     slice::from_ref,
-    sync::Arc,
     vec::Vec,
 };
 
@@ -35,7 +34,7 @@ use super::environment_settings_object::RealmWiring;
 use super::event_loop::{EventLoopTaskSources, Task};
 use crate::dom::event::EventTarget;
 use crate::html::document_providers::DocumentProviders;
-use crate::html::image_data::{
+use crate::html::images_processing_model::{
     self, DecodeSettlement, ImageAttributes, ImageRegistry, ImageUpdateEnvironment,
     PendingImageDataUpdate,
 };
@@ -126,15 +125,16 @@ pub struct AnimationFrameCallback {
     pub callback: Callback,
 }
 
-/// One `decode()` promise, waiting for its image request to be decoded (the
-/// wait of `decode()` step 2.3).
+/// The resolving functions of one `decode()` promise.
+/// <https://html.spec.whatwg.org/#dom-img-decode>
 #[gc_struct]
 struct PendingImageDecode {
     /// The identity the processing model uses for the `<img>` element.
     #[ignore_trace]
     element_id: ImageElementId,
     /// The identity of the current request the promise waits on, or `None`
-    /// until the microtask queued at decode() step 2 reads it.
+    /// until the microtask queued at `decode()` step 2 reads it
+    /// (<https://html.spec.whatwg.org/#dom-img-decode>).
     #[ignore_trace]
     request_id: Option<u64>,
     /// The promise's resolving and rejecting functions.
@@ -367,11 +367,10 @@ pub struct GlobalScope {
     #[ignore_trace]
     image_registry: Rc<RefCell<Option<Rc<RefCell<ImageRegistry>>>>>,
 
-    /// The document's providers, from which the `update the image data`
-    /// continuation queued at step 8 reads the document's base URL, partition
-    /// and origin, and starts the image fetch.
+    /// The document's providers, from which the realm reads the document's
+    /// base URL, partition and origin and starts the image fetch.
     #[ignore_trace]
-    image_providers: Rc<RefCell<Option<Arc<DocumentProviders>>>>,
+    document_providers: Rc<RefCell<Option<Rc<DocumentProviders>>>>,
 
     /// The `decode()` promises whose image request is not decoded yet.
     pending_image_decodes: GcCell<Vec<PendingImageDecode>>,
@@ -435,7 +434,7 @@ impl GlobalScope {
             epoch_anchor_wall_ms: Rc::new(std::cell::Cell::new(None)),
             needs_paint: Rc::new(RefCell::new(None)),
             image_registry: Rc::new(RefCell::new(None)),
-            image_providers: Rc::new(RefCell::new(None)),
+            document_providers: Rc::new(RefCell::new(None)),
             pending_image_decodes: gc_cell_new(Vec::new(), ec),
 
             creation_url: Rc::new(RefCell::new(None)),
@@ -1393,10 +1392,8 @@ impl GlobalScope {
         Ok(())
     }
 
-    /// Set the shared video-paint registry that both GlobalScope and
-    /// ContentProcess access.  ContentProcess sets this during document
-    /// creation so that `resource_selection_algorithm` can register
-    /// paint IDs during JS execution.
+    /// Set the image processing model state shared with `ContentProcess`, so
+    /// the `<img>` IDL members can read the current request's state.
     pub(crate) fn set_image_registry(&self, registry: Rc<RefCell<ImageRegistry>>) {
         self.image_registry.borrow_mut().replace(registry);
     }
@@ -1406,20 +1403,19 @@ impl GlobalScope {
         self.image_registry.borrow().clone()
     }
 
-    /// The document's providers, which give the step-8 continuation the
-    /// document's base URL, partition and origin, and the sink that starts the
-    /// image fetch.
-    pub(crate) fn set_image_providers(&self, providers: Arc<DocumentProviders>) {
-        self.image_providers.borrow_mut().replace(providers);
+    /// The document's providers, from which the realm reads the document's
+    /// base URL, partition and origin and starts the image fetch.
+    pub(crate) fn set_document_providers(&self, providers: Rc<DocumentProviders>) {
+        self.document_providers.borrow_mut().replace(providers);
     }
 
-    fn image_providers(&self) -> Option<Arc<DocumentProviders>> {
-        self.image_providers.borrow().clone()
+    fn document_providers(&self) -> Option<Rc<DocumentProviders>> {
+        self.document_providers.borrow().clone()
     }
 
-    /// Records the `decode()` promise for `node_id`, to be armed by the
-    /// microtask queued at step 2 of `decode()` and settled once its request
-    /// is decoded.
+    /// Records the resolving functions of the promise `decode()` step 1
+    /// creates.
+    /// <https://html.spec.whatwg.org/#dom-img-decode>
     pub(crate) fn add_pending_image_decode(
         &self,
         ec: &mut dyn ExecutionContext<Types>,
@@ -1444,9 +1440,9 @@ impl GlobalScope {
         Some(registry.element_id(document_id, node_id))
     }
 
-    /// `decode()` step 2.2 and 2.3's read of the element's state: arm every
-    /// unarmed promise for `node_id` with the identity of the current request
-    /// it waits on, then settle the promises that request already decides.
+    /// The identities `decode()` step 2.2 and 2.3 read from the element's
+    /// current request.
+    /// <https://html.spec.whatwg.org/#dom-img-decode>
     pub(crate) fn arm_pending_image_decodes(
         &self,
         ec: &mut dyn ExecutionContext<Types>,
@@ -1458,9 +1454,9 @@ impl GlobalScope {
         let request_id = {
             let registry = registry.borrow_mut();
             match registry.element_location(element_id) {
-                Some((document_id, node_id)) => {
-                    image_data::current_request_id(&registry.element(document_id, node_id))
-                }
+                Some((document_id, node_id)) => images_processing_model::current_request_id(
+                    &registry.element(document_id, node_id),
+                ),
                 // The processing model never installed a request for this
                 // element, so the request identity `decode()` waits on is the
                 // default one (0), which `decode_settlement` rejects.
@@ -1478,10 +1474,7 @@ impl GlobalScope {
         self.settle_pending_image_decodes(ec, element_id)
     }
 
-    /// Settles the `decode()` promises waiting on `node_id`'s current request
-    /// (step 2.2 and 2.3 of `decode()`): resolved once the request is
-    /// completely available and decoded, rejected when the request changed,
-    /// broke, or failed to decode.
+    /// <https://html.spec.whatwg.org/#dom-img-decode>
     pub(crate) fn settle_pending_image_decodes(
         &self,
         ec: &mut dyn ExecutionContext<Types>,
@@ -1512,9 +1505,12 @@ impl GlobalScope {
             waiters
                 .iter()
                 .map(|(_, request_id, _)| match location {
-                    Some((document_id, node_id)) => {
-                        image_data::decode_settlement(&registry, document_id, node_id, *request_id)
-                    }
+                    Some((document_id, node_id)) => images_processing_model::decode_settlement(
+                        &registry,
+                        document_id,
+                        node_id,
+                        *request_id,
+                    ),
                     // The element's document went away: the wait ends without
                     // a decode, which `decode()` step 2.3 rejects.
                     None => DecodeSettlement::Reject,
@@ -1544,12 +1540,8 @@ impl GlobalScope {
         Ok(())
     }
 
-    /// Runs the rest of "update the image data" (steps 9-26) for one algorithm
-    /// instance, from the microtask queued at step 8: the continuation reads
-    /// the element's attributes (step 10), the document's base URL, partition
-    /// and origin, and the fetch sink here, when it runs, and then settles the
-    /// `decode()` promises the new state decides.
-    pub(crate) fn run_image_update(
+    /// <https://html.spec.whatwg.org/#update-the-image-data>
+    pub(crate) fn update_the_image_data_microtask(
         &self,
         ec: &mut dyn ExecutionContext<Types>,
         update: &PendingImageDataUpdate,
@@ -1557,7 +1549,7 @@ impl GlobalScope {
         let Some(registry) = self.image_registry() else {
             return Ok(());
         };
-        let Some(providers) = self.image_providers() else {
+        let Some(providers) = self.document_providers() else {
             return Ok(());
         };
         let Some((_document_id, node_id)) = registry.borrow().element_location(update.element_id)
@@ -1582,7 +1574,7 @@ impl GlobalScope {
         };
         {
             let mut registry = registry.borrow_mut();
-            image_data::continue_update_the_image_data(
+            images_processing_model::continue_update_the_image_data(
                 &mut registry,
                 providers.as_ref(),
                 &environment,
@@ -1797,8 +1789,9 @@ impl GlobalScope {
     }
 }
 
-/// Rejects one `decode()` promise with the DOMException that `decode()`
-/// step 2.2 and step 2.3 reject with.
+/// Rejects one `decode()` promise with the DOMException that step 2.2 and
+/// step 2.3 reject with.
+/// <https://html.spec.whatwg.org/#dom-img-decode>
 fn reject_with_encoding_error(
     resolvers: &PromiseResolvers<Types>,
     ec: &mut dyn ExecutionContext<Types>,

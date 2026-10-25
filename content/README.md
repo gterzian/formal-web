@@ -94,22 +94,30 @@ and runs on the content process main thread (`run_content_message_loop` in
 loops on their own threads (see `content/src/html/workers/`).  Guidance for
 adding work to the loop:
 
-- Content-initiated work (window timer expiry, port message tasks) must be
-  **queued as a `Task`**, never run by calling its handler directly: an
-  inline call skips the bookkeeping the model requires (marking the task's
-  document dirty, the microtask checkpoint after the task's steps).
-- An `ipc_messages::content::Command` is an ad hoc message the user agent
-  (or the net process) sends this process — not a task.  Where the spec
-  step behind a command says to queue a task on this event loop (the target
-  half of `postMessage`, a routed port message, `update the rendering`,
-  beforeunload, WebDriver/CDP script evaluation and event dispatch),
-  handling the command queues the matching `Task`, so it runs through the
-  same processing-model steps as a task queued here.  The rest (viewport,
-  document lifecycle, navigation fetch completion, shutdown)
-  `ContentProcess::handle_command` runs directly.  A `Command::PortTask`
-  arrives here only for ports of the window event loop; ports owned by a
-  dedicated worker agent's event loop are delivered over that agent's own
-  user-agent command channel (see `dedicated_worker_agent.rs`).
+- Content-initiated work that the spec models as a task must be **queued as a
+  `Task`**, never run by calling its handler directly: an inline call skips
+  the bookkeeping the model requires (marking the task's document dirty, the
+  microtask checkpoint after the task's steps).  When the step runs inside
+  content and the spec says "queue an element task", content sends itself a
+  `Command` (`RunImageElementTask`, `RunImageEnvironmentUpdate`) instead of
+  adding a private queue; `handle_command` runs the task's steps and the
+  checkpoint follows.
+- An `ipc_messages::content::Command` is a message to this process.  Where a
+  command only triggers a spec task (the target half of `postMessage`, a
+  routed port message, `update the rendering`, beforeunload, WebDriver/CDP
+  script evaluation and event dispatch), handling the command queues the
+  matching `Task`, so it runs through the same processing-model steps as a
+  task queued here.  A command that *is* the queued task (the image element
+  tasks) runs its steps directly; the cluster-level commands (viewport,
+  document lifecycle, navigation fetch completion, shutdown) run directly as
+  well.  A `Command::PortTask` arrives here only for ports of the window
+  event loop; ports owned by a dedicated worker agent's event loop are
+  delivered over that agent's own user-agent command channel (see
+  `dedicated_worker_agent.rs`).
+- **Processing-model state is not a task.**  Work a spec step does not queue
+  (e.g. `ImageRegistry::pending_presentation`, which waits because a DOM hook
+  runs while blitz holds the document mutably borrowed) is state applied by
+  the content process, and is named as state, never as a task.
 - **The command channel is only read while the task queue is empty.**  A
   command's steps run as soon as it is read, so reading one with tasks
   already queued runs those steps ahead of them.  The rendering pipeline
@@ -142,8 +150,8 @@ pending handler first, so the response side does not know which was taken.
 Filtering here rather than in net is what keeps net a place where networking
 happens rather than a fetch coordinator; see `user_agent/README.md`.
 
-`blitz-dom` does not fetch anything.  Every subresource the document needs is
-reported through the `blitz_dom::ResourceHooks` impl of `DocumentProviders` in
+Every subresource the document needs is reported through the
+`blitz_dom::ResourceHooks` impl of `DocumentProviders` in
 `content/src/html/document_providers.rs` and the DOM tree steps in
 `content/src/html/dom_trees.rs`: stylesheets,
 `@import` rules, `@font-face` fonts, and CSS background/mask images.  Each
@@ -156,20 +164,14 @@ are decoded in content because blitz paints them; `<img>` pixels go to the
 graphics process instead (see below).
 
 The `<img>` element follows its own processing model in
-`content/src/html/image_data.rs`: the DOM tree steps in `dom_trees.rs`
-dispatch to the `<img>` HTML element steps there, which report the relevant
-mutations (attribute changes, insertion, removal) and run "update the image
-data", the fetch starts through the same pending-handler route, and the event
-loop completes the request.  Keep an `<img>` fetch on that path: it owns the
-element's current/pending request state, the list of available images, and
-the `load`/`error` element tasks.  The completed image is registered with the
-graphics process once per `ImageIdentifier`; the graphics image backend chooses
-a per-image IOSurface (macOS, presented on its own CoreAnimation sublayer) or
-CPU `ImageData` rendered into a layer surface.  `DestroyDocument` releases the
-document's registered images with `GraphicsCommand::UnregisterImages`.
-Same-origin iframe subdocuments paint their images into the parent's scene,
-so their images stay on the layout-time loader rather than the `<img>`
-processing model (`DocumentHost::Subdocument`).
+`content/src/html/images_processing_model.rs`; keep its fetch on that path (see
+`content/src/html/README.md`, "Images").  The completed image is registered
+with the graphics process once per `ImageIdentifier`; `DestroyDocument`
+releases the document's registered images with
+`GraphicsCommand::UnregisterImages`.  Same-origin iframe subdocuments paint
+their images into the parent's scene, so their images stay on the layout-time
+loader rather than the `<img>` processing model
+(`DocumentHost::Subdocument`).
 
 ## Clipboard
 
