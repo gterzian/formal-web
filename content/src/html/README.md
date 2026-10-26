@@ -341,8 +341,10 @@ Known gaps in the processing model:
 - Subresource URLs resolve against the document's URL only: a `<base href>`
   change is not reflected in the base URL captured by `DocumentProviders`.
 - The `Image(width, height)` legacy factory function is not implemented, so
-  `new Image()` throws; `available-images-onload.html` and
-  `Image-constructor.html` are blocked on it.
+  `new Image()` throws; `available-images-onload.html`,
+  `Image-constructor.html` and WPT's `the-img-element/decode/` tests (which
+  construct their elements with it) are blocked on it, which leaves `decode()`
+  covered only indirectly by the enabled `the-img-element` tests.
 - The graphics process is the only image decoder, so the content process never
   reads image bytes itself: it ships each response body to graphics and runs
   step 27 of <https://html.spec.whatwg.org/#update-the-image-data> when

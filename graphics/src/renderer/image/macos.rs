@@ -34,11 +34,12 @@ use crate::iosurface::create_image_surface;
 
 use super::{ImageDecoder, ImageSurface, StoredImage, StoredImageResult};
 
-/// One image's shared surface, the texture id it was registered under, and the
-/// report the decoder hands back for it.
+/// One image's shared surface, the texture id it was registered under, the
+/// Mach port it is shared on, and the report the decoder hands back for it.
 struct StoredSurface {
     surface: CFRetained<IOSurfaceRef>,
     texture_id: u64,
+    port: OsMachPort,
     decoded: DecodedImage,
 }
 
@@ -73,6 +74,7 @@ impl ImageDecoder for MacosImageDecoder {
         let texture_id = self.next_texture_id;
         self.next_texture_id += 1;
         let stored = StoredSurface {
+            port: OsMachPort::from_name(decoded.surface.create_mach_port()),
             surface: decoded.surface,
             texture_id,
             decoded: decoded.decoded,
@@ -99,7 +101,9 @@ fn present_stored_surface(stored: &StoredSurface) -> StoredImage {
             payload: SurfacePayload::SharedTexture {
                 texture_id: stored.texture_id,
                 surface_id: stored.surface.id(),
-                port: OsMachPort::from_name(stored.surface.create_mach_port()),
+                // A clone of the surface's send right, so re-registering an
+                // already-decoded image does not mint a port each time.
+                port: stored.port.clone(),
             },
         }),
     }

@@ -8,9 +8,6 @@
 // redirects, timing, and response handover are not implemented; the step notes
 // in `fetch`, `main_fetch`, and `scheme_fetch` mark each gap.
 //
-// Some items below are marked `#[allow(dead_code)]` because they model Fetch
-// algorithms (abort, terminate, fetch-group management) that are not wired yet.
-
 use std::collections::HashSet;
 
 use blitz_traits::net::{Body, Request};
@@ -68,28 +65,14 @@ fn request_body_string(body: &Body) -> String {
 
 /// <https://fetch.spec.whatwg.org/#concept-header-list>
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
-#[allow(dead_code)]
 pub(crate) struct HeaderList {
     /// <https://fetch.spec.whatwg.org/#concept-header-list>
     headers: Vec<(String, String)>,
 }
 
-#[allow(dead_code)]
 impl HeaderList {
     pub(crate) fn new() -> Self {
         Self::default()
-    }
-
-    pub(crate) fn from_content_type(content_type: &str) -> Self {
-        // Note: The current content IPC `content_type` convenience field maps to a one-entry
-        // header list. Full response headers belong in a later net/content IPC shape.
-        if content_type.is_empty() {
-            return Self::new();
-        }
-
-        Self {
-            headers: vec![(String::from("content-type"), content_type.to_owned())],
-        }
     }
 
     pub(crate) fn from_pairs(headers: Vec<(String, String)>) -> Self {
@@ -103,7 +86,6 @@ impl HeaderList {
 
 /// <https://fetch.spec.whatwg.org/#concept-request>
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[allow(dead_code)]
 pub(crate) struct InternalFetchRequest {
     /// <https://fetch.spec.whatwg.org/#concept-request-url>
     pub(crate) url: String,
@@ -113,10 +95,6 @@ pub(crate) struct InternalFetchRequest {
     pub(crate) header_list: HeaderList,
     /// <https://fetch.spec.whatwg.org/#concept-request-body>
     pub(crate) body: String,
-    /// <https://fetch.spec.whatwg.org/#done-flag>
-    pub(crate) done: bool,
-    /// <https://fetch.spec.whatwg.org/#request-keepalive-flag>
-    pub(crate) keepalive: bool,
 }
 
 impl InternalFetchRequest {
@@ -126,8 +104,6 @@ impl InternalFetchRequest {
             method: String::from("GET"),
             header_list: HeaderList::new(),
             body: String::new(),
-            done: false,
-            keepalive: false,
         }
     }
 
@@ -137,167 +113,8 @@ impl InternalFetchRequest {
             method: request.method.to_string(),
             header_list: HeaderList::from_pairs(request_header_list(request)),
             body: request_body_string(&request.body),
-            done: false,
-            keepalive: false,
         }
     }
-}
-
-/// <https://fetch.spec.whatwg.org/#concept-response>
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[allow(dead_code)]
-pub(crate) struct InternalFetchResponse {
-    /// <https://fetch.spec.whatwg.org/#concept-response-url-list>
-    pub(crate) url_list: Vec<String>,
-    /// <https://fetch.spec.whatwg.org/#concept-response-status>
-    pub(crate) status: u16,
-    /// <https://fetch.spec.whatwg.org/#concept-response-header-list>
-    pub(crate) header_list: HeaderList,
-    // Note: The content IPC exposes `content_type` as a separate convenience
-    // field alongside the spec-shaped `header_list`.  Both are preserved to round
-    // trip the existing `FetchResponse` transport without changing behavior.
-    pub(crate) content_type: String,
-    /// <https://fetch.spec.whatwg.org/#concept-response-body>
-    pub(crate) body: Vec<u8>,
-}
-
-/// <https://fetch.spec.whatwg.org/#fetch-controller-state>
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
-#[allow(dead_code)]
-pub(crate) enum FetchControllerState {
-    #[default]
-    Ongoing,
-    Terminated,
-    Aborted,
-}
-
-/// <https://fetch.spec.whatwg.org/#fetch-controller>
-#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
-#[allow(dead_code)]
-pub(crate) struct FetchController {
-    /// <https://fetch.spec.whatwg.org/#fetch-controller-state>
-    pub(crate) state: FetchControllerState,
-    /// <https://fetch.spec.whatwg.org/#fetch-controller-serialized-abort-reason>
-    pub(crate) serialized_abort_reason: Option<String>,
-}
-
-#[allow(dead_code)]
-impl FetchController {
-    pub(crate) fn new() -> Self {
-        Self::default()
-    }
-
-    /// <https://fetch.spec.whatwg.org/#fetch-controller-abort>
-    // TODO: Wire this to AbortSignal/controller integration once content can initiate aborts and
-    // formal-web can carry structured abort reasons across content, user-agent, net.
-    pub(crate) fn abort(&mut self, error: Option<String>) {
-        // Step 1. Set controller's state to "aborted".
-        self.state = FetchControllerState::Aborted;
-
-        // Step 2. Let fallbackError be an "AbortError" DOMException.
-        let fallback_error = String::from("AbortError");
-
-        // Step 3. Set error to fallbackError if it is not given.
-        let error = error.unwrap_or_else(|| fallback_error.clone());
-
-        // Step 4. Let serializedError be StructuredSerialize(error).
-        // TODO: Replace this placeholder with StructuredSerialize(error).
-        // formal-web does not yet expose DOMException or structured clone values across
-        // this worker boundary, so the serialized reason is stored as a string placeholder.
-        // Step 5. Set controller's serialized abort reason to serializedError.
-        self.serialized_abort_reason = Some(error);
-    }
-
-    /// <https://fetch.spec.whatwg.org/#fetch-controller-terminate>
-    pub(crate) fn terminate(&mut self) {
-        // Step 1. Set controller's state to "terminated".
-        self.state = FetchControllerState::Terminated;
-    }
-}
-
-/// <https://fetch.spec.whatwg.org/#fetch-params>
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[allow(dead_code)]
-pub(crate) struct FetchParams {
-    /// <https://fetch.spec.whatwg.org/#fetch-params-request>
-    pub(crate) request: InternalFetchRequest,
-    /// <https://fetch.spec.whatwg.org/#fetch-params-controller>
-    pub(crate) controller: FetchController,
-}
-
-#[allow(dead_code)]
-impl FetchParams {
-    pub(crate) fn new(request: InternalFetchRequest) -> Self {
-        Self {
-            request,
-            controller: FetchController::new(),
-        }
-    }
-
-    /// <https://fetch.spec.whatwg.org/#fetch-params-aborted>
-    pub(crate) fn is_aborted(&self) -> bool {
-        self.controller.state == FetchControllerState::Aborted
-    }
-
-    /// <https://fetch.spec.whatwg.org/#fetch-params-canceled>
-    pub(crate) fn is_canceled(&self) -> bool {
-        matches!(
-            self.controller.state,
-            FetchControllerState::Aborted | FetchControllerState::Terminated
-        )
-    }
-}
-
-/// <https://fetch.spec.whatwg.org/#deferred-fetch-record>
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[allow(dead_code)]
-pub(crate) struct DeferredFetchRecord;
-
-/// <https://fetch.spec.whatwg.org/#concept-fetch-group>
-// Note: A fetch group is associated with an environment settings object per the Fetch Standard.
-// That ownership split will be introduced when content exposes environment-scoped Fetch API state.
-#[derive(Debug, Default, Serialize, Deserialize)]
-#[allow(dead_code)]
-pub(crate) struct FetchGroup {
-    /// <https://fetch.spec.whatwg.org/#concept-fetch-record>
-    pub(crate) fetch_records: Vec<FetchRecord>,
-    /// <https://fetch.spec.whatwg.org/#fetch-group-deferred-fetch-records>
-    pub(crate) deferred_fetch_records: Vec<DeferredFetchRecord>,
-}
-
-#[allow(dead_code)]
-impl FetchGroup {
-    pub(crate) fn new() -> Self {
-        Self::default()
-    }
-
-    pub(crate) fn push_fetch_record(&mut self, record: FetchRecord) {
-        self.fetch_records.push(record);
-    }
-
-    /// <https://fetch.spec.whatwg.org/#concept-fetch-group-terminate>
-    pub(crate) fn terminate(&mut self) {
-        // Step 1. For each fetch record record of fetchGroup's fetch records, if record's
-        // controller is non-null and record's request's done flag is unset and keepalive is
-        // false, terminate record's controller.
-        for record in &mut self.fetch_records {
-            if !record.request.done && !record.request.keepalive {
-                record.controller.terminate();
-            }
-        }
-        // TODO: Step 2. Process deferred fetches for fetchGroup.
-        let _has_deferred_fetch_records = !self.deferred_fetch_records.is_empty();
-    }
-}
-
-/// <https://fetch.spec.whatwg.org/#fetch-record>
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[allow(dead_code)]
-pub(crate) struct FetchRecord {
-    /// <https://fetch.spec.whatwg.org/#concept-fetch-record-request>
-    pub(crate) request: InternalFetchRequest,
-    /// <https://fetch.spec.whatwg.org/#concept-fetch-record-fetch>
-    pub(crate) controller: FetchController,
 }
 
 /// The content-process state needed to start a fetch: the IPC endpoints that
@@ -364,8 +181,8 @@ pub(crate) fn fetch(
     // Step 16: If request is a subresource request:
     // Step 16.1: Let record be a new fetch record whose request is request and controller is fetchParams’s controller.
     // Step 16.2: Append record to request’s client’s fetch group’s fetch records.
-    // Note: Fetch-group bookkeeping is modeled in `FetchGroup` but not wired to
-    // an environment settings object yet.
+    // Note: Fetch-group bookkeeping (fetch records, controllers, abort) is not
+    // modeled: content has no environment-settings-scoped fetch state to own it.
     // Step 17: Run main fetch given fetchParams.
     // Note: The response continuation is registered here; `pending` receives the
     // response through `Command::CompleteDocumentFetch` / `FailDocumentFetch`.

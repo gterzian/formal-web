@@ -3106,6 +3106,13 @@ impl ContentProcess {
                 handler_id,
             },
         );
+        // Track the registration from the moment the bytes leave: a document
+        // destroyed before the decode report arrives releases the surface with
+        // its other registered images.
+        self.registered_images_by_document
+            .entry(document_id)
+            .or_default()
+            .insert(image_id.clone());
         let encoded = Arc::new(body.to_vec());
         self.register_image_with_graphics(navigable_id, image_id, encoded)
     }
@@ -3166,6 +3173,10 @@ impl ContentProcess {
                     // The registration belongs to `image_id`; an identity the
                     // model settled instead would leave it unreachable.
                     self.unregister_image(pending.navigable_id, image_id);
+                    self.registered_images_by_document
+                        .entry(pending.document_id)
+                        .or_default()
+                        .remove(image_id);
                 }
                 true
             }
@@ -3175,6 +3186,10 @@ impl ContentProcess {
                 // shipped: drop it instead of holding it for the webview's
                 // lifetime.
                 self.unregister_image(pending.navigable_id, image_id);
+                self.registered_images_by_document
+                    .entry(pending.document_id)
+                    .or_default()
+                    .remove(image_id);
                 false
             }
         };
