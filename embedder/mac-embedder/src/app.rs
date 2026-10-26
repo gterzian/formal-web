@@ -755,7 +755,7 @@ impl MacApp {
             return;
         }
         // Request the next frame at display cadence. The UA gates actual
-        // rendering on its queued rendering opportunities, so an idle scene
+        // rendering on its queued UI state updates, so an idle scene
         // is not re-rendered.
         if let Some(window_id) = self.active_window_id
             && let Some(webview_id) = self.windows.get(&window_id).and_then(|w| w.active_tab)
@@ -2715,7 +2715,7 @@ impl MacApp {
             return;
         }
         match event {
-            FormalWebUserEvent::RequestRedraw(webview_id) => {
+            FormalWebUserEvent::RequestNextFrame(webview_id) => {
                 self.frame_needed(webview_id);
             }
             FormalWebUserEvent::NavigationRequested {

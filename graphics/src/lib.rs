@@ -42,10 +42,10 @@ pub struct ComposedScene {
     /// correct child traversable instead of the root.
     pub child_frame_to_webview: HashMap<FrameId, WebviewId>,
     /// True when the composed scene contains animated content (video, CSS
-    /// animations) that requires the UA to re-note a rendering opportunity
-    /// even without user input. `animating_frame_ids` lists which composed
-    /// frames are animating, so the UA notes those navigables (and not
-    /// static siblings).
+    /// animations) that requires the UA to note a UI state update even
+    /// without user input. `animating_frame_ids` lists which composed frames
+    /// are animating, so the UA notes those navigables (and not static
+    /// siblings).
     pub animating: bool,
     pub animating_frame_ids: Vec<FrameId>,
 }
@@ -452,8 +452,8 @@ fn handle_media_event<R: SurfaceRenderer>(
                 finished_videos.insert(paint_id);
                 // Keep the last video frame in the compositor so it continues
                 // to render as a static image. The PaintFrame from content will
-                // carry animating=false, so the UA stops re-noting rendering
-                // opportunities for video animation.
+                // carry animating=false, so the UA stops noting UI state
+                // updates for video animation.
                 if let Err(send_error) = composed_scene_sender.send(GraphicsEvent::VideoEnded {
                     webview_id,
                     video_paint_id: paint_id,
@@ -601,8 +601,7 @@ fn handle_command<B: MediaBackend + 'static, R: SurfaceRenderer>(
             );
             // Record the animating flag of every stored frame (top-level and
             // child): the composed scene aggregates it so the UA keeps
-            // noting rendering opportunities while any composing frame
-            // animates.
+            // noting UI state updates while any composing frame animates.
             slot.compositor.note_frame_animating(frame_id, animating);
             // Only the top-level frame drives composition: child
             // PaintFrames and video frames are buffered locally and included
@@ -617,15 +616,15 @@ fn handle_command<B: MediaBackend + 'static, R: SurfaceRenderer>(
                 slot.compositor.mark_composition_pending();
                 slot.cycle_deadline = None;
             } else {
-                // A cross-origin iframe's content changed: re-note a
-                // rendering opportunity for the parent traversable so its
-                // render cycle re-composes and includes the child's new
-                // frame. Without this, the child's change sits in the
-                // parent's compositor until an unrelated input event happens
-                // to drive a top-level render. Only re-note when the child's
-                // content actually changed, so a duplicate child frame (a
-                // static child re-sending during a video-driven cycle) does
-                // not spin the parent.
+                // A cross-origin iframe's content changed: note a UI state
+                // update for the parent traversable so its render cycle
+                // re-composes and includes the child's new frame. Without
+                // this, the child's change sits in the parent's compositor
+                // until an unrelated input event happens to drive a top-level
+                // render. Only note it when the child's content actually
+                // changed, so a duplicate child frame (a static child
+                // re-sending during a video-driven cycle) does not spin the
+                // parent.
                 if frame_dirty {
                     info!(
                         "[render-pipe] Graphics child frame changed parent={:?} frame={}",
@@ -783,7 +782,7 @@ fn handle_command<B: MediaBackend + 'static, R: SurfaceRenderer>(
                     dirty: true,
                 });
             // The canvas layer changed without the top-level content process
-            // driving a render; re-note a rendering opportunity for the owner
+            // driving a render; note a UI state update for the owner
             // traversable so its render cycle re-composes the canvas layer.
             if let Err(send_error) = composed_scene_sender
                 .send(ipc_messages::graphics::GraphicsEvent::CompositionChanged { webview_id })
@@ -1006,8 +1005,8 @@ fn maybe_compose<R: SurfaceRenderer>(
     composed.child_frame_to_webview = child_frame_to_webview;
     // animating comes from the content-process PaintFrame flag on the
     // top-level frame. Content knows what's animating (video, CSS animations)
-    // and sets this; the composed scene reports it so the UA keeps re-noting
-    // rendering opportunities. Graphics just passes it through.
+    // and sets this; the composed scene reports it so the UA keeps noting UI
+    // state updates. Graphics just passes it through.
     match slot.renderer.submit_layers(composed, composed_scene_sender) {
         Ok(outcome) => {
             slot.compositor.mark_layers_delivered(&outcome.delivered);

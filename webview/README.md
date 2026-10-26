@@ -22,7 +22,7 @@ it.
 - `WebviewProvider` owns the user-agent handle and exposes the embedder entry
   points: top-level traversal startup, navigation, viewport publication, UI
   event forwarding (serialized in `ui_event`), script evaluation, the
-  frame-needed pacing signal, and the answers to embedder-served fetches.
+  `frame_needed` pacing signal, and the answers to embedder-served fetches.
 - What the embedder settles once is passed at instantiation rather than
   published afterwards: `EmbedderConfig` carries the directory the extension
   executables are spawned from, the URL schemes the embedder serves itself,

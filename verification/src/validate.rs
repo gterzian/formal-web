@@ -863,8 +863,8 @@ fn collect_rendering_opportunity_trace_ids(
                     frame_ids.insert(parent_id.clone());
                 }
             }
-            "NoteRenderingOpportunity"
-            | "FrameNeeded"
+            "NoteUiStateUpdate"
+            | "RenderingOpportunity"
             | "UpdateTheRendering"
             | "GraphicsComputed" => {
                 if let Some(frame_id) = event.event_args.first() {
@@ -1256,19 +1256,21 @@ affected set must have a RunBeforeUnload event (outcome \"Approved\" or \
 RunBeforeUnload event for one or more affected navigables is the most \
 common cause. "
         }
-        "NoteRenderingOpportunity" => {
-            "The model tried to note a rendering opportunity for a frame. When \
-a render is in flight, op_count is incremented to batch the opportunity. \
-Otherwise, when the embedder needs a frame (frame_needed), pending is \
-incremented to start a new render; when no frame is needed, op_count is \
-incremented and the embedder is asked to paint (which sends FrameNeeded). \
-This step may fail if the relevant counter has reached MaxCounter. "
+        "NoteUiStateUpdate" => {
+            "The model tried to note a UI state update for a frame. When \
+a render is in flight or the top-level has no rendering opportunity, \
+ui_state_update_count is set to batch the update. Otherwise, when the \
+embedder has a rendering opportunity (rendering_opportunity), pending is \
+incremented to start a new render; when there is no rendering opportunity, \
+ui_state_update_count is set and the embedder is asked to paint (which sends \
+RenderingOpportunity). This step may fail if the relevant counter has reached \
+MaxCounter. "
         }
-        "FrameNeeded" => {
-            "The model tried to apply a FrameNeeded action: the embedder needs \
-a frame (sent at each paint, paced by vsync). The frame_needed flag is set; \
-when no render is in flight and a batched opportunity or animating content \
-exists, a render starts immediately. "
+        "RenderingOpportunity" => {
+            "The model tried to apply a RenderingOpportunity action: the \
+embedder can present a frame (sent at each paint, paced by vsync). The \
+rendering_opportunity flag is set; when no render is in flight and a batched \
+UI state update or animating content exists, a render starts immediately. "
         }
         "UpdateTheRendering" => {
             "The model tried to apply an UpdateTheRendering action. Content has \

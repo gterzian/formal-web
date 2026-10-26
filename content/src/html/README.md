@@ -498,15 +498,15 @@ Remaining gaps:
   id is a UUID, so a stale frame is inert, but it leaks until the webview
   goes away).
 - Worker animation is display-paced on the winit embedder only. The winit
-  windowed app routes `request_redraw` through the OS, so the UA's
-  frame-needed gate lands at display cadence, but the AppKit app services
-  `request_redraw` by calling `frame_needed` immediately and its
+  windowed app routes `request_next_frame` through the OS, so the UA's
+  rendering-opportunity gate lands at display cadence, but the AppKit app
+  services `request_next_frame` by calling `frame_needed` immediately and its
   `CVDisplayLink` only runs while the surface's `animating` flag is set —
   and a worker-only animation leaves that flag false. A worker
   `requestAnimationFrame` loop therefore still runs at IPC round-trip speed
   on the AppKit browser. Closing the gap needs the worker's pending
   animation frames to mark the document animating and the UA to stop
-  requesting its own redraw while the traversable is animating.
+  requesting its own frame while the traversable is animating.
 
 ## Related documentation
 

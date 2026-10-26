@@ -295,7 +295,7 @@ impl ApplicationHandler<FormalWebUserEvent> for HeadlessEmbedderApp {
 
     fn user_event(&mut self, el: &ActiveEventLoop, event: FormalWebUserEvent) {
         match event {
-            FormalWebUserEvent::RequestRedraw(webview_id) => {
+            FormalWebUserEvent::RequestNextFrame(webview_id) => {
                 // Headless has no window to paint; notify the UA that a
                 // frame is needed for the requested webview.
                 if let Some(provider) = self.provider.as_ref()

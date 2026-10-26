@@ -72,7 +72,7 @@ Quartz Debug flash a layer.
 
 `WindowedApp` owns a `HashMap<WindowId, WindowState>`; a
 `webview_to_window` mapping routes `WebviewId`-scoped events
-(`NavigationRequested`, `NavigationCompleted`, `NewWebview`, `RequestRedraw`)
+(`NavigationRequested`, `NavigationCompleted`, `NewWebview`, `RequestNextFrame`)
 to the correct window.  When tab state changes, the chrome HTML is fully
 regenerated with one tab button per open tab; hit-testing uses the `id`
 attribute from the DOM (not node IDs) to avoid stale references after HTML

@@ -7,13 +7,13 @@ VARIABLES
     pending,
     rendering_updated,
     composed,
-    op_count,
+    ui_state_update_count,
     animating,
-    frame_needed,
+    rendering_opportunity,
     trace_index
 
-vars == <<live, parent, pending, rendering_updated, composed, op_count,
-          animating, frame_needed, trace_index>>
+vars == <<live, parent, pending, rendering_updated, composed,
+          ui_state_update_count, animating, rendering_opportunity, trace_index>>
 
 Base == INSTANCE RenderingOpportunity WITH
     Frame <- TraceFrame,
@@ -24,9 +24,9 @@ Base == INSTANCE RenderingOpportunity WITH
     pending <- pending,
     rendering_updated <- rendering_updated,
     composed <- composed,
-    op_count <- op_count,
+    ui_state_update_count <- ui_state_update_count,
     animating <- animating,
-    frame_needed <- frame_needed
+    rendering_opportunity <- rendering_opportunity
 
 TraceLength == Len(Trace)
 
@@ -59,24 +59,24 @@ CreateFrameTrace ==
        /\ Base!CreateFrame(f, parentArg)
        /\ Advance
 
-NoteRenderingOpportunityTrace ==
+NoteUiStateUpdateTrace ==
     /\ trace_index \in 1..TraceLength
-    /\ CurrentEvent = "NoteRenderingOpportunity"
+    /\ CurrentEvent = "NoteUiStateUpdate"
     /\ Len(CurrentArgs) = 1
     /\ LET f == EventArg(1)
        IN
        /\ f \in live
-       /\ Base!NoteRenderingOpportunity(f)
+       /\ Base!NoteUiStateUpdate(f)
        /\ Advance
 
-FrameNeededTrace ==
+RenderingOpportunityTrace ==
     /\ trace_index \in 1..TraceLength
-    /\ CurrentEvent = "FrameNeeded"
+    /\ CurrentEvent = "RenderingOpportunity"
     /\ Len(CurrentArgs) = 1
     /\ LET f == EventArg(1)
        IN
        /\ f \in live
-       /\ Base!FrameNeeded(f)
+       /\ Base!RenderingOpportunity(f)
        /\ Advance
 
 UpdateTheRenderingTrace ==
@@ -119,8 +119,8 @@ Done ==
 
 Next ==
     \/ CreateFrameTrace
-    \/ NoteRenderingOpportunityTrace
-    \/ FrameNeededTrace
+    \/ NoteUiStateUpdateTrace
+    \/ RenderingOpportunityTrace
     \/ UpdateTheRenderingTrace
     \/ GraphicsComputedTrace
     \/ DeadlineTrace

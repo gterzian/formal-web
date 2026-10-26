@@ -813,7 +813,7 @@ impl ContentProcess {
             }
         }
 
-        // The UA notes a rendering opportunity after sending this command,
+        // The UA notes a UI state update after sending this command,
         // so embed-site geometry (including iframe clip/transform) will be
         // repainted on the next UpdateTheRendering cycle.
         Ok(())
@@ -1202,8 +1202,8 @@ impl ContentProcess {
                 },
             ))
             .map_err(|error| format!("failed to send finalize-navigation event: {error}"))?;
-        // The UA handles the rendering opportunity upon receiving
-        // FinalizeNavigation, so we don't request one here.
+        // The UA notes a UI state update upon receiving FinalizeNavigation,
+        // so we don't request one here.
         Ok(())
     }
 
@@ -2109,16 +2109,17 @@ impl ContentProcess {
 
         // The message handler may mutate the target document.
         self.mark_traversable_dirty(request.target_navigable_id);
-        // Request a rendering opportunity from the UA so the target's render
-        // cycle is driven and it receives UpdateTheRendering: the handler runs
-        // here (in the target's content process) and mutates the document, but
+        // Request a UI state update from the UA so the target's render cycle
+        // is driven and it receives UpdateTheRendering: the handler runs here
+        // (in the target's content process) and mutates the document, but
         // without this note the UA never knows to re-render the navigable, so
         // a cross-origin iframe's change waits for an unrelated input event to
         // come through before it appears.
-        if let Err(error) = self.event_sender.send(ContentEvent::RenderingOpRequested(
-            request.target_navigable_id,
-        )) {
-            error!("failed to request rendering op for postMessage: {error}");
+        if let Err(error) = self
+            .event_sender
+            .send(ContentEvent::NoteUiStateUpdate(request.target_navigable_id))
+        {
+            error!("failed to note ui state update for postMessage: {error}");
         }
 
         // Set up the shared registry so window.open calls made while the
@@ -2370,10 +2371,9 @@ impl ContentProcess {
         .map_err(|error| format!("port message task failed: {}", error.display()))?;
 
         // The message task's handler may have mutated the target
-        // document; mark it dirty and request a rendering opportunity
-        // from the UA so the target's render cycle is driven, instead
-        // of the change waiting for an unrelated input event to come
-        // through.
+        // document; mark it dirty and request a UI state update from the UA
+        // so the target's render cycle is driven, instead of the change
+        // waiting for an unrelated input event to come through.
         self.mark_document_dirty(document_id);
         let traversable_id = self
             .documents
@@ -2382,9 +2382,9 @@ impl ContentProcess {
         if let Some(traversable_id) = traversable_id
             && let Err(error) = self
                 .event_sender
-                .send(ContentEvent::RenderingOpRequested(traversable_id))
+                .send(ContentEvent::NoteUiStateUpdate(traversable_id))
         {
-            error!("failed to request rendering op for port message task: {error}");
+            error!("failed to note ui state update for port message task: {error}");
         }
         Ok(())
     }
@@ -2486,6 +2486,16 @@ impl ContentProcess {
             // blitz resolve + paint and reuses its last scene, so the graphics
             // process keeps the content layer clean instead of re-rasterizing an
             // unchanged scene every cycle.
+            // Step 4: "Unnecessary rendering: Remove from docs any Document
+            // object doc for which all of the following are true: the user
+            // agent believes that updating the rendering of doc's node
+            // navigable would have no visible effect; and doc's map of
+            // animation frame callbacks is empty."
+            // Note: The content process collapses `docs` to its single active
+            // document. The removal conditions invert to `needs_paint` or
+            // `is_animating` (a visible effect) and `had_pending_r_af` (the
+            // animation frame callbacks); `last_scene` being absent forces the
+            // first paint so blitz has a scene to reuse.
             let should_render = {
                 let needs_paint = document.needs_paint.get();
                 let document_guard = document.document.borrow();
@@ -2604,7 +2614,7 @@ impl ContentProcess {
                     // video elements still producing frames, or blitz is animating
                     // (CSS animations/transitions, same-origin subdocuments,
                     // scroll animations). Graphics forwards this to the UA which
-                    // keeps re-noting rendering opportunities to drive animation.
+                    // keeps noting UI state updates to drive animation.
                     let has_video =
                         video_paint_registry
                             .borrow()
@@ -2994,9 +3004,9 @@ impl ContentProcess {
         }
         self.mark_document_dirty(parent_document_id);
         self.event_sender
-            .send(ContentEvent::RenderingOpRequested(traversable_id))
+            .send(ContentEvent::NoteUiStateUpdate(traversable_id))
             .map_err(|error| {
-                format!("failed to request rendering op for an asset fetch: {error}")
+                format!("failed to note ui state update for an asset fetch: {error}")
             })?;
         Ok(())
     }
@@ -3040,9 +3050,9 @@ impl ContentProcess {
         self.mark_document_dirty(parent_document_id);
         if let Some(traversable_id) = traversable_id {
             self.event_sender
-                .send(ContentEvent::RenderingOpRequested(traversable_id))
+                .send(ContentEvent::NoteUiStateUpdate(traversable_id))
                 .map_err(|error| {
-                    format!("failed to request rendering op for a failed asset fetch: {error}")
+                    format!("failed to note ui state update for a failed asset fetch: {error}")
                 })?;
         }
         Ok(())
@@ -3329,9 +3339,9 @@ impl ContentProcess {
             content_document.needs_paint.set(true);
             let traversable_id = content_document.traversable_id;
             self.event_sender
-                .send(ContentEvent::RenderingOpRequested(traversable_id))
+                .send(ContentEvent::NoteUiStateUpdate(traversable_id))
                 .map_err(|error| {
-                    format!("failed to request rendering op for a presented image: {error}")
+                    format!("failed to note ui state update for a presented image: {error}")
                 })?;
         }
         Ok(())
@@ -3420,9 +3430,9 @@ impl ContentProcess {
                 ));
                 self.continue_document_load(document_id)?;
                 self.event_sender
-                    .send(ContentEvent::RenderingOpRequested(traversable_id))
+                    .send(ContentEvent::NoteUiStateUpdate(traversable_id))
                     .map_err(|error| {
-                        format!("failed to request rendering op for deferred script fetch: {error}")
+                        format!("failed to note ui state update for deferred script fetch: {error}")
                     })?;
                 Ok(())
             }
@@ -3477,8 +3487,8 @@ impl ContentProcess {
                 ));
                 self.continue_document_load(document_id)?;
                 self.event_sender
-                    .send(ContentEvent::RenderingOpRequested(traversable_id))
-                    .map_err(|error| format!("failed to request rendering op for deferred script fetch failure: {error}"))?;
+                    .send(ContentEvent::NoteUiStateUpdate(traversable_id))
+                    .map_err(|error| format!("failed to note ui state update for deferred script fetch failure: {error}"))?;
                 Ok(())
             }
         }
@@ -4110,15 +4120,15 @@ impl ContentProcess {
         if let Err(error) = fire_event(ec, &event_target, event_type, time_millis, false) {
             warn!("failed to fire {event_type} event for <img>: {error:?}");
         }
-        // The load/error handler can change the DOM, and the rendering
-        // opportunity noted when the image became available may already be
-        // in flight, so its paint predates the event. Note a fresh
-        // opportunity for the handler's changes.
+        // The load/error handler can change the DOM, and the UI state update
+        // noted when the image became available may already be in flight, so
+        // its paint predates the event. Note a fresh update for the handler's
+        // changes.
         self.event_sender
-            .send(ContentEvent::RenderingOpRequested(
+            .send(ContentEvent::NoteUiStateUpdate(
                 content_document.traversable_id,
             ))
-            .map_err(|error| format!("failed to request rendering op for an image event: {error}"))
+            .map_err(|error| format!("failed to note ui state update for an image event: {error}"))
     }
 
     /// Runs the `finishUpdate` element task queued at step 16.2 or 17.5.3 of

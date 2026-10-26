@@ -93,7 +93,7 @@ pub struct WindowEventLoop {
     /// IPC sender for commands routed into the dedicated content process.
     pub command_sender: ipc::IpcSender<ContentCommand>,
     /// IPC receiver for content-originated events: navigation requests and
-    /// continuations, clipboard writes, rendering-opportunity requests,
+    /// continuations, clipboard writes, UI state update requests,
     /// postMessage and message-port events, title reports, and
     /// dedicated-worker-agent obtained/closed reports.
     pub event_receiver: crossbeam_channel::Receiver<ipc::IpcIncoming<ContentEvent>>,

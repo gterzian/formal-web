@@ -869,7 +869,7 @@ pub struct PaintFrame {
     pub scene_shmem_key: usize,
     /// True when the rendered scene contains animated content (e.g. video,
     /// CSS animations). The graphics process forwards this to the UA so it
-    /// can keep re-noting rendering opportunities without user input.
+    /// can keep noting UI state updates without user input.
     pub animating: bool,
 }
 
@@ -1119,9 +1119,9 @@ pub enum Command {
         traversable_id: NavigableId,
         document_id: DocumentId,
         /// Milliseconds since the Unix epoch on the browser-wide monotonic
-        /// clock, captured when the user agent noted the rendering
-        /// opportunity (the HTML event loop's "last render opportunity
-        /// time").
+        /// clock, captured when the user agent noted the UI state update that
+        /// queued update the rendering (the HTML event loop's "last render
+        /// opportunity time").
         frame_timestamp_epoch_ms: f64,
     },
     /// The user-agent half of a dedicated worker's animation frame request:
@@ -1283,8 +1283,8 @@ pub enum Event {
     /// A message a document sent to the embedder through the host-message
     /// binding on its Window. This is fire-and-forget — no reply is sent.
     HostMessageRequested(HostMessageRequested),
-    /// Content requests a rendering opportunity, e.g. after a network fetch completes.
-    RenderingOpRequested(NavigableId),
+    /// Content notes a UI state update, e.g. after a network fetch completes.
+    NoteUiStateUpdate(NavigableId),
     RegisterMediaPipeline(RegisterMediaPipeline),
     /// The source-process half of the window post message steps: the source
     /// content process ran steps 1–7 and hands the serialized message to the

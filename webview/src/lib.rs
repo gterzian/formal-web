@@ -251,6 +251,6 @@ impl WebviewProvider {
                 webview_id.0
             );
         }
-        self.embedder.request_redraw(webview_id);
+        self.embedder.request_next_frame(webview_id);
     }
 }
