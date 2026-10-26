@@ -1283,8 +1283,8 @@ pub enum Event {
     /// A message a document sent to the embedder through the host-message
     /// binding on its Window. This is fire-and-forget — no reply is sent.
     HostMessageRequested(HostMessageRequested),
-    /// Content requests a UI state update, e.g. after a network fetch completes.
-    UiStateUpdateRequested(NavigableId),
+    /// Content notes a UI state update, e.g. after a network fetch completes.
+    NoteUiStateUpdate(NavigableId),
     RegisterMediaPipeline(RegisterMediaPipeline),
     /// The source-process half of the window post message steps: the source
     /// content process ran steps 1–7 and hands the serialized message to the

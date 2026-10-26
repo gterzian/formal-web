@@ -2115,10 +2115,11 @@ impl ContentProcess {
         // without this note the UA never knows to re-render the navigable, so
         // a cross-origin iframe's change waits for an unrelated input event to
         // come through before it appears.
-        if let Err(error) = self.event_sender.send(ContentEvent::UiStateUpdateRequested(
-            request.target_navigable_id,
-        )) {
-            error!("failed to request ui state update for postMessage: {error}");
+        if let Err(error) = self
+            .event_sender
+            .send(ContentEvent::NoteUiStateUpdate(request.target_navigable_id))
+        {
+            error!("failed to note ui state update for postMessage: {error}");
         }
 
         // Set up the shared registry so window.open calls made while the
@@ -2381,9 +2382,9 @@ impl ContentProcess {
         if let Some(traversable_id) = traversable_id
             && let Err(error) = self
                 .event_sender
-                .send(ContentEvent::UiStateUpdateRequested(traversable_id))
+                .send(ContentEvent::NoteUiStateUpdate(traversable_id))
         {
-            error!("failed to request ui state update for port message task: {error}");
+            error!("failed to note ui state update for port message task: {error}");
         }
         Ok(())
     }
@@ -3004,9 +3005,9 @@ impl ContentProcess {
         }
         self.mark_document_dirty(parent_document_id);
         self.event_sender
-            .send(ContentEvent::UiStateUpdateRequested(traversable_id))
+            .send(ContentEvent::NoteUiStateUpdate(traversable_id))
             .map_err(|error| {
-                format!("failed to request ui state update for an asset fetch: {error}")
+                format!("failed to note ui state update for an asset fetch: {error}")
             })?;
         Ok(())
     }
@@ -3050,9 +3051,9 @@ impl ContentProcess {
         self.mark_document_dirty(parent_document_id);
         if let Some(traversable_id) = traversable_id {
             self.event_sender
-                .send(ContentEvent::UiStateUpdateRequested(traversable_id))
+                .send(ContentEvent::NoteUiStateUpdate(traversable_id))
                 .map_err(|error| {
-                    format!("failed to request ui state update for a failed asset fetch: {error}")
+                    format!("failed to note ui state update for a failed asset fetch: {error}")
                 })?;
         }
         Ok(())
@@ -3339,9 +3340,9 @@ impl ContentProcess {
             content_document.needs_paint.set(true);
             let traversable_id = content_document.traversable_id;
             self.event_sender
-                .send(ContentEvent::UiStateUpdateRequested(traversable_id))
+                .send(ContentEvent::NoteUiStateUpdate(traversable_id))
                 .map_err(|error| {
-                    format!("failed to request ui state update for a presented image: {error}")
+                    format!("failed to note ui state update for a presented image: {error}")
                 })?;
         }
         Ok(())
@@ -3430,11 +3431,9 @@ impl ContentProcess {
                 ));
                 self.continue_document_load(document_id)?;
                 self.event_sender
-                    .send(ContentEvent::UiStateUpdateRequested(traversable_id))
+                    .send(ContentEvent::NoteUiStateUpdate(traversable_id))
                     .map_err(|error| {
-                        format!(
-                            "failed to request ui state update for deferred script fetch: {error}"
-                        )
+                        format!("failed to note ui state update for deferred script fetch: {error}")
                     })?;
                 Ok(())
             }
@@ -3489,8 +3488,8 @@ impl ContentProcess {
                 ));
                 self.continue_document_load(document_id)?;
                 self.event_sender
-                    .send(ContentEvent::UiStateUpdateRequested(traversable_id))
-                    .map_err(|error| format!("failed to request ui state update for deferred script fetch failure: {error}"))?;
+                    .send(ContentEvent::NoteUiStateUpdate(traversable_id))
+                    .map_err(|error| format!("failed to note ui state update for deferred script fetch failure: {error}"))?;
                 Ok(())
             }
         }
@@ -4127,12 +4126,10 @@ impl ContentProcess {
         // its paint predates the event. Note a fresh update for the handler's
         // changes.
         self.event_sender
-            .send(ContentEvent::UiStateUpdateRequested(
+            .send(ContentEvent::NoteUiStateUpdate(
                 content_document.traversable_id,
             ))
-            .map_err(|error| {
-                format!("failed to request ui state update for an image event: {error}")
-            })
+            .map_err(|error| format!("failed to note ui state update for an image event: {error}"))
     }
 
     /// Runs the `finishUpdate` element task queued at step 16.2 or 17.5.3 of

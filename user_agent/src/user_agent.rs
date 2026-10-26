@@ -1981,7 +1981,7 @@ impl UserAgentWorker {
                 // Content sends CreateMediaPipeline directly to the graphics process.
                 // No UA bookkeeping needed.
             }
-            ContentEvent::UiStateUpdateRequested(navigable_id) => {
+            ContentEvent::NoteUiStateUpdate(navigable_id) => {
                 self.note_ui_state_update(navigable_id);
             }
             ContentEvent::DedicatedWorkerAgentObtained {
