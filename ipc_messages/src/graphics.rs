@@ -188,12 +188,12 @@ pub enum GraphicsEvent {
         /// surface for each layer that was re-rasterized this cycle.
         layers: Vec<LayerTopology>,
         /// True when the composed scene contains animated content (video)
-        /// that requires the UA to re-note a rendering opportunity even
-        /// without user input.
+        /// that requires the UA to note a UI state update even without user
+        /// input.
         animating: bool,
         /// The composed frames (the top-level frame and embedded child
-        /// frames) that carry the animating flag; the UA notes rendering
-        /// opportunities for these navigables.
+        /// frames) that carry the animating flag; the UA notes UI state
+        /// updates for these navigables.
         animating_frame_ids: Vec<FrameId>,
         generation: u64,
         frame_hit_info: Vec<FrameHitInfo>,

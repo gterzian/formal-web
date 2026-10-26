@@ -149,7 +149,7 @@ struct CachedFrame {
     scene_digest: u64,
     /// True when this frame's document contains animated content (video
     /// frames still being produced, CSS animations). The composed scene
-    /// aggregates it so the UA keeps noting rendering opportunities.
+    /// aggregates it so the UA keeps noting UI state updates.
     animating: bool,
     /// Set whenever store_frame() stores a new scene for this frame;
     /// cleared once this frame's own layer has been re-rendered. Not part
@@ -479,9 +479,9 @@ impl Compositor {
     /// Store a content frame. Returns whether this frame's content is dirty
     /// (its scene or viewport changed since the last stored frame for the same
     /// id). The caller uses the dirty signal for a non-root (child) frame to
-    /// re-note a rendering opportunity for the parent, so a cross-origin
-    /// iframe whose content changed gets re-composed without waiting for an
-    /// unrelated input event.
+    /// note a UI state update for the parent, so a cross-origin iframe whose
+    /// content changed gets re-composed without waiting for an unrelated input
+    /// event.
     #[must_use]
     pub fn store_frame(
         &mut self,
@@ -623,8 +623,8 @@ impl Compositor {
 
     /// Record the animating flag of a stored frame: its document contains
     /// animated content (video, CSS animations). The composed scene
-    /// aggregates it so the UA keeps noting rendering opportunities while
-    /// any composed frame animates.
+    /// aggregates it so the UA keeps noting UI state updates while any
+    /// composed frame animates.
     pub fn note_frame_animating(&mut self, frame_id: FrameId, animating: bool) {
         if let Some(frame) = self.committed_frames.get_mut(&frame_id) {
             frame.animating = animating;
@@ -998,8 +998,8 @@ impl Compositor {
         let frame_parent = frame.parent_frame_id;
 
         // Aggregate the animating flag across the composed frames: the
-        // composed scene reports it so the UA keeps noting rendering
-        // opportunities while any composing frame animates.
+        // composed scene reports it so the UA keeps noting UI state updates
+        // while any composing frame animates.
         if self
             .committed_frames
             .get(&frame_id)

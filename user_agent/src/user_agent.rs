@@ -559,7 +559,7 @@ pub struct UserAgentState {
     /// Cached child viewport publications to avoid re-publishing unchanged
     /// viewports. Each entry is (width, height, offset_x, offset_y).
     /// Without this cache, every ComposedSceneReady triggers
-    /// set_traversable_viewport → note_rendering_opportunity → UpdateTheRendering →
+    /// set_traversable_viewport → note_ui_state_update → UpdateTheRendering →
     /// PaintFrame → Compose → ComposedSceneReady → ... creating a render cascade.
     published_child_viewports: HashMap<WebviewId, (u32, u32, f32, f32)>,
     /// queue of navigations paused while content runs `beforeunload`.
@@ -1036,16 +1036,17 @@ pub enum UserAgentCommand {
         offset_x: f32,
         offset_y: f32,
     },
-    /// The embedder is about to paint a frame; the UA queues update the
-    /// rendering if a rendering opportunity was noted.
-    FrameNeeded {
+    /// The embedder is about to paint a frame: the UA notes a rendering
+    /// opportunity and queues update the rendering when a UI state update is
+    /// pending.
+    RenderingOpportunity {
         webview_id: WebviewId,
     },
     DispatchEventFor {
         traversable_id: NavigableId,
         event: Vec<u8>,
     },
-    RenderingOpportunityFor {
+    UiStateUpdateFor {
         navigable_id: NavigableId,
     },
     SendUiEvent {
@@ -1233,11 +1234,13 @@ impl UserAgent {
             .map_err(|error| format!("failed to send ui event: {error}"))
     }
 
-    /// <https://html.spec.whatwg.org/multipage/#update-the-rendering>
-    pub fn note_rendering_opportunity(&self, navigable_id: NavigableId) -> Result<(), String> {
+    /// Records a UI state update for the navigable. Update the rendering
+    /// renders only when one is pending (the Unnecessary rendering step of
+    /// <https://html.spec.whatwg.org/multipage/webappapis.html#update-the-rendering>).
+    pub fn note_ui_state_update(&self, navigable_id: NavigableId) -> Result<(), String> {
         self.command_sender
-            .send(UserAgentCommand::RenderingOpportunityFor { navigable_id })
-            .map_err(|error| format!("failed to send rendering-opportunity request: {error}"))
+            .send(UserAgentCommand::UiStateUpdateFor { navigable_id })
+            .map_err(|error| format!("failed to send ui state update: {error}"))
     }
 
     /// broadcasting the embedder viewport to every owned content event loop.
@@ -1253,11 +1256,12 @@ impl UserAgent {
             .map_err(|error| format!("failed to broadcast viewport: {error}"))
     }
 
-    /// The embedder is about to paint a frame; the UA queues update the
-    /// rendering if a rendering opportunity was noted.
+    /// The embedder is about to paint a frame; the UA notes a
+    /// <https://html.spec.whatwg.org/multipage/webappapis.html#rendering-opportunity>
+    /// and queues update the rendering when a UI state update is pending.
     pub fn frame_needed(&self, webview_id: WebviewId) -> Result<(), String> {
         self.command_sender
-            .send(UserAgentCommand::FrameNeeded { webview_id })
+            .send(UserAgentCommand::RenderingOpportunity { webview_id })
             .map_err(|error| format!("failed to forward frame needed: {error}"))
     }
 
@@ -1552,16 +1556,18 @@ struct UserAgentWorker {
     /// The user-agent-side channel messaging state: the routing queue and
     /// per-port transfer state of the MessagePortExtraFG model.
     channel_messaging: crate::channel_messaging::ChannelMessaging,
-    /// Batched rendering opportunities noted while an update was pending
-    /// or no frame was needed yet (TLA spec op_count), with the epoch
-    /// millisecond time the opportunity was noted (the event loop's "last
-    /// render opportunity time"). Set semantics: multiple notes while
-    /// pending collapse to one re-render; the latest note's timestamp wins.
-    queued_rendering_opportunities: HashMap<NavigableId, f64>,
-    /// Top-level traversables for which the embedder needs a frame
-    /// (FrameNeeded, sent at each paint). Update the rendering is queued
-    /// only when a frame is needed AND a rendering opportunity was noted.
-    frame_needed: HashSet<NavigableId>,
+    /// Batched UI state updates noted while an update was pending or the
+    /// navigable had no rendering opportunity yet (TLA spec
+    /// ui_state_update_count), with the epoch millisecond time the update was
+    /// noted (carried as the event loop's "last render opportunity time").
+    /// Set semantics: multiple notes while pending collapse to one re-render;
+    /// the latest note's timestamp wins.
+    queued_ui_state_updates: HashMap<NavigableId, f64>,
+    /// Top-level traversables that currently have a rendering opportunity
+    /// (the embedder sends `frame_needed` at each paint). Update the rendering
+    /// is queued only when there is a rendering opportunity AND a UI state
+    /// update is pending.
+    rendering_opportunities: HashSet<NavigableId>,
     /// Dedicated workers with a pending animation frame request, grouped by
     /// the navigable whose rendering cycle runs their callbacks (the
     /// traversable of the worker's owner document, resolved through the
@@ -1650,8 +1656,8 @@ impl UserAgentWorker {
             channel_messaging: crate::channel_messaging::ChannelMessaging::new(
                 trace_sender.clone(),
             ),
-            queued_rendering_opportunities: HashMap::new(),
-            frame_needed: HashSet::new(),
+            queued_ui_state_updates: HashMap::new(),
+            rendering_opportunities: HashSet::new(),
             pending_worker_animation_frames: HashMap::new(),
             trace_sender,
             next_automation_request_id: 1,
@@ -1791,8 +1797,8 @@ impl UserAgentWorker {
             } => {
                 self.handle_set_traversable_viewport(traversable_id, snapshot, offset_x, offset_y);
             }
-            UserAgentCommand::FrameNeeded { webview_id } => {
-                self.handle_frame_needed(webview_id);
+            UserAgentCommand::RenderingOpportunity { webview_id } => {
+                self.note_rendering_opportunity(webview_id);
             }
             UserAgentCommand::SendUiEvent {
                 webview_id,
@@ -1807,8 +1813,8 @@ impl UserAgentWorker {
             } => {
                 self.handle_dispatch_event_for(traversable_id, event, None);
             }
-            UserAgentCommand::RenderingOpportunityFor { navigable_id } => {
-                self.note_rendering_opportunity(navigable_id);
+            UserAgentCommand::UiStateUpdateFor { navigable_id } => {
+                self.note_ui_state_update(navigable_id);
             }
             UserAgentCommand::CompleteEmbedderSchemeFetch { request_id, result } => {
                 self.complete_embedder_scheme_fetch(request_id, *result);
@@ -1975,8 +1981,8 @@ impl UserAgentWorker {
                 // Content sends CreateMediaPipeline directly to the graphics process.
                 // No UA bookkeeping needed.
             }
-            ContentEvent::RenderingOpRequested(navigable_id) => {
-                self.note_rendering_opportunity(navigable_id);
+            ContentEvent::UiStateUpdateRequested(navigable_id) => {
+                self.note_ui_state_update(navigable_id);
             }
             ContentEvent::DedicatedWorkerAgentObtained {
                 worker_id,
@@ -2047,8 +2053,8 @@ impl UserAgentWorker {
             }
             ContentEvent::WorkerAnimationFrameRequested { worker_id } => {
                 // Record the request against the navigable whose rendering
-                // cycle runs the worker's callbacks, and note a rendering
-                // opportunity for that navigable. The callbacks must not run
+                // cycle runs the worker's callbacks, and note a UI state
+                // update for that navigable. The callbacks must not run
                 // here: a worker rAF loop re-registers on every run, so
                 // dispatching immediately would spin at the worker event
                 // loop's speed instead of the display cadence.
@@ -2062,7 +2068,7 @@ impl UserAgentWorker {
                     .entry(traversable_id)
                     .or_default()
                     .insert(worker_id);
-                self.note_rendering_opportunity(traversable_id);
+                self.note_ui_state_update(traversable_id);
             }
             ContentEvent::ShutdownCompleted => return Ok(false),
         }
@@ -3360,9 +3366,9 @@ impl UserAgentWorker {
                 .state
                 .remove_pending_navigation_finalizations_for_traversable(*traversable_id);
             self.pending_update_the_rendering.remove(traversable_id);
-            self.queued_rendering_opportunities.remove(traversable_id);
+            self.queued_ui_state_updates.remove(traversable_id);
             self.pending_worker_animation_frames.remove(traversable_id);
-            self.frame_needed.remove(traversable_id);
+            self.rendering_opportunities.remove(traversable_id);
             self.state
                 .frame_hit_info
                 .remove(&WebviewId(*traversable_id));
@@ -3482,9 +3488,9 @@ impl UserAgentWorker {
                 .remove(&check_id);
         }
         self.pending_update_the_rendering.remove(&traversable_id);
-        self.queued_rendering_opportunities.remove(&traversable_id);
+        self.queued_ui_state_updates.remove(&traversable_id);
         self.pending_worker_animation_frames.remove(&traversable_id);
-        self.frame_needed.remove(&traversable_id);
+        self.rendering_opportunities.remove(&traversable_id);
         self.state.frame_hit_info.remove(&WebviewId(traversable_id));
 
         // Step 4: Remove traversable from the user interface (e.g., close or hide its tab in a tabbed browser).
@@ -4314,7 +4320,7 @@ impl UserAgentWorker {
             document.url = finalized.url.clone();
             document.is_initial_about_blank = finalized.url == "about:blank";
         }
-        self.note_rendering_opportunity(pending.traversable_id);
+        self.note_ui_state_update(pending.traversable_id);
         // Notify the graphics process that a top-level navigation finalized.
         // This sets replace_root_on_next_paint so the next PaintFrame replaces
         // the old about:blank scene with the new page's scene.
@@ -4430,13 +4436,13 @@ impl UserAgentWorker {
             let _ = error_reply.send(Err(error));
         }
 
-        // Note a rendering opportunity so the content renders the state
-        // produced by the script (DOM mutations, React commits, ...). The
-        // EvaluateScript command was queued ahead of the update-the-rendering
-        // on the same event loop, so the render runs after the script.
-        // Automation script evaluation is a NoteRenderingOpportunity per the
-        // TLA spec, mirroring handle_click_element.
-        self.note_rendering_opportunity(traversable_id);
+        // Note a UI state update so the content renders the state produced by
+        // the script (DOM mutations, React commits, ...). The EvaluateScript
+        // command was queued ahead of the update-the-rendering on the same
+        // event loop, so the render runs after the script. Automation script
+        // evaluation is a NoteUiStateUpdate per the TLA spec, mirroring
+        // handle_click_element.
+        self.note_ui_state_update(traversable_id);
     }
 
     /// the automation-only selector-click bridge into the owning event loop.
@@ -4481,9 +4487,9 @@ impl UserAgentWorker {
             let _ = error_reply.send(Err(error));
         }
 
-        // Note a rendering opportunity so the content renders the clicked state.
-        // Automation click is a NoteRenderingOpportunity per the TLA spec.
-        self.note_rendering_opportunity(traversable_id);
+        // Note a UI state update so the content renders the clicked state.
+        // Automation click is a NoteUiStateUpdate per the TLA spec.
+        self.note_ui_state_update(traversable_id);
     }
 
     /// applying the default viewport to the active traversable and its descendants.
@@ -4539,9 +4545,9 @@ impl UserAgentWorker {
         if let Err(error) = agent.event_loop.command_sender.send(command) {
             error!("failed to send traversable viewport to event loop {handle}: {error}");
         }
-        // The UA notes a rendering opportunity so the content process will
-        // receive UpdateTheRendering and repaint with the new viewport.
-        self.note_rendering_opportunity(traversable_id);
+        // The UA notes a UI state update so the content process will receive
+        // UpdateTheRendering and repaint with the new viewport.
+        self.note_ui_state_update(traversable_id);
         true
     }
 
@@ -4567,48 +4573,45 @@ impl UserAgentWorker {
         })
     }
 
-    /// The embedder is about to paint a frame for the top-level traversable
-    /// `webview_id`. Update the rendering is queued when a frame is needed
-    /// AND a rendering opportunity was noted; the flag stays set until then.
-    fn handle_frame_needed(&mut self, webview_id: WebviewId) {
+    /// <https://html.spec.whatwg.org/multipage/webappapis.html#rendering-opportunity>
+    fn note_rendering_opportunity(&mut self, webview_id: WebviewId) {
         let navigable_id = webview_id.0;
         verification::tla_log!(
             self.tla_tracer,
             -> "RenderingOpportunity",
-            "FrameNeeded",
+            "RenderingOpportunity",
             navigable_id
         );
-        self.frame_needed.insert(navigable_id);
+        self.rendering_opportunities.insert(navigable_id);
         info!(
-            "[render-pipe] UA frame needed navigable={} pending={:?} queued={:?}",
-            navigable_id, self.pending_update_the_rendering, self.queued_rendering_opportunities
+            "[render-pipe] UA rendering opportunity navigable={} pending={:?} queued={:?}",
+            navigable_id, self.pending_update_the_rendering, self.queued_ui_state_updates
         );
         self.queue_update_the_rendering_for_navigables(navigable_id);
     }
 
-    /// True when the embedder needs a frame for the top-level traversable
-    /// containing `navigable_id` (child navigables render only when the
+    /// True when the top-level traversable containing `navigable_id` currently
+    /// has a rendering opportunity (child navigables render only when the
     /// traversable is painted, since their frames are composed into its
     /// texture).
-    fn traversable_frame_needed(&self, navigable_id: NavigableId) -> bool {
+    fn traversable_has_rendering_opportunity(&self, navigable_id: NavigableId) -> bool {
         self.state
             .top_level_traversable_id(navigable_id)
-            .is_some_and(|traversable_id| self.frame_needed.contains(&traversable_id))
+            .is_some_and(|traversable_id| self.rendering_opportunities.contains(&traversable_id))
     }
 
     /// Queue update the rendering for every navigable of
-    /// `traversable_id` that has a batched rendering opportunity.
+    /// `traversable_id` that has a batched UI state update.
     fn queue_update_the_rendering_for_navigables(&mut self, traversable_id: NavigableId) {
         // Drain each candidate independently. A candidate that is already
         // pending is a no-op (the per-navigable guard in
         // `queue_update_the_rendering` handles it), so a child iframe's queued
-        // opportunity is drained even when the top-level traversable's own
-        // update is still in flight. The old batch-level early return on
-        // `pending_update_the_rendering` left a static child's change stranded
-        // in `queued_rendering_opportunities` until an unrelated input event
-        // happened to request a frame.
+        // update is drained even when the top-level traversable's own update
+        // is still in flight; otherwise a static child's change stays
+        // stranded in `queued_ui_state_updates` until an unrelated input
+        // event requests a frame.
         for candidate in self
-            .queued_rendering_opportunities
+            .queued_ui_state_updates
             .keys()
             .copied()
             .collect::<Vec<_>>()
@@ -4700,13 +4703,13 @@ impl UserAgentWorker {
             );
         }
 
-        // Note a rendering opportunity for every frame involved in this
+        // Note a UI state update for every frame involved in this
         // composition (from hit-testing), not just the hit-tested target.
         // This ensures child frames (iframes) get their scene rendered and
         // composed together with the root.  When no hit-test info exists yet
         // (first render), fall back to noting for just the target.
         if composed_frame_ids.is_empty() {
-            self.note_rendering_opportunity(target_webview_id.0);
+            self.note_ui_state_update(target_webview_id.0);
         } else {
             let navigable_ids: Vec<NavigableId> = {
                 let child_frame_map = self.state.child_frame_to_webview.get(&webview_id);
@@ -4722,14 +4725,14 @@ impl UserAgentWorker {
                     .collect()
             };
             for navigable_id in navigable_ids {
-                self.note_rendering_opportunity(navigable_id);
+                self.note_ui_state_update(navigable_id);
             }
         }
     }
 
     /// Route a UI event to the correct frame using frame hit info from the
     /// graphics process. Returns (target_webview, routed_event, composed_frame_ids)
-    /// where composed_frame_ids lists all frames that need rendering opportunities.
+    /// where composed_frame_ids lists all frames that need UI state updates.
     ///
     /// The frame_hit_info root_clip_bounds are in physical/device pixels (matching
     /// the compositor's internal coordinate space), but event coordinates from the
@@ -4771,7 +4774,7 @@ impl UserAgentWorker {
         let phys_x = coords_x * viewport_scale as f64;
         let phys_y = coords_y * viewport_scale as f64;
 
-        // Collect all frame IDs for rendering opportunities.
+        // Collect all frame IDs for UI state updates.
         let composed_frame_ids: Vec<FrameId> =
             hit_info_list.iter().map(|info| info.frame_id).collect();
 
@@ -4910,24 +4913,24 @@ impl UserAgentWorker {
                 * 1000.0
     }
 
-    /// <https://html.spec.whatwg.org/#rendering-opportunity>
-    /// Update the rendering is queued only when the embedder needs a frame
-    /// (FrameNeeded) AND there is something to render.
-    /// Otherwise the opportunity is batched and an embedder redraw is
-    /// requested, so the next paint sends FrameNeeded and queues it.
-    fn note_rendering_opportunity(&mut self, navigable_id: NavigableId) {
+    /// Records a UI state update for `navigable_id`. Update the rendering
+    /// renders only when one is pending (the Unnecessary rendering step of
+    /// <https://html.spec.whatwg.org/multipage/webappapis.html#update-the-rendering>).
+    /// Otherwise the update is batched and an embedder redraw is requested,
+    /// so the next paint notes a rendering opportunity and queues it.
+    fn note_ui_state_update(&mut self, navigable_id: NavigableId) {
         verification::tla_log!(
             self.tla_tracer,
             -> "RenderingOpportunity",
-            "NoteRenderingOpportunity",
+            "NoteUiStateUpdate",
             navigable_id
         );
-        // Stamp the opportunity time once; the queued update-the-rendering
+        // Stamp the update time once; the queued update-the-rendering
         // command carries it as the event loop's "last render opportunity
         // time" (HTML Step 1 of update-the-rendering).
         let frame_timestamp_epoch_ms = self.epoch_millis(Instant::now());
         if self.pending_update_the_rendering.contains(&navigable_id) {
-            self.queued_rendering_opportunities
+            self.queued_ui_state_updates
                 .insert(navigable_id, frame_timestamp_epoch_ms);
             info!(
                 "[render-pipe] UA queue navigable={} (already pending, queued)",
@@ -4935,52 +4938,48 @@ impl UserAgentWorker {
             );
             return;
         }
-        if !self.traversable_frame_needed(navigable_id) {
-            self.queued_rendering_opportunities
+        if !self.traversable_has_rendering_opportunity(navigable_id) {
+            self.queued_ui_state_updates
                 .insert(navigable_id, frame_timestamp_epoch_ms);
             info!(
-                "[render-pipe] UA queue navigable={} (no frame needed, queued)",
+                "[render-pipe] UA queue navigable={} (no rendering opportunity, queued)",
                 navigable_id
             );
-            // Ask the embedder to paint; the paint sends FrameNeeded, which
-            // queues the batched opportunity's update.
+            // Ask the embedder to paint; the paint notes a rendering
+            // opportunity, which queues the batched update.
             if let Some(traversable_id) = self.state.top_level_traversable_id(navigable_id) {
                 self.host.request_redraw(WebviewId(traversable_id));
             }
             return;
         }
-        self.queued_rendering_opportunities
+        self.queued_ui_state_updates
             .insert(navigable_id, frame_timestamp_epoch_ms);
         self.queue_update_the_rendering(navigable_id);
     }
 
-    /// Queue update the rendering for `navigable_id`: mark it in flight,
-    /// drain its batched opportunities, clear the top-level traversable's
-    /// frame-needed flag, and command the content process. A child also
-    /// queues the top-level traversable's update, since the graphics
-    /// process composes only when the top-level frame arrives.
+    /// <https://html.spec.whatwg.org/multipage/webappapis.html#update-the-rendering>
     fn queue_update_the_rendering(&mut self, navigable_id: NavigableId) {
         if self.pending_update_the_rendering.contains(&navigable_id) {
             return;
         }
         self.pending_update_the_rendering.insert(navigable_id);
-        // Drain the opportunity stamp; the latest note for this navigable
+        // Drain the UI state update stamp; the latest note for this navigable
         // wins (the event loop's "last render opportunity time").
         let frame_timestamp_epoch_ms = self
-            .queued_rendering_opportunities
+            .queued_ui_state_updates
             .remove(&navigable_id)
             .unwrap_or_else(|| self.epoch_millis(Instant::now()));
         if let Some(traversable_id) = self.state.top_level_traversable_id(navigable_id) {
-            self.frame_needed.remove(&traversable_id);
+            self.rendering_opportunities.remove(&traversable_id);
         }
         info!(
             "[render-pipe] UA queue update the rendering navigable={} pending={:?} queued={:?}",
-            navigable_id, self.pending_update_the_rendering, self.queued_rendering_opportunities
+            navigable_id, self.pending_update_the_rendering, self.queued_ui_state_updates
         );
 
         let Some(handle) = self.state.traversable_handles.get(&navigable_id).copied() else {
             info!(
-                "[render-pipe] UA note_rendering_opportunity: no handle for navigable={}",
+                "[render-pipe] UA queue update the rendering: no handle for navigable={}",
                 navigable_id
             );
             self.pending_update_the_rendering.remove(&navigable_id);
@@ -4993,7 +4992,7 @@ impl UserAgentWorker {
             .copied()
         else {
             info!(
-                "[render-pipe] UA note_rendering_opportunity: no active document for navigable={}",
+                "[render-pipe] UA queue update the rendering: no active document for navigable={}",
                 navigable_id
             );
             self.pending_update_the_rendering.remove(&navigable_id);
@@ -5008,8 +5007,7 @@ impl UserAgentWorker {
         // produced the pending flag is never cleared — the navigable stops
         // rendering permanently. Skip the update when the active document is
         // not owned by the navigable's current event loop; the finalization's
-        // rendering-opportunity note resumes rendering with the committed
-        // document.
+        // UI state update resumes rendering with the committed document.
         let document_owned_by_target_event_loop = self
             .state
             .documents
@@ -5017,7 +5015,7 @@ impl UserAgentWorker {
             .is_some_and(|document| document.event_loop_id == handle);
         if !document_owned_by_target_event_loop {
             info!(
-                "[render-pipe] UA note_rendering_opportunity: active document {} not owned by event loop {} for navigable={}",
+                "[render-pipe] UA queue update the rendering: active document {} not owned by event loop {} for navigable={}",
                 document_id, handle, navigable_id
             );
             self.pending_update_the_rendering.remove(&navigable_id);
@@ -5025,7 +5023,7 @@ impl UserAgentWorker {
         }
         let Some(agent) = window_agent(&self.state, handle) else {
             info!(
-                "[render-pipe] UA note_rendering_opportunity: no agent for event loop handle={}",
+                "[render-pipe] UA queue update the rendering: no agent for event loop handle={}",
                 handle
             );
             self.pending_update_the_rendering.remove(&navigable_id);
@@ -5035,7 +5033,7 @@ impl UserAgentWorker {
 
         if input_debug_enabled() {
             trace!(
-                "[input-debug][user-agent] note_rendering_opportunity navigable={} event_loop={} document={}",
+                "[input-debug][user-agent] note_ui_state_update navigable={} event_loop={} document={}",
                 navigable_id, handle, document_id,
             );
         }
@@ -5383,7 +5381,7 @@ impl UserAgentWorker {
             }
             self.state.remove_traversable(*traversable_id);
             self.pending_update_the_rendering.remove(traversable_id);
-            self.queued_rendering_opportunities.remove(traversable_id);
+            self.queued_ui_state_updates.remove(traversable_id);
             self.pending_worker_animation_frames.remove(traversable_id);
         }
 
@@ -5581,47 +5579,47 @@ impl UserAgentWorker {
                     animating,
                     self.pending_update_the_rendering.len()
                 );
-                // Animated content wants the next frame: queue an
-                // opportunity for the top-level and every composing child
-                // frame that is animating, so the next FrameNeeded (the
+                // Animated content wants the next frame: queue a UI state
+                // update for the top-level and every composing child frame
+                // that is animating, so the next rendering opportunity (the
                 // next paint) starts the next frame. Only the animating
                 // frames are noted; static composing siblings are not
                 // re-rendered.
                 if *animating {
-                    // All animating frames share one opportunity time, so
-                    // their update-the-rendering commands carry the same
-                    // event-loop "last render opportunity time".
+                    // All animating frames share one update time, so their
+                    // update-the-rendering commands carry the same event-loop
+                    // "last render opportunity time".
                     let frame_timestamp_epoch_ms = self.epoch_millis(Instant::now());
-                    self.queued_rendering_opportunities
+                    self.queued_ui_state_updates
                         .insert(webview_id.0, frame_timestamp_epoch_ms);
                     for frame_id in animating_frame_ids {
                         if let Some(child_wv) = child_frame_to_webview.get(frame_id) {
-                            self.queued_rendering_opportunities
+                            self.queued_ui_state_updates
                                 .insert(child_wv.0, frame_timestamp_epoch_ms);
                         }
                         // Frame ids not in the child map belong to the
                         // top-level frame itself, already noted above.
                     }
                 }
-                // If the embedder already needs the next frame (a
-                // FrameNeeded arrived while this render was in flight),
-                // start it now.
-                if self.frame_needed.contains(&webview_id.0) {
+                // If the embedder already has a rendering opportunity
+                // (a paint arrived while this render was in flight), start
+                // the next render now.
+                if self.rendering_opportunities.contains(&webview_id.0) {
                     self.queue_update_the_rendering_for_navigables(webview_id.0);
                 } else if !*animating
-                    && self.queued_rendering_opportunities.keys().any(|candidate| {
+                    && self.queued_ui_state_updates.keys().any(|candidate| {
                         self.state.top_level_traversable_id(*candidate) == Some(webview_id.0)
                     })
                 {
                     // A static content-only change (a DOM mutation from an
                     // input event or script that landed while the previous
                     // frame was in flight) is stranded in
-                    // `queued_rendering_opportunities`: the scene is not
-                    // animating, so nothing re-notes it and the display link
-                    // is stopped. Without a FrameNeeded the queued opportunity
-                    // is never drained, and the change only appears when the
+                    // `queued_ui_state_updates`: the scene is not animating,
+                    // so nothing re-notes it and the display link is stopped.
+                    // Without a rendering opportunity the queued update is
+                    // never drained, and the change only appears when the
                     // next unrelated input event happens to request a frame.
-                    // Request a redraw so the next FrameNeeded drains it.
+                    // Request a redraw so the next paint drains it.
                     self.host.request_redraw(*webview_id);
                 }
                 self.state
@@ -5726,17 +5724,17 @@ impl UserAgentWorker {
             GraphicsEvent::CompositionChanged { webview_id } => {
                 // A cross-origin iframe's content changed (or a video frame
                 // arrived) without the top-level content process driving a
-                // render. Note a rendering opportunity for the traversable so
-                // its render cycle re-composes and includes the latest
-                // embedded frame. `note_rendering_opportunity` batches the
-                // note and requests a redraw when the embedder is not already
-                // painting, so a static parent gets one repaint per content
-                // change instead of deferring to the next unrelated input.
+                // render. Note a UI state update for the traversable so its
+                // render cycle re-composes and includes the latest embedded
+                // frame. `note_ui_state_update` batches the note and requests
+                // a redraw when the embedder is not already painting, so a
+                // static parent gets one repaint per content change instead of
+                // deferring to the next unrelated input.
                 info!(
                     "[render-pipe] UA composition changed webview={:?}",
                     webview_id
                 );
-                self.note_rendering_opportunity(webview_id.0);
+                self.note_ui_state_update(webview_id.0);
             }
             GraphicsEvent::ShutdownComplete => {
                 debug!("[graphics] graphics process shutdown complete");

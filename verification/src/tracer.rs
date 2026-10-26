@@ -148,7 +148,7 @@ mod tests {
 
         tracer.log_with_location(
             Some("RenderingOpportunity"),
-            "NoteRenderingOpportunity",
+            "NoteUiStateUpdate",
             vec![String::from("w1")],
             file!(),
             line!(),
@@ -156,6 +156,6 @@ mod tests {
 
         let entry = receiver.recv().expect("expected one trace entry");
         assert_eq!(entry.spec, "RenderingOpportunity");
-        assert_eq!(entry.event.as_deref(), Some("NoteRenderingOpportunity"));
+        assert_eq!(entry.event.as_deref(), Some("NoteUiStateUpdate"));
     }
 }
