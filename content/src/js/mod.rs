@@ -78,3 +78,14 @@ pub(crate) type Engine = js_engine::boa::BoaContext;
 
 #[cfg(v8_backend)]
 pub(crate) type Engine = js_engine::v8::V8Engine;
+
+/// Content-level type alias for the realm microtask-queue handle: the queue a
+/// DOM hook posts work to when it runs without an execution context.
+#[cfg(boa_backend)]
+pub(crate) type RealmJobQueue = js_engine::boa::BoaRealmJobQueue;
+
+#[cfg(v8_backend)]
+pub(crate) type RealmJobQueue = js_engine::v8::V8RealmJobQueue;
+
+/// A microtask that runs in one realm.
+pub(crate) type RealmJob = js_engine::RealmJob<Types>;

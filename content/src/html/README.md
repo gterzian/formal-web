@@ -2,7 +2,9 @@
 
 `content/src/html` owns HTML parser integration, document lifecycle work, navigation helpers, and HTML global-object [platform objects](https://webidl.spec.whatwg.org/#dfn-platform-object) such as `Window` and `GlobalScope`.
 
-- Keep DOM-tree entry points under `content/src/html/html_dom_tree.rs`, and route per-element hooks from there into element modules.
+- `dom_trees.rs` implements the HTML Standard's DOM tree steps from [`#dom-trees`](https://html.spec.whatwg.org/#dom-trees) as `blitz_dom::MutationHooks` methods.  Each general step dispatches to the HTML element steps the element's local name defines; those are free functions in the element's module (the `<img>` ones are in `images_processing_model.rs`).  Add an element by extending the dispatch in the general step and writing its functions beside the element.
+- `document_providers.rs` is blitz plumbing, not a spec algorithm: it holds `DocumentProviders`, its `ResourceHooks` impl (which reports blitz's subresource requests), the `AssetRequest` those fetches carry, and `install_resource`, which installs a fetched response into the document.  A function carrying a spec anchor belongs in the module that owns that spec section, not here.
+- `html_dom_tree.rs` holds the document-level iframe post-connection and removing entry points run at document load completion and document destruction; the iframe's HTML element steps do not run from the `MutationHooks` hooks.
 - Keep iframe bindings and iframe processing algorithms together in `content/src/html/html_iframe_element.rs` as free functions over content-process state (`ContentProcess`).
   `contentDocument` is unimplemented: the getter returns null even for a
   same-origin child navigable whose document lives in this content process
@@ -265,6 +267,152 @@ protected/permissible/suspendable monitoring is not.
   allocation (which must happen in the user agent) and the UA-side instance
   lookup by (origin, name); the dedicated-only implementation folds
   `WorkerGlobalScopeKind` into the dedicated global scope.
+
+## Images
+
+`images_processing_model.rs` implements <https://html.spec.whatwg.org/#images-processing-model>.
+The `<img>` HTML element steps are free functions there; `dom_trees.rs`
+dispatches to them.  Do not run the algorithm from the IDL setters or from the
+render path.
+
+Availability lives in `ImageRegistry`, not in blitz's
+`SpecialElementData::Image`: content installs a zero-pixel `RasterImageData`
+only to give layout the intrinsic size, while the graphics process decodes and
+owns the pixels.  `naturalWidth`, `naturalHeight`, `complete`, `currentSrc`,
+and `decode` read the registry through the realm's `GlobalScope`; reading
+`raster_image_data` is not a substitute.
+
+`decode()` promises live on the realm's `GlobalScope` (a traced `GcCell`, so
+the resolving functions survive to settlement; the image registry cannot hold
+them) and are settled by the step that moves the element's request to a new
+state.  Never settle a promise while holding a `GcCell` borrow.
+
+A "queue an element task" step is a command the content process sends to
+itself, so it runs later on the same task queue as every other task; the
+model's state changes that do not queue a task are applied where the algorithm
+runs.  A DOM hook cannot write blitz state (blitz holds the document mutably
+borrowed), so "prepare an image for presentation" waits in
+`ImageRegistry::pending_presentation` until the content process has the
+document again.
+
+Known gaps in the processing model:
+
+- The net process delivers the whole response body in one
+  `CompleteDocumentFetch` message, so one networking task runs step 27's "last
+  task" and the per-chunk presentation updates of the earlier networking tasks
+  are not modeled.  Implementing streaming fetch requires the response handler
+  to become incremental.
+
+- `update-src-complete.html` is disabled.  It asserts `img.complete` is false
+  synchronously after setting `src`, but steps 10-18 (including installing
+  the new request as the pending request) run in the step 8 microtask, so
+  `complete` (true while the current request is completely available and the
+  pending request is null) stays true until the microtask runs.  The
+  synchronous false result is the on-demand behavior in "when to obtain
+  images" (the current request's state returns to unavailable), not the
+  immediate-obtaining behavior implemented here.
+
+- `srcset`/`sizes` selection picks the first `srcset` candidate and ignores
+  the descriptors and `sizes`, so the current pixel density is always 1.0 and
+  the natural dimensions are the decoded pixel dimensions; a parent
+  `<picture>` element and its `<source>` siblings are not tracked, so
+  `picture`/`source` mutations never re-run the algorithm.  "Reacting to
+  environment changes" runs on every viewport change but uses the same
+  selection, so a `sizes`-driven choice never changes the image.  The
+  insertion hook receives no parent, so the `img` insertion steps cannot
+  check for a `<picture>` parent and update the image data on every
+  insertion; the HTML element moving steps are not observed because blitz
+  exposes no moving hook.
+- Decoded images are retained for the webview lifetime until their document is
+  destroyed; there is no per-image eviction for images still referenced by a
+  live document.
+- Lazy loading (`loading=lazy`), animation restart, EXIF density
+  correction, CORS enforcement, and progressive/multipart image decoding
+  are not modeled.
+- "Fetching the image must delay the load event" is not modeled: the document
+  load event ignores `<img>` fetches.  Implementing it as written deadlocks
+  on any page whose script clears the image's `src` to release the load
+  event: the engine runs parser scripts at load completion (see
+  `continue_document_load`), so the clearing script would itself wait for the
+  load event, and the fetch it is meant to abort never finishes.  The spec's
+  ordering needs parser scripts to run during parsing first.
+- The `img` adopting steps are not observed, so adopting an element into
+  another document does not re-run the algorithm.
+- Subresource URLs resolve against the document's URL only: a `<base href>`
+  change is not reflected in the base URL captured by `DocumentProviders`.
+- The `Image(width, height)` legacy factory function is not implemented, so
+  `new Image()` throws; `available-images-onload.html`,
+  `Image-constructor.html` and WPT's `the-img-element/decode/` tests (which
+  construct their elements with it) are blocked on it, which leaves `decode()`
+  covered only indirectly by the enabled `the-img-element` tests.
+- The graphics process is the only image decoder, so the content process never
+  reads image bytes itself: it ships each response body to graphics and runs
+  step 27 of <https://html.spec.whatwg.org/#update-the-image-data> when
+  `GraphicsEvent::ImageDecoded` reports the decoded dimensions and format
+  (`complete_image_decode`).  The accepted set is PNG,
+  JPEG, GIF and WebP — formats graphics reports as `ImageFormat::Other` take
+  step 27's "not in a supported file format" branch, and an SVG `src` is
+  reported as an error. Which formats actually decode is the running OS's
+  Image I/O support on macOS (see `graphics/README.md`).
+- Nothing decodes for blitz: the document's layout-time image loader is
+  answered with a failed load, so CSS `background-image`/`mask-image` and
+  `<img>` elements inside same-origin iframe subdocuments render nothing.  Both
+  are `AssetRequest::DecodedImage` requests; they are still fetched before the
+  load is failed (skipping the fetch is remaining work).  The design that
+  closes the subdocument part is under "Remaining work" below; CSS
+  background/mask images stay unsupported until graphics grows an image layer
+  kind positioned by the document's paint order instead of an element box.
+
+### Remaining work: `<img>` in same-origin iframe subdocuments
+
+A top-level `<img>` is a graphics image layer: the processing model registers
+the image, graphics decodes it, and `build_frame_composition_metadata` emits an
+`EmbedSite::Image` in the document's own coordinate space.  The same element in
+a same-origin subdocument takes none of those steps — `obtain_images` and
+`update_the_image_data` return early for a non-`Main` host, the embed-site scan
+only visits the top-level document's tree, and the layout-time loader (its only
+remaining path) is answered as failed.  So it renders nothing.
+
+Design: give each same-origin subdocument its own frame, so its images are
+ordinary `<img>` layers in that frame's coordinate space and no parent-space
+geometry is needed.
+
+1. **Identity.**  `DocumentHost::Subdocument` carries the parent's `DocumentId`
+   plus a `Uuid`, while `ImageRegistry` keys elements by
+   `(DocumentId, node_id)`; a subdocument therefore needs an identity of its own
+   in the registry before the `DocumentHost::Main` gates in `obtain_images` and
+   `update_the_image_data` come off.  `decode()` and the queued element tasks
+   then run in the subdocument's realm (resolved through `DocumentProviders` /
+   `self.subdocuments`), and their registrations reach graphics like any other.
+2. **Intrinsic size.**  `apply_pending_image_presentation` resolves documents
+   from `self.documents`; it must also resolve `self.subdocuments`
+   (`Weak<RefCell<BaseDocument>>`) so `set_image_intrinsic_size` reaches the
+   subdocument's tree.  With no pixels going to blitz, that write is the only
+   thing that gives the element a box.
+3. **Frame.**  Mint a `FrameId` for the subdocument, emit `EmbedSite::Frame` at
+   the iframe node exactly as `build_frame_composition_metadata` does for a
+   cross-origin iframe, and paint the subdocument into its own `PaintFrame`.
+   Its `<img>` elements then become `EmbedSite::Image` layers inside that frame.
+4. **Per-frame metadata.**  Run the same builder for the subdocument so its
+   image embeds, `FrameHitInfo`, `ChildViewport` and animating flags are
+   published with its frame, and make sure a cycle's composition waits for the
+   subdocument's frame like any other child frame.
+5. **Input and hit-testing.**  Map pointer coordinates through the iframe's box
+   into the subdocument's frame, the way `child_frame_to_webview` maps a
+   cross-origin child.
+
+The alternative — converting each subdocument image's box into the parent's
+space — needs the iframe offset and the subdocument's scroll composed per
+image, clip intersection with the iframe's content rect, and correct z-order
+across the boundary, and it still inherits the one-layer-per-navigable
+limitation.  A frame per subdocument reuses the child-frame machinery that
+already composes cross-origin iframes.
+
+Acceptance: `<img>` load/`error` events, `naturalWidth`/`naturalHeight`,
+`complete` and `decode()` inside a same-origin iframe (WPT image tests in
+iframes); a pointer press reaching an image layer inside an iframe; and the
+`RenderingOpportunity` traces still validating with a second `PaintFrame` per
+cycle.
 
 ## Canvas
 

@@ -13,7 +13,7 @@ ipc-channel-backend = ["ipc/ipc-channel-backend"]
 # `cpu_readback` selects the CPU readback + shared-memory backend there
 # instead. Off macOS the CPU readback backend is the only one (the GStreamer
 # media backend delivers CPU video bytes).
-cpu_readback = []
+cpu_readback = ["dep:image"]
 # Force the zero-copy IOSurface backend. It is already the default on macOS;
 # on other platforms it is a compile error (IOSurface sharing is macOS-only).
 zero_copy = []
@@ -33,13 +33,16 @@ path = "src/bin/graphics_process.rs"
 
 [dependencies]
 verification = { path = "../verification" }
-anyrender = { version = "0.10", features = ["serde"] }
-anyrender_vello = "0.10.1"
+anyrender = { version = "0.11", features = ["serde"] }
+anyrender_vello = "0.11.0"
 ipc = { path = "../ipc" }
 ipc_messages = { path = "../ipc_messages" }
 media = { path = "../media" }
 ipc-channel = { git = "https://github.com/gterzian/ipc-channel", rev = "169da83" }
 kurbo = "0.13"
+# Optional: enabled off macOS (target table above) and by `cpu_readback`; the
+# macOS zero-copy build compiles neither and leaves `image` out entirely.
+image = { version = "0.25.6", default-features = false, features = ["png", "jpeg", "gif", "webp"], optional = true }
 peniko = "0.6"
 serde = { version = "1", features = ["derive"] }
 log = "0.4"
@@ -50,9 +53,23 @@ wgpu = "29"
 vello = "0.9"
 pollster = "0.4"
 
+# The slow cross-platform decoder (`renderer/image/cpu.rs`) is the only code
+# that reads with the `image` crate outside tests, so it is built only for the
+# configurations that compile that decoder: every target off macOS, and the
+# macOS `cpu_readback` build. The macOS zero-copy build decodes with Image I/O
+# and never compiles it.
+[target.'cfg(not(target_os = "macos"))'.dependencies]
+image = { version = "0.25.6", default-features = false, features = ["png", "jpeg", "gif", "webp"] }
+
+[dev-dependencies]
+# The macOS decoder tests decode the same fixtures with both decoders.
+image = { version = "0.25.6", default-features = false, features = ["png", "jpeg", "gif", "webp"] }
+
 [target.'cfg(target_os = "macos")'.dependencies]
 objc2 = "0.6"
 objc2-metal = { version = "0.3", features = ["objc2-io-surface"] }
 objc2-core-foundation = "0.3"
+objc2-core-graphics = { version = "0.3", features = ["CGBitmapContext", "CGColorSpace", "CGContext", "CGImage"] }
+objc2-image-io = { version = "0.3", default-features = false, features = ["std", "CGImageSource", "objc2", "objc2-core-graphics"] }
 objc2-io-surface = "0.3"
 objc2-core-video = "0.3"

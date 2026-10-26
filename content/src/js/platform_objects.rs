@@ -8,8 +8,8 @@ use html5ever::{local_name, ns};
 use crate::dom::{Document, Element, EventPathItem, Node};
 use crate::html::{
     ActivationBehavior, DedicatedWorkerGlobalScope, GlobalScope, HTMLAnchorElement,
-    HTMLCanvasElement, HTMLElement, HTMLIFrameElement, HTMLInputElement, HTMLMediaElement,
-    HTMLVideoElement, Window, WorkerGlobalScope,
+    HTMLCanvasElement, HTMLElement, HTMLIFrameElement, HTMLImageElement, HTMLInputElement,
+    HTMLMediaElement, HTMLVideoElement, Window, WorkerGlobalScope,
 };
 use crate::js::downcast::event_target_from_js_object;
 use crate::webidl::bindings::create_interface_instance;
@@ -327,6 +327,8 @@ fn element_object_from_document(
                     5_u8
                 } else if element.name.local == local_name!("canvas") {
                     6_u8
+                } else if element.name.local == local_name!("img") {
+                    7_u8
                 } else {
                     1_u8
                 }
@@ -343,6 +345,10 @@ fn element_object_from_document(
         ),
         6 => create_interface_instance::<crate::js::Types, HTMLCanvasElement>(
             HTMLCanvasElement::new(document, node_id, ec),
+            ec,
+        ),
+        7 => create_interface_instance::<crate::js::Types, HTMLImageElement>(
+            HTMLImageElement::new(document, node_id, ec),
             ec,
         ),
         4 => create_interface_instance::<crate::js::Types, HTMLVideoElement>(
@@ -400,6 +406,11 @@ pub(crate) fn build_path_from_target_js_object(
             Some((
                 input.html_element.element.node.node_id,
                 input.html_element.element.node.document.clone(),
+            ))
+        } else if let Some(image) = data.downcast_ref::<HTMLImageElement>() {
+            Some((
+                image.html_element.element.node.node_id,
+                image.html_element.element.node.document.clone(),
             ))
         } else if let Some(media) = data.downcast_ref::<HTMLMediaElement>() {
             Some((

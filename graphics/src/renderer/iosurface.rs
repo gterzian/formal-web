@@ -3,12 +3,13 @@
 //! embedder imports the same surface and blits it, with no readback and no
 //! IPC pixel bytes.
 
+use super::image::StoredImageResult;
 use super::{
     FrameDelivery, FrameMetadata, GpuContext, MAX_SURFACE_DIMENSION, PollRequest, ReadbackChannels,
-    RenderError, SurfaceBuffers, SurfaceRenderer, SurfaceRingState, frame_metadata,
+    RenderError, SubmitOutcome, SurfaceBuffers, SurfaceRenderer, SurfaceRingState, frame_metadata,
 };
 use crate::iosurface::{IosurfaceTexture, create_shared_texture};
-use ipc_messages::content::WebviewId;
+use ipc_messages::content::{ImageIdentifier, WebviewId};
 use ipc_messages::graphics::{CompositingLayerId, GraphicsEvent, LayerTopology, SurfacePayload};
 use ipc_messages::media::VideoPaintId;
 use log::{debug, error, info};
@@ -27,7 +28,8 @@ pub struct SharedRenderData {
     pub webview_id: WebviewId,
     pub generation: u64,
     /// The per-layer topology for this cycle; `surface` is present only for
-    /// layers re-rendered this cycle.
+    /// the layers this cycle presents (re-rendered, or delivered as a
+    /// `direct_surface`).
     pub layers: Vec<LayerTopology>,
     pub metadata: FrameMetadata,
 }
@@ -85,11 +87,23 @@ impl SurfaceRenderer for IosurfaceRenderer {
         })
     }
 
+    fn store_image(
+        &mut self,
+        id: &ImageIdentifier,
+        encoded: &[u8],
+    ) -> Result<StoredImageResult, String> {
+        self.gpu.store_image(id, encoded)
+    }
+
+    fn release_images(&mut self, image_ids: &[ImageIdentifier]) {
+        self.gpu.release_images(image_ids);
+    }
+
     fn submit_layers(
         &mut self,
         composed: ComposedScene,
         sender: &ipc::IpcSender<GraphicsEvent>,
-    ) -> Result<Vec<CompositingLayerId>, RenderError> {
+    ) -> Result<SubmitOutcome, RenderError> {
         let ComposedScene {
             webview_id,
             layers,
@@ -116,10 +130,21 @@ impl SurfaceRenderer for IosurfaceRenderer {
             animating_frame_ids,
         );
 
-        let mut rendered = Vec::new();
+        let mut delivered = Vec::new();
+        let mut gpu_work = false;
         let mut topology = Vec::with_capacity(layers.len());
 
         for layer in layers {
+            if let Some(direct_surface) = layer.direct_surface.clone() {
+                // A macOS image layer presented directly from its own
+                // IOSurface: no layer surface is rendered; the embedder maps
+                // the image surface to this layer's CA sublayer. It is
+                // delivered without touching the GPU, so it does not count as
+                // GPU work.
+                delivered.push(layer.layer_id);
+                topology.push(layer.into_layer_topology_with_surface(direct_surface));
+                continue;
+            }
             let Some(ref scene) = layer.render else {
                 // Clean layer: keep its last surface, still report topology.
                 topology.push(layer.into_layer_topology());
@@ -165,12 +190,13 @@ impl SurfaceRenderer for IosurfaceRenderer {
                     port: tex.port_for_frame(),
                 }),
             );
-            rendered.push(layer_id);
+            delivered.push(layer_id);
+            gpu_work = true;
         }
 
         self.gpu.generation += 1;
         let generation = self.gpu.generation;
-        if rendered.is_empty() {
+        if !gpu_work {
             // Nothing was re-rendered this cycle (every layer clean, e.g. a
             // static root with a video that produced no new frame): emit a
             // surface-less PixelFrameReady directly so the UA still learns
@@ -194,10 +220,14 @@ impl SurfaceRenderer for IosurfaceRenderer {
                 );
             }
             debug!(
-                "[gpu-renderer] no shared layers rendered gen={}",
-                generation
+                "[gpu-renderer] no shared layers rendered gen={} delivered={}",
+                generation,
+                delivered.len()
             );
-            return Ok(rendered);
+            return Ok(SubmitOutcome {
+                delivered,
+                gpu_work,
+            });
         }
         let done = SharedRenderData {
             webview_id,
@@ -214,11 +244,14 @@ impl SurfaceRenderer for IosurfaceRenderer {
         }
         debug!(
             "[gpu-renderer] rendered {} shared layers gen={}",
-            rendered.len(),
+            delivered.len(),
             generation
         );
 
-        Ok(rendered)
+        Ok(SubmitOutcome {
+            delivered,
+            gpu_work,
+        })
     }
 
     fn handle_render_done(
@@ -279,7 +312,9 @@ impl SurfaceRenderer for IosurfaceRenderer {
             .iter()
             .filter_map(|layer_id| match layer_id {
                 CompositingLayerId::Video(paint_id) => Some(*paint_id),
-                CompositingLayerId::Navigable(_) | CompositingLayerId::Canvas(_) => None,
+                CompositingLayerId::Navigable(_)
+                | CompositingLayerId::Canvas(_)
+                | CompositingLayerId::Image(_) => None,
             })
             .collect();
         self.gpu.retain_video_paints(&live_videos);

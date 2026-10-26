@@ -65,6 +65,18 @@ impl IosurfaceTexture {
     }
 }
 
+/// Create a global RGBA IOSurface for a decoded `<img>` image. The surface is
+/// padded to the Metal width constraint like a shared frame surface; the
+/// graphics process keeps it alive and the embedder presents it directly on
+/// the image layer's CoreAnimation sublayer.
+pub(crate) fn create_image_surface(width: u32, height: u32) -> Option<CFRetained<IOSurfaceRef>> {
+    let surface_width = padded_width(width);
+    let properties = surface_properties(surface_width, height.max(1));
+    // SAFETY: the properties dictionary is built with the exact keys and
+    // value types IOSurfaceCreate expects.
+    unsafe { IOSurfaceRef::new(&properties) }
+}
+
 /// Create one IOSurface-backed RGBA8 wgpu texture on the renderer's device.
 /// The texture usage (STORAGE_BINDING | TEXTURE_BINDING | COPY_SRC) is what
 /// Vello needs to render into it via compute; the Metal texture descriptor

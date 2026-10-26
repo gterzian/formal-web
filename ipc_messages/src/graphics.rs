@@ -1,4 +1,6 @@
-use crate::content::{CanvasId, EmbedBackgroundPolicy, FrameId, PaintFrame, WebviewId};
+use crate::content::{
+    CanvasId, EmbedBackgroundPolicy, FrameId, ImageIdentifier, ImagePaintId, PaintFrame, WebviewId,
+};
 use crate::media::{MediaPipelineId, VideoPaintId};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -24,14 +26,15 @@ impl Default for CompositorSlotId {
 }
 
 /// Identifies one compositable layer within a webview: a cross-origin
-/// navigable (iframe), a `<video>` embed site, or an offscreen canvas. Same-
-/// origin iframes are baked into their parent's recorded scene and get no
-/// layer of their own.
+/// navigable (iframe), a `<video>` embed site, an offscreen canvas, or an
+/// `<img>` element. Same-origin iframes are baked into their parent's
+/// recorded scene and get no layer of their own.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum CompositingLayerId {
     Navigable(FrameId),
     Video(VideoPaintId),
     Canvas(CanvasId),
+    Image(ImagePaintId),
 }
 
 // ---------------------------------------------------------------------------
@@ -76,6 +79,23 @@ pub enum GraphicsCommand {
     RegisterCanvas {
         webview_id: WebviewId,
         canvas_id: CanvasId,
+    },
+    /// Register an `<img>` element's encoded image data with its webview.
+    /// The bytes travel in the IPC shared-memory map under `data_shmem_key`;
+    /// the graphics process decodes them into the texture keyed by
+    /// `image_id`, shared by every layer that references that image.
+    RegisterImage {
+        webview_id: WebviewId,
+        image_id: ImageIdentifier,
+        data_shmem_key: usize,
+    },
+    /// Drop the decoded state and shared surface of `<img>` resources whose
+    /// document was unloaded.  The content process names the identifiers it
+    /// registered for that document; the graphics process removes the
+    /// compositor entry and the backend's decoded data or IOSurface.
+    UnregisterImages {
+        webview_id: WebviewId,
+        image_ids: Vec<ImageIdentifier>,
     },
     /// Remove a video frame slot (pipeline destroyed).
     RemoveVideoFrame {
@@ -188,6 +208,20 @@ pub enum GraphicsEvent {
         webview_id: WebviewId,
         video_paint_id: VideoPaintId,
     },
+    /// The graphics process finished decoding an `<img>` resource registered
+    /// with `GraphicsCommand::RegisterImage`. The UA forwards the result to
+    /// the content process that registered the image, which runs the
+    /// supported-file-format branch of step 27 of
+    /// <https://html.spec.whatwg.org/#update-the-image-data> (and of steps
+    /// 17.5.1-17.5.3 of
+    /// <https://html.spec.whatwg.org/#reacting-to-environment-changes>) on it and
+    /// settles the `decode()` promises waiting on it.
+    ImageDecoded {
+        webview_id: WebviewId,
+        image_id: ImageIdentifier,
+        /// `Err` carries the decoder's failure reason.
+        result: Result<DecodedImage, String>,
+    },
     /// A cross-origin child frame's content changed (a source the top-level
     /// content process does not itself drive). The UA notes a rendering
     /// opportunity for the parent traversable so its render cycle re-composes
@@ -248,6 +282,31 @@ pub enum SurfacePayload {
         /// Mach port (send right) to the IOSurface, for the fallback lookup.
         port: OsMachPort,
     },
+}
+
+/// The image format a decoder recognized for an `<img>` resource.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub enum ImageFormat {
+    Png,
+    Jpeg,
+    Gif,
+    WebP,
+    /// A format this process's decoder reads but the accepted set does not
+    /// name; the content process treats it as not supported.
+    Other,
+}
+
+/// What the graphics process's decoder reports for one registered `<img>`
+/// resource: the decoded image's dimensions and the format it recognized.
+///
+/// The graphics process is the only decoder, so the content process learns an
+/// image's dimensions and whether its format is supported from this report
+/// rather than sniffing the bytes itself.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DecodedImage {
+    pub width: u32,
+    pub height: u32,
+    pub format: ImageFormat,
 }
 
 /// A rendered surface frame delivered to the embedder: the pixel delivery

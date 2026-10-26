@@ -70,6 +70,10 @@ Read repository documentation from general to specific:
 2. Every `README.md` found by walking from the repo root down to the
    directory containing the file(s) your task touches, in that order.
 
+There is exactly one `AGENTS.md`, at the repository root.  Every other
+level of the tree documents itself with a `README.md`; nested `AGENTS.md`
+files are not part of the chain and must not be created.
+
 Concatenate all of them; together they form the "doc chain" for a task.
 
 ## The placement invariant
@@ -197,11 +201,17 @@ for the definitive spec-annotation reference with examples and common mistakes.
    summary, no prose.  **Zero prose — not a single explanatory sentence.**
    If the function name is not enough context, the spec IS the documentation.
    Explanatory doc comments on spec-implementing functions are violations.
+   The same holds for module docs: a module that owns a spec section carries
+   that section's anchor and nothing else.
 
    The Rust function name MUST match the spec algorithm name, with `_`
    separators replacing spaces and hyphens.  For example, "steps to fire
    beforeunload" becomes `steps_to_fire_beforeunload`, not `fire_global_event`.
-   The spec→code mapping must be discoverable by name alone.
+   The spec→code mapping must be discoverable by name alone.  Each
+   asynchronous part of a split algorithm is named for the part it implements,
+   and a comment that names a spec step, method, or attribute links the
+   algorithm or interface that defines it — a bare member name is not a spec
+   reference.
 
    The anchor is a claim that the item **is** that algorithm.  It must name
    the algorithm the item implements, never an algorithm that merely calls
@@ -270,6 +280,44 @@ for the definitive spec-annotation reference with examples and common mistakes.
 
 See the "Spec-mapping review" step under "End-of-Task Flow" for the full
 review checklist.
+
+# Process Boundaries
+
+Each process owns one capability, and the boundary has to be enforceable
+rather than advisory: each helper process will run under a per-platform
+sandbox that allows it only its own capability (network, GPU, filesystem), iOS
+first. Code that performs another process's work "works today" and becomes a
+failure the moment its sandbox lands — so the rule is checked when the code is
+written, not when the sandbox breaks it.
+
+- **Content owns the DOM and runs JavaScript.** It executes scripts, holds the
+  document and its algorithms' state, and never touches the network, a GPU API,
+  or a window-system surface. It never decodes or encodes an image or a media
+  stream: it ships the bytes to graphics and renders what graphics reports
+  back (`GraphicsEvent::ImageDecoded`, video frames, composed surfaces).
+- **Net owns all network I/O.** Every request — navigation, subresource,
+  script fetch, worker script — goes through the net process. Content does not
+  open sockets, and graphics does not fetch anything it needs to decode.
+- **Graphics owns everything the GPU and window system own.** Decoding images
+  and video, compositing, surfaces (IOSurface/Metal/CoreAnimation, Vello,
+  AVFoundation/GStreamer) all live there. Nothing else paints, decodes, or
+  holds a surface.
+- **The user agent coordinates and the embedder presents.** They route IPC and
+  own the window; they do not do content's, net's, or graphics' work.
+
+Operational tests before adding code or a dependency:
+
+- Which process's capability does this need? If the answer is not the process
+  you are editing, the work goes in the owning process and travels over IPC
+  (paint payloads on shared memory, metadata and handles as typed messages).
+- Does the dependency grant a capability the sandbox will deny — a socket, a
+  GPU or window-system API, an image/video codec? Then it belongs to the
+  process that owns that capability. A helper that pulls a codec dependency in
+  only to inspect or decode a few bytes is the same violation as calling the
+  API elsewhere.
+- A format or protocol decision made from bytes belongs to the owner of those
+  bytes: content decides a response's *supported-format* policy from graphics'
+  report, but graphics is what reads the bitstream.
 
 # Project Structure
 
@@ -417,13 +465,17 @@ cargo build --release -p graphics --bin formal-web-graphics
 ### External dependencies: blitz and anyrender
 
 Blitz crates (blitz-traits, blitz-dom, blitz-paint, blitz-html, stylo_taffy,
-debug_timer) come from a git dependency on
-<https://github.com/gterzian/blitz> (rev `954b41f`).
+debug_timer) come from the `resource_hooks` branch of
+<https://github.com/gterzian/blitz> (`0.3.0-alpha.5`).  That branch carries
+the `DocumentConfig::embedded_images` edit that keeps `<img>` out of the
+document's own scene, and the `DocumentHooks` refactor that makes the
+embedder load subresources and observe DOM tree mutations.  `Cargo.lock`
+pins the branch's revision; refresh it after the branch moves.
 
-AnyRender crates (anyrender, anyrender_vello, anyrender_vello_cpu,
-anyrender_svg, wgpu_context) are sourced from crates.io at the versions
-required by the blitz workspace (0.10, 0.10.1, 0.12.1, 0.11.0, 0.6.0
-respectively).
+Stylo is `0.18.0`; the AnyRender crates (anyrender, anyrender_vello,
+anyrender_vello_cpu, anyrender_svg, wgpu_context) are sourced from crates.io
+at the versions the blitz workspace requires (0.11, 0.11.0, 0.14.0, 0.12.0,
+0.6.0 respectively).
 
 ### IPC wire format consistency
 
@@ -492,6 +544,15 @@ for detailed documentation.
 - Use descriptive variable names throughout. Single-letter names (`s`, `st`, `wid`, `el`, `p`,
   `cs`, `at`, `ch`) are prohibited in new code and should be expanded when touching existing
   code. A variable called `state` is always clearer than `s`.
+- Name a shared mechanism for what it is, not for its first user (`job_queue`, not
+  `image_job_queue`).
+- **Name a module after the platform or capability it covers, never after the
+  framework it calls.** A platform path is one module — `renderer/image/macos.rs`
+  uses Image I/O and Core Graphics inside it — so a framework file (`imageio.rs`,
+  `coregraphics.rs`) as a sibling of the platform file splits one path into
+  pieces whose names say nothing about where they run. Split a module when it
+  owns a separate capability (`renderer/video.rs`, `renderer/image/cpu.rs`), not
+  when a different library serves the same one.
 - Exception: closure parameters in iterator chains (`.map(|x| ...)`) where the type is obvious
   from context. But even there, prefer short but meaningful names like `tab` over `t`.
 - **Never use fully qualified paths** — no `crate::foo::bar::baz(...)` anywhere.

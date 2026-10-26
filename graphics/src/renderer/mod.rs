@@ -14,7 +14,8 @@
 //! owns its surface buffers ([`SurfaceBuffers`]) and its delivery path.
 
 use anyrender::PaintScene;
-use ipc_messages::content::{FrameId, WebviewId};
+use image::ImageDecoder;
+use ipc_messages::content::{FrameId, ImageIdentifier, WebviewId};
 use ipc_messages::graphics::{ChildViewport, CompositingLayerId, FrameHitInfo, GraphicsEvent};
 use ipc_messages::media::VideoPaintId;
 use kurbo::Affine;
@@ -60,7 +61,23 @@ pub struct FrameDelivery {
     pub graphics_computed: bool,
 }
 
-/// The outcome of submitting a composed scene.
+/// The outcome of one composition: which layer surfaces reached the embedder
+/// and whether the GPU has work in flight for them.
+pub struct SubmitOutcome {
+    /// The layers this composition delivered a surface for — re-rendered, or
+    /// presented directly from a shared surface. The compositor clears these
+    /// layers' dirty flags; a layer the outcome omits keeps its dirty flag and
+    /// is presented again on the next composition, so a failed submission
+    /// never loses a surface.
+    pub delivered: Vec<CompositingLayerId>,
+    /// True when GPU work was submitted and the frame is delivered on
+    /// completion. False when nothing was rendered (every layer clean): the
+    /// renderer then sends a surface-less `PixelFrameReady` itself, so the
+    /// frame never reaches [`handle_render_done`](SurfaceRenderer::handle_render_done)
+    /// and the run loop traces `GraphicsComputed` for it directly.
+    pub gpu_work: bool,
+}
+
 #[derive(Debug)]
 pub enum RenderError {
     /// Buffer allocation or GPU failure; the scene was dropped.
@@ -123,13 +140,14 @@ impl<D> Clone for ReadbackChannels<D> {
 }
 
 /// The shared per-webview GPU state every surface backend needs: the wgpu
-/// device, the Vello renderer, the video texture machinery, and the frame
-/// generation counter. Backend-specific state (surface buffers, staging
-/// buffers) lives on the concrete renderers.
+/// device, the Vello renderer, the image decoder, the video texture machinery,
+/// and the frame generation counter. Backend-specific state (surface buffers,
+/// staging buffers) lives on the concrete renderers.
 pub(crate) struct GpuContext {
     pub(crate) device_handle: wgpu_context::DeviceHandle,
     vello_renderer: VelloRenderer,
     vello_scene: VelloScene,
+    image_decoder: image::Decoder,
     pub(crate) generation: u64,
     #[cfg(target_os = "macos")]
     video: video::VideoTextures,
@@ -157,10 +175,34 @@ impl GpuContext {
             device_handle,
             vello_renderer,
             vello_scene: VelloScene::new(),
+            image_decoder: image::Decoder::new(),
             generation: 0,
             #[cfg(target_os = "macos")]
             video: video::VideoTextures::new(),
         })
+    }
+
+    /// Decode one `<img>` resource into the image decoder's storage. Returns
+    /// the stored image (rendered pixels or a direct IOSurface) with the
+    /// dimensions and format the decoder reported.
+    pub(crate) fn store_image(
+        &mut self,
+        id: &ImageIdentifier,
+        encoded: &[u8],
+    ) -> Result<image::StoredImageResult, String> {
+        self.image_decoder.store_image(
+            &self.device_handle.device,
+            &self.device_handle.queue,
+            &mut self.vello_renderer,
+            id,
+            encoded,
+        )
+    }
+
+    /// Drop the decoded image state and shared surfaces for images whose
+    /// document was unloaded.
+    pub(crate) fn release_images(&mut self, image_ids: &[ImageIdentifier]) {
+        self.image_decoder.release_images(image_ids);
     }
 
     /// The raw Metal device backing this renderer (macOS), needed to create
@@ -390,18 +432,17 @@ pub trait SurfaceRenderer {
         Self: Sized;
 
     /// Submit `composed` for per-layer rendering. Each layer with a `render`
-    /// scene is rasterized into its own surface; clean layers (render `None`)
-    /// are skipped and keep their last surface. Returns the layer ids that
-    /// were actually re-rendered, so the caller can clear their dirty flags.
-    /// The GPU completion is delivered on `ReadbackChannels::render_done_tx`
-    /// as `Self::RenderData`. When nothing was re-rendered (every layer
-    /// clean), `sender` is used to emit a surface-less `PixelFrameReady` so
-    /// the UA still learns the composition completed.
+    /// scene is rasterized into its own surface, and each layer with a
+    /// `direct_surface` is delivered as that surface; clean layers (both
+    /// `None`) are skipped and keep their last surface. The GPU completion is
+    /// delivered on `ReadbackChannels::render_done_tx` as `Self::RenderData`.
+    /// When nothing was rendered, `sender` is used to emit a surface-less
+    /// `PixelFrameReady` so the UA still learns the composition completed.
     fn submit_layers(
         &mut self,
         composed: ComposedScene,
         sender: &ipc::IpcSender<GraphicsEvent>,
-    ) -> Result<Vec<CompositingLayerId>, RenderError>;
+    ) -> Result<SubmitOutcome, RenderError>;
 
     /// The GPU completed a frame: deliver
     /// the frame to the embedder. The run loop emits the `GraphicsComputed`
@@ -416,6 +457,18 @@ pub trait SurfaceRenderer {
     /// The webview a completed frame belongs to (used to look up the
     /// webview's renderer).
     fn render_done_webview_id(data: &Self::RenderData) -> WebviewId;
+
+    /// Decode one `<img>` resource into the backend's image storage. Returns
+    /// the stored image with the dimensions and format the decoder reported.
+    fn store_image(
+        &mut self,
+        id: &ImageIdentifier,
+        encoded: &[u8],
+    ) -> Result<image::StoredImageResult, String>;
+
+    /// Drop the decoded image state and any shared surfaces for the given
+    /// image identifiers (their document was unloaded).
+    fn release_images(&mut self, image_ids: &[ImageIdentifier]);
 
     /// Store a video frame for `paint_id` without touching the GPU: the
     /// media callback keeps the latest decoded pixel buffer plus its
@@ -441,6 +494,8 @@ pub trait SurfaceRenderer {
 
 #[cfg(target_os = "macos")]
 mod video;
+
+pub(crate) mod image;
 
 /// The CPU readback backend: renders into an intermediate texture and ships
 /// pixels through the webview's shared-memory ring. The backend off macOS

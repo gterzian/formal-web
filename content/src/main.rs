@@ -19,8 +19,14 @@ pub mod wasm;
 pub mod webidl;
 
 use crate::dom::{EventTargetAccess, dispatch_with_path, fire_event, simple_path};
+use crate::html::document_providers::{
+    AssetRequest, DocumentHost, DocumentProviders, install_resource,
+};
 use crate::html::environment_settings_object::RealmWiring;
 use crate::html::event_loop::{EventLoopTaskSources, Task, TaskQueue};
+use crate::html::images_processing_model::{
+    self, ImageAttributes, ImageFetchOutcome, ImageRegistry,
+};
 use crate::html::timers::MapOfActiveTimers;
 use crate::html::timers::TimerRealm;
 use crate::html::ui_events::{dispatch_trusted_click_event, dispatch_ui_event};
@@ -28,9 +34,9 @@ use crate::html::workers::dedicated_worker_agent::{
     WorkerChannelMessage, WorkerEvent, WorkerHandle, WorkerInbound, fire_worker_posted_message,
 };
 use crate::html::{
-    EnvironmentSettingsObject, JsHtmlParserProvider, MessageEvent, PendingParserScript, Window,
-    attach_same_origin_child_document_for_traversable, execute_parser_scripts,
-    parse_html_into_document, run_dom_post_connection_steps_for_document,
+    EnvironmentSettingsObject, HTMLImageElement, JsHtmlParserProvider, MessageEvent,
+    PendingParserScript, Window, attach_same_origin_child_document_for_traversable,
+    execute_parser_scripts, parse_html_into_document, run_dom_post_connection_steps_for_document,
     run_dom_removing_steps_for_document, run_iframe_load_event_steps_for_traversable,
     structured_data::safe_passing_of_structured_data::{
         SerializeWithTransferResult, structured_deserialize_with_transfer,
@@ -40,50 +46,47 @@ use crate::html::{
 use crate::infra::strip_and_collapse_ascii_whitespace;
 use crate::js::Engine;
 use crate::js::downcast::try_with_event_target_mut;
-use crate::js::platform_objects::with_global_scope;
+use crate::js::platform_objects::{resolve_element_object, with_global_scope};
 use crate::ui_event::deserialize_ui_event;
 #[cfg(all(boa_backend, feature = "wasm"))]
 use crate::wasm::{WasmResult, compile_continuation, compile_rejection, instantiate_continuation};
 use anyrender::Scene as RenderScene;
-use blitz_dom::{BaseDocument, DocumentConfig};
+use blitz_dom::{BaseDocument, DocumentConfig, MutationHooks, ResourceHooks};
 use blitz_paint::paint_scene;
-use blitz_traits::net::{Body, Bytes, NetHandler, NetProvider, Request};
+use blitz_traits::net::Request;
 use blitz_traits::shell::{ClipboardError, ColorScheme, ShellProvider, Viewport};
 use data_url::DataUrl;
 use html5ever::local_name;
 use js_engine::{EcmascriptHost, ExecutionContext, JsTypes};
 
-use crate::fetch::request_header_list;
+use crate::fetch::{FetchContext, InternalFetchRequest, fetch};
 use ipc_messages::content::Command::{
     ClickElement, CompleteDocumentFetch, ContentBootstrap, CreateEmptyDocument,
     CreateLoadedDocument, DestroyDocument, DispatchEvent, EvaluateScript, FailDocumentFetch,
-    NotifyVideoEnded, RunAnimationFrameCallbacks, SetTraversableViewport, SetViewport, Shutdown,
-    UpdateTheRendering,
+    ImageDecoded, NotifyVideoEnded, RunAnimationFrameCallbacks, RunImageElementTask,
+    RunImageEnvironmentUpdate, SetTraversableViewport, SetViewport, Shutdown, UpdateTheRendering,
 };
-use ipc_messages::content::EmbedderSchemeFetchRequested;
 use ipc_messages::content::{
     BeforeUnloadCheckId, CanvasEmbedSite, CanvasId, ClipboardWriteRequested,
     ColorScheme as MessageColorScheme, Command, DispatchEventEntry, DocumentFetchId, DocumentId,
     ElementClickResult, EmbedBackgroundPolicy, EmbedLayout, EmbedSite, EmbedSiteId,
-    Event as ContentEvent, EventLoopId, FetchRequest as ContentFetchRequest,
-    FetchResponse as ContentFetchResponse, FontTransportSender, FrameCompositionMetadata, FrameId,
-    IframeEmbedSite, LoadedDocumentResponse, NavigableId, NavigationId, PaintFrame, PortId,
-    PortTaskKind, PreparedScene, RecordedScene, ScriptEvaluationResult, TitleChanged,
-    TraversableViewport, UserScript, ViewportSnapshot, WebviewId, WindowTimerKey, WorkerId,
-    WorkerOwner,
+    Event as ContentEvent, EventLoopId, FetchResponse as ContentFetchResponse, FontTransportSender,
+    FrameCompositionMetadata, FrameId, IframeEmbedSite, ImageElementId, ImageEmbedData, ImageEvent,
+    ImageIdentifier, ImagePaintId, ImageTransportSender, LoadedDocumentResponse, NavigableId,
+    NavigationId, PaintFrame, PortId, PortTaskKind, PreparedScene, RecordedScene,
+    ResourcePartitionKey, ScriptEvaluationResult, TitleChanged, TraversableViewport, UserScript,
+    ViewportSnapshot, WebviewId, WindowTimerKey, WorkerId, WorkerOwner,
 };
+use ipc_messages::graphics::{DecodedImage, GraphicsCommand, ImageFormat};
 use ipc_messages::media::{VideoEmbedData, VideoPaintId};
 use ipc_messages::safe_passing_of_structured_data::PostMessageRequest;
 use log::{debug, error, info, warn};
 use std::{
-    cell::RefCell,
+    cell::{Cell, RefCell},
     collections::{HashMap, HashSet},
     env,
-    rc::Rc,
-    sync::{
-        Arc, Mutex,
-        atomic::{AtomicBool, Ordering},
-    },
+    rc::{Rc, Weak},
+    sync::Arc,
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 use url::Url;
@@ -145,11 +148,20 @@ fn epoch_millis(epoch_anchor: Instant, epoch_anchor_wall_ms: f64, instant: Insta
             * 1000.0
 }
 
-enum PendingNetworkHandler {
-    Resource {
+pub(crate) enum PendingNetworkHandler {
+    /// A stylesheet, font, or background image reported by a `blitz-dom`
+    /// document hook.
+    Asset {
+        host: DocumentHost,
+        request: AssetRequest,
+    },
+    /// The response of an `<img>` element's image request.
+    Image {
         document_id: DocumentId,
-        request_url: String,
-        handler: Box<dyn NetHandler>,
+        navigable_id: NavigableId,
+        /// The element the request belongs to; the response is routed to that
+        /// element's processing model state without searching for it.
+        element_id: ImageElementId,
     },
     DeferredScript {
         document_id: DocumentId,
@@ -157,26 +169,22 @@ enum PendingNetworkHandler {
     },
 }
 
-struct LocalContentState {
-    pending_handlers: HashMap<DocumentFetchId, PendingNetworkHandler>,
+pub(crate) struct LocalContentState {
+    pub(crate) pending_handlers: HashMap<DocumentFetchId, PendingNetworkHandler>,
 }
 
-pub(crate) type LocalContentStateRef = Arc<Mutex<LocalContentState>>;
+pub(crate) type LocalContentStateRef = Rc<RefCell<LocalContentState>>;
 
 /// Tracks the playback state of a video element across paints.
 /// Stored in the paint registry instead of on the element for now.
-pub(crate) fn new_document_fetch_id() -> DocumentFetchId {
-    DocumentFetchId::new()
-}
-
 /// Shared clipboard cache for paste-without-IPC.
 /// `get_clipboard_text` reads from this cache instead of doing a blocking
 /// IPC round-trip. The embedder prefetches clipboard text before dispatching
 /// paste events and writes it here via `set_clipboard_cache`.
-type ClipboardCache = std::sync::Arc<std::sync::Mutex<Option<String>>>;
+type ClipboardCache = Rc<RefCell<Option<String>>>;
 
 fn new_clipboard_cache() -> ClipboardCache {
-    std::sync::Arc::new(std::sync::Mutex::new(None))
+    Rc::new(RefCell::new(None))
 }
 
 struct ContentShellProvider {
@@ -189,21 +197,23 @@ struct ContentShellProvider {
     /// identical scene during a video-driven render cycle skips the blitz
     /// work entirely.
     ///
-    /// The `Arc<AtomicBool>` (rather than an `Rc<RefCell<bool>>` or a single
+    /// Shared between this provider, which blitz calls `request_redraw()`
+    /// on, and the `ContentDocument` that `update_the_rendering` reads.
+    ///
     /// `bool`) is a blitz shell-provider constraint, not our own cross-thread
     /// sharing: blitz's `ShellProvider` trait is `Send + Sync`, so this
     /// `ContentShellProvider` must be `Send + Sync`, which forces the flag to
     /// be a thread-safe shared value. It is shared between the
     /// `ContentShellProvider` that blitz calls `request_redraw()` on and the
     /// `ContentDocument` that `update_the_rendering` reads.
-    needs_paint: Arc<AtomicBool>,
+    needs_paint: Rc<Cell<bool>>,
 }
 
 impl ContentShellProvider {
     fn new(
         event_sender: ipc::IpcSender<ContentEvent>,
         clipboard_cache: ClipboardCache,
-        needs_paint: Arc<AtomicBool>,
+        needs_paint: Rc<Cell<bool>>,
     ) -> Self {
         Self {
             event_sender,
@@ -215,16 +225,14 @@ impl ContentShellProvider {
 
 impl ShellProvider for ContentShellProvider {
     fn request_redraw(&self) {
-        self.needs_paint.store(true, Ordering::Relaxed);
+        self.needs_paint.set(true);
     }
 
     fn get_clipboard_text(&self) -> Result<String, ClipboardError> {
         // The embedder prefetches the clipboard text into the cache before
         // dispatching a paste event (DispatchEventEntry.prefetched_clipboard_text);
         // content never reads the system clipboard itself.
-        if let Ok(mut cache) = self.clipboard_cache.lock()
-            && let Some(text) = cache.take()
-        {
+        if let Some(text) = self.clipboard_cache.borrow_mut().take() {
             return Ok(text);
         }
         error!("clipboard read requested but no prefetched clipboard text is available");
@@ -267,12 +275,28 @@ struct PendingDocumentLoad {
     scripts: Vec<DeferredScriptState>,
 }
 
-fn request_body_string(body: &Body) -> String {
-    match body {
-        Body::Bytes(bytes) => String::from_utf8_lossy(bytes).into_owned(),
-        Body::Form(form) => serde_json::to_string(form).unwrap_or_default(),
-        Body::Empty => String::new(),
-    }
+/// One `<img>` response whose bytes are with the graphics process: the state
+/// step 27 of <https://html.spec.whatwg.org/#update-the-image-data> (and steps
+/// 17.5.1-17.5.3 of
+/// <https://html.spec.whatwg.org/#reacting-to-environment-changes>) needs once
+/// the decoder reports on the image identifier.
+struct PendingImageDecode {
+    document_id: DocumentId,
+    navigable_id: NavigableId,
+    element_id: ImageElementId,
+    handler_id: DocumentFetchId,
+}
+
+/// The "supported file format" test of step 27 of
+/// <https://html.spec.whatwg.org/#update-the-image-data> (and of steps
+/// 17.5.1-17.5.3 of
+/// <https://html.spec.whatwg.org/#reacting-to-environment-changes>) for the
+/// format the graphics process's decoder reported.
+fn is_supported_image_format(format: ImageFormat) -> bool {
+    matches!(
+        format,
+        ImageFormat::Png | ImageFormat::Jpeg | ImageFormat::Gif | ImageFormat::WebP
+    )
 }
 
 /// Run the embedder's scripts in a new document's realm, before the
@@ -311,97 +335,6 @@ fn log_render_state_debug(message: impl AsRef<str>) {
     }
 }
 
-#[derive(Clone)]
-struct ContentNetProvider {
-    local_state: LocalContentStateRef,
-    content_document_id: DocumentId,
-    /// The navigable of the document whose subresources this provider
-    /// fetches; an embedder-scheme fetch names it to the user agent.
-    navigable_id: NavigableId,
-    event_loop_id: EventLoopId,
-    network_extension_sender: ipc::IpcSender<ipc_messages::network::Request>,
-    content_command_sender: ipc::IpcSender<Command>,
-    /// The channel to the user agent, which owns the embedder.
-    event_sender: ipc::IpcSender<ContentEvent>,
-    /// The URL schemes the embedder serves itself.
-    embedder_schemes: Arc<HashSet<String>>,
-}
-
-impl NetProvider for ContentNetProvider {
-    fn fetch(&self, _doc_id: usize, request: Request, handler: Box<dyn NetHandler>) {
-        match request.url.scheme() {
-            "data" => match DataUrl::process(request.url.as_str()) {
-                Ok(data_url) => match data_url.decode_to_vec() {
-                    Ok((bytes, _fragment)) => {
-                        handler.bytes(request.url.to_string(), Bytes::from(bytes));
-                    }
-                    Err(_error) => {}
-                },
-                Err(_error) => {}
-            },
-            _scheme => {
-                let handler_id = new_document_fetch_id();
-                let mut local_state = self
-                    .local_state
-                    .lock()
-                    .expect("local content state mutex poisoned");
-                local_state.pending_handlers.insert(
-                    handler_id,
-                    PendingNetworkHandler::Resource {
-                        document_id: self.content_document_id,
-                        request_url: request.url.to_string(),
-                        handler,
-                    },
-                );
-                drop(local_state);
-
-                let fetch_request = ContentFetchRequest {
-                    handler_id,
-                    url: request.url.to_string(),
-                    method: request.method.to_string(),
-                    header_list: request_header_list(&request),
-                    body: request_body_string(&request.body),
-                };
-
-                // A scheme the embedder serves is answered by the
-                // embedder, so the fetch goes to the user agent instead of
-                // to net, ahead of
-                // <https://fetch.spec.whatwg.org/#scheme-fetch>
-                if self.embedder_schemes.contains(request.url.scheme()) {
-                    if let Err(error) =
-                        self.event_sender
-                            .send(ContentEvent::EmbedderSchemeFetchRequested(
-                                EmbedderSchemeFetchRequested {
-                                    navigable_id: self.navigable_id,
-                                    handler_id,
-                                    request: fetch_request,
-                                },
-                            ))
-                    {
-                        error!(
-                            "failed to send an embedder-scheme fetch to the user agent: {error}"
-                        );
-                    }
-                    return;
-                }
-
-                let network_request = ipc_messages::network::Request::Fetch {
-                    event_loop_id: self.event_loop_id,
-                    request_id: uuid::Uuid::new_v4(),
-                    request: fetch_request,
-                    reply_to: ipc_messages::network::ResponseRecipient::ContentProcess {
-                        content_command_sender: self.content_command_sender.clone(),
-                        handler_id,
-                    },
-                };
-                if let Err(error) = self.network_extension_sender.send(network_request) {
-                    error!("failed to send direct fetch request to net: {error}");
-                }
-            }
-        }
-    }
-}
-
 pub(crate) struct ContentDocument {
     traversable_id: NavigableId,
     parent_traversable_id: Option<NavigableId>,
@@ -409,6 +342,11 @@ pub(crate) struct ContentDocument {
     frame_id: FrameId,
     document: Rc<RefCell<BaseDocument>>,
     settings: EnvironmentSettingsObject,
+    /// The document's `DocumentProviders`, which the content process uses to
+    /// apply the microtasks and presentation state the DOM hooks produce.
+    /// `None` for a document created without hooks (the initial about:blank
+    /// document of a `window.open` realm).
+    providers: Option<Rc<DocumentProviders>>,
     pending_document_load: Option<PendingDocumentLoad>,
     navigable_container_states: HashMap<usize, NavigableContainerState>,
     viewport_offset_x: f32,
@@ -420,7 +358,7 @@ pub(crate) struct ContentDocument {
     /// not animating — so a static document that keeps being asked to render
     /// (e.g. a video elsewhere drives the render cycle) does not re-run blitz
     /// on an unchanged scene.
-    needs_paint: Arc<AtomicBool>,
+    needs_paint: Rc<Cell<bool>>,
     /// The last recorded scene, reused verbatim on a clean render cycle so the
     /// graphics process keeps the content layer clean (an unchanged scene is
     /// not re-rasterized) instead of re-painting an unchanged document. Fonts
@@ -502,6 +440,23 @@ pub(crate) struct ContentProcess {
     active_documents_by_traversable: HashMap<NavigableId, DocumentId>,
     font_namespace: u64,
     font_sender: FontTransportSender,
+    /// Tracks which `<img>` resources this process already shipped to the
+    /// graphics process, so an image's decoded pixels cross the boundary
+    /// once per webview lifetime.
+    image_sender: ImageTransportSender,
+    /// The `<img>` processing model state shared by the process's documents.
+    image_registry: Rc<RefCell<ImageRegistry>>,
+    /// The image identifiers each document has registered with the graphics
+    /// process; released when the document is destroyed.
+    registered_images_by_document: HashMap<DocumentId, HashSet<ImageIdentifier>>,
+    /// The `<img>` responses whose bytes are with the graphics process: step 27
+    /// of <https://html.spec.whatwg.org/#update-the-image-data> (and of
+    /// <https://html.spec.whatwg.org/#reacting-to-environment-changes>) runs
+    /// when the decoder reports back on the image identifier.
+    pending_image_decodes: HashMap<ImageIdentifier, PendingImageDecode>,
+    /// The same-origin iframe subdocuments owned by this process's documents,
+    /// keyed by the id their `DocumentProviders` routes asset fetches with.
+    subdocuments: HashMap<uuid::Uuid, Weak<RefCell<BaseDocument>>>,
     tla_tracer: TLATracer,
     /// Shared clipboard cache. The embedder writes prefetched clipboard text
     /// here before dispatching paste events; `ShellProvider::get_clipboard_text`
@@ -552,7 +507,7 @@ pub(crate) struct ContentProcess {
     /// The URL schemes the embedder serves itself, received in
     /// `ContentBootstrap` and fixed for the life of the process. A fetch for
     /// one of them goes to the user agent instead of to net.
-    embedder_schemes: Arc<HashSet<String>>,
+    embedder_schemes: Rc<HashSet<String>>,
 }
 
 impl ContentProcess {
@@ -582,7 +537,7 @@ impl ContentProcess {
         Self {
             event_sender,
             event_loop_id,
-            local_state: Arc::new(Mutex::new(LocalContentState {
+            local_state: Rc::new(RefCell::new(LocalContentState {
                 pending_handlers: HashMap::new(),
             })),
             default_viewport: None,
@@ -594,6 +549,11 @@ impl ContentProcess {
             active_documents_by_traversable: HashMap::new(),
             font_namespace: new_font_namespace(),
             font_sender: FontTransportSender::default(),
+            image_sender: ImageTransportSender::default(),
+            image_registry: Rc::new(RefCell::new(ImageRegistry::default())),
+            registered_images_by_document: HashMap::new(),
+            pending_image_decodes: HashMap::new(),
+            subdocuments: HashMap::new(),
             tla_tracer: TLATracer::new("Navigation", "formal-web:content", trace_sender.clone()),
             clipboard_cache: clipboard_cache.clone(),
             new_document_registry: Rc::new(RefCell::new(HashMap::new())),
@@ -611,7 +571,7 @@ impl ContentProcess {
             realm_parent: Engine::new(),
             active_timers: Rc::new(RefCell::new(MapOfActiveTimers::default())),
             task_queue: TaskQueue::new(),
-            embedder_schemes: Arc::new(embedder_schemes.into_iter().collect()),
+            embedder_schemes: Rc::new(embedder_schemes.into_iter().collect()),
         }
     }
 
@@ -653,6 +613,7 @@ impl ContentProcess {
                 global_scope.set_worker_owner_inbox(worker_event_sender.clone());
                 global_scope.set_network_partition_event_loop_id(self.event_loop_id);
                 global_scope.set_network_extension_sender(network_extension_sender.clone());
+                global_scope.set_image_registry(Rc::clone(&self.image_registry));
                 Ok(())
             },
         )
@@ -663,9 +624,7 @@ impl ContentProcess {
     /// Set the clipboard cache from a prefetched clipboard text.
     /// Called before dispatching paste events.
     fn set_clipboard_cache(&self, text: Option<String>) {
-        if let Ok(mut cache) = self.clipboard_cache.lock() {
-            *cache = text;
-        }
+        *self.clipboard_cache.borrow_mut() = text;
     }
 
     fn document_viewport_state(
@@ -687,28 +646,76 @@ impl ContentProcess {
             })
     }
 
+    /// Connects a document's realm to its `DocumentProviders`.  The providers
+    /// run `blitz-dom`'s hooks, which cannot reach the realm: the mutation
+    /// hooks have no execution context, so they queue their microtasks on the
+    /// realm's queue (<https://html.spec.whatwg.org/#queue-a-microtask>), and
+    /// the resource hooks need the document's base URL, partition and origin.
+    /// The realm's algorithms read the providers back for that state and for
+    /// the image fetch sink.
+    fn wire_document_providers(
+        &mut self,
+        settings: &mut EnvironmentSettingsObject,
+        providers: &Rc<DocumentProviders>,
+    ) -> Result<(), String> {
+        let queue = settings.realm_execution_context.realm_job_queue();
+        providers.set_job_queue(queue);
+        with_global_scope(
+            &mut settings.realm_execution_context,
+            |global_scope, _ec| {
+                global_scope.set_document_providers(Rc::clone(providers));
+                Ok(())
+            },
+        )
+        .map_err(|error| {
+            format!(
+                "failed to connect the document's providers: {}",
+                error.display()
+            )
+        })
+    }
+
     fn document_config(
         &self,
         traversable_id: NavigableId,
-        document_id: DocumentId,
+        top_level_traversable_id: NavigableId,
         base_url: Option<String>,
-        needs_paint: Arc<AtomicBool>,
-    ) -> DocumentConfig {
-        DocumentConfig {
+        origin: String,
+        needs_paint: Rc<Cell<bool>>,
+        embedded_images: bool,
+        host: DocumentHost,
+    ) -> (DocumentConfig, Rc<DocumentProviders>) {
+        let partition = ResourcePartitionKey {
+            top_level_traversable: top_level_traversable_id,
+            origin,
+        };
+        let providers = Rc::new(DocumentProviders::new(
+            host,
+            traversable_id,
+            self.event_loop_id,
+            base_url.as_ref().and_then(|url| Url::parse(url).ok()),
+            partition,
+            Rc::clone(&self.local_state),
+            self.network_extension_sender.clone(),
+            self.content_command_sender.clone(),
+            self.event_sender.clone(),
+            Rc::clone(&self.embedder_schemes),
+            Rc::clone(&self.image_registry),
+            needs_paint.clone(),
+        ));
+        let config = DocumentConfig {
+            embedded_images,
             viewport: self
                 .document_viewport_state(traversable_id)
                 .map(|viewport| viewport_of_snapshot(&viewport.snapshot)),
             base_url,
-            net_provider: Some(Arc::new(ContentNetProvider {
-                local_state: Arc::clone(&self.local_state),
-                content_document_id: document_id,
-                navigable_id: traversable_id,
-                event_loop_id: self.event_loop_id,
-                network_extension_sender: self.network_extension_sender.clone(),
-                content_command_sender: self.content_command_sender.clone(),
-                event_sender: self.event_sender.clone(),
-                embedder_schemes: Arc::clone(&self.embedder_schemes),
-            })),
+            mutation_hooks: Some(Rc::clone(&providers) as Rc<dyn MutationHooks>),
+            resource_hooks: Some(Rc::clone(&providers) as Rc<dyn ResourceHooks>),
+            // blitz's `DocumentConfig` takes `Arc<dyn ShellProvider>` while the
+            // provider holds `Rc` state, since the content process is
+            // single-threaded: the `Arc` is a container here, not a
+            // thread-safety requirement.
+            #[allow(clippy::arc_with_non_send_sync)]
             shell_provider: Some(Arc::new(ContentShellProvider::new(
                 self.event_sender.clone(),
                 self.clipboard_cache.clone(),
@@ -716,7 +723,8 @@ impl ContentProcess {
             ))),
             html_parser_provider: Some(Arc::new(JsHtmlParserProvider)),
             ..DocumentConfig::default()
-        }
+        };
+        (config, providers)
     }
 
     fn set_viewport(&mut self, viewport: ViewportSnapshot) {
@@ -762,7 +770,7 @@ impl ContentProcess {
         // A viewport change resizes the document surface; mark it dirty so the
         // next update-the-rendering re-paints instead of reusing the stale-size
         // cached scene.
-        document.needs_paint.store(true, Ordering::Relaxed);
+        document.needs_paint.set(true);
         document
             .document
             .borrow_mut()
@@ -770,25 +778,45 @@ impl ContentProcess {
         document.viewport_offset_x = viewport_state.offset_x;
         document.viewport_offset_y = viewport_state.offset_y;
 
+        // <https://html.spec.whatwg.org/#reacting-to-environment-changes>
+        // The viewport change is a stable state: let every `<img>` in the
+        // document react to the new environment.
+        let image_node_ids: Vec<usize> = {
+            let registry = self.image_registry.borrow_mut();
+            registry
+                .elements
+                .values()
+                .filter(|element| element.document_id == document_id)
+                .map(|element| element.node_id)
+                .collect()
+        };
+        let providers = document.providers.clone();
+        if let Some(providers) = providers {
+            let mut images = Vec::new();
+            {
+                let document_guard = document.document.borrow();
+                for node_id in image_node_ids {
+                    if let Some(element) = document_guard
+                        .get_node(node_id)
+                        .and_then(|node| node.element_data())
+                    {
+                        images.push((node_id, ImageAttributes::from_element(element)));
+                    }
+                }
+            }
+            for (node_id, attributes) in images {
+                images_processing_model::reacting_to_environment_changes(
+                    &providers,
+                    node_id,
+                    &attributes,
+                );
+            }
+        }
+
         // The UA notes a rendering opportunity after sending this command,
         // so embed-site geometry (including iframe clip/transform) will be
         // repainted on the next UpdateTheRendering cycle.
         Ok(())
-    }
-
-    fn register_pending_handler(
-        &self,
-        pending_handler: PendingNetworkHandler,
-    ) -> Result<DocumentFetchId, String> {
-        let handler_id = new_document_fetch_id();
-        let mut local_state = self
-            .local_state
-            .lock()
-            .expect("local content state mutex poisoned");
-        local_state
-            .pending_handlers
-            .insert(handler_id, pending_handler);
-        Ok(handler_id)
     }
 
     /// `navigable_id` is the navigable of the document the fetch is for;
@@ -797,50 +825,28 @@ impl ContentProcess {
         &self,
         handler_id: DocumentFetchId,
         navigable_id: NavigableId,
+        pending: PendingNetworkHandler,
         request: Request,
     ) -> Result<(), String> {
         log_render_state_debug(format!(
             "request remote fetch handler={} method={} url={}",
             handler_id, request.method, request.url,
         ));
-        let fetch_request = ContentFetchRequest {
-            handler_id,
-            url: request.url.to_string(),
-            method: request.method.to_string(),
-            header_list: request_header_list(&request),
-            body: request_body_string(&request.body),
-        };
-
-        // A scheme the embedder serves is answered by the embedder, so the
-        // fetch goes to the user agent instead of to net, ahead of
-        // <https://fetch.spec.whatwg.org/#scheme-fetch>
-        if self.embedder_schemes.contains(request.url.scheme()) {
-            return self
-                .event_sender
-                .send(ContentEvent::EmbedderSchemeFetchRequested(
-                    EmbedderSchemeFetchRequested {
-                        navigable_id,
-                        handler_id,
-                        request: fetch_request,
-                    },
-                ))
-                .map_err(|error| {
-                    format!("failed to send an embedder-scheme fetch to the user agent: {error}")
-                });
-        }
-
-        let network_request = ipc_messages::network::Request::Fetch {
+        let context = FetchContext {
             event_loop_id: self.event_loop_id,
-            request_id: uuid::Uuid::new_v4(),
-            request: fetch_request,
-            reply_to: ipc_messages::network::ResponseRecipient::ContentProcess {
-                content_command_sender: self.content_command_sender.clone(),
-                handler_id,
-            },
+            navigable_id,
+            content_command_sender: &self.content_command_sender,
+            event_sender: &self.event_sender,
+            network_extension_sender: &self.network_extension_sender,
+            embedder_schemes: self.embedder_schemes.as_ref(),
+            local_state: &self.local_state,
         };
-        self.network_extension_sender
-            .send(network_request)
-            .map_err(|error| format!("failed to send document fetch request to net: {error}"))
+        fetch(
+            &context,
+            handler_id,
+            pending,
+            InternalFetchRequest::from_request(&request),
+        )
     }
 
     fn deferred_script_state(script: PendingParserScript) -> DeferredScriptState {
@@ -917,11 +923,16 @@ impl ContentProcess {
             return Ok(());
         }
 
-        let handler_id = self.register_pending_handler(PendingNetworkHandler::DeferredScript {
-            document_id,
-            script_index,
-        })?;
-        self.request_remote_fetch(handler_id, navigable_id, Request::get(resolved_url))
+        let handler_id = DocumentFetchId::new();
+        self.request_remote_fetch(
+            handler_id,
+            navigable_id,
+            PendingNetworkHandler::DeferredScript {
+                document_id,
+                script_index,
+            },
+            Request::get(resolved_url),
+        )
     }
 
     fn allocate_navigable_id(&self) -> Result<NavigableId, String> {
@@ -1010,6 +1021,7 @@ impl ContentProcess {
                 global_scope.set_worker_owner_inbox(worker_event_sender.clone());
                 global_scope.set_network_partition_event_loop_id(self.event_loop_id);
                 global_scope.set_network_extension_sender(network_extension_sender.clone());
+                global_scope.set_image_registry(Rc::clone(&self.image_registry));
                 Ok(())
             })
             .map_err(|error| format!("failed to set event loop id: {}", error.display()))?;
@@ -1023,11 +1035,12 @@ impl ContentProcess {
                     frame_id,
                     document,
                     settings,
+                    providers: None,
                     pending_document_load: None,
                     navigable_container_states: HashMap::new(),
                     viewport_offset_x: 0.0,
                     viewport_offset_y: 0.0,
-                    needs_paint: Arc::new(AtomicBool::new(false)),
+                    needs_paint: Rc::new(Cell::new(false)),
                     last_scene: None,
                     last_composition: None,
                 },
@@ -1070,12 +1083,15 @@ impl ContentProcess {
                 .ok_or_else(|| format!("unknown document id: {document_id}"))?;
             let traversable_id = content_document.traversable_id;
 
-            content_document.document.borrow_mut().handle_messages();
             let resources_ready = !content_document
                 .document
                 .borrow()
                 .has_pending_critical_resources();
-
+            // Note: "Fetching the image must delay the load event" is not
+            // implemented: this engine runs parser scripts after parsing (at
+            // load completion), so an image whose `src` a page script clears
+            // cannot release the load event it would be delaying. See
+            // content/src/html/README.md (Images).
             let Some(pending_document_load) = content_document.pending_document_load.as_mut()
             else {
                 return Ok(());
@@ -1203,19 +1219,24 @@ impl ContentProcess {
     ) -> Result<(), String> {
         let viewport_state = self.document_viewport_state(traversable_id);
         let frame_id = frame_id.unwrap_or_else(FrameId::new);
-        let needs_paint = Arc::new(AtomicBool::new(false));
-        let document = Rc::new(RefCell::new(BaseDocument::new(self.document_config(
+        let needs_paint = Rc::new(Cell::new(false));
+        let (document_config, providers) = self.document_config(
             traversable_id,
-            document_id,
+            top_level_traversable_id,
             None,
+            String::from("null"),
             needs_paint.clone(),
-        ))));
+            true,
+            DocumentHost::Main(document_id),
+        );
+        let document = Rc::new(RefCell::new(BaseDocument::new(document_config)));
         let mut settings = self.create_environment_settings_object(
             Rc::clone(&document),
             Url::parse("about:blank").map_err(|error| error.to_string())?,
             traversable_id,
             document_id,
         )?;
+        self.wire_document_providers(&mut settings, &providers)?;
 
         // Set the video-paint registry on GlobalScope so that
         // resource_selection_algorithm can register paint IDs.
@@ -1262,6 +1283,7 @@ impl ContentProcess {
                 frame_id,
                 document,
                 settings,
+                providers: Some(providers),
                 pending_document_load: None,
                 navigable_container_states: HashMap::new(),
                 viewport_offset_x: viewport_state
@@ -1300,16 +1322,19 @@ impl ContentProcess {
     }
 
     /// <https://html.spec.whatwg.org/#initialise-the-document-object>
+    #[allow(clippy::type_complexity)]
     fn initialise_the_document_object(
         &mut self,
         traversable_id: NavigableId,
         document_id: DocumentId,
+        top_level_traversable_id: NavigableId,
         final_url: &str,
     ) -> Result<
         (
             Rc<RefCell<BaseDocument>>,
             EnvironmentSettingsObject,
-            Arc<AtomicBool>,
+            Rc<Cell<bool>>,
+            Rc<DocumentProviders>,
         ),
         String,
     > {
@@ -1402,13 +1427,18 @@ impl ContentProcess {
         // Note: The document and settings object are returned to the caller
         // (`create_loaded_document`), which continues navigate-html with the parse.
         let creation_url = Url::parse(final_url).map_err(|error| error.to_string())?;
-        let needs_paint = Arc::new(AtomicBool::new(false));
-        let document = Rc::new(RefCell::new(BaseDocument::new(self.document_config(
+        let needs_paint = Rc::new(Cell::new(false));
+        let origin = creation_url.origin().unicode_serialization();
+        let (document_config, providers) = self.document_config(
             traversable_id,
-            document_id,
+            top_level_traversable_id,
             Some(final_url.to_string()),
+            origin,
             needs_paint.clone(),
-        ))));
+            true,
+            DocumentHost::Main(document_id),
+        );
+        let document = Rc::new(RefCell::new(BaseDocument::new(document_config)));
         // Steps 7.5, 7.6 and 7.10 run in `create_environment_settings_object` for the
         // otherwise branch; for the step-6 branch they already ran when the reused realm was
         // created, and `repoint_document` re-points that realm at the new document.
@@ -1424,6 +1454,7 @@ impl ContentProcess {
                 document_id,
             )?,
         };
+        self.wire_document_providers(&mut settings, &providers)?;
 
         // The video-paint registry and graphics sender are engine integration, not spec
         // steps: they wire the document's GlobalScope to the media and graphics pipelines.
@@ -1443,7 +1474,7 @@ impl ContentProcess {
             );
         }
 
-        Ok((document, settings, needs_paint))
+        Ok((document, settings, needs_paint, providers))
     }
 
     /// <https://html.spec.whatwg.org/#initialise-the-document-object> — step 6
@@ -1509,8 +1540,13 @@ impl ContentProcess {
         // `Self::initialise_the_document_object`; the user-agent-side steps (browsing context
         // and agent selection) ran in `UserAgent::initialise_the_document_object` before this
         // command was dispatched.
-        let (document, mut settings, needs_paint) =
-            self.initialise_the_document_object(traversable_id, document_id, &final_url)?;
+        let (document, mut settings, needs_paint, providers) = self
+            .initialise_the_document_object(
+                traversable_id,
+                document_id,
+                top_level_traversable_id,
+                &final_url,
+            )?;
 
         run_user_scripts(&mut settings, &user_scripts);
 
@@ -1548,6 +1584,7 @@ impl ContentProcess {
                 frame_id,
                 document: Rc::clone(&document),
                 settings,
+                providers: Some(providers),
                 pending_document_load: Some(PendingDocumentLoad {
                     finalize_url: final_url.clone(),
                     scripts: deferred_scripts,
@@ -1571,6 +1608,17 @@ impl ContentProcess {
         // script execution.
         self.active_documents_by_traversable
             .insert(traversable_id, document_id);
+
+        // The parse task's stable state: run the document's microtask
+        // checkpoint so the continuations the parsed `<img>` elements queued at
+        // step 8 of "update the image data" start their fetches before the
+        // document starts its other subresource fetches; an image's load event
+        // then does not have to wait for them behind the deferred scripts.
+        if let Some(content_document) = self.documents.get_mut(&document_id)
+            && let Err(error) = content_document.settings.perform_a_microtask_checkpoint()
+        {
+            error!("failed to run the parsed document's microtask checkpoint: {error}");
+        }
         attach_same_origin_child_document_for_traversable(self, traversable_id)?;
 
         // Set the navigable hierarchy on the GlobalScope so that `window.open`
@@ -1834,6 +1882,31 @@ impl ContentProcess {
             if let Err(error) = content_document.settings.clear_all_window_timers() {
                 error!("failed to clear window timers during document teardown: {error}");
             }
+            // A response whose bytes are already with the graphics process
+            // keeps its pending entry: the decode report still has to settle
+            // through `complete_image_decode` (which finds no providers and
+            // releases the surface).
+            let mut image_ids: HashSet<ImageIdentifier> = self
+                .registered_images_by_document
+                .remove(&document_id)
+                .unwrap_or_default();
+            image_ids.extend(
+                self.image_registry
+                    .borrow_mut()
+                    .forget_document(document_id),
+            );
+            if !image_ids.is_empty() {
+                let image_ids: Vec<ImageIdentifier> = image_ids.into_iter().collect();
+                self.image_sender.forget_images(&image_ids);
+                if let Some(graphics_sender) = &self.graphics_sender
+                    && let Err(error) = graphics_sender.send(GraphicsCommand::UnregisterImages {
+                        webview_id: WebviewId(traversable_id),
+                        image_ids,
+                    })
+                {
+                    error!("failed to unregister images with graphics: {error}");
+                }
+            }
             drop(content_document);
         }
         #[cfg(all(boa_backend, feature = "wasm"))]
@@ -1850,14 +1923,14 @@ impl ContentProcess {
                     || self.wasm.pending_requests.get(request_id) != Some(&document_id)
             });
         }
-        let mut local_state = self
-            .local_state
-            .lock()
-            .expect("local content state mutex poisoned");
+        let mut local_state = self.local_state.borrow_mut();
         local_state
             .pending_handlers
             .retain(|_, pending_handler| match pending_handler {
-                PendingNetworkHandler::Resource {
+                PendingNetworkHandler::Asset { host, .. } => {
+                    host.parent_document_id() != document_id
+                }
+                PendingNetworkHandler::Image {
                     document_id: pending_document_id,
                     ..
                 }
@@ -1867,6 +1940,8 @@ impl ContentProcess {
                 } => *pending_document_id != document_id,
             });
         drop(local_state);
+        self.subdocuments
+            .retain(|_, subdocument| subdocument.strong_count() > 0);
 
         // Tear down the destroyed document's realm: prune callback records
         // whose creation realm has died (housekeeping — the captures are
@@ -2376,13 +2451,13 @@ impl ContentProcess {
         ));
         let video_paint_registry = Rc::clone(&self.video_paint_registry);
         let canvas_registry = Rc::clone(&self.canvas_registry);
+        let image_registry = Rc::clone(&self.image_registry);
+        let image_registry_guard = image_registry.borrow_mut();
         let (paint_frame, shmem_map) = {
             let document = self
                 .documents
                 .get_mut(&document_id)
                 .ok_or_else(|| format!("unknown document id: {document_id}"))?;
-
-            document.document.borrow_mut().handle_messages();
 
             // Step 1: "Let `frameTimestamp` be `eventLoop`'s last render opportunity time."
             // The user agent stamps the opportunity time on the browser-wide monotonic
@@ -2412,7 +2487,7 @@ impl ContentProcess {
             // process keeps the content layer clean instead of re-rasterizing an
             // unchanged scene every cycle.
             let should_render = {
-                let needs_paint = document.needs_paint.load(Ordering::Relaxed);
+                let needs_paint = document.needs_paint.get();
                 let document_guard = document.document.borrow();
                 needs_paint
                     || had_pending_r_af
@@ -2494,11 +2569,13 @@ impl ContentProcess {
                     let mut scene = RenderScene::new();
                     let composition = Self::build_frame_composition_metadata(
                         document_id,
+                        navigable_id,
                         &document_guard,
                         &document.navigable_container_states,
                         viewport.scale_f64(),
                         &mut video_paint_registry.borrow_mut(),
                         &canvas_registry.borrow(),
+                        &image_registry_guard,
                     );
 
                     // Step 22: "For each `doc` of `docs`, update the rendering or user interface of `doc` and its node navigable to reflect the current state."
@@ -2518,6 +2595,7 @@ impl ContentProcess {
                         scene,
                         &mut next_shmem_key,
                     );
+
                     log_render_state_debug(format!(
                         "emit paint navigable={} document={} size=({}, {})",
                         navigable_id, document_id, width, height,
@@ -2561,7 +2639,7 @@ impl ContentProcess {
                 };
                 document.last_scene = Some(recorded_scene);
                 document.last_composition = Some(composition);
-                document.needs_paint.store(false, Ordering::Relaxed);
+                document.needs_paint.set(false);
                 (paint_frame, shmem_data)
             }
         };
@@ -2638,13 +2716,16 @@ impl ContentProcess {
         Some((x, y, width, height))
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn build_frame_composition_metadata(
         document_id: DocumentId,
+        navigable_id: NavigableId,
         document: &BaseDocument,
         container_states: &HashMap<usize, NavigableContainerState>,
         scale: f64,
         video_paint_registry: &mut HashMap<(DocumentId, usize), VideoPaintId>,
         canvas_registry: &HashMap<(DocumentId, usize), CanvasId>,
+        image_registry: &ImageRegistry,
     ) -> FrameCompositionMetadata {
         let mut iframe_node_ids = container_states
             .iter()
@@ -2657,10 +2738,20 @@ impl ContentProcess {
         // Collect video node ids by scanning the document tree for <video> elements.
         let mut video_node_ids = Vec::new();
         document.visit(|node_id, node| {
-            if let Some(element_data) = node.element_data() {
-                if element_data.name.local == local_name!("video") {
-                    video_node_ids.push(node_id);
-                }
+            if let Some(element_data) = node.element_data()
+                && element_data.name.local == local_name!("video")
+            {
+                video_node_ids.push(node_id);
+            }
+        });
+
+        // Collect image node ids by scanning the document tree for <img> elements.
+        let mut image_node_ids = Vec::new();
+        document.visit(|node_id, node| {
+            if let Some(element_data) = node.element_data()
+                && element_data.name.local == local_name!("img")
+            {
+                image_node_ids.push(node_id);
             }
         });
 
@@ -2783,6 +2874,7 @@ impl ContentProcess {
             .filter(|((registry_document_id, _), _)| *registry_document_id == document_id)
             .collect::<Vec<_>>();
         canvas_entries.sort_by_key(|((_, canvas_node_id), _)| *canvas_node_id);
+        let canvas_count = canvas_entries.len();
         for (canvas_offset, ((_, canvas_node_id), canvas_id)) in
             canvas_entries.into_iter().enumerate()
         {
@@ -2800,6 +2892,40 @@ impl ContentProcess {
                 layout: EmbedLayout {
                     z_index: 0,
                     paint_order: (iframe_count + video_count + canvas_offset) as u32,
+                    transform: [1.0, 0.0, 0.0, 1.0, x, y],
+                    clip_bounds: [x, y, x + width, y + height],
+                },
+            }));
+        }
+
+        // Build image embed sites: every <img> element whose current request
+        // is available becomes its own compositing layer, drawing a shared
+        // decoded image registered once with the graphics process.
+        for (image_offset, image_node_id) in image_node_ids.into_iter().enumerate() {
+            let Some((x, y, width, height)) =
+                Self::content_box_for_node(document, image_node_id, scale)
+            else {
+                continue;
+            };
+            let element =
+                images_processing_model::image_element(image_registry, document_id, image_node_id);
+            if !images_processing_model::is_available(&element) {
+                continue;
+            }
+            let Some(image_id) = images_processing_model::current_image_id(&element) else {
+                continue;
+            };
+            let clip_svg_path = format!("M0,0 L{width},0 L{width},{height} L0,{height} Z");
+            embed_sites.push(EmbedSite::Image(ImageEmbedData {
+                embed_site_id: EmbedSiteId((image_node_id as u64).wrapping_add(1)),
+                paint_id: ImagePaintId::for_node(navigable_id, image_node_id),
+                image_id,
+                background_policy: EmbedBackgroundPolicy::Transparent,
+                clip_svg_path,
+                clip_radius: 0.0,
+                layout: EmbedLayout {
+                    z_index: 0,
+                    paint_order: (iframe_count + video_count + canvas_count + image_offset) as u32,
                     transform: [1.0, 0.0, 0.0, 1.0, x, y],
                     clip_bounds: [x, y, x + width, y + height],
                 },
@@ -2833,6 +2959,384 @@ impl ContentProcess {
         Some((x, y, width, height))
     }
 
+    fn complete_asset_fetch(
+        &mut self,
+        host: DocumentHost,
+        request: AssetRequest,
+        response_url: &str,
+        body: &[u8],
+    ) -> Result<(), String> {
+        let parent_document_id = host.parent_document_id();
+        let Some(traversable_id) = self
+            .documents
+            .get(&parent_document_id)
+            .map(|content_document| content_document.traversable_id)
+        else {
+            error!("[content] complete_asset_fetch: document {parent_document_id} not found");
+            return Ok(());
+        };
+        let document = match host {
+            DocumentHost::Main(document_id) => self
+                .documents
+                .get(&document_id)
+                .map(|content_document| Rc::clone(&content_document.document)),
+            DocumentHost::Subdocument { id, .. } => {
+                self.subdocuments.get(&id).and_then(Weak::upgrade)
+            }
+        };
+        let Some(document) = document else {
+            error!("[content] complete_asset_fetch: document {host:?} not found");
+            return Ok(());
+        };
+        install_resource(&mut document.borrow_mut(), &request, response_url, body)?;
+        if matches!(host, DocumentHost::Main(_)) {
+            self.continue_document_load(parent_document_id)?;
+        }
+        self.mark_document_dirty(parent_document_id);
+        self.event_sender
+            .send(ContentEvent::RenderingOpRequested(traversable_id))
+            .map_err(|error| {
+                format!("failed to request rendering op for an asset fetch: {error}")
+            })?;
+        Ok(())
+    }
+
+    fn fail_asset_fetch(
+        &mut self,
+        host: DocumentHost,
+        request: AssetRequest,
+    ) -> Result<(), String> {
+        let parent_document_id = host.parent_document_id();
+        let traversable_id = self
+            .documents
+            .get(&parent_document_id)
+            .map(|content_document| content_document.traversable_id);
+        match request {
+            AssetRequest::Stylesheet {
+                request_id: Some(request_id),
+                ..
+            } => {
+                if let DocumentHost::Main(document_id) = host
+                    && let Some(content_document) = self.documents.get(&document_id)
+                {
+                    content_document
+                        .document
+                        .borrow_mut()
+                        .cancel_pending_resource(request_id);
+                }
+                if matches!(host, DocumentHost::Main(_)) {
+                    self.continue_document_load(parent_document_id)?;
+                }
+            }
+            AssetRequest::Stylesheet { .. } | AssetRequest::StylesheetImport { .. } => {
+                // A stylesheet that failed to load is not retried; the
+                // document load continues without it.
+                if matches!(host, DocumentHost::Main(_)) {
+                    self.continue_document_load(parent_document_id)?;
+                }
+            }
+            AssetRequest::Font { .. } | AssetRequest::DecodedImage { .. } => {}
+        }
+        self.mark_document_dirty(parent_document_id);
+        if let Some(traversable_id) = traversable_id {
+            self.event_sender
+                .send(ContentEvent::RenderingOpRequested(traversable_id))
+                .map_err(|error| {
+                    format!("failed to request rendering op for a failed asset fetch: {error}")
+                })?;
+        }
+        Ok(())
+    }
+
+    /// The image fetch's `processResponse` of step 27 of
+    /// <https://html.spec.whatwg.org/#update-the-image-data> (and of steps
+    /// 17.5.1-17.5.3 of
+    /// <https://html.spec.whatwg.org/#reacting-to-environment-changes>): ship
+    /// the body to the graphics process, the only decoder, and record what the
+    /// step needs once it reports.
+    fn process_image_fetch_response(
+        &mut self,
+        document_id: DocumentId,
+        navigable_id: NavigableId,
+        element_id: ImageElementId,
+        handler_id: DocumentFetchId,
+        body: &[u8],
+    ) -> Result<(), String> {
+        // The graphics process is the only decoder: this process never sees
+        // the image's dimensions or format itself, so step 27 runs when the
+        // decoder reports back (`complete_image_decode`). Ship the bytes now.
+        let image_id = {
+            let registry = self.image_registry.borrow();
+            images_processing_model::request_image_id(&registry, element_id, handler_id)
+        };
+        let Some(image_id) = image_id else {
+            // A response for a request the processing model already aborted:
+            // there is nothing to register, and step 27 fails it.
+            let providers = self
+                .documents
+                .get(&document_id)
+                .and_then(|content_document| content_document.providers.clone());
+            let Some(providers) = providers else {
+                return Ok(());
+            };
+            let outcome = {
+                let mut registry = self.image_registry.borrow_mut();
+                images_processing_model::process_image_fetch_response(
+                    &mut registry,
+                    providers.as_ref(),
+                    element_id,
+                    handler_id,
+                    None,
+                )
+            };
+            if let ImageFetchOutcome::ImageAvailable(aborted_id) = outcome {
+                // The model cannot make an aborted request available; log the
+                // identity it produced so a regression is visible.
+                error!("an aborted image request became available as {aborted_id:?}");
+            }
+            self.settle_image_decodes(element_id);
+            return Ok(());
+        };
+        self.pending_image_decodes.insert(
+            image_id.clone(),
+            PendingImageDecode {
+                document_id,
+                navigable_id,
+                element_id,
+                handler_id,
+            },
+        );
+        // Track the registration from the moment the bytes leave: a document
+        // destroyed before the decode report arrives releases the surface with
+        // its other registered images.
+        self.registered_images_by_document
+            .entry(document_id)
+            .or_default()
+            .insert(image_id.clone());
+        let encoded = Arc::new(body.to_vec());
+        self.register_image_with_graphics(navigable_id, image_id, encoded)
+    }
+
+    /// The second half of the image fetch's `processResponse` of step 27 of
+    /// <https://html.spec.whatwg.org/#update-the-image-data> (and of steps
+    /// 17.5.1-17.5.3 of
+    /// <https://html.spec.whatwg.org/#reacting-to-environment-changes>), which
+    /// waits for the graphics process to decode the body: runs the model's
+    /// response step with the decoder's report and settles the `decode()`
+    /// promises waiting on it.
+    ///
+    /// `report` is the decoder's report; `None` means the bytes were never
+    /// decoded into an image, which takes step 27's "not in a supported file
+    /// format" branch.
+    fn complete_image_decode(
+        &mut self,
+        image_id: &ImageIdentifier,
+        report: Option<DecodedImage>,
+    ) -> Result<(), String> {
+        let Some(pending) = self.pending_image_decodes.remove(image_id) else {
+            // A report for a fetch this process no longer tracks (its document
+            // was destroyed, or the response was already completed).
+            return Ok(());
+        };
+        let providers = self
+            .documents
+            .get(&pending.document_id)
+            .and_then(|content_document| content_document.providers.clone());
+        let Some(providers) = providers else {
+            self.unregister_image(pending.navigable_id, image_id);
+            return Ok(());
+        };
+        // Note: the net process delivers the whole response body in one
+        // message, so this is step 27's last networking task; fetch does not
+        // stream chunks yet, so the per-chunk presentation updates of the
+        // earlier networking tasks are not modeled.
+        let dimensions = report
+            .filter(|report| is_supported_image_format(report.format))
+            .map(|report| (report.width, report.height));
+        let outcome = {
+            let mut registry = self.image_registry.borrow_mut();
+            images_processing_model::process_image_fetch_response(
+                &mut registry,
+                providers.as_ref(),
+                pending.element_id,
+                pending.handler_id,
+                dimensions,
+            )
+        };
+        let decoded = match outcome {
+            ImageFetchOutcome::ImageAvailable(available_id) => {
+                self.registered_images_by_document
+                    .entry(pending.document_id)
+                    .or_default()
+                    .insert(available_id.clone());
+                if &available_id != image_id {
+                    // The registration belongs to `image_id`; an identity the
+                    // model settled instead would leave it unreachable.
+                    self.unregister_image(pending.navigable_id, image_id);
+                    self.registered_images_by_document
+                        .entry(pending.document_id)
+                        .or_default()
+                        .remove(image_id);
+                }
+                true
+            }
+            ImageFetchOutcome::Failed => {
+                // The decoder produced a surface for a format this process does
+                // not accept, or the request failed after the bytes were
+                // shipped: drop it instead of holding it for the webview's
+                // lifetime.
+                self.unregister_image(pending.navigable_id, image_id);
+                self.registered_images_by_document
+                    .entry(pending.document_id)
+                    .or_default()
+                    .remove(image_id);
+                false
+            }
+        };
+        let settled = {
+            let mut registry = self.image_registry.borrow_mut();
+            images_processing_model::image_decoded(&mut registry, image_id, decoded)
+        };
+        for element_id in settled {
+            self.settle_image_decodes(element_id);
+        }
+        self.settle_image_decodes(pending.element_id);
+        Ok(())
+    }
+
+    /// The image fetch's `processResponse` failure branch: a network error or
+    /// a response that is not a usable image, per
+    /// <https://html.spec.whatwg.org/#update-the-image-data> and
+    /// <https://html.spec.whatwg.org/#reacting-to-environment-changes>.
+    fn process_image_fetch_failure(
+        &mut self,
+        element_id: ImageElementId,
+        handler_id: DocumentFetchId,
+    ) -> Result<(), String> {
+        let document_id = {
+            let registry = self.image_registry.borrow();
+            registry
+                .element_location(element_id)
+                .map(|(document_id, _)| document_id)
+        };
+        let Some(document_id) = document_id else {
+            return Ok(());
+        };
+        let providers = self
+            .documents
+            .get(&document_id)
+            .and_then(|content_document| content_document.providers.clone());
+        let Some(providers) = providers else {
+            return Ok(());
+        };
+        {
+            let mut registry = self.image_registry.borrow_mut();
+            images_processing_model::process_image_fetch_response(
+                &mut registry,
+                providers.as_ref(),
+                element_id,
+                handler_id,
+                None,
+            );
+        }
+        self.settle_image_decodes(element_id);
+        Ok(())
+    }
+
+    /// Ship the encoded bytes of an `<img>` resource to the graphics process,
+    /// which is the only image decoder. Its `ImageDecoded` report completes
+    /// step 27 of <https://html.spec.whatwg.org/#update-the-image-data> (and of
+    /// <https://html.spec.whatwg.org/#reacting-to-environment-changes>) through
+    /// `complete_image_decode`.
+    fn register_image_with_graphics(
+        &mut self,
+        navigable_id: NavigableId,
+        image_id: ImageIdentifier,
+        encoded: Arc<Vec<u8>>,
+    ) -> Result<(), String> {
+        let mut next_shmem_key = 0usize;
+        let Some((registration, region)) =
+            self.image_sender
+                .prepare_image(image_id.clone(), &encoded, &mut next_shmem_key)
+        else {
+            // The bytes never reach the graphics process, so nothing will
+            // decode this image: step 27 fails it.
+            return self.complete_image_decode(&image_id, None);
+        };
+        let data_shmem_key = registration.data_shmem_key;
+        let mut image_shmem = HashMap::new();
+        image_shmem.insert(data_shmem_key, region);
+        let command = GraphicsCommand::RegisterImage {
+            webview_id: WebviewId(navigable_id),
+            image_id: registration.id,
+            data_shmem_key,
+        };
+        let send_result = {
+            let Some(graphics_sender) = &self.graphics_sender else {
+                // Without a graphics process nothing decodes this image.
+                return self.complete_image_decode(&image_id, None);
+            };
+            graphics_sender.send_with_shmem_map(command, image_shmem)
+        };
+        if let Err(error) = send_result {
+            // The graphics process never received the bytes, so no report will
+            // arrive: run the response step without one.
+            self.complete_image_decode(&image_id, None)?;
+            return Err(format!("failed to register image with graphics: {error}"));
+        }
+        Ok(())
+    }
+
+    /// Release one image's decoded surface and its transport entry, for a
+    /// resource the processing model will not present.
+    fn unregister_image(&mut self, navigable_id: NavigableId, image_id: &ImageIdentifier) {
+        self.image_sender
+            .forget_images(std::slice::from_ref(image_id));
+        let Some(graphics_sender) = &self.graphics_sender else {
+            return;
+        };
+        let command = GraphicsCommand::UnregisterImages {
+            webview_id: WebviewId(navigable_id),
+            image_ids: vec![image_id.clone()],
+        };
+        if let Err(error) = graphics_sender.send(command) {
+            error!("failed to unregister an image with graphics: {error}");
+        }
+    }
+
+    /// Writes the "prepare an image for presentation" state the processing
+    /// model produced to the documents' blitz trees.  This is model state, not
+    /// a queued task: a DOM hook runs while blitz holds the document mutably
+    /// borrowed, so the write waits until the content process has the document
+    /// again.
+    fn apply_pending_image_presentation(&mut self) -> Result<(), String> {
+        let presentations = {
+            let mut registry = self.image_registry.borrow_mut();
+            registry.take_pending_presentation()
+        };
+        for presentation in presentations {
+            let Some(content_document) = self.documents.get(&presentation.document_id) else {
+                continue;
+            };
+            content_document
+                .document
+                .borrow_mut()
+                .set_image_intrinsic_size(
+                    presentation.node_id,
+                    presentation.width,
+                    presentation.height,
+                );
+            content_document.needs_paint.set(true);
+            let traversable_id = content_document.traversable_id;
+            self.event_sender
+                .send(ContentEvent::RenderingOpRequested(traversable_id))
+                .map_err(|error| {
+                    format!("failed to request rendering op for a presented image: {error}")
+                })?;
+        }
+        Ok(())
+    }
+
     fn complete_document_fetch(
         &mut self,
         handler_id: DocumentFetchId,
@@ -2842,10 +3346,7 @@ impl ContentProcess {
         let response_status = response.status;
         let response_type = response.content_type.clone();
         let pending_handler = {
-            let mut local_state = self
-                .local_state
-                .lock()
-                .expect("local content state mutex poisoned");
+            let mut local_state = self.local_state.borrow_mut();
             local_state.pending_handlers.remove(&handler_id)
         };
 
@@ -2854,36 +3355,38 @@ impl ContentProcess {
         };
 
         match pending_handler {
-            PendingNetworkHandler::Resource {
-                document_id,
-                request_url: _,
-                handler,
-            } => {
-                handler.bytes(
-                    response.final_url.clone(),
-                    Bytes::copy_from_slice(&response.body),
-                );
-                let Some(content_document) = self.documents.get(&document_id) else {
-                    error!("[content] complete_document_fetch: document {document_id} not found");
-                    return Ok(());
-                };
-                let traversable_id = content_document.traversable_id;
+            PendingNetworkHandler::Asset { host, request } => {
                 log_render_state_debug(format!(
-                    "complete resource fetch handler={} traversable={} document={} status={} type={} url={}",
+                    "complete asset fetch handler={} document={} status={} type={} url={}",
                     handler_id,
-                    traversable_id,
-                    document_id,
+                    host.parent_document_id(),
                     response_status,
                     response_type,
                     response_url,
                 ));
-                self.continue_document_load(document_id)?;
-                self.event_sender
-                    .send(ContentEvent::RenderingOpRequested(traversable_id))
-                    .map_err(|error| {
-                        format!("failed to request rendering op for resource fetch: {error}")
-                    })?;
-                Ok(())
+                self.complete_asset_fetch(host, request, &response_url, &response.body)
+            }
+            PendingNetworkHandler::Image {
+                document_id,
+                navigable_id,
+                element_id,
+            } => {
+                log_render_state_debug(format!(
+                    "complete image fetch handler={} document={} element={} status={} type={} url={}",
+                    handler_id,
+                    document_id,
+                    element_id,
+                    response_status,
+                    response_type,
+                    response_url,
+                ));
+                self.process_image_fetch_response(
+                    document_id,
+                    navigable_id,
+                    element_id,
+                    handler_id,
+                    &response.body,
+                )
             }
             PendingNetworkHandler::DeferredScript {
                 document_id,
@@ -2928,10 +3431,7 @@ impl ContentProcess {
 
     fn fail_document_fetch(&mut self, handler_id: DocumentFetchId) -> Result<(), String> {
         let pending_handler = {
-            let mut local_state = self
-                .local_state
-                .lock()
-                .expect("local content state mutex poisoned");
+            let mut local_state = self.local_state.borrow_mut();
             local_state.pending_handlers.remove(&handler_id)
         };
 
@@ -2940,30 +3440,24 @@ impl ContentProcess {
         };
 
         match pending_handler {
-            PendingNetworkHandler::Resource {
+            PendingNetworkHandler::Asset { host, request } => {
+                warn!(
+                    "content asset fetch failed handler={} document={} request={request:?}",
+                    handler_id,
+                    host.parent_document_id(),
+                );
+                self.fail_asset_fetch(host, request)
+            }
+            PendingNetworkHandler::Image {
                 document_id,
-                request_url,
-                handler,
+                element_id,
+                ..
             } => {
-                handler.bytes(request_url, Bytes::new());
-                let Some(content_document) = self.documents.get(&document_id) else {
-                    error!("[content] fail_document_fetch: document {document_id} not found");
-                    return Ok(());
-                };
-                let traversable_id = content_document.traversable_id;
-                log_render_state_debug(format!(
-                    "fail resource fetch handler={} traversable={} document={}",
-                    handler_id, traversable_id, document_id,
-                ));
-                self.continue_document_load(document_id)?;
-                self.event_sender
-                    .send(ContentEvent::RenderingOpRequested(traversable_id))
-                    .map_err(|error| {
-                        format!(
-                            "failed to request rendering op for resource fetch failure: {error}"
-                        )
-                    })?;
-                Ok(())
+                warn!(
+                    "content image fetch failed handler={} document={} element={}",
+                    handler_id, document_id, element_id,
+                );
+                self.process_image_fetch_failure(element_id, handler_id)
             }
             PendingNetworkHandler::DeferredScript {
                 document_id,
@@ -3449,6 +3943,9 @@ impl ContentProcess {
 
     fn handle_command(&mut self, command: Command) -> Result<bool, String> {
         let result = self.handle_command_inner(command);
+        if let Err(error) = self.apply_pending_image_presentation() {
+            error!("failed to apply pending image presentation after a command: {error}");
+        }
 
         #[cfg(all(boa_backend, feature = "wasm"))]
         {
@@ -3456,6 +3953,16 @@ impl ContentProcess {
             // process completed results from the shared queue.
             self.drain_all_pending_wasm_requests();
             self.drain_wasm_results();
+        }
+
+        // <https://html.spec.whatwg.org/#perform-a-microtask-checkpoint>
+        // Every command that is conceptually a task ends with a checkpoint;
+        // commands that only queue a task run their checkpoint when that task
+        // finishes.
+        if matches!(&result, Ok(true))
+            && let Err(error) = self.perform_microtask_checkpoint()
+        {
+            error!("microtask checkpoint after a command failed: {error}");
         }
 
         result
@@ -3551,10 +4058,104 @@ impl ContentProcess {
         }
         steps?;
 
+        // Image mutations observed by the DOM hooks produce presentation state;
+        // write it as part of the task that caused it.
+        self.apply_pending_image_presentation()?;
+
         // Step 2.7: "Set the event loop's currently running task back to null."
         // Note: Not implemented, as for step 2.5.
         // Step 2.8: "Perform a microtask checkpoint."
         self.perform_microtask_checkpoint()
+    }
+
+    /// Runs a queued image element task: set the current URL when the
+    /// algorithm's queued steps include it (steps 11.2.1 and 13.4.1), then fire
+    /// `load` or `error` at the element (steps 7.4.7.3, 11.2.2, 13.4.2, 27.14,
+    /// and environment step 15.7) — see
+    /// <https://html.spec.whatwg.org/#update-the-image-data> and
+    /// <https://html.spec.whatwg.org/#reacting-to-environment-changes>.
+    fn run_image_event(
+        &mut self,
+        document_id: DocumentId,
+        node_id: usize,
+        event: ImageEvent,
+        current_url: Option<String>,
+    ) -> Result<(), String> {
+        if let Some(current_url) = current_url {
+            let mut registry = self.image_registry.borrow_mut();
+            registry
+                .element_mut(document_id, node_id)
+                .current_request
+                .current_url = current_url;
+        }
+        let Some(content_document) = self.documents.get_mut(&document_id) else {
+            return Ok(());
+        };
+        let time_millis = content_document.settings.current_time_millis();
+        let ec = content_document.settings.ec();
+        let Ok(object) = resolve_element_object(node_id, ec) else {
+            return Ok(());
+        };
+        let event_target = ec.with_object_any(&object).and_then(|data| {
+            data.downcast_ref::<HTMLImageElement>()
+                .map(|image| image.html_element.element.node.event_target.clone())
+        });
+        let Some(event_target) = event_target else {
+            return Ok(());
+        };
+        let event_type = match event {
+            ImageEvent::Load => "load",
+            ImageEvent::Error => "error",
+        };
+        if let Err(error) = fire_event(ec, &event_target, event_type, time_millis, false) {
+            warn!("failed to fire {event_type} event for <img>: {error:?}");
+        }
+        // The load/error handler can change the DOM, and the rendering
+        // opportunity noted when the image became available may already be
+        // in flight, so its paint predates the event. Note a fresh
+        // opportunity for the handler's changes.
+        self.event_sender
+            .send(ContentEvent::RenderingOpRequested(
+                content_document.traversable_id,
+            ))
+            .map_err(|error| format!("failed to request rendering op for an image event: {error}"))
+    }
+
+    /// Runs the `finishUpdate` element task queued at step 16.2 or 17.5.3 of
+    /// <https://html.spec.whatwg.org/#reacting-to-environment-changes>.
+    fn run_image_environment_update(
+        &mut self,
+        document_id: DocumentId,
+        node_id: usize,
+        instance_id: u64,
+        selected_source: &str,
+        selected_pixel_density: f64,
+    ) -> Result<(), String> {
+        let fire_load = {
+            let mut registry = self.image_registry.borrow_mut();
+            images_processing_model::finish_environment_update(
+                &mut registry,
+                document_id,
+                node_id,
+                instance_id,
+                selected_source,
+                selected_pixel_density,
+            )
+        };
+        let element_id = {
+            let registry = self.image_registry.borrow();
+            registry.existing_element_id(document_id, node_id)
+        };
+        if let Some(element_id) = element_id {
+            self.settle_image_decodes(element_id);
+        }
+        if fire_load {
+            // Step 15.6 runs before step 15.7, so write the presentation the
+            // `finishUpdate` task produced before firing `load`.
+            self.apply_pending_image_presentation()?;
+            self.run_image_event(document_id, node_id, ImageEvent::Load, None)?;
+        }
+        Ok(())
     }
 
     /// The message task of one message a dedicated worker posted back to its
@@ -3642,6 +4243,10 @@ impl ContentProcess {
 
     /// <https://html.spec.whatwg.org/#perform-a-microtask-checkpoint>
     fn perform_microtask_checkpoint(&mut self) -> Result<(), String> {
+        // Each document's checkpoint runs the "update the image data"
+        // continuations its DOM hooks queued (step 8) before the engine's job
+        // queue: their instances queued them during a mutation that ran before
+        // any microtask this task enqueued.
         for document in self.documents.values_mut() {
             document
                 .settings
@@ -3649,6 +4254,34 @@ impl ContentProcess {
                 .map_err(|error| format!("microtask checkpoint failed: {error}"))?;
         }
         Ok(())
+    }
+
+    /// Settles the `decode()` promises waiting on one `<img>` element, whose
+    /// image data the processing model just moved to a new state: the content
+    /// process's side of `decode()` step 2.2 and 2.3
+    /// (<https://html.spec.whatwg.org/#dom-img-decode>).
+    fn settle_image_decodes(&mut self, element_id: ImageElementId) {
+        let location = {
+            let registry = self.image_registry.borrow_mut();
+            registry.element_location(element_id)
+        };
+        let Some((document_id, _node_id)) = location else {
+            return;
+        };
+        let Some(content_document) = self.documents.get_mut(&document_id) else {
+            return;
+        };
+        let result = with_global_scope(content_document.settings.ec(), |global_scope, ec| {
+            global_scope.settle_pending_image_decodes(ec, element_id)
+        });
+        if let Err(error) = result {
+            let message = content_document
+                .settings
+                .ec()
+                .to_rust_string(error)
+                .unwrap_or_else(|_| String::from("unknown error"));
+            error!("failed to settle pending image decode promises: {message}");
+        }
     }
 
     /// Mark a document as needing a render. Called whenever content runs a
@@ -3659,7 +4292,7 @@ impl ContentProcess {
     /// render skips the blitz resolve + paint on an unchanged scene.
     fn mark_document_dirty(&self, document_id: DocumentId) {
         if let Some(document) = self.documents.get(&document_id) {
-            document.needs_paint.store(true, Ordering::Relaxed);
+            document.needs_paint.set(true);
         }
     }
 
@@ -3792,6 +4425,38 @@ impl ContentProcess {
             }
             FailDocumentFetch { handler_id } => {
                 self.fail_document_fetch(handler_id)?;
+                Ok(true)
+            }
+            ImageDecoded { image_id, result } => {
+                if let Err(error) = &result {
+                    error!("graphics failed to decode an image: {error}");
+                }
+                self.complete_image_decode(&image_id, result.ok())?;
+                Ok(true)
+            }
+            RunImageElementTask {
+                document_id,
+                node_id,
+                event,
+                current_url,
+            } => {
+                self.run_image_event(document_id, node_id, event, current_url)?;
+                Ok(true)
+            }
+            RunImageEnvironmentUpdate {
+                document_id,
+                node_id,
+                instance_id,
+                selected_source,
+                selected_pixel_density,
+            } => {
+                self.run_image_environment_update(
+                    document_id,
+                    node_id,
+                    instance_id,
+                    &selected_source,
+                    selected_pixel_density,
+                )?;
                 Ok(true)
             }
             ContentBootstrap { .. } => {

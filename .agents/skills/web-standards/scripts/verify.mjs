@@ -166,6 +166,7 @@ function collectAlgorithmSteps($, $orderedList, parentNumber, map) {
 
     const $clone = $listItem.clone();
     $clone.find("ol").remove();
+    $clone.find("dl").remove();
     $clone.find("div.dfn-panel").remove();
     if (!map.has(fullNumber)) {
       map.set(fullNumber, $clone.text().trim());
@@ -181,7 +182,9 @@ function collectAlgorithmSteps($, $orderedList, parentNumber, map) {
       }
     });
 
-    const $nestedList = $listItem.children("ol");
+    const $nestedList = $listItem
+      .find("ol")
+      .filter((_, nested) => $(nested).parent().closest("ol").is($orderedList));
     if ($nestedList.length) {
       collectAlgorithmSteps($, $nestedList, fullNumber, map);
     }
@@ -244,6 +247,38 @@ function collectStepsForAnchor($, anchor) {
 
   if (/^h[1-6]$/.test(tagName)) {
     collectFromSection($, $element, parseInt(tagName[1]), map);
+    return map;
+  }
+
+  // A dfn nested inside an algorithm's own list: the algorithm is that
+  // list, not whatever the enclosing section happens to contain.
+  const $enclosingList = $element.closest("ol");
+  if ($enclosingList.length) {
+    let $rootList = $enclosingList;
+    while ($rootList.parent().closest("ol").length) {
+      $rootList = $rootList.parent().closest("ol");
+    }
+    collectAlgorithmSteps($, $rootList, "", map);
+    return map;
+  }
+
+  // A dfn defined in prose (an IDL attribute or method, a concept): its
+  // steps are the list inside the same definition item, or the list that
+  // follows the paragraph defining it.  Never fall back to the whole section:
+  // that compares the comment against an unrelated algorithm that happens to
+  // appear later in the section.
+  const $item = $element.closest("dd, dt");
+  const $block = $item.length ? $item : $element.closest("p");
+  if ($block.length) {
+    const $list = $block.find("ol").first();
+    if ($list.length) {
+      collectAlgorithmSteps($, $list, "", map);
+      return map;
+    }
+    const $followingList = $block.nextAll("ol").first();
+    if ($followingList.length) {
+      collectAlgorithmSteps($, $followingList, "", map);
+    }
     return map;
   }
 
@@ -310,6 +345,9 @@ export async function verifyPaths(paths, options = {}) {
     if (record.steps.length === 0) continue;
 
     const stepMap = collectStepsForAnchor($, record.anchor);
+    // An anchor defined in prose (an IDL attribute or method, a concept) has
+    // no numbered algorithm; only the anchor itself is checked.
+    if (stepMap.size === 0) continue;
     for (const step of record.steps) {
       checkedSteps += 1;
       const rendered = stepMap.get(step.number);

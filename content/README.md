@@ -94,22 +94,30 @@ and runs on the content process main thread (`run_content_message_loop` in
 loops on their own threads (see `content/src/html/workers/`).  Guidance for
 adding work to the loop:
 
-- Content-initiated work (window timer expiry, port message tasks) must be
-  **queued as a `Task`**, never run by calling its handler directly: an
-  inline call skips the bookkeeping the model requires (marking the task's
-  document dirty, the microtask checkpoint after the task's steps).
-- An `ipc_messages::content::Command` is an ad hoc message the user agent
-  (or the net process) sends this process — not a task.  Where the spec
-  step behind a command says to queue a task on this event loop (the target
-  half of `postMessage`, a routed port message, `update the rendering`,
-  beforeunload, WebDriver/CDP script evaluation and event dispatch),
-  handling the command queues the matching `Task`, so it runs through the
-  same processing-model steps as a task queued here.  The rest (viewport,
-  document lifecycle, navigation fetch completion, shutdown)
-  `ContentProcess::handle_command` runs directly.  A `Command::PortTask`
-  arrives here only for ports of the window event loop; ports owned by a
-  dedicated worker agent's event loop are delivered over that agent's own
-  user-agent command channel (see `dedicated_worker_agent.rs`).
+- Content-initiated work that the spec models as a task must be **queued as a
+  `Task`**, never run by calling its handler directly: an inline call skips
+  the bookkeeping the model requires (marking the task's document dirty, the
+  microtask checkpoint after the task's steps).  When the step runs inside
+  content and the spec says "queue an element task", content sends itself a
+  `Command` (`RunImageElementTask`, `RunImageEnvironmentUpdate`) instead of
+  adding a private queue; `handle_command` runs the task's steps and the
+  checkpoint follows.
+- An `ipc_messages::content::Command` is a message to this process.  Where a
+  command only triggers a spec task (the target half of `postMessage`, a
+  routed port message, `update the rendering`, beforeunload, WebDriver/CDP
+  script evaluation and event dispatch), handling the command queues the
+  matching `Task`, so it runs through the same processing-model steps as a
+  task queued here.  A command that *is* the queued task (the image element
+  tasks) runs its steps directly; the cluster-level commands (viewport,
+  document lifecycle, navigation fetch completion, shutdown) run directly as
+  well.  A `Command::PortTask` arrives here only for ports of the window
+  event loop; ports owned by a dedicated worker agent's event loop are
+  delivered over that agent's own user-agent command channel (see
+  `dedicated_worker_agent.rs`).
+- **Processing-model state is not a task.**  Work a spec step does not queue
+  (e.g. `ImageRegistry::pending_presentation`, which waits because a DOM hook
+  runs while blitz holds the document mutably borrowed) is state applied by
+  the content process, and is named as state, never as a task.
 - **The command channel is only read while the task queue is empty.**  A
   command's steps run as soon as it is read, so reading one with tasks
   already queued runs those steps ahead of them.  The rendering pipeline
@@ -125,6 +133,13 @@ adding work to the loop:
 `request_header_list`, the conversion from a blitz `Request` to the header
 list that travels on the wire.
 
+`fetch` is the minimal start of the Fetch algorithm: it registers the response
+continuation, implements the `data:` branch of scheme fetch, and routes the
+other schemes to the embedder or net. The per-step notes in `fetch`,
+`main_fetch`, and `scheme_fetch` mark what is still missing (request client
+population, default headers, preloading, CORS, redirects, timing, and response
+handover).
+
 Subresource fetches leave this process by one of two routes, chosen by the
 URL's scheme. A scheme named in `ContentBootstrap::embedder_schemes` is one
 the embedder serves itself: the fetch goes to the user agent as
@@ -134,6 +149,31 @@ scheme goes straight to the net process. Both routes register the same
 pending handler first, so the response side does not know which was taken.
 Filtering here rather than in net is what keeps net a place where networking
 happens rather than a fetch coordinator; see `user_agent/README.md`.
+
+Every subresource the document needs is reported through the
+`blitz_dom::ResourceHooks` impl of `DocumentProviders` in
+`content/src/html/document_providers.rs` and the DOM tree steps in
+`content/src/html/dom_trees.rs`: stylesheets,
+`@import` rules, `@font-face` fonts, and CSS background/mask images.  Each
+request takes the scheme routing above and comes back as
+`Command::CompleteDocumentFetch`; content then installs the result into the
+document with `BaseDocument::handle_message` (a `Resource`, or
+`complete_stylesheet_import` for `@import`).  `data:` URLs are resolved in
+content and delivered through the same command.  No image is decoded here: the
+graphics process is the only image decoder (`AGENTS.md`, "Process
+Boundaries"), and the layout-time image loader's requests are answered as
+failed so blitz paints nothing for them (see below).
+
+The `<img>` element follows its own processing model in
+`content/src/html/images_processing_model.rs`; keep its fetch on that path (see
+`content/src/html/README.md`, "Images").  The completed image is registered
+with the graphics process once per `ImageIdentifier`; `DestroyDocument`
+releases the document's registered images with
+`GraphicsCommand::UnregisterImages`.  Same-origin iframe subdocuments keep
+their images on the layout-time loader rather than the `<img>` processing model
+(`DocumentHost::Subdocument`), so those images do not render: they need their
+own frames and image layers before they can go through graphics like a
+top-level `<img>` (remaining work, see `content/src/html/README.md`).
 
 ## Clipboard
 
@@ -157,6 +197,14 @@ this crate.
 
 - **Clippy warning backlog.** The content crate has a backlog of pre-existing
   clippy warnings (e.g. "useless conversion to the same type: V8Object").
+
+- **A dynamically inserted `<img>` ignores a fixed CSS `height`.** An `<img>`
+  created with `createElement` and appended with `appendChild` lays out at its
+  intrinsic aspect ratio; the stylesheet's `height` and an inline `height` on
+  the element are both ignored, so changing the source reflows the document.
+  Building the same figure through `innerHTML` applies the stylesheet, and the
+  image keeps its fixed-height box. Images present in the initial markup are
+  unaffected.
 
 ## Layout
 

@@ -63,6 +63,28 @@ enum QueuedJob {
     WithRealm(Rc<V8RealmState>, RealmJob),
 }
 
+/// A handle that queues a microtask in one realm without an execution context.
+///
+/// <https://html.spec.whatwg.org/#queue-a-microtask>
+///
+/// The job joins the same queue `queue_a_microtask` uses and runs with its
+/// realm restored, in FIFO order with the realm's other queued jobs and before
+/// the engine's ECMAScript job queue at the next checkpoint.
+#[derive(Clone)]
+pub struct V8RealmJobQueue {
+    shared_isolate: Rc<SharedIsolate>,
+    realm_state: Rc<V8RealmState>,
+}
+
+impl V8RealmJobQueue {
+    pub fn queue(&self, job: RealmJob) {
+        self.shared_isolate
+            .queued_jobs
+            .borrow_mut()
+            .push_back(QueuedJob::WithRealm(Rc::clone(&self.realm_state), job));
+    }
+}
+
 /// The ECMA-262 wrapper-object kinds whose constructor the engine may be
 /// asked to invoke with a primitive argument.
 enum WrapperKind {
@@ -273,6 +295,17 @@ impl SharedIsolate {
 }
 
 impl V8Engine {
+    /// The queue a DOM claim can hand to code that runs without an execution
+    /// context, so the work still lands in this realm's microtask queue.
+    ///
+    /// <https://html.spec.whatwg.org/#queue-a-microtask>
+    pub fn realm_job_queue(&self) -> V8RealmJobQueue {
+        V8RealmJobQueue {
+            shared_isolate: Rc::clone(&self.shared_isolate),
+            realm_state: Rc::clone(&self.realm_state),
+        }
+    }
+
     /// Run a closure with the isolate borrowed mutably, mirroring the scope
     /// macros: inside a native callback the isolate is reborrowed from the
     /// pinned callback scope, otherwise the shared isolate RefCell is used.

@@ -1,3 +1,4 @@
+use crate::graphics::DecodedImage;
 use crate::media::{VideoEmbedData, VideoPaintId};
 use crate::safe_passing_of_structured_data::{PortMessagePayload, PostMessageRequest};
 use anyrender::{
@@ -60,10 +61,100 @@ uuid_id!(BeforeUnloadCheckId);
 uuid_id!(NavigableId);
 uuid_id!(FrameId);
 uuid_id!(CanvasId);
+uuid_id!(ImagePaintId);
+uuid_id!(ImageElementId);
 uuid_id!(NavigationId);
 uuid_id!(PortId);
 uuid_id!(MessageId);
 uuid_id!(WorkerId);
+
+impl ImagePaintId {
+    /// Dedicated UUIDv5 namespace for `<img>` layer identifiers.
+    const LAYER_NAMESPACE: Uuid = Uuid::from_u128(0x6d5f0a1e_9c3b_4f2a_8e7d_1b2c3d4e5f60);
+
+    /// Derive the layer identifier for the `<img>` element at `node_id` in
+    /// the document hosted by `navigable_id`. A navigable hosts one document
+    /// at a time and a node id is stable for the element's life, so the
+    /// identifier is stable across frames and unique within a webview; the
+    /// frame-composition builder recomputes it without a side table.
+    ///
+    /// <https://html.spec.whatwg.org/#htmlimageelement>
+    pub fn for_node(navigable_id: NavigableId, node_id: usize) -> Self {
+        let name = format!("{}:{node_id}", navigable_id.0);
+        Self(Uuid::new_v5(&Self::LAYER_NAMESPACE, name.as_bytes()))
+    }
+}
+
+/// The cache partition a resource load belongs to: the top-level
+/// traversable that owns the document and the document's origin. Two loads
+/// that differ in either component never share a decoded-image cache entry.
+///
+/// <https://html.spec.whatwg.org/#origin>
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub struct ResourcePartitionKey {
+    pub top_level_traversable: NavigableId,
+    pub origin: String,
+}
+
+/// Identifies a decoded raster image: the content process-local `Blob` id
+/// stamped when the resource was loaded, scoped to the partition it was
+/// loaded in.
+///
+/// <https://html.spec.whatwg.org/#the-img-element>
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub struct ImageIdentifier {
+    pub partition: ResourcePartitionKey,
+    pub blob_id: u64,
+}
+
+/// A decoded raster image shipped to the graphics process, once per
+/// `ImageIdentifier`. The bytes travel in the IPC shared memory map under
+/// `data_shmem_key`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RegisteredImage {
+    pub id: ImageIdentifier,
+    pub data_shmem_key: usize,
+}
+
+/// Tracks which `ImageIdentifier`s this content process already shipped, so
+/// an image's pixels cross the process boundary at most once per identifier.
+#[derive(Debug, Default)]
+pub struct ImageTransportSender {
+    sent_images: HashSet<ImageIdentifier>,
+}
+
+impl ImageTransportSender {
+    /// Register `id`'s decoded bytes for transport if it has not been sent
+    /// before, assigning the next shared-memory key. Returns the
+    /// registration and the shmem region to place under that key, or
+    /// `None` when the image was already shipped.
+    pub fn prepare_image(
+        &mut self,
+        id: ImageIdentifier,
+        encoded_bytes: &[u8],
+        next_shmem_key: &mut usize,
+    ) -> Option<(RegisteredImage, ipc::IpcSharedRegion)> {
+        if !self.sent_images.insert(id.clone()) {
+            return None;
+        }
+        let data_shmem_key = *next_shmem_key;
+        *next_shmem_key += 1;
+        Some((
+            RegisteredImage { id, data_shmem_key },
+            ipc::IpcSharedRegion::from_bytes(encoded_bytes),
+        ))
+    }
+
+    /// Forget images whose document unloaded.  A later document that loads
+    /// the same resource gets a fresh `ImageIdentifier` (the blob id is
+    /// allocated per fetched request), so these identifiers will not be
+    /// registered again.
+    pub fn forget_images(&mut self, image_ids: &[ImageIdentifier]) {
+        for image_id in image_ids {
+            self.sent_images.remove(image_id);
+        }
+    }
+}
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize)]
 pub enum ColorScheme {
@@ -366,8 +457,26 @@ pub struct CanvasEmbedSite {
     pub layout: EmbedLayout,
 }
 
+/// An `<img>` embed site: a rectangle of externally-sourced raster content,
+/// positioned by layout and composited as its own layer. `paint_id`
+/// identifies the on-screen instance (so two `<img>` elements showing the
+/// same URL get two layers); `image_id` identifies the shared decoded
+/// texture that layer's one-node scene draws.
+///
+/// <https://html.spec.whatwg.org/#the-img-element>
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ImageEmbedData {
+    pub embed_site_id: EmbedSiteId,
+    pub paint_id: ImagePaintId,
+    pub image_id: ImageIdentifier,
+    pub background_policy: EmbedBackgroundPolicy,
+    pub clip_svg_path: String,
+    pub clip_radius: f64,
+    pub layout: EmbedLayout,
+}
+
 /// A single embed site within a parent document's composition.
-/// Iframes, video and offscreen canvas are
+/// Iframes, video, offscreen canvas and images are
 /// [embedded content](https://html.spec.whatwg.org/#embedded-content)
 /// and share the same z-order / paint-order space.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -375,6 +484,7 @@ pub enum EmbedSite {
     Frame(IframeEmbedSite),
     Video(VideoEmbedData),
     Canvas(CanvasEmbedSite),
+    Image(ImageEmbedData),
 }
 
 impl EmbedSite {
@@ -383,6 +493,7 @@ impl EmbedSite {
             EmbedSite::Frame(s) => &s.layout,
             EmbedSite::Video(s) => &s.layout,
             EmbedSite::Canvas(s) => &s.layout,
+            EmbedSite::Image(s) => &s.layout,
         }
     }
 
@@ -929,19 +1040,29 @@ pub enum WorkerOwner {
     Worker(WorkerId),
 }
 
+/// The event an `<img>` element task fires.
+/// <https://html.spec.whatwg.org/#update-the-image-data>
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub enum ImageEvent {
+    /// <https://html.spec.whatwg.org/#event-load>
+    Load,
+    /// <https://html.spec.whatwg.org/#event-error>
+    Error,
+}
+
 /// A message the user agent (or the net process) sends into a content
 /// process to drive it.  A content process is one agent cluster; most
 /// commands are addressed to the cluster's single similar-origin window
 /// agent and arrive on the process's main command channel, whose receiver —
 /// the content process main thread — both handles the cluster's work
 /// (bootstrap, viewport, document lifecycle, navigation-fetch completions,
-/// shutdown) and runs the window agent's event loop.  A command is not an
-/// event-loop task: when the spec step behind a command says to queue a
-/// task on the window event loop, the content process queues the
-/// corresponding `Task` while handling the command (see
-/// `content/src/html/event_loop.rs`); the cluster-level commands it runs
-/// directly.  A dedicated worker agent of the cluster is addressed over its
-/// own user-agent command channel (see
+/// image element tasks, shutdown) and runs the window agent's event loop.  A
+/// command that only triggers an event-loop task queues the corresponding
+/// `Task` while handling the command (see
+/// `content/src/html/event_loop.rs`); a command that *is* the queued task
+/// (the image element tasks) runs its steps directly; the cluster-level
+/// commands it runs directly as well.  A dedicated worker agent of the
+/// cluster is addressed over its own user-agent command channel (see
 /// `ContentEvent::DedicatedWorkerAgentObtained`) rather than the process's
 /// main channel.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -1054,6 +1175,37 @@ pub enum Command {
     /// animating flags associated with this pipeline.
     NotifyVideoEnded {
         video_paint_id: VideoPaintId,
+    },
+    /// The graphics process finished decoding an `<img>` resource.  Content
+    /// records the result and settles the `decode()` promises waiting on that
+    /// image (step 2.3 of `decode()`).
+    ImageDecoded {
+        image_id: ImageIdentifier,
+        /// The graphics process's decode report; `Err` carries the decoder's
+        /// failure reason.
+        result: Result<DecodedImage, String>,
+    },
+    /// An element task on the DOM manipulation task source queued by an image
+    /// algorithm: run the task's steps, which may set the current URL and fire
+    /// `load` or `error` at the `<img>` element.
+    /// <https://html.spec.whatwg.org/#queue-an-element-task>
+    RunImageElementTask {
+        document_id: DocumentId,
+        node_id: usize,
+        event: ImageEvent,
+        /// The current request URL the task sets before firing, when the
+        /// algorithm's queued steps include it (steps 11.2.1 and 13.4.1).
+        current_url: Option<String>,
+    },
+    /// The element task queued by "reacting to environment changes" to run
+    /// `finishUpdate`.
+    /// <https://html.spec.whatwg.org/#reacting-to-environment-changes>
+    RunImageEnvironmentUpdate {
+        document_id: DocumentId,
+        node_id: usize,
+        instance_id: u64,
+        selected_source: String,
+        selected_pixel_density: f64,
     },
     /// The target-process half of the window post message steps (step 8 and
     /// its substeps): the user agent routes this to the target window's event

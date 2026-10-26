@@ -29,7 +29,9 @@ pub struct ComposedScene {
     pub webview_id: WebviewId,
     /// The per-layer decomposition of this webview's composition. Each layer
     /// is its own surface; `render` is `Some` for layers re-rasterized this
-    /// cycle (dirty), `None` for clean layers that keep their last surface.
+    /// cycle (dirty) and `direct_surface` for layers presented from a shared
+    /// surface. A clean layer that stays presented has both `None` and keeps
+    /// its last surface.
     pub layers: Vec<LayerUpdate>,
     pub frame_hit_info: Vec<FrameHitInfo>,
     /// Viewport data for child frames, keyed by child webview_id.
@@ -662,6 +664,58 @@ fn handle_command<B: MediaBackend + 'static, R: SurfaceRenderer>(
                 webview_id.0, deadline_ms
             );
         }
+        GraphicsCommand::RegisterImage {
+            webview_id,
+            image_id,
+            data_shmem_key,
+        } => {
+            let bytes = shmem_regions
+                .get(&data_shmem_key)
+                .map(|region| region.as_slice())
+                .unwrap_or_default();
+            let slot = webviews
+                .entry(webview_id)
+                .or_insert_with(|| WebviewState::new(channels.clone()));
+            let stored = slot.renderer.store_image(&image_id, bytes);
+            let result = match stored {
+                Ok((stored, decoded)) => {
+                    slot.compositor
+                        .insert_image(image_id.clone(), stored, decoded);
+                    debug!(
+                        "[render-pipe] Graphics register image webview={:?} size={}x{} format={:?} encoded_bytes={}",
+                        webview_id,
+                        decoded.width,
+                        decoded.height,
+                        decoded.format,
+                        bytes.len()
+                    );
+                    Ok(decoded)
+                }
+                Err(error) => {
+                    error!("[render-pipe] Graphics failed to decode image: {error}");
+                    Err(error)
+                }
+            };
+            if let Err(send_error) = composed_scene_sender.send(GraphicsEvent::ImageDecoded {
+                webview_id,
+                image_id,
+                result,
+            }) {
+                error!(
+                    "[graphics] failed to report image decode result for {:?}: {send_error}",
+                    webview_id
+                );
+            }
+        }
+        GraphicsCommand::UnregisterImages {
+            webview_id,
+            image_ids,
+        } => {
+            if let Some(slot) = webviews.get_mut(&webview_id) {
+                slot.compositor.remove_images(&image_ids);
+                slot.renderer.release_images(&image_ids);
+            }
+        }
         GraphicsCommand::RemoveVideoFrame {
             webview_id,
             paint_id,
@@ -955,20 +1009,20 @@ fn maybe_compose<R: SurfaceRenderer>(
     // and sets this; the composed scene reports it so the UA keeps re-noting
     // rendering opportunities. Graphics just passes it through.
     match slot.renderer.submit_layers(composed, composed_scene_sender) {
-        Ok(rendered) => {
-            slot.compositor.mark_layers_rendered(&rendered);
+        Ok(outcome) => {
+            slot.compositor.mark_layers_delivered(&outcome.delivered);
             // Release surfaces for layers the compositor no longer holds
             // (a navigated-away frame, a torn-down child): `live` is the
             // compositor's current layer set, so layers that are merely
             // offscreen keep their buffers.
             let live = slot.compositor.live_layer_ids();
             slot.renderer.retain_layers(&live);
-            if rendered.is_empty() {
-                // Every layer stayed clean (no surface re-produced): the
-                // renderer still emits a surface-less PixelFrameReady so the
-                // UA clears the navigable's pending update-the-rendering.
-                // Trace the render as computed here, since the empty cycle
-                // does not flow through `handle_render_done`.
+            if !outcome.gpu_work {
+                // No layer surface was rendered, so the renderer delivered
+                // the frame itself (a surface-less PixelFrameReady for a
+                // composition whose only delivered layers were presented
+                // directly from their own surfaces) instead of going through
+                // `handle_render_done`. Trace the render as computed here.
                 verification::tla_log!(
                     *tla_tracer,
                     -> "RenderingOpportunity",

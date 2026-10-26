@@ -3,7 +3,7 @@ pub(crate) mod gc;
 mod trace;
 mod types;
 
-pub use engine::{V8Engine, create_builtin_fn_with_captures};
+pub use engine::{V8Engine, V8RealmJobQueue, create_builtin_fn_with_captures};
 pub use gc::V8PlatformData;
 pub use types::{
     V8ArrayBuffer, V8AsyncGenerator, V8BigInt, V8Constructor, V8DataView, V8Function, V8Generator,

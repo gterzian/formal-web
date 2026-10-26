@@ -6,11 +6,15 @@ use anyrender::{PaintScene, Scene as RenderScene};
 use ipc::IpcSharedRegion;
 use ipc_messages::content::{
     CanvasId, EmbedBackgroundPolicy, EmbedSite, FontTransportReceiver, FrameCompositionMetadata,
-    FrameId, IframeEmbedSite, PaintFrame, RecordedScene, serialize_scene_to_vec,
+    FrameId, IframeEmbedSite, ImageIdentifier, ImagePaintId, PaintFrame, RecordedScene,
+    serialize_scene_to_vec,
 };
 use ipc_messages::graphics::{CompositingLayerId, FrameHitInfo, LayerTopology, SurfacePayload};
 
 use crate::ComposedScene;
+use ipc_messages::graphics::DecodedImage;
+
+use crate::renderer::image::StoredImage;
 use ipc_messages::media::VideoPaintId;
 use kurbo::{Affine, Rect, Shape};
 use log::{error, info, trace};
@@ -80,6 +84,11 @@ pub struct LayerUpdate {
     pub width: u32,
     pub height: u32,
     pub render: Option<RenderScene>,
+    /// Set when the layer is presented directly from a shared surface (a
+    /// macOS `<img>` IOSurface) instead of being rendered into a layer
+    /// surface. The surface is forwarded to the embedder, which maps it to
+    /// the layer's CoreAnimation sublayer.
+    pub direct_surface: Option<SurfacePayload>,
 }
 
 impl LayerUpdate {
@@ -191,6 +200,25 @@ pub struct CompositorCanvasFrame {
     pub dirty: bool,
 }
 
+/// The state of one on-screen `<img>` instance. `image_id` is the shared
+/// decoded image it draws; `dirty` is set when the layer still has to be
+/// presented with a newly decoded image (first paint, or a switch to a
+/// different image) and cleared once its surface has been delivered.
+#[derive(Clone)]
+struct ImageLayerState {
+    image_id: ImageIdentifier,
+    dirty: bool,
+}
+
+/// One decoded image registered with the compositor: the presentation form
+/// chosen by the image backend plus its logical dimensions.
+#[derive(Clone)]
+struct StoredImageEntry {
+    stored: StoredImage,
+    width: u32,
+    height: u32,
+}
+
 /// The per-webview compositor: receives PaintFrames and VideoFrames,
 /// composes them into a single final scene, and publishes the result plus
 /// hit-testing info back to the user agent. Owns the webview's font
@@ -205,8 +233,14 @@ pub struct Compositor {
     resolved_tree_dirty: bool,
     /// Latest frame per video paint id.
     video_frames: HashMap<VideoPaintId, CompositorVideoFrame>,
-    /// Latest committed scene per offscreen canvas id.
+    /// Latest decoded scene per offscreen canvas id.
     canvas_frames: HashMap<CanvasId, CompositorCanvasFrame>,
+    /// Decoded image state per `ImageIdentifier`, shared by every `<img>`
+    /// layer that references the same image. Populated by `RegisterImage`.
+    image_registry: HashMap<ImageIdentifier, StoredImageEntry>,
+    /// Per-instance `<img>` layer state: which shared image it draws and
+    /// whether its one-node scene still needs rasterizing.
+    image_layers: HashMap<ImagePaintId, ImageLayerState>,
     /// True when the latest top-level frame arrived but its composition is
     /// deferred until every embedded frame it references has arrived.
     composition_pending: bool,
@@ -214,6 +248,17 @@ pub struct Compositor {
     /// composed frame is animating, and which frames are.
     composing_animating: bool,
     composing_animating_frames: Vec<FrameId>,
+    /// The layers the last delivered composition presented. A layer it did not
+    /// present (a child navigable scrolled out of view, a video element removed
+    /// from the document) loses its CoreAnimation sublayer, so a layer
+    /// re-entering the composition is presented again even though its content
+    /// is clean — otherwise it would come back blank until its content changed.
+    presented_layers: HashSet<CompositingLayerId>,
+    /// The layer presence of the composition being submitted. Committed to
+    /// `presented_layers` once the submission delivered its surfaces, so a
+    /// submission that fails leaves the previous baseline in place and every
+    /// layer it had to present is presented again.
+    composing_presented_layers: HashSet<CompositingLayerId>,
     /// Font transport state for this webview: fonts registered from content
     /// PaintFrames, resolved when recorded scenes are turned into render
     /// scenes.
@@ -244,6 +289,9 @@ impl Compositor {
         self.pending_frames.clear();
         self.committed_frames.clear();
         self.video_frames.clear();
+        self.clear_image_layers();
+        self.presented_layers.clear();
+        self.composing_presented_layers.clear();
         // Canvas frames are NOT cleared here: a canvas is registered and its
         // first scene committed by the incoming document's script, which runs
         // before the navigation is finalized.  A stale canvas frame is keyed
@@ -296,12 +344,92 @@ impl Compositor {
         self.canvas_frames.remove(&canvas_id);
     }
 
-    /// Clear the dirty flag for the layers that were actually re-rendered this
-    /// cycle. Called by the event loop after `submit_layers` succeeds; a layer
-    /// whose content no longer changed keeps its last surface on the next
+    /// Register an image the renderer's image backend already decoded. The
+    /// backend decides whether the layer draws rendered pixels or is
+    /// presented directly from a shared IOSurface.
+    pub fn insert_image(
+        &mut self,
+        id: ImageIdentifier,
+        stored: StoredImage,
+        decoded: DecodedImage,
+    ) {
+        if self.image_registry.contains_key(&id) {
+            return;
+        }
+        self.image_registry.insert(
+            id,
+            StoredImageEntry {
+                stored,
+                width: decoded.width,
+                height: decoded.height,
+            },
+        );
+    }
+
+    /// Drop the decoded image entries and their per-layer state.  The
+    /// renderer's image backend drops the decoded pixels/shared surfaces; a
+    /// later document that loads the same resource registers a fresh
+    /// `ImageIdentifier`.
+    pub fn remove_images(&mut self, image_ids: &[ImageIdentifier]) {
+        let image_ids: HashSet<ImageIdentifier> = image_ids.iter().cloned().collect();
+        self.image_registry
+            .retain(|image_id, _| !image_ids.contains(image_id));
+        self.image_layers
+            .retain(|_, state| !image_ids.contains(&state.image_id));
+    }
+
+    /// Drop every image layer on navigation: the outgoing document's `<img>`
+    /// elements are gone. The document's registered images are released by
+    /// `remove_images` when its `DestroyDocument` command arrives.
+    fn clear_image_layers(&mut self) {
+        self.image_layers.clear();
+    }
+
+    /// Rebuild the `<img>` layer set from the committed frames' embed sites:
+    /// a paint id present this cycle keeps its dirty state while it still
+    /// draws the same image; a new paint id, or one that switched image, is
+    /// dirty so its one-node scene is rasterized once.
+    fn refresh_image_layers(&mut self) {
+        let mut refreshed: HashMap<ImagePaintId, ImageLayerState> = HashMap::new();
+        for frame in self.committed_frames.values() {
+            for site in &frame.composition.embed_sites {
+                let EmbedSite::Image(image) = site else {
+                    continue;
+                };
+                match refreshed.get_mut(&image.paint_id) {
+                    Some(state) if state.image_id == image.image_id => {}
+                    Some(state) => {
+                        state.image_id = image.image_id.clone();
+                        state.dirty = true;
+                    }
+                    None => {
+                        let dirty = self
+                            .image_layers
+                            .get(&image.paint_id)
+                            .map(|state| state.image_id != image.image_id)
+                            .unwrap_or(true);
+                        refreshed.insert(
+                            image.paint_id,
+                            ImageLayerState {
+                                image_id: image.image_id.clone(),
+                                dirty,
+                            },
+                        );
+                    }
+                }
+            }
+        }
+        self.image_layers = refreshed;
+    }
+
+    /// Clear the dirty flag for the layers whose surface this composition
+    /// delivered to the embedder, and make the composition the new "presented"
+    /// baseline. Called by the event loop after `submit_layers` succeeds; a
+    /// layer whose content no longer changed keeps its last surface on the next
     /// cycles, which is what lets clean layers skip Vello work.
-    pub fn mark_layers_rendered(&mut self, rendered: &[CompositingLayerId]) {
-        for layer_id in rendered {
+    pub fn mark_layers_delivered(&mut self, delivered: &[CompositingLayerId]) {
+        self.presented_layers = std::mem::take(&mut self.composing_presented_layers);
+        for layer_id in delivered {
             match layer_id {
                 CompositingLayerId::Navigable(frame_id) => {
                     if let Some(frame) = self.committed_frames.get_mut(frame_id) {
@@ -316,6 +444,11 @@ impl Compositor {
                 CompositingLayerId::Canvas(canvas_id) => {
                     if let Some(frame) = self.canvas_frames.get_mut(canvas_id) {
                         frame.dirty = false;
+                    }
+                }
+                CompositingLayerId::Image(paint_id) => {
+                    if let Some(state) = self.image_layers.get_mut(paint_id) {
+                        state.dirty = false;
                     }
                 }
             }
@@ -448,6 +581,7 @@ impl Compositor {
                 );
             }
             self.resolved_tree_dirty = true;
+            self.refresh_image_layers();
             return scene_changed;
         }
 
@@ -467,6 +601,7 @@ impl Compositor {
 
         self.committed_frames.insert(frame_id, frame);
         self.resolved_tree_dirty = true;
+        self.refresh_image_layers();
         scene_changed
     }
 
@@ -535,6 +670,9 @@ impl Compositor {
         for canvas_id in self.canvas_frames.keys() {
             live.insert(CompositingLayerId::Canvas(*canvas_id));
         }
+        for paint_id in self.image_layers.keys() {
+            live.insert(CompositingLayerId::Image(*paint_id));
+        }
         live
     }
 
@@ -567,6 +705,7 @@ impl Compositor {
             match site {
                 EmbedSite::Frame(_iframe_site) => {}
                 EmbedSite::Canvas(_) => {}
+                EmbedSite::Image(_) => {}
                 EmbedSite::Video(video_data) => {
                     if expected_videos.contains(&video_data.paint_id)
                         && !self.video_frames.contains_key(&video_data.paint_id)
@@ -609,6 +748,7 @@ impl Compositor {
                     }
                 }
                 EmbedSite::Canvas(_) => {}
+                EmbedSite::Image(_) => {}
                 EmbedSite::Video(video_data) => {
                     if expected_videos.contains(&video_data.paint_id)
                         && !self.video_frames.contains_key(&video_data.paint_id)
@@ -638,13 +778,16 @@ impl Compositor {
         let root_placement = self.root_layer_placement(root_frame_id)?;
         let mut stack = HashSet::from([root_frame_id]);
         let mut layers = Vec::new();
+        let mut presented_layers = HashSet::new();
         self.compose_layers(
             root_frame_id,
             &mut stack,
             Affine::IDENTITY,
             root_placement,
             &mut layers,
+            &mut presented_layers,
         )?;
+        self.composing_presented_layers = presented_layers;
         self.resolved_tree_dirty = false;
 
         let frame_hit_info = self.build_frame_hit_info(webview_id);
@@ -658,6 +801,14 @@ impl Compositor {
             animating: self.composing_animating,
             animating_frame_ids: std::mem::take(&mut self.composing_animating_frames),
         })
+    }
+
+    /// Whether `layer_id` was absent from the last delivered composition: the
+    /// embedder no longer holds a presentation for it (a child navigable
+    /// scrolled out of view), so this composition supplies its surface even
+    /// when the layer's content is clean.
+    fn re_enters_composition(&self, layer_id: CompositingLayerId) -> bool {
+        !self.presented_layers.contains(&layer_id)
     }
 
     fn build_frame_hit_info(
@@ -782,6 +933,9 @@ impl Compositor {
             {
                 let mut stack = HashSet::from([root_frame_id]);
                 let mut scratch_layers = Vec::new();
+                // The scratch walk resolves geometry only; it must not disturb
+                // the presented set the last real composition recorded.
+                let mut scratch_presented = HashSet::new();
                 if self
                     .compose_layers(
                         root_frame_id,
@@ -789,6 +943,7 @@ impl Compositor {
                         Affine::IDENTITY,
                         root_placement,
                         &mut scratch_layers,
+                        &mut scratch_presented,
                     )
                     .is_none()
                 {
@@ -817,6 +972,7 @@ impl Compositor {
         frame_local_to_root: Affine,
         placement: LayerPlacement,
         layers: &mut Vec<LayerUpdate>,
+        presented_layers: &mut HashSet<CompositingLayerId>,
     ) -> Option<()> {
         if input_debug_enabled() {
             trace!("[input-debug][compositor] composing frame {}", frame_id.0);
@@ -854,14 +1010,19 @@ impl Compositor {
             self.composing_animating_frames.push(frame_id);
         }
 
-        // Decode this frame's own scene only when dirty; a clean layer keeps
-        // its last surface and skips the Vello rasterization entirely.
-        let render = if frame_dirty {
+        // Decode this frame's own scene when its content changed, or when the
+        // previous composition did not present this layer (a child navigable
+        // scrolled out of view): the embedder dropped the layer's sublayer, so
+        // a clean scene still has to be rendered for it. A clean, still-present
+        // layer keeps its last surface and skips the Vello rasterization.
+        let layer_id = CompositingLayerId::Navigable(frame_id);
+        let render = if frame_dirty || self.re_enters_composition(layer_id) {
             let frame = self.committed_frames.get(&frame_id)?;
             Some(frame.scene.clone().into_scene(&self.font_receiver))
         } else {
             None
         };
+        presented_layers.insert(layer_id);
 
         // This frame is its own compositing layer. The parent-relative
         // placement was computed by the parent (or is the root's own
@@ -869,7 +1030,7 @@ impl Compositor {
         // the layer tree. Same-origin iframes are baked into their parent's
         // scene and never reach here with their own layer.
         layers.push(LayerUpdate {
-            layer_id: CompositingLayerId::Navigable(frame_id),
+            layer_id,
             parent: frame_parent.map(CompositingLayerId::Navigable),
             transform: placement.transform,
             clip_bounds: placement.clip_bounds,
@@ -879,6 +1040,7 @@ impl Compositor {
             width: frame_width,
             height: frame_height,
             render,
+            direct_surface: None,
         });
 
         let bg_map: HashMap<_, _> = embed_sites
@@ -887,6 +1049,7 @@ impl Compositor {
                 EmbedSite::Frame(f) => Some((f.embed_site_id, f.background_policy)),
                 EmbedSite::Video(_) => None,
                 EmbedSite::Canvas(_) => None,
+                EmbedSite::Image(_) => None,
             })
             .collect();
 
@@ -933,6 +1096,7 @@ impl Compositor {
                         child_local_to_root,
                         child_placement,
                         layers,
+                        presented_layers,
                     );
                     stack.remove(&child_frame_id);
                 }
@@ -980,7 +1144,9 @@ impl Compositor {
                     // drawing the decoded frame at identity, placed by
                     // `video_transform` (which scales the frame to the clip
                     // rect and positions it at the video's origin).
-                    let render = if video_frame.dirty {
+                    let layer_id = CompositingLayerId::Video(video_data.paint_id);
+                    let present = video_frame.dirty || self.re_enters_composition(layer_id);
+                    let render = if present {
                         let mut video_scene = RenderScene::new();
                         match &video_frame.content {
                             VideoFrameContent::Bytes(pixel_bytes) => {
@@ -1010,7 +1176,7 @@ impl Compositor {
                     };
 
                     layers.push(LayerUpdate {
-                        layer_id: CompositingLayerId::Video(video_data.paint_id),
+                        layer_id,
                         parent: Some(CompositingLayerId::Navigable(frame_id)),
                         transform: video_transform,
                         clip_bounds: Rect::new(
@@ -1025,7 +1191,9 @@ impl Compositor {
                         width: video_frame.width,
                         height: video_frame.height,
                         render,
+                        direct_surface: None,
                     });
+                    presented_layers.insert(layer_id);
                 }
                 EmbedSite::Canvas(canvas_site) => {
                     let Some(canvas_frame) = self.canvas_frames.get(&canvas_site.canvas_id) else {
@@ -1069,14 +1237,16 @@ impl Compositor {
                     // The canvas embed site is its own layer: the worker's
                     // committed anyrender scene drawn at identity, placed by
                     // `canvas_transform` (scaled to the clip rect).
-                    let render = if canvas_frame.dirty {
+                    let layer_id = CompositingLayerId::Canvas(canvas_site.canvas_id);
+                    let present = canvas_frame.dirty || self.re_enters_composition(layer_id);
+                    let render = if present {
                         Some(canvas_frame.scene.clone().into_scene(&self.font_receiver))
                     } else {
                         None
                     };
 
                     layers.push(LayerUpdate {
-                        layer_id: CompositingLayerId::Canvas(canvas_site.canvas_id),
+                        layer_id,
                         parent: Some(CompositingLayerId::Navigable(frame_id)),
                         transform: canvas_transform,
                         clip_bounds: Rect::new(
@@ -1091,7 +1261,104 @@ impl Compositor {
                         width: canvas_frame.width,
                         height: canvas_frame.height,
                         render,
+                        direct_surface: None,
                     });
+                    presented_layers.insert(layer_id);
+                }
+                EmbedSite::Image(image_data) => {
+                    let Some(entry) = self.image_registry.get(&image_data.image_id).cloned() else {
+                        if input_debug_enabled() {
+                            trace!(
+                                "[input-debug][compositor] image paint_id={:?} no decoded pixels yet",
+                                image_data.paint_id
+                            );
+                        }
+                        continue;
+                    };
+                    let dirty = self
+                        .image_layers
+                        .get(&image_data.paint_id)
+                        .map(|state| state.dirty)
+                        .unwrap_or(true);
+                    if input_debug_enabled() {
+                        trace!(
+                            "[input-debug][compositor] image paint_id={:?} dirty={}",
+                            image_data.paint_id, dirty
+                        );
+                    }
+                    let transform = Affine::new(image_data.layout.transform);
+                    let tx = transform.as_coeffs()[4];
+                    let ty = transform.as_coeffs()[5];
+                    let clip_rect = Rect::new(
+                        image_data.layout.clip_bounds[0] - tx,
+                        image_data.layout.clip_bounds[1] - ty,
+                        image_data.layout.clip_bounds[2] - tx,
+                        image_data.layout.clip_bounds[3] - ty,
+                    );
+                    let local_w = clip_rect.width();
+                    let local_h = clip_rect.height();
+                    let scale_x = if entry.width > 0 {
+                        local_w / entry.width as f64
+                    } else {
+                        1.0
+                    };
+                    let scale_y = if entry.height > 0 {
+                        local_h / entry.height as f64
+                    } else {
+                        1.0
+                    };
+                    let image_transform = Affine::new([scale_x, 0.0, 0.0, scale_y, tx, ty]);
+
+                    // The `<img>` embed site is its own layer. The CPU image
+                    // backend draws the decoded pixels into a layer scene;
+                    // the macOS backend provides the image's own IOSurface,
+                    // which the embedder presents directly on the layer.
+                    //
+                    // The image's surface is fixed at decode time, so it is
+                    // delivered only for the composition that presents the
+                    // layer: the one after it became dirty (first paint, or a
+                    // switch to a different image) and the one that brings it
+                    // back into the composition after it was absent. Delivering
+                    // it every cycle would re-set the sublayer's contents with
+                    // unchanged pixels, which CoreAnimation reports as a layer
+                    // update (Quartz Debug flashes the image rect) without any
+                    // pixel changing.
+                    let layer_id = CompositingLayerId::Image(image_data.paint_id);
+                    let present = dirty || self.re_enters_composition(layer_id);
+                    let (render, direct_surface) = if let Some(surface) = &entry.stored.surface {
+                        (None, present.then(|| surface.payload.clone()))
+                    } else if let Some(image) = &entry.stored.image_data {
+                        let render = if present {
+                            let mut image_scene = RenderScene::new();
+                            image_scene.draw_image(ImageBrushRef::from(image), Affine::IDENTITY);
+                            Some(image_scene)
+                        } else {
+                            None
+                        };
+                        (render, None)
+                    } else {
+                        (None, None)
+                    };
+
+                    layers.push(LayerUpdate {
+                        layer_id,
+                        parent: Some(CompositingLayerId::Navigable(frame_id)),
+                        transform: image_transform,
+                        clip_bounds: Rect::new(
+                            image_data.layout.clip_bounds[0],
+                            image_data.layout.clip_bounds[1],
+                            image_data.layout.clip_bounds[2],
+                            image_data.layout.clip_bounds[3],
+                        ),
+                        corner_radius: image_data.clip_radius,
+                        z_order: (z, paint_order),
+                        background: None,
+                        width: entry.width,
+                        height: entry.height,
+                        render,
+                        direct_surface,
+                    });
+                    presented_layers.insert(layer_id);
                 }
             }
         }
@@ -1290,6 +1557,7 @@ impl Compositor {
                 EmbedSite::Frame(f) => Some(f.child_frame_id),
                 EmbedSite::Video(_) => None,
                 EmbedSite::Canvas(_) => None,
+                EmbedSite::Image(_) => None,
             })
             .collect::<Vec<_>>();
         for child_frame_id in child_frame_ids {
@@ -1311,5 +1579,262 @@ impl Compositor {
         let scale_x = clip_bounds.width() / f64::from(child_frame.viewport_width);
         let scale_y = clip_bounds.height() / f64::from(child_frame.viewport_height);
         Some(Affine::new([scale_x, 0.0, 0.0, scale_y, 0.0, 0.0]))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::Compositor;
+    use crate::renderer::image::{ImageSurface, StoredImage};
+    use anyrender::Scene as RenderScene;
+    use ipc_messages::content::{
+        EmbedBackgroundPolicy, EmbedLayout, EmbedSite, EmbedSiteId, FrameCompositionMetadata,
+        FrameId, IframeEmbedSite, ImageEmbedData, ImageIdentifier, ImagePaintId, NavigableId,
+        RecordedScene, ResourcePartitionKey, WebviewId,
+    };
+    use ipc_messages::graphics::{CompositingLayerId, DecodedImage, ImageFormat, SurfacePayload};
+
+    const IMAGE_WIDTH: u32 = 4;
+    const IMAGE_HEIGHT: u32 = 4;
+
+    fn empty_scene() -> RecordedScene {
+        let scene = RenderScene::new();
+        RecordedScene::from_scene_without_fonts(scene)
+    }
+
+    fn composition(embed_sites: Vec<EmbedSite>) -> FrameCompositionMetadata {
+        FrameCompositionMetadata { embed_sites }
+    }
+
+    fn layout(clip_bounds: [f64; 4], paint_order: u32) -> EmbedLayout {
+        EmbedLayout {
+            transform: [1.0, 0.0, 0.0, 1.0, clip_bounds[0], clip_bounds[1]],
+            clip_bounds,
+            z_index: 0,
+            paint_order,
+        }
+    }
+
+    fn image_site(paint_id: ImagePaintId, image_id: &ImageIdentifier) -> EmbedSite {
+        EmbedSite::Image(ImageEmbedData {
+            embed_site_id: EmbedSiteId(1),
+            paint_id,
+            image_id: image_id.clone(),
+            background_policy: EmbedBackgroundPolicy::Transparent,
+            clip_svg_path: String::from("M0,0 L4,0 L4,4 L0,4 Z"),
+            clip_radius: 0.0,
+            layout: layout([0.0, 0.0, 4.0, 4.0], 1),
+        })
+    }
+
+    fn iframe_site(child_frame_id: FrameId, clip_bounds: [f64; 4]) -> EmbedSite {
+        EmbedSite::Frame(IframeEmbedSite {
+            embed_site_id: EmbedSiteId(2),
+            child_frame_id,
+            background_policy: EmbedBackgroundPolicy::Transparent,
+            clip_svg_path: String::from("M0,0 L4,0 L4,4 L0,4 Z"),
+            layout: layout(clip_bounds, 2),
+        })
+    }
+
+    fn image_identifier(blob_id: u64) -> ImageIdentifier {
+        ImageIdentifier {
+            partition: ResourcePartitionKey {
+                top_level_traversable: Default::default(),
+                origin: String::from("http://localhost"),
+            },
+            blob_id,
+        }
+    }
+
+    /// A compositor holding one decoded image presented directly from its own
+    /// surface (the macOS `<img>` path), with the image layer registered on
+    /// `document_frame`.
+    fn compositor_with_direct_image(
+        document_frame: FrameId,
+        image_id: &ImageIdentifier,
+        embed_sites: Vec<EmbedSite>,
+    ) -> Compositor {
+        let mut compositor = Compositor::default();
+        compositor.insert_image(
+            image_id.clone(),
+            StoredImage {
+                image_data: None,
+                surface: Some(ImageSurface {
+                    payload: SurfacePayload::CpuShmem { shmem_key: 0 },
+                }),
+            },
+            DecodedImage {
+                width: IMAGE_WIDTH,
+                height: IMAGE_HEIGHT,
+                format: ImageFormat::Png,
+            },
+        );
+        assert!(
+            compositor.store_frame(
+                document_frame,
+                IMAGE_WIDTH,
+                IMAGE_HEIGHT,
+                composition(embed_sites),
+                empty_scene(),
+                true,
+            ),
+            "a frame stored for the first time is dirty"
+        );
+        compositor
+    }
+
+    /// Compose the scene, record the composition as delivered the way the event
+    /// loop does (for the layers that carried a surface), and report whether the
+    /// image layer was presented with a surface.
+    fn image_surface_delivered(compositor: &mut Compositor, paint_id: ImagePaintId) -> bool {
+        let composed = compositor
+            .compose_scene(WebviewId(NavigableId::new()))
+            .expect("the root frame composes");
+        let image_layer = composed
+            .layers
+            .iter()
+            .find(|layer| layer.layer_id == CompositingLayerId::Image(paint_id))
+            .expect("the image layer is part of the composition");
+        let presented = image_layer.direct_surface.is_some();
+        let delivered: Vec<CompositingLayerId> = composed
+            .layers
+            .iter()
+            .filter(|layer| layer.render.is_some() || layer.direct_surface.is_some())
+            .map(|layer| layer.layer_id)
+            .collect();
+        compositor.mark_layers_delivered(&delivered);
+        presented
+    }
+
+    /// The image's surface is delivered once and then left alone: presentation
+    /// only follows a change, so a composition that changes nothing re-set every
+    /// image layer's contents (a CoreAnimation layer update per image, which
+    /// Quartz Debug flashes) without any pixel changing.
+    #[test]
+    fn direct_image_surface_is_delivered_once() {
+        let document_frame = FrameId::new();
+        let paint_id = ImagePaintId::new();
+        let image_id = image_identifier(1);
+        let mut compositor = compositor_with_direct_image(
+            document_frame,
+            &image_id,
+            vec![image_site(paint_id, &image_id)],
+        );
+
+        assert!(image_surface_delivered(&mut compositor, paint_id));
+        assert!(!image_surface_delivered(&mut compositor, paint_id));
+        assert!(!image_surface_delivered(&mut compositor, paint_id));
+    }
+
+    /// A new image on the same `<img>` instance is a content change: its
+    /// surface is delivered again, though the layer's identifier is unchanged.
+    #[test]
+    fn direct_image_surface_is_delivered_after_the_image_changes() {
+        let document_frame = FrameId::new();
+        let paint_id = ImagePaintId::new();
+        let image_id = image_identifier(1);
+        let next_image_id = image_identifier(2);
+        let mut compositor = compositor_with_direct_image(
+            document_frame,
+            &image_id,
+            vec![image_site(paint_id, &image_id)],
+        );
+        assert!(image_surface_delivered(&mut compositor, paint_id));
+
+        compositor.insert_image(
+            next_image_id.clone(),
+            StoredImage {
+                image_data: None,
+                surface: Some(ImageSurface {
+                    payload: SurfacePayload::CpuShmem { shmem_key: 1 },
+                }),
+            },
+            DecodedImage {
+                width: IMAGE_WIDTH,
+                height: IMAGE_HEIGHT,
+                format: ImageFormat::Png,
+            },
+        );
+        assert!(
+            !compositor.store_frame(
+                document_frame,
+                IMAGE_WIDTH,
+                IMAGE_HEIGHT,
+                composition(vec![image_site(paint_id, &next_image_id)]),
+                empty_scene(),
+                true,
+            ),
+            "a different image on the same embed site changes no pixels of the document's own scene"
+        );
+
+        assert!(image_surface_delivered(&mut compositor, paint_id));
+        assert!(!image_surface_delivered(&mut compositor, paint_id));
+    }
+
+    /// An image inside a child navigable that was scrolled out of the
+    /// composition (its layer was dropped, sublayer and all) is delivered again
+    /// when it comes back, even though its content never changed: otherwise the
+    /// embedder would create an empty sublayer for it.
+    #[test]
+    fn clean_image_layer_is_delivered_when_it_re_enters_the_composition() {
+        let root_frame = FrameId::new();
+        let child_frame = FrameId::new();
+        let paint_id = ImagePaintId::new();
+        let image_id = image_identifier(1);
+        // The child navigable sits outside the root viewport, so the composition
+        // skips it and its image layer.
+        let mut compositor = compositor_with_direct_image(root_frame, &image_id, Vec::new());
+        assert!(
+            compositor.store_frame(
+                child_frame,
+                IMAGE_WIDTH,
+                IMAGE_HEIGHT,
+                composition(vec![image_site(paint_id, &image_id)]),
+                empty_scene(),
+                false,
+            ),
+            "the child navigable's first frame is dirty"
+        );
+        assert!(
+            !compositor.store_frame(
+                root_frame,
+                IMAGE_WIDTH,
+                IMAGE_HEIGHT,
+                composition(vec![iframe_site(child_frame, [10.0, 10.0, 14.0, 14.0])]),
+                empty_scene(),
+                true,
+            ),
+            "the root frame only moved an embed site"
+        );
+        let composed = compositor
+            .compose_scene(WebviewId(NavigableId::new()))
+            .expect("the root frame composes");
+        assert!(
+            !composed
+                .layers
+                .iter()
+                .any(|layer| layer.layer_id == CompositingLayerId::Image(paint_id)),
+            "an offscreen child navigable contributes no layer"
+        );
+        let navigable_layers: Vec<CompositingLayerId> =
+            composed.layers.iter().map(|layer| layer.layer_id).collect();
+        compositor.mark_layers_delivered(&navigable_layers);
+
+        // The child scrolls into view: its layer and its image layer re-enter
+        // the composition.
+        assert!(
+            !compositor.store_frame(
+                root_frame,
+                IMAGE_WIDTH,
+                IMAGE_HEIGHT,
+                composition(vec![iframe_site(child_frame, [0.0, 0.0, 4.0, 4.0])]),
+                empty_scene(),
+                true,
+            ),
+            "scrolling an embed site into view leaves the document's own scene unchanged"
+        );
+        assert!(image_surface_delivered(&mut compositor, paint_id));
+        assert!(!image_surface_delivered(&mut compositor, paint_id));
     }
 }
