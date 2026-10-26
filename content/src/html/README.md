@@ -465,7 +465,8 @@ Wiring a canvas that draws on a worker:
   rides the owner navigable's cycle, the user agent also arms the graphics
   process's `RenderStarted` deadline, so a canvas commit keeps compositing
   against the last committed root when the window's top-level frame is
-  late (see `graphics/README.md`).
+  late (see `graphics/README.md`). The render cycle itself is documented in
+  `user_agent/README.md` ("Rendering pipeline").
 
 Remaining gaps:
 

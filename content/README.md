@@ -125,7 +125,8 @@ adding work to the loop:
   before the top-level traversable's frame composes (their frames compose
   together), and letting a command overtake it makes the `RenderingOpportunity`
   TLA+ trace validation fail intermittently (`verification/verify-specs.sh`,
-  roughly one run in five).
+  roughly one run in five). The pipeline itself is documented in
+  `user_agent/README.md` ("Rendering pipeline").
 
 ## Fetch
 
