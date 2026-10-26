@@ -455,9 +455,9 @@ Wiring a canvas that draws on a worker:
 - A worker `requestAnimationFrame` sends
   `ContentEvent::WorkerAnimationFrameRequested`; the user agent records the
   request against the worker's owner navigable. When that navigable's
-  update the rendering is queued — i.e. when the embedder needs a frame —
-  the user agent sends `Command::RunAnimationFrameCallbacks` to the
-  worker's own event loop (the worker's update-the-rendering counterpart).
+  update the rendering is queued, the user agent sends
+  `Command::RunAnimationFrameCallbacks` to the worker's own event loop (the
+  worker's update-the-rendering counterpart).
   The dispatch must be gated on that frame cadence, never performed when
   the request arrives: a worker `requestAnimationFrame` loop re-registers
   on every run, so dispatching immediately spins at the worker event
