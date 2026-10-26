@@ -1612,7 +1612,7 @@ impl ApplicationHandler<FormalWebUserEvent> for WindowedApp {
 
     fn user_event(&mut self, event_loop: &ActiveEventLoop, event: FormalWebUserEvent) {
         match event {
-            FormalWebUserEvent::RequestRedraw(webview_id) => {
+            FormalWebUserEvent::RequestNextFrame(webview_id) => {
                 if let Some(window) = Self::window_for_webview(self, webview_id) {
                     let is_active = self
                         .windows

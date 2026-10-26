@@ -82,7 +82,7 @@ stranded-update race: the model batches the whole hierarchy, while the UA's
 `queue_update_the_rendering_for_navigables` drains each navigable independently
 (so a child is serviced even when the top-level is in flight). Expressing that
 recovery in the model would need a distinct `CompositionChanged`-style note
-event and a `request_redraw` recovery action, and is deferred.
+event and a `request_next_frame` recovery action, and is deferred.
 
 ### Adding a spec
 

@@ -35,7 +35,7 @@ impl UserEventSink for MacEventSink {
 }
 
 pub enum FormalWebUserEvent {
-    RequestRedraw(WebviewId),
+    RequestNextFrame(WebviewId),
     NewWebContentLayers {
         webview_id: WebviewId,
         /// The per-layer frames: topology always, surface only for the
@@ -104,12 +104,12 @@ impl Embedder for EventLoopEmbedder {
             .send(FormalWebUserEvent::NewWebview(webview_id, target_name))
     }
 
-    fn request_redraw(&self, webview_id: WebviewId) {
+    fn request_next_frame(&self, webview_id: WebviewId) {
         if let Err(error) = self
             .sink
-            .send(FormalWebUserEvent::RequestRedraw(webview_id))
+            .send(FormalWebUserEvent::RequestNextFrame(webview_id))
         {
-            error!("failed to request redraw for webview {webview_id:?}: {error}");
+            error!("failed to request next frame for webview {webview_id:?}: {error}");
         }
     }
 

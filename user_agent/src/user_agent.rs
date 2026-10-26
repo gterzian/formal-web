@@ -217,7 +217,7 @@ pub trait Embedder: Send + Sync {
     ) -> Result<(), String>;
     fn navigation_completed(&self, completed: NavigationCompleted) -> Result<(), String>;
     fn new_webview(&self, webview_id: WebviewId, target_name: String) -> Result<(), String>;
-    fn request_redraw(&self, webview_id: WebviewId);
+    fn request_next_frame(&self, webview_id: WebviewId);
     fn viewport_scale_factor(&self) -> f32;
     fn window_viewport_snapshot(&self) -> Option<(u32, u32, f32, ColorScheme)>;
     fn clipboard_set_text(&self, text: String);
@@ -4916,7 +4916,7 @@ impl UserAgentWorker {
     /// Records a UI state update for `navigable_id`. Update the rendering
     /// renders only when one is pending (the Unnecessary rendering step of
     /// <https://html.spec.whatwg.org/multipage/webappapis.html#update-the-rendering>).
-    /// Otherwise the update is batched and an embedder redraw is requested,
+    /// Otherwise the update is batched and the next frame is requested,
     /// so the next paint notes a rendering opportunity and queues it.
     fn note_ui_state_update(&mut self, navigable_id: NavigableId) {
         verification::tla_log!(
@@ -4948,7 +4948,7 @@ impl UserAgentWorker {
             // Ask the embedder to paint; the paint notes a rendering
             // opportunity, which queues the batched update.
             if let Some(traversable_id) = self.state.top_level_traversable_id(navigable_id) {
-                self.host.request_redraw(WebviewId(traversable_id));
+                self.host.request_next_frame(WebviewId(traversable_id));
             }
             return;
         }
@@ -5619,8 +5619,8 @@ impl UserAgentWorker {
                     // Without a rendering opportunity the queued update is
                     // never drained, and the change only appears when the
                     // next unrelated input event happens to request a frame.
-                    // Request a redraw so the next paint drains it.
-                    self.host.request_redraw(*webview_id);
+                    // Request the next frame so the next paint drains it.
+                    self.host.request_next_frame(*webview_id);
                 }
                 self.state
                     .frame_hit_info
@@ -5727,9 +5727,9 @@ impl UserAgentWorker {
                 // render. Note a UI state update for the traversable so its
                 // render cycle re-composes and includes the latest embedded
                 // frame. `note_ui_state_update` batches the note and requests
-                // a redraw when the embedder is not already painting, so a
-                // static parent gets one repaint per content change instead of
-                // deferring to the next unrelated input.
+                // the next frame when the embedder is not already painting, so
+                // a static parent gets one repaint per content change instead
+                // of deferring to the next unrelated input.
                 info!(
                     "[render-pipe] UA composition changed webview={:?}",
                     webview_id

@@ -2715,7 +2715,7 @@ impl MacApp {
             return;
         }
         match event {
-            FormalWebUserEvent::RequestRedraw(webview_id) => {
+            FormalWebUserEvent::RequestNextFrame(webview_id) => {
                 self.frame_needed(webview_id);
             }
             FormalWebUserEvent::NavigationRequested {
