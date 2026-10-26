@@ -2492,11 +2492,10 @@ impl ContentProcess {
             // navigable would have no visible effect; and doc's map of
             // animation frame callbacks is empty."
             // Note: The content process collapses `docs` to its single active
-            // document. `needs_paint` is the "no visible effect" signal and
-            // `had_pending_r_af` is the animation frame callbacks check;
-            // `is_animating` keeps an animated document rendering, and a fresh
-            // document that has never painted fails open so the first frame
-            // always runs blitz.
+            // document. The removal conditions invert to `needs_paint` or
+            // `is_animating` (a visible effect) and `had_pending_r_af` (the
+            // animation frame callbacks); `last_scene` being absent forces the
+            // first paint so blitz has a scene to reuse.
             let should_render = {
                 let needs_paint = document.needs_paint.get();
                 let document_guard = document.document.borrow();
