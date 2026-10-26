@@ -496,7 +496,9 @@ mod tests {
         // SOF0 sampling factors are 0x22/0x11/0x11: 4:2:0, the layout photos
         // use, where the decoders' chroma upsampling can differ. The bytes are
         // checked in because the `image` crate's JPEG encoder is fixed at
-        // 4:2:2 and cannot produce one.
+        // 4:2:2 and cannot produce one; they were written by
+        // `sips -s format jpeg` from a PNG of the same shading, so any 4:2:0
+        // encoder can regenerate the fixture.
         let encoded = include_bytes!("../../../tests/fixtures/photo-like-420.jpg");
         assert_decoders_agree(encoded, SUBSAMPLED_JPEG_TOLERANCE, ReportFormat::Jpeg);
     }

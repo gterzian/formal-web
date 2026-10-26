@@ -283,12 +283,12 @@ review checklist.
 
 # Process Boundaries
 
-Each process owns one capability, and the boundary is enforced rather than
-advisory: the helper processes are sandboxed per platform, so on iOS a process
-will only be allowed its own capability (network, GPU, filesystem). Code that
-performs another process's work "works today" and becomes a failure the moment
-the sandbox lands — so the rule is checked when the code is written, not when
-the sandbox breaks it.
+Each process owns one capability, and the boundary has to be enforceable
+rather than advisory: each helper process will run under a per-platform
+sandbox that allows it only its own capability (network, GPU, filesystem), iOS
+first. Code that performs another process's work "works today" and becomes a
+failure the moment its sandbox lands — so the rule is checked when the code is
+written, not when the sandbox breaks it.
 
 - **Content owns the DOM and runs JavaScript.** It executes scripts, holds the
   document and its algorithms' state, and never touches the network, a GPU API,

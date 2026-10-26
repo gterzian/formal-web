@@ -3251,18 +3251,25 @@ impl ContentProcess {
         let data_shmem_key = registration.data_shmem_key;
         let mut image_shmem = HashMap::new();
         image_shmem.insert(data_shmem_key, region);
-        let Some(graphics_sender) = &self.graphics_sender else {
-            // Without a graphics process nothing decodes this image.
-            return self.complete_image_decode(&image_id, None);
-        };
         let command = GraphicsCommand::RegisterImage {
             webview_id: WebviewId(navigable_id),
             image_id: registration.id,
             data_shmem_key,
         };
-        graphics_sender
-            .send_with_shmem_map(command, image_shmem)
-            .map_err(|error| format!("failed to register image with graphics: {error}"))
+        let send_result = {
+            let Some(graphics_sender) = &self.graphics_sender else {
+                // Without a graphics process nothing decodes this image.
+                return self.complete_image_decode(&image_id, None);
+            };
+            graphics_sender.send_with_shmem_map(command, image_shmem)
+        };
+        if let Err(error) = send_result {
+            // The graphics process never received the bytes, so no report will
+            // arrive: run the response step without one.
+            self.complete_image_decode(&image_id, None)?;
+            return Err(format!("failed to register image with graphics: {error}"));
+        }
+        Ok(())
     }
 
     /// Release one image's decoded surface and its transport entry, for a
