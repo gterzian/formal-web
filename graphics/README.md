@@ -178,18 +178,36 @@ resulting presentation entry. `ImageDecoder` is the single decode interface;
 A new platform decoder is a sibling module implementing `ImageDecoder`, added
 to the cfg selection in `renderer/image/mod.rs`.
 
-The content process sends each `ImageIdentifier` once. Every registration is
-answered with `GraphicsEvent::ImageDecoded`: `result` is `Ok` when the image
-decoded and its layer can be presented, `Err` with the decoder's failure
-reason otherwise. The UA forwards it to content, where `decode()` waits for
-it, so a decode failure must keep rejecting it even though the layer stays
-empty. `GraphicsCommand::UnregisterImages` releases a document's decoded
-data/IOSurfaces when its `DestroyDocument` arrives; that is the only eviction
-step, so images otherwise stay resident for the webview's lifetime.
+The `image` crate is a dependency of the slow path only: it is enabled off macOS
+and by `cpu_readback` (`graphics/Cargo.toml`), so the macOS zero-copy build
+compiles no Rust image decoder at all and reads through Image I/O instead. The
+decoder tests still use the crate as a dev-dependency, to decode the same
+fixtures through both decoders; nothing else in the workspace may pull `image`
+into the graphics binary's dependency tree, which is why the verification
+crate's screenshot tool sits behind its `screenshot-check` feature.
+
+The content process sends each `ImageIdentifier` once, with the encoded bytes,
+before it knows anything about the image: the decoder is the only source of the
+image's dimensions and format. Every registration is answered with
+`GraphicsEvent::ImageDecoded`, whose `result` is the `DecodedImage` (dimensions
+plus the `ImageFormat` the decoder recognized) or `Err` with the decoder's
+failure reason. The UA forwards it to content, which runs step 27 of update the
+image data from that report — its accepted set is PNG/JPEG/GIF/WebP, so a
+format the decoder reports as `Other` fails the request, and the content
+process unregisters the decoded image again.
+
+`GraphicsCommand::UnregisterImages` releases a document's decoded
+data/IOSurfaces when its `DestroyDocument` arrives; that is also how a rejected
+format's surface is released, so an image otherwise stays resident for the
+webview's lifetime.
 
 Limitations:
 
 - The CPU path renders each image into a layer surface.
+- Only `<img>` elements in the top-level document become image layers. CSS
+  `background-image`/`mask-image` and `<img>` inside same-origin iframe
+  subdocuments are not decoded by anyone: the document's layout-time image
+  loader is answered with a failed load, so blitz paints nothing there.
 - The macOS path has no fallback decoder. Content accepts PNG, JPEG, GIF and
   WebP because its `image`-crate probe recognizes them, but Image I/O's support
   varies by OS version (Apple documents no cross-version guarantee, and WebKit

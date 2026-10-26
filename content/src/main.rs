@@ -77,7 +77,7 @@ use ipc_messages::content::{
     ResourcePartitionKey, ScriptEvaluationResult, TitleChanged, TraversableViewport, UserScript,
     ViewportSnapshot, WebviewId, WindowTimerKey, WorkerId, WorkerOwner,
 };
-use ipc_messages::graphics::GraphicsCommand;
+use ipc_messages::graphics::{DecodedImage, GraphicsCommand, ImageFormat};
 use ipc_messages::media::{VideoEmbedData, VideoPaintId};
 use ipc_messages::safe_passing_of_structured_data::PostMessageRequest;
 use log::{debug, error, info, warn};
@@ -85,7 +85,6 @@ use std::{
     cell::{Cell, RefCell},
     collections::{HashMap, HashSet},
     env,
-    io::Cursor,
     rc::{Rc, Weak},
     sync::Arc,
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
@@ -276,6 +275,25 @@ struct PendingDocumentLoad {
     scripts: Vec<DeferredScriptState>,
 }
 
+/// One `<img>` response whose bytes are with the graphics process: what step
+/// 27 needs once the decoder reports on the image identifier.
+struct PendingImageDecode {
+    document_id: DocumentId,
+    navigable_id: NavigableId,
+    element_id: ImageElementId,
+    handler_id: DocumentFetchId,
+}
+
+/// Whether the content process accepts the format the graphics process's
+/// decoder reported, i.e. the user agent's "supported file format" decision
+/// for `<img>` resources.
+fn is_supported_image_format(format: ImageFormat) -> bool {
+    matches!(
+        format,
+        ImageFormat::Png | ImageFormat::Jpeg | ImageFormat::Gif | ImageFormat::WebP
+    )
+}
+
 /// Run the embedder's scripts in a new document's realm, before the
 /// document is populated, so a page's own scripts see whatever they set up.
 ///
@@ -426,6 +444,9 @@ pub(crate) struct ContentProcess {
     /// The image identifiers each document has registered with the graphics
     /// process; released when the document is destroyed.
     registered_images_by_document: HashMap<DocumentId, HashSet<ImageIdentifier>>,
+    /// The `<img>` responses whose bytes are with the graphics process: step 27
+    /// runs when the decoder reports back on the image identifier.
+    pending_image_decodes: HashMap<ImageIdentifier, PendingImageDecode>,
     /// The same-origin iframe subdocuments owned by this process's documents,
     /// keyed by the id their `DocumentProviders` routes asset fetches with.
     subdocuments: HashMap<uuid::Uuid, Weak<RefCell<BaseDocument>>>,
@@ -524,6 +545,7 @@ impl ContentProcess {
             image_sender: ImageTransportSender::default(),
             image_registry: Rc::new(RefCell::new(ImageRegistry::default())),
             registered_images_by_document: HashMap::new(),
+            pending_image_decodes: HashMap::new(),
             subdocuments: HashMap::new(),
             tla_tracer: TLATracer::new("Navigation", "formal-web:content", trace_sender.clone()),
             clipboard_cache: clipboard_cache.clone(),
@@ -1853,6 +1875,10 @@ impl ContentProcess {
             if let Err(error) = content_document.settings.clear_all_window_timers() {
                 error!("failed to clear window timers during document teardown: {error}");
             }
+            // A response whose bytes are already with the graphics process
+            // keeps its pending entry: the decode report still has to settle
+            // through `complete_image_decode` (which finds no providers and
+            // releases the surface).
             let mut image_ids: HashSet<ImageIdentifier> = self
                 .registered_images_by_document
                 .remove(&document_id)
@@ -3027,44 +3053,128 @@ impl ContentProcess {
         handler_id: DocumentFetchId,
         body: &[u8],
     ) -> Result<(), String> {
-        let providers = self
-            .documents
-            .get(&document_id)
-            .and_then(|content_document| content_document.providers.clone());
-        let Some(providers) = providers else {
+        // The graphics process is the only decoder: this process never sees
+        // the image's dimensions or format itself, so step 27 runs when the
+        // decoder reports back (`complete_image_decode`). Ship the bytes now.
+        let image_id = {
+            let registry = self.image_registry.borrow();
+            images_processing_model::request_image_id(&registry, element_id, handler_id)
+        };
+        let Some(image_id) = image_id else {
+            // A response for a request the processing model already aborted:
+            // there is nothing to register, and step 27 fails it.
+            let providers = self
+                .documents
+                .get(&document_id)
+                .and_then(|content_document| content_document.providers.clone());
+            let Some(providers) = providers else {
+                return Ok(());
+            };
+            let outcome = {
+                let mut registry = self.image_registry.borrow_mut();
+                images_processing_model::process_image_fetch_response(
+                    &mut registry,
+                    providers.as_ref(),
+                    element_id,
+                    handler_id,
+                    None,
+                )
+            };
+            if let ImageFetchOutcome::ImageAvailable(aborted_id) = outcome {
+                // The model cannot make an aborted request available; log the
+                // identity it produced so a regression is visible.
+                error!("an aborted image request became available as {aborted_id:?}");
+            }
+            self.settle_image_decodes(element_id);
             return Ok(());
         };
-        let dimensions = image::ImageReader::new(Cursor::new(body))
-            .with_guessed_format()
-            .map_err(|error| format!("failed to sniff image data: {error}"))?
-            .into_dimensions()
-            .ok();
+        self.pending_image_decodes.insert(
+            image_id.clone(),
+            PendingImageDecode {
+                document_id,
+                navigable_id,
+                element_id,
+                handler_id,
+            },
+        );
+        let encoded = Arc::new(body.to_vec());
+        self.register_image_with_graphics(navigable_id, image_id, encoded)
+    }
+
+    /// Runs step 27 of
+    /// <https://html.spec.whatwg.org/#update-the-image-data> (or steps
+    /// 17.5.1-17.5.3 of "reacting to environment changes") once the graphics
+    /// process has decoded the response body, and settles the `decode()`
+    /// promises that were waiting on it.
+    ///
+    /// `report` is the decoder's report; `None` means the bytes were never
+    /// decoded into an image, which takes step 27's "not in a supported file
+    /// format" branch.
+    fn complete_image_decode(
+        &mut self,
+        image_id: &ImageIdentifier,
+        report: Option<DecodedImage>,
+    ) -> Result<(), String> {
+        let Some(pending) = self.pending_image_decodes.remove(image_id) else {
+            // A report for a fetch this process no longer tracks (its document
+            // was destroyed, or the response was already completed).
+            return Ok(());
+        };
+        let providers = self
+            .documents
+            .get(&pending.document_id)
+            .and_then(|content_document| content_document.providers.clone());
+        let Some(providers) = providers else {
+            self.unregister_image(pending.navigable_id, image_id);
+            return Ok(());
+        };
         // Note: the net process delivers the whole response body in one
         // message, so this is step 27's last networking task; fetch does not
         // stream chunks yet, so the per-chunk presentation updates of the
         // earlier networking tasks are not modeled.
+        let dimensions = report
+            .filter(|report| is_supported_image_format(report.format))
+            .map(|report| (report.width, report.height));
         let outcome = {
             let mut registry = self.image_registry.borrow_mut();
             images_processing_model::process_image_fetch_response(
                 &mut registry,
                 providers.as_ref(),
-                element_id,
-                handler_id,
+                pending.element_id,
+                pending.handler_id,
                 dimensions,
             )
         };
-        match outcome {
-            ImageFetchOutcome::ImageAvailable(image_id) => {
+        let decoded = match outcome {
+            ImageFetchOutcome::ImageAvailable(available_id) => {
                 self.registered_images_by_document
-                    .entry(document_id)
+                    .entry(pending.document_id)
                     .or_default()
-                    .insert(image_id.clone());
-                let encoded = Arc::new(body.to_vec());
-                self.register_image_with_graphics(navigable_id, image_id, encoded)?;
+                    .insert(available_id.clone());
+                if &available_id != image_id {
+                    // The registration belongs to `image_id`; an identity the
+                    // model settled instead would leave it unreachable.
+                    self.unregister_image(pending.navigable_id, image_id);
+                }
+                true
             }
-            ImageFetchOutcome::Failed => {}
+            ImageFetchOutcome::Failed => {
+                // The decoder produced a surface for a format this process does
+                // not accept, or the request failed after the bytes were
+                // shipped: drop it instead of holding it for the webview's
+                // lifetime.
+                self.unregister_image(pending.navigable_id, image_id);
+                false
+            }
+        };
+        let settled = {
+            let mut registry = self.image_registry.borrow_mut();
+            images_processing_model::image_decoded(&mut registry, image_id, decoded)
+        };
+        for element_id in settled {
+            self.settle_image_decodes(element_id);
         }
-        self.settle_image_decodes(element_id);
+        self.settle_image_decodes(pending.element_id);
         Ok(())
     }
 
@@ -3107,33 +3217,30 @@ impl ContentProcess {
         Ok(())
     }
 
-    /// Ship the encoded bytes of a newly available `<img>` resource to the
-    /// graphics process, which decodes it into its own compositing layer.
+    /// Ship the encoded bytes of an `<img>` resource to the graphics process,
+    /// which is the only image decoder. Its `ImageDecoded` report completes
+    /// step 27 through `complete_image_decode`.
     fn register_image_with_graphics(
         &mut self,
         navigable_id: NavigableId,
         image_id: ImageIdentifier,
         encoded: Arc<Vec<u8>>,
     ) -> Result<(), String> {
-        let image_without_transport = image_id.clone();
         let mut next_shmem_key = 0usize;
         let Some((registration, region)) =
             self.image_sender
-                .prepare_image(image_id, &encoded, &mut next_shmem_key)
+                .prepare_image(image_id.clone(), &encoded, &mut next_shmem_key)
         else {
             // The bytes never reach the graphics process, so nothing will
-            // decode this image: record it as decoded so `decode()` settles.
-            self.record_image_decoded(&image_without_transport);
-            return Ok(());
+            // decode this image: step 27 fails it.
+            return self.complete_image_decode(&image_id, None);
         };
         let data_shmem_key = registration.data_shmem_key;
         let mut image_shmem = HashMap::new();
         image_shmem.insert(data_shmem_key, region);
         let Some(graphics_sender) = &self.graphics_sender else {
-            // Without a graphics process the image is never decoded; record it
-            // as decoded so `decode()` settles.
-            self.record_image_decoded(&registration.id);
-            return Ok(());
+            // Without a graphics process nothing decodes this image.
+            return self.complete_image_decode(&image_id, None);
         };
         let command = GraphicsCommand::RegisterImage {
             webview_id: WebviewId(navigable_id),
@@ -3142,18 +3249,23 @@ impl ContentProcess {
         };
         graphics_sender
             .send_with_shmem_map(command, image_shmem)
-            .map_err(|error| format!("failed to register image with graphics: {error}"))?;
-        Ok(())
+            .map_err(|error| format!("failed to register image with graphics: {error}"))
     }
 
-    /// Records the graphics process's decode outcome for one image resource.
-    fn record_image_decoded(&mut self, image_id: &ImageIdentifier) {
-        let settled = {
-            let mut registry = self.image_registry.borrow_mut();
-            images_processing_model::image_decoded(&mut registry, image_id, true)
+    /// Release one image's decoded surface and its transport entry, for a
+    /// resource the processing model will not present.
+    fn unregister_image(&mut self, navigable_id: NavigableId, image_id: &ImageIdentifier) {
+        self.image_sender
+            .forget_images(std::slice::from_ref(image_id));
+        let Some(graphics_sender) = &self.graphics_sender else {
+            return;
         };
-        for element_id in settled {
-            self.settle_image_decodes(element_id);
+        let command = GraphicsCommand::UnregisterImages {
+            webview_id: WebviewId(navigable_id),
+            image_ids: vec![image_id.clone()],
+        };
+        if let Err(error) = graphics_sender.send(command) {
+            error!("failed to unregister an image with graphics: {error}");
         }
     }
 
@@ -4284,13 +4396,7 @@ impl ContentProcess {
                 if let Err(error) = &result {
                     error!("graphics failed to decode an image: {error}");
                 }
-                let settled = {
-                    let mut registry = self.image_registry.borrow_mut();
-                    images_processing_model::image_decoded(&mut registry, &image_id, result.is_ok())
-                };
-                for element_id in settled {
-                    self.settle_image_decodes(element_id);
-                }
+                self.complete_image_decode(&image_id, result.ok())?;
                 Ok(true)
             }
             RunImageElementTask {

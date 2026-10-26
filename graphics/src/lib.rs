@@ -678,19 +678,19 @@ fn handle_command<B: MediaBackend + 'static, R: SurfaceRenderer>(
                 .or_insert_with(|| WebviewState::new(channels.clone()));
             let stored = slot.renderer.store_image(&image_id, bytes);
             let result = match stored {
-                Ok(Some((stored, (width, height)))) => {
+                Ok((stored, decoded)) => {
                     slot.compositor
-                        .insert_image(image_id.clone(), stored, (width, height));
+                        .insert_image(image_id.clone(), stored, decoded);
                     debug!(
-                        "[render-pipe] Graphics register image webview={:?} size={}x{} encoded_bytes={}",
+                        "[render-pipe] Graphics register image webview={:?} size={}x{} format={:?} encoded_bytes={}",
                         webview_id,
-                        width,
-                        height,
+                        decoded.width,
+                        decoded.height,
+                        decoded.format,
                         bytes.len()
                     );
-                    Ok(())
+                    Ok(decoded)
                 }
-                Ok(None) => Ok(()),
                 Err(error) => {
                     error!("[render-pipe] Graphics failed to decode image: {error}");
                     Err(error)

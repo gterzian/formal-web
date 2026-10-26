@@ -65,10 +65,10 @@ pub(crate) enum AssetRequest {
         overrides: FontFaceOverrides,
         url: String,
     },
-    /// A decoded image installed into the document's layout-time image
-    /// loader: a CSS `background-image`/`mask-image`, or an `<img>` in a
-    /// same-origin iframe subdocument (which blitz paints into its parent's
-    /// scene).
+    /// An image the document's layout-time loader asked for (a CSS
+    /// `background-image`/`mask-image`, or an `<img>` in a same-origin iframe
+    /// subdocument). Nothing decodes it: the graphics process owns every image,
+    /// so the request is answered as failed and blitz paints nothing.
     DecodedImage {
         node_id: usize,
         url: String,
@@ -351,25 +351,18 @@ pub(crate) fn install_resource(
             }));
             Ok(())
         }
-        AssetRequest::DecodedImage {
-            node_id,
-            url,
-            image_type,
-        } => {
-            let decoded = image::load_from_memory(body)
-                .map_err(|error| format!("failed to decode image {url}: {error}"))?
-                .into_rgba8();
-            let width = decoded.width();
-            let height = decoded.height();
+        AssetRequest::DecodedImage { node_id, url, .. } => {
+            // The graphics process is the only image decoder, and it composites
+            // `<img>` elements as their own layers, so this process never hands
+            // blitz image pixels. The failed load leaves blitz painting nothing
+            // where it asked for one (a CSS `background-image`/`mask-image`, or
+            // an `<img>` in a same-origin iframe subdocument).
             document.handle_message(DocumentEvent::ResourceLoad(ResourceLoadResponse {
                 request_id: 0,
                 node_id: Some(*node_id),
                 resolved_url: Some(response_url.to_string()),
-                result: Ok(Resource::Image(
-                    *image_type,
-                    width,
-                    height,
-                    std::sync::Arc::new(decoded.into_raw()),
+                result: Err(format!(
+                    "image {url} is composited by the graphics process, not painted by the document"
                 )),
             }));
             Ok(())

@@ -91,7 +91,7 @@ impl SurfaceRenderer for IosurfaceRenderer {
         &mut self,
         id: &ImageIdentifier,
         encoded: &[u8],
-    ) -> Result<Option<StoredImageResult>, String> {
+    ) -> Result<StoredImageResult, String> {
         self.gpu.store_image(id, encoded)
     }
 

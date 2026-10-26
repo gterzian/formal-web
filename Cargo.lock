@@ -922,7 +922,6 @@ dependencies = [
  "data-url",
  "env_logger",
  "html5ever",
- "image",
  "ipc",
  "ipc_messages",
  "js_engine",

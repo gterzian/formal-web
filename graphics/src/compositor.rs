@@ -12,6 +12,8 @@ use ipc_messages::content::{
 use ipc_messages::graphics::{CompositingLayerId, FrameHitInfo, LayerTopology, SurfacePayload};
 
 use crate::ComposedScene;
+use ipc_messages::graphics::DecodedImage;
+
 use crate::renderer::image::StoredImage;
 use ipc_messages::media::VideoPaintId;
 use kurbo::{Affine, Rect, Shape};
@@ -349,7 +351,7 @@ impl Compositor {
         &mut self,
         id: ImageIdentifier,
         stored: StoredImage,
-        dimensions: (u32, u32),
+        decoded: DecodedImage,
     ) {
         if self.image_registry.contains_key(&id) {
             return;
@@ -358,8 +360,8 @@ impl Compositor {
             id,
             StoredImageEntry {
                 stored,
-                width: dimensions.0,
-                height: dimensions.1,
+                width: decoded.width,
+                height: decoded.height,
             },
         );
     }
@@ -1590,7 +1592,7 @@ mod tests {
         FrameId, IframeEmbedSite, ImageEmbedData, ImageIdentifier, ImagePaintId, NavigableId,
         RecordedScene, ResourcePartitionKey, WebviewId,
     };
-    use ipc_messages::graphics::{CompositingLayerId, SurfacePayload};
+    use ipc_messages::graphics::{CompositingLayerId, DecodedImage, ImageFormat, SurfacePayload};
 
     const IMAGE_WIDTH: u32 = 4;
     const IMAGE_HEIGHT: u32 = 4;
@@ -1662,7 +1664,11 @@ mod tests {
                     payload: SurfacePayload::CpuShmem { shmem_key: 0 },
                 }),
             },
-            (IMAGE_WIDTH, IMAGE_HEIGHT),
+            DecodedImage {
+                width: IMAGE_WIDTH,
+                height: IMAGE_HEIGHT,
+                format: ImageFormat::Png,
+            },
         );
         assert!(
             compositor.store_frame(
@@ -1744,7 +1750,11 @@ mod tests {
                     payload: SurfacePayload::CpuShmem { shmem_key: 1 },
                 }),
             },
-            (IMAGE_WIDTH, IMAGE_HEIGHT),
+            DecodedImage {
+                width: IMAGE_WIDTH,
+                height: IMAGE_HEIGHT,
+                format: ImageFormat::Png,
+            },
         );
         assert!(
             !compositor.store_frame(

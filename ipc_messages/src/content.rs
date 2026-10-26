@@ -1,3 +1,4 @@
+use crate::graphics::DecodedImage;
 use crate::media::{VideoEmbedData, VideoPaintId};
 use crate::safe_passing_of_structured_data::{PortMessagePayload, PostMessageRequest};
 use anyrender::{
@@ -1180,8 +1181,9 @@ pub enum Command {
     /// image (step 2.3 of `decode()`).
     ImageDecoded {
         image_id: ImageIdentifier,
-        /// `Err` carries the decoder's failure reason.
-        result: Result<(), String>,
+        /// The graphics process's decode report; `Err` carries the decoder's
+        /// failure reason.
+        result: Result<DecodedImage, String>,
     },
     /// An element task on the DOM manipulation task source queued by an image
     /// algorithm: run the task's steps, which may set the current URL and fire

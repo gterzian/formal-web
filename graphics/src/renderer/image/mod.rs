@@ -17,7 +17,7 @@
 //! alias names the one this build compiles.
 
 use ipc_messages::content::ImageIdentifier;
-use ipc_messages::graphics::SurfacePayload;
+use ipc_messages::graphics::{DecodedImage, SurfacePayload};
 use peniko::ImageData;
 use vello::Renderer as VelloRenderer;
 
@@ -50,12 +50,14 @@ pub struct ImageSurface {
     pub payload: SurfacePayload,
 }
 
-/// A decoded image's presentation plus its logical dimensions.
-pub(crate) type StoredImageResult = (StoredImage, (u32, u32));
+/// A decoded image's presentation plus the dimensions and format the decoder
+/// reports.
+pub(crate) type StoredImageResult = (StoredImage, DecodedImage);
 
 /// Decode one `<img>` resource into this decoder's storage and report how the
-/// decoded image is presented to the embedder plus its dimensions. `Ok(None)`
-/// means the image was already decoded under `id`.
+/// decoded image is presented to the embedder, its dimensions, and the format
+/// it was decoded from. Registering an image that is already stored returns
+/// the stored image again, so the report is always available.
 pub(crate) trait ImageDecoder {
     fn new() -> Self
     where
@@ -68,7 +70,7 @@ pub(crate) trait ImageDecoder {
         vello_renderer: &mut VelloRenderer,
         id: &ImageIdentifier,
         encoded: &[u8],
-    ) -> Result<Option<StoredImageResult>, String>;
+    ) -> Result<StoredImageResult, String>;
 
     /// Drop the decoded state and any shared surface for the given image
     /// identifiers (their document was unloaded).

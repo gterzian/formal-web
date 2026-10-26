@@ -343,16 +343,20 @@ Known gaps in the processing model:
 - The `Image(width, height)` legacy factory function is not implemented, so
   `new Image()` throws; `available-images-onload.html` and
   `Image-constructor.html` are blocked on it.
-- Image formats are limited to what the `image` crate decodes (PNG, JPEG,
-  GIF, WebP); an SVG `src` is reported as an error.  The graphics process
-  decodes those bytes with its own backend, which on macOS is Image I/O and
-  fetches no fallback decoder (see `graphics/README.md`).
-- Content reads only the encoded header (`into_dimensions`) to decide that an
-  image loaded, so a resource the graphics process cannot decode (a corrupt
-  PNG chunk, for example) leaves the element `complete` with its header
-  dimensions while its layer stays empty.  `decode()` does see the failure:
-  the graphics process reports every decode through
-  `GraphicsEvent::ImageDecoded`, and the promise rejects when it fails.
+- The graphics process is the only image decoder, so the content process never
+  reads image bytes itself: it ships each response body to graphics and runs
+  step 27's branches when `GraphicsEvent::ImageDecoded` reports the decoded
+  dimensions and format (`complete_image_decode`).  The accepted set is PNG,
+  JPEG, GIF and WebP — formats graphics reports as `ImageFormat::Other` take
+  step 27's "not in a supported file format" branch, and an SVG `src` is
+  reported as an error. Which formats actually decode is the running OS's
+  Image I/O support on macOS (see `graphics/README.md`).
+- Nothing decodes for blitz: the document's layout-time image loader is
+  answered with a failed load, so CSS `background-image`/`mask-image` and
+  `<img>` elements inside same-origin iframe subdocuments render nothing.
+  `<img>` in a top-level document is a graphics layer (see `graphics/README.md`).
+  These requests are still fetched before the load is failed; skipping the
+  fetch is remaining work.
 
 ## Canvas
 

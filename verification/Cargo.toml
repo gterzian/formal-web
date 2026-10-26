@@ -8,14 +8,21 @@ publish = false
 name = "tla-validate"
 path = "src/bin/tla_validate.rs"
 
+# Gated: the `image` dependency below exists only for this tool, and the
+# graphics process (which depends on this crate for its TLA tracer) must not
+# compile an image decoder on its macOS fast path, where Image I/O decodes.
 [[bin]]
 name = "webdriver-screenshot-check"
 path = "src/bin/webdriver_screenshot_check.rs"
+required-features = ["screenshot-check"]
+
+[features]
+screenshot-check = ["dep:image"]
 
 [dependencies]
 base64 = "0.22"
 clap = { version = "4.5", features = ["derive"] }
-image = { version = "0.25", default-features = false, features = ["png"] }
+image = { version = "0.25", default-features = false, features = ["png"], optional = true }
 ipc-channel = { git = "https://github.com/gterzian/ipc-channel", rev = "169da83" }
 serde = { version = "1", features = ["derive"] }
 log = "0.4"

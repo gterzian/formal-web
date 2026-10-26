@@ -210,13 +210,14 @@ pub enum GraphicsEvent {
     },
     /// The graphics process finished decoding an `<img>` resource registered
     /// with `GraphicsCommand::RegisterImage`. The UA forwards the result to
-    /// the content process that registered the image, which settles the
-    /// `decode()` promises waiting on it.
+    /// the content process that registered the image, which runs the
+    /// supported-format branch on it and settles the `decode()` promises
+    /// waiting on it.
     ImageDecoded {
         webview_id: WebviewId,
         image_id: ImageIdentifier,
         /// `Err` carries the decoder's failure reason.
-        result: Result<(), String>,
+        result: Result<DecodedImage, String>,
     },
     /// A cross-origin child frame's content changed (a source the top-level
     /// content process does not itself drive). The UA notes a rendering
@@ -278,6 +279,31 @@ pub enum SurfacePayload {
         /// Mach port (send right) to the IOSurface, for the fallback lookup.
         port: OsMachPort,
     },
+}
+
+/// The image format a decoder recognized for an `<img>` resource.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub enum ImageFormat {
+    Png,
+    Jpeg,
+    Gif,
+    WebP,
+    /// A format this process's decoder reads but the accepted set does not
+    /// name; the content process treats it as not supported.
+    Other,
+}
+
+/// What the graphics process's decoder reports for one registered `<img>`
+/// resource: the decoded image's dimensions and the format it recognized.
+///
+/// The graphics process is the only decoder, so the content process learns an
+/// image's dimensions and whether its format is supported from this report
+/// rather than sniffing the bytes itself.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DecodedImage {
+    pub width: u32,
+    pub height: u32,
+    pub format: ImageFormat,
 }
 
 /// A rendered surface frame delivered to the embedder: the pixel delivery

@@ -183,13 +183,13 @@ impl GpuContext {
     }
 
     /// Decode one `<img>` resource into the image decoder's storage. Returns
-    /// the stored image (rendered pixels or a direct IOSurface) and the
-    /// decoded dimensions; `None` means the image was already decoded.
+    /// the stored image (rendered pixels or a direct IOSurface) with the
+    /// dimensions and format the decoder reported.
     pub(crate) fn store_image(
         &mut self,
         id: &ImageIdentifier,
         encoded: &[u8],
-    ) -> Result<Option<image::StoredImageResult>, String> {
+    ) -> Result<image::StoredImageResult, String> {
         self.image_decoder.store_image(
             &self.device_handle.device,
             &self.device_handle.queue,
@@ -459,13 +459,12 @@ pub trait SurfaceRenderer {
     fn render_done_webview_id(data: &Self::RenderData) -> WebviewId;
 
     /// Decode one `<img>` resource into the backend's image storage. Returns
-    /// the stored image and the decoded dimensions; `None` means the image
-    /// was already stored.
+    /// the stored image with the dimensions and format the decoder reported.
     fn store_image(
         &mut self,
         id: &ImageIdentifier,
         encoded: &[u8],
-    ) -> Result<Option<image::StoredImageResult>, String>;
+    ) -> Result<image::StoredImageResult, String>;
 
     /// Drop the decoded image state and any shared surfaces for the given
     /// image identifiers (their document was unloaded).

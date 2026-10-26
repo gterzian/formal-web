@@ -18,7 +18,7 @@ use std::ptr::write_bytes;
 
 use ipc_channel::platform::OsMachPort;
 use ipc_messages::content::ImageIdentifier;
-use ipc_messages::graphics::SurfacePayload;
+use ipc_messages::graphics::{DecodedImage, ImageFormat, SurfacePayload};
 use objc2_core_foundation::{
     CFBoolean, CFData, CFDictionary, CFRetained, CFString, CGPoint, CGRect, CGSize, kCFBooleanFalse,
 };
@@ -34,11 +34,19 @@ use crate::iosurface::create_image_surface;
 
 use super::{ImageDecoder, ImageSurface, StoredImage, StoredImageResult};
 
+/// One image's shared surface, the texture id it was registered under, and the
+/// report the decoder hands back for it.
+struct StoredSurface {
+    surface: CFRetained<IOSurfaceRef>,
+    texture_id: u64,
+    decoded: DecodedImage,
+}
+
 pub(crate) struct MacosImageDecoder {
     /// The graphics process keeps each image surface alive for the webview's
     /// lifetime: the embedder looks it up by global IOSurfaceID, so releasing
     /// it here would destroy the surface under the CALayer.
-    surfaces: HashMap<ImageIdentifier, CFRetained<IOSurfaceRef>>,
+    surfaces: HashMap<ImageIdentifier, StoredSurface>,
     next_texture_id: u64,
 }
 
@@ -57,26 +65,22 @@ impl ImageDecoder for MacosImageDecoder {
         _: &mut VelloRenderer,
         id: &ImageIdentifier,
         encoded: &[u8],
-    ) -> Result<Option<StoredImageResult>, String> {
-        if self.surfaces.contains_key(id) {
-            return Ok(None);
+    ) -> Result<StoredImageResult, String> {
+        if let Some(stored) = self.surfaces.get(id) {
+            return Ok((present_stored_surface(stored), stored.decoded));
         }
         let decoded = decode_into_surface(encoded)?;
         let texture_id = self.next_texture_id;
         self.next_texture_id += 1;
-        let payload = SurfacePayload::SharedTexture {
+        let stored = StoredSurface {
+            surface: decoded.surface,
             texture_id,
-            surface_id: decoded.surface.id(),
-            port: OsMachPort::from_name(decoded.surface.create_mach_port()),
+            decoded: decoded.decoded,
         };
-        self.surfaces.insert(id.clone(), decoded.surface);
-        Ok(Some((
-            StoredImage {
-                image_data: None,
-                surface: Some(ImageSurface { payload }),
-            },
-            (decoded.width, decoded.height),
-        )))
+        let presentation = present_stored_surface(&stored);
+        let report = stored.decoded;
+        self.surfaces.insert(id.clone(), stored);
+        Ok((presentation, report))
     }
 
     fn release_images(&mut self, image_ids: &[ImageIdentifier]) {
@@ -86,19 +90,33 @@ impl ImageDecoder for MacosImageDecoder {
     }
 }
 
-/// One encoded image decoded into an RGBA8 surface of its own, with the
-/// image's natural dimensions.
+/// How one stored surface is presented to the embedder: the shared surface
+/// identity and Mach port, using the same payload shape as a composed frame.
+fn present_stored_surface(stored: &StoredSurface) -> StoredImage {
+    StoredImage {
+        image_data: None,
+        surface: Some(ImageSurface {
+            payload: SurfacePayload::SharedTexture {
+                texture_id: stored.texture_id,
+                surface_id: stored.surface.id(),
+                port: OsMachPort::from_name(stored.surface.create_mach_port()),
+            },
+        }),
+    }
+}
+
+/// One encoded image decoded into an RGBA8 surface of its own, with the report
+/// the decoder hands back for it.
 struct DecodedSurface {
     surface: CFRetained<IOSurfaceRef>,
-    width: u32,
-    height: u32,
+    decoded: DecodedImage,
 }
 
 /// Decode `encoded` into a new RGBA8 IOSurface: the image's pixels at natural
 /// size, premultiplied, with the surface's width padding left clear so the
 /// embedder can crop it with `contentsRect`.
 fn decode_into_surface(encoded: &[u8]) -> Result<DecodedSurface, String> {
-    let image = create_cg_image(encoded)?;
+    let (image, format) = create_cg_image(encoded)?;
     let image_width = CGImage::width(Some(&image));
     let image_height = CGImage::height(Some(&image));
     let width = u32::try_from(image_width)
@@ -111,15 +129,19 @@ fn decode_into_surface(encoded: &[u8]) -> Result<DecodedSurface, String> {
     draw_image_into_surface(&image, &surface, width, height)?;
     Ok(DecodedSurface {
         surface,
-        width,
-        height,
+        decoded: DecodedImage {
+            width,
+            height,
+            format,
+        },
     })
 }
 
-/// Decode the encoded bytes into a `CGImage`, taking the first frame of an
-/// animated format. `kCGImageSourceShouldCache` is false because the surface
-/// is the stored copy: Image I/O has no decoded image it needs to keep.
-fn create_cg_image(encoded: &[u8]) -> Result<CFRetained<CGImage>, String> {
+/// Decode the encoded bytes into a `CGImage` and the format its type
+/// identifier names, taking the first frame of an animated format.
+/// `kCGImageSourceShouldCache` is false because the surface is the stored copy:
+/// Image I/O has no decoded image it needs to keep.
+fn create_cg_image(encoded: &[u8]) -> Result<(CFRetained<CGImage>, ImageFormat), String> {
     let data = CFData::from_bytes(encoded);
     // SAFETY: `kCGImageSourceShouldCache` and `kCFBooleanFalse` are framework
     // constants valid for the process lifetime.
@@ -136,6 +158,12 @@ fn create_cg_image(encoded: &[u8]) -> Result<CFRetained<CGImage>, String> {
     let Some(source) = (unsafe { CGImageSource::with_data(&data, None) }) else {
         return Err(String::from("CGImageSourceCreateWithData returned nil"));
     };
+    // SAFETY: `CGImageSourceGetType` returns a +1 type identifier for a source
+    // this function owns; a source whose data Image I/O did not recognize
+    // reports none.
+    let format = (unsafe { source.r#type() })
+        .map(|identifier| report_format(&identifier.to_string()))
+        .unwrap_or(ImageFormat::Other);
     // SAFETY: the options dictionary's only key is Image I/O's own
     // `kCGImageSourceShouldCache` with a CFBoolean value, the type that key
     // takes; index 0 is the first frame of any image.
@@ -144,7 +172,18 @@ fn create_cg_image(encoded: &[u8]) -> Result<CFRetained<CGImage>, String> {
             "CGImageSourceCreateImageAtIndex returned nil for image",
         ));
     };
-    Ok(image)
+    Ok((image, format))
+}
+
+/// The wire format for an Image I/O type identifier (a UTI).
+fn report_format(identifier: &str) -> ImageFormat {
+    match identifier {
+        "public.png" => ImageFormat::Png,
+        "public.jpeg" => ImageFormat::Jpeg,
+        "com.compuserve.gif" => ImageFormat::Gif,
+        "org.webmproject.webp" => ImageFormat::WebP,
+        _ => ImageFormat::Other,
+    }
 }
 
 /// Draw `image` into `surface`, locking the surface for the duration of the
@@ -260,6 +299,7 @@ mod tests {
     use std::slice::from_raw_parts_mut;
 
     use image::{DynamicImage, ImageFormat, ImageReader, Rgba, RgbaImage, load_from_memory};
+    use ipc_messages::graphics::ImageFormat as ReportFormat;
     use objc2_core_foundation::CFArray;
 
     use super::*;
@@ -395,17 +435,22 @@ mod tests {
     /// Decode `encoded` through both decoders and compare the pixels and the
     /// dimensions. `tolerance` is the per-channel difference allowed between
     /// them; PNG and GIF must match exactly, JPEG rounds differently.
-    fn assert_decoders_agree(encoded: &[u8], tolerance: u8) {
+    fn assert_decoders_agree(encoded: &[u8], tolerance: u8, expected_format: ReportFormat) {
         let expected = load_from_memory(encoded)
             .expect("image crate decode")
             .into_rgba8();
         let decoded = decode_into_surface(encoded).expect("Image I/O decode");
 
-        let dimensions = (decoded.width, decoded.height);
+        let dimensions = (decoded.decoded.width, decoded.decoded.height);
         assert_eq!(dimensions, expected.dimensions(), "decoder dimensions");
         assert_eq!(dimensions, probe_dimensions(encoded), "probed dimensions");
+        assert_eq!(decoded.decoded.format, expected_format, "reported format");
 
-        let actual = read_surface_rgba(&decoded.surface, decoded.width, decoded.height);
+        let actual = read_surface_rgba(
+            &decoded.surface,
+            decoded.decoded.width,
+            decoded.decoded.height,
+        );
         let expected_pixels = expected.as_raw();
         assert_eq!(actual.len(), expected_pixels.len());
         for (index, (actual, straight)) in actual.iter().zip(expected_pixels).enumerate() {
@@ -429,19 +474,19 @@ mod tests {
     #[test]
     fn png_decodes_like_the_image_crate() {
         let encoded = encode(&gradient_image(9, 5), ImageFormat::Png);
-        assert_decoders_agree(&encoded, 0);
+        assert_decoders_agree(&encoded, 0, ReportFormat::Png);
     }
 
     #[test]
     fn jpeg_decodes_like_the_image_crate() {
         let encoded = encode(&gradient_image(16, 8), ImageFormat::Jpeg);
-        assert_decoders_agree(&encoded, JPEG_TOLERANCE);
+        assert_decoders_agree(&encoded, JPEG_TOLERANCE, ReportFormat::Jpeg);
     }
 
     #[test]
     fn blocky_jpeg_decodes_like_the_image_crate() {
         let encoded = encode(&blocky_image(64, 48), ImageFormat::Jpeg);
-        assert_decoders_agree(&encoded, JPEG_TOLERANCE);
+        assert_decoders_agree(&encoded, JPEG_TOLERANCE, ReportFormat::Jpeg);
     }
 
     #[test]
@@ -453,20 +498,20 @@ mod tests {
         // checked in because the `image` crate's JPEG encoder is fixed at
         // 4:2:2 and cannot produce one.
         let encoded = include_bytes!("../../../tests/fixtures/photo-like-420.jpg");
-        assert_decoders_agree(encoded, SUBSAMPLED_JPEG_TOLERANCE);
+        assert_decoders_agree(encoded, SUBSAMPLED_JPEG_TOLERANCE, ReportFormat::Jpeg);
     }
 
     #[test]
     fn gif_decodes_like_the_image_crate() {
         let encoded = encode(&gradient_image(9, 5), ImageFormat::Gif);
-        assert_decoders_agree(&encoded, 0);
+        assert_decoders_agree(&encoded, 0, ReportFormat::Gif);
     }
 
     #[test]
     fn webp_decodes_like_the_image_crate() {
         // Lossless, so the two decoders must agree exactly.
         let encoded = encode(&gradient_image(16, 8), ImageFormat::WebP);
-        assert_decoders_agree(&encoded, 0);
+        assert_decoders_agree(&encoded, 0, ReportFormat::WebP);
     }
 
     #[test]
@@ -490,7 +535,7 @@ mod tests {
         let mut fixture = RgbaImage::from_pixel(4, 2, Rgba([200, 100, 50, 128]));
         fixture.put_pixel(0, 0, Rgba([200, 100, 50, 255]));
         let encoded = encode(&fixture, ImageFormat::Png);
-        assert_decoders_agree(&encoded, 0);
+        assert_decoders_agree(&encoded, 0, ReportFormat::Png);
     }
 
     #[test]
@@ -505,7 +550,7 @@ mod tests {
     fn draw_replaces_pixels_and_clears_the_padding() {
         let fixture = RgbaImage::from_pixel(2, 2, Rgba([200, 100, 50, 128]));
         let encoded = encode(&fixture, ImageFormat::Png);
-        let image = create_cg_image(&encoded).expect("Image I/O decode");
+        let (image, _) = create_cg_image(&encoded).expect("Image I/O decode");
         // 2 logical pixels inside a 64-pixel padded surface.
         let (width, height) = (2u32, 2u32);
         let surface = create_image_surface(width, height).expect("IOSurfaceCreate");

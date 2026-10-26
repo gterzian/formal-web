@@ -1362,6 +1362,28 @@ pub(crate) fn current_image_id(element: &ImageElement) -> Option<ImageIdentifier
         .map(|image| image.image_id.clone())
 }
 
+/// The `ImageIdentifier` the request that started `handler_id`'s fetch will
+/// present, if that request is still the element's current or pending one.
+pub(crate) fn request_image_id(
+    registry: &ImageRegistry,
+    element_id: ImageElementId,
+    handler_id: DocumentFetchId,
+) -> Option<ImageIdentifier> {
+    let element = registry.elements.get(&element_id)?;
+    let request = if element.current_request.fetch_id == Some(handler_id) {
+        &element.current_request
+    } else if element
+        .pending_request
+        .as_ref()
+        .is_some_and(|pending| pending.fetch_id == Some(handler_id))
+    {
+        element.pending_request.as_ref()?
+    } else {
+        return None;
+    };
+    request.image_id.clone()
+}
+
 /// The identity of the element's current request, as `decode()` records it
 /// (<https://html.spec.whatwg.org/#dom-img-decode>).
 pub(crate) fn current_request_id(element: &ImageElement) -> u64 {
