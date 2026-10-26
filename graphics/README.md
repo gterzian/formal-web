@@ -157,20 +157,26 @@ texture → Vello `override_image`) lives in its own module, `renderer/video.rs`
 behind the renderer trait's macOS-only `store_video_frame`.
 
 `RegisterImage` carries the encoded image bytes (PNG/JPEG/...), not raw
-pixels. The renderer's `ImageBackend` decodes them; the compositor stores the
-resulting presentation entry. Two backends exist:
+pixels. The renderer's `ImageDecoder` decodes them; the compositor stores the
+resulting presentation entry. `ImageDecoder` is the single decode interface;
+`renderer/image/mod.rs` selects the one implementation a build compiles:
 
-- **CPU / cross-platform** (`renderer/image/cpu.rs`): decode to RGBA8
-  `ImageData`; the image layer is rendered into its own layer surface like
-  other scene content.
-- **macOS** (`renderer/image/macos.rs`): decode into a global IOSurface owned
-  by the graphics process. The compositor emits the image layer as a direct
-  surface; the embedder looks it up by IOSurfaceID and sets it as the contents
-  of that image layer's CoreAnimation sublayer. The surface is padded to the
-  Metal width constraint and the embedder crops it with `contentsRect`. The
-  surface is fixed by the decode, so it is delivered for the composition that
-  presents the layer and withheld from the cycles that follow, exactly like a
+- **CPU / cross-platform** (`renderer/image/cpu.rs`, the slow path, also the
+  macOS `cpu_readback` build): the `image` crate decodes to RGBA8 `ImageData`;
+  the image layer is rendered into its own layer surface like other scene
+  content.
+- **macOS** (`renderer/image/macos.rs`): Image I/O decodes the bytes and Core
+  Graphics draws them once into a global IOSurface owned by the graphics
+  process. The compositor emits the image layer as a direct surface; the
+  embedder looks it up by IOSurfaceID and sets it as the contents of that
+  image layer's CoreAnimation sublayer. The surface is padded to the Metal
+  width constraint and the embedder crops it with `contentsRect`. The surface
+  is fixed by the decode, so it is delivered for the composition that presents
+  the layer and withheld from the cycles that follow, exactly like a
   re-rendered layer (see "Surface delivery invariants").
+
+A new platform decoder is a sibling module implementing `ImageDecoder`, added
+to the cfg selection in `renderer/image/mod.rs`.
 
 The content process sends each `ImageIdentifier` once. Every registration is
 answered with `GraphicsEvent::ImageDecoded` (decoded dimensions or the
@@ -180,10 +186,10 @@ empty. `GraphicsCommand::UnregisterImages` releases a document's decoded
 data/IOSurfaces when its `DestroyDocument` arrives; that is the only eviction
 step, so images otherwise stay resident for the webview's lifetime.
 
-Limitations: the macOS path still performs the decode-to-IOSurface copy (a
-native ImageIO decoder writing directly into the surface is the next step);
-the CPU path renders each image into a layer surface; both use the `image`
-crate decoder today.
+Limitations: the CPU path renders each image into a layer surface; the macOS
+path has no fallback decoder, so a format the content process's `image`-crate
+probe accepts but the running OS's Image I/O cannot decode fails the
+registration (an `ImageDecoded` error), never a blank layer.
 
 ## Video frames → shared texture (macOS)
 

@@ -14,7 +14,7 @@
 //! owns its surface buffers ([`SurfaceBuffers`]) and its delivery path.
 
 use anyrender::PaintScene;
-use image::ImageBackend;
+use image::ImageDecoder;
 use ipc_messages::content::{FrameId, ImageIdentifier, WebviewId};
 use ipc_messages::graphics::{ChildViewport, CompositingLayerId, FrameHitInfo, GraphicsEvent};
 use ipc_messages::media::VideoPaintId;
@@ -140,14 +140,14 @@ impl<D> Clone for ReadbackChannels<D> {
 }
 
 /// The shared per-webview GPU state every surface backend needs: the wgpu
-/// device, the Vello renderer, the video texture machinery, and the frame
-/// generation counter. Backend-specific state (surface buffers, staging
-/// buffers) lives on the concrete renderers.
+/// device, the Vello renderer, the image decoder, the video texture machinery,
+/// and the frame generation counter. Backend-specific state (surface buffers,
+/// staging buffers) lives on the concrete renderers.
 pub(crate) struct GpuContext {
     pub(crate) device_handle: wgpu_context::DeviceHandle,
     vello_renderer: VelloRenderer,
     vello_scene: VelloScene,
-    images: image::Backend,
+    image_decoder: image::Decoder,
     pub(crate) generation: u64,
     #[cfg(target_os = "macos")]
     video: video::VideoTextures,
@@ -175,22 +175,22 @@ impl GpuContext {
             device_handle,
             vello_renderer,
             vello_scene: VelloScene::new(),
-            images: image::Backend::new(),
+            image_decoder: image::Decoder::new(),
             generation: 0,
             #[cfg(target_os = "macos")]
             video: video::VideoTextures::new(),
         })
     }
 
-    /// Decode one `<img>` resource into the backend's image storage. Returns
+    /// Decode one `<img>` resource into the image decoder's storage. Returns
     /// the stored image (rendered pixels or a direct IOSurface) and the
-    /// decoded dimensions; `None` means the image was already stored.
+    /// decoded dimensions; `None` means the image was already decoded.
     pub(crate) fn store_image(
         &mut self,
         id: &ImageIdentifier,
         encoded: &[u8],
     ) -> Result<Option<image::StoredImageResult>, String> {
-        self.images.store_image(
+        self.image_decoder.store_image(
             &self.device_handle.device,
             &self.device_handle.queue,
             &mut self.vello_renderer,
@@ -202,7 +202,7 @@ impl GpuContext {
     /// Drop the decoded image state and shared surfaces for images whose
     /// document was unloaded.
     pub(crate) fn release_images(&mut self, image_ids: &[ImageIdentifier]) {
-        self.images.release_images(image_ids);
+        self.image_decoder.release_images(image_ids);
     }
 
     /// The raw Metal device backing this renderer (macOS), needed to create

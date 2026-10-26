@@ -1,23 +1,20 @@
-//! Image decode and storage backends for the graphics process.
+//! Image decode and storage for the graphics process. The compositor embeds
+//! one image per `<img>`; how the decoded pixels are presented is chosen at
+//! compile time:
 //!
-//! The compositor assembles scenes and embeds one image per `<img>`.
-//! How that image is presented is backend-specific:
+//! - **CPU / cross-platform** (`cpu.rs`, the slow path): the `image` crate
+//!   decodes the encoded bytes to RGBA8 and stores them in `ImageData`.
+//!   Vello draws that image into the layer's own surface, exactly like any
+//!   other scene content.
+//! - **macOS fast path** (`macos.rs`): Image I/O decodes the bytes and Core
+//!   Graphics draws them once into the image's own global IOSurface.  The
+//!   compositor emits the image layer as a *direct surface* instead of
+//!   rendering it; the embedder looks the surface up by ID and sets it as the
+//!   contents of that layer's CoreAnimation sublayer.  The decoded texture
+//!   reaches the embedder zero-copy.
 //!
-//! - **CPU / cross-platform:** the `image` crate decodes the encoded bytes to
-//!   RGBA8 and stores them in `ImageData`.  Vello draws that image into the
-//!   layer's own surface, exactly like any other scene content.
-//! - **macOS fast path:** the image is decoded once into its own global
-//!   IOSurface.  The compositor emits the image layer as a *direct surface*
-//!   instead of rendering it; the embedder looks the surface up by ID and sets
-//!   it as the contents of that layer's CoreAnimation sublayer.  The decoded
-//!   texture is shared with the embedder zero-copy after the initial decode.
-//!
-//! Decoding compressed bytes necessarily produces pixels.  On macOS the
-//! remaining copy is the decode into the IOSurface; from then on the image
-//! reaches the embedder through the same zero-copy IOSurface path as a
-//! composed frame.  The `ImageBackend` boundary is where a future ImageIO
-//! decoder can replace the `image` crate without touching the compositor, the
-//! renderer, or the embedder.
+//! `ImageDecoder` is the single interface both paths implement; the `Decoder`
+//! alias names the one this build compiles.
 
 use ipc_messages::content::ImageIdentifier;
 use ipc_messages::graphics::SurfacePayload;
@@ -30,12 +27,12 @@ mod cpu;
 mod macos;
 
 #[cfg(any(not(target_os = "macos"), feature = "cpu_readback"))]
-pub(crate) use cpu::CpuImageBackend as Backend;
+pub(crate) use cpu::CpuImageDecoder as Decoder;
 #[cfg(all(target_os = "macos", not(feature = "cpu_readback")))]
-pub(crate) use macos::MacosImageBackend as Backend;
+pub(crate) use macos::MacosImageDecoder as Decoder;
 
 /// How one decoded image reaches the embedder. Exactly one of the two forms
-/// is present, chosen by the image backend.
+/// is present, chosen by the image decoder.
 #[derive(Clone)]
 pub struct StoredImage {
     /// CPU path: pixels Vello draws into the layer's rendered surface.
@@ -56,10 +53,10 @@ pub struct ImageSurface {
 /// A decoded image's presentation plus its logical dimensions.
 pub(crate) type StoredImageResult = (StoredImage, (u32, u32));
 
-/// Decode one `<img>` resource and return how it should be presented, plus
-/// the decoded dimensions.  `Ok(None)` means the image was already stored
-/// under `id`.
-pub(crate) trait ImageBackend {
+/// Decode one `<img>` resource into this decoder's storage and report how the
+/// decoded image is presented to the embedder plus its dimensions. `Ok(None)`
+/// means the image was already decoded under `id`.
+pub(crate) trait ImageDecoder {
     fn new() -> Self
     where
         Self: Sized;

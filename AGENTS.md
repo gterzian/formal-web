@@ -508,6 +508,13 @@ for detailed documentation.
   code. A variable called `state` is always clearer than `s`.
 - Name a shared mechanism for what it is, not for its first user (`job_queue`, not
   `image_job_queue`).
+- **Name a module after the platform or capability it covers, never after the
+  framework it calls.** A platform path is one module — `renderer/image/macos.rs`
+  uses Image I/O and Core Graphics inside it — so a framework file (`imageio.rs`,
+  `coregraphics.rs`) as a sibling of the platform file splits one path into
+  pieces whose names say nothing about where they run. Split a module when it
+  owns a separate capability (`renderer/video.rs`, `renderer/image/cpu.rs`), not
+  when a different library serves the same one.
 - Exception: closure parameters in iterator chains (`.map(|x| ...)`) where the type is obvious
   from context. But even there, prefer short but meaningful names like `tab` over `t`.
 - **Never use fully qualified paths** — no `crate::foo::bar::baz(...)` anywhere.

@@ -323,11 +323,6 @@ Known gaps in the processing model:
   check for a `<picture>` parent and update the image data on every
   insertion; the HTML element moving steps are not observed because blitz
   exposes no moving hook.
-- The macOS image path's remaining copy is the decode into the IOSurface; from
-  then on the image is delivered to the embedder zero-copy.  The CPU path
-  renders each image into a layer surface.  Both backends currently use the
-  `image` crate decoder; a native ImageIO decoder writing directly into the
-  IOSurface is the next step.
 - Decoded images are retained for the webview lifetime until their document is
   destroyed; there is no per-image eviction for images still referenced by a
   live document.
@@ -349,7 +344,9 @@ Known gaps in the processing model:
   `new Image()` throws; `available-images-onload.html` and
   `Image-constructor.html` are blocked on it.
 - Image formats are limited to what the `image` crate decodes (PNG, JPEG,
-  GIF, WebP); an SVG `src` is reported as an error.
+  GIF, WebP); an SVG `src` is reported as an error.  The graphics process
+  decodes those bytes with its own backend, which on macOS is Image I/O and
+  fetches no fallback decoder (see `graphics/README.md`).
 - Content reads only the encoded header (`into_dimensions`) to decide that an
   image loaded, so a resource the graphics process cannot decode (a corrupt
   PNG chunk, for example) leaves the element `complete` with its header

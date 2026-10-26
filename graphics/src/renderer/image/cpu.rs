@@ -1,4 +1,4 @@
-//! CPU / cross-platform image backend: decoded RGBA8 pixels live in
+//! CPU / cross-platform image decoder: decoded RGBA8 pixels live in
 //! `ImageData`; Vello copies them into its atlas when a scene first draws them.
 
 use std::collections::HashMap;
@@ -7,13 +7,13 @@ use ipc_messages::content::ImageIdentifier;
 use peniko::{Blob, ImageAlphaType, ImageData, ImageFormat};
 use vello::Renderer as VelloRenderer;
 
-use super::{ImageBackend, StoredImage, StoredImageResult};
+use super::{ImageDecoder, StoredImage, StoredImageResult};
 
-pub(crate) struct CpuImageBackend {
+pub(crate) struct CpuImageDecoder {
     images: HashMap<ImageIdentifier, (ImageData, (u32, u32))>,
 }
 
-impl ImageBackend for CpuImageBackend {
+impl ImageDecoder for CpuImageDecoder {
     fn new() -> Self {
         Self {
             images: HashMap::new(),

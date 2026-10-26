@@ -55,5 +55,7 @@ pollster = "0.4"
 objc2 = "0.6"
 objc2-metal = { version = "0.3", features = ["objc2-io-surface"] }
 objc2-core-foundation = "0.3"
+objc2-core-graphics = { version = "0.3", features = ["CGBitmapContext", "CGColorSpace", "CGContext", "CGImage"] }
+objc2-image-io = { version = "0.3", default-features = false, features = ["std", "CGImageSource", "objc2", "objc2-core-graphics"] }
 objc2-io-surface = "0.3"
 objc2-core-video = "0.3"
