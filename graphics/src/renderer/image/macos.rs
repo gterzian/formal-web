@@ -260,6 +260,7 @@ mod tests {
     use std::slice::from_raw_parts_mut;
 
     use image::{DynamicImage, ImageFormat, ImageReader, Rgba, RgbaImage, load_from_memory};
+    use objc2_core_foundation::CFArray;
 
     use super::*;
 
@@ -364,9 +365,36 @@ mod tests {
             .expect("a premultiplied channel fits in u8")
     }
 
+    /// Per-channel difference between the decoders on the JPEG fixtures this
+    /// module encodes. Both measure a worst difference of 2; the extra room
+    /// covers rounding that varies between macOS versions, while a
+    /// channel-order or colour-space mistake still exceeds it.
+    const JPEG_TOLERANCE: u8 = 4;
+
+    /// Per-channel difference on the 4:2:0 fixture, which measures 4: the
+    /// decoders upsample its shared chroma samples differently, which the
+    /// 4:2:2 fixtures cannot show.
+    const SUBSAMPLED_JPEG_TOLERANCE: u8 = 8;
+
+    /// The type identifiers Image I/O reports for this OS, as strings.
+    fn supported_type_identifiers() -> Vec<String> {
+        // SAFETY: `CGImageSourceCopyTypeIdentifiers` returns a +1 array of UTI
+        // strings, or null, which the wrapper turns into an empty array.
+        let identifiers: CFRetained<CFArray> = unsafe { CGImageSource::type_identifiers() };
+        // SAFETY: Image I/O documents every element of that array as a
+        // `CFString` UTI, and `CFArray<CFString>` has the same layout as the
+        // opaque `CFArray` it arrives as.
+        let identifiers: &CFArray<CFString> =
+            unsafe { &*(identifiers.as_opaque() as *const CFArray).cast::<CFArray<CFString>>() };
+        identifiers
+            .iter()
+            .map(|identifier| identifier.to_string())
+            .collect()
+    }
+
     /// Decode `encoded` through both decoders and compare the pixels and the
-    /// dimensions. `tolerance` is the per-channel difference the fixtures below
-    /// measure; PNG must match exactly, JPEG rounds differently.
+    /// dimensions. `tolerance` is the per-channel difference allowed between
+    /// them; PNG and GIF must match exactly, JPEG rounds differently.
     fn assert_decoders_agree(encoded: &[u8], tolerance: u8) {
         let expected = load_from_memory(encoded)
             .expect("image crate decode")
@@ -407,16 +435,54 @@ mod tests {
     #[test]
     fn jpeg_decodes_like_the_image_crate() {
         let encoded = encode(&gradient_image(16, 8), ImageFormat::Jpeg);
-        assert_decoders_agree(&encoded, 4);
+        assert_decoders_agree(&encoded, JPEG_TOLERANCE);
     }
 
     #[test]
     fn blocky_jpeg_decodes_like_the_image_crate() {
-        // Both JPEG fixtures measure a worst channel difference of 2; 4 leaves
-        // room for decoder rounding without letting a channel-order or
-        // colour-space mistake through.
         let encoded = encode(&blocky_image(64, 48), ImageFormat::Jpeg);
-        assert_decoders_agree(&encoded, 4);
+        assert_decoders_agree(&encoded, JPEG_TOLERANCE);
+    }
+
+    #[test]
+    fn subsampled_jpeg_decodes_like_the_image_crate() {
+        // `graphics/tests/fixtures/photo-like-420.jpg` is a checked-in 48x32
+        // photo-like fixture (smooth shading plus one hard colour edge) whose
+        // SOF0 sampling factors are 0x22/0x11/0x11: 4:2:0, the layout photos
+        // use, where the decoders' chroma upsampling can differ. The bytes are
+        // checked in because the `image` crate's JPEG encoder is fixed at
+        // 4:2:2 and cannot produce one.
+        let encoded = include_bytes!("../../../tests/fixtures/photo-like-420.jpg");
+        assert_decoders_agree(encoded, SUBSAMPLED_JPEG_TOLERANCE);
+    }
+
+    #[test]
+    fn gif_decodes_like_the_image_crate() {
+        let encoded = encode(&gradient_image(9, 5), ImageFormat::Gif);
+        assert_decoders_agree(&encoded, 0);
+    }
+
+    #[test]
+    fn webp_decodes_like_the_image_crate() {
+        // Lossless, so the two decoders must agree exactly.
+        let encoded = encode(&gradient_image(16, 8), ImageFormat::WebP);
+        assert_decoders_agree(&encoded, 0);
+    }
+
+    #[test]
+    fn image_io_reports_the_formats_content_accepts() {
+        // No fallback decoder exists, so a format the running OS's Image I/O
+        // cannot read fails the registration on that OS. WebP is the one
+        // Apple's platforms gate (WebKit checks for it before accepting).
+        let identifiers = supported_type_identifiers();
+        for format in ["gif", "webp"] {
+            assert!(
+                identifiers
+                    .iter()
+                    .any(|identifier| identifier.to_ascii_lowercase().contains(format)),
+                "Image I/O on this OS does not list {format}: {identifiers:?}"
+            );
+        }
     }
 
     #[test]
@@ -436,15 +502,19 @@ mod tests {
     }
 
     #[test]
-    fn draw_replaces_the_surface_instead_of_blending() {
+    fn draw_replaces_pixels_and_clears_the_padding() {
         let fixture = RgbaImage::from_pixel(2, 2, Rgba([200, 100, 50, 128]));
         let encoded = encode(&fixture, ImageFormat::Png);
         let image = create_cg_image(&encoded).expect("Image I/O decode");
+        // 2 logical pixels inside a 64-pixel padded surface.
         let (width, height) = (2u32, 2u32);
         let surface = create_image_surface(width, height).expect("IOSurfaceCreate");
-        // Fill the surface with a value a blend would bleed through.
+        // The pre-fill serves both checks below: source-over blending would
+        // bleed it through the image, and a missing padding clear would leave
+        // it in the padded columns.
         with_locked_mapping(&surface, height, |mapping, _| mapping.fill(0xab));
         draw_image_into_surface(&image, &surface, width, height).expect("draw");
+
         let expected = [
             premultiply(200, 128),
             premultiply(100, 128),
@@ -453,29 +523,18 @@ mod tests {
         ];
         assert_eq!(
             read_surface_rgba(&surface, width, height),
-            expected.repeat(4)
+            expected.repeat(4),
+            "the draw must replace the destination, not blend over it"
         );
-    }
-
-    #[test]
-    fn width_padding_is_cleared() {
-        // 9 logical pixels inside a 64-pixel padded surface.
-        let encoded = encode(&gradient_image(9, 3), ImageFormat::Png);
-        let decoded = decode_into_surface(&encoded).expect("Image I/O decode");
-        with_locked_mapping(
-            &decoded.surface,
-            decoded.height,
-            |mapping, bytes_per_row| {
-                let written = decoded.width as usize * 4;
-                for row in 0..decoded.height as usize {
-                    let padding =
-                        &mapping[row * bytes_per_row + written..(row + 1) * bytes_per_row];
-                    assert!(
-                        padding.iter().all(|byte| *byte == 0),
-                        "row {row} width padding is not clear"
-                    );
-                }
-            },
-        );
+        let written = width as usize * 4;
+        with_locked_mapping(&surface, height, |mapping, bytes_per_row| {
+            for row in 0..height as usize {
+                let padding = &mapping[row * bytes_per_row + written..(row + 1) * bytes_per_row];
+                assert!(
+                    padding.iter().all(|byte| *byte == 0),
+                    "row {row} width padding is not clear"
+                );
+            }
+        });
     }
 }

@@ -179,9 +179,10 @@ A new platform decoder is a sibling module implementing `ImageDecoder`, added
 to the cfg selection in `renderer/image/mod.rs`.
 
 The content process sends each `ImageIdentifier` once. Every registration is
-answered with `GraphicsEvent::ImageDecoded`, an error carrying the decoder's
-failure reason, which the UA forwards to content: `decode()` waits for this
-report, so a decode failure must keep rejecting it even though the layer stays
+answered with `GraphicsEvent::ImageDecoded`: `result` is `Ok` when the image
+decoded and its layer can be presented, `Err` with the decoder's failure
+reason otherwise. The UA forwards it to content, where `decode()` waits for
+it, so a decode failure must keep rejecting it even though the layer stays
 empty. `GraphicsCommand::UnregisterImages` releases a document's decoded
 data/IOSurfaces when its `DestroyDocument` arrives; that is the only eviction
 step, so images otherwise stay resident for the webview's lifetime.
@@ -194,8 +195,9 @@ Limitations:
   varies by OS version (Apple documents no cross-version guarantee, and WebKit
   gates WebP behind a platform check). On an OS missing one of those formats
   the registration fails with an `ImageDecoded` error rather than a blank
-  layer. The decoder tests cover PNG and JPEG only; GIF and WebP fixtures of
-  any real content would catch such a platform gap.
+  layer. The decoder tests cover all four formats, including a checked-in 4:2:0
+  JPEG (the `image` crate's JPEG encoder is fixed at 4:2:2), and assert that
+  Image I/O lists GIF and WebP.
 - The two decoders colour-manage differently, deliberately: the macOS draw goes
   through an sRGB bitmap context, so an embedded ICC profile is converted to
   sRGB, while the `image`-crate decoder ignores profiles and returns the file's
