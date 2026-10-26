@@ -1,16 +1,20 @@
 //! macOS image fast path: Image I/O decodes the encoded bytes and Core
 //! Graphics draws the decoded image straight into the image's own global
-//! IOSurface, so the decode has no intermediate pixel buffer and no row copy.
-//! The surface is the only copy of the pixels: the compositor emits the image
-//! layer as a direct surface, the embedder looks the surface up by ID, and the
-//! image travels through the same zero-copy IOSurface delivery path as a
-//! composed frame.
+//! IOSurface. This module holds no intermediate pixel buffer and runs no row
+//! copy: the draw reads the `CGImage` and writes the surface, and the `CGImage`
+//! is dropped when the decode returns, so the surface is the pixel buffer this
+//! process keeps. The compositor emits the image layer as a direct surface, the
+//! embedder looks the surface up by ID, and the image travels through the same
+//! zero-copy IOSurface delivery path as a composed frame.
 //!
 //! The draw targets a premultiplied, sRGB bitmap context whose bytes are R,
 //! G, B, A in memory: the order of the surface's 'RGBA' format and of the
-//! `RGBA8Unorm` texture a GPU consumer would wrap it as.
+//! `RGBA8Unorm` texture a GPU consumer would wrap it as. Rendering into an
+//! sRGB context means an embedded ICC profile is converted to sRGB, which the
+//! cross-platform `image`-crate decoder does not do (see `graphics/README.md`).
 
 use std::collections::HashMap;
+use std::ptr::write_bytes;
 
 use ipc_channel::platform::OsMachPort;
 use ipc_messages::content::ImageIdentifier;
@@ -126,14 +130,15 @@ fn create_cg_image(encoded: &[u8]) -> Result<CFRetained<CGImage>, String> {
     let options: CFRetained<CFDictionary<CFString, CFBoolean>> =
         CFDictionary::from_slices(&[should_cache_key], &[should_not_cache]);
     let image_options: &CFDictionary = options.as_ref();
-    // SAFETY: `data` is a CFData holding the encoded image, and the options
-    // dictionary's only key is Image I/O's own `kCGImageSourceShouldCache`
-    // with a CFBoolean value, the type that key takes.
+    // SAFETY: `data` is a CFData holding the encoded image for the lifetime
+    // of the call; no options are passed, so Image I/O opens the source with
+    // its defaults.
     let Some(source) = (unsafe { CGImageSource::with_data(&data, None) }) else {
         return Err(String::from("CGImageSourceCreateWithData returned nil"));
     };
-    // SAFETY: the options dictionary has the same shape as above; index 0 is
-    // the first frame of any image.
+    // SAFETY: the options dictionary's only key is Image I/O's own
+    // `kCGImageSourceShouldCache` with a CFBoolean value, the type that key
+    // takes; index 0 is the first frame of any image.
     let Some(image) = (unsafe { source.image_at_index(0, Some(image_options)) }) else {
         return Err(String::from(
             "CGImageSourceCreateImageAtIndex returned nil for image",
@@ -206,7 +211,7 @@ fn draw_into_locked_surface(
             // is `padding_bytes` long, both inside the mapping (asserted
             // above).
             unsafe {
-                std::ptr::write_bytes(base.add(row * bytes_per_row + row_bytes), 0, padding_bytes);
+                write_bytes(base.add(row * bytes_per_row + row_bytes), 0, padding_bytes);
             }
         }
     }
@@ -252,8 +257,9 @@ fn draw_into_locked_surface(
 #[cfg(test)]
 mod tests {
     use std::io::Cursor;
+    use std::slice::from_raw_parts_mut;
 
-    use image::{ImageFormat, ImageReader, RgbaImage};
+    use image::{DynamicImage, ImageFormat, ImageReader, Rgba, RgbaImage, load_from_memory};
 
     use super::*;
 
@@ -261,10 +267,26 @@ mod tests {
     /// order, or stride mistake shows up as a mismatch.
     fn gradient_image(width: u32, height: u32) -> RgbaImage {
         RgbaImage::from_fn(width, height, |column, row| {
-            image::Rgba([
+            Rgba([
                 (column * 29) as u8,
                 (row * 61) as u8,
                 ((column + row) * 13) as u8,
+                255,
+            ])
+        })
+    }
+
+    /// Sharply different colours every 8 columns and rows, so decoder rounding
+    /// that a smooth gradient hides shows up as a mismatch. The `image` crate's
+    /// JPEG encoder does not subsample chroma, so this is not a 4:2:0 fixture;
+    /// neither JPEG fixture covers a photo's chroma upsampling.
+    fn blocky_image(width: u32, height: u32) -> RgbaImage {
+        RgbaImage::from_fn(width, height, |column, row| {
+            let block = ((column / 8) * 7 + (row / 8) * 13) % 251;
+            Rgba([
+                (block * 3) as u8,
+                (block * 5 + 40) as u8,
+                (block * 11 + 90) as u8,
                 255,
             ])
         })
@@ -275,7 +297,7 @@ mod tests {
         let mut cursor = Cursor::new(&mut bytes);
         // JPEG carries no alpha channel; its encoder takes the RGB form.
         let written = match format {
-            ImageFormat::Jpeg => image::DynamicImage::ImageRgba8(image.clone())
+            ImageFormat::Jpeg => DynamicImage::ImageRgba8(image.clone())
                 .into_rgb8()
                 .write_to(&mut cursor, format),
             _ => image.write_to(&mut cursor, format),
@@ -311,9 +333,8 @@ mod tests {
         assert!(len <= surface.alloc_size());
         // SAFETY: the surface is locked, so its base address is a writable
         // mapping of at least `alloc_size` bytes covering `len`.
-        let mapping = unsafe {
-            std::slice::from_raw_parts_mut(surface.base_address().as_ptr().cast::<u8>(), len)
-        };
+        let mapping =
+            unsafe { from_raw_parts_mut(surface.base_address().as_ptr().cast::<u8>(), len) };
         write(mapping, bytes_per_row);
         // SAFETY: the surface was locked above with the same options.
         let unlock_result = unsafe { surface.unlock(IOSurfaceLockOptions(0), &mut seed) };
@@ -344,10 +365,10 @@ mod tests {
     }
 
     /// Decode `encoded` through both decoders and compare the pixels and the
-    /// dimensions. `tolerance` is the per-channel difference the decoders may
-    /// differ by (JPEG decoders round differently; PNG must match exactly).
+    /// dimensions. `tolerance` is the per-channel difference the fixtures below
+    /// measure; PNG must match exactly, JPEG rounds differently.
     fn assert_decoders_agree(encoded: &[u8], tolerance: u8) {
-        let expected = image::load_from_memory(encoded)
+        let expected = load_from_memory(encoded)
             .expect("image crate decode")
             .into_rgba8();
         let decoded = decode_into_surface(encoded).expect("Image I/O decode");
@@ -390,9 +411,18 @@ mod tests {
     }
 
     #[test]
+    fn blocky_jpeg_decodes_like_the_image_crate() {
+        // Both JPEG fixtures measure a worst channel difference of 2; 4 leaves
+        // room for decoder rounding without letting a channel-order or
+        // colour-space mistake through.
+        let encoded = encode(&blocky_image(64, 48), ImageFormat::Jpeg);
+        assert_decoders_agree(&encoded, 4);
+    }
+
+    #[test]
     fn translucent_png_is_premultiplied() {
-        let mut fixture = RgbaImage::from_pixel(4, 2, image::Rgba([200, 100, 50, 128]));
-        fixture.put_pixel(0, 0, image::Rgba([200, 100, 50, 255]));
+        let mut fixture = RgbaImage::from_pixel(4, 2, Rgba([200, 100, 50, 128]));
+        fixture.put_pixel(0, 0, Rgba([200, 100, 50, 255]));
         let encoded = encode(&fixture, ImageFormat::Png);
         assert_decoders_agree(&encoded, 0);
     }
@@ -407,7 +437,7 @@ mod tests {
 
     #[test]
     fn draw_replaces_the_surface_instead_of_blending() {
-        let fixture = RgbaImage::from_pixel(2, 2, image::Rgba([200, 100, 50, 128]));
+        let fixture = RgbaImage::from_pixel(2, 2, Rgba([200, 100, 50, 128]));
         let encoded = encode(&fixture, ImageFormat::Png);
         let image = create_cg_image(&encoded).expect("Image I/O decode");
         let (width, height) = (2u32, 2u32);

@@ -179,17 +179,29 @@ A new platform decoder is a sibling module implementing `ImageDecoder`, added
 to the cfg selection in `renderer/image/mod.rs`.
 
 The content process sends each `ImageIdentifier` once. Every registration is
-answered with `GraphicsEvent::ImageDecoded` (decoded dimensions or the
-decoder's error), which the UA forwards to content: `decode()` waits for this
+answered with `GraphicsEvent::ImageDecoded`, an error carrying the decoder's
+failure reason, which the UA forwards to content: `decode()` waits for this
 report, so a decode failure must keep rejecting it even though the layer stays
 empty. `GraphicsCommand::UnregisterImages` releases a document's decoded
 data/IOSurfaces when its `DestroyDocument` arrives; that is the only eviction
 step, so images otherwise stay resident for the webview's lifetime.
 
-Limitations: the CPU path renders each image into a layer surface; the macOS
-path has no fallback decoder, so a format the content process's `image`-crate
-probe accepts but the running OS's Image I/O cannot decode fails the
-registration (an `ImageDecoded` error), never a blank layer.
+Limitations:
+
+- The CPU path renders each image into a layer surface.
+- The macOS path has no fallback decoder. Content accepts PNG, JPEG, GIF and
+  WebP because its `image`-crate probe recognizes them, but Image I/O's support
+  varies by OS version (Apple documents no cross-version guarantee, and WebKit
+  gates WebP behind a platform check). On an OS missing one of those formats
+  the registration fails with an `ImageDecoded` error rather than a blank
+  layer. The decoder tests cover PNG and JPEG only; GIF and WebP fixtures of
+  any real content would catch such a platform gap.
+- The two decoders colour-manage differently, deliberately: the macOS draw goes
+  through an sRGB bitmap context, so an embedded ICC profile is converted to
+  sRGB, while the `image`-crate decoder ignores profiles and returns the file's
+  raw values. A tagged image therefore decodes to different bytes on the two
+  paths; the macOS result is what the platform composites for the same file.
+  The tests' fixtures are untagged, so nothing asserts this difference.
 
 ## Video frames → shared texture (macOS)
 
