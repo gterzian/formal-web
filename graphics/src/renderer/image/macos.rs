@@ -19,7 +19,8 @@ use objc2_core_foundation::{
     CFBoolean, CFData, CFDictionary, CFRetained, CFString, CGPoint, CGRect, CGSize, kCFBooleanFalse,
 };
 use objc2_core_graphics::{
-    CGBitmapContextCreate, CGColorSpace, CGContext, CGImage, CGImageAlphaInfo, kCGColorSpaceSRGB,
+    CGBitmapContextCreate, CGBlendMode, CGColorSpace, CGContext, CGImage, CGImageAlphaInfo,
+    kCGColorSpaceSRGB,
 };
 use objc2_image_io::{CGImageSource, kCGImageSourceShouldCache};
 use objc2_io_surface::{IOSurfaceLockOptions, IOSurfaceRef};
@@ -175,9 +176,8 @@ fn draw_image_into_surface(
     draw_result
 }
 
-/// Write `image` into the pages of a locked `surface`: clear the whole
-/// mapping (which also clears the width padding), then draw the image into
-/// the logical width and height.
+/// Write `image` into the pages of a locked `surface`: clear the width
+/// padding, then draw the image into the logical width and height.
 fn draw_into_locked_surface(
     image: &CGImage,
     surface: &IOSurfaceRef,
@@ -189,16 +189,26 @@ fn draw_into_locked_surface(
     let total_bytes = bytes_per_row
         .checked_mul(height as usize)
         .ok_or_else(|| String::from("image surface size overflow"))?;
-    assert!(width as usize * 4 <= bytes_per_row);
+    let row_bytes = width as usize * 4;
+    assert!(row_bytes <= bytes_per_row);
     assert!(total_bytes <= surface.alloc_size());
     // SAFETY: the surface is locked, so its base address is a writable
     // mapping of at least `alloc_size` bytes covering `bytes_per_row *
-    // height` (asserted above). Clearing the whole mapping zeroes the width
-    // padding the embedder crops with `contentsRect`; the draw below fills
-    // only the logical width and height.
+    // height` (asserted above).
     let base = surface.base_address().as_ptr().cast::<u8>();
-    unsafe {
-        std::ptr::write_bytes(base, 0, total_bytes);
+    // The draw below replaces every pixel of the logical width, so only the
+    // width padding needs clearing: the embedder crops it with `contentsRect`,
+    // and it must not hold whatever the surface's pages held before.
+    let padding_bytes = bytes_per_row - row_bytes;
+    if padding_bytes > 0 {
+        for row in 0..height as usize {
+            // SAFETY: this row's padding starts `row_bytes` into the row and
+            // is `padding_bytes` long, both inside the mapping (asserted
+            // above).
+            unsafe {
+                std::ptr::write_bytes(base.add(row * bytes_per_row + row_bytes), 0, padding_bytes);
+            }
+        }
     }
     // SAFETY: `base` points at `bytes_per_row * height` writable bytes of the
     // locked surface, and a row holds at least `width * 4` bytes (asserted
@@ -220,6 +230,11 @@ fn draw_into_locked_surface(
             "CGBitmapContextCreate returned nil for image surface",
         ));
     };
+    // `Copy` replaces the destination instead of compositing the source over
+    // it: a translucent source pixel must not blend with what the surface's
+    // pages held before, and no pass over the logical pixels is needed to
+    // prepare the destination for them.
+    CGContext::set_blend_mode(Some(&context), CGBlendMode::Copy);
     CGContext::draw_image(
         Some(&context),
         CGRect::new(
@@ -279,33 +294,45 @@ mod tests {
             .expect("probe fixture dimensions")
     }
 
-    /// Read the surface's logical region back as tightly packed RGBA rows.
-    fn read_surface_rgba(surface: &IOSurfaceRef, width: u32, height: u32) -> Vec<u8> {
+    /// Run `write` over the surface's whole mapping, `bytes_per_row` per row,
+    /// while the surface is locked.
+    fn with_locked_mapping(
+        surface: &IOSurfaceRef,
+        height: u32,
+        write: impl FnOnce(&mut [u8], usize),
+    ) {
         let mut seed = 0u32;
         // SAFETY: `seed` is a valid out-parameter, and the surface is not
         // accessed again until it is unlocked below.
         let lock_result = unsafe { surface.lock(IOSurfaceLockOptions(0), &mut seed) };
         assert_eq!(lock_result, 0, "IOSurfaceLock failed: {lock_result}");
         let bytes_per_row = surface.bytes_per_row();
-        let row_bytes = width as usize * 4;
-        assert!(row_bytes <= bytes_per_row);
-        let source = surface.base_address().as_ptr().cast::<u8>();
-        let mut pixels = vec![0u8; row_bytes * height as usize];
-        for row in 0..height as usize {
-            // SAFETY: both rows are `row_bytes` long and in bounds: the
-            // surface mapping covers `bytes_per_row * height`, and `pixels`
-            // was allocated for exactly that many logical rows.
-            unsafe {
-                std::ptr::copy_nonoverlapping(
-                    source.add(row * bytes_per_row),
-                    pixels.as_mut_ptr().add(row * row_bytes),
-                    row_bytes,
-                );
-            }
-        }
+        let len = bytes_per_row * height as usize;
+        assert!(len <= surface.alloc_size());
+        // SAFETY: the surface is locked, so its base address is a writable
+        // mapping of at least `alloc_size` bytes covering `len`.
+        let mapping = unsafe {
+            std::slice::from_raw_parts_mut(surface.base_address().as_ptr().cast::<u8>(), len)
+        };
+        write(mapping, bytes_per_row);
         // SAFETY: the surface was locked above with the same options.
         let unlock_result = unsafe { surface.unlock(IOSurfaceLockOptions(0), &mut seed) };
         assert_eq!(unlock_result, 0, "IOSurfaceUnlock failed: {unlock_result}");
+    }
+
+    /// Read the surface's logical region back as tightly packed RGBA rows.
+    fn read_surface_rgba(surface: &IOSurfaceRef, width: u32, height: u32) -> Vec<u8> {
+        let row_bytes = width as usize * 4;
+        let mut pixels = vec![0u8; row_bytes * height as usize];
+        with_locked_mapping(surface, height, |mapping, bytes_per_row| {
+            assert!(row_bytes <= bytes_per_row);
+            for row in 0..height as usize {
+                let source = row * bytes_per_row;
+                let destination = row * row_bytes;
+                pixels[destination..destination + row_bytes]
+                    .copy_from_slice(&mapping[source..source + row_bytes]);
+            }
+        });
         pixels
     }
 
@@ -375,6 +402,50 @@ mod tests {
         assert!(
             decode_into_surface(b"\x89PNG\r\n\x1a\nnot an image").is_err(),
             "bytes no decoder recognizes must fail"
+        );
+    }
+
+    #[test]
+    fn draw_replaces_the_surface_instead_of_blending() {
+        let fixture = RgbaImage::from_pixel(2, 2, image::Rgba([200, 100, 50, 128]));
+        let encoded = encode(&fixture, ImageFormat::Png);
+        let image = create_cg_image(&encoded).expect("Image I/O decode");
+        let (width, height) = (2u32, 2u32);
+        let surface = create_image_surface(width, height).expect("IOSurfaceCreate");
+        // Fill the surface with a value a blend would bleed through.
+        with_locked_mapping(&surface, height, |mapping, _| mapping.fill(0xab));
+        draw_image_into_surface(&image, &surface, width, height).expect("draw");
+        let expected = [
+            premultiply(200, 128),
+            premultiply(100, 128),
+            premultiply(50, 128),
+            128,
+        ];
+        assert_eq!(
+            read_surface_rgba(&surface, width, height),
+            expected.repeat(4)
+        );
+    }
+
+    #[test]
+    fn width_padding_is_cleared() {
+        // 9 logical pixels inside a 64-pixel padded surface.
+        let encoded = encode(&gradient_image(9, 3), ImageFormat::Png);
+        let decoded = decode_into_surface(&encoded).expect("Image I/O decode");
+        with_locked_mapping(
+            &decoded.surface,
+            decoded.height,
+            |mapping, bytes_per_row| {
+                let written = decoded.width as usize * 4;
+                for row in 0..decoded.height as usize {
+                    let padding =
+                        &mapping[row * bytes_per_row + written..(row + 1) * bytes_per_row];
+                    assert!(
+                        padding.iter().all(|byte| *byte == 0),
+                        "row {row} width padding is not clear"
+                    );
+                }
+            },
         );
     }
 }
