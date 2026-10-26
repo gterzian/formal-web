@@ -281,6 +281,44 @@ for the definitive spec-annotation reference with examples and common mistakes.
 See the "Spec-mapping review" step under "End-of-Task Flow" for the full
 review checklist.
 
+# Process Boundaries
+
+Each process owns one capability, and the boundary is enforced rather than
+advisory: the helper processes are sandboxed per platform, so on iOS a process
+will only be allowed its own capability (network, GPU, filesystem). Code that
+performs another process's work "works today" and becomes a failure the moment
+the sandbox lands — so the rule is checked when the code is written, not when
+the sandbox breaks it.
+
+- **Content owns the DOM and runs JavaScript.** It executes scripts, holds the
+  document and its algorithms' state, and never touches the network, a GPU API,
+  or a window-system surface. It never decodes or encodes an image or a media
+  stream: it ships the bytes to graphics and renders what graphics reports
+  back (`GraphicsEvent::ImageDecoded`, video frames, composed surfaces).
+- **Net owns all network I/O.** Every request — navigation, subresource,
+  script fetch, worker script — goes through the net process. Content does not
+  open sockets, and graphics does not fetch anything it needs to decode.
+- **Graphics owns everything the GPU and window system own.** Decoding images
+  and video, compositing, surfaces (IOSurface/Metal/CoreAnimation, Vello,
+  AVFoundation/GStreamer) all live there. Nothing else paints, decodes, or
+  holds a surface.
+- **The user agent coordinates and the embedder presents.** They route IPC and
+  own the window; they do not do content's, net's, or graphics' work.
+
+Operational tests before adding code or a dependency:
+
+- Which process's capability does this need? If the answer is not the process
+  you are editing, the work goes in the owning process and travels over IPC
+  (paint payloads on shared memory, metadata and handles as typed messages).
+- Does the dependency grant a capability the sandbox will deny — a socket, a
+  GPU or window-system API, an image/video codec? Then it belongs to the
+  process that owns that capability. A helper that pulls a codec dependency in
+  only to inspect or decode a few bytes is the same violation as calling the
+  API elsewhere.
+- A format or protocol decision made from bytes belongs to the owner of those
+  bytes: content decides a response's *supported-format* policy from graphics'
+  report, but graphics is what reads the bitstream.
+
 # Project Structure
 
 The formal-web project implements a web browser from scratch from separate processes coordinated by the user agent. The main `formal-web` binary runs the embedder directly in-process and launches dedicated `formal-web-content`, `formal-web-net`, and `formal-web-graphics` helper processes from the `content`, `net`, and `graphics` packages. It delegates to these processes through the `webview` and `user_agent` layers, keeps paint payloads on shared-memory transport, and uses typed IPC messages for metadata and handles. Navigation completion uses explicit content-to-embedder commit signaling.

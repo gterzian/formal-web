@@ -285,10 +285,10 @@ pub(crate) fn obtain_images(document: &DocumentProviders, node_id: usize, elemen
     // <https://html.spec.whatwg.org/#when-to-obtain-images:relevant-mutations>
     // The restart animation flag is never set (image animation is not
     // implemented).
-    // Note: Same-origin iframe subdocuments keep their images in the parent
-    // document's scene (`embedded_images` is false for them), so their images
-    // load through the document's layout-time image loader rather than the
-    // `<img>` processing model.
+    // Note: A same-origin iframe subdocument has no identity of its own in the
+    // image registry, so its `<img>` elements do not run the processing model
+    // and render nothing; giving each subdocument a frame of its own is the
+    // remaining work described in this directory's README.
     if !matches!(document.host(), DocumentHost::Main(_)) {
         return;
     }
@@ -1124,8 +1124,8 @@ pub(crate) fn reacting_to_environment_changes(
     // Step 1: Await a stable state. The synchronous section consists of all the remaining steps of this algorithm until the algorithm says the synchronous section has ended. (Steps in synchronous sections are marked with ⌛.)
     // Note: The viewport command handler runs this when no task is queued (a
     // stable state).
-    // Note: A same-origin iframe subdocument's images load through the
-    // document's layout-time image loader, not the processing model.
+    // Note: A same-origin iframe subdocument's `<img>` elements have no registry
+    // identity and do not run the processing model (see `obtain_images`).
     if !matches!(document.host(), DocumentHost::Main(_)) {
         return;
     }
@@ -1363,7 +1363,11 @@ pub(crate) fn current_image_id(element: &ImageElement) -> Option<ImageIdentifier
 }
 
 /// The `ImageIdentifier` the request that started `handler_id`'s fetch will
-/// present, if that request is still the element's current or pending one.
+/// present, if that request is still the element's current or pending one: what
+/// step 27 of <https://html.spec.whatwg.org/#update-the-image-data> (and steps
+/// 17.5.1-17.5.3 of
+/// <https://html.spec.whatwg.org/#reacting-to-environment-changes>) registers
+/// with the decoder before it can decide the response.
 pub(crate) fn request_image_id(
     registry: &ImageRegistry,
     element_id: ImageElementId,

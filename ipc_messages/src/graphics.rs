@@ -211,8 +211,11 @@ pub enum GraphicsEvent {
     /// The graphics process finished decoding an `<img>` resource registered
     /// with `GraphicsCommand::RegisterImage`. The UA forwards the result to
     /// the content process that registered the image, which runs the
-    /// supported-format branch on it and settles the `decode()` promises
-    /// waiting on it.
+    /// supported-file-format branch of step 27 of
+    /// <https://html.spec.whatwg.org/#update-the-image-data> (and of steps
+    /// 17.5.1-17.5.3 of
+    /// <https://html.spec.whatwg.org/#reacting-to-environment-changes>) on it and
+    /// settles the `decode()` promises waiting on it.
     ImageDecoded {
         webview_id: WebviewId,
         image_id: ImageIdentifier,

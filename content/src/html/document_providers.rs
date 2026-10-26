@@ -69,11 +69,7 @@ pub(crate) enum AssetRequest {
     /// `background-image`/`mask-image`, or an `<img>` in a same-origin iframe
     /// subdocument). Nothing decodes it: the graphics process owns every image,
     /// so the request is answered as failed and blitz paints nothing.
-    DecodedImage {
-        node_id: usize,
-        url: String,
-        image_type: blitz_dom::util::ImageType,
-    },
+    DecodedImage { node_id: usize, url: String },
 }
 
 /// The service providers of one content document, handed to `blitz-dom` as
@@ -287,16 +283,11 @@ impl ResourceHooks for DocumentProviders {
                     url: url.to_string(),
                 },
             ),
-            ResourceRequest::Image {
-                node_id,
-                url,
-                image_type,
-            } => (
+            ResourceRequest::Image { node_id, url, .. } => (
                 url.to_string(),
                 AssetRequest::DecodedImage {
                     node_id,
                     url: url.to_string(),
-                    image_type,
                 },
             ),
         };

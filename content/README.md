@@ -158,20 +158,22 @@ Every subresource the document needs is reported through the
 request takes the scheme routing above and comes back as
 `Command::CompleteDocumentFetch`; content then installs the result into the
 document with `BaseDocument::handle_message` (a `Resource`, or
-`complete_stylesheet_import` for `@import`).  `data:` URLs are decoded in
-content and delivered through the same command.  Background and mask images
-are decoded in content because blitz paints them; `<img>` pixels go to the
-graphics process instead (see below).
+`complete_stylesheet_import` for `@import`).  `data:` URLs are resolved in
+content and delivered through the same command.  No image is decoded here: the
+graphics process is the only image decoder (`AGENTS.md`, "Process
+Boundaries"), and the layout-time image loader's requests are answered as
+failed so blitz paints nothing for them (see below).
 
 The `<img>` element follows its own processing model in
 `content/src/html/images_processing_model.rs`; keep its fetch on that path (see
 `content/src/html/README.md`, "Images").  The completed image is registered
 with the graphics process once per `ImageIdentifier`; `DestroyDocument`
 releases the document's registered images with
-`GraphicsCommand::UnregisterImages`.  Same-origin iframe subdocuments paint
-their images into the parent's scene, so their images stay on the layout-time
-loader rather than the `<img>` processing model
-(`DocumentHost::Subdocument`).
+`GraphicsCommand::UnregisterImages`.  Same-origin iframe subdocuments keep
+their images on the layout-time loader rather than the `<img>` processing model
+(`DocumentHost::Subdocument`), so those images do not render: they need their
+own frames and image layers before they can go through graphics like a
+top-level `<img>` (remaining work, see `content/src/html/README.md`).
 
 ## Clipboard
 

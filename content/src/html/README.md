@@ -345,18 +345,72 @@ Known gaps in the processing model:
   `Image-constructor.html` are blocked on it.
 - The graphics process is the only image decoder, so the content process never
   reads image bytes itself: it ships each response body to graphics and runs
-  step 27's branches when `GraphicsEvent::ImageDecoded` reports the decoded
-  dimensions and format (`complete_image_decode`).  The accepted set is PNG,
+  step 27 of <https://html.spec.whatwg.org/#update-the-image-data> when
+  `GraphicsEvent::ImageDecoded` reports the decoded dimensions and format
+  (`complete_image_decode`).  The accepted set is PNG,
   JPEG, GIF and WebP — formats graphics reports as `ImageFormat::Other` take
   step 27's "not in a supported file format" branch, and an SVG `src` is
   reported as an error. Which formats actually decode is the running OS's
   Image I/O support on macOS (see `graphics/README.md`).
 - Nothing decodes for blitz: the document's layout-time image loader is
   answered with a failed load, so CSS `background-image`/`mask-image` and
-  `<img>` elements inside same-origin iframe subdocuments render nothing.
-  `<img>` in a top-level document is a graphics layer (see `graphics/README.md`).
-  These requests are still fetched before the load is failed; skipping the
-  fetch is remaining work.
+  `<img>` elements inside same-origin iframe subdocuments render nothing.  Both
+  are `AssetRequest::DecodedImage` requests; they are still fetched before the
+  load is failed (skipping the fetch is remaining work).  The design that
+  closes the subdocument part is under "Remaining work" below; CSS
+  background/mask images stay unsupported until graphics grows an image layer
+  kind positioned by the document's paint order instead of an element box.
+
+### Remaining work: `<img>` in same-origin iframe subdocuments
+
+A top-level `<img>` is a graphics image layer: the processing model registers
+the image, graphics decodes it, and `build_frame_composition_metadata` emits an
+`EmbedSite::Image` in the document's own coordinate space.  The same element in
+a same-origin subdocument takes none of those steps — `obtain_images` and
+`update_the_image_data` return early for a non-`Main` host, the embed-site scan
+only visits the top-level document's tree, and the layout-time loader (its only
+remaining path) is answered as failed.  So it renders nothing.
+
+Design: give each same-origin subdocument its own frame, so its images are
+ordinary `<img>` layers in that frame's coordinate space and no parent-space
+geometry is needed.
+
+1. **Identity.**  `DocumentHost::Subdocument` carries the parent's `DocumentId`
+   plus a `Uuid`, while `ImageRegistry` keys elements by
+   `(DocumentId, node_id)`; a subdocument therefore needs an identity of its own
+   in the registry before the `DocumentHost::Main` gates in `obtain_images` and
+   `update_the_image_data` come off.  `decode()` and the queued element tasks
+   then run in the subdocument's realm (resolved through `DocumentProviders` /
+   `self.subdocuments`), and their registrations reach graphics like any other.
+2. **Intrinsic size.**  `apply_pending_image_presentation` resolves documents
+   from `self.documents`; it must also resolve `self.subdocuments`
+   (`Weak<RefCell<BaseDocument>>`) so `set_image_intrinsic_size` reaches the
+   subdocument's tree.  With no pixels going to blitz, that write is the only
+   thing that gives the element a box.
+3. **Frame.**  Mint a `FrameId` for the subdocument, emit `EmbedSite::Frame` at
+   the iframe node exactly as `build_frame_composition_metadata` does for a
+   cross-origin iframe, and paint the subdocument into its own `PaintFrame`.
+   Its `<img>` elements then become `EmbedSite::Image` layers inside that frame.
+4. **Per-frame metadata.**  Run the same builder for the subdocument so its
+   image embeds, `FrameHitInfo`, `ChildViewport` and animating flags are
+   published with its frame, and make sure a cycle's composition waits for the
+   subdocument's frame like any other child frame.
+5. **Input and hit-testing.**  Map pointer coordinates through the iframe's box
+   into the subdocument's frame, the way `child_frame_to_webview` maps a
+   cross-origin child.
+
+The alternative — converting each subdocument image's box into the parent's
+space — needs the iframe offset and the subdocument's scroll composed per
+image, clip intersection with the iframe's content rect, and correct z-order
+across the boundary, and it still inherits the one-layer-per-navigable
+limitation.  A frame per subdocument reuses the child-frame machinery that
+already composes cross-origin iframes.
+
+Acceptance: `<img>` load/`error` events, `naturalWidth`/`naturalHeight`,
+`complete` and `decode()` inside a same-origin iframe (WPT image tests in
+iframes); a pointer press reaching an image layer inside an iframe; and the
+`RenderingOpportunity` traces still validating with a second `PaintFrame` per
+cycle.
 
 ## Canvas
 

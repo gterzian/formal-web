@@ -191,10 +191,10 @@ before it knows anything about the image: the decoder is the only source of the
 image's dimensions and format. Every registration is answered with
 `GraphicsEvent::ImageDecoded`, whose `result` is the `DecodedImage` (dimensions
 plus the `ImageFormat` the decoder recognized) or `Err` with the decoder's
-failure reason. The UA forwards it to content, which runs step 27 of update the
-image data from that report — its accepted set is PNG/JPEG/GIF/WebP, so a
-format the decoder reports as `Other` fails the request, and the content
-process unregisters the decoded image again.
+failure reason. The UA forwards it to content, which runs step 27 of
+<https://html.spec.whatwg.org/#update-the-image-data> from that report — its
+accepted set is PNG/JPEG/GIF/WebP, so a format the decoder reports as `Other`
+fails the request, and the content process unregisters the decoded image again.
 
 `GraphicsCommand::UnregisterImages` releases a document's decoded
 data/IOSurfaces when its `DestroyDocument` arrives; that is also how a rejected
@@ -207,7 +207,10 @@ Limitations:
 - Only `<img>` elements in the top-level document become image layers. CSS
   `background-image`/`mask-image` and `<img>` inside same-origin iframe
   subdocuments are not decoded by anyone: the document's layout-time image
-  loader is answered with a failed load, so blitz paints nothing there.
+  loader is answered with a failed load, so blitz paints nothing there. The
+  subdocument fix (a frame per subdocument, so its images are ordinary image
+  layers) is designed in `content/src/html/README.md`, "Remaining work:
+  `<img>` in same-origin iframe subdocuments".
 - The macOS path has no fallback decoder. Content accepts PNG, JPEG, GIF and
   WebP because its `image`-crate probe recognizes them, but Image I/O's support
   varies by OS version (Apple documents no cross-version guarantee, and WebKit

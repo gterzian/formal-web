@@ -275,8 +275,11 @@ struct PendingDocumentLoad {
     scripts: Vec<DeferredScriptState>,
 }
 
-/// One `<img>` response whose bytes are with the graphics process: what step
-/// 27 needs once the decoder reports on the image identifier.
+/// One `<img>` response whose bytes are with the graphics process: the state
+/// step 27 of <https://html.spec.whatwg.org/#update-the-image-data> (and steps
+/// 17.5.1-17.5.3 of
+/// <https://html.spec.whatwg.org/#reacting-to-environment-changes>) needs once
+/// the decoder reports on the image identifier.
 struct PendingImageDecode {
     document_id: DocumentId,
     navigable_id: NavigableId,
@@ -284,9 +287,11 @@ struct PendingImageDecode {
     handler_id: DocumentFetchId,
 }
 
-/// Whether the content process accepts the format the graphics process's
-/// decoder reported, i.e. the user agent's "supported file format" decision
-/// for `<img>` resources.
+/// The "supported file format" test of step 27 of
+/// <https://html.spec.whatwg.org/#update-the-image-data> (and of steps
+/// 17.5.1-17.5.3 of
+/// <https://html.spec.whatwg.org/#reacting-to-environment-changes>) for the
+/// format the graphics process's decoder reported.
 fn is_supported_image_format(format: ImageFormat) -> bool {
     matches!(
         format,
@@ -445,7 +450,9 @@ pub(crate) struct ContentProcess {
     /// process; released when the document is destroyed.
     registered_images_by_document: HashMap<DocumentId, HashSet<ImageIdentifier>>,
     /// The `<img>` responses whose bytes are with the graphics process: step 27
-    /// runs when the decoder reports back on the image identifier.
+    /// of <https://html.spec.whatwg.org/#update-the-image-data> (and of
+    /// <https://html.spec.whatwg.org/#reacting-to-environment-changes>) runs
+    /// when the decoder reports back on the image identifier.
     pending_image_decodes: HashMap<ImageIdentifier, PendingImageDecode>,
     /// The same-origin iframe subdocuments owned by this process's documents,
     /// keyed by the id their `DocumentProviders` routes asset fetches with.
@@ -3041,10 +3048,12 @@ impl ContentProcess {
         Ok(())
     }
 
-    /// The image fetch's `processResponse`, which runs step 27 of
-    /// <https://html.spec.whatwg.org/#update-the-image-data> or steps
+    /// The image fetch's `processResponse` of step 27 of
+    /// <https://html.spec.whatwg.org/#update-the-image-data> (and of steps
     /// 17.5.1-17.5.3 of
-    /// <https://html.spec.whatwg.org/#reacting-to-environment-changes>.
+    /// <https://html.spec.whatwg.org/#reacting-to-environment-changes>): ship
+    /// the body to the graphics process, the only decoder, and record what the
+    /// step needs once it reports.
     fn process_image_fetch_response(
         &mut self,
         document_id: DocumentId,
@@ -3101,11 +3110,13 @@ impl ContentProcess {
         self.register_image_with_graphics(navigable_id, image_id, encoded)
     }
 
-    /// Runs step 27 of
-    /// <https://html.spec.whatwg.org/#update-the-image-data> (or steps
-    /// 17.5.1-17.5.3 of "reacting to environment changes") once the graphics
-    /// process has decoded the response body, and settles the `decode()`
-    /// promises that were waiting on it.
+    /// The second half of the image fetch's `processResponse` of step 27 of
+    /// <https://html.spec.whatwg.org/#update-the-image-data> (and of steps
+    /// 17.5.1-17.5.3 of
+    /// <https://html.spec.whatwg.org/#reacting-to-environment-changes>), which
+    /// waits for the graphics process to decode the body: runs the model's
+    /// response step with the decoder's report and settles the `decode()`
+    /// promises waiting on it.
     ///
     /// `report` is the decoder's report; `None` means the bytes were never
     /// decoded into an image, which takes step 27's "not in a supported file
@@ -3219,7 +3230,9 @@ impl ContentProcess {
 
     /// Ship the encoded bytes of an `<img>` resource to the graphics process,
     /// which is the only image decoder. Its `ImageDecoded` report completes
-    /// step 27 through `complete_image_decode`.
+    /// step 27 of <https://html.spec.whatwg.org/#update-the-image-data> (and of
+    /// <https://html.spec.whatwg.org/#reacting-to-environment-changes>) through
+    /// `complete_image_decode`.
     fn register_image_with_graphics(
         &mut self,
         navigable_id: NavigableId,
