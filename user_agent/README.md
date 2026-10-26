@@ -68,20 +68,134 @@ document already runs them; one a script opened carries
 `EmbedderConfig::default_user_scripts`. A child navigable drops the
 main-frame-only scripts.
 
-## Graphics process routing
+## Rendering pipeline
 
-The content processes send each traversable's `PaintFrame` directly to the
-`formal-web-graphics` process, which composes the webview's scene (iframe
-embed sites + video frames) and returns `GraphicsEvent::PixelFrameReady`.
-The UA stores the accompanying `FrameHitInfo` in `UserAgentState::frame_hit_info`
-(keyed by webview id) for UI event routing, and forwards the layers to the
-host via `Embedder::new_web_content_layers`.
+The rendering pipeline is demand-driven: content is rendered only when the
+embedder can present a frame and the navigable's UI state has changed since
+the last render. The user agent owns that gate; content owns the document and
+the painted scene; graphics owns composition and pixels; the embedder owns
+presentation. The gate implements the HTML event loop's
+<https://html.spec.whatwg.org/multipage/webappapis.html#rendering-opportunity>
+and the Unnecessary rendering step of
+<https://html.spec.whatwg.org/multipage/webappapis.html#update-the-rendering>.
 
-Gotcha: during a cross-origin navigation the traversable's event loop (and
-content process) switches before the UA-side active document does — the
-active document only changes at finalization, so in the migration window
-`traversable_handles` and `active_documents_by_traversable` disagree.
-Commands pairing those two maps (e.g. `UpdateTheRendering`) must verify the
-active document is owned by the traversable's current event loop and skip
-otherwise — a stale send fails in the new content process and, because no
-paint frame is produced, leaves the render loop's pending flag stuck.
+### The two inputs
+
+A **rendering opportunity** exists for a top-level traversable when the
+embedder can present a frame. The embedder calls the public
+`WebviewProvider::frame_needed` at each paint; the UA's
+`note_rendering_opportunity` records it in `rendering_opportunities`. The
+embedder is the only source of rendering opportunities: the UA cannot create
+one itself.
+
+A **UI state update** says the navigable's visible state may have changed:
+input dispatch, script evaluation, navigation finalization, viewport changes,
+automation, worker `requestAnimationFrame`, or a content- or graphics-reported
+change. `note_ui_state_update` records it in `queued_ui_state_updates`, with
+the epoch time that becomes the event loop's `frameTimestamp` (the HTML "last
+render opportunity time"). Notes are batched: multiple notes before the next
+render collapse into one, and the latest timestamp wins.
+
+`update the rendering` is queued only when both inputs exist. A UI state
+update without a rendering opportunity is batched and the UA calls
+`Embedder::request_next_frame`; a rendering opportunity with no queued UI state
+update does not render, and the opportunity remains recorded for the next UI
+state update. That is the Unnecessary rendering step in code form.
+
+### Queueing update the rendering
+
+`queue_update_the_rendering` starts one cycle per navigable:
+
+- a per-navigable guard (`pending_update_the_rendering`) prevents a second
+  cycle while the first is in flight;
+- the navigable's queued UI state update is drained and its timestamp is used
+  as `frameTimestamp`;
+- the top-level traversable's rendering opportunity is consumed;
+- the active document must be owned by the navigable's current event loop (a
+  cross-origin navigation moves the traversable to a new content process
+  before the UA-side active document changes; a stale send would leave the
+  pending flag stuck);
+- pending worker animation-frame requests are dispatched;
+- for a top-level navigable, graphics is sent `RenderStarted` with the cycle
+  deadline;
+- `ContentCommand::UpdateTheRendering` is sent to the content event loop;
+- for a child navigable, the top-level traversable's update is queued too,
+  because graphics composes only when the top-level frame arrives.
+
+Content turns the command into a task so it runs in event-loop order (see
+`content/README.md`); the rendering task then enters `update_the_rendering`.
+
+### Content's part
+
+`update_the_rendering` runs the animation-frame callbacks and applies the
+Unnecessary rendering test: a clean document reuses its last scene and
+composition instead of re-running blitz, while a dirty or animating document
+(or one with no cached scene) resolves style/layout and paints. Either way
+content sends a `PaintFrame` directly to the graphics process; that is how
+graphics learns the current top-level or child frame and its `animating` flag.
+Content marks a document dirty when a script or event may have mutated it, and
+sends `ContentEvent::NoteUiStateUpdate` when a change happens outside a
+UA-driven command.
+
+### Graphics' part
+
+The graphics process stores child frames in the parent's compositor and
+composes only when a top-level frame arrives, waiting for the child and video
+frames the top-level frame references. It returns child viewport data in
+`PixelFrameReady`; the UA publishes that data to the child. A dirty child frame
+or canvas is reported with `GraphicsEvent::CompositionChanged`, which the UA
+turns into a UI state update for the parent traversable.
+
+`RenderStarted` arms a per-webview composition deadline (16 ms). If the content
+event loop is blocked and the top-level `PaintFrame` does not arrive, graphics
+composes the last committed root with any dirty out-of-band layer (a worker
+`OffscreenCanvas` or a video frame) so that content keeps animating. A normal
+top-level frame clears the deadline. `PixelFrameReady` carries the composed
+layers, hit-test info, child viewport data, and the animating frame ids.
+
+### Completing the cycle
+
+On `PixelFrameReady` the UA:
+
+- clears the in-flight state for the top-level and composed child frames;
+- forwards the layers to the embedder (`new_web_content_layers`), which
+  presents them;
+- records `FrameHitInfo` and the child-frame mapping for input routing;
+- publishes child viewports back to content (cached, so a viewport update does
+  not create a render cascade);
+- if the composed scene is animating, queues UI state updates for the animating
+  frames so the next rendering opportunity starts the next frame;
+- if the embedder already has an outstanding rendering opportunity (a paint
+  arrived while the render was in flight), queues the next update;
+- otherwise, if a static UI state update was stranded during the in-flight
+  render, calls `request_next_frame` so it is not deferred to the next
+  unrelated input event.
+
+The result is a closed loop for animated content: `PixelFrameReady(animating)`
+queues the next UI state update, the embedder keeps supplying rendering
+opportunities while the tab animates, and each opportunity starts the next
+`update the rendering`, content paints, graphics composes, and the cycle
+repeats. A static page leaves the loop: no animating flag, no self-sustaining
+frame requests, and only an actual UI state update or an embedder event starts
+the next cycle.
+
+### Cross-origin navigation and rendering
+
+During a cross-origin navigation the traversable's event loop (and content
+process) switches before the UA-side active document does — the active document
+only changes at finalization, so in the migration window `traversable_handles`
+and `active_documents_by_traversable` disagree. Commands pairing those two maps
+(e.g. `UpdateTheRendering`) must verify the active document is owned by the
+traversable's current event loop and skip otherwise — a stale send fails in the
+new content process and, because no paint frame is produced, leaves the render
+loop's pending flag stuck.
+
+### Model
+
+The cross-process cycle is modeled by
+`verification/tla_specs/RenderingOpportunity.tla`. It tracks
+`rendering_opportunity`, `ui_state_update_count`, `pending`,
+`rendering_updated`, `composed`, and `animating` per frame; its invariants are
+`pending >= rendering_updated >= composed` and `pending <= BufferCount` (two
+buffers: one displayed, one being rendered). See `verification/README.md` for
+the trace-event mapping.

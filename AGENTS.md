@@ -824,7 +824,7 @@ At the end of each task, run the following steps **in order**:
      failure.
    - Update any README "known failures" entry for the fixed test (step 7).
 
-9. **Run all verification steps** — Every end-of-task run executes ALL verification steps unconditionally. Do not skip any step based on a subjective assessment of "relevance" — changes to seemingly unrelated files (test pages, configuration, documentation) routinely break downstream steps in this multi-process system. Running everything catches regressions the agent cannot predict.
+9. **Run all verification steps** — Every end-of-task run executes ALL verification steps unconditionally, with one exception: a changeset that touches only documentation files (`README.md`, `AGENTS.md`) and no source or test files skips them. Report that the change is documentation-only. Do not skip any step based on a subjective assessment of "relevance" for any other change — changes to seemingly unrelated files (test pages, configuration) routinely break downstream steps in this multi-process system. Running everything catches regressions the agent cannot predict.
 
    Two engines run WPT: V8 (default) and Boa (opt-in).  Default verification
    runs use the V8 backend (the default

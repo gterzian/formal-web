@@ -31,14 +31,13 @@ compiled-per-configuration parts.
 
 ## Surface delivery invariants
 
-The render cycle is modeled and validated by the `RenderingOpportunity` TLA+
-spec (`verification/tla_specs/RenderingOpportunity.tla`): the UA traces
-`NoteUiStateUpdate`/`RenderingOpportunity`, content traces
-`UpdateTheRendering`, and the graphics process traces `GraphicsComputed` when
-`PixelFrameReady` is actually sent — i.e. after the poll thread's
-`device.poll(Wait)` confirmed the render completed on the GPU.  A change to
-the cycle must keep the model's checks true (see `verification/README.md`).
-The invariants that keep the pipeline correct:
+The cross-process render cycle is documented in `user_agent/README.md`
+("Rendering pipeline"). The `RenderingOpportunity` TLA+ model
+(`verification/tla_specs/RenderingOpportunity.tla`) checks it; the graphics
+process traces `GraphicsComputed` when `PixelFrameReady` is actually sent —
+i.e. after the poll thread's `device.poll(Wait)` confirmed the render
+completed on the GPU. A change to the cycle must keep the model's checks true
+(see `verification/README.md`). The graphics-specific delivery invariants:
 
 - The per-webview buffers **alternate**: each render cycle renders into the
   buffer the last render did not use.  Rendering-opportunity pacing allows
@@ -317,13 +316,9 @@ two-submit layout.
   composition reports `animating = true` when any composed frame animates
   (the top-level document, or a cross-origin iframe — same-origin iframes
   are subdocuments and already fold into the parent's `is_animating()`),
-  and carries the animating frame ids. The UA notes UI state
-  updates for those navigables on `PixelFrameReady`, so a CSS
-  animation or video inside a cross-origin iframe keeps both its own
-  process and the top-level rendering until it ends. The RenderingOpportunity TLA model
-  abstracts the hierarchy: the model's `rendering_opportunity`, `pending`, and
-  per-frame counters are traced only for the top-level navigable, and the
-  model-checking configuration uses independent top-level frames.
+  and carries the animating frame ids. The UA uses that report to keep the
+  cycle alive for the animating navigables (see `user_agent/README.md`,
+  "Rendering pipeline").
 - **Resize**: on resize the whole 2-slot IOSurface double buffer is recreated
   and the embedder re-imports + re-registers the new surfaces. The update
   happens in one large step once the resize settles — there is no incremental

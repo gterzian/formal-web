@@ -21,7 +21,7 @@ The verification crate owns trace recording, TLA+ validation, and the shutdown w
 | Spec | Events traced (producer) | Validates |
 |---|---|---|
 | `Navigation` | UA navigation lifecycle | navigable/navigation state machine |
-| `RenderingOpportunity` | UA `CreateFrame` (the navigable-creation part of the navigation path, traced from `CreateNavigable`/`CreateChildNavigable`) /`NoteUiStateUpdate`/`RenderingOpportunity`, content `UpdateTheRendering`, graphics `GraphicsComputed` (traced when the pixels are actually sent) | Rendering-opportunity-gated render cycle with double buffering: a render starts only when the embedder can present a frame (a rendering opportunity, paced by vsync) AND a UI state update is pending; the paint consumes the composed frames, and the pipeline never holds more than `BufferCount` (2) renders in flight (one displayed, one being rendered) |
+| `RenderingOpportunity` | UA `CreateFrame` (the navigable-creation part of the navigation path, traced from `CreateNavigable`/`CreateChildNavigable`) /`NoteUiStateUpdate`/`RenderingOpportunity`, content `UpdateTheRendering`, graphics `GraphicsComputed` (traced when the pixels are actually sent) | the render cycle documented in `user_agent/README.md` ("Rendering pipeline"): the rendering-opportunity gate, update the rendering, composition, and the two-buffer bound |
 | `MessagePort` | content `NewChannel`/`PostMessage`/`ReceiveMessage`/`Transfer`/`TransferReceive`, UA `RouteMessage`, content `RunTask` (the last two are the implementation-level routing/task events, skipped by the coarse trace consumer) | the cross-process port workflow mapped to the HTML spec's channel messaging steps: channel creation, the FIFO port message queue ordering (each `ReceiveMessage` pop is checked against the abstract queue head), and the transfer/transfer-receive transitions |
 
 ### MessagePort scope
@@ -55,11 +55,9 @@ The model tracks the frame-production cycle per **top-level traversable** and
 its **child frames** (iframes). `RenderingOpportunity` and `GraphicsComputed`
 only ever fire for top-levels (the embedder sends `frame_needed` for webviews;
 graphics only computes when the root frame arrives), while
-`NoteUiStateUpdate`/`UpdateTheRendering` are traced for every frame. A
-top-level paint services the batched UI state updates of its whole hierarchy,
-and a child's update also starts the top-level's update (their frames compose
-together), mirroring `queue_update_the_rendering`/`queue_update_the_rendering_for_navigables`
-in the user agent.
+`NoteUiStateUpdate`/`UpdateTheRendering` are traced for every frame. The
+pipeline itself is documented in `user_agent/README.md` ("Rendering pipeline");
+this section covers what the trace model records.
 
 Frames are created dynamically by the `CreateFrame` action: the initial
 top-level traversable (parent `NoParent`) and iframes (parent is an existing frame)
@@ -76,13 +74,11 @@ The model abstracts all UI state update notes into `NoteUiStateUpdate` and
 relies on `RenderingOpportunity` fairness to eventually service a batched
 update, so it does not distinguish a cross-origin content change arriving out
 of band (the graphics-side `CompositionChanged` that notes a non-top-level
-frame) from any other note. That is fine for the physical-rendering
-simplification, but it means the model cannot express the recovery for the
-stranded-update race: the model batches the whole hierarchy, while the UA's
-`queue_update_the_rendering_for_navigables` drains each navigable independently
-(so a child is serviced even when the top-level is in flight). Expressing that
-recovery in the model would need a distinct `CompositionChanged`-style note
-event and a `request_next_frame` recovery action, and is deferred.
+frame) from any other note. The model batches the whole hierarchy, while the UA
+drains each navigable independently (see `user_agent/README.md`, "Rendering
+pipeline"). Expressing that recovery in the model would need a distinct
+`CompositionChanged`-style note event and a `request_next_frame` recovery
+action, and is deferred.
 
 ### Adding a spec
 
