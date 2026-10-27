@@ -1,0 +1,58 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>Same-origin iframe child</title>
+    <style>
+      html, body { margin: 0; }
+      body {
+        font-family: system-ui, -apple-system, sans-serif;
+        background: #eef3ff;
+        color: #1a1a2e;
+        padding: 0.75rem 1rem;
+      }
+      h2 { margin: 0 0 0.4rem; font-size: 1rem; }
+      p { margin: 0.3rem 0; font-size: 0.85rem; color: #4a4a62; }
+      img { display: block; margin-top: 0.5rem; border-radius: 0.4rem; }
+    </style>
+  </head>
+  <body>
+    <h2 id="child-heading">Same-origin iframe document</h2>
+    <p>
+      This document has its own realm, its own frame, and its own
+      <code>&lt;img&gt;</code> layer. It shares the parent's content process
+      because it is same-origin with it.
+    </p>
+    <p id="child-status">waiting for parent…</p>
+    <img id="child-image" src="images/sunset.png" width="180" height="100" alt="Sunset" />
+    <script>
+      // The parent reads these through contentWindow, and pings this document
+      // over postMessage: both work because the document is same-origin and
+      // lives in the parent's content process.
+      document.getElementById("child-heading").textContent =
+        "Same-origin iframe document (" + location.href + ")";
+
+      window.addEventListener("message", function (event) {
+        if (event.data !== "ping") {
+          return;
+        }
+        var image = document.getElementById("child-image");
+        // The parent's replies use "*" because a file: document's origin
+        // serializes to "null", which is not a valid targetOrigin URL.
+        event.source.postMessage(
+          {
+            reply: "pong",
+            imageWidth: image.naturalWidth,
+            imageHeight: image.naturalHeight,
+            imageComplete: image.complete
+          },
+          "*"
+        );
+      });
+
+      if (window.parent !== window) {
+        window.parent.postMessage("ready", "*");
+      }
+    </script>
+  </body>
+</html>

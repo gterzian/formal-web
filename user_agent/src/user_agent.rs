@@ -642,6 +642,9 @@ pub struct PendingBeforeUnloadNavigation {
     pub pending_document_ids: HashSet<DocumentId>,
     /// Whether any descendant beforeunload handler canceled the navigation.
     pub canceled: bool,
+    /// The `srcdoc` body of an
+    /// <https://html.spec.whatwg.org/multipage/#navigate-to-the-srcdoc-resource>.
+    pub srcdoc_html: Option<String>,
 }
 
 /// Pending fetch-backed navigation paused at the response wait point.
@@ -1396,6 +1399,31 @@ fn is_same_site(parent_url: &str, destination_url: &str) -> Result<bool, String>
 /// branch predicate used by `initialise_the_document_object`.
 fn is_cross_origin_navigation(parent_url: &str, destination_url: &str) -> Result<bool, String> {
     is_same_site(parent_url, destination_url).map(|same_site| !same_site)
+}
+
+/// <https://html.spec.whatwg.org/multipage/#initialise-the-document-object> — step 7.4
+/// The site the destination document's similar-origin window agent is keyed by.
+/// `about:blank` and `about:srcdoc` inherit the parent document's origin, so
+/// their site is the parent document's; every other destination uses its own
+/// URL's site.
+fn destination_site_for_parent(parent_document_url: &str, final_url: &str) -> String {
+    if is_creator_origin_navigation(final_url) {
+        content_process_label_from_url(parent_document_url)
+    } else {
+        content_process_label_from_url(final_url)
+    }
+}
+
+/// <https://html.spec.whatwg.org/multipage/#initialise-the-document-object> — step 7.4
+/// Whether the destination document inherits the creator's origin:
+/// `about:blank` (a new browsing context's initial document) and
+/// `about:srcdoc` (an iframe srcdoc document) have no origin of their own, so
+/// their origin is the creator's.
+fn is_creator_origin_navigation(final_url: &str) -> bool {
+    let Ok(parsed) = Url::parse(final_url) else {
+        return false;
+    };
+    parsed.scheme() == "about" && (parsed.path() == "blank" || parsed.path() == "srcdoc")
 }
 
 fn content_process_label_from_url(url: &str) -> String {
@@ -3052,6 +3080,7 @@ impl UserAgentWorker {
         traversable_id: NavigableId,
         destination_url: String,
         user_involvement: UserNavigationInvolvement,
+        srcdoc_html: Option<String>,
     ) -> Result<(), String> {
         // Step 1: Assert: this is running in parallel.
         // Note: The user-agent thread performs the navigation-fetch setup inline on the
@@ -3086,6 +3115,26 @@ impl UserAgentWorker {
                 allow_post: false,
                 user_involvement: user_involvement.clone(),
             });
+        // <https://html.spec.whatwg.org/multipage/#navigate-to-the-srcdoc-resource>
+        // Step 1.3: "Navigate to the srcdoc resource: Navigate an iframe or frame given element, about:srcdoc, the empty string, and the value of element's srcdoc attribute."
+        // Note: The response body of the `about:srcdoc` navigation is the
+        // element's srcdoc attribute value, supplied by the content process, so
+        // no fetch is performed.  The request continues through the normal
+        // response path (`handle_navigation_fetch_completed`), which creates the
+        // document in the same content process as the parent (same origin).
+        if let Some(html) = srcdoc_html {
+            self.handle_navigation_fetch_completed(
+                fetch_id,
+                ContentFetchResponse {
+                    final_url: request.url.clone(),
+                    status: 200,
+                    content_type: String::from("text/html; charset=utf-8"),
+                    body: html.into_bytes(),
+                },
+            );
+            return Ok(());
+        }
+
         // A navigation to a scheme the embedder serves is answered by the
         // embedder, so it goes there instead of to net, ahead of
         // <https://fetch.spec.whatwg.org/#scheme-fetch>
@@ -3140,6 +3189,7 @@ impl UserAgentWorker {
         destination_url: String,
         user_involvement: UserNavigationInvolvement,
         navigation_id: NavigationId,
+        srcdoc_html: Option<String>,
     ) -> Result<(), String> {
         let traversable_id = self.traversable_id_for_navigable(navigable_id)?;
         verification::tla_log!(
@@ -3166,6 +3216,7 @@ impl UserAgentWorker {
             navigable_id,
             destination_url,
             user_involvement,
+            srcdoc_html,
             std::iter::once(navigable_id)
                 .chain(descendant_navigable_ids.iter().copied())
                 .collect(),
@@ -3179,6 +3230,7 @@ impl UserAgentWorker {
         navigable_id: NavigableId,
         destination_url: String,
         user_involvement: UserNavigationInvolvement,
+        srcdoc_html: Option<String>,
         navigables_that_need_before_unload: Vec<NavigableId>,
     ) -> Result<(), String> {
         // Step 1: "Let documentsToFireBeforeunload be the active document of each item in
@@ -3224,6 +3276,7 @@ impl UserAgentWorker {
                 user_involvement,
                 pending_document_ids: documents_to_fire_beforeunload.iter().copied().collect(),
                 canceled: false,
+                srcdoc_html,
             },
         );
 
@@ -3273,6 +3326,7 @@ impl UserAgentWorker {
             traversable_id,
             pending.destination_url,
             pending.user_involvement,
+            pending.srcdoc_html,
         )
     }
 
@@ -3557,6 +3611,7 @@ impl UserAgentWorker {
                 destination_url,
                 UserNavigationInvolvement::BrowserUi,
                 NavigationId::new(),
+                None,
             )?;
             // Step 3: Return traversable.
             Ok(())
@@ -3929,6 +3984,7 @@ impl UserAgentWorker {
                 request.destination_url.clone(),
                 request.user_involvement.clone(),
                 navigation_id,
+                request.srcdoc_html.clone(),
             )?;
             // Only notify the embedder for top-level navigations, not iframe children.
             let is_top_level = self
@@ -3945,6 +4001,116 @@ impl UserAgentWorker {
         })();
         if let Err(error) = result {
             error!("failed to run navigate: {error}");
+        }
+    }
+
+    /// The browsing context group of `browsing_context_id`'s top-level
+    /// traversable.
+    fn browsing_context_group_id_for(
+        &self,
+        browsing_context_id: BrowsingContextId,
+    ) -> Result<BrowsingContextGroupId, String> {
+        let top_level_browsing_context_id = self
+            .state
+            .top_level_browsing_context_id(browsing_context_id)
+            .unwrap_or(browsing_context_id);
+        self.state
+            .top_level_browsing_context_group_ids
+            .get(&top_level_browsing_context_id)
+            .copied()
+            .ok_or_else(|| {
+                format!("missing browsing context group for browsing context {browsing_context_id}")
+            })
+    }
+
+    /// Records `site` as served by the agent that owns `traversable_id`'s
+    /// current event loop.  A navigation that keeps its event loop (the first
+    /// navigation of an initial `about:blank` document keeps the process it
+    /// was created in) records the destination site there, so a later
+    /// same-origin navigation — a same-origin iframe, say — reuses that agent
+    /// instead of creating an agent cluster for the site.
+    /// <https://html.spec.whatwg.org/multipage/#obtain-similar-origin-window-agent> — step 6.5
+    fn record_agent_cluster_for_site(
+        &mut self,
+        browsing_context_id: BrowsingContextId,
+        site: String,
+        traversable_id: NavigableId,
+    ) {
+        let Ok(browsing_context_group_id) = self.browsing_context_group_id_for(browsing_context_id)
+        else {
+            return;
+        };
+        let Some(event_loop_id) = self.state.traversable_handles.get(&traversable_id).copied()
+        else {
+            return;
+        };
+        let Some(agent_id) = window_agent(&self.state, event_loop_id).map(|agent| agent.id) else {
+            return;
+        };
+        let Some(group) = self
+            .state
+            .browsing_context_group_set
+            .members
+            .get_mut(&browsing_context_group_id)
+        else {
+            return;
+        };
+        let cross_origin_isolation_mode = group.cross_origin_isolation_mode;
+        group
+            .agent_cluster_map
+            .entry(AgentClusterKey::Site(site))
+            .or_insert(AgentCluster {
+                id: AgentClusterId::new(),
+                cross_origin_isolation_mode,
+                is_origin_keyed: false,
+                similar_origin_window_agent: agent_id,
+            });
+    }
+
+    /// Moves a traversable onto `new_event_loop_id`: updates the agents'
+    /// traversable sets, the traversable's event-loop handle, re-sends its
+    /// viewport to the new process, and stops the old event loop when it has no
+    /// traversables left.
+    fn reassign_traversable_event_loop(
+        &mut self,
+        traversable_id: NavigableId,
+        old_event_loop_id: Option<EventLoopId>,
+        new_event_loop_id: EventLoopId,
+    ) {
+        let mut old_event_loop_to_stop = None;
+        if let Some(old_event_loop_id) = old_event_loop_id {
+            if let Some(old_agent) = window_agent_mut(&mut self.state, old_event_loop_id) {
+                old_agent.traversable_ids.remove(&traversable_id);
+            }
+            if old_event_loop_id != new_event_loop_id
+                && window_agent(&self.state, old_event_loop_id)
+                    .is_some_and(|agent| agent.traversable_ids.is_empty())
+            {
+                old_event_loop_to_stop = Some(old_event_loop_id);
+            }
+        }
+        if let Some(new_agent) = window_agent_mut(&mut self.state, new_event_loop_id) {
+            new_agent.traversable_ids.insert(traversable_id);
+        }
+        self.state
+            .traversable_handles
+            .insert(traversable_id, new_event_loop_id);
+        if let Some(navigable) = self.state.navigables.get_mut(&traversable_id) {
+            navigable.event_loop_id = Some(new_event_loop_id);
+            navigable.handle = Some(new_event_loop_id);
+        }
+        if let Some((snapshot, offset_x, offset_y)) = self
+            .state
+            .traversable_viewports
+            .get(&traversable_id)
+            .copied()
+        {
+            // Re-send the viewport so the new process does not boot with the
+            // fallback viewport state.
+            self.handle_set_traversable_viewport(traversable_id, snapshot, offset_x, offset_y);
+        }
+        if let Some(old_event_loop_id) = old_event_loop_to_stop {
+            self.stop_event_loop_handle(old_event_loop_id);
         }
     }
 
@@ -3992,16 +4158,10 @@ impl UserAgentWorker {
         // so the spec's step-7 new-agent branch is not run for the initial-about:blank
         // top-level case; the content-side origin check then falls through to a fresh realm
         // there.
-        let needs_new_event_loop = if let Some(parent_id) = parent_traversable_id {
-            // Step 7: "Otherwise:" — the active document is not initial about:blank or is not
-            // same-origin-domain with the navigation origin, so a new agent is required.
-            // Note: Child navigables realize step 7 as a cross-origin comparison between the
-            // parent document and the new document.  The child's initial about:blank document
-            // inherits the parent's origin, so the parent-document URL approximates step 6's
-            // same-origin-domain condition; whether the child's own active document is
-            // initial about:blank is not consulted.  A cross-origin child navigation moves
-            // the traversable to a new agent, realized here as a new content process/event
-            // loop.
+        if let Some(parent_id) = parent_traversable_id {
+            // Step 7: "Otherwise:" — the child navigable's active document is not
+            // the navigation's own initial about:blank, so the destination gets
+            // the agent its origin belongs to.
             let parent_document_url = self
                 .state
                 .active_documents_by_traversable
@@ -4010,30 +4170,86 @@ impl UserAgentWorker {
                 .map(|doc| doc.url.clone())
                 .ok_or_else(|| format!("missing parent document for traversable {parent_id}"))?;
             if parent_document_url == "about:blank" {
-                // Note: A parent whose active document is still the initial about:blank has no
-                // origin to compare the destination against; such a child navigation is
-                // rejected instead of approximated.
-                return Err(format!(
-                    "unexpected initial about:blank parent while initialising child traversable {traversable_id}"
-                ));
-            }
-            is_cross_origin_navigation(&parent_document_url, final_url)?
-        } else {
-            let is_initial_about_blank = self
-                .state
-                .active_documents_by_traversable
-                .get(&traversable_id)
-                .and_then(|document_id| self.state.documents.get(document_id))
-                .is_some_and(|document| {
-                    document.is_initial_about_blank && document.url == "about:blank"
-                });
-            if is_initial_about_blank {
+                // Note: A parent whose active document is still the initial
+                // about:blank has no origin to key the destination against; the
+                // child's document is created in that same process and reuses the
+                // initial about:blank realm.
                 return Ok(Some(browsing_context_selection.browsing_context_id));
             }
-            browsing_context_selection.swapped_group
-        };
+            // Step 7.1: "Let oacHeader be the result of getting a structured field value given
+            // `Origin-Agent-Cluster` and "item" from navigationParams's response's header list."
+            // Step 7.2: "Let requestsOAC be true if oacHeader is not null and oacHeader[0] is the
+            // boolean true; otherwise false."
+            // Step 7.3: "If navigationParams's reserved environment is a non-secure context, then
+            // set requestsOAC to false."
+            // Note: Steps 7.1-7.3 are not implemented: Origin-Agent-Cluster is not tracked.
+            // Step 7.4: "Let agent be the result of obtaining a similar-origin window agent given
+            // navigationParams's origin, browsingContext's group, and requestsOAC."
+            let destination_site = destination_site_for_parent(&parent_document_url, final_url);
+            let browsing_context_group_id =
+                self.browsing_context_group_id_for(browsing_context_selection.browsing_context_id)?;
+            let old_event_loop_id = self.state.traversable_handles.get(&traversable_id).copied();
+            let new_event_loop_id = self.obtain_similar_origin_window_agent(
+                &destination_site,
+                browsing_context_group_id,
+                destination_site.clone(),
+            )?;
+            if Some(new_event_loop_id) == old_event_loop_id {
+                self.record_agent_cluster_for_site(
+                    browsing_context_selection.browsing_context_id,
+                    destination_site,
+                    traversable_id,
+                );
+                return Ok(Some(browsing_context_selection.browsing_context_id));
+            }
+            self.reassign_traversable_event_loop(
+                traversable_id,
+                old_event_loop_id,
+                new_event_loop_id,
+            );
+            return Ok(Some(browsing_context_selection.browsing_context_id));
+        }
 
-        if !needs_new_event_loop {
+        // Step 6: "If browsingContext's active document's is initial about:blank is true, and
+        // browsingContext's active document's origin is same origin-domain with
+        // navigationParams's origin, then set window to browsingContext's active window."
+        // Note: The process-placement consequence of step 6 is approximated here: a
+        // top-level traversable whose active document is initial about:blank stays on its
+        // current event loop for the first navigation, so the new document lands in the same
+        // content process as the initial about:blank document, where the window reuse itself
+        // is implemented in `ContentProcess::initialise_the_document_object` (the initial
+        // about:blank realm/Window is re-pointed at the new document when the destination is
+        // same-origin with the initial about:blank's origin).  A cross-origin destination
+        // also keeps the same event loop in this branch — `swapped_group` is not consulted —
+        // so the spec's step-7 new-agent branch is not run for the initial-about:blank
+        // top-level case; the content-side origin check then falls through to a fresh realm
+        // there.
+        let is_initial_about_blank = self
+            .state
+            .active_documents_by_traversable
+            .get(&traversable_id)
+            .and_then(|document_id| self.state.documents.get(document_id))
+            .is_some_and(|document| {
+                document.is_initial_about_blank && document.url == "about:blank"
+            });
+        if is_initial_about_blank {
+            self.record_agent_cluster_for_site(
+                browsing_context_selection.browsing_context_id,
+                content_process_label_from_url(final_url),
+                traversable_id,
+            );
+            return Ok(Some(browsing_context_selection.browsing_context_id));
+        }
+
+        // Step 7: "Otherwise:"
+        // Note: For a top-level traversable, `swapped_group` decides whether a new
+        // agent is required; the agent lookup below is only reached when it is.
+        if !browsing_context_selection.swapped_group {
+            self.record_agent_cluster_for_site(
+                browsing_context_selection.browsing_context_id,
+                content_process_label_from_url(final_url),
+                traversable_id,
+            );
             return Ok(Some(browsing_context_selection.browsing_context_id));
         }
 
@@ -4056,63 +4272,15 @@ impl UserAgentWorker {
         // (`ContentProcess::initialise_the_document_object`).
         let destination_site = content_process_label_from_url(final_url);
         let process_label = destination_site.clone();
-        let browsing_context_group_id = {
-            let top_level_browsing_context_id = self
-                .state
-                .top_level_browsing_context_id(browsing_context_selection.browsing_context_id)
-                .unwrap_or(browsing_context_selection.browsing_context_id);
-            self.state
-                .top_level_browsing_context_group_ids
-                .get(&top_level_browsing_context_id)
-                .copied()
-                .ok_or_else(|| {
-                    format!(
-                        "missing browsing context group for browsing context {}",
-                        browsing_context_selection.browsing_context_id
-                    )
-                })?
-        };
+        let browsing_context_group_id =
+            self.browsing_context_group_id_for(browsing_context_selection.browsing_context_id)?;
         let old_event_loop_id = self.state.traversable_handles.get(&traversable_id).copied();
         let new_event_loop_id = self.obtain_similar_origin_window_agent(
             &destination_site,
             browsing_context_group_id,
             process_label,
         )?;
-        let mut old_event_loop_to_stop = None;
-        if let Some(old_event_loop_id) = old_event_loop_id {
-            if let Some(old_agent) = window_agent_mut(&mut self.state, old_event_loop_id) {
-                old_agent.traversable_ids.remove(&traversable_id);
-            }
-            if old_event_loop_id != new_event_loop_id
-                && window_agent(&self.state, old_event_loop_id)
-                    .is_some_and(|agent| agent.traversable_ids.is_empty())
-            {
-                old_event_loop_to_stop = Some(old_event_loop_id);
-            }
-        }
-        if let Some(new_agent) = window_agent_mut(&mut self.state, new_event_loop_id) {
-            new_agent.traversable_ids.insert(traversable_id);
-        }
-        self.state
-            .traversable_handles
-            .insert(traversable_id, new_event_loop_id);
-        if let Some(navigable) = self.state.navigables.get_mut(&traversable_id) {
-            navigable.event_loop_id = Some(new_event_loop_id);
-            navigable.handle = Some(new_event_loop_id);
-        }
-        if let Some((snapshot, offset_x, offset_y)) = self
-            .state
-            .traversable_viewports
-            .get(&traversable_id)
-            .copied()
-        {
-            // Keep cross-origin child documents from booting with fallback viewport state
-            // after event-loop migration.
-            self.handle_set_traversable_viewport(traversable_id, snapshot, offset_x, offset_y);
-        }
-        if let Some(old_event_loop_id) = old_event_loop_to_stop {
-            self.stop_event_loop_handle(old_event_loop_id);
-        }
+        self.reassign_traversable_event_loop(traversable_id, old_event_loop_id, new_event_loop_id);
         // Step 8: "Let loadTimingInfo be a new document load timing info with its navigation
         // start time set to navigationParams's response's timing info's start time."
         // Step 9: "Let document be a new Document, with: type type; content type contentType;

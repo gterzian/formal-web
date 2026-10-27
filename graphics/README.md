@@ -68,8 +68,8 @@ completed on the GPU. A change to the cycle must keep the model's checks true
 - **A layer carries a surface only when that composition presents it**: it
   became dirty (its content changed), or it re-enters the composition after
   being absent from the previous one. Every layer kind follows this — the
-  document layer, cross-origin iframe layers, video, offscreen canvas, and
-  `<img>` layers, whose macOS direct surface is fixed at decode time and is
+  document layer, iframe layers, video, offscreen canvas, and `<img>`
+  layers, whose macOS direct surface is fixed at decode time and is
   therefore delivered exactly once per presentation. A clean layer is
   reported as topology only (`render` and `direct_surface` both `None`) and
   the embedder keeps the contents it already has.
@@ -203,13 +203,21 @@ webview's lifetime.
 Limitations:
 
 - The CPU path renders each image into a layer surface.
-- Only `<img>` elements in the top-level document become image layers. CSS
-  `background-image`/`mask-image` and `<img>` inside same-origin iframe
-  subdocuments are not decoded by anyone: the document's layout-time image
-  loader is answered with a failed load, so blitz paints nothing there. The
-  subdocument fix (a frame per subdocument, so its images are ordinary image
-  layers) is designed in `content/src/html/README.md`, "Remaining work:
-  `<img>` in same-origin iframe subdocuments".
+- CSS `background-image`/`mask-image` are not decoded by anyone: the
+  document's layout-time image loader is answered with a failed load, so blitz
+  paints nothing there. `<img>` elements become image layers in their own
+  document's frame, including inside an iframe.
+- **Document-owned layers belong to the root webview, at any nesting depth.**
+  Decoded images, canvas scenes and media frames are stored in the compositor
+  of the navigable's root webview (`root_webview_owner` walks the
+  `child_webview_to_parent` chain): `RegisterImage`, `UnregisterImages`,
+  `RegisterCanvas` (and therefore `CanvasPaint`), `CreateMediaPipeline` and
+  `RemoveVideoFrame` remap the command's webview, and a child `PaintFrame` is
+  stored beside its parent's frame in the same compositor
+  (`GraphicsCommand::PaintFrame`), so nested iframes compose. Decode and
+  lifecycle reports (`ImageDecoded`, `VideoEnded`) still go to the
+  *registering* navigable, because that is the content process whose model
+  waits for them. Apply the same split when adding a subresource kind.
 - The macOS path has no fallback decoder. Content accepts PNG, JPEG, GIF and
   WebP because its `image`-crate probe recognizes them, but Image I/O's support
   varies by OS version (Apple documents no cross-version guarantee, and WebKit
@@ -286,16 +294,15 @@ two-submit layout.
     within the cycle (the "never compose independently from the video
     handler" rule, to keep the RenderingOpportunity TLA pipeline model
     valid).
-- **Composition waits for the latest embedded frames, and a changed child
-  re-notes the parent.** A top-level
-  `PaintFrame` arriving at the graphics process before a child (cross-origin
-  iframe) `PaintFrame` — the two are produced in parallel content processes —
-  marks the composition pending and defers it until every embedded frame it
-  references has arrived: child frames (their `PaintFrame` is in flight,
-  so the wait is bounded) and video frames whose pipeline is live and has
-  not ended/failed (`expected_videos`). A late child or video frame
-  completes the pending composition; the composed scene therefore always
-  includes the latest embedded frames. For the normal case the render-cycle
+- **Composition waits for video frames, not child frames.** A top-level
+  `PaintFrame` marks the composition pending and defers it only while a video
+  frame whose pipeline is live and has not ended/failed is missing
+  (`expected_videos`). Child (iframe) frames do not gate composition: their
+  rendering opportunities only arrive via the parent's composed scene, so
+  waiting for one would deadlock a child whose navigation is slow or failed.
+  The parent composes without it, and a dirty child frame that arrives later
+  sends `CompositionChanged`, which notes a UI state update for the parent so
+  its next frame includes the child. For the normal case the render-cycle
   batching is one composition per top-level frame.
 - **A `RenderStarted` deadline composes without a late top-level frame.**
   The UA sends `GraphicsCommand::RenderStarted { webview_id, deadline_ms }`
@@ -314,9 +321,8 @@ two-submit layout.
 - **The composed scene aggregates the animating flag across the composed
   frames.** `PaintFrame.animating` is recorded per stored frame; a
   composition reports `animating = true` when any composed frame animates
-  (the top-level document, or a cross-origin iframe — same-origin iframes
-  are subdocuments and already fold into the parent's `is_animating()`),
-  and carries the animating frame ids. The UA uses that report to keep the
+  (the top-level document or any iframe), and carries the animating frame
+  ids. The UA uses that report to keep the
   cycle alive for the animating navigables (see `user_agent/README.md`,
   "Rendering pipeline").
 - **Resize**: on resize the whole 2-slot IOSurface double buffer is recreated

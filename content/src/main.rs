@@ -20,9 +20,9 @@ pub mod webidl;
 
 use crate::dom::{EventTargetAccess, dispatch_with_path, fire_event, simple_path};
 use crate::html::document_providers::{
-    AssetRequest, DocumentHost, DocumentProviders, install_resource,
+    AssetRequest, DocumentProviders, IframeMutationSteps, PendingIframeSteps, install_resource,
 };
-use crate::html::environment_settings_object::RealmWiring;
+use crate::html::environment_settings_object::{Origin as SettingsOrigin, RealmWiring};
 use crate::html::event_loop::{EventLoopTaskSources, Task, TaskQueue};
 use crate::html::images_processing_model::{
     self, ImageAttributes, ImageFetchOutcome, ImageRegistry,
@@ -35,9 +35,10 @@ use crate::html::workers::dedicated_worker_agent::{
 };
 use crate::html::{
     EnvironmentSettingsObject, HTMLImageElement, JsHtmlParserProvider, MessageEvent,
-    PendingParserScript, Window, attach_same_origin_child_document_for_traversable,
-    execute_parser_scripts, parse_html_into_document, run_dom_post_connection_steps_for_document,
+    PendingParserScript, Window, execute_parser_scripts, parse_html_into_document,
+    process_iframe_attributes, run_dom_post_connection_steps_for_document,
     run_dom_removing_steps_for_document, run_iframe_load_event_steps_for_traversable,
+    run_iframe_post_connection_steps, run_iframe_removing_steps,
     structured_data::safe_passing_of_structured_data::{
         SerializeWithTransferResult, structured_deserialize_with_transfer,
     },
@@ -85,7 +86,7 @@ use std::{
     cell::{Cell, RefCell},
     collections::{HashMap, HashSet},
     env,
-    rc::{Rc, Weak},
+    rc::Rc,
     sync::Arc,
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
@@ -152,7 +153,7 @@ pub(crate) enum PendingNetworkHandler {
     /// A stylesheet, font, or background image reported by a `blitz-dom`
     /// document hook.
     Asset {
-        host: DocumentHost,
+        document_id: DocumentId,
         request: AssetRequest,
     },
     /// The response of an `<img>` element's image request.
@@ -171,6 +172,11 @@ pub(crate) enum PendingNetworkHandler {
 
 pub(crate) struct LocalContentState {
     pub(crate) pending_handlers: HashMap<DocumentFetchId, PendingNetworkHandler>,
+    /// The iframe DOM mutation steps the document tree mutation hooks recorded.
+    /// They run as part of the operation that produced them, as soon as this
+    /// process has the document and realm state back
+    /// (`ContentProcess::drain_pending_iframe_steps`).
+    pub(crate) pending_iframe_steps: Vec<PendingIframeSteps>,
 }
 
 pub(crate) type LocalContentStateRef = Rc<RefCell<LocalContentState>>;
@@ -261,7 +267,6 @@ pub(crate) struct NavigableContainerState {
     pub(crate) content_navigable: Option<NavigableId>,
     pub(crate) content_frame_id: FrameId,
     pub(crate) current_key: String,
-    pub(crate) cross_origin: bool,
     /// Whether the child document finished loading before the parent's
     /// document load completion ("the end", steps 5-9); when true, the
     /// iframe load event steps of "completely finish loading" step 4 are
@@ -285,6 +290,18 @@ struct PendingImageDecode {
     navigable_id: NavigableId,
     element_id: ImageElementId,
     handler_id: DocumentFetchId,
+}
+
+/// <https://html.spec.whatwg.org/#initialise-the-document-object> — step 9
+/// Whether the document's URL makes it inherit the creator's origin and base
+/// URL: an initial `about:blank` document and an iframe `about:srcdoc` document
+/// inherit the creator's origin.
+fn is_creator_origin_url(url: &str) -> bool {
+    Url::parse(url)
+        .map(|parsed| {
+            parsed.scheme() == "about" && (parsed.path() == "blank" || parsed.path() == "srcdoc")
+        })
+        .unwrap_or(false)
 }
 
 /// The "supported file format" test of step 27 of
@@ -454,9 +471,6 @@ pub(crate) struct ContentProcess {
     /// <https://html.spec.whatwg.org/#reacting-to-environment-changes>) runs
     /// when the decoder reports back on the image identifier.
     pending_image_decodes: HashMap<ImageIdentifier, PendingImageDecode>,
-    /// The same-origin iframe subdocuments owned by this process's documents,
-    /// keyed by the id their `DocumentProviders` routes asset fetches with.
-    subdocuments: HashMap<uuid::Uuid, Weak<RefCell<BaseDocument>>>,
     tla_tracer: TLATracer,
     /// Shared clipboard cache. The embedder writes prefetched clipboard text
     /// here before dispatching paste events; `ShellProvider::get_clipboard_text`
@@ -539,6 +553,7 @@ impl ContentProcess {
             event_loop_id,
             local_state: Rc::new(RefCell::new(LocalContentState {
                 pending_handlers: HashMap::new(),
+                pending_iframe_steps: Vec::new(),
             })),
             default_viewport: None,
             traversable_viewports: HashMap::new(),
@@ -553,7 +568,6 @@ impl ContentProcess {
             image_registry: Rc::new(RefCell::new(ImageRegistry::default())),
             registered_images_by_document: HashMap::new(),
             pending_image_decodes: HashMap::new(),
-            subdocuments: HashMap::new(),
             tla_tracer: TLATracer::new("Navigation", "formal-web:content", trace_sender.clone()),
             clipboard_cache: clipboard_cache.clone(),
             new_document_registry: Rc::new(RefCell::new(HashMap::new())),
@@ -682,15 +696,14 @@ impl ContentProcess {
         base_url: Option<String>,
         origin: String,
         needs_paint: Rc<Cell<bool>>,
-        embedded_images: bool,
-        host: DocumentHost,
+        document_id: DocumentId,
     ) -> (DocumentConfig, Rc<DocumentProviders>) {
         let partition = ResourcePartitionKey {
             top_level_traversable: top_level_traversable_id,
             origin,
         };
         let providers = Rc::new(DocumentProviders::new(
-            host,
+            document_id,
             traversable_id,
             self.event_loop_id,
             base_url.as_ref().and_then(|url| Url::parse(url).ok()),
@@ -704,7 +717,7 @@ impl ContentProcess {
             needs_paint.clone(),
         ));
         let config = DocumentConfig {
-            embedded_images,
+            embedded_images: true,
             viewport: self
                 .document_viewport_state(traversable_id)
                 .map(|viewport| viewport_of_snapshot(&viewport.snapshot)),
@@ -1155,6 +1168,8 @@ impl ContentProcess {
         if let Err(error) = self.drain_new_traversable_documents() {
             warn!("failed to drain new traversable documents: {error}");
         }
+        // The same scripts may have inserted, changed or removed an iframe.
+        self.drain_pending_iframe_steps();
 
         let content_document = self
             .documents
@@ -1226,8 +1241,7 @@ impl ContentProcess {
             None,
             String::from("null"),
             needs_paint.clone(),
-            true,
-            DocumentHost::Main(document_id),
+            document_id,
         );
         let document = Rc::new(RefCell::new(BaseDocument::new(document_config)));
         let mut settings = self.create_environment_settings_object(
@@ -1329,6 +1343,7 @@ impl ContentProcess {
         document_id: DocumentId,
         top_level_traversable_id: NavigableId,
         final_url: &str,
+        parent_traversable_id: Option<NavigableId>,
     ) -> Result<
         (
             Rc<RefCell<BaseDocument>>,
@@ -1354,6 +1369,45 @@ impl ContentProcess {
         // Note: Redirect chains are collapsed by the fetch layer: `final_url` is the
         // response's final URL.
         // Step 5: "Let window be null."
+        // Navigation params: the destination origin and base URL.  They are
+        // inputs to this algorithm (step 6 compares the origin with the active
+        // document's, and step 9 builds the Document from it; the document's
+        // providers resolve subresource URLs against the base URL).  An
+        // `about:blank` or `about:srcdoc` document inherits the parent
+        // document's origin and base URL; every other destination uses its
+        // URL's origin and itself as the base URL.
+        // Note: When the parent document is not in this process (a cross-origin
+        // child navigating itself to `about:blank`), the inherited values are
+        // unavailable and the URL's opaque origin is used instead.
+        let parent_document = parent_traversable_id
+            .and_then(|parent_id| {
+                self.active_documents_by_traversable
+                    .get(&parent_id)
+                    .copied()
+            })
+            .and_then(|parent_document_id| self.documents.get(&parent_document_id));
+        let creator_origin = parent_document
+            .filter(|_| is_creator_origin_url(final_url))
+            .map(|parent_document| {
+                let base_url = parent_document
+                    .providers
+                    .as_ref()
+                    .and_then(|providers| providers.base_url().map(Url::to_string))
+                    .unwrap_or_else(|| parent_document.settings.creation_url.to_string());
+                (
+                    Some(base_url),
+                    parent_document.settings.origin.serialized.clone(),
+                )
+            });
+        let (base_url, origin) = creator_origin.unwrap_or_else(|| {
+            (
+                Some(final_url.to_string()),
+                Url::parse(final_url)
+                    .map(|url| url.origin().unicode_serialization())
+                    .unwrap_or_else(|_| String::from("null")),
+            )
+        });
+
         // Step 6: "If browsingContext's active document's is initial about:blank is true, and
         // browsingContext's active document's origin is same origin-domain with
         // navigationParams's origin, then set window to browsingContext's active window."
@@ -1367,7 +1421,7 @@ impl ContentProcess {
         // WindowProxy keeps its identity because the realm is unchanged; a cross-origin
         // destination, or an opaque-origin initial about:blank (a fresh top-level tab with
         // no creator), falls through to step 7 and gets a fresh realm as before.
-        let reused_settings = self.take_initial_about_blank_settings(traversable_id, final_url);
+        let reused_settings = self.take_initial_about_blank_settings(traversable_id, &origin);
         // Step 7: "Otherwise:"
         // Step 7.1: "Let oacHeader be the result of getting a structured field value given
         // `Origin-Agent-Cluster` and "item" from navigationParams's response's header list."
@@ -1428,15 +1482,13 @@ impl ContentProcess {
         // (`create_loaded_document`), which continues navigate-html with the parse.
         let creation_url = Url::parse(final_url).map_err(|error| error.to_string())?;
         let needs_paint = Rc::new(Cell::new(false));
-        let origin = creation_url.origin().unicode_serialization();
         let (document_config, providers) = self.document_config(
             traversable_id,
             top_level_traversable_id,
-            Some(final_url.to_string()),
-            origin,
+            base_url,
+            origin.clone(),
             needs_paint.clone(),
-            true,
-            DocumentHost::Main(document_id),
+            document_id,
         );
         let document = Rc::new(RefCell::new(BaseDocument::new(document_config)));
         // Steps 7.5, 7.6 and 7.10 run in `create_environment_settings_object` for the
@@ -1444,7 +1496,14 @@ impl ContentProcess {
         // created, and `repoint_document` re-points that realm at the new document.
         let mut settings = match reused_settings {
             Some(mut reused) => {
-                reused.repoint_document(Rc::clone(&document), creation_url, document_id)?;
+                reused.repoint_document(
+                    Rc::clone(&document),
+                    creation_url,
+                    SettingsOrigin {
+                        serialized: origin.clone(),
+                    },
+                    document_id,
+                )?;
                 reused
             }
             None => self.create_environment_settings_object(
@@ -1458,7 +1517,12 @@ impl ContentProcess {
 
         // The video-paint registry and graphics sender are engine integration, not spec
         // steps: they wire the document's GlobalScope to the media and graphics pipelines.
+        // The image registry is set here too, so a realm reused from an initial
+        // about:blank document (created outside this function) also reads the
+        // document's `<img>` processing-model state.
+        let image_registry = Rc::clone(&self.image_registry);
         if let Err(error) = with_global_scope(settings.ec(), |global_scope, _ec| {
+            global_scope.set_image_registry(image_registry.clone());
             global_scope.set_video_paint_registry(Rc::clone(&self.video_paint_registry));
             global_scope.set_canvas_registry(Rc::clone(&self.canvas_registry));
             if let Some(ref sender) = self.graphics_sender {
@@ -1487,7 +1551,7 @@ impl ContentProcess {
     fn take_initial_about_blank_settings(
         &mut self,
         traversable_id: NavigableId,
-        final_url: &str,
+        destination_origin: &str,
     ) -> Option<EnvironmentSettingsObject> {
         let active_document_id = *self.active_documents_by_traversable.get(&traversable_id)?;
         let (is_initial_about_blank, active_origin) = {
@@ -1500,13 +1564,9 @@ impl ContentProcess {
         if !is_initial_about_blank {
             return None;
         }
-        let destination_url = Url::parse(final_url).ok()?;
-        // Opaque origins are never same-origin: an opaque initial about:blank (no creator)
-        // or an about:blank destination must not reuse the Window.
-        if matches!(destination_url.origin(), url::Origin::Opaque(_)) {
-            return None;
-        }
-        if active_origin != destination_url.origin().unicode_serialization() {
+        // Opaque origins are never same-origin: an opaque initial about:blank (no
+        // creator) is not reused.
+        if destination_origin == "null" || active_origin != destination_origin {
             return None;
         }
         self.documents
@@ -1546,6 +1606,7 @@ impl ContentProcess {
                 document_id,
                 top_level_traversable_id,
                 &final_url,
+                parent_traversable_id,
             )?;
 
         run_user_scripts(&mut settings, &user_scripts);
@@ -1619,8 +1680,6 @@ impl ContentProcess {
         {
             error!("failed to run the parsed document's microtask checkpoint: {error}");
         }
-        attach_same_origin_child_document_for_traversable(self, traversable_id)?;
-
         // Set the navigable hierarchy on the GlobalScope so that `window.open`
         // can resolve `_parent`/`_top` targets.
         let _ = self.set_navigable_hierarchy_on_global_scope(document_id);
@@ -1727,6 +1786,8 @@ impl ContentProcess {
         if let Err(error) = self.drain_new_traversable_documents() {
             warn!("failed to drain new traversable documents: {error}");
         }
+        // The same scripts may have inserted, changed or removed an iframe.
+        self.drain_pending_iframe_steps();
 
         result
     }
@@ -1927,9 +1988,10 @@ impl ContentProcess {
         local_state
             .pending_handlers
             .retain(|_, pending_handler| match pending_handler {
-                PendingNetworkHandler::Asset { host, .. } => {
-                    host.parent_document_id() != document_id
-                }
+                PendingNetworkHandler::Asset {
+                    document_id: pending_document_id,
+                    ..
+                } => *pending_document_id != document_id,
                 PendingNetworkHandler::Image {
                     document_id: pending_document_id,
                     ..
@@ -1940,8 +2002,6 @@ impl ContentProcess {
                 } => *pending_document_id != document_id,
             });
         drop(local_state);
-        self.subdocuments
-            .retain(|_, subdocument| subdocument.strong_count() > 0);
 
         // Tear down the destroyed document's realm: prune callback records
         // whose creation realm has died (housekeeping — the captures are
@@ -2075,6 +2135,8 @@ impl ContentProcess {
             if let Err(error) = self.drain_new_traversable_documents() {
                 warn!("failed to drain new traversable documents: {error}");
             }
+            // The same script may have inserted, changed or removed an iframe.
+            self.drain_pending_iframe_steps();
         }
 
         Ok(())
@@ -2258,6 +2320,8 @@ impl ContentProcess {
             if let Err(error) = self.drain_new_traversable_documents() {
                 warn!("failed to drain new traversable documents: {error}");
             }
+            // The same script may have inserted, changed or removed an iframe.
+            self.drain_pending_iframe_steps();
         }
 
         Ok(())
@@ -2442,6 +2506,20 @@ impl ContentProcess {
         document_id: DocumentId,
         frame_timestamp_epoch_ms: f64,
     ) -> Result<(), String> {
+        // A navigation commit replaces the navigable's active document between
+        // the user agent queuing this command and this task running: the user
+        // agent switches its active document at finalization, while this process
+        // switches at `CreateLoadedDocument`.  The finalization notes a fresh UI
+        // state update for the new document, so a command carrying the replaced
+        // document is dropped instead of failing.
+        if self.active_documents_by_traversable.get(&navigable_id) != Some(&document_id) {
+            info!(
+                "[render-pipe] Content drop stale update-the-rendering navigable={} document={}",
+                navigable_id, document_id
+            );
+            return Ok(());
+        }
+
         // This is where the update-the-rendering steps run: the rendering
         // opportunity arrives from the user agent as an UpdateTheRendering
         // command carrying the event loop's last render opportunity time.
@@ -2611,10 +2689,10 @@ impl ContentProcess {
                         navigable_id, document_id, width, height,
                     ));
                     // Set animating=true when this document has animated content:
-                    // video elements still producing frames, or blitz is animating
-                    // (CSS animations/transitions, same-origin subdocuments,
-                    // scroll animations). Graphics forwards this to the UA which
-                    // keeps noting UI state updates to drive animation.
+                    // video elements still producing frames, or blitz is
+                    // animating (CSS animations/transitions, scroll animations).
+                    // Graphics forwards this to the UA, which keeps noting UI
+                    // state updates to drive animation.
                     let has_video =
                         video_paint_registry
                             .borrow()
@@ -2739,9 +2817,7 @@ impl ContentProcess {
     ) -> FrameCompositionMetadata {
         let mut iframe_node_ids = container_states
             .iter()
-            .filter_map(|(iframe_node_id, state)| {
-                state.cross_origin.then_some((*iframe_node_id, state))
-            })
+            .map(|(iframe_node_id, state)| (*iframe_node_id, state))
             .collect::<Vec<_>>();
         iframe_node_ids.sort_by_key(|(iframe_node_id, _)| *iframe_node_id);
 
@@ -2971,38 +3047,30 @@ impl ContentProcess {
 
     fn complete_asset_fetch(
         &mut self,
-        host: DocumentHost,
+        document_id: DocumentId,
         request: AssetRequest,
         response_url: &str,
         body: &[u8],
     ) -> Result<(), String> {
-        let parent_document_id = host.parent_document_id();
         let Some(traversable_id) = self
             .documents
-            .get(&parent_document_id)
+            .get(&document_id)
             .map(|content_document| content_document.traversable_id)
         else {
-            error!("[content] complete_asset_fetch: document {parent_document_id} not found");
+            error!("[content] complete_asset_fetch: document {document_id} not found");
             return Ok(());
         };
-        let document = match host {
-            DocumentHost::Main(document_id) => self
-                .documents
-                .get(&document_id)
-                .map(|content_document| Rc::clone(&content_document.document)),
-            DocumentHost::Subdocument { id, .. } => {
-                self.subdocuments.get(&id).and_then(Weak::upgrade)
-            }
-        };
-        let Some(document) = document else {
-            error!("[content] complete_asset_fetch: document {host:?} not found");
+        let Some(document) = self
+            .documents
+            .get(&document_id)
+            .map(|content_document| Rc::clone(&content_document.document))
+        else {
+            error!("[content] complete_asset_fetch: document {document_id} not found");
             return Ok(());
         };
         install_resource(&mut document.borrow_mut(), &request, response_url, body)?;
-        if matches!(host, DocumentHost::Main(_)) {
-            self.continue_document_load(parent_document_id)?;
-        }
-        self.mark_document_dirty(parent_document_id);
+        self.continue_document_load(document_id)?;
+        self.mark_document_dirty(document_id);
         self.event_sender
             .send(ContentEvent::NoteUiStateUpdate(traversable_id))
             .map_err(|error| {
@@ -3013,41 +3081,34 @@ impl ContentProcess {
 
     fn fail_asset_fetch(
         &mut self,
-        host: DocumentHost,
+        document_id: DocumentId,
         request: AssetRequest,
     ) -> Result<(), String> {
-        let parent_document_id = host.parent_document_id();
         let traversable_id = self
             .documents
-            .get(&parent_document_id)
+            .get(&document_id)
             .map(|content_document| content_document.traversable_id);
         match request {
             AssetRequest::Stylesheet {
                 request_id: Some(request_id),
                 ..
             } => {
-                if let DocumentHost::Main(document_id) = host
-                    && let Some(content_document) = self.documents.get(&document_id)
-                {
+                if let Some(content_document) = self.documents.get(&document_id) {
                     content_document
                         .document
                         .borrow_mut()
                         .cancel_pending_resource(request_id);
                 }
-                if matches!(host, DocumentHost::Main(_)) {
-                    self.continue_document_load(parent_document_id)?;
-                }
+                self.continue_document_load(document_id)?;
             }
             AssetRequest::Stylesheet { .. } | AssetRequest::StylesheetImport { .. } => {
                 // A stylesheet that failed to load is not retried; the
                 // document load continues without it.
-                if matches!(host, DocumentHost::Main(_)) {
-                    self.continue_document_load(parent_document_id)?;
-                }
+                self.continue_document_load(document_id)?;
             }
             AssetRequest::Font { .. } | AssetRequest::DecodedImage { .. } => {}
         }
-        self.mark_document_dirty(parent_document_id);
+        self.mark_document_dirty(document_id);
         if let Some(traversable_id) = traversable_id {
             self.event_sender
                 .send(ContentEvent::NoteUiStateUpdate(traversable_id))
@@ -3314,6 +3375,39 @@ impl ContentProcess {
         }
     }
 
+    /// Runs the iframe DOM mutation steps the document tree hooks recorded.
+    /// The DOM mutation algorithms run these steps synchronously; a DOM hook
+    /// runs while blitz holds the document (and, during script execution, the
+    /// realm) mutably borrowed, so the hook records the step and this process
+    /// runs it as soon as it has the state back, at the end of the current
+    /// operation (see `dom_trees.rs`, "Iframes" in content/src/html/README.md).
+    fn drain_pending_iframe_steps(&mut self) {
+        let pending = {
+            let mut local_state = self.local_state.borrow_mut();
+            std::mem::take(&mut local_state.pending_iframe_steps)
+        };
+        for step in pending {
+            let document_id = step.document_id;
+            let iframe_node_id = step.iframe_node_id;
+            let result = match step.steps {
+                IframeMutationSteps::PostConnection => {
+                    run_iframe_post_connection_steps(self, document_id, iframe_node_id)
+                }
+                IframeMutationSteps::AttributeChange => {
+                    process_iframe_attributes(self, document_id, iframe_node_id, false)
+                }
+                IframeMutationSteps::Removing => {
+                    run_iframe_removing_steps(self, document_id, iframe_node_id)
+                }
+            };
+            if let Err(error) = result {
+                error!(
+                    "failed to run iframe DOM mutation steps document={document_id} node={iframe_node_id}: {error}"
+                );
+            }
+        }
+    }
+
     /// Writes the "prepare an image for presentation" state the processing
     /// model produced to the documents' blitz trees.  This is model state, not
     /// a queued task: a DOM hook runs while blitz holds the document mutably
@@ -3365,16 +3459,15 @@ impl ContentProcess {
         };
 
         match pending_handler {
-            PendingNetworkHandler::Asset { host, request } => {
+            PendingNetworkHandler::Asset {
+                document_id,
+                request,
+            } => {
                 log_render_state_debug(format!(
                     "complete asset fetch handler={} document={} status={} type={} url={}",
-                    handler_id,
-                    host.parent_document_id(),
-                    response_status,
-                    response_type,
-                    response_url,
+                    handler_id, document_id, response_status, response_type, response_url,
                 ));
-                self.complete_asset_fetch(host, request, &response_url, &response.body)
+                self.complete_asset_fetch(document_id, request, &response_url, &response.body)
             }
             PendingNetworkHandler::Image {
                 document_id,
@@ -3450,13 +3543,15 @@ impl ContentProcess {
         };
 
         match pending_handler {
-            PendingNetworkHandler::Asset { host, request } => {
+            PendingNetworkHandler::Asset {
+                document_id,
+                request,
+            } => {
                 warn!(
                     "content asset fetch failed handler={} document={} request={request:?}",
-                    handler_id,
-                    host.parent_document_id(),
+                    handler_id, document_id,
                 );
-                self.fail_asset_fetch(host, request)
+                self.fail_asset_fetch(document_id, request)
             }
             PendingNetworkHandler::Image {
                 document_id,
@@ -3762,6 +3857,8 @@ impl ContentProcess {
         if let Err(error) = self.drain_new_traversable_documents() {
             warn!("failed to drain new traversable documents: {error}");
         }
+        // The same scripts may have inserted, changed or removed an iframe.
+        self.drain_pending_iframe_steps();
         Ok(())
     }
 
@@ -3953,6 +4050,9 @@ impl ContentProcess {
 
     fn handle_command(&mut self, command: Command) -> Result<bool, String> {
         let result = self.handle_command_inner(command);
+        // Run the iframe DOM mutation steps the command's DOM work recorded,
+        // before the task checkpoint and the microtasks see the result.
+        self.drain_pending_iframe_steps();
         if let Err(error) = self.apply_pending_image_presentation() {
             error!("failed to apply pending image presentation after a command: {error}");
         }
@@ -4067,6 +4167,9 @@ impl ContentProcess {
             self.drain_wasm_results();
         }
         steps?;
+
+        // Run the iframe DOM mutation steps the task's DOM work recorded.
+        self.drain_pending_iframe_steps();
 
         // Image mutations observed by the DOM hooks produce presentation state;
         // write it as part of the task that caused it.
@@ -4263,6 +4366,8 @@ impl ContentProcess {
                 .perform_a_microtask_checkpoint()
                 .map_err(|error| format!("microtask checkpoint failed: {error}"))?;
         }
+        // A promise job may have inserted, changed or removed an iframe.
+        self.drain_pending_iframe_steps();
         Ok(())
     }
 
@@ -4444,6 +4549,7 @@ impl ContentProcess {
                 self.complete_image_decode(&image_id, result.ok())?;
                 Ok(true)
             }
+
             RunImageElementTask {
                 document_id,
                 node_id,

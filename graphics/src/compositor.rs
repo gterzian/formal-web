@@ -1027,8 +1027,7 @@ impl Compositor {
         // This frame is its own compositing layer. The parent-relative
         // placement was computed by the parent (or is the root's own
         // viewport) and passed in; it positions this layer's content within
-        // the layer tree. Same-origin iframes are baked into their parent's
-        // scene and never reach here with their own layer.
+        // the layer tree.
         layers.push(LayerUpdate {
             layer_id,
             parent: frame_parent.map(CompositingLayerId::Navigable),

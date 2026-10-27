@@ -170,11 +170,10 @@ The `<img>` element follows its own processing model in
 `content/src/html/README.md`, "Images").  The completed image is registered
 with the graphics process once per `ImageIdentifier`; `DestroyDocument`
 releases the document's registered images with
-`GraphicsCommand::UnregisterImages`.  Same-origin iframe subdocuments keep
-their images on the layout-time loader rather than the `<img>` processing model
-(`DocumentHost::Subdocument`), so those images do not render: they need their
-own frames and image layers before they can go through graphics like a
-top-level `<img>` (remaining work, see `content/src/html/README.md`).
+`GraphicsCommand::UnregisterImages`.  Iframe documents run the same
+processing model as a top-level document: every iframe is a child frame, and
+its `<img>` layers draw inside that frame (see `content/src/html/README.md`,
+"Iframes").
 
 ## Clipboard
 

@@ -18,6 +18,21 @@ The `user_agent` crate owns all browser-global coordination: navigables and trav
 - Keep spec-facing algorithms and continuations as named worker methods on the owning type instead of as transport-oriented helper functions.
 - Route browser, embedder, automation, and webview requests through this crate instead of through synchronous cross-thread bridges.
 
+## Content-process placement for navigations
+
+`initialise_the_document_object` resolves the destination's similar-origin
+window agent from the destination origin's site.  A child navigable whose
+destination is `about:blank` or `about:srcdoc` inherits the parent document's
+origin, so it reuses the parent's agent and event loop; any other same-site
+destination reuses the agent already recorded for that site in the browsing
+context group; a cross-site destination obtains a new agent, which spawns its
+content process.  That is the only difference between a same-origin and a
+cross-origin iframe document.  When a navigation keeps the traversable on its
+current event loop, `record_agent_cluster_for_site` records the destination
+site against that agent in the group's agent cluster map, so a later
+same-site navigation (a same-origin iframe, say) finds it instead of spawning
+a process.
+
 ## IPC blocking and deadlock
 
 Sending on an IPC channel can block when the system buffer is full, and the
@@ -188,7 +203,11 @@ and `active_documents_by_traversable` disagree. Commands pairing those two maps
 (e.g. `UpdateTheRendering`) must verify the active document is owned by the
 traversable's current event loop and skip otherwise — a stale send fails in the
 new content process and, because no paint frame is produced, leaves the render
-loop's pending flag stuck.
+loop's pending flag stuck. The same race exists inside one process at commit:
+content replaces the active document when it runs `CreateLoadedDocument`, while
+the UA switches at finalization, so content drops an `UpdateTheRendering` whose
+document is no longer the traversable's active document; the finalization notes
+the UI state update that renders the new document.
 
 ### Model
 

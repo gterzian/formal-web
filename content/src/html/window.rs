@@ -645,6 +645,7 @@ pub(crate) fn window_open_steps(
             Some(features_json),
             result.new_traversable_info,
             None,
+            None,
         )
     {
         error!("window.open: {error}");
