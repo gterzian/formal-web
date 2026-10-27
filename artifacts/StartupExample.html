@@ -467,6 +467,74 @@
         </div>
       </section>
 
+
+      <!-- ──── 10. Same-origin iframe ──── -->
+      <section class="section-card">
+        <div class="section-title">
+          <span>Same-origin iframe</span>
+          <span class="badge working">Working</span>
+        </div>
+        <p class="section-desc">
+          Same-origin, <code>srcdoc</code>, and <code>about:blank</code> iframe
+          documents use the same embedding mechanism as cross-origin iframes:
+          each document is created by the ordinary navigation path and composes
+          as its own child frame, with its own <code>&lt;img&gt;</code> layers,
+          viewport and hit testing. The only difference from the cross-origin
+          frame above is that the document stays in the parent's content
+          process, so the parent can script it through
+          <code>contentWindow</code>.
+        </p>
+
+        <div style="display:flex;flex-wrap:wrap;gap:0.8rem;align-items:flex-start;">
+          <iframe
+            id="same-origin-frame"
+            title="Same-origin frame"
+            src="iframe-child.html"
+            width="320"
+            height="180"
+            style="border:1px solid #e4e2ec;border-radius:0.6rem;"
+          ></iframe>
+          <iframe
+            id="srcdoc-frame"
+            title="Srcdoc frame"
+            srcdoc="<body style='margin:0;padding:0.6rem;font:14px system-ui;background:#fff7ea;color:#4a3a1a;'><div id='srcdoc-text'>srcdoc document</div><img id='srcdoc-image' src='images/stripes.gif' width='120' height='80' style='display:block;margin-top:0.4rem;border-radius:0.4rem;'></body>"
+            width="220"
+            height="150"
+            style="border:1px solid #e4e2ec;border-radius:0.6rem;"
+          ></iframe>
+          <iframe
+            id="blank-frame"
+            title="about:blank frame"
+            width="180"
+            height="150"
+            style="border:1px solid #e4e2ec;border-radius:0.6rem;"
+          ></iframe>
+        </div>
+
+        <div class="btn-row" style="margin-top:0.8rem;">
+          <button class="btn btn-primary" id="iframe-probe-btn" type="button">Probe iframe documents</button>
+          <button class="btn btn-primary" id="iframe-ping-btn" type="button">Ping same-origin frame</button>
+          <button class="btn btn-outline" id="iframe-fill-blank-btn" type="button">Fill about:blank</button>
+        </div>
+        <p class="section-desc" style="margin-top:1rem;">
+          Iframes created by script go through the same DOM mutation steps as
+          parser-inserted ones: the insertion creates the child navigable and
+          processes the current attributes, and later <code>src</code> or
+          <code>srcdoc</code> changes navigate the existing document.
+        </p>
+        <div id="created-frame-container"></div>
+        <div class="btn-row" style="margin-top:0.8rem;">
+          <button class="btn btn-primary" id="iframe-create-btn" type="button">Create iframe</button>
+          <button class="btn btn-outline" id="iframe-retarget-btn" type="button">Retarget created iframe</button>
+        </div>
+        <div class="output-box" id="created-frame-output" style="margin-top:0.6rem;">
+          Script-created iframes report here.
+        </div>
+        <div class="output-box" id="iframe-output" style="margin-top:0.6rem;">
+          Probe the documents to read the child image state and the srcdoc base URL.
+        </div>
+      </section>
+
       <footer style="text-align:center;padding:1rem 0 0;font-size:0.82rem;color:#a0a0b8;">
         formal-web · built from scratch in Rust
       </footer>
@@ -800,6 +868,117 @@
         });
       })();
 
+    </script>
+
+    <script>
+      // ──── 10. Same-origin iframe ────
+      (function() {
+        var output = document.getElementById("iframe-output");
+        var sameFrame = document.getElementById("same-origin-frame");
+        var srcdocFrame = document.getElementById("srcdoc-frame");
+        var blankFrame = document.getElementById("blank-frame");
+
+        function frameDocument(frame) {
+          try {
+            return frame.contentWindow.document;
+          } catch (error) {
+            return null;
+          }
+        }
+
+        document.getElementById("iframe-probe-btn").addEventListener("click", function() {
+          var sameDocument = frameDocument(sameFrame);
+          var srcdocDocument = frameDocument(srcdocFrame);
+          var sameImage = sameDocument && sameDocument.getElementById("child-image");
+          var srcdocImage = srcdocDocument && srcdocDocument.getElementById("srcdoc-image");
+          output.textContent =
+            "same-origin document: " +
+              (sameDocument ? sameFrame.contentWindow.location.href : "unavailable") +
+            " | image " + (sameImage ? sameImage.naturalWidth + "x" + sameImage.naturalHeight +
+              " complete=" + sameImage.complete : "unavailable") +
+            "\nsrcdoc document: " +
+              (srcdocDocument ? srcdocFrame.contentWindow.location.href : "unavailable") +
+            " | image " + (srcdocImage ? srcdocImage.naturalWidth + "x" + srcdocImage.naturalHeight +
+              " complete=" + srcdocImage.complete : "unavailable") +
+            "\nabout:blank document: " + (frameDocument(blankFrame) ? "reachable" : "unavailable");
+        });
+
+        document.getElementById("iframe-fill-blank-btn").addEventListener("click", function() {
+          var blankDocument = frameDocument(blankFrame);
+          if (!blankDocument) {
+            output.textContent = "about:blank document is unavailable";
+            return;
+          }
+          blankDocument.body.style.cssText =
+            "margin:0;padding:0.6rem;font:13px system-ui;background:#eafbee;color:#14532d;";
+          blankDocument.body.textContent = "Written by the parent through contentWindow.document";
+          output.textContent =
+            "Wrote into the about:blank document (" +
+            blankFrame.contentWindow.location.href + ")";
+        });
+
+        document.getElementById("iframe-ping-btn").addEventListener("click", function() {
+          sameFrame.contentWindow.postMessage("ping", "*");
+        });
+
+        window.addEventListener("message", function(event) {
+          if (event.data === "ready") {
+            output.textContent = "Same-origin frame reported ready through postMessage";
+            return;
+          }
+          if (event.data && event.data.reply === "pong") {
+            output.textContent =
+              "Same-origin frame replied " + event.data.reply +
+              " with image " + event.data.imageWidth + "x" + event.data.imageHeight +
+              " complete=" + event.data.imageComplete;
+          }
+        });
+
+        var createdFrame = null;
+        var createdFrameCount = 0;
+        var createdFrameOutput = document.getElementById("created-frame-output");
+
+        function describeCreatedFrame(frame) {
+          var childDocument = frameDocument(frame);
+          var image = childDocument && childDocument.getElementById("child-image");
+          var url = frame.contentWindow ? frame.contentWindow.location.href : "unavailable";
+          createdFrameOutput.textContent =
+            "script-created iframe: " + url +
+            " | image " + (image ? image.naturalWidth + "x" + image.naturalHeight +
+              " complete=" + image.complete : "unavailable");
+        }
+
+        document.getElementById("iframe-create-btn").addEventListener("click", function() {
+          createdFrameCount += 1;
+          var frame = document.createElement("iframe");
+          frame.id = "created-frame-" + createdFrameCount;
+          frame.title = "Script-created frame";
+          frame.width = "300";
+          frame.height = "170";
+          frame.style.cssText = "margin-top:0.8rem;border:1px solid #e4e2ec;border-radius:0.6rem;";
+          // The src attribute change and the insertion are both observed by the
+          // DOM mutation steps: insertion creates the child navigable and
+          // processes the current attributes.
+          frame.src = "iframe-child.html";
+          frame.addEventListener("load", function() {
+            describeCreatedFrame(frame);
+          });
+          createdFrame = frame;
+          document.getElementById("created-frame-container").appendChild(frame);
+        });
+
+        document.getElementById("iframe-retarget-btn").addEventListener("click", function() {
+          if (!createdFrame) {
+            createdFrameOutput.textContent = "Create an iframe first";
+            return;
+          }
+          createdFrame.addEventListener("load", function() {
+            describeCreatedFrame(createdFrame);
+          });
+          // A later src change navigates the existing child document.
+          createdFrame.src = "iframe-child.html?retargeted=" + createdFrameCount;
+        });
+      })();
     </script>
   </body>
 </html>

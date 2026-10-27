@@ -267,6 +267,12 @@ pub struct NavigateRequest {
     /// needed).
     #[serde(default)]
     pub new_child_navigable: Option<NewChildNavigableInfo>,
+    /// The document source of a navigation to the `srcdoc` resource of an
+    /// iframe. The user agent answers the navigation with this body instead of
+    /// fetching `about:srcdoc`.
+    /// <https://html.spec.whatwg.org/#navigate-to-the-srcdoc-resource>
+    #[serde(default)]
+    pub srcdoc_html: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

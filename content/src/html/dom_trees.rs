@@ -1,7 +1,7 @@
 //! <https://html.spec.whatwg.org/#dom-trees>
 
 use blitz_dom::{ElementData, MutationHooks};
-use html5ever::ns;
+use html5ever::{local_name, ns};
 
 use crate::html::document_providers::DocumentProviders;
 use crate::html::images_processing_model;
@@ -28,6 +28,31 @@ impl MutationHooks for DocumentProviders {
                 self, node_id, element, local_name, old_value, new_value, namespace,
             );
         }
+        if is_html_element(element) && element.name.local.as_ref() == "iframe" {
+            // <https://html.spec.whatwg.org/#the-iframe-element>
+            // "Whenever an iframe element with a non-null content navigable has its
+            // srcdoc attribute set, changed, or removed, the user agent must process
+            // the iframe attributes."
+            // "Similarly, whenever an iframe element with a non-null content
+            // navigable but with no srcdoc attribute specified has its src attribute
+            // set, changed, or removed, the user agent must process the iframe
+            // attributes."
+            // Note: "process the iframe attributes" needs the content process's
+            // document and navigable state, which a DOM hook cannot reach while
+            // blitz holds the document mutably borrowed, so the hook records the
+            // step and the content process runs it when it has the document back
+            // (`ContentProcess::drain_pending_iframe_steps`), before the current
+            // operation ends.  The recorded step re-reads the element's current
+            // attributes, so a burst of changes processes once; the
+            // content-navigable guard and the missing-`srcdoc` guard for `src`
+            // are re-applied there.
+            let relevant = namespace.is_empty()
+                && (local_name == "srcdoc"
+                    || (local_name == "src" && element.attr(local_name!("srcdoc")).is_none()));
+            if relevant {
+                self.record_iframe_attribute_change_steps(node_id);
+            }
+        }
     }
 
     /// <https://html.spec.whatwg.org/#dom-trees:concept-node-insert-ext>
@@ -53,11 +78,22 @@ impl MutationHooks for DocumentProviders {
     }
 
     /// <https://html.spec.whatwg.org/#dom-trees:concept-node-post-connection-ext>
-    fn post_connection_steps(&self, _: usize, _: Option<&ElementData>) {
+    fn post_connection_steps(&self, node_id: usize, element: Option<&ElementData>) {
         // Step 1: "If insertedNode is an element whose namespace is the HTML namespace, and this
         // standard defines HTML element post-connection steps for insertedNode's local name, then
         // run the corresponding HTML element post-connection steps given insertedNode."
-        // Note: This implementation defines no HTML element post-connection steps.
+        if let Some(inserted_node) = element
+            && is_html_element(inserted_node)
+            && inserted_node.name.local.as_ref() == "iframe"
+        {
+            // Note: The iframe post-connection steps create a child navigable, which
+            // needs the content process's document and navigable state; a DOM hook
+            // cannot reach it while blitz holds the document mutably borrowed, so
+            // the hook records the step and the content process runs it when it has
+            // the document back (`ContentProcess::drain_pending_iframe_steps`),
+            // before the current operation ends.
+            self.record_iframe_post_connection_steps(node_id);
+        }
     }
 
     /// <https://html.spec.whatwg.org/#dom-trees:concept-node-remove-ext>
@@ -89,6 +125,12 @@ impl MutationHooks for DocumentProviders {
                 is_subtree_root,
                 old_ancestor,
             );
+        }
+        if let Some(removed_node) = element
+            && is_html_element(removed_node)
+            && removed_node.name.local.as_ref() == "iframe"
+        {
+            self.record_iframe_removing_steps(node_id);
         }
         // Step 4: "If removedNode is a form-associated element with a non-null form owner and
         // removedNode and its form owner are no longer in the same tree, then reset the form
