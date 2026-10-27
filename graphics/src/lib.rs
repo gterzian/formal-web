@@ -15,7 +15,9 @@ use std::collections::{HashMap, HashSet};
 use crate::renderer::{ReadbackChannels, SurfaceRenderer};
 use compositor::{Compositor, CompositorVideoFrame, LayerUpdate};
 use crossbeam_channel::{select, tick};
-use ipc_messages::content::{CanvasId, FrameId, WebviewId, deserialize_scene_from_slice};
+use ipc_messages::content::{
+    CanvasId, FrameId, ImageIdentifier, WebviewId, deserialize_scene_from_slice,
+};
 use ipc_messages::graphics::{FrameHitInfo, GraphicsCommand, GraphicsEvent};
 use ipc_messages::media::{MediaPipelineId, VideoPaintId};
 use log::{debug, error, info};
@@ -202,6 +204,7 @@ pub fn run_graphics_process<B: MediaBackend + 'static, R: SurfaceRenderer>(
                 None::<&mut B>,
                 &mut HashMap::new(),
                 &mut HashMap::new(),
+                &mut HashMap::new(),
                 &mut finished_videos,
                 &mut tla_tracer,
                 &channels,
@@ -212,8 +215,7 @@ pub fn run_graphics_process<B: MediaBackend + 'static, R: SurfaceRenderer>(
 
     // Media pipeline state.
     let mut pipelines: HashMap<MediaPipelineId, B::Pipeline> = HashMap::new();
-    let mut pipeline_webview_map: HashMap<MediaPipelineId, (WebviewId, VideoPaintId)> =
-        HashMap::new();
+    let mut pipeline_webview_map: HashMap<MediaPipelineId, PipelineWebview> = HashMap::new();
     // Sample tick: dynamically switches between never() (no active pipelines)
     // and tick(8ms) (at least one pipeline needs sampling). This avoids waking
     // the select! loop every 8ms when everything is idle.
@@ -233,6 +235,11 @@ pub fn run_graphics_process<B: MediaBackend + 'static, R: SurfaceRenderer>(
     // Populated by RegisterChildNavigableHost and used in PaintFrame to remap
     // child PaintFrames into the parent's compositor slot.
     let mut child_webview_to_parent: HashMap<WebviewId, (WebviewId, FrameId)> = HashMap::new();
+    // The navigable that registered each image, so the decode report reaches the
+    // content process whose image processing model is waiting for it.  The
+    // decoded pixels themselves are stored in the registering navigable's root
+    // webview, whose compositor composes the frame that draws them.
+    let mut image_owners: HashMap<ImageIdentifier, WebviewId> = HashMap::new();
 
     // Mapping from offscreen canvas id -> owning webview. Populated by
     // RegisterCanvas; CanvasPaint uses it to route the committed scene to the
@@ -282,6 +289,7 @@ pub fn run_graphics_process<B: MediaBackend + 'static, R: SurfaceRenderer>(
                     backend.as_mut(),
                     &mut child_webview_to_parent,
                     &mut canvas_to_webview,
+                    &mut image_owners,
                     &mut finished_videos,
                     &mut tla_tracer,
                     &channels,
@@ -341,9 +349,22 @@ pub fn run_graphics_process<B: MediaBackend + 'static, R: SurfaceRenderer>(
     }
 }
 
+/// The webviews one media pipeline is tied to. `storage` is the webview whose
+/// compositor receives the decoded frames: the root webview of the navigable
+/// that owns the `<video>` element, so a video inside an iframe is composed
+/// into the parent's frame tree. `owner` is the navigable that created the
+/// pipeline (the iframe's own navigable); its content process is where the
+/// pipeline's lifecycle events are reported.
+#[derive(Clone, Copy)]
+struct PipelineWebview {
+    storage: WebviewId,
+    owner: WebviewId,
+    paint_id: VideoPaintId,
+}
+
 fn handle_media_event<R: SurfaceRenderer>(
     event: MediaBackendEvent,
-    pipeline_webview_map: &HashMap<MediaPipelineId, (WebviewId, VideoPaintId)>,
+    pipeline_webview_map: &HashMap<MediaPipelineId, PipelineWebview>,
     webviews: &mut HashMap<WebviewId, WebviewState<R>>,
     composed_scene_sender: &ipc::IpcSender<GraphicsEvent>,
     child_webview_to_parent: &HashMap<WebviewId, (WebviewId, FrameId)>,
@@ -353,10 +374,12 @@ fn handle_media_event<R: SurfaceRenderer>(
     match event {
         MediaBackendEvent::Frame(mut video_frame) => {
             let pipeline_id = video_frame.pipeline_id;
-            let Some(&(webview_id, paint_id)) = pipeline_webview_map.get(&pipeline_id) else {
+            let Some(pipeline) = pipeline_webview_map.get(&pipeline_id).copied() else {
                 debug!("[graphics] frame for unknown pipeline {:?}", pipeline_id);
                 return;
             };
+            let webview_id = pipeline.storage;
+            let paint_id = pipeline.paint_id;
             debug!(
                 "[graphics] video frame arrived pipeline={:?} webview={:?}",
                 pipeline_id, webview_id
@@ -401,13 +424,15 @@ fn handle_media_event<R: SurfaceRenderer>(
         ))]
         MediaBackendEvent::PixelBufferFrame(frame) => {
             let pipeline_id = frame.pipeline_id;
-            let Some(&(webview_id, paint_id)) = pipeline_webview_map.get(&pipeline_id) else {
+            let Some(pipeline) = pipeline_webview_map.get(&pipeline_id).copied() else {
                 debug!(
                     "[graphics] pixel buffer frame for unknown pipeline {:?}",
                     pipeline_id
                 );
                 return;
             };
+            let webview_id = pipeline.storage;
+            let paint_id = pipeline.paint_id;
             let Some(slot) = webviews.get_mut(&webview_id) else {
                 return;
             };
@@ -446,23 +471,23 @@ fn handle_media_event<R: SurfaceRenderer>(
             );
         }
         MediaBackendEvent::Eos { pipeline_id } => {
-            if let Some(&(webview_id, paint_id)) = pipeline_webview_map.get(&pipeline_id) {
+            if let Some(pipeline) = pipeline_webview_map.get(&pipeline_id).copied() {
                 // The pipeline will not produce more frames; a pending
                 // composition must not wait on it.
-                finished_videos.insert(paint_id);
+                finished_videos.insert(pipeline.paint_id);
                 // Keep the last video frame in the compositor so it continues
                 // to render as a static image. The PaintFrame from content will
                 // carry animating=false, so the UA stops noting UI state
                 // updates for video animation.
                 if let Err(send_error) = composed_scene_sender.send(GraphicsEvent::VideoEnded {
-                    webview_id,
-                    video_paint_id: paint_id,
+                    webview_id: pipeline.owner,
+                    video_paint_id: pipeline.paint_id,
                 }) {
                     error!("[graphics] failed to send VideoEnded: {send_error}");
                 }
                 maybe_compose(
                     webviews,
-                    webview_id,
+                    pipeline.storage,
                     &expected_videos(pipeline_webview_map, finished_videos),
                     child_webview_to_parent,
                     composed_scene_sender,
@@ -477,11 +502,11 @@ fn handle_media_event<R: SurfaceRenderer>(
             error!("[graphics] pipeline {:?} error: {}", pipeline_id, message);
             // The pipeline will never deliver a frame; a pending composition
             // must not wait on it.
-            if let Some(&(webview_id, paint_id)) = pipeline_webview_map.get(&pipeline_id) {
-                finished_videos.insert(paint_id);
+            if let Some(pipeline) = pipeline_webview_map.get(&pipeline_id).copied() {
+                finished_videos.insert(pipeline.paint_id);
                 maybe_compose(
                     webviews,
-                    webview_id,
+                    pipeline.storage,
                     &expected_videos(pipeline_webview_map, finished_videos),
                     child_webview_to_parent,
                     composed_scene_sender,
@@ -506,10 +531,11 @@ fn handle_command<B: MediaBackend + 'static, R: SurfaceRenderer>(
     webviews: &mut HashMap<WebviewId, WebviewState<R>>,
     shmem_regions: &HashMap<usize, ipc::IpcSharedRegion>,
     pipelines: &mut HashMap<MediaPipelineId, B::Pipeline>,
-    pipeline_webview_map: &mut HashMap<MediaPipelineId, (WebviewId, VideoPaintId)>,
+    pipeline_webview_map: &mut HashMap<MediaPipelineId, PipelineWebview>,
     media_backend: Option<&mut B>,
     child_webview_to_parent: &mut HashMap<WebviewId, (WebviewId, FrameId)>,
     canvas_to_webview: &mut HashMap<CanvasId, WebviewId>,
+    image_owners: &mut HashMap<ImageIdentifier, WebviewId>,
     finished_videos: &mut HashSet<VideoPaintId>,
     tla_tracer: &mut TLATracer,
     channels: &ReadbackChannels<R::RenderData>,
@@ -524,6 +550,24 @@ fn handle_command<B: MediaBackend + 'static, R: SurfaceRenderer>(
         }
         GraphicsCommand::UnregisterWebview { webview_id } => {
             debug!("[graphics] unregistering webview {:?}", webview_id);
+            // Release the images this navigable registered in a root webview.
+            // The content process's own UnregisterImages races this command, and
+            // once the webview is gone its chain entry cannot resolve the root.
+            let owned_images: Vec<ImageIdentifier> = image_owners
+                .iter()
+                .filter(|(_, owner)| **owner == webview_id)
+                .map(|(image_id, _)| image_id.clone())
+                .collect();
+            if !owned_images.is_empty() {
+                let root_webview_id = root_webview_owner(child_webview_to_parent, webview_id);
+                if let Some(slot) = webviews.get_mut(&root_webview_id) {
+                    slot.compositor.remove_images(&owned_images);
+                    slot.renderer.release_images(&owned_images);
+                }
+                for image_id in &owned_images {
+                    image_owners.remove(image_id);
+                }
+            }
             webviews.remove(&webview_id);
             // Drop canvas registrations owned by the removed webview so a
             // canvas id whose owner is gone does not keep routing paints.
@@ -536,18 +580,20 @@ fn handle_command<B: MediaBackend + 'static, R: SurfaceRenderer>(
             if let Some((parent_webview_id, content_frame_id)) =
                 child_webview_to_parent.remove(&webview_id)
             {
+                let root_webview_id =
+                    root_webview_owner(child_webview_to_parent, parent_webview_id);
                 info!(
                     "[render-pipe] Graphics unregister child webview={:?} parent={:?} frame={}",
                     webview_id, parent_webview_id, content_frame_id.0
                 );
-                if let Some(parent_slot) = webviews.get_mut(&parent_webview_id) {
+                if let Some(parent_slot) = webviews.get_mut(&root_webview_id) {
                     parent_slot
                         .compositor
                         .mark_child_frame_removed(content_frame_id);
                 }
                 maybe_compose(
                     webviews,
-                    parent_webview_id,
+                    root_webview_id,
                     &expected_videos(pipeline_webview_map, finished_videos),
                     child_webview_to_parent,
                     composed_scene_sender,
@@ -557,11 +603,18 @@ fn handle_command<B: MediaBackend + 'static, R: SurfaceRenderer>(
         }
         GraphicsCommand::PaintFrame { frame } => {
             // Remap child PaintFrames into the parent's compositor slot.
+            // A child navigable's frame belongs to the root webview's compositor
+            // at any nesting depth: the root composes the whole frame tree, so a
+            // grandchild frame is stored beside its parent's frame.
             let (target_webview_id, actual_frame_id, is_root_candidate) =
-                if let Some(&(parent_id, content_frame_id)) =
+                if let Some(&(_, content_frame_id)) =
                     child_webview_to_parent.get(&frame.traversable_id)
                 {
-                    (parent_id, content_frame_id, false)
+                    (
+                        root_webview_owner(child_webview_to_parent, frame.traversable_id),
+                        content_frame_id,
+                        false,
+                    )
                 } else {
                     (frame.traversable_id, frame.frame_id, true)
                 };
@@ -668,6 +721,8 @@ fn handle_command<B: MediaBackend + 'static, R: SurfaceRenderer>(
             image_id,
             data_shmem_key,
         } => {
+            let registering_webview_id = webview_id;
+            let webview_id = root_webview_owner(child_webview_to_parent, webview_id);
             let bytes = shmem_regions
                 .get(&data_shmem_key)
                 .map(|region| region.as_slice())
@@ -695,14 +750,15 @@ fn handle_command<B: MediaBackend + 'static, R: SurfaceRenderer>(
                     Err(error)
                 }
             };
+            image_owners.insert(image_id.clone(), registering_webview_id);
             if let Err(send_error) = composed_scene_sender.send(GraphicsEvent::ImageDecoded {
-                webview_id,
+                webview_id: registering_webview_id,
                 image_id,
                 result,
             }) {
                 error!(
                     "[graphics] failed to report image decode result for {:?}: {send_error}",
-                    webview_id
+                    registering_webview_id
                 );
             }
         }
@@ -710,15 +766,20 @@ fn handle_command<B: MediaBackend + 'static, R: SurfaceRenderer>(
             webview_id,
             image_ids,
         } => {
+            let webview_id = root_webview_owner(child_webview_to_parent, webview_id);
             if let Some(slot) = webviews.get_mut(&webview_id) {
                 slot.compositor.remove_images(&image_ids);
                 slot.renderer.release_images(&image_ids);
+            }
+            for image_id in &image_ids {
+                image_owners.remove(image_id);
             }
         }
         GraphicsCommand::RemoveVideoFrame {
             webview_id,
             paint_id,
         } => {
+            let webview_id = root_webview_owner(child_webview_to_parent, webview_id);
             if let Some(slot) = webviews.get_mut(&webview_id) {
                 slot.compositor.remove_video_frame(paint_id);
             }
@@ -739,6 +800,7 @@ fn handle_command<B: MediaBackend + 'static, R: SurfaceRenderer>(
             webview_id,
             canvas_id,
         } => {
+            let webview_id = root_webview_owner(child_webview_to_parent, webview_id);
             info!(
                 "[render-pipe] Graphics register canvas canvas={:?} webview={:?}",
                 canvas_id, webview_id
@@ -833,7 +895,14 @@ fn handle_command<B: MediaBackend + 'static, R: SurfaceRenderer>(
                 "[graphics:media] create pipeline {:?} url={} webview={:?} paint={:?}",
                 pipeline_id, url, webview_id, video_paint_id
             );
-            pipeline_webview_map.insert(pipeline_id, (webview_id, video_paint_id));
+            pipeline_webview_map.insert(
+                pipeline_id,
+                PipelineWebview {
+                    storage: root_webview_owner(child_webview_to_parent, webview_id),
+                    owner: webview_id,
+                    paint_id: video_paint_id,
+                },
+            );
             if let Some(backend) = media_backend {
                 match backend.create_pipeline(pipeline_id, url) {
                     Ok(pipeline) => {
@@ -875,11 +944,11 @@ fn handle_command<B: MediaBackend + 'static, R: SurfaceRenderer>(
             }
             // The paint id will never produce more frames; drop it from the
             // expected set so a pending composition does not wait on it.
-            if let Some((webview_id, paint_id)) = pipeline_webview_map.remove(&pipeline_id) {
-                finished_videos.insert(paint_id);
+            if let Some(pipeline) = pipeline_webview_map.remove(&pipeline_id) {
+                finished_videos.insert(pipeline.paint_id);
                 maybe_compose(
                     webviews,
-                    webview_id,
+                    pipeline.storage,
                     &expected_videos(pipeline_webview_map, finished_videos),
                     child_webview_to_parent,
                     composed_scene_sender,
@@ -896,16 +965,34 @@ fn handle_command<B: MediaBackend + 'static, R: SurfaceRenderer>(
     false
 }
 
+/// The root webview of `webview_id`: the webview whose compositor composes a
+/// child navigable's frames, at any nesting depth.  A top-level navigable is
+/// its own root.
+fn root_webview_owner(
+    child_webview_to_parent: &HashMap<WebviewId, (WebviewId, FrameId)>,
+    webview_id: WebviewId,
+) -> WebviewId {
+    let mut root = webview_id;
+    let mut visited = HashSet::from([root]);
+    while let Some(&(parent_webview_id, _)) = child_webview_to_parent.get(&root) {
+        if !visited.insert(parent_webview_id) {
+            break;
+        }
+        root = parent_webview_id;
+    }
+    root
+}
+
 /// The video paint ids whose pipeline is live and will produce more frames:
 /// a pending composition waits for a frame from these, but never waits on a
 /// paint id with no pipeline or one that ended or failed.
 fn expected_videos(
-    pipeline_webview_map: &HashMap<MediaPipelineId, (WebviewId, VideoPaintId)>,
+    pipeline_webview_map: &HashMap<MediaPipelineId, PipelineWebview>,
     finished_videos: &HashSet<VideoPaintId>,
 ) -> HashSet<VideoPaintId> {
     pipeline_webview_map
         .values()
-        .map(|(_, paint_id)| *paint_id)
+        .map(|pipeline| pipeline.paint_id)
         .filter(|paint_id| !finished_videos.contains(paint_id))
         .collect()
 }
@@ -917,7 +1004,7 @@ fn expected_videos(
 /// top-level frame.
 fn compose_expired_deadlines<R: SurfaceRenderer>(
     webviews: &mut HashMap<WebviewId, WebviewState<R>>,
-    pipeline_webview_map: &HashMap<MediaPipelineId, (WebviewId, VideoPaintId)>,
+    pipeline_webview_map: &HashMap<MediaPipelineId, PipelineWebview>,
     finished_videos: &HashSet<VideoPaintId>,
     child_webview_to_parent: &HashMap<WebviewId, (WebviewId, FrameId)>,
     composed_scene_sender: &ipc::IpcSender<GraphicsEvent>,

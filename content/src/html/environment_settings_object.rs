@@ -326,6 +326,7 @@ impl EnvironmentSettingsObject {
         &mut self,
         document: Rc<RefCell<BaseDocument>>,
         creation_url: Url,
+        origin: Origin,
         document_id: DocumentId,
     ) -> Result<(), String> {
         // The platform Document object is created in the reused realm; its JS handle replaces
@@ -355,9 +356,7 @@ impl EnvironmentSettingsObject {
         install_document_property(&mut self.realm_execution_context)
             .map_err(|error| format!("failed to re-install document property: {:?}", error))?;
         self.document = platform_document;
-        self.origin = Origin {
-            serialized: creation_url.origin().unicode_serialization(),
-        };
+        self.origin = origin;
         self.creation_url = creation_url;
         Ok(())
     }

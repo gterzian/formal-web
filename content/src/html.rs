@@ -68,9 +68,10 @@ pub(crate) use html_element::{
     inline_style_properties_for_element, resolved_style_properties_for_element,
 };
 pub use html_iframe_element::HTMLIFrameElement;
-pub(crate) use html_iframe_element::attach_same_origin_child_document_for_traversable;
 pub(crate) use html_iframe_element::{
-    fire_deferred_iframe_load_events, run_iframe_load_event_steps_for_traversable,
+    fire_deferred_iframe_load_events, process_iframe_attributes,
+    run_iframe_load_event_steps_for_traversable, run_iframe_post_connection_steps,
+    run_iframe_removing_steps,
 };
 pub use html_image_element::HTMLImageElement;
 pub use html_input_element::HTMLInputElement;
@@ -346,6 +347,7 @@ pub(crate) fn navigate(
     features_json: Option<String>,
     new_traversable_info: Option<NewTraversableInfo>,
     new_child_navigable: Option<NewChildNavigableInfo>,
+    srcdoc_html: Option<String>,
 ) -> Result<(), String> {
     let request = NavigateRequest {
         navigation_id: Some(NavigationId::new()),
@@ -359,6 +361,7 @@ pub(crate) fn navigate(
         features_json,
         new_traversable_info,
         new_child_navigable,
+        srcdoc_html,
     };
     event_sender
         .send(ContentEvent::NavigationRequested(request))

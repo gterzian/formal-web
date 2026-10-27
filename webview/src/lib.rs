@@ -109,6 +109,7 @@ impl WebviewProvider {
                     features_json: None,
                     new_traversable_info: None,
                     new_child_navigable: None,
+                    srcdoc_html: None,
                 })
             }
             // A webview created here was not asked for by name, so it

@@ -18,35 +18,11 @@ use ipc_messages::network::Request as NetworkRequest;
 use log::error;
 use style::stylesheets::Origin;
 use url::Url;
-use uuid::Uuid;
 
 use crate::fetch::{FetchContext, InternalFetchRequest, fetch};
 use crate::html::images_processing_model::{ImageFetchSink, ImageRegistry};
 use crate::js::{RealmJob, RealmJobQueue};
 use crate::{LocalContentStateRef, PendingNetworkHandler};
-
-/// Which document of the content process an asset fetch belongs to: a
-/// document in the process's document table, or a same-origin iframe
-/// subdocument owned by one of those documents.
-#[derive(Clone, Copy, Debug)]
-pub(crate) enum DocumentHost {
-    Main(DocumentId),
-    Subdocument {
-        parent_document_id: DocumentId,
-        id: Uuid,
-    },
-}
-
-impl DocumentHost {
-    pub(crate) fn parent_document_id(self) -> DocumentId {
-        match self {
-            Self::Main(document_id) => document_id,
-            Self::Subdocument {
-                parent_document_id, ..
-            } => parent_document_id,
-        }
-    }
-}
 
 /// A subresource fetch the content process started in response to a
 /// `blitz-dom` hook or an image mutation.
@@ -66,16 +42,37 @@ pub(crate) enum AssetRequest {
         url: String,
     },
     /// An image the document's layout-time loader asked for (a CSS
-    /// `background-image`/`mask-image`, or an `<img>` in a same-origin iframe
-    /// subdocument). Nothing decodes it: the graphics process owns every image,
-    /// so the request is answered as failed and blitz paints nothing.
+    /// `background-image`/`mask-image`). Nothing decodes it: the graphics
+    /// process owns every image, so the request is answered as failed and
+    /// blitz paints nothing.
     DecodedImage { node_id: usize, url: String },
+}
+
+/// One iframe HTML element DOM mutation step observed by the document tree
+/// mutation hooks, recorded for the content process to run when it has the
+/// document and realm state back.
+#[derive(Clone, Copy, Debug)]
+pub(crate) enum IframeMutationSteps {
+    /// <https://html.spec.whatwg.org/#the-iframe-element:html-element-post-connection-steps>
+    PostConnection,
+    /// <https://html.spec.whatwg.org/#process-the-iframe-attributes>
+    AttributeChange,
+    /// <https://html.spec.whatwg.org/#html-element-removing-steps>
+    Removing,
+}
+
+/// A recorded iframe DOM mutation step, with the document and element it runs
+/// for.
+pub(crate) struct PendingIframeSteps {
+    pub(crate) document_id: DocumentId,
+    pub(crate) iframe_node_id: usize,
+    pub(crate) steps: IframeMutationSteps,
 }
 
 /// The service providers of one content document, handed to `blitz-dom` as
 /// its mutation and resource hooks.
 pub(crate) struct DocumentProviders {
-    host: DocumentHost,
+    document_id: DocumentId,
     navigable_id: NavigableId,
     event_loop_id: EventLoopId,
     /// The document's URL, which subresource URLs are resolved against.  A
@@ -99,7 +96,7 @@ pub(crate) struct DocumentProviders {
 impl DocumentProviders {
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn new(
-        host: DocumentHost,
+        document_id: DocumentId,
         navigable_id: NavigableId,
         event_loop_id: EventLoopId,
         base_url: Option<Url>,
@@ -113,7 +110,7 @@ impl DocumentProviders {
         needs_paint: Rc<Cell<bool>>,
     ) -> Self {
         Self {
-            host,
+            document_id,
             navigable_id,
             event_loop_id,
             base_url,
@@ -143,9 +140,9 @@ impl DocumentProviders {
         }
     }
 
-    /// Which document of the content process these providers serve.
-    pub(crate) fn host(&self) -> DocumentHost {
-        self.host
+    /// The document the providers serve.
+    pub(crate) fn document_id(&self) -> DocumentId {
+        self.document_id
     }
 
     /// The document's base URL, which the image processing model resolves
@@ -169,6 +166,43 @@ impl DocumentProviders {
     /// calls `ShellProvider::request_redraw`.
     pub(crate) fn request_redraw(&self) {
         self.needs_paint.set(true);
+    }
+
+    /// Record an iframe HTML element DOM mutation step for the content process
+    /// to run as soon as it regains the document and realm it needs.  A DOM hook
+    /// runs while blitz holds the document (and, during script execution, the
+    /// realm) mutably borrowed, so the hook records the step and the process runs
+    /// it at the end of the current DOM operation (see
+    /// `ContentProcess::drain_pending_iframe_steps`).
+    fn record_iframe_steps(&self, iframe_node_id: usize, steps: IframeMutationSteps) {
+        self.local_state
+            .borrow_mut()
+            .pending_iframe_steps
+            .push(PendingIframeSteps {
+                document_id: self.document_id,
+                iframe_node_id,
+                steps,
+            });
+    }
+
+    /// Record the iframe HTML element post-connection steps.
+    /// <https://html.spec.whatwg.org/#the-iframe-element:html-element-post-connection-steps>
+    pub(crate) fn record_iframe_post_connection_steps(&self, iframe_node_id: usize) {
+        self.record_iframe_steps(iframe_node_id, IframeMutationSteps::PostConnection);
+    }
+
+    /// Record "process the iframe attributes" after an observed `src` or
+    /// `srcdoc` attribute change.
+    /// <https://html.spec.whatwg.org/#process-the-iframe-attributes>
+    pub(crate) fn record_iframe_attribute_change_steps(&self, iframe_node_id: usize) {
+        self.record_iframe_steps(iframe_node_id, IframeMutationSteps::AttributeChange);
+    }
+
+    /// Record the HTML element removing steps for an iframe the mutation hooks
+    /// observed being removed.
+    /// <https://html.spec.whatwg.org/#html-element-removing-steps>
+    pub(crate) fn record_iframe_removing_steps(&self, iframe_node_id: usize) {
+        self.record_iframe_steps(iframe_node_id, IframeMutationSteps::Removing);
     }
 
     fn start_fetch(
@@ -296,7 +330,7 @@ impl ResourceHooks for DocumentProviders {
             handler_id,
             url,
             PendingNetworkHandler::Asset {
-                host: self.host,
+                document_id: self.document_id,
                 request: asset,
             },
         );
@@ -346,8 +380,7 @@ pub(crate) fn install_resource(
             // The graphics process is the only image decoder, and it composites
             // `<img>` elements as their own layers, so this process never hands
             // blitz image pixels. The failed load leaves blitz painting nothing
-            // where it asked for one (a CSS `background-image`/`mask-image`, or
-            // an `<img>` in a same-origin iframe subdocument).
+            // where it asked for one (a CSS `background-image`/`mask-image`).
             document.handle_message(DocumentEvent::ResourceLoad(ResourceLoadResponse {
                 request_id: 0,
                 node_id: Some(*node_id),

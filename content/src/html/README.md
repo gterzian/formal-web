@@ -6,11 +6,11 @@
 - `document_providers.rs` is blitz plumbing, not a spec algorithm: it holds `DocumentProviders`, its `ResourceHooks` impl (which reports blitz's subresource requests), the `AssetRequest` those fetches carry, and `install_resource`, which installs a fetched response into the document.  A function carrying a spec anchor belongs in the module that owns that spec section, not here.
 - `html_dom_tree.rs` holds the document-level iframe post-connection and removing entry points run at document load completion and document destruction; the iframe's HTML element steps do not run from the `MutationHooks` hooks.
 - Keep iframe bindings and iframe processing algorithms together in `content/src/html/html_iframe_element.rs` as free functions over content-process state (`ContentProcess`).
-  `contentDocument` is unimplemented: the getter returns null even for a
-  same-origin child navigable whose document lives in this content process
-  (`contentWindow` resolves and the iframe `load` event does fire).
 - Keep helper names aligned with the corresponding HTML algorithm anchors, and prefer explicit error returns or `debug_assert!` plus safe early returns over sentinel ids.
-- Trigger parser-discovered iframe work from document-load parsing completion.
+- Iframe work is driven by the DOM mutation hooks in `dom_trees.rs`: a
+  connected, changed or removed iframe records its HTML element steps, and the
+  content process runs them at the end of the current operation.  The
+  document-load scan remains the synchronous path for parser insertions.
 - Use the `web-standards` skill with `https://html.spec.whatwg.org/` to read the HTML spec.
 
 ## Common microsyntaxes (`common_microsyntaxes/`)
@@ -30,6 +30,53 @@ its caller.
 The safe-passing algorithms live in `structured_data/`, split between the
 generic algorithms and the per-platform-object parts, with the serialization
 pitfalls to avoid; see its `README.md`.
+
+## Iframes
+
+Every iframe's content is a real document in `ContentProcess::documents`,
+created by the ordinary navigation path (`create_loaded_document`), and every
+iframe composes as an `EmbedSite::Frame` (`build_frame_composition_metadata`
+walks every `NavigableContainerState`). A child document is never painted into
+the parent's blitz scene: each iframe is its own document-table entry and its
+own frame.
+
+- `about:blank` and `srcdoc` navigate like any other URL. The content process
+  carries the `srcdoc` body on `NavigateRequest::srcdoc_html`; the user agent
+  answers the `about:srcdoc` navigation with it in place of a fetch. Both URLs
+  inherit the parent document's origin and base URL, so their document lands in
+  the parent's content process.
+- The user agent decides the process from the destination origin
+  (`user_agent/README.md`, "Content-process placement for navigations"), so a
+  same-origin URL child also reuses the parent's event loop. Process placement
+  is the only difference between a same-origin and a cross-origin iframe.
+- Post-connection, `src`/`srcdoc` attribute-change and removing steps are
+  driven by the DOM mutation hooks in `dom_trees.rs`.  Those hooks run while
+  blitz holds the document mutably borrowed and cannot reach the navigable
+  state, so they record the step and
+  `ContentProcess::drain_pending_iframe_steps` runs it at the end of the current
+  operation.  The `<img>` steps in the same hooks do not need this: they only
+  touch the document's providers and run synchronously.
+
+Remaining gaps:
+
+- The iframe DOM mutation steps run when the content process has the document
+  and realm back, at the end of the current operation, not synchronously inside
+  the DOM mutation the way the algorithms specify.  A child realm cannot be
+  created while the running script holds the realm's engine, so script that
+  reads `iframe.contentWindow` immediately after inserting the element sees
+  null.  Making the steps strictly synchronous needs a realm-creation handle
+  that does not borrow the parent realm's engine, and the iframe-to-navigable
+  mapping moved out of the realm's `GcCell` so a hook can reach it.
+- `contentDocument` is unimplemented: the getter returns null even for a
+  same-origin child navigable whose document lives in this content process
+  (`contentWindow` resolves and the iframe `load` event does fire).  Named
+  property access to child navigables on the parent Window (`window.myframe`)
+  is not implemented either.
+- The sandboxing directive is parsed but not stored on the element, and the
+  iframe load in-progress/mute flags are not modeled (an initial `about:blank`
+  replaced by a `src` navigation can fire an extra `load`).
+- Iframe lazy loading (`loading=lazy`) is not implemented: `process the iframe
+  attributes` runs its "navigate" steps immediately.
 
 ## Algorithm split: content process vs user agent
 
@@ -355,64 +402,13 @@ Known gaps in the processing model:
   reported as an error. Which formats actually decode is the running OS's
   Image I/O support on macOS (see `graphics/README.md`).
 - Nothing decodes for blitz: the document's layout-time image loader is
-  answered with a failed load, so CSS `background-image`/`mask-image` and
-  `<img>` elements inside same-origin iframe subdocuments render nothing.  Both
-  are `AssetRequest::DecodedImage` requests; they are still fetched before the
-  load is failed (skipping the fetch is remaining work).  The design that
-  closes the subdocument part is under "Remaining work" below; CSS
-  background/mask images stay unsupported until graphics grows an image layer
-  kind positioned by the document's paint order instead of an element box.
-
-### Remaining work: `<img>` in same-origin iframe subdocuments
-
-A top-level `<img>` is a graphics image layer: the processing model registers
-the image, graphics decodes it, and `build_frame_composition_metadata` emits an
-`EmbedSite::Image` in the document's own coordinate space.  The same element in
-a same-origin subdocument takes none of those steps — `obtain_images` and
-`update_the_image_data` return early for a non-`Main` host, the embed-site scan
-only visits the top-level document's tree, and the layout-time loader (its only
-remaining path) is answered as failed.  So it renders nothing.
-
-Design: give each same-origin subdocument its own frame, so its images are
-ordinary `<img>` layers in that frame's coordinate space and no parent-space
-geometry is needed.
-
-1. **Identity.**  `DocumentHost::Subdocument` carries the parent's `DocumentId`
-   plus a `Uuid`, while `ImageRegistry` keys elements by
-   `(DocumentId, node_id)`; a subdocument therefore needs an identity of its own
-   in the registry before the `DocumentHost::Main` gates in `obtain_images` and
-   `update_the_image_data` come off.  `decode()` and the queued element tasks
-   then run in the subdocument's realm (resolved through `DocumentProviders` /
-   `self.subdocuments`), and their registrations reach graphics like any other.
-2. **Intrinsic size.**  `apply_pending_image_presentation` resolves documents
-   from `self.documents`; it must also resolve `self.subdocuments`
-   (`Weak<RefCell<BaseDocument>>`) so `set_image_intrinsic_size` reaches the
-   subdocument's tree.  With no pixels going to blitz, that write is the only
-   thing that gives the element a box.
-3. **Frame.**  Mint a `FrameId` for the subdocument, emit `EmbedSite::Frame` at
-   the iframe node exactly as `build_frame_composition_metadata` does for a
-   cross-origin iframe, and paint the subdocument into its own `PaintFrame`.
-   Its `<img>` elements then become `EmbedSite::Image` layers inside that frame.
-4. **Per-frame metadata.**  Run the same builder for the subdocument so its
-   image embeds, `FrameHitInfo`, `ChildViewport` and animating flags are
-   published with its frame, and make sure a cycle's composition waits for the
-   subdocument's frame like any other child frame.
-5. **Input and hit-testing.**  Map pointer coordinates through the iframe's box
-   into the subdocument's frame, the way `child_frame_to_webview` maps a
-   cross-origin child.
-
-The alternative — converting each subdocument image's box into the parent's
-space — needs the iframe offset and the subdocument's scroll composed per
-image, clip intersection with the iframe's content rect, and correct z-order
-across the boundary, and it still inherits the one-layer-per-navigable
-limitation.  A frame per subdocument reuses the child-frame machinery that
-already composes cross-origin iframes.
-
-Acceptance: `<img>` load/`error` events, `naturalWidth`/`naturalHeight`,
-`complete` and `decode()` inside a same-origin iframe (WPT image tests in
-iframes); a pointer press reaching an image layer inside an iframe; and the
-`RenderingOpportunity` traces still validating with a second `PaintFrame` per
-cycle.
+  answered with a failed load, so CSS `background-image`/`mask-image` render
+  nothing.  Those `AssetRequest::DecodedImage` requests are still fetched
+  before the load is failed (skipping the fetch is remaining work).  They stay
+  unsupported until graphics grows an image layer kind positioned by the
+  document's paint order instead of an element box.  `<img>` elements are not
+  affected: every document, including one in a same-origin iframe, runs the
+  processing model and draws its images in its own frame.
 
 ## Canvas
 
@@ -492,9 +488,6 @@ Remaining gaps:
   language/direction.
 - The `OffscreenCanvas` transfer steps carry the canvas id and bitmap
   dimensions but not its inherited language/direction.
-- Canvas embed sites surface only for a top-level document; a canvas inside a
-  same-origin iframe document would not get its own layer (same-origin
-  iframes are baked into their parent's scene).
 - Canvas frames are never unregistered when their document is destroyed (the
   id is a UUID, so a stale frame is inert, but it leaks until the webview
   goes away).
