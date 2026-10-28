@@ -13,7 +13,7 @@ compile_error!(
 use std::collections::{HashMap, HashSet};
 
 use crate::renderer::{ReadbackChannels, SurfaceRenderer};
-use compositor::{Compositor, CompositorVideoFrame, LayerUpdate};
+use compositor::{Compositor, CompositorVideoFrame, ContentFrame, LayerUpdate};
 use crossbeam_channel::{select, tick};
 use ipc_messages::content::{CanvasId, FrameId, WebviewId, deserialize_scene_from_slice};
 use ipc_messages::graphics::{FrameHitInfo, GraphicsCommand, GraphicsEvent};
@@ -574,6 +574,7 @@ fn handle_command<B: MediaBackend + 'static, R: SurfaceRenderer>(
             let viewport_height = frame.viewport_height;
             let frame_id = actual_frame_id;
             let animating = frame.animating;
+            let scene_unchanged = frame.scene_unchanged;
             info!(
                 "[render-pipe] Graphics store frame id={} traversable={} webview={} root_candidate={} viewport={}x{} children={}",
                 frame_id.0,
@@ -593,10 +594,13 @@ fn handle_command<B: MediaBackend + 'static, R: SurfaceRenderer>(
             };
             let frame_dirty = slot.compositor.store_frame(
                 frame_id,
-                viewport_width,
-                viewport_height,
-                composition,
-                recorded_scene,
+                ContentFrame {
+                    viewport_width,
+                    viewport_height,
+                    composition,
+                    scene: recorded_scene,
+                    scene_unchanged,
+                },
                 is_root_candidate,
             );
             // Record the animating flag of every stored frame (top-level and

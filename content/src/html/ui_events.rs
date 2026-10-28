@@ -1,4 +1,7 @@
-use std::{cell::RefCell, rc::Rc};
+use std::{
+    cell::{Cell, RefCell},
+    rc::Rc,
+};
 
 use blitz_dom::{BaseDocument, Document as BlitzDocument, EventDriver, EventHandler};
 use blitz_traits::SmolStr;
@@ -191,16 +194,21 @@ fn build_event_path(
 struct BlitzJSEventHandler<'a> {
     settings: &'a mut EnvironmentSettingsObject,
     deferred_apple_keybinding: Rc<RefCell<DeferredAppleStandardKeybinding>>,
+    /// Set when an event dispatched through this handler reaches a registered
+    /// listener, so the caller knows the event ran script.
+    listener_reached: Rc<Cell<bool>>,
 }
 
 impl<'a> BlitzJSEventHandler<'a> {
     fn new(
         settings: &'a mut EnvironmentSettingsObject,
         deferred_apple_keybinding: Rc<RefCell<DeferredAppleStandardKeybinding>>,
+        listener_reached: Rc<Cell<bool>>,
     ) -> Self {
         Self {
             settings,
             deferred_apple_keybinding,
+            listener_reached,
         }
     }
 }
@@ -235,6 +243,9 @@ impl EventHandler for BlitzJSEventHandler<'_> {
             .expect("event_object must wrap a UIEvent");
 
         let path = build_event_path(chain, doc_et, global_et, ec);
+        if path_reaches_a_listener(&path, &domain_event.type_, ec) {
+            self.listener_reached.set(true);
+        }
         if let Err(error) = dispatch_with_path(ec, &path, &domain_event) {
             let error_msg = self
                 .settings
@@ -268,13 +279,17 @@ impl EventHandler for BlitzJSEventHandler<'_> {
     }
 }
 
+/// Dispatch a UI event through blitz's event driver to the listeners on its
+/// event path. Returns whether the event reached a listener, which the caller
+/// uses to tell an event that ran script from one that cannot have changed the
+/// document.
 pub(crate) fn dispatch_ui_event(
     document: Rc<RefCell<BaseDocument>>,
     settings: &mut EnvironmentSettingsObject,
     viewport_offset_x: f32,
     viewport_offset_y: f32,
     event: UiEvent,
-) -> Result<(), String> {
+) -> Result<bool, String> {
     let mut event = event;
     {
         let d = document.borrow();
@@ -282,7 +297,9 @@ pub(crate) fn dispatch_ui_event(
     }
     let mut document = document;
     let deferred = Rc::new(RefCell::new(DeferredAppleStandardKeybinding::default()));
-    let handler = BlitzJSEventHandler::new(settings, Rc::clone(&deferred));
+    let listener_reached = Rc::new(Cell::new(false));
+    let handler =
+        BlitzJSEventHandler::new(settings, Rc::clone(&deferred), Rc::clone(&listener_reached));
     let mut driver = EventDriver::new(&mut document, handler);
     driver.handle_ui_event(event);
     let dak = *deferred.borrow();
@@ -291,7 +308,25 @@ pub(crate) fn dispatch_ui_event(
     {
         driver.handle_ui_event(UiEvent::AppleStandardKeybinding(SmolStr::new(command)));
     }
-    Ok(())
+    Ok(listener_reached.get())
+}
+
+/// Whether dispatching `event_type` over `path` reaches a listener, in either
+/// phase. A UI event that reaches none cannot have run script, so it cannot
+/// have mutated the document; the changes blitz makes to it while handling the
+/// event (a hover state change) are reported by blitz requesting a repaint.
+fn path_reaches_a_listener(
+    path: &[EventPathItem],
+    event_type: &str,
+    ec: &mut dyn ExecutionContext<Types>,
+) -> bool {
+    path.iter().any(|item| {
+        item.invocation_target
+            .event_listener_list
+            .borrow(ec)
+            .iter()
+            .any(|listener| !listener.removed && listener.type_ == event_type)
+    })
 }
 
 pub(crate) fn dispatch_trusted_click_event(
@@ -299,7 +334,7 @@ pub(crate) fn dispatch_trusted_click_event(
     target_node_id: usize,
 ) -> Result<(), String> {
     let deferred = Rc::new(RefCell::new(DeferredAppleStandardKeybinding::default()));
-    let handler = BlitzJSEventHandler::new(settings, deferred);
+    let handler = BlitzJSEventHandler::new(settings, deferred, Rc::new(Cell::new(false)));
     let time_millis = handler.settings.current_time_millis();
     let event_domain = {
         let ec = handler.settings.ec();
@@ -345,10 +380,69 @@ mod tests {
     use crate::ui_events::UIEvent as JsUiEvent;
     use crate::webidl::bindings::create_interface_instance;
 
-    use super::dispatch_trusted_click_event;
+    use super::{dispatch_trusted_click_event, path_reaches_a_listener};
 
     fn new_document() -> Rc<RefCell<BaseDocument>> {
         Rc::new(RefCell::new(BaseDocument::new(DocumentConfig::default())))
+    }
+
+    /// A settings object whose document has run `html`'s parser scripts.
+    fn settings_with_scripts(html: &str) -> (Rc<RefCell<BaseDocument>>, EnvironmentSettingsObject) {
+        let creation_url = Url::parse("about:blank").expect("parse creation URL");
+        let document = new_document();
+        let scripts = parse_html_into_document(&mut document.borrow_mut(), html);
+        let mut settings = EnvironmentSettingsObject::new(Rc::clone(&document), creation_url)
+            .expect("build settings object");
+        execute_parser_scripts(&mut settings, scripts).expect("execute parser scripts");
+        (document, settings)
+    }
+
+    /// A UI event reaches a listener only when one is registered for its type on
+    /// some node of its path; content relies on that to tell an event that ran
+    /// script from one that cannot have changed anything.
+    #[test]
+    fn only_an_event_with_a_listener_on_its_path_reaches_one() {
+        let (document, mut settings) = settings_with_scripts(
+            r#"<div id="target"></div>
+                <script>
+                    document.getElementById("target")
+                        .addEventListener("mousemove", function() {});
+                </script>"#,
+        );
+        let path = {
+            let ec = settings.ec();
+            let target_node_id = document
+                .borrow()
+                .query_selector("#target")
+                .expect("query selector")
+                .expect("find target");
+            let target = resolve_element_object(target_node_id, ec).expect("resolve target");
+            build_path_from_target_js_object(&target, ec)
+        };
+        assert!(
+            path_reaches_a_listener(&path, "mousemove", settings.ec()),
+            "the mousemove listener registered on the path is reached"
+        );
+        assert!(
+            !path_reaches_a_listener(&path, "click", settings.ec()),
+            "no listener is registered for a click on the path"
+        );
+
+        let (document, mut settings) = settings_with_scripts(r#"<div id="target"></div>"#);
+        let path = {
+            let ec = settings.ec();
+            let target_node_id = document
+                .borrow()
+                .query_selector("#target")
+                .expect("query selector")
+                .expect("find target");
+            let target = resolve_element_object(target_node_id, ec).expect("resolve target");
+            build_path_from_target_js_object(&target, ec)
+        };
+        assert!(
+            !path_reaches_a_listener(&path, "mousemove", settings.ec()),
+            "a document without listeners reaches none"
+        );
     }
 
     #[test]

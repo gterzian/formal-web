@@ -183,7 +183,42 @@ from text the embedder prefetched onto the same UI event, and a copy is
 forwarded to the embedder. Do not add a platform clipboard dependency back to
 this crate.
 
+## Render invalidation
+
+`ContentDocument`'s `PaintDirty` carries two answers, and
+`update_the_rendering` treats them differently:
+
+- **Paint** — content changed something blitz does not model: a script ran
+  (`mark_document_dirty`), an offscreen canvas or video embed site appeared,
+  the viewport changed, a resource loaded, or blitz made a change that is only
+  visible in paint (text selection, IME). `ShellProvider::request_redraw` and
+  `GlobalScope::mark_document_dirty` set it. It repaints whatever the resolve
+  pass says.
+- **Restyle** — blitz reported that a computed style may have changed:
+  `ShellProvider::request_restyle` (a `:hover` state change, from
+  `set_hover_to`/`clear_hover`). The document is resolved and repainted **only
+  if `BaseDocument::resolve` reports that the pass produced restyle damage**,
+  so crossing elements on a page whose `:hover` rules match nothing leaves the
+  layer clean.
+
+A UI event that reaches no listener on its path sets neither (it cannot have
+run script); a listener that mutates the DOM is covered by the paint flag
+because content marks the document dirty around event dispatch. Any new input
+path that mutates the document without going through blitz must set the paint
+flag itself.
+
 ## Known issues
+
+- **A hover-driven repaint still happens where it should not.** Pointer
+  crossings repaint less than before (a resolved document that reports no
+  restyle damage keeps its layer clean), but pages still repaint on pointer
+  moves, including cases where no `:hover` rule seems to apply. blitz's own
+  `blitz-html/tests/resolve_change.rs` shows the damage signal distinguishes a
+  matching `:hover` rule from none, so the remaining cause is either UA
+  stylesheet `:hover` rules matching, or stylo reporting damage for restyled
+  nodes whose computed values are equal — that was not investigated. End-to-end
+  checks over CDP could not settle it either: `Input.dispatchMouseEvent` hover
+  delivery in formal-web's CDP server is unreliable.
 
 - **Document lifecycle commands run outside the task queue.**
   `CreateEmptyDocument`, `CreateLoadedDocument`, `CompleteDocumentFetch`,

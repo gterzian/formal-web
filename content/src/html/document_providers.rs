@@ -72,6 +72,42 @@ pub(crate) enum AssetRequest {
     DecodedImage { node_id: usize, url: String },
 }
 
+/// The document's pending paint work.
+#[derive(Default)]
+pub(crate) struct PaintDirty {
+    paint: Cell<bool>,
+    restyle: Cell<bool>,
+}
+
+impl PaintDirty {
+    /// Content changed something the repaint must not skip: a script may have
+    /// mutated the document, an embed site may have appeared, the viewport may
+    /// have changed.
+    pub(crate) fn note_paint(&self) {
+        self.paint.set(true);
+    }
+
+    /// A restyle may have changed a computed style (`:hover` state, a
+    /// selection, an IME update). The document is repainted only when
+    /// `BaseDocument::resolve` reports that the pass changed something.
+    pub(crate) fn note_restyle(&self) {
+        self.restyle.set(true);
+    }
+
+    pub(crate) fn needs_paint(&self) -> bool {
+        self.paint.get()
+    }
+
+    pub(crate) fn needs_restyle(&self) -> bool {
+        self.restyle.get()
+    }
+
+    pub(crate) fn clear(&self) {
+        self.paint.set(false);
+        self.restyle.set(false);
+    }
+}
+
 /// The service providers of one content document, handed to `blitz-dom` as
 /// its mutation and resource hooks.
 pub(crate) struct DocumentProviders {
@@ -93,7 +129,7 @@ pub(crate) struct DocumentProviders {
     /// (<https://html.spec.whatwg.org/#queue-a-microtask>).  Set once the
     /// document's realm exists.
     job_queue: RefCell<Option<RealmJobQueue>>,
-    needs_paint: Rc<Cell<bool>>,
+    paint_dirty: Rc<PaintDirty>,
 }
 
 impl DocumentProviders {
@@ -110,7 +146,7 @@ impl DocumentProviders {
         event_sender: ipc::IpcSender<ContentEvent>,
         embedder_schemes: Rc<HashSet<String>>,
         image_registry: Rc<RefCell<ImageRegistry>>,
-        needs_paint: Rc<Cell<bool>>,
+        paint_dirty: Rc<PaintDirty>,
     ) -> Self {
         Self {
             host,
@@ -125,7 +161,7 @@ impl DocumentProviders {
             embedder_schemes,
             image_registry,
             job_queue: RefCell::new(None),
-            needs_paint,
+            paint_dirty,
         }
     }
 
@@ -165,10 +201,10 @@ impl DocumentProviders {
         &self.image_registry
     }
 
-    /// Mark the document as needing a frame, the same flag blitz sets when it
+    /// Mark the document as needing a repaint, the same flag blitz sets when it
     /// calls `ShellProvider::request_redraw`.
     pub(crate) fn request_redraw(&self) {
-        self.needs_paint.set(true);
+        self.paint_dirty.note_paint();
     }
 
     fn start_fetch(
