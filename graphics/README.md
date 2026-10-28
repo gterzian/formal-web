@@ -80,10 +80,17 @@ completed on the GPU. A change to the cycle must keep the model's checks true
   presented (Quartz Debug then flashes the layer's bounds with no pixel
   change). Re-sending an unchanged surface is what a flash-per-input-event
   looks like; every new layer kind must opt into the dirty/absent rule
-  instead. The rule also keeps a layer that was dropped and re-presented
-  (a child navigable scrolled out of view and back) from coming back blank:
-  the compositor records the layers the last delivered composition presented
-  and treats a layer missing from that set as needing presentation.
+  instead. The dirty bit comes from the process that produced the content —
+  content reports `PaintFrame.scene_unchanged` for a cycle that recorded
+  nothing, either because it skipped the paint (`content/README.md`, "Render
+  invalidation") or because the resolve pass changed no computed style —
+  never from comparing the content in graphics: that would walk the whole
+  scene every cycle, and `RecordedScene`'s derived `PartialEq` cannot compare
+  it anyway (a `Paint::Custom` compares by `Arc` identity, floats by `==`).
+  The rule also keeps a layer that was dropped and re-presented (a
+  child navigable scrolled out of view and back) from coming back blank: the
+  compositor records the layers the last delivered composition presented and
+  treats a layer missing from that set as needing presentation.
 - Per-frame copies on the CPU path today: GPU → CPU readback, kernel copy in
   the IPC transport, CPU → GPU upload, and Vello's internal atlas copy.
 
@@ -274,8 +281,8 @@ two-submit layout.
   blocked load, ended-but-not-marked, muted autoplay blocked). The content
   process now *skips blitz* on a clean cycle — a document that was not
   mutated reuses its last recorded scene instead of re-running resolve + paint
-  (see `content/src/main.rs` `update_the_rendering`), and the graphics process
-  keeps the content layer clean (the reused scene compares byte-identical).
+  (see `content/src/main.rs` `update_the_rendering`), and marks the frame
+  `scene_unchanged` so the graphics process keeps the content layer clean.
   The remaining waste is the render cycle itself (compose + forward) running
   at vsync.  Remaining follow-up:
   - Set `animating` only when the document has a **pending rAF callback**
@@ -286,6 +293,15 @@ two-submit layout.
     within the cycle (the "never compose independently from the video
     handler" rule, to keep the RenderingOpportunity TLA pipeline model
     valid).
+- **A clean cycle ships the scene it marks unchanged.** Content
+  re-serializes `last_scene` into shared memory and graphics deserializes it,
+  only for `store_frame` to replace the copy it already holds.
+  `scene_unchanged` is not the whole payload because graphics can have dropped
+  its copy while content still holds the scene (a `NavigationFinalized` arriving
+  after the incoming document's first paint); the stale-frame fallback then
+  paints the arriving scene instead of leaving the layer blank. Dropping the
+  payload needs graphics to ask content for a full frame when its stored copy
+  is gone.
 - **Composition waits for the latest embedded frames, and a changed child
   re-notes the parent.** A top-level
   `PaintFrame` arriving at the graphics process before a child (cross-origin
@@ -360,13 +376,12 @@ two-submit layout.
   web layer; there is no sub-division within a document. A change that
   genuinely alters the document's visible output (a `:hover` effect, a caret
   blink, a scroll) therefore re-rasterizes and re-presents the whole layer's
-  surface — `store_frame`'s scene comparison
-  correctly flags the whole layer dirty, and `setContents:` swaps the entire
-  `IOSurface` with no old-vs-new diff, so Quartz Debug flashes the full layer
-  bounds rather than the changed pixels. This is expected for the current
-  granularity, not a bug in the dirty tracking; eliminating it needs
-  damage-rect tracking inside the raster step, or splitting a document into
-  multiple GPU-composited layers per containing block / `will-change`
+  surface — content marks the frame changed wholesale, and `setContents:`
+  swaps the entire `IOSurface` with no old-vs-new diff, so Quartz Debug flashes
+  the full layer bounds rather than the changed pixels. This is expected for
+  the current granularity, not a bug in the dirty tracking; eliminating it
+  needs damage-rect tracking inside the raster step, or splitting a document
+  into multiple GPU-composited layers per containing block / `will-change`
   promotion.
 - **`is_animating()` is too coarse: `has_canvas` is unconditional.** Blitz's
   `BaseDocument::is_animating()` includes `has_canvas`, and `compute_has_canvas`

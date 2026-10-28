@@ -130,10 +130,14 @@ Content turns the command into a task so it runs in event-loop order (see
 `update_the_rendering` runs the animation-frame callbacks and applies the
 Unnecessary rendering test: a clean document reuses its last scene and
 composition instead of re-running blitz, while a dirty or animating document
-(or one with no cached scene) resolves style/layout and paints. Either way
-content sends a `PaintFrame` directly to the graphics process; that is how
-graphics learns the current top-level or child frame and its `animating` flag.
-Content marks a document dirty when a script or event may have mutated it, and
+(or one with no cached scene) resolves style/layout and paints. Only a
+restyle-dirty document (blitz reported a possible `:hover` change) can come
+out of the resolve pass unchanged, and it then keeps its last scene too. Either
+way content sends a `PaintFrame` directly to the graphics process; that is how
+graphics learns the current top-level or child frame, its `animating` flag,
+and whether its scene changed. Content marks a document dirty when a script
+ran or blitz made a change it cannot model as a style change; a UI event that
+reaches no listener marks nothing, since it cannot have run script. Content
 sends `ContentEvent::NoteUiStateUpdate` when a change happens outside a
 UA-driven command.
 

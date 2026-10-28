@@ -3,7 +3,7 @@ use ipc_messages::content::{
     NewChildNavigableInfo, UserNavigationInvolvement, iframe_target_name,
 };
 use std::{
-    cell::{Cell, RefCell},
+    cell::RefCell,
     collections::{HashMap, HashSet},
     rc::Rc,
 };
@@ -16,9 +16,15 @@ use url::Url;
 
 use crate::{
     ContentDocument, ContentProcess, EMPTY_HTML_DOCUMENT, NavigableContainerState,
-    dom::event::EventTargetAccess, dom::fire_event, html::HTMLElement,
-    html::create_a_new_browsing_context_and_document, html::document_providers::DocumentHost,
-    html::environment_settings_object::RealmWiring, html::navigate, js::Types, webidl::Callback,
+    dom::event::EventTargetAccess,
+    dom::fire_event,
+    html::HTMLElement,
+    html::create_a_new_browsing_context_and_document,
+    html::document_providers::{DocumentHost, PaintDirty},
+    html::environment_settings_object::RealmWiring,
+    html::navigate,
+    js::Types,
+    webidl::Callback,
 };
 
 /// <https://html.spec.whatwg.org/#htmliframeelement>
@@ -236,7 +242,7 @@ fn attach_iframe_subdocument_from_html(
     else {
         return Ok(());
     };
-    let needs_paint = Rc::new(Cell::new(false));
+    let paint_dirty = Rc::new(PaintDirty::default());
     let top_level_traversable_id = process
         .documents
         .get(&parent_document_id)
@@ -251,7 +257,7 @@ fn attach_iframe_subdocument_from_html(
         top_level_traversable_id,
         Some(base_url),
         origin,
-        needs_paint.clone(),
+        Rc::clone(&paint_dirty),
         false,
         DocumentHost::Subdocument {
             parent_document_id,
@@ -467,7 +473,7 @@ fn create_a_new_child_navigable(
     // flag: this child navigable's render is driven by content command
     // handlers (event/script dispatch); resource-load re-notes via the
     // shell provider are not connected for dynamically-created documents.
-    let needs_paint = Rc::new(Cell::new(false));
+    let paint_dirty = Rc::new(PaintDirty::default());
     process.documents.insert(
         new_document_id,
         ContentDocument {
@@ -482,7 +488,7 @@ fn create_a_new_child_navigable(
             navigable_container_states: HashMap::new(),
             viewport_offset_x: 0.0,
             viewport_offset_y: 0.0,
-            needs_paint,
+            paint_dirty,
             last_scene: None,
             last_composition: None,
         },

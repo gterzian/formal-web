@@ -20,7 +20,7 @@ pub mod webidl;
 
 use crate::dom::{EventTargetAccess, dispatch_with_path, fire_event, simple_path};
 use crate::html::document_providers::{
-    AssetRequest, DocumentHost, DocumentProviders, install_resource,
+    AssetRequest, DocumentHost, DocumentProviders, PaintDirty, install_resource,
 };
 use crate::html::environment_settings_object::RealmWiring;
 use crate::html::event_loop::{EventLoopTaskSources, Task, TaskQueue};
@@ -82,7 +82,7 @@ use ipc_messages::media::{VideoEmbedData, VideoPaintId};
 use ipc_messages::safe_passing_of_structured_data::PostMessageRequest;
 use log::{debug, error, info, warn};
 use std::{
-    cell::{Cell, RefCell},
+    cell::RefCell,
     collections::{HashMap, HashSet},
     env,
     rc::{Rc, Weak},
@@ -190,42 +190,35 @@ fn new_clipboard_cache() -> ClipboardCache {
 struct ContentShellProvider {
     event_sender: ipc::IpcSender<ContentEvent>,
     clipboard_cache: ClipboardCache,
-    /// Per-document flag: set when blitz asks for a repaint (a resource
-    /// loaded, an event mutated the DOM, the viewport changed). Content reads
-    /// it in `update_the_rendering` to decide whether to re-run blitz
-    /// (resolve + paint) — a static document that keeps re-sending an
-    /// identical scene during a video-driven render cycle skips the blitz
-    /// work entirely.
-    ///
-    /// Shared between this provider, which blitz calls `request_redraw()`
-    /// on, and the `ContentDocument` that `update_the_rendering` reads.
-    ///
-    /// `bool`) is a blitz shell-provider constraint, not our own cross-thread
-    /// sharing: blitz's `ShellProvider` trait is `Send + Sync`, so this
-    /// `ContentShellProvider` must be `Send + Sync`, which forces the flag to
-    /// be a thread-safe shared value. It is shared between the
-    /// `ContentShellProvider` that blitz calls `request_redraw()` on and the
-    /// `ContentDocument` that `update_the_rendering` reads.
-    needs_paint: Rc<Cell<bool>>,
+    /// The document's pending paint work, set through this provider as blitz
+    /// asks for a repaint (a resource loaded, a selection changed) or for a
+    /// restyle (a hover state changed). Shared with the `ContentDocument` that
+    /// `update_the_rendering` reads; see `PaintDirty` for how each kind is
+    /// resolved into a repaint.
+    paint_dirty: Rc<PaintDirty>,
 }
 
 impl ContentShellProvider {
     fn new(
         event_sender: ipc::IpcSender<ContentEvent>,
         clipboard_cache: ClipboardCache,
-        needs_paint: Rc<Cell<bool>>,
+        paint_dirty: Rc<PaintDirty>,
     ) -> Self {
         Self {
             event_sender,
             clipboard_cache,
-            needs_paint,
+            paint_dirty,
         }
     }
 }
 
 impl ShellProvider for ContentShellProvider {
     fn request_redraw(&self) {
-        self.needs_paint.set(true);
+        self.paint_dirty.note_paint();
+    }
+
+    fn request_restyle(&self) {
+        self.paint_dirty.note_restyle();
     }
 
     fn get_clipboard_text(&self) -> Result<String, ClipboardError> {
@@ -351,17 +344,15 @@ pub(crate) struct ContentDocument {
     navigable_container_states: HashMap<usize, NavigableContainerState>,
     viewport_offset_x: f32,
     viewport_offset_y: f32,
-    /// Set whenever the document may have changed and needs a blitz render
-    /// (a script ran, an event was dispatched, a resource loaded, or blitz
-    /// requested a repaint). Cleared after a render is produced. `update_the_rendering`
-    /// skips the blitz resolve + paint when this is clear and the document is
-    /// not animating — so a static document that keeps being asked to render
-    /// (e.g. a video elsewhere drives the render cycle) does not re-run blitz
-    /// on an unchanged scene.
-    needs_paint: Rc<Cell<bool>>,
-    /// The last recorded scene, reused verbatim on a clean render cycle so the
-    /// graphics process keeps the content layer clean (an unchanged scene is
-    /// not re-rasterized) instead of re-painting an unchanged document. Fonts
+    /// The document's pending paint work, cleared after a render is produced.
+    /// `update_the_rendering` runs the blitz resolve pass only when this asks
+    /// for one, and paints only when the pass reports a change or the change
+    /// came from content itself (a script ran, an embed site appeared) — so a
+    /// static document that keeps being asked to render (pointer moves, a
+    /// video elsewhere driving the render cycle) neither resolves nor paints,
+    /// and its frame is marked unchanged so graphics keeps the layer clean.
+    paint_dirty: Rc<PaintDirty>,
+    /// The last recorded scene, reused verbatim on a clean render cycle. Fonts
     /// are not re-sent on a clean cycle (they are already registered on the
     /// graphics side).
     last_scene: Option<RecordedScene>,
@@ -681,7 +672,7 @@ impl ContentProcess {
         top_level_traversable_id: NavigableId,
         base_url: Option<String>,
         origin: String,
-        needs_paint: Rc<Cell<bool>>,
+        paint_dirty: Rc<PaintDirty>,
         embedded_images: bool,
         host: DocumentHost,
     ) -> (DocumentConfig, Rc<DocumentProviders>) {
@@ -701,7 +692,7 @@ impl ContentProcess {
             self.event_sender.clone(),
             Rc::clone(&self.embedder_schemes),
             Rc::clone(&self.image_registry),
-            needs_paint.clone(),
+            Rc::clone(&paint_dirty),
         ));
         let config = DocumentConfig {
             embedded_images,
@@ -719,7 +710,7 @@ impl ContentProcess {
             shell_provider: Some(Arc::new(ContentShellProvider::new(
                 self.event_sender.clone(),
                 self.clipboard_cache.clone(),
-                needs_paint,
+                paint_dirty,
             ))),
             html_parser_provider: Some(Arc::new(JsHtmlParserProvider)),
             ..DocumentConfig::default()
@@ -770,7 +761,7 @@ impl ContentProcess {
         // A viewport change resizes the document surface; mark it dirty so the
         // next update-the-rendering re-paints instead of reusing the stale-size
         // cached scene.
-        document.needs_paint.set(true);
+        document.paint_dirty.note_paint();
         document
             .document
             .borrow_mut()
@@ -1040,7 +1031,7 @@ impl ContentProcess {
                     navigable_container_states: HashMap::new(),
                     viewport_offset_x: 0.0,
                     viewport_offset_y: 0.0,
-                    needs_paint: Rc::new(Cell::new(false)),
+                    paint_dirty: Rc::new(PaintDirty::default()),
                     last_scene: None,
                     last_composition: None,
                 },
@@ -1219,13 +1210,13 @@ impl ContentProcess {
     ) -> Result<(), String> {
         let viewport_state = self.document_viewport_state(traversable_id);
         let frame_id = frame_id.unwrap_or_else(FrameId::new);
-        let needs_paint = Rc::new(Cell::new(false));
+        let paint_dirty = Rc::new(PaintDirty::default());
         let (document_config, providers) = self.document_config(
             traversable_id,
             top_level_traversable_id,
             None,
             String::from("null"),
-            needs_paint.clone(),
+            Rc::clone(&paint_dirty),
             true,
             DocumentHost::Main(document_id),
         );
@@ -1247,7 +1238,7 @@ impl ContentProcess {
                 global_scope.set_graphics_sender(sender.clone());
             }
             global_scope.set_epoch_anchor(self.epoch_anchor, self.epoch_anchor_wall_ms);
-            global_scope.set_needs_paint(needs_paint.clone());
+            global_scope.set_paint_dirty(Rc::clone(&paint_dirty));
             Ok(())
         }) {
             error!(
@@ -1294,7 +1285,7 @@ impl ContentProcess {
                     .as_ref()
                     .map(|viewport| viewport.offset_y)
                     .unwrap_or(0.0),
-                needs_paint,
+                paint_dirty,
                 last_scene: None,
                 last_composition: None,
             },
@@ -1333,7 +1324,7 @@ impl ContentProcess {
         (
             Rc<RefCell<BaseDocument>>,
             EnvironmentSettingsObject,
-            Rc<Cell<bool>>,
+            Rc<PaintDirty>,
             Rc<DocumentProviders>,
         ),
         String,
@@ -1427,14 +1418,14 @@ impl ContentProcess {
         // Note: The document and settings object are returned to the caller
         // (`create_loaded_document`), which continues navigate-html with the parse.
         let creation_url = Url::parse(final_url).map_err(|error| error.to_string())?;
-        let needs_paint = Rc::new(Cell::new(false));
+        let paint_dirty = Rc::new(PaintDirty::default());
         let origin = creation_url.origin().unicode_serialization();
         let (document_config, providers) = self.document_config(
             traversable_id,
             top_level_traversable_id,
             Some(final_url.to_string()),
             origin,
-            needs_paint.clone(),
+            Rc::clone(&paint_dirty),
             true,
             DocumentHost::Main(document_id),
         );
@@ -1465,7 +1456,7 @@ impl ContentProcess {
                 global_scope.set_graphics_sender(sender.clone());
             }
             global_scope.set_epoch_anchor(self.epoch_anchor, self.epoch_anchor_wall_ms);
-            global_scope.set_needs_paint(needs_paint.clone());
+            global_scope.set_paint_dirty(Rc::clone(&paint_dirty));
             Ok(())
         }) {
             error!(
@@ -1474,7 +1465,7 @@ impl ContentProcess {
             );
         }
 
-        Ok((document, settings, needs_paint, providers))
+        Ok((document, settings, paint_dirty, providers))
     }
 
     /// <https://html.spec.whatwg.org/#initialise-the-document-object> — step 6
@@ -1540,7 +1531,7 @@ impl ContentProcess {
         // `Self::initialise_the_document_object`; the user-agent-side steps (browsing context
         // and agent selection) ran in `UserAgent::initialise_the_document_object` before this
         // command was dispatched.
-        let (document, mut settings, needs_paint, providers) = self
+        let (document, mut settings, paint_dirty, providers) = self
             .initialise_the_document_object(
                 traversable_id,
                 document_id,
@@ -1598,7 +1589,7 @@ impl ContentProcess {
                     .as_ref()
                     .map(|viewport| viewport.offset_y)
                     .unwrap_or(0.0),
-                needs_paint,
+                paint_dirty,
                 last_scene: None,
                 last_composition: None,
             },
@@ -2051,9 +2042,6 @@ impl ContentProcess {
                 warn!("failed to set up new document registry for UI event: {error}");
             }
 
-            // Dispatch may mutate the document; mark it so the next
-            // update-the-rendering re-runs blitz.
-            self.mark_document_dirty(document_id);
             let Some(document) = self.documents.get_mut(&document_id) else {
                 continue;
             };
@@ -2061,13 +2049,20 @@ impl ContentProcess {
             // Continues <https://dom.spec.whatwg.org/#concept-event-fire> after the
             // user agent writes the serialized UI event batch to the content process.
             let event = deserialize_ui_event(&event)?;
-            dispatch_ui_event(
+            let listener_reached = dispatch_ui_event(
                 Rc::clone(&document.document),
                 &mut document.settings,
                 document.viewport_offset_x,
                 document.viewport_offset_y,
                 event,
             )?;
+            // An event that reaches no listener cannot have run script, so
+            // nothing recorded in the document changed; blitz reports the
+            // changes it makes to it while handling the event (a hover state
+            // change) by requesting a repaint, which sets the same flag.
+            if listener_reached {
+                self.mark_document_dirty(document_id);
+            }
 
             if let Err(error) = self.tear_down_new_document_registry(traversable_id) {
                 warn!("failed to tear down new document registry: {error}");
@@ -2480,12 +2475,6 @@ impl ContentProcess {
 
             let animation_time = frame_timestamp_ms / 1000.0;
 
-            // Decide whether to run blitz. A static document that is asked to
-            // render only because an external animation (a video frame arriving
-            // at the graphics process) keeps the render cycle alive skips the
-            // blitz resolve + paint and reuses its last scene, so the graphics
-            // process keeps the content layer clean instead of re-rasterizing an
-            // unchanged scene every cycle.
             // Step 4: "Unnecessary rendering: Remove from docs any Document
             // object doc for which all of the following are true: the user
             // agent believes that updating the rendering of doc's node
@@ -2496,25 +2485,46 @@ impl ContentProcess {
             // `is_animating` (a visible effect) and `had_pending_r_af` (the
             // animation frame callbacks); `last_scene` being absent forces the
             // first paint so blitz has a scene to reuse.
-            let should_render = {
-                let needs_paint = document.needs_paint.get();
+            //
+            // A paint-dirty document needs the repaint whatever the resolve
+            // pass reports: content changed something blitz does not model (a
+            // script may have mutated the DOM, an embed site may have
+            // appeared). A restyle-dirty document (blitz reported that a
+            // computed style may have changed, e.g. a `:hover` state change)
+            // needs the resolve pass to find out, and is repainted only when
+            // that pass reports a change — otherwise a pointer move that
+            // re-targets `:hover` on a page with no `:hover` rule would
+            // re-rasterize the layer for nothing.
+            let paint_dirty = Rc::clone(&document.paint_dirty);
+            let needs_restyle = paint_dirty.needs_restyle();
+            let must_paint = {
                 let document_guard = document.document.borrow();
-                needs_paint
+                paint_dirty.needs_paint()
                     || had_pending_r_af
                     || document_guard.is_animating()
                     // A fresh document has never painted; fail open so the first
                     // frame always runs blitz and populates the cache.
                     || document.last_scene.is_none()
             };
+            let mut rendering_changed = false;
+            if must_paint || needs_restyle {
+                let mut document_guard = document.document.borrow_mut();
 
-            if !should_render {
-                // Clean render: reuse the last recorded scene and composition.
-                // No blitz work, no font re-send, and the graphics process
-                // keeps this frame's layer clean (the scene is byte-identical).
-                // The render cycle still completes, so a new video frame is
-                // composed against the unchanged content layer.
+                // Step 16.2.1: "Recalculate styles and update layout for `doc`."
+                // `resolve` advances style, layout, and resource-driven document updates.
+                rendering_changed = document_guard.resolve(animation_time);
+            }
+            let should_paint = must_paint || rendering_changed;
+
+            let frame = if !should_paint {
+                // Clean render: reuse the last recorded scene and composition,
+                // with no paint recording and no font re-send. A resolve pass
+                // that ran reported no change, and the frame is marked
+                // unchanged, so the graphics process keeps this frame's layer
+                // clean. The render cycle still completes, so a new video frame
+                // is composed against the unchanged content layer.
                 info!(
-                    "[render-pipe] Content clean render navigable={} document={} (skipping blitz)",
+                    "[render-pipe] Content clean render navigable={} document={} (reusing the last scene)",
                     navigable_id, document_id
                 );
                 let recorded_scene = document.last_scene.clone().ok_or_else(|| {
@@ -2545,7 +2555,7 @@ impl ContentProcess {
                     font_shmem: HashMap::new(),
                 };
                 let mut next_shmem_key = 0usize;
-                let (paint_frame, shmem_data) = PaintFrame::new(
+                let (mut paint_frame, shmem_data) = PaintFrame::new(
                     WebviewId(navigable_id),
                     document.frame_id,
                     width,
@@ -2555,16 +2565,11 @@ impl ContentProcess {
                     &mut next_shmem_key,
                     animating,
                 )?;
+                // The scene is the one this document recorded last time, so the
+                // graphics process keeps the frame's layer clean.
+                paint_frame.scene_unchanged = true;
                 (paint_frame, shmem_data)
             } else {
-                {
-                    let mut document_guard = document.document.borrow_mut();
-
-                    // Step 16.2.1: "Recalculate styles and update layout for `doc`."
-                    // `resolve` advances style, layout, and resource-driven document updates.
-                    document_guard.resolve(animation_time);
-                }
-
                 info!(
                     "[render-pipe] Content render navigable={} document={} iframes={} video_registry_entries={}",
                     navigable_id,
@@ -2649,9 +2654,10 @@ impl ContentProcess {
                 };
                 document.last_scene = Some(recorded_scene);
                 document.last_composition = Some(composition);
-                document.needs_paint.set(false);
                 (paint_frame, shmem_data)
-            }
+            };
+            paint_dirty.clear();
+            frame
         };
 
         verification::tla_log!(
@@ -3336,7 +3342,7 @@ impl ContentProcess {
                     presentation.width,
                     presentation.height,
                 );
-            content_document.needs_paint.set(true);
+            content_document.paint_dirty.note_paint();
             let traversable_id = content_document.traversable_id;
             self.event_sender
                 .send(ContentEvent::NoteUiStateUpdate(traversable_id))
@@ -4294,15 +4300,16 @@ impl ContentProcess {
         }
     }
 
-    /// Mark a document as needing a render. Called whenever content runs a
-    /// script or dispatches an event that may mutate the document, so
-    /// `update_the_rendering` re-runs blitz. A render cycle driven solely by
-    /// external animation (a video frame arriving at the graphics process)
-    /// does not call this, so a static document that keeps being asked to
-    /// render skips the blitz resolve + paint on an unchanged scene.
+    /// Mark a document as needing a repaint. Called whenever content runs a
+    /// script or dispatches an event that may mutate the document: blitz does
+    /// not model every such change (a canvas embed site, an offscreen commit),
+    /// so the repaint cannot wait for the resolve pass to report a style
+    /// change. A render cycle driven solely by external animation (a video
+    /// frame arriving at the graphics process) does not call this, so a static
+    /// document that keeps being asked to render neither resolves nor paints.
     fn mark_document_dirty(&self, document_id: DocumentId) {
         if let Some(document) = self.documents.get(&document_id) {
-            document.needs_paint.set(true);
+            document.paint_dirty.note_paint();
         }
     }
 

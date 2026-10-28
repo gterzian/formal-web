@@ -871,6 +871,10 @@ pub struct PaintFrame {
     /// CSS animations). The graphics process forwards this to the UA so it
     /// can keep noting UI state updates without user input.
     pub animating: bool,
+    /// True when the sender re-sent the scene it sent for this frame last
+    /// time instead of recording a new one. The receiver keeps the frame's
+    /// layer clean rather than re-rasterizing identical content.
+    pub scene_unchanged: bool,
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -920,6 +924,7 @@ impl PaintFrame {
                 font_registrations: registered_fonts,
                 scene_shmem_key,
                 animating,
+                scene_unchanged: false,
             },
             shmem_map,
         ))

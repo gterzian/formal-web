@@ -33,7 +33,7 @@ use log::{debug, error};
 use super::environment_settings_object::RealmWiring;
 use super::event_loop::{EventLoopTaskSources, Task};
 use crate::dom::event::EventTarget;
-use crate::html::document_providers::DocumentProviders;
+use crate::html::document_providers::{DocumentProviders, PaintDirty};
 use crate::html::images_processing_model::{
     self, DecodeSettlement, ImageAttributes, ImageRegistry, ImageUpdateEnvironment,
     PendingImageDataUpdate,
@@ -375,13 +375,13 @@ pub struct GlobalScope {
     /// The `decode()` promises whose image request is not decoded yet.
     pending_image_decodes: GcCell<Vec<PendingImageDecode>>,
 
-    /// The document's repaint flag, shared with `ContentDocument`: a script
-    /// that mutates only canvas/offscreen state (no DOM mutation) marks it
-    /// dirty here so the next update-the-rendering re-runs blitz and rebuilds
-    /// the frame composition (which picks up a newly registered canvas embed
-    /// site).
+    /// The document's pending paint work, shared with `ContentDocument`: a
+    /// script that mutates only canvas/offscreen state (no DOM mutation) asks
+    /// for a repaint here so the next update-the-rendering re-runs blitz and
+    /// rebuilds the frame composition (which picks up a newly registered
+    /// canvas embed site).
     #[ignore_trace]
-    needs_paint: Rc<RefCell<Option<Rc<Cell<bool>>>>>,
+    paint_dirty: Rc<RefCell<Option<Rc<PaintDirty>>>>,
 
     /// <https://html.spec.whatwg.org/#concept-document-creation-url>
     /// The creation URL of this window's Document.
@@ -432,7 +432,7 @@ impl GlobalScope {
             graphics_sender: Rc::new(RefCell::new(None)),
             epoch_anchor: Rc::new(std::cell::Cell::new(None)),
             epoch_anchor_wall_ms: Rc::new(std::cell::Cell::new(None)),
-            needs_paint: Rc::new(RefCell::new(None)),
+            paint_dirty: Rc::new(RefCell::new(None)),
             image_registry: Rc::new(RefCell::new(None)),
             document_providers: Rc::new(RefCell::new(None)),
             pending_image_decodes: gc_cell_new(Vec::new(), ec),
@@ -1614,18 +1614,18 @@ impl GlobalScope {
         }
     }
 
-    /// Set the shared repaint flag that both GlobalScope and ContentDocument
+    /// Set the shared paint work that both GlobalScope and ContentDocument
     /// access. ContentProcess sets this during document creation.
-    pub(crate) fn set_needs_paint(&self, flag: Rc<Cell<bool>>) {
-        *self.needs_paint.borrow_mut() = Some(flag);
+    pub(crate) fn set_paint_dirty(&self, dirty: Rc<PaintDirty>) {
+        *self.paint_dirty.borrow_mut() = Some(dirty);
     }
 
     /// Mark the document dirty without mutating the DOM (e.g. registering an
     /// offscreen canvas embed site), so the next update-the-rendering re-runs
     /// blitz and rebuilds the frame composition.
     pub(crate) fn mark_document_dirty(&self) {
-        if let Some(flag) = self.needs_paint.borrow().as_ref() {
-            flag.set(true);
+        if let Some(dirty) = self.paint_dirty.borrow().as_ref() {
+            dirty.note_paint();
         }
     }
 
