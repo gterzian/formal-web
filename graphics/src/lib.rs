@@ -412,10 +412,11 @@ fn handle_media_event<R: SurfaceRenderer>(
                 return;
             };
             // Store the raw frame on the renderer without touching the GPU:
-            // the blit (import) is deferred to the next compose, which blits
-            // only frames newer than the last imported one into the same
-            // encoder as the Vello render (a single submission per compose,
-            // so the import does not contend with the gpu poll thread).
+            // the conversion (import) is deferred to the next compose, which
+            // converts only frames newer than the last imported one into the
+            // same encoder as the Vello render (a single submission per
+            // compose, so the import does not contend with the gpu poll
+            // thread).
             let Some(resource_id) = slot.renderer.store_video_frame(
                 paint_id,
                 &frame.pixel_buffer,

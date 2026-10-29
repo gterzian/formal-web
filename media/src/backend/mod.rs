@@ -16,8 +16,9 @@ use ipc_messages::media::MediaPipelineId;
 use ipc_messages::media::VideoFrame;
 
 /// A decoded video frame delivered as a GPU-backed pixel buffer (macOS
-/// AVFoundation). The graphics process wraps it as a Metal texture and
-/// composites it, avoiding the CPU readback + BGRA→RGBA byte conversion.
+/// AVFoundation). The graphics process wraps its NV12 planes as Metal
+/// textures and converts them to RGBA as it composites, avoiding the CPU
+/// readback and the pixel-format conversion a BGRA pool would cost.
 #[cfg(all(
     any(feature = "backend-avfoundation", avf_default),
     target_os = "macos"
@@ -27,8 +28,8 @@ pub struct PixelBufferVideoFrame {
     pub pipeline_id: MediaPipelineId,
     pub width: u32,
     pub height: u32,
-    /// The decoded BGRA pixel buffer; must stay alive while the Metal
-    /// texture wrapping it is in use.
+    /// The decoded NV12 pixel buffer; must stay alive while the Metal
+    /// textures wrapping its planes are in use.
     pub pixel_buffer: objc2::rc::Retained<objc2_core_video::CVPixelBuffer>,
 }
 

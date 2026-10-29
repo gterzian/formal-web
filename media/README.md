@@ -92,9 +92,9 @@ AVFoundation services URL loading, KVO, and video output timing; checks item
 status once (wait for `AVPlayerItemStatus::ReadyToPlay` before reporting
 duration); then polls `AVPlayerItemVideoOutput` for frames
 (`itemTimeForHostTime`, `hasNewPixelBufferForItemTime`) and delivers the
-pixel buffer itself as `PixelBufferFrame` — the graphics process wraps it as
-a Metal texture (zero-copy when GPU-backed) instead of the CPU byte
-conversion.
+pixel buffer itself as `PixelBufferFrame` — the graphics process wraps its
+two NV12 planes as Metal textures (zero-copy when GPU-backed) instead of the
+CPU byte conversion.
 
 Key design decisions:
 
@@ -106,9 +106,12 @@ Key design decisions:
 | Timer-driven `sample()`, not message-driven | Without a timer, `sample()` only runs when a command or event arrives,
   starving AVFoundation of CPU time. |
 | Frames flow through the same channel as EOS/error/duration | Eliminates the `frame_tx`/`frame_rx` pair from the dispatch loop. |
-| Deliver the `CVPixelBuffer` itself (BGRA), not CPU-converted bytes | The graphics process imports it as a Metal texture (zero-copy when
-  GPU-backed); the BGRA→RGBA conversion Vello needs happens there, as a
-  compute blit. |
+| Deliver the `CVPixelBuffer` itself as NV12, not CPU-converted bytes | The graphics process imports its two planes as Metal textures
+  (zero-copy when GPU-backed) and converts YUV→RGBA there, with the matrix
+  the buffer's YCbCr attachment names. |
+| Request `kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange` | The hardware decoder's native output: a pool request for any other
+  format (e.g. `32BGRA`) makes `copyPixelBufferForItemTime` transfer every
+  frame into a new buffer before the graphics process sees it. |
 
 ### Common pitfalls
 
