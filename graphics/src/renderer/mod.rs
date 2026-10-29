@@ -216,10 +216,10 @@ impl GpuContext {
     }
 
     /// Paint `scene` into `target` with Vello's compute renderer, after
-    /// importing (blitting) the pending video frames in their own
-    /// submission: two submits back to back, the blit then Vello's render
-    /// (GPU execution order guarantees the blit completes before the
-    /// render reads it). Blits run only for paints whose stored raw frame
+    /// importing (converting) the pending video frames in their own
+    /// submission: two submits back to back, the conversion then Vello's
+    /// render (GPU execution order guarantees the conversion completes
+    /// before the render reads it). Blits run only for paints whose stored raw frame
     /// is newer than the last imported one; unchanged frames reuse their
     /// RGBA texture.
     pub(crate) fn render_into(
@@ -255,13 +255,13 @@ impl GpuContext {
             .map_err(|e| format!("Vello render failed: {e:?}"))
     }
 
-    /// Blit the pending video frames (macOS) in their own submission, right
-    /// before Vello's render submits. Every `queue.submit` on the main
+    /// Convert the pending video frames (macOS) in their own submission,
+    /// right before Vello's render submits. Every `queue.submit` on the main
     /// thread blocks on the gpu poll thread's fence lock until its current
     /// `device.poll(Wait)` finishes; two back-to-back submits per composed
     /// frame are accepted — the win is that the media event path no longer
     /// submits at all, and frames that are never composited are never
-    /// blitted.
+    /// converted.
     #[cfg(target_os = "macos")]
     fn import_video_frames(&mut self) {
         let Some(raw_device) = self.raw_metal_device() else {
@@ -285,7 +285,7 @@ impl GpuContext {
 
     /// Store a video frame for `paint_id` without touching the GPU: the
     /// media callback keeps the latest decoded pixel buffer plus its
-    /// metadata here, and the compose-time import (blit) happens in
+    /// metadata here, and the compose-time import (conversion) happens in
     /// [`render_into`](Self::render_into). Returns the fake `ImageData`
     /// (empty blob, real size) composed scenes embed as a plain image
     /// brush; its blob is registered with Vello's `override_image` when
@@ -472,7 +472,7 @@ pub trait SurfaceRenderer {
 
     /// Store a video frame for `paint_id` without touching the GPU: the
     /// media callback keeps the latest decoded pixel buffer plus its
-    /// metadata here, and the compose-time import (blit) happens in
+    /// metadata here, and the compose-time import (conversion) happens in
     /// `submit_scene`. Returns the fake `ImageData` (empty blob, real
     /// size) composed scenes embed as a plain image brush.
     #[cfg(target_os = "macos")]

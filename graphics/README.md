@@ -235,37 +235,46 @@ Limitations:
 ## Video frames → shared texture (macOS)
 
 The AVFoundation pipeline delivers the decoded `CVPixelBuffer` itself
-(`MediaBackendEvent::PixelBufferFrame`); the graphics process wraps it as a
-Metal texture via `CVMetalTextureCacheCreateTextureFromImage` (zero-copy when
-the pixel buffer is GPU-backed), does a one-pass BGRA→RGBA compute blit into
-a per-pipeline RGBA texture, and registers that texture with its Vello
-renderer via `Renderer::override_image` (a fake `ImageData` with an empty
-blob; the scene draws it as a plain image brush).  GStreamer keeps the CPU
-byte path (`MediaBackendEvent::Frame`).
+(`MediaBackendEvent::PixelBufferFrame`) as bi-planar NV12 (see
+`media/README.md` for why the pool requests that format); the graphics
+process wraps each plane as a Metal texture via
+`CVMetalTextureCacheCreateTextureFromImage` (zero-copy when the pixel buffer
+is GPU-backed), converts both planes to RGBA in one compute pass into a
+per-pipeline RGBA texture, and registers that texture with its Vello renderer
+via `Renderer::override_image` (a fake `ImageData` with an empty blob; the
+scene draws it as a plain image brush).  GStreamer keeps the CPU byte path
+(`MediaBackendEvent::Frame`).
+
+The conversion needs a YUV→RGB matrix, which the frame's
+`kCVImageBufferYCbCrMatrixKey` attachment names (BT.601, BT.709, SMPTE 240M,
+or BT.2020; BT.709 when the buffer carries none) and a range conversion for
+the video-range signal the pool produces.  Chroma is half resolution in both
+axes and is upsampled with a linear sampler.
 
 **The import is deferred from frame arrival to compose time.** The media
 callback (`store_video_frame`) only stores the latest raw frame — the pixel
 buffer, its size, and a generation counter — without touching the GPU.  When
-`submit_layers` runs, `VideoTextures::record_imports` blits exactly the frames
-whose generation is newer than the last imported one in their own submission,
-right before Vello's render submits (two back-to-back submissions; GPU
-execution order guarantees the blit completes before the render reads it).
-Re-blitted images are marked dirty so Vello recopies them into its atlas;
-unchanged frames reuse their RGBA texture.
+`submit_layers` runs, `VideoTextures::record_imports` converts exactly the
+frames whose generation is newer than the last imported one in their own
+submission, right before Vello's render submits (two back-to-back
+submissions; GPU execution order guarantees the conversion completes before
+the render reads it).  Reconverted images are marked dirty so Vello recopies
+them into its atlas; unchanged frames reuse their RGBA texture.
 
 Why: every `queue.submit` on the main thread blocks on the gpu poll thread's
 fence lock until its current `device.poll(Wait)` finishes, so an import from
 the media event path would stall the loop — and frames that are never
-composited should never be blitted.  Caveats: the `CVPixelBuffer` must stay
-alive while the texture referencing it is in use (the stored raw frame keeps
-it until the next frame replaces it); a BGRA→RGBA blit is needed because
-Vello's `register_texture` requires `Rgba8Unorm`.  A blit that fails to wrap
-its source (first import of a paint) records a texture clear instead so the
-frame shows black — like a browser shows for a video that fails to decode —
-and is retried on the next compose; a failed re-blit of a previously
-imported paint leaves the last good frame in place.
+composited should never be converted.  Caveats: the `CVPixelBuffer` must stay
+alive while the textures referencing its planes are in use (the stored raw
+frame keeps it until the next frame replaces it); the RGBA intermediate is
+needed because Vello's `register_texture` requires `Rgba8Unorm`.  A
+conversion that fails to wrap its source (first import of a paint) records a
+texture clear instead so the frame shows black — like a browser shows for a
+video that fails to decode — and is retried on the next compose; a failed
+reconversion of a previously imported paint leaves the last good frame in
+place.
 
-**Dead end:** merging the blit and Vello's render into a single command
+**Dead end:** merging the import pass and Vello's render into a single command
 encoder + one submit was tried and parked — it needs a record-only vello API
 that 0.9 does not expose.  The modified vello source with
 `render_to_texture_into` / `run_recording_into` is parked at
@@ -274,6 +283,19 @@ two-submit layout.
 
 ## Open risks and questions
 
+- **The windowed winit embedder panics on a playing video (unfixed).** With
+  `--features winit_embedder` and a headed `cdp` session, a page containing a
+  playing `<video>` intermittently kills the embedder: the panic is Vello's
+  "Tried to draw an invalid empty image (id: 12). Maybe it was registered to a
+  different renderer, or unregistered before this render was submitted",
+  raised from `VelloWindowRenderer::render` inside the winit window event
+  handler. The embedder draws a scene that references the video's empty-blob
+  `ImageData`, whose `override_image` registration exists only in the graphics
+  process's renderer. Ruled out as causes: the pixel format (the same panic
+  reproduces with the BGRA import) and the headless host (no panic there).
+  Observed in 3 of 5 headed runs. CDP screenshots cannot observe it because
+  `automation_screenshot_png` returns a blank image in both hosts. Not
+  investigated further.
 - **Video still drives the render cycle via the coarse `animating` flag
   (follow-up).** Content still sets `PaintFrame.animating = has_video ||
   document.is_animating()`, so a page with any non-ended video keeps the

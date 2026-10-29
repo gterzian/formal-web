@@ -4,7 +4,8 @@ use objc2::runtime::{AnyObject, ProtocolObject};
 use objc2_av_foundation::AVPlayerItemVideoOutput;
 use objc2_core_media::CMTime;
 use objc2_core_video::{
-    CVPixelBuffer, kCVPixelBufferPixelFormatTypeKey, kCVPixelFormatType_32BGRA,
+    CVPixelBuffer, kCVPixelBufferPixelFormatTypeKey,
+    kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange,
 };
 use objc2_foundation::{NSDictionary, NSNumber, NSString};
 
@@ -14,12 +15,15 @@ pub(crate) struct AvVideoOutput {
 
 impl AvVideoOutput {
     pub(crate) fn new() -> Self {
-        // Build pixel-buffer attributes requesting 32BGRA format.
+        // Build pixel-buffer attributes requesting bi-planar NV12 in video
+        // range, the format hardware decoders produce: a pool request that
+        // matches the decoder's output lets the video output hand over the
+        // decoded buffer instead of transferring it into a BGRA one.
         // kCVPixelBufferPixelFormatTypeKey is &'static CFString.
         // SAFETY: CFString and NSString are toll-free bridged.
         let key: &NSString =
             unsafe { &*(kCVPixelBufferPixelFormatTypeKey as *const _ as *const NSString) };
-        let value = NSNumber::new_u32(kCVPixelFormatType_32BGRA);
+        let value = NSNumber::new_u32(kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange);
         // SAFETY: dictionaryWithObject:forKey: expects key to conform to
         // NSCopying, which NSString does.  NSNumber conforms to AnyObject.
         // We cast through *const void to change the type parameter.
