@@ -80,7 +80,7 @@ helper).
 **Known limits.**  The shared-borrow guard cannot enforce rooting:
 `cell.borrow(ec).clone()` compiles and yields an unrooted copy, so the rules
 above are the enforcement.  The executable case is
-`generic_js_test::tests::review_findings::edge_clone_taken_with_borrow_survives_collection_after_the_cell_is_cleared`;
+`generic_js_test::tests::edge_clone_taken_with_borrow_survives_collection_after_the_cell_is_cleared`;
 the API fix (a non-cloneable guard or rooted clones) is described in
 `js_engine/src/v8/README.md`, “An `Edge` clone that leaves traced storage is
 not rooted”.

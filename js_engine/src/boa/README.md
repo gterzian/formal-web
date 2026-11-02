@@ -35,8 +35,8 @@ Backend methods that return a plausible value instead of implementing the
 full spec algorithm, plus the one generic operation Boa cannot express:
 
 - `is_array` does not follow a Proxy's `[[ProxyTarget]]`; Boa's public object
-  API exposes no target accessor.  `review_findings::is_array_sees_through_proxy`
-  is ignored on Boa for this reason (V8 passes).
+  API exposes no target accessor.  The `is_array_sees_through_proxy` test is
+  ignored on Boa for this reason (V8 passes).
 - `set_value_in_buffer` with `Float16` throws: the `float16` feature is off.
 - `species_constructor` always returns the default constructor.
 - `is_fixed_length_array_buffer` is always true (resizable ArrayBuffers are

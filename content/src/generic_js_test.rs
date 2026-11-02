@@ -690,18 +690,32 @@ impl WebIdlInterface<TestTypes> for TestButton {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::cell::Cell;
+    use std::cell::{Cell, RefCell};
+    use std::hint::black_box;
     use std::rc::Rc;
     use std::sync::{
         Arc,
         atomic::{AtomicUsize, Ordering},
     };
+    use std::time::Instant;
 
+    use blitz_dom::{BaseDocument, DocumentConfig};
+    use ipc_messages::safe_passing_of_structured_data::SerializedRecord;
     use js_engine::PromiseState;
     use js_engine::PropertyDescriptor;
     use js_engine::TypedArrayElementType;
     use js_engine::gc::gc_cell_new;
-    use js_engine::{EcmascriptHost, ExecutionContext, JsEngine};
+    use js_engine::records::RealmIntrinsics;
+    use js_engine::{EcmascriptHost, ExecutionContext, JsEngine, Numeric};
+    use url::Url;
+
+    use crate::dom::{DOMException, EventTarget};
+    use crate::html::EnvironmentSettingsObject;
+    use crate::html::structured_data::safe_passing_of_structured_data::{
+        SerializeWithTransferResult, structured_clone, structured_deserialize_with_transfer,
+    };
+    use crate::js::Engine;
+    use crate::webidl::bindings::register_interface_spec;
 
     /// Create an initialized engine context with the TestWidget interface registered.
     /// Returns the concrete engine type so callers can use both
@@ -763,220 +777,190 @@ mod tests {
         ec.to_number(value).expect("marker is a number")
     }
 
-    /// Evidence for the findings in `scratchpad/js-engine-review.md`.
-    ///
-    /// Every test asserts the behaviour the specification requires. A test that fails today is
-    /// ignored with its finding id; run it alone (`--ignored --exact`), because some abort the
-    /// process. A test without `#[ignore]` passes today and pins sound behaviour. Tests named
-    /// `*_cost` or `*_scales` only print measurements.
-    mod review_findings {
-        use std::cell::RefCell;
-        use std::hint::black_box;
-        use std::rc::Rc;
-        use std::time::Instant;
+    // JS-engine regression tests: each test asserts the spec-correct
+    // behaviour.  Most review findings are now part of the default run; the
+    // few ignored tests name the open finding in their reason string.  Tests
+    // named `*_cost` or `*_scales` only print measurements.
 
-        use blitz_dom::{BaseDocument, DocumentConfig};
-        use ipc_messages::safe_passing_of_structured_data::SerializedRecord;
-        #[cfg(v8_backend)]
-        use js_engine::gc::gc_cell_new;
-        use js_engine::records::RealmIntrinsics;
-        use js_engine::{Completion, EcmascriptHost, ExecutionContext, JsEngine, JsTypes, Numeric};
-        use url::Url;
+    fn evaluate(engine: &mut Engine, source: &str) -> JsValue {
+        let realm = engine.current_realm();
+        JsEngine::evaluate_script(engine, source, &realm).expect("the script evaluates")
+    }
 
-        #[cfg(v8_backend)]
-        use super::object_with_marker;
-        use super::setup;
-        use crate::dom::{DOMException, EventTarget};
-        use crate::generic_js_test::{JsObject, JsValue, TestTypes};
-        use crate::html::EnvironmentSettingsObject;
-        use crate::html::structured_data::safe_passing_of_structured_data::{
-            SerializeWithTransferResult, structured_clone, structured_deserialize_with_transfer,
-        };
-        use crate::js::Engine;
-        use crate::webidl::bindings::register_interface_spec;
+    fn evaluate_to_string(engine: &mut Engine, source: &str) -> String {
+        let value = evaluate(engine, source);
+        engine
+            .to_rust_string(value)
+            .expect("the result converts to a string")
+    }
 
-        fn evaluate(engine: &mut Engine, source: &str) -> JsValue {
-            let realm = engine.current_realm();
-            JsEngine::evaluate_script(engine, source, &realm).expect("the script evaluates")
-        }
+    #[cfg(v8_backend)]
+    fn evaluate_to_bool(engine: &mut Engine, source: &str) -> bool {
+        let value = evaluate(engine, source);
+        TestTypes::value_as_bool(&value).expect("the result is a boolean")
+    }
 
-        fn evaluate_to_string(engine: &mut Engine, source: &str) -> String {
-            let value = evaluate(engine, source);
-            engine
-                .to_rust_string(value)
-                .expect("the result converts to a string")
-        }
+    fn clone_value(engine: &mut Engine, value: JsValue) -> Completion<JsValue, TestTypes> {
+        structured_clone(value, None, engine)
+    }
 
-        #[cfg(v8_backend)]
-        fn evaluate_to_bool(engine: &mut Engine, source: &str) -> bool {
-            let value = evaluate(engine, source);
-            TestTypes::value_as_bool(&value).expect("the result is a boolean")
-        }
+    fn as_object(value: &JsValue) -> JsObject {
+        TestTypes::value_as_object(value).expect("the value is an object")
+    }
 
-        fn clone_value(engine: &mut Engine, value: JsValue) -> Completion<JsValue, TestTypes> {
-            structured_clone(value, None, engine)
-        }
+    fn read_property(engine: &mut Engine, object: &JsObject, name: &str) -> JsValue {
+        EcmascriptHost::get(engine, object, name).expect("the property reads")
+    }
 
-        fn as_object(value: &JsValue) -> JsObject {
-            TestTypes::value_as_object(value).expect("the value is an object")
-        }
-
-        fn read_property(engine: &mut Engine, object: &JsObject, name: &str) -> JsValue {
-            EcmascriptHost::get(engine, object, name).expect("the property reads")
-        }
-
-        fn production_settings() -> EnvironmentSettingsObject {
-            let document = Rc::new(RefCell::new(BaseDocument::new(DocumentConfig::default())));
-            EnvironmentSettingsObject::new(
-                document,
-                Url::parse("about:blank").expect("the URL parses"),
-            )
+    fn production_settings() -> EnvironmentSettingsObject {
+        let document = Rc::new(RefCell::new(BaseDocument::new(DocumentConfig::default())));
+        EnvironmentSettingsObject::new(document, Url::parse("about:blank").expect("the URL parses"))
             .expect("the production realm builds")
-        }
+    }
 
-        fn register_dom_exception(engine: &mut Engine) {
-            register_interface_spec::<TestTypes, DOMException, _>(engine)
-                .expect("DOMException registers");
-        }
+    fn register_dom_exception(engine: &mut Engine) {
+        register_interface_spec::<TestTypes, DOMException, _>(engine)
+            .expect("DOMException registers");
+    }
 
-        fn register_event_target(engine: &mut Engine) {
-            register_interface_spec::<TestTypes, EventTarget, _>(engine)
-                .expect("EventTarget registers");
-        }
+    fn register_event_target(engine: &mut Engine) {
+        register_interface_spec::<TestTypes, EventTarget, _>(engine)
+            .expect("EventTarget registers");
+    }
 
-        fn review_depth() -> usize {
-            std::env::var("REVIEW_DEPTH")
-                .ok()
-                .and_then(|value| value.parse().ok())
-                .unwrap_or(450)
-        }
+    fn review_depth() -> usize {
+        std::env::var("REVIEW_DEPTH")
+            .ok()
+            .and_then(|value| value.parse().ok())
+            .unwrap_or(450)
+    }
 
-        fn deserialize_forged(engine: &mut Engine, record: SerializedRecord) -> bool {
-            let forged = SerializeWithTransferResult {
-                serialized: record,
-                transfer_data_holders: Vec::new(),
-            };
-            let realm = engine.value_undefined();
-            structured_deserialize_with_transfer(&forged, &realm, engine).is_ok()
-        }
+    fn deserialize_forged(engine: &mut Engine, record: SerializedRecord) -> bool {
+        let forged = SerializeWithTransferResult {
+            serialized: record,
+            transfer_data_holders: Vec::new(),
+        };
+        let realm = engine.value_undefined();
+        structured_deserialize_with_transfer(&forged, &realm, engine).is_ok()
+    }
 
-        fn forged_view_record(
-            constructor: &str,
-            byte_offset: u64,
-            byte_length: u64,
-        ) -> SerializedRecord {
-            SerializedRecord::ArrayBufferView {
-                constructor: constructor.to_owned(),
-                buffer_serialized: Box::new(SerializedRecord::ArrayBuffer {
-                    data: vec![0; 4],
-                    byte_length: 4,
-                    max_byte_length: None,
-                }),
-                byte_length,
-                byte_offset,
-                array_length: None,
-            }
+    fn forged_view_record(
+        constructor: &str,
+        byte_offset: u64,
+        byte_length: u64,
+    ) -> SerializedRecord {
+        SerializedRecord::ArrayBufferView {
+            constructor: constructor.to_owned(),
+            buffer_serialized: Box::new(SerializedRecord::ArrayBuffer {
+                data: vec![0; 4],
+                byte_length: 4,
+                max_byte_length: None,
+            }),
+            byte_length,
+            byte_offset,
+            array_length: None,
         }
+    }
 
-        #[cfg(v8_backend)]
-        fn listener_targets_collected(engine: &mut Engine) -> (bool, bool) {
-            evaluate(
-                engine,
-                "globalThis.weakPlain = (() => new WeakRef(new EventTarget()))();
+    #[cfg(v8_backend)]
+    fn listener_targets_collected(engine: &mut Engine) -> (bool, bool) {
+        evaluate(
+            engine,
+            "globalThis.weakPlain = (() => new WeakRef(new EventTarget()))();
                  globalThis.weakWithListener = (() => {
                      const target = new EventTarget();
                      target.addEventListener('x', () => target);
                      return new WeakRef(target);
                  })();",
-            );
-            engine
-                .perform_a_microtask_checkpoint()
-                .expect("the checkpoint runs");
-            engine.gc();
-            (
-                evaluate_to_bool(engine, "weakPlain.deref() === undefined"),
-                evaluate_to_bool(engine, "weakWithListener.deref() === undefined"),
-            )
-        }
+        );
+        engine
+            .perform_a_microtask_checkpoint()
+            .expect("the checkpoint runs");
+        engine.gc();
+        (
+            evaluate_to_bool(engine, "weakPlain.deref() === undefined"),
+            evaluate_to_bool(engine, "weakWithListener.deref() === undefined"),
+        )
+    }
 
-        #[cfg(v8_backend)]
-        #[test]
-        fn gc_control_fresh_event_target_survives_collection() {
-            let mut engine = setup();
-            register_event_target(&mut engine);
-            evaluate(&mut engine, "globalThis.keep = new EventTarget();");
-            engine.gc();
-        }
+    #[cfg(v8_backend)]
+    #[test]
+    fn gc_control_fresh_event_target_survives_collection() {
+        let mut engine = setup();
+        register_event_target(&mut engine);
+        evaluate(&mut engine, "globalThis.keep = new EventTarget();");
+        engine.gc();
+    }
 
-        #[cfg(v8_backend)]
-        #[test]
-        fn gc_survives_add_event_listener_through_binding() {
-            let mut engine = setup();
-            register_event_target(&mut engine);
-            evaluate(
-                &mut engine,
-                "globalThis.keep = new EventTarget(); keep.addEventListener('x', () => {});",
-            );
-            engine.gc();
-        }
+    #[cfg(v8_backend)]
+    #[test]
+    fn gc_survives_add_event_listener_through_binding() {
+        let mut engine = setup();
+        register_event_target(&mut engine);
+        evaluate(
+            &mut engine,
+            "globalThis.keep = new EventTarget(); keep.addEventListener('x', () => {});",
+        );
+        engine.gc();
+    }
 
-        #[cfg(v8_backend)]
-        #[test]
-        fn event_target_with_self_referencing_listener_is_collected() {
-            env_logger::builder().is_test(true).try_init().ok();
-            let mut engine = setup();
-            register_event_target(&mut engine);
-            let (plain, with_listener) = listener_targets_collected(&mut engine);
-            println!("collected: plain={plain}, with self-referencing listener={with_listener}");
-            assert!(plain, "an EventTarget without listeners is collected");
-            assert!(
-                with_listener,
-                "an EventTarget whose listener references it is collected"
-            );
-        }
+    #[cfg(v8_backend)]
+    #[test]
+    fn event_target_with_self_referencing_listener_is_collected() {
+        env_logger::builder().is_test(true).try_init().ok();
+        let mut engine = setup();
+        register_event_target(&mut engine);
+        let (plain, with_listener) = listener_targets_collected(&mut engine);
+        println!("collected: plain={plain}, with self-referencing listener={with_listener}");
+        assert!(plain, "an EventTarget without listeners is collected");
+        assert!(
+            with_listener,
+            "an EventTarget whose listener references it is collected"
+        );
+    }
 
-        #[cfg(v8_backend)]
-        #[test]
-        fn production_realm_listener_cycle_is_collected() {
-            let mut settings = production_settings();
-            let (plain, with_listener) =
-                listener_targets_collected(&mut settings.realm_execution_context);
-            println!("collected: plain={plain}, with self-referencing listener={with_listener}");
-            assert!(plain, "an EventTarget without listeners is collected");
-            assert!(
-                with_listener,
-                "an EventTarget whose listener references it is collected"
-            );
-        }
+    #[cfg(v8_backend)]
+    #[test]
+    fn production_realm_listener_cycle_is_collected() {
+        let mut settings = production_settings();
+        let (plain, with_listener) =
+            listener_targets_collected(&mut settings.realm_execution_context);
+        println!("collected: plain={plain}, with self-referencing listener={with_listener}");
+        assert!(plain, "an EventTarget without listeners is collected");
+        assert!(
+            with_listener,
+            "an EventTarget whose listener references it is collected"
+        );
+    }
 
-        #[cfg(v8_backend)]
-        #[test]
-        #[ignore = "S2: a clone taken through borrow() is not rooted; reading it after the cell is cleared and a collection runs segfaults"]
-        fn edge_clone_taken_with_borrow_survives_collection_after_the_cell_is_cleared() {
-            let mut engine = setup();
-            let object = engine.create_plain_object(None);
-            let key = engine.property_key_from_str("marker");
-            let marker = engine.value_from_number(77.0);
-            engine
-                .set(object.clone(), key, marker, false)
-                .expect("the marker is set");
-            let cell = gc_cell_new(Some(object), &mut engine);
-            let clone = cell
-                .borrow(&engine)
-                .clone()
-                .expect("the cell holds the object");
-            cell.set(None, &mut engine);
-            engine.gc();
-            let value = EcmascriptHost::get(&mut engine, &clone, "marker")
-                .expect("the clone still reads after the cell was cleared");
-            assert_eq!(TestTypes::value_as_number(&value), Some(77.0));
-        }
+    #[cfg(v8_backend)]
+    #[test]
+    #[ignore = "S2: a clone taken through borrow() is not rooted; reading it after the cell is cleared and a collection runs segfaults"]
+    fn edge_clone_taken_with_borrow_survives_collection_after_the_cell_is_cleared() {
+        let mut engine = setup();
+        let object = engine.create_plain_object(None);
+        let key = engine.property_key_from_str("marker");
+        let marker = engine.value_from_number(77.0);
+        engine
+            .set(object.clone(), key, marker, false)
+            .expect("the marker is set");
+        let cell = gc_cell_new(Some(object), &mut engine);
+        let clone = cell
+            .borrow(&engine)
+            .clone()
+            .expect("the cell holds the object");
+        cell.set(None, &mut engine);
+        engine.gc();
+        let value = EcmascriptHost::get(&mut engine, &clone, "marker")
+            .expect("the clone still reads after the cell was cleared");
+        assert_eq!(TestTypes::value_as_number(&value), Some(77.0));
+    }
 
-        #[cfg(v8_backend)]
-        #[test]
-        fn stream_chunk_survives_collection_during_pull() {
-            let mut settings = production_settings();
-            settings
+    #[cfg(v8_backend)]
+    #[test]
+    fn stream_chunk_survives_collection_during_pull() {
+        let mut settings = production_settings();
+        settings
                 .evaluate_script(
                     "globalThis.outcome = 'pending';
                      const forceCollection = typeof gc === 'function'
@@ -996,374 +980,372 @@ mod tests {
                      })().catch(error => { globalThis.outcome = 'rejected: ' + error; });",
                 )
                 .expect("the script runs");
-            let outcome =
-                evaluate_to_string(&mut settings.realm_execution_context, "String(outcome)");
-            println!("read() outcome: {outcome}");
-            assert_eq!(outcome, "chunk");
-        }
+        let outcome = evaluate_to_string(&mut settings.realm_execution_context, "String(outcome)");
+        println!("read() outcome: {outcome}");
+        assert_eq!(outcome, "chunk");
+    }
 
-        #[test]
-        fn structured_clone_of_deeply_nested_object_returns_error_not_abort() {
-            let depth = review_depth();
-            let mut engine = setup();
-            register_dom_exception(&mut engine);
-            let source = format!(
-                "(() => {{ let value = {{}}; for (let index = 0; index < {depth}; index++) value = {{ value }}; return value; }})()"
-            );
-            let input = evaluate(&mut engine, &source);
-            let started = Instant::now();
-            match clone_value(&mut engine, input) {
-                Ok(_) => println!(
-                    "structuredClone(depth {depth}) succeeded in {:?}",
-                    started.elapsed()
-                ),
-                Err(error) => {
-                    let message = engine
-                        .to_rust_string(error)
-                        .expect("the error converts to a string");
-                    println!(
-                        "structuredClone(depth {depth}) failed in {:?}: {message}",
-                        started.elapsed()
-                    );
-                }
-            }
-        }
-
-        #[test]
-        fn structured_deserialize_of_forged_deep_record_returns_error_not_abort() {
-            let depth = review_depth();
-            let mut record = SerializedRecord::Object(Vec::new());
-            for _ in 0..depth {
-                record = SerializedRecord::Object(vec![(vec![u16::from(b'v')], record)]);
-            }
-            let mut engine = setup();
-            register_dom_exception(&mut engine);
-            let started = Instant::now();
-            let accepted = deserialize_forged(&mut engine, record);
-            println!(
-                "deserializing a forged record of depth {depth} returned after {:?}: ok={accepted}",
+    #[test]
+    fn structured_clone_of_deeply_nested_object_returns_error_not_abort() {
+        let depth = review_depth();
+        let mut engine = setup();
+        register_dom_exception(&mut engine);
+        let source = format!(
+            "(() => {{ let value = {{}}; for (let index = 0; index < {depth}; index++) value = {{ value }}; return value; }})()"
+        );
+        let input = evaluate(&mut engine, &source);
+        let started = Instant::now();
+        match clone_value(&mut engine, input) {
+            Ok(_) => println!(
+                "structuredClone(depth {depth}) succeeded in {:?}",
                 started.elapsed()
-            );
+            ),
+            Err(error) => {
+                let message = engine
+                    .to_rust_string(error)
+                    .expect("the error converts to a string");
+                println!(
+                    "structuredClone(depth {depth}) failed in {:?}: {message}",
+                    started.elapsed()
+                );
+            }
         }
+    }
 
-        #[test]
-        fn forged_typed_array_extent_beyond_buffer_returns_error() {
-            let mut engine = setup();
-            register_dom_exception(&mut engine);
-            let record = forged_view_record("Uint8Array", 0, 1_000_000);
-            assert!(!deserialize_forged(&mut engine, record));
+    #[test]
+    fn structured_deserialize_of_forged_deep_record_returns_error_not_abort() {
+        let depth = review_depth();
+        let mut record = SerializedRecord::Object(Vec::new());
+        for _ in 0..depth {
+            record = SerializedRecord::Object(vec![(vec![u16::from(b'v')], record)]);
         }
+        let mut engine = setup();
+        register_dom_exception(&mut engine);
+        let started = Instant::now();
+        let accepted = deserialize_forged(&mut engine, record);
+        println!(
+            "deserializing a forged record of depth {depth} returned after {:?}: ok={accepted}",
+            started.elapsed()
+        );
+    }
 
-        #[test]
-        fn forged_typed_array_offset_beyond_buffer_returns_error() {
-            let mut engine = setup();
-            register_dom_exception(&mut engine);
-            let record = forged_view_record("Uint8Array", 1_000_000, 1);
-            assert!(!deserialize_forged(&mut engine, record));
-        }
+    #[test]
+    fn forged_typed_array_extent_beyond_buffer_returns_error() {
+        let mut engine = setup();
+        register_dom_exception(&mut engine);
+        let record = forged_view_record("Uint8Array", 0, 1_000_000);
+        assert!(!deserialize_forged(&mut engine, record));
+    }
 
-        #[test]
-        fn forged_misaligned_float64_offset_returns_error() {
-            let mut engine = setup();
-            register_dom_exception(&mut engine);
-            let record = forged_view_record("Float64Array", 3, 8);
-            assert!(!deserialize_forged(&mut engine, record));
-        }
+    #[test]
+    fn forged_typed_array_offset_beyond_buffer_returns_error() {
+        let mut engine = setup();
+        register_dom_exception(&mut engine);
+        let record = forged_view_record("Uint8Array", 1_000_000, 1);
+        assert!(!deserialize_forged(&mut engine, record));
+    }
 
-        #[test]
-        fn forged_data_view_extent_beyond_buffer_returns_error() {
-            let mut engine = setup();
-            register_dom_exception(&mut engine);
-            let record = forged_view_record("DataView", 0, 1_000_000);
-            assert!(!deserialize_forged(&mut engine, record));
-        }
+    #[test]
+    fn forged_misaligned_float64_offset_returns_error() {
+        let mut engine = setup();
+        register_dom_exception(&mut engine);
+        let record = forged_view_record("Float64Array", 3, 8);
+        assert!(!deserialize_forged(&mut engine, record));
+    }
 
-        #[test]
-        fn structured_clone_of_view_with_shadowed_extent_clones_the_real_extent() {
-            let mut engine = setup();
-            register_dom_exception(&mut engine);
-            let input = evaluate(
-                &mut engine,
-                "(() => {
+    #[test]
+    fn forged_data_view_extent_beyond_buffer_returns_error() {
+        let mut engine = setup();
+        register_dom_exception(&mut engine);
+        let record = forged_view_record("DataView", 0, 1_000_000);
+        assert!(!deserialize_forged(&mut engine, record));
+    }
+
+    #[test]
+    fn structured_clone_of_view_with_shadowed_extent_clones_the_real_extent() {
+        let mut engine = setup();
+        register_dom_exception(&mut engine);
+        let input = evaluate(
+            &mut engine,
+            "(() => {
                      const view = new Uint8Array(new ArrayBuffer(4), 1, 2);
                      Object.defineProperty(view, 'byteLength', { value: 1000000 });
                      return view;
                  })()",
-            );
-            let cloned = clone_value(&mut engine, input).expect("the clone succeeds");
-            let view =
-                TestTypes::object_as_typed_array(&as_object(&cloned)).expect("a typed array");
-            assert_eq!(
-                engine
-                    .typed_array_byte_length(&view)
-                    .expect("the length reads"),
-                2
-            );
-        }
+        );
+        let cloned = clone_value(&mut engine, input).expect("the clone succeeds");
+        let view = TestTypes::object_as_typed_array(&as_object(&cloned)).expect("a typed array");
+        assert_eq!(
+            engine
+                .typed_array_byte_length(&view)
+                .expect("the length reads"),
+            2
+        );
+    }
 
-        #[cfg(v8_backend)]
-        #[test]
-        fn page_script_cannot_see_gc() {
-            let mut settings = production_settings();
-            assert_eq!(
-                evaluate_to_string(&mut settings.realm_execution_context, "typeof gc"),
-                "undefined"
-            );
-        }
+    #[cfg(v8_backend)]
+    #[test]
+    fn page_script_cannot_see_gc() {
+        let mut settings = production_settings();
+        assert_eq!(
+            evaluate_to_string(&mut settings.realm_execution_context, "typeof gc"),
+            "undefined"
+        );
+    }
 
-        #[cfg(v8_backend)]
-        #[test]
-        fn to_length_ignores_patched_math_trunc() {
-            let mut engine = setup();
-            evaluate(&mut engine, "Math.trunc = () => 7;");
-            let thousand = engine.value_from_number(1000.0);
-            assert_eq!(engine.to_length(thousand).expect("ToLength succeeds"), 1000);
-        }
+    #[cfg(v8_backend)]
+    #[test]
+    fn to_length_ignores_patched_math_trunc() {
+        let mut engine = setup();
+        evaluate(&mut engine, "Math.trunc = () => 7;");
+        let thousand = engine.value_from_number(1000.0);
+        assert_eq!(engine.to_length(thousand).expect("ToLength succeeds"), 1000);
+    }
 
-        #[cfg(v8_backend)]
-        #[test]
-        fn map_entries_ignore_patched_array_from() {
-            let mut engine = setup();
-            let map = evaluate(&mut engine, "new Map([[1, 2], [3, 4]])");
-            evaluate(&mut engine, "Array.from = () => [];");
-            let entries = TestTypes::object_as_map(&as_object(&map)).expect("a Map");
-            assert_eq!(
-                engine
-                    .map_get_entries(&entries)
-                    .expect("the entries read")
-                    .len(),
-                2
-            );
-        }
+    #[cfg(v8_backend)]
+    #[test]
+    fn map_entries_ignore_patched_array_from() {
+        let mut engine = setup();
+        let map = evaluate(&mut engine, "new Map([[1, 2], [3, 4]])");
+        evaluate(&mut engine, "Array.from = () => [];");
+        let entries = TestTypes::object_as_map(&as_object(&map)).expect("a Map");
+        assert_eq!(
+            engine
+                .map_get_entries(&entries)
+                .expect("the entries read")
+                .len(),
+            2
+        );
+    }
 
-        #[cfg(v8_backend)]
-        #[test]
-        fn to_int16_ignores_replaced_typed_array_constructor() {
-            let mut engine = setup();
-            evaluate(
-                &mut engine,
-                "globalThis.Int16Array = function () { return [12345]; };",
-            );
-            let five = engine.value_from_number(5.0);
-            assert_eq!(engine.to_int16(five).expect("ToInt16 succeeds"), 5);
-        }
+    #[cfg(v8_backend)]
+    #[test]
+    fn to_int16_ignores_replaced_typed_array_constructor() {
+        let mut engine = setup();
+        evaluate(
+            &mut engine,
+            "globalThis.Int16Array = function () { return [12345]; };",
+        );
+        let five = engine.value_from_number(5.0);
+        assert_eq!(engine.to_int16(five).expect("ToInt16 succeeds"), 5);
+    }
 
-        #[cfg(v8_backend)]
-        #[test]
-        fn promise_resolve_ignores_patched_promise_resolve() {
-            let mut engine = setup();
-            let realm = engine.current_realm();
-            let constructor = engine.realm_intrinsics(&realm).promise;
-            evaluate(
-                &mut engine,
-                "Promise.resolve = () => { throw new Error('patched'); };",
-            );
-            let value = engine.value_from_number(1.0);
-            assert!(engine.promise_resolve(constructor, value).is_ok());
-        }
+    #[cfg(v8_backend)]
+    #[test]
+    fn promise_resolve_ignores_patched_promise_resolve() {
+        let mut engine = setup();
+        let realm = engine.current_realm();
+        let constructor = engine.realm_intrinsics(&realm).promise;
+        evaluate(
+            &mut engine,
+            "Promise.resolve = () => { throw new Error('patched'); };",
+        );
+        let value = engine.value_from_number(1.0);
+        assert!(engine.promise_resolve(constructor, value).is_ok());
+    }
 
-        #[test]
-        fn typed_array_metadata_ignores_shadowing_properties() {
-            let mut engine = setup();
-            let value = evaluate(
-                &mut engine,
-                "(() => {
+    #[test]
+    fn typed_array_metadata_ignores_shadowing_properties() {
+        let mut engine = setup();
+        let value = evaluate(
+            &mut engine,
+            "(() => {
                      const view = new Uint8Array(new ArrayBuffer(4), 1, 2);
                      Object.defineProperty(view, 'byteOffset', { value: 0 });
                      Object.defineProperty(view, 'byteLength', { value: 1 });
                      return view;
                  })()",
-            );
-            let view = TestTypes::object_as_typed_array(&as_object(&value)).expect("a typed array");
-            assert_eq!(
-                engine
-                    .typed_array_byte_offset(&view)
-                    .expect("the offset reads"),
-                1
-            );
-            assert_eq!(
-                engine
-                    .typed_array_byte_length(&view)
-                    .expect("the length reads"),
-                2
-            );
-        }
+        );
+        let view = TestTypes::object_as_typed_array(&as_object(&value)).expect("a typed array");
+        assert_eq!(
+            engine
+                .typed_array_byte_offset(&view)
+                .expect("the offset reads"),
+            1
+        );
+        assert_eq!(
+            engine
+                .typed_array_byte_length(&view)
+                .expect("the length reads"),
+            2
+        );
+    }
 
-        #[cfg(v8_backend)]
-        #[test]
-        fn returning_a_number_object_does_not_call_value_of() {
-            let mut engine = setup();
-            evaluate(&mut engine, "globalThis.calls = 0;");
-            evaluate(
-                &mut engine,
-                "(() => { const wrapper = new Number(5); wrapper.valueOf = () => { calls++; return 7; }; return wrapper; })()",
-            );
-            assert_eq!(evaluate_to_string(&mut engine, "String(calls)"), "0");
-        }
+    #[cfg(v8_backend)]
+    #[test]
+    fn returning_a_number_object_does_not_call_value_of() {
+        let mut engine = setup();
+        evaluate(&mut engine, "globalThis.calls = 0;");
+        evaluate(
+            &mut engine,
+            "(() => { const wrapper = new Number(5); wrapper.valueOf = () => { calls++; return 7; }; return wrapper; })()",
+        );
+        assert_eq!(evaluate_to_string(&mut engine, "String(calls)"), "0");
+    }
 
-        #[cfg(v8_backend)]
-        #[test]
-        fn returning_a_callable_proxy_does_not_run_its_traps() {
-            let mut engine = setup();
-            evaluate(&mut engine, "globalThis.trapCalls = 0;");
-            evaluate(
-                &mut engine,
-                "new Proxy(function () {}, { getOwnPropertyDescriptor(target, key) { trapCalls++; return Reflect.getOwnPropertyDescriptor(target, key); } })",
-            );
-            assert_eq!(evaluate_to_string(&mut engine, "String(trapCalls)"), "0");
-        }
+    #[cfg(v8_backend)]
+    #[test]
+    fn returning_a_callable_proxy_does_not_run_its_traps() {
+        let mut engine = setup();
+        evaluate(&mut engine, "globalThis.trapCalls = 0;");
+        evaluate(
+            &mut engine,
+            "new Proxy(function () {}, { getOwnPropertyDescriptor(target, key) { trapCalls++; return Reflect.getOwnPropertyDescriptor(target, key); } })",
+        );
+        assert_eq!(evaluate_to_string(&mut engine, "String(trapCalls)"), "0");
+    }
 
-        #[test]
-        fn structured_clone_uses_number_data_not_value_of() {
-            let mut engine = setup();
-            let input = evaluate(
-                &mut engine,
-                "(() => { const wrapper = new Number(5); wrapper.valueOf = () => 7; return wrapper; })()",
-            );
-            let cloned = clone_value(&mut engine, input).expect("the clone succeeds");
-            assert_eq!(engine.to_number(cloned).expect("ToNumber succeeds"), 5.0);
-        }
+    #[test]
+    fn structured_clone_uses_number_data_not_value_of() {
+        let mut engine = setup();
+        let input = evaluate(
+            &mut engine,
+            "(() => { const wrapper = new Number(5); wrapper.valueOf = () => 7; return wrapper; })()",
+        );
+        let cloned = clone_value(&mut engine, input).expect("the clone succeeds");
+        assert_eq!(engine.to_number(cloned).expect("ToNumber succeeds"), 5.0);
+    }
 
-        #[test]
-        fn structured_clone_round_trips_an_array() {
-            let mut engine = setup();
-            let input = evaluate(&mut engine, "[1, 'two', null]");
-            let cloned = as_object(&clone_value(&mut engine, input).expect("the clone succeeds"));
-            let first = read_property(&mut engine, &cloned, "0");
-            assert_eq!(engine.to_number(first).expect("ToNumber succeeds"), 1.0);
-            let second = read_property(&mut engine, &cloned, "1");
-            assert_eq!(
-                engine.to_rust_string(second).expect("ToString succeeds"),
-                "two"
-            );
-            let third = read_property(&mut engine, &cloned, "2");
-            assert!(TestTypes::value_is_null(&third));
-        }
+    #[test]
+    fn structured_clone_round_trips_an_array() {
+        let mut engine = setup();
+        let input = evaluate(&mut engine, "[1, 'two', null]");
+        let cloned = as_object(&clone_value(&mut engine, input).expect("the clone succeeds"));
+        let first = read_property(&mut engine, &cloned, "0");
+        assert_eq!(engine.to_number(first).expect("ToNumber succeeds"), 1.0);
+        let second = read_property(&mut engine, &cloned, "1");
+        assert_eq!(
+            engine.to_rust_string(second).expect("ToString succeeds"),
+            "two"
+        );
+        let third = read_property(&mut engine, &cloned, "2");
+        assert!(TestTypes::value_is_null(&third));
+    }
 
-        #[test]
-        fn structured_clone_round_trips_a_cyclic_array() {
-            let mut engine = setup();
-            let input = evaluate(
-                &mut engine,
-                "(() => { const array = []; array[0] = array; return array; })()",
-            );
-            let cloned = as_object(&clone_value(&mut engine, input).expect("the clone succeeds"));
-            let element = read_property(&mut engine, &cloned, "0");
-            assert!(engine.same_value(&TestTypes::value_from_object(cloned), &element));
-        }
+    #[test]
+    fn structured_clone_round_trips_a_cyclic_array() {
+        let mut engine = setup();
+        let input = evaluate(
+            &mut engine,
+            "(() => { const array = []; array[0] = array; return array; })()",
+        );
+        let cloned = as_object(&clone_value(&mut engine, input).expect("the clone succeeds"));
+        let element = read_property(&mut engine, &cloned, "0");
+        assert!(engine.same_value(&TestTypes::value_from_object(cloned), &element));
+    }
 
-        #[test]
-        fn structured_clone_defines_proto_key_as_own_property() {
-            let mut engine = setup();
-            let input = evaluate(
-                &mut engine,
-                r#"JSON.parse('{"__proto__":{"polluted":true}}')"#,
-            );
-            let cloned = clone_value(&mut engine, input).expect("the clone succeeds");
-            let object = as_object(&cloned);
-            let key = engine.property_key_from_str("__proto__");
-            let own = engine
-                .has_own_property(object.clone(), key)
-                .expect("the own-property check succeeds");
-            let inherited = read_property(&mut engine, &object, "polluted");
-            println!(
-                "own __proto__: {own}, inherited polluted: {:?}",
-                TestTypes::value_as_bool(&inherited)
-            );
-            assert!(own, "__proto__ is an own data property of the clone");
-            assert!(
-                TestTypes::value_is_undefined(&inherited),
-                "the clone inherits nothing from the serialized __proto__"
-            );
-        }
+    #[test]
+    fn structured_clone_defines_proto_key_as_own_property() {
+        let mut engine = setup();
+        let input = evaluate(
+            &mut engine,
+            r#"JSON.parse('{"__proto__":{"polluted":true}}')"#,
+        );
+        let cloned = clone_value(&mut engine, input).expect("the clone succeeds");
+        let object = as_object(&cloned);
+        let key = engine.property_key_from_str("__proto__");
+        let own = engine
+            .has_own_property(object.clone(), key)
+            .expect("the own-property check succeeds");
+        let inherited = read_property(&mut engine, &object, "polluted");
+        println!(
+            "own __proto__: {own}, inherited polluted: {:?}",
+            TestTypes::value_as_bool(&inherited)
+        );
+        assert!(own, "__proto__ is an own data property of the clone");
+        assert!(
+            TestTypes::value_is_undefined(&inherited),
+            "the clone inherits nothing from the serialized __proto__"
+        );
+    }
 
-        #[test]
-        fn structured_clone_preserves_lone_surrogates() {
-            let mut engine = setup();
-            let input = evaluate(&mut engine, r"'\uD800'");
-            let cloned = clone_value(&mut engine, input.clone()).expect("the clone succeeds");
-            assert!(engine.same_value(&input, &cloned));
-        }
+    #[test]
+    fn structured_clone_preserves_lone_surrogates() {
+        let mut engine = setup();
+        let input = evaluate(&mut engine, r"'\uD800'");
+        let cloned = clone_value(&mut engine, input.clone()).expect("the clone succeeds");
+        assert!(engine.same_value(&input, &cloned));
+    }
 
-        #[test]
-        fn structured_clone_preserves_shared_array_buffer_identity() {
-            let mut engine = setup();
-            let input = evaluate(
-                &mut engine,
-                "(() => { const buffer = new ArrayBuffer(4); return { first: buffer, second: buffer }; })()",
-            );
-            let cloned = as_object(&clone_value(&mut engine, input).expect("the clone succeeds"));
-            let first = read_property(&mut engine, &cloned, "first");
-            let second = read_property(&mut engine, &cloned, "second");
-            assert!(engine.same_value(&first, &second));
-        }
+    #[test]
+    fn structured_clone_preserves_shared_array_buffer_identity() {
+        let mut engine = setup();
+        let input = evaluate(
+            &mut engine,
+            "(() => { const buffer = new ArrayBuffer(4); return { first: buffer, second: buffer }; })()",
+        );
+        let cloned = as_object(&clone_value(&mut engine, input).expect("the clone succeeds"));
+        let first = read_property(&mut engine, &cloned, "first");
+        let second = read_property(&mut engine, &cloned, "second");
+        assert!(engine.same_value(&first, &second));
+    }
 
-        #[test]
-        fn structured_clone_keeps_views_of_one_buffer_sharing_it() {
-            let mut engine = setup();
-            let input = evaluate(
-                &mut engine,
-                "(() => { const buffer = new ArrayBuffer(4); return { low: new Uint8Array(buffer, 0, 2), high: new Uint8Array(buffer, 2, 2) }; })()",
-            );
-            let cloned = as_object(&clone_value(&mut engine, input).expect("the clone succeeds"));
-            let low = as_object(&read_property(&mut engine, &cloned, "low"));
-            let high = as_object(&read_property(&mut engine, &cloned, "high"));
-            let low_buffer = read_property(&mut engine, &low, "buffer");
-            let high_buffer = read_property(&mut engine, &high, "buffer");
-            assert!(engine.same_value(&low_buffer, &high_buffer));
-        }
+    #[test]
+    fn structured_clone_keeps_views_of_one_buffer_sharing_it() {
+        let mut engine = setup();
+        let input = evaluate(
+            &mut engine,
+            "(() => { const buffer = new ArrayBuffer(4); return { low: new Uint8Array(buffer, 0, 2), high: new Uint8Array(buffer, 2, 2) }; })()",
+        );
+        let cloned = as_object(&clone_value(&mut engine, input).expect("the clone succeeds"));
+        let low = as_object(&read_property(&mut engine, &cloned, "low"));
+        let high = as_object(&read_property(&mut engine, &cloned, "high"));
+        let low_buffer = read_property(&mut engine, &low, "buffer");
+        let high_buffer = read_property(&mut engine, &high, "buffer");
+        assert!(engine.same_value(&low_buffer, &high_buffer));
+    }
 
-        #[test]
-        fn structured_clone_skips_symbol_keyed_properties() {
-            let mut engine = setup();
-            register_dom_exception(&mut engine);
-            let input = evaluate(&mut engine, "({ [Symbol('hidden')]: 7, visible: 1 })");
-            let cloned = as_object(
-                &clone_value(&mut engine, input)
-                    .expect("symbol-keyed properties are skipped, not rejected"),
-            );
-            let key = engine.property_key_from_str("Symbol");
-            assert!(
-                !engine
-                    .has_own_property(cloned, key)
-                    .expect("the own-property check succeeds")
-            );
-        }
+    #[test]
+    fn structured_clone_skips_symbol_keyed_properties() {
+        let mut engine = setup();
+        register_dom_exception(&mut engine);
+        let input = evaluate(&mut engine, "({ [Symbol('hidden')]: 7, visible: 1 })");
+        let cloned = as_object(
+            &clone_value(&mut engine, input)
+                .expect("symbol-keyed properties are skipped, not rejected"),
+        );
+        let key = engine.property_key_from_str("Symbol");
+        assert!(
+            !engine
+                .has_own_property(cloned, key)
+                .expect("the own-property check succeeds")
+        );
+    }
 
-        #[test]
-        fn structured_clone_accepts_string_key_that_looks_like_a_symbol() {
-            let mut engine = setup();
-            register_dom_exception(&mut engine);
-            let input = evaluate(&mut engine, "({ 'Symbol(example)': 1 })");
-            assert!(clone_value(&mut engine, input).is_ok());
-        }
+    #[test]
+    fn structured_clone_accepts_string_key_that_looks_like_a_symbol() {
+        let mut engine = setup();
+        register_dom_exception(&mut engine);
+        let input = evaluate(&mut engine, "({ 'Symbol(example)': 1 })");
+        assert!(clone_value(&mut engine, input).is_ok());
+    }
 
-        #[cfg(v8_backend)]
-        #[test]
-        fn object_identity_holds_between_a_root_handle_and_an_edge_clone() {
-            let mut engine = setup();
-            let object = object_with_marker(&mut engine, 1.0);
-            let cell = gc_cell_new(Some(object.clone()), &mut engine);
-            let from_cell = cell
-                .borrow(&engine)
-                .clone()
-                .expect("the cell holds the object");
-            assert!(
-                engine.same_value(
-                    &TestTypes::value_from_object(object),
-                    &TestTypes::value_from_object(from_cell),
-                ),
-                "a rooted handle and an edge clone of the same object are equal"
-            );
-        }
+    #[cfg(v8_backend)]
+    #[test]
+    fn object_identity_holds_between_a_root_handle_and_an_edge_clone() {
+        let mut engine = setup();
+        let object = object_with_marker(&mut engine, 1.0);
+        let cell = gc_cell_new(Some(object.clone()), &mut engine);
+        let from_cell = cell
+            .borrow(&engine)
+            .clone()
+            .expect("the cell holds the object");
+        assert!(
+            engine.same_value(
+                &TestTypes::value_from_object(object),
+                &TestTypes::value_from_object(from_cell),
+            ),
+            "a rooted handle and an edge clone of the same object are equal"
+        );
+    }
 
-        #[cfg(v8_backend)]
-        #[test]
-        fn readable_stream_construction_ignores_patched_promise_resolve() {
-            let mut settings = production_settings();
-            let outcome = evaluate_to_string(
-                &mut settings.realm_execution_context,
-                "(() => {
+    #[cfg(v8_backend)]
+    #[test]
+    fn readable_stream_construction_ignores_patched_promise_resolve() {
+        let mut settings = production_settings();
+        let outcome = evaluate_to_string(
+            &mut settings.realm_execution_context,
+            "(() => {
                      Promise.resolve = () => { throw new Error('patched'); };
                      try {
                          new ReadableStream({ start(controller) { controller.enqueue(1); } });
@@ -1372,148 +1354,147 @@ mod tests {
                          return 'threw: ' + error.message;
                      }
                  })()",
-            );
-            println!("ReadableStream construction outcome: {outcome}");
-            assert_eq!(outcome, "constructed");
-        }
+        );
+        println!("ReadableStream construction outcome: {outcome}");
+        assert_eq!(outcome, "constructed");
+    }
 
-        #[test]
-        fn structured_clone_rejects_unserializable_values() {
-            let mut engine = setup();
-            register_dom_exception(&mut engine);
-            register_event_target(&mut engine);
-            let mut accepted = Vec::new();
-            for source in [
-                "new Proxy({ a: 1 }, {})",
-                "Promise.resolve(1)",
-                "new WeakMap()",
-                "new EventTarget()",
-            ] {
-                let input = evaluate(&mut engine, source);
-                if clone_value(&mut engine, input).is_ok() {
-                    accepted.push(source);
-                }
-            }
-            assert!(
-                accepted.is_empty(),
-                "cloned instead of throwing DataCloneError: {accepted:?}"
-            );
-        }
-
-        #[test]
-        fn structured_clone_of_shared_array_buffer_shares_or_throws() {
-            let mut engine = setup();
-            register_dom_exception(&mut engine);
-            let input = evaluate(&mut engine, "new SharedArrayBuffer(4)");
-            if let Ok(cloned) = clone_value(&mut engine, input) {
-                let length = read_property(&mut engine, &as_object(&cloned), "byteLength");
-                assert_eq!(TestTypes::value_as_number(&length), Some(4.0));
+    #[test]
+    fn structured_clone_rejects_unserializable_values() {
+        let mut engine = setup();
+        register_dom_exception(&mut engine);
+        register_event_target(&mut engine);
+        let mut accepted = Vec::new();
+        for source in [
+            "new Proxy({ a: 1 }, {})",
+            "Promise.resolve(1)",
+            "new WeakMap()",
+            "new EventTarget()",
+        ] {
+            let input = evaluate(&mut engine, source);
+            if clone_value(&mut engine, input).is_ok() {
+                accepted.push(source);
             }
         }
+        assert!(
+            accepted.is_empty(),
+            "cloned instead of throwing DataCloneError: {accepted:?}"
+        );
+    }
 
-        #[test]
-        #[cfg_attr(
-            boa_backend,
-            ignore = "C6: Boa's public API does not expose a Proxy's target"
-        )]
-        fn is_array_sees_through_proxy() {
-            let mut engine = setup();
-            let value = evaluate(&mut engine, "new Proxy([], {})");
-            assert!(engine.is_array(&value).expect("IsArray succeeds"));
+    #[test]
+    fn structured_clone_of_shared_array_buffer_shares_or_throws() {
+        let mut engine = setup();
+        register_dom_exception(&mut engine);
+        let input = evaluate(&mut engine, "new SharedArrayBuffer(4)");
+        if let Ok(cloned) = clone_value(&mut engine, input) {
+            let length = read_property(&mut engine, &as_object(&cloned), "byteLength");
+            assert_eq!(TestTypes::value_as_number(&length), Some(4.0));
         }
+    }
 
-        #[test]
-        fn to_index_of_nan_is_zero() {
-            let mut engine = setup();
-            let nan = engine.value_from_number(f64::NAN);
-            assert_eq!(engine.to_index(nan).expect("ToIndex(NaN) is 0"), 0);
-        }
+    #[test]
+    #[cfg_attr(
+        boa_backend,
+        ignore = "C6: Boa's public API does not expose a Proxy's target"
+    )]
+    fn is_array_sees_through_proxy() {
+        let mut engine = setup();
+        let value = evaluate(&mut engine, "new Proxy([], {})");
+        assert!(engine.is_array(&value).expect("IsArray succeeds"));
+    }
 
-        #[test]
-        fn to_bigint_rejects_numbers() {
-            let mut engine = setup();
-            let one = engine.value_from_number(1.0);
-            assert!(engine.to_bigint(one).is_err());
-        }
+    #[test]
+    fn to_index_of_nan_is_zero() {
+        let mut engine = setup();
+        let nan = engine.value_from_number(f64::NAN);
+        assert_eq!(engine.to_index(nan).expect("ToIndex(NaN) is 0"), 0);
+    }
 
-        #[test]
-        fn to_length_rejects_bigint() {
-            let mut engine = setup();
-            let bigint = evaluate(&mut engine, "1n");
-            assert!(engine.to_length(bigint).is_err());
-        }
+    #[test]
+    fn to_bigint_rejects_numbers() {
+        let mut engine = setup();
+        let one = engine.value_from_number(1.0);
+        assert!(engine.to_bigint(one).is_err());
+    }
 
-        #[test]
-        fn to_numeric_of_object_returning_bigint_is_the_bigint() {
-            let mut engine = setup();
-            let value = evaluate(&mut engine, "({ [Symbol.toPrimitive]() { return 1n; } })");
-            assert!(matches!(engine.to_numeric(value), Ok(Numeric::BigInt(_))));
-        }
+    #[test]
+    fn to_length_rejects_bigint() {
+        let mut engine = setup();
+        let bigint = evaluate(&mut engine, "1n");
+        assert!(engine.to_length(bigint).is_err());
+    }
 
-        #[test]
-        fn set_value_in_buffer_writes_a_whole_uint16() {
-            use js_engine::{SharedMemoryOrder, TypedArrayElementType};
+    #[test]
+    fn to_numeric_of_object_returning_bigint_is_the_bigint() {
+        let mut engine = setup();
+        let value = evaluate(&mut engine, "({ [Symbol.toPrimitive]() { return 1n; } })");
+        assert!(matches!(engine.to_numeric(value), Ok(Numeric::BigInt(_))));
+    }
 
-            let mut engine = setup();
-            let realm = engine.current_realm();
-            let constructor = engine.realm_intrinsics(&realm).array_buffer;
-            let buffer = JsEngine::allocate_array_buffer(&mut engine, constructor, 4, None)
-                .expect("the buffer allocates");
-            let value = engine.value_from_number(513.0);
+    #[test]
+    fn set_value_in_buffer_writes_a_whole_uint16() {
+        use js_engine::{SharedMemoryOrder, TypedArrayElementType};
+
+        let mut engine = setup();
+        let realm = engine.current_realm();
+        let constructor = engine.realm_intrinsics(&realm).array_buffer;
+        let buffer = JsEngine::allocate_array_buffer(&mut engine, constructor, 4, None)
+            .expect("the buffer allocates");
+        let value = engine.value_from_number(513.0);
+        engine
+            .set_value_in_buffer(
+                &buffer,
+                0,
+                TypedArrayElementType::Uint16,
+                value,
+                false,
+                SharedMemoryOrder::Unordered,
+            )
+            .expect("the write succeeds");
+        assert_eq!(
             engine
-                .set_value_in_buffer(
-                    &buffer,
-                    0,
-                    TypedArrayElementType::Uint16,
-                    value,
-                    false,
-                    SharedMemoryOrder::Unordered,
-                )
-                .expect("the write succeeds");
-            assert_eq!(
-                engine
-                    .array_buffer_data(&buffer)
-                    .expect("the buffer has data"),
-                vec![1, 2, 0, 0]
-            );
-        }
+                .array_buffer_data(&buffer)
+                .expect("the buffer has data"),
+            vec![1, 2, 0, 0]
+        );
+    }
 
-        #[test]
-        fn object_as_constructor_rejects_arrow_function() {
-            let mut engine = setup();
-            let arrow = evaluate(&mut engine, "() => 1");
-            assert!(TestTypes::object_as_constructor(&as_object(&arrow)).is_none());
-        }
+    #[test]
+    fn object_as_constructor_rejects_arrow_function() {
+        let mut engine = setup();
+        let arrow = evaluate(&mut engine, "() => 1");
+        assert!(TestTypes::object_as_constructor(&as_object(&arrow)).is_none());
+    }
 
-        #[test]
-        fn is_detached_buffer_after_engine_detach() {
-            let mut engine = setup();
-            let realm = engine.current_realm();
-            let constructor = engine.realm_intrinsics(&realm).array_buffer;
-            let buffer = JsEngine::allocate_array_buffer(&mut engine, constructor, 4, None)
-                .expect("the buffer allocates");
-            JsEngine::detach_array_buffer(&mut engine, buffer.clone(), None)
-                .expect("the buffer detaches");
-            assert!(engine.is_detached_buffer(&buffer));
-        }
+    #[test]
+    fn is_detached_buffer_after_engine_detach() {
+        let mut engine = setup();
+        let realm = engine.current_realm();
+        let constructor = engine.realm_intrinsics(&realm).array_buffer;
+        let buffer = JsEngine::allocate_array_buffer(&mut engine, constructor, 4, None)
+            .expect("the buffer allocates");
+        JsEngine::detach_array_buffer(&mut engine, buffer.clone(), None)
+            .expect("the buffer detaches");
+        assert!(engine.is_detached_buffer(&buffer));
+    }
 
-        #[cfg(v8_backend)]
-        #[test]
-        fn is_detached_buffer_after_script_detach() {
-            let mut engine = setup();
-            let value = evaluate(&mut engine, "globalThis.buffer = new ArrayBuffer(4)");
-            let buffer =
-                TestTypes::object_as_array_buffer(&as_object(&value)).expect("an ArrayBuffer");
-            evaluate(&mut engine, "buffer.transfer()");
-            assert!(engine.array_buffer_data(&buffer).is_none());
-            assert!(engine.is_detached_buffer(&buffer));
-        }
+    #[cfg(v8_backend)]
+    #[test]
+    fn is_detached_buffer_after_script_detach() {
+        let mut engine = setup();
+        let value = evaluate(&mut engine, "globalThis.buffer = new ArrayBuffer(4)");
+        let buffer = TestTypes::object_as_array_buffer(&as_object(&value)).expect("an ArrayBuffer");
+        evaluate(&mut engine, "buffer.transfer()");
+        assert!(engine.array_buffer_data(&buffer).is_none());
+        assert!(engine.is_detached_buffer(&buffer));
+    }
 
-        #[test]
+    #[test]
 
-        fn async_iterator_next_does_not_run_microtasks_inline() {
-            let mut settings = production_settings();
-            settings
+    fn async_iterator_next_does_not_run_microtasks_inline() {
+        let mut settings = production_settings();
+        settings
                 .evaluate_script(
                     "globalThis.order = [];
                      const stream = new ReadableStream({
@@ -1526,129 +1507,124 @@ mod tests {
                      order.push('end of script');",
                 )
                 .expect("the script runs");
-            let order =
-                evaluate_to_string(&mut settings.realm_execution_context, "order.join(',')");
-            println!("event order: {order}");
-            assert_eq!(order, "end of script,microtask");
-        }
+        let order = evaluate_to_string(&mut settings.realm_execution_context, "order.join(',')");
+        println!("event order: {order}");
+        assert_eq!(order, "end of script,microtask");
+    }
 
-        #[test]
-        #[ignore = "P1: measurement only; prints timings"]
-        fn node_wrapper_cache_scales() {
-            for count in [10_000_usize, 20_000, 40_000] {
-                let mut settings = production_settings();
-                let started = Instant::now();
-                settings
-                    .evaluate_script(&format!(
-                        "for (let index = 0; index < {count}; index++) document.createElement('div');"
-                    ))
-                    .expect("the script runs");
-                println!(
-                    "creating {count} detached elements took {:?}",
-                    started.elapsed()
-                );
-            }
-        }
-
-        #[cfg(v8_backend)]
-        #[test]
-        fn detached_element_wrapper_is_collected() {
+    #[test]
+    #[ignore = "P1: measurement only; prints timings"]
+    fn node_wrapper_cache_scales() {
+        for count in [10_000_usize, 20_000, 40_000] {
             let mut settings = production_settings();
+            let started = Instant::now();
             settings
-                .evaluate_script(
-                    "globalThis.weak = (() => new WeakRef(document.createElement('div')))();",
-                )
+                .evaluate_script(&format!(
+                    "for (let index = 0; index < {count}; index++) document.createElement('div');"
+                ))
                 .expect("the script runs");
-            settings.realm_execution_context.gc();
-            assert!(evaluate_to_bool(
-                &mut settings.realm_execution_context,
-                "weak.deref() === undefined"
-            ));
-        }
-
-        #[test]
-        #[ignore = "P2: measurement only; prints timings"]
-        fn structured_clone_of_array_buffer_cost() {
-            let mut engine = setup();
-            for size in [1_000_usize, 10_000, 100_000] {
-                let input = evaluate(&mut engine, &format!("new ArrayBuffer({size})"));
-                let started = Instant::now();
-                let cloned = clone_value(&mut engine, input).expect("the buffer clones");
-                let elapsed = started.elapsed();
-                let length = read_property(&mut engine, &as_object(&cloned), "byteLength");
-                println!(
-                    "structuredClone(ArrayBuffer({size})) took {elapsed:?}; clone byteLength={:?}",
-                    TestTypes::value_as_number(&length)
-                );
-            }
-        }
-
-        #[test]
-        #[ignore = "P3: measurement only; prints timings"]
-        fn structured_clone_of_many_objects_cost() {
-            let mut engine = setup();
-            for count in [500_usize, 1_000, 2_000, 4_000] {
-                let input = evaluate(
-                    &mut engine,
-                    &format!("Array.from({{ length: {count} }}, (_, index) => ({{ index }}))"),
-                );
-                let started = Instant::now();
-                clone_value(&mut engine, input).expect("the array clones");
-                println!(
-                    "structuredClone(array of {count} small objects) took {:?}",
-                    started.elapsed()
-                );
-            }
-        }
-
-        #[test]
-        #[ignore = "S3: measurement only; prints the size and cost of realm_intrinsics"]
-        fn realm_intrinsics_cost() {
-            let engine = setup();
-            let realm = engine.current_realm();
             println!(
-                "size_of::<RealmIntrinsics>() = {} bytes",
-                std::mem::size_of::<RealmIntrinsics<TestTypes>>()
+                "creating {count} detached elements took {:?}",
+                started.elapsed()
+            );
+        }
+    }
+
+    #[cfg(v8_backend)]
+    #[test]
+    fn detached_element_wrapper_is_collected() {
+        let mut settings = production_settings();
+        settings
+            .evaluate_script(
+                "globalThis.weak = (() => new WeakRef(document.createElement('div')))();",
+            )
+            .expect("the script runs");
+        settings.realm_execution_context.gc();
+        assert!(evaluate_to_bool(
+            &mut settings.realm_execution_context,
+            "weak.deref() === undefined"
+        ));
+    }
+
+    #[test]
+    #[ignore = "P2: measurement only; prints timings"]
+    fn structured_clone_of_array_buffer_cost() {
+        let mut engine = setup();
+        for size in [1_000_usize, 10_000, 100_000] {
+            let input = evaluate(&mut engine, &format!("new ArrayBuffer({size})"));
+            let started = Instant::now();
+            let cloned = clone_value(&mut engine, input).expect("the buffer clones");
+            let elapsed = started.elapsed();
+            let length = read_property(&mut engine, &as_object(&cloned), "byteLength");
+            println!(
+                "structuredClone(ArrayBuffer({size})) took {elapsed:?}; clone byteLength={:?}",
+                TestTypes::value_as_number(&length)
+            );
+        }
+    }
+
+    #[test]
+    #[ignore = "P3: measurement only; prints timings"]
+    fn structured_clone_of_many_objects_cost() {
+        let mut engine = setup();
+        for count in [500_usize, 1_000, 2_000, 4_000] {
+            let input = evaluate(
+                &mut engine,
+                &format!("Array.from({{ length: {count} }}, (_, index) => ({{ index }}))"),
             );
             let started = Instant::now();
-            for _ in 0..10_000 {
-                let intrinsics = engine.realm_intrinsics(&realm);
-                black_box(&intrinsics);
-            }
+            clone_value(&mut engine, input).expect("the array clones");
             println!(
-                "realm_intrinsics(): {:?} per call over 10000 calls",
-                started.elapsed() / 10_000
+                "structuredClone(array of {count} small objects) took {:?}",
+                started.elapsed()
             );
         }
+    }
 
-        #[cfg(v8_backend)]
-        #[test]
-        fn native_callback_panic_becomes_a_script_exception() {
-            let mut engine = setup();
-            let key = engine.property_key_from_str("explode");
-            let function = engine.create_builtin_fn(
-                Box::new(|_, _, _| panic!("expected review panic")),
-                0,
-                key,
-            );
-            let global = engine.realm_global_object();
-            let name = engine.property_key_from_str("explode");
-            engine
-                .set(
-                    global,
-                    name,
-                    TestTypes::value_from_object(TestTypes::object_from_function(function)),
-                    true,
-                )
-                .expect("the function installs");
-            assert_eq!(
-                evaluate_to_string(
-                    &mut engine,
-                    "(() => { try { explode(); return 'no throw'; } catch (error) { return error.message; } })()",
-                ),
-                "Rust panic in native callback"
-            );
+    #[test]
+    #[ignore = "S3: measurement only; prints the size and cost of realm_intrinsics"]
+    fn realm_intrinsics_cost() {
+        let engine = setup();
+        let realm = engine.current_realm();
+        println!(
+            "size_of::<RealmIntrinsics>() = {} bytes",
+            std::mem::size_of::<RealmIntrinsics<TestTypes>>()
+        );
+        let started = Instant::now();
+        for _ in 0..10_000 {
+            let intrinsics = engine.realm_intrinsics(&realm);
+            black_box(&intrinsics);
         }
+        println!(
+            "realm_intrinsics(): {:?} per call over 10000 calls",
+            started.elapsed() / 10_000
+        );
+    }
+
+    #[cfg(v8_backend)]
+    #[test]
+    fn native_callback_panic_becomes_a_script_exception() {
+        let mut engine = setup();
+        let key = engine.property_key_from_str("explode");
+        let function =
+            engine.create_builtin_fn(Box::new(|_, _, _| panic!("expected review panic")), 0, key);
+        let global = engine.realm_global_object();
+        let name = engine.property_key_from_str("explode");
+        engine
+            .set(
+                global,
+                name,
+                TestTypes::value_from_object(TestTypes::object_from_function(function)),
+                true,
+            )
+            .expect("the function installs");
+        assert_eq!(
+            evaluate_to_string(
+                &mut engine,
+                "(() => { try { explode(); return 'no throw'; } catch (error) { return error.message; } })()",
+            ),
+            "Rust panic in native callback"
+        );
     }
 
     /// A value cloned out of a `GcCell` with `get` must stay valid after the
