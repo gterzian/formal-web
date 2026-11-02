@@ -1399,10 +1399,19 @@ fn is_cross_origin_navigation(parent_url: &str, destination_url: &str) -> Result
 }
 
 fn content_process_label_from_url(url: &str) -> String {
-    Url::parse(url)
-        .ok()
-        .and_then(|parsed| parsed.host_str().map(str::to_owned))
-        .unwrap_or_else(|| String::from("about:blank"))
+    // The agent-cluster key is the site: scheme, host and port.  Two URLs
+    // that differ in scheme or port are different origins and must not share
+    // an agent cluster (and therefore a content process).
+    let Ok(parsed) = Url::parse(url) else {
+        return String::from("about:blank");
+    };
+    let Some(host) = parsed.host_str() else {
+        return String::from("about:blank");
+    };
+    match parsed.port_or_known_default() {
+        Some(port) => format!("{}://{}:{}", parsed.scheme(), host, port),
+        None => format!("{}://{}", parsed.scheme(), host),
+    }
 }
 
 fn child_navigable_ids_by_parent(state: &UserAgentState) -> HashMap<NavigableId, Vec<NavigableId>> {
@@ -5787,4 +5796,40 @@ fn set_event_local_coords(
         _ => {}
     }
     routed
+}
+
+#[cfg(test)]
+mod tests {
+    use super::content_process_label_from_url;
+
+    #[test]
+    fn content_process_label_keys_agent_clusters_by_scheme_host_and_port() {
+        assert_eq!(
+            content_process_label_from_url("http://example.com/"),
+            "http://example.com:80"
+        );
+        assert_eq!(
+            content_process_label_from_url("https://example.com/"),
+            "https://example.com:443"
+        );
+        assert_eq!(
+            content_process_label_from_url("http://example.com:8001/"),
+            "http://example.com:8001"
+        );
+        assert_ne!(
+            content_process_label_from_url("http://example.com:8001/"),
+            content_process_label_from_url("http://example.com:8002/"),
+            "different ports must not share an agent cluster"
+        );
+        assert_ne!(
+            content_process_label_from_url("http://example.com/"),
+            content_process_label_from_url("https://example.com/"),
+            "different schemes must not share an agent cluster"
+        );
+        assert_eq!(content_process_label_from_url("about:blank"), "about:blank");
+        assert_eq!(
+            content_process_label_from_url("data:text/plain,hi"),
+            "about:blank"
+        );
+    }
 }

@@ -19,6 +19,7 @@ use std::rc::Rc;
 use rusty_v8 as v8;
 
 use crate::ExecutionContext;
+use crate::fatal_invariant;
 use crate::gc::GcRootHandle;
 use crate::gc::Trace;
 use crate::records::PromiseResolvers;
@@ -61,15 +62,17 @@ fn make_strong_optional_handle<T>(
 /// Assert that a handle reached by cppgc tracing is an edge, never a strong
 /// root. A root here means a write into traced storage bypassed `store`; the
 /// marker would silently skip it and the referent would be over-retained
-/// instead of collected with its owner. Debug builds panic; release builds
-/// count the root so `V8Engine::gc` can report it instead of staying silent.
+/// instead of collected with its owner. A debug build aborts deterministically
+/// (the trace runs inside V8's C++ marking visitor, so a panic must not unwind);
+/// release builds count the root so `V8Engine::gc` can report it.
 fn debug_assert_stored<T>(handle: &V8Handle<T>) {
     if handle.is_root() {
         record_root_reached_during_trace();
-        debug_assert!(
-            false,
-            "a rooted JS handle reached cppgc tracing: the store invariant was bypassed"
-        );
+        if cfg!(debug_assertions) {
+            fatal_invariant!(
+                "a rooted JS handle reached cppgc tracing: the store invariant was bypassed"
+            );
+        }
     }
 }
 

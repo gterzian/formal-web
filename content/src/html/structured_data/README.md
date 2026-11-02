@@ -46,19 +46,24 @@ is wrong.
 
 ### String round-tripping — use UTF-16 units, never a display-escaped string
 
-Strings are serialized as raw UTF-16 code units. Any display/escaping
-conversion (one that replaces unpaired surrogates with literal `\uXXXX`
-escape sequences) corrupts strings like lone surrogates (`\uD800`, `\uDC00`).
+Strings are serialized as raw UTF-16 code units.  A display conversion loses
+that: `js_string_to_rust_string` is lossy (a lone surrogate becomes U+FFFD on
+V8) or escaping (Boa renders it as the six characters `\uD800`), so neither
+side of the round trip can recover the original units.
 
 **Correct serialization:**
 ```rust
-let utf16_units: Vec<u16> = ec.js_string_to_rust_string(&s).encode_utf16().collect();
+let utf16_units: Vec<u16> = ec.js_string_to_utf16(&s);
 ```
 
 **Correct deserialization:**
 ```rust
-let js_string = ec.js_string_from_str(&String::from_utf16_lossy(&utf16_units[..]));
+let js_string = ec.js_string_from_utf16(&utf16_units[..]);
 ```
+
+The same applies to property keys: `property_key_to_utf16` and
+`property_key_from_utf16` preserve them, `property_key_to_rust_string` does
+not.
 
 ### RegExp source — `[[OriginalSource]]` vs the escaped getter
 
@@ -86,12 +91,18 @@ enumerability through `ec.get_own_property`.
 ### Wrapper objects — Boolean/Number/String/BigInt
 
 When serializing, check for `[[BooleanData]]` / `[[NumberData]]` / etc.
-internal slots (steps 7–10). When deserializing, create wrapper *objects*
-with the correct prototype (steps 6–9), not primitive values — construct
-through the realm's intrinsic constructor.
+internal slots (steps 7–10) through `ec.boolean_wrapper_value`,
+`ec.number_wrapper_value`, `ec.string_wrapper_value` and
+`ec.bigint_wrapper_value`.  Do not unbox with `ToNumber`/`valueOf`: page
+script can override `valueOf` on the wrapper, and the slot is what the spec
+reads.  When deserializing, create wrapper *objects* with the correct
+prototype (steps 6–9), not primitive values — construct through the realm's
+intrinsic constructor.  The slot accessors are also what keep a clone from
+capturing a `valueOf` result computed at wrap time.
 
-### Error cause — serialize custom data
+### Error cause — same memory map
 
-The spec says "User agents should attach a serialized representation of any
-interesting accompanying data." The `cause` property (ES2022) was added as
-an optional `Box<SerializedRecord>` to the `Error` variant.
+The `cause` property (ES2022) is an optional `Box<SerializedRecord>` on the
+`Error` variant.  It is serialized with the same `MemoryMap`, so a cause
+chain is bounded by the nesting limit and a shared node or cycle through a
+cause resolves as a back reference.

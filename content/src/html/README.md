@@ -120,10 +120,13 @@ Two constraints are not visible from the traps alone:
   event loop (after a cross-process navigation those differ).
 
 The mapping of agent clusters/agents to processes and realms (one content
-process per similar-origin window agent, cross-origin windows always
-cross-process, a realm per Window) is what decides which of the two
-backings applies; the agent records and their spec anchors live in
-`user_agent/src/user_agent.rs` and `agent.rs`.
+process per agent cluster, a realm per Window) is what decides which of the
+two backings applies; the agent records and their spec anchors live in
+`user_agent/src/user_agent.rs` and `agent.rs`.  The cluster key is the site
+(scheme, host and port), so navigables with different origins get different
+content processes; `is_platform_object_same_origin` additionally compares
+the two documents' serialized origins (hostless and opaque URLs can share a
+process label).
 
 ### Remaining gaps
 
@@ -167,6 +170,19 @@ tracked by the user agent (`traversable_target_names` in
 process yet; the domain methods (`Window::name_value`, `opener_value`,
 `closed_value`, `close`) return placeholder values with `// Note:`
 annotations until that state is sent to the content process or forwarded.
+
+**6. Boa keeps node wrappers alive.**  The node-wrapper cache stores a weak
+reflector on V8, so a dropped wrapper is collected; Boa's
+`JsTypesGcExt::Reflector` is a strong `JsObject`, so Boa retains a wrapper
+until its node is invalidated (removed or the document is torn down).  See
+`js_engine/src/boa/README.md`.
+
+**7. Cross-origin co-located access has no end-to-end test.**  Agent clusters
+are keyed by site (scheme, host and port) and `is_platform_object_same_origin`
+compares the two settings-object origins, but no test serves two ports and
+attempts an iframe/opener read.  The formal window tests cover the about:blank
+inheritance path; the scheme/port isolation itself is unit-tested in
+`user_agent/src/user_agent.rs`.
 
 ## Workers (`workers/`)
 

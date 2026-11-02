@@ -169,8 +169,18 @@ enum IframeNavigationTarget {
     Url { url: Url },
 }
 
-fn matches_about_blank(url: &Url) -> bool {
-    url.scheme() == "about" && url.path() == "blank"
+/// <https://html.spec.whatwg.org/multipage/urls-and-fetching.html#matches-about:blank>
+pub(crate) fn matches_about_blank(url: &Url) -> bool {
+    // Step 1: "A URL matches about:blank if its scheme is "about", its path
+    //          contains a single string "blank", its username and password are
+    //          the empty string, and its host is null."
+    url.scheme() == "about"
+        && url.path_segments().is_some_and(|mut segments| {
+            segments.next() == Some("blank") && segments.next().is_none()
+        })
+        && url.username().is_empty()
+        && url.password().is_none()
+        && url.host().is_none()
 }
 
 /// <https://html.spec.whatwg.org/#process-the-iframe-attributes>

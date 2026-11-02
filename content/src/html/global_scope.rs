@@ -6,7 +6,7 @@ use std::{
     vec::Vec,
 };
 
-use super::windowproxy::{WindowProxy, WindowProxyBacking};
+use super::windowproxy::{WindowProxy, WindowProxyBacking, same_content_process_backing};
 use super::{
     ChannelMessaging, Window, create_a_new_browsing_context_and_document,
     environment_settings_object::EnvironmentSettingsObject,
@@ -27,7 +27,7 @@ use ipc_messages::content::{
 use ipc_messages::media::VideoPaintId;
 use ipc_messages::network::Request as NetworkRequest;
 use js_engine::gc::{GcCell, gc_cell_new};
-use js_engine::{Completion, ExecutionContext, JsTypes, PromiseResolvers, gc_struct};
+use js_engine::{Completion, ExecutionContext, JsTypes, JsTypesGcExt, PromiseResolvers, gc_struct};
 use log::{debug, error};
 
 use super::environment_settings_object::RealmWiring;
@@ -44,6 +44,14 @@ use crate::webidl::dom_exception::encoding_error_value;
 
 type JsValue = <Types as JsTypes>::JsValue;
 type JsObject = <Types as JsTypes>::JsObject;
+
+/// The weak back-link to a node's platform object.  V8 uses the engine's
+/// weak reflector so a dropped wrapper can be collected; Boa's reflector is a
+/// strong `JsObject` and stays traced (Boa has no exposed weak wrapper).
+#[cfg(v8_backend)]
+type NodeReflector = <Types as JsTypesGcExt>::Reflector;
+#[cfg(boa_backend)]
+type NodeReflector = JsObject;
 
 /// The shared (document_id, node_id) → CanvasId registry held by both
 /// GlobalScope and ContentProcess.
@@ -76,7 +84,13 @@ pub struct CachedNodeObject {
     pub node_id: usize,
 
     /// <https://webidl.spec.whatwg.org/#dfn-platform-object>
-    pub object: JsObject,
+    #[cfg(v8_backend)]
+    #[ignore_trace]
+    pub reflector: NodeReflector,
+
+    /// Boa's reflector is a strong `JsObject`, so it must stay traced.
+    #[cfg(boa_backend)]
+    pub reflector: NodeReflector,
 }
 
 /// A cached WindowProxy for a navigable, keyed by navigable id.  The cache
@@ -388,6 +402,14 @@ pub struct GlobalScope {
     #[ignore_trace]
     creation_url: Rc<RefCell<Option<url::Url>>>,
 
+    /// <https://html.spec.whatwg.org/#concept-settings-object-origin>
+    /// The serialized origin of this global's environment settings object.
+    /// For an about:blank document this is the inherited creator origin (the
+    /// URL's own origin is opaque), so origin comparisons must read this, not
+    /// the creation URL.
+    #[ignore_trace]
+    origin: Rc<RefCell<Option<String>>>,
+
     /// Consolidated wasm state (pending requests, resolvers, counter).
     #[cfg(all(boa_backend, feature = "wasm"))]
     wasm_state: Option<crate::wasm::WasmState>,
@@ -438,6 +460,7 @@ impl GlobalScope {
             pending_image_decodes: gc_cell_new(Vec::new(), ec),
 
             creation_url: Rc::new(RefCell::new(None)),
+            origin: Rc::new(RefCell::new(None)),
             #[cfg(all(boa_backend, feature = "wasm"))]
             wasm_state: Some(crate::wasm::WasmState::new(ec)),
         }
@@ -483,6 +506,7 @@ impl GlobalScope {
         document_object: JsObject,
         document_id: DocumentId,
         creation_url: url::Url,
+        origin: String,
         ec: &mut dyn ExecutionContext<Types>,
     ) {
         *self.document.borrow_mut() = document;
@@ -491,6 +515,7 @@ impl GlobalScope {
         self.location_object.borrow_mut(ec).take();
         self.document_id.borrow_mut().replace(document_id);
         self.creation_url.borrow_mut().replace(creation_url);
+        self.set_origin(origin);
     }
 
     pub(crate) fn set_navigation_info(
@@ -993,9 +1018,7 @@ impl GlobalScope {
             None
         } else {
             let backing = match local_window {
-                Some((window, js_object)) => {
-                    WindowProxyBacking::SameContentProcess { window, js_object }
-                }
+                Some((window, js_object)) => same_content_process_backing(window, js_object),
                 None => WindowProxyBacking::CrossContentProcess,
             };
             Some(WindowProxy::new(navigable_id, backing, ec))
@@ -1042,11 +1065,17 @@ impl GlobalScope {
         node_id: usize,
         ec: &mut dyn ExecutionContext<Types>,
     ) -> Option<JsObject> {
-        self.node_objects
-            .borrow(ec)
-            .iter()
-            .find(|entry| entry.node_id == node_id)
-            .map(|entry| entry.object.clone())
+        // The cache is sorted by node id; clone the weak reflector out before
+        // upgrading (an upgrade is an engine call, which must not run under a
+        // cell borrow).
+        let reflector = {
+            let entries = self.node_objects.borrow(ec);
+            let index = entries
+                .binary_search_by_key(&node_id, |entry| entry.node_id)
+                .ok()?;
+            entries[index].reflector.clone()
+        };
+        <Types as JsTypesGcExt>::upgrade_reflector(ec, &reflector)
     }
 
     pub(crate) fn cache_node_object(
@@ -1055,9 +1084,13 @@ impl GlobalScope {
         object: JsObject,
         ec: &mut dyn ExecutionContext<Types>,
     ) {
-        self.node_objects
-            .borrow_mut(ec)
-            .push(CachedNodeObject { node_id, object });
+        let reflector = <Types as JsTypesGcExt>::create_reflector(ec, &object);
+        let mut entries = self.node_objects.borrow_mut(ec);
+        let entry = CachedNodeObject { node_id, reflector };
+        match entries.binary_search_by_key(&node_id, |entry| entry.node_id) {
+            Ok(index) => entries[index] = entry,
+            Err(index) => entries.insert(index, entry),
+        }
     }
 
     pub(crate) fn invalidate_cached_node_ids(
@@ -1081,10 +1114,18 @@ impl GlobalScope {
         &self,
         ec: &mut dyn ExecutionContext<Types>,
     ) -> Vec<JsObject> {
-        self.node_objects
+        // Clone the weak reflectors out before upgrading (upgrading is an
+        // engine call and must not run under a cell borrow).  Entries whose
+        // wrapper was collected contribute nothing.
+        let reflectors: Vec<_> = self
+            .node_objects
             .borrow(ec)
             .iter()
-            .map(|entry| entry.object.clone())
+            .map(|entry| entry.reflector.clone())
+            .collect();
+        reflectors
+            .into_iter()
+            .filter_map(|reflector| <Types as JsTypesGcExt>::upgrade_reflector(ec, &reflector))
             .collect()
     }
 
@@ -1666,6 +1707,16 @@ impl GlobalScope {
 
     pub(crate) fn creation_url(&self) -> Option<url::Url> {
         self.creation_url.borrow().clone()
+    }
+
+    /// <https://html.spec.whatwg.org/#concept-settings-object-origin>
+    pub(crate) fn set_origin(&self, serialized: String) {
+        self.origin.borrow_mut().replace(serialized);
+    }
+
+    /// <https://html.spec.whatwg.org/#concept-settings-object-origin>
+    pub(crate) fn origin(&self) -> Option<String> {
+        self.origin.borrow().clone()
     }
 
     /// Set the shared canvas registry that both GlobalScope and

@@ -235,7 +235,7 @@ async function searchSpecIds(url, query, limit, options) {
   });
 
   if (matches.length === 0) {
-    return { text: `No ids matching "${query}" found.` };
+    return { text: `No anchor ids matching "${query}" found. (search matches ids only, not body text; try a plausible id or read the section heading around a related definition.)` };
   }
 
   const shown = matches.slice(0, limit);

@@ -29,6 +29,7 @@ use super::offscreen_canvas;
 
 use js_engine::{
     Completion, EcmascriptHost, ExecutionContext, JsTypes, enums::TypedArrayElementType,
+    records::RealmIntrinsics,
 };
 
 /// <https://html.spec.whatwg.org/#safe-passing-of-structured-data>
@@ -96,6 +97,15 @@ pub trait Transferable {
 
 // Memory map (for cycle/duplicate detection)
 
+/// Maximum nesting depth of a serialized graph.  Not a spec value: the
+/// algorithms recurse once per nesting level and the content process runs
+/// them on threads with the default 2 MiB stack, where a few hundred levels
+/// exhaust the stack (fewer in a debug build, whose frames are larger).  A
+/// record that exceeds the bound is rejected with a `DataCloneError` instead
+/// of aborting the process; 64 levels is far beyond the nesting real data
+/// uses and leaves headroom for the deepest per-level frame.
+const MAX_STRUCTURED_CLONE_DEPTH: usize = 64;
+
 /// The memory map used for cycle and duplicate detection during (de)serialization.
 ///
 /// <https://html.spec.whatwg.org/#structuredserializeinternal> step 1.
@@ -108,6 +118,10 @@ pub struct MemoryMap {
     /// records are kept for the whole serialization (never removed), so a
     /// completed record is still reachable by index.
     serialized: Vec<(JsObject, usize, SerializedRecord)>,
+    /// Identity hash → positions in `serialized`, a fast pre-filter for the
+    /// memory map.  A hash collision is resolved with the engine's exact
+    /// identity comparison, so the bucket is a candidate list, not a decision.
+    serialized_by_hash: HashMap<u32, Vec<usize>>,
     next_serialized_index: usize,
     /// Memory index → deserialized object, built in the same pre-order the
     /// serialization assigned the indices.  `BackReference(index)` resolves
@@ -119,42 +133,80 @@ pub struct MemoryMap {
     /// position; `SerializedRecord::TransferredValue(index)` resolves here.
     /// <https://html.spec.whatwg.org/#structureddeserializewithtransfer>
     transferred_values: Vec<JsValue>,
+    /// Nesting depth of the current walk.  The algorithms are unbounded in
+    /// nesting, so a bound is imposed here to keep the recursion within the
+    /// thread stack: the content process runs on worker threads with the
+    /// default 2 MiB stack, where the serializer overflows at a few hundred
+    /// levels and a wire record can nest arbitrarily deep.
+    depth: usize,
+}
+
+/// Whether two object handles denote the same object, comparing through the
+/// engine so a root handle and a traced edge of one object compare equal.
+fn same_object(ec: &dyn ExecutionContext<Types>, left: &JsObject, right: &JsObject) -> bool {
+    ec.same_object(left, right)
 }
 
 impl MemoryMap {
-    fn get_serialized(&self, object: &JsObject) -> Option<&SerializedRecord> {
-        self.serialized
-            .iter()
-            .find(|(key, _, _)| key == object)
-            .map(|(_, _, record)| record)
+    fn get_serialized(
+        &self,
+        object: &JsObject,
+        ec: &dyn ExecutionContext<Types>,
+    ) -> Option<&SerializedRecord> {
+        let index = self.get_serialized_index(object, ec)?;
+        self.serialized.get(index).map(|(_, _, record)| record)
     }
-    fn get_serialized_index(&self, object: &JsObject) -> Option<usize> {
-        self.serialized
+    fn get_serialized_index(
+        &self,
+        object: &JsObject,
+        ec: &dyn ExecutionContext<Types>,
+    ) -> Option<usize> {
+        let hash = ec.object_identity_hash(object);
+        self.serialized_by_hash
+            .get(&hash)?
             .iter()
-            .find(|(key, _, _)| key == object)
-            .map(|(_, index, _)| *index)
+            .copied()
+            .find(|index| {
+                self.serialized
+                    .get(*index)
+                    .is_some_and(|(key, _, _)| same_object(ec, key, object))
+            })
     }
-    fn insert_serialized(&mut self, object: &JsObject, record: SerializedRecord) {
-        if let Some((_, _, existing)) = self.serialized.iter_mut().find(|(key, _, _)| key == object)
-        {
-            *existing = record;
+    fn insert_serialized(
+        &mut self,
+        object: &JsObject,
+        record: SerializedRecord,
+        ec: &dyn ExecutionContext<Types>,
+    ) {
+        if let Some(index) = self.get_serialized_index(object, ec) {
+            if let Some((_, _, existing)) = self.serialized.get_mut(index) {
+                *existing = record;
+            }
         } else {
             let index = self.next_serialized_index;
             self.next_serialized_index += 1;
+            let hash = ec.object_identity_hash(object);
             self.serialized.push((object.clone(), index, record));
+            self.serialized_by_hash.entry(hash).or_default().push(index);
         }
     }
-    fn get_serialized_mut(&mut self, object: &JsObject) -> Option<&mut SerializedRecord> {
-        self.serialized
-            .iter_mut()
-            .find(|(key, _, _)| key == object)
-            .map(|(_, _, record)| record)
+    fn get_serialized_mut(
+        &mut self,
+        object: &JsObject,
+        ec: &dyn ExecutionContext<Types>,
+    ) -> Option<&mut SerializedRecord> {
+        let index = self.get_serialized_index(object, ec)?;
+        self.serialized.get_mut(index).map(|(_, _, record)| record)
     }
     /// The completed record of an object, leaving the memory-map entry in
     /// place so a later occurrence of the same object (a shared DAG node)
     /// still resolves by index.
-    fn take_record(&self, object: &JsObject) -> Option<SerializedRecord> {
-        self.get_serialized(object).cloned()
+    fn take_record(
+        &self,
+        object: &JsObject,
+        ec: &dyn ExecutionContext<Types>,
+    ) -> Option<SerializedRecord> {
+        self.get_serialized(object, ec).cloned()
     }
     fn get_deserialized(&self, index: &usize) -> Option<JsObject> {
         self.deserialized.get(index).cloned()
@@ -187,8 +239,8 @@ fn js_value_to_primitive(
     } else if let Some(n) = Types::value_as_number(value) {
         Some(PrimitiveValue::Number(n))
     } else if let Some(s) = Types::value_as_string(value) {
-        let rust_str = ec.js_string_to_rust_string(&s);
-        Some(PrimitiveValue::String(rust_str.encode_utf16().collect()))
+        let utf16_units = ec.js_string_to_utf16(&s);
+        Some(PrimitiveValue::String(utf16_units))
     } else if let Some(_bi) = Types::value_as_bigint(value) {
         // BigInt value → decimal string via ToString
         ec.to_rust_string(value.clone())
@@ -210,16 +262,21 @@ fn get_property_key(
 }
 
 /// Convert a PropertyKey to UTF-16 code units (for use in serialized property lists).
-fn property_key_to_string(
-    key: &PropertyKey,
-    ec: &mut dyn ExecutionContext<Types>,
-) -> Completion<Vec<u16>, Types> {
-    let key_str = ec.property_key_to_rust_string(key);
-    // If the key string starts with "Symbol(", it's a Symbol key → DataCloneError.
-    if key_str.starts_with("Symbol(") {
-        return Err(crate::webidl::data_clone_error_value(ec));
-    }
-    Ok(key_str.encode_utf16().collect())
+fn property_key_to_units(key: &PropertyKey, ec: &mut dyn ExecutionContext<Types>) -> Vec<u16> {
+    ec.property_key_to_utf16(key)
+}
+
+/// Record a non-container object's serialized form in the memory map, so a
+/// later occurrence of the same object (a shared node or a cycle through an
+/// object property) is emitted as a back reference.
+fn memoize(
+    memory: &mut MemoryMap,
+    object: &JsObject,
+    record: SerializedRecord,
+    ec: &dyn ExecutionContext<Types>,
+) -> SerializedRecord {
+    memory.insert_serialized(object, record.clone(), ec);
+    record
 }
 
 // StructuredSerializeInternal
@@ -231,11 +288,28 @@ fn structured_serialize_internal(
     memory: &mut MemoryMap,
     ec: &mut dyn ExecutionContext<Types>,
 ) -> Completion<SerializedRecord, Types> {
+    // A nesting bound, not a spec step: see `MemoryMap::depth`.
+    if memory.depth >= MAX_STRUCTURED_CLONE_DEPTH {
+        return Err(crate::webidl::data_clone_error_value(ec));
+    }
+    memory.depth += 1;
+    let outcome = structured_serialize_internal_walk(value, for_storage, memory, ec);
+    memory.depth -= 1;
+    outcome
+}
+
+/// <https://html.spec.whatwg.org/#structuredserializeinternal>
+fn structured_serialize_internal_walk(
+    value: &JsValue,
+    for_storage: bool,
+    memory: &mut MemoryMap,
+    ec: &mut dyn ExecutionContext<Types>,
+) -> Completion<SerializedRecord, Types> {
     // Step 1: If memory was not supplied, let memory be an empty map.
     //         (memory is always supplied here.)
     // Step 2: If memory[value] exists, then return memory[value].
     if let Some(index) =
-        Types::value_as_object(value).and_then(|object| memory.get_serialized_index(&object))
+        Types::value_as_object(value).and_then(|object| memory.get_serialized_index(&object, ec))
     {
         // The object was already serialized (a cycle or a shared DAG node);
         // reference it by its memory index.
@@ -264,36 +338,46 @@ fn structured_serialize_internal(
 
     // Step 7: If value has a [[BooleanData]] internal slot, then set serialized to
     //           { [[Type]]: "Boolean", [[BooleanData]]: value.[[BooleanData]] }.
-    if let Some(b) = Types::boolean_wrapper_data(&object) {
-        return Ok(SerializedRecord::Boolean(b));
+    if let Some(b) = ec.boolean_wrapper_value(&object)? {
+        return Ok(memoize(memory, &object, SerializedRecord::Boolean(b), ec));
     }
 
     // Step 8: Otherwise, if value has a [[NumberData]] internal slot, then set serialized to
     //           { [[Type]]: "Number", [[NumberData]]: value.[[NumberData]] }.
-    if let Some(n) = Types::number_wrapper_data(&object) {
-        return Ok(SerializedRecord::Number(n));
+    if let Some(n) = ec.number_wrapper_value(&object)? {
+        return Ok(memoize(memory, &object, SerializedRecord::Number(n), ec));
     }
 
     // Step 9: Otherwise, if value has a [[BigIntData]] internal slot, then set serialized to
     //           { [[Type]]: "BigInt", [[BigIntData]]: value.[[BigIntData]] }.
-    if let Some(bi) = Types::bigint_wrapper_data(&object) {
+    if let Some(bi) = ec.bigint_wrapper_value(&object)? {
         let bi_val = Types::value_from_bigint(bi);
         let bi_str = ec.to_rust_string(bi_val)?;
-        return Ok(SerializedRecord::BigInt(bi_str));
+        return Ok(memoize(
+            memory,
+            &object,
+            SerializedRecord::BigInt(bi_str),
+            ec,
+        ));
     }
 
     // Step 10: Otherwise, if value has a [[StringData]] internal slot, then set serialized to
     //            { [[Type]]: "String", [[StringData]]: value.[[StringData]] }.
-    if let Some(s) = Types::string_wrapper_data(&object) {
-        let rust_str = ec.js_string_to_rust_string(&s);
-        return Ok(SerializedRecord::String(rust_str.encode_utf16().collect()));
+    if let Some(s) = ec.string_wrapper_value(&object)? {
+        let units = ec.js_string_to_utf16(&s);
+        return Ok(memoize(
+            memory,
+            &object,
+            SerializedRecord::String(units),
+            ec,
+        ));
     }
 
     // Step 11: Otherwise, if value has a [[DateValue]] internal slot, then set serialized to
     //            { [[Type]]: "Date", [[DateValue]]: value.[[DateValue]] }.
     if Types::object_is_date(&object) {
         let ms = ec.get_date_value(&object)?;
-        return Ok(SerializedRecord::Date(ms));
+        return Ok(memoize(memory, &object, SerializedRecord::Date(ms), ec));
     }
 
     // Step 12: Otherwise, if value has a [[RegExpMatcher]] internal slot, then set serialized to
@@ -308,26 +392,37 @@ fn structured_serialize_internal(
         let escaped_source = ec.get_regexp_source(&object)?;
         let source = unescape_regexp_source(&escaped_source);
         let flags = ec.get_regexp_flags(&object)?;
-        return Ok(SerializedRecord::RegExp { source, flags });
+        return Ok(memoize(
+            memory,
+            &object,
+            SerializedRecord::RegExp { source, flags },
+            ec,
+        ));
     }
 
     // Step 13: Otherwise, if value has an [[ArrayBufferData]] internal slot.
     // Step 13.1: If IsSharedArrayBuffer(value) is true:
     if let Some(sab) = Types::object_as_shared_array_buffer(&object) {
-        return serialize_shared_array_buffer(&sab, for_storage, ec);
+        let record = serialize_shared_array_buffer(&sab, for_storage, ec)?;
+        return Ok(memoize(memory, &object, record, ec));
     }
 
     // Step 13.2: Otherwise (non-shared ArrayBuffer):
     if let Some(buffer) = Types::object_as_array_buffer(&object) {
-        return serialize_array_buffer(&buffer, ec);
+        let record = serialize_array_buffer(&buffer, ec)?;
+        return Ok(memoize(memory, &object, record, ec));
     }
 
     // Step 14: Otherwise, if value has a [[ViewedArrayBuffer]] internal slot.
+    //   The view's buffer is serialized (and memoized) first, so two views of
+    //   one buffer share the buffer's memory entry.
     if let Some(dv) = Types::object_as_data_view(&object) {
-        return serialize_dataview(&dv, for_storage, memory, ec);
+        let record = serialize_dataview(&dv, for_storage, memory, ec)?;
+        return Ok(memoize(memory, &object, record, ec));
     }
     if let Some(ta) = Types::object_as_typed_array(&object) {
-        return serialize_typed_array(&ta, for_storage, memory, ec);
+        let record = serialize_typed_array(&ta, for_storage, memory, ec)?;
+        return Ok(memoize(memory, &object, record, ec));
     }
 
     // Step 15: Otherwise, if value has a [[MapData]] internal slot.
@@ -342,7 +437,7 @@ fn structured_serialize_internal(
 
     // Step 17: Otherwise, if value has an [[ErrorData]] internal slot and value is not a platform object.
     if Types::object_is_error(&object) {
-        return serialize_error(&object, ec);
+        return serialize_error(&object, for_storage, memory, ec);
     }
 
     // Step 18: Otherwise, if value is an Array exotic object.
@@ -353,7 +448,9 @@ fn structured_serialize_internal(
     // Step 19: Otherwise, if value is a platform object that is a serializable object.
     // TODO: Check registered [Serializable] platform objects.
     // Step 20: Otherwise, if value is a platform object, then throw a "DataCloneError" DOMException.
-    // TODO: Add platform object detection.
+    if ec.with_object_any(&object).is_some() {
+        return Err(crate::webidl::data_clone_error_value(ec));
+    }
 
     // Step 21: Otherwise, if IsCallable(value) is true, then throw a "DataCloneError" DOMException.
     if ec.is_callable(value) {
@@ -362,16 +459,28 @@ fn structured_serialize_internal(
 
     // Step 22: Otherwise, if value has any internal slot other than [[Prototype]], [[Extensible]],
     //            or [[PrivateElements]], then throw a "DataCloneError" DOMException.
-    // TODO: Add these checks.
+    //            The slots observable generically are the Promise and weak-collection
+    //            slots.
+    if Types::object_as_promise(&object).is_some()
+        || Types::object_as_weak_map(&object).is_some()
+        || Types::object_as_weak_set(&object).is_some()
+    {
+        return Err(crate::webidl::data_clone_error_value(ec));
+    }
+
     // Step 23: Otherwise, if value is an exotic object and value is not the %Object.prototype%
     //            intrinsic object associated with any realm, then throw a "DataCloneError" DOMException.
-    // TODO: Add these checks.
+    // Note: A Proxy is rejected here without probing it, so none of its traps run.
+    // TODO: Add the remaining exotic-object checks (bound function, module namespace).
+    if ec.value_is_proxy(value) {
+        return Err(crate::webidl::data_clone_error_value(ec));
+    }
 
     // Step 24 (spec's final fallback): Otherwise, set serialized to
     //   { [[Type]]: "Object", [[Properties]]: a new empty List }.
     // Step 25: Set memory[value] to serialized.
     let serialized = SerializedRecord::Object(Vec::new());
-    memory.insert_serialized(&object, serialized);
+    memory.insert_serialized(&object, serialized, ec);
 
     // Step 26 ("If deep is true" block for the Object case):
     //   For each key in ! EnumerableOwnProperties(value, key):
@@ -382,6 +491,11 @@ fn structured_serialize_internal(
     let keys = ec.own_property_keys(object.clone())?;
     let mut properties = Vec::new();
     for key in keys {
+        // EnumerableOwnProperties(value, key) enumerates string keys only; a
+        // symbol key is skipped here, not rejected.
+        if ec.property_key_is_symbol(&key) {
+            continue;
+        }
         if !ec.has_own_property(object.clone(), key.clone())? {
             continue;
         }
@@ -397,16 +511,16 @@ fn structured_serialize_internal(
 
         // Step 26: "Let outputValue be ? StructuredSerializeInternal(inputValue, forStorage, memory)."
         let output_value = structured_serialize_internal(&input_value, for_storage, memory, ec)?;
-        let key_str = property_key_to_string(&key, ec)?;
-        properties.push((key_str, output_value));
+        let key_units = property_key_to_units(&key, ec);
+        properties.push((key_units, output_value));
     }
 
     // Step 28 (spec): Return serialized.
-    if let Some(SerializedRecord::Object(props)) = memory.get_serialized_mut(&object) {
+    if let Some(SerializedRecord::Object(props)) = memory.get_serialized_mut(&object, ec) {
         *props = properties;
     }
     Ok(memory
-        .take_record(&object)
+        .take_record(&object, ec)
         .expect("entry must exist in memory"))
 }
 
@@ -446,38 +560,18 @@ fn serialize_array_buffer(
 /// <https://html.spec.whatwg.org/#structuredserializeinternal>
 /// Step 13.1: SharedArrayBuffer.
 fn serialize_shared_array_buffer(
-    sab: &SharedArrayBuffer,
-    for_storage: bool,
+    _sab: &SharedArrayBuffer,
+    _for_storage: bool,
     ec: &mut dyn ExecutionContext<Types>,
 ) -> Completion<SerializedRecord, Types> {
     // Step 13.1.1: If IsSharedArrayBuffer(value) is true:
     //   Step 13.1.1.1: If the current settings object's cross-origin isolated capability is false,
     //                    then throw a "DataCloneError" DOMException.
-    // TODO: Check cross-origin isolated capability.
-    // Step 13.1.2: If forStorage is true, then throw a "DataCloneError" DOMException.
-    if for_storage {
-        return Err(crate::webidl::data_clone_error_value(ec));
-    }
-
-    // Step 13.1.3: If value has an [[ArrayBufferMaxByteLength]] internal slot, then
-    //                set serialized to { [[Type]]: "GrowableSharedArrayBuffer", ... }.
-    // TODO: Support GrowableSharedArrayBuffer.
-    // Step 13.1.4: Otherwise, set serialized to { [[Type]]: "SharedArrayBuffer",
-    //               [[ArrayBufferData]]: value.[[ArrayBufferData]],
-    //               [[ArrayBufferByteLength]]: value.[[ArrayBufferByteLength]],
-    //               [[AgentCluster]]: the surrounding agent's agent cluster }.
-    // Copy raw bytes for IPC portability.
-    // Extract byte length from the SAB object.
-    let sab_obj = Types::object_from_shared_array_buffer(sab.clone());
-    let buffer_val = EcmascriptHost::get(ec, &sab_obj, "byteLength")?;
-    let _byte_length = ec.to_number(buffer_val)? as u64;
-    // TODO: extract raw data from SharedArrayBuffer.
-    let data = Vec::new();
-    let agent_cluster = String::from("default"); // TODO: use actual agent cluster.
-    Ok(SerializedRecord::SharedArrayBuffer {
-        data,
-        agent_cluster,
-    })
+    // Note: cross-origin isolation is not implemented, so the capability is
+    // always false and every SharedArrayBuffer reaches this throw.  Steps
+    // 13.1.2 (forStorage) through 13.1.4 (the serialized record) are therefore
+    // unreachable.
+    Err(crate::webidl::data_clone_error_value(ec))
 }
 
 /// <https://html.spec.whatwg.org/#structuredserializeinternal>
@@ -562,6 +656,28 @@ fn serialize_typed_array(
     })
 }
 
+/// Reject a view extent that does not fit its buffer, or that does not start
+/// at a whole element (the `IsArrayBufferViewOutOfBounds` check of
+/// <https://html.spec.whatwg.org/#structuredserializeinternal> step 14.1 and
+/// the constructor's own bounds check, which V8 turns into a permanent
+/// failure rather than an exception).
+fn check_view_in_bounds(
+    buffer: &ArrayBuffer,
+    byte_offset: u64,
+    byte_length: u64,
+    element_size: u8,
+    ec: &mut dyn ExecutionContext<Types>,
+) -> Completion<(), Types> {
+    let buffer_byte_length = ec.array_buffer_byte_length(buffer);
+    let element_size = u64::from(element_size);
+    if !byte_offset.is_multiple_of(element_size)
+        || byte_offset.saturating_add(byte_length) > buffer_byte_length
+    {
+        return Err(crate::webidl::data_clone_error_value(ec));
+    }
+    Ok(())
+}
+
 /// Return the byte size of a single element of the given TypedArray element type.
 fn typed_array_element_byte_size(element_type: TypedArrayElementType) -> u8 {
     use TypedArrayElementType::*;
@@ -596,7 +712,7 @@ fn serialize_map_contents(
     let serialized = SerializedRecord::Map(Vec::new());
 
     // Step 15.2: Set memory[value] to serialized.
-    memory.insert_serialized(object, serialized);
+    memory.insert_serialized(object, serialized, ec);
 
     // Step 15.3: Let copiedList be a new empty List.
     // Step 15.4: For each Record { [[Key]], [[Value]] } entry of value.[[MapData]]:
@@ -616,11 +732,11 @@ fn serialize_map_contents(
     }
 
     // Update the entry in memory with the serialized entries.
-    if let Some(SerializedRecord::Map(entry_list)) = memory.get_serialized_mut(object) {
+    if let Some(SerializedRecord::Map(entry_list)) = memory.get_serialized_mut(object, ec) {
         *entry_list = entries;
     }
     Ok(memory
-        .take_record(object)
+        .take_record(object, ec)
         .expect("Map entry must exist in memory"))
 }
 
@@ -645,7 +761,7 @@ fn serialize_set_contents(
     let serialized = SerializedRecord::Set(Vec::new());
 
     // Step 16.2: Set memory[value] to serialized.
-    memory.insert_serialized(object, serialized);
+    memory.insert_serialized(object, serialized, ec);
 
     // Step 16.3: Let copiedList be a new empty List.
     // Step 16.4: For each entry of value.[[SetData]]:
@@ -661,18 +777,19 @@ fn serialize_set_contents(
         entries.push(sv);
     }
 
-    if let Some(SerializedRecord::Set(entry_list)) = memory.get_serialized_mut(object) {
+    if let Some(SerializedRecord::Set(entry_list)) = memory.get_serialized_mut(object, ec) {
         *entry_list = entries;
     }
     Ok(memory
-        .take_record(object)
+        .take_record(object, ec)
         .expect("Set entry must exist in memory"))
 }
 
 /// <https://html.spec.whatwg.org/#structuredserializeinternal>
-/// Step 17: Otherwise, if value has an [[ErrorData]] internal slot and value is not a platform object.
 fn serialize_error(
     object: &JsObject,
+    for_storage: bool,
+    memory: &mut MemoryMap,
     ec: &mut dyn ExecutionContext<Types>,
 ) -> Completion<SerializedRecord, Types> {
     // Step 17.1: Let name be ? Get(value, "name").
@@ -717,10 +834,11 @@ fn serialize_error(
         .as_ref()
         .and_then(|d| {
             d.value.clone().and_then(|val| {
-                // cause is serialized as a sub-serialization. Use a fresh memory map for
-                // the self-contained cause value.
-                let mut cause_memory = MemoryMap::default();
-                structured_serialize_internal(&val, false, &mut cause_memory, ec).ok()
+                // Step 17.8: "Let serialized.[[Cause]] be ?
+                // StructuredSerializeInternal(value.[[Cause]], forStorage, memory)" —
+                // the same memory map, so a cause chain is bounded like any other
+                // nesting and cycles through a cause resolve as back references.
+                structured_serialize_internal(&val, for_storage, memory, ec).ok()
             })
         })
         .map(Box::new);
@@ -771,12 +889,17 @@ fn serialize_array(
     };
 
     // Step 18.4: Set memory[value] to serialized.
-    memory.insert_serialized(&object, serialized);
+    memory.insert_serialized(&object, serialized, ec);
 
     // Step 18.5: For each key of ! EnumerableOwnProperties(value, key):
     let keys = ec.own_property_keys(object.clone())?;
     let mut properties = Vec::new();
     for key in keys {
+        // EnumerableOwnProperties(value, key) enumerates string keys only; a
+        // symbol key is skipped here, not rejected.
+        if ec.property_key_is_symbol(&key) {
+            continue;
+        }
         // If ! HasOwnProperty(value, key) is true:
         if !ec.has_own_property(object.clone(), key.clone())? {
             continue;
@@ -792,18 +915,18 @@ fn serialize_array(
         let input_value = get_property_key(ec, object.clone(), key.clone())?;
         // Let outputValue be ? StructuredSerializeInternal(inputValue, forStorage, memory).
         let output_value = structured_serialize_internal(&input_value, for_storage, memory, ec)?;
-        let key_str = property_key_to_string(&key, ec)?;
-        properties.push((key_str, output_value));
+        let key_units = property_key_to_units(&key, ec);
+        properties.push((key_units, output_value));
     }
 
     if let Some(SerializedRecord::Array {
         properties: props, ..
-    }) = memory.get_serialized_mut(&object)
+    }) = memory.get_serialized_mut(&object, ec)
     {
         *props = properties;
     }
     Ok(memory
-        .take_record(&object)
+        .take_record(&object, ec)
         .expect("Array entry must exist in memory"))
 }
 
@@ -890,7 +1013,7 @@ pub fn structured_serialize_with_transfer(
         }
 
         // Step 2.3: If memory[transferable] exists, then throw.
-        if memory.get_serialized(&object).is_some() {
+        if memory.get_serialized(&object, ec).is_some() {
             return Err(crate::webidl::data_clone_error_value(ec));
         }
 
@@ -898,7 +1021,7 @@ pub fn structured_serialize_with_transfer(
         // Note: The spec's "uninitialized" dataHolder record is represented by a
         // transfer-list index so the graph stays IPC-serializable (see the
         // `TransferredValue` variant).  Step 5 fills the actual holder list.
-        memory.insert_serialized(&object, SerializedRecord::TransferredValue(index));
+        memory.insert_serialized(&object, SerializedRecord::TransferredValue(index), ec);
     }
 
     // Step 3: Let serialized be ? StructuredSerializeInternal(value, false, memory).
@@ -967,8 +1090,27 @@ pub fn structured_serialize_with_transfer(
 /// <https://html.spec.whatwg.org/#structureddeserialize>
 fn structured_deserialize(
     serialized: &SerializedRecord,
+    target_realm: &JsValue,
+    memory: &mut MemoryMap,
+    intrinsics: &RealmIntrinsics<Types>,
+    ec: &mut dyn ExecutionContext<Types>,
+) -> Completion<JsValue, Types> {
+    // A nesting bound, not a spec step: see `MemoryMap::depth`.
+    if memory.depth >= MAX_STRUCTURED_CLONE_DEPTH {
+        return Err(crate::webidl::data_clone_error_value(ec));
+    }
+    memory.depth += 1;
+    let outcome = structured_deserialize_walk(serialized, target_realm, memory, intrinsics, ec);
+    memory.depth -= 1;
+    outcome
+}
+
+/// <https://html.spec.whatwg.org/#structureddeserialize>
+fn structured_deserialize_walk(
+    serialized: &SerializedRecord,
     _target_realm: &JsValue,
     memory: &mut MemoryMap,
+    intrinsics: &RealmIntrinsics<Types>,
     ec: &mut dyn ExecutionContext<Types>,
 ) -> Completion<JsValue, Types> {
     // Step 1: If memory was not supplied, let memory be an empty map.
@@ -987,9 +1129,8 @@ fn structured_deserialize(
     // Step 4: Let value be an uninitialized value.
     let value: JsValue;
 
-    // Get realm intrinsics for constructing objects.
-    let realm = ec.current_realm();
-    let intrinsics = ec.realm_intrinsics(&realm);
+    // Intrinsics are computed once per top-level deserialization; cloning the
+    // 3.5 KiB struct at every nesting level was measurable.
 
     match serialized {
         // Step 5: If serialized.[[Type]] is "primitive", then set value to serialized.[[Value]].
@@ -1043,7 +1184,7 @@ fn structured_deserialize(
         //           object in targetRealm whose [[StringData]] internal slot value is
         //           serialized.[[StringData]].
         SerializedRecord::String(s) => {
-            let str_val = ec.value_from_string(ec.js_string_from_str(&String::from_utf16_lossy(s)));
+            let str_val = ec.value_from_string(ec.js_string_from_utf16(s));
             let obj = ec.construct(intrinsics.string.clone(), &[str_val], None)?;
             value = Types::value_from_object(obj);
         }
@@ -1106,18 +1247,7 @@ fn structured_deserialize(
                     None,
                 )
                 .map_err(|_| crate::webidl::data_clone_error_value(ec))?;
-            // Write data byte by byte using set_value_in_buffer with Uint8.
-            for (i, byte) in data_copy.iter().enumerate() {
-                let byte_val = ec.value_from_number(*byte as f64);
-                ec.set_value_in_buffer(
-                    &buf,
-                    i as u64,
-                    TypedArrayElementType::Uint8,
-                    byte_val,
-                    false,
-                    js_engine::enums::SharedMemoryOrder::Unordered,
-                )?;
-            }
+            ec.set_buffer_bytes(&buf, 0, data_copy)?;
             let buf_obj = Types::object_from_array_buffer(buf);
             value = Types::value_from_object(buf_obj);
         }
@@ -1133,13 +1263,14 @@ fn structured_deserialize(
             //   Let deserializedArrayBuffer be ?
             //     StructuredDeserialize(serialized.[[ArrayBufferSerialized]], targetRealm, memory).
             let deserialized_buffer =
-                structured_deserialize(buffer_serialized, _target_realm, memory, ec)?;
+                structured_deserialize(buffer_serialized, _target_realm, memory, intrinsics, ec)?;
             let buffer_obj = Types::value_as_object(&deserialized_buffer)
                 .ok_or_else(|| ec.new_type_error("deserialized buffer is not an object"))?;
 
             if constructor == "DataView" {
                 let buffer = Types::object_as_array_buffer(&buffer_obj)
                     .ok_or_else(|| ec.new_type_error("expected ArrayBuffer for DataView"))?;
+                check_view_in_bounds(&buffer, *byte_offset, *byte_length, 1, ec)?;
                 let dv = ec.construct_data_view_from_buffer(buffer, *byte_offset, *byte_length)?;
                 let dv_obj = Types::object_from_data_view(dv);
                 value = Types::value_from_object(dv_obj);
@@ -1149,6 +1280,8 @@ fn structured_deserialize(
                 })?;
                 let buffer = Types::object_as_array_buffer(&buffer_obj)
                     .ok_or_else(|| ec.new_type_error("expected ArrayBuffer for TypedArray"))?;
+                let element_size = typed_array_element_byte_size(kind);
+                check_view_in_bounds(&buffer, *byte_offset, *byte_length, element_size, ec)?;
                 let ta = ec.construct_typed_array_view(kind, buffer, *byte_offset, *byte_length)?;
                 let ta_obj = Types::object_from_typed_array(ta);
                 value = Types::value_from_object(ta_obj);
@@ -1193,7 +1326,7 @@ fn structured_deserialize(
             stack,
             cause,
         } => {
-            value = deserialize_error(name, message, stack, cause, ec)?;
+            value = deserialize_error(name, message, stack, cause, memory, intrinsics, ec)?;
         }
 
         // Step 22: Otherwise (platform object):
@@ -1210,15 +1343,25 @@ fn structured_deserialize(
     }
 
     // Step 23: Set memory[serialized] to value.  The serialization assigns
-    // memory indices to exactly the record kinds that can be back-referenced
-    // (object containers and the transfer placeholders); the same kinds get
-    // their deserialized object reserved here, in the same pre-order.
+    // memory indices to exactly these record kinds (the containers, and every
+    // other object record it memoizes); the deserializer reserves an index for
+    // the same kinds in the same pre-order, so a `BackReference` resolves to
+    // the object already built for that index.
     let needs_index = matches!(
         serialized,
         SerializedRecord::Object(_)
             | SerializedRecord::Map(_)
             | SerializedRecord::Set(_)
             | SerializedRecord::Array { .. }
+            | SerializedRecord::Boolean(_)
+            | SerializedRecord::Number(_)
+            | SerializedRecord::BigInt(_)
+            | SerializedRecord::String(_)
+            | SerializedRecord::Date(_)
+            | SerializedRecord::RegExp { .. }
+            | SerializedRecord::SharedArrayBuffer { .. }
+            | SerializedRecord::ArrayBuffer { .. }
+            | SerializedRecord::ArrayBufferView { .. }
             | SerializedRecord::TransferredValue(_)
     );
     if needs_index && let Some(obj) = Types::value_as_object(&value) {
@@ -1234,8 +1377,10 @@ fn structured_deserialize(
                     .and_then(|o| Types::object_as_map(&o))
                     .ok_or_else(|| ec.new_type_error("expected Map"))?;
                 for (key_rec, val_rec) in entries {
-                    let dk = structured_deserialize(key_rec, _target_realm, memory, ec)?;
-                    let dv = structured_deserialize(val_rec, _target_realm, memory, ec)?;
+                    let dk =
+                        structured_deserialize(key_rec, _target_realm, memory, intrinsics, ec)?;
+                    let dv =
+                        structured_deserialize(val_rec, _target_realm, memory, intrinsics, ec)?;
                     ec.map_set_entry(&map_obj, dk, dv)?;
                 }
             }
@@ -1246,7 +1391,7 @@ fn structured_deserialize(
                     .and_then(|o| Types::object_as_set(&o))
                     .ok_or_else(|| ec.new_type_error("expected Set"))?;
                 for entry in entries {
-                    let de = structured_deserialize(entry, _target_realm, memory, ec)?;
+                    let de = structured_deserialize(entry, _target_realm, memory, intrinsics, ec)?;
                     ec.set_add_entry(&set_obj, de)?;
                 }
             }
@@ -1256,10 +1401,12 @@ fn structured_deserialize(
                 let obj = Types::value_as_object(&value)
                     .ok_or_else(|| ec.new_type_error("expected object"))?;
                 for (key, val_rec) in properties {
-                    let dv = structured_deserialize(val_rec, _target_realm, memory, ec)?;
-                    let key_str = String::from_utf16_lossy(key);
-                    let pk = ec.property_key_from_str(&key_str);
-                    ec.set(obj.clone(), pk, dv, true)?;
+                    let dv =
+                        structured_deserialize(val_rec, _target_realm, memory, intrinsics, ec)?;
+                    let pk = ec.property_key_from_utf16(key);
+                    // Step 24.c defines the property with CreateDataProperty: no
+                    // `__proto__` setter, no page-visible side effects.
+                    ec.create_data_property(obj.clone(), pk, dv)?;
                 }
             }
 
@@ -1284,7 +1431,7 @@ fn deserialize_primitive_value(
         PrimitiveValue::Boolean(b) => Ok(ec.value_from_bool(*b)),
         PrimitiveValue::Number(n) => Ok(ec.value_from_number(*n)),
         PrimitiveValue::String(s) => {
-            let js_str = ec.js_string_from_str(&String::from_utf16_lossy(s));
+            let js_str = ec.js_string_from_utf16(s);
             Ok(ec.value_from_string(js_str))
         }
         PrimitiveValue::BigInt(s) => {
@@ -1322,11 +1469,10 @@ fn deserialize_error(
     message: &Option<String>,
     stack: &str,
     cause: &Option<Box<SerializedRecord>>,
+    memory: &mut MemoryMap,
+    intrinsics: &RealmIntrinsics<Types>,
     ec: &mut dyn ExecutionContext<Types>,
 ) -> Completion<JsValue, Types> {
-    let realm = ec.current_realm();
-    let intrinsics = ec.realm_intrinsics(&realm);
-
     // Steps 21.1-21.7: Select constructor based on error name.
     let error_ctor = match name {
         "EvalError" => intrinsics.eval_error.clone(),
@@ -1358,13 +1504,12 @@ fn deserialize_error(
 
     // Additionally deserialize [[ErrorData]].[[Cause]] if present.
     if let Some(cause_serialized) = cause {
-        let mut cause_memory = MemoryMap::default();
-        if let Ok(cause_val) = structured_deserialize(
-            cause_serialized,
-            &ec.value_undefined(),
-            &mut cause_memory,
-            ec,
-        ) {
+        // The cause shares the outer memory map, so a cause chain is bounded
+        // like any other nesting and a shared node or cycle resolves.
+        let undefined = ec.value_undefined();
+        if let Ok(cause_val) =
+            structured_deserialize(cause_serialized, &undefined, memory, intrinsics, ec)
+        {
             let cause_key = ec.property_key_from_str("cause");
             ec.set(error_obj.clone(), cause_key, cause_val, true)?;
         }
@@ -1414,18 +1559,7 @@ pub fn structured_deserialize_with_transfer(
                 let buf = ec
                     .allocate_array_buffer(intrinsics.array_buffer.clone(), data.len() as u64, None)
                     .map_err(|_| crate::webidl::data_clone_error_value(ec))?;
-                // Write data into the buffer byte by byte.
-                for (i, byte) in data.iter().enumerate() {
-                    let byte_val = ec.value_from_number(*byte as f64);
-                    ec.set_value_in_buffer(
-                        &buf,
-                        i as u64,
-                        TypedArrayElementType::Uint8,
-                        byte_val,
-                        false,
-                        js_engine::enums::SharedMemoryOrder::Unordered,
-                    )?;
-                }
+                ec.set_buffer_bytes(&buf, 0, data)?;
                 let buf_obj = Types::object_from_array_buffer(buf);
                 Types::value_from_object(buf_obj)
             }
@@ -1475,8 +1609,15 @@ pub fn structured_deserialize_with_transfer(
 
     // Step 4: Let deserialized be ? StructuredDeserialize(
     //           serializeWithTransferResult.[[Serialized]], targetRealm, memory).
-    let deserialized =
-        structured_deserialize(&serialize_result.serialized, target_realm, &mut memory, ec)?;
+    let realm = ec.current_realm();
+    let intrinsics = ec.realm_intrinsics(&realm);
+    let deserialized = structured_deserialize(
+        &serialize_result.serialized,
+        target_realm,
+        &mut memory,
+        &intrinsics,
+        ec,
+    )?;
 
     // Step 5: Return { [[Deserialized]]: deserialized, [[TransferredValues]]: transferredValues }.
     Ok(DeserializeWithTransferResult {

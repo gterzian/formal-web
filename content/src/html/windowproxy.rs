@@ -41,6 +41,11 @@ pub(crate) enum WindowProxyBacking {
         /// <https://html.spec.whatwg.org/#concept-windowproxy-window>
         /// The Window's JS object handle.
         js_object: JsObject,
+
+        /// The origin of the backing Window's document, serialized for the
+        /// same-origin-domain comparison.
+        #[ignore_trace]
+        origin: String,
     },
 
     /// The navigable's active Window was created in another content process;
@@ -123,13 +128,26 @@ fn cross_origin_property_fallback(
 }
 
 /// <https://html.spec.whatwg.org/#isplatformobjectsameorigin-(-o-)>
-fn is_platform_object_same_origin(backing: &WindowProxyBacking) -> bool {
+fn is_platform_object_same_origin(
+    backing: &WindowProxyBacking,
+    ec: &mut dyn ExecutionContext<Types>,
+) -> bool {
     // Step 1: "Return true if the current settings object's origin is same
     //           origin-domain with O's relevant settings object's origin, and
     //           false otherwise."
-    // Note: Same origin-domain is approximated by the navigable's window
-    // living in this content process (same agent cluster).
-    matches!(backing, WindowProxyBacking::SameContentProcess { .. })
+    // Note: Only a locally-backed Window can be same origin-domain; a
+    // cross-content-process Window is not.  The comparison uses the two
+    // environment settings objects' serialized origins.  The origin is the
+    // settings-object origin (which an about:blank document inherits from its
+    // creator), not the creation URL's origin (opaque for about:blank).
+    let WindowProxyBacking::SameContentProcess { origin, .. } = backing else {
+        return false;
+    };
+    let Ok(Some(current)) = with_global_scope(ec, |global_scope, _| Ok(global_scope.origin()))
+    else {
+        return false;
+    };
+    current == *origin
 }
 
 /// <https://html.spec.whatwg.org/#crossorigingetownpropertyhelper-(-o,-p-)>
@@ -272,7 +290,7 @@ fn trap_get_prototype_of(
     // Step 1: "Let W be the value of the [[Window]] internal slot of this."
     // Step 2: "If IsPlatformObjectSameOrigin(W) is true, then return !
     //           OrdinaryGetPrototypeOf(W)."
-    if is_platform_object_same_origin(&backing) {
+    if is_platform_object_same_origin(&backing, ec) {
         let Some(window_object) = window_object_handle(&backing) else {
             return Ok(ec.value_null());
         };
@@ -299,7 +317,7 @@ fn trap_set_prototype_of(
     // Step 1: "Return ! SetImmutablePrototype(this, V)."
     // Note: A cross-content-process window has no local Window, so its
     // prototype is null.
-    let current = if is_platform_object_same_origin(&backing) {
+    let current = if is_platform_object_same_origin(&backing, ec) {
         let Some(window_object) = window_object_handle(&backing) else {
             return Ok(ec.value_from_bool(false));
         };
@@ -349,7 +367,7 @@ fn trap_get_own_property_descriptor(
     // Note: Child navigable support not yet implemented.
     // Step 3: "If IsPlatformObjectSameOrigin(W) is true, then return !
     //           OrdinaryGetOwnProperty(W, P)."
-    if is_platform_object_same_origin(&backing) {
+    if is_platform_object_same_origin(&backing, ec) {
         let Some(window_object) = window_object_handle(&backing) else {
             return Ok(ec.value_undefined());
         };
@@ -422,7 +440,7 @@ fn trap_define_property(
 
     // Step 1: "Let W be the value of the [[Window]] internal slot of this."
     // Step 2: "If IsPlatformObjectSameOrigin(W) is true:"
-    if is_platform_object_same_origin(&backing) {
+    if is_platform_object_same_origin(&backing, ec) {
         let Some(window_object) = window_object_handle(&backing) else {
             return Ok(ec.value_from_bool(false));
         };
@@ -464,7 +482,7 @@ fn trap_get(
     // Note: Access reporting is not yet implemented.
     // Step 3: "If IsPlatformObjectSameOrigin(W) is true, then return ?
     //           OrdinaryGet(this, P, Receiver)."
-    if is_platform_object_same_origin(&backing) {
+    if is_platform_object_same_origin(&backing, ec) {
         let Some(window_object) = window_object_handle(&backing) else {
             return Ok(ec.value_undefined());
         };
@@ -513,7 +531,7 @@ fn trap_set(
     //           reported, ..."
     // Note: Access reporting is not yet implemented.
     // Step 3: "If IsPlatformObjectSameOrigin(W) is true:"
-    if is_platform_object_same_origin(&backing) {
+    if is_platform_object_same_origin(&backing, ec) {
         let Some(window_object) = window_object_handle(&backing) else {
             return Ok(ec.value_from_bool(false));
         };
@@ -545,7 +563,7 @@ fn trap_delete_property(
 
     // Step 1: "Let W be the value of the [[Window]] internal slot of this."
     // Step 2: "If IsPlatformObjectSameOrigin(W) is true:"
-    if is_platform_object_same_origin(&backing) {
+    if is_platform_object_same_origin(&backing, ec) {
         let Some(window_object) = window_object_handle(&backing) else {
             return Ok(ec.value_from_bool(false));
         };
@@ -593,7 +611,7 @@ fn trap_has(
     }
 
     let prop_key = ec.to_property_key(key)?;
-    let backing_object = if is_platform_object_same_origin(&backing) {
+    let backing_object = if is_platform_object_same_origin(&backing, ec) {
         window_object_handle(&backing).unwrap_or_else(|| proxy_target.clone())
     } else {
         proxy_target
@@ -617,7 +635,7 @@ fn trap_own_keys(
     // Step 3: "Let keys be the range 0 to maxProperties, exclusive."
     // Step 4: "If IsPlatformObjectSameOrigin(W) is true, then return the
     //           concatenation of keys and OrdinaryOwnPropertyKeys(W)."
-    if is_platform_object_same_origin(&backing) {
+    if is_platform_object_same_origin(&backing, ec) {
         let backing_object = window_object_handle(&backing).unwrap_or_else(|| proxy_target.clone());
         let window_keys = ec.own_property_keys(backing_object)?;
         let key_array = ec.create_empty_array();
@@ -692,6 +710,20 @@ fn wrap_callable_result(
     None
 }
 
+/// Build a same-content-process backing, recording the backing Window's
+/// document origin for `is_platform_object_same_origin`.
+pub(crate) fn same_content_process_backing(
+    window: Window,
+    js_object: JsObject,
+) -> WindowProxyBacking {
+    let origin = window.global_scope.origin().unwrap_or_default();
+    WindowProxyBacking::SameContentProcess {
+        window,
+        js_object,
+        origin,
+    }
+}
+
 /// <https://html.spec.whatwg.org/#the-windowproxy-exotic-object>
 pub(crate) fn create_window_proxy(
     navigable_id: NavigableId,
@@ -724,7 +756,7 @@ pub(crate) fn create_window_proxy(
         with_global_scope(ec, |global_scope, ec| {
             global_scope.set_window_proxy_backing(
                 navigable_id,
-                WindowProxyBacking::SameContentProcess { window, js_object },
+                same_content_process_backing(window, js_object),
                 ec,
             );
             Ok(())
@@ -739,9 +771,7 @@ pub(crate) fn create_window_proxy(
         Some(window_proxy) => window_proxy,
         None => {
             let backing = match local_window {
-                Some((window, js_object)) => {
-                    WindowProxyBacking::SameContentProcess { window, js_object }
-                }
+                Some((window, js_object)) => same_content_process_backing(window, js_object),
                 None => WindowProxyBacking::CrossContentProcess,
             };
             let window_proxy = WindowProxy::new(navigable_id, backing, ec);

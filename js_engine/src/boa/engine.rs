@@ -18,25 +18,8 @@
 //! - `evaluate_module` — module loader not wired (`todo!()`)
 //! - `generator_start` — VM internal (`todo!()`)
 //!
-//! ### Silent no-ops (return plausible-looking fake data)
-//!
-//! These methods return default values instead of implementing the full
-//! spec algorithm.  Unlike `todo!()` they do not panic, so callers get
-//! no error signal:
-//!
-//! - `get_value_from_buffer` — always returns `undefined`
-//! - `set_value_in_buffer` — always `Ok(())`, does nothing
-//! - `is_detached_buffer` — always `false` (Boa's `JsArrayBuffer` doesn't
-//!   expose `[[IsDetached]]` through its public API)
-//! - `is_fixed_length_array_buffer` — always `true` (resizable ArrayBuffers
-//!   not supported)
-//! - `species_constructor` — always returns `default_constructor`, ignores
-//!   `@@species` entirely
-//! - `set_host_hooks` — no-op for Boa (host hooks are set during
-//!   `ContextBuilder::host_hooks()`, not at runtime)
-//!
-//! See `js_engine/README.md` for the migration plan and
-//! `super::mod.rs` for known Boa-specific quirks.
+//! See `js_engine/src/boa/README.md` for the current backend gaps and
+//! `js_engine/README.md` for the migration plan.
 
 use boa_engine::{
     Context, JsBigInt, JsError, JsNativeError, JsResult, JsSymbol, JsValue,
@@ -46,8 +29,10 @@ use boa_engine::{
     object::{
         FunctionObjectBuilder, JsObject,
         builtins::{
-            JsArray, JsArrayBuffer, JsDataView, JsFunction, JsGenerator, JsPromise,
-            JsSharedArrayBuffer, JsTypedArray, JsUint8Array,
+            JsArray, JsArrayBuffer, JsBigInt64Array, JsBigUint64Array, JsDataView, JsFloat32Array,
+            JsFloat64Array, JsFunction, JsGenerator, JsInt8Array, JsInt16Array, JsInt32Array,
+            JsPromise, JsSharedArrayBuffer, JsTypedArray, JsUint8Array, JsUint8ClampedArray,
+            JsUint16Array, JsUint32Array,
         },
         builtins::{JsDate, JsMap, JsRegExp, JsSet},
     },
@@ -815,10 +800,13 @@ impl ExecutionContext<BoaTypes> for BoaContext {
     }
 
     fn to_numeric(&mut self, value: JsValue) -> Completion<Numeric<BoaTypes>, BoaTypes> {
-        if let Some(bigint) = value.as_bigint() {
+        // ToNumeric is ToPrimitive(value, number) followed by ToNumber, except
+        // that a BigInt result is returned as-is (ToNumber would throw).
+        let primitive = self.to_primitive(value, Some(PreferredType::Number))?;
+        if let Some(bigint) = primitive.as_bigint() {
             return Ok(Numeric::BigInt(bigint.clone()));
         }
-        self.to_number(value).map(Numeric::Number)
+        self.to_number(primitive).map(Numeric::Number)
     }
 
     fn to_int32(&mut self, value: JsValue) -> Completion<i32, BoaTypes> {
@@ -1689,8 +1677,9 @@ impl ExecutionContext<BoaTypes> for BoaContext {
         JsEngine::detach_array_buffer(self, array_buffer, key)
     }
 
-    fn is_detached_buffer(&self, _array_buffer: &JsArrayBuffer) -> bool {
-        false // HARD: Boa's JsArrayBuffer doesn't expose is_detached publicly
+    fn is_detached_buffer(&self, array_buffer: &JsArrayBuffer) -> bool {
+        // `JsArrayBuffer::data` returns `None` once the buffer is detached.
+        array_buffer.data().is_none()
     }
 
     fn is_fixed_length_array_buffer(&self, _array_buffer: &JsArrayBuffer) -> bool {
@@ -1701,15 +1690,34 @@ impl ExecutionContext<BoaTypes> for BoaContext {
         &mut self,
         array_buffer: &JsArrayBuffer,
         byte_index: u64,
-        _element_type: TypedArrayElementType,
+        element_type: TypedArrayElementType,
         _is_typed_array: bool,
         _order: SharedMemoryOrder,
     ) -> JsValue {
-        match JsUint8Array::from_array_buffer(array_buffer.clone(), &mut self.context) {
-            Ok(uint8) => uint8
-                .at(byte_index as i64, &mut self.context)
-                .unwrap_or_default(),
-            Err(_) => JsValue::undefined(),
+        macro_rules! read_view {
+            ($view:ty, $size:expr) => {
+                <$view>::from_array_buffer(array_buffer.clone(), &mut self.context)
+                    .and_then(|view| view.at((byte_index / $size) as i64, &mut self.context))
+                    .unwrap_or_else(|error| {
+                        error
+                            .into_opaque(&mut self.context)
+                            .unwrap_or(JsValue::undefined())
+                    })
+            };
+        }
+        match element_type {
+            TypedArrayElementType::Int8 => read_view!(JsInt8Array, 1),
+            TypedArrayElementType::Uint8 => read_view!(JsUint8Array, 1),
+            TypedArrayElementType::Uint8Clamped => read_view!(JsUint8ClampedArray, 1),
+            TypedArrayElementType::Int16 => read_view!(JsInt16Array, 2),
+            TypedArrayElementType::Uint16 => read_view!(JsUint16Array, 2),
+            TypedArrayElementType::Int32 => read_view!(JsInt32Array, 4),
+            TypedArrayElementType::Uint32 => read_view!(JsUint32Array, 4),
+            TypedArrayElementType::Float32 => read_view!(JsFloat32Array, 4),
+            TypedArrayElementType::Float64 => read_view!(JsFloat64Array, 8),
+            TypedArrayElementType::BigInt64 => read_view!(JsBigInt64Array, 8),
+            TypedArrayElementType::BigUint64 => read_view!(JsBigUint64Array, 8),
+            TypedArrayElementType::Float16 => JsValue::undefined(),
         }
     }
 
@@ -1717,24 +1725,66 @@ impl ExecutionContext<BoaTypes> for BoaContext {
         &mut self,
         array_buffer: &JsArrayBuffer,
         byte_index: u64,
-        _element_type: TypedArrayElementType,
+        element_type: TypedArrayElementType,
         value: JsValue,
         _is_typed_array: bool,
         _order: SharedMemoryOrder,
     ) -> Completion<(), BoaTypes> {
-        // Write the value through a Uint8Array view over the buffer using
-        // TypedArray.prototype.set, which performs the byte write.
-        let uint8 = match JsUint8Array::from_array_buffer(array_buffer.clone(), &mut self.context) {
-            Ok(uint8) => uint8,
-            Err(error) => {
-                return Err(error
-                    .into_opaque(&mut self.context)
-                    .unwrap_or(JsValue::undefined()));
+        macro_rules! write_view {
+            ($view:ty, $size:expr) => {{
+                let view = <$view>::from_array_buffer(array_buffer.clone(), &mut self.context)
+                    .map_err(|error| {
+                        error
+                            .into_opaque(&mut self.context)
+                            .unwrap_or(JsValue::undefined())
+                    })?;
+                let source = JsArray::from_iter([value], &mut self.context);
+                view.set_values(
+                    JsValue::from(source),
+                    Some(byte_index / $size),
+                    &mut self.context,
+                )
+                .map(|_| ())
+                .map_err(|error| {
+                    error
+                        .into_opaque(&mut self.context)
+                        .unwrap_or(JsValue::undefined())
+                })
+            }};
+        }
+        match element_type {
+            TypedArrayElementType::Int8 => write_view!(JsInt8Array, 1),
+            TypedArrayElementType::Uint8 => write_view!(JsUint8Array, 1),
+            TypedArrayElementType::Uint8Clamped => write_view!(JsUint8ClampedArray, 1),
+            TypedArrayElementType::Int16 => write_view!(JsInt16Array, 2),
+            TypedArrayElementType::Uint16 => write_view!(JsUint16Array, 2),
+            TypedArrayElementType::Int32 => write_view!(JsInt32Array, 4),
+            TypedArrayElementType::Uint32 => write_view!(JsUint32Array, 4),
+            TypedArrayElementType::Float32 => write_view!(JsFloat32Array, 4),
+            TypedArrayElementType::Float64 => write_view!(JsFloat64Array, 8),
+            TypedArrayElementType::BigInt64 => write_view!(JsBigInt64Array, 8),
+            TypedArrayElementType::BigUint64 => write_view!(JsBigUint64Array, 8),
+            TypedArrayElementType::Float16 => {
+                Err(self.new_type_error("Float16Array is not supported by Boa"))
             }
-        };
-        let source = JsArray::from_iter([value], &mut self.context);
-        uint8
-            .set_values(JsValue::from(source), Some(byte_index), &mut self.context)
+        }
+    }
+
+    fn set_buffer_bytes(
+        &mut self,
+        array_buffer: &JsArrayBuffer,
+        byte_offset: u64,
+        bytes: &[u8],
+    ) -> Completion<(), BoaTypes> {
+        let view = JsUint8Array::from_array_buffer(array_buffer.clone(), &mut self.context)
+            .map_err(|error| {
+                error
+                    .into_opaque(&mut self.context)
+                    .unwrap_or(JsValue::undefined())
+            })?;
+        let source =
+            JsArray::from_iter(bytes.iter().copied().map(JsValue::from), &mut self.context);
+        view.set_values(JsValue::from(source), Some(byte_offset), &mut self.context)
             .map(|_| ())
             .map_err(|error| {
                 error
@@ -2186,6 +2236,26 @@ impl ExecutionContext<BoaTypes> for BoaContext {
         }
     }
 
+    fn property_key_is_symbol(&self, key: &PropertyKey) -> bool {
+        matches!(key, PropertyKey::Symbol(_))
+    }
+
+    fn property_key_to_utf16(&self, key: &PropertyKey) -> Vec<u16> {
+        match key {
+            PropertyKey::String(s) => s.to_vec(),
+            PropertyKey::Index(i) => i.get().to_string().encode_utf16().collect(),
+            PropertyKey::Symbol(_) => Vec::new(),
+        }
+    }
+
+    fn property_key_from_utf16(&self, units: &[u16]) -> PropertyKey {
+        let mut builder = boa_engine::string::Utf16JsStringBuilder::with_capacity(units.len());
+        builder.extend_from_slice(units);
+        // `PropertyKey::from` recognizes a canonical array index, which an
+        // array's [[DefineOwnProperty]] requires to update `length`.
+        PropertyKey::from(builder.build())
+    }
+
     // ── Host-Defined Data Store ───────────────────────────────────────────
 
     // ── Error Reporting ──────────────────────────────────────────────────
@@ -2324,6 +2394,16 @@ impl ExecutionContext<BoaTypes> for BoaContext {
 
     fn js_string_to_rust_string(&self, s: &boa_engine::JsString) -> String {
         s.to_std_string_escaped()
+    }
+
+    fn js_string_to_utf16(&self, s: &boa_engine::JsString) -> Vec<u16> {
+        s.to_vec()
+    }
+
+    fn value_is_proxy(&self, value: &JsValue) -> bool {
+        value
+            .as_object()
+            .is_some_and(|object| object.is::<boa_engine::builtins::proxy::Proxy>())
     }
 
     // ── Array Construction ───────────────────────────────────────────
@@ -2665,6 +2745,12 @@ impl EcmascriptHost<BoaTypes> for BoaContext {
 
     fn js_string_from_str(&self, s: &str) -> boa_engine::JsString {
         boa_engine::js_string!(s)
+    }
+
+    fn js_string_from_utf16(&self, units: &[u16]) -> boa_engine::JsString {
+        let mut builder = boa_engine::string::Utf16JsStringBuilder::with_capacity(units.len());
+        builder.extend_from_slice(units);
+        builder.build()
     }
 }
 

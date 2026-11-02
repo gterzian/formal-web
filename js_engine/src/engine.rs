@@ -79,6 +79,11 @@ pub trait EcmascriptHost<T: JsTypes> {
     /// <https://tc39.es/ecma262/#sec-ecmascript-language-types>
     /// Construct a `JsString` value from a `&str`.
     fn js_string_from_str(&self, s: &str) -> T::JsString;
+
+    /// <https://tc39.es/ecma262/#sec-ecmascript-language-types>
+    /// Construct a `JsString` value from UTF-16 code units, preserving lone
+    /// surrogates (a `&str` cannot represent them).
+    fn js_string_from_utf16(&self, units: &[u16]) -> T::JsString;
 }
 
 // ────────────────────────────────────────────────────────────────────────────
@@ -186,6 +191,23 @@ pub trait ExecutionContext<T: JsTypes + JsTypesWithRealm>: EcmascriptHost<T> {
 
     /// <https://tc39.es/ecma262/#sec-samevalue>
     fn same_value(&self, x: &T::JsValue, y: &T::JsValue) -> bool;
+
+    /// Whether two object handles denote the same object.  Backends with a
+    /// cheap exact identity fast path override this; the default compares the
+    /// values through `same_value`.
+    fn same_object(&self, left: &T::JsObject, right: &T::JsObject) -> bool {
+        self.same_value(
+            &T::value_from_object(left.clone()),
+            &T::value_from_object(right.clone()),
+        )
+    }
+
+    /// A stable hash of an object's identity, or 0 when the backend has no
+    /// identity hash.  Two handles to one object return the same hash, but a
+    /// hash collision is possible: callers must verify with `same_object`.
+    fn object_identity_hash(&self, _object: &T::JsObject) -> u32 {
+        0
+    }
 
     /// <https://tc39.es/ecma262/#sec-samevaluezero>
     fn same_value_zero(&self, x: &T::JsValue, y: &T::JsValue) -> bool;
@@ -463,6 +485,29 @@ pub trait ExecutionContext<T: JsTypes + JsTypesWithRealm>: EcmascriptHost<T> {
         order: SharedMemoryOrder,
     ) -> Completion<(), T>;
 
+    /// Copy `bytes` into the buffer at `byte_offset`.  Bulk form of
+    /// `set_value_in_buffer` for Uint8 data (structured clone, byte-stream
+    /// copies); backends with a direct backing-store write override it.
+    fn set_buffer_bytes(
+        &mut self,
+        array_buffer: &T::ArrayBuffer,
+        byte_offset: u64,
+        bytes: &[u8],
+    ) -> Completion<(), T> {
+        for (index, byte) in bytes.iter().enumerate() {
+            let value = self.value_from_number(f64::from(*byte));
+            self.set_value_in_buffer(
+                array_buffer,
+                byte_offset + index as u64,
+                TypedArrayElementType::Uint8,
+                value,
+                false,
+                SharedMemoryOrder::Unordered,
+            )?;
+        }
+        Ok(())
+    }
+
     // ────────────────────────────────────────────────────────────────────────
     // §23.2 TypedArray Objects
     // ────────────────────────────────────────────────────────────────────────
@@ -668,6 +713,21 @@ pub trait ExecutionContext<T: JsTypes + JsTypesWithRealm>: EcmascriptHost<T> {
     /// Symbols are represented as their `Symbol(name)` string.
     fn property_key_to_rust_string(&self, key: &T::PropertyKey) -> String;
 
+    /// Whether `key` is a Symbol key.  `property_key_to_rust_string` renders a
+    /// symbol as text, which is indistinguishable from a string key with that
+    /// text; callers that must treat the two differently ask here.
+    fn property_key_is_symbol(&self, key: &T::PropertyKey) -> bool;
+
+    /// <https://tc39.es/ecma262/#sec-type-conversion>
+    /// The UTF-16 code units of a string `PropertyKey`, preserving lone
+    /// surrogates.  Only valid for string and index keys.
+    fn property_key_to_utf16(&self, key: &T::PropertyKey) -> Vec<u16>;
+
+    /// <https://tc39.es/ecma262/#sec-type-conversion>
+    /// Build a string `PropertyKey` from UTF-16 code units, preserving lone
+    /// surrogates.
+    fn property_key_from_utf16(&self, units: &[u16]) -> T::PropertyKey;
+
     // ────────────────────────────────────────────────────────────────────────
     // Host-Defined Data Store (analogous to boa_engine::Context::get_data/insert_data)
     // ────────────────────────────────────────────────────────────────────────
@@ -756,6 +816,48 @@ pub trait ExecutionContext<T: JsTypes + JsTypesWithRealm>: EcmascriptHost<T> {
     /// Extract a Rust `String` from an engine-native `JsString`.
     /// Pure operation — does not execute JS code.
     fn js_string_to_rust_string(&self, s: &T::JsString) -> String;
+
+    /// <https://tc39.es/ecma262/#sec-thisnumbervalue>
+    /// The [[NumberData]] of a Number wrapper object.  The cached slot answers
+    /// when the backend recorded it; a backend that can read the slot without
+    /// running page code overrides this.
+    fn number_wrapper_value(&mut self, object: &T::JsObject) -> Completion<Option<f64>, T> {
+        Ok(T::number_wrapper_data(object))
+    }
+
+    /// <https://tc39.es/ecma262/#sec-thisbooleanvalue>
+    /// The [[BooleanData]] of a Boolean wrapper object, read from the wrapper's
+    /// internal slot rather than through a page-visible `valueOf`.
+    fn boolean_wrapper_value(&mut self, object: &T::JsObject) -> Completion<Option<bool>, T> {
+        Ok(T::boolean_wrapper_data(object))
+    }
+
+    /// <https://tc39.es/ecma262/#sec-thisstringvalue>
+    /// The [[StringData]] of a String wrapper object, read from the wrapper's
+    /// internal slot rather than through a page-visible `valueOf`.
+    fn string_wrapper_value(&mut self, object: &T::JsObject) -> Completion<Option<T::JsString>, T> {
+        Ok(T::string_wrapper_data(object))
+    }
+
+    /// <https://tc39.es/ecma262/#sec-thisbigintvalue>
+    /// The [[BigIntData]] of a BigInt wrapper object, read from the wrapper's
+    /// internal slot rather than through a page-visible `valueOf`.
+    fn bigint_wrapper_value(&mut self, object: &T::JsObject) -> Completion<Option<T::JsBigInt>, T> {
+        Ok(T::bigint_wrapper_data(object))
+    }
+
+    /// <https://tc39.es/ecma262/#sec-ecmascript-language-types>
+    /// The UTF-16 code units of a string, preserving lone surrogates (which
+    /// `js_string_to_rust_string` cannot represent).
+    fn js_string_to_utf16(&self, s: &T::JsString) -> Vec<u16>;
+
+    /// <https://tc39.es/ecma262/#sec-proxy-object-internal-methods-and-internal-slots>
+    /// Whether the value is a Proxy exotic object.  A caller that must reject
+    /// a Proxy without running its traps asks here: every slot or property
+    /// probe would otherwise invoke one.
+    fn value_is_proxy(&self, _value: &T::JsValue) -> bool {
+        false
+    }
 
     /// Convenience: apply ECMA-262 `ToString` then extract as Rust `String`.
     /// Combines `to_js_string(value).and_then(|s| Ok(js_string_to_rust_string(&s)))`.

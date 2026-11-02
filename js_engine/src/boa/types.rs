@@ -134,6 +134,9 @@ impl JsTypes for BoaTypes {
         JsFunction::from_object(o.clone())
     }
     fn object_as_constructor(o: &Self::JsObject) -> Option<Self::Constructor> {
+        if !o.is_constructor() {
+            return None;
+        }
         JsFunction::from_object(o.clone())
     }
     fn object_as_map(o: &Self::JsObject) -> Option<Self::Map> {

@@ -29,8 +29,27 @@ backend (and browsers) give realm B's.  Observed through
 `e.constructor === window.DOMException` on the caller side; the callee-realm
 switch performed by the V8 callback machinery has no Boa counterpart.
 
+## Known gaps
+
+Backend methods that return a plausible value instead of implementing the
+full spec algorithm, plus the one generic operation Boa cannot express:
+
+- `is_array` does not follow a Proxy's `[[ProxyTarget]]`; Boa's public object
+  API exposes no target accessor.  The `is_array_sees_through_proxy` test is
+  ignored on Boa for this reason (V8 passes).
+- `set_value_in_buffer` with `Float16` throws: the `float16` feature is off.
+- `species_constructor` always returns the default constructor.
+- `is_fixed_length_array_buffer` is always true (resizable ArrayBuffers are
+  not supported).
+- `set_host_hooks` is a no-op (host hooks are set on the `ContextBuilder`).
+
+`JsTypesGcExt::Reflector` for Boa is a strong `JsObject` because Boa exposes
+no weak reflector here.  A cache built on it keeps its wrapper alive; the
+node-wrapper cache (`content/src/html/global_scope.rs`) is therefore weak on
+V8 and strong on Boa.
+
 ## WPT results
 
-Last recorded: `executed=272 unexpected=0`.
+Last recorded: `executed=277 unexpected=0`.
 
 Wasm tests are excluded from the default WPT run (opt-in `--features wasm`).

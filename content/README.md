@@ -77,6 +77,20 @@ runs the engine calls on the owned clone, then writes it back
 (`content/src/js/downcast.rs::with_cloned_platform_mut` is the shared
 helper).
 
+**Known limits.**  The shared-borrow guard cannot enforce rooting:
+`cell.borrow(ec).clone()` compiles and yields an unrooted copy, so the rules
+above are the enforcement.  The executable case is
+`generic_js_test::tests::edge_clone_taken_with_borrow_survives_collection_after_the_cell_is_cleared`;
+the API fix (a non-cloneable guard or rooted clones) is described in
+`js_engine/src/v8/README.md`, “An `Edge` clone that leaves traced storage is
+not rooted”.
+
+**Remaining GC sweep.**  `try_with_event_target_mut` and its named binding
+test are fixed.  A per-platform-type sweep — create each platform object
+through its production binding, mutate it once, and run a debug-build
+collection — is still to be run to close any other `with_object_any_mut`
+write-back site.
+
 Do not write code that hands `ec` to a closure while a cell borrow is live.
 The V8 backend enforces the rule as a backstop: `HeapCell::trace` aborts if
 marking visits a mutably-borrowed cell (a Rust panic there would unwind

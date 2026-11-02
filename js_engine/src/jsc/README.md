@@ -248,6 +248,3 @@ whole `streams/piping` suite flaked roughly every other run.
   `JSGarbageCollect` corruption identified) and `jsc_objc_2` (unified `GcCell`
   managed edges, per-object owners, microtask-job and settlement-record
   redesigns, full session logs).
-- `scratchpad/jsc-objc-gc-test/*.m` — standalone Objective-C probes for which
-  owner types protect under the synchronous collector, edge reachability, and
-  the property-set-from-callback crash.

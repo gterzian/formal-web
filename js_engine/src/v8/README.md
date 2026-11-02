@@ -139,45 +139,40 @@ Cargo home directory.
 
 ## WPT results
 
-Last recorded: `executed=272 unexpected=0`.
+Last recorded: `executed=277 unexpected=0`.
 
 ## Remaining work
 
-1. **Edge equality approximation.** `V8Object`/`V8Symbol` `PartialEq` uses
-   `V8Handle::same_identity`, which is exact for clones of one edge but
-   under-approximates two independently created edges to the same object
-   (use `ec.same_value` for those — `Callback::equals` already does).
-2. **Wrapper data for Boolean/String/BigInt created by scripts.** The
-   `wrapper_primitive` profile slot is extracted at wrap time only for
-   Number wrappers (the native `NumberValue` fast path unboxes
-   `[[NumberData]]`). Wrappers created by evaluating `new Boolean(false)`,
-   `new String("x")`, or `Object(5n)` therefore report `None` from
-   `boolean_wrapper_data`/`string_wrapper_data`/`bigint_wrapper_data`;
-   the `construct` path coerces Boolean/String arguments (BigInt has no
-   [[Construct]]). Extracting the other wrapper slots needs a per-realm
-   captured `%Boolean.prototype.valueOf%`-style intrinsic.
-3. **Scope-macro `&mut PinScope` reborrow.** The `v8_engine_scope_with_*`
+1. **Edge equality approximation in `PartialEq`.** `V8Object`/`V8Symbol`
+   `PartialEq` uses `V8Handle::same_identity`, which is exact for two roots or
+   clones of one edge but under-approximates mixed and independently-created
+   edges.  Live identity paths no longer use it: the associated-object lookup
+   and the structured-clone memory map use `ExecutionContext::same_object`,
+   which materializes both sides through `same_value`.  The impls remain only
+   to satisfy the generic `JsTypes` trait bounds, and are documented as
+   approximate.
+2. **Scope-macro `&mut PinScope` reborrow.** The `v8_engine_scope_with_*`
    macros reborrow the callback scope as `&mut` on each nested engine call
    during a native callback. The references never overlap in use (each is
    created, used for a bounded sequence of C calls, and dropped) and the
    underlying memory is C++-owned, but the pattern is not Stacked-Borrows
    clean; a Miri run would flag it.
-4. **The opaque closure path remains on the concrete engines.**
+3. **The opaque closure path remains on the concrete engines.**
    `create_builtin_fn` / `create_builtin_function` are no longer `JsEngine`
    trait methods, so generic domain code cannot use them; they survive as
    inherent methods for the engine tests. A future
    production caller holding a concrete engine could still pass a closure
    with rooted captures, so the doc-comment rule (capture no strong JS
    handles) still applies.
-5. **Strong roots remain in host-data holders.** `store_host_any` values and
+4. **Strong roots remain in host-data holders.** `store_host_any` values and
    `AssociatedPlatform.object` hold strong `V8Object` roots inside the
    realm's host-data holder, so a dead realm needs one extra collection
    cycle. This is safe today only because nothing JS-reachable points at the
    host-data holder; a JS path to it would form a strong cycle none of the
    current tests catch.
-6. **`is_constructor` has no exact check.** See the IsConstructor gap under
+5. **`is_constructor` has no exact check.** See the IsConstructor gap under
    "ArrayBuffer / IsConstructor gaps".
-7. **An `Edge` clone that leaves traced storage is not rooted.**
+6. **An `Edge` clone that leaves traced storage is not rooted.**
    `V8Handle::clone` on an `Edge` shares the `Rc<TracedReference>`; a clone
    obtained with `cell.borrow(ec).clone()` and then removed from its cell
    (or whose owning platform is collected) is not visited by any marker, so
@@ -188,13 +183,13 @@ Last recorded: `executed=272 unexpected=0`.
    Closing this needs V8's mark epoch (a GC prologue callback bumping a
    counter, stamped on every traced edge and checked before `to_local`) or a
    rooted `Clone`; neither is implemented.
-8. **`create_realm` retains every realm state.**
+7. **`create_realm` retains every realm state.**
    `V8Engine::created_realm_states` holds a strong `Rc<V8RealmState>` per
    `create_realm` call so the realm state outlives the returned handle. Only
    the generic engine tests call `create_realm`, but nothing removes the
    entries, so each call leaks the realm's intrinsics and host-data holder
    for the engine's lifetime.
-9. **Traced-capture payload is reached through a raw pointer.**
+8. **Traced-capture payload is reached through a raw pointer.**
    `create_builtin_fn_with_captures` caches a `*const C` into the capture
    holder and dereferences it from the callback closure. The holder is alive
    exactly while the function is callable (the closure cannot run after the
@@ -217,8 +212,8 @@ Last recorded: `executed=272 unexpected=0`.
   excluded — not ECMA-262 `IsConstructor` (§7.2.4). It is wrong for bound
   constructors ([[Construct]] mirroring a constructible target, no own
   `prototype`) and for arrow functions given a manual `prototype`
-  assignment; the `has_own_property` probe can also run a Proxy trap at wrap
-  time. `delete Foo.prototype` cannot produce a false negative — `prototype`
+  assignment; a Proxy is classified as not-a-constructor without probing it.
+  `delete Foo.prototype` cannot produce a false negative — `prototype`
   is non-configurable on functions. The exact check is
   `v8::Object::IsConstructor` (`v8-object.h`); `rusty_v8` 150.1.0 binds only
   `StackFrame::IsConstructor`, so a one-line upstream binding (or a patch to
