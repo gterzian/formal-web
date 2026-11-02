@@ -9,6 +9,7 @@ use ipc_messages::content::{
 use url::Url;
 
 use crate::html::event_loop::EventLoopTaskSources;
+use crate::html::html_iframe_element::matches_about_blank;
 use crate::html::{TimerHandler, Window};
 use crate::js::bindings::dom::document::create_document_platform_object;
 use crate::js::build_context::{build_context, build_realm};
@@ -138,6 +139,23 @@ impl EnvironmentSettingsObject {
             })?;
         }
 
+        // <https://html.spec.whatwg.org/#concept-settings-object-origin>
+        // The settings-object origin, not the creation URL's origin: an
+        // about:blank document inherits its creator's origin, and a URL that
+        // matches about:blank has an opaque origin of its own.
+        let origin = creator_origin.unwrap_or_else(|| Origin {
+            serialized: creation_url.origin().unicode_serialization(),
+        });
+        with_global_scope(&mut engine, |global_scope, _ec| {
+            global_scope.set_origin(origin.serialized.clone());
+            Ok(())
+        })
+        .map_err(|error| {
+            engine
+                .to_rust_string(error)
+                .unwrap_or_else(|_| "failed to set realm origin".to_string())
+        })?;
+
         let (document_object, document) =
             create_document_platform_object(document.clone(), creation_url.clone(), &mut engine)
                 .map_err(|error| {
@@ -202,9 +220,7 @@ impl EnvironmentSettingsObject {
         Ok(Self {
             realm_execution_context: engine,
             document,
-            origin: creator_origin.unwrap_or_else(|| Origin {
-                serialized: creation_url.origin().unicode_serialization(),
-            }),
+            origin,
             creation_url,
             referrer_policy: ReferrerPolicy::NoReferrerWhenDowngrade,
             time_origin: Instant::now(),
@@ -297,13 +313,24 @@ impl EnvironmentSettingsObject {
                     .unwrap_or_else(|_| "unknown error".to_string())
             })?;
 
+        let origin = Origin {
+            serialized: creation_url.origin().unicode_serialization(),
+        };
+        with_global_scope(&mut engine, |global_scope, _ec| {
+            global_scope.set_origin(origin.serialized.clone());
+            Ok(())
+        })
+        .map_err(|error| {
+            engine
+                .to_rust_string(error)
+                .unwrap_or_else(|_| "failed to set worker origin".to_string())
+        })?;
+
         Ok((
             Self {
                 realm_execution_context: engine,
                 document: platform_document,
-                origin: Origin {
-                    serialized: creation_url.origin().unicode_serialization(),
-                },
+                origin,
                 creation_url,
                 referrer_policy: ReferrerPolicy::NoReferrerWhenDowngrade,
                 time_origin: Instant::now(),
@@ -336,12 +363,24 @@ impl EnvironmentSettingsObject {
             &mut self.realm_execution_context,
         )
         .map_err(|error| format!("failed to create replacement document object: {:?}", error))?;
+        // <https://html.spec.whatwg.org/#concept-settings-object-origin>
+        // A destination URL that matches about:blank keeps the current
+        // document's origin (the navigation params origin is inherited); any
+        // other destination takes its own URL's origin.
+        let new_origin = if matches_about_blank(&creation_url) {
+            self.origin.clone()
+        } else {
+            Origin {
+                serialized: creation_url.origin().unicode_serialization(),
+            }
+        };
         with_global_scope(&mut self.realm_execution_context, |global_scope, ec| {
             global_scope.repoint_document(
                 Rc::clone(&document),
                 document_object,
                 document_id,
                 creation_url.clone(),
+                new_origin.serialized.clone(),
                 ec,
             );
             Ok(())
@@ -355,9 +394,7 @@ impl EnvironmentSettingsObject {
         install_document_property(&mut self.realm_execution_context)
             .map_err(|error| format!("failed to re-install document property: {:?}", error))?;
         self.document = platform_document;
-        self.origin = Origin {
-            serialized: creation_url.origin().unicode_serialization(),
-        };
+        self.origin = new_origin;
         self.creation_url = creation_url;
         Ok(())
     }
@@ -650,5 +687,9 @@ impl js_engine::EcmascriptHost<crate::js::Types> for EnvironmentSettingsObject {
     }
     fn js_string_from_str(&self, s: &str) -> JsString {
         self.realm_execution_context.js_string_from_str(s)
+    }
+
+    fn js_string_from_utf16(&self, units: &[u16]) -> JsString {
+        self.realm_execution_context.js_string_from_utf16(units)
     }
 }

@@ -24,7 +24,12 @@ cache. A truncated result ends with the `--offset` for the next page.
 
 ## Workflow
 
-1. `search` for a keyword when the exact id is unknown.
+1. `search` for an anchor id when the exact id is unknown.  It matches ids
+   only, not body text: a phrase that appears only in prose (e.g.
+   "about:blank") returns no result even though the concept exists.  In that
+   case try plausible id prefixes (`#matches-about:blank`, `#concept-...`),
+   or read the section heading around a related definition and look that
+   heading id up.
 2. `lookup` the id to read the definition, section or algorithm.
 3. `refs` to list every usage site of a concept.
 4. `refs ... --read <n>` to read the algorithm at a specific usage site.

@@ -304,10 +304,6 @@ where
                 None,
             )?;
 
-            // Run microtasks and jobs to settle the promise synchronously.
-            ec.perform_a_microtask_checkpoint()?;
-            ec.run_jobs();
-
             // Step 10.4: "Set object's ongoing promise to afterOngoingPromiseCapability.[[Promise]]."
             let result_obj = Types::value_as_object(&then_value)
                 .ok_or_else(|| ec.new_type_error("PerformPromiseThen did not return an object"))?;
@@ -403,13 +399,6 @@ where
             Some(on_rejected),
             None,
         )?;
-
-        // Run microtasks so that if nextPromise was already resolved,
-        // the onFulfilled/onRejected handlers run immediately and the
-        // result promise settles synchronously.
-        // Run microtasks to settle promise chain synchronously.
-        ec.perform_a_microtask_checkpoint()?;
-        ec.run_jobs();
 
         // Use the .then() result as the ongoing promise.
         let result_promise = Types::value_as_object(&then_result)

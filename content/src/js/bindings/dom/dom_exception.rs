@@ -16,7 +16,7 @@ fn with_dom_exception_ref<R>(
     Err(ec.new_type_error("receiver is not a DOMException"))
 }
 
-use crate::webidl::bindings::{AttributeDef, InterfaceDefinition, WebIdlInterface};
+use crate::webidl::bindings::{AttributeDef, ConstantDef, InterfaceDefinition, WebIdlInterface};
 
 use js_engine::{Completion, ExecutionContext, JsTypes};
 
@@ -42,6 +42,32 @@ impl WebIdlInterface<crate::js::Types> for DOMException {
     }
 
     fn define_members(def: &mut InterfaceDefinition<crate::js::Types>) {
+        // https://webidl.spec.whatwg.org/#idl-DOMException
+        def.add_constant(ConstantDef::number("INDEX_SIZE_ERR", 1.0));
+        def.add_constant(ConstantDef::number("DOMSTRING_SIZE_ERR", 2.0));
+        def.add_constant(ConstantDef::number("HIERARCHY_REQUEST_ERR", 3.0));
+        def.add_constant(ConstantDef::number("WRONG_DOCUMENT_ERR", 4.0));
+        def.add_constant(ConstantDef::number("INVALID_CHARACTER_ERR", 5.0));
+        def.add_constant(ConstantDef::number("NO_DATA_ALLOWED_ERR", 6.0));
+        def.add_constant(ConstantDef::number("NO_MODIFICATION_ALLOWED_ERR", 7.0));
+        def.add_constant(ConstantDef::number("NOT_FOUND_ERR", 8.0));
+        def.add_constant(ConstantDef::number("NOT_SUPPORTED_ERR", 9.0));
+        def.add_constant(ConstantDef::number("INUSE_ATTRIBUTE_ERR", 10.0));
+        def.add_constant(ConstantDef::number("INVALID_STATE_ERR", 11.0));
+        def.add_constant(ConstantDef::number("SYNTAX_ERR", 12.0));
+        def.add_constant(ConstantDef::number("INVALID_MODIFICATION_ERR", 13.0));
+        def.add_constant(ConstantDef::number("NAMESPACE_ERR", 14.0));
+        def.add_constant(ConstantDef::number("INVALID_ACCESS_ERR", 15.0));
+        def.add_constant(ConstantDef::number("VALIDATION_ERR", 16.0));
+        def.add_constant(ConstantDef::number("TYPE_MISMATCH_ERR", 17.0));
+        def.add_constant(ConstantDef::number("SECURITY_ERR", 18.0));
+        def.add_constant(ConstantDef::number("NETWORK_ERR", 19.0));
+        def.add_constant(ConstantDef::number("ABORT_ERR", 20.0));
+        def.add_constant(ConstantDef::number("URL_MISMATCH_ERR", 21.0));
+        def.add_constant(ConstantDef::number("QUOTA_EXCEEDED_ERR", 22.0));
+        def.add_constant(ConstantDef::number("TIMEOUT_ERR", 23.0));
+        def.add_constant(ConstantDef::number("INVALID_NODE_TYPE_ERR", 24.0));
+        def.add_constant(ConstantDef::number("DATA_CLONE_ERR", 25.0));
         def.add_attribute(AttributeDef {
             id: "name",
             getter: get_name,

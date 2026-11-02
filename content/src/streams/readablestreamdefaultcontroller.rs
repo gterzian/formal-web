@@ -347,7 +347,10 @@ impl ReadableStreamDefaultController {
                     .borrow_mut(ec)
                     .pop_front()
                     .expect("queue was checked to be non-empty");
-                let chunk_value = entry.chunk.borrow(ec).clone();
+                // The entry has left the queue cell; `get` clones the chunk out
+                // of its cell and roots it, so the chunk survives the engine
+                // calls below (a `borrow` clone would not).
+                let chunk_value = entry.chunk.get(ec);
                 {
                     let new_size = self.queue_total_size.get() - entry.size;
                     if new_size <= 0.0 {

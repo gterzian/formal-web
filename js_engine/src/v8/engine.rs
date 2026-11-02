@@ -191,6 +191,21 @@ struct CapturedIntrinsics {
     is_sealed: V8Function,
     is_frozen: V8Function,
     define_property: V8Function,
+    number_value_of: V8Function,
+    boolean_value_of: V8Function,
+    string_value_of: V8Function,
+    bigint_value_of: V8Function,
+    float16_array: V8Constructor,
+    reflect_construct: V8Function,
+    regexp_has_indices: V8Function,
+    regexp_global: V8Function,
+    regexp_ignore_case: V8Function,
+    regexp_multiline: V8Function,
+    regexp_dot_all: V8Function,
+    regexp_unicode: V8Function,
+    regexp_unicode_sets: V8Function,
+    regexp_sticky: V8Function,
+    species_symbol: V8Symbol,
 }
 
 type StoredCallbackScope = v8::PinScope<'static, 'static>;
@@ -508,6 +523,11 @@ static V8_PLATFORM: std::sync::OnceLock<v8::SharedRef<v8::Platform>> = std::sync
 fn initialize_v8() {
     static INITIALIZE: Once = Once::new();
     INITIALIZE.call_once(|| {
+        // `--expose-gc` is required by `Isolate::RequestGarbageCollectionForTesting`,
+        // which `V8Engine::gc` (the test hook that produces a precise collection)
+        // calls.  The flag also installs a `gc` global in every context; each
+        // context removes it right after creation (see `hide_gc_global`) so page
+        // script cannot force collections.
         v8::V8::set_flags_from_string("--expose-gc");
         let platform = v8::new_default_platform(0, false).make_shared();
         v8::V8::initialize_platform(platform.clone());
@@ -516,6 +536,24 @@ fn initialize_v8() {
         let _ = V8_PLATFORM.set(platform);
         v8::V8::initialize();
     });
+}
+
+/// Remove the `gc` global the `--expose-gc` flag installs, so a page cannot
+/// force a full collection (observing collection timing and `WeakRef`
+/// behaviour) while the embedder keeps the testing-only collection hook.
+fn hide_gc_global(scope: &v8::PinScope<'_, '_>, global: v8::Local<'_, v8::Object>) {
+    let Some(key) = v8::String::new(scope, "gc") else {
+        error!("failed to allocate the `gc` property name");
+        return;
+    };
+    // The property is non-configurable (it cannot be deleted), but it is
+    // writable: replacing it leaves page script with no way to reach the
+    // function while the flag keeps the testing-only collection hook usable.
+    match global.set(scope, key.into(), v8::undefined(scope).into()) {
+        Some(true) => {}
+        Some(false) => error!("V8 refused to overwrite the testing-only `gc` global"),
+        None => error!("overwriting the testing-only `gc` global threw an exception"),
+    }
 }
 
 fn cache_string(scope: &v8::PinScope<'_, '_>, string: &v8::String) -> Arc<[u16]> {
@@ -653,13 +691,15 @@ fn wrap_local_value(
         // (constructible when the target is, with no own `prototype`) and for
         // arrows given a manual `prototype` assignment. `rusty_v8` 150.1.0
         // binds only `StackFrame::IsConstructor`; the exact
-        // `v8::Object::IsConstructor` needs an upstream binding. The
-        // `has_own_property` probe can also run a Proxy trap at wrap time.
+        // `v8::Object::IsConstructor` needs an upstream binding. A Proxy is
+        // reported as not-a-constructor without probing it, because any
+        // own-property probe would run its traps at wrap time;
         // `make_builtin_function` overwrites the cached bit for native
         // functions, where the constructor behavior is known exactly.
         let is_constructor = if value.is_function()
             && !value.is_generator_function()
             && !value.is_async_function()
+            && !value.is_proxy()
         {
             let prototype_name = v8::String::new(scope, "prototype")
                 .expect("static V8 property name allocation failed");
@@ -669,16 +709,14 @@ fn wrap_local_value(
         } else {
             false
         };
-        // Wrapper objects created by JavaScript (`new Number(42)`) unbox
-        // through the native NumberValue fast path; the profile caches the
-        // wrapped [[NumberData]]. Boolean, String, and BigInt wrappers have
-        // no native unboxing API, so their data is only available through the
-        // `construct` path (see `ExecutionContext::construct`).
-        let wrapper_primitive = if value.is_number_object() {
-            value.number_value(scope).map(CachedPrimitive::Number)
-        } else {
-            None
-        };
+        // Wrapper objects created by JavaScript (`new Number(42)`): their
+        // [[BooleanData]]/[[NumberData]]/[[StringData]]/[[BigIntData]] slots
+        // are read on demand by
+        // `ExecutionContext::{boolean,number,string,bigint}_wrapper_value`,
+        // which call the realm's captured `*Value` accessors.  Probing a slot
+        // here would run the wrapped object's `valueOf`.
+        let wrapper_primitive = None;
+        let identity_hash = object.get_identity_hash().get() as u32;
         Some(Box::new(ObjectProfile {
             object_handle: root_handle(scope, object),
             array_buffer_handle,
@@ -703,6 +741,7 @@ fn wrap_local_value(
             wrapper_primitive,
             array_buffer_state,
             typed_array_element_type,
+            identity_hash,
         }))
     } else {
         None
@@ -777,6 +816,34 @@ fn local_typed_object<'scope, T>(
         let exception = v8::Exception::type_error(scope, message);
         wrap_local_value(scope, isolate_id, exception)
     })
+}
+
+/// Materialize an `ArrayBufferView` local from a wrapped object, using V8's
+/// internal view slots (never the `buffer`/`byteOffset`/`byteLength`
+/// properties, which page script can shadow).
+fn local_array_buffer_view<'scope>(
+    scope: &mut v8::PinScope<'scope, '_>,
+    isolate_id: u64,
+    object: &V8Object,
+) -> Result<v8::Local<'scope, v8::ArrayBufferView>, V8Value> {
+    let value = local_value(scope, isolate_id, &object.0)?;
+    v8::Local::<v8::ArrayBufferView>::try_from(value).map_err(|_| {
+        let message = v8::String::new(scope, "value is not an ArrayBuffer view")
+            .expect("static V8 error string allocation failed");
+        let exception = v8::Exception::type_error(scope, message);
+        wrap_local_value(scope, isolate_id, exception)
+    })
+}
+
+/// Byte size of one element of a typed array element type.
+fn buffer_element_byte_size(element_type: TypedArrayElementType) -> usize {
+    use TypedArrayElementType::*;
+    match element_type {
+        Int8 | Uint8 | Uint8Clamped => 1,
+        Int16 | Uint16 | Float16 => 2,
+        Int32 | Uint32 | Float32 => 4,
+        Float64 | BigInt64 | BigUint64 => 8,
+    }
 }
 
 fn local_property_key<'scope>(
@@ -1147,6 +1214,7 @@ impl V8Engine {
             shared_isolate.install_security_token(scope, &context);
             let context_handle = v8::Global::new(scope, context);
             let context_scope = &mut v8::ContextScope::new(scope, context);
+            hide_gc_global(context_scope, context.global(context_scope));
             let global = context.global(context_scope);
             let realm_global = object_from_wrapped_value(wrap_local_value(
                 context_scope,
@@ -1186,6 +1254,15 @@ impl V8Engine {
         let previous_realm = replace(&mut self.realm_state, Rc::clone(&realm_state));
         let intrinsics = self.load_intrinsics();
         realm_state.intrinsics.replace(Some(intrinsics.clone()));
+        // `Symbol.species` has no rusty_v8 accessor; read the well-known
+        // symbol off the intrinsic `Symbol` constructor while the realm is
+        // still pristine.
+        let symbol_constructor = self.intrinsic_object("Symbol");
+        let species_key = self.property_key_from_str("species");
+        let species_value = ExecutionContext::get(self, symbol_constructor, species_key)
+            .expect("the intrinsic Symbol.species reads");
+        let species_symbol =
+            V8Types::value_as_symbol(&species_value).expect("Symbol.species is a symbol");
         let captured = CapturedIntrinsics {
             get_prototype_of: self.intrinsic_function("Object.getPrototypeOf"),
             own_keys: self.intrinsic_function("Reflect.ownKeys"),
@@ -1194,6 +1271,21 @@ impl V8Engine {
             is_sealed: self.intrinsic_function("Object.isSealed"),
             is_frozen: self.intrinsic_function("Object.isFrozen"),
             define_property: self.intrinsic_function("Object.defineProperty"),
+            number_value_of: self.intrinsic_function("Number.prototype.valueOf"),
+            boolean_value_of: self.intrinsic_function("Boolean.prototype.valueOf"),
+            string_value_of: self.intrinsic_function("String.prototype.valueOf"),
+            bigint_value_of: self.intrinsic_function("BigInt.prototype.valueOf"),
+            float16_array: self.intrinsic_constructor("Float16Array"),
+            reflect_construct: self.intrinsic_function("Reflect.construct"),
+            regexp_has_indices: self.intrinsic_getter("RegExp.prototype", "hasIndices"),
+            regexp_global: self.intrinsic_getter("RegExp.prototype", "global"),
+            regexp_ignore_case: self.intrinsic_getter("RegExp.prototype", "ignoreCase"),
+            regexp_multiline: self.intrinsic_getter("RegExp.prototype", "multiline"),
+            regexp_dot_all: self.intrinsic_getter("RegExp.prototype", "dotAll"),
+            regexp_unicode: self.intrinsic_getter("RegExp.prototype", "unicode"),
+            regexp_unicode_sets: self.intrinsic_getter("RegExp.prototype", "unicodeSets"),
+            regexp_sticky: self.intrinsic_getter("RegExp.prototype", "sticky"),
+            species_symbol,
         };
         realm_state.captured.replace(Some(captured));
         let host_data_holder = self.create_object_with_any(
@@ -1304,6 +1396,121 @@ impl V8Engine {
         })
     }
 
+    /// The `[[ViewedArrayBuffer]]` slot of an `ArrayBufferView`.
+    fn array_buffer_view_buffer(
+        &mut self,
+        object: &V8Object,
+    ) -> Completion<V8ArrayBuffer, V8Types> {
+        let isolate_id = self.isolate_id;
+        v8_engine_scope_with_context!(scope, self, &self.realm_state.realm.context, {
+            v8::tc_scope!(let try_catch, scope);
+            let view = local_array_buffer_view(try_catch, isolate_id, object)?;
+            let Some(buffer) = view.buffer(try_catch) else {
+                return Err(caught_exception(
+                    try_catch,
+                    isolate_id,
+                    None,
+                    "array buffer view has no ArrayBuffer",
+                ));
+            };
+            let wrapped =
+                object_from_wrapped_value(wrap_local_value(try_catch, isolate_id, buffer.into()));
+            V8Types::object_as_array_buffer(&wrapped).ok_or_else(|| {
+                caught_exception(
+                    try_catch,
+                    isolate_id,
+                    None,
+                    "array buffer view has no ArrayBuffer",
+                )
+            })
+        })
+    }
+
+    /// The `[[ByteOffset]]` slot of an `ArrayBufferView`.
+    fn array_buffer_view_byte_offset(&mut self, object: &V8Object) -> Completion<u64, V8Types> {
+        let isolate_id = self.isolate_id;
+        v8_engine_scope_with_context!(scope, self, &self.realm_state.realm.context, {
+            v8::tc_scope!(let try_catch, scope);
+            let view = local_array_buffer_view(try_catch, isolate_id, object)?;
+            Ok(view.byte_offset() as u64)
+        })
+    }
+
+    /// The `[[ByteLength]]` slot of an `ArrayBufferView`.
+    fn array_buffer_view_byte_length(&mut self, object: &V8Object) -> Completion<u64, V8Types> {
+        let isolate_id = self.isolate_id;
+        v8_engine_scope_with_context!(scope, self, &self.realm_state.realm.context, {
+            v8::tc_scope!(let try_catch, scope);
+            let view = local_array_buffer_view(try_catch, isolate_id, object)?;
+            Ok(view.byte_length() as u64)
+        })
+    }
+
+    /// The backing store of a non-detached `ArrayBuffer`.  A shared store is
+    /// rejected: the byte accessors below use plain (non-atomic) loads and
+    /// stores, which are only valid for a store no other agent can write.
+    fn buffer_backing_store(&self, array_buffer: &V8ArrayBuffer) -> Option<(*mut u8, usize)> {
+        if self.is_detached_buffer(array_buffer) {
+            return None;
+        }
+        let state = array_buffer
+            .0
+            .0
+            .object_profile
+            .as_ref()?
+            .array_buffer_state
+            .as_ref()?;
+        assert!(
+            !state.backing_store.is_shared(),
+            "buffer byte access must not touch a shared backing store"
+        );
+        let length = state.backing_store.byte_length();
+        let data = state
+            .backing_store
+            .data()
+            .map_or(std::ptr::NonNull::<u8>::dangling().as_ptr(), |data| {
+                data.as_ptr() as *mut u8
+            });
+        Some((data, length))
+    }
+
+    /// The low 64 bits of a BigInt (the modulo-2^64 value a BigInt64Array /
+    /// BigUint64Array stores).
+    fn bigint_low_u64(&mut self, bigint: &V8BigInt) -> u64 {
+        let isolate_id = self.isolate_id;
+        v8_engine_scope_with_context!(scope, self, &self.realm_state.realm.context, {
+            let local = local_value(scope, isolate_id, &bigint.value)
+                .expect("a V8BigInt must hold a value from this isolate");
+            let local =
+                v8::Local::<v8::BigInt>::try_from(local).expect("a V8BigInt must wrap a BigInt");
+            local.u64_value().0
+        })
+    }
+
+    fn value_from_bigint_u64(&mut self, value: u64) -> V8Value {
+        let isolate_id = self.isolate_id;
+        v8_engine_scope_with_context!(scope, self, &self.realm_state.realm.context, {
+            let bigint = v8::BigInt::new_from_u64(scope, value);
+            wrap_local_value(scope, isolate_id, bigint.into())
+        })
+    }
+
+    /// Read or write one element through a captured `Float16Array` view.  V8
+    /// binds no float16 conversion, and the captured constructor keeps the
+    /// page from replacing the global one.
+    fn float16_view(
+        &mut self,
+        array_buffer: &V8ArrayBuffer,
+        byte_offset: u64,
+    ) -> Completion<V8Object, V8Types> {
+        let constructor = self.captured_constructor(|captured| captured.float16_array.clone());
+        let buffer =
+            V8Types::value_from_object(V8Types::object_from_array_buffer(array_buffer.clone()));
+        let offset = self.value_from_number(byte_offset as f64);
+        let length = self.value_from_number(1.0);
+        self.construct(constructor, &[buffer, offset, length], None)
+    }
+
     fn call_js_helper(
         &mut self,
         source: &str,
@@ -1373,6 +1580,12 @@ impl V8Engine {
             .unwrap_or_else(|| panic!("V8 intrinsic `{source}` is not a function"))
     }
 
+    /// The getter function of an accessor property on an intrinsic prototype.
+    fn intrinsic_getter(&mut self, prototype: &str, property: &str) -> V8Function {
+        let source = format!("Object.getOwnPropertyDescriptor({prototype}, '{property}').get");
+        self.intrinsic_function(&source)
+    }
+
     /// Clone one of the realm-bound captured builtins used by the generic
     /// abstract operations.
     fn captured_intrinsic(
@@ -1385,6 +1598,40 @@ impl V8Engine {
             .as_ref()
             .map(select)
             .expect("V8 captured intrinsics are not initialized")
+    }
+
+    /// Clone one of the realm-bound captured constructors.
+    fn captured_constructor(
+        &self,
+        select: impl FnOnce(&CapturedIntrinsics) -> V8Constructor,
+    ) -> V8Constructor {
+        self.realm_state
+            .captured
+            .borrow()
+            .as_ref()
+            .map(select)
+            .expect("V8 captured intrinsics are not initialized")
+    }
+
+    /// Clone a realm-bound captured well-known symbol.
+    fn captured_symbol(&self, select: impl FnOnce(&CapturedIntrinsics) -> V8Symbol) -> V8Symbol {
+        self.realm_state
+            .captured
+            .borrow()
+            .as_ref()
+            .map(select)
+            .expect("V8 captured intrinsics are not initialized")
+    }
+
+    /// Call a captured `*Value` accessor with `object` as `this`, reading the
+    /// wrapper's internal slot without consulting a page-defined `valueOf`.
+    fn call_wrapper_value_of(
+        &mut self,
+        value_of: V8Function,
+        object: &V8Object,
+    ) -> Completion<V8Value, V8Types> {
+        let this_value = V8Types::value_from_object(object.clone());
+        EcmascriptHost::call(self, &value_of.0, &this_value, &[])
     }
 
     fn load_intrinsics(&mut self) -> RealmIntrinsics<V8Types> {
@@ -1607,6 +1854,7 @@ impl JsEngine<V8Types> for V8Engine {
                 self.shared_isolate.install_security_token(scope, &context);
                 let context_handle = v8::Global::new(scope, context);
                 let context_scope = &mut v8::ContextScope::new(scope, context);
+                hide_gc_global(context_scope, context.global(context_scope));
                 let global = context.global(context_scope);
                 let realm_global = object_from_wrapped_value(wrap_local_value(
                     context_scope,
@@ -1819,15 +2067,26 @@ impl JsTypesGcExt for V8Types {
     type Reflector = Rc<v8::Weak<v8::Object>>;
     type Context = V8Engine;
 
-    fn create_reflector(context: &mut Self::Context, object: &V8Object) -> Self::Reflector {
-        context.create_weak_object(object)
+    fn create_reflector(
+        context: &mut dyn ExecutionContext<V8Types>,
+        object: &V8Object,
+    ) -> Self::Reflector {
+        context
+            .as_any_mut()
+            .downcast_mut::<V8Engine>()
+            .expect("V8 reflector created with a non-V8 execution context")
+            .create_weak_object(object)
     }
 
     fn upgrade_reflector(
-        context: &mut Self::Context,
+        context: &mut dyn ExecutionContext<V8Types>,
         reflector: &Self::Reflector,
     ) -> Option<V8Object> {
-        context.upgrade_weak_object(reflector)
+        context
+            .as_any_mut()
+            .downcast_mut::<V8Engine>()
+            .expect("V8 reflector upgraded with a non-V8 execution context")
+            .upgrade_weak_object(reflector)
     }
 }
 
@@ -2261,6 +2520,13 @@ impl EcmascriptHost<V8Types> for V8Engine {
             utf16: Arc::from(string.encode_utf16().collect::<Vec<_>>()),
         }
     }
+
+    fn js_string_from_utf16(&self, units: &[u16]) -> V8String {
+        V8String {
+            value: None,
+            utf16: Arc::from(units),
+        }
+    }
 }
 
 impl ExecutionContext<V8Types> for V8Engine {
@@ -2316,51 +2582,95 @@ impl ExecutionContext<V8Types> for V8Engine {
     }
 
     fn to_numeric(&mut self, value: V8Value) -> Completion<Numeric<V8Types>, V8Types> {
-        if let Some(bigint) = V8Types::value_as_bigint(&value) {
+        // ToNumeric: ToPrimitive(value, number), then a BigInt result is
+        // returned as-is (ToNumber would throw for it).
+        let primitive = self.to_primitive(value, Some(PreferredType::Number))?;
+        if let Some(bigint) = V8Types::value_as_bigint(&primitive) {
             return Ok(Numeric::BigInt(bigint));
         }
-        self.to_number(value).map(Numeric::Number)
+        self.to_number(primitive).map(Numeric::Number)
     }
 
     fn to_int32(&mut self, value: V8Value) -> Completion<i32, V8Types> {
-        let result = self.call_js_helper("value => value | 0", &[value])?;
-        Ok(V8Types::value_as_number(&result).unwrap_or(0.0) as i32)
+        let isolate_id = self.isolate_id;
+        v8_engine_scope_with_context!(scope, self, &self.realm_state.realm.context, {
+            v8::tc_scope!(let try_catch, scope);
+            let local = local_value(try_catch, isolate_id, &value)?;
+            let Some(number) = local.to_int32(try_catch) else {
+                return Err(caught!(try_catch, isolate_id, "ToInt32 failed"));
+            };
+            Ok(number.value())
+        })
     }
 
     fn to_uint32(&mut self, value: V8Value) -> Completion<u32, V8Types> {
-        let result = self.call_js_helper("value => value >>> 0", &[value])?;
-        Ok(V8Types::value_as_number(&result).unwrap_or(0.0) as u32)
+        let isolate_id = self.isolate_id;
+        v8_engine_scope_with_context!(scope, self, &self.realm_state.realm.context, {
+            v8::tc_scope!(let try_catch, scope);
+            let local = local_value(try_catch, isolate_id, &value)?;
+            let Some(number) = local.to_uint32(try_catch) else {
+                return Err(caught!(try_catch, isolate_id, "ToUint32 failed"));
+            };
+            Ok(number.value())
+        })
     }
 
     fn to_int16(&mut self, value: V8Value) -> Completion<i16, V8Types> {
-        let result = self.call_js_helper("value => new Int16Array([value])[0]", &[value])?;
-        Ok(V8Types::value_as_number(&result).unwrap_or(0.0) as i16)
+        // ToInt16: the ToInt32 result modulo 2^16, interpreted as signed.
+        Ok(self.to_int32(value)? as u16 as i16)
     }
 
     fn to_uint16(&mut self, value: V8Value) -> Completion<u16, V8Types> {
-        let result = self.call_js_helper("value => new Uint16Array([value])[0]", &[value])?;
-        Ok(V8Types::value_as_number(&result).unwrap_or(0.0) as u16)
+        // ToUint16: the ToInt32 result modulo 2^16.
+        Ok(self.to_int32(value)? as u16)
     }
 
     fn to_int8(&mut self, value: V8Value) -> Completion<i8, V8Types> {
-        let result = self.call_js_helper("value => new Int8Array([value])[0]", &[value])?;
-        Ok(V8Types::value_as_number(&result).unwrap_or(0.0) as i8)
+        // ToInt8: the ToInt32 result modulo 2^8, interpreted as signed.
+        Ok(self.to_int32(value)? as u8 as i8)
     }
 
     fn to_uint8(&mut self, value: V8Value) -> Completion<u8, V8Types> {
-        let result = self.call_js_helper("value => new Uint8Array([value])[0]", &[value])?;
-        Ok(V8Types::value_as_number(&result).unwrap_or(0.0) as u8)
+        // ToUint8: the ToInt32 result modulo 2^8.
+        Ok(self.to_int32(value)? as u8)
     }
 
     fn to_uint8_clamp(&mut self, value: V8Value) -> Completion<u8, V8Types> {
-        let result = self.call_js_helper("value => new Uint8ClampedArray([value])[0]", &[value])?;
-        Ok(V8Types::value_as_number(&result).unwrap_or(0.0) as u8)
+        // <https://tc39.es/ecma262/#sec-touint8clamp>: clamp to [0, 255] and
+        // round halves to even.
+        let number = self.to_number(value)?;
+        if number.is_nan() || number <= 0.0 {
+            return Ok(0);
+        }
+        if number >= 255.0 {
+            return Ok(255);
+        }
+        let floor = number.floor();
+        let fraction = number - floor;
+        let rounded = if fraction < 0.5 {
+            floor
+        } else if fraction > 0.5 {
+            floor + 1.0
+        } else if (floor as i64) % 2 == 0 {
+            floor
+        } else {
+            floor + 1.0
+        };
+        Ok(rounded as u8)
     }
 
     fn to_bigint(&mut self, value: V8Value) -> Completion<V8BigInt, V8Types> {
-        let result = self.call_js_helper("value => BigInt(value)", &[value])?;
-        V8Types::value_as_bigint(&result)
-            .ok_or_else(|| self.new_type_error("ToBigInt did not produce a BigInt"))
+        let isolate_id = self.isolate_id;
+        v8_engine_scope_with_context!(scope, self, &self.realm_state.realm.context, {
+            v8::tc_scope!(let try_catch, scope);
+            let local = local_value(try_catch, isolate_id, &value)?;
+            let Some(bigint) = local.to_big_int(try_catch) else {
+                return Err(caught!(try_catch, isolate_id, "ToBigInt failed"));
+            };
+            let wrapped = wrap_local_value(try_catch, isolate_id, bigint.into());
+            V8Types::value_as_bigint(&wrapped)
+                .ok_or_else(|| self.new_type_error("ToBigInt did not produce a BigInt"))
+        })
     }
 
     fn string_to_bigint(&mut self, string: V8String) -> Option<V8BigInt> {
@@ -2371,12 +2681,18 @@ impl ExecutionContext<V8Types> for V8Engine {
     }
 
     fn to_js_string(&mut self, value: V8Value) -> Completion<V8String, V8Types> {
-        let result = self.call_js_helper(
-            "value => { if (typeof value === 'symbol') throw new TypeError('cannot convert Symbol to string'); return `${value}`; }",
-            &[value],
-        )?;
-        V8Types::value_as_string(&result)
-            .ok_or_else(|| self.new_type_error("ToString did not produce a string"))
+        let isolate_id = self.isolate_id;
+        v8_engine_scope_with_context!(scope, self, &self.realm_state.realm.context, {
+            v8::tc_scope!(let try_catch, scope);
+            let local = local_value(try_catch, isolate_id, &value)?;
+            // ToString throws for a Symbol, as required.
+            let Some(string) = local.to_string(try_catch) else {
+                return Err(caught!(try_catch, isolate_id, "ToString failed"));
+            };
+            let wrapped = wrap_local_value(try_catch, isolate_id, string.into());
+            V8Types::value_as_string(&wrapped)
+                .ok_or_else(|| self.new_type_error("ToString did not produce a string"))
+        })
     }
 
     fn to_object(&mut self, value: V8Value) -> Completion<V8Object, V8Types> {
@@ -2405,11 +2721,18 @@ impl ExecutionContext<V8Types> for V8Engine {
     }
 
     fn to_length(&mut self, value: V8Value) -> Completion<u64, V8Types> {
-        let result = self.call_js_helper(
-            "value => Math.min(Math.max(Math.trunc(Number(value)) || 0, 0), Number.MAX_SAFE_INTEGER)",
-            &[value],
-        )?;
-        Ok(V8Types::value_as_number(&result).unwrap_or(0.0) as u64)
+        // <https://tc39.es/ecma262/#sec-tolength>: ToIntegerOrInfinity clamped
+        // to [0, 2^53-1].  ToNumber is V8's own conversion, no page helper.
+        const MAX_SAFE_INTEGER: f64 = 9_007_199_254_740_991.0;
+        let number = self.to_number(value)?;
+        let length = if number.is_nan() || number <= 0.0 {
+            0.0
+        } else if number >= MAX_SAFE_INTEGER {
+            MAX_SAFE_INTEGER
+        } else {
+            number.trunc()
+        };
+        Ok(length as u64)
     }
 
     fn canonical_numeric_index_string(&self, argument: &V8String) -> Option<f64> {
@@ -2431,11 +2754,24 @@ impl ExecutionContext<V8Types> for V8Engine {
     }
 
     fn to_index(&mut self, value: V8Value) -> Completion<u64, V8Types> {
-        let result = self.call_js_helper(
-            "value => { if (value === undefined) return 0; const integer = Math.trunc(Number(value)); if (integer < 0 || integer > Number.MAX_SAFE_INTEGER || !Number.isFinite(integer)) throw new RangeError('invalid index'); return integer || 0; }",
-            &[value],
-        )?;
-        Ok(V8Types::value_as_number(&result).unwrap_or(0.0) as u64)
+        // <https://tc39.es/ecma262/#sec-toindex>: undefined is 0, otherwise
+        // ToIntegerOrInfinity must be in [0, 2^53-1] or a RangeError is thrown.
+        const MAX_SAFE_INTEGER: f64 = 9_007_199_254_740_991.0;
+        if V8Types::value_is_undefined(&value) {
+            return Ok(0);
+        }
+        let number = self.to_number(value)?;
+        let integer = if number.is_nan() {
+            0.0
+        } else if number.is_infinite() {
+            number
+        } else {
+            number.trunc()
+        };
+        if !(0.0..=MAX_SAFE_INTEGER).contains(&integer) {
+            return Err(self.new_range_error("index is outside the accepted range"));
+        }
+        Ok(integer as u64)
     }
 
     fn require_object_coercible(&mut self, value: V8Value) -> Completion<V8Value, V8Types> {
@@ -2452,9 +2788,14 @@ impl ExecutionContext<V8Types> for V8Engine {
         }
         let isolate_id = self.isolate_id;
         v8_engine_scope_with_context!(scope, self, &self.realm_state.realm.context, {
-            let local = local_value(scope, isolate_id, value)?;
-            // The native `IsArray` check models ECMA-262 §7.2.2 directly;
-            // it does not consult the realm's (possibly patched) Array.isArray.
+            let mut local = local_value(scope, isolate_id, value)?;
+            // IsArray follows a Proxy's [[ProxyTarget]]; V8's native
+            // `Value::is_array` does not.
+            while local.is_proxy() {
+                let proxy = v8::Local::<v8::Proxy>::try_from(local)
+                    .expect("V8 reports the value as a Proxy");
+                local = proxy.get_target(scope);
+            }
             Ok(local.is_array())
         })
     }
@@ -2464,6 +2805,45 @@ impl ExecutionContext<V8Types> for V8Engine {
             .object_profile
             .as_ref()
             .is_some_and(|profile| profile.is_constructor)
+    }
+
+    fn number_wrapper_value(&mut self, object: &V8Object) -> Completion<Option<f64>, V8Types> {
+        if !V8Types::object_is_number_wrapper(object) {
+            return Ok(None);
+        }
+        // ThisNumberValue: call the realm's captured `Number.prototype.valueOf`
+        // (bound to the wrapper) rather than probing the slot through
+        // `ToNumber`, which would run a page-defined `valueOf`.
+        let value_of = self.captured_intrinsic(|captured| captured.number_value_of.clone());
+        let result = self.call_wrapper_value_of(value_of, object)?;
+        Ok(V8Types::value_as_number(&result))
+    }
+
+    fn boolean_wrapper_value(&mut self, object: &V8Object) -> Completion<Option<bool>, V8Types> {
+        if !V8Types::object_is_boolean_wrapper(object) {
+            return Ok(None);
+        }
+        let value_of = self.captured_intrinsic(|captured| captured.boolean_value_of.clone());
+        let result = self.call_wrapper_value_of(value_of, object)?;
+        Ok(V8Types::value_as_bool(&result))
+    }
+
+    fn string_wrapper_value(&mut self, object: &V8Object) -> Completion<Option<V8String>, V8Types> {
+        if !V8Types::object_is_string_wrapper(object) {
+            return Ok(None);
+        }
+        let value_of = self.captured_intrinsic(|captured| captured.string_value_of.clone());
+        let result = self.call_wrapper_value_of(value_of, object)?;
+        Ok(V8Types::value_as_string(&result))
+    }
+
+    fn bigint_wrapper_value(&mut self, object: &V8Object) -> Completion<Option<V8BigInt>, V8Types> {
+        if !V8Types::object_is_bigint_wrapper(object) {
+            return Ok(None);
+        }
+        let value_of = self.captured_intrinsic(|captured| captured.bigint_value_of.clone());
+        let result = self.call_wrapper_value_of(value_of, object)?;
+        Ok(V8Types::value_as_bigint(&result))
     }
 
     fn is_extensible(&mut self, object: &V8Object) -> Completion<bool, V8Types> {
@@ -2524,6 +2904,24 @@ impl ExecutionContext<V8Types> for V8Engine {
             }
             _ => false,
         }
+    }
+
+    fn same_object(&self, left: &V8Object, right: &V8Object) -> bool {
+        if left.0.isolate_id != right.0.isolate_id {
+            return false;
+        }
+        if left.0.handle.same_identity(&right.0.handle) && left.1.same_identity(&right.1) {
+            return true;
+        }
+        self.same_value(&left.0, &right.0)
+    }
+
+    fn object_identity_hash(&self, object: &V8Object) -> u32 {
+        object
+            .0
+            .object_profile
+            .as_ref()
+            .map_or(0, |profile| profile.identity_hash)
     }
 
     fn same_value_zero(&self, left: &V8Value, right: &V8Value) -> bool {
@@ -2905,12 +3303,25 @@ impl ExecutionContext<V8Types> for V8Engine {
         new_target: Option<V8Constructor>,
     ) -> Completion<V8Object, V8Types> {
         if let Some(new_target) = new_target {
-            let mut helper_arguments = vec![function.0.0];
-            helper_arguments.push(new_target.0.0);
-            helper_arguments.extend_from_slice(arguments);
-            let result = self.call_js_helper(
-                "(constructor, newTarget, ...args) => Reflect.construct(constructor, args, newTarget)",
-                &helper_arguments,
+            // Use the realm's captured `Reflect.construct`; the global
+            // `Reflect` object is page-patchable.
+            let argument_values = self.create_empty_array();
+            for argument in arguments {
+                self.array_push(&argument_values, argument.clone())?;
+            }
+            let constructor_value =
+                V8Types::value_from_object(V8Types::object_from_constructor(function));
+            let new_target_value =
+                V8Types::value_from_object(V8Types::object_from_constructor(new_target));
+            let arguments_value = V8Types::value_from_object(argument_values);
+            let reflect_construct =
+                self.captured_intrinsic(|captured| captured.reflect_construct.clone());
+            let undefined = self.value_undefined();
+            let result = EcmascriptHost::call(
+                self,
+                &reflect_construct.0,
+                &undefined,
+                &[constructor_value, arguments_value, new_target_value],
             )?;
             return V8Types::value_as_object(&result)
                 .ok_or_else(|| self.new_type_error("constructor did not return an object"));
@@ -2922,22 +3333,22 @@ impl ExecutionContext<V8Types> for V8Engine {
             .borrow()
             .as_ref()
             .and_then(|intrinsics| {
-                if function.0 == intrinsics.boolean.0 {
+                if self.same_object(&function.0, &intrinsics.boolean.0) {
                     Some(WrapperKind::Boolean)
-                } else if function.0 == intrinsics.number.0 {
+                } else if self.same_object(&function.0, &intrinsics.number.0) {
                     Some(WrapperKind::Number)
-                } else if function.0 == intrinsics.string.0 {
+                } else if self.same_object(&function.0, &intrinsics.string.0) {
                     Some(WrapperKind::String)
                 } else {
                     None
                 }
             });
-        // The wrapper's [[BooleanData]] has no native unboxing API, so the
-        // cached primitive is derived from the coerced argument; Number and
-        // String wrapper data are also extracted from the wrapper itself at
-        // wrap time, so these entries only supplement that path. (BigInt has
-        // no [[Construct]], so `new BigInt(...)` always throws and no cache
-        // entry is needed.)
+        // The wrapper's primitive is derived from the coerced argument and
+        // cached for the type-level `*_wrapper_data` accessors.  Script-created
+        // wrappers do not need it: their slots are read on demand by
+        // `ExecutionContext::*_wrapper_value` through the captured `*Value`
+        // accessors.  (BigInt has no [[Construct]], so `new BigInt(...)` always
+        // throws and no cache entry is needed.)
         let wrapper_primitive = match wrapper_kind {
             Some(kind) => match arguments.first().cloned() {
                 Some(argument) => match kind {
@@ -3022,14 +3433,22 @@ impl ExecutionContext<V8Types> for V8Engine {
         object: V8Object,
         default_constructor: V8Constructor,
     ) -> Completion<V8Constructor, V8Types> {
-        let result = self.call_js_helper(
-            "(object, defaultConstructor) => { const constructor = object.constructor; if (constructor === undefined) return defaultConstructor; if (Object(constructor) !== constructor) throw new TypeError('constructor is not an object'); const species = constructor[Symbol.species]; if (species == null) return defaultConstructor; if (typeof species !== 'function') throw new TypeError('species is not a constructor'); return species; }",
-            &[object.0, default_constructor.0.0],
-        )?;
-        let result = V8Types::value_as_object(&result)
-            .ok_or_else(|| self.new_type_error("SpeciesConstructor did not return an object"))?;
-        V8Types::object_as_constructor(&result)
-            .ok_or_else(|| self.new_type_error("SpeciesConstructor did not return a constructor"))
+        let constructor_key = self.property_key_from_str("constructor");
+        let constructor = ExecutionContext::get(self, object, constructor_key)?;
+        if V8Types::value_is_undefined(&constructor) {
+            return Ok(default_constructor);
+        }
+        let constructor_object = V8Types::value_as_object(&constructor)
+            .ok_or_else(|| self.new_type_error("constructor is not an object"))?;
+        let species_key = self.property_key_from_well_known_symbol("species");
+        let species = ExecutionContext::get(self, constructor_object, species_key)?;
+        if V8Types::value_is_null(&species) || V8Types::value_is_undefined(&species) {
+            return Ok(default_constructor);
+        }
+        let species_object = V8Types::value_as_object(&species)
+            .ok_or_else(|| self.new_type_error("species is not an object"))?;
+        V8Types::object_as_constructor(&species_object)
+            .ok_or_else(|| self.new_type_error("species is not a constructor"))
     }
 
     fn get_function_realm(&mut self, function: &V8Object) -> Completion<V8Realm, V8Types> {
@@ -3179,13 +3598,29 @@ impl ExecutionContext<V8Types> for V8Engine {
     }
 
     fn is_detached_buffer(&self, array_buffer: &V8ArrayBuffer) -> bool {
-        array_buffer
+        let Some(state) = array_buffer
             .0
             .0
             .object_profile
             .as_ref()
             .and_then(|profile| profile.array_buffer_state.as_ref())
-            .is_some_and(|state| state.detached.get())
+        else {
+            return false;
+        };
+        if state.detached.get() {
+            return true;
+        }
+        // A script-side `ArrayBuffer.prototype.transfer()` detaches the buffer
+        // without updating the flag cached at wrap time; ask V8 for the live
+        // state as well.
+        let isolate_id = self.isolate_id;
+        v8_engine_scope_with_context!(scope, self, &self.realm_state.realm.context, {
+            let Ok(local) = local_typed_object(scope, isolate_id, &array_buffer.0, &array_buffer.1)
+            else {
+                return true;
+            };
+            local.was_detached()
+        })
     }
 
     fn is_fixed_length_array_buffer(&self, array_buffer: &V8ArrayBuffer) -> bool {
@@ -3365,26 +3800,69 @@ impl ExecutionContext<V8Types> for V8Engine {
         _is_typed_array: bool,
         _order: SharedMemoryOrder,
     ) -> V8Value {
-        let constructor = match element_type {
-            TypedArrayElementType::Int8 => "Int8Array",
-            TypedArrayElementType::Uint8 => "Uint8Array",
-            TypedArrayElementType::Uint8Clamped => "Uint8ClampedArray",
-            TypedArrayElementType::Int16 => "Int16Array",
-            TypedArrayElementType::Uint16 => "Uint16Array",
-            TypedArrayElementType::Int32 => "Int32Array",
-            TypedArrayElementType::Uint32 => "Uint32Array",
-            TypedArrayElementType::Float16 => "Float16Array",
-            TypedArrayElementType::Float32 => "Float32Array",
-            TypedArrayElementType::Float64 => "Float64Array",
-            TypedArrayElementType::BigInt64 => "BigInt64Array",
-            TypedArrayElementType::BigUint64 => "BigUint64Array",
+        if element_type == TypedArrayElementType::Float16 {
+            return self
+                .float16_view(array_buffer, byte_index)
+                .and_then(|view| ExecutionContext::get(self, view, V8PropertyKey::Index(0)))
+                .unwrap_or_else(|exception| exception);
+        }
+        let Some((data, length)) = self.buffer_backing_store(array_buffer) else {
+            return self.new_type_error("ArrayBuffer is detached");
         };
-        let byte_index = self.value_from_number(byte_index as f64);
-        self.call_js_helper(
-            &format!("(buffer, offset) => new {constructor}(buffer, offset, 1)[0]"),
-            &[array_buffer.0.0.clone(), byte_index],
-        )
-        .unwrap_or_else(|exception| exception)
+        let size = buffer_element_byte_size(element_type);
+        let Some(end) = byte_index.checked_add(size as u64) else {
+            return self.new_range_error("buffer read is out of bounds");
+        };
+        if end > length as u64 {
+            return self.new_range_error("buffer read is out of bounds");
+        };
+        let mut bytes = [0u8; 8];
+        // SAFETY: `data` is the backing store's non-shared allocation, the
+        // range was checked against its byte length, and no JavaScript runs
+        // between the check and this read.
+        unsafe {
+            std::ptr::copy_nonoverlapping(data.add(byte_index as usize), bytes.as_mut_ptr(), size);
+        }
+        let bytes = &bytes[..size];
+        match element_type {
+            TypedArrayElementType::Int8 => {
+                self.value_from_number(i8::from_ne_bytes([bytes[0]]) as f64)
+            }
+            TypedArrayElementType::Uint8 | TypedArrayElementType::Uint8Clamped => {
+                self.value_from_number(f64::from(bytes[0]))
+            }
+            TypedArrayElementType::Int16 => {
+                self.value_from_number(i16::from_ne_bytes([bytes[0], bytes[1]]) as f64)
+            }
+            TypedArrayElementType::Uint16 => {
+                self.value_from_number(f64::from(u16::from_ne_bytes([bytes[0], bytes[1]])))
+            }
+            TypedArrayElementType::Int32 => {
+                self.value_from_number(
+                    i32::from_ne_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]) as f64
+                )
+            }
+            TypedArrayElementType::Uint32 => {
+                self.value_from_number(f64::from(u32::from_ne_bytes([
+                    bytes[0], bytes[1], bytes[2], bytes[3],
+                ])))
+            }
+            TypedArrayElementType::Float32 => {
+                self.value_from_number(f64::from(f32::from_ne_bytes([
+                    bytes[0], bytes[1], bytes[2], bytes[3],
+                ])))
+            }
+            TypedArrayElementType::Float64 => self.value_from_number(f64::from_ne_bytes([
+                bytes[0], bytes[1], bytes[2], bytes[3], bytes[4], bytes[5], bytes[6], bytes[7],
+            ])),
+            TypedArrayElementType::BigInt64 => self.value_from_bigint(i64::from_ne_bytes([
+                bytes[0], bytes[1], bytes[2], bytes[3], bytes[4], bytes[5], bytes[6], bytes[7],
+            ])),
+            TypedArrayElementType::BigUint64 => self.value_from_bigint_u64(u64::from_ne_bytes([
+                bytes[0], bytes[1], bytes[2], bytes[3], bytes[4], bytes[5], bytes[6], bytes[7],
+            ])),
+            TypedArrayElementType::Float16 => unreachable!("Float16 is handled above"),
+        }
     }
 
     fn set_value_in_buffer(
@@ -3396,27 +3874,117 @@ impl ExecutionContext<V8Types> for V8Engine {
         _is_typed_array: bool,
         _order: SharedMemoryOrder,
     ) -> Completion<(), V8Types> {
-        let constructor = match element_type {
-            TypedArrayElementType::Int8 => "Int8Array",
-            TypedArrayElementType::Uint8 => "Uint8Array",
-            TypedArrayElementType::Uint8Clamped => "Uint8ClampedArray",
-            TypedArrayElementType::Int16 => "Int16Array",
-            TypedArrayElementType::Uint16 => "Uint16Array",
-            TypedArrayElementType::Int32 => "Int32Array",
-            TypedArrayElementType::Uint32 => "Uint32Array",
-            TypedArrayElementType::Float16 => "Float16Array",
-            TypedArrayElementType::Float32 => "Float32Array",
-            TypedArrayElementType::Float64 => "Float64Array",
-            TypedArrayElementType::BigInt64 => "BigInt64Array",
-            TypedArrayElementType::BigUint64 => "BigUint64Array",
+        if element_type == TypedArrayElementType::Float16 {
+            let view = self.float16_view(array_buffer, byte_index)?;
+            return self.set(view, V8PropertyKey::Index(0), value, false);
+        }
+        let size = buffer_element_byte_size(element_type);
+        let bytes: [u8; 8] = match element_type {
+            TypedArrayElementType::Int8 => {
+                let number = self.to_int32(value)?;
+                let mut bytes = [0u8; 8];
+                bytes[0] = number as i8 as u8;
+                bytes
+            }
+            TypedArrayElementType::Uint8 => {
+                let number = self.to_int32(value)?;
+                let mut bytes = [0u8; 8];
+                bytes[0] = number as u8;
+                bytes
+            }
+            TypedArrayElementType::Uint8Clamped => {
+                let number = self.to_uint8_clamp(value)?;
+                let mut bytes = [0u8; 8];
+                bytes[0] = number;
+                bytes
+            }
+            TypedArrayElementType::Int16 => {
+                let number = self.to_int16(value)?;
+                let mut bytes = [0u8; 8];
+                bytes[..2].copy_from_slice(&number.to_ne_bytes());
+                bytes
+            }
+            TypedArrayElementType::Uint16 => {
+                let number = self.to_uint16(value)?;
+                let mut bytes = [0u8; 8];
+                bytes[..2].copy_from_slice(&number.to_ne_bytes());
+                bytes
+            }
+            TypedArrayElementType::Int32 => {
+                let number = self.to_int32(value)?;
+                let mut bytes = [0u8; 8];
+                bytes[..4].copy_from_slice(&number.to_ne_bytes());
+                bytes
+            }
+            TypedArrayElementType::Uint32 => {
+                let number = self.to_uint32(value)?;
+                let mut bytes = [0u8; 8];
+                bytes[..4].copy_from_slice(&number.to_ne_bytes());
+                bytes
+            }
+            TypedArrayElementType::Float32 => {
+                let number = self.to_number(value)?;
+                let mut bytes = [0u8; 8];
+                bytes[..4].copy_from_slice(&(number as f32).to_ne_bytes());
+                bytes
+            }
+            TypedArrayElementType::Float64 => {
+                let number = self.to_number(value)?;
+                number.to_ne_bytes()
+            }
+            TypedArrayElementType::BigInt64 | TypedArrayElementType::BigUint64 => {
+                let bigint = self.to_bigint(value)?;
+                let low = self.bigint_low_u64(&bigint);
+                low.to_ne_bytes()
+            }
+            TypedArrayElementType::Float16 => unreachable!("Float16 is handled above"),
         };
-        let byte_index = self.value_from_number(byte_index as f64);
-        self.call_js_helper(
-            &format!(
-                "(buffer, offset, value) => {{ new {constructor}(buffer, offset, 1)[0] = value; }}"
-            ),
-            &[array_buffer.0.0.clone(), byte_index, value],
-        )?;
+        let Some((data, length)) = self.buffer_backing_store(array_buffer) else {
+            return Err(self.new_type_error("ArrayBuffer is detached"));
+        };
+        let Some(end) = byte_index.checked_add(size as u64) else {
+            return Err(self.new_range_error("buffer write is out of bounds"));
+        };
+        if end > length as u64 {
+            return Err(self.new_range_error("buffer write is out of bounds"));
+        }
+        // SAFETY: `data` is the backing store's non-shared allocation, the
+        // range was checked against its byte length after the value was
+        // converted, and no JavaScript runs between the check and this write.
+        unsafe {
+            std::ptr::copy_nonoverlapping(bytes.as_ptr(), data.add(byte_index as usize), size);
+        }
+        Ok(())
+    }
+
+    fn set_buffer_bytes(
+        &mut self,
+        array_buffer: &V8ArrayBuffer,
+        byte_offset: u64,
+        bytes: &[u8],
+    ) -> Completion<(), V8Types> {
+        let Some((data, length)) = self.buffer_backing_store(array_buffer) else {
+            return Err(self.new_type_error("ArrayBuffer is detached"));
+        };
+        let Some(end) = byte_offset.checked_add(bytes.len() as u64) else {
+            return Err(self.new_range_error("buffer write is out of bounds"));
+        };
+        if end > length as u64 {
+            return Err(self.new_range_error("buffer write is out of bounds"));
+        }
+        if bytes.is_empty() {
+            return Ok(());
+        }
+        // SAFETY: `data` is the backing store's non-shared allocation, the
+        // range was checked against its byte length, and no JavaScript runs
+        // between the check and this copy.
+        unsafe {
+            std::ptr::copy_nonoverlapping(
+                bytes.as_ptr(),
+                data.add(byte_offset as usize),
+                bytes.len(),
+            );
+        }
         Ok(())
     }
 
@@ -3424,30 +3992,15 @@ impl ExecutionContext<V8Types> for V8Engine {
         &mut self,
         typed_array: &V8TypedArray,
     ) -> Completion<V8ArrayBuffer, V8Types> {
-        let value = self.call_js_helper(
-            "view => view.buffer",
-            std::slice::from_ref(&typed_array.0.0),
-        )?;
-        let object = V8Types::value_as_object(&value)
-            .ok_or_else(|| self.new_type_error("typed array has no ArrayBuffer"))?;
-        V8Types::object_as_array_buffer(&object)
-            .ok_or_else(|| self.new_type_error("typed array has no ArrayBuffer"))
+        self.array_buffer_view_buffer(&typed_array.0)
     }
 
     fn typed_array_byte_offset(&mut self, typed_array: &V8TypedArray) -> Completion<u64, V8Types> {
-        let value = self.call_js_helper(
-            "view => view.byteOffset",
-            std::slice::from_ref(&typed_array.0.0),
-        )?;
-        Ok(V8Types::value_as_number(&value).unwrap_or(0.0) as u64)
+        self.array_buffer_view_byte_offset(&typed_array.0)
     }
 
     fn typed_array_byte_length(&mut self, typed_array: &V8TypedArray) -> Completion<u64, V8Types> {
-        let value = self.call_js_helper(
-            "view => view.byteLength",
-            std::slice::from_ref(&typed_array.0.0),
-        )?;
-        Ok(V8Types::value_as_number(&value).unwrap_or(0.0) as u64)
+        self.array_buffer_view_byte_length(&typed_array.0)
     }
 
     fn typed_array_element_type(
@@ -3547,28 +4100,15 @@ impl ExecutionContext<V8Types> for V8Engine {
     }
 
     fn data_view_buffer(&mut self, data_view: &V8DataView) -> Completion<V8ArrayBuffer, V8Types> {
-        let value =
-            self.call_js_helper("view => view.buffer", std::slice::from_ref(&data_view.0.0))?;
-        let object = V8Types::value_as_object(&value)
-            .ok_or_else(|| self.new_type_error("DataView has no ArrayBuffer"))?;
-        V8Types::object_as_array_buffer(&object)
-            .ok_or_else(|| self.new_type_error("DataView has no ArrayBuffer"))
+        self.array_buffer_view_buffer(&data_view.0)
     }
 
     fn data_view_byte_offset(&mut self, data_view: &V8DataView) -> Completion<u64, V8Types> {
-        let value = self.call_js_helper(
-            "view => view.byteOffset",
-            std::slice::from_ref(&data_view.0.0),
-        )?;
-        Ok(V8Types::value_as_number(&value).unwrap_or(0.0) as u64)
+        self.array_buffer_view_byte_offset(&data_view.0)
     }
 
     fn data_view_byte_length(&mut self, data_view: &V8DataView) -> Completion<u64, V8Types> {
-        let value = self.call_js_helper(
-            "view => view.byteLength",
-            std::slice::from_ref(&data_view.0.0),
-        )?;
-        Ok(V8Types::value_as_number(&value).unwrap_or(0.0) as u64)
+        self.array_buffer_view_byte_length(&data_view.0)
     }
 
     fn construct_data_view_from_buffer(
@@ -3627,44 +4167,111 @@ impl ExecutionContext<V8Types> for V8Engine {
     }
 
     fn get_date_value(&mut self, date: &V8Object) -> Completion<f64, V8Types> {
-        let value = self.call_js_helper(
-            "date => Date.prototype.getTime.call(date)",
-            std::slice::from_ref(&date.0),
-        )?;
-        V8Types::value_as_number(&value)
-            .ok_or_else(|| self.new_type_error("Date value is not a number"))
+        let isolate_id = self.isolate_id;
+        v8_engine_scope_with_context!(scope, self, &self.realm_state.realm.context, {
+            v8::tc_scope!(let try_catch, scope);
+            let value = local_value(try_catch, isolate_id, &date.0)?;
+            let Ok(date) = v8::Local::<v8::Date>::try_from(value) else {
+                return Err(caught_exception(
+                    try_catch,
+                    isolate_id,
+                    None,
+                    "value is not a Date",
+                ));
+            };
+            Ok(date.value_of())
+        })
     }
 
     fn get_regexp_source(&mut self, regexp: &V8Object) -> Completion<String, V8Types> {
-        let value =
-            self.call_js_helper("regexp => regexp.source", std::slice::from_ref(&regexp.0))?;
-        self.to_rust_string(value)
+        let isolate_id = self.isolate_id;
+        v8_engine_scope_with_context!(scope, self, &self.realm_state.realm.context, {
+            v8::tc_scope!(let try_catch, scope);
+            let value = local_value(try_catch, isolate_id, &regexp.0)?;
+            let Ok(regexp) = v8::Local::<v8::RegExp>::try_from(value) else {
+                return Err(caught_exception(
+                    try_catch,
+                    isolate_id,
+                    None,
+                    "value is not a RegExp",
+                ));
+            };
+            let source = regexp.get_source(try_catch);
+            Ok(source.to_rust_string_lossy(try_catch))
+        })
     }
 
     fn get_regexp_flags(&mut self, regexp: &V8Object) -> Completion<String, V8Types> {
-        let value =
-            self.call_js_helper("regexp => regexp.flags", std::slice::from_ref(&regexp.0))?;
-        self.to_rust_string(value)
+        // Each flag is read by the realm's captured `RegExp.prototype` getter,
+        // which reads the internal slot; reading `regexp.flags` would consult
+        // whatever page script installed on the instance or prototype.
+        let getters = [
+            (
+                "d",
+                self.captured_intrinsic(|captured| captured.regexp_has_indices.clone()),
+            ),
+            (
+                "g",
+                self.captured_intrinsic(|captured| captured.regexp_global.clone()),
+            ),
+            (
+                "i",
+                self.captured_intrinsic(|captured| captured.regexp_ignore_case.clone()),
+            ),
+            (
+                "m",
+                self.captured_intrinsic(|captured| captured.regexp_multiline.clone()),
+            ),
+            (
+                "s",
+                self.captured_intrinsic(|captured| captured.regexp_dot_all.clone()),
+            ),
+            (
+                "u",
+                self.captured_intrinsic(|captured| captured.regexp_unicode.clone()),
+            ),
+            (
+                "v",
+                self.captured_intrinsic(|captured| captured.regexp_unicode_sets.clone()),
+            ),
+            (
+                "y",
+                self.captured_intrinsic(|captured| captured.regexp_sticky.clone()),
+            ),
+        ];
+        let this_value = V8Types::value_from_object(regexp.clone());
+        let mut flags = String::new();
+        for (flag, getter) in getters {
+            let result = EcmascriptHost::call(self, &getter.0, &this_value, &[])?;
+            if self.to_boolean(&result) {
+                flags.push_str(flag);
+            }
+        }
+        Ok(flags)
     }
 
     fn map_get_entries(&mut self, map: &V8Map) -> Completion<Vec<(V8Value, V8Value)>, V8Types> {
-        let entries = self.call_js_helper(
-            "map => Array.from(map.entries()).flat()",
-            std::slice::from_ref(&map.0.0),
-        )?;
-        let entries = V8Types::value_as_object(&entries)
-            .ok_or_else(|| self.new_type_error("Map entries did not produce an array"))?;
-        let length =
-            ExecutionContext::get(self, entries.clone(), self.property_key_from_str("length"))?;
-        let length = V8Types::value_as_number(&length).unwrap_or(0.0) as u32;
-        let mut result = Vec::with_capacity((length / 2) as usize);
-        for index in (0..length).step_by(2) {
-            let key = ExecutionContext::get(self, entries.clone(), V8PropertyKey::Index(index))?;
-            let value =
-                ExecutionContext::get(self, entries.clone(), V8PropertyKey::Index(index + 1))?;
-            result.push((key, value));
-        }
-        Ok(result)
+        let isolate_id = self.isolate_id;
+        v8_engine_scope_with_context!(scope, self, &self.realm_state.realm.context, {
+            v8::tc_scope!(let try_catch, scope);
+            let map = local_typed_object(try_catch, isolate_id, &map.0, &map.1)?;
+            let entries = map.as_array(try_catch);
+            let length = entries.length();
+            let mut result = Vec::with_capacity((length / 2) as usize);
+            for index in (0..length).step_by(2) {
+                let Some(key) = entries.get_index(try_catch, index) else {
+                    return Err(caught!(try_catch, isolate_id, "failed to read a Map key"));
+                };
+                let Some(value) = entries.get_index(try_catch, index + 1) else {
+                    return Err(caught!(try_catch, isolate_id, "failed to read a Map value"));
+                };
+                result.push((
+                    wrap_local_value(try_catch, isolate_id, key),
+                    wrap_local_value(try_catch, isolate_id, value),
+                ));
+            }
+            Ok(result)
+        })
     }
 
     fn map_set_entry(
@@ -3673,55 +4280,82 @@ impl ExecutionContext<V8Types> for V8Engine {
         key: V8Value,
         value: V8Value,
     ) -> Completion<(), V8Types> {
-        self.call_js_helper(
-            "(map, key, value) => { map.set(key, value); }",
-            &[map.0.0.clone(), key, value],
-        )?;
-        Ok(())
+        let isolate_id = self.isolate_id;
+        v8_engine_scope_with_context!(scope, self, &self.realm_state.realm.context, {
+            v8::tc_scope!(let try_catch, scope);
+            let map = local_typed_object(try_catch, isolate_id, &map.0, &map.1)?;
+            let key = local_value(try_catch, isolate_id, &key)?;
+            let value = local_value(try_catch, isolate_id, &value)?;
+            if map.set(try_catch, key, value).is_none() {
+                return Err(caught!(try_catch, isolate_id, "failed to set a Map entry"));
+            }
+            Ok(())
+        })
     }
 
     fn set_get_values(&mut self, set: &V8Set) -> Completion<Vec<V8Value>, V8Types> {
-        let values = self.call_js_helper(
-            "set => Array.from(set.values())",
-            std::slice::from_ref(&set.0.0),
-        )?;
-        let values = V8Types::value_as_object(&values)
-            .ok_or_else(|| self.new_type_error("Set values did not produce an array"))?;
-        let length =
-            ExecutionContext::get(self, values.clone(), self.property_key_from_str("length"))?;
-        let length = V8Types::value_as_number(&length).unwrap_or(0.0) as u32;
-        let mut result = Vec::with_capacity(length as usize);
-        for index in 0..length {
-            result.push(ExecutionContext::get(
-                self,
-                values.clone(),
-                V8PropertyKey::Index(index),
-            )?);
-        }
-        Ok(result)
+        let isolate_id = self.isolate_id;
+        v8_engine_scope_with_context!(scope, self, &self.realm_state.realm.context, {
+            v8::tc_scope!(let try_catch, scope);
+            let set = local_typed_object(try_catch, isolate_id, &set.0, &set.1)?;
+            let values = set.as_array(try_catch);
+            let mut result = Vec::with_capacity(values.length() as usize);
+            for index in 0..values.length() {
+                let Some(value) = values.get_index(try_catch, index) else {
+                    return Err(caught!(try_catch, isolate_id, "failed to read a Set value"));
+                };
+                result.push(wrap_local_value(try_catch, isolate_id, value));
+            }
+            Ok(result)
+        })
     }
 
     fn set_add_entry(&mut self, set: &V8Set, value: V8Value) -> Completion<(), V8Types> {
-        self.call_js_helper(
-            "(set, value) => { set.add(value); }",
-            &[set.0.0.clone(), value],
-        )?;
-        Ok(())
+        let isolate_id = self.isolate_id;
+        v8_engine_scope_with_context!(scope, self, &self.realm_state.realm.context, {
+            v8::tc_scope!(let try_catch, scope);
+            let set = local_typed_object(try_catch, isolate_id, &set.0, &set.1)?;
+            let value = local_value(try_catch, isolate_id, &value)?;
+            if set.add(try_catch, value).is_none() {
+                return Err(caught!(try_catch, isolate_id, "failed to add a Set value"));
+            }
+            Ok(())
+        })
     }
 
     fn promise_resolve(
         &mut self,
-        constructor: V8Constructor,
+        _constructor: V8Constructor,
         value: V8Value,
     ) -> Completion<V8Promise, V8Types> {
-        let promise = self.call_js_helper(
-            "(constructor, value) => Promise.resolve.call(constructor, value)",
-            &[constructor.0.0, value],
-        )?;
-        let object = V8Types::value_as_object(&promise)
-            .ok_or_else(|| self.new_type_error("PromiseResolve did not return a promise"))?;
-        V8Types::object_as_promise(&object)
-            .ok_or_else(|| self.new_type_error("PromiseResolve did not return a promise"))
+        // Note: the intrinsic `%Promise%` is used rather than `constructor`;
+        // every caller in `content` passes `%Promise%`.  PromiseResolve's
+        // "same constructor" fast path (return `value` when it is already a
+        // promise of `constructor`) is therefore not modelled.
+        let isolate_id = self.isolate_id;
+        v8_engine_scope_with_context!(scope, self, &self.realm_state.realm.context, {
+            v8::tc_scope!(let try_catch, scope);
+            let value = local_value(try_catch, isolate_id, &value)?;
+            let Some(resolver) = v8::PromiseResolver::new(try_catch) else {
+                return Err(caught!(
+                    try_catch,
+                    isolate_id,
+                    "failed to create a Promise resolver"
+                ));
+            };
+            if resolver.resolve(try_catch, value).is_none() {
+                return Err(caught!(
+                    try_catch,
+                    isolate_id,
+                    "failed to resolve the promise"
+                ));
+            }
+            let promise = resolver.get_promise(try_catch);
+            let wrapped =
+                object_from_wrapped_value(wrap_local_value(try_catch, isolate_id, promise.into()));
+            V8Types::object_as_promise(&wrapped)
+                .ok_or_else(|| self.new_type_error("PromiseResolve did not return a promise"))
+        })
     }
 
     fn new_promise_capability(
@@ -3899,12 +4533,32 @@ impl ExecutionContext<V8Types> for V8Engine {
     }
 
     fn property_key_from_well_known_symbol(&mut self, name: &str) -> V8PropertyKey {
-        let name = self.value_from_string(self.js_string_from_str(name));
-        let symbol = self
-            .call_js_helper("name => Symbol[name]", &[name])
-            .ok()
-            .and_then(|value| V8Types::value_as_symbol(&value))
-            .unwrap_or_else(|| panic!("unknown well-known Symbol name"));
+        // V8 exposes the well-known symbols through its API; `Symbol[name]`
+        // would read a page-patchable global.  `species` has no rusty_v8
+        // accessor, so it was captured from the pristine realm instead.
+        if name == "species" {
+            let symbol = self.captured_symbol(|captured| captured.species_symbol.clone());
+            return V8PropertyKey::Symbol(symbol);
+        }
+        let isolate_id = self.isolate_id;
+        let symbol = v8_engine_scope_with_context!(scope, self, &self.realm_state.realm.context, {
+            let symbol = match name {
+                "asyncIterator" => v8::Symbol::get_async_iterator(scope),
+                "hasInstance" => v8::Symbol::get_has_instance(scope),
+                "isConcatSpreadable" => v8::Symbol::get_is_concat_spreadable(scope),
+                "iterator" => v8::Symbol::get_iterator(scope),
+                "match" => v8::Symbol::get_match(scope),
+                "replace" => v8::Symbol::get_replace(scope),
+                "search" => v8::Symbol::get_search(scope),
+                "split" => v8::Symbol::get_split(scope),
+                "toPrimitive" => v8::Symbol::get_to_primitive(scope),
+                "toStringTag" => v8::Symbol::get_to_string_tag(scope),
+                "unscopables" => v8::Symbol::get_unscopables(scope),
+                other => panic!("well-known Symbol `{other}` has no V8 API binding"),
+            };
+            let wrapped = wrap_local_value(scope, isolate_id, symbol.into());
+            V8Types::value_as_symbol(&wrapped).expect("a well-known symbol wraps as a symbol")
+        });
         V8PropertyKey::Symbol(symbol)
     }
 
@@ -3917,6 +4571,25 @@ impl ExecutionContext<V8Types> for V8Engine {
             }
             V8PropertyKey::Index(index) => index.to_string(),
         }
+    }
+
+    fn property_key_is_symbol(&self, key: &V8PropertyKey) -> bool {
+        matches!(key, V8PropertyKey::Symbol(_))
+    }
+
+    fn property_key_to_utf16(&self, key: &V8PropertyKey) -> Vec<u16> {
+        match key {
+            V8PropertyKey::String(string) => string.utf16.to_vec(),
+            V8PropertyKey::Index(index) => index.to_string().encode_utf16().collect(),
+            V8PropertyKey::Symbol(_) => Vec::new(),
+        }
+    }
+
+    fn property_key_from_utf16(&self, units: &[u16]) -> V8PropertyKey {
+        V8PropertyKey::String(V8String {
+            value: None,
+            utf16: Arc::from(units),
+        })
     }
 
     fn store_host_any(&mut self, id: TypeId, value: Box<dyn Any>) {
@@ -4001,7 +4674,7 @@ impl ExecutionContext<V8Types> for V8Engine {
             self.realm_host_data()
                 .associated_objects
                 .iter()
-                .find(|associated| &associated.object == object)
+                .find(|associated| self.same_object(&associated.object, object))
                 .map(|associated| associated.platform_pointer as usize)
         };
         let address = platform_address?;
@@ -4021,11 +4694,12 @@ impl ExecutionContext<V8Types> for V8Engine {
         let platform_address: Option<usize> = if let Some(pointer) = object.0.host_data {
             Some(pointer.as_ptr() as usize)
         } else {
-            self.realm_host_data_mut()
+            let index = self
+                .realm_host_data()
                 .associated_objects
-                .iter_mut()
-                .find(|associated| &associated.object == object)
-                .map(|associated| associated.platform_pointer as usize)
+                .iter()
+                .position(|associated| self.same_object(&associated.object, object))?;
+            Some(self.realm_host_data_mut().associated_objects[index].platform_pointer as usize)
         };
         let address = platform_address?;
         assert_eq!(
@@ -4106,6 +4780,20 @@ impl ExecutionContext<V8Types> for V8Engine {
         String::from_utf16_lossy(&string.utf16)
     }
 
+    fn js_string_to_utf16(&self, string: &V8String) -> Vec<u16> {
+        string.utf16.to_vec()
+    }
+
+    fn value_is_proxy(&self, value: &V8Value) -> bool {
+        let isolate_id = self.isolate_id;
+        v8_engine_scope_with_context!(scope, self, &self.realm_state.realm.context, {
+            let Ok(local) = local_value(scope, isolate_id, value) else {
+                return false;
+            };
+            local.is_proxy()
+        })
+    }
+
     fn create_empty_array(&mut self) -> V8Object {
         let isolate_id = self.isolate_id;
         v8_engine_scope_with_context!(scope, self, &self.realm_state.realm.context, {
@@ -4115,11 +4803,14 @@ impl ExecutionContext<V8Types> for V8Engine {
     }
 
     fn array_push(&mut self, array: &V8Object, value: V8Value) -> Completion<(), V8Types> {
-        self.call_js_helper(
-            "(array, value) => { array.push(value); }",
-            &[array.0.clone(), value],
-        )?;
-        Ok(())
+        // Append through the indexed property, not `Array.prototype.push`,
+        // which page script can replace.
+        let length =
+            ExecutionContext::get(self, array.clone(), self.property_key_from_str("length"))?;
+        let length = self.to_length(length)?;
+        let index = u32::try_from(length)
+            .map_err(|_| self.new_range_error("array is too long to append to"))?;
+        self.set(array.clone(), V8PropertyKey::Index(index), value, false)
     }
 
     fn create_plain_object(&mut self, prototype: Option<&V8Object>) -> V8Object {
@@ -4138,11 +4829,16 @@ impl ExecutionContext<V8Types> for V8Engine {
     }
 
     fn json_stringify(&mut self, value: V8Value) -> Completion<String, V8Types> {
-        let result = self.call_js_helper("value => JSON.stringify(value)", &[value])?;
-        if V8Types::value_is_undefined(&result) {
-            return Ok("null".to_owned());
-        }
-        self.to_rust_string(result)
+        let isolate_id = self.isolate_id;
+        v8_engine_scope_with_context!(scope, self, &self.realm_state.realm.context, {
+            let Some(local) = local_value(scope, isolate_id, &value).ok() else {
+                return Err(self.new_type_error("JSON.stringify value is not usable"));
+            };
+            let Some(json) = v8::json::stringify(scope, local) else {
+                return Err(self.new_type_error("JSON.stringify failed"));
+            };
+            Ok(json.to_rust_string_lossy(scope))
+        })
     }
 
     fn evaluate_script(&mut self, source: &str) -> Completion<V8Value, V8Types> {
@@ -5688,7 +6384,7 @@ mod tests {
     }
 
     #[test]
-    fn number_wrapper_data_extracts_script_created_wrappers() {
+    fn number_wrapper_value_extracts_script_created_wrappers() {
         let mut engine = V8Engine::new();
         for source in ["new Number(42)", "new Number('42')"] {
             let wrapper = ExecutionContext::evaluate_script(&mut engine, source)
@@ -5696,11 +6392,65 @@ mod tests {
             let object = V8Types::value_as_object(&wrapper).expect("the wrapper must be an object");
             assert!(V8Types::object_is_number_wrapper(&object));
             assert_eq!(
-                V8Types::number_wrapper_data(&object),
+                ExecutionContext::number_wrapper_value(&mut engine, &object)
+                    .expect("ThisNumberValue must succeed"),
                 Some(42.0),
                 "the wrapper's [[NumberData]] must be extracted from `{source}`"
             );
         }
+    }
+
+    #[test]
+    fn wrapper_value_accessors_extract_script_created_wrappers() {
+        let mut engine = V8Engine::new();
+        ExecutionContext::evaluate_script(&mut engine, "globalThis.calls = 0;")
+            .expect("the counter initializes");
+
+        let boolean = ExecutionContext::evaluate_script(
+            &mut engine,
+            "(() => { const wrapper = new Boolean(true); wrapper.valueOf = () => { calls++; return false; }; return wrapper; })()",
+        )
+        .expect("the Boolean wrapper evaluates");
+        let boolean = V8Types::value_as_object(&boolean).expect("a Boolean wrapper is an object");
+        assert_eq!(
+            ExecutionContext::boolean_wrapper_value(&mut engine, &boolean)
+                .expect("ThisBooleanValue must succeed"),
+            Some(true),
+            "the wrapper's [[BooleanData]] is read without its valueOf"
+        );
+
+        let string = ExecutionContext::evaluate_script(
+            &mut engine,
+            "(() => { const wrapper = new String('hi'); wrapper.valueOf = () => { calls++; return 'patched'; }; return wrapper; })()",
+        )
+        .expect("the String wrapper evaluates");
+        let string = V8Types::value_as_object(&string).expect("a String wrapper is an object");
+        assert_eq!(
+            ExecutionContext::string_wrapper_value(&mut engine, &string)
+                .expect("ThisStringValue must succeed")
+                .map(|value| String::from_utf16_lossy(&value.utf16)),
+            Some(String::from("hi")),
+            "the wrapper's [[StringData]] is read without its valueOf"
+        );
+
+        let bigint = ExecutionContext::evaluate_script(
+            &mut engine,
+            "(() => { const wrapper = Object(7n); wrapper.valueOf = () => { calls++; return 0n; }; return wrapper; })()",
+        )
+        .expect("the BigInt wrapper evaluates");
+        let bigint = V8Types::value_as_object(&bigint).expect("a BigInt wrapper is an object");
+        let bigint = ExecutionContext::bigint_wrapper_value(&mut engine, &bigint)
+            .expect("ThisBigIntValue must succeed")
+            .expect("a BigInt wrapper holds a BigInt");
+        assert_eq!(bigint.canonical.as_ref(), "7");
+
+        assert_eq!(
+            ExecutionContext::evaluate_script(&mut engine, "calls")
+                .ok()
+                .and_then(|value| V8Types::value_as_number(&value)),
+            Some(0.0),
+            "no wrapper valueOf runs while reading the internal slots"
+        );
     }
 
     #[test]

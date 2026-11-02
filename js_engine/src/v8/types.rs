@@ -57,6 +57,9 @@ pub(crate) struct ObjectProfile {
     pub wrapper_primitive: Option<CachedPrimitive>,
     pub array_buffer_state: Option<V8ArrayBufferState>,
     pub typed_array_element_type: Option<TypedArrayElementType>,
+    /// V8's stable identity hash for the object, used as a fast map key; a
+    /// collision is resolved by the engine's exact identity comparison.
+    pub identity_hash: u32,
 }
 
 #[derive(Clone)]
@@ -135,9 +138,11 @@ impl<T> Clone for V8Handle<T> {
 }
 
 impl<T> V8Handle<T> {
-    /// Materialize a `Local` for this handle in the given scope. `None` when
-    /// the referent has been reclaimed (a stale edge) or the handle is
-    /// empty.
+    /// Materialize a `Local` for this handle in the given scope.  `None` when
+    /// the handle is empty.  This is not a staleness check: V8 requires that an
+    /// edge is not read after its referent has been reclaimed (its storage cell
+    /// is cleared lazily), so an edge must be rooted with `make_strong` before
+    /// the owner that traced it can collect it.
     pub(crate) fn to_local<'s>(
         &self,
         scope: &mut v8::PinScope<'s, '_, ()>,
@@ -295,6 +300,11 @@ impl From<V8Object> for V8Value {
     }
 }
 
+/// Approximate identity, required by the generic `JsTypes` bound.  It is exact
+/// for two roots or two clones of one traced edge; across storage modes use the
+/// engine's `same_value` (which materializes both sides).  Live identity checks
+/// (the engine's associated-object lookup and structured clone's memory map)
+/// go through `same_value`, not this impl.
 impl PartialEq for V8Object {
     fn eq(&self, other: &Self) -> bool {
         self.0.isolate_id == other.0.isolate_id
@@ -392,6 +402,8 @@ impl Hash for V8String {
 #[derive(Clone, Debug)]
 pub struct V8Symbol(pub(crate) V8Value);
 
+/// Approximate identity, required by the generic `JsTypes` bound; use the
+/// engine's `same_value` across storage modes.
 impl PartialEq for V8Symbol {
     fn eq(&self, other: &Self) -> bool {
         self.0.isolate_id == other.0.isolate_id && self.0.handle.same_identity(&other.0.handle)

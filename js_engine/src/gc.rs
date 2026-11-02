@@ -97,9 +97,12 @@ pub trait JsTypesGcExt: JsTypes + JsTypesWithRealm + Sized + 'static {
     type Reflector: Clone + 'static;
     type Context: ExecutionContext<Self>;
 
-    fn create_reflector(context: &mut Self::Context, obj: &Self::JsObject) -> Self::Reflector;
+    fn create_reflector(
+        context: &mut dyn ExecutionContext<Self>,
+        obj: &Self::JsObject,
+    ) -> Self::Reflector;
     fn upgrade_reflector(
-        context: &mut Self::Context,
+        context: &mut dyn ExecutionContext<Self>,
         reflector: &Self::Reflector,
     ) -> Option<Self::JsObject>;
 }
@@ -718,11 +721,14 @@ mod boa_gc_impl {
         type Reflector = boa_engine::object::JsObject;
         type Context = crate::boa::BoaContext;
 
-        fn create_reflector(_context: &mut Self::Context, obj: &Self::JsObject) -> Self::Reflector {
+        fn create_reflector(
+            _context: &mut dyn ExecutionContext<BoaTypes>,
+            obj: &Self::JsObject,
+        ) -> Self::Reflector {
             obj.clone()
         }
         fn upgrade_reflector(
-            _context: &mut Self::Context,
+            _context: &mut dyn ExecutionContext<BoaTypes>,
             reflector: &Self::Reflector,
         ) -> Option<Self::JsObject> {
             Some(reflector.clone())

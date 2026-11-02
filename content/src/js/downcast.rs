@@ -433,6 +433,9 @@ pub(crate) fn try_with_event_target_mut<R>(
         return Err(ec.new_type_error("receiver is not an EventTarget"));
     };
     let result = f(&mut target, ec);
+    // Convert the rooted cell clones `f` may have assigned into cppgc edges
+    // before the write-back installs them in traced storage.
+    store_traced(&mut target, ec);
     ec.with_object_any_mut(&obj)
         .and_then(|data| with_platform_event_target_mut(data, |slot| *slot = target));
     Ok(result)

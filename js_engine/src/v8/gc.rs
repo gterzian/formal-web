@@ -272,10 +272,14 @@ impl<T: Trace + 'static> V8GcCell<T> {
     /// context, so the compiler does not prevent calling back into the engine
     /// while a borrow is held — and the borrow discipline forbids it: an
     /// engine call can allocate and trigger a cppgc trace that reads the cell
-    /// while the borrow is live (see `js_engine/README.md`). Clone the value
-    /// out instead, or scope the borrow to a non-engine section. The cell's
-    /// reference is held for the whole borrow, and the borrow counter prevents
-    /// mutable aliasing.
+    /// while the borrow is live (see `js_engine/README.md`).  Scope the borrow
+    /// to a non-engine section; to keep a value after the borrow ends, read it
+    /// with `get`/`take`, which return rooted clones.  Cloning the borrowed
+    /// value does not root it: the clone's handles are edges kept alive only by
+    /// the owning cell, so it must not outlive the borrow.
+    ///
+    /// The cell's reference is held for the whole borrow, and the borrow
+    /// counter prevents mutable aliasing.
     pub(crate) fn borrow<'a>(&'a self, _ec: &dyn ExecutionContext<V8Types>) -> V8GcRef<'a, T> {
         let heap_cell = self.heap_cell();
         if heap_cell.writer.get() {
@@ -346,10 +350,15 @@ impl<T: Trace + 'static> Traced for V8GcCell<T> {
             CellLink::Member(member) => visitor.trace(member),
             CellLink::Strong(_) => {
                 crate::v8::trace::record_strong_cell_reached_during_trace();
-                debug_assert!(
-                    false,
-                    "a rooted GcCell reached cppgc tracing: the store invariant was bypassed"
-                );
+                // Release builds keep running with the cell over-retained and
+                // let `V8Engine::gc` report the count; a debug build aborts
+                // deterministically instead of unwinding across the C++ trace
+                // callback.
+                if cfg!(debug_assertions) {
+                    fatal_invariant!(
+                        "a rooted GcCell reached cppgc tracing: the store invariant was bypassed"
+                    );
+                }
             }
         }
     }

@@ -5,12 +5,13 @@ type JsValue = <Types as JsTypes>::JsValue;
 type JsObject = <Types as JsTypes>::JsObject;
 type ArrayBuffer = <Types as JsTypes>::ArrayBuffer;
 
-use js_engine::{Completion, ExecutionContext, JsTypes, SharedMemoryOrder, TypedArrayElementType};
+use js_engine::{Completion, ExecutionContext, JsTypes, TypedArrayElementType};
 
 use crate::webidl::bindings::create_interface_instance;
 use crate::webidl::{rejected_promise, resolved_promise};
 use js_engine::gc::GcCell;
 use js_engine::gc::gc_cell_new;
+use js_engine::gc::make_strong_traced;
 use js_engine::gc_struct;
 
 use super::{
@@ -839,7 +840,7 @@ impl ReadableByteStreamController {
         error: JsValue,
         ec: &mut dyn ExecutionContext<crate::js::Types>,
     ) -> Completion<(), crate::js::Types> {
-        let pending = self.pending_pull_intos.borrow(ec).clone();
+        let pending = self.pending_pull_intos.get(ec);
         for descriptor in pending {
             if matches!(descriptor.request, PullRequest::Byob(_)) {
                 descriptor.error(error.clone(), ec)?;
@@ -989,7 +990,10 @@ impl ReadableByteStreamController {
                     None
                 }
             };
-            if let Some(descriptor) = descriptor {
+            if let Some(mut descriptor) = descriptor {
+                // The descriptor left the cell above; root it before the
+                // enqueue below runs engine code.
+                make_strong_traced(&mut descriptor, ec);
                 self.enqueue_detached_pull_into_to_queue(descriptor, ec)?;
             }
         }
@@ -1386,10 +1390,15 @@ impl ReadableByteStreamController {
         &self,
         ec: &mut dyn ExecutionContext<crate::js::Types>,
     ) -> PullIntoDescriptor {
-        self.pending_pull_intos
+        let mut descriptor = self
+            .pending_pull_intos
             .borrow_mut(ec)
             .pop_front()
-            .expect("pending pull intos must not be empty")
+            .expect("pending pull intos must not be empty");
+        // The descriptor has left traced storage; root its handles before the
+        // caller can run engine code that collects it.
+        make_strong_traced(&mut descriptor, ec);
+        descriptor
     }
 
     /// <https://streams.spec.whatwg.org/#readable-byte-stream-controller-commit-pull-into-descriptor>
@@ -1714,6 +1723,9 @@ impl ReadableByteStreamController {
                     }
                 }
             };
+            // The entry has left traced storage; root its handles for the
+            // engine calls below.
+            make_strong_traced(&mut entry, ec);
             // Step 11.2: Let bytesToCopy be min(totalBytesToCopyRemaining, headOfQueue's byte length).
             let to_take = total_bytes_to_copy_remaining.min(entry.remaining_len());
             // Step 11.8: Perform ! CopyDataBlockBytes(descriptorBuffer, destStart, queueBuffer, queueByteOffset, bytesToCopy).
@@ -1733,17 +1745,7 @@ impl ReadableByteStreamController {
             total_bytes_to_copy_remaining -= to_take;
 
             let dest_start = descriptor.view.byte_offset() + descriptor.bytes_filled;
-            for (relative_index, byte) in bytes.iter().copied().enumerate() {
-                let value = ec.value_from_number(f64::from(byte));
-                ec.set_value_in_buffer(
-                    &descriptor.view.buffer,
-                    (dest_start + relative_index) as u64,
-                    TypedArrayElementType::Uint8,
-                    value,
-                    true,
-                    SharedMemoryOrder::Unordered,
-                )?;
-            }
+            ec.set_buffer_bytes(&descriptor.view.buffer, dest_start as u64, &bytes)?;
             // Step 11.12: Perform ! FillHeadPullIntoDescriptor(controller, bytesToCopy, pullIntoDescriptor).
             descriptor.bytes_filled += to_take;
             copied_total += to_take;

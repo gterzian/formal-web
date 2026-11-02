@@ -41,7 +41,7 @@ use crate::html::{
     structured_data::safe_passing_of_structured_data::{
         SerializeWithTransferResult, structured_deserialize_with_transfer,
     },
-    windowproxy::WindowProxyBacking,
+    windowproxy::{WindowProxyBacking, same_content_process_backing},
 };
 use crate::infra::strip_and_collapse_ascii_whitespace;
 use crate::js::Engine;
@@ -1960,9 +1960,7 @@ impl ContentProcess {
         replacement_window: Option<(Window, JsObject)>,
     ) -> Result<(), String> {
         let backing = match replacement_window {
-            Some((window, js_object)) => {
-                WindowProxyBacking::SameContentProcess { window, js_object }
-            }
+            Some((window, js_object)) => same_content_process_backing(window, js_object),
             None => WindowProxyBacking::CrossContentProcess,
         };
         let document_ids: Vec<DocumentId> = self.documents.keys().copied().collect();
