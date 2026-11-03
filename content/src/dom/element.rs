@@ -112,6 +112,16 @@ impl Element {
             .to_owned()
     }
 
+    /// <https://dom.spec.whatwg.org/#dom-element-classname>
+    pub(crate) fn class_name(&self) -> String {
+        self.get_attribute("class").unwrap_or_default()
+    }
+
+    /// <https://dom.spec.whatwg.org/#dom-element-classname>
+    pub(crate) fn set_class_name(&self, value: &str) {
+        self.set_attribute("class", value);
+    }
+
     /// <https://dom.spec.whatwg.org/#dom-element-tagname>
     pub(crate) fn tag_name(&self) -> String {
         let document = self.node.document.borrow();

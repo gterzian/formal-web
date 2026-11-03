@@ -1,0 +1,40 @@
+<!DOCTYPE html>
+<meta charset="utf-8">
+<title>Element.className reflects the class attribute</title>
+<link rel="help" href="https://dom.spec.whatwg.org/#dom-element-classname">
+<script src="/resources/testharness.js"></script>
+<script src="/resources/testharnessreport.js"></script>
+<div id="with-class" class="a b"></div>
+<div id="without-class"></div>
+<script>
+'use strict';
+
+test(() => {
+  assert_equals(document.getElementById('with-class').className, 'a b');
+  assert_equals(document.getElementById('without-class').className, '');
+}, 'className getter returns the class attribute, or the empty string when absent');
+
+test(() => {
+  const el = document.createElement('div');
+  el.className = 'x  y';
+  assert_equals(el.getAttribute('class'), 'x  y');
+  assert_equals(el.className, 'x  y');
+  assert_true(el.classList.contains('y'));
+}, 'className setter sets the class attribute');
+
+test(() => {
+  const el = document.createElement('div');
+  el.setAttribute('class', 'foo');
+  assert_equals(el.className, 'foo');
+  el.classList.add('bar');
+  assert_equals(el.className, 'foo bar');
+}, 'className reflects setAttribute and classList changes');
+
+test(() => {
+  const el = document.createElement('div');
+  el.className = null;
+  assert_equals(el.getAttribute('class'), 'null');
+  el.className = 5;
+  assert_equals(el.className, '5');
+}, 'className setter converts its value to a string');
+</script>
