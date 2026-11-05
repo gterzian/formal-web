@@ -3,7 +3,7 @@ use ipc_messages::content::{
     NewChildNavigableInfo, UserNavigationInvolvement, iframe_target_name,
 };
 use std::{
-    cell::RefCell,
+    cell::{Cell, RefCell},
     collections::{HashMap, HashSet},
     rc::Rc,
 };
@@ -383,6 +383,7 @@ fn create_a_new_child_navigable(
             viewport_offset_x: 0.0,
             viewport_offset_y: 0.0,
             paint_dirty,
+            ui_state_update_noted: Cell::new(false),
             last_scene: None,
             last_composition: None,
         },

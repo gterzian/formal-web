@@ -198,8 +198,11 @@ impl DocumentProviders {
         &self.image_registry
     }
 
-    /// Mark the document as needing a repaint, the same flag blitz sets when it
-    /// calls `ShellProvider::request_redraw`.
+    /// Mark the document as needing a repaint.  Called for the changes blitz
+    /// does not report through `ShellProvider::request_redraw`: the DOM tree
+    /// steps this document's own mutation hooks observe (so a script that
+    /// mutates a document other than the one it runs in still marks that
+    /// document), and the image processing model's redraws.
     pub(crate) fn request_redraw(&self) {
         self.paint_dirty.note_paint();
     }

@@ -43,6 +43,20 @@ Look up any cross-reference by its exact URL fragment. Split a full URL before
 that heading id next. For example, `queue-a-microtask` truncates; `queuing-tasks`
 renders the full algorithm.
 
+**Truncated section → read the reference instead.** Some algorithms are
+rendered far from the heading they live under, so even `lookup` on the section
+heading stops before the step list. `refs <spec-url> <id> --read <n>` reads the
+reference site and prints the enclosing algorithms in full, step by step — that
+is the reliable way to get the numbered steps of an algorithm whose anchor sits
+inside another algorithm (e.g. `update-the-rendering` under the event loop
+processing model).
+
+**Step numbering is the spec's path, not the nesting depth.** Steps of an
+algorithm nested inside another step carry the full dotted number
+(`Step 3.14`, `Step 3.16.2.1`), and `verify` matches `// Step N:` comments
+against exactly that. A comment numbered `// Step 14:` for a step the spec
+numbers `3.14` fails verification.
+
 ## Annotation conventions
 
 Annotation conventions live in `AGENTS.md` under "Algorithm Implementation"

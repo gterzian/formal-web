@@ -39,6 +39,14 @@ impl ResolvedViewport {
     fn intersects_local_rect(&self, rect: Rect) -> bool {
         rect.x0 < self.width && rect.y0 < self.height && rect.x1 > 0.0 && rect.y1 > 0.0
     }
+
+    /// True when a layer at `rect` (in the frame's local space) has any part of
+    /// its box inside the frame's viewport.  A layer outside it is not drawn:
+    /// the frame shows only its viewport, so an element scrolled out of a child
+    /// frame's viewport must not become a sublayer that draws outside the frame.
+    fn shows_layer(&self, rect: [f64; 4]) -> bool {
+        rect[0] < self.width && rect[1] < self.height && rect[2] > 0.0 && rect[3] > 0.0
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -1085,6 +1093,9 @@ impl Compositor {
                     stack.remove(&child_frame_id);
                 }
                 EmbedSite::Video(video_data) => {
+                    if !parent_viewport.shows_layer(video_data.layout.clip_bounds) {
+                        continue;
+                    }
                     let Some(video_frame) = self.video_frames.get(&video_data.paint_id) else {
                         if input_debug_enabled() {
                             trace!(
@@ -1180,6 +1191,9 @@ impl Compositor {
                     presented_layers.insert(layer_id);
                 }
                 EmbedSite::Canvas(canvas_site) => {
+                    if !parent_viewport.shows_layer(canvas_site.layout.clip_bounds) {
+                        continue;
+                    }
                     let Some(canvas_frame) = self.canvas_frames.get(&canvas_site.canvas_id) else {
                         if input_debug_enabled() {
                             trace!(
@@ -1250,6 +1264,9 @@ impl Compositor {
                     presented_layers.insert(layer_id);
                 }
                 EmbedSite::Image(image_data) => {
+                    if !parent_viewport.shows_layer(image_data.layout.clip_bounds) {
+                        continue;
+                    }
                     let Some(entry) = self.image_registry.get(&image_data.image_id).cloned() else {
                         if input_debug_enabled() {
                             trace!(

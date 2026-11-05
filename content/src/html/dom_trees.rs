@@ -23,6 +23,7 @@ impl MutationHooks for DocumentProviders {
         new_value: Option<&str>,
         namespace: &str,
     ) {
+        self.request_redraw();
         if is_html_element(element) && element.name.local.as_ref() == "img" {
             images_processing_model::attribute_change_steps(
                 self, node_id, element, local_name, old_value, new_value, namespace,
@@ -57,6 +58,7 @@ impl MutationHooks for DocumentProviders {
 
     /// <https://html.spec.whatwg.org/#dom-trees:concept-node-insert-ext>
     fn insertion_steps(&self, node_id: usize, element: Option<&ElementData>) {
+        self.request_redraw();
         // Step 1: "If insertedNode is an element whose namespace is the HTML namespace, and this
         // standard defines HTML element insertion steps for insertedNode's local name, then
         // run the corresponding HTML element insertion steps given insertedNode."
@@ -68,9 +70,8 @@ impl MutationHooks for DocumentProviders {
         }
         // Step 2: "If insertedNode is a form-associated element or the ancestor of a
         // form-associated element:"
-        // Step 2.1: "If the form-associated element's parser inserted flag is set, then return."
-        // Step 2.2: "Reset the form owner of the form-associated element."
-        // Note: Form-associated elements are not implemented.
+        // Note: Form-associated elements are not implemented, so the reset of the form
+        // owner the step performs is not run.
         // Step 3: "If insertedNode is an Element that is not on the stack of open elements of an
         // HTML parser, then process internal resource links given insertedNode's node document."
         // Note: The stack of open elements is parser state that is not available here, and
@@ -79,6 +80,7 @@ impl MutationHooks for DocumentProviders {
 
     /// <https://html.spec.whatwg.org/#dom-trees:concept-node-post-connection-ext>
     fn post_connection_steps(&self, node_id: usize, element: Option<&ElementData>) {
+        self.request_redraw();
         // Step 1: "If insertedNode is an element whose namespace is the HTML namespace, and this
         // standard defines HTML element post-connection steps for insertedNode's local name, then
         // run the corresponding HTML element post-connection steps given insertedNode."
@@ -104,6 +106,7 @@ impl MutationHooks for DocumentProviders {
         is_subtree_root: bool,
         old_ancestor: Option<&ElementData>,
     ) {
+        self.request_redraw();
         // Step 1: "Let document be removedNode's node document."
         // Step 2: "If document's focused area is removedNode, then set document's focused area to
         // document's viewport, and set document's relevant global object's navigation API's focus

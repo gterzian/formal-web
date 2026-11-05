@@ -3028,21 +3028,32 @@ impl MacApp {
             });
 
             // Geometry: the layer's frame is its visible clip rect in its
-            // parent's space, converted from root-pixel space to web_layer
-            // point space; contents scale to fill (default
-            // contentsGravity = resize), matching the producer's placement.
+            // parent's space, converted from root-pixel space to point space;
+            // contents scale to fill (default contentsGravity = resize),
+            // matching the producer's placement.
             //
-            // The clip is reported in the root navigable's top-down pixel
-            // space, while the web_layer (a layer-hosting view's backing
-            // layer) has a bottom-up (y-up) coordinate space. Mapping the
-            // top-down clip straight into the y-up frame would mirror the
-            // sublayer vertically: it would sit above its element and move
-            // opposite the page on scroll. Flip the y origin so sublayers
-            // land on their element and track the page.
+            // A layer's clip is reported in its parent's top-down pixel space,
+            // while the parent CALayer (and the web_layer under the root
+            // navigable) is y-up. Mapping the top-down clip straight into the
+            // y-up frame would mirror the sublayer vertically: it would sit above
+            // its element and move opposite the page on scroll. Flip the y origin
+            // against the parent's own height, so a frame nested in a child frame
+            // stays inside that frame instead of being flipped about the root's
+            // height.
             let clip = &entry.clip_bounds;
-            let frame_y = web_bounds.size.height - clip[3] * scale_y;
+            let parent_height_pixels = entry
+                .parent
+                .and_then(|parent_id| {
+                    stored
+                        .iter()
+                        .find(|candidate| candidate.layer_id == parent_id)
+                })
+                .map(|parent_entry| parent_entry.clip_bounds[3] - parent_entry.clip_bounds[1])
+                .unwrap_or(root_h);
+            let frame_x = clip[0] * scale_x;
+            let frame_y = (parent_height_pixels - clip[3]) * scale_y;
             sublayer.setFrame(NSRect::new(
-                NSPoint::new(clip[0] * scale_x, frame_y),
+                NSPoint::new(frame_x, frame_y),
                 NSSize::new((clip[2] - clip[0]) * scale_x, (clip[3] - clip[1]) * scale_y),
             ));
             sublayer.setCornerRadius(entry.corner_radius);
@@ -3057,7 +3068,7 @@ impl MacApp {
                 entry.clip_bounds,
                 entry.z_order,
                 (entry.width, entry.height),
-                (clip[0] * scale_x, frame_y),
+                (frame_x, frame_y),
                 ((clip[2] - clip[0]) * scale_x, (clip[3] - clip[1]) * scale_y),
             );
 
@@ -3229,21 +3240,34 @@ impl MacApp {
                 });
 
                 // Geometry: the layer's frame is its visible clip rect in its
-                // parent's space, converted from root-pixel space to web_layer
-                // point space; contents scale to fill (default
-                // contentsGravity = resize), matching the producer's placement.
+                // parent's space, converted from root-pixel space to point space;
+                // contents scale to fill (default contentsGravity = resize),
+                // matching the producer's placement.
                 //
-                // The clip is reported in the root navigable's top-down pixel
-                // space, while the web_layer (a layer-hosting view's backing
-                // layer) has a bottom-up (y-up) coordinate space. Mapping the
-                // top-down clip straight into the y-up frame would mirror the
-                // sublayer vertically: it would sit above its element and move
-                // opposite the page on scroll. Flip the y origin so sublayers
-                // land on their element and track the page.
+                // A layer's clip is reported in its parent's top-down pixel
+                // space, while the parent CALayer (and the web_layer under the
+                // root navigable) is y-up. Mapping the top-down clip straight
+                // into the y-up frame would mirror the sublayer vertically: it
+                // would sit above its element and move opposite the page on
+                // scroll. Flip the y origin against the parent's own height, so a
+                // frame nested in a child frame stays inside that frame instead
+                // of being flipped about the root's height.
                 let clip = &layer.topology.clip_bounds;
-                let frame_y = web_bounds.size.height - clip[3] * scale_y;
+                let parent_height_pixels = layer
+                    .topology
+                    .parent
+                    .and_then(|parent_id| {
+                        layers
+                            .iter()
+                            .map(|candidate| &candidate.topology)
+                            .find(|topology| topology.layer_id == parent_id)
+                    })
+                    .map(|topology| topology.clip_bounds[3] - topology.clip_bounds[1])
+                    .unwrap_or(root_h);
+                let frame_x = clip[0] * scale_x;
+                let frame_y = (parent_height_pixels - clip[3]) * scale_y;
                 sublayer.setFrame(NSRect::new(
-                    NSPoint::new(clip[0] * scale_x, frame_y),
+                    NSPoint::new(frame_x, frame_y),
                     NSSize::new((clip[2] - clip[0]) * scale_x, (clip[3] - clip[1]) * scale_y),
                 ));
                 sublayer.setCornerRadius(layer.topology.corner_radius);
@@ -3261,7 +3285,7 @@ impl MacApp {
                         .frame
                         .as_ref()
                         .map(|_| (layer.topology.width, layer.topology.height)),
-                    (clip[0] * scale_x, frame_y),
+                    (frame_x, frame_y),
                     ((clip[2] - clip[0]) * scale_x, (clip[3] - clip[1]) * scale_y,),
                 );
 

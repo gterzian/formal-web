@@ -32,22 +32,16 @@
       document.getElementById("child-heading").textContent =
         "Same-origin iframe document (" + location.href + ")";
 
+      // The parent posts the content it wants shown; this document writes it
+      // into its own body, so the change is drawn in this frame.
       window.addEventListener("message", function (event) {
-        if (event.data !== "ping") {
+        var data = event.data;
+        if (!data || data.type !== "content") {
           return;
         }
-        var image = document.getElementById("child-image");
-        // The parent's replies use "*" because a file: document's origin
-        // serializes to "null", which is not a valid targetOrigin URL.
-        event.source.postMessage(
-          {
-            reply: "pong",
-            imageWidth: image.naturalWidth,
-            imageHeight: image.naturalHeight,
-            imageComplete: image.complete
-          },
-          "*"
-        );
+        document.body.style.background = data.background;
+        document.getElementById("child-heading").textContent = data.heading;
+        document.getElementById("child-status").textContent = data.text;
       });
 
       if (window.parent !== window) {

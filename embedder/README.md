@@ -71,6 +71,15 @@ re-presentation in `reconcile_sublayers`) must therefore supply the surface
 retained for that layer; setting `contents` without a change is what makes
 Quartz Debug flash a layer.
 
+Sublayer geometry is per layer's own parent, and both presentation paths
+(`handle_new_layers` and the tab-switch `reconcile_sublayers`) must compute it
+the same way: a layer's clip is a top-down rect in its parent's pixel space, so
+its frame is `clip[0] * scale` horizontally and flipped about **the parent's**
+height vertically (the root navigable's height for a child of the web layer, a
+child frame's height for a frame nested inside it).  Flipping about the root's
+height instead puts a grandchild iframe outside the child frame that contains
+it, where it is not visible.
+
 ### Multi-window and multi-tab
 
 `WindowedApp` owns a `HashMap<WindowId, WindowState>`; a

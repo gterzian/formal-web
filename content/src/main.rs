@@ -84,7 +84,7 @@ use ipc_messages::media::{VideoEmbedData, VideoPaintId};
 use ipc_messages::safe_passing_of_structured_data::PostMessageRequest;
 use log::{debug, error, info, warn};
 use std::{
-    cell::RefCell,
+    cell::{Cell, RefCell},
     collections::{HashMap, HashSet},
     env,
     rc::Rc,
@@ -370,6 +370,11 @@ pub(crate) struct ContentDocument {
     /// video elsewhere driving the render cycle) neither resolves nor paints,
     /// and its frame is marked unchanged so graphics keeps the layer clean.
     paint_dirty: Rc<PaintDirty>,
+    /// Whether a UI state update for this document's navigable is already
+    /// outstanding: a note sent while it is set would only add work the render
+    /// already queued, so the content process skips it.  Cleared by the render
+    /// the note asked for.
+    ui_state_update_noted: Cell<bool>,
     /// The last recorded scene, reused verbatim on a clean render cycle. Fonts
     /// are not re-sent on a clean cycle (they are already registered on the
     /// graphics side).
@@ -1046,6 +1051,7 @@ impl ContentProcess {
                     viewport_offset_x: 0.0,
                     viewport_offset_y: 0.0,
                     paint_dirty: Rc::new(PaintDirty::default()),
+                    ui_state_update_noted: Cell::new(false),
                     last_scene: None,
                     last_composition: None,
                 },
@@ -1061,12 +1067,9 @@ impl ContentProcess {
         Ok(())
     }
 
-    /// Create and register an about:blank document for a child navigable.
-    /// Uses the shared `create_about_blank_document` helper.  Called by
-    /// `create_a_new_child_navigable` to create the document in the content
-    /// process immediately, since we are already in the correct browsing
-    /// context group.
-    /// <https://html.spec.whatwg.org/multipage/#navigate-html>
+    /// Continues a document load after a subresource response or a deferred
+    /// script arrives, finishing the load when no critical resource and no
+    /// deferred script is pending.
     fn continue_document_load(&mut self, document_id: DocumentId) -> Result<(), String> {
         // Set up the shared registry so window.open calls made by the inline
         // and deferred scripts running during the load can register new
@@ -1301,6 +1304,7 @@ impl ContentProcess {
                     .map(|viewport| viewport.offset_y)
                     .unwrap_or(0.0),
                 paint_dirty,
+                ui_state_update_noted: Cell::new(false),
                 last_scene: None,
                 last_composition: None,
             },
@@ -1652,6 +1656,7 @@ impl ContentProcess {
                     .map(|viewport| viewport.offset_y)
                     .unwrap_or(0.0),
                 paint_dirty,
+                ui_state_update_noted: Cell::new(false),
                 last_scene: None,
                 last_composition: None,
             },
@@ -2171,12 +2176,7 @@ impl ContentProcess {
         // without this note the UA never knows to re-render the navigable, so
         // a cross-origin iframe's change waits for an unrelated input event to
         // come through before it appears.
-        if let Err(error) = self
-            .event_sender
-            .send(ContentEvent::NoteUiStateUpdate(request.target_navigable_id))
-        {
-            error!("failed to note ui state update for postMessage: {error}");
-        }
+        self.note_ui_state_update(request.target_navigable_id);
 
         // Set up the shared registry so window.open calls made while the
         // message handlers run can register new documents.
@@ -2437,12 +2437,8 @@ impl ContentProcess {
             .documents
             .get(&document_id)
             .map(|document| document.traversable_id);
-        if let Some(traversable_id) = traversable_id
-            && let Err(error) = self
-                .event_sender
-                .send(ContentEvent::NoteUiStateUpdate(traversable_id))
-        {
-            error!("failed to note ui state update for port message task: {error}");
+        if let Some(traversable_id) = traversable_id {
+            self.note_ui_state_update(traversable_id);
         }
         Ok(())
     }
@@ -2497,21 +2493,26 @@ impl ContentProcess {
     fn update_the_rendering(
         &mut self,
         navigable_id: NavigableId,
-        document_id: DocumentId,
+        requested_document_id: DocumentId,
         frame_timestamp_epoch_ms: f64,
     ) -> Result<(), String> {
-        // A navigation commit replaces the navigable's active document between
-        // the user agent queuing this command and this task running: the user
-        // agent switches its active document at finalization, while this process
-        // switches at `CreateLoadedDocument`.  The finalization notes a fresh UI
-        // state update for the new document, so a command carrying the replaced
-        // document is dropped instead of failing.
-        if self.active_documents_by_traversable.get(&navigable_id) != Some(&document_id) {
-            info!(
-                "[render-pipe] Content drop stale update-the-rendering navigable={} document={}",
-                navigable_id, document_id
-            );
+        // Note: Step 3.2 ("Let docs be all fully active Document objects whose
+        // relevant agent's event loop is eventLoop, sorted arbitrarily except that
+        // the following conditions must be met:") is resolved here, when the task
+        // runs, so a navigation that committed in between does not leave the task
+        // naming a replaced document — the spec's note on the queueing step records
+        // that "the document associated with the task might become inactive before
+        // the task is processed".  This process renders the update's navigable only:
+        // the user agent queues one update per navigable it noted, so `docs` is that
+        // one document.
+        let Some(&document_id) = self.active_documents_by_traversable.get(&navigable_id) else {
             return Ok(());
+        };
+        if document_id != requested_document_id {
+            info!(
+                "[render-pipe] Content update-the-rendering named replaced document navigable={} document={} (command named {})",
+                navigable_id, document_id, requested_document_id
+            );
         }
 
         // This is where the update-the-rendering steps run: the rendering
@@ -2531,7 +2532,7 @@ impl ContentProcess {
                 .get_mut(&document_id)
                 .ok_or_else(|| format!("unknown document id: {document_id}"))?;
 
-            // Step 1: "Let `frameTimestamp` be `eventLoop`'s last render opportunity time."
+            // Step 3.1: "Let frameTimestamp be eventLoop's last render opportunity time."
             // The user agent stamps the opportunity time on the browser-wide monotonic
             // clock when it notes the opportunity and passes it in the UpdateTheRendering
             // command; convert it to a duration from this document's time origin (HR Time
@@ -2543,8 +2544,9 @@ impl ContentProcess {
                     document.settings.time_origin,
                 );
 
-            // Step 14: "For each `doc` of `docs`, run the animation frame callbacks for `doc`, passing in the relative high resolution time given `frameTimestamp` and `doc`'s relevant global object as the timestamp."
-            // Note: The content process collapses `docs` to the single active document for this content process.
+            // Step 3.14: "For each doc of docs, run the animation frame callbacks
+            // for doc, passing in the relative high resolution time given
+            // frameTimestamp and doc's relevant global object as the timestamp."
             let had_pending_r_af = document.settings.has_pending_animation_frame_callbacks();
             document
                 .settings
@@ -2552,16 +2554,13 @@ impl ContentProcess {
 
             let animation_time = frame_timestamp_ms / 1000.0;
 
-            // Step 4: "Unnecessary rendering: Remove from docs any Document
-            // object doc for which all of the following are true: the user
-            // agent believes that updating the rendering of doc's node
-            // navigable would have no visible effect; and doc's map of
-            // animation frame callbacks is empty."
-            // Note: The content process collapses `docs` to its single active
-            // document. The removal conditions invert to `needs_paint` or
-            // `is_animating` (a visible effect) and `had_pending_r_af` (the
-            // animation frame callbacks); `last_scene` being absent forces the
-            // first paint so blitz has a scene to reuse.
+            // Step 3.4: "Unnecessary rendering: Remove from docs any Document
+            // object doc for which all of the following are true:"
+            // The conditions are inverted here into the paint decision: `docs`
+            // is kept (the document is painted) when the user agent believes the
+            // navigable's rendering changed — `needs_paint`, `is_animating`, or
+            // its animation frame callbacks ran — and `last_scene` being absent
+            // forces the first paint so blitz has a scene to reuse.
             //
             // A paint-dirty document needs the repaint whatever the resolve
             // pass reports: content changed something blitz does not model (a
@@ -2587,7 +2586,7 @@ impl ContentProcess {
             if must_paint || needs_restyle {
                 let mut document_guard = document.document.borrow_mut();
 
-                // Step 16.2.1: "Recalculate styles and update layout for `doc`."
+                // Step 3.16.2.1: "Recalculate styles and update layout for doc."
                 // `resolve` advances style, layout, and resource-driven document updates.
                 rendering_changed = document_guard.resolve(animation_time);
             }
@@ -2670,8 +2669,9 @@ impl ContentProcess {
                         &image_registry_guard,
                     );
 
-                    // Step 22: "For each `doc` of `docs`, update the rendering or user interface of `doc` and its node navigable to reflect the current state."
-                    // Note: This implementation collapses the HTML rendering task to a single active document and records the painted scene for the embedder.
+                    // Step 3.22: "For each doc of docs, update the rendering or user
+                    // interface of doc and its node navigable to reflect the current
+                    // state."
                     paint_scene(
                         &mut scene,
                         &document_guard,
@@ -2734,6 +2734,9 @@ impl ContentProcess {
                 (paint_frame, shmem_data)
             };
             paint_dirty.clear();
+            // The render this note asked for has happened; a later change to the
+            // document notes the user agent again.
+            document.ui_state_update_noted.set(false);
             frame
         };
 
@@ -3076,11 +3079,7 @@ impl ContentProcess {
         install_resource(&mut document.borrow_mut(), &request, response_url, body)?;
         self.continue_document_load(document_id)?;
         self.mark_document_dirty(document_id);
-        self.event_sender
-            .send(ContentEvent::NoteUiStateUpdate(traversable_id))
-            .map_err(|error| {
-                format!("failed to note ui state update for an asset fetch: {error}")
-            })?;
+        self.note_ui_state_update(traversable_id);
         Ok(())
     }
 
@@ -3115,11 +3114,7 @@ impl ContentProcess {
         }
         self.mark_document_dirty(document_id);
         if let Some(traversable_id) = traversable_id {
-            self.event_sender
-                .send(ContentEvent::NoteUiStateUpdate(traversable_id))
-                .map_err(|error| {
-                    format!("failed to note ui state update for a failed asset fetch: {error}")
-                })?;
+            self.note_ui_state_update(traversable_id);
         }
         Ok(())
     }
@@ -3437,11 +3432,7 @@ impl ContentProcess {
                 );
             content_document.paint_dirty.note_paint();
             let traversable_id = content_document.traversable_id;
-            self.event_sender
-                .send(ContentEvent::NoteUiStateUpdate(traversable_id))
-                .map_err(|error| {
-                    format!("failed to note ui state update for a presented image: {error}")
-                })?;
+            self.note_ui_state_update(traversable_id);
         }
         Ok(())
     }
@@ -3527,11 +3518,7 @@ impl ContentProcess {
                     response_url,
                 ));
                 self.continue_document_load(document_id)?;
-                self.event_sender
-                    .send(ContentEvent::NoteUiStateUpdate(traversable_id))
-                    .map_err(|error| {
-                        format!("failed to note ui state update for deferred script fetch: {error}")
-                    })?;
+                self.note_ui_state_update(traversable_id);
                 Ok(())
             }
         }
@@ -3586,9 +3573,7 @@ impl ContentProcess {
                     handler_id, traversable_id, document_id, script_index,
                 ));
                 self.continue_document_load(document_id)?;
-                self.event_sender
-                    .send(ContentEvent::NoteUiStateUpdate(traversable_id))
-                    .map_err(|error| format!("failed to note ui state update for deferred script fetch failure: {error}"))?;
+                self.note_ui_state_update(traversable_id);
                 Ok(())
             }
         }
@@ -4421,6 +4406,35 @@ impl ContentProcess {
     fn mark_traversable_dirty(&self, traversable_id: NavigableId) {
         if let Some(document_id) = self.active_documents_by_traversable.get(&traversable_id) {
             self.mark_document_dirty(*document_id);
+        }
+    }
+
+    /// Notes a UI state update for `navigable_id` unless one is already
+    /// outstanding for its document.  The user agent batches a note that arrives
+    /// while an update is in flight ("Unnecessary rendering", step 3.4 of
+    /// <https://html.spec.whatwg.org/#update-the-rendering>), so a second note
+    /// only asks for a render the first one already queued — in this content
+    /// process that would be a duplicate `UpdateTheRendering`, since the render
+    /// each note asks for paints the document the note was about.
+    fn note_ui_state_update(&mut self, navigable_id: NavigableId) {
+        let Some(document_id) = self
+            .active_documents_by_traversable
+            .get(&navigable_id)
+            .copied()
+        else {
+            return;
+        };
+        let Some(document) = self.documents.get(&document_id) else {
+            return;
+        };
+        if document.ui_state_update_noted.replace(true) {
+            return;
+        }
+        if let Err(error) = self
+            .event_sender
+            .send(ContentEvent::NoteUiStateUpdate(navigable_id))
+        {
+            error!("failed to note a ui state update for navigable={navigable_id}: {error}");
         }
     }
 
