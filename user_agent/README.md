@@ -33,6 +33,20 @@ site against that agent in the group's agent cluster map, so a later
 same-site navigation (a same-origin iframe, say) finds it instead of spawning
 a process.
 
+## Document destruction
+
+The user agent decides when a document dies: content removes a document from its
+table only when it handles `DestroyDocument`.  Every path that removes a
+navigable sends it for the navigable's active document, routed by document id
+(`command_sender_for_document`) so it reaches the process that owns the
+document — a top-level traversable's teardown, a navigation commit's previous
+document, and an iframe removal (`IframeTraversableRemoved`, "destroy a child
+navigable" step 5).  Content destroys a document's descendants by running that
+document's removing steps, which retires its iframes' navigables and so sends
+the user agent back through this path.  A path that retires a navigable without
+sending `DestroyDocument` retains the document, its realm and its blitz tree
+for the life of the content process.
+
 ## IPC blocking and deadlock
 
 Sending on an IPC channel can block when the system buffer is full, and the

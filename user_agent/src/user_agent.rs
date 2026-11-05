@@ -5554,6 +5554,19 @@ impl UserAgentWorker {
                 .get(traversable_id)
                 .copied()
             {
+                // Step 5: "Destroy a document and its descendants given navigable's active
+                // document."
+                // Note: That step of "destroy a child navigable"
+                // (<https://html.spec.whatwg.org/#destroy-a-child-navigable>) runs here: the
+                // content process that owns the document runs the destruction, so the command
+                // is routed by document id — a cross-origin child's document lives in another
+                // content process, and its own child navigables are destroyed the same way when
+                // their removing steps retire them.
+                if let Ok(sender) = self.command_sender_for_document(document_id)
+                    && let Err(error) = sender.send(ContentCommand::DestroyDocument { document_id })
+                {
+                    error!("[nav] failed to destroy a removed child navigable's document: {error}");
+                }
                 removed_document_ids.insert(document_id);
             }
             self.state.remove_traversable(*traversable_id);
