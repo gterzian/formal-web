@@ -9,7 +9,6 @@ use ipc_messages::content::{
 use url::Url;
 
 use crate::html::event_loop::EventLoopTaskSources;
-use crate::html::html_iframe_element::matches_about_blank;
 use crate::html::{TimerHandler, Window};
 use crate::js::bindings::dom::document::create_document_platform_object;
 use crate::js::build_context::{build_context, build_realm};
@@ -353,6 +352,7 @@ impl EnvironmentSettingsObject {
         &mut self,
         document: Rc<RefCell<BaseDocument>>,
         creation_url: Url,
+        origin: Origin,
         document_id: DocumentId,
     ) -> Result<(), String> {
         // The platform Document object is created in the reused realm; its JS handle replaces
@@ -363,24 +363,13 @@ impl EnvironmentSettingsObject {
             &mut self.realm_execution_context,
         )
         .map_err(|error| format!("failed to create replacement document object: {:?}", error))?;
-        // <https://html.spec.whatwg.org/#concept-settings-object-origin>
-        // A destination URL that matches about:blank keeps the current
-        // document's origin (the navigation params origin is inherited); any
-        // other destination takes its own URL's origin.
-        let new_origin = if matches_about_blank(&creation_url) {
-            self.origin.clone()
-        } else {
-            Origin {
-                serialized: creation_url.origin().unicode_serialization(),
-            }
-        };
         with_global_scope(&mut self.realm_execution_context, |global_scope, ec| {
             global_scope.repoint_document(
                 Rc::clone(&document),
                 document_object,
                 document_id,
                 creation_url.clone(),
-                new_origin.serialized.clone(),
+                origin.serialized.clone(),
                 ec,
             );
             Ok(())
@@ -394,7 +383,7 @@ impl EnvironmentSettingsObject {
         install_document_property(&mut self.realm_execution_context)
             .map_err(|error| format!("failed to re-install document property: {:?}", error))?;
         self.document = platform_document;
-        self.origin = new_origin;
+        self.origin = origin;
         self.creation_url = creation_url;
         Ok(())
     }

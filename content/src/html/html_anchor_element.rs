@@ -107,6 +107,7 @@ impl ActivationBehavior for HTMLAnchorElement {
             None,
             result.new_traversable_info,
             None,
+            None,
         )
         .map_err(|error| format!("failed to send hyperlink activation navigation request: {error}"))
     }

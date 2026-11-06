@@ -25,10 +25,9 @@ impl Default for CompositorSlotId {
     }
 }
 
-/// Identifies one compositable layer within a webview: a cross-origin
-/// navigable (iframe), a `<video>` embed site, an offscreen canvas, or an
-/// `<img>` element. Same-origin iframes are baked into their parent's
-/// recorded scene and get no layer of their own.
+/// Identifies one compositable layer within a webview: a navigable
+/// (iframe), a `<video>` embed site, an offscreen canvas, or an `<img>`
+/// element.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum CompositingLayerId {
     Navigable(FrameId),

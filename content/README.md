@@ -135,12 +135,12 @@ adding work to the loop:
 - **The command channel is only read while the task queue is empty.**  A
   command's steps run as soon as it is read, so reading one with tasks
   already queued runs those steps ahead of them.  The rendering pipeline
-  depends on this: a child navigable's `update the rendering` task must run
-  before the top-level traversable's frame composes (their frames compose
-  together), and letting a command overtake it makes the `RenderingOpportunity`
-  TLA+ trace validation fail intermittently (`verification/verify-specs.sh`,
-  roughly one run in five). The pipeline itself is documented in
-  `user_agent/README.md` ("Rendering pipeline").
+  depends on this: a cross-origin child navigable's `update the rendering`
+  task must run before the top-level traversable's frame composes (their
+  frames compose together), and letting a command overtake it makes the
+  `RenderingOpportunity` TLA+ trace validation fail intermittently
+  (`verification/verify-specs.sh`, roughly one run in five).  The pipeline
+  itself is documented in `user_agent/README.md` ("Rendering pipeline").
 
 ## Fetch
 
@@ -184,11 +184,10 @@ The `<img>` element follows its own processing model in
 `content/src/html/README.md`, "Images").  The completed image is registered
 with the graphics process once per `ImageIdentifier`; `DestroyDocument`
 releases the document's registered images with
-`GraphicsCommand::UnregisterImages`.  Same-origin iframe subdocuments keep
-their images on the layout-time loader rather than the `<img>` processing model
-(`DocumentHost::Subdocument`), so those images do not render: they need their
-own frames and image layers before they can go through graphics like a
-top-level `<img>` (remaining work, see `content/src/html/README.md`).
+`GraphicsCommand::UnregisterImages`.  Iframe documents run the same
+processing model as a top-level document: every iframe is a child frame, and
+its `<img>` layers draw inside that frame (see `content/src/html/README.md`,
+"Iframes").
 
 ## Clipboard
 
@@ -220,6 +219,11 @@ run script); a listener that mutates the DOM is covered by the paint flag
 because content marks the document dirty around event dispatch. Any new input
 path that mutates the document without going through blitz must set the paint
 flag itself.
+
+An animating document also resolves every cycle: blitz reports CSS animation
+damage only when the resolve pass runs, and it does not request a redraw per
+animation tick. Painting still depends on the pass reporting a change, so a
+video-driven cycle reuses the document's scene instead of repainting it.
 
 ## Known issues
 

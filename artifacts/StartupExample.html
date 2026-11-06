@@ -467,6 +467,38 @@
         </div>
       </section>
 
+
+      <!-- ──── 10. Same-origin iframe ──── -->
+      <section class="section-card">
+        <div class="section-title">
+          <span>Same-origin iframe</span>
+          <span class="badge working">Working</span>
+        </div>
+        <p class="section-desc">
+          The frame's content is a same-origin child navigable: its own
+          document, realm and frame, in this page's content process. The buttons
+          post a message to it and the child's script rewrites its own document,
+          so each change is drawn in the child frame.
+        </p>
+
+        <iframe
+          id="same-origin-frame"
+          title="Same-origin frame"
+          src="iframe-child.html"
+          width="360"
+          height="180"
+          style="display:block;border:1px solid #e4e2ec;border-radius:0.6rem;background:#fff;"
+        ></iframe>
+
+        <div class="btn-row" style="margin-top:0.8rem;">
+          <button class="btn btn-primary" id="iframe-load-btn" type="button">Load content</button>
+          <button class="btn btn-outline" id="iframe-change-btn" type="button">Change content</button>
+        </div>
+        <div class="output-box" id="iframe-output" style="margin-top:0.6rem;">
+          Load content into the frame, then change it.
+        </div>
+      </section>
+
       <footer style="text-align:center;padding:1rem 0 0;font-size:0.82rem;color:#a0a0b8;">
         formal-web · built from scratch in Rust
       </footer>
@@ -800,6 +832,47 @@
         });
       })();
 
+    </script>
+
+    <script>
+      // ──── 10. Same-origin iframe ────
+      (function() {
+        var output = document.getElementById("iframe-output");
+        var frame = document.getElementById("same-origin-frame");
+        var edits = 0;
+        var palette = ["#eef3ff", "#eafbee", "#fff7ea", "#fdeef4"];
+
+        function send(heading, text) {
+          edits += 1;
+          var background = palette[edits % palette.length];
+          try {
+            frame.contentWindow.postMessage(
+              {
+                type: "content",
+                heading: heading,
+                text: text + " (edit " + edits + ")",
+                background: background
+              },
+              "*"
+            );
+          } catch (error) {
+            output.textContent = "postMessage failed: " + error.message;
+            output.className = "output-box error";
+            return;
+          }
+          output.textContent =
+            "Posted edit " + edits + " to " + frame.contentWindow.location.href;
+          output.className = "output-box success";
+        }
+
+        document.getElementById("iframe-load-btn").addEventListener("click", function() {
+          send("Loaded by the parent", "The child document rewrote its own body.");
+        });
+
+        document.getElementById("iframe-change-btn").addEventListener("click", function() {
+          send("Changed by the parent", "Same child document, new content.");
+        });
+      })();
     </script>
   </body>
 </html>
