@@ -123,7 +123,11 @@ automation, worker `requestAnimationFrame`, or a content- or graphics-reported
 change. `note_ui_state_update` records it in `queued_ui_state_updates`, with
 the epoch time that becomes the event loop's `frameTimestamp` (the HTML "last
 render opportunity time"). Notes are batched: multiple notes before the next
-render collapse into one, and the latest timestamp wins.
+render collapse into one, and the latest timestamp wins. A note for a navigable
+on the same event loop as its top-level traversable is recorded against that
+top-level, so one cycle renders every document of the event loop; a
+cross-origin child remains its own target because it runs on its own event
+loop.
 
 `update the rendering` is queued only when both inputs exist. A UI state
 update without a rendering opportunity is batched and the UA calls
@@ -133,7 +137,7 @@ state update. That is the Unnecessary rendering step in code form.
 
 ### Queueing update the rendering
 
-`queue_update_the_rendering` starts one cycle per navigable:
+`queue_update_the_rendering` starts one cycle per noted navigable:
 
 - a per-navigable guard (`pending_update_the_rendering`) prevents a second
   cycle while the first is in flight;
@@ -148,27 +152,28 @@ state update. That is the Unnecessary rendering step in code form.
 - for a top-level navigable, graphics is sent `RenderStarted` with the cycle
   deadline;
 - `ContentCommand::UpdateTheRendering` is sent to the content event loop;
-- for a child navigable, the top-level traversable's update is queued too,
-  because graphics composes only when the top-level frame arrives.
+- for a cross-origin child navigable, the top-level traversable's update is
+  queued too, because graphics composes only when the top-level frame arrives.
 
 Content turns the command into a task so it runs in event-loop order (see
 `content/README.md`); the rendering task then enters `update_the_rendering`.
 
 ### Content's part
 
-`update_the_rendering` runs the animation-frame callbacks and applies the
-Unnecessary rendering test: a clean document reuses its last scene and
-composition instead of re-running blitz, while a dirty or animating document
-(or one with no cached scene) resolves style/layout and paints. Only a
-restyle-dirty document (blitz reported a possible `:hover` change) can come
-out of the resolve pass unchanged, and it then keeps its last scene too. Either
-way content sends a `PaintFrame` directly to the graphics process; that is how
-graphics learns the current top-level or child frame, its `animating` flag,
-and whether its scene changed. Content marks a document dirty when a script
-ran or blitz made a change it cannot model as a style change; a UI event that
-reaches no listener marks nothing, since it cannot have run script. Content
-sends `ContentEvent::NoteUiStateUpdate` when a change happens outside a
-UA-driven command.
+`update_the_rendering` walks the event loop's documents in container-document
+order, runs the animation-frame callbacks and the Unnecessary rendering test
+for each, then resolves and paints the ones that need it. A clean document
+reuses its last scene and composition instead of re-running blitz; a
+content-dirty document or one with no cached scene resolves and paints; a
+restyle-dirty or animating document resolves and paints only when the pass
+reports a change. Either way content sends a `PaintFrame` per document
+directly to the graphics process; that is how graphics learns the current
+top-level or child frame, its `animating` flag, and whether its scene changed.
+Content marks a document dirty when a script ran or blitz made a change it
+cannot model as a style change; a UI event that reaches no listener marks
+nothing, since it cannot have run script. Content sends
+`ContentEvent::NoteUiStateUpdate` when a change happens outside a UA-driven
+command.
 
 ### Graphics' part
 
@@ -191,7 +196,10 @@ layers, hit-test info, child viewport data, and the animating frame ids.
 
 On `PixelFrameReady` the UA:
 
-- clears the in-flight state for the top-level and composed child frames;
+- clears the in-flight state for the top-level and composed child frames. A
+  same-event-loop child has no pending update of its own (its changes note the
+  event loop root); a cross-origin child's queued update is released here when
+  its frame is composed, which lets its next note queue again;
 - forwards the layers to the embedder (`new_web_content_layers`), which
   presents them;
 - records `FrameHitInfo` and the child-frame mapping for input routing;

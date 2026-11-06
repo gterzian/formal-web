@@ -2101,6 +2101,7 @@ impl UserAgentWorker {
                     error!("animation frame request for worker {worker_id} with no owner document");
                     return Ok(true);
                 };
+                let traversable_id = self.event_loop_root_navigable(traversable_id);
                 self.pending_worker_animation_frames
                     .entry(traversable_id)
                     .or_default()
@@ -5090,12 +5091,40 @@ impl UserAgentWorker {
                 * 1000.0
     }
 
-    /// Records a UI state update for `navigable_id`. Update the rendering
-    /// renders only when one is pending (the Unnecessary rendering step of
+    /// The navigable whose update the rendering covers `navigable_id`: the
+    /// root navigable of its event loop.  A same-origin descendant shares its
+    /// event loop with its top-level traversable, so noting the root renders
+    /// both in one update; a cross-origin child runs on its own event loop and
+    /// remains its own target.
+    fn event_loop_root_navigable(&self, navigable_id: NavigableId) -> NavigableId {
+        let Some(event_loop_id) = self.state.traversable_handles.get(&navigable_id).copied() else {
+            return navigable_id;
+        };
+        let mut root = navigable_id;
+        let mut current = navigable_id;
+        while let Some(parent_id) = self
+            .state
+            .navigables
+            .get(&current)
+            .and_then(|navigable| navigable.parent_navigable_id)
+        {
+            if self.state.traversable_handles.get(&parent_id).copied() != Some(event_loop_id) {
+                break;
+            }
+            root = parent_id;
+            current = parent_id;
+        }
+        root
+    }
+
+    /// Records a UI state update for `navigable_id`'s event loop root. Update
+    /// the rendering renders only when one is pending (the Unnecessary
+    /// rendering step of
     /// <https://html.spec.whatwg.org/multipage/webappapis.html#update-the-rendering>).
     /// Otherwise the update is batched and the next frame is requested,
     /// so the next paint notes a rendering opportunity and queues it.
     fn note_ui_state_update(&mut self, navigable_id: NavigableId) {
+        let navigable_id = self.event_loop_root_navigable(navigable_id);
         verification::tla_log!(
             self.tla_tracer,
             -> "RenderingOpportunity",
@@ -5784,6 +5813,12 @@ impl UserAgentWorker {
                         .insert(webview_id.0, frame_timestamp_epoch_ms);
                     for frame_id in animating_frame_ids {
                         if let Some(child_wv) = child_frame_to_webview.get(frame_id) {
+                            // A child on the top-level's own event loop is
+                            // rendered by the same update; only a child on
+                            // another event loop needs its own note.
+                            if self.event_loop_root_navigable(child_wv.0) == webview_id.0 {
+                                continue;
+                            }
                             self.queued_ui_state_updates
                                 .insert(child_wv.0, frame_timestamp_epoch_ms);
                         }

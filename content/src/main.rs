@@ -363,12 +363,13 @@ pub(crate) struct ContentDocument {
     viewport_offset_x: f32,
     viewport_offset_y: f32,
     /// The document's pending paint work, cleared after a render is produced.
-    /// `update_the_rendering` runs the blitz resolve pass only when this asks
-    /// for one, and paints only when the pass reports a change or the change
-    /// came from content itself (a script ran, an embed site appeared) — so a
-    /// static document that keeps being asked to render (pointer moves, a
-    /// video elsewhere driving the render cycle) neither resolves nor paints,
-    /// and its frame is marked unchanged so graphics keeps the layer clean.
+    /// `update_the_rendering` runs the blitz resolve pass when this asks for
+    /// one or the document is animating, and paints only when the pass reports
+    /// a change or the change came from content itself (a script ran, an embed
+    /// site appeared) — so a static document that keeps being asked to render
+    /// (pointer moves, a video elsewhere driving the render cycle) neither
+    /// resolves nor paints, and its frame is marked unchanged so graphics
+    /// keeps the layer clean.
     paint_dirty: Rc<PaintDirty>,
     /// Whether a UI state update for this document's navigable is already
     /// outstanding: a note sent while it is set would only add work the render
@@ -383,6 +384,19 @@ pub(crate) struct ContentDocument {
     /// (embed sites, viewport, and frame id are unchanged when nothing dirtied
     /// the document).
     last_composition: Option<FrameCompositionMetadata>,
+}
+
+/// The per-document state update the rendering carries between its
+/// per-document passes: the unnecessary-rendering decision (step 3.4),
+/// animation frame callbacks (step 3.14), style and layout (step 3.16.2.1),
+/// and the update itself (step 3.22).
+struct RenderingDocument {
+    document_id: DocumentId,
+    frame_timestamp_ms: f64,
+    animation_time: f64,
+    must_paint: bool,
+    needs_resolve: bool,
+    should_paint: bool,
 }
 
 #[derive(Clone)]
@@ -2489,6 +2503,79 @@ impl ContentProcess {
             .map_err(|error| format!("failed to send beforeunload completion: {error}"))
     }
 
+    /// The documents of this event loop for step 3.2 of
+    /// <https://html.spec.whatwg.org/#update-the-rendering>: a document whose
+    /// container document is in this process is listed after it, and sibling
+    /// documents are listed in the tree order of their navigable containers.
+    fn documents_for_update_the_rendering(&self) -> Vec<DocumentId> {
+        let mut children_by_parent: HashMap<NavigableId, Vec<NavigableId>> = HashMap::new();
+        let mut roots = Vec::new();
+        for (&navigable_id, &document_id) in &self.active_documents_by_traversable {
+            let Some(document) = self.documents.get(&document_id) else {
+                continue;
+            };
+            match document.parent_traversable_id {
+                Some(parent_traversable_id)
+                    if self
+                        .active_documents_by_traversable
+                        .contains_key(&parent_traversable_id) =>
+                {
+                    children_by_parent
+                        .entry(parent_traversable_id)
+                        .or_default()
+                        .push(navigable_id);
+                }
+                _ => roots.push(navigable_id),
+            }
+        }
+
+        for (parent_traversable_id, children) in &mut children_by_parent {
+            let Some(&parent_document_id) = self
+                .active_documents_by_traversable
+                .get(parent_traversable_id)
+            else {
+                continue;
+            };
+            let Some(parent_document) = self.documents.get(&parent_document_id) else {
+                continue;
+            };
+            let container_order = {
+                let document = parent_document.document.borrow();
+                let mut node_positions = HashMap::new();
+                let mut position = 0usize;
+                document.visit(|node_id, _| {
+                    node_positions.insert(node_id, position);
+                    position += 1;
+                });
+                let mut container_order = HashMap::new();
+                for (node_id, state) in &parent_document.navigable_container_states {
+                    if let Some(child_navigable_id) = state.content_navigable {
+                        container_order.insert(
+                            child_navigable_id,
+                            node_positions.get(node_id).copied().unwrap_or(usize::MAX),
+                        );
+                    }
+                }
+                container_order
+            };
+            children.sort_by_key(|child| container_order.get(child).copied().unwrap_or(usize::MAX));
+        }
+
+        roots.sort_by_key(|navigable_id| navigable_id.0.as_u128());
+        let mut ordered = Vec::with_capacity(self.active_documents_by_traversable.len());
+        let mut pending: Vec<NavigableId> = roots.into_iter().rev().collect();
+        while let Some(navigable_id) = pending.pop() {
+            let Some(&document_id) = self.active_documents_by_traversable.get(&navigable_id) else {
+                continue;
+            };
+            ordered.push(document_id);
+            if let Some(children) = children_by_parent.remove(&navigable_id) {
+                pending.extend(children.into_iter().rev());
+            }
+        }
+        ordered
+    }
+
     /// <https://html.spec.whatwg.org/#update-the-rendering>
     fn update_the_rendering(
         &mut self,
@@ -2496,19 +2583,25 @@ impl ContentProcess {
         requested_document_id: DocumentId,
         frame_timestamp_epoch_ms: f64,
     ) -> Result<(), String> {
-        // Note: Step 3.2 ("Let docs be all fully active Document objects whose
-        // relevant agent's event loop is eventLoop, sorted arbitrarily except that
-        // the following conditions must be met:") is resolved here, when the task
-        // runs, so a navigation that committed in between does not leave the task
-        // naming a replaced document — the spec's note on the queueing step records
-        // that "the document associated with the task might become inactive before
-        // the task is processed".  This process renders the update's navigable only:
-        // the user agent queues one update per navigable it noted, so `docs` is that
-        // one document.
-        let Some(&document_id) = self.active_documents_by_traversable.get(&navigable_id) else {
-            return Ok(());
-        };
-        if document_id != requested_document_id {
+        // Step 3.1: "Let frameTimestamp be eventLoop's last render opportunity time."
+        // The user agent stamps the opportunity time on the browser-wide monotonic
+        // clock when it notes the opportunity and passes it in the UpdateTheRendering
+        // command; each document converts frameTimestamp to a duration from its own
+        // time origin (HR Time "relative high resolution time") below.
+        let frame_timestamp = frame_timestamp_epoch_ms;
+
+        // Step 3.2: "Let docs be all fully active Document objects whose relevant
+        // agent's event loop is eventLoop, sorted arbitrarily except that the
+        // following conditions must be met:"
+        // Note: The list is resolved from this process's active documents when the
+        // task runs, so a navigation that committed in between does not leave the
+        // task naming a replaced document — the spec's note on the queueing step
+        // records that "the document associated with the task might become inactive
+        // before the task is processed".
+        let event_loop_documents = self.documents_for_update_the_rendering();
+        if let Some(&document_id) = self.active_documents_by_traversable.get(&navigable_id)
+            && document_id != requested_document_id
+        {
             info!(
                 "[render-pipe] Content update-the-rendering named replaced document navigable={} document={} (command named {})",
                 navigable_id, document_id, requested_document_id
@@ -2519,48 +2612,35 @@ impl ContentProcess {
         // opportunity arrives from the user agent as an UpdateTheRendering
         // command carrying the event loop's last render opportunity time.
         log_render_state_debug(format!(
-            "process update-the-rendering navigable={} document={}",
-            navigable_id, document_id,
+            "process update-the-rendering navigable={} documents={:?}",
+            navigable_id, event_loop_documents,
         ));
         let video_paint_registry = Rc::clone(&self.video_paint_registry);
         let canvas_registry = Rc::clone(&self.canvas_registry);
         let image_registry = Rc::clone(&self.image_registry);
         let image_registry_guard = image_registry.borrow_mut();
-        let (paint_frame, shmem_map) = {
-            let document = self
-                .documents
-                .get_mut(&document_id)
-                .ok_or_else(|| format!("unknown document id: {document_id}"))?;
 
-            // Step 3.1: "Let frameTimestamp be eventLoop's last render opportunity time."
-            // The user agent stamps the opportunity time on the browser-wide monotonic
-            // clock when it notes the opportunity and passes it in the UpdateTheRendering
-            // command; convert it to a duration from this document's time origin (HR Time
-            // "relative high resolution time") for the animation frame callbacks below.
-            let frame_timestamp_ms = frame_timestamp_epoch_ms
+        let mut rendering_documents = Vec::with_capacity(event_loop_documents.len());
+        for document_id in &event_loop_documents {
+            let Some(document) = self.documents.get_mut(document_id) else {
+                continue;
+            };
+
+            let frame_timestamp_ms = frame_timestamp
                 - epoch_millis(
                     self.epoch_anchor,
                     self.epoch_anchor_wall_ms,
                     document.settings.time_origin,
                 );
-
-            // Step 3.14: "For each doc of docs, run the animation frame callbacks
-            // for doc, passing in the relative high resolution time given
-            // frameTimestamp and doc's relevant global object as the timestamp."
-            let had_pending_r_af = document.settings.has_pending_animation_frame_callbacks();
-            document
-                .settings
-                .run_animation_frame_callbacks(frame_timestamp_ms)?;
-
             let animation_time = frame_timestamp_ms / 1000.0;
 
             // Step 3.4: "Unnecessary rendering: Remove from docs any Document
             // object doc for which all of the following are true:"
             // The conditions are inverted here into the paint decision: `docs`
-            // is kept (the document is painted) when the user agent believes the
-            // navigable's rendering changed — `needs_paint`, `is_animating`, or
-            // its animation frame callbacks ran — and `last_scene` being absent
-            // forces the first paint so blitz has a scene to reuse.
+            // is kept (the document is painted) when `needs_paint` (content
+            // changed something blitz does not model), its map of animation
+            // frame callbacks is not empty, or `last_scene` being absent forces
+            // the first paint so blitz has a scene to reuse.
             //
             // A paint-dirty document needs the repaint whatever the resolve
             // pass reports: content changed something blitz does not model (a
@@ -2573,26 +2653,70 @@ impl ContentProcess {
             // re-rasterize the layer for nothing.
             let paint_dirty = Rc::clone(&document.paint_dirty);
             let needs_restyle = paint_dirty.needs_restyle();
-            let must_paint = {
+            let has_pending_r_af = document.settings.has_pending_animation_frame_callbacks();
+            let (must_paint, is_animating) = {
                 let document_guard = document.document.borrow();
-                paint_dirty.needs_paint()
-                    || had_pending_r_af
-                    || document_guard.is_animating()
-                    // A fresh document has never painted; fail open so the first
-                    // frame always runs blitz and populates the cache.
-                    || document.last_scene.is_none()
+                (
+                    paint_dirty.needs_paint()
+                        || has_pending_r_af
+                        // A fresh document has never painted; fail open so the first
+                        // frame always runs blitz and populates the cache.
+                        || document.last_scene.is_none(),
+                    document_guard.is_animating(),
+                )
             };
-            let mut rendering_changed = false;
-            if must_paint || needs_restyle {
-                let mut document_guard = document.document.borrow_mut();
+            // Blitz reports CSS animation damage only when the resolve pass
+            // runs; it does not request a redraw per animation tick. An
+            // animating document therefore still resolves, while `must_paint`
+            // stays false so a video-driven cycle reuses the scene unless the
+            // pass reports a change.
+            let needs_resolve = must_paint || needs_restyle || is_animating;
+            rendering_documents.push(RenderingDocument {
+                document_id: *document_id,
+                frame_timestamp_ms,
+                animation_time,
+                must_paint,
+                needs_resolve,
+                should_paint: must_paint,
+            });
+        }
 
-                // Step 3.16.2.1: "Recalculate styles and update layout for doc."
-                // `resolve` advances style, layout, and resource-driven document updates.
-                rendering_changed = document_guard.resolve(animation_time);
+        // Step 3.14: "For each doc of docs, run the animation frame callbacks
+        // for doc, passing in the relative high resolution time given
+        // frameTimestamp and doc's relevant global object as the timestamp."
+        for rendering_document in &rendering_documents {
+            let Some(document) = self.documents.get_mut(&rendering_document.document_id) else {
+                continue;
+            };
+            document
+                .settings
+                .run_animation_frame_callbacks(rendering_document.frame_timestamp_ms)?;
+        }
+
+        // Step 3.16.2.1: "Recalculate styles and update layout for doc."
+        // `resolve` advances style, layout, and resource-driven document updates.
+        for rendering_document in &mut rendering_documents {
+            if !rendering_document.needs_resolve {
+                continue;
             }
-            let should_paint = must_paint || rendering_changed;
+            let Some(document) = self.documents.get_mut(&rendering_document.document_id) else {
+                continue;
+            };
+            let mut document_guard = document.document.borrow_mut();
+            let rendering_changed = document_guard.resolve(rendering_document.animation_time);
+            rendering_document.should_paint = rendering_document.must_paint || rendering_changed;
+        }
 
-            let frame = if !should_paint {
+        // Step 3.22: "For each doc of docs, update the rendering or user
+        // interface of doc and its node navigable to reflect the current state."
+        let mut paint_frames = Vec::with_capacity(rendering_documents.len());
+        for rendering_document in &rendering_documents {
+            let document_id = rendering_document.document_id;
+            let Some(document) = self.documents.get_mut(&document_id) else {
+                continue;
+            };
+            let navigable_id = document.traversable_id;
+            let frame = if !rendering_document.should_paint {
                 // Clean render: reuse the last recorded scene and composition,
                 // with no paint recording and no font re-send. A resolve pass
                 // that ran reported no change, and the frame is marked
@@ -2669,9 +2793,6 @@ impl ContentProcess {
                         &image_registry_guard,
                     );
 
-                    // Step 3.22: "For each doc of docs, update the rendering or user
-                    // interface of doc and its node navigable to reflect the current
-                    // state."
                     paint_scene(
                         &mut scene,
                         &document_guard,
@@ -2733,27 +2854,35 @@ impl ContentProcess {
                 document.last_composition = Some(composition);
                 (paint_frame, shmem_data)
             };
-            paint_dirty.clear();
+            document.paint_dirty.clear();
             // The render this note asked for has happened; a later change to the
             // document notes the user agent again.
             document.ui_state_update_noted.set(false);
-            frame
-        };
+            paint_frames.push(frame);
+        }
 
-        verification::tla_log!(
-            self.tla_tracer,
-            -> "RenderingOpportunity",
-            "UpdateTheRendering",
-            navigable_id
-        );
+        if self
+            .active_documents_by_traversable
+            .contains_key(&navigable_id)
+        {
+            verification::tla_log!(
+                self.tla_tracer,
+                -> "RenderingOpportunity",
+                "UpdateTheRendering",
+                navigable_id
+            );
+        }
 
-        // Send the PaintFrame directly to the graphics process for composition.
+        // Send the PaintFrames directly to the graphics process for composition.
         if let Some(graphics_sender) = &self.graphics_sender {
-            let command = ipc_messages::graphics::GraphicsCommand::PaintFrame {
-                frame: paint_frame.clone(),
-            };
-            if let Err(error) = graphics_sender.send_with_shmem_map(command, shmem_map.clone()) {
-                error!("failed to send paint frame to graphics process: {error}");
+            for (paint_frame, shmem_map) in paint_frames {
+                let command = ipc_messages::graphics::GraphicsCommand::PaintFrame {
+                    frame: paint_frame.clone(),
+                };
+                if let Err(error) = graphics_sender.send_with_shmem_map(command, shmem_map.clone())
+                {
+                    error!("failed to send paint frame to graphics process: {error}");
+                }
             }
         }
 
@@ -4409,14 +4538,42 @@ impl ContentProcess {
         }
     }
 
-    /// Notes a UI state update for `navigable_id` unless one is already
-    /// outstanding for its document.  The user agent batches a note that arrives
-    /// while an update is in flight ("Unnecessary rendering", step 3.4 of
+    /// The navigable whose update the rendering covers `navigable_id` on this
+    /// event loop: the root document of the document tree hosted by this
+    /// process.  A cross-origin child's container document lives in another
+    /// process, so that child is the root here.
+    fn event_loop_root_navigable(&self, navigable_id: NavigableId) -> NavigableId {
+        let mut current = navigable_id;
+        loop {
+            let Some(&document_id) = self.active_documents_by_traversable.get(&current) else {
+                return current;
+            };
+            let Some(document) = self.documents.get(&document_id) else {
+                return current;
+            };
+            let Some(parent_traversable_id) = document.parent_traversable_id else {
+                return current;
+            };
+            if !self
+                .active_documents_by_traversable
+                .contains_key(&parent_traversable_id)
+            {
+                return current;
+            }
+            current = parent_traversable_id;
+        }
+    }
+
+    /// Notes a UI state update for the event loop root covering `navigable_id`
+    /// unless one is already outstanding for its document.  The user agent
+    /// batches a note that arrives while an update is in flight ("Unnecessary
+    /// rendering", step 3.4 of
     /// <https://html.spec.whatwg.org/#update-the-rendering>), so a second note
     /// only asks for a render the first one already queued — in this content
     /// process that would be a duplicate `UpdateTheRendering`, since the render
-    /// each note asks for paints the document the note was about.
+    /// each note asks for paints every document of the event loop.
     fn note_ui_state_update(&mut self, navigable_id: NavigableId) {
+        let navigable_id = self.event_loop_root_navigable(navigable_id);
         let Some(document_id) = self
             .active_documents_by_traversable
             .get(&navigable_id)
@@ -4602,8 +4759,10 @@ impl ContentProcess {
             }
             NotifyVideoEnded { video_paint_id } => {
                 // Keep the paint ID in the registry so the last video frame is
-                // still rendered as part of the composition. Just mark the node
-                // as ended so the animating flag is set to false.
+                // still rendered as part of the composition. Mark the node as
+                // ended so the animating flag is set to false, and note the
+                // document for a paint so the ended state reaches the next
+                // frame.
                 let ended_key: Vec<(DocumentId, usize)> = self
                     .video_paint_registry
                     .borrow()
@@ -4613,6 +4772,7 @@ impl ContentProcess {
                     .collect();
                 for key in ended_key {
                     self.ended_video_nodes.insert(key);
+                    self.mark_document_dirty(key.0);
                 }
                 Ok(true)
             }

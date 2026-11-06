@@ -469,6 +469,14 @@ struct StoredLayerState {
     surface_id: Option<u32>,
 }
 
+/// Whether a layer must clip its sublayers to its bounds.  A navigable layer
+/// with sublayers is an iframe's frame whose embed sites (images, videos,
+/// nested frames) may extend past its viewport, and the parent page must not
+/// draw them outside the frame.
+fn layer_clips_to_bounds(layer_id: CompositingLayerId, has_sublayers: bool) -> bool {
+    has_sublayers && matches!(layer_id, CompositingLayerId::Navigable(_))
+}
+
 /// Per-window state: the NSWindow, the native chrome views, tabs, and
 /// per-webview surfaces.
 struct MacWindow {
@@ -2987,6 +2995,8 @@ impl MacApp {
             .filter(|entry| entry.parent.is_some())
             .map(|entry| entry.layer_id)
             .collect();
+        let layers_with_sublayers: HashSet<CompositingLayerId> =
+            stored.iter().filter_map(|entry| entry.parent).collect();
         let stale: Vec<_> = window_state
             .sublayers
             .keys()
@@ -3057,7 +3067,13 @@ impl MacApp {
                 NSSize::new((clip[2] - clip[0]) * scale_x, (clip[3] - clip[1]) * scale_y),
             ));
             sublayer.setCornerRadius(entry.corner_radius);
-            sublayer.setMasksToBounds(entry.corner_radius > 0.0);
+            sublayer.setMasksToBounds(
+                entry.corner_radius > 0.0
+                    || layer_clips_to_bounds(
+                        entry.layer_id,
+                        layers_with_sublayers.contains(&entry.layer_id),
+                    ),
+            );
             let (z_index, paint_order) = entry.z_order;
             sublayer.setZPosition((z_index as f64) * 10000.0 + (paint_order as f64));
             debug!(
@@ -3215,6 +3231,10 @@ impl MacApp {
             objc2_quartz_core::CATransaction::begin();
             objc2_quartz_core::CATransaction::setDisableActions(true);
             let mut seen = HashSet::new();
+            let layers_with_sublayers: HashSet<CompositingLayerId> = layers
+                .iter()
+                .filter_map(|layer| layer.topology.parent)
+                .collect();
             for layer in &layers {
                 let layer_id = layer.topology.layer_id;
                 if layer.topology.parent.is_none() {
@@ -3271,7 +3291,13 @@ impl MacApp {
                     NSSize::new((clip[2] - clip[0]) * scale_x, (clip[3] - clip[1]) * scale_y),
                 ));
                 sublayer.setCornerRadius(layer.topology.corner_radius);
-                sublayer.setMasksToBounds(layer.topology.corner_radius > 0.0);
+                sublayer.setMasksToBounds(
+                    layer.topology.corner_radius > 0.0
+                        || layer_clips_to_bounds(
+                            layer.topology.layer_id,
+                            layers_with_sublayers.contains(&layer.topology.layer_id),
+                        ),
+                );
                 let (z_index, paint_order) = layer.topology.z_order;
                 sublayer.setZPosition((z_index as f64) * 10000.0 + (paint_order as f64));
                 debug!(

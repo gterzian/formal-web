@@ -58,28 +58,10 @@ own frame.
   touch the document's providers and run synchronously.
 - Child navigables nest at any depth, and a same-origin child's document is
   another document of this process.  Every DOM tree step marks the document
-  that owns the hook as needing a repaint, so the change is drawn the next time
-  that document renders — but the note that asks for that render is per
-  navigable, and only the navigable an operation runs for gets one (see the gap
-  below).
+  that owns the hook as needing a repaint, and a change to any document notes
+  the event loop root, whose update renders every document of the process.
 
 Remaining gaps:
-
-- A same-origin child document changed by another document's script does not
-  repaint: the note a UI state update needs is sent for the navigable the
-  operation ran for, so script in a parent document writing into a child
-  document through `contentWindow` marks the child dirty without asking for its
-  render.  The child repaints as soon as its own navigable is noted (a
-  `postMessage` to it, its own event, a navigation), which is what
-  `artifacts/iframe-child.html` does in the startup demo.  Noting every active
-  document this process changed at the microtask checkpoint fixes it and was
-  reverted: the `RenderingOpportunity` model rejects the extra
-  `UpdateTheRendering`, because the UA clears a child's pending flag when a
-  composition includes its (possibly stale) frame, so a child render queued
-  before that composition has no pending left to consume.  Closing the gap
-  needs the UA to keep a child's pending flag until content reports that
-  navigable's render, and the model updated to hold a child's in-flight update
-  across a composition.
 
 - The iframe DOM mutation steps run when the content process has the document
   and realm back, at the end of the current operation, not synchronously inside
@@ -488,15 +470,15 @@ Wiring a canvas that draws on a worker:
   send scenes directly to graphics.
 - A worker `requestAnimationFrame` sends
   `ContentEvent::WorkerAnimationFrameRequested`; the user agent records the
-  request against the worker's owner navigable. When that navigable's
-  update the rendering is queued, the user agent sends
+  request against the event loop root of the worker's owner navigable. When
+  that navigable's update the rendering is queued, the user agent sends
   `Command::RunAnimationFrameCallbacks` to the worker's own event loop (the
   worker's update-the-rendering counterpart).
   The dispatch must be gated on that frame cadence, never performed when
   the request arrives: a worker `requestAnimationFrame` loop re-registers
   on every run, so dispatching immediately spins at the worker event
   loop's speed rather than the display refresh rate. Because the dispatch
-  rides the owner navigable's cycle, the user agent also arms the graphics
+  rides that event loop's cycle, the user agent also arms the graphics
   process's `RenderStarted` deadline, so a canvas commit keeps compositing
   against the last committed root when the window's top-level frame is
   late (see `graphics/README.md`). The render cycle itself is documented in

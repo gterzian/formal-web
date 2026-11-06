@@ -135,12 +135,12 @@ adding work to the loop:
 - **The command channel is only read while the task queue is empty.**  A
   command's steps run as soon as it is read, so reading one with tasks
   already queued runs those steps ahead of them.  The rendering pipeline
-  depends on this: a child navigable's `update the rendering` task must run
-  before the top-level traversable's frame composes (their frames compose
-  together), and letting a command overtake it makes the `RenderingOpportunity`
-  TLA+ trace validation fail intermittently (`verification/verify-specs.sh`,
-  roughly one run in five). The pipeline itself is documented in
-  `user_agent/README.md` ("Rendering pipeline").
+  depends on this: a cross-origin child navigable's `update the rendering`
+  task must run before the top-level traversable's frame composes (their
+  frames compose together), and letting a command overtake it makes the
+  `RenderingOpportunity` TLA+ trace validation fail intermittently
+  (`verification/verify-specs.sh`, roughly one run in five).  The pipeline
+  itself is documented in `user_agent/README.md` ("Rendering pipeline").
 
 ## Fetch
 
@@ -219,6 +219,11 @@ run script); a listener that mutates the DOM is covered by the paint flag
 because content marks the document dirty around event dispatch. Any new input
 path that mutates the document without going through blitz must set the paint
 flag itself.
+
+An animating document also resolves every cycle: blitz reports CSS animation
+damage only when the resolve pass runs, and it does not request a redraw per
+animation tick. Painting still depends on the pass reporting a change, so a
+video-driven cycle reuses the document's scene instead of repainting it.
 
 ## Known issues
 

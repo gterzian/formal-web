@@ -309,12 +309,11 @@ two-submit layout.
   document.is_animating()`, so a page with any non-ended video keeps the
   render cycle alive even when the video is not producing frames (failed/
   blocked load, ended-but-not-marked, muted autoplay blocked). The content
-  process now *skips blitz* on a clean cycle — a document that was not
-  mutated reuses its last recorded scene instead of re-running resolve + paint
-  (see `content/src/main.rs` `update_the_rendering`), and marks the frame
-  `scene_unchanged` so the graphics process keeps the content layer clean.
-  The remaining waste is the render cycle itself (compose + forward) running
-  at vsync.  Remaining follow-up:
+  process reuses its last recorded scene on a clean cycle instead of re-running
+  resolve + paint (see `content/src/main.rs` `update_the_rendering`), and marks
+  the frame `scene_unchanged` so the graphics process keeps the content layer
+  clean. The remaining waste is the render cycle itself (compose + forward)
+  running at vsync.  Remaining follow-up:
   - Set `animating` only when the document has a **pending rAF callback**
     (script-driven animation) or blitz is genuinely advancing CSS
     animations, and handle video-driven flow separately: a
@@ -416,9 +415,10 @@ two-submit layout.
   returns true for any node that is a `<canvas>` element with a `src`
   attribute — regardless of whether that canvas is being redrawn. Content
   therefore treats a page containing a `src`-bearing canvas as animating and
-  runs `should_render` (blitz resolve + paint) every cycle for the whole
-  document. Not fixable in-repo: `is_animating`/`compute_has_canvas` live in the
-  pinned blitz git dependency.
+  runs blitz resolve every cycle for the whole document. Painting still
+  depends on the resolve pass reporting damage, so such a page keeps its layer
+  clean when nothing actually changed. Not fixable in-repo:
+  `is_animating`/`compute_has_canvas` live in the pinned blitz git dependency.
 - **A removed `<video>` element or offscreen canvas keeps its compositor
   frame until navigation.** The compositor's live set
   (`Compositor::live_layer_ids`) releases a layer's surfaces only once the

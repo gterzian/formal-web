@@ -78,7 +78,10 @@ its frame is `clip[0] * scale` horizontally and flipped about **the parent's**
 height vertically (the root navigable's height for a child of the web layer, a
 child frame's height for a frame nested inside it).  Flipping about the root's
 height instead puts a grandchild iframe outside the child frame that contains
-it, where it is not visible.
+it, where it is not visible.  Both paths also mask a navigable sublayer that
+has sublayers of its own, so an embed site that is only partly inside a child
+frame's viewport is clipped to the frame instead of drawing over the parent
+page.
 
 ### Multi-window and multi-tab
 
