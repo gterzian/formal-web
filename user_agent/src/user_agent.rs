@@ -2392,12 +2392,15 @@ impl UserAgentWorker {
         // Step 4: Otherwise, if group's historical agent cluster key
         // map[origin] exists, then set key to group's historical agent
         // cluster key map[origin].
-        // Step 5: Otherwise, if requestsOAC is true, then set key to origin.
+        // Step 5: Otherwise:
+        // Step 5.1: If requestsOAC is true, then set key to origin.
+        // Step 5.2: Set group's historical agent cluster key map[origin] to
+        // key.
         // Note: Steps 1-5 resolve the agent cluster key.  Only site keys are
         // reached: the paths that obtain a window agent pass a site and run
         // with requestsOAC false, the group's cross-origin isolation mode is
-        // always "none", and the historical agent cluster key map is not
-        // modeled.
+        // always "none", and the historical agent cluster key map is never
+        // written, so step 5.2 is not implemented.
         let key = AgentClusterKey::Site(origin_site.to_owned());
         // Step 6: If group's agent cluster map[key] does not exist:
         // Note: A cluster whose content process was stopped is not reusable:
@@ -4077,10 +4080,13 @@ impl UserAgentWorker {
             });
     }
 
-    /// Moves a traversable onto `new_event_loop_id`: updates the agents'
-    /// traversable sets, the traversable's event-loop handle, re-sends its
-    /// viewport to the new process, and stops the old event loop when it has no
-    /// traversables left.
+    /// Moves a traversable onto the event loop of the agent that step 7.4 of
+    /// <https://html.spec.whatwg.org/multipage/#initialise-the-document-object>
+    /// obtained: updates the agents' traversable sets and the traversable's
+    /// event-loop handle, re-sends its viewport to the new content process, and
+    /// stops the old event loop when it has no traversables left.  The active
+    /// document stays on the old event loop until the navigation finalizes, so
+    /// document-routed commands address it by document id, not by this handle.
     fn reassign_traversable_event_loop(
         &mut self,
         traversable_id: NavigableId,
@@ -4092,6 +4098,8 @@ impl UserAgentWorker {
             if let Some(old_agent) = window_agent_mut(&mut self.state, old_event_loop_id) {
                 old_agent.traversable_ids.remove(&traversable_id);
             }
+            // The old process hosts every traversable of its agent cluster, so
+            // its event loop is only reclaimed once the agent has none left.
             if old_event_loop_id != new_event_loop_id
                 && window_agent(&self.state, old_event_loop_id)
                     .is_some_and(|agent| agent.traversable_ids.is_empty())
@@ -4102,6 +4110,10 @@ impl UserAgentWorker {
         if let Some(new_agent) = window_agent_mut(&mut self.state, new_event_loop_id) {
             new_agent.traversable_ids.insert(traversable_id);
         }
+        // The index every command about a traversable resolves through is a
+        // cache of "the active document's relevant agent's event loop": the
+        // spec fixes the destination's agent in step 7.4, before the document
+        // exists, so the index names the destination process from here on.
         self.state
             .traversable_handles
             .insert(traversable_id, new_event_loop_id);
@@ -4212,6 +4224,8 @@ impl UserAgentWorker {
                 );
                 return Ok(Some(browsing_context_selection.browsing_context_id));
             }
+            // The destination agent's window event loop is a different one, so
+            // the traversable moves to it before its document is created there.
             self.reassign_traversable_event_loop(
                 traversable_id,
                 old_event_loop_id,

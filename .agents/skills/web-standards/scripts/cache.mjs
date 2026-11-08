@@ -68,7 +68,21 @@ async function fetchSpecHtml(url, options) {
   return html;
 }
 
+// The HTML Standard's multipage tree is split by section: `/multipage/` is a
+// table of contents, and `/multipage/<section>.html` holds that one section.
+// Every id is also present in the single-page rendering, so a lookup against a
+// multipage URL reads that document instead of reporting the id missing from
+// whichever page was fetched.
+const HTML_MULTIPAGE_URL_PATTERN =
+  /^https:\/\/html\.spec\.whatwg\.org\/multipage\/(?:[a-z0-9-]+\.html)?$/;
+
+function canonicalSpecUrl(url) {
+  return HTML_MULTIPAGE_URL_PATTERN.test(url)
+    ? "https://html.spec.whatwg.org/"
+    : url;
+}
+
 export async function getDoc(url, options = {}) {
-  const html = await fetchSpecHtml(url, options);
+  const html = await fetchSpecHtml(canonicalSpecUrl(url), options);
   return load(html);
 }

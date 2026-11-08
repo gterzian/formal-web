@@ -22,6 +22,13 @@ The `lookup`, `refs` and `search` commands accept `--offset <n>` and
 `--max-lines <n>` (default 400) for paging and `--refresh` to bypass the
 cache. A truncated result ends with the `--offset` for the next page.
 
+**HTML Standard multipage URLs.** `https://html.spec.whatwg.org/multipage/`
+is a table of contents and `/multipage/<section>.html` holds only that
+section, so a fragment id is rarely on the page its URL names. Ids are
+identical to the single-page rendering, so every multipage URL is read
+against `https://html.spec.whatwg.org/` instead; annotate with whichever form
+the file uses and look it up as written.
+
 ## Workflow
 
 1. `search` for an anchor id when the exact id is unknown.  It matches ids

@@ -33,6 +33,40 @@ site against that agent in the group's agent cluster map, so a later
 same-site navigation (a same-origin iframe, say) finds it instead of spawning
 a process.
 
+### The traversable's event-loop binding
+
+The spec has no per-navigable event loop: the agent is chosen per document
+(`initialise the document object` step 7.4) and an agent's event loop is fixed
+for the agent's life (`create an agent` step 4).  This crate adds a standing
+binding — `traversable_handles`, mirrored by `Navigable::event_loop_id` and the
+agent's `traversable_ids` — because a command about a traversable has to name
+the content process that owns its current document.  It is a cache of "the
+active document's relevant agent's event loop", refreshed by
+`reassign_traversable_event_loop` at the point where the spec fixes the
+destination's agent: after step 7.4 and before `CreateLoadedDocument` is
+dispatched.  The destination agent differs from the current one in two cases
+only — a child navigable, whose destination site resolves to another agent of
+the same group, and a top-level navigation that switches browsing context
+group.
+
+What follows from the binding being a cache:
+
+- Until finalization the binding names the destination process while the
+  active document is still the outgoing one (see "Cross-origin navigation and
+  rendering").  Commands for the outgoing document route by document id
+  (`command_sender_for_document`), never through the binding.
+- A traversable that keeps its event loop still needs the destination site
+  recorded against that agent (`record_agent_cluster_for_site`), or the next
+  same-site navigation spawns a process.
+- The old event loop is stopped only when its agent has no traversables left:
+  the process hosts every traversable of the cluster, not just the one that
+  moved.  HTML's counterpart is that the abandoned browsing context "might" be
+  destroyed unless other Documents use it (`obtain a browsing context to use
+  for a navigation response` step 10); this crate has no back/forward cache, so
+  an empty agent is the whole condition.
+- The destination process booted with fallback viewport state, so the move
+  re-sends the traversable's recorded viewport to it.
+
 ## Document destruction
 
 The user agent decides when a document dies: content removes a document from its
