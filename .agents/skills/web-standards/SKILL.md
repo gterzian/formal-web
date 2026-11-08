@@ -22,6 +22,13 @@ The `lookup`, `refs` and `search` commands accept `--offset <n>` and
 `--max-lines <n>` (default 400) for paging and `--refresh` to bypass the
 cache. A truncated result ends with the `--offset` for the next page.
 
+**HTML Standard multipage URLs.** `https://html.spec.whatwg.org/multipage/`
+is a table of contents and `/multipage/<section>.html` holds only that
+section, so a fragment id is rarely on the page its URL names. Ids are
+identical to the single-page rendering, so every multipage URL is read
+against `https://html.spec.whatwg.org/` instead; annotate with whichever form
+the file uses and look it up as written.
+
 ## Workflow
 
 1. `search` for an anchor id when the exact id is unknown.  It matches ids
@@ -42,6 +49,20 @@ Look up any cross-reference by its exact URL fragment. Split a full URL before
 `<p>`. When the result looks incomplete, read the `Section:` line and look up
 that heading id next. For example, `queue-a-microtask` truncates; `queuing-tasks`
 renders the full algorithm.
+
+**Truncated section → read the reference instead.** Some algorithms are
+rendered far from the heading they live under, so even `lookup` on the section
+heading stops before the step list. `refs <spec-url> <id> --read <n>` reads the
+reference site and prints the enclosing algorithms in full, step by step — that
+is the reliable way to get the numbered steps of an algorithm whose anchor sits
+inside another algorithm (e.g. `update-the-rendering` under the event loop
+processing model).
+
+**Step numbering is the spec's path, not the nesting depth.** Steps of an
+algorithm nested inside another step carry the full dotted number
+(`Step 3.14`, `Step 3.16.2.1`), and `verify` matches `// Step N:` comments
+against exactly that. A comment numbered `// Step 14:` for a step the spec
+numbers `3.14` fails verification.
 
 ## Annotation conventions
 

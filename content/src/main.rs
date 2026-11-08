@@ -20,9 +20,10 @@ pub mod webidl;
 
 use crate::dom::{EventTargetAccess, dispatch_with_path, fire_event, simple_path};
 use crate::html::document_providers::{
-    AssetRequest, DocumentHost, DocumentProviders, PaintDirty, install_resource,
+    AssetRequest, DocumentProviders, IframeMutationSteps, PaintDirty, PendingIframeSteps,
+    install_resource,
 };
-use crate::html::environment_settings_object::RealmWiring;
+use crate::html::environment_settings_object::{Origin as SettingsOrigin, RealmWiring};
 use crate::html::event_loop::{EventLoopTaskSources, Task, TaskQueue};
 use crate::html::images_processing_model::{
     self, ImageAttributes, ImageFetchOutcome, ImageRegistry,
@@ -35,9 +36,10 @@ use crate::html::workers::dedicated_worker_agent::{
 };
 use crate::html::{
     EnvironmentSettingsObject, HTMLImageElement, JsHtmlParserProvider, MessageEvent,
-    PendingParserScript, Window, attach_same_origin_child_document_for_traversable,
-    execute_parser_scripts, parse_html_into_document, run_dom_post_connection_steps_for_document,
+    PendingParserScript, Window, execute_parser_scripts, parse_html_into_document,
+    process_iframe_attributes, run_dom_post_connection_steps_for_document,
     run_dom_removing_steps_for_document, run_iframe_load_event_steps_for_traversable,
+    run_iframe_post_connection_steps, run_iframe_removing_steps,
     structured_data::safe_passing_of_structured_data::{
         SerializeWithTransferResult, structured_deserialize_with_transfer,
     },
@@ -82,10 +84,10 @@ use ipc_messages::media::{VideoEmbedData, VideoPaintId};
 use ipc_messages::safe_passing_of_structured_data::PostMessageRequest;
 use log::{debug, error, info, warn};
 use std::{
-    cell::RefCell,
+    cell::{Cell, RefCell},
     collections::{HashMap, HashSet},
     env,
-    rc::{Rc, Weak},
+    rc::Rc,
     sync::Arc,
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
@@ -152,7 +154,7 @@ pub(crate) enum PendingNetworkHandler {
     /// A stylesheet, font, or background image reported by a `blitz-dom`
     /// document hook.
     Asset {
-        host: DocumentHost,
+        document_id: DocumentId,
         request: AssetRequest,
     },
     /// The response of an `<img>` element's image request.
@@ -171,6 +173,11 @@ pub(crate) enum PendingNetworkHandler {
 
 pub(crate) struct LocalContentState {
     pub(crate) pending_handlers: HashMap<DocumentFetchId, PendingNetworkHandler>,
+    /// The iframe DOM mutation steps the document tree mutation hooks recorded.
+    /// They run as part of the operation that produced them, as soon as this
+    /// process has the document and realm state back
+    /// (`ContentProcess::drain_pending_iframe_steps`).
+    pub(crate) pending_iframe_steps: Vec<PendingIframeSteps>,
 }
 
 pub(crate) type LocalContentStateRef = Rc<RefCell<LocalContentState>>;
@@ -254,7 +261,6 @@ pub(crate) struct NavigableContainerState {
     pub(crate) content_navigable: Option<NavigableId>,
     pub(crate) content_frame_id: FrameId,
     pub(crate) current_key: String,
-    pub(crate) cross_origin: bool,
     /// Whether the child document finished loading before the parent's
     /// document load completion ("the end", steps 5-9); when true, the
     /// iframe load event steps of "completely finish loading" step 4 are
@@ -278,6 +284,18 @@ struct PendingImageDecode {
     navigable_id: NavigableId,
     element_id: ImageElementId,
     handler_id: DocumentFetchId,
+}
+
+/// <https://html.spec.whatwg.org/#initialise-the-document-object> — step 9
+/// Whether the document's URL makes it inherit the creator's origin and base
+/// URL: an initial `about:blank` document and an iframe `about:srcdoc` document
+/// inherit the creator's origin.
+fn is_creator_origin_url(url: &str) -> bool {
+    Url::parse(url)
+        .map(|parsed| {
+            parsed.scheme() == "about" && (parsed.path() == "blank" || parsed.path() == "srcdoc")
+        })
+        .unwrap_or(false)
 }
 
 /// The "supported file format" test of step 27 of
@@ -345,13 +363,19 @@ pub(crate) struct ContentDocument {
     viewport_offset_x: f32,
     viewport_offset_y: f32,
     /// The document's pending paint work, cleared after a render is produced.
-    /// `update_the_rendering` runs the blitz resolve pass only when this asks
-    /// for one, and paints only when the pass reports a change or the change
-    /// came from content itself (a script ran, an embed site appeared) — so a
-    /// static document that keeps being asked to render (pointer moves, a
-    /// video elsewhere driving the render cycle) neither resolves nor paints,
-    /// and its frame is marked unchanged so graphics keeps the layer clean.
+    /// `update_the_rendering` runs the blitz resolve pass when this asks for
+    /// one or the document is animating, and paints only when the pass reports
+    /// a change or the change came from content itself (a script ran, an embed
+    /// site appeared) — so a static document that keeps being asked to render
+    /// (pointer moves, a video elsewhere driving the render cycle) neither
+    /// resolves nor paints, and its frame is marked unchanged so graphics
+    /// keeps the layer clean.
     paint_dirty: Rc<PaintDirty>,
+    /// Whether a UI state update for this document's navigable is already
+    /// outstanding: a note sent while it is set would only add work the render
+    /// already queued, so the content process skips it.  Cleared by the render
+    /// the note asked for.
+    ui_state_update_noted: Cell<bool>,
     /// The last recorded scene, reused verbatim on a clean render cycle. Fonts
     /// are not re-sent on a clean cycle (they are already registered on the
     /// graphics side).
@@ -360,6 +384,19 @@ pub(crate) struct ContentDocument {
     /// (embed sites, viewport, and frame id are unchanged when nothing dirtied
     /// the document).
     last_composition: Option<FrameCompositionMetadata>,
+}
+
+/// The per-document state update the rendering carries between its
+/// per-document passes: the unnecessary-rendering decision (step 3.4),
+/// animation frame callbacks (step 3.14), style and layout (step 3.16.2.1),
+/// and the update itself (step 3.22).
+struct RenderingDocument {
+    document_id: DocumentId,
+    frame_timestamp_ms: f64,
+    animation_time: f64,
+    must_paint: bool,
+    needs_resolve: bool,
+    should_paint: bool,
 }
 
 #[derive(Clone)]
@@ -445,9 +482,6 @@ pub(crate) struct ContentProcess {
     /// <https://html.spec.whatwg.org/#reacting-to-environment-changes>) runs
     /// when the decoder reports back on the image identifier.
     pending_image_decodes: HashMap<ImageIdentifier, PendingImageDecode>,
-    /// The same-origin iframe subdocuments owned by this process's documents,
-    /// keyed by the id their `DocumentProviders` routes asset fetches with.
-    subdocuments: HashMap<uuid::Uuid, Weak<RefCell<BaseDocument>>>,
     tla_tracer: TLATracer,
     /// Shared clipboard cache. The embedder writes prefetched clipboard text
     /// here before dispatching paste events; `ShellProvider::get_clipboard_text`
@@ -530,6 +564,7 @@ impl ContentProcess {
             event_loop_id,
             local_state: Rc::new(RefCell::new(LocalContentState {
                 pending_handlers: HashMap::new(),
+                pending_iframe_steps: Vec::new(),
             })),
             default_viewport: None,
             traversable_viewports: HashMap::new(),
@@ -544,7 +579,6 @@ impl ContentProcess {
             image_registry: Rc::new(RefCell::new(ImageRegistry::default())),
             registered_images_by_document: HashMap::new(),
             pending_image_decodes: HashMap::new(),
-            subdocuments: HashMap::new(),
             tla_tracer: TLATracer::new("Navigation", "formal-web:content", trace_sender.clone()),
             clipboard_cache: clipboard_cache.clone(),
             new_document_registry: Rc::new(RefCell::new(HashMap::new())),
@@ -673,15 +707,14 @@ impl ContentProcess {
         base_url: Option<String>,
         origin: String,
         paint_dirty: Rc<PaintDirty>,
-        embedded_images: bool,
-        host: DocumentHost,
+        document_id: DocumentId,
     ) -> (DocumentConfig, Rc<DocumentProviders>) {
         let partition = ResourcePartitionKey {
             top_level_traversable: top_level_traversable_id,
             origin,
         };
         let providers = Rc::new(DocumentProviders::new(
-            host,
+            document_id,
             traversable_id,
             self.event_loop_id,
             base_url.as_ref().and_then(|url| Url::parse(url).ok()),
@@ -695,7 +728,7 @@ impl ContentProcess {
             Rc::clone(&paint_dirty),
         ));
         let config = DocumentConfig {
-            embedded_images,
+            embedded_images: true,
             viewport: self
                 .document_viewport_state(traversable_id)
                 .map(|viewport| viewport_of_snapshot(&viewport.snapshot)),
@@ -1032,6 +1065,7 @@ impl ContentProcess {
                     viewport_offset_x: 0.0,
                     viewport_offset_y: 0.0,
                     paint_dirty: Rc::new(PaintDirty::default()),
+                    ui_state_update_noted: Cell::new(false),
                     last_scene: None,
                     last_composition: None,
                 },
@@ -1047,12 +1081,9 @@ impl ContentProcess {
         Ok(())
     }
 
-    /// Create and register an about:blank document for a child navigable.
-    /// Uses the shared `create_about_blank_document` helper.  Called by
-    /// `create_a_new_child_navigable` to create the document in the content
-    /// process immediately, since we are already in the correct browsing
-    /// context group.
-    /// <https://html.spec.whatwg.org/multipage/#navigate-html>
+    /// Continues a document load after a subresource response or a deferred
+    /// script arrives, finishing the load when no critical resource and no
+    /// deferred script is pending.
     fn continue_document_load(&mut self, document_id: DocumentId) -> Result<(), String> {
         // Set up the shared registry so window.open calls made by the inline
         // and deferred scripts running during the load can register new
@@ -1146,6 +1177,8 @@ impl ContentProcess {
         if let Err(error) = self.drain_new_traversable_documents() {
             warn!("failed to drain new traversable documents: {error}");
         }
+        // The same scripts may have inserted, changed or removed an iframe.
+        self.drain_pending_iframe_steps();
 
         let content_document = self
             .documents
@@ -1217,8 +1250,7 @@ impl ContentProcess {
             None,
             String::from("null"),
             Rc::clone(&paint_dirty),
-            true,
-            DocumentHost::Main(document_id),
+            document_id,
         );
         let document = Rc::new(RefCell::new(BaseDocument::new(document_config)));
         let mut settings = self.create_environment_settings_object(
@@ -1286,6 +1318,7 @@ impl ContentProcess {
                     .map(|viewport| viewport.offset_y)
                     .unwrap_or(0.0),
                 paint_dirty,
+                ui_state_update_noted: Cell::new(false),
                 last_scene: None,
                 last_composition: None,
             },
@@ -1320,6 +1353,7 @@ impl ContentProcess {
         document_id: DocumentId,
         top_level_traversable_id: NavigableId,
         final_url: &str,
+        parent_traversable_id: Option<NavigableId>,
     ) -> Result<
         (
             Rc<RefCell<BaseDocument>>,
@@ -1345,6 +1379,45 @@ impl ContentProcess {
         // Note: Redirect chains are collapsed by the fetch layer: `final_url` is the
         // response's final URL.
         // Step 5: "Let window be null."
+        // Navigation params: the destination origin and base URL.  They are
+        // inputs to this algorithm (step 6 compares the origin with the active
+        // document's, and step 9 builds the Document from it; the document's
+        // providers resolve subresource URLs against the base URL).  An
+        // `about:blank` or `about:srcdoc` document inherits the parent
+        // document's origin and base URL; every other destination uses its
+        // URL's origin and itself as the base URL.
+        // Note: When the parent document is not in this process (a cross-origin
+        // child navigating itself to `about:blank`), the inherited values are
+        // unavailable and the URL's opaque origin is used instead.
+        let parent_document = parent_traversable_id
+            .and_then(|parent_id| {
+                self.active_documents_by_traversable
+                    .get(&parent_id)
+                    .copied()
+            })
+            .and_then(|parent_document_id| self.documents.get(&parent_document_id));
+        let creator_origin = parent_document
+            .filter(|_| is_creator_origin_url(final_url))
+            .map(|parent_document| {
+                let base_url = parent_document
+                    .providers
+                    .as_ref()
+                    .and_then(|providers| providers.base_url().map(Url::to_string))
+                    .unwrap_or_else(|| parent_document.settings.creation_url.to_string());
+                (
+                    Some(base_url),
+                    parent_document.settings.origin.serialized.clone(),
+                )
+            });
+        let (base_url, origin) = creator_origin.unwrap_or_else(|| {
+            (
+                Some(final_url.to_string()),
+                Url::parse(final_url)
+                    .map(|url| url.origin().unicode_serialization())
+                    .unwrap_or_else(|_| String::from("null")),
+            )
+        });
+
         // Step 6: "If browsingContext's active document's is initial about:blank is true, and
         // browsingContext's active document's origin is same origin-domain with
         // navigationParams's origin, then set window to browsingContext's active window."
@@ -1358,7 +1431,7 @@ impl ContentProcess {
         // WindowProxy keeps its identity because the realm is unchanged; a cross-origin
         // destination, or an opaque-origin initial about:blank (a fresh top-level tab with
         // no creator), falls through to step 7 and gets a fresh realm as before.
-        let reused_settings = self.take_initial_about_blank_settings(traversable_id, final_url);
+        let reused_settings = self.take_initial_about_blank_settings(traversable_id, &origin);
         // Step 7: "Otherwise:"
         // Step 7.1: "Let oacHeader be the result of getting a structured field value given
         // `Origin-Agent-Cluster` and "item" from navigationParams's response's header list."
@@ -1419,15 +1492,13 @@ impl ContentProcess {
         // (`create_loaded_document`), which continues navigate-html with the parse.
         let creation_url = Url::parse(final_url).map_err(|error| error.to_string())?;
         let paint_dirty = Rc::new(PaintDirty::default());
-        let origin = creation_url.origin().unicode_serialization();
         let (document_config, providers) = self.document_config(
             traversable_id,
             top_level_traversable_id,
-            Some(final_url.to_string()),
-            origin,
+            base_url,
+            origin.clone(),
             Rc::clone(&paint_dirty),
-            true,
-            DocumentHost::Main(document_id),
+            document_id,
         );
         let document = Rc::new(RefCell::new(BaseDocument::new(document_config)));
         // Steps 7.5, 7.6 and 7.10 run in `create_environment_settings_object` for the
@@ -1435,7 +1506,14 @@ impl ContentProcess {
         // created, and `repoint_document` re-points that realm at the new document.
         let mut settings = match reused_settings {
             Some(mut reused) => {
-                reused.repoint_document(Rc::clone(&document), creation_url, document_id)?;
+                reused.repoint_document(
+                    Rc::clone(&document),
+                    creation_url,
+                    SettingsOrigin {
+                        serialized: origin.clone(),
+                    },
+                    document_id,
+                )?;
                 reused
             }
             None => self.create_environment_settings_object(
@@ -1449,7 +1527,12 @@ impl ContentProcess {
 
         // The video-paint registry and graphics sender are engine integration, not spec
         // steps: they wire the document's GlobalScope to the media and graphics pipelines.
+        // The image registry is set here too, so a realm reused from an initial
+        // about:blank document (created outside this function) also reads the
+        // document's `<img>` processing-model state.
+        let image_registry = Rc::clone(&self.image_registry);
         if let Err(error) = with_global_scope(settings.ec(), |global_scope, _ec| {
+            global_scope.set_image_registry(image_registry.clone());
             global_scope.set_video_paint_registry(Rc::clone(&self.video_paint_registry));
             global_scope.set_canvas_registry(Rc::clone(&self.canvas_registry));
             if let Some(ref sender) = self.graphics_sender {
@@ -1478,7 +1561,7 @@ impl ContentProcess {
     fn take_initial_about_blank_settings(
         &mut self,
         traversable_id: NavigableId,
-        final_url: &str,
+        destination_origin: &str,
     ) -> Option<EnvironmentSettingsObject> {
         let active_document_id = *self.active_documents_by_traversable.get(&traversable_id)?;
         let (is_initial_about_blank, active_origin) = {
@@ -1491,13 +1574,9 @@ impl ContentProcess {
         if !is_initial_about_blank {
             return None;
         }
-        let destination_url = Url::parse(final_url).ok()?;
-        // Opaque origins are never same-origin: an opaque initial about:blank (no creator)
-        // or an about:blank destination must not reuse the Window.
-        if matches!(destination_url.origin(), url::Origin::Opaque(_)) {
-            return None;
-        }
-        if active_origin != destination_url.origin().unicode_serialization() {
+        // Opaque origins are never same-origin: an opaque initial about:blank (no
+        // creator) is not reused.
+        if destination_origin == "null" || active_origin != destination_origin {
             return None;
         }
         self.documents
@@ -1537,6 +1616,7 @@ impl ContentProcess {
                 document_id,
                 top_level_traversable_id,
                 &final_url,
+                parent_traversable_id,
             )?;
 
         run_user_scripts(&mut settings, &user_scripts);
@@ -1590,6 +1670,7 @@ impl ContentProcess {
                     .map(|viewport| viewport.offset_y)
                     .unwrap_or(0.0),
                 paint_dirty,
+                ui_state_update_noted: Cell::new(false),
                 last_scene: None,
                 last_composition: None,
             },
@@ -1610,8 +1691,6 @@ impl ContentProcess {
         {
             error!("failed to run the parsed document's microtask checkpoint: {error}");
         }
-        attach_same_origin_child_document_for_traversable(self, traversable_id)?;
-
         // Set the navigable hierarchy on the GlobalScope so that `window.open`
         // can resolve `_parent`/`_top` targets.
         let _ = self.set_navigable_hierarchy_on_global_scope(document_id);
@@ -1718,6 +1797,8 @@ impl ContentProcess {
         if let Err(error) = self.drain_new_traversable_documents() {
             warn!("failed to drain new traversable documents: {error}");
         }
+        // The same scripts may have inserted, changed or removed an iframe.
+        self.drain_pending_iframe_steps();
 
         result
     }
@@ -1918,9 +1999,10 @@ impl ContentProcess {
         local_state
             .pending_handlers
             .retain(|_, pending_handler| match pending_handler {
-                PendingNetworkHandler::Asset { host, .. } => {
-                    host.parent_document_id() != document_id
-                }
+                PendingNetworkHandler::Asset {
+                    document_id: pending_document_id,
+                    ..
+                } => *pending_document_id != document_id,
                 PendingNetworkHandler::Image {
                     document_id: pending_document_id,
                     ..
@@ -1931,8 +2013,6 @@ impl ContentProcess {
                 } => *pending_document_id != document_id,
             });
         drop(local_state);
-        self.subdocuments
-            .retain(|_, subdocument| subdocument.strong_count() > 0);
 
         // Tear down the destroyed document's realm: prune callback records
         // whose creation realm has died (housekeeping — the captures are
@@ -2068,6 +2148,8 @@ impl ContentProcess {
             if let Err(error) = self.drain_new_traversable_documents() {
                 warn!("failed to drain new traversable documents: {error}");
             }
+            // The same script may have inserted, changed or removed an iframe.
+            self.drain_pending_iframe_steps();
         }
 
         Ok(())
@@ -2108,12 +2190,7 @@ impl ContentProcess {
         // without this note the UA never knows to re-render the navigable, so
         // a cross-origin iframe's change waits for an unrelated input event to
         // come through before it appears.
-        if let Err(error) = self
-            .event_sender
-            .send(ContentEvent::NoteUiStateUpdate(request.target_navigable_id))
-        {
-            error!("failed to note ui state update for postMessage: {error}");
-        }
+        self.note_ui_state_update(request.target_navigable_id);
 
         // Set up the shared registry so window.open calls made while the
         // message handlers run can register new documents.
@@ -2251,6 +2328,8 @@ impl ContentProcess {
             if let Err(error) = self.drain_new_traversable_documents() {
                 warn!("failed to drain new traversable documents: {error}");
             }
+            // The same script may have inserted, changed or removed an iframe.
+            self.drain_pending_iframe_steps();
         }
 
         Ok(())
@@ -2372,12 +2451,8 @@ impl ContentProcess {
             .documents
             .get(&document_id)
             .map(|document| document.traversable_id);
-        if let Some(traversable_id) = traversable_id
-            && let Err(error) = self
-                .event_sender
-                .send(ContentEvent::NoteUiStateUpdate(traversable_id))
-        {
-            error!("failed to note ui state update for port message task: {error}");
+        if let Some(traversable_id) = traversable_id {
+            self.note_ui_state_update(traversable_id);
         }
         Ok(())
     }
@@ -2428,61 +2503,144 @@ impl ContentProcess {
             .map_err(|error| format!("failed to send beforeunload completion: {error}"))
     }
 
+    /// The documents of this event loop for step 3.2 of
+    /// <https://html.spec.whatwg.org/#update-the-rendering>: a document whose
+    /// container document is in this process is listed after it, and sibling
+    /// documents are listed in the tree order of their navigable containers.
+    fn documents_for_update_the_rendering(&self) -> Vec<DocumentId> {
+        let mut children_by_parent: HashMap<NavigableId, Vec<NavigableId>> = HashMap::new();
+        let mut roots = Vec::new();
+        for (&navigable_id, &document_id) in &self.active_documents_by_traversable {
+            let Some(document) = self.documents.get(&document_id) else {
+                continue;
+            };
+            match document.parent_traversable_id {
+                Some(parent_traversable_id)
+                    if self
+                        .active_documents_by_traversable
+                        .contains_key(&parent_traversable_id) =>
+                {
+                    children_by_parent
+                        .entry(parent_traversable_id)
+                        .or_default()
+                        .push(navigable_id);
+                }
+                _ => roots.push(navigable_id),
+            }
+        }
+
+        for (parent_traversable_id, children) in &mut children_by_parent {
+            let Some(&parent_document_id) = self
+                .active_documents_by_traversable
+                .get(parent_traversable_id)
+            else {
+                continue;
+            };
+            let Some(parent_document) = self.documents.get(&parent_document_id) else {
+                continue;
+            };
+            let container_order = {
+                let document = parent_document.document.borrow();
+                let mut node_positions = HashMap::new();
+                let mut position = 0usize;
+                document.visit(|node_id, _| {
+                    node_positions.insert(node_id, position);
+                    position += 1;
+                });
+                let mut container_order = HashMap::new();
+                for (node_id, state) in &parent_document.navigable_container_states {
+                    if let Some(child_navigable_id) = state.content_navigable {
+                        container_order.insert(
+                            child_navigable_id,
+                            node_positions.get(node_id).copied().unwrap_or(usize::MAX),
+                        );
+                    }
+                }
+                container_order
+            };
+            children.sort_by_key(|child| container_order.get(child).copied().unwrap_or(usize::MAX));
+        }
+
+        roots.sort_by_key(|navigable_id| navigable_id.0.as_u128());
+        let mut ordered = Vec::with_capacity(self.active_documents_by_traversable.len());
+        let mut pending: Vec<NavigableId> = roots.into_iter().rev().collect();
+        while let Some(navigable_id) = pending.pop() {
+            let Some(&document_id) = self.active_documents_by_traversable.get(&navigable_id) else {
+                continue;
+            };
+            ordered.push(document_id);
+            if let Some(children) = children_by_parent.remove(&navigable_id) {
+                pending.extend(children.into_iter().rev());
+            }
+        }
+        ordered
+    }
+
     /// <https://html.spec.whatwg.org/#update-the-rendering>
     fn update_the_rendering(
         &mut self,
         navigable_id: NavigableId,
-        document_id: DocumentId,
+        requested_document_id: DocumentId,
         frame_timestamp_epoch_ms: f64,
     ) -> Result<(), String> {
+        // Step 3.1: "Let frameTimestamp be eventLoop's last render opportunity time."
+        // The user agent stamps the opportunity time on the browser-wide monotonic
+        // clock when it notes the opportunity and passes it in the UpdateTheRendering
+        // command; each document converts frameTimestamp to a duration from its own
+        // time origin (HR Time "relative high resolution time") below.
+        let frame_timestamp = frame_timestamp_epoch_ms;
+
+        // Step 3.2: "Let docs be all fully active Document objects whose relevant
+        // agent's event loop is eventLoop, sorted arbitrarily except that the
+        // following conditions must be met:"
+        // Note: The list is resolved from this process's active documents when the
+        // task runs, so a navigation that committed in between does not leave the
+        // task naming a replaced document — the spec's note on the queueing step
+        // records that "the document associated with the task might become inactive
+        // before the task is processed".
+        let event_loop_documents = self.documents_for_update_the_rendering();
+        if let Some(&document_id) = self.active_documents_by_traversable.get(&navigable_id)
+            && document_id != requested_document_id
+        {
+            info!(
+                "[render-pipe] Content update-the-rendering named replaced document navigable={} document={} (command named {})",
+                navigable_id, document_id, requested_document_id
+            );
+        }
+
         // This is where the update-the-rendering steps run: the rendering
         // opportunity arrives from the user agent as an UpdateTheRendering
         // command carrying the event loop's last render opportunity time.
         log_render_state_debug(format!(
-            "process update-the-rendering navigable={} document={}",
-            navigable_id, document_id,
+            "process update-the-rendering navigable={} documents={:?}",
+            navigable_id, event_loop_documents,
         ));
         let video_paint_registry = Rc::clone(&self.video_paint_registry);
         let canvas_registry = Rc::clone(&self.canvas_registry);
         let image_registry = Rc::clone(&self.image_registry);
         let image_registry_guard = image_registry.borrow_mut();
-        let (paint_frame, shmem_map) = {
-            let document = self
-                .documents
-                .get_mut(&document_id)
-                .ok_or_else(|| format!("unknown document id: {document_id}"))?;
 
-            // Step 1: "Let `frameTimestamp` be `eventLoop`'s last render opportunity time."
-            // The user agent stamps the opportunity time on the browser-wide monotonic
-            // clock when it notes the opportunity and passes it in the UpdateTheRendering
-            // command; convert it to a duration from this document's time origin (HR Time
-            // "relative high resolution time") for the animation frame callbacks below.
-            let frame_timestamp_ms = frame_timestamp_epoch_ms
+        let mut rendering_documents = Vec::with_capacity(event_loop_documents.len());
+        for document_id in &event_loop_documents {
+            let Some(document) = self.documents.get_mut(document_id) else {
+                continue;
+            };
+
+            let frame_timestamp_ms = frame_timestamp
                 - epoch_millis(
                     self.epoch_anchor,
                     self.epoch_anchor_wall_ms,
                     document.settings.time_origin,
                 );
-
-            // Step 14: "For each `doc` of `docs`, run the animation frame callbacks for `doc`, passing in the relative high resolution time given `frameTimestamp` and `doc`'s relevant global object as the timestamp."
-            // Note: The content process collapses `docs` to the single active document for this content process.
-            let had_pending_r_af = document.settings.has_pending_animation_frame_callbacks();
-            document
-                .settings
-                .run_animation_frame_callbacks(frame_timestamp_ms)?;
-
             let animation_time = frame_timestamp_ms / 1000.0;
 
-            // Step 4: "Unnecessary rendering: Remove from docs any Document
-            // object doc for which all of the following are true: the user
-            // agent believes that updating the rendering of doc's node
-            // navigable would have no visible effect; and doc's map of
-            // animation frame callbacks is empty."
-            // Note: The content process collapses `docs` to its single active
-            // document. The removal conditions invert to `needs_paint` or
-            // `is_animating` (a visible effect) and `had_pending_r_af` (the
-            // animation frame callbacks); `last_scene` being absent forces the
-            // first paint so blitz has a scene to reuse.
+            // Step 3.4: "Unnecessary rendering: Remove from docs any Document
+            // object doc for which all of the following are true:"
+            // The conditions are inverted here into the paint decision: `docs`
+            // is kept (the document is painted) when `needs_paint` (content
+            // changed something blitz does not model), its map of animation
+            // frame callbacks is not empty, or `last_scene` being absent forces
+            // the first paint so blitz has a scene to reuse.
             //
             // A paint-dirty document needs the repaint whatever the resolve
             // pass reports: content changed something blitz does not model (a
@@ -2495,26 +2653,70 @@ impl ContentProcess {
             // re-rasterize the layer for nothing.
             let paint_dirty = Rc::clone(&document.paint_dirty);
             let needs_restyle = paint_dirty.needs_restyle();
-            let must_paint = {
+            let has_pending_r_af = document.settings.has_pending_animation_frame_callbacks();
+            let (must_paint, is_animating) = {
                 let document_guard = document.document.borrow();
-                paint_dirty.needs_paint()
-                    || had_pending_r_af
-                    || document_guard.is_animating()
-                    // A fresh document has never painted; fail open so the first
-                    // frame always runs blitz and populates the cache.
-                    || document.last_scene.is_none()
+                (
+                    paint_dirty.needs_paint()
+                        || has_pending_r_af
+                        // A fresh document has never painted; fail open so the first
+                        // frame always runs blitz and populates the cache.
+                        || document.last_scene.is_none(),
+                    document_guard.is_animating(),
+                )
             };
-            let mut rendering_changed = false;
-            if must_paint || needs_restyle {
-                let mut document_guard = document.document.borrow_mut();
+            // Blitz reports CSS animation damage only when the resolve pass
+            // runs; it does not request a redraw per animation tick. An
+            // animating document therefore still resolves, while `must_paint`
+            // stays false so a video-driven cycle reuses the scene unless the
+            // pass reports a change.
+            let needs_resolve = must_paint || needs_restyle || is_animating;
+            rendering_documents.push(RenderingDocument {
+                document_id: *document_id,
+                frame_timestamp_ms,
+                animation_time,
+                must_paint,
+                needs_resolve,
+                should_paint: must_paint,
+            });
+        }
 
-                // Step 16.2.1: "Recalculate styles and update layout for `doc`."
-                // `resolve` advances style, layout, and resource-driven document updates.
-                rendering_changed = document_guard.resolve(animation_time);
+        // Step 3.14: "For each doc of docs, run the animation frame callbacks
+        // for doc, passing in the relative high resolution time given
+        // frameTimestamp and doc's relevant global object as the timestamp."
+        for rendering_document in &rendering_documents {
+            let Some(document) = self.documents.get_mut(&rendering_document.document_id) else {
+                continue;
+            };
+            document
+                .settings
+                .run_animation_frame_callbacks(rendering_document.frame_timestamp_ms)?;
+        }
+
+        // Step 3.16.2.1: "Recalculate styles and update layout for doc."
+        // `resolve` advances style, layout, and resource-driven document updates.
+        for rendering_document in &mut rendering_documents {
+            if !rendering_document.needs_resolve {
+                continue;
             }
-            let should_paint = must_paint || rendering_changed;
+            let Some(document) = self.documents.get_mut(&rendering_document.document_id) else {
+                continue;
+            };
+            let mut document_guard = document.document.borrow_mut();
+            let rendering_changed = document_guard.resolve(rendering_document.animation_time);
+            rendering_document.should_paint = rendering_document.must_paint || rendering_changed;
+        }
 
-            let frame = if !should_paint {
+        // Step 3.22: "For each doc of docs, update the rendering or user
+        // interface of doc and its node navigable to reflect the current state."
+        let mut paint_frames = Vec::with_capacity(rendering_documents.len());
+        for rendering_document in &rendering_documents {
+            let document_id = rendering_document.document_id;
+            let Some(document) = self.documents.get_mut(&document_id) else {
+                continue;
+            };
+            let navigable_id = document.traversable_id;
+            let frame = if !rendering_document.should_paint {
                 // Clean render: reuse the last recorded scene and composition,
                 // with no paint recording and no font re-send. A resolve pass
                 // that ran reported no change, and the frame is marked
@@ -2591,8 +2793,6 @@ impl ContentProcess {
                         &image_registry_guard,
                     );
 
-                    // Step 22: "For each `doc` of `docs`, update the rendering or user interface of `doc` and its node navigable to reflect the current state."
-                    // Note: This implementation collapses the HTML rendering task to a single active document and records the painted scene for the embedder.
                     paint_scene(
                         &mut scene,
                         &document_guard,
@@ -2614,10 +2814,10 @@ impl ContentProcess {
                         navigable_id, document_id, width, height,
                     ));
                     // Set animating=true when this document has animated content:
-                    // video elements still producing frames, or blitz is animating
-                    // (CSS animations/transitions, same-origin subdocuments,
-                    // scroll animations). Graphics forwards this to the UA which
-                    // keeps noting UI state updates to drive animation.
+                    // video elements still producing frames, or blitz is
+                    // animating (CSS animations/transitions, scroll animations).
+                    // Graphics forwards this to the UA, which keeps noting UI
+                    // state updates to drive animation.
                     let has_video =
                         video_paint_registry
                             .borrow()
@@ -2654,24 +2854,35 @@ impl ContentProcess {
                 document.last_composition = Some(composition);
                 (paint_frame, shmem_data)
             };
-            paint_dirty.clear();
-            frame
-        };
+            document.paint_dirty.clear();
+            // The render this note asked for has happened; a later change to the
+            // document notes the user agent again.
+            document.ui_state_update_noted.set(false);
+            paint_frames.push(frame);
+        }
 
-        verification::tla_log!(
-            self.tla_tracer,
-            -> "RenderingOpportunity",
-            "UpdateTheRendering",
-            navigable_id
-        );
+        if self
+            .active_documents_by_traversable
+            .contains_key(&navigable_id)
+        {
+            verification::tla_log!(
+                self.tla_tracer,
+                -> "RenderingOpportunity",
+                "UpdateTheRendering",
+                navigable_id
+            );
+        }
 
-        // Send the PaintFrame directly to the graphics process for composition.
+        // Send the PaintFrames directly to the graphics process for composition.
         if let Some(graphics_sender) = &self.graphics_sender {
-            let command = ipc_messages::graphics::GraphicsCommand::PaintFrame {
-                frame: paint_frame.clone(),
-            };
-            if let Err(error) = graphics_sender.send_with_shmem_map(command, shmem_map.clone()) {
-                error!("failed to send paint frame to graphics process: {error}");
+            for (paint_frame, shmem_map) in paint_frames {
+                let command = ipc_messages::graphics::GraphicsCommand::PaintFrame {
+                    frame: paint_frame.clone(),
+                };
+                if let Err(error) = graphics_sender.send_with_shmem_map(command, shmem_map.clone())
+                {
+                    error!("failed to send paint frame to graphics process: {error}");
+                }
             }
         }
 
@@ -2743,9 +2954,7 @@ impl ContentProcess {
     ) -> FrameCompositionMetadata {
         let mut iframe_node_ids = container_states
             .iter()
-            .filter_map(|(iframe_node_id, state)| {
-                state.cross_origin.then_some((*iframe_node_id, state))
-            })
+            .map(|(iframe_node_id, state)| (*iframe_node_id, state))
             .collect::<Vec<_>>();
         iframe_node_ids.sort_by_key(|(iframe_node_id, _)| *iframe_node_id);
 
@@ -2975,89 +3184,66 @@ impl ContentProcess {
 
     fn complete_asset_fetch(
         &mut self,
-        host: DocumentHost,
+        document_id: DocumentId,
         request: AssetRequest,
         response_url: &str,
         body: &[u8],
     ) -> Result<(), String> {
-        let parent_document_id = host.parent_document_id();
         let Some(traversable_id) = self
             .documents
-            .get(&parent_document_id)
+            .get(&document_id)
             .map(|content_document| content_document.traversable_id)
         else {
-            error!("[content] complete_asset_fetch: document {parent_document_id} not found");
+            error!("[content] complete_asset_fetch: document {document_id} not found");
             return Ok(());
         };
-        let document = match host {
-            DocumentHost::Main(document_id) => self
-                .documents
-                .get(&document_id)
-                .map(|content_document| Rc::clone(&content_document.document)),
-            DocumentHost::Subdocument { id, .. } => {
-                self.subdocuments.get(&id).and_then(Weak::upgrade)
-            }
-        };
-        let Some(document) = document else {
-            error!("[content] complete_asset_fetch: document {host:?} not found");
+        let Some(document) = self
+            .documents
+            .get(&document_id)
+            .map(|content_document| Rc::clone(&content_document.document))
+        else {
+            error!("[content] complete_asset_fetch: document {document_id} not found");
             return Ok(());
         };
         install_resource(&mut document.borrow_mut(), &request, response_url, body)?;
-        if matches!(host, DocumentHost::Main(_)) {
-            self.continue_document_load(parent_document_id)?;
-        }
-        self.mark_document_dirty(parent_document_id);
-        self.event_sender
-            .send(ContentEvent::NoteUiStateUpdate(traversable_id))
-            .map_err(|error| {
-                format!("failed to note ui state update for an asset fetch: {error}")
-            })?;
+        self.continue_document_load(document_id)?;
+        self.mark_document_dirty(document_id);
+        self.note_ui_state_update(traversable_id);
         Ok(())
     }
 
     fn fail_asset_fetch(
         &mut self,
-        host: DocumentHost,
+        document_id: DocumentId,
         request: AssetRequest,
     ) -> Result<(), String> {
-        let parent_document_id = host.parent_document_id();
         let traversable_id = self
             .documents
-            .get(&parent_document_id)
+            .get(&document_id)
             .map(|content_document| content_document.traversable_id);
         match request {
             AssetRequest::Stylesheet {
                 request_id: Some(request_id),
                 ..
             } => {
-                if let DocumentHost::Main(document_id) = host
-                    && let Some(content_document) = self.documents.get(&document_id)
-                {
+                if let Some(content_document) = self.documents.get(&document_id) {
                     content_document
                         .document
                         .borrow_mut()
                         .cancel_pending_resource(request_id);
                 }
-                if matches!(host, DocumentHost::Main(_)) {
-                    self.continue_document_load(parent_document_id)?;
-                }
+                self.continue_document_load(document_id)?;
             }
             AssetRequest::Stylesheet { .. } | AssetRequest::StylesheetImport { .. } => {
                 // A stylesheet that failed to load is not retried; the
                 // document load continues without it.
-                if matches!(host, DocumentHost::Main(_)) {
-                    self.continue_document_load(parent_document_id)?;
-                }
+                self.continue_document_load(document_id)?;
             }
             AssetRequest::Font { .. } | AssetRequest::DecodedImage { .. } => {}
         }
-        self.mark_document_dirty(parent_document_id);
+        self.mark_document_dirty(document_id);
         if let Some(traversable_id) = traversable_id {
-            self.event_sender
-                .send(ContentEvent::NoteUiStateUpdate(traversable_id))
-                .map_err(|error| {
-                    format!("failed to note ui state update for a failed asset fetch: {error}")
-                })?;
+            self.note_ui_state_update(traversable_id);
         }
         Ok(())
     }
@@ -3318,6 +3504,39 @@ impl ContentProcess {
         }
     }
 
+    /// Runs the iframe DOM mutation steps the document tree hooks recorded.
+    /// The DOM mutation algorithms run these steps synchronously; a DOM hook
+    /// runs while blitz holds the document (and, during script execution, the
+    /// realm) mutably borrowed, so the hook records the step and this process
+    /// runs it as soon as it has the state back, at the end of the current
+    /// operation (see `dom_trees.rs`, "Iframes" in content/src/html/README.md).
+    fn drain_pending_iframe_steps(&mut self) {
+        let pending = {
+            let mut local_state = self.local_state.borrow_mut();
+            std::mem::take(&mut local_state.pending_iframe_steps)
+        };
+        for step in pending {
+            let document_id = step.document_id;
+            let iframe_node_id = step.iframe_node_id;
+            let result = match step.steps {
+                IframeMutationSteps::PostConnection => {
+                    run_iframe_post_connection_steps(self, document_id, iframe_node_id)
+                }
+                IframeMutationSteps::AttributeChange => {
+                    process_iframe_attributes(self, document_id, iframe_node_id, false)
+                }
+                IframeMutationSteps::Removing => {
+                    run_iframe_removing_steps(self, document_id, iframe_node_id)
+                }
+            };
+            if let Err(error) = result {
+                error!(
+                    "failed to run iframe DOM mutation steps document={document_id} node={iframe_node_id}: {error}"
+                );
+            }
+        }
+    }
+
     /// Writes the "prepare an image for presentation" state the processing
     /// model produced to the documents' blitz trees.  This is model state, not
     /// a queued task: a DOM hook runs while blitz holds the document mutably
@@ -3342,11 +3561,7 @@ impl ContentProcess {
                 );
             content_document.paint_dirty.note_paint();
             let traversable_id = content_document.traversable_id;
-            self.event_sender
-                .send(ContentEvent::NoteUiStateUpdate(traversable_id))
-                .map_err(|error| {
-                    format!("failed to note ui state update for a presented image: {error}")
-                })?;
+            self.note_ui_state_update(traversable_id);
         }
         Ok(())
     }
@@ -3369,16 +3584,15 @@ impl ContentProcess {
         };
 
         match pending_handler {
-            PendingNetworkHandler::Asset { host, request } => {
+            PendingNetworkHandler::Asset {
+                document_id,
+                request,
+            } => {
                 log_render_state_debug(format!(
                     "complete asset fetch handler={} document={} status={} type={} url={}",
-                    handler_id,
-                    host.parent_document_id(),
-                    response_status,
-                    response_type,
-                    response_url,
+                    handler_id, document_id, response_status, response_type, response_url,
                 ));
-                self.complete_asset_fetch(host, request, &response_url, &response.body)
+                self.complete_asset_fetch(document_id, request, &response_url, &response.body)
             }
             PendingNetworkHandler::Image {
                 document_id,
@@ -3433,11 +3647,7 @@ impl ContentProcess {
                     response_url,
                 ));
                 self.continue_document_load(document_id)?;
-                self.event_sender
-                    .send(ContentEvent::NoteUiStateUpdate(traversable_id))
-                    .map_err(|error| {
-                        format!("failed to note ui state update for deferred script fetch: {error}")
-                    })?;
+                self.note_ui_state_update(traversable_id);
                 Ok(())
             }
         }
@@ -3454,13 +3664,15 @@ impl ContentProcess {
         };
 
         match pending_handler {
-            PendingNetworkHandler::Asset { host, request } => {
+            PendingNetworkHandler::Asset {
+                document_id,
+                request,
+            } => {
                 warn!(
                     "content asset fetch failed handler={} document={} request={request:?}",
-                    handler_id,
-                    host.parent_document_id(),
+                    handler_id, document_id,
                 );
-                self.fail_asset_fetch(host, request)
+                self.fail_asset_fetch(document_id, request)
             }
             PendingNetworkHandler::Image {
                 document_id,
@@ -3490,9 +3702,7 @@ impl ContentProcess {
                     handler_id, traversable_id, document_id, script_index,
                 ));
                 self.continue_document_load(document_id)?;
-                self.event_sender
-                    .send(ContentEvent::NoteUiStateUpdate(traversable_id))
-                    .map_err(|error| format!("failed to note ui state update for deferred script fetch failure: {error}"))?;
+                self.note_ui_state_update(traversable_id);
                 Ok(())
             }
         }
@@ -3766,6 +3976,8 @@ impl ContentProcess {
         if let Err(error) = self.drain_new_traversable_documents() {
             warn!("failed to drain new traversable documents: {error}");
         }
+        // The same scripts may have inserted, changed or removed an iframe.
+        self.drain_pending_iframe_steps();
         Ok(())
     }
 
@@ -3957,6 +4169,9 @@ impl ContentProcess {
 
     fn handle_command(&mut self, command: Command) -> Result<bool, String> {
         let result = self.handle_command_inner(command);
+        // Run the iframe DOM mutation steps the command's DOM work recorded,
+        // before the task checkpoint and the microtasks see the result.
+        self.drain_pending_iframe_steps();
         if let Err(error) = self.apply_pending_image_presentation() {
             error!("failed to apply pending image presentation after a command: {error}");
         }
@@ -4071,6 +4286,9 @@ impl ContentProcess {
             self.drain_wasm_results();
         }
         steps?;
+
+        // Run the iframe DOM mutation steps the task's DOM work recorded.
+        self.drain_pending_iframe_steps();
 
         // Image mutations observed by the DOM hooks produce presentation state;
         // write it as part of the task that caused it.
@@ -4267,6 +4485,8 @@ impl ContentProcess {
                 .perform_a_microtask_checkpoint()
                 .map_err(|error| format!("microtask checkpoint failed: {error}"))?;
         }
+        // A promise job may have inserted, changed or removed an iframe.
+        self.drain_pending_iframe_steps();
         Ok(())
     }
 
@@ -4315,6 +4535,63 @@ impl ContentProcess {
     fn mark_traversable_dirty(&self, traversable_id: NavigableId) {
         if let Some(document_id) = self.active_documents_by_traversable.get(&traversable_id) {
             self.mark_document_dirty(*document_id);
+        }
+    }
+
+    /// The navigable whose update the rendering covers `navigable_id` on this
+    /// event loop: the root document of the document tree hosted by this
+    /// process.  A cross-origin child's container document lives in another
+    /// process, so that child is the root here.
+    fn event_loop_root_navigable(&self, navigable_id: NavigableId) -> NavigableId {
+        let mut current = navigable_id;
+        loop {
+            let Some(&document_id) = self.active_documents_by_traversable.get(&current) else {
+                return current;
+            };
+            let Some(document) = self.documents.get(&document_id) else {
+                return current;
+            };
+            let Some(parent_traversable_id) = document.parent_traversable_id else {
+                return current;
+            };
+            if !self
+                .active_documents_by_traversable
+                .contains_key(&parent_traversable_id)
+            {
+                return current;
+            }
+            current = parent_traversable_id;
+        }
+    }
+
+    /// Notes a UI state update for the event loop root covering `navigable_id`
+    /// unless one is already outstanding for its document.  The user agent
+    /// batches a note that arrives while an update is in flight ("Unnecessary
+    /// rendering", step 3.4 of
+    /// <https://html.spec.whatwg.org/#update-the-rendering>), so a second note
+    /// only asks for a render the first one already queued — in this content
+    /// process that would be a duplicate `UpdateTheRendering`, since the render
+    /// each note asks for paints every document of the event loop.
+    fn note_ui_state_update(&mut self, navigable_id: NavigableId) {
+        let navigable_id = self.event_loop_root_navigable(navigable_id);
+        let Some(document_id) = self
+            .active_documents_by_traversable
+            .get(&navigable_id)
+            .copied()
+        else {
+            return;
+        };
+        let Some(document) = self.documents.get(&document_id) else {
+            return;
+        };
+        if document.ui_state_update_noted.replace(true) {
+            return;
+        }
+        if let Err(error) = self
+            .event_sender
+            .send(ContentEvent::NoteUiStateUpdate(navigable_id))
+        {
+            error!("failed to note a ui state update for navigable={navigable_id}: {error}");
         }
     }
 
@@ -4449,6 +4726,7 @@ impl ContentProcess {
                 self.complete_image_decode(&image_id, result.ok())?;
                 Ok(true)
             }
+
             RunImageElementTask {
                 document_id,
                 node_id,
@@ -4481,8 +4759,10 @@ impl ContentProcess {
             }
             NotifyVideoEnded { video_paint_id } => {
                 // Keep the paint ID in the registry so the last video frame is
-                // still rendered as part of the composition. Just mark the node
-                // as ended so the animating flag is set to false.
+                // still rendered as part of the composition. Mark the node as
+                // ended so the animating flag is set to false, and note the
+                // document for a paint so the ended state reaches the next
+                // frame.
                 let ended_key: Vec<(DocumentId, usize)> = self
                     .video_paint_registry
                     .borrow()
@@ -4492,6 +4772,7 @@ impl ContentProcess {
                     .collect();
                 for key in ended_key {
                     self.ended_video_nodes.insert(key);
+                    self.mark_document_dirty(key.0);
                 }
                 Ok(true)
             }

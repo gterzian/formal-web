@@ -18,6 +18,69 @@ The `user_agent` crate owns all browser-global coordination: navigables and trav
 - Keep spec-facing algorithms and continuations as named worker methods on the owning type instead of as transport-oriented helper functions.
 - Route browser, embedder, automation, and webview requests through this crate instead of through synchronous cross-thread bridges.
 
+## Content-process placement for navigations
+
+`initialise_the_document_object` resolves the destination's similar-origin
+window agent from the destination origin's site.  A child navigable whose
+destination is `about:blank` or `about:srcdoc` inherits the parent document's
+origin, so it reuses the parent's agent and event loop; any other same-site
+destination reuses the agent already recorded for that site in the browsing
+context group; a cross-site destination obtains a new agent, which spawns its
+content process.  That is the only difference between a same-origin and a
+cross-origin iframe document.  When a navigation keeps the traversable on its
+current event loop, `record_agent_cluster_for_site` records the destination
+site against that agent in the group's agent cluster map, so a later
+same-site navigation (a same-origin iframe, say) finds it instead of spawning
+a process.
+
+### The traversable's event-loop binding
+
+The spec has no per-navigable event loop: the agent is chosen per document
+(`initialise the document object` step 7.4) and an agent's event loop is fixed
+for the agent's life (`create an agent` step 4).  This crate adds a standing
+binding — `traversable_handles`, mirrored by `Navigable::event_loop_id` and the
+agent's `traversable_ids` — because a command about a traversable has to name
+the content process that owns its current document.  It is a cache of "the
+active document's relevant agent's event loop", refreshed by
+`reassign_traversable_event_loop` at the point where the spec fixes the
+destination's agent: after step 7.4 and before `CreateLoadedDocument` is
+dispatched.  The destination agent differs from the current one in two cases
+only — a child navigable, whose destination site resolves to another agent of
+the same group, and a top-level navigation that switches browsing context
+group.
+
+What follows from the binding being a cache:
+
+- Until finalization the binding names the destination process while the
+  active document is still the outgoing one (see "Cross-origin navigation and
+  rendering").  Commands for the outgoing document route by document id
+  (`command_sender_for_document`), never through the binding.
+- A traversable that keeps its event loop still needs the destination site
+  recorded against that agent (`record_agent_cluster_for_site`), or the next
+  same-site navigation spawns a process.
+- The old event loop is stopped only when its agent has no traversables left:
+  the process hosts every traversable of the cluster, not just the one that
+  moved.  HTML's counterpart is that the abandoned browsing context "might" be
+  destroyed unless other Documents use it (`obtain a browsing context to use
+  for a navigation response` step 10); this crate has no back/forward cache, so
+  an empty agent is the whole condition.
+- The destination process booted with fallback viewport state, so the move
+  re-sends the traversable's recorded viewport to it.
+
+## Document destruction
+
+The user agent decides when a document dies: content removes a document from its
+table only when it handles `DestroyDocument`.  Every path that removes a
+navigable sends it for the navigable's active document, routed by document id
+(`command_sender_for_document`) so it reaches the process that owns the
+document — a top-level traversable's teardown, a navigation commit's previous
+document, and an iframe removal (`IframeTraversableRemoved`, "destroy a child
+navigable" step 5).  Content destroys a document's descendants by running that
+document's removing steps, which retires its iframes' navigables and so sends
+the user agent back through this path.  A path that retires a navigable without
+sending `DestroyDocument` retains the document, its realm and its blitz tree
+for the life of the content process.
+
 ## IPC blocking and deadlock
 
 Sending on an IPC channel can block when the system buffer is full, and the
@@ -94,7 +157,11 @@ automation, worker `requestAnimationFrame`, or a content- or graphics-reported
 change. `note_ui_state_update` records it in `queued_ui_state_updates`, with
 the epoch time that becomes the event loop's `frameTimestamp` (the HTML "last
 render opportunity time"). Notes are batched: multiple notes before the next
-render collapse into one, and the latest timestamp wins.
+render collapse into one, and the latest timestamp wins. A note for a navigable
+on the same event loop as its top-level traversable is recorded against that
+top-level, so one cycle renders every document of the event loop; a
+cross-origin child remains its own target because it runs on its own event
+loop.
 
 `update the rendering` is queued only when both inputs exist. A UI state
 update without a rendering opportunity is batched and the UA calls
@@ -104,7 +171,7 @@ state update. That is the Unnecessary rendering step in code form.
 
 ### Queueing update the rendering
 
-`queue_update_the_rendering` starts one cycle per navigable:
+`queue_update_the_rendering` starts one cycle per noted navigable:
 
 - a per-navigable guard (`pending_update_the_rendering`) prevents a second
   cycle while the first is in flight;
@@ -119,34 +186,36 @@ state update. That is the Unnecessary rendering step in code form.
 - for a top-level navigable, graphics is sent `RenderStarted` with the cycle
   deadline;
 - `ContentCommand::UpdateTheRendering` is sent to the content event loop;
-- for a child navigable, the top-level traversable's update is queued too,
-  because graphics composes only when the top-level frame arrives.
+- for a cross-origin child navigable, the top-level traversable's update is
+  queued too, because graphics composes only when the top-level frame arrives.
 
 Content turns the command into a task so it runs in event-loop order (see
 `content/README.md`); the rendering task then enters `update_the_rendering`.
 
 ### Content's part
 
-`update_the_rendering` runs the animation-frame callbacks and applies the
-Unnecessary rendering test: a clean document reuses its last scene and
-composition instead of re-running blitz, while a dirty or animating document
-(or one with no cached scene) resolves style/layout and paints. Only a
-restyle-dirty document (blitz reported a possible `:hover` change) can come
-out of the resolve pass unchanged, and it then keeps its last scene too. Either
-way content sends a `PaintFrame` directly to the graphics process; that is how
-graphics learns the current top-level or child frame, its `animating` flag,
-and whether its scene changed. Content marks a document dirty when a script
-ran or blitz made a change it cannot model as a style change; a UI event that
-reaches no listener marks nothing, since it cannot have run script. Content
-sends `ContentEvent::NoteUiStateUpdate` when a change happens outside a
-UA-driven command.
+`update_the_rendering` walks the event loop's documents in container-document
+order, runs the animation-frame callbacks and the Unnecessary rendering test
+for each, then resolves and paints the ones that need it. A clean document
+reuses its last scene and composition instead of re-running blitz; a
+content-dirty document or one with no cached scene resolves and paints; a
+restyle-dirty or animating document resolves and paints only when the pass
+reports a change. Either way content sends a `PaintFrame` per document
+directly to the graphics process; that is how graphics learns the current
+top-level or child frame, its `animating` flag, and whether its scene changed.
+Content marks a document dirty when a script ran or blitz made a change it
+cannot model as a style change; a UI event that reaches no listener marks
+nothing, since it cannot have run script. Content sends
+`ContentEvent::NoteUiStateUpdate` when a change happens outside a UA-driven
+command.
 
 ### Graphics' part
 
 The graphics process stores child frames in the parent's compositor and
-composes only when a top-level frame arrives, waiting for the child and video
-frames the top-level frame references. It returns child viewport data in
-`PixelFrameReady`; the UA publishes that data to the child. A dirty child frame
+composes only when a top-level frame arrives, waiting for the video frames the
+top-level frame references (child frames do not gate it). It returns child
+viewport data in `PixelFrameReady`; the UA publishes that data to the child. A
+dirty child frame
 or canvas is reported with `GraphicsEvent::CompositionChanged`, which the UA
 turns into a UI state update for the parent traversable.
 
@@ -161,7 +230,10 @@ layers, hit-test info, child viewport data, and the animating frame ids.
 
 On `PixelFrameReady` the UA:
 
-- clears the in-flight state for the top-level and composed child frames;
+- clears the in-flight state for the top-level and composed child frames. A
+  same-event-loop child has no pending update of its own (its changes note the
+  event loop root); a cross-origin child's queued update is released here when
+  its frame is composed, which lets its next note queue again;
 - forwards the layers to the embedder (`new_web_content_layers`), which
   presents them;
 - records `FrameHitInfo` and the child-frame mapping for input routing;
@@ -192,7 +264,11 @@ and `active_documents_by_traversable` disagree. Commands pairing those two maps
 (e.g. `UpdateTheRendering`) must verify the active document is owned by the
 traversable's current event loop and skip otherwise — a stale send fails in the
 new content process and, because no paint frame is produced, leaves the render
-loop's pending flag stuck.
+loop's pending flag stuck. The same race exists inside one process at commit:
+content replaces the active document when it runs `CreateLoadedDocument`, while
+the UA switches at finalization, so content drops an `UpdateTheRendering` whose
+document is no longer the traversable's active document; the finalization notes
+the UI state update that renders the new document.
 
 ### Model
 

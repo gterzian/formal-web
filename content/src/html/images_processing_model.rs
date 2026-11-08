@@ -10,7 +10,7 @@ use ipc_messages::content::{
 use log::error;
 use url::Url;
 
-use crate::html::document_providers::{DocumentHost, DocumentProviders};
+use crate::html::document_providers::DocumentProviders;
 use crate::js::RealmJob;
 use crate::js::platform_objects::with_global_scope;
 
@@ -285,14 +285,7 @@ pub(crate) fn obtain_images(document: &DocumentProviders, node_id: usize, elemen
     // <https://html.spec.whatwg.org/#when-to-obtain-images:relevant-mutations>
     // The restart animation flag is never set (image animation is not
     // implemented).
-    // Note: A same-origin iframe subdocument has no identity of its own in the
-    // image registry, so its `<img>` elements do not run the processing model
-    // and render nothing; giving each subdocument a frame of its own is the
-    // remaining work described in this directory's README.
-    if !matches!(document.host(), DocumentHost::Main(_)) {
-        return;
-    }
-    let document_id = document.host().parent_document_id();
+    let document_id = document.document_id();
     let attributes = ImageAttributes::from_element(element);
     let update = {
         let mut registry = document.image_registry().borrow_mut();
@@ -1124,12 +1117,7 @@ pub(crate) fn reacting_to_environment_changes(
     // Step 1: Await a stable state. The synchronous section consists of all the remaining steps of this algorithm until the algorithm says the synchronous section has ended. (Steps in synchronous sections are marked with ⌛.)
     // Note: The viewport command handler runs this when no task is queued (a
     // stable state).
-    // Note: A same-origin iframe subdocument's `<img>` elements have no registry
-    // identity and do not run the processing model (see `obtain_images`).
-    if !matches!(document.host(), DocumentHost::Main(_)) {
-        return;
-    }
-    let document_id = document.host().parent_document_id();
+    let document_id = document.document_id();
     let base_url = document.base_url();
     let partition = document.partition();
     let origin = &partition.origin;
